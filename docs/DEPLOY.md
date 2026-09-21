@@ -30,11 +30,23 @@ Authentication is not a reason to open a port. The service binds to `127.0.0.1` 
 open to the internet is SSH. Reach the dashboard through a tunnel from your own machine:
 
 ```
-ssh -N -L 8787:127.0.0.1:8787 -i ~/.ssh/<key> ubuntu@<host>
+ssh -N -L 8788:127.0.0.1:8787 -i ~/.ssh/<key> ubuntu@<host>
 ```
 
-Then open http://localhost:8787. Do not set `HOST=0.0.0.0` on a public machine without putting
-authentication in front of it first.
+Then open http://localhost:8788.
+
+**Use a local port nothing else is on.** If you also run the bot on your own machine, it already
+holds 8787, and a tunnel asking for the same number cannot bind it. SSH does not always fail loudly:
+when the local server holds IPv4 only, the tunnel can still take IPv6, and `localhost:8787` then
+resolves to whichever the browser picks. The result looks like the remote dashboard being down or
+showing the wrong data. Forwarding to a free local port such as 8788 removes the ambiguity, and
+anything answering there can only be the tunnel.
+
+To check what holds a port: `lsof -nP -iTCP:8787 -sTCP:LISTEN`. Add `-o ExitOnForwardFailure=yes` to
+the ssh command so a tunnel that cannot bind exits instead of sitting there half-connected.
+
+Do not set `HOST=0.0.0.0` on a public machine. Accounts protect the API, but there is no TLS in
+front of it, so passwords and session cookies would cross the network in the clear.
 
 ## Install
 
