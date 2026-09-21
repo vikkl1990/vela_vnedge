@@ -296,7 +296,7 @@ export function fillExit(pos: Position, price: number, qty: number, reason: stri
  * Apply one price bar (or tick expressed as a degenerate bar) to an open position.
  * Returns fills produced. SL is evaluated before TPs on the same bar.
  */
-export function applyBar(pos: Position, bar: { time: number; high: number; low: number; close: number }, cfg: PaperConfig): Fill[] {
+export function applyBar(pos: Position, bar: { time: number; high: number; low: number; close: number }, cfg: PaperConfig, atrNow?: number): Fill[] {
   if (pos.status !== 'open') return [];
   const fills: Fill[] = [];
   const long = pos.side === 'long';
@@ -327,7 +327,7 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   // 3. trail LAST: this bar's exits were checked against the stop as it stood when the bar
   // opened, so a stop raised here only applies from the next bar. Trailing earlier would let
   // the same bar's high both raise the stop and then trigger it.
-  trailStop(pos, long ? bar.high : bar.low, cfg);
+  trailStop(pos, long ? bar.high : bar.low, cfg, atrNow);
   const stale = staleExit(pos, bar, cfg, (TF_SECONDS[pos.tf] ?? 0) * 1000);
   if (stale) fills.push(stale);
   return fills;
@@ -337,7 +337,7 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
  * Advance the trailing stop from the best price seen. Never moves against the position and does
  * nothing until the trade has shown `trailAfterR` of favourable excursion.
  */
-export function trailStop(pos: Position, favourable: number, cfg: PaperConfig): void {
+export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, atrNow?: number): void {
   if (pos.status !== 'open') return;
   const base = pos.slOriginal ?? pos.sl;
   if (base === null) return;
@@ -357,8 +357,14 @@ export function trailStop(pos: Position, favourable: number, cfg: PaperConfig): 
   if (floorAt > 0 && peak >= floorAt) keptR = Math.max(keptR, cfg.floorKeepR ?? 0);
   const afterR = cfg.trailAfterR ?? 0;
   if (afterR > 0 && peak >= afterR) {
-    const give = cfg.trailGiveBackPct ?? 0;
-    keptR = Math.max(keptR, give > 0 ? peak * (1 - give / 100) : peak - (cfg.trailDistanceR > 0 ? cfg.trailDistanceR : 1));
+    const atrMult = cfg.trailAtrMult ?? 0;
+    if (atrMult > 0 && atrNow && atrNow > 0) {
+      // distance measured in today's volatility, converted into R so the rest of the maths is shared
+      keptR = Math.max(keptR, peak - (atrMult * atrNow) / risk);
+    } else {
+      const give = cfg.trailGiveBackPct ?? 0;
+      keptR = Math.max(keptR, give > 0 ? peak * (1 - give / 100) : peak - (cfg.trailDistanceR > 0 ? cfg.trailDistanceR : 1));
+    }
   }
   if (!Number.isFinite(keptR)) return;
 

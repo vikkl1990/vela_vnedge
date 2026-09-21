@@ -1,0 +1,65 @@
+… 5/44 pairs
+… 10/44 pairs
+… 15/44 pairs
+… 20/44 pairs
+… 25/44 pairs
+… 30/44 pairs
+… 35/44 pairs
+… 40/44 pairs
+
+44/44 live pairs · 4000 bars of 15m · 8 walk-forward windows · 2613 trades under the live policy
+
+EXIT REASONS (live policy) — captured versus available
+reason        trades     pnl   avgR  avg best  captured   further after exit   bars held
+be             1323   25899   0.96      1.80       53%                 2.06        8.6
+sl             1159  -23515  -1.00      0.47         -                 1.90        6.3
+reversal        100    -172  -0.12      0.70         -                 1.35       10.4
+tp3              27    2701   4.75      6.82       70%                 6.75        7.3
+script_flip       2     -28  -0.56      0.55         -                 0.13       83.0
+tp2               1      43   2.54      3.30       77%                 1.28        3.0
+liquidation       1     -14  -0.61      0.06         -                 1.34        3.0
+
+winners 1384: captured 1.03R of 1.88R shown (54%)
+best unrealised R ever reached, all trades:
+  under 0.25R      421   16%
+  0.25 to 0.5R     332   13%
+  0.5 to 1R        440   17%
+  1 to 2R         1015   39%
+  2R or more       405   15%
+  never reached 1R: 46% of trades — no exit rule can bank what these never showed
+
+losing trades 1229 — how far green did they get before turning?
+  never above 0.1R     209   17%  avg lost -0.99R
+  0.1 to 0.25R         211   17%  avg lost -0.97R
+  0.25 to 0.5R         328   27%  avg lost -0.96R
+  0.5 to 1R            420   34%  avg lost -0.97R
+  1R or more            61    5%  avg lost -0.96R
+  reachable: 809 losers (31% of all trades) showed 0.25R or better before failing
+
+POOLED OVER THE WHOLE SPAN
+policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
+live (trail 1R, keep 75%)        2613    4914   1.20    53%   0.09   5317        7.7        7.1     0.245
+ATR trail 2x from 1R             2528    3068   1.13    41%   0.06   4943        9.9       10.8     0.123 (-1845)
+ATR trail 3x from 1R             2468    3879   1.14    34%   0.08   4833       12.9       19.0     0.122 (-1034)
+ATR trail 4x from 1R             2413    3320   1.12    31%   0.07   4677       15.7       24.3     0.088 (-1594)
+ATR trail 5x from 1R             2363    4167   1.14    29%   0.09   4577       17.7       29.4     0.100 (-747)
+ATR trail 3x from 0.5R           2480    3815   1.14    33%   0.08   4860       12.3       18.9     0.125 (-1098)
+ATR trail 3x from 2R             2410    4043   1.14    35%   0.09   4715       15.7       23.0     0.107 (-871)
+keep 70% from 1R                 2606    4050   1.17    53%   0.07   5228        7.7        8.5     0.201 (-864)
+keep 80% from 1R                 2618    5348   1.22    53%   0.10   5369        7.6        5.6     0.270 (+435)
+
+WALK-FORWARD — the same fixed policy measured on each window separately
+policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
+live (trail 1R, keep 75%)         -170   1085    236    156    308    204   1118   1349      7/8      308
+ATR trail 2x from 1R               -66    654   -600   -471   1223   -282    344   2050      4/8      344
+ATR trail 3x from 1R               399   1213   -845   -471   1004   -752   -129   2997      4/8      399
+ATR trail 4x from 1R               274   1455  -1282   -310   1692  -1067   -726   3004      4/8      274
+ATR trail 5x from 1R               -12   1915  -1264   -275   1823   -602   -997   3129      3/8      -12
+ATR trail 3x from 0.5R             442   1204   -869   -511    902   -663   -139   2979      4/8      442
+ATR trail 3x from 2R               250   1564   -993   -479   1552   -836   -640   3183      4/8      250
+keep 70% from 1R                  -222    983     22     40    245    293    900   1286      7/8      293
+keep 80% from 1R                   -95   1004    359    158    406    214   1146   1419      7/8      406
+
+selecting on each window and trading the next: 2221  ·  staying on the live policy: 4456  ·  perfect hindsight: 8878
+what selection would have picked: ATR trail 3x from 0.5R, ATR trail 5x from 1R, keep 80% from 1R, keep 70% from 1R
+profitable in at least 60% of windows: live (trail 1R, keep 75%) (7/8), keep 70% from 1R (7/8), keep 80% from 1R (7/8)

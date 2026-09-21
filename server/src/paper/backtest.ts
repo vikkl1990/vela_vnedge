@@ -50,7 +50,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if (equity <= Math.max(0, cfg.initialEquity * 0.02)) { busted = true; rejected['purse_wiped'] = (rejected['purse_wiped'] ?? 0) + 1; break; }
     // 1. level fills on this bar for a position opened on an earlier bar
     if (open && open.entryAt < bar.time) {
-      applyBar(open, bar, cfg);
+      applyBar(open, bar, cfg, atr[i]);
       if (open.status === 'closed') finish(open);
     }
     // 2. script events on this bar (exits first, then entries)

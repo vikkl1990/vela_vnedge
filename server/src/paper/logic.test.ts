@@ -281,3 +281,30 @@ test('the time stop closes a trade that never got going, and spares one that did
   assert.equal(runner.status, 'open', 'a trade that reached the threshold is left alone');
   assert.equal(DEFAULT_CONFIG.paper.staleBars, 0, 'the time stop ships disabled');
 });
+
+test('the volatility trail measures its distance in current ATR, not in entry risk', () => {
+  const c = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false,
+    breakEvenAfterTp1: false, trailAfterR: 1, trailAtrMult: 3, tpSplit: [0, 0, 1] as [number, number, number] };
+  const mk = () => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [300], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: true });
+
+  // calm market: ATR 1 -> the stop sits 3 points under the peak
+  const calm = mk();
+  applyBar(calm, { time: 1, high: 120, low: 99, close: 119 }, c, 1);
+  assert.equal(calm.sl, 117, `calm trail, got ${calm.sl}`);
+
+  // same peak, noisy market: ATR 5 -> the stop gives the trade 15 points of room
+  const noisy = mk();
+  applyBar(noisy, { time: 1, high: 120, low: 99, close: 119 }, c, 5);
+  assert.equal(noisy.sl, 105, `noisy trail, got ${noisy.sl}`);
+
+  // it still never loosens
+  applyBar(noisy, { time: 2, high: 121, low: 110, close: 111 }, c, 20);
+  assert.equal(noisy.sl, 105, 'a volatility spike must not pull the stop back down');
+
+  // and with no ATR supplied it falls back to the R-based rule rather than doing nothing
+  const noAtr = mk();
+  applyBar(noAtr, { time: 1, high: 120, low: 99, close: 119 }, { ...c, trailDistanceR: 1 }, undefined);
+  assert.equal(noAtr.sl, 115, `fallback trail, got ${noAtr.sl}`);
+  assert.equal(DEFAULT_CONFIG.paper.trailAtrMult, 0, 'ships disabled');
+});

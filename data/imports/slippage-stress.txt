@@ -1,0 +1,62 @@
+… 5/46 pairs
+… 10/46 pairs
+… 15/46 pairs
+… 20/46 pairs
+… 25/46 pairs
+… 30/46 pairs
+… 35/46 pairs
+… 40/46 pairs
+… 45/46 pairs
+
+46/46 live pairs · 4000 bars of 15m · 8 walk-forward windows · 2606 trades under the live policy
+
+EXIT REASONS (live policy) — captured versus available
+reason        trades     pnl   avgR  avg best  captured   further after exit   bars held
+be             1319   25738   0.96      1.80       53%                 2.07        8.6
+sl             1156  -23416  -1.00      0.47         -                 1.90        6.3
+reversal        101    -207  -0.13      0.69         -                 1.48       10.3
+tp3              26    2610   4.72      6.80       69%                 6.95        6.7
+script_flip       2     -28  -0.56      0.55         -                 0.13       83.0
+tp2               1      43   2.54      3.30       77%                 1.28        3.0
+liquidation       1     -14  -0.61      0.06         -                 1.34        3.0
+
+winners 1379: captured 1.02R of 1.88R shown (54%)
+best unrealised R ever reached, all trades:
+  under 0.25R      415   16%
+  0.25 to 0.5R     335   13%
+  0.5 to 1R        442   17%
+  1 to 2R         1010   39%
+  2R or more       404   16%
+  never reached 1R: 46% of trades — no exit rule can bank what these never showed
+
+losing trades 1227 — how far green did they get before turning?
+  never above 0.1R     205   17%  avg lost -0.99R
+  0.1 to 0.25R         209   17%  avg lost -0.97R
+  0.25 to 0.5R         331   27%  avg lost -0.96R
+  0.5 to 1R            421   34%  avg lost -0.97R
+  1R or more            61    5%  avg lost -0.96R
+  reachable: 813 losers (31% of all trades) showed 0.25R or better before failing
+
+POOLED OVER THE WHOLE SPAN
+policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
+keep 75% (live)  slip 2bp        2606    4726   1.20    53%   0.08   5281        7.7        6.5     0.236
+keep 75%         slip 10bp       2572   -2471   0.89    48%  -0.06   3880        8.9       10.4    -0.108 (-7196)
+keep 75%         slip 25bp       2534   -9328   0.58    42%  -0.24   2589       10.6       11.9    -0.348 (-14054)
+keep 95%         slip 2bp        2615    9112   1.35    53%   0.16   5640        7.5        4.0     0.466 (+4386)
+keep 95%         slip 10bp       2580     232   1.01    48%   0.00   4062        8.7        4.6     0.010 (-4493)
+keep 95%         slip 25bp       2537   -7707   0.66    42%  -0.19   2679       10.4        7.0    -0.291 (-12433)
+keep 90%         slip 10bp       2580    -735   0.97    48%  -0.02   3994        8.7        4.7    -0.033 (-5461)
+
+WALK-FORWARD — the same fixed policy measured on each window separately
+policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
+keep 75% (live)  slip 2bp         -148   1037    200    173    225    176   1159   1424      7/8      225
+keep 75%         slip 10bp        -594    225   -653   -835   -570   -840    -85    720      2/8     -570
+keep 75%         slip 25bp       -1154   -984  -1774  -1816  -1572  -2031  -1413   -145      0/8    -1413
+keep 95%         slip 2bp          196   1316    838    637    729    541   1763   1890      8/8      838
+keep 95%         slip 10bp        -335    317   -109   -546   -130   -512    438   1083      3/8     -109
+keep 95%         slip 25bp       -1045   -751  -1412  -1635  -1335  -1791  -1034    262      1/8    -1045
+keep 90%         slip 10bp        -388    191   -267   -667   -237   -656    254    979      3/8     -237
+
+selecting on each window and trading the next: 7714  ·  staying on the live policy: 4393  ·  perfect hindsight: 7714
+what selection would have picked: keep 95%         slip 2bp
+profitable in at least 60% of windows: keep 75% (live)  slip 2bp (7/8), keep 95%         slip 2bp (8/8)

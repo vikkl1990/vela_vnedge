@@ -65,6 +65,13 @@ export interface PaperConfig {
    */
   trailGiveBackPct: number;
   /**
+   * Volatility trail (0 = off): the stop follows the best price by `trailAtrMult` × ATR, measured
+   * from the ATR now rather than the risk fixed at entry. An R-based trail keeps a constant
+   * distance while the market's own range changes underneath it; this one widens when the market
+   * gets noisy and tightens when it calms. Armed by `trailAfterR` like the others.
+   */
+  trailAtrMult: number;
+  /**
    * Profit floor (0 = off). Once the trade has shown `floorAtR`, the stop may never sit below
    * `floorKeepR` of profit. Unlike a trail it does not keep tightening, so it banks a small
    * gain without capping the trade; the trail still takes over at `trailAfterR`.
@@ -261,6 +268,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     trailAfterR: 0,
     trailDistanceR: 1,
     trailGiveBackPct: 0,
+    trailAtrMult: 0,
     floorAtR: 0,
     floorKeepR: 0,
     staleBars: 0,
@@ -375,6 +383,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
   if (!(Number.isFinite(p.trailGiveBackPct) && p.trailGiveBackPct >= 0 && p.trailGiveBackPct < 100)) errs.push('paper.trailGiveBackPct must be in [0, 100)');
+  if (!(Number.isFinite(p.trailAtrMult) && p.trailAtrMult >= 0)) errs.push('paper.trailAtrMult must be ≥ 0 (0 = off)');
   if (!(Number.isFinite(p.floorAtR) && p.floorAtR >= 0)) errs.push('paper.floorAtR must be ≥ 0 (0 = off)');
   if (p.floorAtR > 0 && !(p.floorKeepR >= 0 && p.floorKeepR < p.floorAtR)) errs.push('paper.floorKeepR must be ≥ 0 and below floorAtR');
   if (!(Number.isFinite(p.staleBars) && p.staleBars >= 0)) errs.push('paper.staleBars must be ≥ 0 (0 = off)');
