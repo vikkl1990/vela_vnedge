@@ -28,6 +28,9 @@ fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
   autoTune: { enabled: false }, ml: { minProb: 0, useAsScore: false },
   paper: { initialEquity: 100_000, riskPerTradePct: 1, maxLeverage: 10, minRiskFeeRatio: 0, slippageBps: 0 },
   alerts: { onTrade: true, dailySummaryHourUtc: null },
+  // this replay drives a flat synthetic series; the portfolio risk layer (regime floor, kill
+  // switches) has its own unit tests and would reject the entry this test is here to observe
+  risk: { enabled: false },
   scanners: { tiny: { enabled: true, symbols: null, timeframes: null, exitMode: 'both' } },
 }));
 
