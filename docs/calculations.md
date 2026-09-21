@@ -21,7 +21,7 @@ For the simplified fixed maintenance-on-entry-notional model, with entry E, isol
 
 The first adverse threshold is evaluated before profit targets. When a liquidation threshold is crossed, the entire remainder closes, including when the crossing is observed in a script exit. Modeled liquidation slippage is bounded by bankruptcy price; liquidation exit fees are capped at the remaining allocated margin. Entry fees were charged separately at entry.
 
-These are approximations. Delta uses mark-price triggers, contract-specific maintenance tiers, liquidation charges, netting and possible incremental liquidation. This application uses candle prices, a configured fixed maintenance rate and full liquidation. Funding, taxes and exchange liquidation charges are not modeled. A candle gap cannot establish the exact order or executable price of stop and liquidation triggers.
+These are approximations. Delta uses mark-price triggers, contract-specific maintenance tiers, liquidation charges, netting and possible incremental liquidation. This application uses a configured fixed maintenance rate and full liquidation. In `candles` mode the trigger is the candle extreme; in `tape` mode it is the exchange mark price from the `mark_price` channel (the last print when no mark is known yet). Taxes and exchange liquidation charges are not modeled. A candle gap cannot establish the exact order or executable price of stop and liquidation triggers.
 
 References: [Delta isolated margin](https://guides.delta.exchange/delta-exchange-india-user-guide/trading-guide/margin-explainer/margin-explainer), [Delta liquidation process](https://www.delta.exchange/support/solutions?articleId=80001199739).
 
@@ -32,6 +32,41 @@ Gross P&L = (exit − filled entry) × underlying quantity for longs, with rever
 SL and TP levels must remain positive and on the correct side after tick rounding. Zero-quantity target allocations neither fill nor activate break-even. Backtests ignore exits explicitly addressed to the opposite side.
 
 Statistics are based on closed trades. Reported maximum drawdown is closed-trade equity drawdown, not full intratrade drawdown; backtest equity curves likewise omit open-position unrealized swings. Trade pnlPct is return on original notional, not return on margin. These definitions should be considered when comparing results to exchange reports.
+
+## Execution realism (`paper.fillSource: "tape"`)
+
+Default `candles` keeps the 1-minute path above unchanged. `tape` switches the live engine to Delta's `all_trades` stream:
+
+- **Latency.** A signal creates a pending entry; the fill is the first print with `time ≥ signalTime + latencyMs` (default 1500 ms) at that print's price plus slippage. Levels from the signal are absolute; if the fill print already sits beyond the stop or a target the entry is cancelled (`rejected:price moved past levels before fill`). Sizing happens at fill time. If no print arrives, the 1m close fills it once the tape has been silent for `tapeFallbackMs`; an entry unfilled 60 s after its due time expires.
+- **Stops** trigger on the last trade and fill at min(print, stop) for longs (max for shorts) with slippage: a stop-market never fills better than its trigger and can fill through a gap.
+- **Take-profit legs** are resting limit orders filled at their own price with the maker fee. `limitFill: "through"` (default) requires a print strictly beyond the level, standing in for the queue ahead of the order; `"touch"` fills on a print at the level (optimistic).
+- **Liquidation** is checked against the mark price on every print and every mark update, before stops, exactly as Delta liquidates on mark.
+- **Funding.** At each realization (every 8 h at 00:00/08:00/16:00 UTC, taken from `next_funding_realization`) every open position pays `ratePct / 100 × qtyOpen × contractValue × mark`; longs pay when the rate is positive, shorts receive it (and vice versa). Delta's `funding_rate` is a percent-per-interval figure (0.01 = 0.01 %). The charge is a zero-quantity fill with reason `funding` and flows through realized P&L (not fees). When the feed missed several slots only the most recent one is charged. `paper.fundingCharges: false` disables it.
+- **Depth slippage.** Market fills (entry, stop, liquidation, reversal, manual) pay `slippageBps + notionalUsd / depthUsdPerBp` bps; `depthUsdPerBp: 0` (default) keeps the fixed slippage. Sizing still budgets the fixed slippage only, so large orders realise slightly more than `riskPerTradePct` at the stop.
+- **Fallback.** With the tape silent for more than `tapeFallbackMs` (5 s) the 1m candle path runs; while the tape is live each position's candle baseline is refreshed so a later fallback only sees movement after the last print.
+
+## Portfolio risk layer (`risk`)
+
+Checked per entry before sizing, in this order; the first failure is recorded as `rejected:risk <reason>`:
+
+1. Manual halt (`POST /api/risk/kill`), applied even when `risk.enabled` is false.
+2. Daily / weekly kill switch: `(equity − periodStartEquity) / periodStartEquity × 100 ≤ −maxDailyLossPct` (`maxWeeklyLossPct`), equity including unrealized P&L. The day is the UTC day, the week starts Monday 00:00 UTC; a new period restarts from the current equity and clears the trip. `closeAllOnKill` flattens the book when a switch trips.
+3. Position caps: open + pending entries ≥ `maxPositionsTotal`, per symbol ≥ `maxPositionsPerSymbol`, per scanner ≥ `perScannerMaxPositions`.
+4. Per-scanner daily budget: the scanner's net realized P&L since the day start (closed trades plus partial exits and funding on open positions) ≤ `−perScannerDailyLossPct` % of the day-start equity.
+5. Cooldown: after `cooldownAfterLosses` consecutive losing trades (net P&L < 0; a winning trade resets the count) the scanner is paused for `cooldownMinutes` from the loss.
+6. Regime filter: no entries on Saturday/Sunday UTC (`noWeekend`) and none when `ATR(14) / price × 100 < minAtrPct` (skipped when no ATR is available); scanner ids in `exempt` bypass it.
+7. Drawdown scaling: with drawdown `(peakEquity − equity) / peakEquity × 100`, the entry with the largest `ddPct ≤ drawdown` in `ddScale` supplies `leverageMult`, which multiplies `riskPerTradePct`, `maxLeverage` and `minLeverage` for the sizing of that entry only.
+8. BTC-beta exposure cap (after sizing): `Σ side × notional × corr(symbol, BTCUSD)` over open positions plus the candidate, as % of equity, must stay within `±maxBetaExposurePct` (0 = off). `corr` is the Pearson correlation of log returns over the last `corrBars` closed bars of the entry timeframe; BTCUSD counts as 1 and an unknown correlation is treated as 1 (conservative).
+
+State (period starts, trips, peak, cooldowns) is stored in the kv table and survives restarts; a paper reset restarts it.
+
+## Exchange execution safety
+
+- The exchange host is the Delta India **demo** host unless `execution.allowProduction: true` is configured **and** the process runs with `DELTA_LIVE=1`; either alone keeps the demo host.
+- Even on production the transport accepts only plain market orders (no limit, stop or take-profit orders) and refuses any non-entry order that is not `reduce_only`, so brackets are demo-only and the bot can never hold resting orders on a real account.
+- `execution.mode: "dry-run"` logs every payload without sending; `"testnet"` without API keys silently degrades to dry-run.
+- Brackets (demo): per paper position one reduce-only stop-market (`stop_loss_order`, mark-price trigger) for the open size and one reduce-only GTC limit per unfilled TP leg. When the paper stop moves (break-even) or a leg fills, the stop is cancelled and re-placed for the remaining size; a closed position cancels the rest. Level exits (`sl`, `be`, `tp1-3`, `liquidation`) are then left to the exchange orders; script exits, reversals, manual closes and risk kills are sent as reduce-only market orders.
+- Reconciliation (`reconcileSec`): exchange positions vs paper net contracts per symbol, average entry (> 25 bps drift flagged), and open-order counts vs expected bracket legs; each drift is logged as `DRIFT …` and exposed under `GET /api/execution`.
 
 ## Fee-aware entry filter
 

@@ -30,8 +30,12 @@ re-subscribes the feed and re-warms scanners.
              "sizingMode": "risk", "minLeverage": 5, "liquidation": true, "maintenanceMarginPct": 0.5,
              "feeRatePct": 0.05, "makerFeeRatePct": 0.02, "slippageBps": 2, "tpSplit": [0.4, 0.3, 0.3],
              "breakEvenAfterTp1": true, "allowReversal": true, "fallbackAtrSl": 1.5,
-             "fallbackRR": [1, 2, 3], "maxOpenPositions": 20 },
-  "execution": { "mode": "paper" },
+             "fallbackRR": [1, 2, 3], "maxOpenPositions": 20,
+             "fillSource": "candles", "limitFill": "through", "depthUsdPerBp": 0, "latencyMs": 1500, "tapeFallbackMs": 5000, "fundingCharges": true },
+  "execution": { "mode": "paper", "bracket": true, "reconcileSec": 60, "allowProduction": false },   // paper | dry-run | testnet
+  "risk": { "enabled": true, "maxDailyLossPct": 15, "maxWeeklyLossPct": 30, "closeAllOnKill": false, "maxPositionsTotal": 8, "maxPositionsPerSymbol": 2,
+            "maxBetaExposurePct": 0, "corrBars": 20, "cooldownAfterLosses": 0, "cooldownMinutes": 120, "ddScale": [{ "ddPct": 10, "leverageMult": 0.5 }],
+            "perScannerMaxPositions": 4, "perScannerDailyLossPct": 0, "regime": { "enabled": true, "minAtrPct": 0.30, "noWeekend": true, "exempt": [] } },
   "scanners": { "<scannerId>": { "enabled": true, "symbols": null, "timeframes": null, "exitMode": "both" } } }
 ```
 
@@ -84,7 +88,9 @@ re-subscribes the feed and re-warms scanners.
    "sl": 78402, "tp": [79152.2, 79527, 79901], "score": 77.9, "label": "LONG", "message": "🟢 LONG | DELTA:BTCUSD | ...",
    "source": "alert", "levelsSource": "script", "action": "opened", "positionId": 12 }]
 ```
-`kind` is `entry | exit | info`. `action` is what the paper engine did: `opened | closed | reduced | ignored | rejected:<reason>`.
+`kind` is `entry | exit | info`. `action` is what the paper engine did: `opened | closed | reduced | ignored | pending:awaiting tape fill | rejected:<reason>`.
+Risk-layer vetoes read `rejected:risk <reason>` (e.g. `rejected:risk regime: ATR 0.29% < 0.3%`, `rejected:risk daily loss limit 15% hit (-15.40%)`).
+In tape mode an entry is first `pending:awaiting tape fill` and becomes `opened` (with `positionId`) when the first print after the latency window fills it.
 
 `GET /api/positions` → open positions
 ```json
@@ -103,7 +109,8 @@ re-subscribes the feed and re-warms scanners.
    "fills": [{ "at": 1, "price": 1, "qty": 4, "reason": "tp1" }] }]
 ```
 
-`GET /api/orders?limit=200` → fills/executions log `[{ "id", "at", "positionId", "scannerId", "symbol", "side": "buy|sell", "qty", "price", "fee", "reason" }]`
+`GET /api/orders?limit=200` → fills/executions log `[{ "id", "at", "positionId", "scannerId", "symbol", "side": "buy|sell|pay|receive", "qty", "price", "fee", "reason" }]`
+(`reason: "funding"` rows are funding charges: `qty` 0, `price` = mark, `side` `pay`/`receive`, `pnl` signed).
 
 `GET /api/stats` →
 ```json
@@ -129,6 +136,43 @@ re-subscribes the feed and re-warms scanners.
 Rule shape: `{ feature, label, kind: "prefer"|"avoid", condition, n, coverage, winRate, avgR, baselineAvgR, lift, text }`. Signals carry `mlProb`; config has `ml: { minProb, useAsScore }`.
 
 `GET /api/logs?limit=200&level=info` → `[{ "at", "level": "debug|info|warn|error", "scope": "feed|scanner|paper|api", "msg", "data" }]`
+
+## Risk layer (phase 3)
+
+`GET /api/risk` →
+```json
+{ "at": 1, "enabled": true, "halted": false, "haltReason": null, "manualHalt": null,
+  "equity": 99941.5, "peakEquity": 100000, "drawdownPct": 0.06, "leverageMult": 1,
+  "day":  { "start": 1789948800000, "startEquity": 100000, "pnl": -58.5, "pnlPct": -0.06, "limitPct": 15, "tripped": false, "trippedAt": null },
+  "week": { "...same shape...", "limitPct": 30 },
+  "positions": { "open": 1, "pending": 0, "max": 8, "bySymbol": { "ETHUSD": 1 }, "byScanner": { "<id>": 1 }, "maxPerSymbol": 2, "maxPerScanner": 4 },
+  "scanners": { "<id>": { "consecutive": 2, "lastLossAt": 1, "cooldownUntil": 1, "dayPnl": -120.5, "inCooldown": true } },
+  "exposure": { "tf": "15m", "netNotional": 106194, "netBetaNotional": 106194, "netPct": 106.3, "netBetaPct": 106.3, "limitPct": 0,
+                "rows": [{ "symbol": "ETHUSD", "side": "long", "notional": 106194, "corr": 0.82, "beta": 87079 }] },
+  "regime": { "enabled": true, "minAtrPct": 0.3, "noWeekend": true, "exempt": [] }, "config": { "...risk config..." },
+  "rejections": [{ "at": 1, "scannerId": "<id>", "symbol": "BTCUSD", "side": "short", "reason": "regime: ATR 0.29% < 0.3%" }] }
+```
+`halted` is true while a manual halt or a tripped daily/weekly kill switch blocks new entries (open positions keep running to their levels unless `closeAllOnKill`).
+Kill switches reset automatically when the UTC day / ISO week (Monday 00:00 UTC) rolls; `POST /api/paper/reset` also restarts the bookkeeping.
+
+`POST /api/risk/kill` body `{ "reason": "ops", "closeAll": false }` → manual halt (no new entries until reset); `closeAll: true` also flattens the paper account (`exitReason: "risk-kill"`). Returns the state.
+`POST /api/risk/reset` → clears the manual halt, tripped switches and cooldowns; restarts the day/week windows and the equity peak from the current equity. Returns the state.
+
+## Execution (phase 5, demo account only)
+
+`GET /api/execution` →
+```json
+{ "mode": "dry-run", "host": "testnet", "baseUrl": "https://cdn-ind.testnet.deltaex.org", "hasKeys": false, "dryRun": true, "bracket": true, "products": 16,
+  "brackets": [{ "positionId": 1, "symbol": "ETHUSD", "stop": { "id": "dry-2", "price": 2664.35, "size": 3953 }, "tps": [{ "id": "dry-3", "price": 2707.45, "size": 1581, "leg": 1 }] }],
+  "lastReconcile": { "at": 1, "ok": false, "positions": 2, "orders": 1, "drift": [{ "symbol": "BTCUSD", "kind": "size", "paper": 200, "exchange": 150, "detail": "net contracts differ by -50" }] },
+  "dryRunLog": [{ "at": 1, "action": "place", "payload": { "product_id": 1699, "size": 3953, "side": "buy", "order_type": "market_order", "reduce_only": false, "client_order_id": "vnedge-1-entry-…" } }] }
+```
+In `paper` mode the object is `{ mode: "paper", host: null, hasKeys: false, ... }`. `drift.kind` is `size | price | orders | orphan-position | orphan-orders`.
+
+`POST /api/execution/reconcile` → runs the reconciliation now and returns `lastReconcile`.
+`POST /api/execution/close-all` body `{ "confirm": true }` → cancels every open order on the exchange account and sends a reduce-only market order against every exchange position (demo host; logged only in dry-run). Returns `{ closed: [{ symbol, size, order }], cancelled: [product_id], dryRun }`. Without `confirm` → 500.
+
+`GET /api/marks` → `{ at, fillSource, symbols: { "BTCUSD": { markPrice, at, last, tapeActive, funding: { ratePct, predictedRatePct, intervalSec, nextAt, at, lastChargedAt } } }, pending: [{ id, scannerId, symbol, tf, side, signalPrice, at, dueAt }] }` — exchange mark price and funding state per symbol (`ratePct` is Delta's percent-per-8h figure, 0.01 = 0.01 %), whether the tape is live, and tape-mode entries waiting for their fill.
 
 ## Server-Sent Events
 
