@@ -169,3 +169,17 @@ test('audit 5: a print past the expiry deadline cancels instead of filling', t =
   assert.equal(engine.openPositions().length, 0, 'expiry is enforced in the fill path, not only by housekeeping');
   assert.equal(engine.pendingEntries().length, 0);
 });
+
+test('audit 2b: a quoted entry pays the spread once, not the spread plus assumed slippage', t => {
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  Object.assign(cfg.paper, { feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', maxStopLossPct: 0, maxSignalAgeSec: 0, slippageBps: 100, depthUsdPerBp: 0, useSpread: true, quoteMaxAgeMs: 10_000, requireQuote: false });
+  const engine = new PaperEngine(db, () => cfg);
+  const enter = (id: string) => engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105, 110, 115], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: id, scannerName: id, symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at: 1_000, signalId: null, exitMode: 'both' }).position!;
+  engine.quotes = { executable: (_s, side) => (side === 'buy' ? 100.5 : 99.5) };
+  assert.equal(enter('quoted').entryPrice, 100.5, 'the ask is the fill, with no extra 100 bps on top');
+  engine.quotes = { executable: () => null };
+  assert.equal(enter('unquoted').entryPrice, 101, 'without a quote the slippage model still stands in for the spread');
+});

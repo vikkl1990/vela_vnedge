@@ -204,6 +204,17 @@ export function slippageBpsFor(cfg: PaperConfig, notionalUsd = 0): number {
   return cfg.slippageBps + impact;
 }
 
+/**
+ * Depth impact only, for a price that already crossed the real spread (buy at the ask, sell at
+ * the bid). `slippageBps` stands in for the spread when no quote exists, so adding it on top of
+ * a quoted price would charge the spread twice; walking the book for size still costs extra.
+ */
+export function impactOnly(price: number, side: 'buy' | 'sell', cfg: PaperConfig, notionalUsd = 0): number {
+  const depth = cfg.depthUsdPerBp ?? 0;
+  const f = (depth > 0 && notionalUsd > 0 ? notionalUsd / depth : 0) / 10_000;
+  return side === 'buy' ? price * (1 + f) : price * (1 - f);
+}
+
 export function pnlOf(pos: Pick<Position, 'side' | 'entryPrice' | 'contractValue'>, exitPrice: number, qty: number): number {
   const dir = pos.side === 'long' ? 1 : -1;
   return (exitPrice - pos.entryPrice) * dir * pos.contractValue * qty;
@@ -224,12 +235,16 @@ export interface OpenParams {
   marginLeverage?: number;
   features?: Record<string, number>;
   mlProb?: number | null;
+  /** True when `entryPrice` is already an executable quote, so only depth impact is added. */
+  quoted?: boolean;
   /** Last cumulative live candle observed; retained across restarts. */
   lastPriceBar?: PriceBar;
 }
 
 export function openPosition(p: OpenParams): Position {
-  const fillPrice = slip(p.entryPrice, p.side === 'long' ? 'buy' : 'sell', p.cfg, p.entryPrice * p.qty * p.contractValue);
+  const side = p.side === 'long' ? 'buy' : 'sell';
+  const notional = p.entryPrice * p.qty * p.contractValue;
+  const fillPrice = p.quoted ? impactOnly(p.entryPrice, side, p.cfg, notional) : slip(p.entryPrice, side, p.cfg, notional);
   const fee = feeFor(fillPrice, p.qty, p.contractValue, p.cfg);
   const legs = splitLegs(p.qty, p.cfg.tpSplit, p.tp.length);
   return {
@@ -244,11 +259,14 @@ export function openPosition(p: OpenParams): Position {
 export interface FillEvent { position: Position; fill: Fill; closed: boolean }
 
 /** Reduce/close a position at `price`. Mutates and returns the fill. */
-export function fillExit(pos: Position, price: number, qty: number, reason: string, at: number, cfg: PaperConfig, withSlippage: boolean): Fill {
+export function fillExit(pos: Position, price: number, qty: number, reason: string, at: number, cfg: PaperConfig, withSlippage: boolean | 'quoted'): Fill {
   let q = Math.min(qty, pos.qtyOpen);
   // an exchange would have liquidated before any exit could print beyond the liquidation price
   if (pos.liqPrice !== null && (pos.side === 'long' ? price <= pos.liqPrice : price >= pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; q = pos.qtyOpen; withSlippage = true; }
-  let px = withSlippage ? slip(price, pos.side === 'long' ? 'sell' : 'buy', cfg, price * q * pos.contractValue) : price;
+  const exitSide = pos.side === 'long' ? 'sell' : 'buy';
+  // 'quoted' means the caller already crossed the real spread, so only depth impact is added
+  let px = withSlippage === 'quoted' ? impactOnly(price, exitSide, cfg, price * q * pos.contractValue)
+    : withSlippage ? slip(price, exitSide, cfg, price * q * pos.contractValue) : price;
   const marginLeverage = pos.marginLeverage ?? pos.leverage;
   const margin = marginLeverage > 0 ? pos.entryPrice * q * pos.contractValue / marginLeverage : Infinity;
   if (reason === 'liquidation' && marginLeverage > 0) {

@@ -33,6 +33,26 @@ SL and TP levels must remain positive and on the correct side after tick roundin
 
 Statistics are based on closed trades. Reported maximum drawdown is closed-trade equity drawdown, not full intratrade drawdown; backtest equity curves likewise omit open-position unrealized swings. Trade pnlPct is return on original notional, not return on margin. These definitions should be considered when comparing results to exchange reports.
 
+## Entry pricing and the spread
+
+`slippageBps` is a stand-in for the spread, used when no quote is available. When `useSpread` is on
+and the top of book (from `v2/ticker`) is fresher than `quoteMaxAgeMs`, the entry fills at the ask
+(buy) or bid (sell) and only depth impact is added on top; charging `slippageBps` as well would pay
+the spread twice. `requireQuote` refuses an entry that cannot be priced off a fresh book. Exits never
+require a quote, so a position is always closable.
+
+Measured spreads on Delta India differ from the flat assumption by more than an order of magnitude in
+both directions, so which of the two paths prices a fill changes results materially:
+
+| symbol | quoted spread |
+|---|---|
+| BTCUSD | 0.12 bps |
+| SOLUSD | 0.08 bps |
+| FILUSD | 2.06 bps |
+| AKEUSD | 3.55 bps |
+| PIEVERSEUSD | 4.90 bps |
+| EVAAUSD | 8.01 bps |
+
 ## Execution realism (`paper.fillSource: "tape"`)
 
 Default `candles` keeps the 1-minute path above unchanged. `tape` switches the live engine to Delta's `all_trades` stream:

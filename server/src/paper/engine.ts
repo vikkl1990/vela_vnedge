@@ -129,14 +129,14 @@ export class PaperEngine extends EventEmitter {
    * no book. When `paper.requireQuote` is on, an entry that cannot be priced off a fresh
    * top-of-book is refused rather than filled at an assumed price.
    */
-  private entryPrice(symbol: string, side: 'buy' | 'sell', reference: number, cfg: PaperConfig, now: number): { price: number } | { reject: string } {
+  private entryPrice(symbol: string, side: 'buy' | 'sell', reference: number, cfg: PaperConfig, now: number): { price: number; quoted: boolean } | { reject: string } {
     const quoted = this.marketPrice(symbol, side, reference, cfg, now);
     if (quoted.source === 'slippage' && cfg.useSpread && cfg.requireQuote) {
       this.priceSource.rejectedNoQuote++;
       return { reject: `no executable ${side === 'buy' ? 'ask' : 'bid'} within ${cfg.quoteMaxAgeMs ?? 0}ms` };
     }
     this.priceSource[quoted.source]++;
-    return { price: quoted.price };
+    return { price: quoted.price, quoted: quoted.source === 'quote' };
   }
   mark(symbol: string): number | undefined { return this.marks.get(symbol); }
   /** Exchange mark price (liquidation reference). */
@@ -189,8 +189,8 @@ export class PaperEngine extends EventEmitter {
       if (existing.side === ev.side) return { action: 'ignored', reason: 'already in position' };
       if (!cfg.allowReversal) return { action: 'ignored', reason: 'opposite signal while in position (reversal disabled)' };
       const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
-      const px = this.marketPrice(existing.symbol, existing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at).price;
-      this.applyFills(existing, [fillExit(existing, px, existing.qtyOpen, 'reversal', ctx.at, cfg, true)]);
+      const exitQuote = this.marketPrice(existing.symbol, existing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
+      this.applyFills(existing, [fillExit(existing, exitQuote.price, existing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)]);
       closed = existing;
     }
     if (this.findPending(ctx.scannerId, ctx.symbol, ctx.tf)) return { action: 'ignored', reason: 'entry already pending', closed };
@@ -227,7 +227,7 @@ export class PaperEngine extends EventEmitter {
       log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first print after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
       return { action: 'pending', reason: 'awaiting tape fill', pendingId: id, closed };
     }
-    const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, scannerTag: ctx.scannerId }, cfg);
+    const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg);
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
   }
 
@@ -239,6 +239,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig): Position {
+    // `quoted` entries already crossed the real spread; openPosition adds depth impact only
     const pos = openPosition({ ...p, id, cfg, bt: false, lastPriceBar: this.priceBars.get(p.symbol) });
     this.open.set(id, pos);
     this.persist(pos);
