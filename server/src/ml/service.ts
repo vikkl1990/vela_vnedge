@@ -157,7 +157,7 @@ export class MlService {
     return { at: Date.now(), n, window: DRIFT_WINDOW, threshold, drifted: features.filter(f => f.drifted).length, features };
   }
 
-  /** Snapshot plus the live drift report (`drift`) — this is what `GET /api/ml` returns. */
-  insights(): (MlSnapshot & { drift: DriftReport }) | null { return this.snapshot ? { ...this.snapshot, drift: this.drift() } : null; }
+  /** Snapshot plus the live drift report (`drift`) — this is what `GET /api/ml` returns (drift is reported even before the first training). */
+  insights(): MlSnapshot & { drift: DriftReport } { return { ...(this.snapshot ?? { trainedAt: null, samples: 0, liveSamples: 0, scannersWithModel: 0, global: null, scanners: [] }), drift: this.drift() }; }
   insightFor(scannerId: string): ScannerInsight | null { return this.snapshot?.scanners.find(s => s.scannerId === scannerId) ?? null; }
 }

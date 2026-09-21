@@ -42,6 +42,14 @@ Delta Exchange India ──REST (history, products, tickers)──┐
 | `paper/backtest.ts` | Deterministic bar-level replay with the same logic. |
 | `execution/testnet.ts` | Optional mirror of paper fills to the Delta **demo** account (off by default). |
 | `api/server.ts` | HTTP router, SSE broadcaster, static dashboard hosting. |
+| `api/extensions.ts` | One-line registration of feature-module routes (`validation/routes.ts`). |
+| `data/candleCache.ts` | SQLite candle cache (`candles` table): pages Delta REST in 4,000-bar chunks, sequential per symbol with delays, serves 60–90 days without refetching; deep source for warm backtests (`validation.history.backtestBars`). |
+| `validation/walkForward.ts` | Rolling train/test windows over a long history, each replayed with `runBacktest`; in-sample selection → out-of-sample aggregation, positive weeks, de-duplicated trades. |
+| `validation/service.ts` | Runs walk-forward for every scanner×symbol×tf, persists `walk_forward`, feeds OOS summaries to the engine's auto-tune. |
+| `validation/shadow.ts` | Two in-memory paper ledgers (`ungated`, `ml-gated`) fed by the engine's `signal` events and 1m bars through the same `logic.ts` fills. |
+| `validation/consensus.ts` | Optional entry filter: N distinct scanners must agree on side/symbol/tf within a window. |
+| `pine/inputs.ts` | Parses `input.*()` declarations from Pine; validates per-scanner overrides that the worker applies through PineTS's `Indicator.input`. |
+| `ml/model.ts` / `ml/service.ts` | Logistic regression with a time-ordered holdout, Platt calibration, reliability buckets, and live feature-drift monitoring. |
 
 ## Signal semantics
 
@@ -68,7 +76,31 @@ Delta Exchange India ──REST (history, products, tickers)──┐
   then sequential TP legs (40/30/30 % default), SL → entry after TP1 when `breakEvenAfterTp1`.
 * Script exits are honoured according to the scanner's `exitMode` (`levels`, `script`, `both`).
 
+## Validation loop (Phase 1)
+
+```
+CandleCache (SQLite, 60–90 d)  ──bars──▶  PinePool (one run per scanner×symbol×tf over the whole history)
+                                             │ events (alerts, shapes, derived rules)
+                                             ▼
+                        walkForward(): windows [train 10 d | test 3 d] rolled daily
+                                             │ per window: runBacktest(train) → selected?  runBacktest(test)
+                                             ▼
+                 walk_forward table ──▶ ScannerEngine.autoTune({ oos })  ──▶ scanners.<id>.symbols / timeframes
+```
+
+* **Honest numbers**: `outOfSample` only counts test windows whose preceding training window the tuner would have selected, so it is the return of *following the tuner*, not of the script. `outOfSampleAll` is the unconditional figure. Overlapping test windows are de-duplicated by entry time.
+* **Auto-tune rules**: in-sample (default, unchanged behaviour) or OOS (`autoTune.oos.enabled`): keep a pair when OOS trades ≥ min, PF ≥ min, positive weeks ≥ min and pnl > 0. Missing walk-forward data → in-sample fallback marked `provisional` in the report. `autoTune.tuneTimeframes` evaluates every (symbol, tf) pair and tunes both lists.
+* **Deep warm backtests**: `validation.history.backtestBars` > `historyBars` makes the engine run the *backtest* over cached history; the live run always uses the in-memory bars (a second, short script run when both are needed in one warm-up).
+* **Shadow accounts** subscribe to the engine's `signal` events and the candle store's 1m `bar`/`closed` events; nothing is written to the live tables (the ledger is snapshotted in `kv`).
+* **Consensus** is an `EntryFilter` the engine calls before the ML gate and the paper engine; off by default.
+
+## Scanner quality (Phase 6)
+
+* **ML**: `trainLogReg` fits on the oldest 80 % of samples by time and reports every metric on the newest 20 %, fits Platt scaling on that holdout and stores reliability buckets before/after; `MlService.score()` returns the calibrated probability and records the feature vector in a 200-sample ring used by `drift()` (per-feature mean/std vs. the training distribution).
+* **Script inputs**: `scanners.<id>.inputs` travels in the `WorkerJob`; the worker builds a PineTS `Indicator`, writes each override through `indicator.input[name|title]` (validated by PineTS) and runs it. Invalid overrides fail the run loudly.
+* **Generic rules** (`scanners.<id>.rule`): `trailing` picks the overlay series that behaves like a trailing stop (title hint, else the one the close crosses least often; complementary up/down plots are merged) and enters on flips with the trail as the stop; `oscillator` picks the pane series and uses zero-line crosses or OB/OS exits based on its range. Plot data is requested for the whole history when a generic rule is configured.
+
 ## Data & persistence
 
-`data/vnedge.db` (WAL) holds signals, positions, orders, equity curve, last runs and backtests.
+`data/vnedge.db` (WAL) holds signals, positions, orders, equity curve, last runs, backtests, the candle cache (`candles`), walk-forward results (`walk_forward`), ML samples and, in `kv`, the ML models, live feature ring and shadow ledgers.
 `data/config.json` holds user settings. Delete the DB to start clean, or use *Reset paper account*.
