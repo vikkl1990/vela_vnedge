@@ -1,0 +1,22 @@
+  5/19 pairs
+  10/19 pairs
+  15/19 pairs
+
+HYBRID: entries on 15m, exits helped by a higher timeframe · 19 pairs · 40 days
+
+  variant                       trades      net     PF  win%   avgR   held  htf exits  windows up
+  live: 15m only                  1067     4514   1.48   56%   0.20    7.7          0  7/8
+  + 1h trend exit (EMA 20)        1082     4057   1.44   55%   0.18    7.0       2333  7/8
+  + 1h trend exit (EMA 50)        1070     4430   1.48   56%   0.20    7.5       1471  7/8
+  + 4h trend exit (EMA 20)        1068     4511   1.48   56%   0.20    7.7        487  7/8
+  + 4h trend exit (EMA 50)        1068     4365   1.47   56%   0.19    7.7        264  7/8
+
+  per window, net:
+  variant                            w1      w2      w3      w4      w5      w6      w7      w8
+  live: 15m only                   -219     986     428     519     356     401    1166     876
+  + 1h trend exit (EMA 20)         -238     901     337     505     338     335    1104     775
+  + 1h trend exit (EMA 50)         -212     988     372     543     392     404    1101     843
+  + 4h trend exit (EMA 20)         -211     987     429     512     370     399    1170     855
+  + 4h trend exit (EMA 50)         -219     961     425     517     332     399    1105     845
+
+  baseline net 4514; a variant is only interesting if it beats that in most windows, not in total.

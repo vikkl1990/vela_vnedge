@@ -221,3 +221,34 @@ stating plainly, because it means the selection and the result are not independe
 
 **Revisit if** the review shows 15m working live, at which point 1h becomes a candidate for
 diversifying the signal source rather than replacing it. Adding 5m would be actively harmful.
+
+## 11. Tested: letting a higher timeframe decide the exit. It adds nothing.
+
+Entries stay on 15m, where the edge is. A 1h or 4h trend is computed from its own candles and,
+wherever it flips against an open position, an exit is injected at the first 15m bar closing after
+that higher candle completed — so the flip is only acted on once it is actually known. Stops,
+targets and the trail still apply, so the higher timeframe can only end a trade early.
+
+| variant | trades | net | PF | avg R | bars held | htf exits fired | windows up |
+|---|---|---|---|---|---|---|---|
+| 15m only (current) | 1067 | 4514 | 1.48 | 0.20 | 7.7 | — | 7/8 |
+| + 1h trend, EMA 20 | 1082 | 4057 | 1.44 | 0.18 | 7.0 | 2333 | 7/8 |
+| + 1h trend, EMA 50 | 1070 | 4430 | 1.48 | 0.20 | 7.5 | 1471 | 7/8 |
+| + 4h trend, EMA 20 | 1068 | 4511 | 1.48 | 0.20 | 7.7 | 487 | 7/8 |
+| + 4h trend, EMA 50 | 1068 | 4365 | 1.47 | 0.19 | 7.7 | 264 | 7/8 |
+
+Nothing beats the baseline, and the ordering is informative: the more the higher timeframe
+interferes, the worse it gets. 2333 injected exits cost 457; 487 cost 3. The 4h EMA-20 variant is
+within rounding of doing nothing, which is exactly what firing 487 exits across 1068 trades amounts
+to.
+
+Per window it is the same story — the baseline is highest or tied in six of eight, and no variant
+leads more than one. This is not a marginal call being decided by the total.
+
+**Why it fails is worth keeping.** A 15m trade lasts 7.7 bars, under two hours. A 1h trend needs
+several candles to turn, and a 4h trend needs most of a day. By the time either confirms, the trade
+is usually over. The higher timeframe is not wrong, it is late, and the stop and trail have already
+resolved the position.
+
+**Revisit if** holding times lengthen materially — a rule that is too slow for a two-hour trade
+could be useful for a two-day one.
