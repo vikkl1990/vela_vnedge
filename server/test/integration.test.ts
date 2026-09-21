@@ -260,3 +260,40 @@ after(async () => {
   assert.equal(r.drained, true);
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test('scanner list: the batched build matches the per-scanner build, and the lite view is a strict subset', async () => {
+  const full = await getJson('/api/scanners');
+  assert.equal(full.status, 200);
+  const list = full.body as any[];
+  assert.ok(list.length >= 1, 'the fixture scanner is listed');
+  // the single-scanner route still uses the unbatched path: the two must agree field for field
+  for (const s of list) {
+    const one = await getJson(`/api/scanners/${s.id}`);
+    assert.equal(one.status, 200);
+    assert.deepEqual(one.body, s, `${s.id} differs between the list and the single-scanner route`);
+  }
+  const lite = await getJson('/api/scanners?view=lite');
+  assert.equal(lite.status, 200);
+  assert.equal((lite.body as any[]).length, list.length, 'lite lists every scanner');
+  for (const l of lite.body as any[]) {
+    const f = list.find((x: any) => x.id === l.id);
+    assert.ok(f, `${l.id} missing from the full view`);
+    for (const k of ['id', 'name', 'status', 'category', 'enabled', 'hidden']) {
+      assert.deepEqual(l[k], f[k], `${l.id}.${k} differs between lite and full`);
+    }
+  }
+});
+
+test('responses are gzipped when asked for, and identical once decoded', async () => {
+  const plain = await fetch(base + '/api/scanners', { headers: { 'Accept-Encoding': 'identity' } });
+  assert.equal(plain.headers.get('content-encoding'), null);
+  const raw = await plain.text();
+  const gz = await fetch(base + '/api/scanners', { headers: { 'Accept-Encoding': 'gzip' } });
+  // undici decodes transparently; the header proves it travelled compressed
+  assert.equal(gz.headers.get('content-encoding'), 'gzip');
+  assert.equal(gz.headers.get('vary'), 'Accept-Encoding');
+  assert.equal(await gz.text(), raw, 'compression must not change the payload');
+  // small bodies stay uncompressed
+  const small = await fetch(base + '/api/stats', { headers: { 'Accept-Encoding': 'gzip' } });
+  assert.equal(small.headers.get('content-encoding'), null, 'tiny payloads are not worth compressing');
+});

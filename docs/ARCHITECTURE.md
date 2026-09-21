@@ -96,6 +96,14 @@ Delta Exchange India ──REST (history, products, tickers)──┐
 * Every 1-minute candle update of the symbol is applied to open positions: SL first (worst case),
   then sequential TP legs (40/30/30 % default), SL → entry after TP1 when `breakEvenAfterTp1`.
 * Script exits are honoured according to the scanner's `exitMode` (`levels`, `script`, `both`).
+* **Dashboard payloads**: `GET /api/scanners` carries per-scanner statistics and symbol lists for every
+  script on disk, which is what the scanner pages need and roughly a hundred times what a name lookup
+  needs. `?view=lite` returns id, name, status, category, enabled, hidden, overlay and the last run's
+  error only; the header, the Overview fleet panel, the signal and trade filters and the chart picker
+  use it. The full list is built from one pass over closed positions, one grouped signal count, one
+  pass over backtests and one over last-runs, rather than scanning each per scanner. Responses over
+  1 KiB are gzipped when the client asks (never SSE), and hashed build assets are immutable for a year.
+
 * **Execution guards** (added after the latency audit):
   - *Quotes*: the top of book is taken from `v2/ticker` (`quotes.best_bid`/`best_ask`), not `mark_price`, which carries none on Delta India. Entries cross the spread when a quote is fresher than `paper.quoteMaxAgeMs`; otherwise they fall back to the slippage model, and `paper.requireQuote` refuses them instead. Exits never require a quote, so a position is always closable. `entries_priced_on_quote_total`, `entries_priced_on_slippage_total` and `symbols_quoted` make a silent book outage visible.
   - *Historical bars*: a 1m bar that a resync or gap fill pulled from REST is flagged `historical`. It may still exit an open position (those prices really traded) but the fill is stamped at the bar's close rather than at receipt, it never fills a pending entry, and it never becomes the live mark.

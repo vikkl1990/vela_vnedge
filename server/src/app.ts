@@ -150,22 +150,48 @@ export class App {
     return list;
   }
 
-  scannerView(id: string) {
+  /** Pre-grouped lookups so building the whole scanner list is linear rather than quadratic. */
+  private scannerViewIndex() {
+    return {
+      closed: this.paper.closedByScanner(),
+      open: this.paper.openCountByScanner(),
+      signals: this.db.countSignalsByScanner(),
+      backtests: this.scanners.backtestsByScanner(),
+      lastRun: this.scanners.lastRunByScanner(),
+    };
+  }
+
+  scannerView(id: string, idx?: ReturnType<App['scannerViewIndex']>) {
     const s = this.registry.get(id);
     if (!s) return null;
     const c = this.scanners.scannerConfig(id);
-    const stats = this.paper.scannerStats(id);
-    stats.signals = this.db.countSignals(id);
-    stats.backtest = this.scanners.backtestSummary(id);
+    const stats = idx ? this.paper.scannerStats(id, { closed: idx.closed, open: idx.open }) : this.paper.scannerStats(id);
+    stats.signals = idx ? (idx.signals.get(id) ?? 0) : this.db.countSignals(id);
+    stats.backtest = idx ? this.scanners.backtestSummary(id, idx.backtests) : this.scanners.backtestSummary(id);
     return {
       id: s.id, name: s.name, author: s.author, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: this.scanners.isActive(s), hidden: Boolean(c.hidden),
       overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, updated: s.updated, patches: s.patches,
       symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), exitMode: c.exitMode,
-      lastRun: this.scanners.getLastRun(id), stats,
+      lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,
     };
   }
 
-  scannerViews() { return this.registry.all().map(s => this.scannerView(s.id)); }
+  scannerViews() { const idx = this.scannerViewIndex(); return this.registry.all().map(s => this.scannerView(s.id, idx)); }
+
+  /**
+   * The fields the header, dropdowns and pickers actually read. The full view carries per-scanner
+   * stats and symbol lists for ~2000 scripts, which is about a hundred times more than a name
+   * lookup needs; pages that only resolve names ask for this instead.
+   */
+  scannerIndex() {
+    const lastRun = this.scanners.lastRunByScanner();
+    return this.registry.all().map(s => {
+      const c = this.scanners.scannerConfig(s.id);
+      // `overlay` drives the chart picker and `lastRunError` the fleet error count; both are needed
+      // by pages that otherwise only resolve names, and both are a few bytes rather than a stats block
+      return { id: s.id, name: s.name, status: s.status, category: s.category, enabled: this.scanners.isActive(s), hidden: Boolean(c.hidden), overlay: s.overlay, lastRunError: lastRun.get(s.id)?.error ?? null };
+    });
+  }
 
   /** Cross-sectional analytics: pairs, scanners, scanner×pair matrix, exits and time-of-day, for backtest and live. */
   analytics() {

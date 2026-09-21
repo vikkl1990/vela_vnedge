@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, usePositions, useScanners, useSignals, useStats } from '../api/queries'
+import { useEquity, usePositions, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { EquityChart, PnlByScannerChart, type PnlBar } from '../components/charts'
 import { PositionsTable } from '../components/PositionsTable'
@@ -11,7 +11,7 @@ import { fmtInt, fmtMoney, fmtProfitFactor, fmtPct, fmtPnl, fmtR, pnlClass } fro
 export function Overview() {
   const stats = useStats()
   const equity = useEquity()
-  const scanners = useScanners()
+  const scanners = useScannerIndex()
   const signals = useSignals({ limit: 15 })
   const positions = usePositions()
 
@@ -91,7 +91,7 @@ export function Overview() {
             {(d) => {
               const ok = d.filter((x) => x.status === 'ok').length
               const en = d.filter((x) => x.enabled).length
-              const err = d.filter((x) => x.lastRun?.error).length
+              const err = d.filter((x) => x.lastRunError).length
               return (
                 <div className="fleet">
                   <div className="fleet-row">

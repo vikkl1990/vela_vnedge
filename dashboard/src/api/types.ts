@@ -127,6 +127,19 @@ export interface LastRun {
   error: string | null
 }
 
+/** The `?view=lite` shape: enough to resolve a name, a status and visibility, nothing more. */
+export interface ScannerIndexEntry {
+  id: string
+  name: string
+  status: ScannerStatus
+  category?: string
+  enabled: boolean
+  hidden?: boolean
+  overlay: boolean
+  /** Error from the newest run of this scanner, or null; the full view carries the whole run record. */
+  lastRunError: string | null
+}
+
 export interface Scanner {
   id: string
   name: string

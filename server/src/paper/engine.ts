@@ -464,7 +464,28 @@ export class PaperEngine extends EventEmitter {
     };
   }
 
-  scannerStats(id: string) {
+  /** Closed positions grouped by scanner, so a full scanner list does not rescan the array per scanner. */
+  closedByScanner(): Map<string, Position[]> {
+    const m = new Map<string, Position[]>();
+    for (const p of this.closedPositions()) { const l = m.get(p.scannerId); if (l) l.push(p); else m.set(p.scannerId, [p]); }
+    return m;
+  }
+
+  /** Open-position counts per scanner, same reason. */
+  openCountByScanner(): Map<string, number> {
+    const m = new Map<string, number>();
+    for (const p of this.open.values()) m.set(p.scannerId, (m.get(p.scannerId) ?? 0) + 1);
+    return m;
+  }
+
+  scannerStats(id: string, pre?: { closed: Map<string, Position[]>; open: Map<string, number> }) {
+    if (pre) {
+      const s: any = computeStats(pre.closed.get(id) ?? [], this.initialEquity);
+      s.profitFactor = fin(s.profitFactor);
+      s.open = pre.open.get(id) ?? 0;
+      s.pnlPct = this.initialEquity ? s.pnl / this.initialEquity * 100 : 0;
+      return s;
+    }
     const closed = this.closedPositions().filter(p => p.scannerId === id);
     const s: any = computeStats(closed, this.initialEquity);
     s.profitFactor = fin(s.profitFactor);

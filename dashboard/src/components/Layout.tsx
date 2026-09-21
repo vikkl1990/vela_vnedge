@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { useBackendOnline, useHealth, usePositions, useResetPaper, useScanners, useStats } from '../api/queries'
+import { useBackendOnline, useHealth, usePositions, useResetPaper, useScannerIndex, useStats } from '../api/queries'
 import { useDensity } from '../lib/density'
 import { fmtAge, fmtMoney, fmtPnl, LOCAL_TZ, pnlClass } from '../lib/format'
 import { useHotkeys, type Hotkey } from '../lib/hotkeys'
@@ -79,7 +79,7 @@ export function Layout() {
   const health = useHealth()
   const stats = useStats()
   const positions = usePositions()
-  const scanners = useScanners()
+  const scanners = useScannerIndex()
   const { online, checked } = useBackendOnline()
   const toast = useToast()
   const reset = useResetPaper()
@@ -89,6 +89,8 @@ export function Layout() {
   const loc = useLocation()
 
   const h = health.data
+  // "not loaded yet" is not "down": defaulting to false flashed a red FEED UNAVAILABLE on every page load
+  const feedKnown = health.isSuccess || health.isError
   const feedConnected = h?.feed.connected ?? false
   const lastTick = sse.lastTickAt ?? h?.feed.lastTickAt ?? null
   const s = stats.data
@@ -111,6 +113,8 @@ export function Layout() {
   // Freshness is time-derived, so it lives in leaf components with their own 1 s clock.
   // Keeping that clock in Layout re-rendered <Outlet/> — the whole active page — every second.
   const live = sse.status === 'connected' && feedConnected
+  const feedTone: 'ok' | 'warn' | 'neutral' = !feedKnown ? 'neutral' : live ? 'ok' : 'warn'
+  const feedLabel = !feedKnown ? 'Feed connecting' : live ? 'Feed connected' : 'Feed unavailable'
 
   // ---- hotkeys ----
   const hotkeys = useMemo<Hotkey[]>(
@@ -214,9 +218,9 @@ export function Layout() {
           <span className="tcrumb-tz mono muted small hide-narrow" title="Times are shown in your local zone; hover any time for UTC">
             {LOCAL_TZ}
           </span>
-          <span className={`pill ${live ? 'pill-ok' : 'pill-warn'} live-pill`}>
-            <StatusDot tone={live ? 'ok' : 'warn'} />
-            {live ? 'Feed connected' : 'Feed unavailable'}
+          <span className={`pill ${feedTone === 'ok' ? 'pill-ok' : feedTone === 'warn' ? 'pill-warn' : ''} live-pill`} aria-live="polite">
+            <StatusDot tone={feedTone} />
+            {feedLabel}
           </span>
         </div>
         <div className="terminal-body">

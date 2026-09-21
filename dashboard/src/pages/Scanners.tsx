@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { qk, useConfig, useMarkets, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
 import { useQueryClient } from '@tanstack/react-query'
@@ -49,6 +49,12 @@ export function Scanners() {
       (!f || s.name.toLowerCase().includes(f) || s.id.toLowerCase().includes(f)))
   }, [scanners.data, filter, showHidden, author])
   const rows = useMemo(() => filteredScanners.filter((s) => cat === 'All' || categorize(s.name) === cat), [filteredScanners, cat])
+  // Render the grid in pages. Every scanner stays reachable, but a category with hundreds of
+  // scripts no longer builds 20+ screens of cards before the page is usable.
+  const PAGE = 60
+  const [shown, setShown] = useState(PAGE)
+  useEffect(() => setShown(PAGE), [cat, filteredScanners])
+  const visibleRows = useMemo(() => rows.slice(0, shown), [rows, shown])
   const authors = useMemo(() => ['All', ...Array.from(new Set((scanners.data ?? []).map((s) => s.author ?? 'WillyAlgoTrader')))], [scanners.data])
   const hiddenCount = (scanners.data ?? []).filter((s) => s.hidden).length
   const enabledCount = (scanners.data ?? []).filter((s) => s.enabled).length
@@ -304,9 +310,22 @@ export function Scanners() {
       {scanners.data && view === 'cards' && (
         <div className="cards-2">
           {rows.length === 0 && <Empty label="No scanners match." hint="Try another category, author or filter." />}
-          {rows.map((s) => (
+          {visibleRows.map((s) => (
             <ScannerCard key={s.id} s={s} onToggle={(v) => patch(s, { enabled: v })} onRun={() => runNow(s)} onHide={() => onHide(s)} busy={busy} runBusy={run.isPending} />
           ))}
+        </div>
+      )}
+      {scanners.data && view === 'cards' && rows.length > visibleRows.length && (
+        <div className="more-row">
+          <button type="button" className="btn" onClick={() => setShown((n) => n + PAGE)}>
+            Show {Math.min(PAGE, rows.length - visibleRows.length)} more
+          </button>
+          <button type="button" className="btn btn-quiet" onClick={() => setShown(rows.length)}>
+            Show all {rows.length}
+          </button>
+          <span className="muted small mono">
+            {visibleRows.length} of {rows.length}
+          </span>
         </div>
       )}
 

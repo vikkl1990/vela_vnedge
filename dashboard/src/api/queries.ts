@@ -8,6 +8,7 @@ export const qk = {
   config: ['config'] as const,
   markets: ['markets'] as const,
   scanners: ['scanners'] as const,
+  scannerIndex: ['scanners', 'index'] as const,
   scannerSource: (id: string) => ['scanners', 'source', id] as const,
   scannerOverlay: (id: string, symbol: string, tf: string) => ['scanners', 'overlay', id, symbol, tf] as const,
   signals: (q: SignalQuery = {}) => ['signals', q] as const,
@@ -53,6 +54,12 @@ export const useMarkets = () =>
   useQuery({ queryKey: qk.markets, queryFn: api.markets, staleTime: 5 * 60_000, refetchInterval: 5 * 60_000, retry: 1 })
 export const useScanners = (opts?: Opts<Awaited<ReturnType<typeof api.scanners>>>) =>
   useQuery({ queryKey: qk.scanners, queryFn: api.scanners, staleTime: LIVE_STALE, retry: 1, ...opts })
+/**
+ * Name/status lookup for headers, dropdowns and pickers. Same rows as `useScanners`, without the
+ * per-scanner statistics and symbol lists that make the full response ~100x larger.
+ */
+export const useScannerIndex = (opts?: Opts<Awaited<ReturnType<typeof api.scannerIndex>>>) =>
+  useQuery({ queryKey: qk.scannerIndex, queryFn: api.scannerIndex, staleTime: LIVE_STALE, retry: 1, ...opts })
 export const useScannerSource = (id: string | undefined) =>
   useQuery({
     queryKey: qk.scannerSource(id ?? ''),
@@ -103,7 +110,7 @@ export function useUpdateScanner() {
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: ScannerUpdate }) => api.updateScanner(id, body),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: qk.scanners })
+      void qc.invalidateQueries({ queryKey: qk.scanners })  // prefix match also covers qk.scannerIndex
       void qc.invalidateQueries({ queryKey: qk.config })
     },
   })
@@ -113,7 +120,7 @@ export function useRunScanner() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) => api.runScanner(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.scanners }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.scanners })  // prefix match also covers qk.scannerIndex,
   })
 }
 
@@ -123,7 +130,7 @@ export function useUpdateConfig() {
     mutationFn: (patch: ConfigPatch) => api.updateConfig(patch),
     onSuccess: (data) => {
       qc.setQueryData(qk.config, data)
-      void qc.invalidateQueries({ queryKey: qk.scanners })
+      void qc.invalidateQueries({ queryKey: qk.scanners })  // prefix match also covers qk.scannerIndex
     },
   })
 }

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useMarkets, useScanners, useSignals } from '../api/queries'
+import { useMarkets, useScannerIndex, useSignals } from '../api/queries'
 import type { Signal, SignalKind, Side } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { ActionPill, ErrorState, Loading, PageTitle, Panel, ScoreBadge, SidePill, StatusDot, Time } from '../components/ui'
@@ -124,7 +124,7 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
 }
 
 export function Signals() {
-  const scanners = useScanners()
+  const scanners = useScannerIndex()
   const markets = useMarkets()
   const [scanner, setScanner] = useState('')
   const [symbol, setSymbol] = useState('')

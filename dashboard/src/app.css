@@ -1260,3 +1260,7 @@ body { overflow-x: clip; }
   .filters .select, .filters .input { width: 100%; min-height: 44px; }
   .small { font-size: 12px; }
 }
+
+/* scanners grid: incremental rendering controls */
+.more-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 0 4px; }
+.more-row .btn-quiet { background: transparent; }

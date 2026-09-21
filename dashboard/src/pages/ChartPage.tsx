@@ -1,7 +1,7 @@
 import { useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import { qk, useConfig, useMarkets, useScanners, useSignals } from '../api/queries'
+import { qk, useConfig, useMarkets, useScannerIndex, useSignals } from '../api/queries'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { ChipSelect, Panel, Pill, QueryState } from '../components/ui'
@@ -14,7 +14,7 @@ const LS_KEY = 'vnedge.chart'
 export function ChartPage() {
   const markets = useMarkets()
   const config = useConfig()
-  const scanners = useScanners()
+  const scanners = useScannerIndex()
 
   const [symbolSel, setSymbol] = useState<string>(() => {
     try {

@@ -176,6 +176,12 @@ export class Db {
   }
   signalById(id: number): SignalRow | undefined { const r = this.get<any>('SELECT * FROM signals WHERE id=?', id); return r ? rowToSignal(r) : undefined; }
   countSignals(scannerId: string): number { return this.get<{ n: number }>('SELECT COUNT(*) n FROM signals WHERE scanner_id=?', scannerId)?.n ?? 0; }
+  /** Signal counts for every scanner in one query; building the scanner list one at a time was O(n) round trips. */
+  countSignalsByScanner(): Map<string, number> {
+    const m = new Map<string, number>();
+    for (const r of this.all<{ scanner_id: string; n: number }>('SELECT scanner_id, COUNT(*) n FROM signals GROUP BY scanner_id')) m.set(r.scanner_id, r.n);
+    return m;
+  }
 }
 
 export function rowToSignal(r: any): SignalRow {

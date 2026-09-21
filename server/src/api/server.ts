@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { URL } from 'node:url';
 import type { App } from '../app.ts';
@@ -57,7 +58,7 @@ export class ApiServer {
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     if (url.pathname === '/api/events') return this.handleSse(req, res);
-    if (!url.pathname.startsWith('/api/')) return this.serveStatic(url.pathname, res);
+    if (!url.pathname.startsWith('/api/')) return this.serveStatic(url.pathname, res, req);
     for (const r of this.routes) {
       if (r.method !== req.method) continue;
       const m = url.pathname.match(r.pattern);
@@ -67,18 +68,18 @@ export class ApiServer {
       try {
         const body = await readBody(req);
         const out = await r.handler(req, res, params, url, body);
-        if (!res.headersSent) json(res, 200, out ?? { ok: true });
+        if (!res.headersSent) json(res, 200, out ?? { ok: true }, req);
       } catch (e: any) {
         const status = e instanceof HttpError ? e.status : 500;
         if (status >= 500) log.error(`${req.method} ${url.pathname}: ${e?.stack ?? e}`);
-        json(res, status, { error: String(e?.message ?? e) });
+        json(res, status, { error: String(e?.message ?? e) }, req);
       }
       return;
     }
-    json(res, 404, { error: 'not found' });
+    json(res, 404, { error: 'not found' }, req);
   }
 
-  private serveStatic(pathname: string, res: http.ServerResponse) {
+  private serveStatic(pathname: string, res: http.ServerResponse, req?: http.IncomingMessage) {
     if (!fs.existsSync(DASHBOARD_DIST)) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<h1>VNEdge server running</h1><p>Dashboard not built yet — run <code>npm run build</code> in the repo root, or use the Vite dev server on :5173.</p><p>API: <a href="/api/health">/api/health</a></p>'); return; }
     let file = path.join(DASHBOARD_DIST, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(DASHBOARD_DIST)) { res.writeHead(403); res.end(); return; }
@@ -88,7 +89,17 @@ export class ApiServer {
       file = path.join(DASHBOARD_DIST, 'index.html');
     }
     const ext = path.extname(file);
-    res.writeHead(200, { 'Content-Type': MIME[ext] ?? 'application/octet-stream', 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' });
+    // build assets carry a content hash in their name, so they can never change under the same URL
+    const cache = ext === '.html' ? 'no-cache' : pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
+    const head: Record<string, string> = { 'Content-Type': MIME[ext] ?? 'application/octet-stream', 'Cache-Control': cache, Vary: 'Accept-Encoding' };
+    const text = ['.html', '.js', '.css', '.svg', '.json', '.map', '.txt'].includes(ext);
+    if (text && req && /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? '')) && fs.statSync(file).size >= COMPRESS_MIN_BYTES) {
+      head['Content-Encoding'] = 'gzip';
+      res.writeHead(200, head);
+      fs.createReadStream(file).pipe(zlib.createGzip()).pipe(res);
+      return;
+    }
+    res.writeHead(200, head);
     fs.createReadStream(file).pipe(res);
   }
 
@@ -178,7 +189,8 @@ export class ApiServer {
       return list.slice(-limit).map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
     });
 
-    this.add('GET', '/api/scanners', () => a.scannerViews());
+    // `?view=lite` returns id/name/status/category/enabled/hidden only; the default shape is unchanged
+    this.add('GET', '/api/scanners', (_r, _s, _p, url) => (url.searchParams.get('view') === 'lite' ? a.scannerIndex() : a.scannerViews()));
     this.add('POST', '/api/scanners/auto-tune', async (_r, _s, _p, _u, body) => {
       const report = a.scanners.autoTune({ minTrades: Number(body?.minTrades ?? 3), minProfitFactor: Number(body?.minProfitFactor ?? 1) });
       await a.onConfigChanged();
@@ -249,9 +261,27 @@ export class ApiServer {
   }
 }
 
-function json(res: http.ServerResponse, status: number, data: unknown) {
-  const body = JSON.stringify(data, (_k, v) => (typeof v === 'number' && !Number.isFinite(v) ? null : v));
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+/** Smallest body worth compressing; below this the header overhead and CPU are not repaid. */
+const COMPRESS_MIN_BYTES = 1024;
+
+/** gzip when the client asked for it and the body is big enough. Never used for SSE. */
+function compressible(req: http.IncomingMessage | undefined, bytes: number): boolean {
+  if (!req || bytes < COMPRESS_MIN_BYTES) return false;
+  return /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? ''));
+}
+
+function json(res: http.ServerResponse, status: number, data: unknown, req?: http.IncomingMessage) {
+  const body = Buffer.from(JSON.stringify(data, (_k, v) => (typeof v === 'number' && !Number.isFinite(v) ? null : v)));
+  const head: Record<string, string> = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Vary: 'Accept-Encoding' };
+  if (compressible(req, body.length)) {
+    let gz: Buffer;
+    try { gz = zlib.gzipSync(body); } catch { res.writeHead(status, head); res.end(body); return; }
+    head['Content-Encoding'] = 'gzip';
+    res.writeHead(status, head);
+    res.end(gz);
+    return;
+  }
+  res.writeHead(status, head);
   res.end(body);
 }
 

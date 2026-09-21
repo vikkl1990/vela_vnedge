@@ -1,4 +1,5 @@
 import type {
+  ScannerIndexEntry,
   BacktestResult,
   Candle,
   CandleQuery,
@@ -92,6 +93,8 @@ export const api = {
 
   // scanners
   scanners: () => get<Scanner[]>('/scanners'),
+  /** id/name/status/category/enabled/hidden only — the full list carries per-scanner stats for ~2000 scripts. */
+  scannerIndex: () => get<ScannerIndexEntry[]>('/scanners?view=lite'),
   updateScanner: (id: string, body: ScannerUpdate) => post<Scanner>(`/scanners/${encodeURIComponent(id)}`, body),
   runScanner: (id: string) => post<{ queued: number }>(`/scanners/${encodeURIComponent(id)}/run`),
   scannerSource: (id: string) => get<ScannerSource>(`/scanners/${encodeURIComponent(id)}/source`),

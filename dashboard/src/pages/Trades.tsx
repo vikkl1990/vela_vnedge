@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useCloseAll, useMarkets, useOrders, usePositions, useScanners, useTrades } from '../api/queries'
+import { useCloseAll, useMarkets, useOrders, usePositions, useScannerIndex, useTrades } from '../api/queries'
 import type { Order, Trade } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
@@ -12,7 +12,7 @@ const EXIT_REASONS: Record<string, string> = { tp1: 'Take profit 1', tp2: 'Take 
 
 export function Trades() {
   const positions = usePositions()
-  const scanners = useScanners()
+  const scanners = useScannerIndex()
   const markets = useMarkets()
   const closeAll = useCloseAll()
   const toast = useToast()

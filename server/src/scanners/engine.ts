@@ -148,8 +148,22 @@ export class ScannerEngine extends EventEmitter {
   getOverlay(id: string, symbol: string, tf: string): Overlay | undefined { return this.overlays.get(`${id}:${symbol}:${tf}`); }
   getBacktest(id: string, symbol: string, tf: string): BacktestResult | undefined { return this.backtests.get(`${id}:${symbol}:${tf}`); }
   allBacktests(): Array<{ id: string; symbol: string; tf: string; result: BacktestResult }> { return [...this.backtests.entries()].map(([k, result]) => { const [id, symbol, tf] = k.split(':'); return { id, symbol, tf, result }; }); }
-  backtestSummary(id: string): BacktestResult['stats'] | null {
-    const list = [...this.backtests.entries()].filter(([k]) => k.startsWith(id + ':')).map(([, v]) => v);
+  /** Backtests grouped by scanner id; the per-scanner filter was rescanning the whole map each time. */
+  backtestsByScanner(): Map<string, BacktestResult[]> {
+    const m = new Map<string, BacktestResult[]>();
+    for (const [k, v] of this.backtests) { const id = k.slice(0, k.indexOf(':')); const l = m.get(id); if (l) l.push(v); else m.set(id, [v]); }
+    return m;
+  }
+
+  /** Newest run per scanner id, grouped in one pass. */
+  lastRunByScanner(): Map<string, RunInfo> {
+    const m = new Map<string, RunInfo>();
+    for (const [k, v] of this.lastRun) { const id = k.slice(0, k.indexOf(':')); const b = m.get(id); if (!b || v.at > b.at) m.set(id, v); }
+    return m;
+  }
+
+  backtestSummary(id: string, pre?: Map<string, BacktestResult[]>): BacktestResult['stats'] | null {
+    const list = pre ? (pre.get(id) ?? []) : [...this.backtests.entries()].filter(([k]) => k.startsWith(id + ':')).map(([, v]) => v);
     if (!list.length) return null;
     // aggregate across symbols/timeframes
     const agg: any = { trades: 0, wins: 0, losses: 0, pnl: 0, fees: 0, grossProfit: 0, grossLoss: 0, maxDrawdownPct: 0, open: 0 };
