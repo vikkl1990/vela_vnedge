@@ -66,6 +66,13 @@ export class ScannerEngine extends EventEmitter {
   private overlays = new Map<string, Overlay>();
   private markets = new Map<string, MarketInfo>();
   private inFlight = new Set<string>();
+  /**
+   * One deferred run per scanner/symbol/timeframe. A bar that closes while the previous run is
+   * still going used to be dropped outright, losing that bar's entries and script exits; the
+   * newest request is now held here and dispatched when the running job finishes. Only the
+   * newest is kept: older bars are already superseded by the time we get to them.
+   */
+  private deferred = new Map<string, { s: LoadedScanner; symbol: string; tf: string; mode: { backtest: boolean; live: boolean } }>();
   private backtests = new Map<string, BacktestResult>();
   private warmed = new Set<string>();
   private seenLabels = new Map<string, Set<string>>();
@@ -326,7 +333,13 @@ export class ScannerEngine extends EventEmitter {
 
   private async runOnce(s: LoadedScanner, symbol: string, tf: string, mode: { backtest: boolean; live: boolean }): Promise<void> {
     const key = `${s.id}:${symbol}:${tf}`;
-    if (this.inFlight.has(key)) { log.debug(`skip ${key}: already running`); return; }
+    if (this.inFlight.has(key)) {
+      const prev = this.deferred.get(key);
+      // keep the newest request, but never lose a live run behind a backtest-only one
+      this.deferred.set(key, { s, symbol, tf, mode: { backtest: mode.backtest || (prev?.mode.backtest ?? false), live: mode.live || (prev?.mode.live ?? false) } });
+      log.debug(`defer ${key}: already running`);
+      return;
+    }
     this.inFlight.add(key);
     const scannerConfigAtStart = this.cfgRef().scanners[s.id];
     const at = Date.now();
@@ -381,6 +394,12 @@ export class ScannerEngine extends EventEmitter {
       this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });
     } finally {
       this.inFlight.delete(key);
+      const next = this.deferred.get(key);
+      if (next) {
+        this.deferred.delete(key);
+        // run on the next tick so the finished job's stack unwinds before the follow-up starts
+        setImmediate(() => void this.runOnce(next.s, next.symbol, next.tf, next.mode).catch(e => log.error(`deferred run ${key} failed: ${e?.message ?? e}`)));
+      }
     }
   }
 

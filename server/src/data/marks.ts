@@ -4,7 +4,7 @@
  * (`dueFunding`) hands out one charge per symbol per funding timestamp.
  */
 import { EventEmitter } from 'node:events';
-import type { WsFunding, WsMark } from '../delta/ws.ts';
+import type { WsFunding, WsMark, WsTicker } from '../delta/ws.ts';
 
 export interface MarkState { markPrice: number; at: number; bestBid: number | null; bestAsk: number | null }
 export interface FundingState {
@@ -25,13 +25,37 @@ export const FUNDING_INTERVAL_MS = 8 * 3600 * 1000;
 
 export class MarkStore extends EventEmitter {
   private marks = new Map<string, MarkState>();
+  /**
+   * Top of book, kept apart from the mark price because the two arrive on different channels:
+   * `mark_price` carries no quotes on Delta India, `v2/ticker` does. `at` is the local receipt
+   * time, which is the clock `executable`'s `maxAgeMs` is measured against.
+   */
+  private quotes = new Map<string, { bid: number; ask: number; at: number }>();
   private fundingBySymbol = new Map<string, FundingState>();
+
+  /** Record a top-of-book snapshot. Crossed, zero or out-of-order quotes are ignored. */
+  setQuotes(symbol: string, bid: number | null, ask: number | null, at = Date.now()): void {
+    if (bid === null || ask === null) return;
+    if (!(bid > 0 && ask > 0 && bid <= ask)) return;
+    const prev = this.quotes.get(symbol);
+    if (prev && at < prev.at) return;
+    this.quotes.set(symbol, { bid, ask, at });
+  }
+
+  /** `v2/ticker` is the channel that actually carries `quotes.best_bid` / `quotes.best_ask`. */
+  onWsTicker(t: WsTicker): void { this.setQuotes(t.symbol, t.bestBid, t.bestAsk); }
+
+  /** Symbols currently holding a quote no older than `maxAgeMs` (0 = any age). */
+  quotedSymbols(maxAgeMs = 0, now = Date.now()): string[] {
+    return [...this.quotes.entries()].filter(([, q]) => maxAgeMs <= 0 || now - q.at <= maxAgeMs).map(([s]) => s);
+  }
 
   setMark(symbol: string, markPrice: number, at = Date.now(), bestBid: number | null = null, bestAsk: number | null = null): void {
     if (!(markPrice > 0)) return;
     const prev = this.marks.get(symbol);
     if (prev && at < prev.at) return;
     this.marks.set(symbol, { markPrice, at, bestBid, bestAsk });
+    this.setQuotes(symbol, bestBid, bestAsk);
     this.emit('mark', { symbol, markPrice, at });
   }
   /**
@@ -39,21 +63,26 @@ export class MarkStore extends EventEmitter {
    * Returns null when there is no quote, it is stale, or it is crossed/invalid.
    */
   executable(symbol: string, side: 'buy' | 'sell', maxAgeMs: number, now = Date.now()): number | null {
-    const q = this.marks.get(symbol);
-    if (!q || q.bestBid === null || q.bestAsk === null) return null;
-    if (!(q.bestBid > 0 && q.bestAsk > 0 && q.bestBid <= q.bestAsk)) return null;
+    const q = this.quotes.get(symbol);
+    if (!q) return null;
+    if (!(q.bid > 0 && q.ask > 0 && q.bid <= q.ask)) return null;
     if (maxAgeMs > 0 && now - q.at > maxAgeMs) return null;
-    return side === 'buy' ? q.bestAsk : q.bestBid;
+    return side === 'buy' ? q.ask : q.bid;
   }
 
   onWsMark(m: WsMark): void { this.setMark(m.symbol, m.markPrice, m.timeMs, m.bestBid, m.bestAsk); }
   mark(symbol: string): number | undefined { return this.marks.get(symbol)?.markPrice; }
-  markState(symbol: string): MarkState | undefined { return this.marks.get(symbol); }
+  markState(symbol: string): MarkState | undefined {
+    const m = this.marks.get(symbol);
+    if (!m) return undefined;
+    const q = this.quotes.get(symbol);
+    return q ? { ...m, bestBid: q.bid, bestAsk: q.ask } : m;
+  }
   /** Quoted spread in bps; null when no quotes. */
   spreadBps(symbol: string): number | null {
-    const m = this.marks.get(symbol);
-    if (!m || m.bestBid === null || m.bestAsk === null || !(m.bestBid > 0)) return null;
-    return (m.bestAsk - m.bestBid) / ((m.bestAsk + m.bestBid) / 2) * 10_000;
+    const q = this.quotes.get(symbol);
+    if (!q || !(q.bid > 0)) return null;
+    return (q.ask - q.bid) / ((q.ask + q.bid) / 2) * 10_000;
   }
 
   setFunding(symbol: string, f: { ratePct: number; predictedRatePct?: number | null; intervalSec?: number; nextAt: number; at?: number }): void {

@@ -1,0 +1,26 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { MarkStore } from './marks.ts';
+
+test('the top of book comes from the ticker channel and survives a mark update', () => {
+  const m = new MarkStore();
+  // Delta India sends no quotes on `mark_price`; the quote must not be wiped by one
+  m.onWsTicker({ symbol: 'BTCUSD', price: 100, markPrice: 100, timeMs: 1, bestBid: 99.5, bestAsk: 100.5 });
+  m.setMark('BTCUSD', 100.2, Date.now(), null, null);
+  assert.equal(m.executable('BTCUSD', 'buy', 10_000), 100.5);
+  assert.equal(m.executable('BTCUSD', 'sell', 10_000), 99.5);
+  assert.equal(m.markState('BTCUSD')?.bestBid, 99.5);
+  assert.ok((m.spreadBps('BTCUSD') ?? 0) > 0);
+});
+
+test('crossed, missing and stale quotes are not executable', () => {
+  const m = new MarkStore();
+  assert.equal(m.executable('BTCUSD', 'buy', 10_000), null, 'no quote at all');
+  m.onWsTicker({ symbol: 'BTCUSD', price: 100, markPrice: 100, timeMs: 1, bestBid: 101, bestAsk: 100 });
+  assert.equal(m.executable('BTCUSD', 'buy', 10_000), null, 'crossed book rejected');
+  m.setQuotes('BTCUSD', 99, 100, 1_000);
+  assert.equal(m.executable('BTCUSD', 'buy', 10_000, 1_500), 100);
+  assert.equal(m.executable('BTCUSD', 'buy', 10_000, 20_000), null, 'stale quote rejected');
+  assert.deepEqual(m.quotedSymbols(10_000, 1_500), ['BTCUSD']);
+  assert.deepEqual(m.quotedSymbols(10_000, 20_000), []);
+});

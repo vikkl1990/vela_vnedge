@@ -23,7 +23,9 @@ export interface OpsDeps {
   dataDir: string;
   feed: { connected: boolean; lastTickAt: number; on(ev: string, fn: (...a: any[]) => void): unknown };
   pool: { stats: { size: number; queued: number; busy: number }; stop(): Promise<void> };
-  paper: { stats(): any; trades(opts: { limit: number }): any[]; openPositions(): any[]; on(ev: any, fn: (...a: any[]) => void): unknown };
+  paper: { stats(): any; trades(opts: { limit: number }): any[]; openPositions(): any[]; priceSource: { quote: number; slippage: number; rejectedNoQuote: number }; on(ev: any, fn: (...a: any[]) => void): unknown };
+  /** Top-of-book store; used only to report how many symbols are actually quoted. */
+  marks?: { quotedSymbols(maxAgeMs?: number, now?: number): string[] };
   candles: CandleStore;
   scanners: { allBacktests(): unknown[]; on(ev: string, fn: (...a: any[]) => void): unknown };
   workers: WorkerTracker;
@@ -141,6 +143,11 @@ export class OpsService {
     m.gauge('script_runs_per_minute', 'Script runs completed in the last 60 s', () => this.runRate.perMinute());
     m.gauge('script_errors_per_minute', 'Script runs that failed in the last 60 s', () => this.errRate.perMinute());
     m.gauge('open_positions', 'Open paper positions', () => d.paper.openPositions().length);
+    // a quote share near zero means spread crossing is inert and entry fills are optimistic
+    m.gauge('entries_priced_on_quote_total', 'Entries priced off a fresh top of book', () => d.paper.priceSource.quote);
+    m.gauge('entries_priced_on_slippage_total', 'Entries priced off the reference price plus slippage', () => d.paper.priceSource.slippage);
+    m.gauge('entries_rejected_no_quote_total', 'Entries refused because no fresh quote was available', () => d.paper.priceSource.rejectedNoQuote);
+    m.gauge('symbols_quoted', 'Symbols holding a top of book no older than paper.quoteMaxAgeMs', () => d.marks ? d.marks.quotedSymbols(d.cfg().paper.quoteMaxAgeMs ?? 0).length : null);
     m.gauge('paper_equity', 'Paper account equity', () => safeNum(() => d.paper.stats().equity));
     m.gauge('paper_realized_pnl', 'Realised pnl net of fees', () => safeNum(() => d.paper.stats().realizedPnl));
     m.gauge('paper_unrealized_pnl', 'Unrealised pnl of open positions', () => safeNum(() => d.paper.stats().unrealizedPnl));

@@ -91,3 +91,81 @@ test('stale signals are rejected (audit P1: entries minutes/hours after bar clos
   assert.equal(PaperEngine.signalAgeSec({ barTime }, '15m', close - 5_000), -5);
   assert.equal(PaperEngine.signalAgeSec({ barTime: 0 }, '15m', close), 0); // unknown bar → no age gate
 });
+
+// ---- execution/latency audit fixes ----
+
+function tapeSetup(t: { after: (fn: () => void) => void }, over: Record<string, unknown> = {}) {
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'tape', latencyMs: 0, maxStopLossPct: 0, maxSignalAgeSec: 0, useSpread: false, ...over });
+  const engine = new PaperEngine(db, () => cfg);
+  const queue = (at = 1_000) => engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105, 110, 115], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at, signalId: null, exitMode: 'both' });
+  return { db, cfg, engine, queue };
+}
+
+test('audit 1: a risk halt after queueing cancels the pending entry instead of filling it', t => {
+  const { engine, queue } = tapeSetup(t);
+  let halted = false;
+  engine.risk = { gate: () => (halted ? { reject: 'manual halt', leverageMult: 1 } : { leverageMult: 1 }), exposureCheck: () => null };
+  assert.equal(queue().action, 'pending');
+  halted = true;
+  engine.onTrade('BTCUSD', 100, 1, 2_000, 2_000);
+  assert.equal(engine.openPositions().length, 0, 'a halt between queue and fill must stop the entry');
+  assert.equal(engine.pendingEntries().length, 0);
+});
+
+test('audit 1: the exposure cap is re-applied at fill time', t => {
+  const { engine, queue } = tapeSetup(t);
+  let capped = false;
+  engine.risk = { gate: () => ({ leverageMult: 1 }), exposureCheck: () => (capped ? 'correlated exposure' : null) };
+  assert.equal(queue().action, 'pending');
+  capped = true;
+  engine.onTrade('BTCUSD', 100, 1, 2_000, 2_000);
+  assert.equal(engine.openPositions().length, 0);
+});
+
+test('audit 2: requireQuote refuses an entry that has no fresh top of book', t => {
+  const { engine, cfg } = tapeSetup(t, { fillSource: 'candles', useSpread: true, requireQuote: true, quoteMaxAgeMs: 10_000 });
+  engine.quotes = { executable: () => null };
+  const r = engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 1_000, signalId: null, exitMode: 'both' });
+  assert.equal(r.action, 'rejected');
+  assert.match(r.reason ?? '', /unpriceable/);
+  assert.equal(engine.priceSource.rejectedNoQuote, 1);
+  cfg.paper.requireQuote = false;
+  const r2 = engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 's2', scannerName: 's2', symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 1_000, signalId: null, exitMode: 'both' });
+  assert.equal(r2.action, 'opened', 'with the flag off the slippage model still prices the fill');
+  assert.equal(engine.priceSource.slippage, 1);
+});
+
+test('audit 3: a historical candle never fills a pending entry and never moves the mark', t => {
+  const { engine, queue } = tapeSetup(t);
+  assert.equal(queue(600_000).action, 'pending');
+  engine.setMark('BTCUSD', 100);
+  engine.onBar('BTCUSD', { time: 60_000, high: 90, low: 80, close: 85 }, 600_100, { historical: true });
+  assert.equal(engine.openPositions().length, 0, 'an old candle cannot open a position');
+  assert.equal(engine.pendingEntries().length, 1, 'and it does not consume the pending entry either');
+  assert.equal(engine.mark('BTCUSD'), 100, 'the live mark is not rewound to an old close');
+});
+
+test('audit 3: a historical candle exits an open position stamped at the bar, not at receipt', t => {
+  const { engine, cfg } = tapeSetup(t, { fillSource: 'candles' });
+  const p = engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105, 110, 115], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_000, signalId: null, exitMode: 'both' }).position!;
+  const barTime = 120_000;
+  engine.onBar('BTCUSD', { time: barTime, high: 101, low: 94, close: 99 }, 900_000, { historical: true });
+  assert.equal(p.exitReason, 'sl');
+  assert.equal(p.exitAt, barTime + 60_000, 'the exit carries the bar close, not the moment we received it');
+  assert.ok(cfg.paper.fillSource === 'candles');
+});
+
+test('audit 5: a print past the expiry deadline cancels instead of filling', t => {
+  const { engine, queue } = tapeSetup(t);
+  assert.equal(queue(1_000).action, 'pending');
+  engine.onTrade('BTCUSD', 100, 1, 2_000, 1_000 + 61_000);
+  assert.equal(engine.openPositions().length, 0, 'expiry is enforced in the fill path, not only by housekeeping');
+  assert.equal(engine.pendingEntries().length, 0);
+});

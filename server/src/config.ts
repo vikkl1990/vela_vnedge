@@ -36,6 +36,12 @@ export interface PaperConfig {
   useSpread: boolean;
   /** A quote older than this is not used for spread crossing. */
   quoteMaxAgeMs: number;
+  /**
+   * With `useSpread`, refuse an entry that cannot be priced off a fresh top-of-book instead of
+   * assuming the reference price plus slippage. Exits are never gated on a quote. Leave this off
+   * until the quote feed is proven, or a silent book outage stops all trading.
+   */
+  requireQuote: boolean;
   feeRatePct: number;
   /** Fee for take-profit limit fills (maker). */
   makerFeeRatePct: number;
@@ -217,6 +223,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     maxSignalAgeSec: 300,
     useSpread: true,
     quoteMaxAgeMs: 10_000,
+    requireQuote: false,
     feeRatePct: 0.05,
     makerFeeRatePct: 0.02,
     slippageBps: 2,
@@ -326,6 +333,8 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Number.isFinite(p.maxSignalAgeSec) && p.maxSignalAgeSec >= 0)) errs.push('paper.maxSignalAgeSec must be ≥ 0');
   if (typeof p.useSpread !== 'boolean') errs.push('paper.useSpread must be boolean');
   if (!(Number.isFinite(p.quoteMaxAgeMs) && p.quoteMaxAgeMs >= 0)) errs.push('paper.quoteMaxAgeMs must be ≥ 0');
+  if (p.requireQuote && !p.useSpread) errs.push('paper.requireQuote needs paper.useSpread');
+  if (p.requireQuote && !(p.quoteMaxAgeMs > 0)) errs.push('paper.requireQuote needs paper.quoteMaxAgeMs > 0');
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');

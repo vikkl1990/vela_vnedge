@@ -2,7 +2,7 @@ import { ConfigStore, DATA_DIR, type AppConfig } from './config.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
-import { DeltaFeed } from './delta/ws.ts';
+import { DeltaFeed, type WsTicker } from './delta/ws.ts';
 import { logger } from './log.ts';
 import { PaperEngine } from './paper/engine.ts';
 import { PinePool } from './pine/pool.ts';
@@ -62,9 +62,11 @@ export class App {
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.resolvedSymbols = cfg().symbols;
     // 1m candles drive paper fills for every open position
-    this.candles.on('bar', (e: { symbol: string; tf: string; bar: any }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar); });
-    this.candles.on('closed', (e: { symbol: string; tf: string; bar: any }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar); });
-    this.feed.on('ticker', (t: { symbol: string; price: number }) => this.paper.setMark(t.symbol, t.price));
+    // `historical` marks bars that a resync or gap fill pulled from REST: they describe the past,
+    // so they must not fill new entries or move the live mark (audit: current-time fills from old candles)
+    this.candles.on('bar', (e: { symbol: string; tf: string; bar: any; historical?: boolean }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true }); });
+    this.candles.on('closed', (e: { symbol: string; tf: string; bar: any; historical?: boolean }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true }); });
+    this.feed.on('ticker', (t: WsTicker) => { this.paper.setMark(t.symbol, t.price); this.marks.onWsTicker(t); });
     this.feed.on('status', async (s: { connected: boolean }) => {
       if (s.connected) for (const t of this.candles.tracked()) { try { const n = await this.candles.resync(t.symbol, t.tf); if (n) log.info(`resynced ${t.symbol} ${t.tf}: ${n} bars`); } catch (e: any) { log.warn(`resync failed ${t.symbol} ${t.tf}: ${e?.message}`); } }
     });
@@ -72,7 +74,7 @@ export class App {
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     wireRealtime(this);
-    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport });
+    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport });
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
     process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
   }

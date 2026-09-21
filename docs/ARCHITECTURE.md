@@ -96,6 +96,12 @@ Delta Exchange India ──REST (history, products, tickers)──┐
 * Every 1-minute candle update of the symbol is applied to open positions: SL first (worst case),
   then sequential TP legs (40/30/30 % default), SL → entry after TP1 when `breakEvenAfterTp1`.
 * Script exits are honoured according to the scanner's `exitMode` (`levels`, `script`, `both`).
+* **Execution guards** (added after the latency audit):
+  - *Quotes*: the top of book is taken from `v2/ticker` (`quotes.best_bid`/`best_ask`), not `mark_price`, which carries none on Delta India. Entries cross the spread when a quote is fresher than `paper.quoteMaxAgeMs`; otherwise they fall back to the slippage model, and `paper.requireQuote` refuses them instead. Exits never require a quote, so a position is always closable. `entries_priced_on_quote_total`, `entries_priced_on_slippage_total` and `symbols_quoted` make a silent book outage visible.
+  - *Historical bars*: a 1m bar that a resync or gap fill pulled from REST is flagged `historical`. It may still exit an open position (those prices really traded) but the fill is stamped at the bar's close rather than at receipt, it never fills a pending entry, and it never becomes the live mark.
+  - *Pending entries*: the portfolio risk layer is consulted again at fill time (halt, caps, cooldown, drawdown scaling), not only when the entry was queued, and the expiry deadline is enforced inside the fill path rather than only by the housekeeping tick.
+  - *Scanner backlog*: a bar that closes while that scanner/symbol/timeframe is still running is held as one deferred run and dispatched when the job finishes, instead of being dropped with its entries and script exits.
+
 * **Tape mode** (`paper.fillSource: "tape"`): an entry becomes *pending* and fills at the first `all_trades` print after signal time + `latencyMs`; stops trigger on the last trade and fill at that print (a stop-market can fill through a gap); TP legs are resting limits that fill at their level once a print goes beyond it (`limitFill: through`) or touches it (`touch`); liquidation is checked against the exchange **mark price**; funding (`rate × notional`, sign by side) is charged at every 8 h realization; market fills add `notional / depthUsdPerBp` bps of impact. When no print arrives for `tapeFallbackMs` the 1m candle path takes over (only movement since the last print counts). `candles` (default) reproduces the legacy behaviour exactly.
 
 ## Risk layer

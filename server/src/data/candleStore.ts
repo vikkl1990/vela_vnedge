@@ -320,7 +320,9 @@ export class CandleStore extends EventEmitter {
   private emitClosed(s: Series, bar: Bar) {
     if (bar.time <= s.lastClosedEmitted) return;
     s.lastClosedEmitted = bar.time; s.lastClosedAt = Date.now();
-    this.emit('closed', { symbol: s.symbol, tf: s.tf, bar: { ...bar } });
+    // announced more than one timeframe after the period ended → we are catching up, not live
+    const historical = Date.now() - (bar.time + TF_SECONDS[s.tf] * 1000) > TF_SECONDS[s.tf] * 1000;
+    this.emit('closed', { symbol: s.symbol, tf: s.tf, bar: { ...bar }, historical });
   }
 
   private async backfill(s: Series): Promise<void> {
@@ -363,7 +365,8 @@ export class CandleStore extends EventEmitter {
       if (announce) this.emitClosed(s, last!);
       bars.push(bar);
       if (bars.length > s.maxBars + 50) bars.splice(0, bars.length - s.maxBars);
-      if (!quiet && s.loaded) this.emit('bar', { symbol: s.symbol, tf: s.tf, bar: { ...bar }, closed: false });
+      // a bar pulled from REST describes a period that has already ended (resync / gap fill)
+      if (!quiet && s.loaded) this.emit('bar', { symbol: s.symbol, tf: s.tf, bar: { ...bar }, closed: false, historical: source === 'rest' });
       if (jumped && !quiet) void this.checkGaps(s, 'bar close').catch(() => { /* reported inside */ });
       return true;
     }
@@ -373,7 +376,7 @@ export class CandleStore extends EventEmitter {
         bar.high = Math.max(bar.high, last.high); bar.low = Math.min(bar.low, last.low);
       }
       bars[bars.length - 1] = bar;
-      if (!quiet && s.loaded) this.emit('bar', { symbol: s.symbol, tf: s.tf, bar: { ...bar }, closed: false });
+      if (!quiet && s.loaded) this.emit('bar', { symbol: s.symbol, tf: s.tf, bar: { ...bar }, closed: false, historical: source === 'rest' });
       return true;
     }
     // older bar: binary insert/replace

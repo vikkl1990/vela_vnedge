@@ -30,6 +30,9 @@ export interface RiskGate {
   exposureCheck(req: { symbol: string; side: Side; tf: string; notional: number }): string | null;
 }
 
+/** A pending entry is abandoned this long after its latency window closes. */
+export const PENDING_EXPIRY_MS = 60_000;
+
 /** Tape-mode entry waiting for its first print after signal time + latency. */
 export interface PendingEntry {
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; signalPrice: number; levels: LevelResult;
@@ -57,6 +60,12 @@ export class PaperEngine extends EventEmitter {
   private pending = new Map<number, PendingEntry>();
   /** Portfolio risk layer; set by the composition root (app.ts). */
   risk: RiskGate | null = null;
+  /**
+   * How entry prices were obtained since start. `slippage` means no fresh top-of-book was
+   * available and the configured slippage model priced the fill; a high share of those means
+   * the quote feed is not delivering and simulated fills are optimistic by about half a spread.
+   */
+  readonly priceSource = { quote: 0, slippage: 0, rejectedNoQuote: 0 };
 
   constructor(db: Db, cfgRef: () => AppConfig) {
     super();
@@ -113,6 +122,21 @@ export class PaperEngine extends EventEmitter {
       if (q !== null && Number.isFinite(q) && q > 0) return { price: q, source: 'quote' };
     }
     return { price: reference, source: 'slippage' };
+  }
+
+  /**
+   * Entry pricing. Exits never go through here: a position must always be closable, even with
+   * no book. When `paper.requireQuote` is on, an entry that cannot be priced off a fresh
+   * top-of-book is refused rather than filled at an assumed price.
+   */
+  private entryPrice(symbol: string, side: 'buy' | 'sell', reference: number, cfg: PaperConfig, now: number): { price: number } | { reject: string } {
+    const quoted = this.marketPrice(symbol, side, reference, cfg, now);
+    if (quoted.source === 'slippage' && cfg.useSpread && cfg.requireQuote) {
+      this.priceSource.rejectedNoQuote++;
+      return { reject: `no executable ${side === 'buy' ? 'ask' : 'bid'} within ${cfg.quoteMaxAgeMs ?? 0}ms` };
+    }
+    this.priceSource[quoted.source]++;
+    return { price: quoted.price };
   }
   mark(symbol: string): number | undefined { return this.marks.get(symbol); }
   /** Exchange mark price (liquidation reference). */
@@ -174,7 +198,8 @@ export class PaperEngine extends EventEmitter {
     // A market entry pays the spread: buy at the ask, sell at the bid when a fresh quote exists.
     // The script's own price is only a reference and is often minutes old by the time we act.
     const reference = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
-    const quoted = this.marketPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
+    const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
+    if ('reject' in quoted) return { action: 'rejected', reason: `unpriceable: ${quoted.reject}`, closed };
     const price = quoted.price;
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
@@ -226,7 +251,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   /** Fill a pending entry at `price` (first print after the latency window, or the 1m close when the tape is silent). */
-  private fillPending(pe: PendingEntry, price: number, at: number, source: 'tape' | 'candle'): Position | null {
+  private fillPending(pe: PendingEntry, price: number, at: number, source: 'tape' | 'candle', receivedAt = Date.now()): Position | null {
     this.pending.delete(pe.id);
     const cfg = this.paper;
     const cancel = (reason: string) => {
@@ -236,14 +261,29 @@ export class PaperEngine extends EventEmitter {
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
+    // expiry belongs in the fill path, not only in housekeeping: a print can arrive past the
+    // deadline before the next housekeeping tick and would otherwise still be filled
+    if (receivedAt > pe.dueAt + PENDING_EXPIRY_MS) return cancel(`no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
     // the signal's levels are absolute; the fill price must still sit on the right side of them
     const levels = resolveLevels({ side: pe.side, price, sl: pe.levels.sl, tp: pe.levels.tp }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
     const feeErr = checkRiskVsFees(price, levels.sl, cfg);
     if (feeErr) return cancel(feeErr);
     if (this.open.size >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
-    const size = this.size(price, levels.sl, pe.market, pe.score, pe.leverageMult);
+    // the portfolio risk layer was consulted when the entry was queued; the book can have
+    // halted, hit a cap or changed the drawdown scaling since, so ask it again at fill time
+    let leverageMult = pe.leverageMult;
+    if (this.risk) {
+      const g = this.risk.gate({ scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, side: pe.side, price, sl: levels.sl, at: receivedAt });
+      if (g.reject) return cancel(`risk ${g.reject}`);
+      leverageMult = g.leverageMult;
+    }
+    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult);
     if (size.qty < 1) return cancel(size.reason ?? 'size');
+    if (this.risk) {
+      const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price });
+      if (x) return cancel(`risk ${x}`);
+    }
     const pos = this.openAt(pe.id, { scannerId: pe.scannerId, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg);
     if (pe.signalId) this.db.updateSignalAction(pe.signalId, 'opened', pos.id);
     return pos;
@@ -262,7 +302,7 @@ export class PaperEngine extends EventEmitter {
 
   /** Expire pending entries that neither the tape nor a candle could fill within a minute past their due time. */
   housekeeping(now = Date.now()): void {
-    for (const pe of [...this.pending.values()]) if (now > pe.dueAt + 60_000) this.cancelPending(pe.id, 'no fill within 60s of the latency window');
+    for (const pe of [...this.pending.values()]) if (now > pe.dueAt + PENDING_EXPIRY_MS) this.cancelPending(pe.id, `no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
   }
 
   // ---- phase 2: tape, mark price, funding ----
@@ -276,7 +316,7 @@ export class PaperEngine extends EventEmitter {
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
       if (pe.symbol !== symbol || time < pe.dueAt) continue;
-      const pos = this.fillPending(pe, price, time, 'tape');
+      const pos = this.fillPending(pe, price, time, 'tape', observedAt);
       if (pos) filled.add(pos.id);
     }
     const mark = this.markPrices.get(symbol)?.price;
@@ -333,22 +373,28 @@ export class PaperEngine extends EventEmitter {
    * only takes over while the tape has been silent for more than `tapeFallbackMs`, otherwise it just
    * refreshes each position's candle baseline so a later fallback sees only new movement.
    */
-  onBar(symbol: string, bar: PriceBar, observedAt = Date.now()): void {
+  onBar(symbol: string, bar: PriceBar, observedAt = Date.now(), opts: { historical?: boolean } = {}): void {
     if (bar.time < (this.priceBars.get(symbol)?.time ?? -Infinity)) return;
     this.priceBars.set(symbol, { ...bar });
     this.housekeeping(observedAt);
+    // A bar a resync pulled from REST describes a period that has already ended. Its prices are
+    // real, so open positions may still exit on them, but they are stamped at the bar's own close
+    // instead of now, they never fill a new entry, and they never become the live mark.
+    const barClosedAt = bar.time + 60_000;
+    const historical = opts.historical === true || observedAt > barClosedAt + 60_000;
+    const eventAt = historical ? Math.min(observedAt, barClosedAt) : observedAt;
     if (this.tapeMode && this.tapeActive(symbol, observedAt)) {
       for (const pos of this.open.values()) if (pos.symbol === symbol && pos.status === 'open' && observedAt >= pos.entryAt) pos.lastPriceBar = { ...bar };
       return;
     }
-    this.marks.set(symbol, bar.close);
-    if (this.tapeMode) {
-      for (const pe of [...this.pending.values()]) if (pe.symbol === symbol && observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle');
+    if (!historical) this.marks.set(symbol, bar.close);
+    if (this.tapeMode && !historical) {
+      for (const pe of [...this.pending.values()]) if (pe.symbol === symbol && observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle', observedAt);
     }
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
-      const fills = applyLiveBar(pos, bar, this.paper, observedAt);
+      const fills = applyLiveBar(pos, bar, this.paper, eventAt);
       if (fills.length) this.applyFills(pos, fills);
       else if (pos.lastPriceBar !== previous) this.persist(pos);
     }

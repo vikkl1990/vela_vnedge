@@ -12,7 +12,8 @@ export interface WsCandle {
   open: number; high: number; low: number; close: number; volume: number;
   updatedMs: number;
 }
-export interface WsTicker { symbol: string; price: number; markPrice: number; timeMs: number }
+/** `v2/ticker` channel. Delta carries the top of book here (`quotes.best_bid` / `best_ask`), not on `mark_price`. */
+export interface WsTicker { symbol: string; price: number; markPrice: number; timeMs: number; bestBid: number | null; bestAsk: number | null }
 /** One print from the `all_trades` channel (the tape). `qty` is in contracts. */
 export interface WsTrade { symbol: string; price: number; qty: number; timeMs: number; aggressor: 'buy' | 'sell' | null }
 /** `mark_price` channel (Delta sends symbols as `MARK:BTCUSD`; `symbol` here is the bare product symbol). */
@@ -161,11 +162,13 @@ export class DeltaFeed extends EventEmitter {
       return;
     }
     if (type === 'v2/ticker') {
+      const q = msg.quotes ?? {};
       const t: WsTicker = {
         symbol: msg.symbol,
         price: Number(msg.close ?? msg.mark_price),
         markPrice: Number(msg.mark_price ?? msg.close),
         timeMs: Math.floor(Number(msg.timestamp ?? Date.now() * 1000) / 1000),
+        bestBid: num(q.best_bid), bestAsk: num(q.best_ask),
       };
       if (Number.isFinite(t.price)) this.emit('ticker', t);
       return;
