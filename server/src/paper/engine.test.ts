@@ -183,3 +183,24 @@ test('audit 2b: a quoted entry pays the spread once, not the spread plus assumed
   engine.quotes = { executable: () => null };
   assert.equal(enter('unquoted').entryPrice, 101, 'without a quote the slippage model still stands in for the spread');
 });
+
+test('the trailing peak survives a restart, so the trail keeps advancing', t => {
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles',
+    maxStopLossPct: 0, maxSignalAgeSec: 0, useSpread: false, breakEvenAfterTp1: false, tpSplit: [0, 0, 1],
+    trailAfterR: 1, trailDistanceR: 0, trailGiveBackPct: 25 });
+  const engine = new PaperEngine(db, () => cfg);
+  const p = engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [200], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at: 60_000, signalId: null, exitMode: 'both' }).position!;
+  engine.onBar('BTCUSD', { time: 120_000, high: 120, low: 99, close: 118 }, 180_000);   // peak 4R → stop 3R = 115
+  assert.equal(p.peakR, 4);
+  assert.equal(p.sl, 115);
+
+  const resumed = new PaperEngine(db, () => cfg);
+  const r = resumed.openPositions()[0];
+  assert.equal(r.peakR, 4, 'the peak is restored, not reset to zero');
+  resumed.onBar('BTCUSD', { time: 180_000, high: 124, low: 116, close: 123 }, 240_000); // peak 4.8R → stop 3.6R = 118
+  assert.ok(Math.abs(r.sl! - 118) < 1e-9, `trail advanced to ${r.sl}, expected 118`);
+});
