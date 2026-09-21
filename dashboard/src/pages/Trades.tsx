@@ -6,6 +6,7 @@ import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
 import { ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pnl, QueryState, SidePill, StatusDot, Time } from '../components/ui'
 import { fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtR, fmtTime } from '../lib/format'
+import { useMediaQuery } from '../lib/useMediaQuery'
 import { useToast } from '../lib/toast'
 
 const EXIT_REASONS: Record<string, string> = { tp1: 'Take profit 1', tp2: 'Take profit 2', tp3: 'Take profit 3', sl: 'Stop loss', be: 'Break-even', script_exit: 'Script exit', reversal: 'Reversal', manual: 'Manual close', tp_partial: 'Partial take profit', liquidation: 'Liquidation', removed: 'Scanner removed' }
@@ -24,6 +25,9 @@ export function Trades() {
   const q = useMemo(() => ({ limit: 300, scanner: scanner || undefined, symbol: symbol || undefined }), [scanner, symbol])
   const trades = useTrades(q)
   const orders = useOrders(200)
+  // the closed-trades table needs ~1300px for every column; below that, shed the derived ones
+  const narrow = useMediaQuery('(max-width: 1440px)')
+  const veryNarrow = useMediaQuery('(max-width: 1180px)')
 
   const rows = useMemo(() => (trades.data ?? []).filter((t) => !reason || t.exitReason === reason), [trades.data, reason])
   const totals = useMemo(() => rows.reduce((a, t) => ({ pnl: a.pnl + t.pnl, fees: a.fees + (t.fees ?? 0) }), { pnl: 0, fees: 0 }), [rows])
@@ -59,10 +63,17 @@ export function Trades() {
       { key: 'qty', header: 'Qty', numeric: true, value: (t) => t.qty, render: (t) => <span className="mono">{fmtInt(t.qty)}</span> },
       { key: 'entry', header: 'Entry', numeric: true, value: (t) => t.entryPrice, render: (t) => <span className="mono">{fmtPrice(t.entryPrice, tick(t.symbol))}</span> },
       { key: 'exit', header: 'Exit price', numeric: true, value: (t) => t.exitPrice, render: (t) => <span className="mono">{fmtPrice(t.exitPrice, tick(t.symbol))}</span> },
-      { key: 'dur', header: 'Held', numeric: true, value: (t) => t.exitAt - t.entryAt, render: (t) => <span className="mono muted small">{fmtDuration(t.exitAt - t.entryAt)}</span> },
+      ...(veryNarrow
+        ? []
+        : ([{ key: 'dur', header: 'Held', numeric: true, value: (t) => t.exitAt - t.entryAt, render: (t) => <span className="mono muted small">{fmtDuration(t.exitAt - t.entryAt)}</span> }] as Column<Trade>[])),
       { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <Pnl value={t.pnl} /> },
-      { key: 'pnlPct', header: 'Return %', title: 'Net P&L divided by initial entry notional, after fees', numeric: true, value: (t) => t.pnlPct, render: (t) => <span className={`mono ${t.pnlPct >= 0 ? 'gain' : 'loss'}`}>{fmtPct(t.pnlPct, 1, true)}</span> },
-      { key: 'fees', header: 'Fees (USD)', numeric: true, value: (t) => t.fees, render: (t) => <span className="mono muted">{fmtMoney(t.fees)}</span> },
+      // return % and fees restate what PnL already says, so they are the first to go when narrow
+      ...(narrow
+        ? []
+        : ([
+            { key: 'pnlPct', header: 'Return %', title: 'Net P&L divided by initial entry notional, after fees', numeric: true, value: (t) => t.pnlPct, render: (t) => <span className={`mono ${t.pnlPct >= 0 ? 'gain' : 'loss'}`}>{fmtPct(t.pnlPct, 1, true)}</span> },
+            { key: 'fees', header: 'Fees (USD)', numeric: true, value: (t) => t.fees, render: (t) => <span className="mono muted">{fmtMoney(t.fees)}</span> },
+          ] as Column<Trade>[])),
       { key: 'r', header: 'R', numeric: true, value: (t) => t.rMultiple, render: (t) => <span className={`mono ${t.rMultiple >= 0 ? 'gain' : 'loss'}`}>{fmtR(t.rMultiple)}</span> },
       { key: 'reason', header: 'Exit reason', value: (t) => t.exitReason, render: (t) => <ExitReasonPill reason={t.exitReason} /> },
       {
@@ -77,7 +88,7 @@ export function Trades() {
         ),
       },
     ]
-  }, [markets.data])
+  }, [markets.data, narrow, veryNarrow])
 
   const orderCols = useMemo<Column<Order>[]>(() => {
     const tick = (sym: string) => markets.data?.find((m) => m.symbol === sym)?.tickSize
@@ -191,7 +202,7 @@ export function Trades() {
 
       <Panel title="Orders / fills" pad={false}>
         <QueryState {...orders} data={orders.data} empty="No fills yet." hint="Every paper fill (entry, partial TP, exit) is logged here." skeleton="table" skeletonRows={5} skeletonCols={9} onRetry={() => orders.refetch()}>
-          {(d) => <DataTable columns={orderCols} rows={d} rowKey={(o) => o.id} defaultSort={{ key: 'at', dir: 'desc' }} maxHeight={420} caption="Orders and fills" />}
+          {(d) => <DataTable columns={orderCols} rows={d} rowKey={(o) => o.id} defaultSort={{ key: 'at', dir: 'desc' }} caption="Orders and fills" />}
         </QueryState>
       </Panel>
 

@@ -6,6 +6,7 @@ import { fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
 import { useToast } from '../lib/toast'
 import { useLivePrice } from '../sse/prices'
 import { DataTable, type Column } from './DataTable'
+import { useMediaQuery } from '../lib/useMediaQuery'
 import { ConfirmDialog, Pill, Pnl, SidePill, StatusDot, Time } from './ui'
 
 /** Live unrealized PnL from the latest tick (falls back to the server's number). */
@@ -37,6 +38,12 @@ const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
 })
 
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
+  // Eighteen columns need about 1500px. Below that, drop the derived values rather than making
+  // the reader scroll sideways: notional, margin and liquidation can all be inferred from the
+  // rest, so they are the first to go, and the per-trade result figures follow.
+  const narrow = useMediaQuery('(max-width: 1440px)')
+  const veryNarrow = useMediaQuery('(max-width: 1180px)')
+  const dense = compact || veryNarrow
   const { data: markets } = useMarkets()
   const close = useClosePosition()
   const toast = useToast()
@@ -86,9 +93,13 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         value: (p) => p.marginLeverage ?? p.leverage ?? 0,
         render: (p) => <span className="mono">{(p.marginLeverage ?? p.leverage) ? `${(p.marginLeverage ?? p.leverage)!.toFixed(1)}x` : '–'}</span>,
       },
-      { key: 'notional', header: 'Notional', numeric: true, value: (p) => p.qtyOpen * p.contractValue * p.markPrice, render: (p) => <LiveNotional p={p} /> },
-      { key: 'margin', header: 'Margin', numeric: true, value: (p) => p.margin ?? 0, render: (p) => <span className="mono">{p.margin != null ? fmtMoney(p.margin, 2) : '–'}</span> },
-      { key: 'liq', header: 'Liq', numeric: true, value: (p) => p.liqPrice ?? 0, render: (p) => <span className="mono loss">{p.liqPrice != null ? fmtPrice(p.liqPrice, tick(p.symbol)) : '–'}</span> },
+      ...(narrow || compact
+        ? []
+        : ([
+            { key: 'notional', header: 'Notional', numeric: true, value: (p) => p.qtyOpen * p.contractValue * p.markPrice, render: (p) => <LiveNotional p={p} /> },
+            { key: 'margin', header: 'Margin', numeric: true, value: (p) => p.margin ?? 0, render: (p) => <span className="mono">{p.margin != null ? fmtMoney(p.margin, 2) : '–'}</span> },
+            { key: 'liq', header: 'Liq', numeric: true, value: (p) => p.liqPrice ?? 0, render: (p) => <span className="mono loss">{p.liqPrice != null ? fmtPrice(p.liqPrice, tick(p.symbol)) : '–'}</span> },
+          ] as Column<Position>[])),
       {
         key: 'sl',
         header: 'SL',
@@ -132,7 +143,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
       { key: 'upnl', header: 'Unrealized', numeric: true, value: (p) => p.unrealizedPnl, render: (p) => <LiveUpnl p={p} /> },
-      ...(compact
+      ...(dense
         ? []
         : ([
             { key: 'rpnl', header: 'Realized', numeric: true, value: (p) => p.realizedPnl, render: (p) => <Pnl value={p.realizedPnl} /> },
@@ -157,7 +168,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
     ]
-  }, [markets, compact, pending])
+  }, [markets, compact, dense, narrow, pending])
 
   return (
     <>
