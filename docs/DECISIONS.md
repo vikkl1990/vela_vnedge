@@ -167,3 +167,32 @@ work.
 
 **Revisit at** the 100-trade review, alongside the fill-quality check, since the candidates here are
 separated by less than the cost assumption is worth.
+
+## 9. Tested: taking partial profit at TP1. Worse in every window.
+
+With targets at 2/4/6 R and the split at 0/0/100, TP1 and TP2 carry no contracts, so the whole
+position rides to 6R, to the trail, or to the stop. The obvious objection is that it banks nothing
+on the way. Six splits were walk-forwarded against it on the VM fleet, 19 pairs, 1112 trades:
+
+| split | net | PF | avg R |
+|---|---|---|---|
+| 0/0/100, current | 4668 | 1.47 | 0.20 |
+| 20/30/50 | 4242 | 1.44 | 0.18 |
+| 25/25/50 | 4174 | 1.43 | 0.18 |
+| 33/33/34 | 3977 | 1.41 | 0.17 |
+| 40/30/30 | 3884 | 1.40 | 0.17 |
+| 50/0/50 | 3769 | 1.39 | 0.16 |
+| 50/25/25 | 3698 | 1.39 | 0.16 |
+
+Monotonic: the more taken at TP1, the worse the result. Unlike the other exit tests this one is
+consistent rather than marginal — the current split wins seven of the eight windows outright and
+ties the eighth, and no split wins a single window.
+
+The mechanism is plain in the numbers. Trade count is identical at 1112 and win rate identical at
+57%, because the split changes nothing about which trades are taken or where they stop. It only
+truncates the winners. Banking 2R on half the position removes that half from everything above 2R,
+and the give-back trail is already protecting the open profit, so the partial adds no safety it did
+not already have. It converts a run into a cap.
+
+This is the same lesson as the floors and the give-back thresholds, in the one place it is
+unambiguous: on this fleet, protecting profit earlier costs more than it saves, every time.

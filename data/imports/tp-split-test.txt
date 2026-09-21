@@ -1,0 +1,55 @@
+… 5/19 pairs
+… 10/19 pairs
+… 15/19 pairs
+
+19/19 live pairs · 4000 bars of 15m · 8 walk-forward windows · 1112 trades under the live policy
+
+EXIT REASONS (live policy) — captured versus available
+reason        trades     pnl   avgR  avg best  captured   further after exit   bars held
+be              582   12650   1.01      1.85       55%                 2.18        8.5
+sl              440   -9470  -1.00      0.53         -                 1.81        6.4
+reversal         73      74   0.03      0.68        4%                 1.65        8.1
+tp3              14    1399   4.69      6.75       69%                 4.61        6.2
+script_flip       2     -28  -0.56      0.55         -                 0.13       83.0
+tp2               1      43   2.54      3.30       77%                 1.28        3.0
+
+winners 629: captured 1.08R of 1.92R shown (56%)
+best unrealised R ever reached, all trades:
+  under 0.25R      146   13%
+  0.25 to 0.5R     144   13%
+  0.5 to 1R        185   17%
+  1 to 2R          436   39%
+  2R or more       201   18%
+  never reached 1R: 43% of trades — no exit rule can bank what these never showed
+
+losing trades 483 — how far green did they get before turning?
+  never above 0.1R      62   13%  avg lost -0.96R
+  0.1 to 0.25R          83   17%  avg lost -0.94R
+  0.25 to 0.5R         140   29%  avg lost -0.93R
+  0.5 to 1R            165   34%  avg lost -0.95R
+  1R or more            33    7%  avg lost -1.00R
+  reachable: 338 losers (30% of all trades) showed 0.25R or better before failing
+
+POOLED OVER THE WHOLE SPAN
+policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
+live 0/0/100 (all at TP3)        1112    4668   1.47    57%   0.20   2103        7.8        6.0     0.540
+25/25/50                         1112    4174   1.43    57%   0.18   2047        7.8        8.6     0.483 (-494)
+33/33/34                         1112    3977   1.41    57%   0.17   2025        7.8        8.4     0.460 (-691)
+40/30/30                         1112    3884   1.40    57%   0.17   2012        7.8        8.4     0.450 (-784)
+50/0/50 (half at 2R)             1112    3769   1.39    57%   0.16   1995        7.8        8.3     0.436 (-899)
+20/30/50                         1112    4242   1.44    57%   0.18   2057        7.8        8.7     0.491 (-426)
+50/25/25                         1112    3698   1.39    57%   0.16   1992        7.8        8.3     0.428 (-970)
+
+WALK-FORWARD — the same fixed policy measured on each window separately
+policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
+live 0/0/100 (all at TP3)          -68    711    350    640    229    460    789    829      7/8      640
+25/25/50                           -54    611    314    586    182    390    774    754      7/8      586
+33/33/34                           -62    569    305    566    154    362    769    726      7/8      566
+40/30/30                           -60    546    300    561    149    348    764    714      7/8      546
+50/0/50 (half at 2R)               -57    506    277    562    154    319    758    712      7/8      506
+20/30/50                           -57    627    327    589    178    400    777    762      7/8      589
+50/25/25                           -55    501    275    546    138    311    759    694      7/8      501
+
+selecting on each window and trading the next: 3908  ·  staying on the live policy: 4008  ·  perfect hindsight: 4008
+what selection would have picked: 25/25/50, live 0/0/100 (all at TP3)
+profitable in at least 60% of windows: live 0/0/100 (all at TP3) (7/8), 25/25/50 (7/8), 33/33/34 (7/8), 40/30/30 (7/8), 50/0/50 (half at 2R) (7/8), 20/30/50 (7/8), 50/25/25 (7/8)
