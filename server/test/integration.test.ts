@@ -347,3 +347,25 @@ test('authorisation is enforced by the server, not just hidden in the UI', async
   cookie = admin;   // hand the rest of the suite back its administrator
   assert.equal((await getJson('/api/stats')).status, 200);
 });
+
+test('failed authentication reports 401 and 400, not 500', async () => {
+  const bad = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'nobody', password: 'wrong-password' }) });
+  assert.equal(bad.status, 401, 'a wrong password is the caller being wrong, not the server failing');
+  assert.match((await bad.json()).error, /wrong username or password/);
+
+  const blank = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(blank.status, 401);
+
+  // setup is closed once configured
+  const again = await fetch(base + '/api/auth/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'second', password: 'a-good-password' }) });
+  assert.equal(again.status, 409);
+
+  // store validation surfaces as 400
+  const dupe = await getJson('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'replay', password: 'a-good-password', role: 'viewer' }) });
+  assert.equal(dupe.status, 400, 'a taken username is a bad request');
+  assert.match(dupe.body.error, /taken/);
+
+  const weak = await getJson('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'weakling', password: 'short', role: 'viewer' }) });
+  assert.equal(weak.status, 400);
+  assert.match(weak.body.error, /at least 10/);
+})

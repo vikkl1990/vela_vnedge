@@ -6,7 +6,6 @@
  * opens it, which is the direction a mistake should fail in.
  */
 import http from 'node:http';
-import crypto from 'node:crypto';
 import { AuthStore, ROLE_LABELS, ROLES, SESSION_TTL_MS, can, isRole, passwordProblem, type Permission, type Role, type User } from './store.ts';
 import { logger } from '../log.ts';
 
@@ -91,6 +90,8 @@ type Add = (method: string, route: string, handler: (req: http.IncomingMessage, 
 export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.IncomingMessage) => User | null) {
   const { store, throttle } = ctx;
   const fail = (status: number, message: string) => { const e: any = new Error(message); e.status = status; throw e; };
+  /** Store validation failures are the caller's fault, not ours: surface them as 400, not 500. */
+  const valid = <T>(fn: () => T): T => { try { return fn(); } catch (e: any) { fail(400, String(e?.message ?? e)); throw e; } };
 
   add('GET', '/api/auth/status', (req) => ({
     configured: store.countUsers() > 0,
@@ -102,7 +103,7 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
   add('POST', '/api/auth/setup', (req, res, _p, _u, body) => {
     if (store.countUsers() > 0) fail(409, 'already configured');
     if (!isLoopback(req)) fail(403, 'the first administrator must be created from the server itself');
-    const user = store.createUser({ username: String(body?.username ?? ''), password: String(body?.password ?? ''), role: 'admin', displayName: body?.displayName });
+    const user = valid(() => store.createUser({ username: String(body?.username ?? ''), password: String(body?.password ?? ''), role: 'admin', displayName: body?.displayName }));
     const s = store.startSession(user.id);
     res.setHeader('Set-Cookie', cookieHeader(s.token, Math.floor(SESSION_TTL_MS / 1000), isSecureRequest(req)));
     log.warn(`first administrator created: ${user.username}`);
@@ -154,8 +155,8 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
     const next = String(body?.next ?? '');
     const problem = passwordProblem(next);
     if (problem) fail(400, problem);
-    if (crypto.timingSafeEqual(Buffer.from(String(body?.current ?? '')), Buffer.from(next)) === true) fail(400, 'the new password must differ from the current one');
-    store.updateUser(u!.id, { password: next });
+    if (String(body?.current ?? '') === next) fail(400, 'the new password must differ from the current one');
+    valid(() => store.updateUser(u!.id, { password: next }));
     const s = store.startSession(u!.id);   // keep this browser signed in
     res.setHeader('Set-Cookie', cookieHeader(s.token, Math.floor(SESSION_TTL_MS / 1000), isSecureRequest(req)));
     log.info(`${u!.username} changed their password`);
@@ -165,7 +166,7 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
   add('POST', '/api/auth/profile', (req, _res, _p, _u, body) => {
     const u = currentUser(req);
     if (!u) fail(401, 'not signed in');
-    return { user: publicUser(store.updateUser(u!.id, { displayName: String(body?.displayName ?? u!.displayName) })) };
+    return { user: publicUser(valid(() => store.updateUser(u!.id, { displayName: String(body?.displayName ?? u!.displayName) }))) };
   });
 
   // ---- administration ----
@@ -178,7 +179,7 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
   add('POST', '/api/users', (_req, _res, _p, _u, body) => {
     const role = body?.role;
     if (!isRole(role)) fail(400, `role must be one of ${ROLES.join(', ')}`);
-    const user = store.createUser({ username: String(body?.username ?? ''), password: String(body?.password ?? ''), role, displayName: body?.displayName });
+    const user = valid(() => store.createUser({ username: String(body?.username ?? ''), password: String(body?.password ?? ''), role, displayName: body?.displayName }));
     log.info(`user ${user.username} created as ${user.role}`);
     return { user: publicUser(user) };
   });
@@ -192,7 +193,7 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
     if (body?.disabled !== undefined) patch.disabled = Boolean(body.disabled);
     if (body?.password !== undefined) patch.password = String(body.password);
     if (me && me.id === id && patch.role && patch.role !== me.role) fail(400, 'change your own role from another administrator account');
-    const user = store.updateUser(id, patch);
+    const user = valid(() => store.updateUser(id, patch));
     log.info(`user ${user.username} updated${patch.role ? ` to ${patch.role}` : ''}${patch.disabled !== undefined ? patch.disabled ? ' (disabled)' : ' (enabled)' : ''}`);
     return { user: publicUser(user) };
   });
@@ -202,7 +203,7 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
     const me = currentUser(req);
     if (me && me.id === id) fail(400, 'you cannot delete your own account');
     const target = store.getUser(id);
-    store.deleteUser(id);
+    valid(() => store.deleteUser(id));
     log.info(`user ${target?.username ?? id} deleted`);
     return { ok: true };
   });

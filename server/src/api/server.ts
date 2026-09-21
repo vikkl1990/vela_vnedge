@@ -104,7 +104,9 @@ export class ApiServer {
         const out = await r.handler(req, res, params, url, body);
         if (!res.headersSent) json(res, 200, out ?? { ok: true }, req);
       } catch (e: any) {
-        const status = e instanceof HttpError ? e.status : 500;
+        // Any error may carry a `status`; without this an intended 401 or 400 is reported as a crash.
+        const carried = Number((e as any)?.status);
+        const status = e instanceof HttpError ? e.status : Number.isInteger(carried) && carried >= 400 && carried <= 599 ? carried : 500;
         if (status >= 500) log.error(`${req.method} ${url.pathname}: ${e?.stack ?? e}`);
         json(res, status, { error: String(e?.message ?? e) }, req);
       }

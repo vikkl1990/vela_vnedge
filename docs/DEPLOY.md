@@ -93,3 +93,27 @@ entries are dropped by design, since their signal is stale by then.
 The app writes its own rotating log to `data/logs/vnedge.log`. The service's stdout and stderr go to
 `data/logs/vnedge.out` and `.err`, rotated daily and at 50 MB by `/etc/logrotate.d/vnedge`, seven
 generations kept. Nightly database snapshots land in `data/backups`.
+
+## Reaching the dashboard without a tunnel
+
+nginx terminates TLS on 443 and proxies to the bot on loopback. The bot itself never listens on a
+public address. The configuration lives at `/etc/nginx/sites-available/vnedge` and sets
+`X-Forwarded-Proto https`, which is what makes the session cookie `Secure`. Server-sent events are
+proxied unbuffered with a one hour read timeout, and `/api/auth/login` is rate limited at the edge
+on top of the application's own throttle.
+
+The certificate is self-signed with the server's IP in its subject alternative name, because a
+public certificate authority will not issue for a bare IP address. Browsers therefore show a warning
+the first time. Point a domain at the host and switch to a real certificate if you want that gone.
+
+Opening the port is two separate firewalls, and both must allow it:
+
+1. The host: `sudo iptables -L INPUT -n` should accept 80 and 443. Oracle's Ubuntu image already does.
+2. The cloud: in the Oracle Cloud console, open the subnet's **Security List** (or the instance's
+   Network Security Group) and add ingress rules for TCP 443 and 80 from `0.0.0.0/0`.
+
+Until step 2 is done, connections to those ports time out rather than being refused, which is how
+you tell a cloud rule from a host one: a host refusal comes back immediately.
+
+Exposing the dashboard puts a login form on the public internet. The SSH tunnel remains the stricter
+option and needs nothing open but 22.
