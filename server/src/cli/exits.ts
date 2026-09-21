@@ -47,14 +47,16 @@ if (!pairs.length) { console.error('no enabled scanner/symbol pairs'); process.e
 
 type Policy = { name: string; cfg: (p: PaperConfig) => PaperConfig; exitMode?: 'levels' | 'script' | 'both' };
 const policies: Policy[] = [
-  { name: 'live: reverse on any opposite signal', cfg: p => p },
-  // the ask: when it turns, at least get out ahead. A losing position is held to its stop instead.
-  { name: 'reverse only above break-even', cfg: p => ({ ...p, reversalMinR: 0.01 }) },
-  { name: 'reverse only above 0.1R', cfg: p => ({ ...p, reversalMinR: 0.1 }) },
-  { name: 'reverse only above 0.25R', cfg: p => ({ ...p, reversalMinR: 0.25 }) },
-  { name: 'reverse only above 0.5R', cfg: p => ({ ...p, reversalMinR: 0.5 }) },
-  { name: 'reverse only above 1R', cfg: p => ({ ...p, reversalMinR: 1 }) },
-  { name: 'never reverse (stop only)', cfg: p => ({ ...p, allowReversal: false }) },
+  // Targets sit at 2/4/6 R, so TP1 banks 2R on whatever share it is given. The live split gives
+  // it nothing: the whole position rides to 6R, the trail, or the stop. Does taking some off at
+  // 2R beat riding it, now that the give-back trail is doing the protecting?
+  { name: 'live 0/0/100 (all at TP3)', cfg: p => p },
+  { name: '25/25/50', cfg: p => ({ ...p, tpSplit: [0.25, 0.25, 0.5] }) },
+  { name: '33/33/34', cfg: p => ({ ...p, tpSplit: [0.34, 0.33, 0.33] }) },
+  { name: '40/30/30', cfg: p => ({ ...p, tpSplit: [0.4, 0.3, 0.3] }) },
+  { name: '50/0/50 (half at 2R)', cfg: p => ({ ...p, tpSplit: [0.5, 0, 0.5] }) },
+  { name: '20/30/50', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5] }) },
+  { name: '50/25/25', cfg: p => ({ ...p, tpSplit: [0.5, 0.25, 0.25] }) },
 ];
 
 interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }
