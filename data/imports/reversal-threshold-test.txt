@@ -1,0 +1,55 @@
+… 5/19 pairs
+… 10/19 pairs
+… 15/19 pairs
+
+19/19 live pairs · 4000 bars of 15m · 8 walk-forward windows · 1112 trades under the live policy
+
+EXIT REASONS (live policy) — captured versus available
+reason        trades     pnl   avgR  avg best  captured   further after exit   bars held
+be              582   12650   1.01      1.85       55%                 2.18        8.5
+sl              440   -9470  -1.00      0.53         -                 1.81        6.4
+reversal         73      74   0.03      0.68        4%                 1.65        8.1
+tp3              14    1399   4.69      6.75       69%                 4.61        6.2
+script_flip       2     -28  -0.56      0.55         -                 0.13       83.0
+tp2               1      43   2.54      3.30       77%                 1.28        3.0
+
+winners 629: captured 1.08R of 1.92R shown (56%)
+best unrealised R ever reached, all trades:
+  under 0.25R      146   13%
+  0.25 to 0.5R     144   13%
+  0.5 to 1R        185   17%
+  1 to 2R          436   39%
+  2R or more       201   18%
+  never reached 1R: 43% of trades — no exit rule can bank what these never showed
+
+losing trades 483 — how far green did they get before turning?
+  never above 0.1R      62   13%  avg lost -0.96R
+  0.1 to 0.25R          83   17%  avg lost -0.94R
+  0.25 to 0.5R         140   29%  avg lost -0.93R
+  0.5 to 1R            165   34%  avg lost -0.95R
+  1R or more            33    7%  avg lost -1.00R
+  reachable: 338 losers (30% of all trades) showed 0.25R or better before failing
+
+POOLED OVER THE WHOLE SPAN
+policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
+live: reverse on any opposite    1112    4668   1.47    57%   0.20   2103        7.8        6.0     0.540
+reverse only above break-even    1080    4530   1.47    58%   0.20   2028        8.0        6.0     0.522 (-138)
+reverse only above 0.1R          1075    4613   1.47    58%   0.20   2019        8.1        6.0     0.531 (-55)
+reverse only above 0.25R         1070    4774   1.49    58%   0.21   2018        8.1        6.0     0.549 (+106)
+reverse only above 0.5R          1066    5112   1.51    58%   0.22   2078        8.2        6.0     0.587 (+444)
+reverse only above 1R            1057    5146   1.52    58%   0.22   2063        8.2        6.0     0.591 (+478)
+never reverse (stop only)        1053    4858   1.49    58%   0.22   2027        8.2        6.0     0.560 (+190)
+
+WALK-FORWARD — the same fixed policy measured on each window separately
+policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
+live: reverse on any opposite      -68    711    350    640    229    460    789    829      7/8      640
+reverse only above break-even      -63    743    381    588    237    314    802    859      7/8      588
+reverse only above 0.1R            -92    777    378    588    199    421    802    859      7/8      588
+reverse only above 0.25R          -115    777    380    588    273    419    802    869      7/8      588
+reverse only above 0.5R            -61    844    471    547    277    407    809    883      7/8      547
+reverse only above 1R              -61    841    521    547    277    359    780    932      7/8      547
+never reverse (stop only)          -61    814    480    547    275    359    731    885      7/8      547
+
+selecting on each window and trading the next: 4170  ·  staying on the live policy: 4008  ·  perfect hindsight: 4484
+what selection would have picked: reverse only above 0.5R, reverse only above 1R, live: reverse on any opposite signal
+profitable in at least 60% of windows: live: reverse on any opposite signal (7/8), reverse only above break-even (7/8), reverse only above 0.1R (7/8), reverse only above 0.25R (7/8), reverse only above 0.5R (7/8), reverse only above 1R (7/8), never reverse (stop only) (7/8)

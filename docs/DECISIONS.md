@@ -131,3 +131,39 @@ than an edge. At keep-95% the stop sits a fraction of a bar's range below the pe
 "the bar's low touched the stop, so fill at the stop" does the most work. Under a 10 bps fill it
 collapses from +4386 to −4493, a bigger fall than the incumbent suffers. A gain that needs an
 optimistic fill to exist is not a gain.
+
+## 8. Tested: "exit above break-even when it reverses". It is the worst variant.
+
+The instinct was that when a trade turns against you, the bot should at least get out ahead rather
+than ride it to the stop. Unlike the price-threshold protections, this one keys on a reversal
+*signal*, which had never been tested, so `paper.reversalMinR` was added: an opposite signal may
+only close the position once it is at least that far ahead, otherwise the position is held to its
+stop and the new signal is skipped.
+
+Walk-forwarded on the VM's own fleet, 19 pairs, 1112 trades, 8 windows:
+
+| policy | net | PF | windows won | median |
+|---|---|---|---|---|
+| reverse on any opposite signal (current) | 4668 | 1.47 | 7/8 | 640 |
+| reverse only above break-even | 4530 | 1.47 | 7/8 | 588 |
+| reverse only above 0.1R | 4613 | 1.47 | 7/8 | 588 |
+| reverse only above 0.25R | 4774 | 1.49 | 7/8 | 588 |
+| reverse only above 0.5R | 5112 | 1.51 | 7/8 | 547 |
+| reverse only above 1R | 5146 | 1.52 | 7/8 | 547 |
+| never reverse at all | 4858 | 1.49 | 7/8 | 547 |
+
+The requested setting, reversing only above break-even, is the worst of the seven. Every variant
+wins the same seven windows of eight, and the current policy has the *highest* median, so the gains
+shown by the stricter thresholds come from a few windows rather than consistently. The spread from
+best to worst is about 10% of net, inside what this sample can distinguish.
+
+One directional hint worth noting for the review, not for acting on now: what helps is reversing
+*less*, not more selectively in the profit direction. Refusing to reverse at all beats the current
+policy by 190, and only reversing when already a full R ahead beats it by 478 — which suggests the
+reversal signal itself carries little information and the "already winning" condition is doing the
+work.
+
+`reversalMinR` ships at 0, which is current behaviour. Nothing changed on the live account.
+
+**Revisit at** the 100-trade review, alongside the fill-quality check, since the candidates here are
+separated by less than the cost assumption is worth.
