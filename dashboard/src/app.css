@@ -118,8 +118,12 @@
 html,
 body,
 #root {
-  height: 100%;
+  /* min-height, not height: `height:100%` capped body at the viewport while its content
+     overflowed, making BOTH html and body scrollable (two scrollbars that fight each other). */
+  min-height: 100%;
 }
+html { overflow-y: auto; }
+body { overflow-y: visible; }
 body {
   margin: 0;
   background: var(--bg);
@@ -367,7 +371,9 @@ select {
 .main {
   flex: 1;
   min-width: 0;
-  overflow: auto;
+  /* horizontal only: a vertical scroller here duplicates the page scrollbar */
+  overflow-x: auto;
+  overflow-y: visible;
   padding: 16px 18px 28px;
 }
 
@@ -730,7 +736,7 @@ select {
 .chip-on { background: var(--accent-soft); color: var(--accent-3); border-color: transparent; }
 .chips-compact .chip { padding: 0 6px; font-size: 10px; }
 .chips-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.page-chart .chips-row { max-height: 74px; overflow: auto; padding-bottom: 2px; }
+.page-chart .chips-row { max-height: 74px; overflow: auto; overscroll-behavior: contain; padding-bottom: 2px; }
 
 .toolbar {
   display: flex;
@@ -740,12 +746,12 @@ select {
 }
 .toolbar .input { min-width: 200px; }
 .cat-tabs { display: flex; gap: 2px; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--pill); flex-wrap: wrap; }
-@media (max-width: 1100px) { .cat-tabs { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; scrollbar-width: thin; } }
+@media (max-width: 1100px) { .cat-tabs { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; max-width: 100%; scrollbar-width: thin; } }
 .filters { flex-wrap: wrap; }
 .row-actions { display: inline-flex; gap: 6px; align-items: center; }
 
 /* ---------- tables ---------- */
-.table-wrap { width: 100%; overflow: auto; scrollbar-width: thin; max-width: 100%; }
+.table-wrap { width: 100%; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; max-width: 100%; }
 .panel .table-wrap { border-radius: 0 0 var(--radius) var(--radius); }
 .table {
   width: 100%;
@@ -902,7 +908,7 @@ thead.sticky th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(
 }
 .alerts-title { font-weight: 700; }
 .alerts-sub { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
-.alerts-body { overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.alerts-body { overflow: auto; overscroll-behavior: contain; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .alert-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -990,6 +996,7 @@ thead.sticky th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(
   margin: 0;
   max-height: 520px;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 12px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1001,6 +1008,7 @@ thead.sticky th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(
 .logbox {
   min-height: 300px;
   overflow: auto;
+  overscroll-behavior: contain;
   font-family: var(--font-mono);
   font-size: 11.5px;
   background: var(--bg);
@@ -1174,7 +1182,7 @@ kbd {
 /* ---------- responsive ---------- */
 @media (max-width: 1280px) {
   .topnav { grid-template-columns: auto 1fr; }
-  .navpills { grid-column: 1 / -1; justify-self: stretch; overflow-x: auto; flex-wrap: nowrap; }
+  .navpills { grid-column: 1 / -1; justify-self: stretch; overflow-x: auto; overscroll-behavior-x: contain; flex-wrap: nowrap; }
   .topright { grid-row: 1; grid-column: 2; }
 }
 @media (max-width: 1000px) {
@@ -1191,7 +1199,8 @@ kbd {
   .panel-head { padding: 8px 12px; }
   .toast-stack { left: 12px; right: 12px; max-width: none; }
 }
-html, body { overflow-x: hidden; }
+html { overflow-x: hidden; }
+body { overflow-x: clip; }
 
 /* Header breakpoints — kept last so they win over the base .topnav/.topstat rules. */
 @media (max-width: 1560px) {
