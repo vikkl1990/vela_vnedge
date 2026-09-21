@@ -46,17 +46,39 @@ for (const s of registry.all()) {
 if (!pairs.length) { console.error('no enabled scanner/symbol pairs'); process.exit(1); }
 
 type Policy = { name: string; cfg: (p: PaperConfig) => PaperConfig; exitMode?: 'levels' | 'script' | 'both' };
+/**
+ * One representative of each family that has been tested, so a single run reproduces the
+ * decisions in docs/DECISIONS.md rather than re-deriving them. Add a row to test something new;
+ * do not leave a one-off sweep here, or the next person gets an experiment instead of a baseline.
+ */
 const policies: Policy[] = [
-  // Targets sit at 2/4/6 R, so TP1 banks 2R on whatever share it is given. The live split gives
-  // it nothing: the whole position rides to 6R, the trail, or the stop. Does taking some off at
-  // 2R beat riding it, now that the give-back trail is doing the protecting?
-  { name: 'live 0/0/100 (all at TP3)', cfg: p => p },
-  { name: '25/25/50', cfg: p => ({ ...p, tpSplit: [0.25, 0.25, 0.5] }) },
-  { name: '33/33/34', cfg: p => ({ ...p, tpSplit: [0.34, 0.33, 0.33] }) },
-  { name: '40/30/30', cfg: p => ({ ...p, tpSplit: [0.4, 0.3, 0.3] }) },
-  { name: '50/0/50 (half at 2R)', cfg: p => ({ ...p, tpSplit: [0.5, 0, 0.5] }) },
-  { name: '20/30/50', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5] }) },
-  { name: '50/25/25', cfg: p => ({ ...p, tpSplit: [0.5, 0.25, 0.25] }) },
+  { name: 'live: 2/4/6 R, all at TP3, keep 75% from 1R', cfg: p => p },
+
+  // targets (decision 4): wider beat narrower, and the plateau was flat
+  { name: 'targets 1/2/3 R', cfg: p => ({ ...p, fallbackRR: [1, 2, 3] }) },
+  { name: 'targets 3/6/9 R', cfg: p => ({ ...p, fallbackRR: [3, 6, 9] }) },
+
+  // splits (decision 9): every partial at TP1 was worse, monotonically
+  { name: 'split 25/25/50', cfg: p => ({ ...p, tpSplit: [0.25, 0.25, 0.5] }) },
+  { name: 'split 50/25/25', cfg: p => ({ ...p, tpSplit: [0.5, 0.25, 0.25] }) },
+
+  // protecting earlier (decisions 6 and 7): all lost, while raising the win rate
+  { name: 'no trail at all', cfg: p => ({ ...p, trailAfterR: 0 }) },
+  { name: 'break-even after TP1 instead', cfg: p => ({ ...p, trailAfterR: 0, breakEvenAfterTp1: true }) },
+  { name: 'floor 0.5R keep 0.25R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0.25 }) },
+  { name: 'give back 50% from 0.4R', cfg: p => ({ ...p, trailAfterR: 0.4, trailGiveBackPct: 50 }) },
+  { name: 'time stop: 12 bars under 1R', cfg: p => ({ ...p, staleBars: 12, staleMinR: 1 }) },
+
+  // volatility exits (decision 7): worse and far less consistent
+  { name: 'ATR trail 3x from 1R', cfg: p => ({ ...p, trailGiveBackPct: 0, trailAtrMult: 3 }) },
+
+  // reversals (decision 8): the requested variant was worst; reversing less helped slightly
+  { name: 'reverse only above break-even', cfg: p => ({ ...p, reversalMinR: 0.01 }) },
+  { name: 'never reverse', cfg: p => ({ ...p, allowReversal: false }) },
+
+  // stop width (decision 3): 1.5 ATR sits on a peak, not a slope
+  { name: 'stop 1.0 ATR', cfg: p => ({ ...p, fallbackAtrSl: 1.0 }) },
+  { name: 'stop 2.5 ATR', cfg: p => ({ ...p, fallbackAtrSl: 2.5 }) },
 ];
 
 interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }
