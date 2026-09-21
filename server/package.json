@@ -13,7 +13,8 @@
     "test": "node --no-warnings=ExperimentalWarning --test src/**/*.test.ts",
     "exits": "node --no-warnings=ExperimentalWarning src/cli/exits.ts",
     "losses": "node --no-warnings=ExperimentalWarning src/cli/losses.ts",
-    "timeframes": "node --no-warnings=ExperimentalWarning src/cli/timeframes.ts"
+    "timeframes": "node --no-warnings=ExperimentalWarning src/cli/timeframes.ts",
+    "hybrid": "node --no-warnings=ExperimentalWarning src/cli/hybrid.ts"
   },
   "dependencies": {
     "pinets": "^0.9.34"
