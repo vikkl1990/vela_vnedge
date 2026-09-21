@@ -26,9 +26,10 @@ export const FUNDING_INTERVAL_MS = 8 * 3600 * 1000;
 export class MarkStore extends EventEmitter {
   private marks = new Map<string, MarkState>();
   /**
-   * Top of book, kept apart from the mark price because the two arrive on different channels:
-   * `mark_price` carries no quotes on Delta India, `v2/ticker` does. `at` is the local receipt
-   * time, which is the clock `executable`'s `maxAgeMs` is measured against.
+   * Top of book, kept apart from the mark price so that either channel can supply it: Delta
+   * India sends `best_bid`/`best_ask` on `mark_price` and `quotes.best_bid`/`best_ask` on
+   * `v2/ticker`. `at` is the local receipt time, which is the clock `executable`'s `maxAgeMs`
+   * is measured against; the exchange timestamp orders marks but should not decide freshness.
    */
   private quotes = new Map<string, { bid: number; ask: number; at: number }>();
   private fundingBySymbol = new Map<string, FundingState>();
@@ -118,10 +119,13 @@ export class MarkStore extends EventEmitter {
     return out;
   }
 
-  snapshot(): Record<string, { markPrice: number | null; at: number; funding: FundingState | null }> {
-    const out: Record<string, { markPrice: number | null; at: number; funding: FundingState | null }> = {};
-    for (const [s, m] of this.marks) out[s] = { markPrice: m.markPrice, at: m.at, funding: this.fundingBySymbol.get(s) ?? null };
-    for (const [s, f] of this.fundingBySymbol) if (!out[s]) out[s] = { markPrice: null, at: 0, funding: f };
+  /** Includes the top of book: leaving it out once made a working quote feed look dead. */
+  snapshot(): Record<string, { markPrice: number | null; at: number; bestBid: number | null; bestAsk: number | null; quoteAt: number | null; spreadBps: number | null; funding: FundingState | null }> {
+    const out: Record<string, { markPrice: number | null; at: number; bestBid: number | null; bestAsk: number | null; quoteAt: number | null; spreadBps: number | null; funding: FundingState | null }> = {};
+    const quote = (s: string) => { const q = this.quotes.get(s); return { bestBid: q?.bid ?? null, bestAsk: q?.ask ?? null, quoteAt: q?.at ?? null, spreadBps: this.spreadBps(s) }; };
+    for (const [s, m] of this.marks) out[s] = { markPrice: m.markPrice, at: m.at, ...quote(s), funding: this.fundingBySymbol.get(s) ?? null };
+    for (const [s, f] of this.fundingBySymbol) if (!out[s]) out[s] = { markPrice: null, at: 0, ...quote(s), funding: f };
+    for (const s of this.quotes.keys()) if (!out[s]) out[s] = { markPrice: null, at: 0, ...quote(s), funding: null };
     return out;
   }
 }

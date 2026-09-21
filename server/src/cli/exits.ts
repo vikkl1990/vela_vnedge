@@ -164,6 +164,14 @@ for (const [reason, list] of [...byReason.entries()].sort((a, b) => b[1].length 
 const winners = rows.filter(r => r.r > 0);
 const mean = (l: TradeRow[], f: (r: TradeRow) => number) => (l.length ? l.reduce((a, r) => a + f(r), 0) / l.length : 0);
 console.log(`\nwinners ${winners.length}: captured ${mean(winners, r => r.r).toFixed(2)}R of ${mean(winners, r => r.mfeR).toFixed(2)}R shown (${(mean(winners, r => r.r) / Math.max(1e-9, mean(winners, r => r.mfeR)) * 100).toFixed(0)}%)`);
+// how many trades ever reach the level a trailing stop needs before it can protect anything
+const bucket = (lo: number, hi: number) => rows.filter(r => r.mfeR >= lo && r.mfeR < hi).length;
+console.log('best unrealised R ever reached, all trades:');
+for (const [lo, hi, label] of [[0, 0.25, 'under 0.25R'], [0.25, 0.5, '0.25 to 0.5R'], [0.5, 1, '0.5 to 1R'], [1, 2, '1 to 2R'], [2, 1e9, '2R or more']] as Array<[number, number, string]>) {
+  const n = bucket(lo, hi);
+  console.log(`  ${label.padEnd(14)} ${String(n).padStart(5)}  ${(n / Math.max(1, rows.length) * 100).toFixed(0).padStart(3)}%`);
+}
+console.log(`  never reached 1R: ${(rows.filter(r => r.mfeR < 1).length / Math.max(1, rows.length) * 100).toFixed(0)}% of trades — no exit rule can bank what these never showed`);
 
 console.log('\nPOOLED OVER THE WHOLE SPAN');
 console.log('policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar');

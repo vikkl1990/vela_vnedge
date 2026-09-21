@@ -57,10 +57,12 @@ average holding time from 11.7 bars to 7.8 while raising net profit per bar held
 ## Entry pricing and the spread
 
 `slippageBps` is a stand-in for the spread, used when no quote is available. When `useSpread` is on
-and the top of book (from `v2/ticker`) is fresher than `quoteMaxAgeMs`, the entry fills at the ask
-(buy) or bid (sell) and only depth impact is added on top; charging `slippageBps` as well would pay
-the spread twice. `requireQuote` refuses an entry that cannot be priced off a fresh book. Exits never
-require a quote, so a position is always closable.
+and the top of book is fresher than `quoteMaxAgeMs`, the entry fills at the ask (buy) or bid (sell)
+and only depth impact is added on top; charging `slippageBps` as well would pay the spread twice.
+`requireQuote` refuses an entry that cannot be priced off a fresh book. Exits never require a quote,
+so a position is always closable. Delta India sends the top of book on both `mark_price`
+(`best_bid`/`best_ask`) and `v2/ticker` (`quotes.best_bid`/`best_ask`); either can supply it, and the
+quote store keeps them apart from the mark so one channel cannot clear what the other set.
 
 Measured spreads on Delta India differ from the flat assumption by more than an order of magnitude in
 both directions, so which of the two paths prices a fill changes results materially:

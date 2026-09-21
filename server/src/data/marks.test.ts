@@ -24,3 +24,13 @@ test('crossed, missing and stale quotes are not executable', () => {
   assert.deepEqual(m.quotedSymbols(10_000, 1_500), ['BTCUSD']);
   assert.deepEqual(m.quotedSymbols(10_000, 20_000), []);
 });
+
+test('the snapshot exposes the top of book (omitting it once hid a working quote feed)', () => {
+  const m = new MarkStore();
+  m.onWsMark({ symbol: 'BTCUSD', markPrice: 100, timeMs: 1, bestBid: 99.5, bestAsk: 100.5 });
+  const snap = m.snapshot().BTCUSD;
+  assert.equal(snap.bestBid, 99.5);
+  assert.equal(snap.bestAsk, 100.5);
+  assert.ok((snap.spreadBps ?? 0) > 0);
+  assert.equal(m.executable('BTCUSD', 'buy', 0), 100.5, 'mark_price alone is enough to price a fill');
+});
