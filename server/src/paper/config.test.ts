@@ -9,3 +9,12 @@ test('rejects invalid calculation settings even when split weights sum to one', 
     assert.ok(validateConfig(cfg).length > 0);
   }
 });
+
+test('give-back trailing is a valid alternative to a fixed trail distance', async () => {
+  const { validateConfig, DEFAULT_CONFIG } = await import('../config.ts');
+  const base = structuredClone(DEFAULT_CONFIG);
+  Object.assign(base.paper, { trailAfterR: 1, trailDistanceR: 0, trailGiveBackPct: 25 });
+  assert.deepEqual(validateConfig(base), [], 'give-back supplies the distance');
+  Object.assign(base.paper, { trailGiveBackPct: 0 });
+  assert.ok(validateConfig(base).some(e => e.includes('trailDistanceR')), 'without either, the trail has no distance');
+});

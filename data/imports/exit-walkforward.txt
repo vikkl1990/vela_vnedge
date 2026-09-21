@@ -23,6 +23,14 @@ best unrealised R ever reached, all trades:
   2R or more       216   19%
   never reached 1R: 43% of trades — no exit rule can bank what these never showed
 
+losing trades 494 — how far green did they get before turning?
+  never above 0.1R      63   13%  avg lost -0.96R
+  0.1 to 0.25R          86   17%  avg lost -0.95R
+  0.25 to 0.5R         140   28%  avg lost -0.93R
+  0.5 to 1R            170   34%  avg lost -0.95R
+  1R or more            35    7%  avg lost -1.00R
+  reachable: 345 losers (30% of all trades) showed 0.25R or better before failing
+
 POOLED OVER THE WHOLE SPAN
 policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
 live 40/30/30 + BE               1134    3175   1.34    56%   0.14   1979        7.8        5.6     0.359
@@ -39,6 +47,18 @@ trail 0.5R / 0.5R behind         1210    1895   1.26    56%   0.08   2093       
 back-loaded + trail 1R/.5R       1134    2519   1.28    56%   0.11   1874        7.8        6.6     0.285 (-656)
 TP3 only + trail 1R/.5R          1134    3175   1.34    56%   0.14   1979        7.8        5.6     0.359 (+0)
 BE + trail 1R/.5R                1134    3175   1.34    56%   0.14   1979        7.8        5.6     0.359 (+0)
+LIVE + floor .4R keep .1R        1228    1844   1.27    50%   0.08   2128        4.8        4.1     0.315 (-1332)
+LIVE + floor .5R keep .25R       1217    2206   1.30    66%   0.09   2143        5.1        4.2     0.352 (-970)
+LIVE + floor .75R keep .4R       1175    2652   1.31    62%   0.12   2053        6.4        5.0     0.350 (-523)
+LIVE + floor .5R keep 0R         1196    1671   1.22    40%   0.07   2030        5.6        4.3     0.250 (-1504)
+give-back 50% from .4R           1245    2137   1.32    70%   0.09   2211        4.5        5.1     0.379 (-1039)
+give-back 40% from .5R           1220    2575   1.35    68%   0.11   2187        5.0        4.2     0.426 (-600)
+give-back 30% from .75R          1183    3081   1.35    62%   0.13   2147        6.2        4.2     0.417 (-94)
+give-back 50% from .75R          1169    2018   1.24    62%   0.09   1987        6.7        6.3     0.259 (-1157)
+LIVE + stale 8 bars under .5R    1150    2360   1.26    53%   0.11   1973        6.4        4.7     0.322 (-815)
+LIVE + stale 12 bars under 1R    1152    2078   1.24    53%   0.10   1973        5.8        4.0     0.309 (-1097)
+floor .5R/.25R + stale 12/1R     1220    1783   1.24    64%   0.08   2146        4.5        3.4     0.328 (-1393)
+give-back 40%/.5R + stale 12/1   1222    2090   1.28    66%   0.09   2184        4.3        3.5     0.399 (-1085)
 
 WALK-FORWARD — the same fixed policy measured on each window separately
 policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
@@ -56,7 +76,19 @@ trail 0.5R / 0.5R behind          -102    220    218    165     15    279    372
 back-loaded + trail 1R/.5R          -4    198    147    385    174    223    574    659      7/8      223
 TP3 only + trail 1R/.5R             -5    346    199    484    243    308    612    752      7/8      346
 BE + trail 1R/.5R                   -5    346    199    484    243    308    612    752      7/8      346
+LIVE + floor .4R keep .1R         -134    342    246    165   -139    359    452    519      6/8      342
+LIVE + floor .5R keep .25R         -95    296    253    158     79    355    398    557      7/8      296
+LIVE + floor .75R keep .4R         -44    265    243    308    158    387    506    714      7/8      308
+LIVE + floor .5R keep 0R          -141    227    177    116    -44    258    457    554      6/8      227
+give-back 50% from .4R             -64    387    216    210     -6    358    349    595      6/8      349
+give-back 40% from .5R            -127    273    249    214    197    451    415    672      7/8      273
+give-back 30% from .75R            -73    370    308    328    347    408    455    760      7/8      370
+give-back 50% from .75R            -87    221    116    233    113    241    432    656      7/8      233
+LIVE + stale 8 bars under .5R      -16    167     12    391    162    350    554    645      7/8      350
+LIVE + stale 12 bars under 1R     -133    172    -14    305    136    383    519    575      6/8      305
+floor .5R/.25R + stale 12/1R       -89    193    130    129    -34    410    384    523      6/8      193
+give-back 40%/.5R + stale 12/1    -127    206    126    178     79    502    407    625      7/8      206
 
-selecting on each window and trading the next: 3901  ·  staying on the live policy: 2945  ·  perfect hindsight: 3901
-what selection would have picked: wide targets RR 2/4/6
-profitable in at least 60% of windows: live 40/30/30 + BE (7/8), no break-even (7/8), front-loaded 60/25/15 (7/8), back-loaded 20/30/50 (7/8), single target TP1 (5/8), single target TP3 (7/8), tight targets RR .75/1.5/2.5 (7/8), wide targets RR 2/4/6 (8/8), trail 1R / 0.5R behind (7/8), trail 1R / 1R behind (7/8), trail 0.5R / 0.5R behind (7/8), back-loaded + trail 1R/.5R (7/8), TP3 only + trail 1R/.5R (7/8), BE + trail 1R/.5R (7/8)
+selecting on each window and trading the next: 3348  ·  staying on the live policy: 2945  ·  perfect hindsight: 3941
+what selection would have picked: wide targets RR 2/4/6, give-back 30% from .75R, give-back 40%/.5R + stale 12/1R
+profitable in at least 60% of windows: live 40/30/30 + BE (7/8), no break-even (7/8), front-loaded 60/25/15 (7/8), back-loaded 20/30/50 (7/8), single target TP1 (5/8), single target TP3 (7/8), tight targets RR .75/1.5/2.5 (7/8), wide targets RR 2/4/6 (8/8), trail 1R / 0.5R behind (7/8), trail 1R / 1R behind (7/8), trail 0.5R / 0.5R behind (7/8), back-loaded + trail 1R/.5R (7/8), TP3 only + trail 1R/.5R (7/8), BE + trail 1R/.5R (7/8), LIVE + floor .4R keep .1R (6/8), LIVE + floor .5R keep .25R (7/8), LIVE + floor .75R keep .4R (7/8), LIVE + floor .5R keep 0R (6/8), give-back 50% from .4R (6/8), give-back 40% from .5R (7/8), give-back 30% from .75R (7/8), give-back 50% from .75R (7/8), LIVE + stale 8 bars under .5R (7/8), LIVE + stale 12 bars under 1R (6/8), floor .5R/.25R + stale 12/1R (6/8), give-back 40%/.5R + stale 12/1R (7/8)

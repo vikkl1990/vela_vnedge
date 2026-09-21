@@ -49,10 +49,25 @@ profit-taking fill, so a policy that captures the same money sooner is visible a
 continuation figure is a maximum over a fixed horizon, so read it as evidence that movement was
 available, not as profit that was reachable.
 
-The live account runs the policy that won that test over 4000 bars of 15m across 8 windows
-(1081 trades): a single target at TP3 with the trail armed at 1R and held half an R behind the peak,
-and no break-even jump. It was profitable in all 8 windows, held the best profit factor, and cut
-average holding time from 11.7 bars to 7.8 while raising net profit per bar held from 0.16 to 0.36.
+### What the sweep found about protecting small gains
+
+Thirty-eight policies were measured this way. Every mechanism that banks a gain below 1R lost money,
+even as it raised the win rate: a floor keeping 0.25R from 0.5R took the win rate to 66% and the net
+down by 970; giving back 50% of the peak from 0.4R reached a 70% win rate and lost 1039. Losing
+trades average −0.95R however green they first got, so protecting them early is cheap only in
+appearance: the same rule clips the 19% of trades that reach 2R or more, and those carry the result.
+
+Protection pays once it is armed above 1R. Keeping 75% of the peak from 1R was the best policy
+tested. Aiming higher mattered more than protecting earlier, and the result is a plateau rather than
+a spike: fallback targets of 2/4/6, 2.5/5/7.5, 3/6/9 and 4/8/12 R all land within 3% of each other
+and are profitable in all 8 windows, which is the opposite of the sharp sensitivity a fixed trail
+distance shows.
+
+The live account runs the winner: fallback targets at 2/4/6 R, the whole position on the last one,
+the stop keeping 75% of the best price seen once the trade has shown 1R, and no break-even jump.
+Over 4000 bars of 15m across 8 windows (1133 trades) it returned 5010 against 3175 for the previous
+policy, at a profit factor of 1.50 against 1.34, with the same 7.8 bars of average holding time, and
+net profit per bar held of 0.57 against 0.36.
 
 ## Entry pricing and the spread
 

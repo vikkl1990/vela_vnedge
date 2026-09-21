@@ -1,0 +1,66 @@
+… 5/20 pairs
+… 10/20 pairs
+… 15/20 pairs
+… 20/20 pairs
+
+20/20 live pairs · 4000 bars of 15m · 8 walk-forward windows · 1134 trades under the live policy
+
+EXIT REASONS (live policy) — captured versus available
+reason        trades     pnl   avgR  avg best  captured   further after exit   bars held
+be              536    8566   0.80      1.65       48%                 2.24        8.9
+sl              452   -9020  -1.00      0.53         -                 1.83        6.4
+reversal         72      31   0.02      0.69        2%                 1.32        8.3
+tp3              71    3582   2.55      4.13       62%                 3.48        5.6
+script_flip       2     -27  -0.56      0.55         -                 0.13       83.0
+tp2               1      43   2.54      3.30       77%                 1.28        3.0
+
+winners 640: captured 0.98R of 1.90R shown (52%)
+best unrealised R ever reached, all trades:
+  under 0.25R      150   13%
+  0.25 to 0.5R     144   13%
+  0.5 to 1R        189   17%
+  1 to 2R          435   38%
+  2R or more       216   19%
+  never reached 1R: 43% of trades — no exit rule can bank what these never showed
+
+losing trades 494 — how far green did they get before turning?
+  never above 0.1R      63   13%  avg lost -0.96R
+  0.1 to 0.25R          86   17%  avg lost -0.95R
+  0.25 to 0.5R         140   28%  avg lost -0.93R
+  0.5 to 1R            170   34%  avg lost -0.95R
+  1R or more            35    7%  avg lost -1.00R
+  reachable: 345 losers (30% of all trades) showed 0.25R or better before failing
+
+POOLED OVER THE WHOLE SPAN
+policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
+live (TP3 + trail 1R/.5R)        1134    3175   1.34    56%   0.14   1979        7.8        5.6     0.359
+RR 2/4/6                         1129    4416   1.46    57%   0.19   2067        7.9        7.3     0.497 (+1241)
+RR 2.5/5/7.5                     1128    4548   1.48    57%   0.20   2071        7.9        4.8     0.511 (+1373)
+RR 3/6/9                         1127    4541   1.48    57%   0.20   2071        7.9        3.8     0.510 (+1366)
+RR 4/8/12                        1126    4545   1.48    57%   0.20   2071        7.9        4.7     0.511 (+1370)
+RR 2/4/6 + give-back 30%/.75R    1173    3676   1.41    62%   0.15   2199        6.4        5.1     0.493 (+501)
+RR 2/4/6 + give-back 25%/1R      1133    5010   1.50    57%   0.21   2178        7.8        7.1     0.569 (+1835)
+RR 2/4/6 + floor .75R/.4R        1168    3618   1.42    62%   0.16   2129        6.5        5.2     0.475 (+443)
+RR 2/4/6 + trail 1.5R/.75R       1073    3940   1.34    46%   0.19   1979       11.3       17.2     0.324 (+765)
+RR 2/4/6 + stale 12 under 1R     1147    3082   1.34    54%   0.14   2049        5.9        5.4     0.455 (-93)
+RR 2/4/6 no trail at all          921    5492   1.44    31%   0.28   1657       23.8       39.5     0.250 (+2317)
+RR 2/4/6 back-loaded 20/30/50    1129    3861   1.41    57%   0.17   2015        7.9        8.9     0.434 (+685)
+
+WALK-FORWARD — the same fixed policy measured on each window separately
+policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
+live (TP3 + trail 1R/.5R)           -5    346    199    484    243    308    612    752      7/8      346
+RR 2/4/6                            84    632    280    556    337    501    640    957      8/8      556
+RR 2.5/5/7.5                        77    647    280    557    327    531    640   1038      8/8      557
+RR 3/6/9                            77    647    280    557    327    531    640   1037      8/8      557
+RR 4/8/12                           77    647    280    557    327    544    640   1027      8/8      557
+RR 2/4/6 + give-back 30%/.75R      -79    518    371    415    411    487    439    846      7/8      439
+RR 2/4/6 + give-back 25%/1R        -24    772    359    628    450    567    690    904      7/8      628
+RR 2/4/6 + floor .75R/.4R           45    493    322    389    209    573    502    911      8/8      493
+RR 2/4/6 + trail 1.5R/.75R          77    561    196    510    417    488    106    996      8/8      488
+RR 2/4/6 + stale 12 under 1R       -61    402     35    379    187    590    547    766      7/8      402
+RR 2/4/6 no trail at all           265    910   -424    872    845    273   -233   1739      6/8      845
+RR 2/4/6 back-loaded 20/30/50       82    523    258    498    280    427    616    868      8/8      498
+
+selecting on each window and trading the next: 3470  ·  staying on the live policy: 2945  ·  perfect hindsight: 6016
+what selection would have picked: RR 2/4/6 no trail at all, RR 2/4/6 + give-back 30%/.75R, RR 2/4/6 + stale 12 under 1R, RR 2/4/6 + give-back 25%/1R
+profitable in at least 60% of windows: live (TP3 + trail 1R/.5R) (7/8), RR 2/4/6 (8/8), RR 2.5/5/7.5 (8/8), RR 3/6/9 (8/8), RR 4/8/12 (8/8), RR 2/4/6 + give-back 30%/.75R (7/8), RR 2/4/6 + give-back 25%/1R (7/8), RR 2/4/6 + floor .75R/.4R (8/8), RR 2/4/6 + trail 1.5R/.75R (8/8), RR 2/4/6 + stale 12 under 1R (7/8), RR 2/4/6 no trail at all (6/8), RR 2/4/6 back-loaded 20/30/50 (8/8)

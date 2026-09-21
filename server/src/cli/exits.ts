@@ -61,6 +61,22 @@ const policies: Policy[] = [
   { name: 'back-loaded + trail 1R/.5R', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
   { name: 'TP3 only + trail 1R/.5R', cfg: p => ({ ...p, tpSplit: [0, 0, 1], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
   { name: 'BE + trail 1R/.5R', cfg: p => ({ ...p, trailAfterR: 1, trailDistanceR: 0.5 }) },
+  // --- banking a small gain without capping the runner ---
+  { name: 'LIVE + floor .4R keep .1R', cfg: p => ({ ...p, floorAtR: 0.4, floorKeepR: 0.1 }) },
+  { name: 'LIVE + floor .5R keep .25R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0.25 }) },
+  { name: 'LIVE + floor .75R keep .4R', cfg: p => ({ ...p, floorAtR: 0.75, floorKeepR: 0.4 }) },
+  { name: 'LIVE + floor .5R keep 0R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0 }) },
+  // --- proportional give-back: tight when small, loose when running ---
+  { name: 'give-back 50% from .4R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.4, trailGiveBackPct: 50 }) },
+  { name: 'give-back 40% from .5R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.5, trailGiveBackPct: 40 }) },
+  { name: 'give-back 30% from .75R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.75, trailGiveBackPct: 30 }) },
+  { name: 'give-back 50% from .75R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.75, trailGiveBackPct: 50 }) },
+  // --- time stop on trades that never get going ---
+  { name: 'LIVE + stale 8 bars under .5R', cfg: p => ({ ...p, staleBars: 8, staleMinR: 0.5 }) },
+  { name: 'LIVE + stale 12 bars under 1R', cfg: p => ({ ...p, staleBars: 12, staleMinR: 1 }) },
+  // --- combinations ---
+  { name: 'floor .5R/.25R + stale 12/1R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0.25, staleBars: 12, staleMinR: 1 }) },
+  { name: 'give-back 40%/.5R + stale 12/1R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.5, trailGiveBackPct: 40, staleBars: 12, staleMinR: 1 }) },
 ];
 
 interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }
@@ -172,6 +188,16 @@ for (const [lo, hi, label] of [[0, 0.25, 'under 0.25R'], [0.25, 0.5, '0.25 to 0.
   console.log(`  ${label.padEnd(14)} ${String(n).padStart(5)}  ${(n / Math.max(1, rows.length) * 100).toFixed(0).padStart(3)}%`);
 }
 console.log(`  never reached 1R: ${(rows.filter(r => r.mfeR < 1).length / Math.max(1, rows.length) * 100).toFixed(0)}% of trades — no exit rule can bank what these never showed`);
+// the prize: losers that were green first, and by how much
+const losers = rows.filter(r => r.r <= 0);
+console.log(`\nlosing trades ${losers.length} — how far green did they get before turning?`);
+let prize = 0;
+for (const [lo, hi, label] of [[0, 0.1, 'never above 0.1R'], [0.1, 0.25, '0.1 to 0.25R'], [0.25, 0.5, '0.25 to 0.5R'], [0.5, 1, '0.5 to 1R'], [1, 1e9, '1R or more']] as Array<[number, number, string]>) {
+  const l = losers.filter(r => r.mfeR >= lo && r.mfeR < hi);
+  if (lo >= 0.25) prize += l.length;
+  console.log(`  ${label.padEnd(18)} ${String(l.length).padStart(5)}  ${(l.length / Math.max(1, losers.length) * 100).toFixed(0).padStart(3)}%  avg lost ${(l.reduce((a, r) => a + r.r, 0) / Math.max(1, l.length)).toFixed(2)}R`);
+}
+console.log(`  reachable: ${prize} losers (${(prize / Math.max(1, rows.length) * 100).toFixed(0)}% of all trades) showed 0.25R or better before failing`);
 
 console.log('\nPOOLED OVER THE WHOLE SPAN');
 console.log('policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar');

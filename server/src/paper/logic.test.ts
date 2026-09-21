@@ -238,3 +238,46 @@ test('a short trails downward', () => {
   applyBar(pos, { time: 1, high: 101, low: 90, close: 91 }, cfg);
   assert.equal(pos.sl, 95, 'stop trails 1R above the -2R low');
 });
+
+test('a profit floor banks a small gain without capping the runner', () => {
+  const c = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false,
+    breakEvenAfterTp1: false, floorAtR: 0.5, floorKeepR: 0.25, tpSplit: [0, 0, 1] as [number, number, number] };
+  const pos = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [200], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: true });
+  applyBar(pos, { time: 60_000, high: 102, low: 99.5, close: 102 }, c);      // +0.4R: below the floor
+  assert.equal(pos.sl, 95, 'the floor is not armed yet');
+  applyBar(pos, { time: 120_000, high: 103, low: 101, close: 103 }, c);      // +0.6R: arms
+  assert.equal(pos.sl, 101.25, 'stop moves to +0.25R and banks it');
+  applyBar(pos, { time: 180_000, high: 130, low: 102, close: 130 }, c);      // +6R
+  assert.equal(pos.sl, 101.25, 'the floor does not keep tightening, so the runner is not capped');
+});
+
+test('proportional give-back is tight when small and loose when running', () => {
+  const c = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false,
+    breakEvenAfterTp1: false, trailAfterR: 0.5, trailDistanceR: 0, trailGiveBackPct: 40, tpSplit: [0, 0, 1] as [number, number, number] };
+  const pos = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [200], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: true });
+  applyBar(pos, { time: 60_000, high: 103, low: 99, close: 103 }, c);        // peak 0.6R → keep 60% = 0.36R
+  assert.ok(Math.abs(pos.sl! - 101.8) < 1e-9, `kept 0.36R, got ${pos.sl}`);
+  applyBar(pos, { time: 120_000, high: 125, low: 102, close: 125 }, c);      // peak 5R → keep 3R
+  assert.ok(Math.abs(pos.sl! - 115) < 1e-9, `kept 3R, got ${pos.sl}`);
+});
+
+test('the time stop closes a trade that never got going, and spares one that did', () => {
+  const c = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false,
+    breakEvenAfterTp1: false, staleBars: 4, staleMinR: 1, tpSplit: [0, 0, 1] as [number, number, number] };
+  const make = () => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [200], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: true });
+  const dull = make();
+  applyBar(dull, { time: 3 * 900_000, high: 101, low: 99.5, close: 100.5 }, c);
+  assert.equal(dull.status, 'open', 'not yet old enough');
+  const out = applyBar(dull, { time: 4 * 900_000, high: 101, low: 99.5, close: 100.5 }, c);
+  assert.equal(out.at(-1)?.reason, 'stale');
+  assert.equal(dull.status, 'closed');
+
+  const runner = make();
+  applyBar(runner, { time: 900_000, high: 106, low: 99.5, close: 106 }, c);  // peak 1.2R
+  applyBar(runner, { time: 5 * 900_000, high: 106, low: 103, close: 104 }, c);
+  assert.equal(runner.status, 'open', 'a trade that reached the threshold is left alone');
+  assert.equal(DEFAULT_CONFIG.paper.staleBars, 0, 'the time stop ships disabled');
+});

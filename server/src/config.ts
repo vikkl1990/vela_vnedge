@@ -57,6 +57,26 @@ export interface PaperConfig {
    */
   trailAfterR: number;
   trailDistanceR: number;
+  /**
+   * Proportional give-back (percent, 0 = off). When set, an armed trail keeps
+   * `peak × (1 − giveBack)` instead of sitting a fixed `trailDistanceR` behind the peak. It is
+   * tight in absolute terms while the trade is small and loose once it runs, which is the
+   * opposite of a fixed distance and the point of it.
+   */
+  trailGiveBackPct: number;
+  /**
+   * Profit floor (0 = off). Once the trade has shown `floorAtR`, the stop may never sit below
+   * `floorKeepR` of profit. Unlike a trail it does not keep tightening, so it banks a small
+   * gain without capping the trade; the trail still takes over at `trailAfterR`.
+   */
+  floorAtR: number;
+  floorKeepR: number;
+  /**
+   * Time stop (0 = off). A position still below `staleMinR` after this many bars is closed at
+   * market: the money is better used elsewhere and these rarely recover.
+   */
+  staleBars: number;
+  staleMinR: number;
   allowReversal: boolean;
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
@@ -240,6 +260,11 @@ export const DEFAULT_CONFIG: AppConfig = {
     breakEvenAfterTp1: true,
     trailAfterR: 0,
     trailDistanceR: 1,
+    trailGiveBackPct: 0,
+    floorAtR: 0,
+    floorKeepR: 0,
+    staleBars: 0,
+    staleMinR: 0,
     allowReversal: true,
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
@@ -349,7 +374,11 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
-  if (p.trailAfterR > 0 && !(Number.isFinite(p.trailDistanceR) && p.trailDistanceR > 0)) errs.push('paper.trailDistanceR must be > 0 when trailing is on');
+  if (!(Number.isFinite(p.trailGiveBackPct) && p.trailGiveBackPct >= 0 && p.trailGiveBackPct < 100)) errs.push('paper.trailGiveBackPct must be in [0, 100)');
+  if (!(Number.isFinite(p.floorAtR) && p.floorAtR >= 0)) errs.push('paper.floorAtR must be ≥ 0 (0 = off)');
+  if (p.floorAtR > 0 && !(p.floorKeepR >= 0 && p.floorKeepR < p.floorAtR)) errs.push('paper.floorKeepR must be ≥ 0 and below floorAtR');
+  if (!(Number.isFinite(p.staleBars) && p.staleBars >= 0)) errs.push('paper.staleBars must be ≥ 0 (0 = off)');
+  if (p.trailAfterR > 0 && !(p.trailGiveBackPct > 0) && !(Number.isFinite(p.trailDistanceR) && p.trailDistanceR > 0)) errs.push('paper.trailDistanceR must be > 0 when trailing is on without trailGiveBackPct');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');

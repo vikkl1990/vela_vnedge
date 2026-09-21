@@ -7,6 +7,7 @@
  *  - `qty` is in contracts (integer ≥ 1).
  *  - Ambiguous OHLC bars resolve stop-loss BEFORE take-profit (conservative).
  */
+import { TF_SECONDS } from '../config.ts';
 import type { PaperConfig, ExitMode } from '../config.ts';
 import type { Side, ExitType } from '../scanners/extractor.ts';
 
@@ -327,6 +328,8 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   // opened, so a stop raised here only applies from the next bar. Trailing earlier would let
   // the same bar's high both raise the stop and then trigger it.
   trailStop(pos, long ? bar.high : bar.low, cfg);
+  const stale = staleExit(pos, bar, cfg, (TF_SECONDS[pos.tf] ?? 0) * 1000);
+  if (stale) fills.push(stale);
   return fills;
 }
 
@@ -335,22 +338,47 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
  * nothing until the trade has shown `trailAfterR` of favourable excursion.
  */
 export function trailStop(pos: Position, favourable: number, cfg: PaperConfig): void {
-  const afterR = cfg.trailAfterR ?? 0;
-  if (!(afterR > 0) || pos.status !== 'open') return;
+  if (pos.status !== 'open') return;
   const base = pos.slOriginal ?? pos.sl;
   if (base === null) return;
   const risk = Math.abs(pos.entryPrice - base);
   if (!(risk > 0)) return;
   const long = pos.side === 'long';
-  const r = ((favourable - pos.entryPrice) * (long ? 1 : -1)) / risk;
+  const dir = long ? 1 : -1;
+  const r = ((favourable - pos.entryPrice) * dir) / risk;
   pos.peakR = Math.max(pos.peakR ?? 0, r);
-  if (pos.peakR < afterR) return;
-  const distance = cfg.trailDistanceR > 0 ? cfg.trailDistanceR : 1;
-  const level = pos.entryPrice + (long ? 1 : -1) * (pos.peakR - distance) * risk;
+  const peak = pos.peakR;
+
+  // Two independent protections, whichever is higher wins. The floor banks a small gain once
+  // the trade clears `floorAtR` and then stops moving, so it does not cap a runner; the trail
+  // takes over later and rises with the peak.
+  let keptR = -Infinity;
+  const floorAt = cfg.floorAtR ?? 0;
+  if (floorAt > 0 && peak >= floorAt) keptR = Math.max(keptR, cfg.floorKeepR ?? 0);
+  const afterR = cfg.trailAfterR ?? 0;
+  if (afterR > 0 && peak >= afterR) {
+    const give = cfg.trailGiveBackPct ?? 0;
+    keptR = Math.max(keptR, give > 0 ? peak * (1 - give / 100) : peak - (cfg.trailDistanceR > 0 ? cfg.trailDistanceR : 1));
+  }
+  if (!Number.isFinite(keptR)) return;
+
+  const level = pos.entryPrice + dir * keptR * risk;
   if (pos.sl === null || (long ? level > pos.sl : level < pos.sl)) {
     pos.sl = level;
     if (long ? level >= pos.entryPrice : level <= pos.entryPrice) pos.breakEven = true;
   }
+}
+
+/**
+ * Time stop: a position still below `staleMinR` after `staleBars` bars is closed at market.
+ * Returns the fill, or null when the rule is off or the trade is doing well enough.
+ */
+export function staleExit(pos: Position, bar: { time: number; close: number }, cfg: PaperConfig, tfMs: number): Fill | null {
+  const bars = cfg.staleBars ?? 0;
+  if (!(bars > 0) || pos.status !== 'open' || !(tfMs > 0)) return null;
+  if ((bar.time - pos.entryAt) / tfMs < bars) return null;
+  if ((pos.peakR ?? 0) >= (cfg.staleMinR ?? 0)) return null;
+  return fillExit(pos, bar.close, pos.qtyOpen, 'stale', bar.time, cfg, true);
 }
 
 export interface PriceBar { time: number; high: number; low: number; close: number }
