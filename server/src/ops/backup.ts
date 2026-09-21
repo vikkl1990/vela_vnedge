@@ -39,7 +39,7 @@ export class BackupService {
   /** Run a snapshot now. Concurrent calls share the in-flight run. */
   run(reason = 'manual'): Promise<BackupResult> {
     if (this.running) return this.running;
-    this.running = (async () => {
+    const p = (async () => {
       try {
         const r = this.db.backup(this.dir, this.cfg().keepDays);
         this.state.lastAt = r.at; this.state.lastFile = r.file; this.state.lastBytes = r.bytes; this.state.lastMs = r.ms; this.state.lastError = null; this.state.count++;
@@ -50,9 +50,11 @@ export class BackupService {
         this.state.failures++; this.state.lastError = String(e?.message ?? e).slice(0, 300);
         log.error(`snapshot (${reason}) failed: ${this.state.lastError}`);
         throw e;
-      } finally { this.running = null; }
+      }
     })();
-    return this.running;
+    this.running = p;
+    void p.catch(() => { /* reported above */ }).finally(() => { if (this.running === p) this.running = null; });
+    return p;
   }
 
   /** Next scheduled run: today at `hourUtc` if still ahead, else tomorrow. */

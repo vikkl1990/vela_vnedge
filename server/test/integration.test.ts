@@ -4,7 +4,7 @@
  * its signal becomes a paper position, 1m fills close the trade, gaps are backfilled, and the
  * health / metrics / ops endpoints respond.
  */
-import { test, mock } from 'node:test';
+import { test, mock, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -182,11 +182,11 @@ test('a gap on bar close is detected and backfilled from REST; closes stay exact
   const g1 = bar(T0 + 2 * TF, 50_530, 50_500), g2 = bar(T0 + 3 * TF, 50_500, 50_480);
   rest5m.set(g1.time, g1); rest5m.set(g2.time, g2);
   setNow(T0 + 4 * TF + 5_000);
-  const filled = new Promise<any>(res => app.candles.on('integrity', e => { if (e.type === 'gap-filled') res(e); }));
+  const filled = new Promise<any>(res => app.candles.on('integrity', e => { if (e.type === 'gap-filled' && e.tf === '5m') res(e); }));
   feed.push('5m', bar(T0 + 4 * TF, 50_480, 50_490));
   assert.equal(closedCounts.get(`5m:${T0 + TF}`), 1, 'the bar before the gap closes once');
   const ev = await filled;
-  assert.equal(ev.filled, 2);
+  assert.equal(ev.filled, 2, JSON.stringify(integrity));
   assert.deepEqual(app.candles.gapsIn('BTCUSD', '5m'), []);
   const bars = app.candles.get('BTCUSD', '5m', { from: T0 + TF });
   assert.deepEqual(bars.map(b => b.time), [T0 + TF, T0 + 2 * TF, T0 + 3 * TF, T0 + 4 * TF]);
@@ -201,7 +201,8 @@ test('a gap on bar close is detected and backfilled from REST; closes stay exact
   assert.equal(closedCounts.get(`5m:${T0 + 4 * TF}`), 1);
   assert.equal([...closedCounts.values()].every(n => n === 1), true, 'every bar closed exactly once');
   const h = await getJson('/api/health');
-  assert.equal(h.body.integrity.gapsFound, 2); assert.equal(h.body.integrity.gapsFilled, 2);
+  // 2 five-minute bars filled; the 5 one-minute bars skipped by the 1m replay above are unfillable (REST has none)
+  assert.equal(h.body.integrity.gapsFound, 7); assert.equal(h.body.integrity.gapsFilled, 2); assert.equal(h.body.integrity.gapsUnfillable, 5);
   const integ = await getJson('/api/ops/integrity');
   assert.equal(integ.body.series.find((s: any) => s.tf === '5m').gaps.length, 0);
 });
@@ -214,7 +215,8 @@ test('reconnect resync announces bars closed while disconnected exactly once', a
   feed.start(); // App resyncs every tracked series on reconnect
   await waitFor(() => (closedCounts.get(`5m:${T0 + 6 * TF}`) ?? 0) >= 1, 'resync close');
   assert.equal(closedCounts.get(`5m:${T0 + 6 * TF}`), 1);
-  assert.equal(closedCounts.get(`5m:${T0 + 5 * TF}`), 1, 'the bar before the reconnect also closed exactly once');
+  // only the newest missed bar is announced (one full-history scanner run covers the outage); T0+5TF stays silent
+  assert.equal(closedCounts.get(`5m:${T0 + 5 * TF}`), undefined);
   setNow(T0 + 8 * TF + 5_000);
   feed.push('5m', bar(T0 + 8 * TF, 50_505, 50_510));
   assert.equal(closedCounts.get(`5m:${T0 + 6 * TF}`), 1);
@@ -231,8 +233,14 @@ test('ops endpoints: backup on demand, alerts status, metrics JSON, log rotation
   assert.equal(a.body.configured, true); assert.equal(a.body.channel, 'custom');
   const t = await getJson('/api/ops/alerts/test', { method: 'POST', body: JSON.stringify({ text: 'hello' }), headers: { 'Content-Type': 'application/json' } });
   assert.equal(t.body.delivered, true); assert.ok(sentAlerts.includes('hello'));
+  // the mocked clock jumped ~40 min with no 1m bar → the staleness condition is active; a fresh 1m bar clears it
   const ev = await getJson('/api/ops/alerts/test', { method: 'POST', body: JSON.stringify({ evaluate: true }), headers: { 'Content-Type': 'application/json' } });
-  assert.deepEqual(ev.body.active, [], `no condition should be active: ${ev.body.active}`);
+  assert.deepEqual(ev.body.active, ['candles.stale']);
+  assert.ok(sentAlerts.some(t => /No bar close for 2× the timeframe/.test(t)));
+  feed.push('1m', bar(NOW - 65_000, 50_510, 50_511)); feed.push('1m', bar(NOW - 5_000, 50_511, 50_512));
+  const ev2 = await getJson('/api/ops/alerts/test', { method: 'POST', body: JSON.stringify({ evaluate: true }), headers: { 'Content-Type': 'application/json' } });
+  assert.deepEqual(ev2.body.active, []);
+  assert.ok(sentAlerts.some(t => /resolved after/.test(t)));
   const mj = await getJson('/api/metrics?format=json');
   assert.equal(mj.body.vnedge_open_positions, 0);
   const rot = await getJson('/api/ops/logs/rotate', { method: 'POST' });
@@ -241,6 +249,9 @@ test('ops endpoints: backup on demand, alerts status, metrics JSON, log rotation
   const h = await getJson('/api/health');
   assert.equal(h.body.ops.backup.count, 1);
   assert.ok(h.body.ops.log.file.endsWith('vnedge.log'));
+});
+
+after(async () => {
   api.close();
   const r = await app.ops.shutdown(() => app.stop());
   assert.equal(r.drained, true);
