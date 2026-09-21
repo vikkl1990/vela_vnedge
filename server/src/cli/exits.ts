@@ -1,18 +1,22 @@
 /**
- * Exit analysis: how much of each trade's available move the exit policy actually captured,
- * and what alternative policies would have captured on the same entries.
+ * Exit analysis and walk-forward comparison of exit policies.
  *
- *   npm run exits -- [BARS] [TF]
+ *   npm run exits -- [BARS] [TF] [WINDOWS]
  *
- * Runs every enabled scanner/symbol pair once through PineTS, then replays the same event
- * stream through the paper backtester under several exit policies. The script is the expensive
- * part, so it is run once per pair and the events are reused for every policy.
+ * Every enabled scanner/symbol pair is run through PineTS once over the whole span; the event
+ * stream is then replayed through the paper backtester under each policy, both pooled over the
+ * full span and separately over `WINDOWS` consecutive, non-overlapping windows.
  *
- * Per trade it also measures, from the bars themselves:
- *   - MFE: the best unrealised R the trade ever showed before it closed
- *   - MAE: the worst
- *   - after: how far price continued in the trade's direction after the exit, in R, over a
- *     fixed horizon. Positive means the exit was early.
+ * An exit policy is a fixed rule, so evaluating the same rule on disjoint windows is the honest
+ * out-of-sample test: a policy that only wins on one window is fitted to it. The report also runs
+ * the realistic version of the choice, picking the best policy on each window and applying it to
+ * the next one, which is what a tuner could actually have done.
+ *
+ * Per trade it measures, from the bars themselves:
+ *   - MFE:   the best unrealised R the trade showed before it closed
+ *   - after: how far price continued in the trade's direction over a fixed horizon past the exit
+ *            (a maximum over that horizon, so an upper bound on what a better exit could reach)
+ *   - bars held, and bars to the first profit-taking fill
  */
 import { DeltaRest } from '../delta/rest.ts';
 import { PinePool } from '../pine/pool.ts';
@@ -23,100 +27,116 @@ import { runBacktest } from '../paper/backtest.ts';
 import { ConfigStore, TF_SECONDS, type PaperConfig } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 
-const [barsArg = '1500', tfArg = '15m'] = process.argv.slice(2);
-const HORIZON_BARS = 20;           // how far past the exit we look for continuation
+const [barsArg = '4000', tfArg = '15m', windowsArg = '8'] = process.argv.slice(2);
+const HORIZON_BARS = 20;
+const WINDOWS = Math.max(2, Number(windowsArg));
 
-const store = new ConfigStore();
-const cfg = store.get();
+const cfg = new ConfigStore().get();
 const registry = new ScannerRegistry();
 const rest = new DeltaRest();
 
-/** The pairs the bot is actually trading. */
-const pairs: Array<{ id: string; name: string; symbol: string; tf: string; exitMode: 'levels' | 'script' | 'both' }> = [];
+const pairs: Array<{ id: string; symbol: string; tf: string; exitMode: 'levels' | 'script' | 'both' }> = [];
 for (const s of registry.all()) {
   const sc = cfg.scanners[s.id];
   if (!sc?.enabled || sc.hidden || s.status !== 'ok') continue;
   for (const symbol of sc.symbols ?? cfg.symbols) for (const tf of sc.timeframes ?? [tfArg]) {
-    pairs.push({ id: s.id, name: s.name, symbol, tf, exitMode: sc.exitMode ?? 'both' });
+    pairs.push({ id: s.id, symbol, tf, exitMode: sc.exitMode ?? 'both' });
   }
 }
 if (!pairs.length) { console.error('no enabled scanner/symbol pairs'); process.exit(1); }
 
 type Policy = { name: string; cfg: (p: PaperConfig) => PaperConfig; exitMode?: 'levels' | 'script' | 'both' };
 const policies: Policy[] = [
-  { name: 'live (3 TP legs + BE)', cfg: p => p },
+  { name: 'live 40/30/30 + BE', cfg: p => p },
   { name: 'no break-even', cfg: p => ({ ...p, breakEvenAfterTp1: false }) },
-  { name: 'single target at TP1', cfg: p => ({ ...p, tpSplit: [1, 0, 0] }) },
-  { name: 'single target at TP3', cfg: p => ({ ...p, tpSplit: [0, 0, 1] }) },
+  { name: 'front-loaded 60/25/15', cfg: p => ({ ...p, tpSplit: [0.6, 0.25, 0.15] }) },
   { name: 'back-loaded 20/30/50', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5] }) },
-  { name: 'back-loaded, no BE', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5], breakEvenAfterTp1: false }) },
-  { name: 'wider targets (RR 2/4/6)', cfg: p => ({ ...p, fallbackRR: [2, 4, 6] }) },
-  { name: 'levels only (ignore script exits)', cfg: p => p, exitMode: 'levels' },
-  // trailing replaces the break-even jump: stay in the runner instead of exiting it flat
-  { name: 'trail after 1R, 1R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 1 }) },
-  { name: 'trail after 1R, 0.5R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
-  { name: 'trail after 1.5R, 1R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 1.5, trailDistanceR: 1 }) },
-  { name: 'trail after 2R, 1R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 2, trailDistanceR: 1 }) },
-  { name: 'back-loaded + trail 1R/1R', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 1 }) },
-  { name: 'TP3 only + trail 1R/1R', cfg: p => ({ ...p, tpSplit: [0, 0, 1], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 1 }) },
+  { name: 'single target TP1', cfg: p => ({ ...p, tpSplit: [1, 0, 0] }) },
+  { name: 'single target TP3', cfg: p => ({ ...p, tpSplit: [0, 0, 1] }) },
+  { name: 'tight targets RR .75/1.5/2.5', cfg: p => ({ ...p, fallbackRR: [0.75, 1.5, 2.5] }) },
+  { name: 'wide targets RR 2/4/6', cfg: p => ({ ...p, fallbackRR: [2, 4, 6] }) },
+  { name: 'trail 1R / 0.5R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
+  { name: 'trail 1R / 1R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 1 }) },
+  { name: 'trail 0.5R / 0.5R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 0.5, trailDistanceR: 0.5 }) },
+  { name: 'back-loaded + trail 1R/.5R', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
+  { name: 'TP3 only + trail 1R/.5R', cfg: p => ({ ...p, tpSplit: [0, 0, 1], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
+  { name: 'BE + trail 1R/.5R', cfg: p => ({ ...p, trailAfterR: 1, trailDistanceR: 0.5 }) },
 ];
 
-interface TradeRow { pair: string; side: 'long' | 'short'; reason: string; r: number; pnl: number; mfeR: number; maeR: number; afterR: number }
+interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }
+const blank = (): Agg => ({ trades: 0, pnl: 0, gp: 0, gl: 0, fees: 0, wins: 0, r: 0, barsHeld: 0, barsToFirstTp: 0, firstTpCount: 0 });
+const pf = (a: Agg) => (a.gl > 0 ? a.gp / a.gl : a.gp > 0 ? Infinity : 0);
 
-function excursions(bars: Bar[], t: any): { mfeR: number; maeR: number; afterR: number } {
-  const risk = Math.abs(t.entryPrice - (t.sl ?? t.slOriginal ?? t.entryPrice));
-  if (!(risk > 0)) return { mfeR: 0, maeR: 0, afterR: 0 };
+function accumulate(acc: Agg, bt: any, tfMs: number) {
+  acc.trades += bt.stats.trades; acc.pnl += bt.stats.pnl; acc.gp += bt.stats.grossProfit; acc.gl += bt.stats.grossLoss; acc.fees += bt.stats.fees;
+  for (const t of bt.trades as any[]) {
+    if (t.pnl > 0) acc.wins++;
+    acc.r += t.rMultiple ?? 0;
+    acc.barsHeld += Math.max(0, ((t.exitAt ?? t.entryAt) - t.entryAt) / tfMs);
+    const firstTp = (t.fills ?? []).find((f: any) => String(f.reason).startsWith('tp'));
+    if (firstTp) { acc.barsToFirstTp += Math.max(0, (firstTp.at - t.entryAt) / tfMs); acc.firstTpCount++; }
+  }
+}
+
+interface TradeRow { reason: string; r: number; pnl: number; mfeR: number; afterR: number; heldBars: number }
+function excursions(bars: Bar[], t: any, tfMs: number): TradeRow | null {
+  const risk = Math.abs(t.entryPrice - (t.slOriginal ?? t.sl ?? t.entryPrice));
+  if (!(risk > 0)) return null;
   const dir = t.side === 'long' ? 1 : -1;
-  let mfe = 0, mae = 0, after = 0;
-  let exitIdx = -1;
+  let mfe = 0, after = 0, exitIdx = -1;
   for (let i = 0; i < bars.length; i++) {
     const b = bars[i];
     if (b.time < t.entryAt) continue;
-    if (b.time <= (t.exitAt ?? Infinity)) {
-      mfe = Math.max(mfe, ((t.side === 'long' ? b.high : b.low) - t.entryPrice) * dir / risk);
-      mae = Math.min(mae, ((t.side === 'long' ? b.low : b.high) - t.entryPrice) * dir / risk);
-      exitIdx = i;
-    } else break;
+    if (b.time > (t.exitAt ?? Infinity)) break;
+    mfe = Math.max(mfe, ((t.side === 'long' ? b.high : b.low) - t.entryPrice) * dir / risk);
+    exitIdx = i;
   }
   if (exitIdx >= 0 && t.exitPrice) {
     for (let i = exitIdx + 1; i <= Math.min(bars.length - 1, exitIdx + HORIZON_BARS); i++) {
-      const b = bars[i];
-      after = Math.max(after, ((t.side === 'long' ? b.high : b.low) - t.exitPrice) * dir / risk);
+      after = Math.max(after, ((t.side === 'long' ? bars[i].high : bars[i].low) - t.exitPrice) * dir / risk);
     }
   }
-  return { mfeR: mfe, maeR: mae, afterR: after };
+  return { reason: String(t.exitReason ?? '?'), r: t.rMultiple ?? 0, pnl: t.pnl, mfeR: mfe, afterR: after, heldBars: ((t.exitAt ?? t.entryAt) - t.entryAt) / tfMs };
 }
 
-const pool = new PinePool(4, 180_000);
-const totals = new Map<string, { trades: number; pnl: number; gp: number; gl: number; wins: number; r: number }>();
+const pool = new PinePool(4, 300_000);
+const pooled = new Map<string, Agg>();
+const perWindow: Array<Map<string, Agg>> = Array.from({ length: WINDOWS }, () => new Map());
 const rows: TradeRow[] = [];
-let done = 0;
+let done = 0, used = 0;
 
 for (const p of pairs) {
   try {
     const product = await rest.product(p.symbol);
     const market = { contractValue: Number(product?.contract_value ?? 0.001), tickSize: Number(product?.tick_size ?? 0.5) };
+    const tfMs = TF_SECONDS[p.tf] * 1000;
     const candles = await rest.recentCandles(p.symbol, p.tf, Number(barsArg), TF_SECONDS[p.tf]);
     const bars: Bar[] = candles.slice(0, -1).map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
-    if (bars.length < 100) { console.error(`skip ${p.id} ${p.symbol}: only ${bars.length} bars`); continue; }
+    if (bars.length < 400) { console.error(`skip ${p.id} ${p.symbol}: only ${bars.length} bars`); continue; }
     const s = registry.get(p.id)!;
     const res = await pool.run({ scannerId: s.id, source: s.patched, symbol: p.symbol, tf: p.tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: cfg.scanners[p.id]?.inputs });
     if (!res.ok) { console.error(`skip ${p.id} ${p.symbol}: ${res.error}`); continue; }
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[p.id]?.rule ?? null, bars, mode: 'backtest' });
     const events = extractEvents(res.alerts, res.shapes, { derived });
+    used++;
 
+    const size = Math.floor(bars.length / WINDOWS);
     for (const pol of policies) {
-      const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol: p.symbol, tf: p.tf, bars, events, cfg: pol.cfg(cfg.paper), exitMode: pol.exitMode ?? p.exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
-      const acc = totals.get(pol.name) ?? { trades: 0, pnl: 0, gp: 0, gl: 0, wins: 0, r: 0 };
-      acc.trades += bt.stats.trades; acc.pnl += bt.stats.pnl; acc.gp += bt.stats.grossProfit; acc.gl += bt.stats.grossLoss;
-      acc.wins += bt.trades.filter((t: any) => t.pnl > 0).length;
-      acc.r += bt.trades.reduce((a: number, t: any) => a + (t.rMultiple ?? 0), 0);
-      totals.set(pol.name, acc);
-      if (pol.name === policies[0].name) {
-        for (const t of bt.trades as any[]) {
-          const e = excursions(bars, t);
-          rows.push({ pair: `${p.id}:${p.symbol}`, side: t.side, reason: String(t.exitReason ?? '?'), r: t.rMultiple ?? 0, pnl: t.pnl, ...e });
-        }
+      const paper = pol.cfg(cfg.paper);
+      const mode = pol.exitMode ?? p.exitMode;
+      const run = (b: Bar[]) => {
+        const from = b[0].time, to = b.at(-1)!.time;
+        return runBacktest({ scannerId: s.id, scannerName: s.id, symbol: p.symbol, tf: p.tf, bars: b, events: events.filter(e => e.barTime >= from && e.barTime <= to), cfg: paper, exitMode: mode, contractValue: market.contractValue, tickSize: market.tickSize });
+      };
+      const whole = run(bars);
+      const acc = pooled.get(pol.name) ?? blank();
+      accumulate(acc, whole, tfMs); pooled.set(pol.name, acc);
+      if (pol.name === policies[0].name) for (const t of whole.trades as any[]) { const r = excursions(bars, t, tfMs); if (r) rows.push(r); }
+      for (let w = 0; w < WINDOWS; w++) {
+        const slice = bars.slice(w * size, w === WINDOWS - 1 ? bars.length : (w + 1) * size);
+        if (slice.length < 60) continue;
+        const a = perWindow[w].get(pol.name) ?? blank();
+        accumulate(a, run(slice), tfMs); perWindow[w].set(pol.name, a);
       }
     }
   } catch (e: any) {
@@ -126,36 +146,65 @@ for (const p of pairs) {
 }
 await pool.stop();
 
-// ---- report ----
-const n = rows.length;
-console.log(`\n${pairs.length} live pairs · ${Number(barsArg)} bars of ${tfArg} · ${n} trades under the live exit policy\n`);
+const pad = (s: string, n: number) => s.padEnd(n).slice(0, n);
+const base = pooled.get(policies[0].name)!;
 
-console.log('EXIT REASONS — what each one captured, and what price did afterwards');
-console.log('reason        trades    pnl   avgR   avg MFE   capture   avg move after exit (R)');
+console.log(`\n${used}/${pairs.length} live pairs · ${barsArg} bars of ${tfArg} · ${WINDOWS} walk-forward windows · ${rows.length} trades under the live policy\n`);
+
+console.log('EXIT REASONS (live policy) — captured versus available');
+console.log('reason        trades     pnl   avgR  avg best  captured   further after exit   bars held');
 const byReason = new Map<string, TradeRow[]>();
-for (const r of rows) (byReason.get(r.reason) ?? byReason.set(r.reason, []).get(r.reason)!).push(r);
+for (const r of rows) { const l = byReason.get(r.reason) ?? []; l.push(r); byReason.set(r.reason, l); }
 for (const [reason, list] of [...byReason.entries()].sort((a, b) => b[1].length - a[1].length)) {
   const avg = (f: (r: TradeRow) => number) => list.reduce((a, r) => a + f(r), 0) / list.length;
   const mfe = avg(r => r.mfeR), r = avg(t => t.r);
-  console.log(`${reason.padEnd(12)} ${String(list.length).padStart(6)} ${list.reduce((a, t) => a + t.pnl, 0).toFixed(0).padStart(6)} ${r.toFixed(2).padStart(6)} ${mfe.toFixed(2).padStart(9)} ${(mfe > 0 ? (r / mfe * 100).toFixed(0) + '%' : '-').padStart(9)} ${avg(t => t.afterR).toFixed(2).padStart(12)}`);
+  const cap = r > 0 && mfe > 0 ? `${(r / mfe * 100).toFixed(0)}%` : '-';
+  console.log(`${pad(reason, 12)} ${String(list.length).padStart(6)} ${list.reduce((a, t) => a + t.pnl, 0).toFixed(0).padStart(7)} ${r.toFixed(2).padStart(6)} ${mfe.toFixed(2).padStart(9)} ${cap.padStart(9)} ${avg(t => t.afterR).toFixed(2).padStart(20)} ${avg(t => t.heldBars).toFixed(1).padStart(10)}`);
 }
+const winners = rows.filter(r => r.r > 0);
+const mean = (l: TradeRow[], f: (r: TradeRow) => number) => (l.length ? l.reduce((a, r) => a + f(r), 0) / l.length : 0);
+console.log(`\nwinners ${winners.length}: captured ${mean(winners, r => r.r).toFixed(2)}R of ${mean(winners, r => r.mfeR).toFixed(2)}R shown (${(mean(winners, r => r.r) / Math.max(1e-9, mean(winners, r => r.mfeR)) * 100).toFixed(0)}%)`);
 
-const winners = rows.filter(r => r.r > 0), losers = rows.filter(r => r.r <= 0);
-const sum = (l: TradeRow[], f: (r: TradeRow) => number) => l.reduce((a, r) => a + f(r), 0);
-console.log(`\nwinners ${winners.length}: avg captured ${(sum(winners, r => r.r) / Math.max(1, winners.length)).toFixed(2)}R of ${(sum(winners, r => r.mfeR) / Math.max(1, winners.length)).toFixed(2)}R shown`);
-console.log(`losers  ${losers.length}: avg ${(sum(losers, r => r.r) / Math.max(1, losers.length)).toFixed(2)}R, but showed ${(sum(losers, r => r.mfeR) / Math.max(1, losers.length)).toFixed(2)}R in profit first`);
-const gaveBack = rows.filter(r => r.mfeR >= 1 && r.r <= 0);
-console.log(`round trips: ${gaveBack.length} trades reached +1R or better and still closed at a loss (${(gaveBack.length / Math.max(1, n) * 100).toFixed(0)}% of all trades)`);
-const early = rows.filter(r => r.afterR >= 1);
-console.log(`early exits: ${early.length} trades ran another +1R or more within ${HORIZON_BARS} bars of the exit (${(early.length / Math.max(1, n) * 100).toFixed(0)}%)`);
-
-console.log('\nEXIT POLICIES — same entries, same bars, different exits');
-console.log('policy                              trades    pnl     PF   win%   avgR');
-const base = totals.get(policies[0].name)!;
+console.log('\nPOOLED OVER THE WHOLE SPAN');
+console.log('policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar');
 for (const pol of policies) {
-  const a = totals.get(pol.name);
-  if (!a) continue;
-  const pf = a.gl > 0 ? a.gp / a.gl : a.gp > 0 ? Infinity : 0;
-  const delta = pol.name === policies[0].name ? '' : `  (${a.pnl - base.pnl >= 0 ? '+' : ''}${(a.pnl - base.pnl).toFixed(0)})`;
-  console.log(`${pol.name.padEnd(36)} ${String(a.trades).padStart(5)} ${a.pnl.toFixed(0).padStart(6)} ${(Number.isFinite(pf) ? pf.toFixed(2) : '∞').padStart(6)} ${(a.wins / Math.max(1, a.trades) * 100).toFixed(0).padStart(5)}% ${(a.r / Math.max(1, a.trades)).toFixed(2).padStart(6)}${delta}`);
+  const a = pooled.get(pol.name); if (!a || !a.trades) continue;
+  const delta = pol.name === policies[0].name ? '' : ` (${a.pnl - base.pnl >= 0 ? '+' : ''}${(a.pnl - base.pnl).toFixed(0)})`;
+  console.log(`${pad(pol.name, 30)} ${String(a.trades).padStart(6)} ${a.pnl.toFixed(0).padStart(7)} ${(Number.isFinite(pf(a)) ? pf(a).toFixed(2) : '∞').padStart(6)} ${(a.wins / a.trades * 100).toFixed(0).padStart(5)}% ${(a.r / a.trades).toFixed(2).padStart(6)} ${a.fees.toFixed(0).padStart(6)} ${(a.barsHeld / a.trades).toFixed(1).padStart(10)} ${(a.firstTpCount ? (a.barsToFirstTp / a.firstTpCount).toFixed(1) : '-').padStart(10)} ${(a.pnl / Math.max(1, a.barsHeld)).toFixed(3).padStart(9)}${delta}`);
 }
+
+console.log('\nWALK-FORWARD — the same fixed policy measured on each window separately');
+console.log(`policy                         ${Array.from({ length: WINDOWS }, (_, i) => `w${i + 1}`.padStart(7)).join('')}     won   median`);
+const winCount = new Map<string, number>();
+for (const pol of policies) {
+  const cells: string[] = []; let won = 0; const vals: number[] = [];
+  for (let w = 0; w < WINDOWS; w++) {
+    const a = perWindow[w].get(pol.name);
+    if (!a || !a.trades) { cells.push('      -'); continue; }
+    cells.push(a.pnl.toFixed(0).padStart(7));
+    vals.push(a.pnl);
+    if (a.pnl > 0) won++;
+  }
+  winCount.set(pol.name, won);
+  const sorted = [...vals].sort((x, y) => x - y);
+  const med = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+  console.log(`${pad(pol.name, 30)} ${cells.join('')} ${String(won).padStart(6)}/${vals.length} ${med.toFixed(0).padStart(8)}`);
+}
+
+// realistic selection: choose on window w, trade window w+1
+let picked = 0, oracle = 0, liveSum = 0;
+const chosen: string[] = [];
+for (let w = 1; w < WINDOWS; w++) {
+  let bestPrev = policies[0].name, bestPrevPnl = -Infinity;
+  for (const pol of policies) { const a = perWindow[w - 1].get(pol.name); if (a && a.trades && a.pnl > bestPrevPnl) { bestPrevPnl = a.pnl; bestPrev = pol.name; } }
+  let bestNow = -Infinity;
+  for (const pol of policies) { const a = perWindow[w].get(pol.name); if (a && a.trades) bestNow = Math.max(bestNow, a.pnl); }
+  picked += perWindow[w].get(bestPrev)?.pnl ?? 0;
+  oracle += Number.isFinite(bestNow) ? bestNow : 0;
+  liveSum += perWindow[w].get(policies[0].name)?.pnl ?? 0;
+  chosen.push(bestPrev);
+}
+console.log(`\nselecting on each window and trading the next: ${picked.toFixed(0)}  ·  staying on the live policy: ${liveSum.toFixed(0)}  ·  perfect hindsight: ${oracle.toFixed(0)}`);
+console.log(`what selection would have picked: ${[...new Set(chosen)].join(', ')}`);
+const stable = policies.filter(p => (winCount.get(p.name) ?? 0) >= Math.ceil(WINDOWS * 0.6)).map(p => `${p.name} (${winCount.get(p.name)}/${WINDOWS})`);
+console.log(`profitable in at least 60% of windows: ${stable.length ? stable.join(', ') : 'none'}`);

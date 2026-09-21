@@ -1,0 +1,55 @@
+… 5/20 pairs
+… 10/20 pairs
+… 15/20 pairs
+… 20/20 pairs
+
+20/20 live pairs · 4000 bars of 15m · 8 walk-forward windows · 1081 trades under the live policy
+
+EXIT REASONS (live policy) — captured versus available
+reason        trades     pnl   avgR  avg best  captured   further after exit   bars held
+sl              425   -8215  -1.00      0.53         -                 1.89        6.3
+be              304    1962   0.33      1.57       21%                 1.97       13.9
+tp3             216    7004   1.70      3.83       44%                 3.45       15.4
+reversal        123     903   0.38      1.18       32%                 1.46       13.9
+tp2              10     354   1.85      3.12       59%                 1.09       41.3
+script_flip       3     -13  -0.18      0.84         -                 0.14       91.3
+
+winners 616: captured 0.89R of 2.38R shown (37%)
+
+POOLED OVER THE WHOLE SPAN
+policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
+live 40/30/30 + BE               1081    1995   1.23    57%   0.10   1658       11.7        6.9     0.158
+no break-even                    1022    2128   1.24    44%   0.11   1576       16.2        6.9     0.129 (+133)
+front-loaded 60/25/15            1081    1502   1.18    57%   0.08   1613       11.6        6.9     0.119 (-493)
+back-loaded 20/30/50             1078    2434   1.28    52%   0.12   1703       11.8        7.1     0.192 (+438)
+single target TP1                1204     981   1.11    58%   0.04   1724        6.5        6.4     0.125 (-1015)
+single target TP3                1021    3241   1.26    37%   0.16   1714       16.2       21.7     0.196 (+1246)
+tight targets RR .75/1.5/2.5     1127     996   1.13    62%   0.05   1678        9.7        5.3     0.092 (-999)
+wide targets RR 2/4/6             960    3147   1.30    44%   0.17   1630       20.3       12.9     0.161 (+1152)
+trail 1R / 0.5R behind           1133    2124   1.24    56%   0.10   1798        7.8        6.6     0.240 (+128)
+trail 1R / 1R behind             1113    1548   1.18    56%   0.08   1714        9.2        6.5     0.152 (-447)
+trail 0.5R / 0.5R behind         1208     901   1.13    56%   0.04   1951        5.2        3.9     0.143 (-1094)
+back-loaded + trail 1R/.5R       1133    2543   1.28    56%   0.12   1873        7.8        6.6     0.288 (+548)
+TP3 only + trail 1R/.5R          1133    3200   1.34    56%   0.14   1977        7.8        5.6     0.362 (+1205)
+BE + trail 1R/.5R                1139    2018   1.23    58%   0.09   1801        7.6        6.5     0.233 (+22)
+
+WALK-FORWARD — the same fixed policy measured on each window separately
+policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
+live 40/30/30 + BE                 -90     53    -98    446    169     64    361    811      6/8      169
+no break-even                     -106     54    -76    380    232     92    164    923      6/8      164
+front-loaded 60/25/15              -78    -10    -71    348     89     28    363    617      5/8       89
+back-loaded 20/30/50               -59    104   -154    560    227     28    400    980      6/8      227
+single target TP1                  -80    -79     17    223     -2     -4    403    472      4/8       17
+single target TP3                  -48    391   -348    659    453      6      7   1393      6/8      391
+tight targets RR .75/1.5/2.5      -219    -44   -130     83    153     29    312    637      5/8       83
+wide targets RR 2/4/6               40    159     14    567    570    137     88    908      8/8      159
+trail 1R / 0.5R behind             -14    131     64    312    152    208    545    624      7/8      208
+trail 1R / 1R behind               -26     31     16    218     18    197    398    616      7/8      197
+trail 0.5R / 0.5R behind          -126      9     97     48    -13    118    299    397      6/8       97
+back-loaded + trail 1R/.5R          17    214    108    389    190    265    574    678      8/8      265
+TP3 only + trail 1R/.5R             16    361    161    490    270    351    612    772      8/8      361
+BE + trail 1R/.5R                  -42    127     55    331    127    212    530    646      7/8      212
+
+selecting on each window and trading the next: 2276  ·  staying on the live policy: 1806  ·  perfect hindsight: 4137
+what selection would have picked: wide targets RR 2/4/6, single target TP3, TP3 only + trail 1R/.5R
+profitable in at least 60% of windows: live 40/30/30 + BE (6/8), no break-even (6/8), front-loaded 60/25/15 (5/8), back-loaded 20/30/50 (6/8), single target TP3 (6/8), tight targets RR .75/1.5/2.5 (5/8), wide targets RR 2/4/6 (8/8), trail 1R / 0.5R behind (7/8), trail 1R / 1R behind (7/8), trail 0.5R / 0.5R behind (6/8), back-loaded + trail 1R/.5R (8/8), TP3 only + trail 1R/.5R (8/8), BE + trail 1R/.5R (7/8)

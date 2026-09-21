@@ -41,10 +41,18 @@ The trail arms once the trade has shown `trailAfterR` of favourable excursion an
 best price `trailDistanceR` behind it, never moving against the position. It is advanced only after
 the current bar's exits have been checked, so a bar can never both raise the stop and trigger it.
 
-`npm run exits -- [BARS] [TF]` replays every enabled pair under alternative exit policies and
-reports, per exit reason, how much of the available move was captured and how far price continued
-afterwards. Its continuation figure is a maximum over a fixed horizon, so read it as evidence that
-movement was available, not as profit that was reachable.
+`npm run exits -- [BARS] [TF] [WINDOWS]` replays every enabled pair under alternative exit policies,
+pooled over the whole span and separately over consecutive non-overlapping windows. An exit policy is
+a fixed rule, so the same rule measured on disjoint windows is the out-of-sample test: a policy that
+only wins on one window is fitted to it. The report also measures bars held and bars to the first
+profit-taking fill, so a policy that captures the same money sooner is visible as such. Its
+continuation figure is a maximum over a fixed horizon, so read it as evidence that movement was
+available, not as profit that was reachable.
+
+The live account runs the policy that won that test over 4000 bars of 15m across 8 windows
+(1081 trades): a single target at TP3 with the trail armed at 1R and held half an R behind the peak,
+and no break-even jump. It was profitable in all 8 windows, held the best profit factor, and cut
+average holding time from 11.7 bars to 7.8 while raising net profit per bar held from 0.16 to 0.36.
 
 ## Entry pricing and the spread
 
