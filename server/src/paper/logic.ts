@@ -153,8 +153,15 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   const desired = s.cfg.sizingMode === 'quality'
     ? Math.floor(s.equity * marginLeverage / notional)
     : Math.floor(s.equity * (s.cfg.riskPerTradePct / 100) / perContractRisk);
-  const qty = Math.min(desired, maxQty);
-  if (!Number.isFinite(qty) || qty < 1) return rejected(maxQty < 1 ? 'margin or leverage cap exhausted' : 'risk budget too small for one contract');
+  // Hard cap in EVERY mode: the loss at the stop may never exceed maxStopLossPct of equity.
+  // Quality sizing targets a notional, so without this a wide (ATR-fallback) stop can cost most of the account.
+  const stopCapPct = s.cfg.maxStopLossPct ?? 0;
+  const stopCapQty = stopCapPct > 0 ? Math.floor((s.equity * stopCapPct / 100) / perContractRisk) : Infinity;
+  const qty = Math.min(desired, maxQty, stopCapQty);
+  if (!Number.isFinite(qty) || qty < 1) {
+    if (stopCapQty < 1) return rejected(`stop too wide for the ${stopCapPct}% max stop-loss cap`);
+    return rejected(maxQty < 1 ? 'margin or leverage cap exhausted' : 'risk budget too small for one contract');
+  }
   return { qty, riskAmount: qty * perContractRisk, leverage: qty * notional / s.equity, marginLeverage };
 }
 

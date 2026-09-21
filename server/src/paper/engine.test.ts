@@ -65,7 +65,7 @@ test('a new minute checks full extremes and stale candles do not alter a positio
 
 test('isolated margin cannot be reused and is released pro-rata after TP, across restart', t => {
   const { engine, db, cfg } = setup(t);
-  Object.assign(cfg.paper, { sizingMode: 'quality', minLeverage: 5, maxLeverage: 10 });
+  Object.assign(cfg.paper, { sizingMode: 'quality', minLeverage: 5, maxLeverage: 10, maxStopLossPct: 0 }); // cap off: this test is about margin reuse, not stop sizing
   const open = (e: PaperEngine, id: string) => e.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105, 110, 115], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: id, scannerName: id, symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' });
   const p = open(engine, 's').position!;
   assert.equal(p.marginLeverage, 5);
@@ -80,4 +80,14 @@ test('isolated margin cannot be reused and is released pro-rata after TP, across
   assert.equal(open(resumed, 's2').action, 'opened');
   const reserved = resumed.openPositions().reduce((sum, p) => sum + p.qtyOpen * p.entryPrice * p.contractValue / p.marginLeverage!, 0);
   assert.ok(reserved <= resumed.initialEquity + resumed.realizedPnl());
+});
+
+test('stale signals are rejected (audit P1: entries minutes/hours after bar close)', async () => {
+  const { PaperEngine } = await import('./engine.ts');
+  const barTime = Date.UTC(2026, 8, 20, 18, 0, 0);       // 15m bar closing at 18:15
+  const close = barTime + 15 * 60_000;
+  assert.equal(PaperEngine.signalAgeSec({ barTime }, '15m', close + 20_000), 20);
+  assert.equal(PaperEngine.signalAgeSec({ barTime }, '15m', close + 11_335_696 / 1000 * 1000), 11335.696);
+  assert.equal(PaperEngine.signalAgeSec({ barTime }, '15m', close - 5_000), -5);
+  assert.equal(PaperEngine.signalAgeSec({ barTime: 0 }, '15m', close), 0); // unknown bar → no age gate
 });

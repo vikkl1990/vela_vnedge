@@ -43,6 +43,7 @@ re-subscribes the feed and re-warms scanners.
              "feeRatePct": 0.05, "makerFeeRatePct": 0.02, "slippageBps": 2, "tpSplit": [0.4, 0.3, 0.3],
              "breakEvenAfterTp1": true, "allowReversal": true, "fallbackAtrSl": 1.5,
              "fallbackRR": [1, 2, 3], "maxOpenPositions": 20,
+             "maxStopLossPct": 2, "maxSignalAgeSec": 90,
              "fillSource": "candles", "limitFill": "through", "depthUsdPerBp": 0, "latencyMs": 1500, "tapeFallbackMs": 5000, "fundingCharges": true },
   "execution": { "mode": "paper", "bracket": true, "reconcileSec": 60, "allowProduction": false },   // paper | dry-run | testnet
   "risk": { "enabled": true, "maxDailyLossPct": 15, "maxWeeklyLossPct": 30, "closeAllOnKill": false, "maxPositionsTotal": 8, "maxPositionsPerSymbol": 2,

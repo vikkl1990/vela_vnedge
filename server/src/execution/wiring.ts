@@ -12,6 +12,7 @@ const TICK_MS = 5000;
 
 /** Attach feed listeners and the periodic scheduler. Call once from the App constructor. */
 export function wireRealtime(app: App): void {
+  app.paper.quotes = app.marks;   // spread-crossing fills (paper.useSpread)
   app.feed.on('trade', (t: WsTrade) => app.paper.onTrade(t.symbol, t.price, t.qty, t.timeMs));
   app.feed.on('mark', (m: WsMark) => { app.marks.onWsMark(m); app.paper.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
   app.feed.on('funding', (f: WsFunding) => app.marks.onWsFunding(f));

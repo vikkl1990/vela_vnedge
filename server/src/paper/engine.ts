@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
-import type { AppConfig, ExitMode, PaperConfig } from '../config.ts';
+import { TF_SECONDS, type AppConfig, type ExitMode, type PaperConfig } from '../config.ts';
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
@@ -99,6 +99,21 @@ export class PaperEngine extends EventEmitter {
 
   /** Last traded price (ticker / tape / candle close): reference for unrealized P&L and market fills. */
   setMark(symbol: string, price: number) { this.marks.set(symbol, price); }
+
+  /** Live top-of-book source (set by the realtime wiring); enables spread-crossing fills. */
+  quotes: { executable(symbol: string, side: 'buy' | 'sell', maxAgeMs: number, now?: number): number | null } | null = null;
+
+  /**
+   * Price a market-style fill. With a fresh quote we cross the real spread (buy at ask,
+   * sell at bid); otherwise we fall back to the configured slippage around `reference`.
+   */
+  marketPrice(symbol: string, side: 'buy' | 'sell', reference: number, cfg: PaperConfig, now = Date.now()): { price: number; source: 'quote' | 'slippage' } {
+    if (cfg.useSpread && this.quotes) {
+      const q = this.quotes.executable(symbol, side, cfg.quoteMaxAgeMs ?? 0, now);
+      if (q !== null && Number.isFinite(q) && q > 0) return { price: q, source: 'quote' };
+    }
+    return { price: reference, source: 'slippage' };
+  }
   mark(symbol: string): number | undefined { return this.marks.get(symbol); }
   /** Exchange mark price (liquidation reference). */
   markPrice(symbol: string): number | undefined { return this.markPrices.get(symbol)?.price; }
@@ -128,20 +143,39 @@ export class PaperEngine extends EventEmitter {
     return { ...cfg, riskPerTradePct: cfg.riskPerTradePct * mult, maxLeverage, minLeverage: Math.min(maxLeverage, Math.max(1, cfg.minLeverage * mult)) };
   }
 
+  /** Seconds between the close of the signal's bar and `at` (negative while the bar is still forming). */
+  static signalAgeSec(ev: Pick<ScanEvent, 'barTime'>, tf: string, at: number): number {
+    const tfSec = TF_SECONDS[tf] ?? 0;
+    if (!ev.barTime || !tfSec) return 0;
+    return (at - (ev.barTime + tfSec * 1000)) / 1000;
+  }
+
   onEntry(ev: ScanEvent, ctx: { scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number }): EntryDecision {
     const cfg = this.paper;
+    // A signal acted on long after its bar closed could not have been taken at these prices
+    // (restarts and deep queues used to replay bar-old signals straight into the book).
+    const maxAge = cfg.maxSignalAgeSec ?? 0;
+    if (maxAge > 0) {
+      const age = PaperEngine.signalAgeSec(ev, ctx.tf, ctx.at);
+      if (age > maxAge) return { action: 'rejected', reason: `stale signal: bar closed ${age.toFixed(0)}s ago (max ${maxAge}s)` };
+    }
     const existing = this.findOpen(ctx.scannerId, ctx.symbol, ctx.tf);
     let closed: Position | undefined;
     if (existing) {
       if (existing.side === ev.side) return { action: 'ignored', reason: 'already in position' };
       if (!cfg.allowReversal) return { action: 'ignored', reason: 'opposite signal while in position (reversal disabled)' };
-      const px = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
+      const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
+      const px = this.marketPrice(existing.symbol, existing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at).price;
       this.applyFills(existing, [fillExit(existing, px, existing.qtyOpen, 'reversal', ctx.at, cfg, true)]);
       closed = existing;
     }
     if (this.findPending(ctx.scannerId, ctx.symbol, ctx.tf)) return { action: 'ignored', reason: 'entry already pending', closed };
     if (this.open.size + this.pending.size >= cfg.maxOpenPositions) return { action: 'rejected', reason: `max open positions (${cfg.maxOpenPositions})`, closed };
-    const price = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
+    // A market entry pays the spread: buy at the ask, sell at the bid when a fresh quote exists.
+    // The script's own price is only a reference and is often minutes old by the time we act.
+    const reference = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
+    const quoted = this.marketPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
+    const price = quoted.price;
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
     const feeErr = checkRiskVsFees(price, levels.sl, cfg);

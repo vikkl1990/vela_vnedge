@@ -63,10 +63,10 @@ test('stats', () => {
 });
 
 test('quality sizing scales leverage with score and models liquidation', () => {
-  const q = { ...cfg, sizingMode: 'quality' as const, minLeverage: 5, maxLeverage: 50, liquidation: true, maintenanceMarginPct: 0.5 };
+  const q = { ...cfg, sizingMode: 'quality' as const, minLeverage: 5, maxLeverage: 50, liquidation: true, maintenanceMarginPct: 0.5, maxStopLossPct: 0 }; // stop cap tested separately
   assert.equal(leverageForScore(undefined, q), 5); assert.equal(leverageForScore(50, q), 27.5); assert.equal(leverageForScore(100, q), 50);
   const s = sizeContracts(100, 98, { equity: 1000, contractValue: 0.001, tickSize: 0.5, cfg: q }, 0, 100);
-  assert.equal(s.qty, 500_000); // 1000 × 50x = 50,000 notional / (100 × 0.001 per contract)
+  assert.equal(s.qty, 500_000); // 1000 × 50x = 50,000 notional / (100 × 0.001 per contract) — uncapped
   assert.ok(Math.abs(s.leverage - 50) < 1e-9);
   const liq = liquidationPrice('long', 100, 50, q)!;
   assert.ok(Math.abs(liq - 98.5) < 1e-9); // 1/50 = 2% minus 0.5% maintenance
@@ -170,4 +170,24 @@ test('fee-aware entry filter rejects stops tighter than N× round-trip fees', ()
   assert.ok(checkRiskVsFees(100, 99.8, c)); // 0.2% stop vs 0.1% round trip → 2× < 4×
   assert.equal(checkRiskVsFees(100, 99.5, c), null); // 0.5% stop = 5×
   assert.equal(checkRiskVsFees(100, 99.8, { ...c, minRiskFeeRatio: 0 }), null);
+});
+
+test('max stop-loss cap bounds the loss in quality sizing (audit #94/#95 regression)', () => {
+  const q = { ...cfg, sizingMode: 'quality' as const, minLeverage: 5, maxLeverage: 50, maxStopLossPct: 2, liquidation: false };
+  // AKEUSD #95: 5x quality leverage, ATR-fallback stop ~11 % away, $892 account.
+  // One contract alone loses ~$69 (7.7 % of the account), so the trade must be refused outright.
+  const entry = 0.0606, sl = entry * 0.886;
+  const akeusd = sizeContracts(entry, sl, { equity: 892, contractValue: 10_000, tickSize: 0.000001, cfg: q }, 0, 0);
+  assert.equal(akeusd.qty, 0);
+  assert.match(String(akeusd.reason), /max stop-loss cap/);
+  // uncapped, the same trade really did risk over half the account (it lost $480 of $892)
+  const uncapped = sizeContracts(entry, sl, { equity: 892, contractValue: 10_000, tickSize: 0.000001, cfg: { ...q, maxStopLossPct: 0 } }, 0, 0);
+  assert.ok(Math.abs(entry - sl) * 10_000 * uncapped.qty > 892 * 0.4, 'uncapped sizing really was that dangerous');
+  // a normal 2 % stop is sized DOWN to the cap rather than refused
+  const sized = sizeContracts(100, 98, { equity: 1000, contractValue: 0.001, tickSize: 0.5, cfg: q }, 0, 100);
+  assert.equal(sized.qty, 10_000);                       // 1000 × 2 % / (2 × 0.001) — not the 500,000 the leverage alone would buy
+  assert.ok(Math.abs(100 - 98) * 0.001 * sized.qty <= 1000 * 0.02 + 1e-9);
+  // risk mode is capped too
+  const riskMode = sizeContracts(100, 90, { equity: 1000, contractValue: 0.001, tickSize: 0.5, cfg: { ...q, sizingMode: 'risk', riskPerTradePct: 10 } }, 0);
+  assert.ok(Math.abs(100 - 90) * 0.001 * riskMode.qty <= 1000 * 0.02 + 1e-9, 'riskPerTradePct above the cap is clamped');
 });

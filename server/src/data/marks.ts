@@ -34,6 +34,18 @@ export class MarkStore extends EventEmitter {
     this.marks.set(symbol, { markPrice, at, bestBid, bestAsk });
     this.emit('mark', { symbol, markPrice, at });
   }
+  /**
+   * Executable side of a fresh top-of-book: `buy` → ask, `sell` → bid.
+   * Returns null when there is no quote, it is stale, or it is crossed/invalid.
+   */
+  executable(symbol: string, side: 'buy' | 'sell', maxAgeMs: number, now = Date.now()): number | null {
+    const q = this.marks.get(symbol);
+    if (!q || q.bestBid === null || q.bestAsk === null) return null;
+    if (!(q.bestBid > 0 && q.bestAsk > 0 && q.bestBid <= q.bestAsk)) return null;
+    if (maxAgeMs > 0 && now - q.at > maxAgeMs) return null;
+    return side === 'buy' ? q.bestAsk : q.bestBid;
+  }
+
   onWsMark(m: WsMark): void { this.setMark(m.symbol, m.markPrice, m.timeMs, m.bestBid, m.bestAsk); }
   mark(symbol: string): number | undefined { return this.marks.get(symbol)?.markPrice; }
   markState(symbol: string): MarkState | undefined { return this.marks.get(symbol); }

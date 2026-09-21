@@ -23,6 +23,14 @@ export interface PaperConfig {
   maintenanceMarginPct: number;
   /** Reject entries whose stop distance is less than this multiple of the round-trip taker fee (0 = off). */
   minRiskFeeRatio: number;
+  /** Hard cap: the modelled loss at the stop may never exceed this % of equity, in ANY sizing mode (0 = off). */
+  maxStopLossPct: number;
+  /** Reject entries whose signal bar closed more than this many seconds ago (0 = off). */
+  maxSignalAgeSec: number;
+  /** Cross the live spread when a fresh quote exists: buy at the ask, sell at the bid (falls back to the slippage model). */
+  useSpread: boolean;
+  /** A quote older than this is not used for spread crossing. */
+  quoteMaxAgeMs: number;
   feeRatePct: number;
   /** Fee for take-profit limit fills (maker). */
   makerFeeRatePct: number;
@@ -200,6 +208,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     liquidation: true,
     maintenanceMarginPct: 0.5,
     minRiskFeeRatio: 4,
+    maxStopLossPct: 2,
+    maxSignalAgeSec: 90,
+    useSpread: true,
+    quoteMaxAgeMs: 10_000,
     feeRatePct: 0.05,
     makerFeeRatePct: 0.02,
     slippageBps: 2,
@@ -305,6 +317,10 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.minLeverage >= 1 && p.minLeverage <= p.maxLeverage)) errs.push('paper.minLeverage must be 1..maxLeverage');
   if (!(p.maintenanceMarginPct >= 0 && p.maintenanceMarginPct < 5)) errs.push('paper.maintenanceMarginPct must be 0..5');
   if (!(Number.isFinite(p.minRiskFeeRatio) && p.minRiskFeeRatio >= 0)) errs.push('paper.minRiskFeeRatio must be ≥ 0');
+  if (!(Number.isFinite(p.maxStopLossPct) && p.maxStopLossPct >= 0 && p.maxStopLossPct <= 100)) errs.push('paper.maxStopLossPct must be 0..100');
+  if (!(Number.isFinite(p.maxSignalAgeSec) && p.maxSignalAgeSec >= 0)) errs.push('paper.maxSignalAgeSec must be ≥ 0');
+  if (typeof p.useSpread !== 'boolean') errs.push('paper.useSpread must be boolean');
+  if (!(Number.isFinite(p.quoteMaxAgeMs) && p.quoteMaxAgeMs >= 0)) errs.push('paper.quoteMaxAgeMs must be ≥ 0');
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');

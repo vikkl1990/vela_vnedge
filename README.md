@@ -83,6 +83,11 @@ Other commands:
   (`PUT /api/scanners/:id/rule`), per-scanner **timeframe tuning** (`autoTune.tuneTimeframes`), and
   ML **probability calibration** (Platt), reliability buckets and live **feature-drift** monitoring
   in `GET /api/ml`.
+* **Hard stop-loss cap** (`paper.maxStopLossPct`, default 2 %): no single trade may lose more
+  than that share of equity at its stop, in any sizing mode. **Stale signals** whose bar closed
+  more than `paper.maxSignalAgeSec` (default 90 s) ago are rejected.
+* **Spread-crossing fills** (`paper.useSpread`): market fills pay the live bid/ask instead of
+  assuming the last price, falling back to the slippage model when no fresh quote exists.
 * **Fee-aware entries**: a signal is skipped when its stop is closer than `minRiskFeeRatio`
   (default 4) × the round-trip taker fee, so fees cannot eat the risk budget on tight stops.
 * The **paper engine** sizes by risk % of equity, fills SL/TP legs on 1-minute candles,

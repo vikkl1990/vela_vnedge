@@ -75,3 +75,23 @@ An entry is rejected when |entry − stop| < `minRiskFeeRatio` × (entry × take
 ## Scanner removal
 
 Removing or disabling a scanner stops new entries only; positions already open keep running to their stop and targets, because closing them at market was measured to give back roughly 0.7R per trade.
+
+## Hard stop-loss cap and signal freshness
+
+`paper.maxStopLossPct` (default 2) caps the modelled loss at the stop in **every** sizing mode:
+`qty ≤ equity × maxStopLossPct / 100 ÷ riskPerContract`. Quality sizing targets a notional
+(`equity × leverage`) and therefore never consulted the stop distance on its own, so an
+ATR-fallback stop far from entry could risk most of the account in a single trade. When even one
+contract breaches the cap the entry is refused rather than silently taken. Set it to 0 to disable.
+
+`paper.maxSignalAgeSec` (default 90) rejects an entry whose signal bar closed more than that many
+seconds ago. Restarts, deep worker queues and warm-up re-runs used to replay bar-old signals
+straight into the book at prices that were never available.
+
+## Spread-crossing fills
+
+With `paper.useSpread` (default on) a market-style fill uses the live top of book: entries buy at
+the ask and sell at the bid, exits do the reverse. Delta's `mark_price` channel carries
+`best_bid`/`best_ask`. A quote older than `paper.quoteMaxAgeMs` (10 s), a crossed book or a
+missing quote falls back to the configured slippage model around the reference price. This
+replaces the assumption that a market order fills at the last traded price.

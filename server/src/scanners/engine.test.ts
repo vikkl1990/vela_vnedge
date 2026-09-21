@@ -15,7 +15,10 @@ for (const change of ['none', 'disabled', 'removed', 'reenabled', 'timeframe'] a
     const cfg = structuredClone(DEFAULT_CONFIG);
     cfg.symbols = ['BTCUSD']; cfg.timeframes = ['1m'];
     cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
-    const bars = Array.from({ length: 60 }, (_, i) => ({ time: i * 60_000, open: 100, high: 101, low: 99, close: 100, volume: 100 }));
+    // anchor to real time: the entry path rejects signals whose bar closed more than
+    // paper.maxSignalAgeSec ago, and epoch-0 fixtures would read as decades stale
+    const lastClose = Math.floor(Date.now() / 60_000) * 60_000;
+    const bars = Array.from({ length: 60 }, (_, i) => ({ time: lastClose - (60 - i) * 60_000, open: 100, high: 101, low: 99, close: 100, volume: 100 }));
     const candles = Object.assign(new EventEmitter(), { get: () => bars });
     let finish!: (result: WorkerResult) => void;
     const pool = { stats: { queued: 0 }, run: () => new Promise<WorkerResult>(resolve => { finish = resolve; }) };

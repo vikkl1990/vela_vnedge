@@ -211,3 +211,23 @@ test('all_trades message parsing normalises µs timestamps and string prices', (
   assert.equal(toMs(1789948800000, 0), 1789948800000);
   assert.equal(toMs(1789948800, 0), 1789948800000);
 });
+
+test('market fills cross the live spread when a fresh quote exists (PR #3 idea)', () => {
+  const cfg = { ...DEFAULT_CONFIG.paper, useSpread: true, quoteMaxAgeMs: 10_000, slippageBps: 2 };
+  const db = new Db(':memory:');
+  const engine = new PaperEngine(db, () => ({ ...DEFAULT_CONFIG, paper: cfg }));
+  const marks = new MarkStore();
+  engine.quotes = marks;
+  const now = Date.now();
+  marks.setMark('BTCUSD', 100, now, 99.9, 100.1);
+  assert.equal(engine.marketPrice('BTCUSD', 'buy', 100, cfg, now).price, 100.1, 'buy pays the ask');
+  assert.equal(engine.marketPrice('BTCUSD', 'sell', 100, cfg, now).price, 99.9, 'sell hits the bid');
+  // stale quote → fall back to the reference price and the slippage model
+  assert.equal(engine.marketPrice('BTCUSD', 'buy', 100, cfg, now + 30_000).source, 'slippage');
+  // crossed book is ignored
+  marks.setMark('ETHUSD', 10, now, 10.2, 10.0);
+  assert.equal(engine.marketPrice('ETHUSD', 'buy', 10, cfg, now).source, 'slippage');
+  // opt-out restores the old behaviour exactly
+  assert.equal(engine.marketPrice('BTCUSD', 'buy', 100, { ...cfg, useSpread: false }, now).source, 'slippage');
+  db.db.close();
+});
