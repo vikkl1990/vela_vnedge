@@ -1285,3 +1285,10 @@ body { overflow-x: clip; }
 .user-new { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; align-items: end; }
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 @media (max-width: 720px) { .account-chip { margin-left: 0; } .user-new { grid-template-columns: 1fr; } }
+
+/* a take-profit leg with no contracts allocated cannot fill: show it, but do not imply it is live */
+.tp-unfunded { opacity: .38; text-decoration: line-through; text-decoration-thickness: 1px; }
+.tp-share { font-size: .62em; opacity: .65; margin-left: 1px; }
+
+/* levels the script did not provide: taken from the position the signal opened */
+.lvl-derived { border-bottom: 1px dotted currentColor; opacity: .82; }

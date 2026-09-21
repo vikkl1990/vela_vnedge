@@ -107,16 +107,27 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
       },
       {
         key: 'tp',
-        header: 'TP1/2/3',
+        header: 'Targets',
         numeric: true,
         sortable: false,
         render: (p) => (
           <span className="mono small tp-list">
-            {[0, 1, 2].map((i) => (
-              <span key={i} className={p.tpHit?.[i] ? 'tp-hit' : ''} title={p.tpHit?.[i] ? 'hit' : ''}>
-                {fmtPrice(p.tp?.[i], tick(p.symbol))}
-              </span>
-            ))}
+            {[0, 1, 2].map((i) => {
+              // a leg with no contracts allocated can never fill; showing it as a live target misleads
+              const size = p.legs?.[i]
+              const funded = size === undefined ? true : size > 0
+              const share = funded && p.qty ? Math.round(((size ?? p.qty) / p.qty) * 100) : 0
+              return (
+                <span
+                  key={i}
+                  className={`${p.tpHit?.[i] ? 'tp-hit' : ''} ${funded ? '' : 'tp-unfunded'}`}
+                  title={!funded ? `TP${i + 1} carries no contracts under the current split, so it cannot fill` : p.tpHit?.[i] ? `TP${i + 1} hit` : `TP${i + 1}: ${share}% of the position`}
+                >
+                  {fmtPrice(p.tp?.[i], tick(p.symbol))}
+                  {funded && share > 0 && share < 100 ? <sup className="tp-share">{share}%</sup> : null}
+                </span>
+              )
+            })}
           </span>
         ),
       },
@@ -169,7 +180,18 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <div><dt>Realized P&L (USD)</dt><dd><Pnl value={p.realizedPnl} /></dd></div>
               <div><dt>Risk (USD)</dt><dd>{fmtMoney(p.riskAmount)}</dd></div>
             </dl>
-            <div className="small">TP1 / TP2 / TP3: {[0, 1, 2].map((i) => <span key={i} className={p.tpHit?.[i] ? 'tp-hit' : ''}> {fmtPrice(p.tp?.[i], tick)}{p.tpHit?.[i] ? ' (hit)' : ''}{i < 2 ? ' /' : ''}</span>)}</div>
+            <div className="small">
+              Targets:{' '}
+              {[0, 1, 2].map((i) => {
+                const size = p.legs?.[i]
+                const funded = size === undefined ? true : size > 0
+                return (
+                  <span key={i} className={`${p.tpHit?.[i] ? 'tp-hit' : ''} ${funded ? '' : 'tp-unfunded'}`} title={funded ? undefined : 'no contracts allocated to this target'}>
+                    {' '}{fmtPrice(p.tp?.[i], tick)}{p.tpHit?.[i] ? ' (hit)' : ''}{i < 2 ? ' /' : ''}
+                  </span>
+                )
+              })}
+            </div>
             <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>
           </article>
         })}

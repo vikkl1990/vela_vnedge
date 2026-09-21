@@ -65,8 +65,22 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
       },
       { key: 'kind', header: 'Kind', value: (s) => s.kind, render: (s) => <span className={`kind kind-${s.kind}`}>{s.kind}</span> },
       { key: 'side', header: 'Side', value: (s) => s.side, render: (s) => <SidePill side={s.side} /> },
-      { key: 'price', header: 'Price', numeric: true, value: (s) => s.price, render: (s) => <span className="mono">{fmtPrice(s.price, tick(s.symbol))}</span> },
-      { key: 'sl', header: 'SL', numeric: true, value: (s) => s.sl, render: (s) => <span className="mono loss">{fmtPrice(s.sl, tick(s.symbol))}</span> },
+      {
+        key: 'price', header: 'Price', numeric: true, value: (s) => s.price,
+        render: (s) => (
+          <span className={`mono ${s.derived ? 'lvl-derived' : ''}`} title={s.derived ? 'the script sent no price; this is the fill the position actually got' : undefined}>
+            {fmtPrice(s.price, tick(s.symbol))}
+          </span>
+        ),
+      },
+      {
+        key: 'sl', header: 'SL', numeric: true, value: (s) => s.sl,
+        render: (s) => (
+          <span className={`mono loss ${s.derived ? 'lvl-derived' : ''}`} title={s.derived ? 'derived from ATR when the position opened, because the script sent no stop' : undefined}>
+            {fmtPrice(s.sl, tick(s.symbol))}
+          </span>
+        ),
+      },
       {
         key: 'tp',
         header: 'TP1 / 2 / 3',

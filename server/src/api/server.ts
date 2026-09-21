@@ -256,10 +256,21 @@ export class ApiServer {
       return a.scanners.getOverlay(p.id, symbol, tf) ?? { at: null, plots: [], shapes: [], labels: [] };
     });
 
-    this.add('GET', '/api/signals', (_r, _s, _p, url) => a.db.signals({
-      limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined,
-      kind: url.searchParams.get('kind') ?? undefined, since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
-    }));
+    this.add('GET', '/api/signals', (_r, _s, _p, url) => {
+      const rows = a.db.signals({
+        limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined,
+        kind: url.searchParams.get('kind') ?? undefined, since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
+      });
+      // Most scripts signal through a bare alertcondition, which carries a direction and nothing
+      // else; the levels are derived from ATR when the position opens. Showing blank columns hides
+      // the prices the trade actually used, so fall back to the position they produced.
+      return rows.map(r => {
+        if (!r.positionId || (r.price && r.sl)) return r;
+        const p = a.paper.position(r.positionId);
+        if (!p) return r;
+        return { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
+      });
+    });
     this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => positionView(p, a.paper.mark(p.symbol))));
     this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return positionView(pos); });
     this.add('POST', '/api/paper/close-all', () => ({ closed: a.paper.closeAll() }));

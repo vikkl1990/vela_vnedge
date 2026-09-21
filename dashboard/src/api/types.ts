@@ -209,6 +209,8 @@ export interface ScannerOverlay {
 // ---------- Signals, positions, trades ----------
 
 export interface Signal {
+  /** True when price/SL/TP came from the resulting position because the script sent none. */
+  derived?: boolean
   id: number
   at: number
   barTime: number
@@ -255,6 +257,10 @@ export interface Position {
   slOriginal: number | null
   tp: (number | null)[]
   tpHit: boolean[]
+  /** Contracts allocated to each target. A zero leg never fills; the split is configurable. */
+  legs?: number[]
+  /** Best favourable excursion so far, in R; the trail arms once it passes paper.trailAfterR. */
+  peakR?: number | null
   breakEven: boolean
   markPrice: number
   unrealizedPnl: number

@@ -579,6 +579,8 @@ export function positionView(p: Position, mark?: number) {
   return {
     id: p.id, scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side, qty: p.qty, qtyOpen: p.qtyOpen, contractValue: p.contractValue,
     entryPrice: p.entryPrice, entryAt: p.entryAt, sl: p.sl, slOriginal: p.slOriginal, tp: p.tp, tpHit: p.tpHit, breakEven: p.breakEven, markPrice: m,
+    // contracts allocated to each target: a zero leg can never fill, so the UI must not imply it will
+    legs: p.legs, peakR: p.peakR ?? null,
     unrealizedPnl: unrealized(p, m), realizedPnl: p.realizedPnl, fees: p.fees, riskAmount: p.riskAmount, rMultiple: p.riskAmount ? (p.realizedPnl - p.fees + unrealized(p, m)) / p.riskAmount : null,
     levelsSource: p.levelsSource, leverage: p.leverage, marginLeverage: p.marginLeverage, liqPrice: p.liqPrice, signalId: p.signalId, status: p.status,
     notional: p.qtyOpen * p.contractValue * m, notionalEntry: p.qty * p.contractValue * p.entryPrice, mlProb: p.mlProb ?? null,
