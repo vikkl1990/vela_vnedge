@@ -122,3 +122,22 @@ test('expired sessions are swept', t => {
   assert.equal(s.resolve(old.token), null);
   assert.equal(s.sessionCount(u.id), 1);
 });
+
+test('a proxied request is judged by the real client, not by the proxy', async () => {
+  const { isLoopback, clientAddress } = await import('./routes.ts')
+  const mk = (peer: string, fwd?: string) => ({ socket: { remoteAddress: peer }, headers: fwd ? { 'x-forwarded-for': fwd } : {} }) as any;
+
+  // direct connections: the socket decides
+  assert.equal(isLoopback(mk('127.0.0.1')), true);
+  assert.equal(isLoopback(mk('::1')), true);
+  assert.equal(isLoopback(mk('203.0.113.9')), false);
+
+  // behind the reverse proxy every request arrives from loopback; the header must decide
+  assert.equal(isLoopback(mk('127.0.0.1', '203.0.113.9')), false, 'a public caller must not look local');
+  assert.equal(isLoopback(mk('127.0.0.1', '203.0.113.9, 127.0.0.1')), false, 'the leftmost entry is the client');
+  assert.equal(isLoopback(mk('127.0.0.1', '127.0.0.1')), true, 'a genuine local call through the proxy stays local');
+
+  // a direct public connection may not forge the header
+  assert.equal(isLoopback(mk('203.0.113.9', '127.0.0.1')), false, 'only a loopback peer is trusted to forward');
+  assert.equal(clientAddress(mk('203.0.113.9', '127.0.0.1')), '203.0.113.9');
+});

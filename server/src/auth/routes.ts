@@ -53,10 +53,27 @@ function isSecureRequest(req: http.IncomingMessage): boolean {
   return String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
 }
 
-/** Loopback-only, used to gate first-run setup so nobody can claim the empty instance remotely. */
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost']);
+const isLoopbackAddress = (a: string) => LOOPBACK.has(a.trim().replace(/^\[|\]$/g, ''));
+
+/**
+ * The address the request really came from.
+ *
+ * Behind a reverse proxy every request arrives from loopback, which would make a public caller
+ * look local. When the immediate peer is loopback we therefore believe `X-Forwarded-For`, whose
+ * leftmost entry is the original client. A direct connection has no proxy to trust, so the
+ * header is ignored and the socket wins.
+ */
+export function clientAddress(req: http.IncomingMessage): string {
+  const peer = req.socket.remoteAddress ?? '';
+  if (!isLoopbackAddress(peer)) return peer;
+  const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+  return fwd || peer;
+}
+
+/** Loopback-only, used to gate first-run setup so nobody can claim an empty instance remotely. */
 export function isLoopback(req: http.IncomingMessage): boolean {
-  const a = req.socket.remoteAddress ?? '';
-  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+  return isLoopbackAddress(clientAddress(req));
 }
 
 export const publicUser = (u: User) => ({ ...u, roleLabel: ROLE_LABELS[u.role] });
@@ -112,7 +129,7 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
 
   add('POST', '/api/auth/login', (req, res, _p, _u, body) => {
     const username = String(body?.username ?? '').trim();
-    const addr = req.socket.remoteAddress ?? 'unknown';
+    const addr = clientAddress(req) || 'unknown';
     for (const key of [`u:${username.toLowerCase()}`, `a:${addr}`]) {
       const wait = throttle.check(key);
       if (wait) fail(429, `too many attempts, try again in ${wait}s`);

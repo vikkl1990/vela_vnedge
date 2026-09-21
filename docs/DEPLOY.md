@@ -117,3 +117,12 @@ you tell a cloud rule from a host one: a host refusal comes back immediately.
 
 Exposing the dashboard puts a login form on the public internet. The SSH tunnel remains the stricter
 option and needs nothing open but 22.
+
+### A reverse proxy makes every request look local
+
+Behind nginx the bot sees `127.0.0.1` as the peer for every request, which would make a caller on
+the internet pass the loopback check that guards first-run setup. The application therefore trusts
+`X-Forwarded-For` only when the immediate peer is loopback, and takes its leftmost entry as the real
+client; a direct connection cannot forge it because its peer is not loopback. nginx additionally
+refuses `/api/auth/setup` outright, so the first administrator can only ever be created over the SSH
+tunnel. If you put a different proxy in front, it must set `X-Forwarded-For`, or the same hole opens.
