@@ -48,6 +48,15 @@ export interface PaperConfig {
   slippageBps: number;
   tpSplit: [number, number, number];
   breakEvenAfterTp1: boolean;
+  /**
+   * Trailing stop, in R (0 = off). Once the position's favourable excursion reaches
+   * `trailAfterR`, the stop follows the best price seen, `trailDistanceR` behind it, and never
+   * moves against the position. It replaces the break-even jump, which exits a runner flat.
+   * The trail is updated from a bar only after that bar's exits have been checked, so it can
+   * never use a high the stop had not yet seen.
+   */
+  trailAfterR: number;
+  trailDistanceR: number;
   allowReversal: boolean;
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
@@ -229,6 +238,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     slippageBps: 2,
     tpSplit: [0.4, 0.3, 0.3],
     breakEvenAfterTp1: true,
+    trailAfterR: 0,
+    trailDistanceR: 1,
     allowReversal: true,
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
@@ -337,6 +348,8 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.requireQuote && !(p.quoteMaxAgeMs > 0)) errs.push('paper.requireQuote needs paper.quoteMaxAgeMs > 0');
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
+  if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
+  if (p.trailAfterR > 0 && !(Number.isFinite(p.trailDistanceR) && p.trailDistanceR > 0)) errs.push('paper.trailDistanceR must be > 0 when trailing is on');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');

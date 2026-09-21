@@ -51,6 +51,8 @@ export interface Position {
   /** Entry-time ML features (see ml/features.ts); optional. */
   features?: Record<string, number>;
   mlProb?: number | null;
+  /** Best favourable excursion seen so far, in R; drives the trailing stop. */
+  peakR?: number;
   /** Last cumulative live candle observed; retained across restarts. */
   lastPriceBar?: PriceBar;
 }
@@ -321,7 +323,34 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
     if (pos.qtyOpen <= 0) return fills;
     if (i === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven) { pos.sl = pos.entryPrice; pos.breakEven = true; }
   }
+  // 3. trail LAST: this bar's exits were checked against the stop as it stood when the bar
+  // opened, so a stop raised here only applies from the next bar. Trailing earlier would let
+  // the same bar's high both raise the stop and then trigger it.
+  trailStop(pos, long ? bar.high : bar.low, cfg);
   return fills;
+}
+
+/**
+ * Advance the trailing stop from the best price seen. Never moves against the position and does
+ * nothing until the trade has shown `trailAfterR` of favourable excursion.
+ */
+export function trailStop(pos: Position, favourable: number, cfg: PaperConfig): void {
+  const afterR = cfg.trailAfterR ?? 0;
+  if (!(afterR > 0) || pos.status !== 'open') return;
+  const base = pos.slOriginal ?? pos.sl;
+  if (base === null) return;
+  const risk = Math.abs(pos.entryPrice - base);
+  if (!(risk > 0)) return;
+  const long = pos.side === 'long';
+  const r = ((favourable - pos.entryPrice) * (long ? 1 : -1)) / risk;
+  pos.peakR = Math.max(pos.peakR ?? 0, r);
+  if (pos.peakR < afterR) return;
+  const distance = cfg.trailDistanceR > 0 ? cfg.trailDistanceR : 1;
+  const level = pos.entryPrice + (long ? 1 : -1) * (pos.peakR - distance) * risk;
+  if (pos.sl === null || (long ? level > pos.sl : level < pos.sl)) {
+    pos.sl = level;
+    if (long ? level >= pos.entryPrice : level <= pos.entryPrice) pos.breakEven = true;
+  }
 }
 
 export interface PriceBar { time: number; high: number; low: number; close: number }

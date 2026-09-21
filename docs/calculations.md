@@ -33,6 +33,19 @@ SL and TP levels must remain positive and on the correct side after tick roundin
 
 Statistics are based on closed trades. Reported maximum drawdown is closed-trade equity drawdown, not full intratrade drawdown; backtest equity curves likewise omit open-position unrealized swings. Trade pnlPct is return on original notional, not return on margin. These definitions should be considered when comparing results to exchange reports.
 
+## Exits
+
+Three take-profit legs (`tpSplit`), a stop, and optionally a break-even jump after TP1
+(`breakEvenAfterTp1`) or a trailing stop (`trailAfterR` / `trailDistanceR`, 0 = off, the default).
+The trail arms once the trade has shown `trailAfterR` of favourable excursion and then follows the
+best price `trailDistanceR` behind it, never moving against the position. It is advanced only after
+the current bar's exits have been checked, so a bar can never both raise the stop and trigger it.
+
+`npm run exits -- [BARS] [TF]` replays every enabled pair under alternative exit policies and
+reports, per exit reason, how much of the available move was captured and how far price continued
+afterwards. Its continuation figure is a maximum over a fixed horizon, so read it as evidence that
+movement was available, not as profit that was reachable.
+
 ## Entry pricing and the spread
 
 `slippageBps` is a stand-in for the spread, used when no quote is available. When `useSpread` is on

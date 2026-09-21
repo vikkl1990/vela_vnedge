@@ -191,3 +191,50 @@ test('max stop-loss cap bounds the loss in quality sizing (audit #94/#95 regress
   const riskMode = sizeContracts(100, 90, { equity: 1000, contractValue: 0.001, tickSize: 0.5, cfg: { ...q, sizingMode: 'risk', riskPerTradePct: 10 } }, 0);
   assert.ok(Math.abs(100 - 90) * 0.001 * riskMode.qty <= 1000 * 0.02 + 1e-9, 'riskPerTradePct above the cap is clamped');
 });
+
+test('trailing stop follows the peak, never loosens, and cannot be hit by the bar that raised it', () => {
+  const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false,
+    breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 1, tpSplit: [0, 0, 1] as [number, number, number] };
+  const pos = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [130], riskAmount: 50, levelsSource: 'script', signalId: null, cfg, bt: true });
+  assert.equal(pos.sl, 95, 'risk is 5, so 1R = 5');
+
+  // a bar that reaches +2R must not also be stopped out by the stop that same bar raises
+  const fills = applyBar(pos, { time: 1, high: 110, low: 99, close: 109 }, cfg);
+  assert.equal(fills.length, 0);
+  assert.equal(pos.sl, 105, 'stop trails 1R behind the +2R peak');
+  assert.equal(pos.breakEven, true, 'a stop above entry counts as protected');
+
+  // a weaker bar cannot pull the stop back down
+  applyBar(pos, { time: 2, high: 106, low: 105.5, close: 106 }, cfg);
+  assert.equal(pos.sl, 105, 'the trail never moves against the position');
+
+  // and the stop does fire on a later bar
+  const out = applyBar(pos, { time: 3, high: 106, low: 104, close: 104 }, cfg);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].price, 105);
+  assert.equal(pos.status, 'closed');
+});
+
+test('trailing does nothing before the arming threshold, and is off by default', () => {
+  const base = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, breakEvenAfterTp1: false };
+  const make = (cfg: typeof base) => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [130], riskAmount: 50, levelsSource: 'script', signalId: null, cfg, bt: true });
+  const armed = { ...base, trailAfterR: 2, trailDistanceR: 1 };
+  const p = make(armed);
+  applyBar(p, { time: 1, high: 107, low: 99, close: 107 }, armed);   // +1.4R: below the 2R threshold
+  assert.equal(p.sl, 95, 'the stop stays put until the trade has shown 2R');
+  assert.equal(DEFAULT_CONFIG.paper.trailAfterR, 0, 'trailing ships disabled');
+  const q = make(base);
+  applyBar(q, { time: 1, high: 120, low: 99, close: 120 }, base);
+  assert.equal(q.sl, 95, 'with trailing off the stop never moves');
+});
+
+test('a short trails downward', () => {
+  const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false,
+    breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 1, tpSplit: [0, 0, 1] as [number, number, number] };
+  const pos = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'short', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 105, tp: [70], riskAmount: 50, levelsSource: 'script', signalId: null, cfg, bt: true });
+  applyBar(pos, { time: 1, high: 101, low: 90, close: 91 }, cfg);
+  assert.equal(pos.sl, 95, 'stop trails 1R above the -2R low');
+});
