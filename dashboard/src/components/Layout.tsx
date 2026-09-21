@@ -52,6 +52,26 @@ function routeMeta(pathname: string, scannerName?: string): { title: string; cru
   return nav ? { title: nav.label, crumb: nav.label.toLowerCase() } : { title: 'Not found', crumb: seg }
 }
 
+/** Header tick age. Owns the 1 s clock so only this text re-renders. */
+function TickAge({ lastTick }: { lastTick: number | null }) {
+  const now = useNow(1000)
+  return <span className="mono muted small hide-mid"> · tick {fmtAge(lastTick ? now - lastTick : null)}</span>
+}
+
+/** Stale-stream banner. Owns its own clock for the same reason as TickAge. */
+function StaleBanner({ getLastEventAt, enabled }: { getLastEventAt: () => number | null; enabled: boolean }) {
+  const now = useNow(1000)
+  if (!enabled) return null
+  const last = getLastEventAt()
+  const silentMs = last ? now - last : null
+  if (silentMs == null || silentMs <= STALE_AFTER_MS) return null
+  return (
+    <div className="banner banner-warn" role="status">
+      <StatusDot tone="warn" /> Data may be stale (last update {fmtAge(silentMs)} ago) — the event stream is connected but silent.
+    </div>
+  )
+}
+
 export function Layout() {
   const { theme, toggle } = useTheme()
   const { density, toggle: toggleDensity } = useDensity()
@@ -61,7 +81,6 @@ export function Layout() {
   const positions = usePositions()
   const scanners = useScanners()
   const { online, checked } = useBackendOnline()
-  const now = useNow(1000)
   const toast = useToast()
   const reset = useResetPaper()
   const navigate = useNavigate()
@@ -72,7 +91,6 @@ export function Layout() {
   const h = health.data
   const feedConnected = h?.feed.connected ?? false
   const lastTick = sse.lastTickAt ?? h?.feed.lastTickAt ?? null
-  const tickAge = lastTick ? now - lastTick : null
   const s = stats.data
   const openCount = positions.data?.length ?? s?.openPositions ?? 0
 
@@ -90,10 +108,9 @@ export function Layout() {
   const sseLabel =
     sse.status === 'connected' ? 'SSE live' : sse.status === 'connecting' ? 'SSE connecting' : sse.status === 'reconnecting' ? `SSE reconnecting (${sse.attempts})` : 'SSE offline'
   const backendDown = (checked && !online) || sse.status === 'offline' || sse.status === 'reconnecting'
-  const lastEvent = sse.getLastEventAt()
-  const silentMs = lastEvent ? now - lastEvent : null
-  const stale = !backendDown && sse.status === 'connected' && silentMs != null && silentMs > STALE_AFTER_MS
-  const live = sse.status === 'connected' && feedConnected && !stale
+  // Freshness is time-derived, so it lives in leaf components with their own 1 s clock.
+  // Keeping that clock in Layout re-rendered <Outlet/> — the whole active page — every second.
+  const live = sse.status === 'connected' && feedConnected
 
   // ---- hotkeys ----
   const hotkeys = useMemo<Hotkey[]>(
@@ -153,7 +170,7 @@ export function Layout() {
           <span className="conn" title={feedConnected ? 'Market feed connected' : 'Market feed disconnected'}>
             <StatusDot tone={feedConnected ? 'ok' : 'danger'} />{' '}
             <span className="hide-narrow">feed {feedConnected ? 'on' : 'off'}</span>
-            <span className="mono muted small hide-mid"> · tick {fmtAge(tickAge)}</span>
+            <TickAge lastTick={lastTick} />
           </span>
           <button className="btn btn-sm btn-danger-outline" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
             Reset paper
@@ -177,11 +194,7 @@ export function Layout() {
           {health.error?.message ? <span className="muted"> ({health.error.message})</span> : null}
         </div>
       )}
-      {stale && (
-        <div className="banner banner-warn" role="status">
-          <StatusDot tone="warn" /> Data may be stale (last update {fmtAge(silentMs)} ago) — the event stream is connected but silent.
-        </div>
-      )}
+            <StaleBanner getLastEventAt={sse.getLastEventAt} enabled={!backendDown && sse.status === 'connected'} />
       {h?.lastError && (
         <div className="banner banner-warn" role="status">
           Server last error: <code>{h.lastError}</code>
