@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
+import { applyBar, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false };
 
@@ -307,4 +307,28 @@ test('the volatility trail measures its distance in current ATR, not in entry ri
   applyBar(noAtr, { time: 1, high: 120, low: 99, close: 119 }, { ...c, trailDistanceR: 1 }, undefined);
   assert.equal(noAtr.sl, 115, `fallback trail, got ${noAtr.sl}`);
   assert.equal(DEFAULT_CONFIG.paper.trailAtrMult, 0, 'ships disabled');
+});
+
+test('a reversal only banks the trade once it is actually ahead', () => {
+  const base = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, allowReversal: true };
+  const pos = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [130], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: base, bt: true });
+
+  // risk is 5 points on 10 contracts, so 1R = 50 and each point of price is 0.2R
+  assert.equal(openR(pos, 100), 0);
+  assert.equal(openR(pos, 102), 0.4);
+  assert.equal(openR(pos, 97), -0.6);
+
+  // default: every opposite signal reverses, win or lose
+  assert.equal(reversalAllowed(pos, 97, base), true);
+
+  // with a threshold, a losing position is left to its stop and a winning one is banked
+  const gated = { ...base, reversalMinR: 0.25 };
+  assert.equal(reversalAllowed(pos, 97, gated), false, 'underwater: hold it');
+  assert.equal(reversalAllowed(pos, 100.5, gated), false, 'barely ahead: still below the threshold');
+  assert.equal(reversalAllowed(pos, 102, gated), true, 'ahead by 0.4R: bank it');
+
+  // and the switch that turns reversals off entirely still wins
+  assert.equal(reversalAllowed(pos, 102, { ...gated, allowReversal: false }), false);
+  assert.equal(DEFAULT_CONFIG.paper.reversalMinR, 0, 'ships as today’s behaviour');
 });

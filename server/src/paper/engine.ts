@@ -4,7 +4,7 @@ import { TF_SECONDS, type AppConfig, type ExitMode, type PaperConfig } from '../
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
+  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
 } from './logic.ts';
 
 const log = logger.scoped('paper');
@@ -188,6 +188,10 @@ export class PaperEngine extends EventEmitter {
     if (existing) {
       if (existing.side === ev.side) return { action: 'ignored', reason: 'already in position' };
       if (!cfg.allowReversal) return { action: 'ignored', reason: 'opposite signal while in position (reversal disabled)' };
+      const markNow = this.marks.get(existing.symbol) ?? ctx.refPrice;
+      if (!reversalAllowed(existing, markNow, cfg)) {
+        return { action: 'ignored', reason: `reversal held: position at ${openR(existing, markNow).toFixed(2)}R, below the ${cfg.reversalMinR}R needed to bank it` };
+      }
       const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
       const exitQuote = this.marketPrice(existing.symbol, existing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
       this.applyFills(existing, [fillExit(existing, exitQuote.price, existing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)]);

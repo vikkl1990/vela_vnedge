@@ -85,6 +85,12 @@ export interface PaperConfig {
   staleBars: number;
   staleMinR: number;
   allowReversal: boolean;
+  /**
+   * Minimum open result, in R, before an opposite signal is allowed to close the position.
+   * 0 (the default) reverses on every opposite signal. A positive value means "only bank a
+   * reversal once the trade is actually ahead"; a losing position is left to its stop instead.
+   */
+  reversalMinR: number;
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
@@ -274,6 +280,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     staleBars: 0,
     staleMinR: 0,
     allowReversal: true,
+    reversalMinR: 0,
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
     maxOpenPositions: 20,
@@ -384,6 +391,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
   if (!(Number.isFinite(p.trailGiveBackPct) && p.trailGiveBackPct >= 0 && p.trailGiveBackPct < 100)) errs.push('paper.trailGiveBackPct must be in [0, 100)');
   if (!(Number.isFinite(p.trailAtrMult) && p.trailAtrMult >= 0)) errs.push('paper.trailAtrMult must be ≥ 0 (0 = off)');
+  if (!Number.isFinite(p.reversalMinR)) errs.push('paper.reversalMinR must be a number (0 = reverse on every opposite signal)');
   if (!(Number.isFinite(p.floorAtR) && p.floorAtR >= 0)) errs.push('paper.floorAtR must be ≥ 0 (0 = off)');
   if (p.floorAtR > 0 && !(p.floorKeepR >= 0 && p.floorKeepR < p.floorAtR)) errs.push('paper.floorKeepR must be ≥ 0 and below floorAtR');
   if (!(Number.isFinite(p.staleBars) && p.staleBars >= 0)) errs.push('paper.staleBars must be ≥ 0 (0 = off)');

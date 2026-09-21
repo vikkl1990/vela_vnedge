@@ -47,36 +47,14 @@ if (!pairs.length) { console.error('no enabled scanner/symbol pairs'); process.e
 
 type Policy = { name: string; cfg: (p: PaperConfig) => PaperConfig; exitMode?: 'levels' | 'script' | 'both' };
 const policies: Policy[] = [
-  { name: 'live 40/30/30 + BE', cfg: p => p },
-  { name: 'no break-even', cfg: p => ({ ...p, breakEvenAfterTp1: false }) },
-  { name: 'front-loaded 60/25/15', cfg: p => ({ ...p, tpSplit: [0.6, 0.25, 0.15] }) },
-  { name: 'back-loaded 20/30/50', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5] }) },
-  { name: 'single target TP1', cfg: p => ({ ...p, tpSplit: [1, 0, 0] }) },
-  { name: 'single target TP3', cfg: p => ({ ...p, tpSplit: [0, 0, 1] }) },
-  { name: 'tight targets RR .75/1.5/2.5', cfg: p => ({ ...p, fallbackRR: [0.75, 1.5, 2.5] }) },
-  { name: 'wide targets RR 2/4/6', cfg: p => ({ ...p, fallbackRR: [2, 4, 6] }) },
-  { name: 'trail 1R / 0.5R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
-  { name: 'trail 1R / 1R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 1 }) },
-  { name: 'trail 0.5R / 0.5R behind', cfg: p => ({ ...p, breakEvenAfterTp1: false, trailAfterR: 0.5, trailDistanceR: 0.5 }) },
-  { name: 'back-loaded + trail 1R/.5R', cfg: p => ({ ...p, tpSplit: [0.2, 0.3, 0.5], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
-  { name: 'TP3 only + trail 1R/.5R', cfg: p => ({ ...p, tpSplit: [0, 0, 1], breakEvenAfterTp1: false, trailAfterR: 1, trailDistanceR: 0.5 }) },
-  { name: 'BE + trail 1R/.5R', cfg: p => ({ ...p, trailAfterR: 1, trailDistanceR: 0.5 }) },
-  // --- banking a small gain without capping the runner ---
-  { name: 'LIVE + floor .4R keep .1R', cfg: p => ({ ...p, floorAtR: 0.4, floorKeepR: 0.1 }) },
-  { name: 'LIVE + floor .5R keep .25R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0.25 }) },
-  { name: 'LIVE + floor .75R keep .4R', cfg: p => ({ ...p, floorAtR: 0.75, floorKeepR: 0.4 }) },
-  { name: 'LIVE + floor .5R keep 0R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0 }) },
-  // --- proportional give-back: tight when small, loose when running ---
-  { name: 'give-back 50% from .4R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.4, trailGiveBackPct: 50 }) },
-  { name: 'give-back 40% from .5R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.5, trailGiveBackPct: 40 }) },
-  { name: 'give-back 30% from .75R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.75, trailGiveBackPct: 30 }) },
-  { name: 'give-back 50% from .75R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.75, trailGiveBackPct: 50 }) },
-  // --- time stop on trades that never get going ---
-  { name: 'LIVE + stale 8 bars under .5R', cfg: p => ({ ...p, staleBars: 8, staleMinR: 0.5 }) },
-  { name: 'LIVE + stale 12 bars under 1R', cfg: p => ({ ...p, staleBars: 12, staleMinR: 1 }) },
-  // --- combinations ---
-  { name: 'floor .5R/.25R + stale 12/1R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0.25, staleBars: 12, staleMinR: 1 }) },
-  { name: 'give-back 40%/.5R + stale 12/1R', cfg: p => ({ ...p, trailDistanceR: 0, trailAfterR: 0.5, trailGiveBackPct: 40, staleBars: 12, staleMinR: 1 }) },
+  { name: 'live: reverse on any opposite signal', cfg: p => p },
+  // the ask: when it turns, at least get out ahead. A losing position is held to its stop instead.
+  { name: 'reverse only above break-even', cfg: p => ({ ...p, reversalMinR: 0.01 }) },
+  { name: 'reverse only above 0.1R', cfg: p => ({ ...p, reversalMinR: 0.1 }) },
+  { name: 'reverse only above 0.25R', cfg: p => ({ ...p, reversalMinR: 0.25 }) },
+  { name: 'reverse only above 0.5R', cfg: p => ({ ...p, reversalMinR: 0.5 }) },
+  { name: 'reverse only above 1R', cfg: p => ({ ...p, reversalMinR: 1 }) },
+  { name: 'never reverse (stop only)', cfg: p => ({ ...p, allowReversal: false }) },
 ];
 
 interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }

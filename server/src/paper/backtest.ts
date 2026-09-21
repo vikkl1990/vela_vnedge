@@ -6,7 +6,7 @@ import type { PaperConfig, ExitMode } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, type Position } from './logic.ts';
+import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, type Position } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { SIMULATION_VERSION } from './version.ts';
 import { computeFeatures } from '../ml/features.ts';
@@ -68,6 +68,8 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       if (open) {
         if (open.side === ev.side) { rejected['already_open'] = (rejected['already_open'] ?? 0) + 1; continue; }
         if (!cfg.allowReversal) { rejected['reversal_disabled'] = (rejected['reversal_disabled'] ?? 0) + 1; continue; }
+        // hold a losing position through an opposite signal when reversalMinR asks us to
+        if (!reversalAllowed(open, ev.price ?? bar.close, cfg)) { rejected['reversal_below_min'] = (rejected['reversal_below_min'] ?? 0) + 1; continue; }
         fillExit(open, ev.price ?? bar.close, open.qtyOpen, 'reversal', bar.time, cfg, true);
         finish(open);
       }

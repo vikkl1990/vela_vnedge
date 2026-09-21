@@ -410,6 +410,19 @@ export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, obs
   return applyBar(pos, { time: observedAt, high, low, close: bar.close }, cfg);
 }
 
+/** Where a position stands right now, in R, counting realised legs, fees and the open mark. */
+export function openR(pos: Position, mark: number): number {
+  if (!(pos.riskAmount > 0)) return 0;
+  return (pos.realizedPnl - pos.fees + unrealized(pos, mark)) / pos.riskAmount;
+}
+
+/** True when an opposite signal is allowed to close this position. */
+export function reversalAllowed(pos: Position, mark: number, cfg: PaperConfig): boolean {
+  if (!cfg.allowReversal) return false;
+  const min = cfg.reversalMinR ?? 0;
+  return min <= 0 || openR(pos, mark) >= min;
+}
+
 export interface TapePrint { time: number; price: number; qty?: number }
 
 /**
