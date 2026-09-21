@@ -6,6 +6,8 @@ import { URL } from 'node:url';
 import type { App } from '../app.ts';
 import { DASHBOARD_DIST, DATA_DIR, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
 import { logger } from '../log.ts';
+import { AuthStore, can, type User } from '../auth/store.ts';
+import { authRoutes, createAuth, parseCookies, permissionFor, SESSION_COOKIE } from '../auth/routes.ts';
 import { positionView } from '../paper/engine.ts';
 import { EXTENSIONS } from './extensions.ts';
 import { aggregateMonthly } from '../pine/provider.ts';
@@ -22,12 +24,19 @@ class HttpError extends Error { status: number; constructor(status: number, msg:
 export class ApiServer {
   private routes: Route[] = [];
   private sse = new Set<http.ServerResponse>();
+  /** Users, passwords and sessions; shares the application database. */
+  readonly auth: AuthStore;
+  private authCtx: ReturnType<typeof createAuth>;
   private server: http.Server;
   private app: App;
 
   constructor(app: App) {
     this.app = app;
     this.server = http.createServer((req, res) => this.dispatch(req, res));
+    this.auth = new AuthStore(app.db);
+    this.authCtx = createAuth(this.auth);
+    authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
+    setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000).unref?.();
     this.defineRoutes();
     for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);
     this.wireEvents();
@@ -42,6 +51,11 @@ export class ApiServer {
 
   close() { for (const r of this.sse) r.end(); this.server.close(); }
 
+  /** The signed-in user for a request, or null. Reads the session cookie only. */
+  userFor(req: http.IncomingMessage): User | null {
+    return this.auth.resolve(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+  }
+
   // ---- routing ----
 
   private add(method: string, route: string, handler: Handler) {
@@ -52,13 +66,33 @@ export class ApiServer {
 
   private async dispatch(req: http.IncomingMessage, res: http.ServerResponse) {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // Session cookies travel on this API, so the origin cannot be a wildcard. Only a local
+    // development origin is reflected, and only then are credentials allowed.
+    const origin = String(req.headers.origin ?? '');
+    if (origin && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Vary', 'Origin');
+    }
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Private-Network', 'true');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-    if (url.pathname === '/api/events') return this.handleSse(req, res);
+    if (url.pathname === '/api/events') {
+      if (!this.userFor(req)) { json(res, 401, { error: 'not signed in' }, req); return; }
+      return this.handleSse(req, res);
+    }
     if (!url.pathname.startsWith('/api/')) return this.serveStatic(url.pathname, res, req);
+    // Authorisation happens here, before any handler runs, so no route can forget it.
+    const needed = permissionFor(req.method ?? 'GET', url.pathname);
+    if (needed !== null) {
+      const user = this.userFor(req);
+      if (!user) { json(res, 401, { error: this.auth.countUsers() === 0 ? 'not configured: create the first administrator' : 'not signed in' }, req); return; }
+      if (!can(user.role, needed)) {
+        log.warn(`${user.username} (${user.role}) denied ${req.method} ${url.pathname}: needs ${needed}`);
+        json(res, 403, { error: `your account may not do this (needs ${needed} access)`, needed, role: user.role }, req);
+        return;
+      }
+    }
     for (const r of this.routes) {
       if (r.method !== req.method) continue;
       const m = url.pathname.match(r.pattern);

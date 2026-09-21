@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useBackendOnline, useHealth, usePositions, useResetPaper, useScannerIndex, useStats } from '../api/queries'
+import { useAuth } from '../auth/AuthGate'
 import { useDensity } from '../lib/density'
 import { fmtAge, fmtMoney, fmtPnl, LOCAL_TZ, pnlClass } from '../lib/format'
 import { useHotkeys, type Hotkey } from '../lib/hotkeys'
@@ -35,6 +36,8 @@ const NAV = [
   { to: '/analytics', label: 'Analytics', icon: IconChart, key: 'a' },
   { to: '/learn', label: 'Learn', icon: IconChart, key: 'l' },
   { to: '/logs', label: 'Logs', icon: IconLogs, key: 'g' },
+  { to: '/profile', label: 'Profile', icon: IconSettings, key: 'p' },
+  { to: '/users', label: 'Users', icon: IconSettings, key: 'u', adminOnly: true },
 ]
 
 const STALE_AFTER_MS = 60_000
@@ -87,6 +90,8 @@ export function Layout() {
   const [confirmReset, setConfirmReset] = useState(false)
   const [showKeys, setShowKeys] = useState(false)
   const loc = useLocation()
+  const auth = useAuth()
+  const nav = NAV.filter((n) => !n.adminOnly || auth.isAdmin)
 
   const h = health.data
   // "not loaded yet" is not "down": defaulting to false flashed a red FEED UNAVAILABLE on every page load
@@ -119,12 +124,12 @@ export function Layout() {
   // ---- hotkeys ----
   const hotkeys = useMemo<Hotkey[]>(
     () => [
-      ...NAV.map((n) => ({ keys: `g ${n.key}`, label: `Go to ${n.label}`, run: () => navigate(n.to) })),
+      ...nav.map((n) => ({ keys: `g ${n.key}`, label: `Go to ${n.label}`, run: () => navigate(n.to) })),
       { keys: 't', label: 'Toggle light / dark theme', run: toggle },
       { keys: 'd', label: 'Toggle compact density', run: toggleDensity },
       { keys: '?', label: 'Show this list', run: () => setShowKeys((v) => !v) },
     ],
-    [navigate, toggle, toggleDensity],
+    [navigate, toggle, toggleDensity, nav],
   )
   useHotkeys(hotkeys)
 
@@ -143,7 +148,7 @@ export function Layout() {
         </div>
 
         <nav className="navpills" aria-label="Primary">
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `navpill ${isActive ? 'navpill-on' : ''}`} aria-current={loc.pathname === n.to ? 'page' : undefined}>
               {n.label}
             </NavLink>
@@ -176,9 +181,18 @@ export function Layout() {
             <span className="hide-narrow">feed {feedConnected ? 'on' : 'off'}</span>
             <TickAge lastTick={lastTick} />
           </span>
-          <button className="btn btn-sm btn-danger-outline" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
-            Reset paper
-          </button>
+          {auth.canTrade && (
+            <button className="btn btn-sm btn-danger-outline" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
+              Reset paper
+            </button>
+          )}
+          <span className="account-chip">
+            <NavLink to="/profile" className="account-name" title={`${auth.user.username} · ${auth.user.roleLabel}`}>
+              {auth.user.displayName || auth.user.username}
+            </NavLink>
+            <span className="muted small hide-mid">{auth.user.roleLabel}</span>
+            <button className="btn btn-sm" onClick={auth.signOut}>Sign out</button>
+          </span>
           <button className={`iconbtn ${density === 'compact' ? 'iconbtn-on' : ''}`} onClick={toggleDensity} aria-label={`Density: ${density}. Switch to ${density === 'compact' ? 'comfortable' : 'compact'}`} title={`Density: ${density} (d)`} aria-pressed={density === 'compact'}>
             <IconRows />
           </button>
@@ -225,7 +239,7 @@ export function Layout() {
         </div>
         <div className="terminal-body">
           <aside className="rail" aria-label="Sections">
-            {NAV.map((n) => {
+            {nav.map((n) => {
               const Icon = n.icon
               return (
                 <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `rail-btn ${isActive ? 'rail-on' : ''}`} title={`${n.label} (g ${n.key})`} aria-label={n.label}>

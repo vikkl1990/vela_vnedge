@@ -21,7 +21,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot, MlScannerInsight, Analytics } from './types'
+  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -51,6 +51,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(`${BASE}${path}`, {
       ...init,
+      // the session lives in an HttpOnly cookie; without this the API sees an anonymous caller
+      credentials: 'include',
       headers: { Accept: 'application/json', ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...(init?.headers ?? {}) },
     })
   } catch (e) {
@@ -79,6 +81,7 @@ const get = <T>(path: string) => request<T>(path)
 const post = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) })
 const put = <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
+const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export const api = {
   // health / config
@@ -92,6 +95,20 @@ export const api = {
   ticker: (symbol: string) => get<Ticker>(`/ticker${qs({ symbol })}`),
 
   // scanners
+  // ---- authentication ----
+  authStatus: () => get<AuthStatus>('/auth/status'),
+  setup: (body: { username: string; password: string; displayName?: string }) => post<{ user: Me }>('/auth/setup', body),
+  login: (body: { username: string; password: string }) => post<{ user: Me }>('/auth/login', body),
+  logout: () => post<{ ok: true }>('/auth/logout'),
+  me: () => get<Session>('/auth/me'),
+  changePassword: (body: { current: string; next: string }) => post<{ ok: true }>('/auth/password', body),
+  updateProfile: (body: { displayName: string }) => post<{ user: Me }>('/auth/profile', body),
+  users: () => get<{ users: Me[]; roles: RoleOption[] }>('/users'),
+  createUser: (body: { username: string; password: string; role: Role; displayName?: string }) => post<{ user: Me }>('/users', body),
+  updateUser: (id: number, body: Partial<{ role: Role; displayName: string; disabled: boolean; password: string }>) => post<{ user: Me }>(`/users/${id}`, body),
+  deleteUser: (id: number) => del<{ ok: true }>(`/users/${id}`),
+  revokeSessions: (id: number) => post<{ ok: true }>(`/users/${id}/sessions/revoke`),
+
   scanners: () => get<Scanner[]>('/scanners'),
   /** id/name/status/category/enabled/hidden only — the full list carries per-scanner stats for ~2000 scripts. */
   scannerIndex: () => get<ScannerIndexEntry[]>('/scanners?view=lite'),

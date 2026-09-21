@@ -116,11 +116,20 @@ async function waitFor(pred: () => boolean, what: string, ms = 30_000) {
   const t0 = performance.now();
   while (!pred()) { if (performance.now() - t0 > ms) throw new Error(`timeout waiting for ${what}`); await new Promise(r => setTimeout(r, 25)); }
 }
-const getJson = async (p: string, init?: RequestInit) => { const r = await fetch(base + p, init); return { status: r.status, body: await r.json(), headers: r.headers }; };
+// Every API route now requires a session, so the replay signs in first and carries the cookie.
+let cookie = '';
+const withAuth = (init?: RequestInit): RequestInit => ({ ...init, headers: { ...(init?.headers as any), ...(cookie ? { cookie } : {}) } });
+const getJson = async (p: string, init?: RequestInit) => { const r = await fetch(base + p, withAuth(init)); return { status: r.status, body: await r.json(), headers: r.headers }; };
+const rememberCookie = (r: Response) => { const c = r.headers.get('set-cookie'); if (c) cookie = c.split(';')[0]; };
 
 test('boot: API listens, history backfills and warm-up runs the scanner once', async () => {
   await api.listen(port, '127.0.0.1');
   await app.start();
+  // first run has no users: the loopback setup route creates the administrator this test uses
+  const setup = await fetch(base + '/api/auth/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'replay', password: 'a-good-password' }) });
+  assert.equal(setup.status, 200, 'first-run setup');
+  rememberCookie(setup);
+  assert.ok(cookie.startsWith('vnedge_session='), 'a session cookie was issued');
   await waitFor(() => app.candles.has('BTCUSD', '5m') && app.candles.has('BTCUSD', '1m'), 'candle backfill');
   await waitFor(() => app.scanners.getLastRun('tiny') !== null, 'warm-up run', 60_000);
   const run = app.scanners.getLastRun('tiny')!;
@@ -152,7 +161,7 @@ test('bar close → scanner run → signal → paper position (exactly one close
   feed.push('5m', bar(T0 + TF, 50_520, 50_530));
   assert.equal(closedCounts.get(`5m:${T0}`), 1);
   assert.equal([...closedCounts.values()].every(n => n === 1), true);
-  const m = await fetch(base + '/api/metrics');
+  const m = await fetch(base + '/api/metrics', withAuth());
   assert.match(m.headers.get('content-type') ?? '', /text\/plain/);
   const text = await m.text();
   assert.match(text, /^# TYPE vnedge_bars_closed_total counter$/m);
@@ -285,15 +294,56 @@ test('scanner list: the batched build matches the per-scanner build, and the lit
 });
 
 test('responses are gzipped when asked for, and identical once decoded', async () => {
-  const plain = await fetch(base + '/api/scanners', { headers: { 'Accept-Encoding': 'identity' } });
+  const plain = await fetch(base + '/api/scanners', withAuth({ headers: { 'Accept-Encoding': 'identity' } }));
   assert.equal(plain.headers.get('content-encoding'), null);
   const raw = await plain.text();
-  const gz = await fetch(base + '/api/scanners', { headers: { 'Accept-Encoding': 'gzip' } });
+  const gz = await fetch(base + '/api/scanners', withAuth({ headers: { 'Accept-Encoding': 'gzip' } }));
   // undici decodes transparently; the header proves it travelled compressed
   assert.equal(gz.headers.get('content-encoding'), 'gzip');
   assert.equal(gz.headers.get('vary'), 'Accept-Encoding');
   assert.equal(await gz.text(), raw, 'compression must not change the payload');
   // small bodies stay uncompressed
-  const small = await fetch(base + '/api/stats', { headers: { 'Accept-Encoding': 'gzip' } });
+  const small = await fetch(base + '/api/stats', withAuth({ headers: { 'Accept-Encoding': 'gzip' } }));
   assert.equal(small.headers.get('content-encoding'), null, 'tiny payloads are not worth compressing');
+});
+
+test('authorisation is enforced by the server, not just hidden in the UI', async () => {
+  // an unauthenticated caller gets nothing, not even read access
+  for (const [method, path] of [['GET', '/api/stats'], ['GET', '/api/scanners'], ['POST', '/api/paper/reset'], ['GET', '/api/users']] as const) {
+    const r = await fetch(base + path, { method });
+    assert.equal(r.status, 401, `${method} ${path} must refuse an anonymous caller`);
+  }
+  // the live event stream is not an exception
+  assert.equal((await fetch(base + '/api/events')).status, 401);
+
+  // a backtest-only account reads and backtests, and is refused everything that trades
+  const admin = cookie;
+  const made = await getJson('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'analyst', password: 'a-good-password', role: 'viewer' }) });
+  assert.equal(made.status, 200);
+  assert.equal(made.body.user.role, 'viewer');
+  assert.equal(made.body.user.roleLabel, 'Backtest only');
+
+  const login = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'analyst', password: 'a-good-password' }) });
+  assert.equal(login.status, 200);
+  rememberCookie(login);
+
+  assert.equal((await getJson('/api/stats')).status, 200, 'viewer may read');
+  const me = await getJson('/api/auth/me');
+  assert.deepEqual(me.body.permissions, ['read', 'backtest']);
+
+  for (const path of ['/api/paper/reset', '/api/paper/close-all', '/api/scanners/auto-tune', '/api/risk/kill']) {
+    const r = await getJson(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(r.status, 403, `viewer must be refused ${path}`);
+    assert.equal(r.body.needed, 'trade');
+  }
+  const cfg = await getJson('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(cfg.status, 403, 'viewer must not rewrite configuration');
+  assert.equal((await getJson('/api/users')).status, 403, 'viewer must not see the user list');
+
+  // signing out invalidates the session immediately
+  await getJson('/api/auth/logout', { method: 'POST' });
+  assert.equal((await getJson('/api/stats')).status, 401);
+
+  cookie = admin;   // hand the rest of the suite back its administrator
+  assert.equal((await getJson('/api/stats')).status, 200);
 });
