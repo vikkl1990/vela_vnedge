@@ -196,3 +196,28 @@ not already have. It converts a run into a cap.
 
 This is the same lesson as the floors and the give-back thresholds, in the one place it is
 unambiguous: on this fleet, protecting profit earlier costs more than it saves, every time.
+
+## 10. Tested: other timeframes. 15m is the only one that works on this fleet.
+
+The same 19 scanner/symbol pairs, the same exit policy, the same 40 days, run at four timeframes:
+
+| timeframe | trades | net | PF | win% | avg R | trades/day | windows up |
+|---|---|---|---|---|---|---|---|
+| 5m | 1074 | −1777 | 0.79 | 43% | −0.11 | 26.9 | 1/8 |
+| **15m (live)** | **1067** | **4514** | **1.48** | **56%** | **0.20** | **26.7** | **7/8** |
+| 1h | 345 | 740 | 1.23 | 50% | 0.11 | 8.6 | 5/8 |
+| 4h | 64 | 318 | 1.60 | 50% | 0.30 | 1.6 | 5/8 |
+
+5m is not a thinner version of the same edge, it is the opposite sign: the win rate falls from 56%
+to 43% and only one window of eight is positive, on almost exactly the same number of trades. These
+scanners are reading structure that does not exist five minutes at a time.
+
+1h and 4h keep a positive expectancy but give up most of the sample: 1h trades a third as often for
+half the edge, and 4h produces 64 trades in 40 days, which is too few to select on and too few to
+trade. 4h's higher average R on 64 trades is not evidence of anything.
+
+So the fleet's edge is specific to 15m, which is also the timeframe it was selected on — worth
+stating plainly, because it means the selection and the result are not independent.
+
+**Revisit if** the review shows 15m working live, at which point 1h becomes a candidate for
+diversifying the signal source rather than replacing it. Adding 5m would be actively harmful.
