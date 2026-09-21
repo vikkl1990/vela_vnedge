@@ -221,3 +221,9 @@ export function truncate(s: string | null | undefined, n = 80): string {
 export function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v))
 }
+
+/** Legacy API encodes a profitable sample without gross losses as 999. */
+export function fmtProfitFactor(v: number | null | undefined): string {
+  if (v === 999 || v === Infinity) return 'No gross losses'
+  return fmtNum(v)
+}

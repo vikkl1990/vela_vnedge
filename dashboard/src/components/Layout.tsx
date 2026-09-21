@@ -130,18 +130,18 @@ export function Layout() {
         </nav>
 
         <div className="topright">
-          <span className="pill pill-accent">{(h?.mode ?? 'paper').toUpperCase()}</span>
-          <span className="topstat" title="Equity">
-            <span className="topstat-label">EQ</span>
+          <span className="pill pill-accent">{!h ? 'Execution: loading' : h.mode === 'paper' ? 'Paper · simulated fills' : `Execution: ${h.mode}`}</span>
+          <span className="topstat" title="Equity (USD)">
+            <span className="topstat-label">EQ USD</span>
             <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
           </span>
           <span className="topstat" title="Today's PnL">
-            <span className="topstat-label">DAY</span>
+            <span className="topstat-label">DAY USD</span>
             <span className={`mono ${pnlClass(s?.todayPnl)}`}>{s ? fmtPnl(s.todayPnl) : '–'}</span>
           </span>
           <span className="topstat" title="Open positions">
             <span className="topstat-label">POS</span>
-            <span className="mono">{openCount}</span>
+            <span className="mono">{s ? openCount : '–'}</span>
           </span>
           <span className="topstat hide-mid" title="Worker queue (queued / busy / size)">
             <span className="topstat-label">Q</span>
@@ -203,7 +203,7 @@ export function Layout() {
           </span>
           <span className={`pill ${live ? 'pill-ok' : 'pill-warn'} live-pill`}>
             <StatusDot tone={live ? 'ok' : 'warn'} />
-            {live ? 'LIVE' : 'STALE'}
+            {live ? 'Feed connected' : 'Feed unavailable'}
           </span>
         </div>
         <div className="terminal-body">

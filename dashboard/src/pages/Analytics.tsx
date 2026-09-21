@@ -5,11 +5,11 @@ import { useAnalytics } from '../api/queries'
 import type { Agg, Analytics as AnalyticsData } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { Empty, ErrorState, KpiTile, Loading, PageTitle, Panel, Segmented, Time } from '../components/ui'
-import { fmtMoney, fmtPct, fmtPnl } from '../lib/format'
+import { fmtMoney, fmtPct, fmtPnl, fmtProfitFactor } from '../lib/format'
 
 type Mode = 'backtest' | 'live'
 const EMPTY_AGG: Agg = { trades: 0, wins: 0, winRatePct: 0, pnl: 0, fees: 0, profitFactor: null }
-const pf = (v: number | null) => (v == null ? '–' : v >= 999 ? '∞' : v.toFixed(2))
+const pf = fmtProfitFactor
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 type PairRow = AnalyticsData['symbols'][number] & { agg: Agg }
@@ -128,7 +128,7 @@ export function Analytics() {
 
   return (
     <div className="page">
-      <PageTitle pre="Where the edge," accent="lives." sub="Which pairs pay, which scanners earn, and where the two meet. Backtest = enabled scanners on their tuned symbols over the loaded history; Live = closed paper trades." />
+      <PageTitle pre="Where the edge," accent="lives." sub="Which pairs pay, which scanners earn, and where the two meet. Backtest = enabled scanners on their tuned symbols over the loaded history; Paper trades = simulated fills and P&L." />
       <div className="row gap mb">
         <Segmented
           ariaLabel="Data source"
@@ -136,7 +136,7 @@ export function Analytics() {
           onChange={(v) => setMode(v as Mode)}
           options={[
             { value: 'backtest', label: 'Backtest' },
-            { value: 'live', label: 'Live' },
+            { value: 'live', label: 'Paper trades' },
           ]}
         />
         {d && (
@@ -162,11 +162,11 @@ export function Analytics() {
       {d && tot && (
         <>
           <div className="kpi-grid">
-            <KpiTile label={`${mode} net PnL`} value={fmtPnl(tot.pnl)} tone={tot.pnl >= 0 ? 'gain' : 'loss'} sub={<span className="muted">fees {fmtMoney(tot.fees)} · {tot.trades} trades</span>} />
+            <KpiTile label={`${mode === 'live' ? 'Paper' : 'Backtest'} net PnL (USD)`} value={fmtPnl(tot.pnl)} tone={tot.pnl >= 0 ? 'gain' : 'loss'} sub={<span className="muted">fees {fmtMoney(tot.fees)} · {tot.trades} trades</span>} />
             <KpiTile label="Win rate" value={fmtPct(tot.winRatePct)} sub={<span className="muted">PF {pf(tot.profitFactor)}</span>} />
             <KpiTile label="Best pair" value={best ? best.symbol : '–'} tone="gain" sub={best ? <span className="gain">{fmtPnl(best.agg.pnl)} · {best.agg.trades} trades · {fmtPct(best.agg.winRatePct)}</span> : undefined} />
             <KpiTile label="Worst pair" value={worst && worst.agg.pnl < 0 ? worst.symbol : '–'} tone="loss" sub={worst && worst.agg.pnl < 0 ? <span className="loss">{fmtPnl(worst.agg.pnl)} · {worst.agg.trades} trades</span> : <span className="muted">no losing pair</span>} />
-            <KpiTile label="Best scanner" value={bestSc ? bestSc.name.slice(0, 22) : '–'} tone="gain" sub={bestSc ? <span className="gain">{fmtPnl(bestSc.agg.pnl)} · PF {pf(bestSc.agg.profitFactor)}</span> : undefined} />
+            <KpiTile label="Best scanner" value={bestSc ? bestSc.name : '–'} tone="gain" sub={bestSc ? <span className="gain">{fmtPnl(bestSc.agg.pnl)} · PF {pf(bestSc.agg.profitFactor)}</span> : undefined} />
           </div>
 
           <div className="grid-2">
@@ -263,16 +263,16 @@ export function Analytics() {
             </Panel>
           </div>
 
-          <Panel title="Live exits" pad={false}>
+          <Panel title="Paper exits" pad={false}>
             <DataTable
               columns={exitCols}
               rows={d.exits}
               rowKey={(e) => e.reason}
               defaultSort={{ key: 'pnl', dir: 'desc' }}
-              caption="Live exits by reason"
+              caption="Paper exits by reason"
               emptyLabel={
                 <span>
-                  No closed live trades yet<span className="empty-hint">Exit reasons are tallied from closed paper trades.</span>
+                  No closed paper trades yet<span className="empty-hint">Exit reasons are tallied from closed paper trades.</span>
                 </span>
               }
             />

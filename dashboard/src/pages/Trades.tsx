@@ -8,7 +8,7 @@ import { ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, P
 import { fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtR, fmtTime } from '../lib/format'
 import { useToast } from '../lib/toast'
 
-const EXIT_REASONS = ['tp3', 'sl', 'be', 'script_exit', 'reversal', 'manual', 'tp_partial']
+const EXIT_REASONS: Record<string, string> = { tp1: 'Take profit 1', tp2: 'Take profit 2', tp3: 'Take profit 3', sl: 'Stop loss', be: 'Break-even', script_exit: 'Script exit', reversal: 'Reversal', manual: 'Manual close', tp_partial: 'Partial take profit', liquidation: 'Liquidation', removed: 'Scanner removed' }
 
 export function Trades() {
   const positions = usePositions()
@@ -18,6 +18,7 @@ export function Trades() {
   const toast = useToast()
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
   const [scanner, setScanner] = useState('')
+  const [scannerSearch, setScannerSearch] = useState('')
   const [symbol, setSymbol] = useState('')
   const [reason, setReason] = useState('')
   const q = useMemo(() => ({ limit: 300, scanner: scanner || undefined, symbol: symbol || undefined }), [scanner, symbol])
@@ -57,13 +58,13 @@ export function Trades() {
       { key: 'side', header: 'Side', value: (t) => t.side, render: (t) => <SidePill side={t.side} /> },
       { key: 'qty', header: 'Qty', numeric: true, value: (t) => t.qty, render: (t) => <span className="mono">{fmtInt(t.qty)}</span> },
       { key: 'entry', header: 'Entry', numeric: true, value: (t) => t.entryPrice, render: (t) => <span className="mono">{fmtPrice(t.entryPrice, tick(t.symbol))}</span> },
-      { key: 'exit', header: 'Exit', numeric: true, value: (t) => t.exitPrice, render: (t) => <span className="mono">{fmtPrice(t.exitPrice, tick(t.symbol))}</span> },
+      { key: 'exit', header: 'Exit price', numeric: true, value: (t) => t.exitPrice, render: (t) => <span className="mono">{fmtPrice(t.exitPrice, tick(t.symbol))}</span> },
       { key: 'dur', header: 'Held', numeric: true, value: (t) => t.exitAt - t.entryAt, render: (t) => <span className="mono muted small">{fmtDuration(t.exitAt - t.entryAt)}</span> },
-      { key: 'pnl', header: 'PnL', numeric: true, value: (t) => t.pnl, render: (t) => <Pnl value={t.pnl} /> },
-      { key: 'pnlPct', header: '%', numeric: true, value: (t) => t.pnlPct, render: (t) => <span className={`mono ${t.pnlPct >= 0 ? 'gain' : 'loss'}`}>{fmtPct(t.pnlPct, 1, true)}</span> },
-      { key: 'fees', header: 'Fees', numeric: true, value: (t) => t.fees, render: (t) => <span className="mono muted">{fmtMoney(t.fees)}</span> },
+      { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <Pnl value={t.pnl} /> },
+      { key: 'pnlPct', header: 'Return %', title: 'Net P&L divided by initial entry notional, after fees', numeric: true, value: (t) => t.pnlPct, render: (t) => <span className={`mono ${t.pnlPct >= 0 ? 'gain' : 'loss'}`}>{fmtPct(t.pnlPct, 1, true)}</span> },
+      { key: 'fees', header: 'Fees (USD)', numeric: true, value: (t) => t.fees, render: (t) => <span className="mono muted">{fmtMoney(t.fees)}</span> },
       { key: 'r', header: 'R', numeric: true, value: (t) => t.rMultiple, render: (t) => <span className={`mono ${t.rMultiple >= 0 ? 'gain' : 'loss'}`}>{fmtR(t.rMultiple)}</span> },
-      { key: 'reason', header: 'Exit', value: (t) => t.exitReason, render: (t) => <ExitReasonPill reason={t.exitReason} /> },
+      { key: 'reason', header: 'Exit reason', value: (t) => t.exitReason, render: (t) => <ExitReasonPill reason={t.exitReason} /> },
       {
         key: 'fills',
         header: 'Fills',
@@ -86,7 +87,7 @@ export function Trades() {
       { key: 'side', header: 'Side', value: (o) => o.side, render: (o) => <span className={`side ${o.side === 'buy' ? 'side-long' : 'side-short'}`}>{o.side.toUpperCase()}</span> },
       { key: 'qty', header: 'Qty', numeric: true, value: (o) => o.qty, render: (o) => <span className="mono">{fmtInt(o.qty)}</span> },
       { key: 'price', header: 'Price', numeric: true, value: (o) => o.price, render: (o) => <span className="mono">{fmtPrice(o.price, tick(o.symbol))}</span> },
-      { key: 'fee', header: 'Fee', numeric: true, value: (o) => o.fee, render: (o) => <span className="mono muted">{fmtMoney(o.fee)}</span> },
+      { key: 'fee', header: 'Fee (USD)', numeric: true, value: (o) => o.fee, render: (o) => <span className="mono muted">{fmtMoney(o.fee)}</span> },
       { key: 'reason', header: 'Reason', value: (o) => o.reason, render: (o) => <ExitReasonPill reason={o.reason} /> },
       { key: 'pos', header: 'Pos', numeric: true, value: (o) => o.positionId, render: (o) => <span className="mono muted">#{o.positionId}</span> },
       {
@@ -140,9 +141,10 @@ export function Trades() {
         }
         right={
           <div className="row gap filters">
+            <input className="input scanner-search" type="search" aria-label="Search scanner options" placeholder="Search scanners…" value={scannerSearch} onChange={(e) => setScannerSearch(e.target.value)} />
             <select className="select select-sm" value={scanner} onChange={(e) => setScanner(e.target.value)} aria-label="Scanner">
               <option value="">All scanners</option>
-              {(scanners.data ?? []).map((s) => (
+              {(scanners.data ?? []).filter((s) => s.id === scanner || `${s.name} ${s.id}`.toLowerCase().includes(scannerSearch.toLowerCase())).map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
                 </option>
@@ -158,9 +160,9 @@ export function Trades() {
             </select>
             <select className="select select-sm" value={reason} onChange={(e) => setReason(e.target.value)} aria-label="Exit reason">
               <option value="">All exits</option>
-              {EXIT_REASONS.map((r) => (
+              {Array.from(new Set([...Object.keys(EXIT_REASONS), ...(trades.data ?? []).map((t) => t.exitReason)])).map((r) => (
                 <option key={r} value={r}>
-                  {r}
+                  {EXIT_REASONS[r] ?? r}
                 </option>
               ))}
             </select>

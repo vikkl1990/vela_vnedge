@@ -8,7 +8,7 @@ import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconPlay } from '../components/Icons'
 import { Collapsible, Empty, ErrorState, ExitReasonPill, KpiTile, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
 import { SignalsTable } from './Signals'
-import { fmtInt, fmtMs, fmtNum, fmtPct, fmtPrice, fmtR } from '../lib/format'
+import { fmtInt, fmtMs, fmtProfitFactor, fmtPct, fmtPrice, fmtR } from '../lib/format'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
 
@@ -121,11 +121,11 @@ export function ScannerDetail() {
         <KpiTile label="Signals" value={fmtInt(st?.signals)} />
         <KpiTile label="Trades" value={fmtInt(st?.trades)} sub={<span className="muted">{st?.open ?? 0} open</span>} />
         <KpiTile label="Win rate" value={fmtPct(st?.winRatePct)} sub={<span className="muted">{st?.wins ?? 0}W / {st?.losses ?? 0}L</span>} />
-        <KpiTile label="Profit factor" value={fmtNum(st?.profitFactor)} tone={(st?.profitFactor ?? 0) >= 1 ? 'gain' : 'loss'} />
+        <KpiTile label="Profit factor" value={fmtProfitFactor(st?.profitFactor)} tone={(st?.profitFactor ?? 0) >= 1 ? 'gain' : 'loss'} />
         <KpiTile label="PnL" value={<Pnl value={st?.pnl} />} sub={<span className="muted">{fmtPct(st?.pnlPct, 1, true)}</span>} />
         <KpiTile label="Avg R" value={fmtR(st?.avgR)} tone={(st?.avgR ?? 0) >= 0 ? 'gain' : 'loss'} />
         <KpiTile label="Max DD" value={`−${fmtPct(Math.abs(st?.maxDrawdownPct ?? 0))}`} tone="loss" />
-        <KpiTile label="Backtest PF" value={bt ? fmtNum(bt.profitFactor) : '–'} sub={bt ? <span className="muted">{bt.trades} trades · {fmtPct(bt.winRatePct)} · <Pnl value={bt.pnl} /></span> : <span className="muted">no warm backtest</span>} hint="Backtest profit factor" />
+        <KpiTile label="Backtest PF" value={bt ? fmtProfitFactor(bt.profitFactor) : '–'} sub={bt ? <span className="muted">{bt.trades} trades · {fmtPct(bt.winRatePct)} · <Pnl value={bt.pnl} /></span> : <span className="muted">no warm backtest</span>} hint="Backtest profit factor" />
       </div>
 
       <Panel
@@ -191,7 +191,7 @@ export function ScannerDetail() {
                 </span>
                 <span className="stat-chip">
                   <span className="stat-k">PF</span>
-                  <span className="mono">{fmtNum(btRes.stats?.profitFactor as number)}</span>
+                  <span className="mono">{fmtProfitFactor(btRes.stats?.profitFactor as number)}</span>
                 </span>
                 <span className="stat-chip">
                   <span className="stat-k">PNL</span>

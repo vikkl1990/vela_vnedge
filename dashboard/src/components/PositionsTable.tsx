@@ -150,6 +150,31 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
 
   return (
     <>
+      <div className="position-cards" aria-label="Open positions">
+        {positions.length === 0 && <p className="muted">No open positions</p>}
+        {positions.map((p) => {
+          const tick = markets?.find((m) => m.symbol === p.symbol)?.tickSize
+          return <article className="position-card" key={p.id}>
+            <div className="row gap"><b>{p.symbol} {p.tf}</b><SidePill side={p.side} /></div>
+            <Link className="link" to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link>
+            <dl className="position-metrics">
+              <div><dt>Unrealized P&L (USD)</dt><dd><LiveUpnl p={p} /></dd></div>
+              <div><dt>Mark price</dt><dd><LiveMark p={p} tick={tick} /></dd></div>
+              <div><dt>Stop loss {p.breakEven ? '(break-even)' : ''}</dt><dd>{fmtPrice(p.sl, tick)}</dd></div>
+              <div><dt>Liquidation (modelled)</dt><dd>{fmtPrice(p.liqPrice, tick)}</dd></div>
+              <div><dt>Entry price</dt><dd>{fmtPrice(p.entryPrice, tick)}</dd></div>
+              <div><dt>Open / initial contracts</dt><dd>{fmtInt(p.qtyOpen)} / {fmtInt(p.qty)}</dd></div>
+              <div><dt>Margin (USD)</dt><dd>{fmtMoney(p.margin)}</dd></div>
+              <div><dt>Leverage</dt><dd>{(p.marginLeverage ?? p.leverage)?.toFixed(1) ?? '–'}×</dd></div>
+              <div><dt>Realized P&L (USD)</dt><dd><Pnl value={p.realizedPnl} /></dd></div>
+              <div><dt>Risk (USD)</dt><dd>{fmtMoney(p.riskAmount)}</dd></div>
+            </dl>
+            <div className="small">TP1 / TP2 / TP3: {[0, 1, 2].map((i) => <span key={i} className={p.tpHit?.[i] ? 'tp-hit' : ''}> {fmtPrice(p.tp?.[i], tick)}{p.tpHit?.[i] ? ' (hit)' : ''}{i < 2 ? ' /' : ''}</span>)}</div>
+            <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>
+          </article>
+        })}
+      </div>
+      <div className="position-desktop">
       <DataTable
         columns={cols}
         rows={positions}
@@ -163,6 +188,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         defaultSort={{ key: 'age', dir: 'desc' }}
         caption="Open positions"
       />
+      </div>
       <ConfirmDialog
         open={!!closing}
         title={closing ? `Close ${closing.side.toUpperCase()} ${closing.symbol}?` : ''}
