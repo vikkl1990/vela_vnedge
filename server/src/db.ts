@@ -9,6 +9,12 @@ export interface SignalRow {
   label: string; message: string; summary: string; source: string; levelsSource: string | null; action: string; positionId: number | null; mlProb?: number | null;
 }
 
+/** Columns added after the first release; SQLite has no IF NOT EXISTS for these. */
+const ADDED_COLUMNS: Array<[string, string]> = [
+  ['orders', 'ref_price REAL'], ['orders', 'bid REAL'], ['orders', 'ask REAL'],
+  ['orders', 'quote_at INTEGER'], ['orders', 'price_source TEXT'],
+];
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS signals (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, bar_time INTEGER NOT NULL, scanner_id TEXT NOT NULL, scanner_name TEXT NOT NULL,
@@ -30,7 +36,9 @@ CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status, bt);
 
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, position_id INTEGER NOT NULL, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL,
-  side TEXT NOT NULL, qty REAL NOT NULL, price REAL NOT NULL, fee REAL NOT NULL, reason TEXT NOT NULL, bt INTEGER NOT NULL DEFAULT 0
+  side TEXT NOT NULL, qty REAL NOT NULL, price REAL NOT NULL, fee REAL NOT NULL, reason TEXT NOT NULL, bt INTEGER NOT NULL DEFAULT 0,
+  -- fill quality: what the book looked like when this filled, so the cost assumption can be audited
+  ref_price REAL, bid REAL, ask REAL, quote_at INTEGER, price_source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_orders_at ON orders(at DESC);
 
@@ -72,6 +80,11 @@ export class Db {
     const cols = this.db.prepare('PRAGMA table_info(signals)').all() as Array<{ name: string }>;
     if (!cols.some(c => c.name === 'summary')) this.db.exec("ALTER TABLE signals ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
     if (!cols.some(c => c.name === 'ml_prob')) this.db.exec('ALTER TABLE signals ADD COLUMN ml_prob REAL');
+    for (const [table, decl] of ADDED_COLUMNS) {
+      const name = decl.split(' ')[0];
+      const existing = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!existing.some(c => c.name === name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${decl}`);
+    }
   }
 
   run(sql: string, ...params: any[]) { try { return this.db.prepare(sql).run(...params); } catch (e) { this.noteError(e); throw e; } }

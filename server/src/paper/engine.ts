@@ -110,7 +110,19 @@ export class PaperEngine extends EventEmitter {
   setMark(symbol: string, price: number) { this.marks.set(symbol, price); }
 
   /** Live top-of-book source (set by the realtime wiring); enables spread-crossing fills. */
-  quotes: { executable(symbol: string, side: 'buy' | 'sell', maxAgeMs: number, now?: number): number | null } | null = null;
+  quotes: {
+    executable(symbol: string, side: 'buy' | 'sell', maxAgeMs: number, now?: number): number | null;
+    markState?(symbol: string): { bestBid: number | null; bestAsk: number | null; at: number } | undefined;
+  } | null = null;
+
+  /**
+   * What each fill was priced against, captured at the moment it happened.
+   *
+   * The simulated cost is only as good as `slippageBps`, and the edge is thin enough that a few
+   * basis points decide it. Recording the live book alongside every fill lets the assumption be
+   * audited against the market actually traded, rather than assumed correct for months.
+   */
+  private fillContext: { ref?: number; source?: 'quote' | 'slippage' } = {};
 
   /**
    * Price a market-style fill. With a fresh quote we cross the real spread (buy at ask,
@@ -205,6 +217,7 @@ export class PaperEngine extends EventEmitter {
     const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
     if ('reject' in quoted) return { action: 'rejected', reason: `unpriceable: ${quoted.reject}`, closed };
     const price = quoted.price;
+    this.fillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
     const feeErr = checkRiskVsFees(price, levels.sl, cfg);
@@ -525,7 +538,14 @@ export class PaperEngine extends EventEmitter {
 
   private persistFill(p: Position, f: Fill) {
     const side = fillSide(p, f);
-    this.db.run('INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt) VALUES (?,?,?,?,?,?,?,?,?,0)', f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason);
+    const q = this.quotes?.markState?.(p.symbol);
+    const ctx = this.fillContext;
+    this.db.run(
+      'INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt, ref_price, bid, ask, quote_at, price_source) VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)',
+      f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason,
+      ctx.ref ?? null, q?.bestBid ?? null, q?.bestAsk ?? null, q?.at ?? null, ctx.source ?? null,
+    );
+    this.fillContext = {};
   }
 
   private applyFills(pos: Position, fills: Fill[]) {

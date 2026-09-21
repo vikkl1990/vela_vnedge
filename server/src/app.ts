@@ -193,6 +193,65 @@ export class App {
     });
   }
 
+  /**
+   * Did the fills cost what the backtest assumed?
+   *
+   * Every live fill stores the top of book at that instant. `assumedBps` is what the simulation
+   * charged; `observedHalfSpreadBps` is half the quoted spread, which is what crossing it really
+   * costs. Their difference, multiplied by two for the round trip and divided by the average stop
+   * distance, is the error in R per trade — and the edge is about 0.2R, so this is the number that
+   * decides whether the backtest transfers.
+   */
+  fillQuality(limit = 500) {
+    const rows = this.db.all<any>(
+      'SELECT * FROM orders WHERE bt=0 AND bid IS NOT NULL AND ask IS NOT NULL ORDER BY at DESC LIMIT ?', limit);
+    const assumedBps = this.config.get().paper.slippageBps;
+    const bySymbol = new Map<string, { n: number; spread: number; slip: number; quoted: number }>();
+    let spreadSum = 0, slipSum = 0, quoted = 0;
+    const recent: any[] = [];
+    for (const r of rows) {
+      const mid = (r.bid + r.ask) / 2;
+      if (!(mid > 0)) continue;
+      const halfSpreadBps = (r.ask - r.bid) / 2 / mid * 10_000;
+      // what this fill actually gave up against the mid, signed so positive always means worse
+      const dir = r.side === 'buy' ? 1 : -1;
+      const slipBps = ((r.price - mid) / mid) * 10_000 * dir;
+      spreadSum += halfSpreadBps; slipSum += slipBps;
+      if (r.price_source === 'quote') quoted++;
+      const e = bySymbol.get(r.symbol) ?? { n: 0, spread: 0, slip: 0, quoted: 0 };
+      e.n++; e.spread += halfSpreadBps; e.slip += slipBps; if (r.price_source === 'quote') e.quoted++;
+      bySymbol.set(r.symbol, e);
+      if (recent.length < 25) recent.push({ at: r.at, symbol: r.symbol, side: r.side, reason: r.reason, price: r.price, bid: r.bid, ask: r.ask, halfSpreadBps: +halfSpreadBps.toFixed(2), slipBps: +slipBps.toFixed(2), source: r.price_source });
+    }
+    const n = rows.length || 1;
+    const avgSpread = spreadSum / n, avgSlip = slipSum / n;
+    const avgStopPct = this.db.get<{ v: number }>(
+      "SELECT AVG(ABS(entry_price - sl_original) / entry_price) v FROM positions WHERE bt=0 AND sl_original IS NOT NULL AND entry_price > 0")?.v ?? 0;
+    const stopBps = avgStopPct * 10_000;
+    const errorBps = (avgSpread - assumedBps) * 2;   // round trip
+    return {
+      fills: rows.length,
+      assumedBps,
+      observedHalfSpreadBps: +avgSpread.toFixed(2),
+      modelledSlipBps: +avgSlip.toFixed(2),
+      quotedShare: rows.length ? +(quoted / rows.length * 100).toFixed(0) : null,
+      avgStopBps: +stopBps.toFixed(0),
+      /** How wrong the assumption is, per trade, in R. Compare against an edge of roughly 0.2R. */
+      errorRPerTrade: stopBps > 0 ? +(errorBps / stopBps).toFixed(3) : null,
+      verdict: !rows.length ? 'no quoted fills yet'
+        : avgSpread <= assumedBps ? 'the assumption is conservative: real spreads are tighter'
+        : `real spreads are ${(avgSpread / Math.max(assumedBps, 0.01)).toFixed(1)}x the assumption`,
+      bySymbol: [...bySymbol.entries()].map(([symbol, e]) => ({
+        symbol, fills: e.n,
+        halfSpreadBps: +(e.spread / e.n).toFixed(2),
+        slipBps: +(e.slip / e.n).toFixed(2),
+        quotedShare: +(e.quoted / e.n * 100).toFixed(0),
+        worseThanAssumed: e.spread / e.n > assumedBps,
+      })).sort((a, b) => b.halfSpreadBps - a.halfSpreadBps),
+      recent,
+    };
+  }
+
   /** Cross-sectional analytics: pairs, scanners, scanner×pair matrix, exits and time-of-day, for backtest and live. */
   analytics() {
     type Agg = { trades: number; wins: number; pnl: number; gp: number; gl: number; fees: number };

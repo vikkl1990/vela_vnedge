@@ -304,6 +304,8 @@ export class ApiServer {
     this.add('POST', '/api/ml/train', () => a.ml.train());
     this.add('GET', '/api/ml/scanner/:id', (_r, _s, p) => a.ml.insightFor(p.id) ?? { scannerId: p.id, samples: 0, rules: [], model: null });
     this.add('GET', '/api/ml/samples', (_r, _s, _p, url) => a.ml.samples(url.searchParams.get('scanner') ?? undefined, Number(url.searchParams.get('limit') ?? 500)));
+    // Fill quality: what the cost assumption was worth against the book actually quoted.
+    this.add('GET', '/api/fills/quality', (_r, _s, _p, url) => a.fillQuality(Number(url.searchParams.get('limit') ?? 500)));
     this.add('GET', '/api/logs', (_r, _s, _p, url) => logger.tail(Number(url.searchParams.get('limit') ?? 200), (url.searchParams.get('level') as any) ?? undefined));
   }
 }

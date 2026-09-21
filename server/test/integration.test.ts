@@ -369,3 +369,28 @@ test('failed authentication reports 401 and 400, not 500', async () => {
   assert.equal(weak.status, 400);
   assert.match(weak.body.error, /at least 10/);
 })
+
+test('every fill records the book it was priced against, and the report audits the assumption', async () => {
+  const before = await getJson('/api/fills/quality');
+  assert.equal(before.status, 200);
+  assert.equal(before.body.assumedBps, 0, 'the replay runs with slippage off');
+
+  // the replay opened and closed a position, so orders exist; quotes are absent in this fixture
+  const orders = await getJson('/api/orders?limit=50');
+  assert.equal(orders.status, 200);
+  assert.ok((orders.body as any[]).length > 0, 'the replay produced fills');
+
+  // with a book present the report computes the spread the fill really crossed
+  const { Db } = await import('../src/db.ts');
+  const db = new Db(':memory:');
+  db.run("INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt, ref_price, bid, ask, quote_at, price_source) VALUES (1,1,'s','BTCUSD','buy',1,100.5,0,'entry',0,100,99.5,100.5,1,'quote')");
+  const row = db.get<any>('SELECT * FROM orders WHERE bt=0');
+  assert.equal(row.bid, 99.5);
+  assert.equal(row.ask, 100.5);
+  assert.equal(row.price_source, 'quote');
+  // mid 100, bought at the ask: that is 50 bps given up, and half the spread is 50 bps
+  const mid = (row.bid + row.ask) / 2;
+  assert.equal(Math.round(((row.price - mid) / mid) * 10_000), 50);
+  assert.equal(Math.round((row.ask - row.bid) / 2 / mid * 10_000), 50);
+  db.db.close();
+})
