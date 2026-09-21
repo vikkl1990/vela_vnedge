@@ -195,7 +195,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   for (const a of alerts) {
     if (a.type !== 'alertcondition' || alertBars.has(a.time)) continue;
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
-    const title = (a.title ?? a.message ?? '').trim();
+    // PineTS can hand back a non-string title (e.g. a Series or number) — coerce before parsing
+    const title = String(a.title ?? a.message ?? '').trim();
     const side = directionalTitle(title);
     if (!side) continue;
     const key = `entry:${side}:${a.time}:`;

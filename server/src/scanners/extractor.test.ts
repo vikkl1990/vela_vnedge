@@ -110,3 +110,11 @@ test('exit prices use the hit level, never the contextual entry price', () => {
   assert.equal(parseAlert(A('TARGET REACHED | Ref entry: 100 | Target: 110'))?.price, 110);
   assert.equal(parseAlert(A('TRADE CLOSED | Entry: 100 | Price: 103'))?.price, 103);
 });
+
+test('non-string alertcondition titles do not crash extraction', () => {
+  const weird = { barIndex: 1, time: 10, type: 'alertcondition' as const, title: 42 as unknown as string, message: 'Bullish Break' };
+  const evs = extractEvents([weird], []);
+  assert.equal(evs.length, 0); // "42" has no direction → no entry, and no throw
+  const ok = extractEvents([{ barIndex: 1, time: 20, type: 'alertcondition' as const, title: undefined as unknown as string, message: 'Bearish Breakout' }], []);
+  assert.equal(ok[0]?.side, 'short');
+});
