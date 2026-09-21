@@ -79,3 +79,25 @@ test('audit 4: a bar that closes during a running job is not dropped, it runs ne
   for (let i = 0; i < 10; i++) await setImmediate();
   assert.equal(finishers.length, 2, 'and it does not loop');
 });
+
+test('a scanner the configuration has never seen is off, not on', async t => {
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.symbols = ['BTCUSD']; cfg.timeframes = ['15m'];
+  cfg.scanners.known = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+  const scanners = [
+    { id: 'known', name: 'Configured and on', status: 'ok', patched: '' },
+    { id: 'freshly-imported', name: 'Never configured', status: 'ok', patched: '' },
+  ];
+  const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper: new PaperEngine(db, () => cfg),
+    candles: Object.assign(new EventEmitter(), { get: () => [] }) as any,
+    pool: { stats: { queued: 0 }, run: async () => ({}) } as any,
+    registry: { all: () => scanners } as any, rest: {} as any });
+
+  assert.equal(engine.isActive(scanners[0] as any), true, 'an explicitly enabled scanner still runs');
+  assert.equal(engine.isActive(scanners[1] as any), false, 'an imported scanner must not trade until someone enables it');
+  // and it contributes no work: importing a thousand scripts must not touch the candle feed
+  assert.deepEqual(engine.requiredSeries().map(r => r.symbol), ['BTCUSD']);
+  assert.equal(engine.scannerConfig('freshly-imported').enabled, false);
+});

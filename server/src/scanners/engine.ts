@@ -113,9 +113,17 @@ export class ScannerEngine extends EventEmitter {
 
   // ---- configuration helpers ----
 
+  /**
+   * A scanner the configuration has never heard of is OFF.
+   *
+   * It used to default to enabled, which meant dropping a .pine file into the folder — or pulling
+   * an import someone else made — put it straight into the live fleet on the next restart, across
+   * the whole symbol universe. Adding a file should not start trading it; turning it on should be
+   * a decision someone made.
+   */
   scannerConfig(id: string): ScannerConfig {
     const cfg = this.cfgRef();
-    return cfg.scanners[id] ?? { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+    return cfg.scanners[id] ?? { enabled: false, symbols: null, timeframes: null, exitMode: 'both' };
   }
   symbolsFor(id: string): string[] { return this.scannerConfig(id).symbols ?? this.symbolsRef(); }
   timeframesFor(id: string): string[] { return this.scannerConfig(id).timeframes ?? this.cfgRef().timeframes; }
