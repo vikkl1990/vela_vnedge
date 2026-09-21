@@ -33,6 +33,25 @@ SL and TP levels must remain positive and on the correct side after tick roundin
 
 Statistics are based on closed trades. Reported maximum drawdown is closed-trade equity drawdown, not full intratrade drawdown; backtest equity curves likewise omit open-position unrealized swings. Trade pnlPct is return on original notional, not return on margin. These definitions should be considered when comparing results to exchange reports.
 
+## Why trades lose
+
+`npm run losses -- [BARS] [TF] [WINDOWS]` groups every trade by how it lost, slices it by scanner,
+symbol, side, session and each of the 19 entry features, and re-checks every candidate in each of
+the windows separately. A slice is reported as a finding only when it stays below baseline in at
+least 60% of the windows it appears in; the rest is printed under a noise heading.
+
+On the live fleet over 4000 bars of 15m (1133 trades, 43% of them losses) the answer is that losses
+are not concentrated anywhere actionable. No condition with 40 or more trades has negative
+expectancy, and every candidate filter tested lowers net profit: dropping the weakest session costs
+354, dropping shorts costs 1026, dropping the weakest scanner and symbol pair costs 793. Filters that
+raise expectancy per trade do so by removing profitable trades.
+
+Two structural numbers explain the rest. Winners reach an average worst excursion of −0.84R before
+they work, so at the moment a loser and a winner look the same, and anything that acts on a small
+adverse move cuts both. Nearly half of all losses first show between 0.1R and 0.5R of profit, which
+is why banking small gains does not pay. Stop width is also already at its best: 1.5 ATR beats 1.0,
+2.0, 2.5 and 3.0 ATR, each by more than 1500 in net.
+
 ## Exits
 
 Three take-profit legs (`tpSplit`), a stop, and optionally a break-even jump after TP1

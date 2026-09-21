@@ -1,0 +1,98 @@
+… 5/20 pairs
+… 10/20 pairs
+… 15/20 pairs
+… 20/20 pairs
+
+20 live pairs · 4000 bars of 15m · 1133 trades · 8 windows
+baseline: expectancy 0.206R · loss rate 43.1% · net 4978
+
+HOW LOSSES HAPPEN
+  never went green (MFE < 0.1R)         63   13% of losses  avg -0.96R  held 3.2 bars  fees 2.33
+  small pop then failed (0.1–0.5R)     227   47% of losses  avg -0.94R  held 5.8 bars  fees 1.75
+  real move then failed (0.5–1R)       165   34% of losses  avg -0.95R  held 10.4 bars  fees 1.96
+  round trip from 1R+                   33    7% of losses  avg -1.00R  held 5.5 bars  fees 1.58
+  fees are 9.1% of gross losses; average loss -0.95R against average win 1.08R
+  average worst excursion: losers -1.50R, winners -0.84R
+
+BY SCANNER — worst first (n ≥ 40)
+  bucket                             n   exp R  loss%     net  windows below baseline
+  pulse-trend-radar                 46   0.020    43%       9  0/1
+  pivot-channel-breaks              55   0.063    44%      64  2/3
+  ai-predictive-flow-zeiierman     317   0.103    46%     793  7/8
+  adaptive-atr-extension-scanner    99   0.105    46%     193  4/6
+  session-killzones-breakouts       81   0.143    53%     170  4/7
+  smart-swing-vwap-zeiierman       205   0.172    46%     694  5/8
+  supertrend-cluster-zeiierman      59   0.176    32%     212  1/4
+  kinetic-momentum-vectors          70   0.491    36%     778  0/3
+
+BY SYMBOL — worst first (n ≥ 40)
+  bucket                             n   exp R  loss%     net  windows below baseline
+  LINKUSD                           82   0.080    48%     124  4/6
+  SOLUSD                           180   0.112    44%     381  5/8
+  UNIUSD                           350   0.134    44%    1117  7/8
+  ETHUSD                            70   0.190    36%     280  2/5
+  AKEUSD                           177   0.226    50%     677  4/8
+  EVAAUSD                           42   0.227    50%     185  2/2
+  ZECUSD                            78   0.319    38%     561  3/7
+  BTCUSD                            40   0.337    23%     281  0/2
+
+BY SIDE — worst first (n ≥ 40)
+  bucket                             n   exp R  loss%     net  windows below baseline
+  short                            436   0.124    46%    1026  5/8
+  long                             697   0.258    41%    3952  3/8
+
+BY LEVEL SOURCE — worst first (n ≥ 40)
+  bucket                             n   exp R  loss%     net  windows below baseline
+  script levels                     79   0.160    38%     263  5/8
+  ATR fallback                    1054   0.210    43%    4715  5/8
+
+BY SESSION (UTC) — worst first (n ≥ 40)
+  bucket                             n   exp R  loss%     net  windows below baseline
+  18–24 US late                    228   0.067    50%     354  6/8
+  06–12 Europe pre                 290   0.156    44%     976  6/8
+  00–06 Asia                       249   0.223    40%    1226  3/8
+  12–18 Europe/US                  366   0.321    40%    2421  3/8
+
+ENTRY CONDITIONS — every feature split at its median and quartiles, worst slices first
+  a slice counts as a finding only if it is below baseline in ≥ 60% of windows it appears in
+
+  condition                                          n   exp R  loss%     net  windows
+  trend200 bottom quartile (≤-1.49)                284   0.014    49%      82  6/8
+  hour top quartile (>16.00)                       275   0.076    50%     489  5/8
+  vol_ratio lower middle (0.68–1.38)               283   0.078    47%     536  6/8
+  side_long = 0                                    436   0.124    46%    1026  5/8
+  trend50 bottom quartile (≤-1.06)                 284   0.127    46%     691  6/8
+  ret5 lower middle (-0.65–0.34)                   283   0.128    42%     761  5/8
+  ret5 bottom quartile (≤-0.65)                    284   0.131    47%     733  5/8
+  atr_pct bottom quartile (≤0.44)                  284   0.133    39%     736  5/8
+  dow bottom quartile (≤1.00)                      358   0.135    46%     984  4/6
+  trend50 upper middle (0.84–2.72)                 283   0.136    46%     942  5/8
+  ret20 lower middle (-0.92–0.68)                  283   0.142    40%     885  5/8
+  trend50 lower middle (-1.06–0.84)                283   0.146    40%     844  5/8
+
+  did NOT hold up across windows (report as noise, not signal):
+  atr_pct upper middle (0.71–1.06)                 284   0.111    47%     670  4/8
+  ret20 bottom quartile (≤-0.92)                   284   0.114    46%     610  4/8
+  trend200 lower middle (-1.49–1.38)               283   0.142    42%     750  3/8
+  src_cond = 1                                     606   0.177    44%    2350  4/8
+  ret20 upper middle (0.68–2.38)                   283   0.184    44%    1167  4/8
+
+  trend200 bottom quartile (≤-1.49): price vs EMA200 (ATR)
+
+  hour top quartile (>16.00): hour (UTC)
+
+  vol_ratio lower middle (0.68–1.38): volume / 20-bar avg
+
+CANDIDATE FILTERS — trades kept, and what the fleet would have earned without them
+  filter (trades it removes)                    kept   exp R     net    Δnet  windows improved
+  late US session 18–24 UTC                      905   0.241    4623 -354  3/8
+  far below EMA200 (trend200 ≤ -1.49)            851   0.269    4868 -110  5/8
+  ai-predictive-flow on UNIUSD                   816   0.246    4185 -793  1/8
+  all shorts                                     697   0.258    3952 -1026  3/8
+  quietest volume quartile                       849   0.224    4002 -976  3/8
+  session + far below EMA200                     691   0.289    4202 -775  2/8
+  session + ai-flow/UNI                          656   0.284    3875 -1103  2/8
+  trade everything (baseline)                   1133   0.206    4978       -
+
+note: a filter that raises expectancy while lowering net is removing profitable trades.
+conditions with outright negative expectancy and n ≥ 40: none

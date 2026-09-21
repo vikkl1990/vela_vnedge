@@ -1,0 +1,56 @@
+… 5/20 pairs
+… 10/20 pairs
+… 15/20 pairs
+… 20/20 pairs
+
+20/20 live pairs · 4000 bars of 15m · 8 walk-forward windows · 1133 trades under the live policy
+
+EXIT REASONS (live policy) — captured versus available
+reason        trades     pnl   avgR  avg best  captured   further after exit   bars held
+be              598   13081   1.01      1.85       55%                 2.19        8.4
+sl              447   -9716  -1.00      0.52         -                 1.82        6.4
+reversal         70      94   0.04      0.70        6%                 1.31        8.4
+tp3              15    1500   4.73      6.79       70%                 4.42        7.3
+script_flip       2     -27  -0.56      0.55         -                 0.13       83.0
+tp2               1      46   2.54      3.30       77%                 1.28        3.0
+
+winners 645: captured 1.08R of 1.93R shown (56%)
+best unrealised R ever reached, all trades:
+  under 0.25R      150   13%
+  0.25 to 0.5R     145   13%
+  0.5 to 1R        184   16%
+  1 to 2R          449   40%
+  2R or more       205   18%
+  never reached 1R: 42% of trades — no exit rule can bank what these never showed
+
+losing trades 488 — how far green did they get before turning?
+  never above 0.1R      63   13%  avg lost -0.96R
+  0.1 to 0.25R          86   18%  avg lost -0.95R
+  0.25 to 0.5R         141   29%  avg lost -0.93R
+  0.5 to 1R            165   34%  avg lost -0.95R
+  1R or more            33    7%  avg lost -1.00R
+  reachable: 339 losers (30% of all trades) showed 0.25R or better before failing
+
+POOLED OVER THE WHOLE SPAN
+policy                           trades     net     PF   win%   avgR   fees  bars held  to 1st TP   net/bar
+live (stop 1.5 ATR)              1133    4978   1.49    57%   0.21   2178        7.8        7.1     0.567
+stop 1.0 ATR                     1034    3287   1.33    52%   0.16   2181        4.8        4.2     0.668 (-1691)
+stop 2.0 ATR                     1154    3401   1.33    53%   0.14   1832       11.3        6.8     0.260 (-1576)
+stop 2.5 ATR                     1111    2440   1.26    53%   0.11   1558       15.1        6.6     0.146 (-2538)
+stop 3.0 ATR                     1032    2639   1.32    53%   0.13   1281       20.8       17.8     0.123 (-2339)
+stop 2.0 ATR + RR 2/4/6          1154    3401   1.33    53%   0.14   1832       11.3        6.8     0.260 (-1576)
+stop 2.5 ATR + RR 2/4/6          1111    2440   1.26    53%   0.11   1558       15.1        6.6     0.146 (-2538)
+
+WALK-FORWARD — the same fixed policy measured on each window separately
+policy                              w1     w2     w3     w4     w5     w6     w7     w8     won   median
+live (stop 1.5 ATR)                -33    807    378    594    400    537    690    904      7/8      594
+stop 1.0 ATR                        -6    534    679    255    167    463    558    535      7/8      534
+stop 2.0 ATR                      -101    441    225    413    308    270    171    965      7/8      308
+stop 2.5 ATR                       -68    219    220    542    198    255    -25    829      6/8      220
+stop 3.0 ATR                        19    345    149    582    175    213    -22    780      7/8      213
+stop 2.0 ATR + RR 2/4/6           -101    441    225    413    308    270    171    965      7/8      308
+stop 2.5 ATR + RR 2/4/6            -68    219    220    542    198    255    -25    829      6/8      220
+
+selecting on each window and trading the next: 3510  ·  staying on the live policy: 4312  ·  perfect hindsight: 4674
+what selection would have picked: stop 3.0 ATR, live (stop 1.5 ATR), stop 1.0 ATR
+profitable in at least 60% of windows: live (stop 1.5 ATR) (7/8), stop 1.0 ATR (7/8), stop 2.0 ATR (7/8), stop 2.5 ATR (6/8), stop 3.0 ATR (7/8), stop 2.0 ATR + RR 2/4/6 (7/8), stop 2.5 ATR + RR 2/4/6 (6/8)
