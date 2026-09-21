@@ -58,11 +58,11 @@ export function attachRawMetrics(server: http.Server | undefined | null, app: Ap
   server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = req.url ?? '';
     const p = url.split('?')[0];
-    if (req.method === 'GET' && (p === '/api/metrics' || p === '/metrics') && !url.includes('format=json')) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && (p === '/api/metrics' || p === '/metrics') && !url.includes('format=json')) {
       try {
         const text = app.ops.metrics.render();
-        res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
-        res.end(text);
+        res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Content-Length': Buffer.byteLength(text) });
+        res.end(req.method === 'HEAD' ? undefined : text);
       } catch (e: any) {
         res.writeHead(500, { 'Content-Type': 'text/plain' }); res.end(`metrics failed: ${e?.message ?? e}`);
       }

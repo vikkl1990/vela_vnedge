@@ -267,7 +267,9 @@ export class CandleStore extends EventEmitter {
     if (products.size === 0) return { delisted: [...this.delisted], changed };
     const symbols = new Set([...this.series.values()].map(s => s.symbol));
     for (const sym of symbols) {
-      const p = products.get(sym);
+      let p = products.get(sym);
+      // the list endpoint is paged (200 per page); confirm with the single-product endpoint before calling anything delisted
+      if (!p) { try { const single = await this.rest.product(sym); if (single && (single.state ?? 'live') === 'live') p = single; } catch { /* treat as missing */ } }
       if (!p) {
         if (!this.delisted.has(sym)) { this.delisted.add(sym); this.report({ at: Date.now(), type: 'delisted', symbol: sym, detail: `${sym} is no longer listed as a live perpetual on Delta` }); }
         continue;

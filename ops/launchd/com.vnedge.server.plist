@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  VNEdge launchd user agent. Template: `ops/install-launchd.sh` replaces __ROOT__, __NODE_DIR__
+  and __HOME__ and installs the result into ~/Library/LaunchAgents/com.vnedge.server.plist.
+  KeepAlive restarts the server whenever it exits (crash or `kill`); ThrottleInterval keeps a crash
+  loop from spinning faster than once every 10 s. stdout/stderr go to data/logs (the app also keeps
+  its own rotated data/logs/vnedge.log).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vnedge.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_DIR__/node</string>
+    <string>--no-warnings=ExperimentalWarning</string>
+    <string>server/src/index.ts</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__ROOT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__NODE_DIR__:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PORT</key>
+    <string>8787</string>
+    <key>HOST</key>
+    <string>127.0.0.1</string>
+    <key>LOG_FORMAT</key>
+    <string>text</string>
+    <!-- Alerts: uncomment and fill in, or put them in data/config.json (alerts.telegram) -->
+    <!-- <key>TELEGRAM_BOT_TOKEN</key><string></string> -->
+    <!-- <key>TELEGRAM_CHAT_ID</key><string></string> -->
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- always restart (crash, kill, or a clean exit); use ops/uninstall-launchd.sh or `launchctl bootout` to stop for good -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- SIGTERM starts the graceful shutdown (drains script runs, flushes logs); launchd waits this long before SIGKILL -->
+  <key>ExitTimeOut</key>
+  <integer>45</integer>
+
+  <key>StandardOutPath</key>
+  <string>__ROOT__/data/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__ROOT__/data/logs/launchd.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>

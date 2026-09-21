@@ -34,7 +34,7 @@ Other commands:
 
 | Command | What it does |
 |---|---|
-| `npm test` | unit tests (alert parser, paper fill logic) |
+| `npm test` | unit + integration tests (alert parser, fill logic, ops: gap detection, alerts, backups, metrics, a full recorded-feed replay through `App`) |
 | `npm run compat -- BTCUSD 15m 1000` | runs every script through PineTS and rewrites `scripts/compat-report.json` |
 | `npm run backtest -- <scanner-id> BTCUSD 15m 1500` | standalone backtest of one scanner |
 
@@ -111,7 +111,19 @@ Everything is editable in the dashboard (**Settings**) or `data/config.json`:
 ```
 
 Environment variables: `PORT` (8787), `HOST` (127.0.0.1), `VNEDGE_WORKERS` (worker threads),
-`VNEDGE_SYMBOLS`, `VNEDGE_TIMEFRAMES`, `LOG_LEVEL`, `VNEDGE_DATA_DIR`.
+`VNEDGE_SYMBOLS`, `VNEDGE_TIMEFRAMES`, `LOG_LEVEL`, `LOG_FORMAT` (`text` | `json`), `VNEDGE_DATA_DIR`,
+`VNEDGE_LOG_FILE=0` (disable the rotated log file), `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` (alerts).
+
+Operations settings (`ops`, `alerts`) live in the same file; defaults:
+
+```jsonc
+{
+  "ops": { "backupHourUtc": 2, "backupKeepDays": 14, "logMaxBytes": 10485760, "logMaxFiles": 5,
+           "queueDepthAlert": 200, "diskLowMb": 500, "driftWarnMs": 2000, "shutdownTimeoutMs": 20000 },
+  "alerts": { "telegram": { "botToken": "", "chatId": "" },   // prefer the env vars: keeps the token out of config.json
+              "drawdownPct": 10, "onTrade": false, "dailySummaryHourUtc": 0, "repeatMinutes": 60, "maxPerHour": 30 }
+}
+```
 
 ### Optional: mirror paper fills to the Delta India demo account
 
@@ -124,14 +136,91 @@ DELTA_API_KEY=… DELTA_API_SECRET=… npm start
 and set `"execution": { "mode": "testnet" }`. Fills are sent as market orders to the
 testnet host only (`cdn-ind.testnet.deltaex.org`); production keys are never used.
 
+## Running it unattended (Phase 4 operations)
+
+### Process supervision
+
+**launchd (macOS, recommended):** starts at login, restarts on any exit (crash loop throttled to
+one start per 10 s), sends SIGTERM for a graceful stop and waits 45 s before SIGKILL.
+
+```bash
+ops/install-launchd.sh              # writes ~/Library/LaunchAgents/com.vnedge.server.plist and starts it
+ops/install-launchd.sh --status     # state / pid / last exit code
+ops/install-launchd.sh --restart    # e.g. after a pull
+ops/uninstall-launchd.sh            # stop and remove
+PORT=8790 TELEGRAM_BOT_TOKEN=… TELEGRAM_CHAT_ID=… ops/install-launchd.sh   # optional overrides baked into the plist (mode 600)
+tail -f data/logs/vnedge.log        # the app's own rotated log; launchd's stdout/stderr: data/logs/launchd.{out,err}.log
+```
+
+**pm2 (any OS):** `npm i -g pm2 && pm2 start ops/pm2.config.cjs`, then `pm2 logs vnedge`,
+`pm2 restart vnedge`, `pm2 stop vnedge`; `pm2 save && pm2 startup` to survive reboots.
+
+Both send SIGTERM; the server then stops timers, waits up to `ops.shutdownTimeoutMs` for in-flight
+script runs, stops the worker pool and flushes the log before exiting.
+
+### Alerts (Telegram)
+
+Create a bot with @BotFather, open a chat with it and read your chat id from
+`https://api.telegram.org/bot<token>/getUpdates`. Set `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`
+(or `alerts.telegram` in `data/config.json`) and restart. `POST /api/ops/alerts/test` sends a test
+message. Without a target nothing changes: conditions are still evaluated and logged.
+
+Conditions (evaluated every 15 s, one message when raised, one when resolved, repeats at most every
+`alerts.repeatMinutes`, hard cap `alerts.maxPerHour`): feed disconnected > 60 s; Pine worker crash
+loop (≥ 3 respawns in 5 min); worker queue deeper than `ops.queueDepthAlert` for > 5 min; equity
+drawdown from its peak ≥ `alerts.drawdownPct`; no bar close for 2× the timeframe on a tracked
+series; free disk below `ops.diskLowMb`; SQLite errors. Plus a daily summary at
+`alerts.dailySummaryHourUtc` (equity, 24 h pnl, trades, top scanners) and, with `alerts.onTrade`,
+a line for every closed live trade. The token is never logged.
+
+### Candle integrity
+
+On every bar close and after every reconnect the store checks for missing bars between consecutive
+candles, backfills them from REST and reports `integrity` events (`gap`, `gap-filled`,
+`gap-unfillable` when the exchange simply had no trades, `clock-drift`, `delisted`, `tick-size`).
+When a backfilled bar is the newest closed bar it is announced once so the scanners re-run on it;
+`closed` is still emitted exactly once per bar. The local clock is compared with exchange
+timestamps (warning above `ops.driftWarnMs`), and tracked symbols are checked against
+`/v2/products` every 10 minutes. `GET /api/ops/integrity`, `POST /api/ops/integrity/check`.
+
+### Backups, logs, metrics
+
+* Nightly SQLite snapshot (`VACUUM INTO`) at `ops.backupHourUtc` into `data/backups/`
+  (`vnedge-YYYYMMDD-HHMMSS.db`, kept `ops.backupKeepDays` days); `POST /api/ops/backup` any time,
+  `GET /api/ops/backups` to list. Restore = stop the server, copy a snapshot over `data/vnedge.db`
+  (delete `-wal`/`-shm`), start.
+* `data/logs/vnedge.log` rotates at `ops.logMaxBytes` keeping `ops.logMaxFiles` generations
+  (`vnedge.log.1` …); `LOG_FORMAT=json` writes one JSON object per line (console and file);
+  `POST /api/ops/logs/rotate`.
+* `GET /api/metrics` is Prometheus text (feed, tick age, queue depth, busy workers, respawns, bars
+  closed, script runs/errors and per-minute rates, signals, positions, equity, pnl, backtests,
+  memory, CPU, event-loop lag, gaps, drift, alerts, backups). Scrape config:
+
+  ```yaml
+  scrape_configs:
+    - job_name: vnedge
+      metrics_path: /api/metrics
+      static_configs: [{ targets: ['127.0.0.1:8787'] }]
+  ```
+
+* `GET /api/health` now carries `integrity`, `alerts` (last sent, active conditions) and `ops`
+  (last backup, log size, db size/errors, worker respawns, monitor state).
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push and pull request: `npm ci`, `tsc --noEmit`, the
+server unit + integration tests on Node 22 and 24, the dashboard lint + build, and validates the
+launchd/pm2 files.
+
 ## Repository layout
 
 ```
 server/      Node/TypeScript bot: feed, PineTS workers, scanners, paper engine, REST+SSE API
 dashboard/   Vite + React dashboard (Vela chart)
 scripts/     Pine sources (scripts/pine/*.pine), manifest.json, compat-report.json
-docs/        API.md (contract), ARCHITECTURE.md, SCANNERS.md
-data/        runtime: vnedge.db, config.json, logs/   (git-ignored)
+docs/        API.md (contract), ARCHITECTURE.md, SCANNERS.md, ROADMAP.md
+ops/         launchd plist + install scripts, pm2 config
+data/        runtime: vnedge.db, config.json, logs/, backups/   (ignored by version control)
 ```
 
 ## Notes & limitations

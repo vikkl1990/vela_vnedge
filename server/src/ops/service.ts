@@ -137,7 +137,7 @@ export class OpsService {
     m.gauge('worker_queue_depth', 'Pine jobs waiting for a worker', () => d.pool.stats.queued);
     m.gauge('worker_busy', 'Workers currently running a script', () => d.pool.stats.busy);
     m.gauge('worker_pool_size', 'Configured worker threads', () => d.pool.stats.size);
-    m.gauge('worker_respawns_total_gauge', 'Worker respawns since start', () => this.workers.respawns);
+    m.gauge('worker_respawns', 'Worker respawns since start', () => this.workers.respawns);
     m.gauge('script_runs_per_minute', 'Script runs completed in the last 60 s', () => this.runRate.perMinute());
     m.gauge('script_errors_per_minute', 'Script runs that failed in the last 60 s', () => this.errRate.perMinute());
     m.gauge('open_positions', 'Open paper positions', () => d.paper.openPositions().length);
