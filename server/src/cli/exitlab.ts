@@ -9,7 +9,8 @@
  * cut short by the current exit. Script exits and reversals are not modelled: this compares price
  * rules on equal terms.
  *
- * Within a minute the stop is assumed to trade before any target (the conservative order). Costs are
+ * Within a minute the stop is assumed to trade before any target (the conservative order), and a
+ * stop raised from a minute's high only applies from the next minute, as in the live engine. Costs are
  * charged in R per trade: two taker fills with GST plus slippage, over the trade's own stop distance.
  *
  * A rule is chosen on the first half of the entries by time and reported on the second half, and on
@@ -44,9 +45,10 @@ function engine(o: { tp?: number; lock?: (peak: number) => number; staleMin?: nu
       if (m.lo <= stop) return banked + left * stop;
       if (o.partial && left === 1 && m.hi >= o.partial.at) { banked += o.partial.share * o.partial.at; left -= o.partial.share; }
       if (o.tp && m.hi >= o.tp) return banked + left * o.tp;
+      // raise the stop last: like the live engine, a stop raised from this minute's high only
+      // applies from the next minute, since the order of high and low inside a minute is unknown
       peak = Math.max(peak, m.hi);
       if (o.lock) stop = Math.max(stop, o.lock(peak));
-      if (m.lo <= stop) return banked + left * stop;   // a pullback inside the same minute
       if (o.staleMin && i + 1 >= o.staleMin && peak < (o.staleR ?? 0)) return banked + left * m.close;
     }
     return banked + left * (path.at(-1)?.close ?? 0);   // horizon reached: leave at market
@@ -68,6 +70,10 @@ const rules: Rule[] = [
   { name: 'half off at 1R, rest BE, TP 3R', run: engine({ tp: 3, partial: { at: 1, share: 0.5 }, lock: pk => (pk >= 1 ? 0 : -1) }) },
   { name: 'keep 50% from 1R', run: engine({ tp: 6, lock: trail(1, 0.5) }) },
   { name: 'keep 60% from 1.5R', run: engine({ tp: 6, lock: trail(1.5, 0.6) }) },
+  { name: 'NEW: keep 60% from 1.5R', run: engine({ tp: 6, lock: trail(1.5, 0.6) }) },
+  { name: 'NEW + break-even at 1R', run: engine({ tp: 6, lock: pk => (pk >= 1.5 ? pk * 0.6 : pk >= 1 ? 0 : -1) }) },
+  { name: 'NEW + lock 0.25R at 1R', run: engine({ tp: 6, lock: pk => (pk >= 1.5 ? pk * 0.6 : pk >= 1 ? 0.25 : -1) }) },
+  { name: 'NEW + lock 0.5R at 1R', run: engine({ tp: 6, lock: pk => (pk >= 1.5 ? pk * 0.6 : pk >= 1 ? 0.5 : -1) }) },
   { name: 'live + time stop 60m under 0.5R', run: engine({ tp: 6, lock: trail(1, 0.75), staleMin: 60, staleR: 0.5 }) },
   { name: 'live + time stop 120m under 0.5R', run: engine({ tp: 6, lock: trail(1, 0.75), staleMin: 120, staleR: 0.5 }) },
   { name: 'live + time stop 240m under 1R', run: engine({ tp: 6, lock: trail(1, 0.75), staleMin: 240, staleR: 1 }) },
@@ -109,7 +115,7 @@ const scores: Score[] = rules.map(rule => {
   return s;
 });
 
-const live = scores[0];
+const live = scores.find(s => s.name.startsWith(process.env.BASE ?? 'LIVE'))!;
 const best = [...scores].sort((a, b) => b.train - a.train)[0];
 console.log(`\nEXIT LAB · ${cases.length} entries · 1m paths up to ${hoursArg}h · costs in R per trade (fees + GST + slippage)\n`);
 console.log(`  ${'rule'.padEnd(34)} ${'total R'.padStart(8)} ${'R/trade'.padStart(8)} ${'PF'.padStart(5)} ${'win%'.padStart(5)} ${'1st half'.padStart(9)} ${'2nd half'.padStart(9)} ${'windows'.padStart(8)} ${'beats live'.padStart(11)}`);
@@ -120,3 +126,61 @@ for (const s of scores) {
 console.log(`\n  chosen on the 1st half: "${best.name}" (${best.train.toFixed(1)}R) → 2nd half ${best.test.toFixed(1)}R vs live ${live.test.toFixed(1)}R`);
 console.log('  per window, R:');
 for (const s of scores) console.log(`  ${s.name.padEnd(34)} ${s.w.map(x => x.toFixed(1).padStart(7)).join('')}`);
+
+// ---------------------------------------------------------------------------------------------
+// GRID=1: retrospective search over where protection starts, how much it keeps, and which candle
+// the trailing stop watches. On 1m the trail fires on any touch; on 5m/15m it fires only when a
+// candle of that size closes beyond it (wicks inside the candle are ignored). The −1R hard stop
+// and the 6R target are always checked on every minute.
+if (process.env.GRID === '1') {
+  const closeTrail = (arm: number, keep: number, tfMin: number, lockAt = 0, lockR = 0) => (path: Min[]) => {
+    let peak = 0, trailLvl = -Infinity;
+    for (let i = 0; i < path.length; i++) {
+      const m = path[i];
+      if (m.lo <= -1) return -1;
+      if (m.hi >= 6) return 6;
+      // a lock is a hard floor, checked intrabar like the stop
+      if (lockAt > 0 && peak >= lockAt && m.lo <= lockR) return lockR;
+      if (tfMin === 1 && m.lo <= trailLvl) return trailLvl;
+      peak = Math.max(peak, m.hi);
+      if (peak >= arm) trailLvl = Math.max(trailLvl, peak * keep);
+      if (tfMin > 1 && (i + 1) % tfMin === 0 && m.close <= trailLvl) return m.close;
+    }
+    return path.at(-1)?.close ?? 0;
+  };
+  type G = { arm: number; keep: number; tf: number; lock: number; total: number; h1: number; h2: number; w: number[]; win: number };
+  const grid: G[] = [];
+  for (const tf of [1, 5, 15]) for (const arm of [0.5, 0.75, 1, 1.25, 1.5, 2]) for (const keep of [0.4, 0.5, 0.6, 0.75]) for (const lock of [0, 0.5]) {
+    if (lock && arm <= 1) continue;   // a lock at 1R only means something when the trail arms later
+    const run = closeTrail(arm, keep, tf, lock ? 1 : 0, lock);
+    const g: G = { arm, keep, tf, lock, total: 0, h1: 0, h2: 0, w: new Array(WINDOWS).fill(0), win: 0 };
+    for (const c of cases) {
+      const r = run(c.path) - c.cost;
+      g.total += r; if (r > 0) g.win++;
+      if (c.e.fillAt < half) g.h1 += r; else g.h2 += r;
+      g.w[Math.min(WINDOWS - 1, Math.floor((c.e.fillAt - t0) / span))] += r;
+    }
+    grid.push(g);
+  }
+  const label = (g: G) => `${g.tf}m close · from ${g.arm}R keep ${g.keep * 100}%${g.lock ? ' · lock 0.5R at 1R' : ''}`;
+  const ref = grid.find(g => g.tf === 1 && g.arm === 1 && g.keep === 0.75 && !g.lock)!;
+  const now = grid.find(g => g.tf === 1 && g.arm === 1.5 && g.keep === 0.6 && !g.lock)!;
+  const byH1 = [...grid].sort((a, b) => b.h1 - a.h1);
+  const rankH2 = (g: G) => [...grid].sort((a, b) => b.h2 - a.h2).indexOf(g) + 1;
+  console.log(`\nGRID · ${grid.length} exit rules · ${cases.length} entries · chosen on the 1st half, judged on the 2nd\n`);
+  console.log(`  ${'rule'.padEnd(44)} ${'1st half'.padStart(9)} ${'2nd half'.padStart(9)} ${'rank 2nd'.padStart(9)} ${'total'.padStart(7)} ${'win%'.padStart(5)} ${'windows'.padStart(8)}`);
+  const show = (g: G, tag = '') => console.log(`  ${(label(g) + tag).padEnd(44)} ${g.h1.toFixed(1).padStart(9)} ${g.h2.toFixed(1).padStart(9)} ${(rankH2(g) + '/' + grid.length).padStart(9)} ${g.total.toFixed(1).padStart(7)} ${(g.win / cases.length * 100).toFixed(0).padStart(4)}% ${(g.w.filter(x => x > 0).length + '/' + WINDOWS).padStart(8)}`);
+  for (const g of byH1.slice(0, 10)) show(g);
+  console.log('  ...'); show(ref, '  [OLD]'); show(now, '  [LIVE NOW]');
+  // does a good first half predict a good second half at all?
+  const n = grid.length, mh1 = grid.reduce((a, g) => a + g.h1, 0) / n, mh2 = grid.reduce((a, g) => a + g.h2, 0) / n;
+  const cov = grid.reduce((a, g) => a + (g.h1 - mh1) * (g.h2 - mh2), 0), v1 = grid.reduce((a, g) => a + (g.h1 - mh1) ** 2, 0), v2 = grid.reduce((a, g) => a + (g.h2 - mh2) ** 2, 0);
+  console.log(`\n  correlation of 1st-half and 2nd-half results across all rules: ${(cov / Math.sqrt(v1 * v2)).toFixed(2)}  (near 1 = the ranking is stable, near 0 = it is noise)`);
+  // marginal effect of each dimension, averaged over the others: robust to picking one lucky cell
+  const avg = (f: (g: G) => boolean) => { const s = grid.filter(f); return (s.reduce((a, g) => a + g.total, 0) / s.length).toFixed(1).padStart(7) + ` (${(s.reduce((a, g) => a + g.w.filter(x => x > 0).length, 0) / s.length).toFixed(1)}/8)`; };
+  console.log('\n  average total R (and windows up) by one dimension, averaged over all the others:');
+  console.log('    exit timeframe   ' + [1, 5, 15].map(tf => `${tf}m ${avg(g => g.tf === tf)}`).join('   '));
+  console.log('    protect from     ' + [0.5, 0.75, 1, 1.25, 1.5, 2].map(a => `${a}R ${avg(g => g.arm === a)}`).join('  '));
+  console.log('    keep of peak     ' + [0.4, 0.5, 0.6, 0.75].map(k => `${k * 100}% ${avg(g => g.keep === k)}`).join('   '));
+  console.log('    lock 0.5R at 1R  ' + `no ${avg(g => !g.lock && g.arm > 1)}   yes ${avg(g => g.lock > 0)}`);
+}

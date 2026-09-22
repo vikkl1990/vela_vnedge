@@ -22,6 +22,7 @@
  * executes. Exit policies must be compared that way: on bar-level fills a trail can only tighten
  * once per bar, which flatters every trailing rule relative to live.
  */
+import fs from 'node:fs';
 import { DeltaRest } from '../delta/rest.ts';
 import { PinePool } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
@@ -40,8 +41,10 @@ const cfg = new ConfigStore().get();
 const registry = new ScannerRegistry();
 const rest = new DeltaRest();
 
-const pairs: Array<{ id: string; symbol: string; tf: string; exitMode: 'levels' | 'script' | 'both' }> = [];
-for (const s of registry.all()) {
+const pairs: Array<{ id: string; symbol: string; tf: string; exitMode: 'levels' | 'script' | 'both'; inputs?: any }> = [];
+// PAIRS=file.json runs an explicit list of { id, symbol, exitMode?, inputs? } (e.g. the VM's fleet)
+if (process.env.PAIRS) for (const p of JSON.parse(fs.readFileSync(process.env.PAIRS, 'utf8'))) pairs.push({ id: p.id, symbol: p.symbol, tf: tfArg, exitMode: p.exitMode ?? 'both', inputs: p.inputs });
+else for (const s of registry.all()) {
   const sc = cfg.scanners[s.id];
   if (!sc?.enabled || sc.hidden || s.status !== 'ok') continue;
   for (const symbol of sc.symbols ?? cfg.symbols) for (const tf of sc.timeframes ?? [tfArg]) {
@@ -56,7 +59,27 @@ type Policy = { name: string; cfg: (p: PaperConfig) => PaperConfig; exitMode?: '
  * decisions in docs/DECISIONS.md rather than re-deriving them. Add a row to test something new;
  * do not leave a one-off sweep here, or the next person gets an experiment instead of a baseline.
  */
-const policies: Policy[] = [
+/**
+ * POLICIES=source: who decides the exit. Every row sets the trail explicitly, so the result does
+ * not depend on whatever the local config happens to hold.
+ *   scanner only   the script's own exit events and opposite signals; stop kept, no trail, no targets
+ *   price only     stop, trail and targets; script exits and reversals ignored
+ *   both           everything, as live runs
+ */
+const off = (p: PaperConfig): PaperConfig => ({ ...p, trailAfterR: 0, trailGiveBackPct: 0, trailAtrMult: 0, floorAtR: 0, floorKeepR: 0, staleBars: 0, fallbackRR: [50, 60, 70] });
+const OLD = (p: PaperConfig): PaperConfig => ({ ...p, trailAfterR: 1, trailGiveBackPct: 25, floorAtR: 0, floorKeepR: 0 });
+const NEW = (p: PaperConfig): PaperConfig => ({ ...p, trailAfterR: 1.5, trailGiveBackPct: 40, floorAtR: 0, floorKeepR: 0 });
+const NEW_LOCK = (p: PaperConfig): PaperConfig => ({ ...NEW(p), floorAtR: 1, floorKeepR: 0.5 });
+const sourcePolicies: Policy[] = [
+  { name: 'both, OLD trail (75% from 1R)', cfg: OLD, exitMode: 'both' },
+  { name: 'scanner exits only (+stop)', cfg: off, exitMode: 'both' },
+  { name: 'price only, OLD trail', cfg: p => ({ ...OLD(p), allowReversal: false }), exitMode: 'levels' },
+  { name: 'price only, NEW trail (60% from 1.5R)', cfg: p => ({ ...NEW(p), allowReversal: false }), exitMode: 'levels' },
+  { name: 'price only, NEW + lock 0.5R at 1R', cfg: p => ({ ...NEW_LOCK(p), allowReversal: false }), exitMode: 'levels' },
+  { name: 'both, NEW trail', cfg: NEW, exitMode: 'both' },
+  { name: 'both, NEW + lock 0.5R at 1R', cfg: NEW_LOCK, exitMode: 'both' },
+];
+const standardPolicies: Policy[] = [
   { name: 'live: 2/4/6 R, all at TP3, keep 75% from 1R', cfg: p => p },
 
   // targets (decision 4): wider beat narrower, and the plateau was flat
@@ -95,6 +118,7 @@ const policies: Policy[] = [
   { name: 'stop 1.0 ATR', cfg: p => ({ ...p, fallbackAtrSl: 1.0 }) },
   { name: 'stop 2.5 ATR', cfg: p => ({ ...p, fallbackAtrSl: 2.5 }) },
 ];
+const policies: Policy[] = process.env.POLICIES === 'source' ? sourcePolicies : standardPolicies;
 
 interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }
 const blank = (): Agg => ({ trades: 0, pnl: 0, gp: 0, gl: 0, fees: 0, wins: 0, r: 0, barsHeld: 0, barsToFirstTp: 0, firstTpCount: 0 });
@@ -152,7 +176,7 @@ for (const p of pairs) {
       m1 = c1.slice(0, -1).map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
     }
     const s = registry.get(p.id)!;
-    const res = await pool.run({ scannerId: s.id, source: s.patched, symbol: p.symbol, tf: p.tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: cfg.scanners[p.id]?.inputs });
+    const res = await pool.run({ scannerId: s.id, source: s.patched, symbol: p.symbol, tf: p.tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: p.inputs ?? cfg.scanners[p.id]?.inputs });
     if (!res.ok) { console.error(`skip ${p.id} ${p.symbol}: ${res.error}`); continue; }
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[p.id]?.rule ?? null, bars, mode: 'backtest' });
     const events = extractEvents(res.alerts, res.shapes, { derived });
