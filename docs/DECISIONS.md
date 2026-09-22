@@ -340,3 +340,29 @@ better one.
 
 Tick fills (`fillSource: tape`) were not adopted either: the tape path never runs the trail at all,
 and there is no tick history to test it on.
+
+## 14. Exit changed: keep 60% of the peak from 1.5R (was 75% from 1R). And fees now include GST.
+
+**Why the trades "wait and then hit the stop".** `npm run reconstruct` walked every trade minute by
+minute. Of 402 backtest trades stopped at −1R, 48% never got above +0.25R and 16% never traded above
+entry at all: no exit rule can rescue those, they are entry failures. Only 28% had reached +0.5R
+first. Live showed the same shape: of 13 stops, 8 never passed +0.25R.
+
+**Protecting earlier makes it worse.** `npm run exitlab` replayed rules on the raw 1m path after all
+992 entries (costs included). Break-even at 0.5R, locking 0.3R at 0.75R, time stops and early
+targets all lost more than the live rule, in most windows. The trades they save are outnumbered by
+the ones they cut that dip and then run. The rules that helped went the other way: more room.
+
+**The chosen rule** was the robust one in the lab (6/8 windows ahead of live on the VM fleet) and was
+then confirmed in the full engine, with script exits and reversals, on the broader 41-pair set:
+
+| 1m exits, GST included | net | PF | windows up | median window | ahead of live |
+|---|---|---|---|---|---|
+| live: keep 75% from 1R | +213 | 1.01 | 3/8 | −147 | – |
+| **keep 60% from 1.5R** | **+1361** | **1.06** | **5/8** | **+438** | **5/8** |
+
+It stays ahead with its best window removed. Larger totals (no trail +4223, keep 50% from 1.5R
++1899) come from one or two trending windows and are not taken.
+
+Set: `trailAfterR 1.5`, `trailGiveBackPct 40`. Fees: `feeTaxPct 18` (Delta India's GST, on top of
+the published 0.05% / 0.02%). The live sample restarts from this deploy (decision 3).
