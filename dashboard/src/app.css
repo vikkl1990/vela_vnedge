@@ -1287,7 +1287,8 @@ body { overflow-x: clip; }
 @media (max-width: 720px) { .account-chip { margin-left: 0; } .user-new { grid-template-columns: 1fr; } }
 
 /* a take-profit leg with no contracts allocated cannot fill: show it, but do not imply it is live */
-.tp-unfunded { opacity: .38; text-decoration: line-through; text-decoration-thickness: 1px; }
+/* a reference level with no contracts on it: dimmed and dotted, never struck (struck means hit) */
+.tp-unfunded { opacity: .45; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
 .tp-share { font-size: .62em; opacity: .65; margin-left: 1px; }
 
 /* levels the script did not provide: taken from the position the signal opened */
