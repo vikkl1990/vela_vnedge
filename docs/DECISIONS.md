@@ -366,3 +366,33 @@ It stays ahead with its best window removed. Larger totals (no trail +4223, keep
 
 Set: `trailAfterR 1.5`, `trailGiveBackPct 40`. Fees: `feeTaxPct 18` (Delta India's GST, on top of
 the published 0.05% / 0.02%). The live sample restarts from this deploy (decision 3).
+
+## 15. Scanner exits versus price exits, and where protection should start
+
+**Who should decide the exit** (`POLICIES=source EXIT_1M=1 npm run exits`, the VM's 17 pairs, 1m exits, GST):
+
+| policy | trades | net | PF | win% | windows up | median |
+|---|---|---|---|---|---|---|
+| scanner exits only (stop kept, no trail/targets) | 506 | +5063 | 1.72 | 27% | 3/8 | −245 |
+| both, old trail (75% from 1R) | 992 | +1587 | 1.19 | 55% | 5/8 | +130 |
+| both, new trail (60% from 1.5R), live | 917 | +2260 | 1.24 | 45% | 6/8 | +315 |
+| both, new + lock 0.5R at 1R | 951 | +1999 | 1.26 | 55% | 6/8 | +298 |
+| price only, new + lock 0.5R at 1R | 888 | +2202 | 1.29 | 56% | 7/8 | +332 |
+
+The scripts barely exit on their own (2 script exits in 992 trades); "scanner exits" is almost
+entirely reversals plus holding to the stop. It makes the most in total by riding two trends for
+eleven hours at a time, and loses in five of eight windows: not a policy to trade. Reversals as an
+exit are neutral (71 trades, −28). Every price-exit variant is more consistent.
+
+**Where protection should start, and on which candle** (`GRID=1 npm run exitlab`, 108 rules on the
+1m path after 992 entries). The ranking of individual rules between the two halves of the data
+correlates at 0.11, so picking the single best cell is picking noise; the averages over each
+dimension are what can be trusted:
+
+- Candle: trailing on 1m touches beats trailing on 5m or 15m closes (average +85R vs +66R / +68R).
+  Ignoring wicks lets pullbacks run further before the exit. Higher timeframes were already ruled
+  out as exit signals (decision 11).
+- Start level: protecting from 0.5R destroys the edge (−3R); 0.75R is weak (+44R); anything from 1R
+  to 2R is about the same (+83R to +90R). Start at 1.25R or later and stop tuning it.
+- Share kept and the 0.5R lock at 1R: trade-offs, not improvements. The lock costs a little total
+  and buys back the old 55% win rate and the highest PF.
