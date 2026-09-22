@@ -90,7 +90,8 @@ if (sliceArg !== 'none') {
       const d = data.get(symbol)!;
       summary.runs++;
       try {
-        const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length });
+        const inputs = cfg.scanners[s.id]?.inputs;
+        const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
         if (!res.ok) { summary.failed++; continue; }
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest' });
         const events = extractEvents(res.alerts, res.shapes, { derived });

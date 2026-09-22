@@ -127,7 +127,7 @@ export class PaperEngine extends EventEmitter {
   /** Live top-of-book source (set by the realtime wiring); enables spread-crossing fills. */
   quotes: {
     executable(symbol: string, side: 'buy' | 'sell', maxAgeMs: number, now?: number): number | null;
-    markState?(symbol: string): { bestBid: number | null; bestAsk: number | null; at: number } | undefined;
+    markState?(symbol: string): { bestBid: number | null; bestAsk: number | null; at: number; quoteAt?: number | null } | undefined;
   } | null = null;
 
   /**
@@ -355,8 +355,11 @@ export class PaperEngine extends EventEmitter {
     const mark = this.markPrices.get(symbol)?.price;
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol || filled.has(pos.id)) continue;
-      const fills = applyTrade(pos, { time, price, qty }, this.paper, mark);
+      const slBefore = pos.sl;
+      const atr = (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined;
+      const fills = applyTrade(pos, { time, price, qty }, this.paper, mark, atr);
       if (fills.length) this.applyFills(pos, fills);
+      else if (pos.sl !== slBefore) { this.persist(pos); this.emit('position', { type: 'updated', position: pos }); }
     }
     this.recordEquity(false);
   }
@@ -560,7 +563,7 @@ export class PaperEngine extends EventEmitter {
     this.db.run(
       'INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt, ref_price, bid, ask, quote_at, price_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason, this.book,
-      ctx.ref ?? null, q?.bestBid ?? null, q?.bestAsk ?? null, q?.at ?? null, ctx.source ?? null,
+      ctx.ref ?? null, q?.bestBid ?? null, q?.bestAsk ?? null, q?.quoteAt ?? null, ctx.source ?? null,
     );
     this.fillContext = {};
   }

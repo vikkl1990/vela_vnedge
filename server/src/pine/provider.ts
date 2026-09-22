@@ -28,6 +28,19 @@ export function toKlines(bars: ProviderBar[], tfSeconds: number): Kline[] {
 }
 
 /**
+ * The Delta market a Pine ticker id names. The exchange prefix is dropped and the usual perpetual
+ * spellings (`BINANCE:ETHUSDT`, `ETHUSDT.P`) map to Delta's `ETHUSD`: close enough for an indicator
+ * input, and far better than the alternative this replaces, which silently served the scanner's
+ * own market for every requested symbol. An empty id means the scanner's own market.
+ */
+export function deltaSymbolFor(tickerId: string | undefined, primary: string): string {
+  const raw = String(tickerId ?? '').trim();
+  if (!raw) return primary.toUpperCase();
+  const sym = (raw.includes(':') ? raw.slice(raw.lastIndexOf(':') + 1) : raw).toUpperCase().replace(/\.P$/, '');
+  return sym.replace(/USDT$/, 'USD');
+}
+
+/**
  * PineTS `IProvider` backed by in-memory Delta candles. Serves the primary timeframe from
  * `bars`; other timeframes requested via `request.security()` go through `fetchOther`
  * (already-cached REST candles in the worker), clipped so no future data leaks past the
@@ -46,11 +59,14 @@ export class DeltaPineProvider {
 
   configure(): void { /* keyless */ }
 
-  async getMarketData(_tickerId: string, timeframe: string, limit?: number): Promise<Kline[]> {
+  async getMarketData(tickerId: string, timeframe: string, limit?: number): Promise<Kline[]> {
     const tf = String(timeframe ?? this.primaryPineTf);
-    const deltaTf = pineTfToDelta(tf);
+    const symbol = deltaSymbolFor(tickerId, this.opts.symbol);
+    const own = symbol === this.opts.symbol.toUpperCase();
+    const sameTf = !pineTfToDelta(tf) || pineTfToDelta(tf) === this.opts.tf || tf === this.primaryPineTf;
+    const deltaTf = sameTf ? this.opts.tf : pineTfToDelta(tf)!;
     const lastMs = this.opts.bars.at(-1)?.time ?? Date.now();
-    if (!deltaTf || deltaTf === this.opts.tf || tf === this.primaryPineTf) {
+    if (own && sameTf) {
       const kl = toKlines(this.opts.bars, TF_SECONDS[this.opts.tf]);
       return limit ? kl.slice(-limit) : kl;
     }
@@ -58,23 +74,29 @@ export class DeltaPineProvider {
     const months = monthsM ? Number(monthsM[1]) : 0;
     const secs = TF_SECONDS[deltaTf] ?? (deltaTf === '1w' ? 604800 : months ? 2592000 * months : undefined);
     if (!secs) return [];
-    const key = `${deltaTf}:${lastMs}`;
+    const key = `${symbol}:${deltaTf}:${lastMs}`;
     if (this.cache.has(key)) return this.cache.get(key)!;
-    if (!this.opts.fetchOther) return [];
+    if (!this.opts.fetchOther) {
+      if (!own) throw new Error(`request.security(${tickerId}): no data source for another market`);
+      return [];
+    }
     const span = this.opts.bars.length * TF_SECONDS[this.opts.tf];
     let raw: ProviderBar[] = [];
     try {
       if (months) {
         // Delta serves no monthly candles: aggregate daily bars into calendar months (UTC).
-        const days = await this.opts.fetchOther(this.opts.symbol, '1d', Math.min(4000, Math.max(400, Math.ceil(span / 86400) + 400)), lastMs + TF_SECONDS[this.opts.tf] * 1000);
+        const days = await this.opts.fetchOther(symbol, '1d', Math.min(4000, Math.max(400, Math.ceil(span / 86400) + 400)), lastMs + TF_SECONDS[this.opts.tf] * 1000);
         raw = aggregateMonthly(days, months);
       } else {
         const want = Math.min(4000, Math.max(300, Math.ceil(span / secs) + 300));
-        raw = await this.opts.fetchOther(this.opts.symbol, deltaTf, want, lastMs + TF_SECONDS[this.opts.tf] * 1000);
+        raw = await this.opts.fetchOther(symbol, deltaTf, want, lastMs + TF_SECONDS[this.opts.tf] * 1000);
       }
     } catch {
       raw = [];
     }
+    // A market Delta does not list (an index, a stock, on-chain data) must fail the run, not quietly
+    // compute the script's logic on the wrong series.
+    if (!own && raw.length === 0) throw new Error(`request.security(${tickerId}): ${symbol} is not a Delta market; external series are not supported`);
     // Only bars that opened at or before the last primary bar (no look-ahead beyond the current HTF bar).
     const bars = raw.filter(b => b.time <= lastMs);
     const kl = months ? toMonthlyKlines(bars, months) : toKlines(bars, secs);

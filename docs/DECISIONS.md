@@ -440,3 +440,32 @@ works in both directions and never promotes on a backtest alone:
 
 Every move is logged in `incubator_events` with the numbers behind it. Promotion is manual until the
 gate has a track record; the first proposals cannot arrive before ~2–3 weeks of shadow trading.
+
+## 18. External audit of 6610d73: twelve findings, all accepted; seven fixed now, the rest block exchange mirroring
+
+All five reproduced failures reproduced here too, on the same fixtures. Each is fixed and the
+report's own check, with its expectation inverted, now passes.
+
+| # | finding | verdict | status |
+|---|---|---|---|
+| 7 | Pine provider served the scanner's own market for any requested symbol | accepted, **live today**: `session-breakout-context` computed its DXY filter on SOL | fixed: the requested market is fetched; a market Delta does not list fails the run. That scanner cannot run honestly on Delta and leaves the fleet |
+| 8 | incubator shadow lacked quotes, tape, mark, funding and input overrides | accepted (introduced by decision 17) | fixed: both books share one market-data wiring; inputs pass through shadow and screen |
+| 6 | quote freshness judged on receipt time only | accepted, affects paper entry prices | fixed: exchange time kept, both clocks must be fresh (2 s skew allowance), ordering by exchange time |
+| 10 | `quote_at` in fill records was the mark's time | accepted | fixed: the quote's own receipt time; ticker-only quotes now reported |
+| 9 | live evaluations shared a FIFO with background work; the backlog guard could drop live bars | accepted, matters more now that 100 shadow pairs share the pool | fixed: live and background queues, live first; live jobs expire after 240 s in the queue; the guard counts live work only |
+| 4 | tape prints never moved the trail or the floor | accepted, dormant (VM uses candle fills) | fixed: same ordering as bars, stop persisted and emitted when it moves |
+| 5 | depth impact could push the stop loss past the cap | accepted, dormant (`depthUsdPerBp` 0) | fixed: the order is sized on the exact stop-out cost and shrunk until it fits |
+| 1 | a rejected bracket still suppressed market exits | accepted, dormant (execution mode paper) | fixed minimally: a level exit is left to the exchange only if its order was acknowledged; a failed stop replacement retries |
+| 2 | paper fills, not exchange fills, are authoritative | accepted | **open: blocks any exchange mirroring** |
+| 3 | stop replacement cancels first; brackets are memory-only across restarts | accepted | **open: blocks any exchange mirroring** |
+| 11 | liquidation, funding and TP liquidity are simplified models | accepted as a limitation | documented; the numbers are estimates |
+| 12 | no per-trade configuration snapshot; no frozen forward test or shared-capital replay | accepted | open; the incubator's shadow book is the forward test for new pairs, the live 100-trade review for the fleet |
+
+Findings 2 and 3 need a durable order state machine (intent → submitted → acknowledged → filled,
+recovery by client order id, protection built from confirmed exposure, brackets persisted and
+verified on start). Until that exists, testnet or production mirroring must not be enabled. Paper
+trading, which is all the VM does, does not touch that code.
+
+One trade-off accepted knowingly: a script asking for an unlisted market now crashes its worker
+thread (PineTS requests the series outside the job's error handling) and the worker is replaced.
+That costs a restart per such run, in background work only, rather than risk a hung run sharing a thread.

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, feeFor, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, feeFor, fillExit, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -345,4 +345,29 @@ test('a reversal only banks the trade once it is actually ahead', () => {
   // and the switch that turns reversals off entirely still wins
   assert.equal(reversalAllowed(pos, 102, { ...gated, allowReversal: false }), false);
   assert.equal(DEFAULT_CONFIG.paper.reversalMinR, 0, 'ships as today’s behaviour');
+});
+
+test('tape prints advance the profit floor and the trail, from the next print on', () => {
+  const c = { ...cfg, fillSource: 'tape' as const, breakEvenAfterTp1: false, trailAfterR: 1.5, trailGiveBackPct: 40, floorAtR: 1, floorKeepR: 0.5, tpSplit: [0, 0, 1] as [number, number, number] };
+  const p = openPosition({ id: 9, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 1000, sl: 95, tp: [130], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: false });
+  applyTrade(p, { time: 2000, price: 106, qty: 1 }, c);                 // +1.2R: the floor locks +0.5R
+  assert.equal(p.sl, 102.5);
+  applyTrade(p, { time: 3000, price: 110, qty: 1 }, c);                 // +2R: keep 60% of the peak
+  assert.equal(p.sl, 106);
+  const out = applyTrade(p, { time: 4000, price: 105.9, qty: 1 }, c);   // falls through the raised stop
+  assert.equal(out[0]?.reason, 'be');
+  assert.equal(p.status, 'closed');
+});
+
+test('with depth impact, the loss at the stop stays within the risk budget and the stop cap', () => {
+  const c = { ...cfg, sizingMode: 'risk' as const, riskPerTradePct: 2, maxStopLossPct: 2, maxLeverage: 10, depthUsdPerBp: 10, liquidation: false };
+  for (const [entry, sl] of [[100, 95], [100, 105], [100, 99]] as const) {
+    const sz = sizeContracts(entry, sl, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.25, cfg: c });
+    assert.ok(sz.qty >= 1);
+    const p = openPosition({ id: 3, scannerId: 's', scannerName: 's', symbol: 'X', tf: '15m', side: sl < entry ? 'long' : 'short', qty: sz.qty, contractValue: 1, entryPrice: entry, at: 1, sl, tp: [entry * 2], riskAmount: sz.riskAmount, levelsSource: 'script', signalId: null, cfg: c, bt: true, marginLeverage: sz.marginLeverage });
+    fillExit(p, sl, p.qtyOpen, 'sl', 2, c, true);
+    const loss = -(p.realizedPnl - p.fees);
+    assert.ok(loss <= 20 + 1e-9, `entry ${entry} stop ${sl}: lost ${loss} on a 20 budget`);
+    assert.ok(Math.abs(loss - sz.riskAmount) < 1e-6, 'the reported risk is the loss the fills produce');
+  }
 });

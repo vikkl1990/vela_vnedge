@@ -13,12 +13,24 @@ interface PoolWorker {
   postMessage(job: WorkerJob): void;
   terminate(): Promise<number>;
 }
-interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number }
+interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number }
+/**
+ * `live` is a current bar's evaluation, which can open or close a trade; `background` is
+ * everything that can wait: backtests, warm-ups, the incubator's shadow runs and research.
+ */
+export type JobPriority = 'live' | 'background';
+/** A live job still waiting after this long would act on a signal too old to trade: drop it. */
+export const LIVE_QUEUE_DEADLINE_MS = 240_000;
 interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: boolean; retiring: boolean }
 
-/** Fixed-size worker pool. Only the exit handler owns worker replacement. */
+/**
+ * Fixed-size worker pool. Only the exit handler owns worker replacement. Two queues: live
+ * evaluations always dispatch before background work, so research can delay itself but never a
+ * trading decision.
+ */
 export class PinePool {
   private workers: Slot[] = [];
+  private live: Pending[] = [];
   private queue: Pending[] = [];
   private nextId = 1;
   readonly size: number;
@@ -35,7 +47,8 @@ export class PinePool {
     this.timeoutTimer.unref();
   }
 
-  get stats() { return { size: this.size, queued: this.queue.length, busy: this.workers.filter(w => w.busy).length }; }
+  get stats() { return { size: this.size, queued: this.queue.length + this.live.length, queuedLive: this.live.length, busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive }; }
+  private expiredLive = 0;
 
   private fail(p: Pending, error: string) {
     p.resolve({ id: p.job.id, ok: false, error, ms: p.startedAt === undefined ? 0 : Date.now() - p.startedAt,
@@ -74,20 +87,34 @@ export class PinePool {
     });
   }
 
-  run(job: Omit<WorkerJob, 'id'>): Promise<WorkerResult> {
+  run(job: Omit<WorkerJob, 'id'>, opts: { priority?: JobPriority } = {}): Promise<WorkerResult> {
     return new Promise(resolve => {
-      const p: Pending = { job: { ...job, id: this.nextId++ }, resolve };
+      const now = Date.now();
+      const live = (opts.priority ?? 'background') === 'live';
+      const p: Pending = { job: { ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: live ? now + LIVE_QUEUE_DEADLINE_MS : undefined };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
-      this.queue.push(p);
+      (live ? this.live : this.queue).push(p);
       this.pump();
     });
+  }
+
+  /** Next job to dispatch: live first, dropping live jobs that waited past their deadline. */
+  private next(): Pending | undefined {
+    const now = Date.now();
+    while (this.live.length) {
+      const p = this.live.shift()!;
+      if (p.deadline !== undefined && now > p.deadline) { this.expiredLive++; this.fail(p, `expired after ${Math.round((now - p.queuedAt) / 1000)}s in the queue`); continue; }
+      return p;
+    }
+    return this.queue.shift();
   }
 
   private pump() {
     if (this.stopped) return;
     for (const slot of this.workers) {
-      if (!slot.ready || slot.retiring || slot.busy || this.queue.length === 0) continue;
-      const p = this.queue.shift()!;
+      if (!slot.ready || slot.retiring || slot.busy || (this.queue.length === 0 && this.live.length === 0)) continue;
+      const p = this.next();
+      if (!p) continue;
       slot.busy = p; p.startedAt = Date.now();
       try { slot.w.postMessage(p.job); }
       catch (e) { this.retire(slot, `worker dispatch failed: ${String(e)}`); }
@@ -108,7 +135,7 @@ export class PinePool {
   async stop() {
     this.stopped = true;
     clearInterval(this.timeoutTimer);
-    for (const p of this.queue.splice(0)) this.fail(p, 'worker pool stopped');
+    for (const p of [...this.live.splice(0), ...this.queue.splice(0)]) this.fail(p, 'worker pool stopped');
     for (const slot of this.workers) {
       slot.retiring = true; slot.ready = false;
       if (slot.busy) { this.fail(slot.busy, 'worker pool stopped'); slot.busy = null; }

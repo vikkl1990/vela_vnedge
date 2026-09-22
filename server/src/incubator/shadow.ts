@@ -32,12 +32,15 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo> };
+  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; subscribe?: (symbols: string[]) => void };
   readonly stats = { runs: 0, skipped: 0, errors: 0, entries: 0, lastBarAt: 0 };
 
   constructor(deps: ShadowRunner['deps']) { this.deps = deps; }
 
   get active(): PairRow[] { return this.pairs; }
+
+  /** Markets the shadow book needs live data for: its pairs, plus any with an open shadow position. */
+  symbols(): string[] { return [...new Set([...this.pairs.map(r => r.symbol), ...this.deps.paper.openPositions().map(p => p.symbol)])]; }
 
   start() {
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
@@ -57,7 +60,8 @@ export class ShadowRunner {
     const tf = cfg.incubator.tf;
     this.pairs = this.deps.store.list(ACTIVE_STAGES).filter(r => r.tf === tf && this.deps.registry.get(r.scannerId)?.status === 'ok');
     // symbols of open shadow positions keep their 1m feed until those positions close
-    const symbols = new Set([...this.pairs.map(r => r.symbol), ...this.deps.paper.openPositions().map(p => p.symbol)]);
+    const symbols = new Set(this.symbols());
+    this.deps.subscribe?.([...symbols]);
     for (const symbol of symbols) {
       try {
         if (this.pairs.some(r => r.symbol === symbol) && !this.deps.candles.has(symbol, tf)) await this.deps.candles.track(symbol, tf, cfg.historyBars);
@@ -82,7 +86,9 @@ export class ShadowRunner {
     const bars = this.deps.candles.get(r.symbol, r.tf, { closedOnly: true, limit: cfg.historyBars });
     if (bars.length < 50) return;
     const market = await this.deps.marketInfo(r.symbol);
-    const res = await this.deps.pool.run({ scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400 });
+    // the scanner's configured input overrides, exactly as a live run of it would use
+    const inputs = cfg.scanners[s.id]?.inputs;
+    const res = await this.deps.pool.run({ scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (!res.ok) { this.stats.errors++; return; }
     const key = `${r.scannerId}:${r.symbol}:${r.tf}`;

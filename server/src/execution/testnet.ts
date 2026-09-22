@@ -90,10 +90,13 @@ export class ExchangeExecutor {
     const product_id = this.productId(o.symbol);
     if (!product_id) { log.warn(`no ${this.transport.host} product for ${o.symbol}; fill not mirrored`); return; }
     const isEntry = o.reason === 'entry';
-    if (!isEntry && this.bracketEnabled && this.brackets.has(o.positionId) && LEVEL_EXITS.has(o.reason)) {
+    // Leave a level exit to the exchange only when the order that would execute it was acknowledged.
+    // A bracket whose stop or target was rejected protects nothing: that exit is sent at market.
+    if (!isEntry && this.bracketEnabled && LEVEL_EXITS.has(o.reason) && this.bracketCovers(o.positionId, o.reason)) {
       log.info(`${o.symbol} ${o.reason} x${o.qty} left to the exchange bracket (not mirrored)`);
       return;
     }
+    if (!isEntry && this.bracketEnabled && LEVEL_EXITS.has(o.reason) && this.brackets.has(o.positionId)) log.warn(`${o.symbol} ${o.reason}: no acknowledged exchange order covers it; sending a market exit`);
     const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: !isEntry, client_order_id: cid(o.positionId, o.reason), purpose: isEntry ? 'entry' : 'exit' };
     const res = await this.transport.placeOrder(payload);
     log.info(`${this.transport.host} ${o.side} ${payload.size} ${o.symbol} (${o.reason}) → order ${res.id} ${res.state ?? ''}`);
@@ -108,6 +111,15 @@ export class ExchangeExecutor {
     if (seen && seen.sl === p.sl && seen.qtyOpen === p.qtyOpen) return;
     this.lastSeen.set(p.id, { sl: p.sl, qtyOpen: p.qtyOpen });
     await this.replaceStop(p);
+  }
+
+  /** Whether an acknowledged exchange order exists for this exit: the stop for sl/be, the matching leg for tpN. */
+  private bracketCovers(positionId: number, reason: string): boolean {
+    const b = this.brackets.get(positionId);
+    if (!b) return false;
+    if (reason === 'sl' || reason === 'be') return b.stop !== null;
+    const leg = Number(reason.match(/^tp(\d)$/)?.[1] ?? 0);
+    return leg > 0 && b.tps.some(t => t.leg === leg);
   }
 
   /** Bracket payloads for a position: one reduce-only stop-market for the open size and one reduce-only TP limit per leg. */
@@ -151,7 +163,10 @@ export class ExchangeExecutor {
     const o = this.bracketPayloads(p, b.product_id).find(x => x.purpose === 'stop');
     if (!o) return;
     try { const res = await this.transport.placeOrder(o); b.stop = { id: res.id, price: Number(o.stop_price), size: o.size }; log.info(`stop #${p.id} ${p.symbol} → ${o.stop_price} x${o.size}${p.breakEven ? ' (break-even)' : ''}`); }
-    catch (e: any) { log.error(`replace stop #${p.id} failed: ${e?.message ?? e}`); }
+    catch (e: any) {
+      log.error(`replace stop #${p.id} failed: ${e?.message ?? e}; the stop exit will be sent at market, and the next update retries`);
+      this.lastSeen.delete(p.id);
+    }
     // drop TP legs that the paper book already counts as filled
     b.tps = b.tps.filter(t => !p.tpHit[t.leg - 1]);
   }

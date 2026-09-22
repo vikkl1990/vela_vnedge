@@ -82,7 +82,10 @@ export class App {
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.resolvedSymbols = cfg().symbols;
-    this.incubator = new ShadowRunner({ store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s) });
+    this.incubator = new ShadowRunner({
+      store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s),
+      subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
+    });
     // 1m candles drive paper fills for every open position
     // `historical` marks bars that a resync or gap fill pulled from REST: they describe the past,
     // so they must not fill new entries or move the live mark (audit: current-time fills from old candles)

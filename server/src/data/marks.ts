@@ -6,7 +6,9 @@
 import { EventEmitter } from 'node:events';
 import type { WsFunding, WsMark, WsTicker } from '../delta/ws.ts';
 
-export interface MarkState { markPrice: number; at: number; bestBid: number | null; bestAsk: number | null }
+export interface MarkState { markPrice: number; at: number; bestBid: number | null; bestAsk: number | null; quoteAt?: number | null; quoteExchangeAt?: number | null }
+/** Allowance for clock skew between Delta and this host when judging a quote by its exchange time. */
+export const QUOTE_SKEW_MS = 2000;
 export interface FundingState {
   /** Percent per funding interval (Delta convention: 0.01 = 0.01 %). Positive → longs pay shorts. */
   ratePct: number;
@@ -28,27 +30,29 @@ export class MarkStore extends EventEmitter {
   /**
    * Top of book, kept apart from the mark price so that either channel can supply it: Delta
    * India sends `best_bid`/`best_ask` on `mark_price` and `quotes.best_bid`/`best_ask` on
-   * `v2/ticker`. `at` is the local receipt time, which is the clock `executable`'s `maxAgeMs`
-   * is measured against; the exchange timestamp orders marks but should not decide freshness.
+   * `v2/ticker`. Two clocks: `at` is local receipt, `exchangeAt` Delta's own timestamp. A quote
+   * must be fresh on both: a message that sat in a buffer for an hour is fresh on receipt only.
    */
-  private quotes = new Map<string, { bid: number; ask: number; at: number }>();
+  private quotes = new Map<string, { bid: number; ask: number; at: number; exchangeAt: number | null }>();
   private fundingBySymbol = new Map<string, FundingState>();
 
   /** Record a top-of-book snapshot. Crossed, zero or out-of-order quotes are ignored. */
-  setQuotes(symbol: string, bid: number | null, ask: number | null, at = Date.now()): void {
+  setQuotes(symbol: string, bid: number | null, ask: number | null, at = Date.now(), exchangeAt: number | null = null): void {
     if (bid === null || ask === null) return;
     if (!(bid > 0 && ask > 0 && bid <= ask)) return;
+    const ex = exchangeAt !== null && Number.isFinite(exchangeAt) && exchangeAt > 0 ? exchangeAt : null;
     const prev = this.quotes.get(symbol);
-    if (prev && at < prev.at) return;
-    this.quotes.set(symbol, { bid, ask, at });
+    // order by the exchange's clock when both have one: a late-delivered older quote must not win
+    if (prev && (ex !== null && prev.exchangeAt !== null ? ex < prev.exchangeAt : at < prev.at)) return;
+    this.quotes.set(symbol, { bid, ask, at, exchangeAt: ex });
   }
 
   /** `v2/ticker` is the channel that actually carries `quotes.best_bid` / `quotes.best_ask`. */
-  onWsTicker(t: WsTicker): void { this.setQuotes(t.symbol, t.bestBid, t.bestAsk); }
+  onWsTicker(t: WsTicker): void { this.setQuotes(t.symbol, t.bestBid, t.bestAsk, Date.now(), t.timeMs); }
 
   /** Symbols currently holding a quote no older than `maxAgeMs` (0 = any age). */
   quotedSymbols(maxAgeMs = 0, now = Date.now()): string[] {
-    return [...this.quotes.entries()].filter(([, q]) => maxAgeMs <= 0 || now - q.at <= maxAgeMs).map(([s]) => s);
+    return [...this.quotes.entries()].filter(([, q]) => maxAgeMs <= 0 || this.fresh(q, maxAgeMs, now)).map(([s]) => s);
   }
 
   setMark(symbol: string, markPrice: number, at = Date.now(), bestBid: number | null = null, bestAsk: number | null = null): void {
@@ -56,7 +60,7 @@ export class MarkStore extends EventEmitter {
     const prev = this.marks.get(symbol);
     if (prev && at < prev.at) return;
     this.marks.set(symbol, { markPrice, at, bestBid, bestAsk });
-    this.setQuotes(symbol, bestBid, bestAsk);
+    this.setQuotes(symbol, bestBid, bestAsk, Date.now(), at);
     this.emit('mark', { symbol, markPrice, at });
   }
   /**
@@ -67,17 +71,23 @@ export class MarkStore extends EventEmitter {
     const q = this.quotes.get(symbol);
     if (!q) return null;
     if (!(q.bid > 0 && q.ask > 0 && q.bid <= q.ask)) return null;
-    if (maxAgeMs > 0 && now - q.at > maxAgeMs) return null;
+    if (maxAgeMs > 0 && !this.fresh(q, maxAgeMs, now)) return null;
     return side === 'buy' ? q.ask : q.bid;
+  }
+
+  private fresh(q: { at: number; exchangeAt: number | null }, maxAgeMs: number, now: number): boolean {
+    if (now - q.at > maxAgeMs) return false;
+    return q.exchangeAt === null || now - q.exchangeAt <= maxAgeMs + QUOTE_SKEW_MS;
   }
 
   onWsMark(m: WsMark): void { this.setMark(m.symbol, m.markPrice, m.timeMs, m.bestBid, m.bestAsk); }
   mark(symbol: string): number | undefined { return this.marks.get(symbol)?.markPrice; }
   markState(symbol: string): MarkState | undefined {
     const m = this.marks.get(symbol);
-    if (!m) return undefined;
     const q = this.quotes.get(symbol);
-    return q ? { ...m, bestBid: q.bid, bestAsk: q.ask } : m;
+    // a quote from the ticker channel alone is still a quote: report it with its own timestamps
+    if (!m) return q ? { markPrice: (q.bid + q.ask) / 2, at: q.at, bestBid: q.bid, bestAsk: q.ask, quoteAt: q.at, quoteExchangeAt: q.exchangeAt } : undefined;
+    return q ? { ...m, bestBid: q.bid, bestAsk: q.ask, quoteAt: q.at, quoteExchangeAt: q.exchangeAt } : { ...m, quoteAt: null, quoteExchangeAt: null };
   }
   /** Quoted spread in bps; null when no quotes. */
   spreadBps(symbol: string): number | null {

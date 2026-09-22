@@ -160,10 +160,24 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   // Quality sizing targets a notional, so without this a wide (ATR-fallback) stop can cost most of the account.
   const stopCapPct = s.cfg.maxStopLossPct ?? 0;
   const stopCapQty = stopCapPct > 0 ? Math.floor((s.equity * stopCapPct / 100) / perContractRisk) : Infinity;
-  const qty = Math.min(desired, maxQty, stopCapQty);
+  let qty = Math.min(desired, maxQty, stopCapQty);
   if (!Number.isFinite(qty) || qty < 1) {
     if (stopCapQty < 1) return rejected(`stop too wide for the ${stopCapPct}% max stop-loss cap`);
     return rejected(maxQty < 1 ? 'margin or leverage cap exhausted' : 'risk budget too small for one contract');
+  }
+  // With depth impact the cost of a fill grows with its size, so the per-contract figure above
+  // understates the loss of a large order. Price the stop-out exactly as the fills will (entry and
+  // exit impact on the order's own notional) and shrink the order until it fits the budget.
+  if ((s.cfg.depthUsdPerBp ?? 0) > 0) {
+    const budget = Math.min(s.cfg.sizingMode === 'risk' ? s.equity * (s.cfg.riskPerTradePct / 100) : Infinity, stopCapPct > 0 ? s.equity * stopCapPct / 100 : Infinity);
+    const lossAt = (n: number) => {
+      const fe = slip(entry, long ? 'buy' : 'sell', s.cfg, entry * n * s.contractValue);
+      const fs = slip(sl, long ? 'sell' : 'buy', s.cfg, sl * n * s.contractValue);
+      return Math.abs(fe - fs) * n * s.contractValue + feeFor(fe, n, s.contractValue, s.cfg) + feeFor(fs, n, s.contractValue, s.cfg);
+    };
+    if (Number.isFinite(budget)) for (let i = 0; i < 60 && qty >= 1 && lossAt(qty) > budget; i++) qty = Math.min(qty - 1, Math.floor(qty * budget / lossAt(qty)));
+    if (qty < 1) return rejected('risk budget too small once depth impact is included');
+    return { qty, riskAmount: lossAt(qty), leverage: qty * notional / s.equity, marginLeverage };
   }
   return { qty, riskAmount: qty * perContractRisk, leverage: qty * notional / s.equity, marginLeverage };
 }
@@ -432,7 +446,7 @@ export interface TapePrint { time: number; price: number; qty?: number }
  * level: with `limitFill: 'through'` only once a print goes beyond the level, with `'touch'` on
  * a print at the level. Prints before the entry are ignored.
  */
-export function applyTrade(pos: Position, t: TapePrint, cfg: PaperConfig, markPrice?: number): Fill[] {
+export function applyTrade(pos: Position, t: TapePrint, cfg: PaperConfig, markPrice?: number, atrNow?: number): Fill[] {
   if (pos.status !== 'open' || t.time < pos.entryAt || !(t.price > 0)) return [];
   const fills: Fill[] = [];
   const long = pos.side === 'long';
@@ -463,6 +477,10 @@ export function applyTrade(pos: Position, t: TapePrint, cfg: PaperConfig, markPr
     if (pos.qtyOpen <= 0) return fills;
     if (i === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven) { pos.sl = pos.entryPrice; pos.breakEven = true; }
   }
+  // 3. trail and profit floor LAST, as on bars: this print was judged against the stop as it stood,
+  // and a stop it raises applies from the next print. Without this, tape mode silently ran without
+  // the exit rules the strategy was chosen with.
+  trailStop(pos, t.price, cfg, atrNow);
   return fills;
 }
 

@@ -346,7 +346,8 @@ export class ScannerEngine extends EventEmitter {
     const active = this.registry.all().filter(s => this.isActive(s) && this.symbolsFor(s.id).includes(symbol) && this.timeframesFor(s.id).includes(tf));
     if (!active.length) return;
     // backpressure: if the worker queue is already deep (warm-up or an earlier bar still running), skip this bar for this symbol
-    if (this.pool.stats.queued > 500) { log.warn(`bar closed ${symbol} ${tf}: worker queue ${this.pool.stats.queued} deep — skipping live runs for this bar (reduce scanners × symbols)`); return; }
+    // only live work counts here: background jobs queue behind live ones and cannot delay them
+    if (this.pool.stats.queuedLive > 500) { log.warn(`bar closed ${symbol} ${tf}: ${this.pool.stats.queuedLive} live runs already queued — skipping live runs for this bar (reduce scanners × symbols)`); return; }
     log.info(`bar closed ${symbol} ${tf} @ ${new Date(bar.time).toISOString().slice(11, 16)} → running ${active.length} scanners`);
     for (const s of active) this.runOnce(s, symbol, tf, { backtest: false, live: true }).catch(e => log.error(`run ${s.id} ${symbol} ${tf} failed: ${e?.message ?? e}`));
   }
@@ -379,7 +380,8 @@ export class ScannerEngine extends EventEmitter {
       }
       const rule = sc.rule ?? null;
       const inputs = sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined;
-      const runJob = (b: Bar[], tailBars: number | 'all') => this.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars: b, tailBars, plotTail: rule ? b.length : 400, inputs });
+      const runJob = (b: Bar[], tailBars: number | 'all') => this.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars: b, tailBars, plotTail: rule ? b.length : 400, inputs },
+        { priority: mode.live && tailBars !== 'all' ? 'live' : 'background' });
       const res = await runJob(mode.backtest ? btBars : bars, mode.backtest ? 'all' : 3);
       // a deep backtest run does not see the last bars the way the live run does → separate live run
       const liveRes = mode.live && btBars !== bars ? await runJob(bars, 3) : res;
