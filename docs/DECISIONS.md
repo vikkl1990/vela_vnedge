@@ -252,3 +252,39 @@ resolved the position.
 
 **Revisit if** holding times lengthen materially — a rule that is too slow for a two-hour trade
 could be useful for a two-day one.
+
+## 12. First live sample: 12 trades, 2 winners. The engine is faithful; the strategy had a bad run.
+
+After roughly half a day on the VM the account had closed 12 trades and won 2, for −7.60R, against
+a backtest expectation of 57% winners and +0.20R a trade. On its face, two or fewer wins in twelve
+at 57% has a 0.53% chance.
+
+`npm run replay` answers the first question that raises: did the engine do something the backtest
+would not? It ran every closed live trade's scanner through the backtester on the same bars. **All
+twelve matched.** The backtest took every one of them, ended each the same way — the same stop,
+reversal or trail exit — and landed within 0.03R of the live result each time. Live −7.60R,
+backtest −7.66R.
+
+So this is not an execution gap, a fill problem or a bug. The paper engine is doing exactly what was
+tested. The losses are the strategy meeting this particular stretch of market.
+
+Two reasons not to read more into it than that:
+
+- **The twelve are not independent.** Four are the same scanner on UNIUSD flipping short, long,
+  short, long through a choppy session; three more are the same scanner buying LINKUSD and being
+  stopped each time. The effective sample is closer to five or six decisions than twelve, so the
+  0.53% figure overstates how surprising it is.
+- **The walk-forward already contains windows like this.** Its first window was negative, and the
+  spread across windows ran from −219 to +1166. A bad half-day is inside that range.
+
+What twelve correlated trades cannot do is distinguish "a bad window" from "the 57% was optimistic",
+and the pre-committed review exists precisely so that question is answered on 100 trades, not on a
+bad day. Nothing is changed.
+
+**One sizing effect this surfaced.** Two of the twelve were absurdly small — 3 LINKUSD contracts at
+$0.49 of risk and 4 FILUSD contracts at $0.04 — because isolated margin was already committed to
+other open positions. That is working as designed, but it means live position size varies by a
+factor of 500 with concurrency, while the backtest runs every pair on its own purse at full size.
+R per trade matches, as the replay shows; dollar results do not. A position too small to matter is
+noise, and skipping entries below a minimum risk would be reasonable — noted for the review rather
+than changed during the freeze.
