@@ -540,3 +540,30 @@ through 160 × 36 runs, the damage is now bounded: each Pine worker has a 1.5 GB
 (`VNEDGE_WORKER_HEAP_MB`; the job fails, the worker is replaced, and the log names the script and
 market), the daily job's main thread 3 GB, the job 8 GB (`MemoryMax`), the bot 10 GB. Verified with a
 deliberately runaway script: stopped in 0.5 s at 409 MB, the next job ran normally.
+
+## 23. strategy() scripts now trade; a 626-script survey says the edge is on 1h and 4h, not 15m
+
+**Strategy support.** Scripts that signal only through `strategy.entry`/`strategy.exit` produced
+nothing before: the bot read alerts and chart markers only. The runtime keeps a trade ledger, so the
+worker reports each fill as `STRATEGY entry|exit side @ price` at the bar it filled on (by default
+the bar after the signal, so nothing can be acted on before the order could exist) and the extractor
+turns those into events. Verified against a crossover strategy: every entry lands on or after its
+signal bar.
+
+**Imported** (all disabled): 470 open-source strategies from TradingView's strategies listing, 16
+from the scalpingcrypto tag, 7 from the "swing crypto" search; AlgoAlpha's 143 were already present.
+Library: 2,489 scripts. Note TradingView's `/api/v1/scripts` ignores `q=`, so an earlier "crypto
+search" import was really the default listing; the search and tag pages only render their first page.
+
+**Survey** (`npm run survey`), 626 scripts × 5m/15m/1h/4h × 5 markets, live exit rules, exits on 1m
+(5m/15m) or 15m (1h/4h), GST, Scalper Offer, 10 bps stress, 8 windows: 8,677 runs, 1,668 skipped as
+silent. 22 script×timeframe passed — **none on 5m or 15m; 9 on 1h, 13 on 4h**. At the fast
+timeframes costs consume the edge; the current 15m fleet is the exception, not the rule.
+
+**Stage 2** took those 22 to all 36 liquid markets (633 runs): 119 pairs pass the screen's terms,
+capped to 5 markets per script×timeframe → 64 candidates, now in the shadow book (81 of 100 slots,
+19 free). Mostly breakouts: momentum bands, inside day, Donchian, Keltner. None trades live: the
+promotion gate needs ≥30 shadow trades over ≥14 days first.
+
+**Also fixed:** `request.security(SYM;HEIKINASHI)` is served by transforming the same candles (other
+chart types are refused); the shadow runner runs each pair on its own timeframe.
