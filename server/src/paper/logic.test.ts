@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
+import { applyBar, applyLiveBar, feeFor, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
 
-const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false };
+const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
 test('resolveLevels uses script levels, else ATR fallback', () => {
   const r = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [110, 120, 130] }, cfg, 0.5);
@@ -163,6 +163,14 @@ test('partial target P&L and maker fees reconcile exactly with closed-trade stat
   assert.ok(Math.abs(stats.pnl - 0.093781) < 1e-12);
   assert.equal(stats.wins, 1);
   assert.equal(stats.losses, 0);
+});
+
+test('GST is charged on top of every fee, as on Delta India', () => {
+  assert.equal(DEFAULT_CONFIG.paper.feeTaxPct, 18);
+  const c = { ...cfg, feeRatePct: 0.05, makerFeeRatePct: 0.02, feeTaxPct: 18 };
+  // $10,000 notional: 0.05% = $5 taker, plus 18% = $5.90; maker 0.02% = $2, plus 18% = $2.36
+  assert.ok(Math.abs(feeFor(100, 100, 1, c) - 5.9) < 1e-9);
+  assert.ok(Math.abs(feeFor(100, 100, 1, c, true) - 2.36) < 1e-9);
 });
 
 test('fee-aware entry filter rejects stops tighter than N× round-trip fees', () => {

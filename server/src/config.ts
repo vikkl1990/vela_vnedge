@@ -45,6 +45,11 @@ export interface PaperConfig {
   feeRatePct: number;
   /** Fee for take-profit limit fills (maker). */
   makerFeeRatePct: number;
+  /**
+   * Tax charged on top of every trading fee, in percent of the fee. Delta India adds 18% GST to the
+   * published 0.05% / 0.02% rates, so the real cost is 0.059% taker and 0.0236% maker.
+   */
+  feeTaxPct?: number;
   slippageBps: number;
   tpSplit: [number, number, number];
   breakEvenAfterTp1: boolean;
@@ -268,6 +273,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     requireQuote: false,
     feeRatePct: 0.05,
     makerFeeRatePct: 0.02,
+    feeTaxPct: 18,
     slippageBps: 2,
     tpSplit: [0.4, 0.3, 0.3],
     breakEvenAfterTp1: true,
@@ -388,6 +394,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.requireQuote && !(p.quoteMaxAgeMs > 0)) errs.push('paper.requireQuote needs paper.quoteMaxAgeMs > 0');
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
+  if (p.feeTaxPct !== undefined && !(p.feeTaxPct >= 0 && p.feeTaxPct <= 100)) errs.push('paper.feeTaxPct must be 0..100');
   if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
   if (!(Number.isFinite(p.trailGiveBackPct) && p.trailGiveBackPct >= 0 && p.trailGiveBackPct < 100)) errs.push('paper.trailGiveBackPct must be in [0, 100)');
   if (!(Number.isFinite(p.trailAtrMult) && p.trailAtrMult >= 0)) errs.push('paper.trailAtrMult must be ≥ 0 (0 = off)');

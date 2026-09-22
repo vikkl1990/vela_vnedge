@@ -122,7 +122,7 @@ export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig): st
   const ratio = cfg.minRiskFeeRatio ?? 0;
   if (!(ratio > 0)) return null;
   const risk = Math.abs(entry - sl);
-  const feeRoundTrip = entry * (cfg.feeRatePct / 100) * 2;
+  const feeRoundTrip = entry * (cfg.feeRatePct / 100) * (1 + (cfg.feeTaxPct ?? 0) / 100) * 2;
   if (risk < feeRoundTrip * ratio) return `stop too tight for fees (${(risk / entry * 100).toFixed(2)}% stop vs ${(feeRoundTrip / entry * 100).toFixed(2)}% round-trip fee; need ≥ ${ratio}×)`;
   return null;
 }
@@ -189,7 +189,7 @@ export function splitLegs(qty: number, split: number[], tpCount: number): number
 
 export function feeFor(price: number, qty: number, contractValue: number, cfg: PaperConfig, maker = false): number {
   const rate = maker ? (cfg.makerFeeRatePct ?? cfg.feeRatePct) : cfg.feeRatePct;
-  return price * qty * contractValue * (rate / 100);
+  return price * qty * contractValue * (rate / 100) * (1 + (cfg.feeTaxPct ?? 0) / 100);
 }
 
 /**
