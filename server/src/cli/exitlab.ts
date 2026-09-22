@@ -84,7 +84,7 @@ const toBars = (c: any[]): Bar[] => c.map(x => ({ time: x.time * 1000, open: x.o
 const bySymbol = new Map<string, Bar[]>();
 for (const s of new Set(entries.map(e => e.symbol))) {
   const es = entries.filter(e => e.symbol === s);
-  bySymbol.set(s, toBars(await rest.candles(s, '1m', Math.floor(Math.min(...es.map(e => e.fillAt)) / 1000) - 60, Math.floor((Math.max(...es.map(e => e.fillAt)) + HORIZON) / 1000), 120_000)));
+  bySymbol.set(s, toBars(await rest.candles(s, '1m', Math.floor(Math.min(...es.map(e => e.fillAt)) / 1000) - (process.env.TP === '1' ? 2 * 86400 : 60), Math.floor((Math.max(...es.map(e => e.fillAt)) + HORIZON) / 1000), 120_000)));
 }
 const feeR = (e: any) => {
   const riskPct = Math.abs(e.entry - e.sl) / e.entry * 100;
@@ -183,4 +183,146 @@ if (process.env.GRID === '1') {
   console.log('    protect from     ' + [0.5, 0.75, 1, 1.25, 1.5, 2].map(a => `${a}R ${avg(g => g.arm === a)}`).join('  '));
   console.log('    keep of peak     ' + [0.4, 0.5, 0.6, 0.75].map(k => `${k * 100}% ${avg(g => g.keep === k)}`).join('   '));
   console.log('    lock 0.5R at 1R  ' + `no ${avg(g => !g.lock && g.arm > 1)}   yes ${avg(g => g.lock > 0)}`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// TP=1: smart take-profit candidates against the live exit (trail 60% from 1.5R, +0.5R locked at
+// 1R, 6R cap). Every rule keeps the same stop logic; only how profit is banked changes.
+if (process.env.TP === '1') {
+  type Opt = { tp?: number; partial?: { at: number; share: number }; decay?: Array<[number, number]> };
+  /** The live stop logic plus a take-profit policy. `tpOf(i)` may give a per-trade target in R. */
+  const live = (o: Opt) => (path: Min[]) => {
+    let stop = -1, peak = 0, banked = 0, left = 1;
+    for (let i = 0; i < path.length; i++) {
+      const m = path[i];
+      if (m.lo <= stop) return banked + left * stop;
+      if (o.partial && left === 1 && m.hi >= o.partial.at) { banked += o.partial.share * o.partial.at; left -= o.partial.share; }
+      // a time-decaying target: [[minutes, R], …] — the target in force is the last step already reached
+      let tp = o.tp ?? 6;
+      if (o.decay) for (const [min, r] of o.decay) if (i >= min) tp = r;
+      if (m.hi >= tp) return banked + left * tp;
+      peak = Math.max(peak, m.hi);
+      stop = Math.max(stop, peak >= 1.5 ? peak * 0.6 : peak >= 1 ? 0.5 : -1);
+    }
+    return banked + left * (path.at(-1)?.close ?? 0);
+  };
+  // structure: the prior 24h extreme in the trade's direction, in R (the nearest obvious level)
+  const structR = cases.map(c => {
+    const d = c.e.side === 'long' ? 1 : -1, risk = Math.abs(c.e.entry - c.e.sl);
+    const prior = bySymbol.get(c.e.symbol)!.filter(b => b.time < c.e.fillAt && b.time >= c.e.fillAt - 86400_000);
+    if (!prior.length) return null;
+    const lvl = d === 1 ? Math.max(...prior.map(b => b.high)) : Math.min(...prior.map(b => b.low));
+    const r = (lvl - c.e.entry) * d / risk;
+    return r >= 0.75 ? r : null;   // a level already under price is no target
+  });
+  // learned: the scanner's median raw peak over its own EARLIER trades (walk-forward, ≥ 15 of them)
+  const rawPeak = cases.map(c => { let pk = 0; for (const m of c.path) { if (m.lo <= -1) break; pk = Math.max(pk, m.hi); } return pk; });
+  const learned = cases.map((c, i) => {
+    const prior = cases.slice(0, i).map((x, j) => [x, rawPeak[j]] as const).filter(([x]) => x.e.scanner === c.e.scanner && x.e.fillAt + 86400_000 <= c.e.fillAt).map(([, p]) => p);
+    if (prior.length < 15) return null;
+    const s = prior.sort((a, b) => a - b); return Math.max(1, s[Math.floor(s.length * 0.5)]);
+  });
+  const rules: Array<{ name: string; run: (path: Min[], i: number) => number }> = [
+    { name: 'LIVE NOW (trail + lock, TP 6R)', run: p => live({})(p) },
+    { name: 'no TP cap (trail + lock only)', run: p => live({ tp: 999 })(p) },
+    { name: 'scale out 1/3 at 1.5R', run: p => live({ partial: { at: 1.5, share: 1 / 3 } })(p) },
+    { name: 'scale out 1/2 at 2R', run: p => live({ partial: { at: 2, share: 0.5 } })(p) },
+    { name: 'scale out 1/3 at 3R', run: p => live({ partial: { at: 3, share: 1 / 3 } })(p) },
+    { name: 'structure: prior-24h extreme', run: (p, i) => live({ tp: structR[i] ?? 6 })(p) },
+    { name: 'structure: half off there, trail rest', run: (p, i) => structR[i] ? live({ partial: { at: structR[i]!, share: 0.5 } })(p) : live({})(p) },
+    { name: 'learned: scanner median peak', run: (p, i) => live({ tp: learned[i] ?? 6 })(p) },
+    { name: 'learned: half off there, trail rest', run: (p, i) => learned[i] ? live({ partial: { at: learned[i]!, share: 0.5 } })(p) : live({})(p) },
+    { name: 'time-decay 6R → 3R@4h → 2R@8h', run: p => live({ decay: [[0, 6], [240, 3], [480, 2]] })(p) },
+    { name: 'time-decay 4R → 2R@2h → 1.5R@6h', run: p => live({ decay: [[0, 4], [120, 2], [360, 1.5]] })(p) },
+  ];
+  type G = { name: string; total: number; h1: number; h2: number; w: number[]; win: number };
+  const out: G[] = rules.map(r => {
+    const g: G = { name: r.name, total: 0, h1: 0, h2: 0, w: new Array(WINDOWS).fill(0), win: 0 };
+    cases.forEach((c, i) => {
+      const x = r.run(c.path, i) - c.cost;
+      g.total += x; if (x > 0) g.win++;
+      if (c.e.fillAt < half) g.h1 += x; else g.h2 += x;
+      g.w[Math.min(WINDOWS - 1, Math.floor((c.e.fillAt - t0) / span))] += x;
+    });
+    return g;
+  });
+  const base = out[0];
+  console.log(`\nSMART TP · ${cases.length} entries · stops identical to live, only the profit-taking differs`);
+  console.log(`  structure level found for ${structR.filter(Boolean).length}, learned target for ${learned.filter(Boolean).length} of ${cases.length}\n`);
+  console.log(`  ${'rule'.padEnd(40)} ${'total R'.padStart(8)} ${'win%'.padStart(5)} ${'1st half'.padStart(9)} ${'2nd half'.padStart(9)} ${'windows'.padStart(8)} ${'beats live'.padStart(11)} ${'w/o best'.padStart(9)}`);
+  for (const g of out) {
+    const d = g.w.map((x, i) => x - base.w[i]);
+    console.log(`  ${g.name.padEnd(40)} ${g.total.toFixed(1).padStart(8)} ${(g.win / cases.length * 100).toFixed(0).padStart(4)}% ${g.h1.toFixed(1).padStart(9)} ${g.h2.toFixed(1).padStart(9)} ${(g.w.filter(x => x > 0).length + '/' + WINDOWS).padStart(8)} ${(g === base ? '-' : d.filter(x => x > 0).length + '/' + WINDOWS).padStart(11)} ${(g === base ? '-' : (d.reduce((a, b) => a + b, 0) - Math.max(...d)).toFixed(1)).padStart(9)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// SPIKE=1: does an early move deserve to be captured? The window is 30 minutes for BTC/ETH and
+// 15 for everything else (the owner's observation). First the premise: after an early peak of
+// k R, how often does the trade go on to double it, and how often does it fall back to entry
+// first? Then capture rules against the live exit.
+if (process.env.SPIKE === '1') {
+  const W = (sym: string) => (/^(BTC|ETH)USD$/.test(sym) ? 30 : 15);
+  const major = (c: typeof cases[number]) => /^(BTC|ETH)USD$/.test(c.e.symbol);
+  const earlyPeak = cases.map(c => { let pk = 0; for (let i = 0; i < Math.min(W(c.e.symbol), c.path.length); i++) { if (c.path[i].lo <= -1) break; pk = Math.max(pk, c.path[i].hi); } return pk; });
+  console.log(`\nEARLY MOVES · window 30m BTC/ETH (${cases.filter(major).length} entries), 15m others (${cases.filter(c => !major(c)).length})\n`);
+  console.log(`  ${'early peak'.padEnd(14)} ${'group'.padEnd(8)} ${'trades'.padStart(6)} ${'then doubled'.padStart(13)} ${'fell to entry first'.padStart(20)} ${'median final raw peak'.padStart(22)}`);
+  for (const k of [0.5, 1, 1.5]) for (const grp of ['BTC/ETH', 'others'] as const) {
+    const idx = cases.map((c, i) => i).filter(i => earlyPeak[i] >= k && (grp === 'BTC/ETH') === major(cases[i]));
+    if (!idx.length) continue;
+    let doubled = 0, back = 0; const finals: number[] = [];
+    for (const i of idx) {
+      const c = cases[i], w = W(c.e.symbol); let pk = 0, res = '';
+      for (let j = 0; j < c.path.length; j++) { const m = c.path[j]; if (m.lo <= -1) break; pk = Math.max(pk, m.hi);
+        if (!res && j >= w) { if (m.hi >= 2 * k) res = 'up'; else if (m.lo <= 0) res = 'back'; } }
+      if (res === 'up') doubled++; else if (res === 'back') back++;
+      finals.push(pk);
+    }
+    finals.sort((a, b) => a - b);
+    console.log(`  ≥ ${String(k).padEnd(4)}R in window ${grp.padEnd(8)} ${String(idx.length).padStart(6)} ${((doubled / idx.length) * 100).toFixed(0).padStart(12)}% ${((back / idx.length) * 100).toFixed(0).padStart(19)}% ${finals[Math.floor(finals.length / 2)].toFixed(2).padStart(21)}R`);
+  }
+
+  // the live exit, plus an optional early-capture policy
+  type Cap = { k: number; share?: number; tighten?: number; spike?: { r: number; win: number } };
+  const run = (c: typeof cases[number], cap?: Cap) => {
+    const w = W(c.e.symbol);
+    let stop = -1, peak = 0, banked = 0, left = 1, tight = false;
+    for (let i = 0; i < c.path.length; i++) {
+      const m = c.path[i];
+      if (m.lo <= stop) return banked + left * stop;
+      if (cap && !cap.spike && i < w && left === 1 && m.hi >= cap.k) {
+        if (cap.tighten) tight = true;
+        else { const sh = cap.share ?? 1; banked += sh * cap.k; left -= sh; if (left <= 1e-9) return banked; }
+      }
+      // spike anywhere: a gain of r R within `win` minutes, taken at this minute's close
+      if (cap?.spike && i >= cap.spike.win && m.close > 0 && m.close - c.path[i - cap.spike.win].close >= cap.spike.r) return banked + left * m.close;
+      if (m.hi >= 6) return banked + left * 6;
+      peak = Math.max(peak, m.hi);
+      const trail = tight ? Math.max(peak * (cap!.tighten!), cap!.k * 0.5) : peak >= 1.5 ? peak * 0.6 : peak >= 1 ? 0.5 : -1;
+      stop = Math.max(stop, trail);
+    }
+    return banked + left * (c.path.at(-1)?.close ?? 0);
+  };
+  const policies: Array<{ name: string; cap?: Cap }> = [
+    { name: 'LIVE NOW' },
+    ...[0.5, 0.75, 1, 1.5].map(k => ({ name: `early: take all at ${k}R`, cap: { k } })),
+    ...[0.75, 1, 1.5].map(k => ({ name: `early: half at ${k}R, trail rest`, cap: { k, share: 0.5 } })),
+    ...[0.75, 1].map(k => ({ name: `early: ${k}R → keep 80% of peak`, cap: { k, tighten: 0.8 } })),
+    { name: 'spike: +1R inside 15m, take it', cap: { k: 0, spike: { r: 1, win: 15 } } },
+    { name: 'spike: +1.5R inside 30m, take it', cap: { k: 0, spike: { r: 1.5, win: 30 } } },
+  ];
+  const score = (sel: (c: typeof cases[number]) => boolean, cap?: Cap) => {
+    const w = new Array(WINDOWS).fill(0); let tot = 0, h1 = 0, h2 = 0, win = 0, n = 0;
+    for (const c of cases) { if (!sel(c)) continue; const x = run(c, cap) - c.cost; n++; tot += x; if (x > 0) win++; if (c.e.fillAt < half) h1 += x; else h2 += x; w[Math.min(WINDOWS - 1, Math.floor((c.e.fillAt - t0) / span))] += x; }
+    return { tot, h1, h2, w, win, n };
+  };
+  for (const [label, sel] of [['ALL', () => true], ['BTC/ETH', major], ['OTHERS', (c: any) => !major(c)]] as const) {
+    const base = score(sel as any);
+    console.log(`\n  ${label} (${base.n} entries)`);
+    console.log(`  ${'rule'.padEnd(36)} ${'total R'.padStart(8)} ${'win%'.padStart(5)} ${'1st half'.padStart(9)} ${'2nd half'.padStart(9)} ${'beats live'.padStart(11)} ${'w/o best'.padStart(9)}`);
+    for (const p of policies) {
+      const g = score(sel as any, p.cap); const d = g.w.map((x, i) => x - base.w[i]);
+      console.log(`  ${p.name.padEnd(36)} ${g.tot.toFixed(1).padStart(8)} ${(g.win / Math.max(1, g.n) * 100).toFixed(0).padStart(4)}% ${g.h1.toFixed(1).padStart(9)} ${g.h2.toFixed(1).padStart(9)} ${(p.cap ? d.filter(x => x > 0).length + '/' + WINDOWS : '-').padStart(11)} ${(p.cap ? (d.reduce((a, b) => a + b, 0) - Math.max(...d)).toFixed(1) : '-').padStart(9)}`);
+    }
+  }
 }

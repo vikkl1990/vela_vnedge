@@ -469,3 +469,23 @@ trading, which is all the VM does, does not touch that code.
 One trade-off accepted knowingly: a script asking for an unlisted market now crashes its worker
 thread (PineTS requests the series outside the job's error handling) and the worker is replaced.
 That costs a restart per such run, in background work only, rather than risk a hung run sharing a thread.
+
+## 19. Tested: smart take-profits and early-move capture. Neither beats the trail; nothing changed.
+
+`TP=1 npm run exitlab` and `SPIKE=1 npm run exitlab`, raw 1m paths, costs with GST, stops identical
+to live (lock +0.5R at 1R, keep 60% of the peak from 1.5R).
+
+**Where the market goes.** Before the −1R stop or 24 h: median best 1.24R; 38% reach 2R, 15% reach 6R,
+10% reach 8R. The median trade that reaches 1R peaks five hours after entry. The fixed targets are
+not unreachable: the trail usually exits first, and the fat tail is where the profit is.
+
+**Smart targets** (VM fleet, 992 entries; live +109.5R): scale-outs at 1.5R/2R/3R +68 to +92; prior-24h
+extreme +77 (half there +94); each scanner's walk-forward median peak +26 (half there +68);
+time-decaying targets +41 to +91. None beat live in more than 2 of 8 windows. Removing the 6R cap
+(+159) comes almost entirely from one window. Capping winners cuts the edge.
+
+**Early-move capture** (window 30 min BTC/ETH, 15 min others). Alts: an early spike predicts a
+runner (≥1.5R in 15 min: 64% double, 24% fall back, median final peak 5.1R), and taking it costs
+30–86R. BTC/ETH: on the VM fleet's 80 entries an early spike looked like a reversal (86% fell
+back), but on 949 BTC/ETH entries across the local fleet it is a coin flip (40–47% double, 47–48%
+fall back) and every capture rule loses 16–120R more than the trail. The first result was 7 trades.
