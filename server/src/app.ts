@@ -1,4 +1,8 @@
 import { lastAtr } from './data/indicators.ts';
+import { IncubatorStore } from './incubator/store.ts';
+import { ShadowRunner } from './incubator/shadow.ts';
+import { approve as incubatorApprove, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, livePairs } from './incubator/cycle.ts';
+import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, DATA_DIR, type AppConfig } from './config.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
@@ -39,6 +43,10 @@ export class App {
   readonly pool: PinePool;
   readonly registry: ScannerRegistry;
   readonly paper: PaperEngine;
+  /** The incubator's shadow book: same engine, separate rows (`bt = 2`), never the live account. */
+  readonly shadow: PaperEngine;
+  readonly incubatorStore: IncubatorStore;
+  readonly incubator: ShadowRunner;
   readonly ml: MlService;
   readonly scanners: ScannerEngine;
   readonly marks = new MarkStore();
@@ -60,15 +68,32 @@ export class App {
     this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined, undefined, workers.factory);
     this.paper = new PaperEngine(this.db, cfg);
     this.paper.atrFor = (symbol, tf) => lastAtr(this.candles.get(symbol, tf, { closedOnly: true, limit: 60 }), 14);
+    // Shadow pairs are judged in R, so the shadow book sizes against a purse no pair can exhaust
+    // and has no position cap: a shadow trade is never skipped because another one holds margin.
+    let shadowBase: AppConfig | null = null, shadowCfg: AppConfig | null = null;
+    const shadowRef = () => {
+      const c = cfg();
+      if (c !== shadowBase) { shadowBase = c; shadowCfg = { ...c, paper: { ...c.paper, initialEquity: 10_000_000, maxOpenPositions: 100_000 } }; }
+      return shadowCfg!;
+    };
+    this.shadow = new PaperEngine(this.db, shadowRef, { book: 2 });
+    this.shadow.atrFor = this.paper.atrFor;
+    this.incubatorStore = new IncubatorStore(this.db);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.resolvedSymbols = cfg().symbols;
+    this.incubator = new ShadowRunner({ store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s) });
     // 1m candles drive paper fills for every open position
     // `historical` marks bars that a resync or gap fill pulled from REST: they describe the past,
     // so they must not fill new entries or move the live mark (audit: current-time fills from old candles)
-    this.candles.on('bar', (e: { symbol: string; tf: string; bar: any; historical?: boolean }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true }); });
-    this.candles.on('closed', (e: { symbol: string; tf: string; bar: any; historical?: boolean }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true }); });
-    this.feed.on('ticker', (t: WsTicker) => { this.paper.setMark(t.symbol, t.price); this.marks.onWsTicker(t); });
+    const onMinute = (e: { symbol: string; tf: string; bar: any; historical?: boolean }) => {
+      if (e.tf !== '1m') return;
+      this.paper.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true });
+      this.shadow.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true });
+    };
+    this.candles.on('bar', onMinute);
+    this.candles.on('closed', onMinute);
+    this.feed.on('ticker', (t: WsTicker) => { this.paper.setMark(t.symbol, t.price); this.shadow.setMark(t.symbol, t.price); this.marks.onWsTicker(t); });
     this.feed.on('status', async (s: { connected: boolean }) => {
       if (s.connected) for (const t of this.candles.tracked()) { try { const n = await this.candles.resync(t.symbol, t.tf); if (n) log.info(`resynced ${t.symbol} ${t.tf}: ${n} bars`); } catch (e: any) { log.warn(`resync failed ${t.symbol} ${t.tf}: ${e?.message}`); } }
     });
@@ -116,6 +141,7 @@ export class App {
     this.ops.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
+    this.incubator.start();
   }
 
   async onConfigChanged(): Promise<void> {
@@ -303,7 +329,54 @@ export class App {
     };
   }
 
+  // ---- incubator ----
+
+  /** Everything the Incubator page shows: stages, the evidence behind each pair, and the audit trail. */
+  incubatorView() {
+    const cfg = this.config.get();
+    const now = Date.now();
+    const openShadow = new Map<string, number>();
+    for (const p of this.shadow.openPositions()) { const k = `${p.scannerId}|${p.symbol}|${p.tf}`; openShadow.set(k, (openShadow.get(k) ?? 0) + 1); }
+    const names = new Map(this.registry.all().map(s => [s.id, s.name]));
+    const pairs = this.incubatorStore.list().map(r => {
+      const book = r.stage === 'live' || r.stage === 'demote_proposed' ? 0 : 2;
+      const judged = r.stage !== 'candidate' && r.stage !== 'retired';
+      return {
+        ...r, scannerName: names.get(r.scannerId) ?? r.scannerId,
+        stats: judged ? pairStats(this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book), r.since, now) : null,
+        openShadow: openShadow.get(`${r.scannerId}|${r.symbol}|${r.tf}`) ?? 0,
+      };
+    });
+    return {
+      enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),
+      fleet: livePairs(cfg).length, promotionsThisWeek: this.incubatorStore.promotionsSince(now - 7 * 86400_000),
+      lastRun: this.db.kvGet('incubator.lastRun') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length },
+      pairs, events: this.incubatorStore.events(100),
+    };
+  }
+
+  async incubatorDecide(id: number, action: 'approve' | 'reject', actor: string, note: string | null = null) {
+    const r = action === 'approve'
+      ? incubatorApprove(this.incubatorStore, this.config.get(), id, actor, (sid, patch) => { this.config.setScanner(sid, patch); })
+      : incubatorReject(this.incubatorStore, id, actor, note);
+    if (action === 'approve') await this.onConfigChanged();
+    await this.incubator.sync();
+    log.info(`incubator: ${actor} ${action}d ${r.scannerId} ${r.symbol} ${r.tf} → ${r.stage}`);
+    return r;
+  }
+
+  /** Re-judge shadow and live pairs now (the daily job does this too, after screening). */
+  async incubatorEvaluate(actor: string) {
+    const cfg = this.config.get();
+    const synced = incubatorSyncLive(this.incubatorStore, cfg);
+    const report = incubatorEvaluate(this.incubatorStore, cfg);
+    await this.incubator.sync();
+    log.info(`incubator: evaluated by ${actor}: ${report.proposed.length} proposed, ${report.retired.length} retired, ${report.admitted.length} admitted, ${report.demoteProposed.length} proposed for demotion`);
+    return { synced, report };
+  }
+
   async stop() {
+    this.incubator.stop();
     this.executor?.stop();
     this.feed.stop();
     await this.pool.stop();

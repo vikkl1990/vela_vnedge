@@ -475,3 +475,36 @@ export interface AuthStatus {
   canSetup: boolean
   roles: RoleOption[]
 }
+
+// ---- incubator ----
+export type IncubatorStage = 'candidate' | 'shadow' | 'proposed' | 'live' | 'demote_proposed' | 'retired'
+export interface IncubatorStats {
+  trades: number; days: number; wins: number; winRatePct: number; netR: number; avgR: number; pfR: number | null
+  weeks: number; positiveWeeks: number; positiveWeeksPct: number
+}
+export interface IncubatorScreen {
+  pass: boolean; at: number; trades: number; profitFactor: number; netPnl: number; netAtStress: number
+  windowsUp: number; winRatePct: number; avgR: number; bars: number; days: number
+}
+export interface IncubatorPair {
+  id: number; scannerId: string; scannerName: string; symbol: string; tf: string; stage: IncubatorStage
+  since: number; updated: number; note: string | null; screen: IncubatorScreen | null
+  gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats } | null
+  stats: IncubatorStats | null; openShadow: number
+}
+export interface IncubatorEvent { id: number; at: number; pairId: number; scannerId: string; symbol: string; tf: string; from: IncubatorStage | null; to: IncubatorStage; actor: string; evidence: unknown }
+export interface IncubatorView {
+  enabled: boolean
+  config: {
+    tf: string; universeTop: number; maxShadow: number; cooldownDays: number
+    screen: { minTrades: number; minProfitFactor: number; minWindowsUp: number; stressBps: number; slices: number }
+    gate: { minTrades: number; minDays: number; minPfR: number; minPositiveWeeksPct: number; minAvgR: number; maxOverlapPct: number; maxDays: number; failPfR: number }
+    promote: { maxPerWeek: number; maxFleet: number }
+    demote: { window: number; minTrades: number; maxPfR: number }
+  }
+  counts: Partial<Record<IncubatorStage, number>>
+  fleet: number; promotionsThisWeek: number
+  lastRun: { at: number; slice: string; scripts: number; symbols: number; runs: number; passed: number; new: number; ms: number; report?: { admitted: string[]; proposed: string[]; retired: string[]; demoteProposed: string[] } } | null
+  runner: { runs: number; skipped: number; errors: number; entries: number; lastBarAt: number; active: number }
+  pairs: IncubatorPair[]; events: IncubatorEvent[]
+}

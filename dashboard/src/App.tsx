@@ -4,6 +4,7 @@ import { AuthGate, useAuth } from './auth/AuthGate'
 import { Layout } from './components/Layout'
 import Profile from './pages/Profile'
 import Users from './pages/Users'
+import Incubator from './pages/Incubator'
 import { ChartPage } from './pages/ChartPage'
 import { Analytics } from './pages/Analytics'
 import { Learn } from './pages/Learn'
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="trades" element={<Trades />} />
           <Route path="chart" element={<ChartPage />} />
           <Route path="analytics" element={<Analytics />} />
+          <Route path="incubator" element={<Incubator />} />
           <Route path="learn" element={<Learn />} />
           <Route path="settings" element={<Settings />} />
           <Route path="logs" element={<Logs />} />

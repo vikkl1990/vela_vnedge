@@ -153,6 +153,29 @@ export interface MlConfig {
   useAsScore: boolean;
 }
 
+/**
+ * The incubator: disabled scanner/market pairs are screened daily, the promising ones trade in a
+ * shadow book on live data, and those that prove themselves there are proposed for promotion.
+ * A backtest screen over tens of thousands of pairs finds hundreds of lucky ones, so promotion rests
+ * only on shadow trades taken after the pair was picked. See docs/DECISIONS.md, decision 17.
+ */
+export interface IncubatorConfig {
+  /** Run shadow pairs in the bot. The daily screen is a separate job (`npm run incubate`). */
+  enabled: boolean;
+  tf: string;
+  /** Most liquid USD perpetuals screened, by 24h turnover, and the turnover floor. */
+  universeTop: number;
+  minTurnoverUsd: number;
+  /** Shadow pairs running at once (each is one script run per bar close). */
+  maxShadow: number;
+  screen: { bars: number; slices: number; minTrades: number; minProfitFactor: number; minWindowsUp: number; stressBps: number };
+  gate: { minTrades: number; minDays: number; minPfR: number; minPositiveWeeksPct: number; minAvgR: number; maxOverlapPct: number; maxDays: number; failPfR: number };
+  promote: { maxPerWeek: number; maxFleet: number };
+  demote: { window: number; minTrades: number; maxPfR: number };
+  /** A pair that failed shadow is not screened again for this long. */
+  cooldownDays: number;
+}
+
 export interface AutoTuneConfig {
   /** Re-tune scanner symbol lists automatically after warm-up and every `intervalHours`. */
   enabled: boolean;
@@ -206,6 +229,7 @@ export interface AppConfig {
   universe: SymbolUniverse;
   ml: MlConfig;
   autoTune: AutoTuneConfig;
+  incubator: IncubatorConfig;
   timeframes: string[];
   historyBars: number;
   paper: PaperConfig;
@@ -254,6 +278,14 @@ export const DEFAULT_CONFIG: AppConfig = {
   symbols: ['BTCUSD', 'ETHUSD'],
   universe: { mode: 'list', top: 20, exclude: [] },
   ml: { minProb: 0, useAsScore: false },
+  incubator: {
+    enabled: true, tf: '15m', universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
+    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10 },
+    gate: { minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0 },
+    promote: { maxPerWeek: 2, maxFleet: 20 },
+    demote: { window: 50, minTrades: 30, maxPfR: 0.9 },
+    cooldownDays: 30,
+  },
   autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },
   timeframes: ['15m'],
   historyBars: 1000,
@@ -414,6 +446,16 @@ export function validateConfig(c: AppConfig): string[] {
   errs.push(...validateRealismAndRisk(c));
   errs.push(...validateExtendedConfig(c));
   errs.push(...validateOpsConfig(c));
+  const inc = c.incubator;
+  if (inc !== undefined) {
+    if (!(inc.tf in TF_SECONDS)) errs.push('incubator.tf must be a supported timeframe');
+    if (!(inc.maxShadow >= 0 && inc.maxShadow <= 1000)) errs.push('incubator.maxShadow must be 0..1000');
+    if (!(inc.universeTop >= 1 && inc.universeTop <= 500)) errs.push('incubator.universeTop must be 1..500');
+    if (!(inc.gate?.minTrades >= 1 && inc.gate?.minDays >= 0 && inc.gate?.maxDays > inc.gate?.minDays)) errs.push('incubator.gate needs minTrades ≥ 1 and maxDays > minDays');
+    if (!(inc.gate?.failPfR < inc.gate?.minPfR)) errs.push('incubator.gate.failPfR must be below minPfR');
+    if (!(inc.promote?.maxPerWeek >= 0 && inc.promote?.maxFleet >= 1)) errs.push('incubator.promote needs maxPerWeek ≥ 0 and maxFleet ≥ 1');
+    if (!(inc.screen?.slices >= 1 && inc.screen?.slices <= 31)) errs.push('incubator.screen.slices must be 1..31');
+  }
   return errs;
 }
 

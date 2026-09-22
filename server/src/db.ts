@@ -58,6 +58,20 @@ CREATE TABLE IF NOT EXISTS backtests (
 );
 
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+
+-- incubator: one row per scanner/market/timeframe it has an opinion on, and every move it made
+CREATE TABLE IF NOT EXISTS incubator_pairs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,
+  stage TEXT NOT NULL, since INTEGER NOT NULL, updated INTEGER NOT NULL, screen TEXT, gate TEXT, note TEXT,
+  UNIQUE(scanner_id, symbol, tf)
+);
+CREATE INDEX IF NOT EXISTS idx_incubator_stage ON incubator_pairs(stage);
+CREATE TABLE IF NOT EXISTS incubator_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, pair_id INTEGER NOT NULL, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,
+  from_stage TEXT, to_stage TEXT NOT NULL, actor TEXT NOT NULL, evidence TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_incubator_events_at ON incubator_events(at DESC);
+CREATE INDEX IF NOT EXISTS idx_positions_pair ON positions(bt, scanner_id, symbol, tf, status);
 `;
 
 export interface BackupResult { file: string; bytes: number; at: number; ms: number; pruned: string[] }
@@ -74,7 +88,8 @@ export class Db {
     this.file = file;
     if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
-    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
+    // busy_timeout: the incubator's daily job writes from its own process while the bot runs
+    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 10000;');
     this.db.exec(SCHEMA);
     // additive migrations
     const cols = this.db.prepare('PRAGMA table_info(signals)').all() as Array<{ name: string }>;

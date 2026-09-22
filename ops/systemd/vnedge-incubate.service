@@ -1,0 +1,30 @@
+[Unit]
+Description=VNEdge incubator: daily screen of disabled scanners, then judge shadow and live pairs
+Documentation=https://github.com/vikkl1990/vela_vnedge/blob/main/docs/DECISIONS.md
+After=network-online.target vnedge.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/vnedge/server
+ExecStart=/usr/local/bin/node --no-warnings=ExperimentalWarning src/cli/incubate.ts
+Environment=NODE_ENV=production
+Environment=VNEDGE_DATA_DIR=/opt/vnedge/data
+# half the cores, at the lowest priority: the live bot always comes first
+Environment=WORKERS=4
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=20
+# a full slice is ~230 scripts × ~40 markets; stop a runaway rather than overlap the next day
+TimeoutStartSec=6h
+StandardOutput=append:/opt/vnedge/data/logs/incubate.out
+StandardError=append:/opt/vnedge/data/logs/incubate.err
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/vnedge/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true

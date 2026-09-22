@@ -1,4 +1,6 @@
 import type {
+  IncubatorPair,
+  IncubatorView,
   ScannerIndexEntry,
   BacktestResult,
   Candle,
@@ -103,6 +105,10 @@ export const api = {
   me: () => get<Session>('/auth/me'),
   changePassword: (body: { current: string; next: string }) => post<{ ok: true }>('/auth/password', body),
   updateProfile: (body: { displayName: string }) => post<{ user: Me }>('/auth/profile', body),
+  // incubator
+  incubator: () => get<IncubatorView>('/incubator'),
+  incubatorDecide: (v: { id: number; action: 'approve' | 'reject'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
+  incubatorEvaluate: () => post<{ report: unknown }>('/incubator/evaluate'),
   users: () => get<{ users: Me[]; roles: RoleOption[] }>('/users'),
   createUser: (body: { username: string; password: string; role: Role; displayName?: string }) => post<{ user: Me }>('/users', body),
   updateUser: (id: number, body: Partial<{ role: Role; displayName: string; disabled: boolean; password: string }>) => post<{ user: Me }>(`/users/${id}`, body),

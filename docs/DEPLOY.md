@@ -126,3 +126,20 @@ the internet pass the loopback check that guards first-run setup. The applicatio
 client; a direct connection cannot forge it because its peer is not loopback. nginx additionally
 refuses `/api/auth/setup` outright, so the first administrator can only ever be created over the SSH
 tunnel. If you put a different proxy in front, it must set `X-Forwarded-For`, or the same hole opens.
+
+## Incubator (daily screen)
+
+The incubator's daily job runs as its own oneshot service on a timer, at low priority, so screening
+never competes with the bot's worker pool. The shadow book itself runs inside the bot.
+
+```
+sudo cp /opt/vnedge/ops/systemd/vnedge-incubate.service /opt/vnedge/ops/systemd/vnedge-incubate.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now vnedge-incubate.timer
+systemctl list-timers vnedge-incubate.timer          # next run
+sudo systemctl start vnedge-incubate.service          # run now (takes about an hour or two)
+tail -f /opt/vnedge/data/logs/incubate.out
+```
+
+`SLICE=none` judges without screening. Output goes to `data/logs/incubate.out`, rotated with the
+other `*.out` files.

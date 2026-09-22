@@ -1292,3 +1292,7 @@ body { overflow-x: clip; }
 
 /* levels the script did not provide: taken from the position the signal opened */
 .lvl-derived { border-bottom: 1px dotted currentColor; opacity: .82; }
+
+/* incubator */
+.plain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.nowrap { white-space: nowrap; }

@@ -415,3 +415,28 @@ removed every DROP.
 UNIUSD (PF 2.18 over 41 days). It judges on the last ~10 days of bar-level backtests, keeps a pair on
 3 trades and any profit, runs every six hours and can only ever remove: over weeks it would switch
 the fleet off by chance, and it overrides every decision above. Fleet changes are made by review.
+
+## 17. The incubator: disabled scanners are screened daily, proven in a shadow book, then proposed
+
+Auto-tune (decision 16) judged pairs on ten days of backtest and could only remove. Its replacement
+works in both directions and never promotes on a backtest alone:
+
+1. **Screen** (`npm run incubate`, daily systemd timer at 01:00 UTC). One seventh of the library per
+   day, on the ~40 most liquid USD perpetuals, 15m, exits on 1m, live exit rules, fees with GST. Passes:
+   ≥ 20 trades, PF ≥ 1.2, ≥ 5/8 windows up, still profitable at 10 bps. A script with no entry on its
+   first three markets is skipped for the rest. This is only a filter: tens of thousands of
+   comparisons pass hundreds of pairs by luck.
+2. **Shadow.** The best candidates by (PF − 1)·√trades take free slots (100) and trade in a separate
+   book (`positions.bt = 2`) on live data: same script run, extraction and paper logic as a live pair,
+   but no live account, risk gate, executor or alerts. Every shadow trade happens after the pair was
+   picked, so it carries no selection bias.
+3. **Gate.** Proposed after ≥ 30 shadow trades over ≥ 14 days, PF ≥ 1.2 in R, ≥ 60% of weeks positive,
+   ≥ 0.1R per trade, and ≤ 50% of entries duplicating a live pair on the same market. Retired if PF < 1.0
+   on a full sample or not proven within 45 days; retired pairs are not screened for 30 days.
+4. **Approve.** The owner promotes or rejects on the Incubator page. At most 2 promotions a week and
+   20 live pairs. Promotion adds the market to the scanner's live symbols.
+5. **Demote.** A live pair whose last 50 trades (≥ 30) fall below PF 0.9 is proposed for demotion; approved,
+   it leaves the live fleet and goes back to the shadow book to prove itself again.
+
+Every move is logged in `incubator_events` with the numbers behind it. Promotion is manual until the
+gate has a track record; the first proposals cannot arrive before ~2–3 weeks of shadow trading.

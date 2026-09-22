@@ -44,6 +44,13 @@ export interface PendingEntry {
  * `position` ({type, position}), `trade` (closed position), `order` (fill) and `stats`.
  */
 export class PaperEngine extends EventEmitter {
+  /**
+   * Which book this engine owns: 0 is the live paper account, 2 the incubator's shadow book.
+   * Every row it writes carries this in `bt`, and every query it makes filters on it, so the books
+   * never see each other's positions. (1 is the in-memory backtest and never reaches the table.)
+   */
+  readonly book: number;
+  private readonly kvPrefix: string;
   private db: Db;
   private cfgRef: () => AppConfig;
   private open = new Map<number, Position>();
@@ -73,18 +80,20 @@ export class PaperEngine extends EventEmitter {
    */
   atrFor?: (symbol: string, tf: string) => number | undefined;
 
-  constructor(db: Db, cfgRef: () => AppConfig) {
+  constructor(db: Db, cfgRef: () => AppConfig, opts: { book?: number } = {}) {
     super();
     this.db = db; this.cfgRef = cfgRef;
-    for (const row of db.all<any>("SELECT * FROM positions WHERE status='open' AND bt=0")) {
+    this.book = opts.book ?? 0;
+    this.kvPrefix = this.book === 0 ? 'paper' : `book${this.book}`;
+    for (const row of db.all<any>(`SELECT * FROM positions WHERE status='open' AND bt=${this.book}`)) {
       const p = rowToPosition(row); this.open.set(p.id, p);
     }
     // pending tape entries do not survive a restart (their signal is seconds old at most)
-    for (const row of db.all<any>("SELECT id, signal_id FROM positions WHERE status='pending' AND bt=0")) {
+    for (const row of db.all<any>(`SELECT id, signal_id FROM positions WHERE status='pending' AND bt=${this.book}`)) {
       db.run('DELETE FROM positions WHERE id=?', row.id);
       if (row.signal_id) db.updateSignalAction(row.signal_id, 'rejected:pending entry dropped on restart', null);
     }
-    log.info(`loaded ${this.open.size} open paper positions`);
+    log.info(`loaded ${this.open.size} open ${this.book === 0 ? 'paper' : 'shadow'} positions`);
   }
 
   private get paper(): PaperConfig { return this.cfgRef().paper; }
@@ -92,10 +101,10 @@ export class PaperEngine extends EventEmitter {
 
   // ---- account state ----
 
-  get initialEquity(): number { return this.db.kvGet<number>('paper.initialEquity') ?? this.paper.initialEquity; }
+  get initialEquity(): number { return this.db.kvGet<number>(`${this.kvPrefix}.initialEquity`) ?? this.paper.initialEquity; }
 
   closedPositions(): Position[] {
-    if (!this.closedCache) this.closedCache = this.db.all<any>("SELECT * FROM positions WHERE status='closed' AND bt=0 ORDER BY exit_at ASC").map(rowToPosition);
+    if (!this.closedCache) this.closedCache = this.db.all<any>(`SELECT * FROM positions WHERE status='closed' AND bt=${this.book} ORDER BY exit_at ASC`).map(rowToPosition);
     return this.closedCache;
   }
 
@@ -270,7 +279,7 @@ export class PaperEngine extends EventEmitter {
     this.emit('order', orderOf(pos, pos.fills[0]));   // the fill precedes the open position (executor: entry before bracket)
     this.emit('position', { type: 'opened', position: pos });
     this.recordEquity(true);
-    log.info(`OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} ${pos.leverage.toFixed(1)}x sl ${pos.sl} tp ${pos.tp.join('/')} liq ${pos.liqPrice?.toFixed(1) ?? '-'} [${p.scannerTag}]`);
+    log.info(`${this.book ? 'INCUBATOR ' : ''}OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} ${pos.leverage.toFixed(1)}x sl ${pos.sl} tp ${pos.tp.join('/')} liq ${pos.liqPrice?.toFixed(1) ?? '-'} [${p.scannerTag}]`);
     return pos;
   }
 
@@ -449,14 +458,16 @@ export class PaperEngine extends EventEmitter {
 
   reset(): void {
     this.db.transaction(() => {
-      this.db.run('DELETE FROM positions WHERE bt=0');
-      this.db.run('DELETE FROM orders WHERE bt=0');
-      this.db.run('DELETE FROM equity');
-      this.db.run("UPDATE signals SET action='reset', position_id=NULL WHERE position_id IS NOT NULL");
+      this.db.run(`DELETE FROM positions WHERE bt=${this.book}`);
+      this.db.run(`DELETE FROM orders WHERE bt=${this.book}`);
+      if (this.book === 0) {
+        this.db.run('DELETE FROM equity');
+        this.db.run("UPDATE signals SET action='reset', position_id=NULL WHERE position_id IS NOT NULL");
+      }
     });
     this.open.clear(); this.pending.clear(); this.closedCache = null;
-    this.db.kvSet('paper.initialEquity', this.paper.initialEquity);
-    this.db.kvSet('paper.resetAt', Date.now());
+    this.db.kvSet(`${this.kvPrefix}.initialEquity`, this.paper.initialEquity);
+    this.db.kvSet(`${this.kvPrefix}.resetAt`, Date.now());
     this.recordEquity(true);
     this.emit('stats', this.stats());
     log.warn('paper account reset');
@@ -529,7 +540,7 @@ export class PaperEngine extends EventEmitter {
   // ---- persistence ----
 
   private nextId(): number {
-    const r = this.db.run("INSERT INTO positions(status, scanner_id, scanner_name, symbol, tf, side, qty, qty_open, contract_value, entry_price, entry_at, bt) VALUES ('pending','','','','','long',0,0,0,0,0,0)");
+    const r = this.db.run("INSERT INTO positions(status, scanner_id, scanner_name, symbol, tf, side, qty, qty_open, contract_value, entry_price, entry_at, bt) VALUES ('pending','','','','','long',0,0,0,0,0,?)", this.book);
     return Number(r.lastInsertRowid);
   }
 
@@ -538,7 +549,7 @@ export class PaperEngine extends EventEmitter {
       `UPDATE positions SET status=?, scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, qty=?, qty_open=?, contract_value=?, entry_price=?, entry_at=?, sl=?, sl_original=?, tp=?, tp_hit=?, break_even=?,
        realized_pnl=?, fees=?, risk_amount=?, levels_source=?, exit_at=?, exit_price=?, exit_reason=?, signal_id=?, fills=?, bt=? WHERE id=?`,
       p.status, p.scannerId, p.scannerName, p.symbol, p.tf, p.side, p.qty, p.qtyOpen, p.contractValue, p.entryPrice, p.entryAt, p.sl, p.slOriginal, JSON.stringify(p.tp), JSON.stringify(p.tpHit), p.breakEven ? 1 : 0,
-      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs, leverage: p.leverage, marginLeverage: p.marginLeverage, liqPrice: p.liqPrice, features: p.features, mlProb: p.mlProb, lastPriceBar: p.lastPriceBar, peakR: p.peakR }), p.bt ? 1 : 0, p.id,
+      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs, leverage: p.leverage, marginLeverage: p.marginLeverage, liqPrice: p.liqPrice, features: p.features, mlProb: p.mlProb, lastPriceBar: p.lastPriceBar, peakR: p.peakR }), this.book, p.id,
     );
   }
 
@@ -547,8 +558,8 @@ export class PaperEngine extends EventEmitter {
     const q = this.quotes?.markState?.(p.symbol);
     const ctx = this.fillContext;
     this.db.run(
-      'INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt, ref_price, bid, ask, quote_at, price_source) VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)',
-      f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason,
+      'INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt, ref_price, bid, ask, quote_at, price_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason, this.book,
       ctx.ref ?? null, q?.bestBid ?? null, q?.bestAsk ?? null, q?.at ?? null, ctx.source ?? null,
     );
     this.fillContext = {};
@@ -562,7 +573,7 @@ export class PaperEngine extends EventEmitter {
       this.closedCache = null;
       this.emit('position', { type: 'closed', position: pos });
       this.emit('trade', tradeOf(pos));
-      log.info(`CLOSE ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} ${pos.exitReason} pnl ${(pos.realizedPnl - pos.fees).toFixed(2)} [${pos.scannerId}]`);
+      log.info(`${this.book ? 'INCUBATOR ' : ''}CLOSE ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} ${pos.exitReason} pnl ${(pos.realizedPnl - pos.fees).toFixed(2)} [${pos.scannerId}]`);
       this.recordEquity(true);
       this.emit('stats', this.stats());
     } else {
@@ -571,6 +582,8 @@ export class PaperEngine extends EventEmitter {
   }
 
   private recordEquity(force: boolean) {
+    // the equity table and the drawdown alert belong to the live account only
+    if (this.book !== 0) return;
     const now = Date.now();
     const eq = this.equity();
     if (!force && (now - this.lastEquityPoint < 60_000 || Math.abs(eq - this.lastEquityValue) < 1e-9)) return;
@@ -579,7 +592,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   orders(limit = 200) {
-    return this.db.all<any>('SELECT id, at, position_id positionId, scanner_id scannerId, symbol, side, qty, price, fee, reason FROM orders WHERE bt=0 ORDER BY at DESC, id DESC LIMIT ?', limit);
+    return this.db.all<any>(`SELECT id, at, position_id positionId, scanner_id scannerId, symbol, side, qty, price, fee, reason FROM orders WHERE bt=${this.book} ORDER BY at DESC, id DESC LIMIT ?`, limit);
   }
 
   trades(opts: { limit?: number; scanner?: string; symbol?: string } = {}) {

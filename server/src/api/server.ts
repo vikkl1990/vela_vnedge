@@ -305,6 +305,16 @@ export class ApiServer {
     this.add('GET', '/api/ml/scanner/:id', (_r, _s, p) => a.ml.insightFor(p.id) ?? { scannerId: p.id, samples: 0, rules: [], model: null });
     this.add('GET', '/api/ml/samples', (_r, _s, _p, url) => a.ml.samples(url.searchParams.get('scanner') ?? undefined, Number(url.searchParams.get('limit') ?? 500)));
     // Fill quality: what the cost assumption was worth against the book actually quoted.
+    // incubator: reading is open to every account; deciding needs trade access (default-deny POST)
+    this.add('GET', '/api/incubator', () => a.incubatorView());
+    this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));
+    this.add('POST', '/api/incubator/:id/:action', async (r, _s, p, _u, body) => {
+      if (p.action !== 'approve' && p.action !== 'reject') throw new HttpError(404, 'unknown action');
+      const id = Number(p.id);
+      if (!Number.isInteger(id)) throw new HttpError(400, 'bad id');
+      const note = typeof body?.note === 'string' ? body.note.slice(0, 500) : null;
+      return a.incubatorDecide(id, p.action, this.userFor(r)?.username ?? 'unknown', note);
+    });
     this.add('GET', '/api/fills/quality', (_r, _s, _p, url) => a.fillQuality(Number(url.searchParams.get('limit') ?? 500)));
     this.add('GET', '/api/logs', (_r, _s, _p, url) => logger.tail(Number(url.searchParams.get('limit') ?? 200), (url.searchParams.get('level') as any) ?? undefined));
   }
