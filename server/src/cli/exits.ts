@@ -74,6 +74,9 @@ const policies: Policy[] = [
   { name: 'give back 50% from 0.4R', cfg: p => ({ ...p, trailAfterR: 0.4, trailGiveBackPct: 50 }) },
   { name: 'give back 50% from 1R', cfg: p => ({ ...p, trailGiveBackPct: 50 }) },
   { name: 'keep 75% from 2R', cfg: p => ({ ...p, trailAfterR: 2 }) },
+  { name: 'keep 60% from 1.5R', cfg: p => ({ ...p, trailAfterR: 1.5, trailGiveBackPct: 40 }) },
+  { name: 'keep 60% from 1R', cfg: p => ({ ...p, trailGiveBackPct: 40 }) },
+  { name: 'keep 50% from 1.5R', cfg: p => ({ ...p, trailAfterR: 1.5, trailGiveBackPct: 50 }) },
   { name: 'time stop: 12 bars under 1R', cfg: p => ({ ...p, staleBars: 12, staleMinR: 1 }) },
 
   // volatility exits (decision 7): worse and far less consistent
