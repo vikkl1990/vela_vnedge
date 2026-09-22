@@ -50,6 +50,12 @@ export interface PaperConfig {
    * published 0.05% / 0.02% rates, so the real cost is 0.059% taker and 0.0236% maker.
    */
   feeTaxPct?: number;
+  /**
+   * Delta India's Scalper Offer: no closing fee when a futures position is closed within the window
+   * of opening (30 min BTCUSD/ETHUSD, 15 min others; partial closes qualify; liquidations and the
+   * listed contracts do not). The account must opt in on Delta ("Join Now"), so it is off by default.
+   */
+  scalperOffer?: { enabled: boolean; majors: string[]; majorsMinutes: number; othersMinutes: number; excluded: string[] };
   slippageBps: number;
   tpSplit: [number, number, number];
   breakEvenAfterTp1: boolean;
@@ -306,6 +312,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     feeRatePct: 0.05,
     makerFeeRatePct: 0.02,
     feeTaxPct: 18,
+    scalperOffer: { enabled: false, majors: ['BTCUSD', 'ETHUSD'], majorsMinutes: 30, othersMinutes: 15, excluded: ['PAXGUSD', 'SLVONUSD', 'XAUTUSD'] },
     slippageBps: 2,
     tpSplit: [0.4, 0.3, 0.3],
     breakEvenAfterTp1: true,

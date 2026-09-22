@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, feeFor, fillExit, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -370,4 +370,20 @@ test('with depth impact, the loss at the stop stays within the risk budget and t
     assert.ok(loss <= 20 + 1e-9, `entry ${entry} stop ${sl}: lost ${loss} on a 20 budget`);
     assert.ok(Math.abs(loss - sz.riskAmount) < 1e-6, 'the reported risk is the loss the fills produce');
   }
+});
+
+test('Scalper Offer: no closing fee inside the window (30 min BTC/ETH, 15 min others), never on liquidation', () => {
+  const on = { ...cfg, feeRatePct: 0.05, feeTaxPct: 18, scalperOffer: { enabled: true, majors: ['BTCUSD', 'ETHUSD'], majorsMinutes: 30, othersMinutes: 15, excluded: ['PAXGUSD'] } };
+  const pos = (symbol: string) => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol, tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [300], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: on, bt: false });
+  const MIN = 60_000;
+  assert.equal(fillExit(pos('BTCUSD'), 101, 10, 'be', 25 * MIN, on, false).fee, 0, 'BTC closed at 25 min: free');
+  assert.ok(fillExit(pos('BTCUSD'), 101, 10, 'be', 31 * MIN, on, false).fee > 0, 'BTC closed at 31 min: charged');
+  assert.equal(fillExit(pos('SOLUSD'), 101, 10, 'be', 14 * MIN, on, false).fee, 0, 'alt closed at 14 min: free');
+  assert.ok(fillExit(pos('SOLUSD'), 101, 10, 'be', 16 * MIN, on, false).fee > 0, 'alt closed at 16 min: charged');
+  assert.ok(fillExit(pos('PAXGUSD'), 101, 10, 'be', 1 * MIN, on, false).fee > 0, 'excluded contract: charged');
+  assert.equal(closingFeeWaived(pos('BTCUSD'), MIN, 'liquidation', on), false);
+  assert.equal(closingFeeWaived(pos('BTCUSD'), MIN, 'be', cfg), false, 'off unless the account opted in');
+  // the backtest fills at the signal bar close, so the window starts there, not at the bar open
+  const bt = openPosition({ id: 2, scannerId: 's', scannerName: 's', symbol: 'SOLUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, openedAt: 15 * MIN, sl: 95, tp: [300], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: on, bt: true });
+  assert.equal(fillExit(bt, 101, 10, 'be', 29 * MIN, on, false).fee, 0);
 });

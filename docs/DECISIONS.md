@@ -489,3 +489,22 @@ runner (≥1.5R in 15 min: 64% double, 24% fall back, median final peak 5.1R), a
 30–86R. BTC/ETH: on the VM fleet's 80 entries an early spike looked like a reversal (86% fell
 back), but on 949 BTC/ETH entries across the local fleet it is a coin flip (40–47% double, 47–48%
 fall back) and every capture rule loses 16–120R more than the trail. The first result was 7 trades.
+
+## 20. Delta's Scalper Offer is modelled and on; chasing its window is not
+
+Delta India waives the closing fee when a futures position closes within 30 minutes of opening on
+BTCUSD/ETHUSD and 15 minutes on other futures (partial closes count; liquidations and PAXG, SLVON,
+XAUT do not; the account must opt in once with "Join Now"). `paper.scalperOffer` models it; the
+window starts at the actual fill (the backtest fills at the signal bar's close, `openedAt`).
+
+`SCALP=1 npm run exitlab`, costs charged per exited portion:
+
+| sample | live, full fees | live, with the offer | best capture rule |
+|---|---|---|---|
+| VM fleet, 992 entries | +109.5R | +116.2R | +113.5R (1R early → keep 80%) |
+| BTC/ETH, 949 entries (local fleet) | −96.9R | −73.6R | −96.2R |
+
+The offer itself is worth ~6% on the fleet with no change in behaviour: quick stop-outs already
+close inside the window. Taking profit early to stay inside it, or scratching trades that are not
+working at the window's end, still loses more than the fee saves. Enabled on the VM on the
+assumption that the account has opted in; if it has not, paper results are ~6% flattered.

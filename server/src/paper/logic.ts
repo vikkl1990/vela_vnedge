@@ -54,6 +54,8 @@ export interface Position {
   mlProb?: number | null;
   /** Best favourable excursion seen so far, in R; drives the trailing stop. */
   peakR?: number;
+  /** When the position was actually filled; the backtest stamps `entryAt` with the signal bar's open. */
+  openedAt?: number;
   /** Last cumulative live candle observed; retained across restarts. */
   lastPriceBar?: PriceBar;
 }
@@ -256,6 +258,19 @@ export interface OpenParams {
   quoted?: boolean;
   /** Last cumulative live candle observed; retained across restarts. */
   lastPriceBar?: PriceBar;
+  /** Actual fill time when it differs from `at` (the backtest fills at the signal bar's close). */
+  openedAt?: number;
+}
+
+/**
+ * Delta India's Scalper Offer: the closing leg of a futures position pays no fee when it closes
+ * within the window of opening. Liquidations never qualify.
+ */
+export function closingFeeWaived(pos: Position, at: number, reason: string, cfg: PaperConfig): boolean {
+  const o = cfg.scalperOffer;
+  if (!o?.enabled || reason === 'liquidation' || o.excluded?.includes(pos.symbol)) return false;
+  const minutes = o.majors.includes(pos.symbol) ? o.majorsMinutes : o.othersMinutes;
+  return at - (pos.openedAt ?? pos.entryAt) <= minutes * 60_000;
 }
 
 export function openPosition(p: OpenParams): Position {
@@ -269,7 +284,7 @@ export function openPosition(p: OpenParams): Position {
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
     levelsSource: p.levelsSource, leverage: p.leverage ?? 0, marginLeverage: p.marginLeverage ?? p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.marginLeverage ?? p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
-    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar,
+    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar, openedAt: p.openedAt ?? p.at,
   };
 }
 
@@ -292,7 +307,7 @@ export function fillExit(pos: Position, price: number, qty: number, reason: stri
   }
   // take-profit legs rest as limit orders → maker fee; everything else crosses the spread → taker fee
   const pnl = pnlOf(pos, px, q);
-  const quotedFee = feeFor(px, q, pos.contractValue, cfg, /^tp[123]$/.test(reason) && !withSlippage);
+  const quotedFee = closingFeeWaived(pos, at, reason, cfg) ? 0 : feeFor(px, q, pos.contractValue, cfg, /^tp[123]$/.test(reason) && !withSlippage);
   const fee = reason === 'liquidation' ? Math.min(quotedFee, Math.max(0, margin + pnl)) : quotedFee;
   pos.qtyOpen -= q;
   pos.realizedPnl += pnl;

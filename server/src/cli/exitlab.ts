@@ -326,3 +326,66 @@ if (process.env.SPIKE === '1') {
     }
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// SCALP=1: the same early-capture question priced with Delta's Scalper Offer: a close inside the
+// window (30 min BTC/ETH, 15 min others) pays no closing fee. Costs are charged per exited portion:
+// the opening fee and slippage always, the closing fee only outside the window.
+if (process.env.SCALP === '1') {
+  const W = (sym: string) => (/^(BTC|ETH)USD$/.test(sym) ? 30 : 15);
+  const major = (c: typeof cases[number]) => /^(BTC|ETH)USD$/.test(c.e.symbol);
+  const legR = (c: typeof cases[number]) => {
+    const riskPct = Math.abs(c.e.entry - c.e.sl) / c.e.entry * 100;
+    const fee = cfg.feeRatePct * (1 + (cfg.feeTaxPct ?? 0) / 100) / riskPct;   // one taker leg, in R
+    return { entry: fee + cfg.slippageBps / 100 / riskPct, exit: fee, exitSlip: cfg.slippageBps / 100 / riskPct };
+  };
+  type Cap = { k?: number; share?: number; scratch?: number; tighten?: number };
+  /** Net R of one trade: live stops, an optional early capture, fees charged by exit time. */
+  const run = (c: typeof cases[number], cap: Cap = {}, waiver = true) => {
+    const w = W(c.e.symbol), L = legR(c);
+    const exitCost = (i: number) => L.exitSlip + (waiver && i + 1 <= w ? 0 : L.exit);
+    let stop = -1, peak = 0, net = -L.entry, left = 1, tight = false;
+    const take = (i: number, share: number, r: number) => { net += share * (r - exitCost(i)); left -= share; };
+    for (let i = 0; i < c.path.length; i++) {
+      const m = c.path[i];
+      if (m.lo <= stop) { take(i, left, stop); return net; }
+      if (cap.k !== undefined && i + 1 <= w && left === 1 && m.hi >= cap.k) {
+        if (cap.tighten) tight = true;
+        else { take(i, cap.share ?? 1, cap.k); if (left <= 1e-9) return net; }
+      }
+      if (m.hi >= 6) { take(i, left, 6); return net; }
+      // the last free minute: leave a trade that is not working while the exit still costs nothing
+      if (cap.scratch !== undefined && i + 1 === w && m.close < cap.scratch) { take(i, left, m.close); return net; }
+      peak = Math.max(peak, m.hi);
+      stop = Math.max(stop, tight ? Math.max(peak * cap.tighten!, cap.k! * 0.5) : peak >= 1.5 ? peak * 0.6 : peak >= 1 ? 0.5 : -1);
+    }
+    take(c.path.length - 1, left, c.path.at(-1)?.close ?? 0);
+    return net;
+  };
+  const policies: Array<{ name: string; cap: Cap; waiver?: boolean }> = [
+    { name: 'LIVE, full fees (no offer)', cap: {}, waiver: false },
+    { name: 'LIVE, with the offer', cap: {} },
+    ...[0.5, 0.75, 1, 1.5].map(k => ({ name: `take all at ${k}R in window`, cap: { k } })),
+    ...[0.75, 1].map(k => ({ name: `half at ${k}R in window, trail rest`, cap: { k, share: 0.5 } })),
+    { name: '1R in window → keep 80% of peak', cap: { k: 1, tighten: 0.8 } },
+    ...[0, 0.25, 0.5].map(t => ({ name: `scratch at window end if < ${t}R`, cap: { scratch: t } })),
+    { name: 'scratch < 0R + take all at 1R', cap: { scratch: 0, k: 1 } },
+  ];
+  for (const [label, sel] of [['ALL', () => true], ['BTC/ETH', major], ['OTHERS', (c: any) => !major(c)]] as const) {
+    const sub = cases.filter(sel as any);
+    if (!sub.length) continue;
+    const score = (p: typeof policies[number]) => {
+      const w = new Array(WINDOWS).fill(0); let tot = 0, win = 0, h1 = 0, h2 = 0;
+      for (const c of sub) { const x = run(c, p.cap, p.waiver ?? true); tot += x; if (x > 0) win++; if (c.e.fillAt < half) h1 += x; else h2 += x; w[Math.min(WINDOWS - 1, Math.floor((c.e.fillAt - t0) / span))] += x; }
+      return { tot, win, h1, h2, w };
+    };
+    const base = score(policies[1]);
+    console.log(`\n  ${label} (${sub.length} entries) · closing fee waived inside ${label === 'OTHERS' ? '15' : label === 'BTC/ETH' ? '30' : '30/15'} min`);
+    console.log(`  ${'rule'.padEnd(36)} ${'total R'.padStart(8)} ${'win%'.padStart(5)} ${'1st half'.padStart(9)} ${'2nd half'.padStart(9)} ${'beats live'.padStart(11)} ${'w/o best'.padStart(9)}`);
+    for (const p of policies) {
+      const g = score(p); const d = g.w.map((x, i) => x - base.w[i]);
+      const cmp = p === policies[1] ? '-' : `${d.filter(x => x > 0).length}/${WINDOWS}`;
+      console.log(`  ${p.name.padEnd(36)} ${g.tot.toFixed(1).padStart(8)} ${(g.win / sub.length * 100).toFixed(0).padStart(4)}% ${g.h1.toFixed(1).padStart(9)} ${g.h2.toFixed(1).padStart(9)} ${cmp.padStart(11)} ${(p === policies[1] ? '-' : (d.reduce((a, b) => a + b, 0) - Math.max(...d)).toFixed(1)).padStart(9)}`);
+    }
+  }
+}
