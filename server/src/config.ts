@@ -524,24 +524,49 @@ export function validateOpsConfig(c: AppConfig): string[] {
   return errs;
 }
 
+/**
+ * The config file and the running bot's copy of it. Every change is written back to the file, and
+ * before writing, the store checks that nobody else changed the file since it was read: a stale
+ * process used to overwrite hand edits wholesale the next time it saved a scanner change.
+ */
 export class ConfigStore {
   private cfg: AppConfig;
   private listeners: Array<(next: AppConfig, prev: AppConfig) => void> = [];
+  private readonly file: string;
+  /** Modification time of the file when it was last read or written by this store. */
+  private seenMtimeMs = 0;
 
-  constructor() {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  constructor(file = CONFIG_FILE) {
+    this.file = file;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    this.cfg = this.read();
+  }
+
+  private read(): AppConfig {
     let stored: Partial<AppConfig> = {};
-    if (fs.existsSync(CONFIG_FILE)) {
-      try { stored = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { stored = {}; }
+    if (fs.existsSync(this.file)) {
+      try { stored = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { stored = {}; }
+      this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
     }
-    this.cfg = deepMerge(structuredClone(DEFAULT_CONFIG), stored);
-    if (process.env.VNEDGE_SYMBOLS) this.cfg.symbols = process.env.VNEDGE_SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
-    if (process.env.VNEDGE_TIMEFRAMES) this.cfg.timeframes = process.env.VNEDGE_TIMEFRAMES.split(',').map(s => s.trim()).filter(Boolean);
+    const cfg = deepMerge(structuredClone(DEFAULT_CONFIG), stored);
+    if (process.env.VNEDGE_SYMBOLS) cfg.symbols = process.env.VNEDGE_SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
+    if (process.env.VNEDGE_TIMEFRAMES) cfg.timeframes = process.env.VNEDGE_TIMEFRAMES.split(',').map(s => s.trim()).filter(Boolean);
+    return cfg;
+  }
+
+  /** Re-read the file if something else wrote it since we last did, so a change lands on top of it. */
+  private refreshIfChangedOnDisk(): void {
+    if (!fs.existsSync(this.file)) return;
+    const mtime = fs.statSync(this.file).mtimeMs;
+    if (mtime === this.seenMtimeMs) return;
+    console.warn(`[config] ${this.file} was changed outside this process; reloading it before applying the change`);
+    this.cfg = this.read();
   }
 
   get(): AppConfig { return this.cfg; }
 
   update(patch: Partial<AppConfig>): AppConfig {
+    this.refreshIfChangedOnDisk();
     const next = deepMerge(this.cfg, patch);
     const errs = validateConfig(next);
     if (errs.length) throw new Error('Invalid config: ' + errs.join('; '));
@@ -553,6 +578,7 @@ export class ConfigStore {
   }
 
   setScanner(id: string, patch: Partial<ScannerConfig>): ScannerConfig {
+    this.refreshIfChangedOnDisk();
     const cur = this.cfg.scanners[id] || { enabled: true, symbols: null, timeframes: null, exitMode: 'both' as ExitMode };
     const next = { ...cur, ...patch };
     if (next.symbols && next.symbols.length === 0) next.symbols = null;
@@ -564,8 +590,12 @@ export class ConfigStore {
 
   onChange(l: (next: AppConfig, prev: AppConfig) => void) { this.listeners.push(l); }
 
+  /** Write atomically (temp file + rename), so another process never reads a half-written file. */
   private save() {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.cfg, null, 2));
+    const tmp = `${this.file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(this.cfg, null, 2));
+    fs.renameSync(tmp, this.file);
+    this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
   }
 }
 
