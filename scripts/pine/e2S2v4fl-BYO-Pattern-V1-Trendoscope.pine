@@ -1,0 +1,370 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Trendoscope Pty Ltd, Trendoscope®
+//                                       ░▒             
+//                                  ▒▒▒   ▒▒      
+//                              ▒▒▒▒▒     ▒▒      
+//                      ▒▒▒▒▒▒▒░     ▒     ▒▒          
+//                  ▒▒▒▒▒▒           ▒     ▒▒          
+//             ▓▒▒▒       ▒        ▒▒▒▒▒▒▒▒▒▒▒  
+//   ▒▒▒▒▒▒▒▒▒▒▒ ▒        ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒         
+//   ▒  ▒       ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░        
+//   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒▒▒         
+//   ▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ ▒▒                       
+//    ▒▒▒▒▒         ▒▒▒▒▒▒▒                            
+//                 ▒▒▒▒▒▒▒▒▒                           
+//                ▒▒▒▒▒ ▒▒▒▒▒                          
+//               ░▒▒▒▒   ▒▒▒▒▓      ████████╗██████╗ ███████╗███╗   ██╗██████╗  ██████╗ ███████╗ ██████╗ ██████╗ ██████╗ ███████╗
+//              ▓▒▒▒▒     ▒▒▒▒      ╚══██╔══╝██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔═══██╗██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+//              ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒        ██║   ██████╔╝█████╗  ██╔██╗ ██║██║  ██║██║   ██║███████╗██║     ██║   ██║██████╔╝█████╗ 
+//             ▒▒▒▒▒       ▒▒▒▒▒       ██║   ██╔══██╗██╔══╝  ██║╚██╗██║██║  ██║██║   ██║╚════██║██║     ██║   ██║██╔═══╝ ██╔══╝  
+//            ▒▒▒▒▒         ▒▒▒▒▒      ██║   ██║  ██║███████╗██║ ╚████║██████╔╝╚██████╔╝███████║╚██████╗╚██████╔╝██║     ███████╗
+//             ▒▒             ▒                        
+//@version=6
+indicator("BYO Pattern V1 [Trendoscope®]", "BYOPv1.0[Trendoscope®]", true)
+import Trendoscope/Zigzag/11 as zg
+import Trendoscope/utils/1 as ut
+import Trendoscope/FibRatios/1 as fibs
+
+type Ratio
+    string ratioTitle
+    bool enable
+    float startValue
+    float endValue
+
+type Scanner
+    string patternName
+    int numberOfPivots
+    float errorPercent
+    bool logScale
+    array<Ratio> ratios
+    bool displayPivotLabels
+    bool displayRatioLabels
+
+type DrawingProperties
+    color lineColor = color.blue
+    color textColor = color.blue
+    int lineWidth = 1
+    bool showPivotLabels = true
+    bool showRatioLabels = true
+    string xloc = xloc.bar_time
+    bool force_overlay = false
+
+type Pattern
+    int id
+    Scanner scanner
+    array<chart.point> pivots
+    array<float> ratios
+    polyline pLine
+    array<label> pivotLabels
+    box prz
+    array<line> ratioLines
+    array<label> ratioLabels
+    DrawingProperties drawingProperties
+    bool hasPrz = false
+    bool valid = false
+
+zigzagLength = input.int(5, step = 5, minval = 1, title = 'Length', group = 'Zigzag', 
+            tooltip = 'Zigzag length for level 0 zigzag', display = display.none)
+depth = input.int(50, 'Depth', step = 25, minval=25, maxval = 500, group = 'Zigzag', 
+            tooltip = 'Zigzag depth refers to max number of pivots to be considered for level 0 zigzag.' + 
+            ' This number will also impact the recursive calculation of zigzags and number of patterns scanned.'+
+            ' Higher depth will slow down the alogirthm and may even lead to runtime error. Lower depth will reduce the number of patterns scanned', 
+            display = display.none)
+useRealTimeBars = input.bool(true, 'Use Real Time Bars', group = 'Zigzag', 
+            tooltip = 'If enabled real time bars are used for calculation. Otherwise, only confirmed bars are used', 
+            display = display.none)
+
+patternName = input.string("Three Drives", "Title", tooltip = "Pattern Title/Name", group='Pattern', display = display.none)
+numberOfPivots = input.int(6, "Number of Pivots", [5, 6], tooltip = "Number of pivots in the pattern", group='Pattern', display = display.none)
+errorPercent = input.float(20, 'Error Percent', tooltip = 'Error threshold to be used when ratios are absolute and not in range.', group='Pattern', display = display.none)
+logScale = input.bool(false, 'Log Scale', 'Use log scale for calculation of ratios', group='Pattern', display = display.none)
+// depth = numberOfPivots
+enableXabRatio = input.bool(true, "XAB", inline='xab', group='Ratios', display = display.none, 
+                    tooltip = 'Ratio of XAB Leg. Applicable for both 5 and 6 pivot patterns')
+xabRatio = Ratio.new(
+                "XAB",
+                enableXabRatio,
+                input.float(0.618, '', inline='xab', group = 'Ratios', active=enableXabRatio, display = display.none),
+                input.float(0.618, '', inline='xab', group = 'Ratios', active=enableXabRatio, display = display.none)
+            )
+
+enableAbcRatio = input.bool(true, "ABC", inline='abc', group='Ratios', display = display.none, 
+                    tooltip = 'Ratio of ABC Leg. Applicable for both 5 and 6 pivot patterns')
+abcRatio = Ratio.new(
+                "ABC",
+                enableAbcRatio,
+                input.float(1.272, '', inline='abc', group = 'Ratios', active=enableAbcRatio, display = display.none),
+                input.float(1.272, '', inline='abc', group = 'Ratios', active=enableAbcRatio, display = display.none)
+            )
+
+enableBcdRatio = input.bool(true, "BCD", inline='bcd', group='Ratios', display = display.none, 
+                    tooltip = 'Ratio of BCD Leg. Applicable for both 5 and 6 pivot patterns')
+bcdRatio = Ratio.new(
+                "BCD",
+                enableBcdRatio,
+                input.float(0.618, '', inline='bcd', group = 'Ratios', active=enableBcdRatio, display = display.none),
+                input.float(0.618, '', inline='bcd', group = 'Ratios', active=enableBcdRatio, display = display.none)
+            )
+
+enableCdeRatio = numberOfPivots == 6? input.bool(true, "CDE", inline='cde', group='Ratios', display = display.none, 
+                    active = numberOfPivots == 6,
+                    tooltip = 'Ratio of CDE Leg. Applicable only for 6 pivot patterns') : false
+cdeRatio = Ratio.new(
+                "CDE",
+                enableCdeRatio,
+                input.float(1.272, '', inline='cde', group = 'Ratios', active=enableCdeRatio, display = display.none),
+                input.float(1.272, '', inline='cde', group = 'Ratios', active=enableCdeRatio, display = display.none)
+            )
+
+enableXadRatio = input.bool(false, "XAD", inline='xad', group='Ratios', display = display.none, 
+                    tooltip = 'Ratio of XAD Leg. Applicable for both 5 and 6 pivot patterns')
+xadRatio = Ratio.new(
+                "XAD",
+                enableXadRatio,
+                input.float(0.382, '', inline='xad', group = 'Ratios', active=enableXadRatio, display = display.none),
+                input.float(0.618, '', inline='xad', group = 'Ratios', active=enableXadRatio, display = display.none)
+            )
+
+enableXcdRatio = input.bool(false, "XCD", inline='xcd', group='Ratios', display = display.none, 
+                    tooltip = 'Ratio of XCD Leg. Applicable for both 5 and 6 pivot patterns')
+xcdRatio = Ratio.new(
+                "XCD",
+                enableXcdRatio,
+                input.float(0.382, '', inline='xcd', group = 'Ratios', active=enableXcdRatio, display = display.none),
+                input.float(1.000, '', inline='xcd', group = 'Ratios', active=enableXcdRatio, display = display.none)
+            )
+
+enableAbeRatio = numberOfPivots == 6? input.bool(false, "ABE", inline='abe', group='Ratios', display = display.none, 
+                    active = numberOfPivots == 6,
+                    tooltip = 'Ratio of ABE Leg. Applicable only for 6 pivot patterns') : false
+abeRatio = Ratio.new(
+                "ABE",
+                enableAbeRatio,
+                input.float(1.000, '', inline='abe', group = 'Ratios', active=enableAbeRatio, display = display.none),
+                input.float(2.618, '', inline='abe', group = 'Ratios', active=enableAbeRatio, display = display.none)
+            )
+
+enableAdeRatio = numberOfPivots == 6? input.bool(false, "ADE", inline='ade', group='Ratios', display = display.none, 
+                    active = numberOfPivots == 6,
+                    tooltip = 'Ratio of CDE Leg. Applicable only for 6 pivot patterns') : false
+adeRatio = Ratio.new(
+                "ADE",
+                enableAdeRatio,
+                input.float(1.000, '', inline='ade', group = 'Ratios', active=enableAdeRatio, display = display.none),
+                input.float(2.618, '', inline='ade', group = 'Ratios', active=enableAdeRatio, display = display.none)
+            )
+
+theme = input.enum(ut.Theme.DARK, title = 'Theme', group = 'Display', 
+            tooltip = 'Chart theme settings. Line and label colors are generted based on the theme settings. If dark theme is selected, ' + 
+            'lighter colors are used and if light theme is selected, darker colors are used.', display = display.none, inline='t')
+showPivotLabels = input.bool(true, 'Pivot Labels', 'Display XABCD(E) pivot labels', group='Display', display = display.none)
+showRatioLabels = input.bool(true, 'Ratio Labels', 'Display ratio values and the labels', group='Display', display = display.none)
+showSummaryTable = input.bool(true, 'Summary', 'Display summary table', group='Display', display = display.none)
+
+if( numberOfPivots == 6 and not (cdeRatio.enable or abeRatio.enable or adeRatio.enable))
+    runtime.error('For 6 Pivot pattern, at least one among CDE, ABE, ADE Ratios must be enabled')
+
+if( numberOfPivots == 5 and not (bcdRatio.enable or xadRatio.enable or xcdRatio.enable))
+    runtime.error('For 5 Pivot pattern, at least one among BCD, XAD, XCD Ratios must be enabled')
+
+var themeColors = theme.getColors()
+offset = useRealTimeBars ? 0 : 1
+var array<Pattern> patterns = array.new<Pattern>()
+
+Scanner scanner = Scanner.new(patternName, numberOfPivots, errorPercent, logScale, 
+            array.from(xabRatio, abcRatio, bcdRatio, cdeRatio, xadRatio, xcdRatio, abeRatio, adeRatio), showPivotLabels, showRatioLabels)
+
+method getRange(Ratio r, float errorPercent)=>
+    startRange = r.startValue == r.endValue? r.startValue * (100-errorPercent)/100 : r.startValue
+    endRange = r.startValue == r.endValue? r.endValue * (100+errorPercent)/100 : r.endValue
+    [startRange, endRange]
+
+method validateRatio(Ratio r, float ratio, float errorPercent)=>
+    valid=true
+    if(r.enable)
+        [startRange, endRange] = r.getRange(errorPercent)
+        valid := ratio >= startRange and ratio <= endRange
+    valid
+
+retracementRatio(x, a, b, l)=>fibs.retracementRatio(x.price, a.price, b.price, l)
+
+method calculateRatios(Pattern p)=>
+    x = p.pivots.last()
+    a = p.pivots.get(p.scanner.numberOfPivots-2)
+    b = p.pivots.get(p.scanner.numberOfPivots-3)
+    c = p.pivots.get(p.scanner.numberOfPivots-4)
+    d = p.pivots.get(p.scanner.numberOfPivots-5)
+    e = p.scanner.numberOfPivots==6?p.pivots.get(p.scanner.numberOfPivots-6):d
+    p.ratios := array.new<float>()
+    p.ratios.push(retracementRatio(x, a, b, p.scanner.logScale))
+    p.ratios.push(retracementRatio(a, b, c, p.scanner.logScale))
+    p.ratios.push(retracementRatio(b, c, d, p.scanner.logScale))
+    p.ratios.push(retracementRatio(c, d, e, p.scanner.logScale))
+    p.ratios.push(retracementRatio(x, a, d, p.scanner.logScale))
+    p.ratios.push(retracementRatio(x, c, b, p.scanner.logScale))
+    p.ratios.push(retracementRatio(a, b, e, p.scanner.logScale))
+    p.ratios.push(retracementRatio(a, d, e, p.scanner.logScale))
+    p
+
+method validate(Pattern p)=>
+    p.valid := true
+    for [i, ratio] in p.scanner.ratios
+        p.valid := p.valid and ratio.validateRatio(p.ratios.get(i), p.scanner.errorPercent)
+    p
+
+retracement(chart.point p1, chart.point p2, Ratio r, float errorPercent, bool logScale=false)=>
+    [startRange, endRange] = r.getRange(errorPercent)
+    startValue = fibs.retracement(p1.price, p2.price, startRange, logScale)
+    endValue = fibs.retracement(p1.price, p2.price, endRange, logScale)
+    [startValue, endValue]
+
+getMidPoint(p1, p2)=>chart.point.new((p1.time+p2.time)/2, (p1.index+p2.index)/2, (p1.price+p2.price)/2)
+
+method draw(Pattern p)=>
+    x = p.pivots.last()
+    a = p.pivots.get(p.scanner.numberOfPivots-2)
+    b = p.pivots.get(p.scanner.numberOfPivots-3)
+    c = p.pivots.get(p.scanner.numberOfPivots-4)
+    d = p.pivots.get(p.scanner.numberOfPivots-5)
+    e = p.scanner.numberOfPivots==6?p.pivots.get(p.scanner.numberOfPivots-6):d
+
+    dir = x.price > a.price? 1 : -1
+
+    p.pLine := polyline.new(p.pivots, false, false, xloc.bar_time, p.drawingProperties.lineColor, line_style = line.style_solid, line_width = 2)
+
+    p.pivotLabels := array.new<label>()
+    p.ratioLines := array.new<line>()
+    p.ratioLabels := array.new<label>()
+    if(p.drawingProperties.showPivotLabels)
+        p.pivotLabels.push(label.new(x, 'X', xloc.bar_time, yloc.price, na, dir > 0? label.style_label_lower_right : label.style_label_upper_right, p.drawingProperties.lineColor, size.normal))
+        p.pivotLabels.push(label.new(a, 'A', xloc.bar_time, yloc.price, na, dir > 0? label.style_label_upper_right : label.style_label_lower_right, p.drawingProperties.lineColor, size.normal))
+        p.pivotLabels.push(label.new(b, 'B', xloc.bar_time, yloc.price, na, dir > 0? label.style_label_down : label.style_label_up, p.drawingProperties.lineColor, size.normal))
+        p.pivotLabels.push(label.new(c, 'C', xloc.bar_time, yloc.price, na, dir > 0? label.style_label_up : label.style_label_down, p.drawingProperties.lineColor, size.normal))
+        p.pivotLabels.push(label.new(d, 'D', xloc.bar_time, yloc.price, na, dir > 0? label.style_label_lower_left : label.style_label_upper_left, p.drawingProperties.lineColor, size.normal))
+        if(p.scanner.numberOfPivots == 6)
+            p.pivotLabels.push(label.new(e, 'E', xloc.bar_time, yloc.price, na, dir > 0? label.style_label_upper_left : label.style_label_lower_left, p.drawingProperties.lineColor, size.normal))
+    if(p.drawingProperties.showRatioLabels)
+        if(p.scanner.ratios.get(0).enable)
+            p.ratioLines.push(line.new(x, b, xloc.bar_time, extend.none, p.drawingProperties.lineColor, line.style_dotted, 1))
+            p.ratioLabels.push(label.new(getMidPoint(x, b), 'XAB : '+str.tostring(p.ratios.get(0)), xloc.bar_time, yloc.price, na, 
+                        dir > 0? label.style_label_lower_right : label.style_label_upper_right, p.drawingProperties.lineColor, size.small))
+        if(p.scanner.ratios.get(1).enable)
+            p.ratioLines.push(line.new(a, c, xloc.bar_time, extend.none, p.drawingProperties.lineColor, line.style_dotted, 1))
+            p.ratioLabels.push(label.new(getMidPoint(a, c), 'ABC : '+str.tostring(p.ratios.get(1)), xloc.bar_time, yloc.price, na, 
+                        dir > 0? label.style_label_upper_right : label.style_label_lower_right, p.drawingProperties.lineColor, size.small))
+        if(p.scanner.ratios.get(2).enable)
+            p.ratioLines.push(line.new(b, d, xloc.bar_time, extend.none, p.drawingProperties.lineColor, line.style_dotted, 1))
+            p.ratioLabels.push(label.new(getMidPoint(b, d), 'BCD : '+str.tostring(p.ratios.get(2)), xloc.bar_time, yloc.price, na, 
+                        dir > 0? label.style_label_lower_left : label.style_label_upper_left, p.drawingProperties.lineColor, size.small))
+        if(p.scanner.ratios.get(3).enable)
+            p.ratioLines.push(line.new(c, e, xloc.bar_time, extend.none, p.drawingProperties.lineColor, line.style_dotted, 1))
+            p.ratioLabels.push(label.new(getMidPoint(c, e), 'CDE : '+str.tostring(p.ratios.get(3)), xloc.bar_time, yloc.price, na, 
+                        dir > 0? label.style_label_upper_left : label.style_label_lower_left, p.drawingProperties.lineColor, size.small))
+        if(p.scanner.ratios.get(4).enable or p.scanner.ratios.get(5).enable)
+            p.ratioLines.push(line.new(x, d, xloc.bar_time, extend.none, p.drawingProperties.lineColor, line.style_dotted, 1))
+            ratioLbl = (p.scanner.ratios.get(4).enable? 'XAD : '+str.tostring(p.ratios.get(4)) : '') +
+                         (p.scanner.ratios.get(4).enable and p.scanner.ratios.get(5).enable? ' / ':'') +
+                         (p.scanner.ratios.get(5).enable? 'XCD : '+str.tostring(p.ratios.get(5)) : '')
+            p.ratioLabels.push(label.new(getMidPoint(x, d), ratioLbl, xloc.bar_time, yloc.price, na, 
+                        dir > 0? label.style_label_down : label.style_label_up, p.drawingProperties.lineColor, size.small))
+        if(p.scanner.ratios.get(6).enable or p.scanner.ratios.get(7).enable)
+            p.ratioLines.push(line.new(a, e, xloc.bar_time, extend.none, p.drawingProperties.lineColor, line.style_dotted, 1))
+            ratioLbl = (p.scanner.ratios.get(6).enable? 'ABE : '+str.tostring(p.ratios.get(6)) : '') +
+                         (p.scanner.ratios.get(6).enable and p.scanner.ratios.get(7).enable? ' / ':'') +
+                         (p.scanner.ratios.get(7).enable? 'ADE : '+str.tostring(p.ratios.get(7)) : '')
+            p.ratioLabels.push(label.new(getMidPoint(a, e), ratioLbl, xloc.bar_time, yloc.price, na, 
+                        dir > 0? label.style_label_up : label.style_label_down, p.drawingProperties.lineColor, size.small))
+    p.hasPrz := p.scanner.numberOfPivots == 6? p.scanner.ratios.get(3).enable or p.scanner.ratios.get(6).enable or p.scanner.ratios.get(7).enable :
+                     p.scanner.ratios.get(2).enable or p.scanner.ratios.get(4).enable or p.scanner.ratios.get(5).enable
+    float przStartPrice = na
+    float przEndPrice = na
+    if(p.scanner.numberOfPivots == 6 and (p.scanner.ratios.get(3).enable or p.scanner.ratios.get(6).enable or p.scanner.ratios.get(7).enable))
+        if(p.scanner.ratios.get(3).enable)
+            [start,end] = retracement(c, d, p.scanner.ratios.get(3), p.scanner.errorPercent)
+            przStartPrice := start
+            przEndPrice := end
+        if(p.scanner.ratios.get(6).enable)
+            [start,end] = retracement(a, b, p.scanner.ratios.get(6), p.scanner.errorPercent)
+            przStartPrice := na(przStartPrice)? start : (przStartPrice < przEndPrice? math.max(przStartPrice, start) : math.min(przStartPrice, start))
+            przEndPrice := na(przStartPrice)? end : (przStartPrice < przEndPrice? math.min(przEndPrice, end) : math.max(przEndPrice, end))
+        if(p.scanner.ratios.get(7).enable)
+            [start,end] = retracement(a, d, p.scanner.ratios.get(7), p.scanner.errorPercent)
+            przStartPrice := na(przStartPrice)? start : (przStartPrice < przEndPrice? math.max(przStartPrice, start) : math.min(przStartPrice, start))
+            przEndPrice := na(przStartPrice)? end : (przStartPrice < przEndPrice? math.min(przEndPrice, end) : math.max(przEndPrice, end))
+    if(p.scanner.numberOfPivots == 5 and (p.scanner.ratios.get(2).enable or p.scanner.ratios.get(4).enable or p.scanner.ratios.get(5).enable))
+        if(p.scanner.ratios.get(2).enable)
+            [start,end] = retracement(b, c, p.scanner.ratios.get(2), p.scanner.errorPercent)
+            przStartPrice := start
+            przEndPrice := end
+        if(p.scanner.ratios.get(4).enable)
+            [start,end] = retracement(x, a, p.scanner.ratios.get(4), p.scanner.errorPercent)
+            przStartPrice := na(przStartPrice)? start : (przStartPrice < przEndPrice? math.max(przStartPrice, start) : math.min(przStartPrice, start))
+            przEndPrice := na(przStartPrice)? end : (przStartPrice < przEndPrice? math.min(przEndPrice, end) : math.max(przEndPrice, end))
+        if(p.scanner.ratios.get(5).enable)
+            [start,end] = retracement(x, c, p.scanner.ratios.get(5), p.scanner.errorPercent)
+            przStartPrice := na(przStartPrice)? start : (przStartPrice < przEndPrice? math.max(przStartPrice, start) : math.min(przStartPrice, start))
+            przEndPrice := na(przStartPrice)? end : (przStartPrice < przEndPrice? math.min(przEndPrice, end) : math.max(przEndPrice, end))
+
+    if(p.hasPrz)
+        p.prz := box.new(chart.point.new(time, p.scanner.numberOfPivots == 6? e.index:d.index, przStartPrice), 
+                         chart.point.new(time, p.scanner.numberOfPivots == 6? e.index+3:d.index+3, przEndPrice),
+                         p.drawingProperties.lineColor, 0, line.style_dotted, extend.none, xloc.bar_index, color.new(p.drawingProperties.lineColor, 70))
+
+method checkIfPatternExist(array<Pattern> this, Pattern pattern)=>
+    duplicate = false
+    for i=this.size()>0?this.size()-1:na to 0
+        p = this.get(i)
+        match = true
+        for [j, pivot] in p.pivots
+            nPivot = pattern.pivots.get(j)
+            if(pivot.index != nPivot.index and j != 0)
+                match := false
+                break
+        if(match)
+            duplicate := true
+            break
+    duplicate
+
+method scan(Scanner scanner, zg.Zigzag zigzag)=>
+    var id = 0
+    if(not na(zigzag) and zigzag.flags.newPivot)
+        mlzigzag = zigzag
+        while(mlzigzag.zigzagPivots.size()>=scanner.numberOfPivots)
+            Pattern p = Pattern.new(id, scanner, mlzigzag.zigzagPivots.getPoints().slice(0, numberOfPivots)).calculateRatios().validate()
+            if(p.valid and not patterns.checkIfPatternExist(p))
+                id+=1
+                pColor = themeColors.pop()
+                themeColors.unshift(pColor)
+                p.drawingProperties := DrawingProperties.new(pColor, pColor, 2, scanner.displayPivotLabels, scanner.displayRatioLabels)
+                p.draw()
+                patterns.push(p)
+            mlzigzag := mlzigzag.nextlevel()
+
+    // if(not na(zigzag) and zigzag.flags.newPivot and zigzag.zigzagPivots.size()>=scanner.numberOfPivots)
+    //     Pattern p = Pattern.new(id, scanner, zigzag.zigzagPivots.getPoints().slice(0, numberOfPivots)).calculateRatios().validate()
+    //     if(p.valid and not patterns.checkIfPatternExist(p))
+    //         id+=1
+    //         pColor = themeColors.pop()
+    //         themeColors.unshift(pColor)
+    //         p.drawingProperties := DrawingProperties.new(pColor, pColor, 2, scanner.displayPivotLabels, scanner.displayRatioLabels)
+    //         p.draw()
+    //         patterns.push(p)
+
+method printSummary(Scanner scanner, array<Pattern> patterns)=>
+    tbl = table.new(position.bottom_right, 2, 15, color.aqua, chart.fg_color, 1, chart.fg_color, 1)
+    tbl.cell(0, 0, 'Pattern', text_color = chart.fg_color, bgcolor = color.maroon)
+    tbl.cell(1, 0, scanner.patternName, text_color = color.black, bgcolor = color.aqua)
+    tbl.cell(0, 1, 'Pivots', text_color = chart.fg_color, bgcolor = color.maroon)
+    tbl.cell(1, 1, str.tostring(scanner.numberOfPivots), text_color = color.black, bgcolor = color.aqua)
+    for [i, ratio] in scanner.ratios
+        if(ratio.enable)
+            [startRange, endRange] = ratio.getRange(scanner.errorPercent)
+            tbl.cell(0, 2+i, ratio.ratioTitle, text_color = chart.fg_color, bgcolor = color.maroon)
+            tbl.cell(1, 2+i, str.tostring(startRange)+'-'+str.tostring(endRange), text_color = color.black, bgcolor = color.aqua)
+    tbl.cell(0, 2+scanner.ratios.size(), 'Identified', text_color = chart.fg_color, bgcolor = color.maroon)
+    tbl.cell(1, 2+scanner.ratios.size(), str.tostring(patterns.size()), text_color = color.black, bgcolor = color.aqua)
+var zg.Zigzag zigzag = zg.Zigzag.new(zigzagLength, depth, offset)
+zigzag.calculate()
+scanner.scan(zigzag)
+if(showSummaryTable and (barstate.islast or barstate.islastconfirmedhistory))
+    scanner.printSummary(patterns)

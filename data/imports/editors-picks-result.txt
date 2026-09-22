@@ -1,0 +1,20 @@
+
+TUNING · 9 scanners · BTCUSD,ETHUSD,SOLUSD,UNIUSD,LINKUSD 15m
+
+  scanner                                default TEST             tuned TEST               change / verdict
+  universal-signal-backtester             143t   -504 PF  0.60    -                        [default loses out of sample]
+  trend-target-ribbon                     128t   -235 PF  0.75    -                        [default loses out of sample]
+  zeiierman-trend-pressure-zeiierman        0t      0 PF  0.00    -                        [too few trades to tune]
+  volume-delta-footprint-map-zeiierman      0t      0 PF  0.00    -                        [too few trades to tune]
+  kinetic-slippage-index-ksi                0t      0 PF  0.00    -                        [too few trades to tune]
+  tasc-2026-08-an-ag-selling-model          0t      0 PF  0.00    -                        [too few trades to tune]
+  macd-with-htf-panels                      0t      0 PF  0.00    -                        [too few trades to tune]
+  time-of-day-session-performance-stats-    0t      0 PF  0.00    -                        [too few trades to tune]
+  tasc-2026-09-adaptive-supersmoother       0t      0 PF  0.00    -                        [too few trades to tune]
+
+  found an in-sample improvement:        0 of 9
+  of those, survived out of sample:       0
+  better OOS but still a losing scanner:  0
+  in-sample gain collapsed out of sample: 0
+  default already best in-sample:         0
+  too few trades to tune:                 7

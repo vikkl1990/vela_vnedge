@@ -1,0 +1,889 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fluxchart
+
+//@version=6
+indicator("Session Edge Profiler | Flux Charts", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+//#region Constants
+
+const string GP_SESS = "Sessions"
+const string GP_FILT = "Filters"
+const string GP_DASH = "Dashboard"
+const string GP_DISP = "Display"
+
+const color ORANGE   = #FF6D00
+const color BLUE     = #2962FF
+const color GREEN    = #00C853
+const color PURPLE   = #AA00FF
+const color RED      = #FF1744
+const color YELLOW   = #FFC107
+const color GRAY     = #808080
+
+// Intensity Colors
+const color BULL_COLOR = #089981
+const color BEAR_COLOR = #f23645
+const color MID_COLOR  = color.orange
+
+// Dashboard Theme Colors
+const color BG_DARK_DARK       = color.rgb(30, 30, 30)
+const color BG_DARK_LIGHT      = color.rgb(245, 245, 245)
+const color BG_HEADER_DARK     = color.rgb(30, 30, 40)
+const color BG_HEADER_LIGHT    = color.rgb(230, 230, 240)
+const color BG_ROW_DARK        = #1a2332
+const color BG_ROW_LIGHT       = #e8edf5
+const color BG_BEST_DARK       = #1a5276
+const color BG_BEST_LIGHT      = #c8ddf0
+const color TEXT_DARK          = color.rgb(210, 210, 210)
+const color TEXT_LIGHT         = color.rgb(30, 30, 30)
+
+//#endregion Constants
+
+//#region Input
+
+enAsia       = input.bool(true,          "",               inline = "s1",  group = GP_SESS, display = display.none)
+nameAsia     = input.string("Asia",     "",                inline = "s1",  group = GP_SESS, display = display.none)
+asiaTime     = input.session("1900-0200", "",              inline = "s1",  group = GP_SESS, display = display.none)
+colAsia      = input.color(ORANGE,      "",                inline = "s1",  group = GP_SESS, display = display.none)
+
+enLondon     = input.bool(true,          "",               inline = "s2",  group = GP_SESS, display = display.none)
+nameLondon   = input.string("London",   "",                inline = "s2",  group = GP_SESS, display = display.none)
+londonTime   = input.session("0200-0830", "",              inline = "s2",  group = GP_SESS, display = display.none)
+colLondon    = input.color(BLUE,        "",                inline = "s2",  group = GP_SESS, display = display.none)
+
+enNYAM       = input.bool(true,          "",               inline = "s3",  group = GP_SESS, display = display.none)
+nameNYAM     = input.string("NY AM",    "",                inline = "s3",  group = GP_SESS, display = display.none)
+nyamTime     = input.session("0830-1200", "",              inline = "s3",  group = GP_SESS, display = display.none)
+colNYAM      = input.color(GREEN,       "",                inline = "s3",  group = GP_SESS, display = display.none)
+
+enLunch      = input.bool(true,          "",               inline = "s4",  group = GP_SESS, display = display.none)
+nameLunch    = input.string("NY Lunch", "",                inline = "s4",  group = GP_SESS, display = display.none)
+lunchTime    = input.session("1200-1330", "",              inline = "s4",  group = GP_SESS, display = display.none)
+colLunch     = input.color(PURPLE,      "",                inline = "s4",  group = GP_SESS, display = display.none)
+
+enNYPM       = input.bool(true,          "",               inline = "s5",  group = GP_SESS, display = display.none)
+nameNYPM     = input.string("NY PM",    "",                inline = "s5",  group = GP_SESS, display = display.none)
+nypmTime     = input.session("1330-1600", "",              inline = "s5",  group = GP_SESS, display = display.none)
+colNYPM      = input.color(RED,         "",                inline = "s5",  group = GP_SESS, display = display.none)
+
+wdSun        = input.bool(false,         "Sun",            inline = "wd",  group = GP_FILT, display = display.none)
+wdMon        = input.bool(true,          "Mon",            inline = "wd",  group = GP_FILT, display = display.none)
+wdTue        = input.bool(true,          "Tue",            inline = "wd",  group = GP_FILT, display = display.none)
+wdWed        = input.bool(true,          "Wed",            inline = "wd",  group = GP_FILT, display = display.none)
+wdThu        = input.bool(true,          "Thu",            inline = "wd",  group = GP_FILT, display = display.none)
+wdFri        = input.bool(true,          "Fri",            inline = "wd",  group = GP_FILT, display = display.none)
+wdSat        = input.bool(false,         "Sat",            inline = "wd",  group = GP_FILT, display = display.none)
+atrLen       = input.int(14,             "ATR Length",     minval = 5,     maxval = 50,     group = GP_FILT, display = display.none)
+pivotLen     = input.int(5,              "Pivot Strength", minval = 2,     maxval = 20,     group = GP_FILT, display = display.none)
+
+showDash     = input.bool(true,          "Show Dashboard",                                                      group = GP_DASH, display = display.none)
+dashTheme    = input.string("Dark Mode", "Theme",           options = ["Dark Mode", "Light Mode"],                  group = GP_DASH, display = display.none)
+dashPos      = input.string("Top Right", "Position",        options = ["Top Right", "Top Center", "Top Left", "Middle Right", "Middle Center", "Middle Left", "Bottom Right", "Bottom Center", "Bottom Left"], group = GP_DASH, display = display.none)
+dashSize     = input.string("Small",     "Text Size",       options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GP_DASH, display = display.none)
+showBars     = input.bool(true,          "Show Progress Bars",                                                      group = GP_DASH, display = display.none)
+
+showAvgRange = input.bool(true,          "Avg Range (ATR%)",        inline = "mt1", group = GP_DASH, display = display.none)
+showVolShare = input.bool(true,          "Vol Share %",      inline = "mt1", group = GP_DASH, display = display.none)
+showAvgVol   = input.bool(false,         "Avg Vol",          inline = "mt1", group = GP_DASH, display = display.none)
+showHOD      = input.bool(true,          "HOD %",            inline = "mt2", group = GP_DASH, display = display.none)
+showLOD      = input.bool(true,          "LOD %",            inline = "mt2", group = GP_DASH, display = display.none)
+showBull     = input.bool(true,          "Bull %",           inline = "mt2", group = GP_DASH, display = display.none)
+showCont     = input.bool(true,          "Continuation %",   inline = "mt3", group = GP_DASH, display = display.none)
+showPctl     = input.bool(true,          "Today Percentile", inline = "mt3", group = GP_DASH, display = display.none)
+showFVGs     = input.bool(true,          "Avg FVGs",         inline = "mt4", group = GP_DASH, display = display.none)
+showOBs      = input.bool(true,          "Avg Swing Breaks", inline = "mt4", group = GP_DASH, display = display.none)
+showSurv     = input.bool(true,          "FVG Survival %",   inline = "mt4", group = GP_DASH, display = display.none)
+showHH       = input.bool(false,         "Avg HH",           inline = "mt5", group = GP_DASH, display = display.none)
+showLL       = input.bool(false,         "Avg LL",           inline = "mt5", group = GP_DASH, display = display.none)
+colHigh      = input.color(BULL_COLOR,   "High",             inline = "sig", group = GP_DASH, display = display.none)
+colMid       = input.color(MID_COLOR,     "Mid",             inline = "sig", group = GP_DASH, display = display.none)
+colLow       = input.color(BEAR_COLOR,   "Low",              inline = "sig", group = GP_DASH, display = display.none)
+
+showBoxes    = input.bool(false,         "Show Session Ranges",   inline = "showRange",         group = GP_DISP, display = display.none)
+showHist     = true and showBoxes//input.bool(false,         " Historical",           inline = "showRange",         group = GP_DISP, display = display.none, active = showBoxes)
+showLabel    = input.bool(true,          "Show Active Session Stats",                                                     inline = "lbl", group = GP_DISP, display = display.none)
+labelSize    = input.string("Small",     "",                options = ["Tiny", "Small", "Normal", "Large", "Huge"], inline = "lbl", group = GP_DISP, display = display.none)
+
+//#endregion Input
+
+//#region Declarations
+
+type Pivot
+    float level
+    int   bar
+    float extreme
+
+type Rec
+    int   wkday
+    float normRng
+    float rawRng
+    bool  isHOD
+    bool  isLOD
+    bool  isBull
+    bool  isCont
+    bool  contOk
+    int   fvgCount
+    int   ifvgCount
+    int   obCount
+    int   hhCount
+    int   llCount
+    float vol
+    float volShare
+
+type Sess
+    string name
+    color  col
+    bool   on
+    array<Rec> hist
+    float  cHi
+    float  cLo
+    float  cOpen
+    int    cBar
+    bool   act
+    float  dHi
+    float  dLo
+    float  dOpen
+    float  dClose
+    bool   dDone
+    bool   prevBull
+    bool   hasPrev
+    box    bx
+    label  lbl
+    int    cFvgs
+    int    cIfvgs
+    int    cOBs
+    int    cHHs
+    int    cLLs
+    float  cSwingHi
+    float  cSwingLo
+    array<float> cFvgLevels
+    array<bool>  cFvgIsBull
+    float  cVol
+    float  dVol
+    int    dFvgs
+    int    dIfvgs
+    int    dOBs
+    int    dHHs
+    int    dLLs
+
+//#endregion Declarations
+
+//#region Functions
+
+// ─── Formatters ─────────────────────────────────────────────────────────────
+
+mkSess(string n, color c, bool en) =>
+    Sess.new(n, c, en, array.new<Rec>(), na, na, na, na, false, na, na, na, na, false, false, false, na, na, 0, 0, 0, 0, 0, na, na, array.new<float>(), array.new<bool>(), 0.0, 0.0, 0, 0, 0, 0, 0)
+
+wdPass(int wd) =>
+    switch wd
+        1 => wdSun
+        2 => wdMon
+        3 => wdTue
+        4 => wdWed
+        5 => wdThu
+        6 => wdFri
+        7 => wdSat
+        => false
+
+wdLabel() =>
+    all = wdSun and wdMon and wdTue and wdWed and wdThu and wdFri and wdSat
+    weekdays = wdMon and wdTue and wdWed and wdThu and wdFri and not wdSun and not wdSat
+    if all
+        "All"
+    else if weekdays
+        "Weekdays"
+    else
+        r = ""
+        if wdSun
+            r += "Su"
+        if wdMon
+            r += (r == "" ? "" : "/") + "M"
+        if wdTue
+            r += (r == "" ? "" : "/") + "Tu"
+        if wdWed
+            r += (r == "" ? "" : "/") + "W"
+        if wdThu
+            r += (r == "" ? "" : "/") + "Th"
+        if wdFri
+            r += (r == "" ? "" : "/") + "F"
+        if wdSat
+            r += (r == "" ? "" : "/") + "Sa"
+        r == "" ? "None" : r
+
+tblPos() =>
+    switch dashPos
+        "Top Right"      => position.top_right
+        "Top Center"     => position.top_center
+        "Top Left"       => position.top_left
+        "Middle Right"   => position.middle_right
+        "Middle Center"  => position.middle_center
+        "Middle Left"    => position.middle_left
+        "Bottom Right"   => position.bottom_right
+        "Bottom Center"  => position.bottom_center
+        => position.bottom_left
+
+toSize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.huge
+
+pBar(float pct) =>
+    w = 8
+    filled = math.round(math.max(math.min(pct, 100), 0) / 100 * w)
+    r = ""
+    for k = 0 to w - 1
+        r += k < filled ? "█" : "░"
+    r
+
+fmtPct(float v, float best) =>
+    if na(v)
+        "—"
+    else
+        t = (showBars ? pBar(v) + " " : "") + str.tostring(v, "#") + "%"
+        t += not na(best) and v == best ? " ★" : "    "
+        t
+
+fmtPctNoBest(float v) =>
+    na(v) ? "—" : (showBars ? pBar(v) + " " : "") + str.tostring(v, "#") + "%" + "    "
+
+fmtCount(float v, float best) =>
+    if na(v)
+        "—"
+    else
+        t = str.tostring(v, "#.#")
+        t += not na(best) and v == best ? " ★" : "    "
+        t
+
+fmtCountNoBest(float v) =>
+    (na(v) ? "—" : str.tostring(v, "#.#")) + "    "
+
+fmtRaw(float v) =>
+    (na(v) ? "—" : str.tostring(v, "#")) + "    "
+
+ordinal(float n) =>
+    v = int(n)
+    mod10  = v % 10
+    mod100 = v % 100
+    suffix = (mod100 >= 11 and mod100 <= 13) ? "th" : mod10 == 1 ? "st" : mod10 == 2 ? "nd" : mod10 == 3 ? "rd" : "th"
+    str.tostring(v) + suffix
+
+fmtPctl(float v) =>
+    (na(v) ? "—" : (showBars ? pBar(v) + " " : "") + ordinal(v)) + "    "
+
+pctlColor(float v, color defCol) =>
+    na(v) ? defCol : v >= 75 ? colHigh : v <= 25 ? colLow : colMid
+
+survColor(float v, color defCol) =>
+    na(v) ? defCol : v >= 70 ? colHigh : v >= 40 ? colMid : colLow
+
+isBest(float v, float best) =>
+    not na(v) and not na(best) and v == best
+
+// ─── Session Lifecycle ──────────────────────────────────────────────────────
+
+method reset(Sess s) =>
+    s.cHi        := high
+    s.cLo        := low
+    s.cOpen      := open
+    s.cBar       := bar_index
+    s.act        := true
+    s.cFvgs      := 0
+    s.cIfvgs     := 0
+    s.cOBs       := 0
+    s.cHHs       := 0
+    s.cLLs       := 0
+    s.cVol       := volume
+    s.cSwingHi   := na
+    s.cSwingLo   := na
+    s.cFvgLevels.clear()
+    s.cFvgIsBull.clear()
+
+method close(Sess s) =>
+    s.dHi        := s.cHi
+    s.dLo        := s.cLo
+    s.dOpen      := s.cOpen
+    s.dClose     := close[1]
+    s.dDone      := true
+    s.act        := false
+    s.dVol       := s.cVol
+    s.dFvgs      := s.cFvgs
+    s.dIfvgs     := s.cIfvgs
+    s.dOBs       := s.cOBs
+    s.dHHs       := s.cHHs
+    s.dLLs       := s.cLLs
+
+method resetDay(Sess s) =>
+    s.dHi        := na
+    s.dLo        := na
+    s.dOpen      := na
+    s.dClose     := na
+    s.dDone      := false
+    s.dFvgs      := 0
+    s.dIfvgs     := 0
+    s.dOBs       := 0
+    s.dHHs       := 0
+    s.dLLs       := 0
+    s.dVol       := 0.0
+
+method checkIFVGs(Sess s) =>
+    if s.cFvgLevels.size() > 0
+        for j = s.cFvgLevels.size() - 1 to 0
+            isBull = s.cFvgIsBull.get(j)
+            lvl    = s.cFvgLevels.get(j)
+            if isBull ? close < lvl : close > lvl
+                s.cIfvgs += 1
+                s.cFvgLevels.remove(j)
+                s.cFvgIsBull.remove(j)
+
+method checkHHLL(Sess s, bool pivHi3, bool pivLo3) =>
+    if pivHi3
+        if not na(s.cSwingHi) and high[1] > s.cSwingHi
+            s.cHHs += 1
+        s.cSwingHi := high[1]
+    if pivLo3
+        if not na(s.cSwingLo) and low[1] < s.cSwingLo
+            s.cLLs += 1
+        s.cSwingLo := low[1]
+
+method drawHistBox(Sess s) =>
+    if not na(s.bx)
+        s.bx.delete()
+        s.bx := na
+    if showHist
+        box.new(s.cBar, s.cHi, bar_index - 1, s.cLo,
+             border_color = color.new(s.col, 50), bgcolor = color.new(s.col, 93),
+             text = s.name, text_color = color.new(s.col, 70), text_size = size.normal,
+             text_halign = text.align_left, text_valign = text.align_top)
+
+// ─── Dashboard Row Helper ───────────────────────────────────────────────────
+
+method dashRow(table tbl, int row, string label, string tip, array<float> vals, float best, color txtCol, string sz, color hBg, color rBg, color bBg, bool isPct, bool hasBest, array<Sess> sessions) =>
+    tbl.cell( 0, row, label, text_color = txtCol, text_size = sz, bgcolor = hBg, text_halign = text.align_left, tooltip = tip)
+    c = 1
+    for i = 0 to 4
+        if not sessions.get(i).on
+            continue
+        v = vals.get(i)
+        bg = hasBest and isBest(v, best) ? bBg : rBg
+        t = isPct ? (hasBest ? fmtPct(v, best) : fmtPctNoBest(v)) : (hasBest ? fmtCount(v, best) : fmtCountNoBest(v))
+        tbl.cell( c, row, t, text_color = txtCol, text_size = sz, bgcolor = bg, text_halign = text.align_center)
+        c += 1
+
+//#endregion Functions
+
+//#region Calculations
+
+// ─── Global ─────────────────────────────────────────────────────────────────
+
+atr = ta.atr(atrLen)
+dATR = request.security(syminfo.tickerid, "D", atr[1], lookahead = barmerge.lookahead_on)
+
+tdShift = 6 * 3600 * 1000
+tdDate  = 10000 * year(time + tdShift, "America/New_York") + 100 * month(time + tdShift, "America/New_York") + dayofmonth(time + tdShift, "America/New_York")
+tdWk    = dayofweek(time + tdShift, "America/New_York")
+
+// ─── Swing Pivots for OB Detection ─────────────────────────────────────────
+
+pivHi = ta.pivothigh(high, pivotLen, pivotLen)
+pivLo = ta.pivotlow(low, pivotLen, pivotLen)
+
+var swingHi = Pivot.new(na, na, na)
+var swingLo = Pivot.new(na, na, na)
+
+if not na(pivHi)
+    swingHi.level   := pivHi
+    swingHi.bar     := bar_index - pivotLen
+    swingHi.extreme := low
+
+if not na(pivLo)
+    swingLo.level   := pivLo
+    swingLo.bar     := bar_index - pivotLen
+    swingLo.extreme := high
+
+if not na(swingHi.level)
+    swingHi.extreme := math.min(nz(swingHi.extreme, low), low)
+if not na(swingLo.level)
+    swingLo.extreme := math.max(nz(swingLo.extreme, high), high)
+
+bullOB = not na(swingHi.level) and close > swingHi.level and close[1] <= swingHi.level
+bearOB = not na(swingLo.level) and close < swingLo.level and close[1] >= swingLo.level
+
+if bullOB
+    swingHi.level := na
+if bearOB
+    swingLo.level := na
+
+// ─── Session Initialization ────────────────────────────────────────────────
+
+var Sess s0 = mkSess(nameAsia,   colAsia,   enAsia)
+var Sess s1 = mkSess(nameLondon, colLondon, enLondon)
+var Sess s2 = mkSess(nameNYAM,   colNYAM,   enNYAM)
+var Sess s3 = mkSess(nameLunch,  colLunch,  enLunch)
+var Sess s4 = mkSess(nameNYPM,   colNYPM,   enNYPM)
+
+var ss = array.new<Sess>()
+if barstate.isfirst
+    ss.push(s0)
+    ss.push(s1)
+    ss.push(s2)
+    ss.push(s3)
+    ss.push(s4)
+
+// ─── Session Detection ─────────────────────────────────────────────────────
+
+in0 = enAsia   and not na(time(timeframe.period, asiaTime,   "America/New_York"))
+in1 = enLondon and not na(time(timeframe.period, londonTime, "America/New_York"))
+in2 = enNYAM   and not na(time(timeframe.period, nyamTime,   "America/New_York"))
+in3 = enLunch  and not na(time(timeframe.period, lunchTime,  "America/New_York"))
+in4 = enNYPM   and not na(time(timeframe.period, nypmTime,   "America/New_York"))
+
+isIn(int i) =>
+    switch i
+        0 => in0
+        1 => in1
+        2 => in2
+        3 => in3
+        => in4
+
+// ─── Session Tracking + Structure Detection ─────────────────────────────────
+
+isBullFVG = low > high[2]
+isBearFVG = high < low[2]
+isPivHi3  = high[1] > high[2] and high[1] > high
+isPivLo3  = low[1] < low[2] and low[1] < low
+
+for i = 0 to 4
+    Sess s = ss.get(i)
+    if not s.on
+        continue
+
+    inn = isIn(i)
+
+    if inn and not s.act
+        s.reset()
+
+    else if inn and s.act
+        s.cHi  := math.max(s.cHi, high)
+        s.cLo  := math.min(s.cLo, low)
+        s.cVol += volume
+
+        if isBullFVG or isBearFVG
+            s.cFvgs += 1
+            s.cFvgLevels.push(isBullFVG ? high[2] : low[2])
+            s.cFvgIsBull.push(isBullFVG)
+
+        s.checkIFVGs()
+
+        if bullOB
+            s.cOBs += 1
+        if bearOB
+            s.cOBs += 1
+
+        s.checkHHLL(isPivHi3, isPivLo3)
+
+    else if not inn and s.act
+        s.close()
+        s.drawHistBox()
+
+// ─── Trading Day Finalization ───────────────────────────────────────────────
+
+var int   pTdDate = na
+var int   pTdWk   = na
+var float dayHigh = na
+var float dayLow  = na
+isNewDay = false
+
+if na(pTdDate)
+    pTdDate := tdDate
+    pTdWk   := tdWk
+    dayHigh := high
+    dayLow  := low
+else if tdDate != pTdDate
+    isNewDay := true
+
+    dayVol = 0.0
+    for i = 0 to 4
+        Sess s = ss.get(i)
+        if s.dDone
+            dayVol += s.dVol
+
+    for i = 0 to 4
+        Sess s = ss.get(i)
+        if s.dDone
+            rng  = s.dHi - s.dLo
+            nRng = not na(dATR) and dATR > 0 ? rng / dATR : 0.0
+            hod  = not na(dayHigh) and s.dHi == dayHigh
+            lod  = not na(dayLow) and s.dLo == dayLow
+            bull = s.dClose > s.dOpen
+            cont = s.hasPrev ? (s.prevBull == bull) : false
+            cOk  = s.hasPrev
+            vShr = dayVol > 0 ? s.dVol / dayVol * 100 : 0.0
+
+            s.hist.push(Rec.new(pTdWk, nRng, rng, hod, lod, bull, cont, cOk, s.dFvgs, s.dIfvgs, s.dOBs, s.dHHs, s.dLLs, s.dVol, vShr))
+            s.prevBull := bull
+            s.hasPrev  := true
+
+        if not s.act
+            s.resetDay()
+
+    if not showHist
+        for i = 0 to 4
+            Sess s = ss.get(i)
+            if not na(s.bx)
+                s.bx.delete()
+                s.bx := na
+
+    pTdDate := tdDate
+    pTdWk   := tdWk
+    dayHigh := high
+    dayLow  := low
+else
+    dayHigh := na(dayHigh) ? high : math.max(dayHigh, high)
+    dayLow  := na(dayLow)  ? low  : math.min(dayLow, low)
+
+//#endregion Calculations
+
+//#region Visualizations
+
+// ─── Session Boxes ──────────────────────────────────────────────────────────
+
+if showBoxes or showHist
+    for i = 0 to 4
+        Sess s = ss.get(i)
+        if not s.on or not s.act
+            continue
+        if na(s.bx)
+            s.bx := box.new(s.cBar, s.cHi, bar_index, s.cLo,
+                 border_color = color.new(s.col, 60), bgcolor = color.new(s.col, 92),
+                 text = s.name, text_color = s.col, text_size = size.tiny,
+                 text_halign = text.align_left, text_valign = text.align_top)
+        else
+            s.bx.set_top(s.cHi)
+            s.bx.set_bottom(s.cLo)
+            s.bx.set_right(bar_index)
+else
+    for i = 0 to 4
+        Sess s = ss.get(i)
+        if not na(s.bx)
+            s.bx.delete()
+            s.bx := na
+
+// ─── Active Session Label ───────────────────────────────────────────────────
+
+if showLabel
+    for i = 0 to 4
+        Sess s = ss.get(i)
+        if not s.on
+            continue
+
+        if s.act
+            curRng  = s.cHi - s.cLo
+            curNorm = not na(dATR) and dATR > 0 ? curRng / dATR : na
+
+            sumN  = 0.0
+            below = 0
+            total = 0
+            if s.hist.size() > 0
+                for j = 0 to s.hist.size() - 1
+                    Rec r = s.hist.get(j)
+                    if not wdPass(r.wkday)
+                        continue
+                    total += 1
+                    sumN  += r.normRng
+                    if not na(curNorm) and r.normRng <= curNorm
+                        below += 1
+
+            avgN  = total > 0 ? sumN / total : na
+            pctl  = total > 0 and not na(curNorm) ? math.round(below * 100.0 / total) : na
+            vsAvg = not na(avgN) and avgN > 0 and not na(curNorm) ? math.round(curNorm / avgN * 100) : na
+
+            txt = s.name
+            txt += " | Rng: " + str.tostring(curRng, format.mintick)
+            txt += " | vs Avg: " + (not na(vsAvg) ? str.tostring(vsAvg, "#") + "%" : "—")
+            txt += " | Percentile: " + (not na(pctl) ? str.tostring(pctl, "#") : "—")
+
+            if na(s.lbl)
+                s.lbl := label.new(bar_index + 3, s.cHi, txt, style = label.style_label_down,
+                     color = color.new(s.col, 80), textcolor = s.col, size = toSize(labelSize))
+            else
+                s.lbl.set_x(bar_index + 3)
+                s.lbl.set_y(s.cHi)
+                s.lbl.set_text(txt)
+        else
+            if not na(s.lbl)
+                s.lbl.delete()
+                s.lbl := na
+
+// ─── Dashboard ──────────────────────────────────────────────────────────────
+
+var table dash = na
+
+if showDash and barstate.islast
+    if not na(dash)
+        dash.delete()
+
+    sz = toSize(dashSize)
+
+    nEn = 0
+    for i = 0 to 4
+        if ss.get(i).on
+            nEn += 1
+
+    if nEn > 0
+        nC = 1 + nEn
+        hasStructure = showFVGs or showOBs or showSurv or showHH or showLL
+        nR = 2 + (showAvgRange ? 1 : 0) + (showVolShare ? 1 : 0) + (showHOD ? 1 : 0) + (showLOD ? 1 : 0) + (showBull ? 1 : 0) + (showCont ? 1 : 0) + (showPctl ? 1 : 0) + (hasStructure ? 1 : 0) + (showFVGs ? 1 : 0) + (showOBs ? 1 : 0) + (showSurv ? 1 : 0) + (showHH ? 1 : 0) + (showLL ? 1 : 0) + (showAvgVol ? 1 : 0)
+
+        isDark = dashTheme == "Dark Mode"
+        hBg    = isDark ? BG_HEADER_DARK : BG_HEADER_LIGHT
+        rBg    = isDark ? BG_DARK_DARK : BG_DARK_LIGHT
+        bBg    = isDark ? BG_BEST_DARK : BG_BEST_LIGHT
+        txtCol = isDark ? TEXT_DARK : TEXT_LIGHT
+
+        dash := table.new(tblPos(), nC, nR, border_width = 1,
+             border_color = color.new(GRAY, 60), frame_width = 2,
+             frame_color = color.new(GRAY, 40))
+
+        // Compute stats per session
+        arV = array.new<float>(5, na)
+        hdV = array.new<float>(5, na)
+        ldV = array.new<float>(5, na)
+        blV = array.new<float>(5, na)
+        ctV = array.new<float>(5, na)
+        tpV = array.new<float>(5, na)
+        fvV = array.new<float>(5, na)
+        obV = array.new<float>(5, na)
+        svV = array.new<float>(5, na)
+        hhV = array.new<float>(5, na)
+        llV = array.new<float>(5, na)
+        vsV = array.new<float>(5, na)
+        avV = array.new<float>(5, na)
+        maxDays = 0
+
+        for i = 0 to 4
+            Sess s = ss.get(i)
+            if not s.on
+                continue
+
+            sumN    = 0.0
+            hodC    = 0
+            lodC    = 0
+            bullC   = 0
+            contC   = 0
+            contT   = 0
+            tot     = 0
+            sumFvg  = 0.0
+            sumIfvg = 0.0
+            sumOb   = 0.0
+            sumHH   = 0.0
+            sumLL   = 0.0
+            sumVol  = 0.0
+            sumVShr = 0.0
+
+            if s.hist.size() > 0
+                for j = 0 to s.hist.size() - 1
+                    Rec r = s.hist.get(j)
+                    if not wdPass(r.wkday)
+                        continue
+                    tot     += 1
+                    sumN    += r.normRng
+                    hodC    += r.isHOD ? 1 : 0
+                    lodC    += r.isLOD ? 1 : 0
+                    bullC   += r.isBull ? 1 : 0
+                    sumFvg  += r.fvgCount
+                    sumIfvg += r.ifvgCount
+                    sumOb   += r.obCount
+                    sumHH   += r.hhCount
+                    sumLL   += r.llCount
+                    sumVol  += r.vol
+                    sumVShr += r.volShare
+                    if r.contOk
+                        contT += 1
+                        contC += r.isCont ? 1 : 0
+
+            if tot > 0
+                arV.set(i, math.round(sumN / tot * 100))
+                hdV.set(i, math.round(hodC * 100.0 / tot))
+                ldV.set(i, math.round(lodC * 100.0 / tot))
+                blV.set(i, math.round(bullC * 100.0 / tot))
+                ctV.set(i, contT > 0 ? math.round(contC * 100.0 / contT) : na)
+                fvV.set(i, math.round(sumFvg * 10.0 / tot) / 10)
+                obV.set(i, math.round(sumOb * 10.0 / tot) / 10)
+                svV.set(i, sumFvg > 0 ? math.round((sumFvg - sumIfvg) * 100.0 / sumFvg) : na)
+                hhV.set(i, math.round(sumHH * 10.0 / tot) / 10)
+                llV.set(i, math.round(sumLL * 10.0 / tot) / 10)
+                vsV.set(i, math.floor(sumVShr / tot))
+                avV.set(i, math.round(sumVol / tot))
+                if tot > maxDays
+                    maxDays := tot
+
+            curNorm = float(na)
+            if s.act
+                curNorm := not na(dATR) and dATR > 0 ? (s.cHi - s.cLo) / dATR : na
+            else if s.dDone
+                curNorm := not na(dATR) and dATR > 0 ? (s.dHi - s.dLo) / dATR : na
+
+            if not na(curNorm) and s.hist.size() > 0
+                bel  = 0
+                ptot = 0
+                for j = 0 to s.hist.size() - 1
+                    Rec r = s.hist.get(j)
+                    if not wdPass(r.wkday)
+                        continue
+                    ptot += 1
+                    if r.normRng <= curNorm
+                        bel += 1
+                tpV.set(i, ptot > 0 ? math.round(bel * 100.0 / ptot) : na)
+
+        // Find best values
+        bestAR = float(na)
+        bestHD = float(na)
+        bestLD = float(na)
+        bestFV = float(na)
+        bestSV = float(na)
+
+        for i = 0 to 4
+            if not ss.get(i).on
+                continue
+            ar = arV.get(i)
+            hd = hdV.get(i)
+            ld = ldV.get(i)
+            fv = fvV.get(i)
+            sv = svV.get(i)
+            if not na(ar) and (na(bestAR) or ar > bestAR)
+                bestAR := ar
+            if not na(hd) and (na(bestHD) or hd > bestHD)
+                bestHD := hd
+            if not na(ld) and (na(bestLD) or ld > bestLD)
+                bestLD := ld
+            if not na(fv) and (na(bestFV) or fv > bestFV)
+                bestFV := fv
+            if not na(sv) and (na(bestSV) or sv > bestSV)
+                bestSV := sv
+
+        // Title + column headers
+        title = "SESSION EDGE PROFILER | " + wdLabel() + " | " + str.tostring(maxDays) + "d"
+        dash.cell( 0, 0, title, text_color = txtCol, text_size = sz, bgcolor = hBg, text_halign = text.align_center)
+        dash.merge_cells( 0, 0, nC - 1, 0)
+
+        dash.cell( 0, 1, "Metric", text_color = txtCol, text_size = sz, bgcolor = hBg, text_halign = text.align_center)
+        hCol = 1
+        for i = 0 to 4
+            Sess s = ss.get(i)
+            if not s.on
+                continue
+            cBg = s.act and isDark ? color.new(s.col, 85) : hBg
+            dash.cell( hCol, 1, s.name, text_color = s.col, text_size = sz, bgcolor = cBg, text_halign = text.align_center)
+            hCol += 1
+
+        // Metric rows
+        row = 2
+
+        if showAvgRange
+            dash.dashRow(row, "Avg Range (ATR%)", "Average session range as a percentage of the daily ATR.", arV, bestAR, txtCol, sz, hBg, rBg, bBg, true, true, ss)
+            row += 1
+
+        if showVolShare
+            dash.dashRow(row, "Vol Share %", "This session's average share of total daily volume.", vsV, na, txtCol, sz, hBg, rBg, bBg, true, false, ss)
+            row += 1
+
+        if showAvgVol
+            dash.cell( 0, row, "Avg Vol", text_color = txtCol, text_size = sz, bgcolor = hBg, text_halign = text.align_left, tooltip = "Average total volume during this session.")
+            c = 1
+            for i = 0 to 4
+                if not ss.get(i).on
+                    continue
+                v = avV.get(i)
+                dash.cell( c, row, fmtRaw(v), text_color = txtCol, text_size = sz, bgcolor = rBg, text_halign = text.align_center)
+                c += 1
+            row += 1
+
+        if showHOD
+            dash.dashRow(row, "HOD %", "Percentage of days where this session set the day's highest price.", hdV, bestHD, txtCol, sz, hBg, rBg, bBg, true, true, ss)
+            row += 1
+
+        if showLOD
+            dash.dashRow(row, "LOD %", "Percentage of days where this session set the day's lowest price.", ldV, bestLD, txtCol, sz, hBg, rBg, bBg, true, true, ss)
+            row += 1
+
+        if showBull
+            dash.dashRow(row, "Bull %", "Percentage of sessions that closed higher than they opened.", blV, na, txtCol, sz, hBg, rBg, bBg, true, false, ss)
+            row += 1
+
+        if showCont
+            dash.dashRow(row, "Continuation %", "Continuation — how often this session closes in the same direction as its previous occurrence.", ctV, na, txtCol, sz, hBg, rBg, bBg, true, false, ss)
+            row += 1
+
+        if showPctl
+            dash.cell( 0, row, "Today Percentile", text_color = txtCol, text_size = sz, bgcolor = hBg, text_halign = text.align_left, tooltip = "Where today's session range sits vs history. Green (>75th) = unusually large. Red (<25th) = unusually small.")
+            c = 1
+            for i = 0 to 4
+                if not ss.get(i).on
+                    continue
+                v = tpV.get(i)
+                dash.cell( c, row, fmtPctl(v), text_color = pctlColor(v, txtCol), text_size = sz, bgcolor = rBg, text_halign = text.align_center)
+                c += 1
+            row += 1
+
+        if hasStructure
+            dash.cell( 0, row, "SMART MONEY", text_color = txtCol, text_size = sz, bgcolor = hBg, text_halign = text.align_center)
+            dash.merge_cells( 0, row, nC - 1, row)
+            row += 1
+
+        if showFVGs
+            dash.dashRow(row, "Avg FVGs", "Average Fair Value Gaps formed per session.", fvV, bestFV, txtCol, sz, hBg, rBg, bBg, false, true, ss)
+            row += 1
+
+        if showOBs
+            dash.dashRow(row, "Avg Swing Breaks", "Average swing breaks per session — instances where price closes beyond a pivot high or low.", obV, na, txtCol, sz, hBg, rBg, bBg, false, false, ss)
+            row += 1
+
+        if showSurv
+            dash.cell( 0, row, "FVG Survival %", text_color = txtCol, text_size = sz, bgcolor = hBg, text_halign = text.align_left, tooltip = "FVG Survival Rate — percentage of FVGs NOT invalidated within the same session. Higher = more reliable.")
+            c = 1
+            for i = 0 to 4
+                if not ss.get(i).on
+                    continue
+                v = svV.get(i)
+                bg = isBest(v, bestSV) ? bBg : rBg
+                dash.cell( c, row, fmtPct(v, bestSV), text_color = survColor(v, txtCol), text_size = sz, bgcolor = bg, text_halign = text.align_center)
+                c += 1
+            row += 1
+
+        if showHH
+            dash.dashRow(row, "Avg HH", "Average Higher Highs per session — bullish structure breaks.", hhV, na, txtCol, sz, hBg, rBg, bBg, false, false, ss)
+            row += 1
+
+        if showLL
+            dash.dashRow(row, "Avg LL", "Average Lower Lows per session — bearish structure breaks.", llV, na, txtCol, sz, hBg, rBg, bBg, false, false, ss)
+            row += 1
+
+// ─── Alerts ─────────────────────────────────────────────────────────────────
+
+highPctlAlert = false
+
+for i = 0 to 4
+    Sess s = ss.get(i)
+    if not s.on or not s.act
+        continue
+    curN = not na(dATR) and dATR > 0 ? (s.cHi - s.cLo) / dATR : na
+    if na(curN) or s.hist.size() == 0
+        continue
+    bel = 0
+    tot = 0
+    for j = 0 to s.hist.size() - 1
+        Rec r = s.hist.get(j)
+        if not wdPass(r.wkday)
+            continue
+        tot += 1
+        if r.normRng <= curN
+            bel += 1
+    if tot > 0 and bel * 100.0 / tot >= 90
+        highPctlAlert := true
+
+alertcondition(highPctlAlert, "Range > 90th Percentile", "Active session range exceeds 90th percentile on {{ticker}} {{interval}}")
+
+//#endregion Visualizations

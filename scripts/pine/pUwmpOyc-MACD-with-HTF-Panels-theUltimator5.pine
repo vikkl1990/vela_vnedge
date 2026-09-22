@@ -1,0 +1,435 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TheUltimator5
+
+//@version=6
+indicator("MACD with HTF Panels [theUltimator5]", overlay=false, max_lines_count=500, max_labels_count=100)
+
+// Standard MACD settings
+macd_fast   = input.int(12, "Fast Length", minval=1, group="MACD")
+macd_slow   = input.int(26, "Slow Length", minval=1, group="MACD")
+macd_signal = input.int(9, "Signal Smoothing", minval=1, group="MACD")
+
+const color MACD_LINE_COLOR   = color.yellow
+const color MACD_SIGNAL_COLOR = color.aqua
+const color MACD_HIST_COLOR   = color.fuchsia
+
+const string SIGNAL1_LABEL = "MACD"
+const string SIGNAL2_LABEL = "Signal"
+const string SIGNAL3_LABEL = "Histogram"
+
+// Histogram colors depend on whether it's above/below zero and rising/falling
+const color HIST_POS_UP   = color.lime
+const color HIST_POS_DOWN = color.new(color.green, 50)
+const color HIST_NEG_UP   = color.new(color.red, 50)
+const color HIST_NEG_DOWN = color.red
+
+signal1_color = MACD_LINE_COLOR
+signal2_color = MACD_SIGNAL_COLOR
+signal3_color = color.gray
+
+// Higher timeframe mini-chart panels drawn off to the right of price
+show_panels = input.bool(true, "Enable HTF Side Panels", group="HTF Panels")
+panel_count = input.int(4, "Number of Panels", minval=1, maxval=4, group="HTF Panels",
+     tooltip="1 = HTF1 centered. 2 = HTF1 top / HTF2 bottom. 3 = HTF1/HTF2/HTF3 stacked. 4 = all four timeframes as a 2x2 grid.")
+
+panel_xoffset = input.int(20, "Horizontal Offset (bars)", minval=1, maxval=200, group="HTF Panels: Position & Size",
+     tooltip="Bars from the last chart bar to the left edge of every panel.")
+panel_bars = input.int(30, "Bars per Panel", minval=5, maxval=40, group="HTF Panels: Position & Size")
+panel_col_gap = input.int(10, "Column Gap (bars)", minval=0, maxval=100, group="HTF Panels: Position & Size",
+     tooltip="Only used with 4 panels.  Horizontal space between the left and right columns.")
+panel_height = input.float(6.0, "Panel Height (Size Units)", minval=0.5, maxval=20.0, group="HTF Panels: Position & Size")
+panel_atr_len = input.int(14, "Size Unit Length (Bars)", minval=1, group="HTF Panels: Position & Size",
+     tooltip="1 unit = the average bar range (ATR) over this many bars, so panels stay sized sensibly on any ticker.")
+panel_center_y = input.float(2.0, "Vertical Center (Size Units)", group="HTF Panels: Position & Size")
+panel_gap = input.float(0.6, "Gap Between Panels (Size Units)", minval=0.0, group="HTF Panels: Position & Size")
+panel_candle_width = input.int(2, "Candle Width (bars)", minval=1, maxval=10, group="HTF Panels: Position & Size")
+panel_auto_scale_zoom = input.bool(false, "Auto-Scale Candle Width With Zoom", group="HTF Panels: Position & Size",
+     tooltip="Scales Candle Width up as you zoom out (and back down zoomed in), approximated from visible bar count.")
+panel_zoom_reference_bars = input.int(300, "Zoom Reference Bar Count", minval=10, group="HTF Panels: Position & Size")
+
+show_panel_candles  = input.bool(false, "Show Candles in Panels", group="HTF Panels: Appearance")
+panel_candle_transp = input.int(60, "Candle Transparency", minval=0, maxval=100, group="HTF Panels: Appearance")
+panel_bull_col = input.color(color.lime, "Bull Candle", group="HTF Panels: Appearance")
+panel_bear_col = input.color(color.fuchsia, "Bear Candle", group="HTF Panels: Appearance")
+show_panel_labels = input.bool(true, "Show Panel Titles", group="HTF Panels: Appearance")
+panel_label_offset = input.int(8, "Panel Title Offset (bars)", minval=1, maxval=40, group="HTF Panels: Appearance")
+
+// Auto mode grows panels to fill the available vertical space as panel_count changes
+panel_size_mode = input.string("Auto (Fill Available Space)", "Panel Size Mode",
+     options=["Auto (Fill Available Space)", "Manual"], group="HTF Panel Scaling",
+     tooltip="Auto: fewer panels automatically get bigger. Manual: exact size via the multiplier below.")
+panel_manual_scale = input.float(1.0, "Manual Size Multiplier", minval=0.1, maxval=10.0, step=0.1, group="HTF Panel Scaling")
+
+// Each HTF can either auto-pick its timeframe off the ladder below or use a manually chosen one
+htf1_auto = input.bool(true, "Auto Timeframe", inline="h1", group="HTF1 (Nearest TF)")
+htf1_manual_tf = input.timeframe("D", "Manual Timeframe", inline="h1", group="HTF1 (Nearest TF)")
+htf2_auto = input.bool(true, "Auto Timeframe", inline="h2", group="HTF2 (Middle TF)")
+htf2_manual_tf = input.timeframe("W", "Manual Timeframe", inline="h2", group="HTF2 (Middle TF)")
+htf3_auto = input.bool(true, "Auto Timeframe", inline="h3", group="HTF3 (Furthest TF)")
+htf3_manual_tf = input.timeframe("M", "Manual Timeframe", inline="h3", group="HTF3 (Furthest TF)")
+htf4_auto = input.bool(true, "Auto Timeframe", inline="h4", group="HTF4 (4-Panel Mode Only)")
+htf4_manual_tf = input.timeframe("3M", "Manual Timeframe", inline="h4", group="HTF4 (4-Panel Mode Only)")
+
+// Table that lists the current MACD/Signal/Histogram values per HTF
+show_signal_table = input.bool(true, "Show Signal Table", group="Signal Table",
+     tooltip="Table naming the active signal lines. Turn off to hide the table entirely.")
+show_panel_values_table = input.bool(true, "Show HTF Panel Values", group="Signal Table",
+     tooltip="Adds a header row plus one row per HTF (timeframe + each signal's current value) below the top row. Turn off to show only the top row.")
+table_position = input.string("Bottom Right", "Table Position",
+     options=["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Left", "Middle Right"], group="Signal Table")
+
+// converts the dropdown string into an actual position.* constant
+get_table_position() =>
+    switch table_position
+        "Top Left" => position.top_left
+        "Top Right" => position.top_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Left" => position.middle_left
+        "Middle Right" => position.middle_right
+        => position.top_right
+
+// most recent value in one of the HTF data arrays (index 0 = current)
+f_curVal(array<float> arr) =>
+    arr.size() > 0 ? arr.get(0) : na
+
+f_fmtVal(float v) =>
+    na(v) ? "—" : str.tostring(v, "#.##")
+
+// green when the histogram is positive and rising, red when negative and falling, etc.
+f_histColor(float _v, float _vPrev) =>
+    bool rising = not na(_vPrev) and _v >= _vPrev
+    _v == 0 ? color.gray : _v > 0 ? (rising ? HIST_POS_UP : HIST_POS_DOWN) : (rising ? HIST_NEG_UP : HIST_NEG_DOWN)
+
+// same idea as f_histColor but pulls current/previous straight out of an array, and
+// grays out values that round to zero so the table doesn't flicker between colors
+f_curHistColor(array<float> arr) =>
+    float v = arr.size() > 0 ? arr.get(0) : na
+    float vPrev = arr.size() > 1 ? arr.get(1) : na
+    bool displaysAsZero = not na(v) and math.round(v * 100) == 0
+    na(v) ? color.silver : displaysAsZero ? color.gray : f_histColor(v, vPrev)
+
+// main chart-timeframe MACD, plotted normally in the indicator pane
+[curMacdLine, curMacdSignal, curMacdHist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+curHistColor = f_histColor(curMacdHist, nz(curMacdHist[1], na))
+
+plot(curMacdHist, title="Histogram", style=plot.style_columns, color=curHistColor)
+plot(curMacdLine, title="MACD", color=MACD_LINE_COLOR, linewidth=2)
+plot(curMacdSignal, title="Signal", color=MACD_SIGNAL_COLOR, linewidth=1)
+hline(0, "Zero Line", color=color.new(color.gray, 50), linestyle=hline.style_dashed)
+
+// Maps a raw price/value into a panel's local vertical band, so panels can be drawn
+// anywhere on the chart regardless of the underlying price scale.
+f_mapPrice(float v, float _anchor, float _bandHalf, float _rangeLow, float _rangeSpan) =>
+    _anchor + ((v - _rangeLow) / _rangeSpan - 0.5) * (_bandHalf * 2.0)
+
+// Auto HTF selection steps through a fixed ladder: 5, 15, 30, 60, 240, D, W, M, 3M, 6M, 12M.
+// converts the chart's timeframe string into a plain minute count so it can be compared against the ladder
+f_currentTfMinutes() =>
+    current_tf = timeframe.period
+    if str.contains(current_tf, "S")
+        math.round(str.tonumber(str.replace(current_tf, "S", "")) / 60)
+    else if str.contains(current_tf, "D")
+        str.tonumber(str.replace(current_tf, "D", "")) * 1440
+    else if str.contains(current_tf, "W")
+        str.tonumber(str.replace(current_tf, "W", "")) * 10080
+    else if str.contains(current_tf, "M")
+        str.tonumber(str.replace(current_tf, "M", "")) * 43200
+    else
+        str.tonumber(current_tf)
+
+var array<string> allowed_htf_strings = array.from("5", "15", "30", "60", "240", "D", "W", "M", "3M", "6M", "12M")
+var array<float>  allowed_htf_minutes = array.from(5.0, 15.0, 30.0, 60.0, 240.0, 1440.0, 10080.0, 43200.0, 129600.0, 259200.0, 518400.0)
+
+// step: 1 = nearest allowed TF strictly above the chart TF, 2 = next one out, etc.
+f_autoHtfTimeframe(int _step) =>
+    cur_minutes = f_currentTfMinutes()
+    start_idx = -1
+    // find the first ladder entry bigger than the chart timeframe
+    for i = 0 to allowed_htf_minutes.size() - 1
+        if allowed_htf_minutes.get(i) > cur_minutes
+            start_idx := i
+            break
+    if start_idx == -1
+        start_idx := allowed_htf_minutes.size() - 1
+    idx = math.min(start_idx + (_step - 1), allowed_htf_minutes.size() - 1)
+    allowed_htf_strings.get(idx)
+
+// turns "60"/"120"/etc into "1H"/"2H" for nicer panel titles, leaves everything else as-is
+format_timeframe_display(tf_string) =>
+    if str.contains(tf_string, "60")
+        "1H"
+    else if str.contains(tf_string, "120")
+        "2H"
+    else if str.contains(tf_string, "180")
+        "3H"
+    else if str.contains(tf_string, "240")
+        "4H"
+    else if str.contains(tf_string, "480")
+        "8H"
+    else if str.contains(tf_string, "720")
+        "12H"
+    else
+        tf_string
+
+// Runs inside request.security() per HTF bar - keeps a rolling window of OHLC + MACD
+// values (newest at index 0) that renderPanel() later reads to draw the mini-chart.
+collectPanelData(int _bars) =>
+    var o_arr  = array.new_float()
+    var h_arr  = array.new_float()
+    var l_arr  = array.new_float()
+    var c_arr  = array.new_float()
+    var s1_arr = array.new_float() // MACD line
+    var s2_arr = array.new_float() // Signal line
+    var s3_arr = array.new_float() // Histogram
+
+    [macdLine, macdSignal, macdHist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+
+    o_arr.unshift(open)
+    h_arr.unshift(high)
+    l_arr.unshift(low)
+    c_arr.unshift(close)
+    s1_arr.unshift(macdLine)
+    s2_arr.unshift(macdSignal)
+    s3_arr.unshift(macdHist)
+
+    // trim off the oldest bar once we're past the window size we want to keep
+    if o_arr.size() > _bars
+        o_arr.pop()
+        h_arr.pop()
+        l_arr.pop()
+        c_arr.pop()
+        s1_arr.pop()
+        s2_arr.pop()
+        s3_arr.pop()
+
+    [o_arr, h_arr, l_arr, c_arr, s1_arr, s2_arr, s3_arr]
+
+// Draws one HTF panel (candles + MACD/Signal lines + histogram) using lines/labels,
+// since Pine can't natively plot a second "chart" inside an indicator pane.
+// Only redraws when a new HTF bar closes (_isNewPeriod), not every chart bar, to save on line count.
+renderPanel(bool _enable, array<float> _o, array<float> _h, array<float> _l, array<float> _c,
+  array<float> _s1, array<float> _s2, array<float> _s3,
+  string _label, float _yATR, int _xOffset, float _atr, float _heightATR,
+  int _maxBars, int _candleWidth, bool _isNewPeriod) =>
+
+    var array<line> candleLines = array.new<line>()
+    var array<line> sig1Lines   = array.new<line>()
+    var array<line> sig2Lines   = array.new<line>()
+    var array<line> sig3Hist    = array.new<line>()
+    var label titleLbl    = na
+    var bool  hasRendered = false
+
+    if _enable and show_panels and barstate.islast and _o.size() > 1 and (_isNewPeriod or not hasRendered)
+        hasRendered := true
+        // wipe out everything drawn last time before redrawing
+        if candleLines.size() > 0
+            for i = candleLines.size() - 1 to 0 by 1
+                line.delete(candleLines.shift())
+        if sig1Lines.size() > 0
+            for i = sig1Lines.size() - 1 to 0 by 1
+                line.delete(sig1Lines.shift())
+        if sig2Lines.size() > 0
+            for i = sig2Lines.size() - 1 to 0 by 1
+                line.delete(sig2Lines.shift())
+        if sig3Hist.size() > 0
+            for i = sig3Hist.size() - 1 to 0 by 1
+                line.delete(sig3Hist.shift())
+        titleLbl.delete()
+
+        int lw1 = 2
+        int lw2 = 1
+
+        // price range for this panel's candles, used to normalize candle wicks/bodies into the panel band
+        float rangeHigh = _h.max()
+        float rangeLow  = _l.min()
+        float rangeSpan = (rangeHigh - rangeLow) == 0 ? 1.0 : (rangeHigh - rangeLow)
+        // separate range for the MACD lines/histogram so they scale independently of price
+        float macdMin = math.min(_s1.min(), math.min(_s2.min(), _s3.min()))
+        float macdMax = math.max(_s1.max(), math.max(_s2.max(), _s3.max()))
+        float macdSpan = (macdMax - macdMin) == 0 ? 1.0 : (macdMax - macdMin)
+
+        // anchorY/bandHalf define where the panel sits vertically and how tall it is, in ATR units off current price
+        float anchorY   = close + _yATR * _atr
+        float bandHalf  = _heightATR * _atr / 2.0
+
+        int n = math.min(_o.size(), _maxBars)
+
+        for idx = 0 to n - 1
+            arrIdx = n - idx - 1 // arrays are newest-first, so walk them backwards to draw left-to-right
+            xIdx = bar_index + _xOffset + idx * _candleWidth
+            bool bear = _o.get(arrIdx) > _c.get(arrIdx)
+            color candleColor = color.new(bear ? panel_bear_col : panel_bull_col, panel_candle_transp)
+
+            // candle body as a thick line, wick as a thin line, both mapped into the panel's price band
+            if show_panel_candles
+                candleLines.push(line.new(xIdx, f_mapPrice(_o.get(arrIdx), anchorY, bandHalf, rangeLow, rangeSpan), xIdx, f_mapPrice(_c.get(arrIdx), anchorY, bandHalf, rangeLow, rangeSpan), xloc.bar_index, extend.none, candleColor, line.style_solid, 3, force_overlay=true))
+                candleLines.push(line.new(xIdx, f_mapPrice(_h.get(arrIdx), anchorY, bandHalf, rangeLow, rangeSpan), xIdx, f_mapPrice(_l.get(arrIdx), anchorY, bandHalf, rangeLow, rangeSpan), xloc.bar_index, extend.none, candleColor, line.style_solid, 1, force_overlay=true))
+
+            // histogram column drawn as a vertical line from zero to the value
+            if not na(_s3.get(arrIdx))
+                float v3 = _s3.get(arrIdx)
+                float v3prev = arrIdx + 1 < _s3.size() ? _s3.get(arrIdx + 1) : na
+                y3z = f_mapPrice(0.0, anchorY, bandHalf, macdMin, macdSpan)
+                y3v = f_mapPrice(v3, anchorY, bandHalf, macdMin, macdSpan)
+                sig3Hist.push(line.new(xIdx, y3z, xIdx, y3v, xloc.bar_index, extend.none, f_histColor(v3, v3prev), line.style_solid, 3, force_overlay=true))
+
+            // MACD/Signal lines connect this bar to the next one, so skip the last bar (nothing to connect to)
+            if idx < n - 1
+                nextArrIdx = arrIdx - 1
+                xNext = bar_index + _xOffset + (idx + 1) * _candleWidth
+
+                if not na(_s1.get(arrIdx)) and not na(_s1.get(nextArrIdx))
+                    y1a = f_mapPrice(_s1.get(arrIdx), anchorY, bandHalf, macdMin, macdSpan)
+                    y1b = f_mapPrice(_s1.get(nextArrIdx), anchorY, bandHalf, macdMin, macdSpan)
+                    sig1Lines.push(line.new(xIdx, y1a, xNext, y1b, xloc.bar_index, extend.none, signal1_color, line.style_solid, lw1, force_overlay=true))
+
+                if not na(_s2.get(arrIdx)) and not na(_s2.get(nextArrIdx))
+                    y2a = f_mapPrice(_s2.get(arrIdx), anchorY, bandHalf, macdMin, macdSpan)
+                    y2b = f_mapPrice(_s2.get(nextArrIdx), anchorY, bandHalf, macdMin, macdSpan)
+                    sig2Lines.push(line.new(xIdx, y2a, xNext, y2b, xloc.bar_index, extend.none, signal2_color, line.style_solid, lw2, force_overlay=true))
+
+        // panel title label sits to the left of the panel's candles
+        if show_panel_labels
+            float labelY = anchorY - bandHalf * 0.5
+            int titleX = bar_index + _xOffset - panel_label_offset * _candleWidth
+            titleLbl := label.new(titleX, labelY, _label, xloc.bar_index, yloc.price, color.new(color.black, 100), label.style_label_left, chart.fg_color, size.normal, text.align_right, force_overlay=true)
+
+
+float panelATR = ta.atr(panel_atr_len)
+
+// Pine caps total lines at 500, so back-calculate how many bars/candle-width we can
+// actually afford per panel before we blow that budget.
+int panel_line_budget = 480
+int active_panel_count = panel_count == 4 ? 4 : (panel_count == 1 ? 1 : panel_count)
+int panel_line_cost = (show_panel_candles ? 2 : 0) + 3
+int safe_panel_bars = math.max(5, int(panel_line_budget / (math.max(active_panel_count, 1) * math.max(panel_line_cost, 1))))
+int render_bars = math.min(panel_bars, safe_panel_bars)
+float visible_bar_count = (chart.right_visible_bar_time - chart.left_visible_bar_time) / (timeframe.in_seconds() * 1000.0)
+int raw_candle_width = panel_auto_scale_zoom ? math.max(1, math.round(panel_candle_width * visible_bar_count / panel_zoom_reference_bars)) : panel_candle_width
+int width_content_bars = math.max(panel_bars + panel_col_gap + render_bars + 2, 1)
+int max_safe_candle_width = math.max(1, int((495 - panel_xoffset) / width_content_bars))
+int effective_candle_width = math.min(raw_candle_width, max_safe_candle_width)
+
+// Auto mode gives 1-panel layouts a much taller panel since there's nothing to share space with
+float stack_budget = 3.0 * panel_height + 2.0 * panel_gap
+float auto_panel_height = switch panel_count
+    1 => panel_height * 6.0
+    2 => (stack_budget - panel_gap) / 2.0
+    4 => (stack_budget - panel_gap) / 2.0
+    => panel_height
+float effective_panel_height = panel_size_mode == "Manual" ? panel_height * panel_manual_scale : auto_panel_height
+
+// vertical positions for up to 3 stacked panels (top/mid/bottom), centered on panel_center_y
+slot_spacing   = (panel_count == 2 or panel_count == 4) ? (effective_panel_height + panel_gap) / 2.0 : (effective_panel_height + panel_gap)
+panel_top_y    = panel_center_y + slot_spacing
+panel_mid_y    = panel_center_y
+panel_bottom_y = panel_center_y - slot_spacing
+
+htf1_timeframe = f_autoHtfTimeframe(1)
+htf2_timeframe = f_autoHtfTimeframe(2)
+htf3_timeframe = f_autoHtfTimeframe(3)
+htf4_timeframe = f_autoHtfTimeframe(4)
+
+htf1_tf = htf1_auto ? htf1_timeframe : htf1_manual_tf
+htf2_tf = htf2_auto ? htf2_timeframe : htf2_manual_tf
+htf3_tf = htf3_auto ? htf3_timeframe : htf3_manual_tf
+htf4_tf = htf4_auto ? htf4_timeframe : htf4_manual_tf
+
+htf1_lbl = format_timeframe_display(htf1_tf)
+htf2_lbl = format_timeframe_display(htf2_tf)
+htf3_lbl = format_timeframe_display(htf3_tf)
+htf4_lbl = format_timeframe_display(htf4_tf)
+
+// flags a new HTF bar closing, which is what triggers a panel redraw
+isNewPeriod1 = ta.change(time(htf1_tf)) != 0
+isNewPeriod2 = ta.change(time(htf2_tf)) != 0
+isNewPeriod3 = ta.change(time(htf3_tf)) != 0
+isNewPeriod4 = ta.change(time(htf4_tf)) != 0
+
+// pull each HTF's rolling OHLC + MACD window; use "" (the chart's own timeframe) if it happens to match the HTF
+[p1_o, p1_h, p1_l, p1_c, p1_s1, p1_s2, p1_s3] = request.security(syminfo.tickerid, htf1_tf == timeframe.period ? "" : htf1_tf, collectPanelData(panel_bars), lookahead=barmerge.lookahead_off, calc_bars_count=panel_bars + 300)
+[p2_o, p2_h, p2_l, p2_c, p2_s1, p2_s2, p2_s3] = request.security(syminfo.tickerid, htf2_tf == timeframe.period ? "" : htf2_tf, collectPanelData(panel_bars), lookahead=barmerge.lookahead_off, calc_bars_count=panel_bars + 300)
+[p3_o, p3_h, p3_l, p3_c, p3_s1, p3_s2, p3_s3] = request.security(syminfo.tickerid, htf3_tf == timeframe.period ? "" : htf3_tf, collectPanelData(panel_bars), lookahead=barmerge.lookahead_off, calc_bars_count=panel_bars + 300)
+[p4_o, p4_h, p4_l, p4_c, p4_s1, p4_s2, p4_s3] = request.security(syminfo.tickerid, htf4_tf == timeframe.period ? "" : htf4_tf, collectPanelData(panel_bars), lookahead=barmerge.lookahead_off, calc_bars_count=panel_bars + 300)
+
+
+// signal table: header row plus one row per HTF showing current MACD/Signal/Histogram values
+if barstate.islast and show_signal_table
+    int tableCols = 4 // HTF label + MACD + Signal + Histogram
+    int tableRows = show_panel_values_table ? 5 : 1
+    var table sigTable = table.new(get_table_position(), tableCols, tableRows, bgcolor=color.new(color.navy, 20), border_width=1, force_overlay=true)
+
+    table.cell(sigTable, 0, 0, "HTF", text_color=color.white, text_size=size.tiny, bgcolor=color.navy)
+    table.cell(sigTable, 1, 0, SIGNAL1_LABEL, text_color=signal1_color, text_size=size.tiny, bgcolor=color.navy)
+    table.cell(sigTable, 2, 0, SIGNAL2_LABEL, text_color=signal2_color, text_size=size.tiny, bgcolor=color.navy)
+    table.cell(sigTable, 3, 0, SIGNAL3_LABEL, text_color=color.silver, text_size=size.tiny, bgcolor=color.navy)
+
+    if show_panel_values_table
+        color rowBg1 = color.new(color.navy, 60)
+        color rowBg2 = color.new(color.navy, 80)
+        table.cell(sigTable, 0, 1, htf1_lbl, text_color=color.silver, text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 0, 2, htf2_lbl, text_color=color.silver, text_size=size.small, bgcolor=rowBg2)
+        table.cell(sigTable, 0, 3, htf3_lbl, text_color=color.silver, text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 0, 4, htf4_lbl, text_color=color.silver, text_size=size.small, bgcolor=rowBg2)
+
+        table.cell(sigTable, 1, 1, f_fmtVal(f_curVal(p1_s1)), text_color=color.white, text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 1, 2, f_fmtVal(f_curVal(p2_s1)), text_color=color.white, text_size=size.small, bgcolor=rowBg2)
+        table.cell(sigTable, 1, 3, f_fmtVal(f_curVal(p3_s1)), text_color=color.white, text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 1, 4, f_fmtVal(f_curVal(p4_s1)), text_color=color.white, text_size=size.small, bgcolor=rowBg2)
+
+        table.cell(sigTable, 2, 1, f_fmtVal(f_curVal(p1_s2)), text_color=color.white, text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 2, 2, f_fmtVal(f_curVal(p2_s2)), text_color=color.white, text_size=size.small, bgcolor=rowBg2)
+        table.cell(sigTable, 2, 3, f_fmtVal(f_curVal(p3_s2)), text_color=color.white, text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 2, 4, f_fmtVal(f_curVal(p4_s2)), text_color=color.white, text_size=size.small, bgcolor=rowBg2)
+
+        table.cell(sigTable, 3, 1, f_fmtVal(f_curVal(p1_s3)), text_color=f_curHistColor(p1_s3), text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 3, 2, f_fmtVal(f_curVal(p2_s3)), text_color=f_curHistColor(p2_s3), text_size=size.small, bgcolor=rowBg2)
+        table.cell(sigTable, 3, 3, f_fmtVal(f_curVal(p3_s3)), text_color=f_curHistColor(p3_s3), text_size=size.small, bgcolor=rowBg1)
+        table.cell(sigTable, 3, 4, f_fmtVal(f_curVal(p4_s3)), text_color=f_curHistColor(p4_s3), text_size=size.small, bgcolor=rowBg2)
+
+
+// Vertical stack slots (1-3 panels only.  4 panels uses the grid below instead).
+slot_top_active    = panel_count >= 2 and panel_count != 4
+slot_mid_active    = panel_count == 1 or panel_count == 3
+slot_bottom_active = panel_count >= 2 and panel_count != 4
+
+// Top = always HTF1. Middle = HTF1 (1-panel) or HTF2 (3-panel).
+// Bottom = HTF2 (2-panel) or HTF3 (3-panel).
+mid_o  = panel_count == 3 ? p2_o  : p1_o
+mid_h  = panel_count == 3 ? p2_h  : p1_h
+mid_l  = panel_count == 3 ? p2_l  : p1_l
+mid_c  = panel_count == 3 ? p2_c  : p1_c
+mid_s1 = panel_count == 3 ? p2_s1 : p1_s1
+mid_s2 = panel_count == 3 ? p2_s2 : p1_s2
+mid_s3 = panel_count == 3 ? p2_s3 : p1_s3
+mid_lbl = panel_count == 3 ? htf2_lbl : htf1_lbl
+mid_isNewPeriod = panel_count == 3 ? isNewPeriod2 : isNewPeriod1
+
+bottom_o  = panel_count == 3 ? p3_o  : p2_o
+bottom_h  = panel_count == 3 ? p3_h  : p2_h
+bottom_l  = panel_count == 3 ? p3_l  : p2_l
+bottom_c  = panel_count == 3 ? p3_c  : p2_c
+bottom_s1 = panel_count == 3 ? p3_s1 : p2_s1
+bottom_s2 = panel_count == 3 ? p3_s2 : p2_s2
+bottom_s3 = panel_count == 3 ? p3_s3 : p2_s3
+bottom_lbl = panel_count == 3 ? htf3_lbl : htf2_lbl
+bottom_isNewPeriod = panel_count == 3 ? isNewPeriod3 : isNewPeriod2
+
+top_isNewPeriod = isNewPeriod1
+
+renderPanel(slot_top_active, p1_o, p1_h, p1_l, p1_c, p1_s1, p1_s2, p1_s3, htf1_lbl, panel_top_y, panel_xoffset, panelATR, effective_panel_height, render_bars, effective_candle_width, top_isNewPeriod)
+renderPanel(slot_mid_active, mid_o, mid_h, mid_l, mid_c, mid_s1, mid_s2, mid_s3, mid_lbl, panel_mid_y, panel_xoffset, panelATR, effective_panel_height, render_bars, effective_candle_width, mid_isNewPeriod)
+renderPanel(slot_bottom_active, bottom_o, bottom_h, bottom_l, bottom_c, bottom_s1, bottom_s2, bottom_s3, bottom_lbl, panel_bottom_y, panel_xoffset, panelATR, effective_panel_height, render_bars, effective_candle_width, bottom_isNewPeriod)
+
+// 4-panel grid (2 columns x 2 rows).  Only active at Number of Panels = 4.
+// Left column = the two nearest timeframes (HTF1 top, HTF2 bottom).
+// Right column = the two furthest (HTF3 top, HTF4 bottom).
+bool grid_active = panel_count == 4
+int  grid_col1_x = panel_xoffset
+int  grid_col2_x = panel_xoffset + panel_bars * effective_candle_width + panel_col_gap * effective_candle_width
+
+renderPanel(grid_active, p1_o, p1_h, p1_l, p1_c, p1_s1, p1_s2, p1_s3, htf1_lbl, panel_top_y,    grid_col1_x, panelATR, effective_panel_height, render_bars, effective_candle_width, isNewPeriod1)
+renderPanel(grid_active, p2_o, p2_h, p2_l, p2_c, p2_s1, p2_s2, p2_s3, htf2_lbl, panel_bottom_y, grid_col1_x, panelATR, effective_panel_height, render_bars, effective_candle_width, isNewPeriod2)
+renderPanel(grid_active, p3_o, p3_h, p3_l, p3_c, p3_s1, p3_s2, p3_s3, htf3_lbl, panel_top_y,    grid_col2_x, panelATR, effective_panel_height, render_bars, effective_candle_width, isNewPeriod3)
+renderPanel(grid_active, p4_o, p4_h, p4_l, p4_c, p4_s1, p4_s2, p4_s3, htf4_lbl, panel_bottom_y, grid_col2_x, panelATR, effective_panel_height, render_bars, effective_candle_width, isNewPeriod4)

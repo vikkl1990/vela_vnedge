@@ -1,0 +1,907 @@
+// This script is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © QuantAlgo
+
+//@version=6
+indicator("Time-of-Day/Session Performance Stats [QuantAlgo]", overlay = true, max_labels_count = 100, max_bars_back = 5000)
+
+//              ╔════════════════════════════════╗              //
+//              ║      USER-DEFINED SETTINGS     ║              //
+//              ╚════════════════════════════════╝              //
+
+var string G_CORE     = "════════ Core Settings ════════"
+var string G_SESSIONS = "════════ Trading Sessions ════════"
+var string G_BOARDS   = "════════ Ranking Boards ════════"
+var string G_PANELS   = "════════ Session & Focus Panels ════════"
+var string G_OVERLAY  = "════════ Chart Overlay ════════"
+var string G_VISUAL   = "════════ Visual Settings ════════"
+
+tooltip_timezone   = "The timezone every calculation is read in. Hour buckets, session windows and the weekday filter all use it, so changing it re-labels and re-sorts every board.\n\nUTC suits crypto and forex, and matches the session windows shipped below. America/New_York suits US futures and equities, but rewrite the four session windows in local time if you switch to it. Exchange follows whatever timezone the symbol itself trades on.\n\nTradingView treats the timezone shown under your chart as a display setting only and gives indicators no way to read it, so if the two need to agree, set this to match your chart manually."
+tooltip_lookback   = "How many calendar days of history to measure back from the last bar.\n\nLonger windows give steadier averages but blend older market regimes into the result. Ninety days is a reasonable balance on intraday charts. TradingView only lets a script reach 5000 bars into the past, so on fine intervals you will reach less than you ask for. Hover any panel header to see the window actually measured against the window requested."
+tooltip_max_bars   = "A hard ceiling on how many bars the study walks back through.\n\nThis is the single biggest driver of load time, so lower it if the indicator feels slow on a busy chart. Raise it to make full use of the lookback on fine intervals. 5000 is the maximum TradingView permits any script to reference, so this cannot go higher."
+tooltip_min_bars   = "The minimum number of bars an hour must hold before it is allowed onto any board.\n\nThis stops tiny samples producing nonsense. Without it, an hour holding three bars that happen to close up prints 100% bull and takes rank 1 ahead of an hour with two thousand bars behind it. Hours below the threshold are dropped from every ranking and from the chart overlay.\n\nRaise it for stricter statistics, lower it if a short lookback is leaving boards short."
+tooltip_range      = "How bar range is measured for the Activity board, the session panel and the chart overlay.\n\nPercent uses high minus low over close, so a bar from two months ago and a bar from today contribute on the same scale. Use this unless you have a reason not to.\n\nPrice uses raw points. Absolute ranges grow with price, so on anything that has trended hard this over weights whichever stretch of the lookback had the highest price. Useful only when you think in fixed point or tick terms."
+tooltip_include    = "Which bars feed the study. This filters at the source rather than afterwards, so every board, panel and overlay respects it.\n\nAll Bars measures the full 24 hours.\n\nAny Enabled Session measures only bars inside at least one session switched on below, which removes the dead gaps between sessions.\n\nNaming a single session narrows everything to bars inside it, including the other rows of the session panel. Use that to ask which hour of the London session is strongest, rather than which hour of the whole day."
+
+tooltip_sydney     = "Sydney session. The first major center to open each day and normally the thinnest of the four, so its ranges tend to sit near the bottom of the boards.\n\nThe field beside the switch is the window, written HHMM-HHMM in the timezone chosen above. It may wrap past midnight, which the 2200-0700 default does. A day mask can be appended, so 2200-0700:23456 restricts it to weekday opens.\n\nTurning a session off removes it from the session panel, from the chart overlay and from its alerts, and excludes it from the Any Enabled Session filter."
+tooltip_tokyo      = "Tokyo session. Drives JPY pairs and Asian indices, and overlaps the tail of Sydney.\n\nThe field beside the switch is the window, written HHMM-HHMM in the timezone chosen above. A bar falling inside two sessions is counted toward both, so overlaps are measured rather than arbitrarily assigned to one side. That is why session bar counts can add up to more than the total sampled."
+tooltip_london     = "London session. The deepest book of the four and usually the source of the widest daily ranges.\n\nThe field beside the switch is the window, written HHMM-HHMM in the timezone chosen above. Its final hours overlap the New York open, which is normally the busiest window of the day and carries its own pair of alerts."
+tooltip_newyork    = "New York session. The primary window for USD pairs, US indices, gold and oil.\n\nThe field beside the switch is the window, written HHMM-HHMM in the timezone chosen above. Where sessions overlap, New York is the one the chart overlay reports on, then London, then Tokyo, then Sydney."
+tooltip_weekdays   = "Restricts all four sessions to Monday through Friday.\n\nLeave it off for crypto, which trades every day, otherwise two days in seven are discarded from every session figure and the bar counts will look short against the total sampled.\n\nTurn it on for forex, futures and equities, where weekend bars either do not exist or are not comparable to weekday bars."
+
+tooltip_boards     = "Show or hide the hour by hour ranking boards.\n\nEvery hour that met the minimum sample threshold is listed, so a full board runs twenty four rows deep. It will be shorter when Bars To Include narrows the study to one session, or when a short lookback leaves hours under the threshold. The header tooltip reports how many of the twenty four qualified."
+tooltip_activity   = "Ranks each hour by its average bar range, highest first.\n\nThe plainest read on when the market actually moves. Rank 1 is the hour with the most room in it, the last row is the hour with the least. Start here if you only want one board."
+tooltip_volume     = "Ranks each hour by its average bar volume, highest first.\n\nRead it against Activity. An hour with high range but low volume is moving on thin participation, which is worth knowing before you size into it. The board hides itself on symbols that report no volume, such as most forex spot feeds."
+tooltip_bias       = "Ranks each hour by the share of its bars that closed above their open, most bullish first.\n\nFlat bars are excluded from the count, so the figure is the share of bars that actually went somewhere. There is deliberately no bearish column, since it would be exactly 100 minus this number and carry no new information. The bearish reading is simply the bottom of the board, which is shaded in the bearish color."
+tooltip_drift      = "Ranks each hour by its mean close minus open over open, most positive first.\n\nSeparate information to Bull %, not a restatement of it. An hour can close up sixty percent of the time and still bleed on average, if its losing bars are larger than its winning ones. Where this board and Bias disagree on the same hour, that is the interesting part."
+tooltip_score      = "Ranks each hour by a combined score, highest first.\n\nThe score is the mean percentile of the hour across three measures: average range, average volume, and directional edge, which is the distance of its bull rate from 50%. All three carry equal weight and nothing else is folded in. Volume is left out on symbols that do not report it, so the score becomes the mean of the remaining two rather than being silently penalized.\n\nThis is the board the Focus Hours panel and the Aggregated Ranking overlay both read from."
+tooltip_boards_pos = "Where the ranking boards sit on the chart.\n\nThis is the largest of the three panels, up to twenty four rows deep with a column group per board, so a center position usually works best. Keep it clear of the other two, since panels sharing a position will overlap."
+
+tooltip_session_on  = "Show or hide the session ranking panel.\n\nIt ranks the four sessions on average range per bar and reports window, bull rate, drift and bar count for each, shaded on the same gradient as the boards so the strongest session is bullish and the weakest is bearish."
+tooltip_session_pos = "Where the session ranking panel sits on the chart.\n\nKeep it clear of the ranking boards and the focus panel, since panels sharing a position will overlap."
+tooltip_focus_on    = "Show or hide the focus hours panel.\n\nIt turns the Aggregated ranking into four plainly labeled plans, from a single hour through to a spread of three, and names the hour worth avoiding."
+tooltip_focus_pos   = "Where the focus hours panel sits on the chart.\n\nKeep it clear of the ranking boards and the session panel, since panels sharing a position will overlap."
+
+tooltip_bg_source  = "What the background shading reports, drawn on the same gradient as the boards so bullish means highly ranked and bearish means poorly ranked.\n\nOff draws nothing.\n\nSession Ranking shades by how the session covering each bar ranks on average range, so the strongest session of the day is bullish and the deadest is bearish.\n\nActivity Ranking shades by how that bar's hour ranks on average range.\n\nVolume Ranking shades by how that bar's hour ranks on average volume.\n\nBias Ranking shades by how that bar's hour ranks on bullish close rate.\n\nDrift Ranking shades by how that bar's hour ranks on mean open-to-close drift.\n\nAggregated Ranking shades by how that bar's hour ranks on the combined score, the fullest read of the available measures.\n\nFocus Hours shades only the four hours the focus panel names, the top three in bullish tiers and the quietest in bearish, leaving every other bar clear.\n\nThe overlay reads a window trailing each bar rather than the final ranking, because a script cannot paint a result backward onto bars it has already drawn. It therefore never repaints: recent bars agree with the panels, and older bars show how the ranking stood at that time."
+tooltip_bg_trans   = "Transparency of the background shading.\n\nLower values make the ranking obvious at a glance, which suits a clean chart. Higher values keep it subtle so it does not compete with price. Above about 95 the shading becomes very faint."
+tooltip_bar_source = "What the price bar coloring reports. The same choices as the background, so you can run one on each, for example Session Ranking behind the chart and Aggregated Ranking on the bars.\n\nLike the background, this reads a window trailing each bar rather than the final ranking, so it never repaints.\n\nSet it to Off if you already color bars from another indicator, since only one can win."
+tooltip_bar_trans  = "Transparency of the price bar coloring.\n\nLower values produce vivid bars that make the ranking immediately obvious. Higher values apply a subtle tint so candle bodies and wicks stay easy to read. Only applies when Color Price Bars By is not Off."
+
+tooltip_warning    = "Show a message on the chart when the interval is too high for this study to work.\n\nHour buckets need bars of an hour or less. On a 4 hour chart only six of the twenty four hours ever receive a bar, so most of the panel would be empty and the rest unreliable. Turn it off once you understand the limitation and want the chart clear."
+tooltip_text_size  = "Text size across all three panels.\n\nTiny suits laptop screens or a chart already carrying several indicators, and is worth reaching for now that every qualifying hour is listed. Normal suits large monitors and presentations."
+tooltip_preset     = "Pre-configured color schemes optimized for different chart themes and visual preferences. Classic uses traditional green and red. Aqua provides ocean inspired blue and orange. Cosmic offers cyan and purple. Cyber features warm orange against cool cyan. Neon delivers high contrast yellow and magenta. Custom lets you set the bull and bear colors yourself.\n\nEvery board runs as one continuous gradient from the bullish color at rank 1 to the bearish color at the last rank, so a low ranking hour reads as a warning rather than a faded good one. The same gradient drives the session panel, the focus panel, the background shading and the bar coloring."
+tooltip_bullish    = "Color applied to rank 1 on every board, to the panel header bands, and to the top ranked end of the background and bar overlays.\n\nOnly used when the Color Preset above is set to Custom. Text color is derived from each cell automatically, so any color you choose stays readable."
+tooltip_bearish    = "Color applied to the last rank on every board, to the Avoid row of the focus panel, and to the bottom ranked end of the background and bar overlays.\n\nOnly used when the Color Preset above is set to Custom. Text color is derived from each cell automatically, so any color you choose stays readable."
+
+timezoneSel   = input.string("UTC",      "Timezone", options = ["UTC", "Exchange", "America/New_York", "America/Chicago", "Europe/London", "Europe/Berlin", "Asia/Tokyo", "Asia/Singapore", "Asia/Hong_Kong", "Australia/Sydney"], group = G_CORE, tooltip = tooltip_timezone)
+lookbackDays  = input.int(90,            "Lookback (Days)", minval = 5, maxval = 730, group = G_CORE, tooltip = tooltip_lookback)
+maxBarsScan   = input.int(5000,          "Max Bars To Scan", minval = 500, maxval = 5000, step = 500, group = G_CORE, tooltip = tooltip_max_bars)
+minHourBars   = input.int(10,            "Min Bars Per Hour", minval = 1, maxval = 500, group = G_CORE, tooltip = tooltip_min_bars)
+rangeUnitSel  = input.string("Percent",  "Range Units", options = ["Percent", "Price"], group = G_CORE, tooltip = tooltip_range)
+includeSel    = input.string("All Bars", "Bars To Include", options = ["All Bars", "Any Enabled Session", "Sydney", "Tokyo", "London", "New York"], group = G_CORE, tooltip = tooltip_include)
+
+showSydney    = input.bool(true, "Sydney       Time:", inline = "sydney", group = G_SESSIONS, tooltip = tooltip_sydney)
+windowSydney  = input.session("2200-0700", "", inline = "sydney", group = G_SESSIONS)
+showTokyo     = input.bool(true, "Tokyo         Time:", inline = "tokyo", group = G_SESSIONS, tooltip = tooltip_tokyo)
+windowTokyo   = input.session("0000-0900", "", inline = "tokyo", group = G_SESSIONS)
+showLondon    = input.bool(true, "London       Time:", inline = "london", group = G_SESSIONS, tooltip = tooltip_london)
+windowLondon  = input.session("0800-1600", "", inline = "london", group = G_SESSIONS)
+showNewYork   = input.bool(true, "New York    Time:", inline = "newyork", group = G_SESSIONS, tooltip = tooltip_newyork)
+windowNewYork = input.session("1300-2200", "", inline = "newyork", group = G_SESSIONS)
+weekdaysOnly  = input.bool(false, "Weekdays Only (Mon-Fri)", group = G_SESSIONS, tooltip = tooltip_weekdays)
+
+showBoards    = input.bool(true, "Show Ranking Boards", group = G_BOARDS, tooltip = tooltip_boards)
+showActivity  = input.bool(true, "Activity Ranking",    group = G_BOARDS, tooltip = tooltip_activity)
+showVolume    = input.bool(true, "Volume Ranking",      group = G_BOARDS, tooltip = tooltip_volume)
+showBias      = input.bool(true, "Bias Ranking",        group = G_BOARDS, tooltip = tooltip_bias)
+showDrift     = input.bool(true, "Drift Ranking",       group = G_BOARDS, tooltip = tooltip_drift)
+showScore     = input.bool(true, "Aggregated Ranking",  group = G_BOARDS, tooltip = tooltip_score)
+boardsPosSel  = input.string("Middle Center", "Boards Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = G_BOARDS, tooltip = tooltip_boards_pos)
+
+showSessionTbl = input.bool(true, "Show Session Ranking", group = G_PANELS, tooltip = tooltip_session_on)
+sessionPosSel  = input.string("Bottom Left", "Session Ranking Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = G_PANELS, tooltip = tooltip_session_pos)
+showFocusTbl   = input.bool(true, "Show Focus Hours", group = G_PANELS, tooltip = tooltip_focus_on)
+focusPosSel    = input.string("Bottom Right", "Focus Hours Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = G_PANELS, tooltip = tooltip_focus_pos)
+
+bgSourceSel   = input.string("Session Ranking", "Shade Background By", options = ["Off", "Session Ranking", "Activity Ranking", "Volume Ranking", "Bias Ranking", "Drift Ranking", "Aggregated Ranking", "Focus Hours"], group = G_OVERLAY, tooltip = tooltip_bg_source)
+bgTransp      = input.int(88, "Background Color Transparency", minval = 0, maxval = 100, group = G_OVERLAY, tooltip = tooltip_bg_trans)
+barSourceSel  = input.string("Session Ranking", "Color Price Bars By", options = ["Off", "Session Ranking", "Activity Ranking", "Volume Ranking", "Bias Ranking", "Drift Ranking", "Aggregated Ranking", "Focus Hours"], group = G_OVERLAY, tooltip = tooltip_bar_source)
+barTransp     = input.int(30, "Bar Color Transparency", minval = 0, maxval = 100, group = G_OVERLAY, tooltip = tooltip_bar_trans)
+
+showWarning   = input.bool(true,    "Show Interval Warning", group = G_VISUAL, tooltip = tooltip_warning)
+textSizeSel   = input.string("Tiny",  "Panel Text Size", options = ["Tiny", "Small", "Normal"], group = G_VISUAL, tooltip = tooltip_text_size)
+colorPreset   = input.string("Custom", "Color Preset", options = ["Classic", "Aqua", "Cosmic", "Cyber", "Neon", "Custom"], group = G_VISUAL, tooltip = tooltip_preset)
+bullishInput  = input.color(#00ffaa,   "Bullish Color", group = G_VISUAL, tooltip = tooltip_bullish)
+bearishInput  = input.color(#ff0000,   "Bearish Color", group = G_VISUAL, tooltip = tooltip_bearish)
+
+[bullishColor, bearishColor] = switch colorPreset
+    "Classic" => [color(#00ff00), color(#ff0000)]
+    "Aqua"    => [color(#00d4ff), color(#ff8c00)]
+    "Cosmic"  => [color(#49ffce), color(#9932cc)]
+    "Cyber"   => [color(#00cccc), color(#ff6600)]
+    "Neon"    => [color(#ffff00), color(#ff00ff)]
+    =>           [bullishInput, bearishInput]
+
+textSize = switch textSizeSel
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    => size.small
+
+//              ╔════════════════════════════════╗              //
+//              ║        UTILITY FUNCTIONS       ║              //
+//              ╚════════════════════════════════╝              //
+
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+clampVal(float v, float lo, float hi) =>
+    math.max(lo, math.min(hi, v))
+
+inkContrast(color col) =>
+    float lum = 0.299 * color.r(col) + 0.587 * color.g(col) + 0.114 * color.b(col)
+    lum > 128 ? color.black : color.white
+
+dimColor(color col, float k) =>
+    color.rgb(color.r(col) * k, color.g(col) * k, color.b(col) * k)
+
+maxChannel(color col) =>
+    math.max(color.r(col), math.max(color.g(col), color.b(col)))
+
+rankGradient(float t) =>
+    float f = na(t) ? 0.0 : clampVal(t, 0.0, 1.0)
+    float r = color.r(bullishColor) + (color.r(bearishColor) - color.r(bullishColor)) * f
+    float g = color.g(bullishColor) + (color.g(bearishColor) - color.g(bullishColor)) * f
+    float b = color.b(bullishColor) + (color.b(bearishColor) - color.b(bullishColor)) * f
+    float want = maxChannel(bullishColor) + (maxChannel(bearishColor) - maxChannel(bullishColor)) * f
+    float k = safeDiv(want, math.max(r, math.max(g, b)), 1.0)
+    color.rgb(math.min(255.0, r * k), math.min(255.0, g * k), math.min(255.0, b * k))
+
+barUsable(float h, float l, float o, float c) =>
+    not na(h) and not na(l) and not na(o) and not na(c) and c > 0.0 and o > 0.0
+
+buildAverages(array<float> sums, array<int> counts, int minBars) =>
+    array<float> out = array.new_float(array.size(sums), na)
+    for i = 0 to array.size(sums) - 1
+        int bars = array.get(counts, i)
+        if bars >= minBars
+            array.set(out, i, array.get(sums, i) / bars)
+    out
+
+buildRates(array<int> hits, array<int> directional, array<int> counts, int minBars) =>
+    array<float> out = array.new_float(array.size(hits), na)
+    for i = 0 to array.size(hits) - 1
+        int bars = array.get(counts, i)
+        int dirs = array.get(directional, i)
+        if bars >= minBars and dirs > 0
+            array.set(out, i, 100.0 * array.get(hits, i) / dirs)
+    out
+
+buildEdges(array<float> rates) =>
+    array<float> out = array.new_float(array.size(rates), na)
+    for i = 0 to array.size(rates) - 1
+        float rate = array.get(rates, i)
+        if not na(rate)
+            array.set(out, i, math.abs(rate - 50.0))
+    out
+
+rankPosition(array<float> values, int idx) =>
+    float here = array.get(values, idx)
+    float res  = na
+    if not na(here)
+        int higher = 0
+        int total  = 0
+        for i = 0 to array.size(values) - 1
+            float other = array.get(values, i)
+            if not na(other)
+                total += 1
+                if other > here
+                    higher += 1
+        res := total > 1 ? float(higher) / float(total - 1) : 0.0
+    res
+
+buildPercentiles(array<float> values) =>
+    array<float> out = array.new_float(array.size(values), na)
+    for i = 0 to array.size(values) - 1
+        float pos = rankPosition(values, i)
+        if not na(pos)
+            array.set(out, i, 100.0 * (1.0 - pos))
+    out
+
+blendPercentiles(array<float> first, array<float> second, array<float> third, bool useSecond) =>
+    array<float> out = array.new_float(array.size(first), na)
+    for i = 0 to array.size(first) - 1
+        float lead = array.get(first, i)
+        if not na(lead)
+            float total = lead
+            float count = 1.0
+            if useSecond
+                float extra = array.get(second, i)
+                if not na(extra)
+                    total += extra
+                    count += 1.0
+            float last = array.get(third, i)
+            if not na(last)
+                total += last
+                count += 1.0
+            array.set(out, i, total / count)
+    out
+
+rankDescending(array<float> values) =>
+    array<int>   order  = array.new_int()
+    array<float> scores = array.new_float()
+    for i = 0 to array.size(values) - 1
+        float v = array.get(values, i)
+        if not na(v)
+            array.push(order, i)
+            array.push(scores, v)
+    int n = array.size(order)
+    if n > 1
+        for i = 0 to n - 2
+            int best = i
+            for j = i + 1 to n - 1
+                if array.get(scores, j) > array.get(scores, best)
+                    best := j
+            if best != i
+                float tmpScore = array.get(scores, i)
+                int   tmpIndex = array.get(order, i)
+                array.set(scores, i, array.get(scores, best))
+                array.set(order, i, array.get(order, best))
+                array.set(scores, best, tmpScore)
+                array.set(order, best, tmpIndex)
+    order
+
+hourLabel(int h) =>
+    str.format("{0,number,00}:00", h)
+
+windowLabel(string sess) =>
+    string res = sess
+    if str.length(sess) >= 9
+        string opens  = str.substring(sess, 0, 4)
+        string closes = str.substring(sess, 5, 9)
+        res := str.substring(opens, 0, 2) + ":" + str.substring(opens, 2, 4) + "-" + str.substring(closes, 0, 2) + ":" + str.substring(closes, 2, 4)
+    res
+
+timezoneLabel(string tzName) =>
+    string res = tzName
+    array<string> parts = str.split(tzName, "/")
+    if array.size(parts) > 1
+        res := array.get(parts, array.size(parts) - 1)
+    str.replace_all(res, "_", " ")
+
+tablePosition(string sel) =>
+    switch sel
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Middle Left"   => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right"  => position.middle_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right"  => position.bottom_right
+        => position.middle_center
+
+formatMetric(string kind, float v) =>
+    string res = "-"
+    if not na(v)
+        if kind == "range"
+            res := rangeUnitSel == "Percent" ? str.tostring(v, "#.###") + "%" : v >= 1000 ? str.tostring(v / 1000, "#.##") + "K" : str.tostring(v, format.mintick)
+        else if kind == "volume"
+            res := v >= 1e9 ? str.tostring(v / 1e9, "#.##") + "B" : v >= 1e6 ? str.tostring(v / 1e6, "#.##") + "M" : v >= 1e3 ? str.tostring(v / 1e3, "#.#") + "K" : str.tostring(v, "#")
+        else if kind == "percent"
+            res := str.tostring(v, "#.#") + "%"
+        else if kind == "signed"
+            res := (v > 0 ? "+" : "") + str.tostring(v, "#.###") + "%"
+        else
+            res := str.tostring(v, "#.#")
+    res
+
+sessionName(int id) =>
+    id == 0 ? "Sydney" : id == 1 ? "Tokyo" : id == 2 ? "London" : "New York"
+
+sessionEnabled(int id) =>
+    id == 0 ? showSydney : id == 1 ? showTokyo : id == 2 ? showLondon : showNewYork
+
+sessionWindow(int id) =>
+    windowLabel(id == 0 ? windowSydney : id == 1 ? windowTokyo : id == 2 ? windowLondon : windowNewYork)
+
+//              ╔════════════════════════════════╗              //
+//              ║       SESSION DETECTION        ║              //
+//              ╚════════════════════════════════╝              //
+
+chartTz       = timezoneSel == "Exchange" ? syminfo.timezone : timezoneSel
+currentHour   = hour(time, chartTz)
+tfSeconds     = timeframe.in_seconds(timeframe.period)
+intervalTooHi = tfSeconds > 3600
+
+isWeekday  = dayofweek(time, chartTz) >= dayofweek.monday and dayofweek(time, chartTz) <= dayofweek.friday
+dayAllowed = weekdaysOnly ? isWeekday : true
+
+inSydney  = showSydney  and not na(time(timeframe.period, windowSydney,  chartTz)) and dayAllowed
+inTokyo   = showTokyo   and not na(time(timeframe.period, windowTokyo,   chartTz)) and dayAllowed
+inLondon  = showLondon  and not na(time(timeframe.period, windowLondon,  chartTz)) and dayAllowed
+inNewYork = showNewYork and not na(time(timeframe.period, windowNewYork, chartTz)) and dayAllowed
+
+inAnySession  = inSydney or inTokyo or inLondon or inNewYork
+inOverlap     = inLondon and inNewYork
+activeSession = inNewYork ? 3 : inLondon ? 2 : inTokyo ? 1 : inSydney ? 0 : -1
+
+barIncluded =
+     includeSel == "All Bars"            ? true :
+     includeSel == "Any Enabled Session" ? inAnySession :
+     includeSel == "Sydney"              ? inSydney :
+     includeSel == "Tokyo"               ? inTokyo :
+     includeSel == "London"              ? inLondon :
+     inNewYork
+
+//              ╔════════════════════════════════╗              //
+//              ║      TIME-OF-DAY STATISTICS    ║              //
+//              ╚════════════════════════════════╝              //
+
+var array<float> hourRangePctSum = array.new_float(24, 0.0)
+var array<float> hourRangePxSum  = array.new_float(24, 0.0)
+var array<float> hourVolumeSum   = array.new_float(24, 0.0)
+var array<float> hourDriftSum    = array.new_float(24, 0.0)
+var array<int>   hourBarCount    = array.new_int(24, 0)
+var array<int>   hourUpCount     = array.new_int(24, 0)
+var array<int>   hourDirCount    = array.new_int(24, 0)
+
+var array<float> sessRangePctSum = array.new_float(4, 0.0)
+var array<float> sessRangePxSum  = array.new_float(4, 0.0)
+var array<float> sessDriftSum    = array.new_float(4, 0.0)
+var array<int>   sessBarCount    = array.new_int(4, 0)
+var array<int>   sessUpCount     = array.new_int(4, 0)
+var array<int>   sessDirCount    = array.new_int(4, 0)
+
+var array<int> hourSessionBars = array.new_int(96, 0)
+
+var int   barsSampled   = 0
+var float daysMeasured  = 0.0
+var bool  scanTruncated = false
+var bool  volumeExists  = false
+var int   lastBuiltBar  = na
+
+rebuildNow = barstate.islast and (na(lastBuiltBar) or bar_index != lastBuiltBar)
+
+addSessionBar(int id, int h, float rangePx, float rangePct, float drift, bool isUp, bool isDirectional) =>
+    array.set(sessRangePxSum,  id, array.get(sessRangePxSum, id) + rangePx)
+    array.set(sessRangePctSum, id, array.get(sessRangePctSum, id) + rangePct)
+    array.set(sessDriftSum,    id, array.get(sessDriftSum, id) + drift)
+    array.set(sessBarCount,    id, array.get(sessBarCount, id) + 1)
+    if isDirectional
+        array.set(sessDirCount, id, array.get(sessDirCount, id) + 1)
+        if isUp
+            array.set(sessUpCount, id, array.get(sessUpCount, id) + 1)
+    array.set(hourSessionBars, h * 4 + id, array.get(hourSessionBars, h * 4 + id) + 1)
+
+if rebuildNow
+    lastBuiltBar := bar_index
+    for i = 0 to 23
+        array.set(hourRangePctSum, i, 0.0)
+        array.set(hourRangePxSum, i, 0.0)
+        array.set(hourVolumeSum, i, 0.0)
+        array.set(hourDriftSum, i, 0.0)
+        array.set(hourBarCount, i, 0)
+        array.set(hourUpCount, i, 0)
+        array.set(hourDirCount, i, 0)
+    for i = 0 to 3
+        array.set(sessRangePctSum, i, 0.0)
+        array.set(sessRangePxSum, i, 0.0)
+        array.set(sessDriftSum, i, 0.0)
+        array.set(sessBarCount, i, 0)
+        array.set(sessUpCount, i, 0)
+        array.set(sessDirCount, i, 0)
+    for i = 0 to 95
+        array.set(hourSessionBars, i, 0)
+
+    int   sampled     = 0
+    int   barsToScan  = math.min(bar_index + 1, maxBarsScan)
+    float earliestMs  = float(time) - float(lookbackDays) * 86400000.0
+    int   oldestTime  = time
+    bool  reachedEdge = false
+    float volumeTotal = 0.0
+
+    for i = 0 to barsToScan - 1
+        int barTime = time[i]
+        if na(barTime) or float(barTime) < earliestMs
+            reachedEdge := true
+            break
+        if not barIncluded[i] or not barUsable(high[i], low[i], open[i], close[i])
+            continue
+
+        int   h        = hour(barTime, chartTz)
+        float rangePx  = math.max(high[i] - low[i], 0.0)
+        float rangePct = rangePx / close[i] * 100.0
+        float drift    = (close[i] - open[i]) / open[i] * 100.0
+        bool  isDirectional = close[i] != open[i]
+        bool  isUp          = close[i] > open[i]
+
+        array.set(hourRangePxSum,  h, array.get(hourRangePxSum, h) + rangePx)
+        array.set(hourRangePctSum, h, array.get(hourRangePctSum, h) + rangePct)
+        array.set(hourVolumeSum,   h, array.get(hourVolumeSum, h) + nz(volume[i], 0.0))
+        array.set(hourDriftSum,    h, array.get(hourDriftSum, h) + drift)
+        array.set(hourBarCount,    h, array.get(hourBarCount, h) + 1)
+        if isDirectional
+            array.set(hourDirCount, h, array.get(hourDirCount, h) + 1)
+            if isUp
+                array.set(hourUpCount, h, array.get(hourUpCount, h) + 1)
+
+        if inSydney[i]
+            addSessionBar(0, h, rangePx, rangePct, drift, isUp, isDirectional)
+        if inTokyo[i]
+            addSessionBar(1, h, rangePx, rangePct, drift, isUp, isDirectional)
+        if inLondon[i]
+            addSessionBar(2, h, rangePx, rangePct, drift, isUp, isDirectional)
+        if inNewYork[i]
+            addSessionBar(3, h, rangePx, rangePct, drift, isUp, isDirectional)
+
+        volumeTotal += nz(volume[i], 0.0)
+        oldestTime  := barTime
+        sampled     += 1
+
+    barsSampled   := sampled
+    scanTruncated := not reachedEdge
+    volumeExists  := volumeTotal > 0.0
+    daysMeasured  := (float(time) - float(oldestTime)) / 86400000.0
+
+hourSessionLabel(int h) =>
+    string res  = ""
+    int    bars = array.get(hourBarCount, h)
+    if bars > 0
+        for id = 0 to 3
+            if array.get(hourSessionBars, h * 4 + id) * 5 >= bars
+                res := res == "" ? sessionName(id) : res + " / " + sessionName(id)
+    res == "" ? "None" : res
+
+var array<float> hourRangeVals  = array.new_float(24, na)
+var array<float> hourVolumeVals = array.new_float(24, na)
+var array<float> hourBiasVals   = array.new_float(24, na)
+var array<float> hourDriftVals  = array.new_float(24, na)
+var array<float> hourScoreVals  = array.new_float(24, na)
+
+var array<float> sessRangeVals = array.new_float(4, na)
+var array<float> sessBiasVals  = array.new_float(4, na)
+var array<float> sessDriftVals = array.new_float(4, na)
+
+var array<int> rankByRange   = array.new_int()
+var array<int> rankByVolume  = array.new_int()
+var array<int> rankByBias    = array.new_int()
+var array<int> rankByDrift   = array.new_int()
+var array<int> rankByScore   = array.new_int()
+var array<int> rankBySession = array.new_int()
+
+if rebuildNow
+    hourRangeVals  := buildAverages(rangeUnitSel == "Percent" ? hourRangePctSum : hourRangePxSum, hourBarCount, minHourBars)
+    hourVolumeVals := buildAverages(hourVolumeSum, hourBarCount, minHourBars)
+    hourBiasVals   := buildRates(hourUpCount, hourDirCount, hourBarCount, minHourBars)
+    hourDriftVals  := buildAverages(hourDriftSum, hourBarCount, minHourBars)
+    hourScoreVals  := blendPercentiles(buildPercentiles(hourRangeVals), buildPercentiles(hourVolumeVals), buildPercentiles(buildEdges(hourBiasVals)), volumeExists)
+
+    rankByRange  := rankDescending(hourRangeVals)
+    rankByVolume := rankDescending(hourVolumeVals)
+    rankByBias   := rankDescending(hourBiasVals)
+    rankByDrift  := rankDescending(hourDriftVals)
+    rankByScore  := rankDescending(hourScoreVals)
+
+    sessRangeVals := buildAverages(rangeUnitSel == "Percent" ? sessRangePctSum : sessRangePxSum, sessBarCount, 1)
+    sessBiasVals  := buildRates(sessUpCount, sessDirCount, sessBarCount, 1)
+    sessDriftVals := buildAverages(sessDriftSum, sessBarCount, 1)
+
+    array<float> sessionKeys = array.new_float(4, na)
+    for id = 0 to 3
+        if sessionEnabled(id)
+            array.set(sessionKeys, id, nz(array.get(sessRangeVals, id), -1.0))
+    rankBySession := rankDescending(sessionKeys)
+
+//              ╔════════════════════════════════╗              //
+//              ║   TRAILING RANK FOR OVERLAYS   ║              //
+//              ╚════════════════════════════════╝              //
+
+needsSession  = bgSourceSel == "Session Ranking" or barSourceSel == "Session Ranking"
+needsScore    = bgSourceSel == "Aggregated Ranking" or barSourceSel == "Aggregated Ranking" or bgSourceSel == "Focus Hours" or barSourceSel == "Focus Hours"
+needsActivity = bgSourceSel == "Activity Ranking" or barSourceSel == "Activity Ranking" or needsScore
+needsVolume   = bgSourceSel == "Volume Ranking" or barSourceSel == "Volume Ranking"
+needsBias     = bgSourceSel == "Bias Ranking" or barSourceSel == "Bias Ranking"
+needsDrift    = bgSourceSel == "Drift Ranking" or barSourceSel == "Drift Ranking"
+overlayActive = needsSession or needsActivity or needsVolume or needsBias or needsDrift
+
+var array<float> trailRangeSum  = array.new_float(24, 0.0)
+var array<float> trailVolumeSum = array.new_float(24, 0.0)
+var array<float> trailDriftSum  = array.new_float(24, 0.0)
+var array<int>   trailBarCount  = array.new_int(24, 0)
+var array<int>   trailUpCount   = array.new_int(24, 0)
+var array<int>   trailDirCount  = array.new_int(24, 0)
+var array<float> trailSessSum   = array.new_float(4, 0.0)
+var array<int>   trailSessCount = array.new_int(4, 0)
+var bool         trailHasVolume = false
+
+trailWindow = math.min(maxBarsScan, int(math.max(1.0, float(lookbackDays) * 86400.0 / float(tfSeconds))))
+
+addTrailSession(int id, float rangeVal, int step) =>
+    array.set(trailSessSum,   id, array.get(trailSessSum, id) + rangeVal)
+    array.set(trailSessCount, id, array.get(trailSessCount, id) + step)
+
+if overlayActive
+    if barIncluded and barUsable(high, low, open, close)
+        float rangeVal = rangeUnitSel == "Percent" ? (high - low) / close * 100.0 : (high - low)
+        float driftVal = (close - open) / open * 100.0
+
+        bool needsCount = needsActivity or needsVolume or needsBias or needsDrift or needsScore
+        if needsCount
+            array.set(trailBarCount, currentHour, array.get(trailBarCount, currentHour) + 1)
+
+        if needsActivity
+            array.set(trailRangeSum, currentHour, array.get(trailRangeSum, currentHour) + rangeVal)
+
+        if needsVolume or needsScore
+            array.set(trailVolumeSum, currentHour, array.get(trailVolumeSum, currentHour) + nz(volume, 0.0))
+            if nz(volume, 0.0) > 0.0
+                trailHasVolume := true
+
+        if needsBias or needsScore
+            if close != open
+                array.set(trailDirCount, currentHour, array.get(trailDirCount, currentHour) + 1)
+                if close > open
+                    array.set(trailUpCount, currentHour, array.get(trailUpCount, currentHour) + 1)
+
+        if needsDrift
+            array.set(trailDriftSum, currentHour, array.get(trailDriftSum, currentHour) + driftVal)
+
+        if needsSession
+            if inSydney
+                addTrailSession(0, rangeVal, 1)
+            if inTokyo
+                addTrailSession(1, rangeVal, 1)
+            if inLondon
+                addTrailSession(2, rangeVal, 1)
+            if inNewYork
+                addTrailSession(3, rangeVal, 1)
+
+    if bar_index >= trailWindow and barIncluded[trailWindow] and barUsable(high[trailWindow], low[trailWindow], open[trailWindow], close[trailWindow])
+        int   hOut     = hour(time[trailWindow], chartTz)
+        float rangeOut = rangeUnitSel == "Percent" ? (high[trailWindow] - low[trailWindow]) / close[trailWindow] * 100.0 : (high[trailWindow] - low[trailWindow])
+        float driftOut = (close[trailWindow] - open[trailWindow]) / open[trailWindow] * 100.0
+
+        bool needsCountOut = needsActivity or needsVolume or needsBias or needsDrift or needsScore
+        if needsCountOut
+            array.set(trailBarCount, hOut, array.get(trailBarCount, hOut) - 1)
+
+        if needsActivity
+            array.set(trailRangeSum, hOut, array.get(trailRangeSum, hOut) - rangeOut)
+
+        if needsVolume or needsScore
+            array.set(trailVolumeSum, hOut, array.get(trailVolumeSum, hOut) - nz(volume[trailWindow], 0.0))
+
+        if needsBias or needsScore
+            if close[trailWindow] != open[trailWindow]
+                array.set(trailDirCount, hOut, array.get(trailDirCount, hOut) - 1)
+                if close[trailWindow] > open[trailWindow]
+                    array.set(trailUpCount, hOut, array.get(trailUpCount, hOut) - 1)
+
+        if needsDrift
+            array.set(trailDriftSum, hOut, array.get(trailDriftSum, hOut) - driftOut)
+
+        if needsSession
+            if inSydney[trailWindow]
+                addTrailSession(0, -rangeOut, -1)
+            if inTokyo[trailWindow]
+                addTrailSession(1, -rangeOut, -1)
+            if inLondon[trailWindow]
+                addTrailSession(2, -rangeOut, -1)
+            if inNewYork[trailWindow]
+                addTrailSession(3, -rangeOut, -1)
+
+var float overlayActivityPos = na
+var float overlayVolumePos   = na
+var float overlayBiasPos     = na
+var float overlayDriftPos    = na
+var float overlayScorePos    = na
+var float overlaySessionPos  = na
+var float overlayFocusPos    = na
+
+hourTurned    = currentHour != currentHour[1]
+sessionTurned = inSydney != inSydney[1] or inTokyo != inTokyo[1] or inLondon != inLondon[1] or inNewYork != inNewYork[1]
+
+if overlayActive and (barstate.isfirst or hourTurned or sessionTurned or barstate.islast)
+    if needsActivity or needsVolume or needsBias or needsDrift or needsScore
+        array<float> trailRange = buildAverages(trailRangeSum, trailBarCount, minHourBars)
+        if needsActivity
+            overlayActivityPos := rankPosition(trailRange, currentHour)
+
+        if needsVolume
+            array<float> trailVolume = buildAverages(trailVolumeSum, trailBarCount, minHourBars)
+            overlayVolumePos := rankPosition(trailVolume, currentHour)
+
+        if needsBias
+            array<float> trailBias = buildRates(trailUpCount, trailDirCount, trailBarCount, minHourBars)
+            overlayBiasPos := rankPosition(trailBias, currentHour)
+
+        if needsDrift
+            array<float> trailDrift = buildAverages(trailDriftSum, trailBarCount, minHourBars)
+            overlayDriftPos := rankPosition(trailDrift, currentHour)
+
+        if needsScore
+            array<float> trailVolume = buildAverages(trailVolumeSum, trailBarCount, minHourBars)
+            array<float> trailBias   = buildRates(trailUpCount, trailDirCount, trailBarCount, minHourBars)
+            array<float> trailScore  = blendPercentiles(buildPercentiles(trailRange), buildPercentiles(trailVolume), buildPercentiles(buildEdges(trailBias)), trailHasVolume)
+            overlayScorePos := rankPosition(trailScore, currentHour)
+            overlayFocusPos := na
+            float scoreHere = array.get(trailScore, currentHour)
+            if not na(scoreHere)
+                int scoreRank = 1
+                for i = 0 to 23
+                    float other = array.get(trailScore, i)
+                    if not na(other) and other > scoreHere
+                        scoreRank += 1
+                overlayFocusPos := scoreRank == 1 ? 0.0 : scoreRank == 2 ? 0.18 : scoreRank == 3 ? 0.36 : na
+            if not na(overlayActivityPos) and overlayActivityPos >= 1.0
+                overlayFocusPos := 1.0
+
+    if needsSession
+        array<float> trailSession = array.new_float(4, na)
+        for id = 0 to 3
+            if sessionEnabled(id) and array.get(trailSessCount, id) > 0
+                array.set(trailSession, id, array.get(trailSessSum, id) / array.get(trailSessCount, id))
+        overlaySessionPos := activeSession < 0 ? na : rankPosition(trailSession, activeSession)
+
+overlayPosition(string source) =>
+    source == "Session Ranking"    ? overlaySessionPos :
+     source == "Activity Ranking"   ? overlayActivityPos :
+     source == "Volume Ranking"     ? overlayVolumePos :
+     source == "Bias Ranking"       ? overlayBiasPos :
+     source == "Drift Ranking"      ? overlayDriftPos :
+     source == "Aggregated Ranking" ? overlayScorePos :
+     source == "Focus Hours"        ? overlayFocusPos :
+     na
+
+//              ╔════════════════════════════════╗              //
+//              ║         VISUALIZATION          ║              //
+//              ╚════════════════════════════════╝              //
+
+bgPos  = overlayPosition(bgSourceSel)
+barPos = overlayPosition(barSourceSel)
+
+bgcolor(na(bgPos)   ? na : color.new(rankGradient(bgPos),  bgTransp),  title = "Ranking Background Color")
+barcolor(na(barPos) ? na : color.new(rankGradient(barPos), barTransp), title = "Ranking Bar Color")
+
+var label warningLabel = na
+
+if barstate.islast
+    if intervalTooHi and showWarning
+        string warnText = "⚠   INTERVAL TOO HIGH   ⚠" +
+             "\n\nTime-of-day buckets need bars of 1 hour or less." +
+             "\nAt this interval most of the 24 hours never receive a bar." +
+             "\n\nSwitch to 5m, 15m, 30m or 1h, for instance." +
+             "\n\nCurrent interval: " + timeframe.period
+        color warnColor = color.new(bearishColor, 10)
+        if na(warningLabel)
+            warningLabel := label.new(int(math.avg(chart.left_visible_bar_time, chart.right_visible_bar_time)), close, warnText, xloc = xloc.bar_time, yloc = yloc.price, style = label.style_label_center, color = warnColor, textcolor = inkContrast(warnColor), size = size.large, textalign = text.align_center)
+        else
+            label.set_xy(warningLabel, int(math.avg(chart.left_visible_bar_time, chart.right_visible_bar_time)), close)
+            label.set_text(warningLabel, warnText)
+    else if not na(warningLabel)
+        label.delete(warningLabel)
+        warningLabel := na
+
+var table boardsTable  = na
+var table sessionTable = na
+var table focusTable   = na
+
+if rebuildNow
+    if not na(boardsTable)
+        table.delete(boardsTable)
+    if not na(sessionTable)
+        table.delete(sessionTable)
+    if not na(focusTable)
+        table.delete(focusTable)
+    boardsTable  := table.new(tablePosition(boardsPosSel),  15, 30, bgcolor = #000000, border_width = 1, border_color = #0d0d0d, frame_width = 0)
+    sessionTable := table.new(tablePosition(sessionPosSel),  7,  6, bgcolor = #000000, border_width = 1, border_color = #0d0d0d, frame_width = 0)
+    focusTable   := table.new(tablePosition(focusPosSel),    7,  6, bgcolor = #000000, border_width = 1, border_color = #0d0d0d, frame_width = 0)
+
+paintCell(table tbl, int col, int row, string txt, color bg) =>
+    table.cell(tbl, col, row, txt, text_color = inkContrast(bg), text_size = textSize, bgcolor = bg, text_halign = text.align_center, text_valign = text.align_center)
+
+paintBand(table tbl, int colFrom, int colTo, int row, string txt, color bg, string tip) =>
+    for col = colFrom to colTo
+        table.cell(tbl, col, row, col == colFrom ? txt : "", text_color = inkContrast(bg), text_size = textSize, bgcolor = bg, text_halign = text.align_center, text_valign = text.align_center, tooltip = tip)
+    if colTo > colFrom
+        table.merge_cells(tbl, colFrom, row, colTo, row)
+
+diagnosticsTooltip() =>
+    "Timezone:  " + chartTz +
+     "\nChart interval:  " + timeframe.period +
+     "\nWindow measured:  " + str.tostring(daysMeasured, "#") + " of " + str.tostring(lookbackDays) + " days requested" +
+     (scanTruncated ? "   (stopped at the " + str.tostring(maxBarsScan) + " bar cap)" : "") +
+     "\nBars sampled:  " + str.tostring(barsSampled) +
+     "\nHours listed:  " + str.tostring(array.size(rankByRange)) + " of 24 met the " + str.tostring(minHourBars) + " bar minimum" +
+     "\nBars to include:  " + includeSel +
+     "\nRange units:  " + rangeUnitSel +
+     "\nWeekdays only:  " + (weekdaysOnly ? "on" : "off") +
+     (volumeExists ? "" : "\n\nThis symbol reports no volume, so the volume board is hidden and volume is left out of the aggregated score.") +
+     (intervalTooHi ? "\n\nThis interval is too high for hour buckets. Switch to 5m, 15m or 30m." : "")
+
+paintBoard(int colFrom, string title, array<int> ranked, array<float> values, string header, string kind, string tip) =>
+    int   count  = array.size(ranked)
+    color headBg = dimColor(bullishColor, 0.42)
+    paintBand(boardsTable, colFrom, colFrom + 2, 1, title, bullishColor, tip)
+    paintCell(boardsTable, colFrom,     2, "Hour", headBg)
+    paintCell(boardsTable, colFrom + 1, 2, header, headBg)
+    paintCell(boardsTable, colFrom + 2, 2, "Rank", headBg)
+    if count > 0
+        for i = 0 to count - 1
+            int   h  = array.get(ranked, i)
+            color bg = rankGradient(count <= 1 ? 0.0 : float(i) / float(count - 1))
+            paintCell(boardsTable, colFrom,     3 + i, hourLabel(h) + (h == currentHour ? " ◀" : ""), bg)
+            paintCell(boardsTable, colFrom + 1, 3 + i, formatMetric(kind, array.get(values, h)), bg)
+            paintCell(boardsTable, colFrom + 2, 3 + i, str.tostring(i + 1), bg)
+
+if rebuildNow and showBoards
+    int boardCount = (showActivity ? 1 : 0) + (showVolume and volumeExists ? 1 : 0) + (showBias ? 1 : 0) + (showDrift ? 1 : 0) + (showScore ? 1 : 0)
+    int boardCols  = math.max(boardCount * 3, 3)
+    string tip     = diagnosticsTooltip()
+
+    paintBand(boardsTable, 0, boardCols - 1, 0, "Time-of-Day Ranking  ·  " + syminfo.ticker + "  ·  " + timezoneLabel(chartTz), bullishColor, tip)
+
+    if barsSampled == 0
+        paintBand(boardsTable, 0, boardCols - 1, 1, "No bars matched for " + syminfo.ticker, bearishColor, tip)
+        paintBand(boardsTable, 0, boardCols - 1, 2, "Drop to 15m, widen the lookback or relax Bars To Include", dimColor(bearishColor, 0.45), tip)
+    else if array.size(rankByRange) == 0
+        paintBand(boardsTable, 0, boardCols - 1, 1, "Every hour holds fewer than " + str.tostring(minHourBars) + " bars", bearishColor, tip)
+        paintBand(boardsTable, 0, boardCols - 1, 2, "Raise the lookback or lower Min Bars Per Hour", dimColor(bearishColor, 0.45), tip)
+    else
+        int col = 0
+        if showActivity
+            paintBoard(col, "Activity Ranking", rankByRange, hourRangeVals, rangeUnitSel == "Percent" ? "Range %" : "Range", "range", tip)
+            col += 3
+        if showVolume and volumeExists
+            paintBoard(col, "Volume Ranking", rankByVolume, hourVolumeVals, "Volume", "volume", tip)
+            col += 3
+        if showBias
+            paintBoard(col, "Bias Ranking", rankByBias, hourBiasVals, "Bull %", "percent", tip)
+            col += 3
+        if showDrift
+            paintBoard(col, "Drift Ranking", rankByDrift, hourDriftVals, "Drift", "signed", tip)
+            col += 3
+        if showScore
+            paintBoard(col, "Aggregated", rankByScore, hourScoreVals, "Score", "number", tip)
+            col += 3
+
+if rebuildNow and showSessionTbl and barsSampled > 0 and array.size(rankBySession) > 0
+    color headBg = dimColor(bullishColor, 0.42)
+    string tip = "Sessions are ranked on average range per bar alone, nothing else is blended in. Rank 1 takes the bullish color and the last rank takes the bearish color, on the same gradient as the boards." +
+         "\nA bar inside an overlap counts toward every session it belongs to, so the bar counts can add up to more than the total sampled." +
+         "\n\n" + diagnosticsTooltip()
+
+    paintBand(sessionTable, 0, 6, 0, "Session Ranking  ·  " + timezoneLabel(chartTz), bullishColor, tip)
+
+    paintCell(sessionTable, 0, 1, "Session", headBg)
+    paintCell(sessionTable, 1, 1, "Window", headBg)
+    paintCell(sessionTable, 2, 1, rangeUnitSel == "Percent" ? "Range %" : "Range", headBg)
+    paintCell(sessionTable, 3, 1, "Bull %", headBg)
+    paintCell(sessionTable, 4, 1, "Drift", headBg)
+    paintCell(sessionTable, 5, 1, "Bars", headBg)
+    paintCell(sessionTable, 6, 1, "Rank", headBg)
+
+    int shown = array.size(rankBySession)
+    for i = 0 to shown - 1
+        int   id   = array.get(rankBySession, i)
+        int   bars = array.get(sessBarCount, id)
+        color bg   = rankGradient(shown <= 1 ? 0.0 : float(i) / float(shown - 1))
+        paintCell(sessionTable, 0, 2 + i, sessionName(id), bg)
+        paintCell(sessionTable, 1, 2 + i, sessionWindow(id), bg)
+        paintCell(sessionTable, 2, 2 + i, formatMetric("range", array.get(sessRangeVals, id)), bg)
+        paintCell(sessionTable, 3, 2 + i, formatMetric("percent", array.get(sessBiasVals, id)), bg)
+        paintCell(sessionTable, 4, 2 + i, formatMetric("signed", array.get(sessDriftVals, id)), bg)
+        paintCell(sessionTable, 5, 2 + i, str.tostring(bars), bg)
+        paintCell(sessionTable, 6, 2 + i, bars > 0 ? str.tostring(i + 1) : "-", bg)
+
+if rebuildNow and showFocusTbl and barsSampled > 0 and array.size(rankByRange) > 0
+    array<int> source = array.size(rankByScore) > 0 ? rankByScore : rankByRange
+    int first  = array.get(source, 0)
+    int second = array.size(source) > 1 ? array.get(source, 1) : first
+    int third  = array.size(source) > 2 ? array.get(source, 2) : second
+    int worst  = array.get(rankByRange, array.size(rankByRange) - 1)
+
+    color headBg = dimColor(bullishColor, 0.42)
+    string tip = "Hours come from the Aggregated ranking, or from Activity when Aggregated is unavailable." +
+         "\nWeights are a straight allocation across the top ranked hours. Nothing here is optimized or backtested, it is a reading of the boards rather than a signal." +
+         "\nAvoid names the quietest hour by average range and takes the bearish color." +
+         "\n\n" + diagnosticsTooltip()
+
+    paintBand(focusTable, 0, 6, 0, "Focus Hours  ·  " + syminfo.ticker + "  ·  now " + hourLabel(currentHour) + "  " + hourSessionLabel(currentHour), bullishColor, tip)
+
+    paintCell(focusTable, 0, 1, "Plan", headBg)
+    paintCell(focusTable, 1, 1, "Hours", headBg)
+    paintCell(focusTable, 2, 1, "Weights", headBg)
+    paintCell(focusTable, 3, 1, "Session", headBg)
+    paintCell(focusTable, 4, 1, "Bull %", headBg)
+    paintCell(focusTable, 5, 1, "Drift", headBg)
+    paintCell(focusTable, 6, 1, "Score", headBg)
+
+    color planOne   = rankGradient(0.0)
+    color planTwo   = rankGradient(0.18)
+    color planThree = rankGradient(0.36)
+    color planAvoid = rankGradient(1.0)
+
+    paintCell(focusTable, 0, 2, "Aggressive", planOne)
+    paintCell(focusTable, 1, 2, hourLabel(first), planOne)
+    paintCell(focusTable, 2, 2, "100%", planOne)
+    paintCell(focusTable, 3, 2, hourSessionLabel(first), planOne)
+    paintCell(focusTable, 4, 2, formatMetric("percent", array.get(hourBiasVals, first)), planOne)
+    paintCell(focusTable, 5, 2, formatMetric("signed", array.get(hourDriftVals, first)), planOne)
+    paintCell(focusTable, 6, 2, formatMetric("number", array.get(hourScoreVals, first)), planOne)
+
+    paintCell(focusTable, 0, 3, "Mix", planTwo)
+    paintCell(focusTable, 1, 3, hourLabel(first) + "  /  " + hourLabel(second), planTwo)
+    paintCell(focusTable, 2, 3, "80 / 20%", planTwo)
+    paintCell(focusTable, 3, 3, hourSessionLabel(second), planTwo)
+    paintCell(focusTable, 4, 3, formatMetric("percent", array.get(hourBiasVals, second)), planTwo)
+    paintCell(focusTable, 5, 3, formatMetric("signed", array.get(hourDriftVals, second)), planTwo)
+    paintCell(focusTable, 6, 3, formatMetric("number", array.get(hourScoreVals, second)), planTwo)
+
+    paintCell(focusTable, 0, 4, "Conservative", planThree)
+    paintCell(focusTable, 1, 4, hourLabel(first) + "  /  " + hourLabel(second) + "  /  " + hourLabel(third), planThree)
+    paintCell(focusTable, 2, 4, "50 / 30 / 20%", planThree)
+    paintCell(focusTable, 3, 4, hourSessionLabel(third), planThree)
+    paintCell(focusTable, 4, 4, formatMetric("percent", array.get(hourBiasVals, third)), planThree)
+    paintCell(focusTable, 5, 4, formatMetric("signed", array.get(hourDriftVals, third)), planThree)
+    paintCell(focusTable, 6, 4, formatMetric("number", array.get(hourScoreVals, third)), planThree)
+
+    paintCell(focusTable, 0, 5, "Avoid", planAvoid)
+    paintCell(focusTable, 1, 5, hourLabel(worst), planAvoid)
+    paintCell(focusTable, 2, 5, "quietest", planAvoid)
+    paintCell(focusTable, 3, 5, hourSessionLabel(worst), planAvoid)
+    paintCell(focusTable, 4, 5, formatMetric("percent", array.get(hourBiasVals, worst)), planAvoid)
+    paintCell(focusTable, 5, 5, formatMetric("signed", array.get(hourDriftVals, worst)), planAvoid)
+    paintCell(focusTable, 6, 5, formatMetric("number", array.get(hourScoreVals, worst)), planAvoid)
+
+//              ╔════════════════════════════════╗              //
+//              ║             ALERTS             ║              //
+//              ╚════════════════════════════════╝              //
+
+hourRolled = barstate.isconfirmed and currentHour != currentHour[1]
+
+bool enteredPeakRange   = false
+bool enteredQuietRange  = false
+bool enteredPeakVolume  = false
+bool enteredMostBullish = false
+bool enteredMostBearish = false
+bool enteredTopScore    = false
+
+if hourRolled and array.size(rankByRange) > 0
+    enteredPeakRange  := currentHour == array.get(rankByRange, 0)
+    enteredQuietRange := currentHour == array.get(rankByRange, array.size(rankByRange) - 1)
+if hourRolled and array.size(rankByVolume) > 0
+    enteredPeakVolume := currentHour == array.get(rankByVolume, 0)
+if hourRolled and array.size(rankByBias) > 0
+    enteredMostBullish := currentHour == array.get(rankByBias, 0)
+    enteredMostBearish := currentHour == array.get(rankByBias, array.size(rankByBias) - 1)
+if hourRolled and array.size(rankByScore) > 0
+    enteredTopScore := currentHour == array.get(rankByScore, 0)
+
+sydneyOpen  = inSydney  and not inSydney[1]
+tokyoOpen   = inTokyo   and not inTokyo[1]
+londonOpen  = inLondon  and not inLondon[1]
+newYorkOpen = inNewYork and not inNewYork[1]
+
+sydneyClose  = not inSydney  and inSydney[1]
+tokyoClose   = not inTokyo   and inTokyo[1]
+londonClose  = not inLondon  and inLondon[1]
+newYorkClose = not inNewYork and inNewYork[1]
+
+overlapOpen  = inOverlap and not inOverlap[1]
+overlapClose = not inOverlap and inOverlap[1]
+
+alertcondition(enteredPeakRange,   title = "Entered Peak Activity Hour",  message = "Time-of-Day / Session Performance Stats [QuantAlgo]: entered the highest average range hour on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(enteredQuietRange,  title = "Entered Quietest Hour",       message = "Time-of-Day / Session Performance Stats [QuantAlgo]: entered the lowest average range hour on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(enteredPeakVolume,  title = "Entered Peak Volume Hour",    message = "Time-of-Day / Session Performance Stats [QuantAlgo]: entered the highest average volume hour on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(enteredMostBullish, title = "Entered Most Bullish Hour",   message = "Time-of-Day / Session Performance Stats [QuantAlgo]: entered the highest bull rate hour on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(enteredMostBearish, title = "Entered Most Bearish Hour",   message = "Time-of-Day / Session Performance Stats [QuantAlgo]: entered the lowest bull rate hour on {{exchange}}:{{ticker}} - {{interval}}")
+alertcondition(enteredTopScore,    title = "Entered Top Aggregated Hour", message = "Time-of-Day / Session Performance Stats [QuantAlgo]: entered the top aggregated score hour on {{exchange}}:{{ticker}} - {{interval}}")
+
+alertcondition(sydneyOpen,  title = "Sydney Session Started",   message = "Time-of-Day / Session Performance Stats [QuantAlgo]: Sydney session STARTED on {{exchange}}:{{ticker}}")
+alertcondition(tokyoOpen,   title = "Tokyo Session Started",    message = "Time-of-Day / Session Performance Stats [QuantAlgo]: Tokyo session STARTED on {{exchange}}:{{ticker}}")
+alertcondition(londonOpen,  title = "London Session Started",   message = "Time-of-Day / Session Performance Stats [QuantAlgo]: London session STARTED on {{exchange}}:{{ticker}}")
+alertcondition(newYorkOpen, title = "New York Session Started", message = "Time-of-Day / Session Performance Stats [QuantAlgo]: New York session STARTED on {{exchange}}:{{ticker}}")
+alertcondition(sydneyOpen or tokyoOpen or londonOpen or newYorkOpen, title = "Any Session Started", message = "Time-of-Day / Session Performance Stats [QuantAlgo]: a trading session STARTED on {{exchange}}:{{ticker}}")
+
+alertcondition(sydneyClose,  title = "Sydney Session Ended",   message = "Time-of-Day / Session Performance Stats [QuantAlgo]: Sydney session ENDED on {{exchange}}:{{ticker}}")
+alertcondition(tokyoClose,   title = "Tokyo Session Ended",    message = "Time-of-Day / Session Performance Stats [QuantAlgo]: Tokyo session ENDED on {{exchange}}:{{ticker}}")
+alertcondition(londonClose,  title = "London Session Ended",   message = "Time-of-Day / Session Performance Stats [QuantAlgo]: London session ENDED on {{exchange}}:{{ticker}}")
+alertcondition(newYorkClose, title = "New York Session Ended", message = "Time-of-Day / Session Performance Stats [QuantAlgo]: New York session ENDED on {{exchange}}:{{ticker}}")
+alertcondition(sydneyClose or tokyoClose or londonClose or newYorkClose, title = "Any Session Ended", message = "Time-of-Day / Session Performance Stats [QuantAlgo]: a trading session ENDED on {{exchange}}:{{ticker}}")
+
+alertcondition(overlapOpen,  title = "London-New York Overlap Started", message = "Time-of-Day / Session Performance Stats [QuantAlgo]: London and New York are now BOTH open on {{exchange}}:{{ticker}}")
+alertcondition(overlapClose, title = "London-New York Overlap Ended",   message = "Time-of-Day / Session Performance Stats [QuantAlgo]: the London and New York overlap has ENDED on {{exchange}}:{{ticker}}")
+
+//              ╔════════════════════════════════╗              //
+//              ║           CREATED BY           ║              //
+//              ╚════════════════════════════════╝              //
+
+// ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗     █████╗ ██╗      ██████╗  ██████╗
+//██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝    ██╔══██╗██║     ██╔════╝ ██╔═══██╗
+//██║   ██║██║   ██║███████║██╔██╗ ██║   ██║       ███████║██║     ██║  ███╗██║   ██║
+//██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║       ██╔══██║██║     ██║   ██║██║   ██║
+//╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║       ██║  ██║███████╗╚██████╔╝╚██████╔╝
+// ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝

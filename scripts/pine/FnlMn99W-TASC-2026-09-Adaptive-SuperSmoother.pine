@@ -1,0 +1,101 @@
+//  TASC Issue: September 2026
+//     Article: Improved Filter Performance
+//              Adaptive SuperSmoother
+//  Article By: John F. Ehlers
+//    Language: TradingView's Pine Script™ v6
+// Provided By: PineCoders, for tradingview.com
+
+//@version=6
+TITLE = "TASC 2026.09 Adaptive SuperSmoother"
+SHORTTITLE = "SS - Adaptive"
+indicator(TITLE, SHORTTITLE)
+
+
+//#region --- Inputs --- 
+
+// @variable The source series to analyze. 
+float srcInput = input.source(close, "Source")
+// @variable The base period of the filters. 
+int perInput = input.int(20, "Base period", 2)
+// @variable The RMS length for the Adaptive SuperSmoother.
+int rmsInput = input.int(81, "RMS length", 2)
+//#endregion
+
+
+//#region --- Functions ---
+
+// @function      Calculates the root mean square (RMS) of a 
+//                series over a specified number of bars.
+// @param source  The series of values to process.
+// @param length  The number of bars in the calculation.
+// @returns       The RMS value. 
+rms(float source, int length) =>
+    math.sqrt(ta.sma(source * source, length))
+
+// @function      Calculates the SuperSmoother with a specified
+//                critical period. The SuperSmoother is a 
+//                second-order IIR filter. Its transfer response
+//                includes a second-degree polynomial in the 
+//                denominator. The filter offers significantly 
+//                greater maximum attenuation of high frequencies,
+//                without a perceptibly greater amount of 
+//                computational lag.
+// @param source  The series of values to process.
+// @param period  The filter's critical period.
+// @returns       The smoothed series.
+superSmoother(float source, int period) =>
+    float w   = 1.414 * math.pi / period
+    float q   = math.exp(-w)
+    float c1  = 2.0 * q * math.cos(w)
+    float c2  = q * q
+    float a0  = (1.0 - c1 + c2) / 2.0
+    float res = source
+    if bar_index >= 4
+        res := (
+            a0 * (source + source[1])
+            + c1 * res[1] - c2 * res[2]
+        )
+    res
+
+// @function         Calculates the Adaptive SuperSmoother. The filter
+//                   adapts its critical period based on the rate of 
+//                   change in an initial SuperSmoother with a specified
+//                   base period. 
+// @param source     The series of values to process.
+// @param period     The base period of the filter calculation.
+// @param rmsLength  Optional. The number of bars over which to calculate 
+//                   the RMS of ROC in the base SuperSmoother. The RMS 
+//                   scales the ROC in the adaptive period calculation.
+//                   The default is 81.
+// @returns          The adaptively smoothed series. 
+adaptiveSuperSmoother(
+    float source, int period, int rmsLength = 81
+) =>
+    float ss = superSmoother(source, period)
+    float roc1 = nz(ss - ss[1])
+    float rocRMS = rms(roc1, rmsLength)
+    float roc = 0.0
+    if rocRMS > 0
+        roc := math.min(math.abs(roc1 / rocRMS), 2.0)
+    float factor = math.pow(1.0 - 0.5 * roc, 2)
+    int aPeriod = math.max(int(period * factor), 2)
+    superSmoother(source, aPeriod)
+//#endregion
+
+
+//#region --- Calculations and plots ---
+
+// @variable The fixed-period SuperSmoother.
+float ssBase = superSmoother(srcInput, perInput)
+// @variable The Adaptive SuperSmoother. 
+float ssAdaptive = adaptiveSuperSmoother(srcInput, perInput, rmsInput)
+
+float osc = ssAdaptive - ssBase
+
+// Plot the two series for visual comparison. 
+plot(ssBase,     "SuperSmoother",          color.red,  force_overlay = true)
+plot(ssAdaptive, "Adaptive SuperSmoother", color.blue, force_overlay = true)
+
+plot(0,   "SS Base",                color.red)
+plot(osc, "Adaptive SS Oscillator", color.blue)
+//#endregion
