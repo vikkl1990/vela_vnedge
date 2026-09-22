@@ -1,0 +1,102 @@
+//@version=6
+strategy("Scott Barclay's Three Muskateers", overlay = true, margin_long = 0, margin_short = 0, calc_on_every_tick = true, pyramiding = 0, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, commission_type = strategy.commission.percent, commission_value = 0.1, slippage = 2)
+
+input_group_signals = "Signal Settings"
+input_group_display = "Display"
+input_group_bot = "BOT CONTROL"
+
+tradeDirection = input.string("Long", "Trade Direction", options = ["Long", "Short", "Both"], group = input_group_signals)
+showBuySellSignals = input.bool(false, "Show Buy/Sell Tags", group = input_group_display)
+showSignalStatusBox = input.bool(false, "Show Signal Status Box", group = input_group_display)
+signalHoldBars = input.int(1, "Trade Signal Hold Bars", minval = 1, group = input_group_display)
+enableBot = input.bool(true, "Enable Bot (Webhook)", group = input_group_bot)
+chartPos = input.string("top", "Chart Position", options = ["top", "bottom"], group = input_group_bot)
+
+emaFastLen = 50
+emaSlowLen = 200
+bbLen = 20
+bbMult = 2.0
+
+rsi = ta.rsi(close, 14)
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+basis = ta.sma(close, bbLen)
+stdevVal = ta.stdev(close, bbLen)
+dev = bbMult * stdevVal
+upperBB = basis + dev
+lowerBB = basis - dev
+
+trendBull = emaFast > emaSlow
+trendBear = emaFast < emaSlow
+meanRevBull = ta.crossover(rsi, 30)
+meanRevBear = ta.crossunder(rsi, 70)
+arbBull = ta.crossover(close, lowerBB)
+arbBear = ta.crossunder(close, upperBB)
+
+bullCount = (trendBull ? 1 : 0) + (meanRevBull ? 1 : 0) + (arbBull ? 1 : 0)
+bearCount = (trendBear ? 1 : 0) + (meanRevBear ? 1 : 0) + (arbBear ? 1 : 0)
+
+buySignal = bullCount >= 2
+sellSignal = bearCount >= 2
+allowLong = tradeDirection == "Long" or tradeDirection == "Both"
+allowShort = tradeDirection == "Short" or tradeDirection == "Both"
+longOnly = tradeDirection == "Long"
+shortOnly = tradeDirection == "Short"
+bothDirections = tradeDirection == "Both"
+
+plotshape(showBuySellSignals and allowLong and buySignal, title = "Buy Signal", location = location.belowbar, color = color.green, style = shape.labelup, text = "BUY")
+plotshape(showBuySellSignals and allowShort and sellSignal, title = "Sell Signal", location = location.abovebar, color = color.red, style = shape.labeldown, text = "SELL")
+
+openLongEvent = allowLong and buySignal and strategy.position_size <= 0
+openShortEvent = allowShort and sellSignal and strategy.position_size >= 0
+closeLongEvent = longOnly and sellSignal and strategy.position_size > 0
+closeShortEvent = shortOnly and buySignal and strategy.position_size < 0
+
+if closeLongEvent
+    strategy.close("Long", comment = "Three Muskateers Sell")
+
+if closeShortEvent
+    strategy.close("Short", comment = "Three Muskateers Buy")
+
+if openLongEvent
+    strategy.entry("Long", strategy.long, comment = "Three Muskateers Buy")
+
+if openShortEvent
+    strategy.entry("Short", strategy.short, comment = "Three Muskateers Sell")
+
+buyTradeEvent = openLongEvent or closeShortEvent
+sellTradeEvent = openShortEvent or closeLongEvent
+
+if enableBot and buyTradeEvent
+    alert('{"action":"BUY","chart":"' + chartPos + '","symbol":"' + syminfo.ticker + '","price":' + str.tostring(close) + '}', alert.freq_once_per_bar)
+
+if enableBot and sellTradeEvent
+    alert('{"action":"SELL","chart":"' + chartPos + '","symbol":"' + syminfo.ticker + '","price":' + str.tostring(close) + '}', alert.freq_once_per_bar)
+
+var int lastSignalBar = na
+var color lastSignalBgColor = color.white
+
+if buyTradeEvent
+    lastSignalBar := bar_index
+    lastSignalBgColor := color.green
+else if sellTradeEvent
+    lastSignalBar := bar_index
+    lastSignalBgColor := color.red
+
+signalActive = not na(lastSignalBar) and bar_index >= lastSignalBar and bar_index < lastSignalBar + signalHoldBars
+signalDisplayBgColor = showSignalStatusBox ? (signalActive ? lastSignalBgColor : color.white) : color.new(color.white, 100)
+
+if barstate.islast
+    var table signalTable = table.new(position.top_right, 1, 2, border_width = 2)
+    table.cell(
+         signalTable, 0, 0, showSignalStatusBox ? "Trade Signal" : "",
+         text_color = color.white,
+         bgcolor    = showSignalStatusBox ? color.rgb(86, 86, 86) : color.new(color.white, 100),
+         text_size  = size.large
+     )
+    table.cell(
+         signalTable, 0, 1, "",
+         text_color = color.white,
+         bgcolor    = signalDisplayBgColor,
+         text_size  = size.huge
+     )

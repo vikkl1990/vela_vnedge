@@ -1,0 +1,145 @@
+//  TASC Issue: July 2026
+//     Article: Risk-On, Risk-Off, Or Caution
+//              Market Regime Identification
+//              Using Trend, Volatility, And
+//              Credit Conditions
+//  Article By: Gaetano Di Prima and Fabio Baruffa
+//    Language: TradingView's Pine Script® v6
+// Provided By: PineCoders, for tradingview.com
+
+//@version=6
+
+TITLE = "TASC 2026.07 Risk-On, Risk-Off, Or Caution"
+SHORTTITLE = "Regime Positioning"
+
+strategy(
+    TITLE, 
+    SHORTTITLE, 
+    slippage = 3, 
+    initial_capital = 10000)
+
+// Raise an error if the script is not running on 
+// a daily SPY chart. 
+if syminfo.ticker != "SPY" or timeframe.period != "1D"
+    runtime.error(
+        "This strategy requires a daily SPY chart."
+    )
+
+
+//#region --- Data requests ---
+
+float vix   = request.security("VIX",   "", close)
+float vix3m = request.security("VIX3M", "", close)
+float spx   = request.security("SPX",   "", close)
+float hyg   = request.security("HYG",   "", close)
+float ief   = request.security("IEF",   "", close)
+//#endregion
+
+
+//#region --- Regime signals ---
+
+// @variable Difference between SPX value & its 200-bar SMA.
+float spxDist = spx - ta.sma(spx, 200)
+
+// @variable The ratio of the VIX value to the VIX3M value.
+float ts = vix / vix3m
+
+// @variable The ratio of the HYG value to the IEF value.
+float creditRatio = hyg / ief
+// @variable The 100-bar z-score of the `creditRatio` value.
+float creditZscore = (
+    (creditRatio - ta.sma(creditRatio, 100))
+    / ta.stdev(creditRatio, 100)
+) 
+
+// @variable `true` if SPX is above the SMA, uptrend.
+bool s1 = spxDist > 0.0
+// @variable `true` if VIX is below VIX3M, "stable" risk.
+bool s2 = ts < 1.0
+// @variable `true` if `creditZscore` value is above -2.
+bool s3 = creditZscore > -2.0
+
+// @variable Regime signal: "Risk ON","Caution","Risk OFF"
+int regime = (s1 ? 1 : 0) + (s2 ? 1 : 0) + (s3 ? 1 : 0)
+
+// @variable The background color for regime signal states.
+color rColor = switch regime
+    3 => #4caf5033
+    2 => #ffeb3b33
+    =>   #ff525233
+//#endregion
+
+
+//#region --- Order logic ---
+
+// This strategy places orders to adjust the 
+// current position only at the close of each week. 
+
+// @variable `true` if the bar is the last of the week.
+bool isEow = time_close == time_close("W")
+
+if isEow and barstate.isconfirmed
+    // @variable The target position size for reallocation.
+    float targetPosition = switch regime
+        3 => strategy.equity        // 100% for "Risk ON"
+        2 => 0.5 * strategy.equity  // 50% for "Caution"     
+        =>   0.0                    // 0% for "Risk OFF"
+
+    // @variable The shares to add to or remove.
+    float diff = math.floor(
+        targetPosition / close - strategy.position_size
+    )
+    // Modify the position if `diff` is nonzero.
+    switch
+        diff > 0 => 
+            strategy.order("Buy", strategy.long, diff)
+        diff < 0 => 
+            strategy.close("Buy", "Sell", -diff)
+//#endregion
+
+
+//#region --- Display ---
+
+// Legend display
+if barstate.isfirst
+    table tbl = table.new(position.bottom_center, 1, 3)
+    tbl.cell(
+        row = 0, 
+        column = 0, 
+        text = "🟩 Risk ON\n🟥 Risk OFF\n🟨 Caution", 
+        text_color = #ffffff, 
+        text_halign = text.align_left, 
+        bgcolor = #363a4580
+    )
+
+// Chart background highlight
+bgcolor(
+    rColor, 
+    title = "Regime highlight", 
+    force_overlay = true
+)
+
+// Signal plots
+plot(
+    s1 ? 1 : na, 
+    title = "Trend signal", 
+    color = #00a2ff, 
+    style = plot.style_columns
+)
+
+plot(
+    s2 ? 2 : na, 
+    title = "Volatility signal", 
+    color = #015f96,
+    style = plot.style_columns, 
+    histbase = 1.1
+)
+
+plot(
+    s3 ? 3 : na, 
+    title = "Credit signal", 
+    color = #00314d,
+    style = plot.style_columns, 
+    histbase = 2.1
+)
+//#endregion

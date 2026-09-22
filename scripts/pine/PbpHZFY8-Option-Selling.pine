@@ -1,0 +1,142 @@
+//@version=5
+strategy(     "Option-Point",     overlay=true,     pyramiding=0,     initial_capital=100000)
+
+//━━━━━━━━━━ INPUTS ━━━━━━━━━━
+group_ma = "Moving Average Settings"
+
+// Fast MA
+fastType = input.string(     "EMA",     "Fast MA Type",     options=["EMA", "SMA", "WMA"],     group=group_ma)
+
+fastLen = input.int(     9,     "Fast MA Length",     minval=1,     group=group_ma)
+
+fastSrc = input.source(     close,     "Fast MA Source",     group=group_ma)
+
+// Slow MA
+slowType = input.string(     "EMA",     "Slow MA Type",     options=["EMA", "SMA", "WMA"],     group=group_ma)
+
+slowLen = input.int(     21,     "Slow MA Length",     minval=1,     group=group_ma)
+
+slowSrc = input.source(     close,     "Slow MA Source",     group=group_ma)
+
+//━━━━━━━━━━ SLOPE FILTER ━━━━━━━━━━
+group_slope = "Slope Filter"
+
+useSlopeFilter = input.bool(     true,     "Use Slope Filter",     group=group_slope)
+
+slopeLookback = input.int(     3,     "Slope Lookback",     minval=1,     group=group_slope)
+
+fastSlopeThreshold = input.float(     0.05,     "Fast MA Negative Slope Threshold",     step=0.01,     group=group_slope)
+
+slowSlopeThreshold = input.float(     0.02,     "Slow MA Negative Slope Threshold",     step=0.01,     group=group_slope)
+
+//━━━━━━━━━━ INTRADAY SETTINGS ━━━━━━━━━━
+group_intraday = "Intraday Settings"
+
+useIntraday = input.bool(     true,     "Enable NSE Intraday Time Filter",     group=group_intraday)
+
+sessionTime = input.session(     "0920-1520",     "Trading Session",     group=group_intraday)
+
+closeBeforeMarketEnd = input.bool(     true,     "Force Close At 3:30 PM",     group=group_intraday)
+
+//━━━━━━━━━━ VISUAL SETTINGS ━━━━━━━━━━
+group_visual = "Visual Settings"
+
+showExitLabels = input.bool(     true,     "Show EXIT Labels",     group=group_visual)
+
+showBackground = input.bool(     false,     "Trend Background",     group=group_visual)
+
+//━━━━━━━━━━ MA FUNCTION ━━━━━━━━━━
+f_ma(_type, _src, _len) =>
+    _type == "EMA" ? ta.ema(_src, _len) :
+     _type == "SMA" ? ta.sma(_src, _len) :
+     ta.wma(_src, _len)
+
+//━━━━━━━━━━ MA CALCULATIONS ━━━━━━━━━━
+fastMA = f_ma(fastType, fastSrc, fastLen)
+slowMA = f_ma(slowType, slowSrc, slowLen)
+
+//━━━━━━━━━━ SLOPE CALCULATIONS ━━━━━━━━━━
+fastSlope =
+     (fastMA - fastMA[slopeLookback]) / slopeLookback
+
+slowSlope =
+     (slowMA - slowMA[slopeLookback]) / slopeLookback
+
+fastSlopeBearish =
+     fastSlope < -fastSlopeThreshold
+
+slowSlopeBearish =
+     slowSlope < -slowSlopeThreshold
+
+slopeFilterPassed =
+     not useSlopeFilter or
+     (fastSlopeBearish and slowSlopeBearish)
+
+//━━━━━━━━━━ SESSION FILTER ━━━━━━━━━━
+inSession =
+     not na(time(timeframe.period, sessionTime))
+
+//━━━━━━━━━━ CONDITIONS ━━━━━━━━━━
+
+// SELL ENTRY
+sellCondition =
+     ta.crossunder(fastMA, slowMA) and
+     slopeFilterPassed and
+     (not useIntraday or inSession)
+
+// EXIT SHORT
+exitCondition =
+     ta.crossover(fastMA, slowMA)
+
+//━━━━━━━━━━ STRATEGY EXECUTION ━━━━━━━━━━
+
+// ENTRY ONLY DURING SESSION
+if sellCondition and strategy.position_size == 0
+    strategy.entry(         "SELL",         strategy.short     )
+
+// NORMAL EXIT
+if exitCondition and strategy.position_size < 0
+    strategy.close("SELL")
+
+// FORCE EXIT AT MARKET CLOSE
+sessionEnded =
+     useIntraday and
+     closeBeforeMarketEnd and
+     not inSession and
+     inSession[1]
+
+if sessionEnded and strategy.position_size < 0
+    strategy.close(         "SELL",         comment="EOD CLOSE"     )
+
+//━━━━━━━━━━ MA COLORS ━━━━━━━━━━
+fastColor =
+     fastMA > slowMA
+     ? color.lime
+     : color.red
+
+slowColor = color.orange
+
+//━━━━━━━━━━ PLOTS ━━━━━━━━━━
+plot(     fastMA,     title="Fast MA",     color=fastColor,     linewidth=2)
+
+plot(     slowMA,     title="Slow MA",     color=slowColor,    linewidth=2)
+//━━━━━━━━━━ BACKGROUND ━━━━━━━━━━
+bgcolor(     showBackground     ? fastMA < slowMA       ? color.new(color.red, 92)       : color.new(color.green, 92)     : na)
+
+//━━━━━━━━━━ SELL LABELS ━━━━━━━━━━
+plotshape(     sellCondition and strategy.position_size == 0,     title="SELL",     style=shape.labeldown,     location=location.abovebar,     color=color.red,     text="SELL",     textcolor=color.white,     size=size.small)
+
+//━━━━━━━━━━ EXIT LABELS ━━━━━━━━━━
+plotshape(     showExitLabels and     exitCondition and     strategy.position_size < 0,
+     title="EXIT",     style=shape.labelup,     location=location.belowbar,     color=color.green,     text="EXIT",     textcolor=color.white,     size=size.small)
+
+// EOD EXIT LABEL
+plotshape(     sessionEnded and strategy.position_size < 0,
+     title="EOD EXIT",     style=shape.labelup,     location=location.belowbar,     color=color.orange,     text="3:30 EXIT",     textcolor=color.white,     size=size.small)
+
+//━━━━━━━━━━ ALERTS ━━━━━━━━━━
+alertcondition(     sellCondition,     title="SELL Alert",     message="SELL Signal Triggered")
+
+alertcondition(     exitCondition,     title="EXIT Alert",     message="EXIT Signal Triggered")
+
+alertcondition(     sessionEnded,     title="EOD EXIT",     message="Position Closed Before NSE Market Close")

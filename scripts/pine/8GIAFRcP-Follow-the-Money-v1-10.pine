@@ -1,0 +1,460 @@
+//@version=6
+strategy(
+     "Follow the Money v1.10",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10,
+     pyramiding=3,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     slippage=2
+ )
+
+
+//====================================================
+// 0. SYMBOL FILTER
+//====================================================
+
+excludeSymbolInput = input.string("", "Exclude Symbol (leave blank for none)", group="Filters")
+excludeSymbol = excludeSymbolInput != "" and syminfo.ticker == excludeSymbolInput
+
+
+//====================================================
+// 1. INPUTS
+//====================================================
+
+// --- DATE RANGE FILTER ---
+useDateFilter = input.bool(true, title="Use Date Filter?", group="Date Filter")
+startDate     = input.time(timestamp("2018-01-01 00:00"), title="Start Date", group="Date Filter")
+endDate       = input.time(timestamp("2026-12-31 23:59"), title="End Date", group="Date Filter")
+
+inDateRange = not useDateFilter or (time >= startDate and time <= endDate)
+
+// --- SIGNAL RELIABILITY ---
+confirmedOnly     = input.bool(true, "Only alert/act on confirmed bar close (recommended)", group="Signal Reliability")
+cooldownBars      = input.int(5, "Cooldown Bars After Exit", minval=0, group="Signal Reliability")
+requireBreakout   = input.bool(true, "Require Breakout Confirmation on Entry", group="Signal Reliability")
+confirmationDays  = input.int(3, "Sustained Confirmation Days (2-3 day whipsaw filter)", minval=1, group="Signal Reliability")
+
+// Trend - golden cross convention: 150-DMA over 200-DMA
+useEMA        = input.bool(false, "Use EMA instead of SMA", group="Trend")
+fastLength    = input.int(150, "Fast DMA Length (institutional line)", group="Trend")
+slowLength    = input.int(200, "Slow DMA Length (long-term anchor)", group="Trend")
+slopeLookback = input.int(10, "DMA Slope Lookback", group="Trend")
+flattenThreshold = input.float(0.05, "DMA Flatten Threshold (% slope)", group="Trend")
+
+// Volume - 50-day average, 50%+ expansion rule
+volumeLength        = input.int(50, "Volume Lookback (days)", group="Volume")
+volumeExpansionPct   = input.float(50, "Volume Expansion Threshold %", group="Volume")
+closeQualityThreshold = input.float(0.70, "Close Quality Threshold", group="Volume")
+
+// ATR (informational volatility read only - no longer used for stops)
+atrLength = input.int(14, "ATR Length", group="Volatility (informational)")
+
+// Position sizing
+maxPositionPercent = input.float(30, "Max Total Position % of Equity (all stages combined)", group="Position Sizing")
+addPercent    = input.float(20, "Position Add % (of current position size) per stage", group="Position Sizing")
+confirmProfit    = input.float(5.0, "Confirmation Add Trigger %", group="Position Sizing")
+expansionProfit  = input.float(10.0, "Expansion Add Trigger %", group="Position Sizing")
+
+// Starter size derived so starter x (1+addPercent%) x (1+addPercent%) = maxPositionPercent,
+// i.e. the fully-pyramided position tops out exactly at your equity cap regardless of
+// what addPercent is set to.
+stage1Percent = maxPositionPercent / math.pow(1 + addPercent / 100, 2)
+
+// Exit
+trailingStopPct = input.float(10, "Catastrophic Backstop: % below the 150 DMA (last-resort, rare trigger)", group="Exit")
+
+
+//====================================================
+// 2. TREND ENGINE - 150/200 DMA GOLDEN CROSS
+//====================================================
+
+dma150 = useEMA ? ta.ema(close, fastLength) : ta.sma(close, fastLength)
+dma200 = ta.sma(close, slowLength)
+
+plot(dma150, title="150 DMA (institutional line)", color=color.blue)
+plot(dma200, title="200 DMA (long-term anchor)", color=color.gray)
+
+dma200Rising  = dma200 > dma200[slopeLookback]
+goldenCross   = dma150 > dma200
+aboveDMA150   = close > dma150
+
+dma150Slope     = (dma150 - dma150[slopeLookback]) / dma150[slopeLookback] * 100
+dma150Flattening = math.abs(dma150Slope) <= flattenThreshold
+
+trendScore = (goldenCross ? 10 : 0) + (dma200Rising ? 10 : 0) + (aboveDMA150 ? 5 : 0)
+
+
+//====================================================
+// 3. VOLUME ENGINE - 50-DAY / 50% EXPANSION RULE
+//====================================================
+
+volumeAverage = ta.sma(volume, volumeLength)
+volumeExpansionRatio = volumeAverage != 0 ? (volume - volumeAverage) / volumeAverage * 100 : 0
+
+highVolume = volumeExpansionRatio >= volumeExpansionPct
+closeQuality = high != low ? (close - low) / (high - low) : 0
+accumulationCandle = closeQuality >= closeQualityThreshold
+
+volumeScore = (highVolume ? 10 : 0) + (accumulationCandle ? 10 : 0)
+
+
+//====================================================
+// 4. ATR ENGINE (informational only)
+//====================================================
+
+atr = ta.atr(atrLength)
+atrAverage = ta.sma(atr, 20)
+atrCompression = atr < atrAverage
+atrExpansion = atr > atrAverage
+
+volatilityScore = atrExpansion ? 10 : atrCompression ? 5 : 0
+
+
+//====================================================
+// 5. MANUAL OBV ENGINE
+//====================================================
+
+obvChange = close > close[1] ? volume : close < close[1] ? -volume : 0
+
+var float obv = 0.0
+obv += obvChange
+
+obvAverage = ta.sma(obv, 20)
+obvAccumulating = obv > obvAverage
+
+obvScore = obvAccumulating ? 10 : 0
+
+
+//====================================================
+// 6. ACCUMULATION / DISTRIBUTION ENGINE
+//====================================================
+
+moneyFlowMultiplier = high != low ? ((close - low) - (high - close)) / (high - low) : 0
+moneyFlowVolume = moneyFlowMultiplier * volume
+adl = ta.cum(moneyFlowVolume)
+adlAverage = ta.sma(adl, 20)
+adlAccumulating = adl > adlAverage
+
+adlScore = adlAccumulating ? 10 : 0
+
+
+//====================================================
+// 7. RELATIVE STRENGTH ENGINE
+//====================================================
+
+// --- SECTOR-RELATIVE BENCHMARKING ---
+// Instead of comparing every symbol to SPY, map each ticker to the sector
+// ETF that best represents "is money rotating into this stock's own group,"
+// which is a more honest institutional-following signal than broad-market RS.
+defaultBenchmark    = input.symbol("SPY",  "Default Benchmark (unmapped symbols)", group="Relative Strength")
+semiBenchmark       = input.symbol("SOXX", "Semiconductor Benchmark", group="Relative Strength")
+industrialBenchmark = input.symbol("XLI",  "Industrial Benchmark", group="Relative Strength")
+utilityBenchmark    = input.symbol("XLU",  "Utility Benchmark", group="Relative Strength")
+
+benchmark = switch syminfo.ticker
+    "AEHR" => semiBenchmark
+    "MU"   => semiBenchmark
+    "ONTO" => semiBenchmark
+    "ETN"  => industrialBenchmark
+    "VRT"  => industrialBenchmark
+    "CEG"  => utilityBenchmark
+    => defaultBenchmark
+
+rsLookback = input.int(63, "Relative Strength Lookback")
+
+benchmarkClose = request.security(benchmark, timeframe.period, close)
+stockReturn = (close / close[rsLookback]) - 1
+benchmarkReturn = (benchmarkClose / benchmarkClose[rsLookback]) - 1
+relativeStrength = stockReturn - benchmarkReturn
+
+rsStrong = relativeStrength > 0
+rsVeryStrong = relativeStrength > 0.10
+
+rsScore = rsVeryStrong ? 20 : rsStrong ? 10 : 0
+
+
+//====================================================
+// 8. MARKET REGIME ENGINE
+//====================================================
+
+marketFastLength = input.int(50, "Market Fast MA")
+marketSlowLength = input.int(200, "Market Slow MA")
+
+marketClose = benchmarkClose
+marketFastMA = request.security(benchmark, timeframe.period, ta.sma(close, marketFastLength))
+marketSlowMA = request.security(benchmark, timeframe.period, ta.sma(close, marketSlowLength))
+
+bullMarket = marketClose > marketFastMA and marketFastMA > marketSlowMA
+marketScore = bullMarket ? 15 : 0
+
+
+//====================================================
+// 9. PRICE / VOLUME REGIME CLASSIFICATION
+//====================================================
+// Price Up / Vol Up + Bull   -> Accumulation (healthy, continue)
+// Price Down / Vol Up + Bull -> Distribution (institutions exiting, danger)
+// Price Down / Vol Up + Bear -> Capitulation (possible bottom forming)
+// Price Up / Vol Up + Bear   -> Short Covering (likely temporary bounce)
+
+priceUp = close > close[1]
+
+volumeRegime = highVolume and priceUp and bullMarket ? "ACCUMULATION" :
+     highVolume and not priceUp and bullMarket ? "DISTRIBUTION" :
+     highVolume and not priceUp and not bullMarket ? "CAPITULATION" :
+     highVolume and priceUp and not bullMarket ? "SHORT COVERING" : "NEUTRAL"
+
+distributionWarning = volumeRegime == "DISTRIBUTION"
+
+
+//====================================================
+// 10. BREAKOUT STRUCTURE
+//====================================================
+
+breakoutLookback = input.int(10, "Breakout Lookback")
+newHigh = close > ta.highest(close[1], breakoutLookback)
+nearHigh = close > ta.highest(close[1], 20) * 0.92
+
+breakoutOK = not requireBreakout or newHigh or nearHigh
+
+
+//====================================================
+// 11. INSTITUTIONAL SCORE (informational grade, not a hard gate)
+//====================================================
+
+closeScore = closeQuality >= closeQualityThreshold ? 5 : 0
+
+institutionalScore = trendScore + volumeScore + volatilityScore + obvScore + adlScore + rsScore + marketScore + closeScore
+
+institutionalGrade = institutionalScore >= 95 ? "A+" : institutionalScore >= 80 ? "A" : institutionalScore >= 65 ? "B" : institutionalScore >= 45 ? "C" : "D"
+
+
+//====================================================
+// 12. EARLY INSTITUTIONAL ACCUMULATION (watch-only signal)
+//====================================================
+
+earlyAccumulation = obvAccumulating and adlAccumulating and rsStrong and atrCompression
+watchSignalRaw = earlyAccumulation and institutionalScore >= 50
+
+
+//====================================================
+// 13. SUSTAINED CONFIRMATION COUNTERS (whipsaw filter)
+//====================================================
+// The doc's core anti-whipsaw rule: only act once price has spent several
+// consecutive days on the correct side of the 150-DMA, not on a single
+// poke through the line.
+
+var int barsAboveDMA150 = 0
+var int barsBelowDMA150 = 0
+
+barsAboveDMA150 := aboveDMA150 ? barsAboveDMA150 + 1 : 0
+barsBelowDMA150 := aboveDMA150 ? 0 : barsBelowDMA150 + 1
+
+sustainedAbove = barsAboveDMA150 >= confirmationDays
+sustainedBelow = barsBelowDMA150 >= confirmationDays
+
+// Real institutional distribution volume typically hits on the FIRST day
+// price breaks below the DMA, not necessarily on the day the multi-day
+// confirmation completes (by then volume has often normalized). So this
+// remembers whether high volume showed up anywhere during the current
+// below-DMA streak, not just on the triggering bar.
+var bool highVolumeDuringDecline = false
+highVolumeDuringDecline := aboveDMA150 ? false : (highVolumeDuringDecline or highVolume)
+
+
+//====================================================
+// 14. POSITION STATE ENGINE
+//====================================================
+
+var int positionStage = 0
+var int barsSinceExit = 1000000  // start large so cooldown never blocks the first trade
+var bool trimmedThisTrade = false
+
+
+//====================================================
+// 15. ENTRY CONDITIONS
+//====================================================
+// SCAN:    Price > 150 DMA, 150 DMA > 200 DMA, 200 DMA rising (golden cross)
+// FILTER:  RS trending up vs benchmark, bull market regime
+// EXECUTE: Buy on breakout of local high with 50-day/50%+ volume expansion,
+//          only after price has sustained above the 150 DMA for several days
+
+minEntryScore = input.int(80, "Minimum Institutional Score to Enter (Grade A+)", minval=0, maxval=100, group="Signal Reliability")
+
+cooldownOK = barsSinceExit >= cooldownBars
+
+// Loosened from v1.9's original ACCUMULATION-regime gate: that required
+// highVolume AND priceUp AND bullMarket to all land on the SAME bar as the
+// breakout, which is a rare coincidence. bullMarket and rsStrong are already
+// required separately below, so this just needs the volume spike itself -
+// it no longer also has to coincide with an up-close on that exact bar.
+initialEntryRaw = goldenCross and dma200Rising and sustainedAbove and breakoutOK and highVolume and rsStrong and bullMarket and cooldownOK and institutionalScore >= minEntryScore
+
+
+//====================================================
+// 16. POSITION SIZING
+//====================================================
+// Initial entry sized as a % of equity (you have no position yet to scale
+// from). Every add scales off the CURRENT position size, not equity -
+// this compounds the position size in the winner's favor as the doc's
+// rule specifies ("add 20% to position size" for every 5% favorable move).
+
+calcInitialQty(percent) => (strategy.equity * percent / 100) / close
+calcAddQty(percent) => math.abs(strategy.position_size) * percent / 100
+
+
+//====================================================
+// 17. PYRAMID EXECUTION ENGINE
+//====================================================
+
+tradeProfitPercent = strategy.position_size != 0 ? ((close - strategy.position_avg_price) / strategy.position_avg_price) * 100 : 0
+
+stageOneEntryRaw = initialEntryRaw and positionStage == 0
+stageTwoEntryRaw = positionStage == 1 and tradeProfitPercent >= confirmProfit and aboveDMA150 and rsStrong
+stageThreeEntryRaw = positionStage == 2 and tradeProfitPercent >= expansionProfit and aboveDMA150
+
+// --- CONFIRMED-BAR GATING ---
+// When confirmedOnly is on, every signal (and its alert) only becomes true
+// once on the bar's close, matching exactly what the strategy backtester
+// itself acts on. This is what eliminates alerts firing on data that
+// later changes mid-bar.
+barOK = not confirmedOnly or barstate.isconfirmed
+
+watchSignal      = watchSignalRaw      and barOK
+stageOneEntry    = stageOneEntryRaw    and barOK
+stageTwoEntry    = stageTwoEntryRaw    and barOK
+stageThreeEntry  = stageThreeEntryRaw  and barOK
+
+
+// --- EXECUTION (WITH DATE FILTER & SYMBOL FILTER) ---
+if not excludeSymbol and inDateRange
+
+    if stageOneEntry
+        strategy.entry("FTM Stage 1", strategy.long, qty=calcInitialQty(stage1Percent), comment="Initial Institutional Entry")
+        positionStage := 1
+        trimmedThisTrade := false
+
+    if stageTwoEntry
+        strategy.entry("FTM Stage 2", strategy.long, qty=calcAddQty(addPercent), comment="Confirmation Add")
+        positionStage := 2
+
+    if stageThreeEntry
+        strategy.entry("FTM Stage 3", strategy.long, qty=calcAddQty(addPercent), comment="Expansion Add")
+        positionStage := 3
+
+// Reset position stage after full exit, and start the cooldown clock
+if strategy.position_size == 0
+    if positionStage != 0
+        barsSinceExit := 0
+    positionStage := 0
+    trimmedThisTrade := false
+
+barsSinceExit := barsSinceExit + 1
+
+
+//====================================================
+// 18. EXIT ENGINE - 150 DMA RULE SET
+//====================================================
+// HARD EXIT:  sustained close below the 150 DMA (2-3+ days) on high volume
+//             - this is the "institutions are moving out" signal.
+// TRIM:       50% of the position sold if the 150 DMA slope flattens
+//             (goes near-zero) even while price is still above it - an
+//             early warning that the trend is losing conviction.
+// BACKSTOP:   a hard trailing % stop from the highest close since entry,
+//             active regardless of confirmation, purely to cap
+//             catastrophic loss if everything else is too slow to react.
+
+trailingFloor = strategy.position_size > 0 ? dma150 * (1 - trailingStopPct / 100) : na
+plot(trailingFloor, title="Catastrophic Trailing Floor (10% below 150 DMA)", color=color.maroon, style=plot.style_linebr)
+
+hardExitRaw = strategy.position_size > 0 and sustainedBelow and highVolumeDuringDecline
+trailingStopRaw = strategy.position_size > 0 and not na(trailingFloor) and close < trailingFloor
+trimSignalRaw = strategy.position_size > 0 and dma150Flattening and aboveDMA150 and not trimmedThisTrade
+
+hardExit = hardExitRaw and barOK
+trailingStopHit = trailingStopRaw and barOK
+trimSignal = trimSignalRaw and barOK
+
+exitSignal = hardExit or trailingStopHit
+
+if hardExit or trailingStopHit
+    strategy.close_all(comment=hardExit ? "150 DMA Distribution Exit" : "Catastrophic Trailing Stop")
+
+if trimSignal
+    for i = 0 to strategy.opentrades - 1
+        tradeId = strategy.opentrades.entry_id(i)
+        strategy.close(tradeId, qty_percent=50, comment="Trend Flattening Trim")
+    trimmedThisTrade := true
+
+
+//====================================================
+// 19. ALERTS
+//====================================================
+
+alertcondition(watchSignal, title="FTM Early Accumulation", message="Follow the Money: early institutional accumulation forming on {{ticker}} at {{close}}. Worth watching.")
+alertcondition(stageOneEntry, title="FTM Stage 1 Entry", message="Follow the Money: BUY signal (Stage 1) on {{ticker}} at {{close}}.")
+alertcondition(stageTwoEntry, title="FTM Stage 2 Add", message="Follow the Money: ADD signal (Stage 2 confirmation) on {{ticker}} at {{close}}.")
+alertcondition(stageThreeEntry, title="FTM Stage 3 Add", message="Follow the Money: ADD signal (Stage 3 expansion) on {{ticker}} at {{close}}.")
+alertcondition(distributionWarning, title="FTM Distribution Warning", message="Follow the Money: distribution detected on {{ticker}} at {{close}} - institutions may be exiting.")
+alertcondition(trimSignal, title="FTM Trend Flattening Trim", message="Follow the Money: trimmed 50% of {{ticker}} at {{close}} - 150 DMA is flattening.")
+alertcondition(exitSignal, title="FTM Exit", message="Follow the Money: EXIT signal on {{ticker}} at {{close}}.")
+
+
+//====================================================
+// 20. VISUAL SIGNALS
+//====================================================
+
+plotshape(watchSignal, title="Accumulation Watch", style=shape.labelup, location=location.belowbar, text="WATCH")
+plotshape(stageOneEntry, title="Stage 1 Buy", style=shape.labelup, location=location.belowbar, text="BUY")
+plotshape(stageTwoEntry, title="Stage 2 Add", style=shape.labelup, location=location.belowbar, text="ADD 2")
+plotshape(stageThreeEntry, title="Stage 3 Add", style=shape.labelup, location=location.belowbar, text="ADD 3")
+plotshape(trimSignal, title="Trim 50%", style=shape.labeldown, location=location.abovebar, text="TRIM")
+plotshape(exitSignal, title="Exit", style=shape.labeldown, location=location.abovebar, text="EXIT")
+
+
+//====================================================
+// 21. DASHBOARD
+//====================================================
+
+showDashboard = input.bool(true, "Show FTM Dashboard")
+var table ftmDashboard = table.new(position.top_right, 2, 13, bgcolor=color.new(color.black, 0), border_width=1, border_color=color.new(color.gray, 0))
+
+stageText = positionStage == 0 ? "WATCHING" : positionStage == 1 ? "ENTRY" : positionStage == 2 ? "CONFIRMING" : "EXPANSION"
+dmaAlignText = goldenCross and dma200Rising ? "ALIGNED" : "NOT ALIGNED"
+
+// Explicit text_color + bgcolor on every cell — a table with no colors set
+// can silently render invisible if a platform-level default changes, with
+// no runtime error. Hardcoding these removes that failure mode entirely.
+cellBg = color.new(color.black, 0)
+labelColor = color.new(color.gray, 0)
+valueColor = color.new(color.white, 0)
+
+if barstate.islast and showDashboard
+    table.cell(ftmDashboard, 0, 0, "Follow the Money v1.10", bgcolor=cellBg, text_color=color.new(color.aqua, 0), text_size=size.small)
+    table.cell(ftmDashboard, 1, 0, syminfo.ticker, bgcolor=cellBg, text_color=color.new(color.aqua, 0), text_size=size.small)
+    table.cell(ftmDashboard, 0, 1, "Stage", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 1, stageText, bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 2, "Score", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 2, str.tostring(institutionalScore), bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 3, "Grade", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 3, institutionalGrade, bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 4, "RS", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 4, rsStrong ? "LEADER" : "WEAK", bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 5, "Market", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 5, bullMarket ? "RISK ON" : "DEFENSIVE", bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 6, "150/200 DMA", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 6, dmaAlignText, bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 7, "Vol Regime", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 7, volumeRegime, bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 8, "OBV / A-D", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 8, (obvAccumulating ? "BUY" : "-") + " / " + (adlAccumulating ? "BUY" : "-"), bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 9, "Trailing Floor", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 9, na(trailingFloor) ? "-" : str.tostring(trailingFloor), bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 10, "Trimmed?", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 10, trimmedThisTrade ? "YES" : "NO", bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 11, "Days Above/Below", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 11, str.tostring(barsAboveDMA150) + " / " + str.tostring(barsBelowDMA150), bgcolor=cellBg, text_color=valueColor, text_size=size.small)
+    table.cell(ftmDashboard, 0, 12, "Cooldown", bgcolor=cellBg, text_color=labelColor, text_size=size.small)
+    table.cell(ftmDashboard, 1, 12, cooldownOK ? "READY" : str.tostring(cooldownBars - barsSinceExit) + " bars left", bgcolor=cellBg, text_color=valueColor, text_size=size.small)

@@ -1,0 +1,231 @@
+//@version=6
+indicator("A1 Value Turn Triple Mode v2.3 (Swing + Crypto)", overlay=true, max_labels_count=500)
+
+// --- Core Settings -------------------------------------------
+lenHigh   = input.int(252,   "Lookback for 52W High (bars)", minval=100, group="Core Settings")
+lenMA     = input.int(200,   "Long MA Length",               minval=50,  group="Core Settings")
+rsiLen    = input.int(14,    "RSI Length",                   minval=2,   group="Core Settings")
+maProxPct = input.float(15.0,"Max % Distance from MA",       minval=1.0, maxval=50.0, step=0.5, group="Core Settings")
+mode      = input.string("40-60% off High", "Mode", options=["40-60% off High", "60-80% off High (Deep)", "Crypto-Linked"], group="Core Settings")
+
+// --- Display Settings ----------------------------------------
+showTable  = input.bool(true,  "Show Mode Reference Table",     group="Display")
+showLabels = input.bool(true,  "Show Signal Labels",            group="Display")
+showStop   = input.bool(true,  "Show Stop-Loss Line on Signal", group="Display")
+showTgt2   = input.bool(true,  "Show Target 2 Line on Signal",  group="Display")
+showTgt3   = input.bool(true,  "Show Target 3 (52W High) Line", group="Display")
+atrLen     = input.int(14,     "ATR Length (for stop calc)",    minval=5,  group="Display")
+atrMult    = input.float(1.5,  "ATR Multiplier for Stop",       minval=0.5, step=0.1, group="Display")
+
+// --- IV / HV Rank Filter -------------------------------------
+useIVFilter   = input.bool(true,  "Require Low IV Rank (avoid overpaying)", group="IV Rank Filter")
+hvRankMax     = input.int(50,     "Max HV Rank % to allow signal",          group="IV Rank Filter", minval=10, maxval=90)
+useVIXFilter  = input.bool(true,  "Require VIX below threshold",            group="IV Rank Filter")
+vixMax        = input.float(25.0, "Max VIX level",                          group="IV Rank Filter", minval=10.0, maxval=80.0, step=1.0)
+showIVLabel   = input.bool(true,  "Show IV status label on chart",          group="IV Rank Filter")
+
+// --- Sector Rotation -----------------------------------------
+useSectorFilter  = input.bool(true,   "Require Sector ETF Confirmation", group="Sector Rotation")
+sectorTicker     = input.string("XLK","Sector ETF (XLK/XLV/XLF/XLY...)", group="Sector Rotation")
+sectorMALen      = input.int(50,      "Sector ETF MA Length",             group="Sector Rotation", minval=10)
+
+// --- Reference Table -----------------------------------------
+var modeTable = table.new(position.top_right, 2, 8)
+table.set_bgcolor(modeTable, color.new(color.black, 20))
+table.set_border_color(modeTable, color.gray)
+table.set_border_width(modeTable, 1)
+
+if barstate.islast and showTable
+    table.cell(modeTable, 0, 0, "Mode",                   text_color=color.white, text_size=size.small)
+    table.cell_set_bgcolor(modeTable, 0, 0, color.new(color.navy, 20))
+    table.cell(modeTable, 1, 0, "RSI / Vol / Tgt",        text_color=color.white, text_size=size.small)
+    table.cell_set_bgcolor(modeTable, 1, 0, color.new(color.navy, 20))
+    table.cell(modeTable, 0, 1, "40-60% off High",        text_color=color.aqua,   text_size=size.small)
+    table.cell(modeTable, 1, 1, "40-70 / 1.3x / T1:20%", text_color=color.aqua,   text_size=size.small)
+    table.cell(modeTable, 0, 2, "  Tgt 2",                text_color=color.new(color.aqua, 40), text_size=size.small)
+    table.cell(modeTable, 1, 2, "+40% from entry",        text_color=color.new(color.aqua, 40), text_size=size.small)
+    table.cell(modeTable, 0, 3, "60-80% off High",        text_color=color.orange, text_size=size.small)
+    table.cell(modeTable, 1, 3, "35-70 / 1.3x / T1:35%", text_color=color.orange, text_size=size.small)
+    table.cell(modeTable, 0, 4, "Crypto-Linked",          text_color=color.purple, text_size=size.small)
+    table.cell(modeTable, 1, 4, "25-75 / 1.1x / T1:50%", text_color=color.purple, text_size=size.small)
+    table.cell(modeTable, 0, 5, "MA Dist <= " + str.tostring(maProxPct, "#") + "%", text_color=color.gray, text_size=size.tiny)
+    table.cell(modeTable, 1, 5, "Tgt 2 = 2x Tgt 1 | RSI up req.",                  text_color=color.gray, text_size=size.tiny)
+    table.cell(modeTable, 0, 6, "Tgt 3 = 52W High",               text_color=color.new(color.gray, 30), text_size=size.tiny)
+    table.cell(modeTable, 1, 6, "Full recovery - 1/3 exit ladder", text_color=color.new(color.gray, 30), text_size=size.tiny)
+    table.cell(modeTable, 0, 7, "IV Rank filter",                  text_color=color.new(color.gray, 30), text_size=size.tiny)
+    table.cell(modeTable, 1, 7, "Max HV rank " + str.tostring(hvRankMax) + "% | VIX < " + str.tostring(vixMax, "#"), text_color=color.new(color.gray, 30), text_size=size.tiny)
+
+// --- Core Calculations ---------------------------------------
+hh        = ta.highest(high, lenHigh)
+offHighPc = (hh - close) / hh * 100
+maLong    = ta.sma(close, lenMA)
+rsi       = ta.rsi(close, rsiLen)
+volAvg    = ta.sma(volume, 20)
+relVol    = volume / volAvg
+maDistPct = math.abs(close - maLong) / maLong * 100
+atr       = ta.atr(atrLen)
+
+// --- Historical Volatility Rank (IV proxy) -------------------
+// HV = annualized stdev of daily log returns over 20 bars
+logReturn  = math.log(close / close[1])
+hvCurrent  = ta.stdev(logReturn, 20) * math.sqrt(252) * 100
+
+// HV rank: where is current HV vs its own 52W range
+hvHigh52   = ta.highest(hvCurrent, 252)
+hvLow52    = ta.lowest(hvCurrent, 252)
+hvRange    = hvHigh52 - hvLow52
+hvRank     = hvRange > 0 ? (hvCurrent - hvLow52) / hvRange * 100 : 50.0
+
+// HV percentile: % of days in past year current HV was higher than
+hvPctCount = 0
+for i = 1 to 252
+    if hvCurrent >= hvCurrent[i]
+        hvPctCount += 1
+hvPercentile = hvPctCount / 252.0 * 100
+
+// VIX macro check
+vixClose  = request.security("VIX", timeframe.period, close)
+vixOK     = useVIXFilter ? vixClose < vixMax : true
+
+// IV rank gate
+hvRankOK  = useIVFilter ? hvRank <= hvRankMax : true
+ivOK      = hvRankOK and vixOK
+
+// IV status text and color for label
+ivStatus      = hvRank <= 30 ? "LOW - great entry" : hvRank <= 50 ? "MODERATE - ok" : hvRank <= 70 ? "HIGH - caution" : "EXTREME - avoid"
+ivLabelColor  = hvRank <= 30 ? color.new(color.green, 20) : hvRank <= 50 ? color.new(color.blue, 20) : hvRank <= 70 ? color.new(color.orange, 20) : color.new(color.red, 20)
+
+// IV status floating label (top left, updates on last bar)
+var ivStatusLabel = label.new(na, na, "")
+if barstate.islast and showIVLabel
+    label.delete(ivStatusLabel)
+    ivTxt = "HV Rank: " + str.tostring(hvRank, "#.1f") + "%  |  " + ivStatus + "\nHV Now: " + str.tostring(hvCurrent, "#.1f") + "%  |  VIX: " + str.tostring(vixClose, "#.1f")
+    ivStatusLabel := label.new(bar_index - 10, high, text=ivTxt, style=label.style_label_down, color=ivLabelColor, textcolor=color.white, size=size.small)
+
+// --- Value Band Logic ----------------------------------------
+inValueBand40     = (offHighPc >= 40) and (offHighPc <= 60)
+inValueBand60     = (offHighPc >= 60) and (offHighPc <= 80)
+inValueBandCrypto = true
+
+inValueBand = mode == "40-60% off High" ? inValueBand40 : mode == "60-80% off High (Deep)" ? inValueBand60 : inValueBandCrypto
+
+// --- Mode Parameters -----------------------------------------
+rsiMin40      = 40.0
+rsiMax40      = 70.0
+tgtPct40      = 20.0
+volMult40     = 1.3
+rsiMin60      = 35.0
+rsiMax60      = 70.0
+tgtPct60      = 35.0
+volMult60     = 1.3
+rsiMinCrypto  = 25.0
+rsiMaxCrypto  = 75.0
+tgtPctCrypto  = 50.0
+volMultCrypto = 1.1
+
+rsiMinM  = mode == "40-60% off High" ? rsiMin40  : mode == "60-80% off High (Deep)" ? rsiMin60  : rsiMinCrypto
+rsiMaxM  = mode == "40-60% off High" ? rsiMax40  : mode == "60-80% off High (Deep)" ? rsiMax60  : rsiMaxCrypto
+tgtPctM  = mode == "40-60% off High" ? tgtPct40  : mode == "60-80% off High (Deep)" ? tgtPct60  : tgtPctCrypto
+volMultM = mode == "40-60% off High" ? volMult40 : mode == "60-80% off High (Deep)" ? volMult60 : volMultCrypto
+
+modeColor = mode == "40-60% off High" ? color.aqua : mode == "60-80% off High (Deep)" ? color.orange : color.new(color.purple, 0)
+modeText  = mode == "40-60% off High" ? "OPT SWING" : mode == "60-80% off High (Deep)" ? "DEEP VALUE" : "CRYPTO"
+
+tgtPrice  = close * (1.0 + tgtPctM / 100.0)
+tgt2PctM  = tgtPctM * 2.0
+tgt2Price = close * (1.0 + tgt2PctM / 100.0)
+tgt3Price = hh
+tgt3PctM  = (hh - close) / close * 100.0
+stopPrice = close - (atrMult * atr)
+
+// --- Sector Rotation -----------------------------------------
+sectorClose   = request.security(sectorTicker, timeframe.period, close)
+sectorRSI     = ta.rsi(sectorClose, rsiLen)
+sectorMA      = ta.sma(sectorClose, sectorMALen)
+sectorCurling = sectorRSI > sectorRSI[1]
+sectorAboveMA = sectorClose > sectorMA
+sectorOK      = useSectorFilter ? (sectorCurling and sectorAboveMA) : true
+
+// --- Signal Conditions ---------------------------------------
+nearMA    = maDistPct <= maProxPct
+rsiTurnUp = (rsi > rsiMinM) and (rsi < rsiMaxM) and (rsi > rsi[1])
+volOK     = relVol >= volMultM
+
+priceLowerLow = (low < low[1]) and (low[1] < low[2])
+rsiHigherLow  = (rsi > rsi[1]) and (rsi[1] > rsi[2])
+bullDiv       = priceLowerLow and rsiHigherLow
+
+// Base signal — stock conditions only
+baseSignal = inValueBand and nearMA and rsiTurnUp and volOK
+
+// Full signal — all layers confirmed
+a1ValueTurn = baseSignal and sectorOK and ivOK
+
+// Pending signals for each missing layer
+pendingIV     = baseSignal and sectorOK and not ivOK
+pendingSector = baseSignal and ivOK and not sectorOK
+pendingBoth   = baseSignal and not sectorOK and not ivOK
+
+// --- Plotting ------------------------------------------------
+plot(maLong, "200 MA", color=color.new(color.orange, 0), linewidth=2)
+
+stopLine = a1ValueTurn and showStop ? stopPrice : na
+plot(stopLine, "ATR Stop", color=color.new(color.red, 40), style=plot.style_circles, linewidth=2)
+
+tgt2Line = a1ValueTurn and showTgt2 ? tgt2Price : na
+plot(tgt2Line, "Target 2", color=color.new(modeColor, 45), style=plot.style_circles, linewidth=2)
+
+tgt3Line = a1ValueTurn and showTgt3 ? tgt3Price : na
+plot(tgt3Line, "Target 3", color=color.new(color.yellow, 20), style=plot.style_circles, linewidth=2)
+
+if a1ValueTurn and showTgt2
+    line.new(bar_index, tgt2Price, bar_index + 8,  tgt2Price, color=color.new(modeColor, 45),        style=line.style_dashed, width=1)
+
+if a1ValueTurn and showTgt3
+    line.new(bar_index, tgt3Price, bar_index + 12, tgt3Price, color=color.new(color.yellow, 20),     style=line.style_dashed, width=1)
+
+// Full signal — large colored triangle
+plotshape(a1ValueTurn, title="A1 Full Signal", style=shape.triangleup, location=location.belowbar, color=modeColor, size=size.large)
+
+// Pending IV — orange small triangle (stock + sector ok but IV too high)
+plotshape(pendingIV, title="Pending - IV Too High", style=shape.triangleup, location=location.belowbar, color=color.new(color.orange, 50), size=size.small)
+
+// Pending sector — gray small triangle (stock ok but sector not confirmed)
+plotshape(pendingSector, title="Pending - Sector", style=shape.triangleup, location=location.belowbar, color=color.new(color.gray, 50), size=size.small)
+
+// Pending both — tiny gray triangle
+plotshape(pendingBoth, title="Pending - Both", style=shape.triangleup, location=location.belowbar, color=color.new(color.gray, 70), size=size.tiny)
+
+// Divergence confluence dot
+plotshape(a1ValueTurn and bullDiv, title="Div Confluence", style=shape.circle, location=location.abovebar, color=color.new(color.yellow, 0), size=size.tiny)
+
+bgcolor(a1ValueTurn ? color.new(modeColor, 88) : na)
+bgcolor(pendingIV ? color.new(color.orange, 95) : na)
+
+// --- Signal Label --------------------------------------------
+if a1ValueTurn and showLabels
+    divNote = bullDiv ? "\n[DIV] Bullish RSI Confluence" : ""
+    riskAmt = close - stopPrice
+    rr1     = riskAmt > 0 ? (tgtPrice  - close) / riskAmt : 0.0
+    rr2     = riskAmt > 0 ? (tgt2Price - close) / riskAmt : 0.0
+    rr3     = riskAmt > 0 ? (tgt3Price - close) / riskAmt : 0.0
+    line1   = "=== " + modeText + " - FULL CONFIRM ===\n"
+    line2   = "Entry: " + str.tostring(close, format.mintick) + "\n"
+    line3   = "Tgt1:  " + str.tostring(tgtPrice,  format.mintick) + "  (+" + str.tostring(tgtPctM,  "#.#") + "%  RR:" + str.tostring(rr1, "#.1f") + ")  1/3\n"
+    line4   = "Tgt2:  " + str.tostring(tgt2Price, format.mintick) + "  (+" + str.tostring(tgt2PctM, "#.#") + "%  RR:" + str.tostring(rr2, "#.1f") + ")  1/3\n"
+    line5   = "Tgt3:  " + str.tostring(tgt3Price, format.mintick) + "  (+" + str.tostring(tgt3PctM, "#.1f") + "%  RR:" + str.tostring(rr3, "#.1f") + ")  1/3 [52W]\n"
+    line6   = "Stop:  " + str.tostring(stopPrice, format.mintick) + "  (" + str.tostring(atrMult, "#.#") + "x ATR)\n"
+    line7   = "HV Rank: " + str.tostring(hvRank, "#.1f") + "%  VIX: " + str.tostring(vixClose, "#.1f") + "\n"
+    line8   = "Sector " + sectorTicker + " RSI: " + str.tostring(sectorRSI, "#.1f") + "  Off 52W: " + str.tostring(offHighPc, "#.1f") + "%\n"
+    line9   = "RSI: " + str.tostring(rsi, "#.1f") + "  Vol: " + str.tostring(relVol, "#.2f") + "x"
+    label.new(bar_index, low, text=line1+line2+line3+line4+line5+line6+line7+line8+line9+divNote, style=label.style_label_up, color=color.new(modeColor, 5), textcolor=color.white, size=size.normal)
+
+// Pending IV label — tells you what to wait for
+if pendingIV and showLabels
+    label.new(bar_index, low, text="[WAIT] Stock + Sector ready\nIV Rank: " + str.tostring(hvRank, "#.1f") + "% - too high\nWait for HV Rank < " + str.tostring(hvRankMax) + "% or VIX < " + str.tostring(vixMax, "#"), style=label.style_label_up, color=color.new(color.orange, 20), textcolor=color.white, size=size.small)
+
+// --- Alerts --------------------------------------------------
+alertcondition(a1ValueTurn, title="A1 Full Signal - All Layers Confirmed", message="A1 FULL CONFIRM - {{ticker}} | Stock + Sector + IV all green | Close: {{close}}")
+alertcondition(pendingIV, title="A1 Pending - IV Too High", message="A1 PENDING IV - {{ticker}} | Stock + Sector ready, waiting for IV to cool | Close: {{close}}")
+alertcondition(pendingSector, title="A1 Pending - Sector Not Confirmed", message="A1 PENDING SECTOR - {{ticker}} | Stock + IV ready, waiting for sector | Close: {{close}}")
+alertcondition(a1ValueTurn and bullDiv, title="A1 Max Confluence - All Layers + Divergence", message="MAX CONFLUENCE - {{ticker}} | All 4 layers confirmed | Close: {{close}}")

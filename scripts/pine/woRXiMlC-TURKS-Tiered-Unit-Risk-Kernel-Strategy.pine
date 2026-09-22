@@ -1,0 +1,2026 @@
+// This work is licensed under a Creative Commons
+// Attribution-NonCommercial-ShareAlike 4.0 International License.
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// (c) Daymenion
+//
+// The Nadaraya-Watson sell engine is derived from "Nadaraya-Watson Envelope [LuxAlgo]"
+// by LuxAlgo, https://www.tradingview.com/u/LuxAlgo/, used under CC BY-NC-SA 4.0.
+// Modified: only the non-repainting one-sided kernel is ported, not the two-sided
+// repainting branch; the envelope drives position sizing rather than plotting
+// reversal signals.
+//
+// Distributed WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+
+//@version=6
+
+strategy(
+     title                   = "TURKS - Tiered Unit Risk Kernel Strategy",
+     shorttitle              = "TURKS",
+     overlay                 = true,
+     max_lines_count         = 500,
+     max_labels_count        = 500,
+     max_boxes_count         = 500,
+     max_bars_back           = 5000,
+     initial_capital         = 150000,
+     default_qty_type        = strategy.fixed,
+     default_qty_value       = 1,
+     pyramiding              = 0,
+     calc_on_every_tick      = false,
+     process_orders_on_close = true,
+     commission_type         = strategy.commission.cash_per_order,
+     commission_value        = 1.5,
+     slippage                = 0)
+
+TURK_MODE = "strategy"
+
+GRP_HZ     = "Shipped Rule"
+GRP_SELL   = "Sell Engine (Nadaraya-Watson)"
+GRP_MAIN   = "Main"
+GRP_COST   = "Trading Costs"
+GRP_VISUAL = "Visual"
+GRP_DASH   = "Dashboard"
+GRP_ALERT  = "Alerts"
+GRP_COLORS = "Colors"
+
+TURK_VERSION = "v1.0.1"
+
+DIR_LONG  = 1
+DIR_SHORT = -1
+DIR_FLAT  = 0
+
+ST_NONE = 0
+ST_BULL = 1
+ST_BEAR = -1
+
+SETUP_NONE     = 0
+SETUP_FLIP     = 1
+SETUP_PULLBACK = 2
+SETUP_RETEST   = 3
+
+REG_TREND_MIN = 60.0
+REG_CHOP_MAX  = 35.0
+
+VOL_LOW_MAX  = 0.75
+VOL_HIGH_MIN = 1.30
+
+GRADE_APLUS_R = 0.82
+GRADE_A_R     = 0.68
+GRADE_B_R     = 0.52
+
+CALIB_MIN_SAMPLES = 25
+EWMA_ALPHA        = 0.20
+MAX_TRADE_LOG     = 500
+MAX_ZONES         = 30
+MAX_PENDING_STOPS = 12
+
+
+
+hzMaLenInput = input.int(200, "Trend Mean (bars)", minval = 20, maxval = 500, group = GRP_HZ,
+     tooltip = "FROZEN AT 200. Do not tune it. The parameter surface for this " +
+               "family cannot be ranked out of sample: the split-half rank " +
+               "correlation of CAGR-per-maxDD across the persistence parameter " +
+               "is -0.452, the first half's best value is 21 and the second " +
+               "half's is 3, and strictly-forward argmax re-selection scores " +
+               "0.614 out of sample against 0.767 for changing nothing.")
+
+hzKInput = input.int(5, "Hysteresis (bars, both ways)", minval = 1, maxval = 30, group = GRP_HZ,
+     tooltip = "k_on = k_off = 5. The state flips ON only after five " +
+               "consecutive bars above the mean, and OFF only after five " +
+               "consecutive bars below it.\n\n" +
+               "Both halves were priced. Lengthening the EXIT requirement from " +
+               "1 bar to 5 (don't-sell-early) is worth +0.71pp/yr of CAGR and " +
+               "+0.028 of CAGR-per-maxDD. Requiring 5 bars to get back IN costs " +
+               "-0.05pp/yr - nothing - while cutting turnover 22%.\n\n" +
+               "FROZEN at 5, and not because 5 is best: measured across K = " +
+               "1/2/3/5/8/10/15/21 the in-sample argmax is K=3. The ordering " +
+               "anti-transfers between sample halves, so K in {2,3,5} is one " +
+               "setting and choosing inside it is worse than not choosing. " +
+               "Probability of backtest overfitting on this objective is 27-42%.")
+
+hzSlopeLenInput = input.int(20, "Slope Lookback (bars)", minval = 1, maxval = 200, group = GRP_HZ,
+     tooltip = "The 200-bar mean must be higher than it was this many bars ago.")
+
+hzUseSlopeInput = input.bool(true, "Require Rising Mean", group = GRP_HZ,
+     tooltip = "ON = the shipped rule. OFF = the incumbent CORE gate (hysteresis " +
+               "only), which scored +9.91% CAGR / -16.9% maxDD / 0.585 against " +
+               "the shipped +9.31% / -12.8% / 0.727 on 64 names.\n\n" +
+               "Read the honest version of that comparison: the SIZE of the " +
+               "improvement is NOT estimable from 8,813 sessions. A paired block " +
+               "bootstrap of the CAGR-per-maxDD advantage at matched gross puts " +
+               "P(wrong sign) at 0.4975 - a coin flip. The rule ships with the " +
+               "slope on because it sits on the combined efficient frontier at " +
+               "its drawdown, is never worse on any metric measured, and turns " +
+               "over 10% less. Its increment over CORE is not a publishable " +
+               "number and is not claimed here.")
+
+hzScaleInput = input.float(1.00, "Risk dial c  (scale down)", minval = 0.05, maxval = 1.0, step = 0.05, group = GRP_HZ,
+     tooltip = "position = c x LONG.  c = 1.00 is the shipped point.\n\n" +
+               "THE FRONTIER, 64 names, 8,813 sessions, lag 1, symmetric causal " +
+               "costs, cash at T-bills. 'zero-timing' is the passive book " +
+               "dialled with cash to the SAME drawdown - what holding less buys " +
+               "you for free. 'premium' is what the timing rule adds AT that " +
+               "drawdown.\n\n" +
+               "  c      CAGR    maxDD   expo   turn   premium\n" +
+               "  0.30  +4.61%   -3.9%  0.163  0.71   -0.67pp\n" +
+               "  0.40  +5.29%   -5.2%  0.217  0.94   +0.01pp\n" +
+               "  0.50  +5.97%   -6.5%  0.271  1.18   +0.69pp\n" +
+               "  0.60  +6.65%   -7.8%  0.325  1.42   +1.37pp\n" +
+               "  0.70  +7.32%   -9.1%  0.380  1.65   +2.04pp\n" +
+               "  0.80  +7.99%  -10.3%  0.434  1.89   +2.71pp\n" +
+               "  0.90  +8.65%  -11.6%  0.488  2.13   +3.18pp\n" +
+               "  1.00  +9.31%  -12.8%  0.542  2.36   +3.55pp\n\n" +
+               "BELOW ABOUT -5% DRAWDOWN THE RULE IS WORSE THAN SIMPLY HOLDING " +
+               "LESS OF THE PASSIVE BOOK. At c=0.30 the premium is -0.67pp and " +
+               "you pay 0.71 round trips a year for it. If your budget is " +
+               "shallower than -6%, the honest answer is a static blend of the " +
+               "passive book with cash, not this rule.\n\n" +
+               "Leave c at 1.00 and use f below to go the other way.")
+
+hzFloorInput = input.float(0.00, "Risk dial f  (OFF-state floor)", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_HZ,
+     tooltip = "position = f + (1-f) x c x LONG.  f = 0.00 is the shipped point.\n\n" +
+               "f is how much of the name you keep while the gate is OFF. It " +
+               "walks the book toward buy-and-hold without ever exceeding gross " +
+               "1.0 and without any leverage.\n\n" +
+               "  f      CAGR    maxDD   expo   turn   premium\n" +
+               "  0.05  +9.66%  -14.0%  0.564  2.25   +3.60pp  (peak)\n" +
+               "  0.10  +9.99%  -15.5%  0.586  2.13   +3.58pp\n" +
+               "  0.15 +10.33%  -17.6%  0.608  2.01   +3.40pp\n" +
+               "  0.20 +10.66%  -19.8%  0.629  1.90   +3.22pp\n" +
+               "  0.30 +11.31%  -24.0%  0.673  1.67   +2.85pp\n" +
+               "  0.40 +11.94%  -28.2%  0.716  1.44   +2.49pp\n" +
+               "  0.55 +12.85%  -34.3%  0.782  1.09   +1.91pp\n" +
+               "  0.70 +13.73%  -40.2%  0.847  0.74   +1.30pp\n" +
+               "  0.85 +14.57%  -45.9%  0.912  0.39   +0.66pp\n" +
+               "  1.00 +15.36%  -51.2%  0.977  0.05    0.00pp  (buy and hold)\n\n" +
+               "READ THE WHOLE TABLE AS ONE FACT: from buy-and-hold to the " +
+               "shipped point you surrender 6.05 percentage points a year of " +
+               "CAGR to remove 38.4 points of drawdown. There is no free point " +
+               "on it. Anyone quoting the drawdown column without the CAGR " +
+               "column is selling you something.\n\n" +
+               "The premium is a HUMP, not a slope: it peaks at +3.60pp at " +
+               "-14.0% drawdown, stays above +3pp only between -11.6% and " +
+               "-19.8%, and decays to zero as you approach buy-and-hold.")
+
+hzShapeInput = input.string("Ensemble 20/50/100/200 (graded)", "Exposure Shape",
+     options = ["Ensemble 20/50/100/200 (graded)", "Graded (continuous)", "Binary gate (legacy)"], group = GRP_HZ,
+     tooltip = "ENSEMBLE (default). Four means - 20/50/100/200 - each graded, " +
+               "then averaged. Sell a slice as the close drops below one more " +
+               "of them, buy it back the same way, flat only below all four. " +
+               "Measured best: it breaks the exposure ceiling the single mean " +
+               "cannot (9.30% vs 6.59% CAGR at deep budgets) because four means " +
+               "do not switch off together. Costs 17.0x turnover a year against " +
+               "the single mean's 8.4x - see the cost table below.\n\n" +
+               "GRADED. One mean. Weight ramps from 0 at the trend mean to " +
+               "full one ATR above it. There is no discrete buy or sell: you " +
+               "scale in as price pulls away from the mean and scale out as it " +
+               "returns, and you are flat exactly AT the mean.\n\n" +
+               "BINARY GATE (legacy). The original rule: full size when the " +
+               "hysteresis gate and slope filter both agree, nothing otherwise. " +
+               "Kept so the two can be compared on the same chart.\n\n" +
+               "Hysteresis and the slope filter apply ONLY to the binary gate. " +
+               "Measurement says they subtract value once the weight is graded: " +
+               "gate AND graded together scores Calmar 0.57 against 0.66 for " +
+               "graded alone.\n\n" +
+               "READ THIS BEFORE CHOOSING. The graded shape turns over 8.4x a " +
+               "year against the gate's 2.4x, so its whole advantage is spent " +
+               "on cost. Book of 140, Calmar by round-trip cost:\n\n" +
+               "  cost     gate    graded   winner\n" +
+               "   0bp     0.53     0.70    graded +0.18\n" +
+               "   2bp     0.52     0.66    graded +0.14\n" +
+               "   5bp     0.51     0.60    graded +0.08\n" +
+               "  10bp     0.50     0.51    TIE\n" +
+               "  15bp     0.49     0.44    gate   -0.05\n" +
+               "  25bp     0.47     0.32    gate   -0.15\n\n" +
+               "BREAK-EVEN IS ABOUT 10bp. Below it use Graded; above it use " +
+               "the Binary gate. 1.87bp is the measured median across 140 LIQUID " +
+               "markets - large caps and major ETFs. A thin 2x single-stock ETF " +
+               "is not one of those and can easily cost several times more, in " +
+               "which case the legacy gate is the correct choice on that " +
+               "instrument. Measure your own spread; do not inherit this one.")
+
+hzRampAtrInput = input.int(14, "Ramp ATR Length", minval = 2, maxval = 100, group = GRP_HZ,
+     tooltip = "ATR window for the ramp width. Graded shape only.")
+
+hzRampInput = input.float(1.0, "Ramp Width (x ATR)", minval = 0.25, maxval = 6.0, step = 0.25, group = GRP_HZ,
+     tooltip = "How far above the mean price must travel to earn full size.\n\n" +
+               "Flat across a 2x range, which is what a parameter that is not " +
+               "fitted looks like. Book of 140, risk-matched at -15% drawdown:\n" +
+               "  1.0 ATR   6.75%\n  1.5 ATR   6.73%\n  2.0 ATR   6.70%\n\n" +
+               "Wider ramps hold less near the mean and so cut drawdown a little " +
+               "further at a little less return. Nothing here is a cliff.")
+
+hzStepsInput = input.int(3, "Quantise Steps (0 = continuous)", minval = 0, maxval = 20, group = GRP_HZ,
+     tooltip = "Rounds the target to N reachable weights and requires the raw " +
+               "target to clear 75% of a step before acting.\n\n" +
+               "This exists for execution, not for return. A continuous target " +
+               "moves nearly every bar, which means an order nearly every bar. " +
+               "Quantising to 3 steps cuts book turnover 9.16x -> 8.42x a year " +
+               "and RAISES Calmar 0.65 -> 0.66, so it is not a compromise.\n\n" +
+               "0 disables it and gives the raw continuous weight.")
+
+hzCashInput = input.float(0.0, "Cash Yield (annual %)", minval = 0.0, maxval = 15.0, step = 0.25, group = GRP_HZ,
+     tooltip = "What the un-invested part of the book earns, used by the BOOK " +
+               "panel. Shipped at 0.0 because that is the floor, and because " +
+               "every figure quoted in the README is measured with it at 0.0.\n\n" +
+               "A constant is the wrong shape for a long backtest. Cash paid " +
+               "about 0.1% from 2013 to 2021 and about 5% through 2023-2024, " +
+               "so a single number is generous in one era and mean in the " +
+               "other. The research credited cash at ^IRX, which moved. This " +
+               "input cannot.\n\n" +
+               "The rule spends most of its life partly in cash, so the yield " +
+               "lands straight on the CAGR and the gap widens as you dial c " +
+               "down and hold more. Set it to what your broker actually pays " +
+               "if you want the panel to match your book, and read the result " +
+               "knowing the rule did not earn that part.")
+
+nweOnInput = input.bool(true, "Enable Nadaraya-Watson sell engine", group = GRP_SELL,
+     tooltip = "Replaces or constrains the dial's SELL side with a Gaussian " +
+               "kernel-regression envelope (LuxAlgo's Nadaraya-Watson Envelope, " +
+               "causal branch only).\n\n" +
+               "WHY: the dial sells 59% of its units BELOW its own average cost " +
+               "at 12.4 round trips a year, because a trend weight cuts into " +
+               "weakness by construction. The envelope only sells into genuine " +
+               "extension, and measures 17% below basis at 2.0 turns a year.\n\n" +
+               "HONEST CAVEAT: matched on EXPOSURE this does not beat the f knob " +
+               "already in Shipped Rule - f wins Sharpe on 4 of 7 names and " +
+               "drawdown on 5 of 7 at the same turnover. It is here to be tested " +
+               "on a chart, not because it cleared the research bar. m9.")
+
+nweModeInput = input.string("Dial, NWE-gated", "Sell Engine Mode", group = GRP_SELL,
+     options = ["NWE band only", "Dial, NWE-gated", "Dial + NWE (both cut)", "Dial only (shipped)"],
+     tooltip = "NWE band only      - the dial's sells are OFF. Size is set purely " +
+               "by band crossings: cross above upper sells a rung, cross below " +
+               "lower buys it back. Fewest, best-priced sales. Measured 2.0 " +
+               "turns/yr, 17% below basis, but OOS dSharpe -0.052 vs the dial.\n\n" +
+               "Dial, NWE-gated    - the dial keeps its targets but may not CUT " +
+               "while price is below the smoother. It may still add. Best " +
+               "measured arm: OOS +0.183 vs the dial, 10 of 13 names, sign-stable " +
+               "in and out of sample, and it degrades when lagged.\n\n" +
+               "Dial + NWE (both)  - either may cut. Sells MORE, not less. " +
+               "Measured worst of the three (-0.167). Included for completeness.\n\n" +
+               "Dial only          - the shipped rule, envelope drawn but inert.")
+
+nweSrcInput = input.source(close, "NWE Source", group = GRP_SELL)
+
+nweHInput = input.float(5.0, "Bandwidth h", minval = 1.0, maxval = 50.0, step = 0.5, group = GRP_SELL,
+     tooltip = "Gaussian width. Larger = smoother and slower. The kernel is " +
+               "summed over ceil(6h)+1 bars, which carries 1 - 1.2e-9 of its " +
+               "total mass, so this is numerically the published 500-tap loop " +
+               "at a tenth of the cost.\n\n" +
+               "LuxAlgo's published default is 8. Shipped here at 5, which " +
+               "tracks price more closely and therefore reaches the bands " +
+               "more often.")
+
+nweMultInput = input.float(3.0, "Band Multiplier", minval = 0.5, maxval = 10.0, step = 0.25, group = GRP_SELL,
+     tooltip = "Band halfwidth in mean-absolute-deviations. Published default 3, " +
+               "which makes the bands rare-touch - that is the whole point, and " +
+               "it is why this sells so much less often than the dial. Lowering " +
+               "it trades the sell discipline back toward the dial's churn.")
+nweMultLoInput = input.float(2.5, "Buy-back Multiplier", minval = 0.25, maxval = 10.0, step = 0.25, group = GRP_SELL,
+     tooltip = "Lower band halfwidth, in the same MAE units, for the BUY-BACK " +
+               "leg only. Set it equal to Band Multiplier for LuxAlgo's " +
+               "symmetric bands. Shipped at 2.5 against a 3.0 upper band.\n\n" +
+               "Why it exists: sells fire on a cross above +mult, buys on a " +
+               "cross below -multLo, so the two triggers sit mult+multLo MAE " +
+               "units apart. Symmetric at 3/3 that gap is 6 MAE. In an uptrend " +
+               "price rides the upper band and never reaches the lower one, so " +
+               "rungs sold never come back - measured mean exposure on the " +
+               "semi panel is 0.369, median sold-episode 753 bars. The loss is " +
+               "being OUT of the market, not trading cost.\n\n" +
+               "Lowering this re-enters sooner. Measured, 42 cells: 2.5 lifts " +
+               "exposure to 0.76 at 0.84 turnover. It is NOT free - it gives " +
+               "back drawdown protection (-18.3% becomes -35.4%), and per " +
+               "point of drawdown surrendered it buys exposure only 1.05x " +
+               "better than simply holding more. It did not clear the " +
+               "multiple-testing bar. Treat it as a cheaper way to be more " +
+               "invested, not as an edge.")
+
+nweMaeLenInput = input.int(499, "MAE Window", minval = 20, maxval = 2000, group = GRP_SELL,
+     tooltip = "Lookback for the mean absolute deviation that sets band width. " +
+               "Published default 499. Nothing trades until this many bars exist.")
+
+nweRungsInput = input.int(20, "Sell Rungs", minval = 1, maxval = 20, group = GRP_SELL,
+     tooltip = "How many pieces the position is sold in. Each upper-band cross " +
+               "sells 1/N, each lower-band cross buys 1/N back, so N fixes the " +
+               "size of every event: 20 rungs is 5% per cross, 10 is 10%, 3 is " +
+               "33%.\n\n" +
+               "Exactly one rung moves per cross, so a large N cannot sell " +
+               "fast in a sharp move - price has to re-enter the band and " +
+               "cross again. A small N sells hard and blunt. Shipped at 20.")
+
+presetInput = input.string("Auto", "Holding Horizon",
+     options = ["Auto", "Fast Swing (3-10 days)", "Swing (1-4 weeks)", "Position (1-6 months)", "Custom"],
+     group = GRP_MAIN,
+     tooltip = "A convenience bundle, not a cage. It sets starting values for " +
+               "pivot strength, band width, stop distance, the target ladder, " +
+               "runner size, cooldown and the time barrier - every one of which " +
+               "you can still override below.\n\n" +
+               "Auto reads it from the chart timeframe:\n" +
+               "  under 4H   -> Fast Swing\n" +
+               "  4H to 12H  -> Swing\n" +
+               "  1D         -> Swing\n" +
+               "  1W and up  -> Position\n\n" +
+               "Horizon values are expressed in bars-per-week, so one preset means " +
+               "the same amount of calendar time on 4H, daily and weekly.\n\n" +
+               "IMPORTANT: by default the preset only supplies the TIME barrier " +
+               "and the cooldown. Pivot strength, band width, stop distance and " +
+               "the target ladder are read from the raw inputs below whatever " +
+               "you select here - see 'Let Preset Override Raw Inputs'.")
+
+presetLockInput = input.bool(false, "Let Preset Override Raw Inputs", group = GRP_MAIN,
+     tooltip = "OFF (default): the raw inputs below win. The shipped defaults " +
+               "ARE the Swing constants, so a daily chart behaves exactly as it " +
+               "always did - but if you change a value, or an optimiser sweeps " +
+               "one, the change actually takes effect.\n\n" +
+               "ON: restores the old behaviour where the horizon preset silently " +
+               "overwrites ATR length, pivot strength, band width, stop buffer, " +
+               "the efficiency and RSI windows and the whole target ladder. That " +
+               "gives you horizon-scaled values on 4H and weekly charts, at the " +
+               "price of making eleven inputs below inert.\n\n" +
+               "The time barrier and the cooldown follow the preset in BOTH " +
+               "modes; each has its own '0 = preset' override.")
+
+
+srcInput     = input.source(close, "Source", group = GRP_MAIN)
+atrLenInput  = input.int(14,  "ATR Length",          minval = 5,  maxval = 100, group = GRP_MAIN)
+atrBaseInput = input.int(100, "ATR Baseline Length", minval = 20, maxval = 500, group = GRP_MAIN,
+     tooltip = "Slow ATR average. Current ATR over this defines the volatility " +
+               "regime: compressed, normal or expanded.")
+
+erLenInput = 20
+adxLenInput = 14
+chopLenInput = 14
+r2LenInput = 50
+acLenInput = 60
+
+wAdxInput = 0.40
+wChopInput = 0.35
+wR2Input = 0.25
+
+swingLenInput = 8
+minorLenInput = 3
+showStructInput = true
+showSwingLblInput = true
+
+useZonesInput = true
+zoneMergeInput = 0.6
+zoneReactInput = 10
+
+baseMultInput = 2.8
+useTqiInput = true
+tqiStrengthInput = 0.45
+tqiCurveInput = 1.5
+useAsymInput = true
+asymStrengthInput = 0.5
+useAutoAtrInput = true
+
+tqiWerInput = 0.35
+tqiWvolInput = 0.20
+tqiWstrInput = 0.25
+tqiWmomInput = 0.20
+tqiStrLenInput = 20
+tqiMomLenInput = 10
+
+htfModeInput = "Auto"
+htfManualInput = "W"
+htfFastInput = 21
+htfSlowInput = 55
+htfStrictInput = "Soft (score only)"
+
+tsmomAutoInput = true
+tsmomLenInput = 252
+
+
+
+useVolFilterInput = true
+volMultInput = 1.15
+rsiLenInput = 14
+
+
+tp1RInput = 1.5
+tp2RInput = 3.0
+tp3RInput = 5.0
+
+alloc1Input = 0.0
+alloc2Input = 0.0
+alloc3Input = 0.0
+
+useDynTpInput = true
+dynMinInput = 0.6
+dynMaxInput = 1.8
+useSnapInput = true
+snapWindowInput = 0.40
+
+
+equityInput = 150000.0
+riskPctInput = 1.0
+
+leverageInput = 1.0
+
+
+useCrashGuardInput = true
+crashMaLenInput = 200
+
+commCashInput = input.float(1.5, "Commission ($ per order)", minval = 0.0, step = 0.5, group = GRP_COST,
+     tooltip = "What the broker charges per order, in account currency. Charged " +
+               "twice for a round trip.\n\n" +
+               "This is the number the operator actually knows. The strategy " +
+               "build passes the identical figure to the tester as " +
+               "strategy.commission.cash_per_order, so the panel and the tester " +
+               "price the same cost model - they used to disagree by 10.3x.")
+posValueInput = input.float(8000.0, "Typical position size ($)", minval = 100.0, step = 500.0, group = GRP_COST,
+     tooltip = "Only used to turn the flat ticket into a rate. A fixed fee is a " +
+               "bigger drag on a small position, and that is real: at $1.50 a " +
+               "ticket a $10,000 position pays 1.5bp per side, a $2,000 one pays " +
+               "7.5bp.\n\n" +
+               "Set it to what a full position in this instrument is actually " +
+               "worth for you. Getting it wrong misprices the cost leg, and cost " +
+               "assumptions carry roughly two thirds of the measured edge.")
+
+commBps = posValueInput > 0.0 ? commCashInput / posValueInput * 10000.0 : 0.0
+slipAtrInput = input.float(0.01, "Slippage (xATR per side)", minval = 0.0, maxval = 1.0, step = 0.01, group = GRP_COST,
+     tooltip = "Slippage in ATR units so it scales with the instrument. A $20 " +
+               "stock and a $1600 stock cannot share a tick count, but they " +
+               "can share a fraction of their own daily range.\n\n" +
+               "Shipped at 0.01, one percent of ATR(14) per side, which on a " +
+               "liquid large cap is a few basis points and several ticks. " +
+               "Every figure quoted in the README is measured with it at " +
+               "0.01. Raise it for anything thin.\n\n" +
+               "This charge lands on the BOOK panel and on every R-multiple " +
+               "in the statistics. It does NOT reach the TradingView Strategy " +
+               "Tester, which has its own slippage field in ticks and is left " +
+               "at 0 because one tick count cannot be right across symbols. " +
+               "Gross backtests are the single most common way an on-chart " +
+               "panel flatters a strategy that loses money live.")
+
+calibModeInput = "Shadow (suggest only)"
+calibWindowInput = 30
+calibCoolInput = 8
+stopReviewInput = 12
+
+
+themeInput        = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL)
+showZonesInput    = input.bool(true,  "Show S/R Zones",              group = GRP_VISUAL)
+maxZoneDrawInput  = input.int(4, "Zones Drawn (strongest only)", minval = 0, maxval = 20, group = GRP_VISUAL,
+     tooltip = "The engine tracks up to 30 scored zones and uses all of them for " +
+               "target snapping and the location score. This only limits how " +
+               "many get PAINTED.\n\n" +
+               "Four is usually right: the two levels above and the two below " +
+               "that price actually has to deal with. Everything else is chart " +
+               "furniture.")
+zoneMinDrawInput  = input.float(45.0, "Minimum Zone Score to Draw", minval = 0.0, maxval = 100.0, step = 5.0, group = GRP_VISUAL)
+showSigLblInput   = input.bool(true,  "Show Signal Labels",          group = GRP_VISUAL)
+showRegimeBgInput = input.bool(false, "Regime Background",           group = GRP_VISUAL)
+levelExtInput     = input.int(12, "Level Extension (bars)", minval = 3, maxval = 100, group = GRP_VISUAL)
+
+showDashInput  = input.bool(true, "Show Market Panel", group = GRP_DASH,
+     tooltip = "Regime, structure, higher timeframe, live signal and the open " +
+               "position. The day-to-day read.")
+dashPosInput   = input.string("Top Right", "Market Panel Position",
+     options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Left", "Middle Right"], group = GRP_DASH)
+
+showResearchInput = input.bool(true, "Show Research Panel", group = GRP_DASH,
+     tooltip = "Realised expectancy, statistical significance, walk-forward " +
+               "decay, edge by grade and by setup, regime memory, calibration. " +
+               "The evidence, not the opinion.")
+dashPos2Input  = input.string("Bottom Left", "Research Panel Position",
+     options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Left", "Middle Right"], group = GRP_DASH)
+
+showPerfInput  = input.bool(true, "  - Realised Performance",       group = GRP_DASH)
+
+alertsOnInput = input.bool(true,  "Enable alert() Messages", group = GRP_ALERT)
+webhookInput  = input.bool(false, "JSON Webhook Format",     group = GRP_ALERT)
+
+bullColInput = input.color(#00E676, "Bull", inline = "c1", group = GRP_COLORS)
+bearColInput = input.color(#FF5252, "Bear", inline = "c1", group = GRP_COLORS)
+zoneColInput = input.color(#787B86, "Zone", inline = "c2", group = GRP_COLORS)
+
+float tfMinutes = timeframe.in_seconds(timeframe.period) / 60.0
+
+string preset = presetInput
+if presetInput == "Auto"
+    preset := tfMinutes < 240 ? "Fast Swing (3-10 days)" : tfMinutes < 7200 ? "Swing (1-4 weeks)" : "Position (1-6 months)"
+
+float barsPerWeek = timeframe.isweekly ? 1.0 : timeframe.ismonthly ? 0.25 : timeframe.isdaily ? 5.0 : tfMinutes > 0 ? math.max(390.0 * 5.0 / tfMinutes, 1.0) : 5.0
+
+int presetAtrLen = switch preset
+    "Fast Swing (3-10 days)"  => 10
+    "Swing (1-4 weeks)"       => 14
+    "Position (1-6 months)"   => 21
+    => atrLenInput
+int effAtrLen = presetLockInput ? presetAtrLen : atrLenInput
+
+int presetSwingLen = switch preset
+    "Fast Swing (3-10 days)"  => 5
+    "Swing (1-4 weeks)"       => 8
+    "Position (1-6 months)"   => 13
+    => swingLenInput
+int effSwingLen = presetLockInput ? presetSwingLen : swingLenInput
+
+int presetMinorLen = switch preset
+    "Fast Swing (3-10 days)"  => 3
+    "Swing (1-4 weeks)"       => 3
+    "Position (1-6 months)"   => 5
+    => minorLenInput
+int effMinorLen = presetLockInput ? presetMinorLen : minorLenInput
+
+float presetBaseMult = switch preset
+    "Fast Swing (3-10 days)"  => 2.2
+    "Swing (1-4 weeks)"       => 2.8
+    "Position (1-6 months)"   => 3.4
+    => baseMultInput
+float effBaseMult = presetLockInput ? presetBaseMult : baseMultInput
+
+
+int presetErLen = switch preset
+    "Fast Swing (3-10 days)"  => 14
+    "Swing (1-4 weeks)"       => 20
+    "Position (1-6 months)"   => 30
+    => erLenInput
+int effErLen = presetLockInput ? presetErLen : erLenInput
+
+int presetRsiLen = switch preset
+    "Fast Swing (3-10 days)"  => 11
+    "Swing (1-4 weeks)"       => 14
+    "Position (1-6 months)"   => 21
+    => rsiLenInput
+int effRsiLen = presetLockInput ? presetRsiLen : rsiLenInput
+
+
+
+float presetTp1 = switch preset
+    "Fast Swing (3-10 days)"  => 1.0
+    "Swing (1-4 weeks)"       => 1.5
+    "Position (1-6 months)"   => 2.0
+    => tp1RInput
+float presetTp2 = switch preset
+    "Fast Swing (3-10 days)"  => 2.0
+    "Swing (1-4 weeks)"       => 3.0
+    "Position (1-6 months)"   => 4.0
+    => tp2RInput
+float presetTp3 = switch preset
+    "Fast Swing (3-10 days)"  => 3.5
+    "Swing (1-4 weeks)"       => 5.0
+    "Position (1-6 months)"   => 8.0
+    => tp3RInput
+
+float presetA1 = switch preset
+    "Fast Swing (3-10 days)"  => 0.0
+    "Swing (1-4 weeks)"       => 0.0
+    "Position (1-6 months)"   => 0.0
+    => alloc1Input
+float presetA2 = switch preset
+    "Fast Swing (3-10 days)"  => 0.0
+    "Swing (1-4 weeks)"       => 0.0
+    "Position (1-6 months)"   => 0.0
+    => alloc2Input
+float presetA3 = switch preset
+    "Fast Swing (3-10 days)"  => 0.0
+    "Swing (1-4 weeks)"       => 0.0
+    "Position (1-6 months)"   => 0.0
+    => alloc3Input
+
+bool useCustomLadder = preset == "Custom"
+bool presetLadder    = presetLockInput and not useCustomLadder
+float rawTp1 = presetLadder ? presetTp1 : tp1RInput
+float rawTp2 = presetLadder ? presetTp2 : tp2RInput
+float rawTp3 = presetLadder ? presetTp3 : tp3RInput
+
+float baseTp1R = math.min(rawTp1, math.min(rawTp2, rawTp3))
+float baseTp3R = math.max(rawTp1, math.max(rawTp2, rawTp3))
+float baseTp2R = rawTp1 + rawTp2 + rawTp3 - baseTp1R - baseTp3R
+
+float rawA1 = presetLadder ? presetA1 : alloc1Input
+float rawA2 = presetLadder ? presetA2 : alloc2Input
+float rawA3 = presetLadder ? presetA3 : alloc3Input
+
+float allocSum   = rawA1 + rawA2 + rawA3
+float allocScale = allocSum > 100.0 ? 100.0 / allocSum : 1.0
+float alloc1 = rawA1 * allocScale / 100.0
+float alloc2 = rawA2 * allocScale / 100.0
+float alloc3 = rawA3 * allocScale / 100.0
+
+int autoTsmomLen = timeframe.ismonthly ? 12 : timeframe.isweekly ? 52 : timeframe.isdaily ? 252 : int(math.min(math.max(math.round(barsPerWeek * 52.0), 20), 400))
+int effTsmomLen  = tsmomAutoInput ? autoTsmomLen : tsmomLenInput
+
+float bpyStatic = timeframe.isdwm ? (timeframe.isdaily ? 252.0 : timeframe.isweekly ? 52.0 : 12.0) : (tfMinutes > 0 ? 252.0 * 390.0 / tfMinutes : 252.0)
+var int bpyFirstTime = 0
+if bpyFirstTime == 0 and not na(time)
+    bpyFirstTime := time
+float bpyYears = bpyFirstTime > 0 and time > bpyFirstTime ? (time - bpyFirstTime) / 31557600000.0 : 0.0
+float barsPerYear = bpyYears >= 0.5 ? math.max(1.0, (bar_index + 1) / bpyYears) : bpyStatic
+
+bool isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128
+
+color TXT     = isDark ? #E0E0E0 : #1A1A1A
+color TXT_DIM = isDark ? color.new(#9E9E9E, 0) : color.new(#6B6B6B, 0)
+color TBL_BG  = isDark ? color.new(#131722, 8) : color.new(#FFFFFF, 8)
+color TBL_BRD = isDark ? color.new(#2A2E39, 0) : color.new(#D6D6D6, 0)
+color HDR_BG  = color.new(#2962FF, 0)
+color HDR_TXT = #FFFFFF
+color NEUTRAL = color.new(#FFC107, 0)
+color BULL_BG = color.new(bullColInput, 93)
+
+drawNow = barstate.islastconfirmedhistory
+
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+clampF(float v, float lo, float hi) =>
+    math.max(lo, math.min(hi, v))
+
+clampI(int v, int lo, int hi) =>
+    math.max(lo, math.min(hi, v))
+
+lerpF(float a, float b, float t) =>
+    a + (b - a) * clampF(t, 0.0, 1.0)
+
+mapClamp(float v, float inLo, float inHi, float outLo, float outHi) =>
+    float t = clampF(safeDiv(v - inLo, inHi - inLo, 0.0), 0.0, 1.0)
+    outLo + t * (outHi - outLo)
+
+
+
+fmtP(float v) =>
+    na(v) ? "n/a" : str.tostring(v, format.mintick)
+
+fmtR(float v) =>
+    na(v) ? "n/a" : str.tostring(v, "+0.00;-0.00") + "R"
+
+fmtJ(float v) =>
+    na(v) ? "null" : str.tostring(v, format.mintick)
+
+fmtPct(float v) =>
+    na(v) ? "n/a" : str.tostring(v * 100.0, "#.0") + "%"
+
+fmtPct2(float v) =>
+    na(v) ? "n/a" : (v >= 0 ? "+" : "") + str.tostring(v * 100.0, "#.00") + "%"
+
+setupName(int s) =>
+    s == SETUP_FLIP ? "FLIP" : s == SETUP_PULLBACK ? "PULLBACK" : s == SETUP_RETEST ? "RETEST" : "-"
+
+dashPosOf(string s) =>
+    switch s
+        "Top Left"     => position.top_left
+        "Top Right"    => position.top_right
+        "Bottom Left"  => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Left"  => position.middle_left
+        =>                position.middle_right
+
+float atr5  = ta.atr(5)
+float atr8  = ta.atr(8)
+float atr11 = ta.atr(11)
+float atr14 = ta.atr(14)
+float atr18 = ta.atr(18)
+float atr24 = ta.atr(24)
+float atr32 = ta.atr(32)
+float atr42 = ta.atr(42)
+float atr55 = ta.atr(55)
+
+getAtr(float len) =>
+    float r = atr55
+    if len <= 5
+        r := atr5
+    else if len <= 8
+        r := lerpF(atr5, atr8, (len - 5.0) / 3.0)
+    else if len <= 11
+        r := lerpF(atr8, atr11, (len - 8.0) / 3.0)
+    else if len <= 14
+        r := lerpF(atr11, atr14, (len - 11.0) / 3.0)
+    else if len <= 18
+        r := lerpF(atr14, atr18, (len - 14.0) / 4.0)
+    else if len <= 24
+        r := lerpF(atr18, atr24, (len - 18.0) / 6.0)
+    else if len <= 32
+        r := lerpF(atr24, atr32, (len - 24.0) / 8.0)
+    else if len <= 42
+        r := lerpF(atr32, atr42, (len - 32.0) / 10.0)
+    else
+        r := lerpF(atr42, atr55, (len - 42.0) / 13.0)
+    r
+
+int warmupBars = math.max(120, math.max(atrBaseInput, math.max(r2LenInput, math.max(acLenInput, math.max(crashMaLenInput, math.max(effTsmomLen, math.max(effErLen, math.max(tqiStrLenInput, effSwingLen * 2 + 5))))))) + 20)
+bool isWarm = bar_index >= warmupBars
+
+float rawAtr   = nz(ta.atr(effAtrLen), nz(high - low, 0.0))
+float atrBase  = nz(ta.sma(rawAtr, atrBaseInput), rawAtr)
+float volRatio = safeDiv(rawAtr, atrBase, 1.0)
+
+float erRaw = safeDiv(math.abs(srcInput - srcInput[effErLen]), math.sum(math.abs(srcInput - srcInput[1]), effErLen), 0.0)
+float erVal = clampF(nz(erRaw, 0.0), 0.0, 1.0)
+
+[diPlus, diMinus, adxRaw] = ta.dmi(adxLenInput, adxLenInput)
+float adxVal = nz(adxRaw, 0.0)
+
+float chopAtrSum = math.sum(ta.tr(true), chopLenInput)
+float chopRange  = ta.highest(high, chopLenInput) - ta.lowest(low, chopLenInput)
+float chopLogN   = math.log10(math.max(float(chopLenInput), 2.0))
+float chopRaw    = chopRange > 0 and chopAtrSum > 0 and chopLogN > 0 ? 100.0 * math.log10(chopAtrSum / chopRange) / chopLogN : 50.0
+float chopVal    = clampF(nz(chopRaw, 50.0), 0.0, 100.0)
+
+float corrVal = ta.correlation(close, bar_index, r2LenInput)
+float r2Val   = na(corrVal) ? 0.0 : clampF(math.pow(corrVal, 2), 0.0, 1.0)
+
+float barRet   = safeDiv(close - close[1], close[1], 0.0)
+float acRaw    = ta.correlation(barRet, barRet[1], acLenInput)
+float autoCorr = na(acRaw) ? 0.0 : clampF(acRaw, -1.0, 1.0)
+
+float retStd      = nz(ta.stdev(barRet, math.max(acLenInput, 20)), 0.0)
+float realisedVol = retStd * math.sqrt(barsPerYear) * 100.0
+
+float rsiVal = nz(ta.rsi(close, effRsiLen), 50.0)
+
+var bool symHasVol = false
+if nz(volume, 0) > 0
+    symHasVol := true
+float volSma   = nz(ta.sma(nz(volume, 0.0), 20), 0.0)
+float volStdev = nz(ta.stdev(nz(volume, 0.0), 20), 0.0)
+bool  volOk    = not useVolFilterInput or not symHasVol or nz(volume, 0.0) > volSma * volMultInput
+
+[macdL, macdS, macdH] = ta.macd(close, 12, 26, 9)
+float macdHist     = nz(macdH, 0.0)
+float macdHistPrev = nz(macdHist[1], macdHist)
+
+float tsmomRet      = safeDiv(close - close[effTsmomLen], close[effTsmomLen], 0.0)
+int   tsmomSign     = tsmomRet > 0 ? 1 : tsmomRet < 0 ? -1 : 0
+float tsmomStrength = clampF(safeDiv(math.abs(tsmomRet) * close, rawAtr * math.sqrt(float(effTsmomLen)), 0.0), 0.0, 3.0)
+
+float crashMa    = nz(ta.sma(close, crashMaLenInput), close)
+float volPct     = nz(ta.percentrank(retStd, 250), 50.0)
+bool  panicState = useCrashGuardInput and close < crashMa and volPct > 70.0
+
+float hzMa    = ta.sma(close, hzMaLenInput)
+float hzMaOld = hzMa[hzSlopeLenInput]
+
+bool hzElig = not na(hzMa)
+bool hzRaw  = hzElig and close > hzMa
+
+var int  hzLastBit = -1
+var int  hzRun     = 0
+var bool hzState   = false
+
+if hzElig
+    int hzBit = hzRaw ? 1 : 0
+    hzRun     := hzBit == hzLastBit ? hzRun + 1 : 1
+    hzLastBit := hzBit
+    if hzBit == 1 and not hzState and hzRun >= hzKInput
+        hzState := true
+    if hzBit == 0 and hzState and hzRun >= hzKInput
+        hzState := false
+
+bool hzGate  = hzElig and hzState
+bool hzSlope = not hzUseSlopeInput or (not na(hzMaOld) and hzMa > hzMaOld)
+bool hzLong  = hzGate and hzSlope
+
+float hzRampAtr = ta.atr(hzRampAtrInput)
+
+float hzMa20  = ta.sma(close, 20)
+float hzMa50  = ta.sma(close, 50)
+float hzMa100 = ta.sma(close, 100)
+float hzMa200 = ta.sma(close, 200)
+float hzD20   = 2.0 * math.sqrt(20.0  / 200.0)
+float hzD50   = 2.0 * math.sqrt(50.0  / 200.0)
+float hzD100  = 2.0 * math.sqrt(100.0 / 200.0)
+float hzD200  = 2.0
+
+bool hzEns = hzShapeInput == "Ensemble 20/50/100/200 (graded)"
+
+hzRawAt(float px) =>
+    float r = 0.0
+    if na(hzRampAtr) or hzRampAtr <= 0
+        r := 0.0
+    else if hzEns
+        float s = 0.0
+        s += na(hzMa20)  ? 0.0 : math.max(0.0, math.min(1.0, (px - hzMa20)  / (hzD20  * hzRampAtr)))
+        s += na(hzMa50)  ? 0.0 : math.max(0.0, math.min(1.0, (px - hzMa50)  / (hzD50  * hzRampAtr)))
+        s += na(hzMa100) ? 0.0 : math.max(0.0, math.min(1.0, (px - hzMa100) / (hzD100 * hzRampAtr)))
+        s += na(hzMa200) ? 0.0 : math.max(0.0, math.min(1.0, (px - hzMa200) / (hzD200 * hzRampAtr)))
+        r := s / 4.0
+    else
+        r := na(hzMa) ? 0.0 : math.max(0.0, math.min(1.0, (px - hzMa) / (hzRampInput * hzRampAtr)))
+    r
+
+hzRungAt(float px) =>
+    float raw = hzRawAt(px)
+    hzStepsInput > 0 ? math.round(raw * hzStepsInput) / hzStepsInput : raw
+
+float hzRampRaw = hzElig ? hzRawAt(close) : 0.0
+
+var float hzStepHeld = 0.0
+if hzElig and hzStepsInput > 0
+    float hzStepSize = 1.0 / hzStepsInput
+    if math.abs(hzRampRaw - hzStepHeld) >= hzStepSize * 0.75
+        hzStepHeld := math.round(hzRampRaw * hzStepsInput) / hzStepsInput
+float hzRamp = hzStepsInput > 0 ? hzStepHeld : hzRampRaw
+
+bool  hzGraded = hzShapeInput != "Binary gate (legacy)"
+float hzUnit   = hzGraded ? hzRamp : (hzLong ? 1.0 : 0.0)
+
+int   nweTaps = math.min(500, int(math.ceil(nweHInput * 6.0)) + 1)
+float nweNum  = 0.0
+float nweDen  = 0.0
+for i = 0 to nweTaps - 1
+    float wgt = math.exp(-(math.pow(i, 2) / (nweHInput * nweHInput * 2.0)))
+    nweNum += nweSrcInput[i] * wgt
+    nweDen += wgt
+float nweOut   = nweNum / nweDen
+float nweMaeRaw = ta.sma(math.abs(nweSrcInput - nweOut), nweMaeLenInput)
+float nweMae    = nweMaeRaw * nweMultInput
+float nweUpper  = nweOut + nweMae
+float nweLower  = nweOut - nweMaeRaw * nweMultLoInput
+
+var int nweSold = 0
+if nweOnInput and not na(nweUpper) and not na(nweUpper[1])
+    if nweSrcInput > nweUpper and nweSrcInput[1] <= nweUpper[1] and nweSold < nweRungsInput
+        nweSold := nweSold + 1
+    else if nweSrcInput < nweLower and nweSrcInput[1] >= nweLower[1] and nweSold > 0
+        nweSold := nweSold - 1
+float nweCap = 1.0 - nweSold / nweRungsInput
+
+var float nweGateHeld = 0.0
+nweGateHeld := na(nweOut) or nweSrcInput >= nweOut ? hzUnit : math.max(nz(nweGateHeld), hzUnit)
+
+float hzUnitEff = switch (nweOnInput ? nweModeInput : "Dial only (shipped)")
+    "NWE band only"          => nweCap
+    "Dial, NWE-gated"        => nweGateHeld
+    "Dial + NWE (both cut)"  => math.min(hzUnit, nweCap)
+    =>                          hzUnit
+
+bool hzLadderValid = not nweOnInput or nweModeInput == "Dial only (shipped)"
+
+float hzTarget = hzElig ? math.min(hzFloorInput + (1.0 - hzFloorInput) * hzScaleInput * hzUnitEff, 1.0) : 0.0
+
+bool hzActive = hzUnitEff > 0.0
+
+hzLevelFor(float tgt) =>
+    float lo  = close * 0.2
+    float hi  = close * 3.0
+    float out = float(na)
+    if not na(hzRampAtr) and hzRampAtr > 0 and hzRungAt(hi) >= tgt
+        if hzRungAt(lo) >= tgt
+            out := float(na)
+        else
+            for _i = 0 to 59
+                float mid = (lo + hi) / 2.0
+                if hzRungAt(mid) >= tgt
+                    hi := mid
+                else
+                    lo := mid
+            out := hi
+    out
+
+float hzLvlFull = hzElig ? hzLevelFor(1.0) : float(na)
+float hzLvlTwo  = hzElig ? hzLevelFor(2.0 / 3.0) : float(na)
+float hzLvlOne  = hzElig ? hzLevelFor(1.0 / 3.0) : float(na)
+
+bool hzMode = true
+
+float adxScore  = clampF(adxVal / 45.0 * 100.0, 0.0, 100.0)
+float chopScore = clampF(100.0 - chopVal, 0.0, 100.0)
+float r2Score   = r2Val * 100.0
+
+float regWsum = wAdxInput + wChopInput + wR2Input
+float regWden = regWsum > 0 ? regWsum : 1.0
+float regimeScore = (adxScore * wAdxInput + chopScore * wChopInput + r2Score * wR2Input) / regWden
+
+bool   isTrending = regimeScore >= REG_TREND_MIN
+bool   isChoppy   = regimeScore < REG_CHOP_MAX
+string regimeLbl  = isTrending ? "Trending" : isChoppy ? "Choppy" : "Mixed"
+color  regimeCol  = isTrending ? bullColInput : isChoppy ? bearColInput : NEUTRAL
+
+int    regimeBin = isChoppy ? 0 : isTrending ? 2 : 1
+int    volBin    = volRatio < VOL_LOW_MAX ? 0 : volRatio < VOL_HIGH_MIN ? 1 : 2
+int    cellIdx   = regimeBin * 3 + volBin
+string volLbl    = volBin == 0 ? "Compressed" : volBin == 1 ? "Normal" : "Expanded"
+
+float regimeT = clampF(regimeScore / 100.0, 0.0, 1.0)
+
+float tunedAtrLen = clampF(((1.0 - regimeT) * 30.0 + regimeT * 11.0) * clampF(volRatio, 0.75, 1.6), 5.0, 55.0)
+float atrVal = useAutoAtrInput ? nz(getAtr(tunedAtrLen), rawAtr) : rawAtr
+
+float swPh = ta.pivothigh(high, effSwingLen, effSwingLen)
+float swPl = ta.pivotlow(low, effSwingLen, effSwingLen)
+float mnPh = ta.pivothigh(high, effMinorLen, effMinorLen)
+float mnPl = ta.pivotlow(low, effMinorLen, effMinorLen)
+
+var float swHigh      = na
+var float swLow       = na
+var float swPrevHigh  = na
+var float swPrevLow   = na
+var int   swHighBar   = na
+var int   swLowBar    = na
+var bool  swHighUsed  = false
+var bool  swLowUsed   = false
+var int   structTrend = ST_NONE
+
+
+float lblOffset = atrVal * 0.35
+
+if not na(swPh)
+    swPrevHigh := swHigh
+    swHigh     := swPh
+    swHighBar  := bar_index - effSwingLen
+    swHighUsed := false
+    if showSwingLblInput and isWarm and not na(swPrevHigh)
+        label.new(bar_index - effSwingLen, swPh + lblOffset, swPh > swPrevHigh ? "HH" : "LH", color = color(na), textcolor = bearColInput, style = label.style_label_down, size = size.tiny)
+
+if not na(swPl)
+    swPrevLow := swLow
+    swLow     := swPl
+    swLowBar  := bar_index - effSwingLen
+    swLowUsed := false
+    if showSwingLblInput and isWarm and not na(swPrevLow)
+        label.new(bar_index - effSwingLen, swPl - lblOffset, swPl < swPrevLow ? "LL" : "HL", color = color(na), textcolor = bullColInput, style = label.style_label_up, size = size.tiny)
+
+bool bullBreak = not na(swHigh) and not swHighUsed and close > swHigh and barstate.isconfirmed and isWarm
+bool bearBreak = not na(swLow) and not swLowUsed and close < swLow and barstate.isconfirmed and isWarm
+
+var string bullBreakType = "-"
+var string bearBreakType = "-"
+bool chochUp   = false
+bool chochDown = false
+
+if bullBreak
+    swHighUsed    := true
+    chochUp       := structTrend == ST_BEAR
+    bullBreakType := chochUp ? "CHoCH" : "BOS"
+    structTrend   := ST_BULL
+    if showStructInput
+        line.new(nz(swHighBar, bar_index), swHigh, bar_index, swHigh, color = bullColInput, width = 2, style = line.style_solid)
+        label.new(int(math.round((nz(swHighBar, bar_index) + bar_index) / 2)), swHigh, bullBreakType, color = color(na), textcolor = bullColInput, style = label.style_label_down, size = size.small)
+
+if bearBreak
+    swLowUsed       := true
+    chochDown       := structTrend == ST_BULL
+    bearBreakType   := chochDown ? "CHoCH" : "BOS"
+    structTrend     := ST_BEAR
+    if showStructInput
+        line.new(nz(swLowBar, bar_index), swLow, bar_index, swLow, color = bearColInput, width = 2, style = line.style_solid)
+        label.new(int(math.round((nz(swLowBar, bar_index) + bar_index) / 2)), swLow, bearBreakType, color = color(na), textcolor = bearColInput, style = label.style_label_up, size = size.small)
+
+type Zone
+    float price
+    float score
+    int   ztype
+    int   bar
+    int   touches
+
+var array<Zone> zones = array.new<Zone>()
+
+zoneVolScore(int offset) =>
+    float res = 20.0
+    float pv  = nz(volume[offset], 0.0)
+    float av  = nz(volSma[offset], 0.0)
+    if symHasVol and av > 0
+        res := clampF(safeDiv(pv, av, 1.0) * 20.0, 0.0, 40.0)
+    res
+
+zoneReactScore(int offset, float price, bool isRes) =>
+    float maxMove = 0.0
+    int   loopEnd = math.min(zoneReactInput, offset)
+    if loopEnd >= 1
+        for i = 1 to loopEnd
+            float ext  = isRes ? nz(low[offset - i], price) : nz(high[offset - i], price)
+            float move = isRes ? price - ext : ext - price
+            if move > maxMove
+                maxMove := move
+    float atrAt = nz(atrVal[offset], atrVal)
+    clampF(safeDiv(maxMove, atrAt, 0.0) * 12.0, 0.0, 40.0)
+
+addZone(float price, int ztype, int offset, bool active) =>
+    float vScore = zoneVolScore(offset)
+    float rScore = zoneReactScore(offset, price, ztype == 1)
+    if active and useZonesInput and isWarm
+        float base      = vScore + rScore + 10.0
+        float mergeDist = atrVal * zoneMergeInput
+        int   mergeIdx  = -1
+        int   n = array.size(zones)
+        if n > 0
+            for i = 0 to n - 1
+                Zone zi = array.get(zones, i)
+                if mergeIdx == -1 and zi.ztype == ztype and math.abs(zi.price - price) <= mergeDist
+                    mergeIdx := i
+        if mergeIdx >= 0
+            Zone zm = array.get(zones, mergeIdx)
+            zm.price   := (zm.price * zm.touches + price) / (zm.touches + 1)
+            zm.score   := math.min(100.0, zm.score + base * 0.5)
+            zm.touches := zm.touches + 1
+            zm.bar     := bar_index - offset
+        else
+            array.push(zones, Zone.new(price, math.min(base, 100.0), ztype, bar_index - offset, 1))
+            if array.size(zones) > MAX_ZONES
+                array.shift(zones)
+    0
+
+addZone(nz(swPh, high[effSwingLen]), 1, effSwingLen, not na(swPh))
+addZone(nz(swPl, low[effSwingLen]), -1, effSwingLen, not na(swPl))
+
+roomAhead(int dir) =>
+    float best = na
+    int   n = array.size(zones)
+    if n > 0
+        for i = 0 to n - 1
+            Zone zi = array.get(zones, i)
+            bool ahead = dir == DIR_LONG ? zi.ztype == 1 and zi.price > close : zi.ztype == -1 and zi.price < close
+            if ahead
+                float d = math.abs(zi.price - close)
+                if na(best) or d < best
+                    best := d
+    na(best) ? 6.0 : safeDiv(best, atrVal, 6.0)
+
+snapTarget(float rawTp, float entry, int dir, float riskDist) =>
+    float outTp = rawTp
+    if useSnapInput and array.size(zones) > 0 and riskDist > 0
+        float window    = snapWindowInput * riskDist
+        float bestPrice = na
+        float bestScore = 0.0
+        int n = array.size(zones)
+        for i = 0 to n - 1
+            Zone zi = array.get(zones, i)
+            bool relevant = dir == DIR_LONG ? zi.ztype == 1 and zi.price > entry : zi.ztype == -1 and zi.price < entry
+            if relevant
+                bool inWindow = dir == DIR_LONG ? zi.price <= rawTp and zi.price >= rawTp - window : zi.price >= rawTp and zi.price <= rawTp + window
+                if inWindow and zi.score > bestScore
+                    bestScore := zi.score
+                    bestPrice := zi.price
+        if not na(bestPrice) and bestScore >= 35.0
+            float buf = atrVal * 0.12
+            outTp := dir == DIR_LONG ? bestPrice - buf : bestPrice + buf
+    outTp
+
+float tqiEr  = erVal
+float volZ   = symHasVol ? safeDiv(nz(volume, 0.0) - volSma, volStdev, 0.0) : 0.0
+float tqiVol = symHasVol ? mapClamp(volZ, -1.0, 2.0, 0.0, 1.0) : mapClamp(volRatio, 0.6, 1.8, 0.0, 1.0)
+
+float strHi     = ta.highest(high, tqiStrLenInput)
+float strLo     = ta.lowest(low, tqiStrLenInput)
+float strRange  = strHi - strLo
+float pricePos  = safeDiv(close - strLo, strRange, 0.5)
+float tqiStruct = clampF(math.abs(pricePos - 0.5) * 2.0, 0.0, 1.0)
+
+float winChange = close - close[tqiMomLenInput]
+float upMoves   = nz(math.sum(close > close[1] ? 1.0 : 0.0, tqiMomLenInput), 0.0)
+float dnMoves   = nz(math.sum(close < close[1] ? 1.0 : 0.0, tqiMomLenInput), 0.0)
+float tqiMom    = winChange > 0 ? upMoves / tqiMomLenInput : winChange < 0 ? dnMoves / tqiMomLenInput : 0.0
+
+float tqiWsum = tqiWerInput + tqiWvolInput + tqiWstrInput + tqiWmomInput
+float tqiWden = tqiWsum > 0 ? tqiWsum : 1.0
+float tqi = useTqiInput ? clampF((tqiEr * tqiWerInput + tqiVol * tqiWvolInput + tqiStruct * tqiWstrInput + tqiMom * tqiWmomInput) / tqiWden, 0.0, 1.0) : 0.5
+
+float qualDev = useTqiInput ? math.pow(1.0 - tqi, tqiCurveInput) : 0.5
+float tqiMult = 1.0 - tqiStrengthInput + tqiStrengthInput * (0.60 + 0.80 * qualDev)
+float symMult = effBaseMult * tqiMult
+
+float activeMult  = symMult
+float passiveMult = symMult
+if useTqiInput and useAsymInput
+    activeMult  := symMult * (1.0 - asymStrengthInput * tqi * 0.30)
+    passiveMult := symMult * (1.0 + asymStrengthInput * tqi * 0.40)
+
+var float actSm = na
+var float pasSm = na
+actSm := na(actSm[1]) ? activeMult : actSm[1] * 0.85 + activeMult * 0.15
+pasSm := na(pasSm[1]) ? passiveMult : pasSm[1] * 0.85 + passiveMult * 0.15
+
+var float lowerBand = na
+var float upperBand = na
+var int   coreDir   = DIR_LONG
+
+int prevDir = na(coreDir[1]) ? DIR_LONG : coreDir[1]
+
+float lowerMult = prevDir == DIR_LONG ? actSm : pasSm
+float upperMult = prevDir == DIR_LONG ? pasSm : actSm
+
+float lowerRaw = srcInput - lowerMult * atrVal
+float upperRaw = srcInput + upperMult * atrVal
+
+lowerBand := na(lowerBand[1]) ? lowerRaw : close[1] > lowerBand[1] ? math.max(lowerRaw, lowerBand[1]) : lowerRaw
+upperBand := na(upperBand[1]) ? upperRaw : close[1] < upperBand[1] ? math.min(upperRaw, upperBand[1]) : upperRaw
+
+coreDir := na(coreDir[1]) ? DIR_LONG : prevDir == DIR_SHORT and close > upperBand[1] ? DIR_LONG : prevDir == DIR_LONG and close < lowerBand[1] ? DIR_SHORT : prevDir
+
+var int coreStartBar = 0
+if coreDir != prevDir
+    coreStartBar := bar_index
+int coreAge = bar_index - coreStartBar
+
+autoHtf() =>
+    string tf = timeframe.period
+    switch
+        timeframe.isseconds                => "60"
+        tf == "1" or tf == "3" or tf == "5" => "60"
+        tf == "15" or tf == "30"            => "240"
+        tf == "60" or tf == "120"           => "D"
+        tf == "180" or tf == "240"          => "D"
+        tf == "360" or tf == "720"          => "D"
+        tf == "D"                           => "W"
+        tf == "W"                           => "M"
+        =>                                     "W"
+
+string htfRes = htfModeInput == "Manual" ? htfManualInput : autoHtf()
+bool   htfOn  = htfModeInput != "Off" and htfStrictInput != "Off"
+
+[htfFastRaw, htfSlowRaw, htfCloseRaw] = request.security(syminfo.tickerid, htfRes, [ta.ema(close, htfFastInput)[1], ta.ema(close, htfSlowInput)[1], close[1]], barmerge.gaps_off, barmerge.lookahead_on)
+
+float htfFast  = nz(htfFastRaw, close)
+float htfSlow  = nz(htfSlowRaw, close)
+float htfClose = nz(htfCloseRaw, close)
+
+int  htfBias = not htfOn ? 0 : htfFast > htfSlow and htfClose > htfSlow ? 1 : htfFast < htfSlow and htfClose < htfSlow ? -1 : 0
+
+float MAXP_HTF    = 16.0
+float MAXP_STRUCT = 14.0
+float MAXP_CORE   = 14.0
+float MAXP_TSMOM  = 12.0
+float MAXP_MOM    = 10.0
+float MAXP_REGIME = 10.0
+float MAXP_LOC    = 9.0
+float MAXP_DIV    = 7.0
+float MAXP_VOL    = 8.0
+
+float maxScore = MAXP_HTF + MAXP_STRUCT + MAXP_CORE + MAXP_TSMOM + MAXP_MOM + MAXP_REGIME + MAXP_LOC + MAXP_DIV + (symHasVol ? MAXP_VOL : 0.0)
+
+var float lastPhPrice = na
+var float lastPhRsi   = na
+var float lastPlPrice = na
+var float lastPlRsi   = na
+bool bearDiv = false
+bool bullDiv = false
+
+if not na(mnPh) and barstate.isconfirmed
+    float rsiAtPh = nz(rsiVal[effMinorLen], 50.0)
+    if not na(lastPhPrice)
+        bearDiv := mnPh > lastPhPrice and rsiAtPh < lastPhRsi
+    lastPhPrice := mnPh
+    lastPhRsi   := rsiAtPh
+
+if not na(mnPl) and barstate.isconfirmed
+    float rsiAtPl = nz(rsiVal[effMinorLen], 50.0)
+    if not na(lastPlPrice)
+        bullDiv := mnPl < lastPlPrice and rsiAtPl > lastPlRsi
+    lastPlPrice := mnPl
+    lastPlRsi   := rsiAtPl
+
+var bool bullDivRecent = false
+var bool bearDivRecent = false
+var int  divBar = -1000
+if bullDiv
+    bullDivRecent := true
+    bearDivRecent := false
+    divBar := bar_index
+if bearDiv
+    bearDivRecent := true
+    bullDivRecent := false
+    divBar := bar_index
+if bar_index - divBar > 20
+    bullDivRecent := false
+    bearDivRecent := false
+
+calcScore(int dir) =>
+    bool isLong = dir == DIR_LONG
+
+    float pHtf = not htfOn ? MAXP_HTF * 0.5 : htfBias == 0 ? MAXP_HTF * 0.5 : (isLong and htfBias == 1) or (not isLong and htfBias == -1) ? MAXP_HTF : 0.0
+
+    float pStruct = (isLong and structTrend == ST_BULL) or (not isLong and structTrend == ST_BEAR) ? MAXP_STRUCT : structTrend == ST_NONE ? MAXP_STRUCT * 0.4 : 0.0
+
+    float pCore = (isLong and coreDir == DIR_LONG) or (not isLong and coreDir == DIR_SHORT) ? MAXP_CORE * (0.55 + 0.45 * tqi) : 0.0
+
+    float pTsmom = (isLong and tsmomSign == 1) or (not isLong and tsmomSign == -1) ? MAXP_TSMOM * clampF(0.55 + 0.45 * tsmomStrength / 2.0, 0.0, 1.0) : tsmomSign == 0 ? MAXP_TSMOM * 0.4 : 0.0
+
+    float rsiPart  = isLong ? (rsiVal > 50 and rsiVal < 78 ? 1.0 : rsiVal > 45 ? 0.5 : 0.0) : (rsiVal < 50 and rsiVal > 22 ? 1.0 : rsiVal < 55 ? 0.5 : 0.0)
+    float macdPart = isLong ? (macdHist > 0 ? 0.6 : 0.0) + (macdHist > macdHistPrev ? 0.4 : 0.0) : (macdHist < 0 ? 0.6 : 0.0) + (macdHist < macdHistPrev ? 0.4 : 0.0)
+    float pMom = MAXP_MOM * (rsiPart * 0.5 + macdPart * 0.5)
+
+    float pRegime = MAXP_REGIME * clampF(regimeScore / 100.0, 0.0, 1.0)
+
+    float pLoc = MAXP_LOC * clampF(mapClamp(roomAhead(dir), 0.5, 4.0, 0.0, 1.0), 0.0, 1.0)
+
+    float pDiv = MAXP_DIV * 0.5
+    if (isLong and bullDivRecent) or (not isLong and bearDivRecent)
+        pDiv := MAXP_DIV
+    else if (isLong and bearDivRecent) or (not isLong and bullDivRecent)
+        pDiv := 0.0
+
+    float pVol = symHasVol ? (volOk ? MAXP_VOL : MAXP_VOL * 0.25) : 0.0
+
+    safeDiv(pHtf + pStruct + pCore + pTsmom + pMom + pRegime + pLoc + pDiv + pVol, maxScore, 0.0) * 100.0
+
+float longScore  = calcScore(DIR_LONG)
+float shortScore = calcScore(DIR_SHORT)
+
+gradeOf(float pct) =>
+    float rr = pct / 100.0
+    rr >= GRADE_APLUS_R ? "A+" : rr >= GRADE_A_R ? "A" : rr >= GRADE_B_R ? "B" : "C"
+
+gradeIdx(string g) =>
+    g == "A+" ? 0 : g == "A" ? 1 : g == "B" ? 2 : 3
+
+var array<int>   cellCount = array.new<int>(9, 0)
+var array<float> cellEwmR  = array.new<float>(9, 0.0)
+
+updateCell(int idx, float r) =>
+    if idx >= 0 and idx < 9
+        int   c = array.get(cellCount, idx) + 1
+        float p = array.get(cellEwmR, idx)
+        array.set(cellCount, idx, c)
+        array.set(cellEwmR, idx, c == 1 ? r : p * (1.0 - EWMA_ALPHA) + r * EWMA_ALPHA)
+    0
+
+
+bool  calibActive = calibModeInput == "Active"
+
+string longGrade  = gradeOf(longScore)
+string shortGrade = gradeOf(shortScore)
+
+
+
+bool longPass  = hzActive and barstate.isconfirmed
+bool shortPass = false
+
+float dynScale = 1.0
+if useDynTpInput
+    float qComp = clampF(tqi, 0.0, 1.0)
+    float vComp = clampF(mapClamp(volRatio, 0.6, 1.8, 0.0, 1.0), 0.0, 1.0)
+    dynScale := dynMinInput + (qComp * 0.6 + vComp * 0.4) * (dynMaxInput - dynMinInput)
+
+var float calibTpScale = 1.0
+float effTpScale = calibActive ? calibTpScale : 1.0
+
+float liveTp1R = math.max(0.2, baseTp1R * dynScale * effTpScale)
+float liveTp2R = math.max(liveTp1R + 0.1, baseTp2R * dynScale * effTpScale)
+float liveTp3R = math.max(liveTp2R + 0.1, baseTp3R * dynScale * effTpScale)
+
+
+float costPerSide = close * commBps / 10000.0 + atrVal * slipAtrInput
+
+plot(hzElig ? hzMa : na, "Trend Mean", color = hzActive ? (hzTarget >= 0.99 ? bullColInput : NEUTRAL) : bearColInput, linewidth = 2)
+
+plot(hzLadderValid and hzGraded and hzElig ? hzLvlFull : na, "Ladder - full size above", color = bullColInput, style = plot.style_linebr, linewidth = 1)
+plot(hzLadderValid and hzGraded and hzElig ? hzLvlTwo  : na, "Ladder - two thirds above", color = NEUTRAL,      style = plot.style_linebr, linewidth = 1)
+plot(hzLadderValid and hzGraded and hzElig ? hzLvlOne  : na, "Ladder - flat below",       color = bearColInput, style = plot.style_linebr, linewidth = 1)
+
+bgcolor(showRegimeBgInput and hzActive ? BULL_BG : na, title = "Gate ON")
+
+var array<box> zoneBoxes = array.new<box>()
+if showZonesInput and useZonesInput and drawNow
+    if array.size(zoneBoxes) > 0
+        for i = 0 to array.size(zoneBoxes) - 1
+            box.delete(array.get(zoneBoxes, i))
+        array.clear(zoneBoxes)
+
+    int perSide = int(math.max(math.round(float(maxZoneDrawInput) / 2.0), 1))
+    int zn = array.size(zones)
+    if zn > 0 and maxZoneDrawInput > 0
+        for side = 0 to 1
+            for pick = 1 to perSide
+                float bestDist  = 1e12
+                int   bestIdx   = -1
+                for i = 0 to zn - 1
+                    Zone zi = array.get(zones, i)
+                    bool right = side == 0 ? zi.ztype == 1 and zi.price > close : zi.ztype == -1 and zi.price < close
+                    if right and zi.score >= zoneMinDrawInput
+                        float d = math.abs(zi.price - close)
+                        bool taken = false
+                        if array.size(zoneBoxes) > 0
+                            for b = 0 to array.size(zoneBoxes) - 1
+                                if math.abs(box.get_top(array.get(zoneBoxes, b)) + box.get_bottom(array.get(zoneBoxes, b)) - 2.0 * zi.price) < 1e-9
+                                    taken := true
+                        if not taken and d < bestDist
+                            bestDist := d
+                            bestIdx  := i
+                if bestIdx >= 0
+                    Zone zb = array.get(zones, bestIdx)
+                    float halfH  = atrVal * 0.18
+                    int   transp = clampI(int(math.round(mapClamp(zb.score, zoneMinDrawInput, 100.0, 85.0, 60.0))), 45, 95)
+                    int   bxLeft = zb.bar > bar_index - 300 ? zb.bar : bar_index - 300
+                    array.push(zoneBoxes, box.new(bxLeft, zb.price + halfH, bar_index + levelExtInput, zb.price - halfH, border_color = color.new(zoneColInput, transp), bgcolor = color.new(zb.ztype == 1 ? bearColInput : bullColInput, transp)))
+
+var array<float> tradeR    = array.new<float>()
+var array<int>   tradeGrd  = array.new<int>()
+var array<int>   tradeSet  = array.new<int>()
+var array<int>   tradeBars = array.new<int>()
+
+var int   statTrades     = 0
+var int   statWins       = 0
+var float statGrossW     = 0.0
+var float statGrossL     = 0.0
+var int   statSinceCalib = 0
+
+var array<int>   pendDir   = array.new<int>()
+var array<float> pendEntry = array.new<float>()
+var array<int>   pendBar   = array.new<int>()
+var int stopNoiseCount = 0
+var int stopTotalCount = 0
+
+rollingStats(int window) =>
+    int n = array.size(tradeR)
+    float wr = na
+    float avg = na
+    float dd = na
+    if n > 0
+        int start = math.max(0, n - window)
+        float sum = 0.0
+        int wins = 0
+        float run = 0.0
+        float peak = 0.0
+        float worst = 0.0
+        for i = start to n - 1
+            float rv = array.get(tradeR, i)
+            sum += rv
+            if rv > 0
+                wins += 1
+            run += rv
+            if run > peak
+                peak := run
+            if run - peak < worst
+                worst := run - peak
+        int cnt = n - start
+        wr  := cnt > 0 ? float(wins) / float(cnt) : na
+        avg := cnt > 0 ? sum / float(cnt) : na
+        dd  := worst
+    [wr, avg, dd]
+
+avgWinner(int window) =>
+    int n = array.size(tradeR)
+    float s = 0.0
+    int c = 0
+    if n > 0
+        int start = math.max(0, n - window)
+        for i = start to n - 1
+            float rv = array.get(tradeR, i)
+            if rv > 0
+                s += rv
+                c += 1
+    c > 0 ? s / float(c) : na
+
+
+
+
+GRP_BOOK = "Book Risk (other holdings)"
+
+bkOnInput   = input.bool(true, "Track book correlation", group = GRP_BOOK,
+     tooltip = "Costs 8 request.security calls. Fill in your actual holdings "
+     + "below.\n\n"
+     + "If the panels start flashing and vanishing, one of those symbols cannot "
+     + "be resolved on your account - fix the symbol rather than switching this "
+     + "off. Crypto pairs are the usual offender.")
+bkNInput    = input.int(7, "How many slots are in the book", minval = 2, maxval = 8,
+     group = GRP_BOOK, tooltip = "Only the first N are used; the rest are "
+     + "fetched but ignored.")
+bkEstInput  = input.string("ATR mixed (free)", "Correlation estimator", group = GRP_BOOK,
+     options = ["ATR mixed (free)", "Stdev consistent (more Sharpe, costs CAGR)"],
+     tooltip = "Measured at n=7, causal, against a matched constant:\n\n"
+     + "ATR mixed         dSharpe +0.0295  dCAGR +0.01%  dMaxDD +2.38pp  turn 0.4x\n"
+     + "Stdev consistent  dSharpe +0.0308  dCAGR -0.32%  dMaxDD +4.33pp  turn 1.0x\n\n"
+     + "The consistent one is the cleaner statistic - one estimator on both "
+     + "sides, so the ratio is average correlation exactly. The mixed one "
+     + "measures better on return and trades less. Default is the free one.")
+bkLookInput = input.int(21, "Correlation lookback", minval = 5, maxval = 120,
+     group = GRP_BOOK, tooltip = "Measured surface: 10 and 21 both work "
+     + "(+0.079 and +0.055 dSharpe on the 71-name book), decaying to zero by "
+     + "42. Correlation spikes are short-lived. No cell in the sweep loses.")
+bkKInput    = input.float(0.55, "Ratio reference k", minval = 0.2, maxval = 1.0,
+     step = 0.05, group = GRP_BOOK)
+bkTgtInput  = input.float(100.0, "Target average gross exposure %", minval = 10.0,
+     maxval = 100.0, step = 5.0, group = GRP_BOOK)
+bkSmInput   = input.int(5, "Smoothing", minval = 1, maxval = 21, group = GRP_BOOK,
+     tooltip = "Not cosmetic. The only algebraic cost of a moving weight is "
+     + "Var(w)*E[r^2], so smoothing buys that cost down directly.")
+bkWarmInput = input.int(252, "Warm-up bars", minval = 60, maxval = 1000, group = GRP_BOOK,
+     tooltip = "The normaliser is an EXPANDING MEAN of the signal's own past, "
+     + "never a full-sample average - a live rule cannot know the future. That "
+     + "distinction was measured, not assumed: ex-post +0.0287, causal +0.0295.")
+
+bkS1 = input.symbol("AMEX:SPY",  "1", group = GRP_BOOK)
+bkS2 = input.symbol("NASDAQ:QQQ", "2", group = GRP_BOOK)
+bkS3 = input.symbol("AMEX:IWM",  "3", group = GRP_BOOK)
+bkS4 = input.symbol("AMEX:XLK",  "4", group = GRP_BOOK)
+bkS5 = input.symbol("AMEX:XLF",  "5", group = GRP_BOOK)
+bkS6 = input.symbol("AMEX:XLE",  "6", group = GRP_BOOK)
+bkS7 = input.symbol("AMEX:XLV",  "7", group = GRP_BOOK)
+bkS8 = input.symbol("AMEX:XLY",  "8", group = GRP_BOOK)
+
+bkFetch(simple string s) =>
+    request.security(s, timeframe.period, [high, low, close],
+         lookahead = barmerge.lookahead_off)
+
+[bkH1, bkL1, bkC1] = bkFetch(bkS1)
+[bkH2, bkL2, bkC2] = bkFetch(bkS2)
+[bkH3, bkL3, bkC3] = bkFetch(bkS3)
+[bkH4, bkL4, bkC4] = bkFetch(bkS4)
+[bkH5, bkL5, bkC5] = bkFetch(bkS5)
+[bkH6, bkL6, bkC6] = bkFetch(bkS6)
+[bkH7, bkL7, bkC7] = bkFetch(bkS7)
+[bkH8, bkL8, bkC8] = bkFetch(bkS8)
+
+bkRet(float c) =>
+    float p = nz(c[1])
+    p > 0 and not na(c) ? c / p - 1.0 : 0.0
+
+bkAtrVol(float h, float l, float c) =>
+    float pc = nz(c[1], c)
+    float tr = math.max(h - l, math.max(math.abs(h - pc), math.abs(l - pc)))
+    float a  = ta.rma(tr, 14)
+    c > 0 and not na(a) ? a / c * math.sqrt(252.0) : float(na)
+
+bkR1 = bkRet(bkC1)
+bkR2 = bkRet(bkC2)
+bkR3 = bkRet(bkC3)
+bkR4 = bkRet(bkC4)
+bkR5 = bkRet(bkC5)
+bkR6 = bkRet(bkC6)
+bkR7 = bkRet(bkC7)
+bkR8 = bkRet(bkC8)
+
+bkA1 = bkAtrVol(bkH1, bkL1, bkC1)
+bkA2 = bkAtrVol(bkH2, bkL2, bkC2)
+bkA3 = bkAtrVol(bkH3, bkL3, bkC3)
+bkA4 = bkAtrVol(bkH4, bkL4, bkC4)
+bkA5 = bkAtrVol(bkH5, bkL5, bkC5)
+bkA6 = bkAtrVol(bkH6, bkL6, bkC6)
+bkA7 = bkAtrVol(bkH7, bkL7, bkC7)
+bkA8 = bkAtrVol(bkH8, bkL8, bkC8)
+
+bkV1 = ta.stdev(bkR1, bkLookInput) * math.sqrt(252.0)
+bkV2 = ta.stdev(bkR2, bkLookInput) * math.sqrt(252.0)
+bkV3 = ta.stdev(bkR3, bkLookInput) * math.sqrt(252.0)
+bkV4 = ta.stdev(bkR4, bkLookInput) * math.sqrt(252.0)
+bkV5 = ta.stdev(bkR5, bkLookInput) * math.sqrt(252.0)
+bkV6 = ta.stdev(bkR6, bkLookInput) * math.sqrt(252.0)
+bkV7 = ta.stdev(bkR7, bkLookInput) * math.sqrt(252.0)
+bkV8 = ta.stdev(bkR8, bkLookInput) * math.sqrt(252.0)
+
+bkAdd(float sr, float sa, float sv, int n, float r, float av, float v, simple int slot) =>
+    bool use = slot <= bkNInput and not na(r) and not na(av)
+    [use ? sr + r : sr, use ? sa + av : sa, use ? sv + nz(v) : sv, use ? n + 1 : n]
+
+[bkX1, bkY1, bkZ1, bkN1] = bkAdd(0.0, 0.0, 0.0, 0, bkR1, bkA1, bkV1, 1)
+[bkX2, bkY2, bkZ2, bkN2] = bkAdd(bkX1, bkY1, bkZ1, bkN1, bkR2, bkA2, bkV2, 2)
+[bkX3, bkY3, bkZ3, bkN3] = bkAdd(bkX2, bkY2, bkZ2, bkN2, bkR3, bkA3, bkV3, 3)
+[bkX4, bkY4, bkZ4, bkN4] = bkAdd(bkX3, bkY3, bkZ3, bkN3, bkR4, bkA4, bkV4, 4)
+[bkX5, bkY5, bkZ5, bkN5] = bkAdd(bkX4, bkY4, bkZ4, bkN4, bkR5, bkA5, bkV5, 5)
+[bkX6, bkY6, bkZ6, bkN6] = bkAdd(bkX5, bkY5, bkZ5, bkN5, bkR6, bkA6, bkV6, 6)
+[bkX7, bkY7, bkZ7, bkN7] = bkAdd(bkX6, bkY6, bkZ6, bkN6, bkR7, bkA7, bkV7, 7)
+[bkSumR, bkSumA, bkSumV, bkLiveN] = bkAdd(bkX7, bkY7, bkZ7, bkN7, bkR8, bkA8, bkV8, 8)
+
+float bkBasketRet = bkLiveN > 0 ? bkSumR / bkLiveN : 0.0
+float bkMeanVol   = bkLiveN > 0 ? bkSumA / bkLiveN : float(na)
+float bkMeanSd    = bkLiveN > 0 ? bkSumV / bkLiveN : float(na)
+float bkBasketVol = ta.stdev(bkBasketRet, bkLookInput) * math.sqrt(252.0)
+
+bool  bkMixed  = bkEstInput == "ATR mixed (free)"
+float bkDenomW = bkMixed ? bkMeanVol : bkMeanSd
+float bkRatioW = not na(bkDenomW) and bkDenomW > 0 ? bkBasketVol / bkDenomW : float(na)
+float bkRatioP = not na(bkMeanSd) and bkMeanSd > 0 ? bkBasketVol / bkMeanSd : float(na)
+float bkRho    = not na(bkRatioP) and bkLiveN > 1
+     ? math.max(-1.0, math.min(1.0, (bkLiveN * bkRatioP * bkRatioP - 1.0) / (bkLiveN - 1)))
+     : float(na)
+float bkDiv    = na(bkRatioP) ? float(na) : (1.0 - bkRatioP) * 100.0
+
+float bkRaw = not na(bkRatioW) and bkRatioW > 0 ? math.min(1.0, bkKInput / bkRatioW) : float(na)
+float bkSm  = ta.sma(bkRaw, bkSmInput)
+
+var int   bkNObs = 0
+var float bkSObs = 0.0
+float bkPrevMean = bkNObs > 0 ? bkSObs / bkNObs : float(na)
+if bkOnInput and not na(bkSm)
+    bkNObs += 1
+    bkSObs += bkSm
+
+float bkTgt   = bkTgtInput / 100.0
+float bkGross = not bkOnInput or na(bkSm) or na(bkPrevMean) or bkPrevMean <= 0 or bkNObs < bkWarmInput
+     ? bkTgt * 100.0
+     : math.min(1.0, bkSm * bkTgt / bkPrevMean) * 100.0
+bool bkLive = bkOnInput and bkNObs >= bkWarmInput
+
+var int    posDir      = DIR_FLAT
+var float  posEntry    = na
+var float  posSL       = na
+var float  posRisk     = na
+var float  posTp1      = na
+var float  posTp2      = na
+var float  posTp3      = na
+var float  posTp1R     = na
+var float  posTp2R     = na
+var float  posTp3R     = na
+var bool   hit1        = false
+var bool   hit2        = false
+var bool   hit3        = false
+var int    posBar      = 0
+var int    posCell     = -1
+var string posGrade    = "-"
+var int    posSetup    = SETUP_NONE
+var float  posSizeMult = 1.0
+var float  posQty      = na
+var float  posRiskFrac = na
+var float  posVolEntry = na
+var float  statDragR   = 0.0
+var float  statGrossR  = 0.0
+var int    statDragN   = 0
+var float  posMfeR     = 0.0
+var float  posMaeR     = 0.0
+var float  posCostR    = 0.0
+
+realisedR(float exitPrice) =>
+    float taken  = (hit1 ? alloc1 * posTp1R : 0.0) + (hit2 ? alloc2 * posTp2R : 0.0) + (hit3 ? alloc3 * posTp3R : 0.0)
+    float remain = math.max(1.0 - (hit1 ? alloc1 : 0.0) - (hit2 ? alloc2 : 0.0) - (hit3 ? alloc3 : 0.0), 0.0)
+    float openR  = posDir == DIR_LONG ? safeDiv(exitPrice - posEntry, posRisk, 0.0) : safeDiv(posEntry - exitPrice, posRisk, 0.0)
+    taken + remain * openR - posCostR
+
+if posDir != DIR_FLAT and not na(posEntry) and not na(posRisk) and posRisk > 0
+    float favR = posDir == DIR_LONG ? (high - posEntry) / posRisk : (posEntry - low) / posRisk
+    float advR = posDir == DIR_LONG ? (posEntry - low) / posRisk : (high - posEntry) / posRisk
+    if favR > posMfeR
+        posMfeR := favR
+    if advR > posMaeR
+        posMaeR := advR
+
+bool   doExit     = false
+float  exitPrice  = na
+string exitReason = ""
+
+
+
+if not doExit and posDir == DIR_LONG and barstate.isconfirmed and not hzActive
+    doExit     := true
+    exitPrice  := close
+    exitReason := "gate_off"
+
+float lastClosedR = na
+
+if doExit
+    float rr = clampF(realisedR(exitPrice), -2.0, 30.0)
+    lastClosedR := rr
+
+    array.push(tradeR, rr)
+    array.push(tradeGrd, gradeIdx(posGrade))
+    array.push(tradeSet, posSetup)
+    array.push(tradeBars, bar_index - posBar)
+    while array.size(tradeR) > MAX_TRADE_LOG
+        array.shift(tradeR)
+        array.shift(tradeGrd)
+        array.shift(tradeSet)
+        array.shift(tradeBars)
+
+    statTrades += 1
+    if rr > 0
+        statWins   += 1
+        statGrossW += rr
+    else
+        statGrossL += math.abs(rr)
+    statSinceCalib += 1
+    updateCell(posCell, rr)
+
+    statGrossR += rr
+    if leverageInput > 1.0 and not na(posVolEntry) and not na(posRiskFrac) and posRiskFrac > 0 and barsPerYear > 0
+        float sig  = posVolEntry / 100.0
+        float yrs  = float(bar_index - posBar) / barsPerYear
+        statDragR += (leverageInput - 1.0) * 0.5 * sig * sig * yrs / posRiskFrac
+        statDragN += 1
+
+    if exitReason == "stop"
+        array.push(pendDir, posDir)
+        array.push(pendEntry, nz(posEntry, close))
+        array.push(pendBar, bar_index)
+        stopTotalCount += 1
+        while array.size(pendDir) > MAX_PENDING_STOPS
+            array.shift(pendDir)
+            array.shift(pendEntry)
+            array.shift(pendBar)
+
+    posDir   := DIR_FLAT
+    posCell  := -1
+
+int newDir = posDir != DIR_FLAT ? DIR_FLAT : longPass ? DIR_LONG : shortPass ? DIR_SHORT : DIR_FLAT
+
+if newDir != DIR_FLAT
+    float e     = close
+    float sl = float(na)
+    float rk = e
+    float t1 = snapTarget(newDir == DIR_LONG ? e + rk * liveTp1R : e - rk * liveTp1R, e, newDir, rk)
+    float t2 = snapTarget(newDir == DIR_LONG ? e + rk * liveTp2R : e - rk * liveTp2R, e, newDir, rk)
+    float t3 = snapTarget(newDir == DIR_LONG ? e + rk * liveTp3R : e - rk * liveTp3R, e, newDir, rk)
+
+    float near = newDir == DIR_LONG ? math.min(t1, math.min(t2, t3)) : math.max(t1, math.max(t2, t3))
+    float far  = newDir == DIR_LONG ? math.max(t1, math.max(t2, t3)) : math.min(t1, math.min(t2, t3))
+    float mid  = t1 + t2 + t3 - near - far
+
+    string grd = newDir == DIR_LONG ? longGrade : shortGrade
+
+    posDir      := newDir
+    posEntry    := e
+    posSL       := sl
+    posRisk     := rk
+    posTp1      := float(na)
+    posTp2      := float(na)
+    posTp3      := float(na)
+    hit1        := false
+    hit2        := false
+    hit3        := false
+    posBar      := bar_index
+    posCell     := cellIdx
+    posGrade    := "-"
+    posSetup    := SETUP_NONE
+    posMfeR     := 0.0
+    posMaeR     := 0.0
+    posCostR    := rk > 0 ? 2.0 * costPerSide / rk : 0.0
+    posQty      := hzMode ? (e > 0 ? equityInput * hzTarget / e : float(na)) : (rk > 0 ? equityInput * riskPctInput / 100.0 * posSizeMult / rk : float(na))
+    posRiskFrac := e > 0 ? rk / e : na
+    posVolEntry := realisedVol
+
+
+bool entryLong  = newDir == DIR_LONG
+
+float hzHeld  = nz(hzTarget[1], 0.0)
+float hzPrevW = nz(hzTarget[2], 0.0)
+float hzPxRet = nz(close[1], 0.0) > 0 ? close / close[1] - 1.0 : 0.0
+float hzCashD = math.pow(1.0 + hzCashInput / 100.0, 1.0 / barsPerYear) - 1.0
+float hzDw    = math.abs(hzHeld - hzPrevW)
+float hzCostD = close > 0 ? hzDw * costPerSide / close : 0.0
+float hzNetD  = hzHeld * hzPxRet + (1.0 - hzHeld) * hzCashD - hzCostD
+
+var float hzEq      = 1.0
+var float hzPeak    = 1.0
+var float hzMdd     = 0.0
+var int   hzBars    = 0
+var float hzExpoSum = 0.0
+var float hzTurnSum = 0.0
+var float hzExSum   = 0.0
+var float hzExSumSq = 0.0
+var float hzBhEq    = 1.0
+var float hzBhPeak  = 1.0
+var float hzBhMdd   = 0.0
+
+bool hzBookOn = barstate.isconfirmed and not na(hzMa[1]) and nz(close[1], 0.0) > 0
+
+if hzBookOn
+    hzEq      := hzEq * (1.0 + hzNetD)
+    hzPeak    := math.max(hzPeak, hzEq)
+    hzMdd     := math.min(hzMdd, hzEq / hzPeak - 1.0)
+    hzBhEq    := hzBhEq * (1.0 + hzPxRet)
+    hzBhPeak  := math.max(hzBhPeak, hzBhEq)
+    hzBhMdd   := math.min(hzBhMdd, hzBhEq / hzBhPeak - 1.0)
+    hzBars    += 1
+    hzExpoSum += hzHeld
+    hzTurnSum += hzDw
+    float hzEx = hzNetD - hzCashD
+    hzExSum   += hzEx
+    hzExSumSq += hzEx * hzEx
+
+float hzYrs      = hzBars > 0 ? float(hzBars) / barsPerYear : na
+float hzCagr     = not na(hzYrs) and hzYrs > 0 and hzEq > 0 ? math.pow(hzEq, 1.0 / hzYrs) - 1.0 : na
+float hzBhCagr   = not na(hzYrs) and hzYrs > 0 and hzBhEq > 0 ? math.pow(hzBhEq, 1.0 / hzYrs) - 1.0 : na
+float hzExpo     = hzBars > 0 ? hzExpoSum / float(hzBars) : na
+float hzTurnYr   = not na(hzYrs) and hzYrs > 0 ? hzTurnSum / hzYrs : na
+float hzExMean   = hzBars > 0 ? hzExSum / float(hzBars) : na
+float hzExVar    = hzBars > 1 ? math.max((hzExSumSq - float(hzBars) * hzExMean * hzExMean) / float(hzBars - 1), 0.0) : na
+float hzSharpe   = not na(hzExVar) and hzExVar > 0 ? hzExMean / math.sqrt(hzExVar) * math.sqrt(barsPerYear) : na
+float hzCalmar   = not na(hzCagr) and hzMdd < 0 ? hzCagr / math.abs(hzMdd) : na
+float hzBhCalmar = not na(hzBhCagr) and hzBhMdd < 0 ? hzBhCagr / math.abs(hzBhMdd) : na
+
+if array.size(pendDir) > 0
+    int qi = 0
+    while qi < array.size(pendDir)
+        int   pd = array.get(pendDir, qi)
+        float pe = array.get(pendEntry, qi)
+        int   pb = array.get(pendBar, qi)
+        bool recovered = pd == DIR_LONG ? high > pe : low < pe
+        bool expired   = bar_index - pb >= stopReviewInput
+        if recovered or expired
+            if recovered
+                stopNoiseCount += 1
+            array.remove(pendDir, qi)
+            array.remove(pendEntry, qi)
+            array.remove(pendBar, qi)
+        else
+            qi += 1
+
+
+var float shadowTpScale = 1.0
+var int   lastShiftDir  = 0
+var float avgRAtShift   = na
+
+
+if doExit and calibModeInput != "Off" and statTrades >= CALIB_MIN_SAMPLES and statSinceCalib >= calibCoolInput
+    [cwr, cavg, cdd] = rollingStats(calibWindowInput)
+
+    if not na(cavg)
+        if cavg < 0.05
+            int shiftDir = lastShiftDir == 0 ? 1 : na(avgRAtShift) or cavg >= avgRAtShift ? lastShiftDir : -lastShiftDir
+            lastShiftDir := shiftDir
+            avgRAtShift  := cavg
+        else if cavg > 0.35
+            lastShiftDir := 0
+            avgRAtShift  := cavg
+
+    float aw = avgWinner(calibWindowInput)
+    if not na(aw) and liveTp3R > 0
+        if aw > liveTp3R * 1.20
+            shadowTpScale := clampF(shadowTpScale * 1.08, 0.5, 2.0)
+        else if aw < liveTp3R * 0.65
+            shadowTpScale := clampF(shadowTpScale * 0.93, 0.5, 2.0)
+
+
+    statSinceCalib := 0
+
+    if calibActive
+        calibTpScale := shadowTpScale
+
+plotshape(showSigLblInput and entryLong ? low : na, "Long Entry", shape.triangleup, location.absolute, bullColInput, size = size.tiny)
+
+plotshape(hzMode and showSigLblInput and doExit ? high : na, "Gate Off", shape.triangledown, location.absolute, bearColInput, size = size.tiny)
+
+if showSigLblInput and entryLong
+    label.new(bar_index, low - atrVal * 0.6, "GATE ON\n" + fmtPct(hzTarget), color = bullColInput, textcolor = #FFFFFF, style = label.style_label_up, size = size.small, tooltip = "close " + fmtP(close) + " > SMA" + str.tostring(hzMaLenInput) + " " + fmtP(hzMa) + "\nHysteresis " + str.tostring(hzKInput) + " bars, both ways\nMean rising over " + str.tostring(hzSlopeLenInput) + " bars: " + (hzSlope ? "yes" : "no") + "\nTarget weight " + fmtPct(hzTarget) + " (c " + str.tostring(hzScaleInput, "#.00") + ", f " + str.tostring(hzFloorInput, "#.00") + ")\nNo stop. Exit is the gate turning off, at a close.")
+
+showFillsInput = input.bool(true, "Mark weight changes as fills", group = GRP_VISUAL,
+     tooltip = "Every change in the quantised weight is a buy or a sell of a "
+             + "definite fraction. This marks each one with the fraction traded "
+             + "and the price it happened at.")
+
+float hzFillDelta = hzMode and hzGraded and hzElig ? hzTarget - nz(hzTarget[1]) : 0.0
+bool  hzFilled    = math.abs(hzFillDelta) > 0.0001
+bool  hzFillBuy   = hzFillDelta > 0.0
+
+plotshape(showFillsInput and hzFilled and hzFillBuy ? low : na, "Weight added",
+     shape.triangleup, location.absolute, bullColInput, size = size.tiny)
+plotshape(showFillsInput and hzFilled and not hzFillBuy ? high : na, "Weight cut",
+     shape.triangledown, location.absolute, bearColInput, size = size.tiny)
+
+plot(nweOnInput ? nweUpper : na, "NWE Upper (sell)", bearColInput, 1)
+plot(nweOnInput ? nweOut   : na, "NWE Mean",         TXT_DIM,     1)
+plot(nweOnInput ? nweLower : na, "NWE Lower (buy)",  bullColInput, 1)
+
+if showFillsInput and hzFilled
+    label.new(bar_index,
+     hzFillBuy ? low - atrVal * 0.35 : high + atrVal * 0.35,
+     (hzFillBuy ? "BUY " : "SELL ") + fmtPct(math.abs(hzFillDelta)) + "\n" + fmtP(close),
+     color     = color.new(hzFillBuy ? bullColInput : bearColInput, 25),
+     textcolor = #FFFFFF,
+     style     = hzFillBuy ? label.style_label_up : label.style_label_down,
+     size      = size.tiny,
+     tooltip   = (hzFillBuy ? "Added " : "Cut ") + fmtPct(math.abs(hzFillDelta))
+             + " of full size at " + fmtP(close)
+             + "\nweight " + fmtPct(nz(hzTarget[1])) + "  ->  " + fmtPct(hzTarget))
+
+DASH_ROWS = 72
+
+var table dashA = table.new(dashPosOf(dashPosInput), 2, DASH_ROWS, bgcolor = TBL_BG, border_color = TBL_BRD, border_width = 1, frame_color = TBL_BRD, frame_width = 1)
+var table dashB = table.new(dashPosOf(dashPos2Input), 2, DASH_ROWS, bgcolor = TBL_BG, border_color = TBL_BRD, border_width = 1, frame_color = TBL_BRD, frame_width = 1)
+
+hdr(table t, int row, string txt) =>
+    if row < DASH_ROWS
+        table.cell(t, 0, row, txt, text_color = HDR_TXT, bgcolor = HDR_BG, text_size = size.small, text_halign = text.align_left)
+        table.cell(t, 1, row, "", text_color = HDR_TXT, bgcolor = HDR_BG, text_size = size.small)
+    0
+
+row2(table t, int row, string k, string v, color vc) =>
+    if row < DASH_ROWS
+        table.cell(t, 0, row, k, text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+        table.cell(t, 1, row, v, text_color = vc, text_size = size.small, text_halign = text.align_right)
+    0
+
+if showDashInput and drawNow
+    int r = 0
+
+    hdr(dashA, r, "TURK  " + TURK_VERSION + "  " + TURK_MODE)
+    r += 1
+    row2(dashA, r, "Engine", hzMode ? (hzGraded ? "Graded  SMA" + str.tostring(hzMaLenInput) + " / ramp " + str.tostring(hzRampInput, "#.##") + "xATR" + str.tostring(hzRampAtrInput) + (hzStepsInput > 0 ? " / " + str.tostring(hzStepsInput) + " steps" : " / continuous") : "Binary gate  SMA" + str.tostring(hzMaLenInput) + " / K" + str.tostring(hzKInput) + (hzUseSlopeInput ? " / slope" + str.tostring(hzSlopeLenInput) : "  (no slope)")) : "Confluence score (legacy)", TXT)
+    r += 1
+    row2(dashA, r, "Timeframe", timeframe.period, TXT_DIM)
+    r += 1
+    if hzMode
+        hdr(dashA, r, "CONTEXT")
+        r += 1
+    row2(dashA, r, "Regime", regimeLbl + "  " + str.tostring(regimeScore, "#"), regimeCol)
+    r += 1
+    row2(dashA, r, "Volatility", volLbl + "  x" + str.tostring(volRatio, "#.00") + "   ann " + str.tostring(realisedVol, "#") + "%", TXT)
+    r += 1
+    row2(dashA, r, "Trend Quality", str.tostring(tqi, "#.00") + "   ER " + str.tostring(erVal, "#.00"), tqi > 0.6 ? bullColInput : tqi > 0.35 ? NEUTRAL : bearColInput)
+    r += 1
+    row2(dashA, r, "Serial corr lag1", str.tostring(autoCorr, "+0.000;-0.000") + (autoCorr > 0.02 ? "  stops help" : autoCorr < -0.02 ? "  stops cost" : "  neutral"), autoCorr > 0.02 ? bullColInput : autoCorr < -0.02 ? bearColInput : TXT_DIM)
+    r += 1
+    row2(dashA, r, "Structure", structTrend == ST_BULL ? "Bullish " + bullBreakType : structTrend == ST_BEAR ? "Bearish " + bearBreakType : "Undefined", structTrend == ST_BULL ? bullColInput : structTrend == ST_BEAR ? bearColInput : TXT_DIM)
+    r += 1
+    row2(dashA, r, "Trend Core", (coreDir == DIR_LONG ? "Long " : "Short ") + str.tostring(coreAge) + "b", coreDir == DIR_LONG ? bullColInput : bearColInput)
+    r += 1
+    row2(dashA, r, "HTF " + htfRes, htfBias == 1 ? "Bullish" : htfBias == -1 ? "Bearish" : htfOn ? "Flat" : "Off", htfBias == 1 ? bullColInput : htfBias == -1 ? bearColInput : TXT_DIM)
+    r += 1
+    row2(dashA, r, "TS momentum " + str.tostring(tsmomLenInput) + "b", tsmomSign == 1 ? "Up  x" + str.tostring(tsmomStrength, "#.0") : tsmomSign == -1 ? "Down  x" + str.tostring(tsmomStrength, "#.0") : "Flat", tsmomSign == 1 ? bullColInput : tsmomSign == -1 ? bearColInput : TXT_DIM)
+    r += 1
+
+    if hzMode
+        hdr(dashA, r, "THE RULE")
+        r += 1
+        row2(dashA, r, "close vs SMA" + str.tostring(hzMaLenInput), (hzRaw ? "above" : "below") + "   " + fmtP(hzMa) + "   run " + str.tostring(hzRun) + "/" + str.tostring(hzKInput), not hzElig ? TXT_DIM : hzRaw ? bullColInput : bearColInput)
+        r += 1
+        row2(dashA, r, "Gate (" + str.tostring(hzKInput) + "-bar hysteresis)", hzElig ? (hzGate ? "ON" : "OFF") : "warming up", not hzElig ? TXT_DIM : hzGate ? bullColInput : bearColInput)
+        r += 1
+        row2(dashA, r, "Mean rising " + str.tostring(hzSlopeLenInput) + "b", not hzUseSlopeInput ? "not required" : na(hzMaOld) ? "n/a" : (hzSlope ? "yes" : "no") + "   " + fmtP(hzMaOld), not hzUseSlopeInput ? TXT_DIM : hzSlope ? bullColInput : bearColInput)
+        r += 1
+        row2(dashA, r, "LONG", hzActive ? "YES" : "no", hzActive ? bullColInput : TXT_DIM)
+        r += 1
+        row2(dashA, r, "Dial  c / f", str.tostring(hzScaleInput, "#.00") + " / " + str.tostring(hzFloorInput, "#.00"), TXT)
+        r += 1
+        row2(dashA, r, "Target weight", fmtPct(hzTarget) + " of equity   gross cap 100%", hzTarget > 0 ? TXT : TXT_DIM)
+        r += 1
+        if nweOnInput
+            hdr(dashA, r, "SELL / BUY ENGINE")
+            r += 1
+            row2(dashA, r, "Sell next above", na(nweUpper) ? "warming up" : fmtP(nweUpper) + "   " + fmtPct2(nweUpper / close - 1.0), na(nweUpper) ? TXT_DIM : bearColInput)
+            r += 1
+            row2(dashA, r, "Mean", na(nweOut) ? "warming up" : fmtP(nweOut) + "   " + fmtPct2(nweOut / close - 1.0), na(nweOut) ? TXT_DIM : close >= nweOut ? bullColInput : bearColInput)
+            r += 1
+            row2(dashA, r, "Buy back below", na(nweLower) ? "warming up" : fmtP(nweLower) + "   " + fmtPct2(nweLower / close - 1.0), na(nweLower) ? TXT_DIM : bullColInput)
+            r += 1
+            row2(dashA, r, "Rungs sold", str.tostring(nweSold) + " of " + str.tostring(nweRungsInput) + "   holding " + fmtPct(nweCap), nweSold > 0 ? TXT : TXT_DIM)
+            r += 1
+            if nweModeInput == "Dial, NWE-gated"
+                row2(dashA, r, "Cutting", close >= nweOut ? "allowed, above mean" : "BLOCKED, below mean", close >= nweOut ? TXT : bullColInput)
+                r += 1
+        if hzGraded and hzLadderValid
+            hdr(dashA, r, "THE LADDER")
+            r += 1
+            row2(dashA, r, "Full size above", na(hzLvlFull) ? "unreachable" : fmtP(hzLvlFull) + "   " + fmtPct2(hzLvlFull / close - 1.0), na(hzLvlFull) ? TXT_DIM : hzLvlFull <= close ? bullColInput : TXT_DIM)
+            r += 1
+            row2(dashA, r, "Two thirds above", na(hzLvlTwo) ? "unreachable" : fmtP(hzLvlTwo) + "   " + fmtPct2(hzLvlTwo / close - 1.0), na(hzLvlTwo) ? TXT_DIM : hzLvlTwo <= close ? TXT : TXT_DIM)
+            r += 1
+            row2(dashA, r, "One third above", na(hzLvlOne) ? "unreachable" : fmtP(hzLvlOne) + "   " + fmtPct2(hzLvlOne / close - 1.0), na(hzLvlOne) ? TXT_DIM : hzLvlOne <= close ? TXT : TXT_DIM)
+            r += 1
+            row2(dashA, r, hzFloorInput > 0.0 ? "Floor " + fmtPct(hzFloorInput) + " below" : "FLAT below", na(hzLvlOne) ? "n/a" : fmtP(hzLvlOne), bearColInput)
+            r += 1
+            row2(dashA, r, "Levels drift", "median 0.076%/day; 98.1% of days under 0.5%", TXT_DIM)
+            r += 1
+        if bkOnInput
+            hdr(dashA, r, "BOOK RISK")
+            r += 1
+            row2(dashA, r, "Names tracked", str.tostring(bkLiveN), TXT)
+            r += 1
+            row2(dashA, r, "Avg pairwise corr", na(bkRho) ? "n/a" : fmtPct(bkRho),
+                 na(bkRho) ? TXT_DIM : bkRho > 0.7 ? bearColInput : bkRho > 0.5 ? NEUTRAL : bullColInput)
+            r += 1
+            row2(dashA, r, "Basket vol / name vol",
+                 na(bkBasketVol) or na(bkMeanVol) ? "n/a"
+                 : fmtPct(bkBasketVol) + "  /  " + fmtPct(bkMeanVol), TXT)
+            r += 1
+            row2(dashA, r, "Risk cancelled",
+                 na(bkDiv) ? "n/a" : str.tostring(bkDiv, "#.0") + "% by diversification",
+                 na(bkDiv) ? TXT_DIM : bkDiv < 20.0 ? bearColInput : TXT)
+            r += 1
+            row2(dashA, r, bkLive ? "Recommended gross" : "Warming up",
+                 bkLive ? str.tostring(bkGross, "#.0") + "%   ("
+                     + str.tostring(bkGross - bkTgtInput, "+#.0;-#.0") + "pp vs target)"
+                     : str.tostring(bkNObs) + " / " + str.tostring(bkWarmInput) + " bars",
+                 not bkLive ? TXT_DIM : bkGross < bkTgtInput * 0.85 ? bearColInput : bullColInput)
+            r += 1
+            row2(dashA, r, "Measured", "+0.03 Sharpe, ~0 CAGR, 0.4x turn - not a direction call", TXT_DIM)
+            r += 1
+
+var int livOpenBar = na
+if strategy.position_size != 0 and nz(strategy.position_size[1], 0.0) == 0
+    livOpenBar := bar_index
+else if strategy.position_size == 0
+    livOpenBar := na
+
+if showResearchInput and drawNow
+    int r = 0
+
+    hdr(dashB, r, "EVIDENCE  " + TURK_MODE)
+    r += 1
+
+    if showPerfInput and hzMode
+        hdr(dashB, r, "BOOK")
+        r += 1
+        row2(dashB, r, "Sample", str.tostring(hzBars) + " bars" + (na(hzYrs) ? "" : "   " + str.tostring(hzYrs, "#.0") + "y") + "   cash " + str.tostring(hzCashInput, "#.00") + "%", TXT_DIM)
+        r += 1
+        row2(dashB, r, "CAGR", (na(hzCagr) ? "n/a" : fmtPct(hzCagr)) + "     b&h " + (na(hzBhCagr) ? "n/a" : fmtPct(hzBhCagr)), na(hzCagr) ? TXT_DIM : hzCagr > 0 ? bullColInput : bearColInput)
+        r += 1
+        row2(dashB, r, "Max drawdown", fmtPct(hzMdd) + "     b&h " + fmtPct(hzBhMdd), bearColInput)
+        r += 1
+        row2(dashB, r, "CAGR / maxDD", (na(hzCalmar) ? "n/a" : str.tostring(hzCalmar, "0.000")) + "     b&h " + (na(hzBhCalmar) ? "n/a" : str.tostring(hzBhCalmar, "0.000")), na(hzCalmar) ? TXT_DIM : na(hzBhCalmar) or hzCalmar > hzBhCalmar ? bullColInput : bearColInput)
+        r += 1
+        row2(dashB, r, "Sharpe", na(hzSharpe) ? "n/a" : str.tostring(hzSharpe, "0.000"), na(hzSharpe) ? TXT_DIM : TXT)
+        r += 1
+        row2(dashB, r, "Exposure", na(hzExpo) ? "n/a" : fmtPct(hzExpo) + "   of the time invested", TXT)
+        r += 1
+        row2(dashB, r, "Turnover", na(hzTurnYr) ? "n/a" : str.tostring(hzTurnYr, "0.00") + " |dw| per year   about " + str.tostring(hzTurnYr / 2.0, "0.0") + " round trips", TXT)
+        r += 1
+
+        int   hzSpells = array.size(tradeR)
+        float hzBarSum = 0.0
+        if hzSpells > 0
+            for i = 0 to hzSpells - 1
+                hzBarSum += float(array.get(tradeBars, i))
+        [swr, savg, sdd] = rollingStats(MAX_TRADE_LOG)
+        row2(dashB, r, "Gate spells", str.tostring(statTrades) + " closed   mean " + (hzSpells > 0 ? str.tostring(hzBarSum / float(hzSpells), "#") : "n/a") + " bars   mean net " + (na(savg) ? "n/a" : fmtPct(savg)), TXT_DIM)
+        r += 1
+
+    hdr(dashB, r, "POSITION")
+    r += 1
+    if hzMode
+        float livQty  = strategy.position_size
+        float livAvg  = strategy.position_avg_price
+        bool  livOpen = livQty != 0 and not na(livAvg) and livAvg > 0
+        float livW    = livOpen and strategy.equity > 0 ? livQty * close / strategy.equity : na
+        float livRet  = livOpen ? close / livAvg - 1.0 : na
+        float livCost = livOpen ? 2.0 * costPerSide / livAvg : na
+        int   livHeld = livOpen and not na(livOpenBar) ? bar_index - livOpenBar : 0
+        row2(dashB, r, "State", livOpen ? "LONG   " + fmtPct(livW) + " of equity   held " + str.tostring(livHeld) + " bars" : "Flat", livOpen ? bullColInput : TXT_DIM)
+        r += 1
+        row2(dashB, r, "Dial", "target " + fmtPct(hzTarget) + "   gate " + (hzActive ? "ON" : hzTarget > 0 ? "off, floor only" : "off, flat"), hzActive ? bullColInput : hzTarget > 0 ? NEUTRAL : TXT_DIM)
+        r += 1
+        row2(dashB, r, "Entry / now", livOpen ? fmtP(livAvg) + "   " + fmtP(close) : "-", livOpen ? TXT : TXT_DIM)
+        r += 1
+        row2(dashB, r, "Open return", livOpen ? fmtPct(livRet) + "   gross of the " + str.tostring(livCost * 100.0, "#.00") + "% round trip" : "-", not livOpen ? TXT_DIM : nz(livRet, 0.0) >= 0 ? bullColInput : bearColInput)
+        r += 1
+        row2(dashB, r, "Stop / target", "none - close-only by design", TXT_DIM)
+        r += 1
+        row2(dashB, r, "Qty / value", livOpen ? str.tostring(livQty, "#.###") + "   " + str.tostring(livQty * close, "#") + " of " + str.tostring(strategy.equity, "#") + " equity" : "-", livOpen ? TXT : TXT_DIM)
+        r += 1
+
+
+string tk    = syminfo.tickerid
+string tfStr = timeframe.period
+
+buildEntryMsg(string side, float sc, string grd) =>
+    string p  = fmtP(posEntry)
+    string sl = fmtP(posSL)
+    string j = ""
+    string t = ""
+    if hzMode
+        j := '{"event":"entry","rule":"horizon","side":"long","ticker":"' + tk + '","tf":"' + tfStr + '","price":' + fmtJ(posEntry) + ',"weight":' + str.tostring(hzTarget, "#.####") + ',"qty":' + (na(posQty) ? "0" : str.tostring(posQty, "#.####")) + ',"sl":null,"tp1":null,"tp2":null,"tp3":null,"dial_c":' + str.tostring(hzScaleInput, "#.00") + ',"dial_f":' + str.tostring(hzFloorInput, "#.00") + '}'
+        t := "LONG (gate on) | " + tk + " " + tfStr + " | @" + p + " | weight " + fmtPct(hzTarget) + " | qty " + (na(posQty) ? "n/a" : str.tostring(posQty, "#.###")) + " | no stop, close-only exit"
+    else
+        j := '{"event":"entry","side":"' + side + '","ticker":"' + tk + '","tf":"' + tfStr + '","setup":"' + setupName(posSetup) + '","grade":"' + grd + '","score":' + str.tostring(sc, "#.0") + ',"price":' + fmtJ(posEntry) + ',"sl":' + fmtJ(posSL) + ',"tp1":' + fmtJ(posTp1) + ',"tp2":' + fmtJ(posTp2) + ',"tp3":' + fmtJ(posTp3) + ',"size_mult":' + str.tostring(posSizeMult, "#.00") + ',"qty":' + (na(posQty) ? "0" : str.tostring(posQty, "#.####")) + ',"regime":"' + regimeLbl + '","panic":' + (panicState ? "true" : "false") + ',"tqi":' + str.tostring(tqi, "#.00") + '}'
+        t := (side == "long" ? "LONG " : "SHORT ") + grd + " " + setupName(posSetup) + " | " + tk + " " + tfStr + " | @" + p + " SL " + sl + " | TP " + fmtP(posTp1) + " / " + fmtP(posTp2) + " / " + fmtP(posTp3) + " | score " + str.tostring(sc, "#.0") + " | size x" + str.tostring(posSizeMult, "#.00") + " | " + regimeLbl + (panicState ? " PANIC" : "")
+    webhookInput ? j : t
+
+if alertsOnInput and entryLong
+    alert(buildEntryMsg("long", longScore, posGrade), alert.freq_once_per_bar_close)
+
+buildExitMsg(string reason, float rv) =>
+    string j = '{"event":"exit","reason":"' + reason + '","ticker":"' + tk + '","tf":"' + tfStr + '","price":' + fmtP(close) + ',"realized_r":' + str.tostring(nz(rv, 0.0), "#.00") + '}'
+    string t = "EXIT (" + reason + ") | " + tk + " " + tfStr + " | @" + fmtP(close) + " | realised " + fmtR(nz(rv, 0.0))
+    webhookInput ? j : t
+
+if alertsOnInput and doExit
+    alert(buildExitMsg(exitReason, lastClosedR), alert.freq_once_per_bar_close)
+
+float hzTgtQty = close > 0 ? hzTarget * strategy.equity / close : 0.0
+bool  hzChange = barstate.isconfirmed and hzTarget != nz(hzTarget[1], -1.0)
+
+if hzChange
+    if hzTarget <= 0.0
+        if strategy.position_size != 0
+            strategy.close_all(comment = doExit ? exitReason : "gate off")
+    else
+        float hzDelta = hzTgtQty - strategy.position_size
+        if hzDelta > 0
+            strategy.order("HZ-ADD", strategy.long, qty = hzDelta, comment = "to dial")
+        else if hzDelta < 0
+            strategy.order("HZ-CUT", strategy.short, qty = -hzDelta, comment = "to dial")
+
+if hzTarget <= 0.0 and strategy.position_size != 0 and barstate.isconfirmed
+    strategy.close_all(comment = "gate off")
+
+var table tvTable = table.new(position.bottom_right, 2, 10, bgcolor = TBL_BG, border_color = TBL_BRD, border_width = 1, frame_color = TBL_BRD, frame_width = 1)
+
+if showPerfInput and drawNow
+    int   tvTrades = strategy.closedtrades
+    float tvNet    = strategy.netprofit
+    float tvGP     = strategy.grossprofit
+    float tvGL     = strategy.grossloss
+    float tvPF     = tvGL > 0 ? tvGP / tvGL : na
+    float tvWr     = tvTrades > 0 ? float(strategy.wintrades) / float(tvTrades) : na
+    float tvDD     = strategy.max_drawdown
+    float tvRet    = strategy.initial_capital > 0 ? tvNet / strategy.initial_capital : na
+    float tvDDPct  = strategy.max_drawdown_percent / 100.0
+
+    table.cell(tvTable, 0, 0, "TRADINGVIEW TESTER", text_color = HDR_TXT, bgcolor = HDR_BG, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 0, "authoritative", text_color = HDR_TXT, bgcolor = HDR_BG, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(tvTable, 0, 1, "Closed fills", text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 1, str.tostring(tvTrades) + "   " + str.tostring(strategy.wintrades) + "W / " + str.tostring(strategy.losstrades) + "L", text_color = TXT, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(tvTable, 0, 2, "Net profit", text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 2, str.tostring(tvNet, "#.##") + "   " + (na(tvRet) ? "n/a" : fmtPct(tvRet)), text_color = tvNet > 0 ? bullColInput : bearColInput, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(tvTable, 0, 3, "Profit factor", text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 3, na(tvPF) ? "n/a" : str.tostring(tvPF, "#.00"), text_color = na(tvPF) ? TXT_DIM : tvPF > 1.0 ? bullColInput : bearColInput, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(tvTable, 0, 4, "Fill win rate (not the metric)", text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 4, na(tvWr) ? "n/a" : fmtPct(tvWr), text_color = TXT_DIM, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(tvTable, 0, 5, "Max drawdown", text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 5, str.tostring(tvDD, "#.##") + "   " + (na(tvDDPct) ? "n/a" : fmtPct(tvDDPct)), text_color = bearColInput, text_size = size.small, text_halign = text.align_right)
+
+    table.cell(tvTable, 0, 6, "Open position", text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 6, str.tostring(strategy.position_size, "#.###") + " @ " + fmtP(strategy.position_avg_price), text_color = TXT, text_size = size.small, text_halign = text.align_right)
+
+    float tvRatio = na(tvRet) or na(tvDDPct) or tvDDPct <= 0 ? na : tvRet / tvDDPct
+    table.cell(tvTable, 0, 7, "Return / maxDD (peak-based)", text_color = TXT_DIM, text_size = size.small, text_halign = text.align_left)
+    table.cell(tvTable, 1, 7, na(tvRatio) ? "n/a" : str.tostring(tvRatio, "0.00") + "   (total, not annualised)", text_color = na(tvRatio) ? TXT_DIM : TXT, text_size = size.small, text_halign = text.align_right)

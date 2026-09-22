@@ -1,0 +1,158 @@
+// ============================================================
+// BOT DE ACUMULACION - GGAL (ADR) | Timeframe: Diario
+// Estrategia: Cruce de Medias Moviles + Filtro ADX
+//
+// SENAL DE COMPRA:  MA15 cruza arriba de MA30 + ADX > 25
+// SENAL DE VENTA:   MA30 cruza abajo de MA60
+// POSITION SIZING:  10% del capital por entrada (hasta 10 entradas)
+// CAPITAL INICIAL:  USD 100.000
+// PERIODO:          01/01/2015 - 31/12/2025
+//
+// Ticker recomendado: NASDAQ:GGAL
+// ============================================================
+
+//@version=6
+strategy(
+     title             = "Bot Acumulacion GGAL | MA + ADX",
+     shorttitle        = "ACUM_GGAL",
+     overlay           = true,
+     initial_capital   = 100000,
+     currency          = currency.USD,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 10,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.1,
+     max_bars_back     = 500
+     )
+
+// ============================================================
+// PARAMETROS CONFIGURABLES
+// ============================================================
+
+// --- Filtro de fechas ---
+fecha_inicio = input.time(timestamp("01 Jan 2015 00:00:00"), title="Fecha inicio", group="Periodo de Backtest")
+fecha_fin    = input.time(timestamp("31 Dec 2025 23:59:59"), title="Fecha fin",    group="Periodo de Backtest")
+
+en_periodo = time >= fecha_inicio and time <= fecha_fin
+
+// --- Medias moviles de COMPRA ---
+len_rapida = input.int(15, title="MA Rapida (Compra)", minval=1, group="Senal de Compra")
+len_media  = input.int(30, title="MA Media  (Compra)", minval=1, group="Senal de Compra")
+
+// --- Medias moviles de VENTA ---
+len_venta1 = input.int(30, title="MA Rapida (Venta)",  minval=1, group="Senal de Venta")
+len_venta2 = input.int(60, title="MA Lenta  (Venta)",  minval=1, group="Senal de Venta")
+
+// --- Filtro ADX ---
+adx_periodo = input.int(14,   title="Periodo ADX",       minval=1, group="Filtro ADX")
+adx_umbral  = input.float(20, title="Umbral ADX minimo", minval=1, group="Filtro ADX")
+
+// --- Tipo de media movil ---
+tipo_ma = input.string("EMA", title="Tipo de Media Movil", options=["EMA", "SMA"], group="Configuracion")
+
+// ============================================================
+// CALCULO DE MEDIAS MOVILES
+// ============================================================
+
+f_ma(src, len, tipo) =>
+    tipo == "EMA" ? ta.ema(src, len) : ta.sma(src, len)
+
+ma15 = f_ma(close, len_rapida, tipo_ma)
+ma30 = f_ma(close, len_media,  tipo_ma)
+ma60 = f_ma(close, len_venta2, tipo_ma)
+
+// ============================================================
+// CALCULO DEL ADX
+// ============================================================
+
+[diPlus, diMinus, adx] = ta.dmi(adx_periodo, adx_periodo)
+
+tendencia_fuerte = adx > adx_umbral
+
+// ============================================================
+// SENALES DE ENTRADA Y SALIDA
+// ============================================================
+
+// COMPRA: MA15 cruza hacia arriba de MA30 + ADX > 25 + dentro del periodo
+cruce_compra = ta.crossover(ma15, ma30) and en_periodo
+
+// VENTA: MA30 cruza hacia abajo de MA60 - liquida todo lo acumulado
+cruce_venta = ta.crossunder(ma15, ma60) and tendencia_fuerte
+
+// Fuerza cierre al llegar al fin del periodo si hay posicion abierta
+fin_periodo = time > fecha_fin and strategy.position_size > 0
+
+// ============================================================
+// EJECUCION DE ORDENES
+// ============================================================
+
+if cruce_compra
+    strategy.entry("Compra", strategy.long, comment="Entrada")
+
+if cruce_venta or fin_periodo
+    strategy.close_all(comment="Venta total")
+
+// ============================================================
+// VISUALIZACION EN EL GRAFICO
+// ============================================================
+
+COLOR_MA15 = color.new(#00C9FF, 0)
+COLOR_MA30 = color.new(#F7B731, 0)
+COLOR_MA60 = color.new(#FF4757, 0)
+
+plot(ma15, title="MA15 (Compra rapida)", color=COLOR_MA15, linewidth=2)
+plot(ma30, title="MA30 (Media)",         color=COLOR_MA30, linewidth=2)
+plot(ma60, title="MA60 (Venta lenta)",   color=COLOR_MA60, linewidth=2)
+
+plotshape(cruce_compra, title="Senal Compra",
+     style=shape.triangleup, location=location.belowbar,
+     color=color.new(color.lime, 0), size=size.normal, text="BUY")
+
+plotshape(cruce_venta, title="Senal Venta",
+     style=shape.triangledown, location=location.abovebar,
+     color=color.new(color.red, 0), size=size.normal, text="SELL")
+
+// Fondo verde cuando hay tendencia alcista confirmada dentro del periodo
+bgcolor(tendencia_fuerte and ma15 > ma30 and en_periodo ? color.new(color.green, 92) : na,
+     title="Zona tendencia alcista confirmada")
+
+// Fondo gris fuera del periodo de backtest
+bgcolor(not en_periodo ? color.new(color.gray, 93) : na,
+     title="Fuera del periodo")
+
+// ============================================================
+// PANEL DE INFORMACION
+// ============================================================
+
+var table info = table.new(position.top_right, 2, 7,
+     bgcolor      = color.new(color.black, 70),
+     border_color = color.new(color.gray, 50),
+     border_width = 1,
+     frame_color  = color.new(color.gray, 30),
+     frame_width  = 1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "INDICADOR", text_color=color.gray,  text_size=size.small)
+    table.cell(info, 1, 0, "VALOR",     text_color=color.gray,  text_size=size.small)
+
+    table.cell(info, 0, 1, "MA15", text_color=COLOR_MA15, text_size=size.small)
+    table.cell(info, 1, 1, str.tostring(ma15, "#.##"), text_color=COLOR_MA15, text_size=size.small)
+
+    table.cell(info, 0, 2, "MA30", text_color=COLOR_MA30, text_size=size.small)
+    table.cell(info, 1, 2, str.tostring(ma30, "#.##"), text_color=COLOR_MA30, text_size=size.small)
+
+    table.cell(info, 0, 3, "MA60", text_color=COLOR_MA60, text_size=size.small)
+    table.cell(info, 1, 3, str.tostring(ma60, "#.##"), text_color=COLOR_MA60, text_size=size.small)
+
+    adx_color = tendencia_fuerte ? color.lime : color.orange
+    table.cell(info, 0, 4, "ADX", text_color=adx_color, text_size=size.small)
+    table.cell(info, 1, 4, str.tostring(adx, "#.#") + (tendencia_fuerte ? " OK" : " --"),
+         text_color=adx_color, text_size=size.small)
+
+    periodo_color = en_periodo ? color.lime : color.gray
+    table.cell(info, 0, 5, "PERIODO", text_color=periodo_color, text_size=size.small)
+    table.cell(info, 1, 5, en_periodo ? "ACTIVO" : "FUERA", text_color=periodo_color, text_size=size.small)
+
+    pos_color = strategy.position_size > 0 ? color.lime : color.gray
+    table.cell(info, 0, 6, "POSICION", text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 6, strategy.position_size > 0 ? "LONG" : "FUERA", text_color=pos_color, text_size=size.small)

@@ -1,0 +1,98 @@
+//@version=6
+
+// @Horazio
+indicator("Stabilized HMA Scalper", shorttitle="Stab. HMA 2.0", overlay=true)
+
+
+import Horazio/Table_Utils/2 as tbl 
+
+
+var color C_BULL    = #00E676 
+var color C_BEAR    = #FF2950 
+var color C_NEUT    = #2962FF 
+var color C_TEXT    = #FFFFFF 
+var color C_BG      = #000000 
+
+// =============================================================================
+// 1. ARCHITECTURE & INPUTS
+// =============================================================================
+
+// --- HMA Settings ---
+grp_hma = "𝗛𝗠𝗔 𝗖𝗢𝗥𝗘 (𝗦𝗜𝗚𝗡𝗔𝗟)"
+len_hma = input.int(200, "Length (HMA)", minval=1, group=grp_hma, tooltip="Inputs for Hull Moving Average.", inline = "HMA_")
+src_hma = input.source(close, "Source", group=grp_hma, inline = "HMA_")
+
+// --- ALMA Settings ---
+grp_alma = "𝗔𝗟𝗠𝗔 𝗙𝗜𝗟𝗧𝗘𝗥 (𝗧𝗥𝗘𝗡𝗗)"
+len_alma = input.int(100, "Length (ALMA)", minval=1, group=grp_alma, inline = "ALMA_")
+off_alma = input.float(0.1, "Offset", step=0.05, group=grp_alma, inline = "ALMA_")
+sig_alma = input.float(0.1, "Sigma", step=0.5, group=grp_alma, inline = "ALMA_")
+
+// --- Visuals ---
+grp_vis = "𝗩𝗜𝗦𝗨𝗔𝗟𝗦"
+show_glow   = input.bool(true, "Show Neon Glow?", group=grp_vis, inline = "VIS")
+show_dash   = input.bool(true, "Show Dashboard?", group=grp_vis, inline = "VIS")
+dash_pos    = input.string("Top Right", "Dashboard Position", options=["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group=grp_vis, inline = "DASH")
+dash_size   = input.string("Normal", "Dashboard Size", options=["Tiny", "Small", "Normal", "Large"], group=grp_vis, inline = "DASH")
+
+// =============================================================================
+// 2. CALCULATION ENGINE
+// =============================================================================
+
+
+hma_val = ta.hma(src_hma, len_hma)
+alma_val = ta.alma(src_hma, len_alma, off_alma, sig_alma)
+hma_rising  = hma_val > hma_val[1]
+hma_falling = hma_val < hma_val[1]
+price_above_alma = close > alma_val
+price_below_alma = close < alma_val
+signal_long  = hma_rising and not hma_rising[1] and price_above_alma
+signal_short = hma_falling and not hma_falling[1] and price_below_alma
+is_bull_trend = hma_rising and price_above_alma
+is_bear_trend = hma_falling and price_below_alma
+
+// =============================================================================
+// 3. CONDITIONAL GRADIENT SHADING 
+// =============================================================================
+
+p_hma  = plot(hma_val, "HMA Line", display=display.none) 
+p_alma = plot(alma_val, "ALMA Line", display=display.none) 
+fill(p_hma, p_alma, is_bull_trend ? hma_val : na, is_bull_trend ? alma_val : na, color.new(C_BULL, 50), color.new(C_BULL, 80))
+fill(p_hma, p_alma, is_bear_trend ? hma_val : na, is_bear_trend ? alma_val : na, color.new(C_BEAR, 50), color.new(C_BEAR, 80))
+
+
+line_col = is_bull_trend ? C_BULL : is_bear_trend ? C_BEAR : C_NEUT
+plot(show_glow ? hma_val : na, "HMA Glow", color=color.new(line_col, 80), linewidth=6, style=plot.style_line)
+plot(hma_val, "HMA Core", color=line_col, linewidth=2, style=plot.style_line)
+plot(alma_val, "ALMA Baseline", color=color.new(C_NEUT, 50), linewidth=1)
+
+// =============================================================================
+// 4. SIGNALS & LABELS
+// =============================================================================
+
+plotshape(signal_long, "Buy Signal", shape.triangleup, location.belowbar, color=C_BULL, size=size.small)
+plotshape(signal_long, "Buy Signal", shape.triangleup, location.belowbar, color=C_BULL, size=size.normal, text="𝐁𝐔𝐘", textcolor=C_TEXT)
+plotshape(signal_short, "Sell Signal", shape.triangledown, location.abovebar, color=C_BEAR, size=size.small)
+plotshape(signal_short, "Sell Signal", shape.triangledown, location.abovebar, color=C_BEAR, size=size.normal, text="𝐒𝐄𝐋𝐋", textcolor=C_TEXT)
+
+// =============================================================================
+// 6. DASHBOARD
+// =============================================================================
+if show_dash
+    var table dash = table.new(tbl.get_position(dash_pos), 2, 2, bgcolor=color.new(C_BG, 30), border_width=1, border_color=color.new(C_NEUT, 50), frame_color=color.new(C_NEUT, 50), frame_width=1)
+    
+    if barstate.islast
+        // Header
+        table.cell(dash, 0, 0, "𝐌𝐀𝐑𝐊𝐄𝐓 𝐒𝐓𝐀𝐓𝐄", text_color=C_TEXT, bgcolor=color.new(C_NEUT, 80), text_size=tbl.get_size(dash_size))
+        table.cell(dash, 1, 0, "𝐕𝐀𝐋𝐔𝐄", text_color=C_TEXT, bgcolor=color.new(C_NEUT, 80), text_size=tbl.get_size(dash_size))
+        
+        string status_txt = is_bull_trend ? "Bullish" : is_bear_trend ? "Bearish" : "Range"
+        color status_col = is_bull_trend ? C_BULL : is_bear_trend ? C_BEAR : color.gray
+        table.cell(dash, 0, 1, "Trend", text_color=C_TEXT, text_size=tbl.get_size(dash_size))
+        table.cell(dash, 1, 1, status_txt, text_color=status_col, text_size=tbl.get_size(dash_size))
+        
+// =============================================================================
+// 7. ALERTS
+// =============================================================================
+alertcondition(signal_long, "HMA Bull Entry", "Valid Long: HMA Green & Price > ALMA")
+alertcondition(signal_short, "HMA Bear Entry", "Valid Short: HMA Red & Price < ALMA")

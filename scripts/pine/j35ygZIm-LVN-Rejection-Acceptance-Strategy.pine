@@ -1,0 +1,56 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AIScripts
+
+
+//@version=6
+strategy("LVN Rejection / Acceptance Strategy", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=5)
+
+// ───── INPUTS ─────
+zoneLen    = input.int(40, "LVN Detection Length")
+atrLen     = input.int(14, "ATR Length")
+zoneWidth  = input.float(0.8, "LVN Width ATR")
+stopMult   = input.float(1.5, "Stop ATR Multiplier")
+rr         = input.float(2.0, "Risk Reward")
+
+// ───── LVN APPROXIMATION ─────
+basis   = ta.sma(close, zoneLen)
+atrVal  = ta.atr(atrLen)
+
+lvnUpper = basis + atrVal * zoneWidth
+lvnLower = basis - atrVal * zoneWidth
+
+// Relative volume check
+avgVol = ta.sma(volume, zoneLen)
+lowVol = volume < avgVol * 0.8
+
+// ───── REJECTION / ACCEPTANCE LOGIC ─────
+bullReject = low < lvnLower and close > lvnLower and lowVol
+bearReject = high > lvnUpper and close < lvnUpper and lowVol
+
+bullAccept = close > lvnUpper and close[1] > lvnUpper
+bearAccept = close < lvnLower and close[1] < lvnLower
+
+// ───── ENTRY CONDITIONS ─────
+longCondition  = bullReject or bullAccept
+shortCondition = bearReject or bearAccept
+
+if longCondition and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+
+if shortCondition and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+
+// ───── RISK MANAGEMENT ─────
+longStop   = strategy.position_avg_price - atrVal * stopMult
+longTarget = strategy.position_avg_price + atrVal * stopMult * rr
+
+shortStop   = strategy.position_avg_price + atrVal * stopMult
+shortTarget = strategy.position_avg_price - atrVal * stopMult * rr
+
+strategy.exit("Exit Long", from_entry="Long", stop=longStop, limit=longTarget)
+strategy.exit("Exit Short", from_entry="Short", stop=shortStop, limit=shortTarget)
+
+// ───── VISUALS ─────
+plot(basis, title="LVN Mid", color=color.orange)
+plot(lvnUpper, title="LVN Upper", color=color.red)
+plot(lvnLower, title="LVN Lower", color=color.green)

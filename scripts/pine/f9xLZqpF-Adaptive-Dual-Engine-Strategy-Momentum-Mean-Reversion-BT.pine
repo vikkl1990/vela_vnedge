@@ -1,0 +1,1042 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// FORECAST + BACKTEST STRATEGY
+// Built on top of "Adaptive Dual-Engine Strategy" (EMA_MACD_BuySell_Dual_Engine_Strategy_v6).
+// It KEEPS the full dual-engine backtest (EMA-MACD momentum + BuySell oscillator + mean reversion)
+// and ADDS a multi-model forward projection of the next N candles (default 15, range 5-50):
+//   1) Linear-regression slope of price   (trend component)
+//   2) Dual-engine score bias             (directional conviction component)
+//   3) Momentum / Rate-of-Change          (recent thrust component)
+//   4) ATR confidence cone                (uncertainty band that widens with horizon)
+// The blended drift projects a candle-by-candle path into the future with an upper/lower band and a
+// forecast summary table. NOTE: a forecast is a probabilistic projection, NOT a guarantee.
+//
+// v6.1 additions: (1) Session/date/weekday entry filters + session-end flatten,
+//   (2) Risk-% position sizing + daily circuit breaker (max trades/day, max daily loss),
+//   (3) JSON webhook alerts on entry/exit for bot/broker automation,
+//   (4) On-chart performance dashboard (win rate, profit factor, net P&L, drawdown, day P&L).
+
+//@version=6
+strategy("EMA MACD Forecast Predictor - Dual Engine [Backtest + Forecast]",
+     shorttitle    = "Forecast Predictor",
+     overlay       = true,
+     initial_capital = 2000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 25,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.0,
+     slippage = 1,
+     pyramiding = 0,
+     calc_on_every_tick = true,  // live forecast: projection appears immediately and updates each tick (intrabar backtest fills)
+     max_labels_count = 500,
+     max_lines_count = 500,
+     max_boxes_count = 500)
+
+//==============================================================================
+// ENTRY MODE
+//==============================================================================
+var string GP_MODE = "Entry Mode"
+entryMode = input.string("Auto (by timeframe)", "How to combine signals", options=["Auto (by timeframe)", "Both Agree", "Either Signal", "EMA MACD Only", "BuySell Only", "Mean Reversion"], group=GP_MODE, tooltip="Auto = Mean Reversion on intraday charts (best for 5-min choppy index ETFs like SPY/QQQ) and EMA MACD momentum on daily+ charts (best for trending stocks).")
+
+//==============================================================================
+// EMA MACD INPUTS
+//==============================================================================
+var string GP_EMA = "EMA MACD — EMA Lines"
+src = input.source(close, "Source", group=GP_EMA)
+ema1Len = input.int(9, "EMA 1 Length", minval=1, group=GP_EMA)
+ema2Len = input.int(21, "EMA 2 Length", minval=1, group=GP_EMA)
+ema3Len = input.int(50, "EMA 3 Length", minval=1, group=GP_EMA)
+ema4Len = input.int(100, "EMA 4 Length", minval=1, group=GP_EMA)
+ema5Len = input.int(200, "EMA 5 Length", minval=1, group=GP_EMA)
+
+// --- EMA line display (merged from EMA MACD Decision Table) ---
+var string GP_EMADISP = "EMA MACD — EMA Line Display"
+showEma   = input.bool(true, "Show EMA lines on chart", group=GP_EMADISP)
+ema1On    = input.bool(true, "EMA 1", inline="e1", group=GP_EMADISP)
+ema1Color = input.color(#FF3C33, "", inline="e1", group=GP_EMADISP)
+ema2On    = input.bool(true, "EMA 2", inline="e2", group=GP_EMADISP)
+ema2Color = input.color(#33FF4A, "", inline="e2", group=GP_EMADISP)
+ema3On    = input.bool(true, "EMA 3", inline="e3", group=GP_EMADISP)
+ema3Color = input.color(#F7FF33, "", inline="e3", group=GP_EMADISP)
+ema4On    = input.bool(true, "EMA 4", inline="e4", group=GP_EMADISP)
+ema4Color = input.color(#8B80EE, "", inline="e4", group=GP_EMADISP)
+ema5On    = input.bool(true, "EMA 5", inline="e5", group=GP_EMADISP)
+ema5Color = input.color(#FF33F6, "", inline="e5", group=GP_EMADISP)
+
+var string GP_MACD1 = "EMA MACD — MACD"
+emMacdFastLen = input.int(12, "Fast Length", minval=1, group=GP_MACD1)
+emMacdSlowLen = input.int(26, "Slow Length", minval=1, group=GP_MACD1)
+emMacdSignalLen = input.int(9, "Signal Smoothing", minval=1, group=GP_MACD1)
+
+var string GP_EMFILTERS = "EMA MACD — Filters"
+emRsiLen = input.int(14, "RSI Length", minval=1, group=GP_EMFILTERS)
+adxLen = input.int(14, "ADX Length", minval=1, group=GP_EMFILTERS)
+adxSmooth = input.int(14, "ADX Smoothing", minval=1, group=GP_EMFILTERS)
+adxTrendMin = input.float(20.0, "Minimum ADX Trend", minval=1.0, step=0.5, group=GP_EMFILTERS)
+emVolLen = input.int(20, "Volume Average Length", minval=1, group=GP_EMFILTERS)
+useHtfTrend = input.bool(true, "Use Higher Timeframe Trend", group=GP_EMFILTERS)
+htf = input.timeframe("D", "Higher Timeframe", group=GP_EMFILTERS)
+htfEmaLen = input.int(50, "HTF EMA Length", minval=1, group=GP_EMFILTERS)
+
+var string GP_EMSTRAT = "EMA MACD — Thresholds"
+emEntryScore = input.int(5, "Entry Score Threshold", minval=1, maxval=10, group=GP_EMSTRAT, tooltip="Score range -10 to +10. Default Strong signal at 5.")
+
+//==============================================================================
+// BUYSELL OSCILLATOR INPUTS
+//==============================================================================
+var string GP_BSRSI = "BuySell — RSI"
+bsRsiLen = input.int(14, "RSI Length", minval=1, group=GP_BSRSI)
+bsRsiBuyLevel = input.float(30.0, "RSI Buy Level", minval=1, maxval=99, step=0.5, group=GP_BSRSI)
+bsRsiSellLevel = input.float(70.0, "RSI Sell Level", minval=1, maxval=99, step=0.5, group=GP_BSRSI)
+bsRsiBullLevel = input.float(55.0, "RSI Bull Bias", minval=1, maxval=99, step=0.5, group=GP_BSRSI)
+bsRsiBearLevel = input.float(45.0, "RSI Bear Bias", minval=1, maxval=99, step=0.5, group=GP_BSRSI)
+
+var string GP_STOCH = "BuySell — Stochastic"
+kPeriod = input.int(14, "K Period", minval=1, group=GP_STOCH)
+kSmooth = input.int(3, "K Smoothing", minval=1, group=GP_STOCH)
+dPeriod = input.int(3, "D Period", minval=1, group=GP_STOCH)
+stochBuyLevel = input.float(20.0, "Stochastic Buy Level", minval=1, maxval=99, step=0.5, group=GP_STOCH)
+stochSellLevel = input.float(80.0, "Stochastic Sell Level", minval=1, maxval=99, step=0.5, group=GP_STOCH)
+
+var string GP_MACD2 = "BuySell — MACD"
+bsMacdFastLen = input.int(12, "Fast Length", minval=1, group=GP_MACD2)
+bsMacdSlowLen = input.int(26, "Slow Length", minval=1, group=GP_MACD2)
+bsMacdSignalLen = input.int(9, "Signal Smoothing", minval=1, maxval=50, group=GP_MACD2)
+useSmaOscillator = input.bool(false, "Simple MA Oscillator", group=GP_MACD2)
+useSmaSignal = input.bool(false, "Simple MA Signal", group=GP_MACD2)
+
+var string GP_BSFILTERS = "BuySell — Extra Confirmation"
+useTrendFilter = input.bool(true, "Use EMA Trend Filter", group=GP_BSFILTERS)
+bsFastEmaLen = input.int(9, "Fast EMA", minval=1, group=GP_BSFILTERS)
+bsSlowEmaLen = input.int(21, "Slow EMA", minval=1, group=GP_BSFILTERS)
+bsTrendEmaLen = input.int(200, "Trend EMA", minval=1, group=GP_BSFILTERS)
+useVolumeFilter = input.bool(true, "Use Volume Confirmation", group=GP_BSFILTERS)
+bsVolLen = input.int(20, "Volume Average Length", minval=1, group=GP_BSFILTERS)
+
+var string GP_BSSTRAT = "BuySell — Thresholds"
+bsEntryScore = input.int(6, "Entry Score Threshold", minval=1, maxval=12, group=GP_BSSTRAT, tooltip="Score range -12 to +12. Default Strong signal at 6.")
+
+//==============================================================================
+// MEAN REVERSION INPUTS  (used by "Mean Reversion" mode and by "Auto" on intraday)
+//==============================================================================
+var string GP_MR = "Mean Reversion (intraday)"
+mrMeanLen   = input.int(40, "Mean EMA Length", minval=2, group=GP_MR)
+mrRsiLen    = input.int(2, "RSI Length (short)", minval=1, group=GP_MR)
+mrBuyLevel  = input.float(15.0, "Buy when RSI below", minval=1, maxval=50, step=1, group=GP_MR)
+mrSellLevel = input.float(85.0, "Short when RSI above", minval=50, maxval=99, step=1, group=GP_MR)
+mrDevATR    = input.float(0.5, "Entry stretch from mean (ATR)", minval=0.1, step=0.1, group=GP_MR)
+mrStopATR   = input.float(2.0, "Mean-reversion stop (ATR)", minval=0.1, step=0.1, group=GP_MR)
+
+//==============================================================================
+// SHARED SETTINGS
+//==============================================================================
+var string GP_RISK = "Risk Management"
+atrLen = input.int(14, "ATR Length", minval=1, group=GP_RISK)
+atrStopMult = input.float(3.0, "ATR Stop Multiplier", minval=0.1, step=0.1, group=GP_RISK)
+rewardRisk = input.float(0.3, "Reward/Risk Target", minval=0.1, step=0.1, group=GP_RISK)
+useAtrStops = input.bool(true, "Use ATR Stop-Loss / Take-Profit", group=GP_RISK)
+useScaleOut = input.bool(false, "Scale out at a close first target", group=GP_RISK)
+tp1AtrMult = input.float(1.0, "First target distance (in ATR)", minval=0.1, step=0.1, group=GP_RISK)
+tp1Qty = input.int(60, "Percent of position to close at first target", minval=1, maxval=99, group=GP_RISK)
+useBreakeven = input.bool(false, "Move stop to breakeven after first target", group=GP_RISK)
+useTrailing = input.bool(false, "Trail the runner with ATR", group=GP_RISK)
+trailAtrMult = input.float(2.5, "Trailing ATR Multiplier", minval=0.1, step=0.1, group=GP_RISK)
+
+var string GP_STRATEGY = "Strategy Settings"
+exitOnFlip = input.bool(true, "Exit on opposite Strong signal", group=GP_STRATEGY)
+exitOnNeutral = input.bool(false, "Exit when score returns to neutral (0)", group=GP_STRATEGY)
+allowShorts = input.bool(false, "Allow Short Trades", group=GP_STRATEGY)
+requireTrendAlignment = input.bool(true, "Only trade WITH the 200-EMA trend", group=GP_STRATEGY)
+requireAdxTrend = input.bool(true, "Block entries when ADX below trend minimum (chop filter)", group=GP_STRATEGY)
+requireNoChase = input.bool(true, "Block over-extended entries (no chasing)", group=GP_STRATEGY)
+maxExtensionAtr = input.float(2.0, "Max extension from fast EMA (in ATR)", minval=0.1, step=0.1, group=GP_STRATEGY)
+rsiMaxLong = input.float(72.0, "Don't go long above this RSI", minval=50, maxval=99, step=1, group=GP_STRATEGY)
+rsiMinShort = input.float(28.0, "Don't go short below this RSI", minval=1, maxval=50, step=1, group=GP_STRATEGY)
+useTimeStop = input.bool(true, "Time-stop: close after N bars (short-term holding)", group=GP_STRATEGY)
+maxHoldBars = input.int(5, "Max bars to hold a trade", minval=1, group=GP_STRATEGY)
+
+//==============================================================================
+// SESSION & DATE FILTERS  (new)
+//==============================================================================
+var string GP_TIME = "Session & Date Filters"
+useDateFilter    = input.bool(false, "Limit trading to a date range", group=GP_TIME, tooltip="Restricts entries to the window below. Handy for isolating a specific backtest period.")
+startDate        = input.time(timestamp("01 Jan 2020 00:00"), "Start date/time", group=GP_TIME)
+endDate          = input.time(timestamp("01 Jan 2099 00:00"), "End date/time", group=GP_TIME)
+useSessionFilter = input.bool(false, "Only enter during a session window (intraday)", group=GP_TIME, tooltip="Blocks entries outside the chosen intraday session (exchange timezone). Leave OFF on daily+ charts.")
+sessionTime      = input.session("0930-1600", "Entry session", group=GP_TIME)
+useDayFilter     = input.bool(false, "Only trade selected weekdays", group=GP_TIME)
+tradeMon = input.bool(true, "Mon", inline="dow", group=GP_TIME)
+tradeTue = input.bool(true, "Tue", inline="dow", group=GP_TIME)
+tradeWed = input.bool(true, "Wed", inline="dow", group=GP_TIME)
+tradeThu = input.bool(true, "Thu", inline="dow", group=GP_TIME)
+tradeFri = input.bool(true, "Fri", inline="dow", group=GP_TIME)
+useFlatten       = input.bool(false, "Flatten all positions in a session-end window", group=GP_TIME, tooltip="Force-closes any open position during the window below. Avoids holding overnight on intraday charts.")
+flattenTime      = input.session("1555-1600", "Flatten window", group=GP_TIME)
+
+//==============================================================================
+// POSITION SIZING & DAILY CIRCUIT BREAKER  (new)
+//==============================================================================
+var string GP_SIZE = "Position Sizing & Circuit Breaker"
+useRiskSizing    = input.bool(false, "Size by risk % of equity (overrides fixed % of equity)", group=GP_SIZE, tooltip="ON = each trade's share count is set so that hitting the ATR stop loses about 'Risk per trade %' of equity. OFF = the default 25%-of-equity sizing.")
+riskPerTradePct  = input.float(1.0, "Risk per trade (% of equity)", minval=0.1, maxval=100, step=0.1, group=GP_SIZE)
+maxTradesPerDay  = input.int(0, "Max trades per day (0 = unlimited)", minval=0, group=GP_SIZE, tooltip="Caps new entries per calendar day. Mainly for intraday; on a daily chart every bar is a new day so this rarely binds.")
+useMaxDailyLoss  = input.bool(false, "Stop & flatten after a daily loss limit", group=GP_SIZE)
+maxDailyLossPct  = input.float(3.0, "Max daily loss (% of day-start equity)", minval=0.1, step=0.1, group=GP_SIZE)
+
+//==============================================================================
+// WEBHOOK / AUTOMATION  (new)
+//==============================================================================
+var string GP_WH = "Webhook / Automation"
+useWebhook    = input.bool(false, "Emit JSON webhook alerts on entry/exit", group=GP_WH, tooltip="Adds machine-readable JSON alert() messages for a trading bot or broker bridge. Create an alert with condition = this strategy and 'Any alert() function call', leave the message box blank, and point the webhook URL at your bot.")
+webhookSymbol = input.string("", "Override symbol in payload (blank = chart symbol)", group=GP_WH)
+
+//==============================================================================
+// PERFORMANCE DASHBOARD  (new)
+//==============================================================================
+var string GP_PERF = "Performance Dashboard"
+showPerfTable = input.bool(false, "Show performance rows in the table", group=GP_PERF, tooltip="Adds live strategy stats (net P&L, profit factor, win rate, drawdown, day P&L) to the one combined table on the right. Position the whole table with the Table Vertical/Horizontal inputs in the Display group.")
+
+//==============================================================================
+// FORECAST INPUTS  (the new prediction engine)
+//==============================================================================
+var string GP_FC = "Forecast — Next N Candles"
+showForecast   = input.bool(true, "Show forward forecast", group=GP_FC)
+fcBars         = input.int(15, "Candles to project forward", minval=5, maxval=50, group=GP_FC, tooltip="How many future candles to project. Default 15. TradingView allows drawing up to ~500 bars into the future.")
+fcRegLen       = input.int(50, "Regression / momentum lookback", minval=5, maxval=500, group=GP_FC, tooltip="Bars used to measure the trend slope and momentum that get projected forward.")
+fcWReg         = input.float(0.5, "Weight: regression slope", minval=0.0, maxval=1.0, step=0.05, group=GP_FC, tooltip="Trend-following component of the drift.")
+fcWScore       = input.float(0.3, "Weight: dual-engine score bias", minval=0.0, maxval=1.0, step=0.05, group=GP_FC, tooltip="Directional conviction from the EMA-MACD + BuySell scores.")
+fcWMom         = input.float(0.2, "Weight: momentum (ROC)", minval=0.0, maxval=1.0, step=0.05, group=GP_FC, tooltip="Recent rate-of-change thrust.")
+fcScoreDriftAtr= input.float(0.15, "Score drift per point (ATR/bar)", minval=0.0, maxval=1.0, step=0.05, group=GP_FC, tooltip="Each normalized score point adds this much ATR of drift per projected bar.")
+fcBandMult     = input.float(1.0, "Confidence band width (ATR)", minval=0.1, maxval=5.0, step=0.1, group=GP_FC, tooltip="Half-width of the cone = this x ATR x sqrt(bar). Wider = more conservative.")
+fcShowCandles  = input.bool(false, "Draw projected candle boxes", group=GP_FC, tooltip="OFF = clean dotted line only (green up / red down). ON = synthetic OHLC candles for the projected path.")
+fcShowBand     = input.bool(true, "Draw confidence cone / parabolic curve (upper/lower)", group=GP_FC, tooltip="The parabolic uncertainty cone around the dotted line. Half-width grows with sqrt(time).")
+fcShowTable    = input.bool(true, "Show forecast summary table", group=GP_FC)
+fcUseGate      = input.bool(false, "Confidence gate: only show forecast when confidence ≥ threshold", group=GP_FC, tooltip="OFF = forecast always shows. ON = hides the projection (and mutes the forecast alert) when confidence is below the threshold, so you only act on high-confidence setups. Turn ON once you've confirmed a threshold that gives good Measured Accuracy.")
+fcGateThresh   = input.int(70, "Confidence gate threshold (%)", minval=0, maxval=100, step=5, group=GP_FC, tooltip="Forecast is drawn only when the live confidence reading reaches this level. 70 = only strong, trending, both-engines-agree setups.")
+fcGrowWick     = input.bool(false, "Grow candle wicks with uncertainty (far candles look bigger)", group=GP_FC, tooltip="ON = each projected candle's wick grows with sqrt(time) to show compounding uncertainty, so bar 15 looks larger than bar 1. OFF = uniform-size candles (wick = a fixed fraction of ATR).")
+fcWickAtr      = input.float(0.5, "Uniform wick size (ATR)", minval=0.0, maxval=3.0, step=0.1, group=GP_FC, tooltip="Wick length (above and below the body) when 'Grow candle wicks' is OFF.")
+fcUpLineColor  = input.color(color.new(color.green, 0), "Forecast line — UP (dotted)", group=GP_FC)
+fcDnLineColor  = input.color(color.new(color.red, 0), "Forecast line — DOWN (dotted)", group=GP_FC)
+fcUpColor      = input.color(color.new(color.teal, 0), "Projected up candle", group=GP_FC)
+fcDnColor      = input.color(color.new(color.red, 0), "Projected down candle", group=GP_FC)
+fcBandColor    = input.color(color.new(color.orange, 20), "Confidence cone (parabolic band)", group=GP_FC)
+
+//==============================================================================
+// DIVERGENCE INPUTS  (lines on past candles — improves directional read)
+//==============================================================================
+var string GP_DIV = "Divergence (past candles)"
+showDiv      = input.bool(true, "Show divergence lines", group=GP_DIV, tooltip="Draws a line between two price pivots when price and the oscillator disagree. Regular = possible reversal; Hidden = trend continuation.")
+divSrcChoice = input.string("RSI", "Oscillator", options=["RSI", "MACD Histogram", "Stochastic %K"], group=GP_DIV)
+divLbL       = input.int(5, "Pivot lookback left", minval=1, group=GP_DIV, tooltip="Bars to the left of a pivot. Larger = fewer, more significant pivots.")
+divLbR       = input.int(5, "Pivot lookback right", minval=1, group=GP_DIV, tooltip="Bars to the right a pivot must hold before it is confirmed. The line therefore appears divLbR bars late (no repaint after that).")
+divRangeMin  = input.int(5, "Min bars between pivots", minval=1, group=GP_DIV)
+divRangeMax  = input.int(60, "Max bars between pivots", minval=2, group=GP_DIV)
+showRegDiv   = input.bool(true, "Regular divergence (reversal)", group=GP_DIV)
+showHidDiv   = input.bool(false, "Hidden divergence (continuation)", group=GP_DIV)
+divLabels    = input.bool(true, "Show R/H labels", group=GP_DIV)
+divBullColor = input.color(color.new(color.green, 0), "Bullish", inline="dvc", group=GP_DIV)
+divBearColor = input.color(color.new(color.red, 0), "Bearish", inline="dvc", group=GP_DIV)
+
+var string GP_ALERTS = "Alerts"
+useEarlyAlert = input.bool(true, "Early Warning Alert (1 point before entry)", group=GP_ALERTS)
+useEntryAlert = input.bool(true, "Entry Alert (Strong signal fires)", group=GP_ALERTS)
+useExitPriceAlert = input.bool(true, "Exit Alert: Price near Stop/Target", group=GP_ALERTS)
+exitProximityPct = input.float(25.0, "Stop/Target Proximity % to alert", minval=5, maxval=75, step=5, group=GP_ALERTS)
+useExitScoreAlert = input.bool(true, "Exit Alert: Score weakening", group=GP_ALERTS)
+scoreWeakenThreshold = input.int(2, "Score weaken threshold", minval=0, maxval=6, group=GP_ALERTS)
+useForecastAlert = input.bool(true, "Forecast Alert (projected move beyond threshold)", group=GP_ALERTS)
+fcAlertPct = input.float(1.0, "Alert if projected move % exceeds", minval=0.1, step=0.1, group=GP_ALERTS)
+
+var string GP_DISPLAY = "Display"
+showAllVisuals = input.bool(true, "Show All Chart Visuals (master toggle)", group=GP_DISPLAY)
+paintBars = input.bool(true, "Paint Bars By Decision", group=GP_DISPLAY)
+showEntryLabels = input.bool(true, "Show Entry Labels (LONG/SHORT) — actual strategy trades", group=GP_DISPLAY)
+showDecisionSignals = input.bool(true, "Show BUY/SELL signal labels (decision score, like the Decision Table)", group=GP_DISPLAY, tooltip="Prints a BUY/SELL label on the candle every time the EMA-MACD decision score crosses into Strong (≥ entry threshold), independent of whether the strategy actually takes a trade. This matches the standalone Decision Table indicator.")
+showEarlyWarnings = input.bool(true, "Show Early Warning Diamonds", group=GP_DISPLAY)
+showDecisionRows = input.bool(true, "Show decision-panel rows in the table", group=GP_DISPLAY, tooltip="Adds the per-indicator breakdown (EMA, MACD, RSI, ADX, Volume, HTF, ATR, Stop/Target) from the Decision Table beneath the forecast rows — one combined table.")
+tableY = input.string("top", "Table Vertical", options=["top", "middle", "bottom"], inline="pos", group=GP_DISPLAY)
+tableX = input.string("right", "Table Horizontal", options=["left", "center", "right"], inline="pos", group=GP_DISPLAY)
+tblSizeChoice = input.string("Normal", "Table text size", options=["Tiny", "Small", "Normal", "Large"], group=GP_DISPLAY, tooltip="Shrink the combined table so it fits on the chart. Use Tiny or Small if the table runs off the bottom edge or overlaps other indicators.")
+
+//==============================================================================
+// EMA MACD SCORING ENGINE (score range: -10 to +10)
+//==============================================================================
+ema1 = ta.ema(src, ema1Len)
+ema2 = ta.ema(src, ema2Len)
+ema3 = ta.ema(src, ema3Len)
+ema4 = ta.ema(src, ema4Len)
+ema5 = ta.ema(src, ema5Len)
+
+[emMacdLine, emMacdSignal, emMacdHist] = ta.macd(src, emMacdFastLen, emMacdSlowLen, emMacdSignalLen)
+
+emRsi = ta.rsi(src, emRsiLen)
+[plusDi, minusDi, adx] = ta.dmi(adxLen, adxSmooth)
+atr = ta.atr(atrLen)
+emVolMa = ta.sma(volume, emVolLen)
+emVolBull = not na(volume) and not na(emVolMa) and volume > emVolMa and close > open
+emVolBear = not na(volume) and not na(emVolMa) and volume > emVolMa and close < open
+
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, htfEmaLen))
+htfBull = not na(htfEma) and not na(htfClose) and htfClose > htfEma
+htfBear = not na(htfEma) and not na(htfClose) and htfClose < htfEma
+
+emEmaBull = ema1 > ema2 and close > ema3
+emEmaBear = ema1 < ema2 and close < ema3
+emLongBull = close > ema5
+emLongBear = close < ema5
+emMacdBull = not na(emMacdLine) and not na(emMacdSignal) and emMacdLine > emMacdSignal and emMacdHist > 0
+emMacdBear = not na(emMacdLine) and not na(emMacdSignal) and emMacdLine < emMacdSignal and emMacdHist < 0
+emMacdBuyCross = ta.crossover(emMacdLine, emMacdSignal)
+emMacdSellCross = ta.crossunder(emMacdLine, emMacdSignal)
+emRsiBull = not na(emRsi) and emRsi > 55
+emRsiBear = not na(emRsi) and emRsi < 45
+emAdxBull = not na(adx) and adx >= adxTrendMin and plusDi > minusDi
+emAdxBear = not na(adx) and adx >= adxTrendMin and minusDi > plusDi
+
+emScore = 0
+emScore += emEmaBull ? 2 : emEmaBear ? -2 : 0
+emScore += emLongBull ? 1 : emLongBear ? -1 : 0
+emScore += emMacdBull ? 2 : emMacdBear ? -2 : 0
+emScore += emMacdBuyCross ? 1 : emMacdSellCross ? -1 : 0
+emScore += emRsiBull ? 1 : emRsiBear ? -1 : 0
+emScore += emAdxBull ? 1 : emAdxBear ? -1 : 0
+emScore += emVolBull ? 1 : emVolBear ? -1 : 0
+emScore += useHtfTrend ? htfBull ? 1 : htfBear ? -1 : 0 : 0
+
+//==============================================================================
+// BUYSELL OSCILLATOR SCORING ENGINE (score range: -12 to +12)
+//==============================================================================
+bsRsi = ta.rsi(src, bsRsiLen)
+bsRsiBull = not na(bsRsi) and bsRsi >= bsRsiBullLevel
+bsRsiBear = not na(bsRsi) and bsRsi <= bsRsiBearLevel
+bsRsiBuyCross = ta.crossover(bsRsi, bsRsiBuyLevel)
+bsRsiSellCross = ta.crossunder(bsRsi, bsRsiSellLevel)
+
+stochK = ta.sma(ta.stoch(close, high, low, kPeriod), kSmooth)
+stochD = ta.sma(stochK, dPeriod)
+stochBull = not na(stochK) and not na(stochD) and stochK > stochD and stochK > 50
+stochBear = not na(stochK) and not na(stochD) and stochK < stochD and stochK < 50
+stochBuyCross = ta.crossover(stochK, stochBuyLevel)
+stochSellCross = ta.crossunder(stochK, stochSellLevel)
+stochKDCrossBuy = ta.crossover(stochK, stochD)
+stochKDCrossSell = ta.crossunder(stochK, stochD)
+
+bsFastMa = useSmaOscillator ? ta.sma(src, bsMacdFastLen) : ta.ema(src, bsMacdFastLen)
+bsSlowMa = useSmaOscillator ? ta.sma(src, bsMacdSlowLen) : ta.ema(src, bsMacdSlowLen)
+bsMacdLine = bsFastMa - bsSlowMa
+bsMacdSignal = useSmaSignal ? ta.sma(bsMacdLine, bsMacdSignalLen) : ta.ema(bsMacdLine, bsMacdSignalLen)
+bsMacdHist = bsMacdLine - bsMacdSignal
+bsMacdBull = not na(bsMacdLine) and not na(bsMacdSignal) and bsMacdLine > bsMacdSignal and bsMacdHist > 0
+bsMacdBear = not na(bsMacdLine) and not na(bsMacdSignal) and bsMacdLine < bsMacdSignal and bsMacdHist < 0
+bsMacdBuyCross = ta.crossover(bsMacdLine, bsMacdSignal)
+bsMacdSellCross = ta.crossunder(bsMacdLine, bsMacdSignal)
+
+bsEmaFast = ta.ema(src, bsFastEmaLen)
+bsEmaSlow = ta.ema(src, bsSlowEmaLen)
+bsEmaTrend = ta.ema(src, bsTrendEmaLen)
+bsTrendBull = bsEmaFast > bsEmaSlow and close > bsEmaTrend
+bsTrendBear = bsEmaFast < bsEmaSlow and close < bsEmaTrend
+
+bsVolAvg = ta.sma(volume, bsVolLen)
+bsVolBull = not na(volume) and not na(bsVolAvg) and volume > bsVolAvg and close > open
+bsVolBear = not na(volume) and not na(bsVolAvg) and volume > bsVolAvg and close < open
+
+bsScore = 0
+bsScore += bsRsiBull ? 2 : bsRsiBear ? -2 : 0
+bsScore += bsRsiBuyCross ? 1 : bsRsiSellCross ? -1 : 0
+bsScore += stochBull ? 2 : stochBear ? -2 : 0
+bsScore += stochKDCrossBuy and stochK < stochSellLevel ? 1 : stochKDCrossSell and stochK > stochBuyLevel ? -1 : 0
+bsScore += stochBuyCross ? 1 : stochSellCross ? -1 : 0
+bsScore += bsMacdBull ? 2 : bsMacdBear ? -2 : 0
+bsScore += bsMacdBuyCross ? 1 : bsMacdSellCross ? -1 : 0
+bsScore += useTrendFilter ? bsTrendBull ? 1 : bsTrendBear ? -1 : 0 : 0
+bsScore += useVolumeFilter ? bsVolBull ? 1 : bsVolBear ? -1 : 0 : 0
+
+//==============================================================================
+// COMBINED SIGNAL LOGIC
+//==============================================================================
+emBuy  = emScore >= emEntryScore
+emSell = emScore <= -emEntryScore
+emBuyFirst  = emBuy and not emBuy[1]
+emSellFirst = emSell and not emSell[1]
+
+bsBuy  = bsScore >= bsEntryScore
+bsSell = bsScore <= -bsEntryScore
+bsBuyFirst  = bsBuy and not bsBuy[1]
+bsSellFirst = bsSell and not bsSell[1]
+
+effMode = entryMode == "Auto (by timeframe)" ? (timeframe.in_seconds() <= 900 ? "Mean Reversion" : "EMA MACD Only") : entryMode
+isMR = effMode == "Mean Reversion"
+
+mrMean = ta.ema(src, mrMeanLen)
+mrRsi  = ta.rsi(src, mrRsiLen)
+mrLong  = not na(mrRsi) and not na(atr) and close < mrMean - mrDevATR * atr and mrRsi < mrBuyLevel
+mrShort = not na(mrRsi) and not na(atr) and close > mrMean + mrDevATR * atr and mrRsi > mrSellLevel
+
+var bool buySignal = false
+var bool sellSignal = false
+
+if isMR
+    buySignal  := mrLong
+    sellSignal := mrShort
+else if effMode == "Both Agree"
+    buySignal  := emBuy and bsBuy and (not emBuy[1] or not bsBuy[1])
+    sellSignal := emSell and bsSell and (not emSell[1] or not bsSell[1])
+else if effMode == "Either Signal"
+    buySignal  := (emBuyFirst or bsBuyFirst)
+    sellSignal := (emSellFirst or bsSellFirst)
+else if effMode == "EMA MACD Only"
+    buySignal  := emBuyFirst
+    sellSignal := emSellFirst
+else
+    buySignal  := bsBuyFirst
+    sellSignal := bsSellFirst
+
+bothNeutral = emScore == 0 and bsScore == 0
+
+//==============================================================================
+// SESSION / DATE / DAY FILTERS + DAILY CIRCUIT BREAKER  (new)
+//==============================================================================
+inDateWindow = (not useDateFilter) or (time >= startDate and time <= endDate)
+inSession    = (not useSessionFilter) or not na(time(timeframe.period, sessionTime))
+dayOK = (not useDayFilter) or (dayofweek == dayofweek.monday and tradeMon) or (dayofweek == dayofweek.tuesday and tradeTue) or (dayofweek == dayofweek.wednesday and tradeWed) or (dayofweek == dayofweek.thursday and tradeThu) or (dayofweek == dayofweek.friday and tradeFri)
+tradingWindow = inDateWindow and inSession and dayOK
+
+var float dayStartEquity = strategy.equity
+var int   tradesToday    = 0
+isNewCalDay = na(dayofmonth[1]) or dayofmonth != dayofmonth[1] or month != month[1] or year != year[1]
+if isNewCalDay
+    tradesToday := 0
+    dayStartEquity := strategy.equity
+dailyPnl      = strategy.equity - dayStartEquity
+dailyPnlPct   = dayStartEquity > 0 ? dailyPnl / dayStartEquity * 100 : 0.0
+dailyLossHit  = useMaxDailyLoss and dayStartEquity > 0 and dailyPnl <= -(dayStartEquity * maxDailyLossPct / 100)
+tradesLeftOK  = maxTradesPerDay == 0 or tradesToday < maxTradesPerDay
+canTradeToday = tradesLeftOK and not dailyLossHit
+
+//==============================================================================
+// ENTRY QUALITY GATES
+//==============================================================================
+htfOkLong  = (not useHtfTrend) or na(htfEma) or htfBull
+htfOkShort = (not useHtfTrend) or na(htfEma) or htfBear
+trendLongOK  = not requireTrendAlignment or (close > ema5 and htfOkLong)
+trendShortOK = not requireTrendAlignment or (close < ema5 and htfOkShort)
+adxOK = not requireAdxTrend or adx >= adxTrendMin
+extLongOK  = not requireNoChase or (close - ema1) <= atr * maxExtensionAtr
+extShortOK = not requireNoChase or (ema1 - close) <= atr * maxExtensionAtr
+rsiLongOK  = emRsi < rsiMaxLong
+rsiShortOK = emRsi > rsiMinShort
+
+longEntry  = tradingWindow and canTradeToday and (isMR ? (buySignal  and trendLongOK)  : (buySignal  and trendLongOK  and adxOK and extLongOK  and rsiLongOK))
+shortEntry = tradingWindow and canTradeToday and (isMR ? (sellSignal and allowShorts and trendShortOK) : (sellSignal and allowShorts and trendShortOK and adxOK and extShortOK and rsiShortOK))
+
+//==============================================================================
+// STRATEGY EXECUTION
+//==============================================================================
+var float longEntryPx  = na
+var float longStopLvl  = na
+var float longTp1Lvl   = na
+var float longTpLvl    = na
+var float longRisk     = na
+var float shortEntryPx = na
+var float shortStopLvl = na
+var float shortTp1Lvl  = na
+var float shortTpLvl   = na
+var float shortRisk    = na
+
+// --- Risk-based position sizing (new) ---
+stopDistUnit = atr * (isMR ? mrStopATR : atrStopMult)
+riskQtyLong  = (useRiskSizing and stopDistUnit > 0) ? math.max(math.floor(strategy.equity * riskPerTradePct / 100 / stopDistUnit), 1) : na
+riskQtyShort = riskQtyLong
+fallbackQty  = close > 0 ? math.max(math.floor(strategy.equity * 0.25 / close), 1) : 1
+effLongQty   = na(riskQtyLong)  ? fallbackQty : riskQtyLong
+effShortQty  = na(riskQtyShort) ? fallbackQty : riskQtyShort
+
+if longEntry
+    strategy.entry("Long", strategy.long, qty = riskQtyLong)
+    longEntryPx := close
+    longRisk    := atr * (isMR ? mrStopATR : atrStopMult)
+    longStopLvl := close - longRisk
+    longTp1Lvl  := close + atr * tp1AtrMult
+    longTpLvl   := isMR ? mrMean : close + longRisk * rewardRisk
+
+if shortEntry
+    strategy.entry("Short", strategy.short, qty = riskQtyShort)
+    shortEntryPx := close
+    shortRisk    := atr * (isMR ? mrStopATR : atrStopMult)
+    shortStopLvl := close + shortRisk
+    shortTp1Lvl  := close - atr * tp1AtrMult
+    shortTpLvl   := isMR ? mrMean : close - shortRisk * rewardRisk
+
+// Count entries taken today (circuit breaker) — new
+if longEntry or shortEntry
+    tradesToday += 1
+
+if strategy.position_size > 0 and useAtrStops and not na(longEntryPx)
+    if isMR
+        longTpLvl := mrMean
+    if useBreakeven and high >= longTp1Lvl
+        longStopLvl := math.max(longStopLvl, longEntryPx)
+    if useTrailing and high >= longTp1Lvl
+        longStopLvl := math.max(longStopLvl, high - atr * trailAtrMult)
+    if useScaleOut
+        strategy.exit("Long TP1", "Long", qty_percent=tp1Qty, stop=longStopLvl, limit=longTp1Lvl)
+        strategy.exit("Long Exit", "Long", stop=longStopLvl, limit=longTpLvl)
+    else
+        strategy.exit("Long Exit", "Long", stop=longStopLvl, limit=longTpLvl)
+
+if strategy.position_size < 0 and useAtrStops and not na(shortEntryPx)
+    if isMR
+        shortTpLvl := mrMean
+    if useBreakeven and low <= shortTp1Lvl
+        shortStopLvl := math.min(shortStopLvl, shortEntryPx)
+    if useTrailing and low <= shortTp1Lvl
+        shortStopLvl := math.min(shortStopLvl, low + atr * trailAtrMult)
+    if useScaleOut
+        strategy.exit("Short TP1", "Short", qty_percent=tp1Qty, stop=shortStopLvl, limit=shortTp1Lvl)
+        strategy.exit("Short Exit", "Short", stop=shortStopLvl, limit=shortTpLvl)
+    else
+        strategy.exit("Short Exit", "Short", stop=shortStopLvl, limit=shortTpLvl)
+
+var int entryBarIndex = na
+if longEntry or shortEntry
+    entryBarIndex := bar_index
+effMaxHold = isMR ? math.max(maxHoldBars, 12) : maxHoldBars
+if useTimeStop and strategy.position_size != 0 and not na(entryBarIndex) and (bar_index - entryBarIndex) >= effMaxHold
+    strategy.close_all(comment="Time stop")
+
+// Session flatten + daily-loss circuit breaker (new)
+inFlatten = useFlatten and not na(time(timeframe.period, flattenTime))
+if inFlatten and strategy.position_size != 0
+    strategy.close_all(comment="Session flatten")
+if dailyLossHit and strategy.position_size != 0
+    strategy.close_all(comment="Daily loss limit")
+
+if exitOnFlip and not isMR
+    if sellSignal and strategy.position_size > 0
+        strategy.close("Long", comment="Flip to Sell")
+    if buySignal and strategy.position_size < 0
+        strategy.close("Short", comment="Flip to Buy")
+
+if exitOnNeutral and not isMR
+    if bothNeutral and strategy.position_size > 0
+        strategy.close("Long", comment="Neutral exit")
+    if bothNeutral and strategy.position_size < 0
+        strategy.close("Short", comment="Neutral exit")
+
+//==============================================================================
+// MULTI-MODEL FORWARD FORECAST ENGINE
+//==============================================================================
+// Blends three drift estimates into a single per-bar expected price change, then projects it forward
+// candle-by-candle with an ATR confidence cone whose half-width grows with sqrt(horizon).
+//
+// 1) Regression slope: slope of a linear fit over the last fcRegLen bars (price units per bar).
+// 2) Score bias:       normalized dual-engine score (-1..+1) x fcScoreDriftAtr x ATR (price/bar).
+// 3) Momentum (ROC):   average per-bar change over the lookback (price units per bar).
+//
+// Each engine's score is normalized to its own max so weights are comparable.
+emScoreNorm = emScore / 10.0
+bsScoreNorm = bsScore / 12.0
+scoreBias   = (emScoreNorm + bsScoreNorm) / 2.0          // -1 .. +1
+
+// Linear regression slope in price units per bar (ta.linreg returns the projected value at offset 0;
+// the slope is the difference between consecutive projected values).
+reg0 = ta.linreg(src, fcRegLen, 0)
+reg1 = ta.linreg(src, fcRegLen, 1)
+regSlope = reg0 - reg1                                    // price per bar
+
+// Momentum: average per-bar change across the lookback window.
+momPerBar = (src - src[fcRegLen]) / fcRegLen             // price per bar
+
+// Score-driven drift in price units per bar.
+scoreDrift = scoreBias * fcScoreDriftAtr * atr           // price per bar
+
+// Blended drift per bar (weights normalized so they always sum to 1).
+// nz() guards every component so an early-bar/na input can never make the whole projection invisible.
+wSum = math.max(fcWReg + fcWScore + fcWMom, 0.0001)
+driftPerBar = (fcWReg * nz(regSlope) + fcWScore * nz(scoreDrift) + fcWMom * nz(momPerBar)) / wSum
+
+// Forecast confidence (0-100): conviction from |score|, trend strength from ADX, and regression fit (R^2).
+// Higher = the three models agree and the market is trending, not chopping.
+adxConf  = na(adx) ? 0.0 : math.min(adx / 50.0, 1.0)
+scoreConf = math.abs(scoreBias)
+corrR    = ta.correlation(src, bar_index, fcRegLen)
+r2       = na(corrR) ? 0.0 : corrR * corrR
+fcConfidence = math.round(100 * (0.4 * scoreConf + 0.3 * adxConf + 0.3 * r2))
+
+// Projected terminal values (at the last forecast bar).
+fcTargetPrice = close + driftPerBar * fcBars
+fcMovePct     = close != 0 ? (fcTargetPrice - close) / close * 100 : 0.0
+fcDirection   = driftPerBar > 0 ? "▲ UP" : driftPerBar < 0 ? "▼ DOWN" : "→ FLAT"
+
+// Confidence gate: forecast is only drawn / alerted when the reading clears the threshold.
+fcGatePass = (not fcUseGate) or fcConfidence >= fcGateThresh
+
+//==============================================================================
+// FORECAST ACCURACY TRACKER (measured hit-rate, not a heuristic)
+//==============================================================================
+// On every closed bar we grade the projection that was made fcBars ago: was its DIRECTION right?
+//   predicted direction (fcBars ago) = sign(driftPerBar[fcBars])
+//   actual    direction              = sign(close - close[fcBars])
+// Accumulate hits / evaluations over the whole chart so "accuracy" is empirical.
+// A second tally grades ONLY the high-confidence (gated) forecasts, so you can see whether the
+// confidence gate actually delivers a better hit-rate.
+var int fcEvalAll  = 0
+var int fcHitAll   = 0
+var int fcEvalGate = 0
+var int fcHitGate  = 0
+if barstate.isconfirmed and bar_index > fcRegLen + fcBars and not na(driftPerBar[fcBars])
+    predDir = math.sign(driftPerBar[fcBars])
+    actDir  = math.sign(close - close[fcBars])
+    if predDir != 0
+        fcEvalAll += 1
+        if predDir == actDir
+            fcHitAll += 1
+        // grade the gated subset using the confidence reading as it was when the forecast was made
+        if (not fcUseGate) or fcConfidence[fcBars] >= fcGateThresh
+            fcEvalGate += 1
+            if predDir == actDir
+                fcHitGate += 1
+fcAccAll  = fcEvalAll  > 0 ? math.round(100.0 * fcHitAll  / fcEvalAll)  : na
+fcAccGate = fcEvalGate > 0 ? math.round(100.0 * fcHitGate / fcEvalGate) : na
+
+// --- Draw the projection only on the last bar (redraw each time, no repaint of history) ---
+var line[]  fcPathLines  = array.new_line()
+var line[]  fcUpperLines = array.new_line()
+var line[]  fcLowLines   = array.new_line()
+var box[]   fcCandleBox  = array.new_box()
+var line[]  fcWickLines  = array.new_line()
+var label   fcEndLabel   = na
+
+deleteAll() =>
+    if array.size(fcPathLines) > 0
+        for i = 0 to array.size(fcPathLines) - 1
+            line.delete(array.get(fcPathLines, i))
+        array.clear(fcPathLines)
+    if array.size(fcUpperLines) > 0
+        for i = 0 to array.size(fcUpperLines) - 1
+            line.delete(array.get(fcUpperLines, i))
+        array.clear(fcUpperLines)
+    if array.size(fcLowLines) > 0
+        for i = 0 to array.size(fcLowLines) - 1
+            line.delete(array.get(fcLowLines, i))
+        array.clear(fcLowLines)
+    if array.size(fcCandleBox) > 0
+        for i = 0 to array.size(fcCandleBox) - 1
+            box.delete(array.get(fcCandleBox, i))
+        array.clear(fcCandleBox)
+    if array.size(fcWickLines) > 0
+        for i = 0 to array.size(fcWickLines) - 1
+            line.delete(array.get(fcWickLines, i))
+        array.clear(fcWickLines)
+
+// Gated out (or forecast off): clear any leftover projection so nothing stale lingers on the chart.
+if barstate.islast and (not showForecast or not fcGatePass)
+    deleteAll()
+    label.delete(fcEndLabel)
+
+if showForecast and barstate.islast and fcGatePass
+    deleteAll()
+    prevPx = close
+    prevUpper = close
+    prevLower = close
+    for i = 1 to fcBars
+        projPx    = close + driftPerBar * i
+        band      = fcBandMult * atr * math.sqrt(i)
+        upperPx   = projPx + band
+        lowerPx   = projPx - band
+        xPrev     = bar_index + (i - 1)
+        xCur      = bar_index + i
+        // Center path line: dotted, green when the segment rises, red when it falls.
+        segUp = projPx >= prevPx
+        plCol = segUp ? fcUpLineColor : fcDnLineColor
+        pl = line.new(xPrev, prevPx, xCur, projPx, xloc=xloc.bar_index, color=plCol, width=2, style=line.style_dotted)
+        array.push(fcPathLines, pl)
+        // Confidence cone.
+        if fcShowBand
+            ul = line.new(xPrev, prevUpper, xCur, upperPx, xloc=xloc.bar_index, color=fcBandColor, width=2, style=line.style_dotted)
+            ll = line.new(xPrev, prevLower, xCur, lowerPx, xloc=xloc.bar_index, color=fcBandColor, width=2, style=line.style_dotted)
+            array.push(fcUpperLines, ul)
+            array.push(fcLowLines, ll)
+        // Synthetic projected candle: open = prev projected close, close = this projected close.
+        if fcShowCandles
+            oPx   = prevPx
+            cPx   = projPx
+            up    = cPx >= oPx
+            bcol  = up ? fcUpColor : fcDnColor
+            bTop  = math.max(oPx, cPx)
+            bBot  = math.min(oPx, cPx)
+            // span one bar slot (open edge at xPrev, close edge at xCur) so the body is visible
+            bx = box.new(left=xPrev, top=bTop, right=xCur, bottom=bBot, xloc=xloc.bar_index, border_color=bcol, bgcolor=color.new(bcol, 35), border_width=2)
+            array.push(fcCandleBox, bx)
+            // wick length: grows with uncertainty (sqrt-of-time cone) OR a fixed ATR fraction for uniform candles
+            wkLen = fcGrowWick ? 0.4 * band : fcWickAtr * atr
+            wkHi = bTop + wkLen
+            wkLo = bBot - wkLen
+            wk = line.new(xCur, wkLo, xCur, wkHi, xloc=xloc.bar_index, color=bcol, width=1)
+            array.push(fcWickLines, wk)
+        prevPx    := projPx
+        prevUpper := upperPx
+        prevLower := lowerPx
+    // End-of-forecast label with target + expected move.
+    label.delete(fcEndLabel)
+    fcLabelTxt = "Target ~" + str.tostring(fcTargetPrice, format.mintick) + "\n" + str.tostring(fcMovePct, "0.00") + "% / " + str.tostring(fcBars) + " bars"
+    fcLabelCol = driftPerBar >= 0 ? color.new(color.teal, 0) : color.new(color.purple, 0)
+    fcEndLabel := label.new(bar_index + fcBars, close + driftPerBar * fcBars, text=fcLabelTxt, xloc=xloc.bar_index, style=label.style_label_left, color=fcLabelCol, textcolor=color.white, size=size.small)
+
+//==============================================================================
+// FORECAST SUMMARY TABLE
+//==============================================================================
+// --- Helpers (merged from EMA MACD Decision Table) ---
+roundTick(v) => str.tostring(v, format.mintick)
+stateCol(s) => s > 0 ? color.new(color.lime, 15) : s < 0 ? color.new(color.red, 15) : color.new(color.gray, 25)
+decisionTxt(s) => s >= 5 ? "STRONG BUY" : s >= 2 ? "BUY" : s <= -5 ? "STRONG SELL" : s <= -2 ? "SELL" : "NEUTRAL"
+decisionCol(s) => s >= 5 ? color.new(color.lime, 0) : s >= 2 ? color.new(color.green, 10) : s <= -5 ? color.new(color.red, 0) : s <= -2 ? color.new(color.maroon, 5) : color.new(color.gray, 20)
+tablePos(x, y) => x == "left" and y == "top" ? position.top_left : x == "left" and y == "middle" ? position.middle_left : x == "left" and y == "bottom" ? position.bottom_left : x == "center" and y == "top" ? position.top_center : x == "center" and y == "middle" ? position.middle_center : x == "center" and y == "bottom" ? position.bottom_center : x == "right" and y == "middle" ? position.middle_right : x == "right" and y == "bottom" ? position.bottom_right : position.top_right
+
+// --- Risk-plan hints (uses the strategy's own ATR stop / reward-risk) ---
+hintLongStop    = close - atr * atrStopMult
+hintLongTarget  = close + (close - hintLongStop) * rewardRisk
+hintShortStop   = close + atr * atrStopMult
+hintShortTarget = close - (hintShortStop - close) * rewardRisk
+
+// ONE combined table on the right: FORECAST rows, then optional DECISION rows, then optional PERFORMANCE rows.
+// A single running row counter keeps every section contiguous (no gaps, no second overlapping table).
+tblTextSize = tblSizeChoice == "Tiny" ? size.tiny : tblSizeChoice == "Normal" ? size.normal : tblSizeChoice == "Large" ? size.large : size.small
+var table fcTable = table.new(tablePos(tableX, tableY), 3, 34, bgcolor=color.new(color.black, 12), frame_color=color.new(color.white, 60), frame_width=1, border_color=color.new(color.white, 80), border_width=1)
+sc(int col, int row, string txt, color bg) => table.cell(fcTable, col, row, txt, text_color=color.white, bgcolor=bg, text_size=tblTextSize)
+
+if (fcShowTable or showPerfTable) and barstate.islast
+    table.clear(fcTable, 0, 0, 2, 33)
+    int r = 0
+    // ---------------- FORECAST + DECISION ----------------
+    if fcShowTable
+        confCol  = fcConfidence >= 66 ? color.new(color.green, 0) : fcConfidence >= 40 ? color.new(color.orange, 0) : color.new(color.red, 0)
+        confWord = fcConfidence >= 66 ? "Strong" : fcConfidence >= 40 ? "Medium" : "Low"
+        dirCol   = driftPerBar > 0 ? color.new(color.teal, 0) : driftPerBar < 0 ? color.new(color.purple, 0) : color.new(color.gray, 0)
+        accCol   = na(fcAccGate) ? color.new(color.gray, 30) : fcAccGate >= 70 ? color.new(color.green, 0) : fcAccGate >= 55 ? color.new(color.orange, 0) : color.new(color.red, 0)
+        gateTxt  = not fcUseGate ? "gate off" : fcGatePass ? "≥" + str.tostring(fcGateThresh) + " pass" : "below " + str.tostring(fcGateThresh)
+        sc(0, r, "Metric", color.new(color.gray, 45))
+        sc(1, r, "State", color.new(color.gray, 45))
+        sc(2, r, "Value", color.new(color.gray, 45))
+        r += 1
+        sc(0, r, "Forecast " + str.tostring(fcBars) + "b", color.new(color.blue, 0))
+        sc(1, r, fcDirection, dirCol)
+        sc(2, r, str.tostring(fcMovePct, "0.00") + "%", dirCol)
+        r += 1
+        sc(0, r, "Target Price", color.new(color.black, 100))
+        sc(1, r, fcDirection, dirCol)
+        sc(2, r, roundTick(fcTargetPrice), color.new(color.black, 100))
+        r += 1
+        sc(0, r, "Confidence", color.new(color.black, 100))
+        sc(1, r, confWord, confCol)
+        sc(2, r, str.tostring(fcConfidence) + "%", confCol)
+        r += 1
+        sc(0, r, "Measured Acc", color.new(color.black, 100))
+        sc(1, r, gateTxt, accCol)
+        sc(2, r, (na(fcAccGate) ? "—" : str.tostring(fcAccGate) + "%") + " n=" + str.tostring(fcEvalGate), accCol)
+        r += 1
+        sc(0, r, "Drift / bar", color.new(color.black, 100))
+        sc(1, r, "EM/BS", color.new(color.gray, 30))
+        sc(2, r, roundTick(driftPerBar) + "  " + str.tostring(emScore) + "/" + str.tostring(bsScore), color.new(color.black, 100))
+        r += 1
+        if showDecisionRows
+            sc(0, r, "Decision", color.new(color.black, 100))
+            sc(1, r, decisionTxt(emScore), decisionCol(emScore))
+            sc(2, r, str.tostring(emScore), decisionCol(emScore))
+            r += 1
+            sc(0, r, "Last Price", color.new(color.black, 100))
+            sc(1, r, close > close[1] ? "Up" : close < close[1] ? "Down" : "Flat", stateCol(close - close[1] > 0 ? 1 : close - close[1] < 0 ? -1 : 0))
+            sc(2, r, roundTick(close), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "EMA 9 / 21", color.new(color.black, 100))
+            sc(1, r, ema1 > ema2 ? "9 > 21" : ema1 < ema2 ? "9 < 21" : "9 = 21", stateCol(emEmaBull ? 1 : emEmaBear ? -1 : 0))
+            sc(2, r, roundTick(ema1) + " / " + roundTick(ema2), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "EMA 50 / 200", color.new(color.black, 100))
+            sc(1, r, emLongBull ? "Above 200" : emLongBear ? "Below 200" : "At 200", stateCol(emLongBull ? 1 : emLongBear ? -1 : 0))
+            sc(2, r, roundTick(ema3) + " / " + roundTick(ema5), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "MACD", color.new(color.black, 100))
+            sc(1, r, emMacdBull ? "Bullish" : emMacdBear ? "Bearish" : "Flat", stateCol(emMacdBull ? 1 : emMacdBear ? -1 : 0))
+            sc(2, r, str.tostring(emMacdHist, "#.####"), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "RSI", color.new(color.black, 100))
+            sc(1, r, emRsi > 70 ? "Overbought" : emRsi < 30 ? "Oversold" : emRsiBull ? "Bullish" : emRsiBear ? "Bearish" : "Neutral", stateCol(emRsiBull ? 1 : emRsiBear ? -1 : 0))
+            sc(2, r, str.tostring(emRsi, "#.##"), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "ADX / DMI", color.new(color.black, 100))
+            sc(1, r, emAdxBull ? "Trend Up" : emAdxBear ? "Trend Down" : "Weak", stateCol(emAdxBull ? 1 : emAdxBear ? -1 : 0))
+            sc(2, r, str.tostring(adx, "#.##"), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "Volume", color.new(color.black, 100))
+            sc(1, r, emVolBull ? "Bull Confirm" : emVolBear ? "Bear Confirm" : "Normal", stateCol(emVolBull ? 1 : emVolBear ? -1 : 0))
+            sc(2, r, na(emVolMa) or emVolMa == 0 ? "-" : str.tostring(volume / emVolMa, "#.##") + "x", color.new(color.black, 100))
+            r += 1
+            sc(0, r, "HTF Trend", color.new(color.black, 100))
+            sc(1, r, useHtfTrend ? (htfBull ? "Bullish" : htfBear ? "Bearish" : "Flat") : "Off", useHtfTrend ? stateCol(htfBull ? 1 : htfBear ? -1 : 0) : color.new(color.gray, 30))
+            sc(2, r, useHtfTrend ? htf + " EMA" + str.tostring(htfEmaLen) : "-", color.new(color.black, 100))
+            r += 1
+            sc(0, r, "ATR", color.new(color.black, 100))
+            sc(1, r, "Risk Unit", color.new(color.gray, 30))
+            sc(2, r, roundTick(atr), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "Long Plan", color.new(color.black, 100))
+            sc(1, r, "Stop/Target", color.new(color.green, 35))
+            sc(2, r, roundTick(hintLongStop) + " / " + roundTick(hintLongTarget), color.new(color.black, 100))
+            r += 1
+            sc(0, r, "Short Plan", color.new(color.black, 100))
+            sc(1, r, "Stop/Target", color.new(color.red, 35))
+            sc(2, r, roundTick(hintShortStop) + " / " + roundTick(hintShortTarget), color.new(color.black, 100))
+            r += 1
+    // ---------------- PERFORMANCE ----------------
+    if showPerfTable
+        ct       = strategy.closedtrades
+        winRate  = ct > 0 ? 100.0 * strategy.wintrades / ct : na
+        pf       = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : na
+        npNet    = strategy.netprofit
+        npPct    = strategy.initial_capital > 0 ? npNet / strategy.initial_capital * 100 : na
+        avgWin   = strategy.wintrades  > 0 ? strategy.grossprofit / strategy.wintrades  : na
+        avgLoss  = strategy.losstrades > 0 ? strategy.grossloss  / strategy.losstrades : na
+        ddPct    = strategy.initial_capital > 0 ? strategy.max_drawdown / strategy.initial_capital * 100 : na
+        posTxt   = strategy.position_size > 0 ? "LONG " + str.tostring(strategy.position_size) : strategy.position_size < 0 ? "SHORT " + str.tostring(math.abs(strategy.position_size)) : "FLAT"
+        posCol   = strategy.position_size > 0 ? color.new(color.lime, 0) : strategy.position_size < 0 ? color.new(color.red, 0) : color.new(color.gray, 20)
+        wrCol    = na(winRate) ? color.new(color.gray, 30) : winRate >= 60 ? color.new(color.lime, 0) : winRate >= 45 ? color.new(color.orange, 0) : color.new(color.red, 0)
+        pfCol    = na(pf) ? color.new(color.gray, 30) : pf >= 1.5 ? color.new(color.lime, 0) : pf >= 1.0 ? color.new(color.orange, 0) : color.new(color.red, 0)
+        npCol    = npNet >= 0 ? color.new(color.lime, 0) : color.new(color.red, 0)
+        dyCol    = dailyPnl >= 0 ? color.new(color.lime, 0) : color.new(color.red, 0)
+        sc(0, r, "PERFORMANCE", color.new(color.blue, 0))
+        sc(1, r, "Engine", color.new(color.gray, 30))
+        sc(2, r, effMode, color.new(color.blue, 0))
+        r += 1
+        sc(0, r, "Net P&L", color.new(color.black, 100))
+        sc(1, r, npNet >= 0 ? "Profit" : "Loss", npCol)
+        sc(2, r, (npNet >= 0 ? "+" : "") + str.tostring(npNet, "#.##") + (na(npPct) ? "" : " (" + str.tostring(npPct, "#.#") + "%)"), npCol)
+        r += 1
+        sc(0, r, "Profit Factor", color.new(color.black, 100))
+        sc(1, r, na(pf) ? "—" : pf >= 1.5 ? "Strong" : pf >= 1.0 ? "OK" : "Weak", pfCol)
+        sc(2, r, na(pf) ? "—" : str.tostring(pf, "#.##"), pfCol)
+        r += 1
+        sc(0, r, "Win Rate", color.new(color.black, 100))
+        sc(1, r, str.tostring(strategy.wintrades) + "/" + str.tostring(strategy.losstrades), color.new(color.gray, 30))
+        sc(2, r, na(winRate) ? "—" : str.tostring(winRate, "#.#") + "%", wrCol)
+        r += 1
+        sc(0, r, "Avg Win / Loss", color.new(color.black, 100))
+        sc(1, r, "W / L", color.new(color.gray, 30))
+        sc(2, r, (na(avgWin) ? "—" : "+" + str.tostring(avgWin, "#.##")) + " / " + (na(avgLoss) ? "—" : "-" + str.tostring(avgLoss, "#.##")), color.new(color.black, 100))
+        r += 1
+        sc(0, r, "Max Drawdown", color.new(color.black, 100))
+        sc(1, r, "Peak-to-trough", color.new(color.gray, 30))
+        sc(2, r, na(ddPct) ? "—" : str.tostring(ddPct, "#.#") + "%", color.new(color.orange, 0))
+        r += 1
+        sc(0, r, "Open P&L", color.new(color.black, 100))
+        sc(1, r, posTxt, posCol)
+        sc(2, r, str.tostring(strategy.openprofit, "#.##"), strategy.openprofit >= 0 ? color.new(color.lime, 0) : color.new(color.red, 0))
+        r += 1
+        sc(0, r, "Trades Today", color.new(color.black, 100))
+        sc(1, r, dailyLossHit ? "HALTED" : "OK", dailyLossHit ? color.new(color.red, 0) : color.new(color.green, 0))
+        sc(2, r, str.tostring(tradesToday) + (maxTradesPerDay > 0 ? " / " + str.tostring(maxTradesPerDay) : ""), color.new(color.black, 100))
+        r += 1
+        sc(0, r, "Day P&L", color.new(color.black, 100))
+        sc(1, r, dailyLossHit ? "limit" : "day", color.new(color.gray, 30))
+        sc(2, r, (dailyPnl >= 0 ? "+" : "") + str.tostring(dailyPnl, "#.##") + " (" + str.tostring(dailyPnlPct, "#.#") + "%)", dyCol)
+        r += 1
+
+//==============================================================================
+// ALERT SYSTEM
+//==============================================================================
+var float entryPrice = na
+var float activeLongStop = na
+var float activeLongTarget = na
+var float activeShortStop = na
+var float activeShortTarget = na
+
+if longEntry
+    entryPrice := close
+    activeLongStop := close - atr * atrStopMult
+    activeLongTarget := close + (close - activeLongStop) * rewardRisk
+if shortEntry
+    entryPrice := close
+    activeShortStop := close + atr * atrStopMult
+    activeShortTarget := close - (activeShortStop - close) * rewardRisk
+
+emEarlyBuy  = emScore >= (emEntryScore - 1) and emScore < emEntryScore and emScore[1] < (emEntryScore - 1)
+emEarlySell = emScore <= -(emEntryScore - 1) and emScore > -emEntryScore and emScore[1] > -(emEntryScore - 1)
+bsEarlyBuy  = bsScore >= (bsEntryScore - 1) and bsScore < bsEntryScore and bsScore[1] < (bsEntryScore - 1)
+bsEarlySell = bsScore <= -(bsEntryScore - 1) and bsScore > -bsEntryScore and bsScore[1] > -(bsEntryScore - 1)
+
+earlyBuyWarning  = emEarlyBuy or bsEarlyBuy
+earlySellWarning = emEarlySell or bsEarlySell
+
+if useEarlyAlert and emEarlyBuy
+    alert("EARLY WARNING: EMA MACD BUY approaching on " + syminfo.ticker + " | EM Score: " + str.tostring(emScore) + " | Price: " + str.tostring(close), alert.freq_once_per_bar)
+if useEarlyAlert and bsEarlyBuy
+    alert("EARLY WARNING: BuySell BUY approaching on " + syminfo.ticker + " | BS Score: " + str.tostring(bsScore) + " | Price: " + str.tostring(close), alert.freq_once_per_bar)
+if useEarlyAlert and emEarlySell
+    alert("EARLY WARNING: EMA MACD SELL approaching on " + syminfo.ticker + " | EM Score: " + str.tostring(emScore) + " | Price: " + str.tostring(close), alert.freq_once_per_bar)
+if useEarlyAlert and bsEarlySell
+    alert("EARLY WARNING: BuySell SELL approaching on " + syminfo.ticker + " | BS Score: " + str.tostring(bsScore) + " | Price: " + str.tostring(close), alert.freq_once_per_bar)
+
+if useEntryAlert and longEntry
+    alert("ENTRY: LONG on " + syminfo.ticker + " | EM: " + str.tostring(emScore) + " BS: " + str.tostring(bsScore) + " | Price: " + str.tostring(close) + " | Stop: " + str.tostring(close - atr * atrStopMult, format.mintick) + " | Target: " + str.tostring(close + (close - (close - atr * atrStopMult)) * rewardRisk, format.mintick), alert.freq_once_per_bar)
+if useEntryAlert and shortEntry
+    alert("ENTRY: SHORT on " + syminfo.ticker + " | EM: " + str.tostring(emScore) + " BS: " + str.tostring(bsScore) + " | Price: " + str.tostring(close) + " | Stop: " + str.tostring(close + atr * atrStopMult, format.mintick) + " | Target: " + str.tostring(close - (close + atr * atrStopMult - close) * rewardRisk, format.mintick), alert.freq_once_per_bar)
+
+// Forecast alert: projected move beyond user threshold.
+if useForecastAlert and barstate.isconfirmed and fcGatePass and math.abs(fcMovePct) >= fcAlertPct
+    alert("FORECAST: " + syminfo.ticker + " projected " + fcDirection + " " + str.tostring(fcMovePct, "0.00") + "% over " + str.tostring(fcBars) + " bars | Target ~" + str.tostring(fcTargetPrice, format.mintick) + " | Confidence " + str.tostring(fcConfidence) + "%", alert.freq_once_per_bar)
+
+longStopProx   = strategy.position_size > 0 and not na(activeLongStop) and close <= entryPrice - (entryPrice - activeLongStop) * (exitProximityPct / 100)
+longTargetProx = strategy.position_size > 0 and not na(activeLongTarget) and close >= entryPrice + (activeLongTarget - entryPrice) * (1 - exitProximityPct / 100)
+shortStopProx   = strategy.position_size < 0 and not na(activeShortStop) and close >= entryPrice + (activeShortStop - entryPrice) * (exitProximityPct / 100)
+shortTargetProx = strategy.position_size < 0 and not na(activeShortTarget) and close <= entryPrice - (entryPrice - activeShortTarget) * (1 - exitProximityPct / 100)
+
+if useExitPriceAlert and longStopProx
+    alert("EXIT WARNING: Long STOP approaching on " + syminfo.ticker + " | Price: " + str.tostring(close) + " | Stop: " + str.tostring(activeLongStop, format.mintick), alert.freq_once_per_bar)
+if useExitPriceAlert and longTargetProx
+    alert("EXIT ALERT: Long TARGET approaching on " + syminfo.ticker + " | Price: " + str.tostring(close) + " | Target: " + str.tostring(activeLongTarget, format.mintick), alert.freq_once_per_bar)
+if useExitPriceAlert and shortStopProx
+    alert("EXIT WARNING: Short STOP approaching on " + syminfo.ticker + " | Price: " + str.tostring(close) + " | Stop: " + str.tostring(activeShortStop, format.mintick), alert.freq_once_per_bar)
+if useExitPriceAlert and shortTargetProx
+    alert("EXIT ALERT: Short TARGET approaching on " + syminfo.ticker + " | Price: " + str.tostring(close) + " | Target: " + str.tostring(activeShortTarget, format.mintick), alert.freq_once_per_bar)
+
+longScoreWeak  = strategy.position_size > 0 and emScore <= scoreWeakenThreshold and emScore[1] > scoreWeakenThreshold
+shortScoreWeak = strategy.position_size < 0 and emScore >= -scoreWeakenThreshold and emScore[1] < -scoreWeakenThreshold
+
+if useExitScoreAlert and longScoreWeak
+    alert("EXIT WARNING: Score weakening on LONG " + syminfo.ticker + " | EM Score: " + str.tostring(emScore) + " BS Score: " + str.tostring(bsScore) + " | Price: " + str.tostring(close), alert.freq_once_per_bar)
+if useExitScoreAlert and shortScoreWeak
+    alert("EXIT WARNING: Score weakening on SHORT " + syminfo.ticker + " | EM Score: " + str.tostring(emScore) + " BS Score: " + str.tostring(bsScore) + " | Price: " + str.tostring(close), alert.freq_once_per_bar)
+
+//==============================================================================
+// WEBHOOK / AUTOMATION ALERTS  (new) — machine-readable JSON for a bot/broker
+//==============================================================================
+whSym = webhookSymbol == "" ? syminfo.ticker : webhookSymbol
+buildJson(string action, string side, float px, float stopPx, float tgtPx, float qty) =>
+    '{"action":"' + action + '","strategy":"ForecastPredictor","symbol":"' + whSym + '","side":"' + side + '","price":' + str.tostring(px, format.mintick) + ',"stop":' + str.tostring(stopPx, format.mintick) + ',"target":' + str.tostring(tgtPx, format.mintick) + ',"qty":' + str.tostring(qty) + ',"time":"' + str.format_time(time, "yyyy-MM-dd HH:mm:ss", syminfo.timezone) + '"}'
+
+whLongStop  = close - atr * (isMR ? mrStopATR : atrStopMult)
+whLongTgt   = isMR ? mrMean : close + (close - whLongStop) * rewardRisk
+whShortStop = close + atr * (isMR ? mrStopATR : atrStopMult)
+whShortTgt  = isMR ? mrMean : close - (whShortStop - close) * rewardRisk
+
+if useWebhook and longEntry
+    alert(buildJson("entry", "long", close, whLongStop, whLongTgt, effLongQty), alert.freq_once_per_bar)
+if useWebhook and shortEntry
+    alert(buildJson("entry", "short", close, whShortStop, whShortTgt, effShortQty), alert.freq_once_per_bar)
+
+whPosFlat  = strategy.position_size == 0 and strategy.position_size[1] != 0
+whExitSide = strategy.position_size[1] > 0 ? "long" : "short"
+if useWebhook and whPosFlat
+    alert(buildJson("exit", whExitSide, close, 0.0, 0.0, math.abs(strategy.position_size[1])), alert.freq_once_per_bar)
+
+//==============================================================================
+// CHART VISUALS
+//==============================================================================
+// Early-warning markers: plain green circle (buy approaching) / red circle (sell approaching), no text.
+plotshape(showAllVisuals and showEarlyWarnings and useEarlyAlert and earlyBuyWarning, title="Early Buy (green)", style=shape.circle, color=color.new(color.green, 0), location=location.belowbar, size=size.tiny)
+plotshape(showAllVisuals and showEarlyWarnings and useEarlyAlert and earlySellWarning, title="Early Sell (red)", style=shape.circle, color=color.new(color.red, 0), location=location.abovebar, size=size.tiny)
+
+plotshape(showAllVisuals and showEntryLabels and longEntry, title="Long Entry", text="LONG", style=shape.labelup, color=color.new(color.green, 0), textcolor=color.white, location=location.belowbar, size=size.small)
+plotshape(showAllVisuals and showEntryLabels and shortEntry, title="Short Entry", text="SHORT", style=shape.labeldown, color=color.new(color.red, 0), textcolor=color.white, location=location.abovebar, size=size.small)
+
+// --- BUY/SELL signal labels from the decision score (merged from EMA MACD Decision Table) ---
+// Fires on the bar the EMA-MACD score crosses into Strong, regardless of strategy entry filters.
+decBuyLabel  = emScore >= emEntryScore and emScore[1] < emEntryScore
+decSellLabel = emScore <= -emEntryScore and emScore[1] > -emEntryScore
+if showAllVisuals and showDecisionSignals and decBuyLabel
+    label.new(bar_index, low, "BUY", style=label.style_label_up, color=color.new(color.lime, 0), textcolor=color.black, size=size.small, tooltip="Strong BUY\nScore: " + str.tostring(emScore) + "\nRSI: " + str.tostring(emRsi, "#.##") + "\nADX: " + str.tostring(adx, "#.##"))
+if showAllVisuals and showDecisionSignals and decSellLabel
+    label.new(bar_index, high, "SELL", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small, tooltip="Strong SELL\nScore: " + str.tostring(emScore) + "\nRSI: " + str.tostring(emRsi, "#.##") + "\nADX: " + str.tostring(adx, "#.##"))
+
+//==============================================================================
+// DIVERGENCE LINES ON PAST CANDLES  (price vs. oscillator pivots)
+//==============================================================================
+// Regular divergence = price and the oscillator disagree at swing extremes -> possible REVERSAL.
+//   Bullish: price makes a LOWER low while the oscillator makes a HIGHER low.
+//   Bearish: price makes a HIGHER high while the oscillator makes a LOWER high.
+// Hidden divergence = trend CONTINUATION.
+//   Bullish: price HIGHER low while oscillator LOWER low (uptrend pullback).
+//   Bearish: price LOWER high while oscillator HIGHER high (downtrend bounce).
+// Pivots confirm divLbR bars after the fact (no repaint once confirmed).
+divOsc = divSrcChoice == "RSI" ? emRsi : divSrcChoice == "MACD Histogram" ? emMacdHist : stochK
+
+plFound = not na(ta.pivotlow(divOsc, divLbL, divLbR))
+phFound = not na(ta.pivothigh(divOsc, divLbL, divLbR))
+inRangeDiv(cond) =>
+    bars = ta.barssince(cond == true)
+    divRangeMin <= bars and bars <= divRangeMax
+
+// --- Pivot LOW comparisons (oscillator value and price at the confirmed pivot) ---
+oscAtPL   = divOsc[divLbR]
+priceAtPL = low[divLbR]
+prevOscPL   = ta.valuewhen(plFound, oscAtPL, 1)
+prevPricePL = ta.valuewhen(plFound, priceAtPL, 1)
+prevBarPL   = ta.valuewhen(plFound, bar_index[divLbR], 1)
+
+regBull = showRegDiv and plFound and inRangeDiv(plFound[1]) and oscAtPL > prevOscPL and priceAtPL < prevPricePL   // price LL, osc HL
+hidBull = showHidDiv and plFound and inRangeDiv(plFound[1]) and oscAtPL < prevOscPL and priceAtPL > prevPricePL   // price HL, osc LL
+
+if showAllVisuals and showDiv and barstate.isconfirmed and (regBull or hidBull)
+    line.new(int(prevBarPL), prevPricePL, bar_index[divLbR], priceAtPL, xloc=xloc.bar_index, color=divBullColor, width=2)
+    if divLabels
+        label.new(bar_index[divLbR], priceAtPL, regBull ? "R" : "H", style=label.style_label_up, color=divBullColor, textcolor=color.white, size=size.tiny, tooltip=(regBull ? "Regular" : "Hidden") + " Bullish divergence\nOscillator: " + divSrcChoice)
+
+// --- Pivot HIGH comparisons ---
+oscAtPH   = divOsc[divLbR]
+priceAtPH = high[divLbR]
+prevOscPH   = ta.valuewhen(phFound, oscAtPH, 1)
+prevPricePH = ta.valuewhen(phFound, priceAtPH, 1)
+prevBarPH   = ta.valuewhen(phFound, bar_index[divLbR], 1)
+
+regBear = showRegDiv and phFound and inRangeDiv(phFound[1]) and oscAtPH < prevOscPH and priceAtPH > prevPricePH   // price HH, osc LH
+hidBear = showHidDiv and phFound and inRangeDiv(phFound[1]) and oscAtPH > prevOscPH and priceAtPH < prevPricePH   // price LH, osc HH
+
+if showAllVisuals and showDiv and barstate.isconfirmed and (regBear or hidBear)
+    line.new(int(prevBarPH), prevPricePH, bar_index[divLbR], priceAtPH, xloc=xloc.bar_index, color=divBearColor, width=2)
+    if divLabels
+        label.new(bar_index[divLbR], priceAtPH, regBear ? "R" : "H", style=label.style_label_down, color=divBearColor, textcolor=color.white, size=size.tiny, tooltip=(regBear ? "Regular" : "Hidden") + " Bearish divergence\nOscillator: " + divSrcChoice)
+
+//==============================================================================
+// PLOTS
+//==============================================================================
+// EMA lines (merged from EMA MACD Decision Table)
+plot(showAllVisuals and showEma and ema1On ? ema1 : na, "EMA 1", color=ema1Color, linewidth=1)
+plot(showAllVisuals and showEma and ema2On ? ema2 : na, "EMA 2", color=ema2Color, linewidth=1)
+plot(showAllVisuals and showEma and ema3On ? ema3 : na, "EMA 3", color=ema3Color, linewidth=2)
+plot(showAllVisuals and showEma and ema4On ? ema4 : na, "EMA 4", color=ema4Color, linewidth=2)
+plot(showAllVisuals and showEma and ema5On ? ema5 : na, "EMA 5", color=ema5Color, linewidth=2)
+
+bothBuy  = emScore >= emEntryScore and bsScore >= bsEntryScore
+bothSell = emScore <= -emEntryScore and bsScore <= -bsEntryScore
+eitherBuy  = emScore >= 2 or bsScore >= 3
+eitherSell = emScore <= -2 or bsScore <= -3
+
+candleColor = bothBuy ? color.new(color.lime, 0) : bothSell ? color.new(color.red, 0) : eitherBuy ? color.new(color.green, 45) : eitherSell ? color.new(color.maroon, 35) : na
+barcolor(showAllVisuals and paintBars ? candleColor : na)
+
+plot(emScore, "EMA MACD Score", display=display.data_window)
+plot(bsScore, "BuySell Score", display=display.data_window)
+plot(driftPerBar, "Forecast Drift/bar", display=display.data_window)
+plot(fcTargetPrice, "Forecast Target", display=display.data_window)
+plot(fcMovePct, "Forecast Move %", display=display.data_window)
+plot(fcConfidence, "Forecast Confidence", display=display.data_window)
+
+//==============================================================================
+// HOW TO USE / HONEST CAVEATS
+//==============================================================================
+// BACKTEST half: identical to the validated Dual-Engine strategy. Leave "How to combine signals" on
+// "Auto (by timeframe)" -> mean reversion on <=15-min intraday, EMA-MACD momentum on daily+.
+//
+// FORECAST half: the dashed blue line + cone projects the next N candles (default 15, set 5-50).
+//   * Drift per bar = weighted blend of (1) linear-regression slope, (2) dual-engine score bias,
+//     (3) momentum/ROC. Tune the three weights in "Forecast — Next N Candles".
+//   * The cone half-width = fcBandMult x ATR x sqrt(bar): uncertainty grows with the horizon, like a
+//     random-walk standard error. The projected close can be anywhere inside the cone.
+//   * Confidence% blends |score| conviction, ADX trend strength, and regression R^2. High = the models
+//     agree AND price is trending. Low = chop; treat the projection as noise.
+//
+// IMPORTANT: this is a PROJECTION of current trend/momentum, not a guarantee. It assumes conditions
+// persist; it cannot see news, gaps, or regime changes. Use it as a directional bias and a target
+// zone, sized by the cone — never as a certainty. Always forward-test on paper before trading size.
+

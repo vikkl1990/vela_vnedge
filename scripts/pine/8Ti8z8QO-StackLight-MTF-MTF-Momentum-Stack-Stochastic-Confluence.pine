@@ -1,0 +1,145 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blitz_locked
+
+//@version=6
+strategy("MTF Momentum Stack + Stochastic", shorttitle="MTF-MomStack",
+     overlay=false, pyramiding=3, default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10, initial_capital=100000,
+     commission_type=strategy.commission.percent, commission_value=0.05,
+     process_orders_on_close=true)
+
+// ───────────────────────────── INPUTS ─────────────────────────────
+grpTF   = "Multi-Timeframe Stack"
+grpMom  = "Momentum Method"
+grpSto  = "Stochastic Trigger"
+grpRisk = "Risk Management"
+grpDir  = "Trade Direction"
+
+tf1 = input.timeframe("15",  "Timeframe 1 (fast)",               group=grpTF)
+tf2 = input.timeframe("60",  "Timeframe 2 (medium)",             group=grpTF)
+tf3 = input.timeframe("240", "Timeframe 3 (slow / stoch confirm)", group=grpTF)
+
+momMode  = input.string("RSI", "Momentum Method", options=["RSI", "EMA Slope"], group=grpMom)
+rsiLen   = input.int(14, "RSI Length", group=grpMom)
+rsiBand  = input.float(5.0, "RSI Neutral Band (± around 50)", minval=0, group=grpMom)
+slopeLen = input.int(21, "EMA Length (for Slope mode)", group=grpMom)
+
+stoLen = input.int(11, "Stochastic Length", group=grpSto)
+stoK   = input.int(3,  "Smooth K", group=grpSto)
+stoD   = input.int(3,  "Smooth D", group=grpSto)
+upLine  = input.int(80, "Overbought", minval=50, maxval=95, group=grpSto)
+lowLine = input.int(20, "Oversold",   minval=5,  maxval=50, group=grpSto)
+linregLen = input.int(11, "Linreg Smoothing Length (MTF Stoch)", group=grpSto)
+
+atrLen    = input.int(14, "ATR Length", group=grpRisk)
+slMult    = input.float(1.5, "Stop Loss (x ATR)",   minval=0.1, group=grpRisk)
+tpMult    = input.float(3.0, "Take Profit (x ATR)", minval=0.1, group=grpRisk)
+breakExit = input.bool(true, "Early-exit if momentum stack flips against trade", group=grpRisk)
+riskPct = input.float(1.0, "Risk per Trade (% of equity)", minval=0.1, maxval=10, group=grpRisk)
+
+
+direction = input.string("Both", "Trade Direction", options=["Both", "Long Only", "Short Only"], group=grpDir)
+
+//Momentum score
+f_score() => 
+    r = ta.rsi(close, rsiLen)
+    emaNow = ta.ema(close,slopeLen)
+    emaPrev = emaNow[1]
+    slope = emaNow-emaPrev
+    score = momMode == "RSI" ? (r>50 + rsiBand ? 1:r<50-rsiBand ? -1:0) : (slope>0?1:slope<0 ? -1 : 0)
+    score
+
+score1=request.security(syminfo.tickerid,tf1,f_score(),lookahead = barmerge.lookahead_off)
+score2=request.security(syminfo.tickerid,tf2,f_score(),lookahead = barmerge.lookahead_off)
+score3=request.security(syminfo.tickerid,tf3,f_score(),lookahead = barmerge.lookahead_off)
+
+alignScore = score1+score2+score3
+fullBull = alignScore==3
+fullBear = alignScore==-3
+
+//Stochastic
+f_stoch()=>
+    k=ta.sma(ta.stoch(close,high,low,stoLen),stoK)
+    d=ta.sma(k,stoD)
+    [k,d]
+
+[k,d] = f_stoch()
+[mtfK_raw, mtfD_raw] = request.security(syminfo.tickerid, tf3, f_stoch(), lookahead=barmerge.lookahead_off)
+mtfK = ta.linreg(mtfK_raw, linregLen, 0)
+mtfD = ta.linreg(mtfD_raw, linregLen, 0)
+
+//entry
+longTrigger = ta.crossover(k,d) and k<upLine and mtfK>mtfD
+shortTrigger = ta.crossunder(k,d) and k>lowLine and mtfK<mtfD
+
+longCondition = fullBull and longTrigger and (direction!="Short Only")
+shortCondition = fullBear and shortTrigger and (direction!="Long Only")
+
+//Risk Management 
+atrVal = ta.atr(atrLen)
+var float longStop    = na
+var float longTarget  = na
+var float shortStop   = na
+var float shortTarget = na
+
+if longCondition
+    stopDist = atrVal * slMult
+    riskAmt  = strategy.equity * (riskPct / 100)
+    qty      = riskAmt / stopDist
+    strategy.entry("Long", strategy.long, qty=qty)
+    longStop   := close - stopDist
+    longTarget := close + atrVal * tpMult
+
+if shortCondition
+    stopDist = atrVal * slMult
+    riskAmt  = strategy.equity * (riskPct / 100)
+    qty      = riskAmt / stopDist
+    strategy.entry("Short", strategy.short, qty=qty)
+    shortStop   := close + stopDist
+    shortTarget := close - atrVal * tpMult
+
+strategy.exit("XL", "Long", stop=longStop, limit = longTarget)
+strategy.exit("XS", "Short", stop=shortStop, limit = shortTarget)
+
+if breakExit and strategy.position_size > 0 and fullBear
+    strategy.close("Long", comment="Stack Flip")
+
+if breakExit and strategy.position_size < 0 and fullBull
+    strategy.close("Short", comment="Stack Flip")
+
+//Visuals
+plot(k, "Stoch %K (chart TF)", color=color.new(color.black, 0))
+plot(d, "Stoch %D (chart TF)", color=color.new(color.gray, 0))
+pK = plot(mtfK, "Stoch %K (slow TF)", color=color.new(color.red, 20))
+pD = plot(mtfD, "Stoch %D (slow TF)", color=color.new(color.lime, 20))
+fill(pK, pD, color = mtfK > mtfD ? color.new(color.green, 90) : color.new(color.red, 90))
+hline(upLine, "Overbought", color=color.new(color.gray, 50))
+hline(50, "Mid", color=color.new(color.gray, 70))
+hline(lowLine, "Oversold", color=color.new(color.gray, 50))
+
+bgColor = alignScore == 3 ? color.new(color.green, 85) : alignScore == -3 ? color.new(color.red, 85) : na
+bgcolor(bgColor)
+
+barcolor(fullBull ? color.new(color.lime, 0) : fullBear ? color.new(color.red, 0) : color.new(color.gray, 60))
+
+f_dotColor(s) =>
+    s == 1 ? color.lime : s == -1 ? color.red : color.new(color.yellow, 0)
+
+var table light = table.new(position.top_right, 3, 2, border_width=1)
+if barstate.islast
+    table.cell(light, 0, 0, tf1, bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(light, 1, 0, tf2, bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(light, 2, 0, tf3, bgcolor=color.new(color.gray, 80), text_color=color.white)
+    table.cell(light, 0, 1, "●", text_color=f_dotColor(score1), text_size=size.large)
+    table.cell(light, 1, 1, "●", text_color=f_dotColor(score2), text_size=size.large)
+    table.cell(light, 2, 1, "●", text_color=f_dotColor(score3), text_size=size.large)
+
+var table biasTbl = table.new(position.bottom_right, 1, 1, border_width=1)
+if barstate.islast
+    biasTxt = alignScore == 3 ? "STRONG BULL" : alignScore == 2 ? "BULL LEAN" :
+              alignScore == -3 ? "STRONG BEAR" : alignScore == -2 ? "BEAR LEAN" : "NEUTRAL"
+    biasClr = alignScore >= 2 ? color.new(color.green, 20) : alignScore <= -2 ? color.new(color.red, 20) : color.new(color.gray, 40)
+    table.cell(biasTbl, 0, 0, biasTxt, bgcolor=biasClr, text_color=color.white, text_size=size.normal)
+
+plotshape(longCondition,  "Long Signal",  shape.triangleup,   location.bottom, color.lime, size=size.small)
+plotshape(shortCondition, "Short Signal", shape.triangledown, location.top,    color.red,  size=size.small)

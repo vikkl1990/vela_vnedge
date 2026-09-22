@@ -1,0 +1,244 @@
+//@version=6
+strategy("Slope & MA Cross + Acc + Range Filter", overlay=true, margin_long=100, margin_short=100, max_bars_back=5000)
+
+// ==========================================
+// 1. INPUTS
+// ==========================================
+grp_ma      = "Moving Average Settings"
+ma_type     = input.string("Hull MA", "MA Type", options=["ALMA", "EMA", "VWMA", "Hull MA"], group=grp_ma)
+ma_len      = input.int(100, "MA Period", minval=1, group=grp_ma)
+slope_len   = input.int(1, "Slope Lookback", minval=1, group=grp_ma)
+alma_offset = input.float(0.85, "ALMA Offset", minval=0.0, maxval=1.0, step=0.05, group=grp_ma)
+alma_sigma  = input.float(6.0, "ALMA Sigma", group=grp_ma)
+
+grp_range        = "Ranging Market Filter (Slope Angle)"
+use_range_filter = input.bool(true, "Enable Range Filter", tooltip="If the slope angle is below the threshold, the market is considered ranging and no new trades are opened.", group=grp_range)
+min_angle        = input.float(35.0, "Minimum Trend Angle (°)", minval=0.1, maxval=89.0, step=0.5, tooltip="Minimum required angle to qualify a trending market.", group=grp_range)
+angle_mult       = input.float(10.0, "Angle Sensitivity Multiplier", minval=1.0, maxval=500.0, step=1.0, tooltip="Scales the micro percentage changes on lower timeframes (e.g., 3m) to expand angle resolution.", group=grp_range)
+
+grp_entry   = "Entry and Exit Modes"
+use_slope_entry = input.bool(false, "Enter on Slope 0 Cross", group=grp_entry)
+use_price_entry = input.bool(false, "Enter on Price / MA Cross", group=grp_entry)
+use_acc_entry   = input.bool(true, "Enter on Slope Acceleration 0 Cross", group=grp_entry)
+use_acc_exit    = input.bool(true, "Exit on Reverse Acceleration Cross", group=grp_entry)
+allow_reentry   = input.bool(true, "Allow Re-Entry During Trend", tooltip="Re-enters the trade if the trend direction remains valid after a stop-out.", group=grp_entry)
+
+grp_fixed_exit = "Fixed Stop Loss & Take Profit"
+use_sl         = input.bool(true, "Enable Fixed / Dynamic SL", group=grp_fixed_exit)
+sl_perc        = input.float(1.0, "Entry-Based SL (%)", minval=0.05, step=0.05, group=grp_fixed_exit) / 100
+use_tp         = input.bool(false, "Enable Take Profit (TP)", group=grp_fixed_exit)
+tp_perc        = input.float(2.0, "Take Profit (%)", minval=0.1, step=0.1, group=grp_fixed_exit) / 100
+
+grp_trail      = "Trailing Stop Settings"
+use_trail      = input.bool(true, "Enable Trailing Stop", group=grp_trail)
+trail_start    = input.float(1.5, "Trailing Activation Profit (%)", minval=0.1, step=0.05, group=grp_trail) / 100
+trail_dist     = input.float(1.0, "Trailing Distance (%)", minval=0.1, step=0.05, group=grp_trail) / 100
+
+grp_shrink     = "Shrinking Stop Loss"
+use_shrinking_sl     = input.bool(true, "Enable Shrinking SL", group=grp_shrink)
+shrink_min_profit    = input.float(1.5, "Min Profit for Tightening (%)", minval=0.1, step=0.1, group=grp_shrink) / 100
+shrink_mult          = input.float(0.5, "Tightening Multiplier", minval=0.1, maxval=1.0, step=0.05, group=grp_shrink)
+use_momentum_trigger = input.bool(true, "Tighten Only When Slope Decelerates", group=grp_shrink)
+
+grp_table      = "Dashboard Settings"
+table_pos      = input.string("Top Right", "Dashboard Position", options=["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group=grp_table)
+
+// ==========================================
+// 2. CALCULATIONS & ACCELERATION & SLOPE ANGLE
+// ==========================================
+get_ma(type, len) =>
+    switch type
+        "ALMA"    => ta.alma(close, len, alma_offset, alma_sigma)
+        "EMA"     => ta.ema(close, len)
+        "VWMA"    => ta.vwma(close, len)
+        "Hull MA" => ta.hma(close, len)
+        => ta.alma(close, len, alma_offset, alma_sigma)
+
+main_ma_val  = get_ma(ma_type, ma_len)
+ma_slope     = main_ma_val - main_ma_val[slope_len]
+ma_accel     = ma_slope - ma_slope[1]
+
+// Scaled Slope Angle Calculation
+slope_change_perc = (main_ma_val - main_ma_val[slope_len]) / main_ma_val[slope_len] * 100
+slope_angle       = math.todegrees(math.atan(slope_change_perc * angle_mult))
+
+// Ranging Market Filter
+bool is_trending_long  = use_range_filter ? (slope_angle >= min_angle) : true
+bool is_trending_short = use_range_filter ? (slope_angle <= -min_angle) : true
+bool is_market_ranging = use_range_filter and (math.abs(slope_angle) < min_angle)
+
+slope_fading_long  = ma_slope < ma_slope[1] and ma_slope > 0
+slope_fading_short = ma_slope > ma_slope[1] and ma_slope < 0
+
+// ==========================================
+// 3. SIGNAL CONDITIONS
+// ==========================================
+slope_crossed_up   = ta.crossover(ma_slope, 0.0)
+slope_crossed_down = ta.crossunder(ma_slope, 0.0)
+
+price_crossed_up   = ta.crossover(close, main_ma_val)
+price_crossed_down = ta.crossunder(close, main_ma_val)
+
+acc_crossed_up     = ta.crossover(ma_accel, 0.0)
+acc_crossed_down   = ta.crossunder(ma_accel, 0.0)
+
+in_long_trend  = ma_slope > 0 and close > main_ma_val
+in_short_trend = ma_slope < 0 and close < main_ma_val
+
+// Combined Entry Signals
+long_cross_signal  = (use_slope_entry and slope_crossed_up) or (use_price_entry and price_crossed_up) or (use_acc_entry and acc_crossed_up)
+short_cross_signal = (use_slope_entry and slope_crossed_down) or (use_price_entry and price_crossed_down) or (use_acc_entry and acc_crossed_down)
+
+long_reentry_signal  = allow_reentry and in_long_trend and ta.crossover(close, high[1])
+short_reentry_signal = allow_reentry and in_short_trend and ta.crossunder(close, low[1])
+
+// Trend-Filtered Final Entries
+long_final_entry  = (long_cross_signal or long_reentry_signal) and is_trending_long
+short_final_entry = (short_cross_signal or short_reentry_signal) and is_trending_short
+
+// Combined Exit Signals
+exit_long_condition  = slope_crossed_down or price_crossed_down or (use_acc_exit and acc_crossed_down)
+exit_short_condition = slope_crossed_up or price_crossed_up or (use_acc_exit and acc_crossed_up)
+
+// ==========================================
+// 4. SHRINKING STOP LOSS
+// ==========================================
+var float shrinking_sl_long  = na
+var float shrinking_sl_short = na
+typical_price = (high + low + close) / 3
+
+if strategy.position_size > 0
+    float current_profit_ratio = (high - strategy.position_avg_price) / strategy.position_avg_price
+    bool profit_ok   = current_profit_ratio >= shrink_min_profit
+    bool momentum_ok = use_momentum_trigger ? slope_fading_long : true
+    
+    if profit_ok and momentum_ok
+        float base_stop = typical_price * (1 - sl_perc * shrink_mult)
+        float min_allowed_stop = strategy.position_avg_price * (1 - sl_perc)
+        float calculated_sl = math.max(base_stop, min_allowed_stop)
+        shrinking_sl_long := na(shrinking_sl_long) ? calculated_sl : math.max(shrinking_sl_long, calculated_sl)
+else
+    shrinking_sl_long := na
+
+if strategy.position_size < 0
+    float current_profit_ratio = (strategy.position_avg_price - low) / strategy.position_avg_price
+    bool profit_ok   = current_profit_ratio >= shrink_min_profit
+    bool momentum_ok = use_momentum_trigger ? slope_fading_short : true
+    
+    if profit_ok and momentum_ok
+        float base_stop = typical_price * (1 + sl_perc * shrink_mult)
+        float max_allowed_stop = strategy.position_avg_price * (1 + sl_perc)
+        float calculated_sl = math.min(base_stop, max_allowed_stop)
+        shrinking_sl_short := na(shrinking_sl_short) ? calculated_sl : math.min(shrinking_sl_short, calculated_sl)
+else
+    shrinking_sl_short := na
+
+float entry_sl_long  = strategy.position_avg_price * (1 - sl_perc)
+float entry_sl_short = strategy.position_avg_price * (1 + sl_perc)
+
+float final_long_stop = strategy.position_size > 0 ? (use_shrinking_sl and not na(shrinking_sl_long) ? math.max(entry_sl_long, shrinking_sl_long) : entry_sl_long) : na
+float final_short_stop = strategy.position_size < 0 ? (use_shrinking_sl and not na(shrinking_sl_short) ? math.min(entry_sl_short, shrinking_sl_short) : entry_sl_short) : na
+
+// ==========================================
+// 5. BAR-CONFIRMED TRADE MANAGEMENT
+// ==========================================
+var int last_entry_bar = -1
+
+if barstate.isconfirmed
+    // 1. Check Exit Conditions
+    if (strategy.position_size > 0 and exit_long_condition)
+        strategy.close("Base MA Long", comment="Close: Long Signal")
+    
+    if (strategy.position_size < 0 and exit_short_condition)
+        strategy.close("Base MA Short", comment="Close: Short Signal")
+    
+    // 2. Check Entry Conditions
+    bool can_enter_this_bar = (last_entry_bar != bar_index)
+    
+    if can_enter_this_bar and strategy.position_size == 0
+        if long_final_entry
+            strategy.entry("Base MA Long", strategy.long, comment=long_cross_signal ? "Long Cross" : "Long Re-Entry")
+            last_entry_bar := bar_index
+        else if short_final_entry
+            strategy.entry("Base MA Short", strategy.short, comment=short_cross_signal ? "Short Cross" : "Short Re-Entry")
+            last_entry_bar := bar_index
+
+long_tp_price   = use_tp ? strategy.position_avg_price * (1 + tp_perc) : na
+short_tp_price  = use_tp ? strategy.position_avg_price * (1 - tp_perc) : na
+
+long_t_trigger  = use_trail ? strategy.position_avg_price * (1 + trail_start) : na
+long_t_offset   = use_trail ? math.max(1, math.round((strategy.position_avg_price * trail_dist) / syminfo.mintick)) : na
+short_t_trigger = use_trail ? strategy.position_avg_price * (1 - trail_start) : na
+short_t_offset  = use_trail ? math.max(1, math.round((strategy.position_avg_price * trail_dist) / syminfo.mintick)) : na
+
+strategy.exit("Exit_L", from_entry="Base MA Long", stop=use_sl ? final_long_stop : na, limit=long_tp_price, trail_price=use_trail ? long_t_trigger : na, trail_offset=use_trail ? long_t_offset : na, comment_loss="SL/Shrink", comment_trailing="Trailing Active")
+strategy.exit("Exit_S", from_entry="Base MA Short", stop=use_sl ? final_short_stop : na, limit=short_tp_price, trail_price=use_trail ? short_t_trigger : na, trail_offset=use_trail ? short_t_offset : na, comment_loss="SL/Shrink", comment_trailing="Trailing Active")
+
+// ==========================================
+// 6. VISUALIZATION & LIVE DASHBOARD
+// ==========================================
+plot(main_ma_val, title="Selected Base MA", color=is_market_ranging ? color.orange : (ma_slope > 0 ? color.green : color.red), linewidth=2)
+plot(use_sl and (strategy.position_size != 0) ? (strategy.position_size > 0 ? final_long_stop : final_short_stop) : na, title="Live Stop Line", color=color.fuchsia, style=plot.style_linebr, linewidth=2)
+
+get_table_pos(pos_str) =>
+    switch pos_str
+        "Top Right"    => position.top_right
+        "Bottom Right" => position.bottom_right
+        "Top Left"     => position.top_left
+        "Bottom Left"  => position.bottom_left
+        => position.top_right
+
+var table infoTable = table.new(get_table_pos(table_pos), 2, 9, border_width=1, border_color=color.black)
+
+if barstate.islast
+    float open_pnl_perc = 0.0
+    float open_pnl_val  = 0.0
+    string pos_text     = "FLAT"
+    color pos_bg        = color.gray
+
+    if strategy.position_size > 0
+        pos_text      := "LONG 🟢"
+        pos_bg        := color.green
+        open_pnl_perc := (close - strategy.position_avg_price) / strategy.position_avg_price * 100
+        open_pnl_val  := (close - strategy.position_avg_price) * strategy.position_size
+    else if strategy.position_size < 0
+        pos_text      := "SHORT 🔴"
+        pos_bg        := color.red
+        open_pnl_perc := (strategy.position_avg_price - close) / strategy.position_avg_price * 100
+        open_pnl_val  := (strategy.position_avg_price - close) * math.abs(strategy.position_size)
+
+    float total_net_pnl_val  = strategy.netprofit
+    float total_net_pnl_perc = (strategy.netprofit / strategy.initial_capital) * 100
+
+    color slope_bg     = is_market_ranging ? color.orange : (slope_angle > 0 ? color.green : color.red)
+    color acc_bg       = ma_accel > 0 ? color.teal : (ma_accel < 0 ? color.maroon : color.gray)
+    color open_pnl_bg  = open_pnl_val >= 0 ? color.teal : color.maroon
+    color total_pnl_bg = total_net_pnl_val >= 0 ? color.teal : color.maroon
+
+    // Dashboard Rows
+    table.cell(infoTable, 0, 0, "Position Status", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 0, pos_text, bgcolor=pos_bg, text_color=color.white)
+
+    table.cell(infoTable, 0, 1, "Market Regime", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 1, is_market_ranging ? "RANGING / WHIPSAW ⚠️" : "TRENDING 🔥", bgcolor=is_market_ranging ? color.orange : color.blue, text_color=color.white)
+
+    table.cell(infoTable, 0, 2, "Slope Value", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 2, str.tostring(ma_slope, "#.0000"), bgcolor=slope_bg, text_color=color.white)
+
+    table.cell(infoTable, 0, 3, "Slope Acceleration", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 3, str.tostring(ma_accel, "#.0000"), bgcolor=acc_bg, text_color=color.white)
+
+    table.cell(infoTable, 0, 4, "Slope Angle (°)", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 4, str.tostring(slope_angle, "#.##") + "°", bgcolor=slope_bg, text_color=color.white)
+
+    table.cell(infoTable, 0, 5, "Open PnL (%)", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 5, str.tostring(open_pnl_perc, "#.##") + "%", bgcolor=open_pnl_bg, text_color=color.white)
+
+    table.cell(infoTable, 0, 6, "Open PnL ($)", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 6, str.tostring(open_pnl_val, "#.##"), bgcolor=open_pnl_bg, text_color=color.white)
+
+    table.cell(infoTable, 0, 7, "Total Net PnL (%)", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 7, str.tostring(total_net_pnl_perc, "#.##") + "%", bgcolor=total_pnl_bg, text_color=color.white)
+
+    table.cell(infoTable, 0, 8, "Total Net PnL ($)", bgcolor=color.gray, text_color=color.white)
+    table.cell(infoTable, 1, 8, str.tostring(total_net_pnl_val, "#.##"), bgcolor=total_pnl_bg, text_color=color.white)

@@ -1,0 +1,171 @@
+//@version=6
+strategy("BTC — Smart Pullback Liquidity + Adaptive RSI",
+     overlay=true,
+     pyramiding=0,
+     calc_on_every_tick=true,
+     initial_capital=10000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=2)
+
+// =====================
+// PARAMÈTRES
+// =====================
+rsiLen       = input.int(14, "RSI longueur")
+lookbackLow  = input.int(20, "Lookback creux liquidité")
+reclaimBars  = input.int(5, "Réintégration max après sweep")
+
+emaFastLen   = input.int(50, "EMA rapide")
+emaSlowLen   = input.int(200, "EMA lente")
+
+atrLen       = input.int(14, "ATR longueur")
+stopATR      = input.float(1.8, "Stop ATR", step=0.1)
+tp1ATR       = input.float(2.2, "TP1 ATR", step=0.1)
+tp2ATR       = input.float(4.5, "TP2 ATR", step=0.1)
+
+useDailyTrend = input.bool(true, "Filtre tendance Daily")
+useADX        = input.bool(true, "Filtre ADX")
+adxMin        = input.float(17, "ADX minimum", step=0.5)
+
+useVolume     = input.bool(true, "Filtre volume")
+volLen        = input.int(50, "SMA volume")
+volMult       = input.float(1.05, "Volume > SMA ×", step=0.05)
+
+// =====================
+// INDICATEURS 1H
+// =====================
+rsi = ta.rsi(close, rsiLen)
+ema50 = ta.ema(close, emaFastLen)
+ema200 = ta.ema(close, emaSlowLen)
+atr = ta.atr(atrLen)
+
+volSMA = ta.sma(volume, volLen)
+volOK = not useVolume or volume > volSMA * volMult
+
+[plusDI, minusDI, adx] = ta.dmi(14, 14)
+adxOK = not useADX or adx > adxMin
+
+// =====================
+// TENDANCE DAILY
+// =====================
+dailyClose  = request.security(syminfo.tickerid, "D", close)
+dailyEMA50  = request.security(syminfo.tickerid, "D", ta.ema(close, 50))
+dailyEMA200 = request.security(syminfo.tickerid, "D", ta.ema(close, 200))
+dailyRSI    = request.security(syminfo.tickerid, "D", ta.rsi(close, 14))
+
+dailyTrendOK = dailyClose > dailyEMA200 and dailyEMA50 > dailyEMA200 and dailyRSI > 45
+trendOK = close > ema200 and ema50 > ema200 and (not useDailyTrend or dailyTrendOK)
+
+// =====================
+// RSI ADAPTATIF
+// =====================
+rsiMean = ta.sma(rsi, 50)
+rsiDev = ta.stdev(rsi, 50)
+rsiZ = rsiDev != 0 ? (rsi - rsiMean) / rsiDev : 0
+
+rsiCapitulation = rsiZ < -1.0
+rsiRebound = ta.crossover(rsiZ, -0.35)
+
+// =====================
+// LIQUIDITY SWEEP
+// =====================
+previousLow = ta.lowest(low[1], lookbackLow)
+
+sweep = low < previousLow and close > previousLow
+barsSinceSweep = ta.barssince(sweep)
+
+reclaimAfterSweep = barsSinceSweep >= 0 and barsSinceSweep <= reclaimBars and close > previousLow
+
+// =====================
+// STRUCTURE
+// =====================
+higherClose = close > close[1]
+notExtended = close < ema50 + atr * 1.5
+
+buySignal =
+     trendOK and
+     adxOK and
+     volOK and
+     reclaimAfterSweep and
+     rsiCapitulation[1] and
+     rsiRebound and
+     higherClose and
+     notExtended
+
+// =====================
+// ENTRÉE
+// =====================
+if buySignal
+    strategy.entry("Long", strategy.long)
+
+// =====================
+// SORTIES
+// =====================
+entryPrice = strategy.position_avg_price
+
+stopPrice = entryPrice - atr * stopATR
+tp1Price  = entryPrice + atr * tp1ATR
+tp2Price  = entryPrice + atr * tp2ATR
+
+strategy.exit("TP1", "Long", limit=tp1Price, stop=stopPrice, qty_percent=50)
+strategy.exit("TP2", "Long", limit=tp2Price, stop=stopPrice, qty_percent=50)
+
+// Sortie défensive si le régime se dégrade
+exitRegime = strategy.position_size > 0 and close < ema200
+if exitRegime
+    strategy.close("Long", comment="Sortie régime cassé")
+
+// =====================
+// VISUEL
+// =====================
+plot(ema50, "EMA 50", color=color.orange, linewidth=2)
+plot(ema200, "EMA 200", color=color.red, linewidth=2)
+
+plot(previousLow, "Niveau liquidité", color=color.new(color.blue, 50), style=plot.style_linebr)
+
+bgcolor(dailyTrendOK ? color.new(color.green, 92) : color.new(color.red, 94))
+
+plotshape(sweep, title="Sweep liquidité",
+     style=shape.circle,
+     location=location.belowbar,
+     color=color.new(color.blue, 0),
+     size=size.tiny,
+     text="SW")
+
+plotshape(buySignal, title="BUY",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.new(color.lime, 0),
+     text="BUY",
+     textcolor=color.black)
+
+plot(strategy.position_size > 0 ? stopPrice : na, "Stop", color=color.new(color.red, 20), style=plot.style_linebr)
+plot(strategy.position_size > 0 ? tp1Price : na, "TP1", color=color.new(color.green, 35), style=plot.style_linebr)
+plot(strategy.position_size > 0 ? tp2Price : na, "TP2", color=color.new(color.green, 0), style=plot.style_linebr)
+
+// =====================
+// TABLEAU DE RÉGIME
+// =====================
+var table dash = table.new(position.top_right, 2, 5, border_width=1)
+
+if barstate.islast
+    table.cell(dash, 0, 0, "Trend Daily")
+    table.cell(dash, 1, 0, dailyTrendOK ? "OK" : "NON")
+
+    table.cell(dash, 0, 1, "Trend 1H")
+    table.cell(dash, 1, 1, close > ema200 ? "OK" : "NON")
+
+    table.cell(dash, 0, 2, "ADX")
+    table.cell(dash, 1, 2, str.tostring(adx, "#.0"))
+
+    table.cell(dash, 0, 3, "RSI Z-score")
+    table.cell(dash, 1, 3, str.tostring(rsiZ, "#.00"))
+
+    table.cell(dash, 0, 4, "Setup")
+    table.cell(dash, 1, 4, buySignal ? "BUY" : "WAIT")
+
+// =====================
+// ALERTES
+// =====================
+alertcondition(buySignal, "Signal BUY BTC", "BUY BTC : tendance OK + sweep liquidité + RSI adaptatif en rebond")

@@ -1,0 +1,64 @@
+//@version=6
+strategy("Fair Value Gap Continuation Framework", overlay=true, initial_capital=100000)
+
+// Inputs
+atrLen   = input.int(14, "ATR Length")
+atrMult  = input.float(1.5, "Stop ATR Multiplier")
+rr       = input.float(2.0, "Risk Reward")
+trendLen = input.int(50, "Trend EMA Length")
+
+// Trend Filter
+emaTrend = ta.ema(close, trendLen)
+
+// ATR
+atrValue = ta.atr(atrLen)
+
+// Fair Value Gap Detection
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+
+// Store Latest FVG Zones
+var float bullTop = na
+var float bullBottom = na
+
+var float bearTop = na
+var float bearBottom = na
+
+if bullFVG
+    bullTop := low
+    bullBottom := high[2]
+
+if bearFVG
+    bearTop := low[2]
+    bearBottom := high
+
+// Retest Logic
+bullRetest = not na(bullTop) and low <= bullTop and close > bullTop
+bearRetest = not na(bearBottom) and high >= bearBottom and close < bearBottom
+
+// Trend Confirmation
+longCondition = bullRetest and close > emaTrend
+shortCondition = bearRetest and close < emaTrend
+
+// Entries
+if longCondition and strategy.position_size <= 0
+    strategy.entry("Long", strategy.long)
+
+if shortCondition and strategy.position_size >= 0
+    strategy.entry("Short", strategy.short)
+
+// Risk Management
+longStop   = strategy.position_avg_price - atrValue * atrMult
+longTarget = strategy.position_avg_price + atrValue * atrMult * rr
+
+shortStop   = strategy.position_avg_price + atrValue * atrMult
+shortTarget = strategy.position_avg_price - atrValue * atrMult * rr
+
+strategy.exit("Exit Long", from_entry="Long", stop=longStop, limit=longTarget)
+strategy.exit("Exit Short", from_entry="Short", stop=shortStop, limit=shortTarget)
+
+// Visuals
+plot(emaTrend, title="Trend EMA", color=color.orange)
+
+plot(bullTop, title="Bullish FVG", color=color.green, linewidth=2)
+plot(bearBottom, title="Bearish FVG", color=color.red, linewidth=2)

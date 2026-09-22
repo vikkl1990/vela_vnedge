@@ -1,0 +1,188 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blitz_locked
+
+//@version=6
+strategy("Multi-Factor Adaptive Z-Score Strategy", shorttitle="MFZ-Score Strategy", overlay=false,
+     initial_capital=10000, default_qty_type=strategy.fixed, default_qty_value=1,
+     commission_type=strategy.commission.percent, commission_value=0.05, slippage=1,
+     process_orders_on_close=true)
+
+//              INPUTS              //
+
+var string g_general    = "General"
+var string g_factors    = "Factor Settings"
+var string g_adaptive   = "Adaptive Smoothing"
+var string g_divergence = "Divergence"
+var string g_entries    = "Entries & Exits"
+var string g_sizing     = "Position Sizing"
+var string g_colors     = "Colors"
+var string g_table      = "Info Table"
+
+src              = input.source(close, "Source", group = g_general)
+zscore_period    = input.int(100, "Z-Score Lookback", minval = 20, maxval = 500, group = g_general)
+smoothing_base   = input.int(5, "Base Smoothing Length", minval = 1, maxval = 50, group = g_general, tooltip = "Used when adaptive smoothing is off.")
+
+momentum_length  = input.int(14, "Momentum ROC Length", minval = 2, maxval = 100, group = g_factors)
+rsi_length       = input.int(14, "RSI Length", minval = 2, maxval = 100, group = g_factors)
+vol_length       = input.int(20, "Volume Average Length", minval = 2, maxval = 200, group = g_factors)
+w_price          = input.float(0.4, "Momentum Weight", minval = 0, maxval = 1, step = 0.05, group = g_factors)
+w_rsi            = input.float(0.3, "RSI Weight", minval = 0, maxval = 1, step = 0.05, group = g_factors)
+w_vol            = input.float(0.3, "Volume Weight", minval = 0, maxval = 1, step = 0.05, group = g_factors)
+
+adaptive_on      = input.bool(true, "Enable Adaptive Smoothing", group = g_adaptive)
+atr_length       = input.int(14, "ATR Length", minval = 2, maxval = 100, group = g_adaptive)
+atr_rank_length  = input.int(100, "ATR Percentile Lookback", minval = 20, maxval = 500, group = g_adaptive)
+min_smoothing    = input.int(2, "Min Smoothing Length", minval = 1, maxval = 20, group = g_adaptive)
+max_smoothing    = input.int(15, "Max Smoothing Length", minval = 2, maxval = 50, group = g_adaptive)
+
+divergence_on    = input.bool(true, "Enable Divergence Detection", group = g_divergence)
+piv_left         = input.int(5, "Pivot Left Bars", minval = 1, maxval = 20, group = g_divergence)
+piv_right        = input.int(5, "Pivot Right Bars", minval = 1, maxval = 20, group = g_divergence)
+
+entry_mode       = input.string("Zero Cross", "Entry Mode", options = ["Zero Cross", "Threshold Reversion"], group = g_entries)
+long_threshold   = input.float(-1.5, "Long Entry Threshold (Reversion)", minval = -5, maxval = 0, step = 0.1, group = g_entries)
+short_threshold  = input.float(1.5, "Short Entry Threshold (Reversion)", minval = 0, maxval = 5, step = 0.1, group = g_entries)
+exit_level_long  = input.float(0.0, "Long Exit Level", minval = -5, maxval = 5, step = 0.1, group = g_entries, tooltip = "Long position exits when composite crosses below this level.")
+exit_level_short = input.float(0.0, "Short Exit Level", minval = -5, maxval = 5, step = 0.1, group = g_entries, tooltip = "Short position exits when composite crosses above this level.")
+allow_longs      = input.bool(true, "Allow Long Trades", group = g_entries)
+allow_shorts     = input.bool(true, "Allow Short Trades", group = g_entries)
+use_stop_loss    = input.bool(true, "Use ATR Stop Loss", group = g_entries)
+
+account_equity   = input.float(10000, "Account Equity ($, for sizing calc)", minval = 0, group = g_sizing)
+risk_percent     = input.float(1.0, "Risk Per Trade (%)", minval = 0.1, maxval = 100, step = 0.1, group = g_sizing)
+atr_mult_stop    = input.float(2.0, "ATR Stop Multiplier", minval = 0.5, maxval = 10, step = 0.1, group = g_sizing, tooltip = "Stop distance = ATR x this multiplier. Drives both position size and the protective stop order.")
+max_pct_equity   = input.float(100, "Max Position Size (% of Equity)", minval = 1, maxval = 500, step = 1, group = g_sizing, tooltip = "Caps position value regardless of the risk calc, to avoid oversized orders on very tight stops.")
+
+bullish_color    = input.color(#26a69a, "Bullish Color", group = g_colors)
+bearish_color    = input.color(#ef5350, "Bearish Color", group = g_colors)
+neutral_color    = input.color(#787b86, "Neutral Color", group = g_colors)
+
+show_table       = input.bool(true, "Show Info Table", group = g_table)
+table_pos        = input.string("Bottom Right", "Table Position",
+     options = ["Top Left","Top Right","Bottom Left","Bottom Right","Middle Right"], group = g_table)
+table_size       = input.string("Normal", "Table Text Size", options = ["Tiny","Small","Normal","Large"], group = g_table)
+
+//Core calculations
+
+zScore(series float s, int len) =>
+    m=ta.sma(s,len)
+    sd=ta.stdev(s,len)
+    sd>0 ? (s-m)/sd : 0.0
+
+roc = (src-src[momentum_length])/src[momentum_length]*100
+rsiVal = ta.rsi(src,rsi_length)
+volRatio = volume / ta.sma(volume,vol_length)
+
+zPrice = zScore(roc,zscore_period)
+zRsi = zScore(rsiVal,zscore_period)
+zVol = zScore(volRatio,zscore_period)
+
+wSum = w_price + w_rsi + w_vol //weighted sum
+wSumSafe = wSum == 0 ? 1.0 : wSum
+composite = (zPrice*w_price + zRsi * w_rsi + zVol * w_vol)/wSumSafe
+
+atrVal = ta.atr(atr_length)
+atrPctRank = ta.percentrank(atrVal,atr_rank_length)
+dynLenFloat =  adaptive_on ? max_smoothing - (max_smoothing-min_smoothing) * (atrPctRank/100) : smoothing_base
+dynLen = math.max(math.round(dynLenFloat),1)
+alpha = 2.0/(dynLen+1)
+
+var float smoothComposite = na
+smoothComposite:=na(smoothComposite[1]) ? composite : smoothComposite[1] + alpha * (composite-smoothComposite[1])
+
+pctRank = ta.percentrank(smoothComposite,zscore_period)
+
+absZ = math.abs(smoothComposite)
+
+strengthLabel = absZ>=3 ? "Extreme" : absZ>=2 ? "Strong" : absZ>=1 ? "Moderate" : "Neutral"
+
+zColor = smoothComposite>0.1 ? bullish_color : smoothComposite<-0.1 ? bearish_color : neutral_color
+
+//Divergence
+plFound = ta.pivotlow(smoothComposite,piv_left,piv_right)
+phFound = ta.pivothigh(smoothComposite,piv_left,piv_right)
+
+var float oscLow1 = na
+var float oscLow2 = na
+var float priceLow1 = na
+var float priceLow2 = na
+var float oscHigh1 = na
+var float oscHigh2 = na
+var float priceHigh1 = na
+var float priceHigh2 = na
+
+if not na(plFound)
+    oscLow2:=oscLow1
+    oscLow1:=plFound
+    priceLow2:=priceLow1
+    priceLow1:=low[piv_right]
+
+if not na(phFound)
+    oscHigh2   := oscHigh1
+    oscHigh1   := phFound
+    priceHigh2 := priceHigh1
+    priceHigh1 := high[piv_right]
+
+bullDiv = divergence_on and not na(plFound) and not na(priceLow2) and priceLow1<priceLow2 and oscLow1>oscLow2
+bearDiv = divergence_on and not na(phFound) and not na(priceHigh2) and priceHigh1 > priceHigh2 and oscHigh1 < oscHigh2
+
+//Signal conditions
+longEntry = allow_longs and (entry_mode=="Zero Cross" ? ta.crossover(smoothComposite,0):ta.crossover(smoothComposite,long_threshold))
+shortEntry = allow_shorts and (entry_mode=="Zero Cross" ? ta.crossunder(smoothComposite,0): ta.crossunder(smoothComposite,short_threshold))
+
+longExit = ta.crossunder(smoothComposite,exit_level_long)
+shortExit = ta.crossover(smoothComposite,exit_level_short)
+
+//Position sizing
+riskAmount        = account_equity * (risk_percent / 100)
+stopDistance      = atrVal * atr_mult_stop
+rawSizeUnits      = stopDistance > 0 ? riskAmount / stopDistance : 0.0
+
+// Cap size so position value doesn't exceed max % of equity
+maxValueAllowed   = account_equity * (max_pct_equity / 100)
+maxSizeByValue    = close > 0 ? maxValueAllowed / close : 0.0
+positionSizeUnits = math.min(rawSizeUnits, maxSizeByValue)
+
+positionValue     = positionSizeUnits * close
+positionPctEquity = account_equity > 0 ? (positionValue / account_equity) * 100 : 0.0
+stopLossLong      = close - stopDistance
+stopLossShort     = close + stopDistance
+
+//orders
+if longEntry and positionSizeUnits > 0
+    strategy.entry("Long",strategy.long,qty=positionSizeUnits)
+    if use_stop_loss
+        strategy.exit("Long Stop", "Long",stop = stopLossLong)
+
+
+if shortEntry and positionSizeUnits > 0
+    strategy.entry("Short", strategy.short, qty = positionSizeUnits)
+    if use_stop_loss
+        strategy.exit("Short Stop", "Short", stop = stopLossShort)
+
+
+if longExit and strategy.position_size > 0
+    strategy.close("Long")
+
+if shortExit and strategy.position_size < 0
+    strategy.close("Short")
+
+
+positionLabel = strategy.position_size > 0 ? "Long" : strategy.position_size < 0 ? "Short" : "Flat"
+
+//Visuals
+hline(0, "Zero Line", color = color.new(neutral_color, 40), linestyle = hline.style_solid)
+hline(1, "1 SD", color = color.new(bullish_color, 75), linestyle = hline.style_dotted)
+hline(-1, "-1 SD", color = color.new(bearish_color, 75), linestyle = hline.style_dotted)
+hline(2, "2 SD", color = color.new(bullish_color, 60), linestyle = hline.style_dashed)
+hline(-2, "-2 SD", color = color.new(bearish_color, 60), linestyle = hline.style_dashed)
+hline(3, "3 SD", color = color.new(bullish_color, 40), linestyle = hline.style_solid)
+hline(-3, "-3 SD", color = color.new(bearish_color, 40), linestyle = hline.style_solid)
+
+plot(smoothComposite, "Composite Z-Score", color = zColor, linewidth = 3)
+plot(smoothComposite, "", color = color.new(zColor, 85), linewidth = 8)
+
+plotshape(bullDiv ? oscLow1 : na, "Bullish Divergence", style = shape.triangleup,
+     location = location.absolute, color = color.new(bullish_color, 20), size = size.small)
+plotshape(bearDiv ? oscHigh1 : na, "Bearish Divergence", style = shape.triangledown,
+     location = location.absolute, color = color.new(bearish_color, 20), size = size.small)

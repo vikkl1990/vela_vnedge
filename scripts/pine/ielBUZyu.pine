@@ -1,0 +1,373 @@
+//@version=6
+strategy(
+     title="Strategy 250 XAUUSD - Composite Quality Score",
+     shorttitle="Strategy 250 XAU",
+     overlay=true,
+     initial_capital=10000,
+     currency=currency.USD,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=95,
+     pyramiding=0,
+     commission_type=strategy.commission.percent,
+     commission_value=0.02,
+     process_orders_on_close=true
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Strategy 250 XAUUSD — Composite Quality Score v2
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Lógica:
+// Score compuesto para XAUUSD basado en:
+//  - Amplificadores:
+//      1) Pendiente EMA200
+//      2) Mid-bias macro
+//      3) Distancia a EMA200 medida en ATR
+//
+//  - Destructores:
+//      1) Acceptance cerca del nivel de ruptura
+//      2) Sweep previo contra la dirección
+//      3) Mala posición dentro del rango
+//
+// Entrada:
+//  - Long: cierre rompe Donchian High previo + score >= min_score + EMA200 slope > 0
+//  - Short: cierre rompe Donchian Low previo + score >= min_score + EMA200 slope < 0
+//
+// Salida:
+//  - Por tiempo máximo en posición
+//  - O por ruptura contraria del canal Donchian
+//
+// Timeframe recomendado: H1
+// Activo recomendado: XAUUSD
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Inputs optimizados para XAUUSD
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+dcPeriod    = input.int(50,  "Donchian Period", minval=5)
+biasPeriod  = input.int(600, "Macro Bias Period", minval=50)
+slopePeriod = input.int(30,  "EMA200 Slope Period", minval=1)
+
+acceptLb    = input.int(20, "Acceptance Lookback", minval=1)
+sweepLb     = input.int(20, "Sweep Lookback", minval=1)
+
+minScore    = input.float(0.8, "Minimum Quality Score", step=0.1)
+holdBars    = input.int(80, "Máximo de barras en posición", minval=1)
+
+atrLen      = input.int(14,  "ATR Length", minval=1)
+emaLen      = input.int(200, "EMA Length", minval=1)
+
+allowLongs  = input.bool(true,  "Permitir longs")
+allowShorts = input.bool(true,  "Permitir shorts")
+
+showSignals = input.bool(true, "Mostrar señales")
+showLevels  = input.bool(true, "Mostrar Donchian / EMA")
+showScore   = input.bool(false, "Mostrar score en panel")
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Indicadores base
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Donchian usando SOLO barras anteriores.
+// Equivale a np.max(high[i-dc_period:i]) / np.min(low[i-dc_period:i])
+dcHigh = ta.highest(high[1], dcPeriod)
+dcLow  = ta.lowest(low[1], dcPeriod)
+
+ema200 = ta.ema(close, emaLen)
+atrVal = ta.atr(atrLen)
+
+// Macro range usando barras anteriores
+macroHigh = ta.highest(high[1], biasPeriod)
+macroLow  = ta.lowest(low[1], biasPeriod)
+macroRng  = macroHigh - macroLow
+
+// EMA200 slope normalizada
+emaBase = ema200[slopePeriod]
+emaSlope = not na(emaBase) and emaBase > 0 ? (ema200 - emaBase) / (emaBase * slopePeriod) : 0.0
+slopeScoreRaw = emaSlope / 0.0003
+slopeScore = math.min(1.5, math.max(-1.5, slopeScoreRaw))
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Función: ratio de acceptance alrededor del nivel
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_acceptance_ratio(float level, float atrValue, int lb) =>
+    float count = 0.0
+    float total = 0.0
+    float zoneHigh = level + atrValue
+    float zoneLow  = level - atrValue
+
+    for j = 1 to lb
+        bool inside = close[j] >= zoneLow and close[j] <= zoneHigh
+        count += inside ? 1.0 : 0.0
+        total += 1.0
+
+    total > 0 ? count / total : 0.0
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Contexto direccional del breakout
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+longBreak  = close > dcHigh
+shortBreak = close < dcLow
+
+// Para calcular el score usamos orientación long si rompe arriba.
+// Si no rompe arriba, usamos orientación short, igual que la lógica Python original
+// que solo diferencia explícitamente el caso close > dcHigh.
+isLongSide = longBreak
+
+indicatorsReady =
+     not na(dcHigh) and
+     not na(dcLow) and
+     not na(ema200) and
+     not na(atrVal) and
+     not na(macroHigh) and
+     not na(macroLow) and
+     not na(emaBase) and
+     atrVal > 0 and
+     macroRng > 0
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Amplificadores
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 1. Mid-bias macro
+bias = indicatorsReady ? (close[1] - macroLow) / macroRng : na
+
+biasScore =
+     indicatorsReady ?
+         isLongSide ?
+             (bias - 0.5) * 2.0 :
+             (0.5 - bias) * 2.0
+     : na
+
+// 2. Distancia a EMA200 en ATR
+emaDist =
+     indicatorsReady ?
+         isLongSide ?
+             (close - ema200) / atrVal :
+             (ema200 - close) / atrVal
+     : na
+
+emaDistScore = indicatorsReady ? math.min(1.0, math.max(0.0, emaDist / 3.0)) : na
+
+// 3. Suma de amplificadores
+amplifiers = indicatorsReady ? slopeScore + biasScore + emaDistScore : na
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Destructores
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 1. Acceptance
+// Adaptación direccional:
+//  - Long: mide acceptance alrededor de dcHigh
+//  - Short: mide acceptance alrededor de dcLow
+acceptLevel = isLongSide ? dcHigh : dcLow
+accRatio = indicatorsReady ? f_acceptance_ratio(acceptLevel, atrVal, acceptLb) : na
+accPenalty = indicatorsReady ? accRatio * 2.0 : na
+
+// 2. Sweep penalty
+prevLowForSweep  = ta.lowest(low[sweepLb], dcPeriod)
+recentLowSweep   = ta.lowest(low[1], sweepLb)
+
+prevHighForSweep = ta.highest(high[sweepLb], dcPeriod)
+recentHighSweep  = ta.highest(high[1], sweepLb)
+
+sweepValLong =
+     indicatorsReady and not na(prevLowForSweep) and not na(recentLowSweep) ?
+         math.max(0.0, (prevLowForSweep - recentLowSweep) / atrVal)
+     : na
+
+sweepValShort =
+     indicatorsReady and not na(prevHighForSweep) and not na(recentHighSweep) ?
+         math.max(0.0, (recentHighSweep - prevHighForSweep) / atrVal)
+     : na
+
+sweepVal = isLongSide ? sweepValLong : sweepValShort
+sweepPenalty = indicatorsReady ? math.min(2.0, sweepVal) : na
+
+// 3. Range position penalty
+rangeRng = dcHigh - dcLow
+rangePos = indicatorsReady and rangeRng > 0 ? (close[1] - dcLow) / rangeRng : na
+
+rangePenalty =
+     indicatorsReady ?
+         isLongSide ?
+             math.max(0.0, 0.5 - rangePos) * 2.0 :
+             math.max(0.0, rangePos - 0.5) * 2.0
+     : na
+
+// Penalización total
+destructorPenalty = indicatorsReady ? accPenalty + sweepPenalty + rangePenalty : na
+
+// Score final
+qualityScore = indicatorsReady ? amplifiers - destructorPenalty : na
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Estado de posición
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+flat    = strategy.position_size == 0
+
+var int entryBarIndex = na
+barsHeld = not na(entryBarIndex) ? bar_index - entryBarIndex : na
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Condiciones de entrada
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+longEntry =
+     indicatorsReady and
+     allowLongs and
+     flat and
+     longBreak and
+     qualityScore >= minScore and
+     emaSlope > 0
+
+shortEntry =
+     indicatorsReady and
+     allowShorts and
+     flat and
+     shortBreak and
+     qualityScore >= minScore and
+     emaSlope < 0
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Condiciones de salida
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+longExit =
+     inLong and (
+         close < dcLow or
+         (not na(barsHeld) and barsHeld >= holdBars)
+     )
+
+shortExit =
+     inShort and (
+         close > dcHigh or
+         (not na(barsHeld) and barsHeld >= holdBars)
+     )
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Ejecución
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if longEntry
+    strategy.entry("Long", strategy.long, alert_message="ENTRY_LONG")
+    entryBarIndex := bar_index
+
+if shortEntry
+    strategy.entry("Short", strategy.short, alert_message="ENTRY_SHORT")
+    entryBarIndex := bar_index
+
+if longExit
+    strategy.close("Long", alert_message="EXIT_LONG")
+    entryBarIndex := na
+
+if shortExit
+    strategy.close("Short", alert_message="EXIT_SHORT")
+    entryBarIndex := na
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Plots principales
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(showLevels ? dcHigh : na, title="Donchian High previo", color=color.new(color.green, 0), linewidth=1)
+plot(showLevels ? dcLow  : na, title="Donchian Low previo",  color=color.new(color.red, 0), linewidth=1)
+plot(showLevels ? ema200 : na, title="EMA 200", color=color.new(color.orange, 0), linewidth=2)
+
+plotshape(
+     showSignals and longEntry,
+     title="Entrada Long",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=color.new(color.green, 0),
+     size=size.small,
+     text="LONG"
+)
+
+plotshape(
+     showSignals and shortEntry,
+     title="Entrada Short",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=color.new(color.red, 0),
+     size=size.small,
+     text="SHORT"
+)
+
+plotshape(
+     showSignals and longExit,
+     title="Salida Long",
+     style=shape.xcross,
+     location=location.abovebar,
+     color=color.new(color.green, 0),
+     size=size.tiny,
+     text="EXIT"
+)
+
+plotshape(
+     showSignals and shortExit,
+     title="Salida Short",
+     style=shape.xcross,
+     location=location.belowbar,
+     color=color.new(color.red, 0),
+     size=size.tiny,
+     text="EXIT"
+)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Plots opcionales de score
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(showScore ? qualityScore : na, title="Quality Score", color=color.new(color.blue, 0), linewidth=2, display=display.pane)
+plot(showScore ? destructorPenalty : na, title="Destructor Penalty", color=color.new(color.red, 0), linewidth=1, display=display.pane)
+hline(minScore, "Min Score", color=color.new(color.gray, 40), linestyle=hline.style_dotted)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Panel informativo
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var table infoTable = table.new(position.top_right, 2, 9, border_width=1)
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Strategy", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(infoTable, 1, 0, "250 XAU", text_color=color.white, bgcolor=color.new(color.blue, 0))
+
+    table.cell(infoTable, 0, 1, "Quality Score")
+    table.cell(infoTable, 1, 1, str.tostring(qualityScore, "#.###"))
+
+    table.cell(infoTable, 0, 2, "Min Score")
+    table.cell(infoTable, 1, 2, str.tostring(minScore, "#.###"))
+
+    table.cell(infoTable, 0, 3, "Penalty")
+    table.cell(infoTable, 1, 3, str.tostring(destructorPenalty, "#.###"))
+
+    table.cell(infoTable, 0, 4, "Amplifiers")
+    table.cell(infoTable, 1, 4, str.tostring(amplifiers, "#.###"))
+
+    table.cell(infoTable, 0, 5, "EMA Slope")
+    table.cell(infoTable, 1, 5, str.tostring(emaSlope * 100, "#.#####") + "%")
+
+    table.cell(infoTable, 0, 6, "Bias")
+    table.cell(infoTable, 1, 6, str.tostring(bias, "#.###"))
+
+    table.cell(infoTable, 0, 7, "Bars Held")
+    table.cell(infoTable, 1, 7, na(barsHeld) ? "-" : str.tostring(barsHeld))
+
+    table.cell(infoTable, 0, 8, "Shorts")
+    table.cell(infoTable, 1, 8, allowShorts ? "ON" : "OFF")
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Alertas
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(longEntry,  title="Strategy 250 XAU Long Entry",  message="Strategy 250 XAUUSD: Entrada LONG")
+alertcondition(shortEntry, title="Strategy 250 XAU Short Entry", message="Strategy 250 XAUUSD: Entrada SHORT")
+alertcondition(longExit,   title="Strategy 250 XAU Long Exit",   message="Strategy 250 XAUUSD: Salida LONG")
+alertcondition(shortExit,  title="Strategy 250 XAU Short Exit",  message="Strategy 250 XAUUSD: Salida SHORT")

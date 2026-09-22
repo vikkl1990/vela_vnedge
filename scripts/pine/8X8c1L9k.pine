@@ -1,0 +1,697 @@
+// FVG CE Strategy v6 – NQ Futures 1min
+// FVG Logik direkt aus "Dinero GapSniper" übernommen (exakt 1:1)
+// Nur 15min aktiviert, Mitigierung: Wick filled
+//@version=5
+strategy("FVG CE Strategy v6 [NQ 1min]",
+     overlay=true,
+     margin_long=100, margin_short=100,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=2.0,
+     slippage=1,
+     max_bars_back=5000)
+  
+// ══════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════
+htf         = input.timeframe("15", "FVG Timeframe (muss 15min sein wie dein Indikator)")
+tick_size   = input.float(0.25, "Tick Size (NQ = 0.25)", step=0.25)
+// ── RR Einstellungen ──
+rr1_ticks   = input.int(50,  "Bis X Ticks → 1:2 RR",   group="RR Einstellungen", minval=1)
+rr2_ticks   = input.int(100, "Bis X Ticks → 1:1.2 RR", group="RR Einstellungen", minval=1)
+rr3_ticks   = input.int(150, "Bis X Ticks → 1:1 RR",   group="RR Einstellungen", minval=1)
+rr4_ticks   = input.int(1, "Bis X Ticks → 1:3 RR",   group="RR Einstellungen", minval=1)
+// Alles über rr4_ticks = kein Trade
+max_fvgs    = input.int(20,    "Max aktive FVG Midpoints")
+show_labels = input.bool(true, "Entry Labels anzeigen")
+show_be     = input.bool(true, "Breakeven Label anzeigen")
+show_ce     = input.bool(true, "CE Linien anzeigen (gelb)")
+use_session = input.bool(true, "Nur innerhalb Handelszeit")
+trade_sess  = input.session("0100-2100", "Handelszeit (Europe/Berlin)")
+use_news    = input.bool(true, "News-Filter aktivieren")
+news1       = input.session("1345-1545", "News Zeit 1 (FOMC etc.)")
+news2       = input.session("0600-0830", "News Zeit 2 (CPI/NFP etc.)")
+news3       = input.session("1530-1545", "News Zeit 3")
+
+// ── Risk Management ──
+account_size  = input.float(120,   "Kontogröße ($)",        group="Risk Management", minval=1)
+risk_pct      = input.float(1.0,   "Risiko pro Trade (%)",  group="Risk Management", minval=0.1, maxval=10, step=0.1)
+point_value   = input.float(1.0,   "Punktwert pro Lot ($)", group="Risk Management", tooltip="NQ=$20 | MNQ=$2 | NAS100 CFD=$1")
+lot_step      = input.float(0.1,   "Mindest Lot Schritt",   group="Risk Management", step=0.01, tooltip="Futures=1.0 | NAS100 CFD=0.1")
+max_lots      = input.float(50.0,  "Max Lots",              group="Risk Management", minval=0.01, step=0.01)
+
+// ── Daily Drawdown Tracking ──
+dd_limit_pct  = input.float(4.0,  "Daily Drawdown Limit (%)", group="Daily Drawdown", minval=0.5, maxval=20, step=0.5)
+show_dd       = input.bool(true,   "Daily Drawdown in Tabelle anzeigen", group="Daily Drawdown")
+
+// ── Stunden Analyse ──
+show_hour_analysis = input.bool(true, "Stunden-Analyse anzeigen", group="Stunden Analyse")
+
+// ── Zufällige Verzögerung ──
+
+// ══════════════════════════════════════════════
+// GAPSNIPER FVG LOGIK – exakt aus dem Originalcode
+// Brauchen 3 aufeinanderfolgende HTF Kerzen: [2], [1], [0]
+// ══════════════════════════════════════════════
+// Kerze [0] = aktuellste abgeschlossene HTF Kerze (= [1] mit lookahead off)
+// Kerze [1] = mittlere HTF Kerze                  (= [2] mit lookahead off)  
+// Kerze [2] = älteste der 3 HTF Kerzen            (= [3] mit lookahead off)
+htf_h0 = request.security(syminfo.tickerid, htf, high[1],  lookahead=barmerge.lookahead_off)
+htf_l0 = request.security(syminfo.tickerid, htf, low[1],   lookahead=barmerge.lookahead_off)
+htf_t0 = request.security(syminfo.tickerid, htf, time[1],  lookahead=barmerge.lookahead_off)
+
+htf_h1 = request.security(syminfo.tickerid, htf, high[2],  lookahead=barmerge.lookahead_off)
+htf_l1 = request.security(syminfo.tickerid, htf, low[2],   lookahead=barmerge.lookahead_off)
+
+htf_h2 = request.security(syminfo.tickerid, htf, high[3],  lookahead=barmerge.lookahead_off)
+htf_l2 = request.security(syminfo.tickerid, htf, low[3],   lookahead=barmerge.lookahead_off)
+htf_t2 = request.security(syminfo.tickerid, htf, time[3],  lookahead=barmerge.lookahead_off)
+
+// GapSniper FindImbalance Logik:
+// Bull FVG: high[Kerze2] < low[Kerze0] → Lücke zwischen den beiden
+// Bear FVG: low[Kerze2]  > high[Kerze0]
+gs_bull = htf_h2 < htf_l0   // bullisches FVG
+gs_bear = htf_l2 > htf_h0   // bärisches FVG
+
+// CE Midpoint (genau wie GapSniper: middle = (open + close) / 2)
+// open = untere Kante, close = obere Kante des FVG
+gs_fvg_open  = gs_bull ? htf_l0 : gs_bear ? htf_h0 : na  // obere Kante
+gs_fvg_close = gs_bull ? htf_h2 : gs_bear ? htf_l2 : na  // untere Kante
+gs_ce_mid    = not na(gs_fvg_open) ? (gs_fvg_open + gs_fvg_close) / 2.0 : na
+
+// Mitigierung (GapSniper "Wick filled"):
+// Bull FVG: mitigiert wenn low <= untere Kante (fvg_close = htf_h2)
+// Bear FVG: mitigiert wenn high >= obere Kante (fvg_close = htf_l2)
+gs_mit_check(lvl_open, lvl_close, is_bull, src_high, src_low) =>
+    is_bull ? src_low <= lvl_close : src_high >= lvl_close
+
+// ══════════════════════════════════════════════
+// CE LEVEL ARRAYS – alle aktiven speichern
+// ══════════════════════════════════════════════
+var int     last_htf_t   = 0
+var float[] ce_mid_arr   = array.new_float(0)
+var float[] ce_open_arr  = array.new_float(0)  // obere Kante
+var float[] ce_close_arr = array.new_float(0)  // untere Kante
+var bool[]  ce_bull_arr  = array.new_bool(0)
+var bool[]  ce_block_arr = array.new_bool(0)   // gesperrt nach fehlgeschlagenem Setup
+var line[]  ce_line_arr  = array.new_line(0)
+
+// Neue HTF Kerze → Level hinzufügen + gesperrte entsperren
+htf_t_cur = request.security(syminfo.tickerid, htf, time, lookahead=barmerge.lookahead_off)
+
+if htf_t_cur != last_htf_t
+    last_htf_t := htf_t_cur
+    // Alle gesperrten Level entsperren (neue 15min Kerze öffnet)
+    if array.size(ce_block_arr) > 0
+        for i = 0 to array.size(ce_block_arr) - 1
+            array.set(ce_block_arr, i, false)
+
+    // Neuen FVG hinzufügen wenn vorhanden
+    if not na(gs_ce_mid)
+        bool dup = false
+        if array.size(ce_mid_arr) > 0
+            for i = 0 to array.size(ce_mid_arr) - 1
+                if math.abs(array.get(ce_mid_arr, i) - gs_ce_mid) < tick_size * 4
+                    dup := true
+                    break
+        if not dup
+            array.unshift(ce_mid_arr,   gs_ce_mid)
+            array.unshift(ce_open_arr,  gs_fvg_open)
+            array.unshift(ce_close_arr, gs_fvg_close)
+            array.unshift(ce_bull_arr,  gs_bull)
+            array.unshift(ce_block_arr, false)
+            if show_ce
+                l = line.new(bar_index, gs_ce_mid, bar_index + 1, gs_ce_mid,
+                     color=color.yellow, width=1,
+                     style=line.style_dotted, extend=extend.right)
+                array.unshift(ce_line_arr, l)
+            else
+                array.unshift(ce_line_arr, na)
+            if array.size(ce_mid_arr) > max_fvgs
+                array.pop(ce_mid_arr)
+                array.pop(ce_open_arr)
+                array.pop(ce_close_arr)
+                array.pop(ce_bull_arr)
+                array.pop(ce_block_arr)
+                old_l = array.pop(ce_line_arr)
+                if not na(old_l)
+                    line.delete(old_l)
+
+// CE Linien verlängern
+if show_ce and array.size(ce_line_arr) > 0
+    for i = 0 to array.size(ce_line_arr) - 1
+        l = array.get(ce_line_arr, i)
+        if not na(l)
+            line.set_x2(l, bar_index + 50)
+
+// ══════════════════════════════════════════════
+// STATE MACHINE VARIABLEN (vorab deklariert)
+// ══════════════════════════════════════════════
+var int   state     = 0
+var int   touched_i = -1
+
+var int   pending_state = 0
+var float pending_sl    = na
+var float pending_entry = na
+
+// ── Daily Drawdown Variablen ──
+var float day_start_equity  = na
+var float day_low_equity    = na
+var float day_max_dd        = 0.0
+var float day_max_dd_pct    = 0.0
+var int   last_day          = na
+
+// ── Stunden Analyse Arrays (0-23 Uhr) ──
+var int[] hour_tp  = array.new_int(24, 0)   // TP Trades pro Stunde
+var int[] hour_sl  = array.new_int(24, 0)   // SL Trades pro Stunde
+var int[] hour_be  = array.new_int(24, 0)   // BE Trades pro Stunde
+var int   last_trade_hour = -1              // Stunde des letzten Entry
+
+// ══════════════════════════════════════════════
+// MITIGIERUNG – erst nach K3 (nicht sofort beim Touch)
+// Linie bleibt gültig während K1/K2/K3 läuft
+// Erst wenn Setup ungültig wird → Linie entfernen
+// ══════════════════════════════════════════════
+f_remove_level(idx) =>
+    if idx >= 0 and idx < array.size(ce_mid_arr)
+        array.remove(ce_mid_arr,   idx)
+        array.remove(ce_open_arr,  idx)
+        array.remove(ce_close_arr, idx)
+        array.remove(ce_bull_arr,  idx)
+        array.remove(ce_block_arr, idx)
+        l = array.remove(ce_line_arr, idx)
+        if not na(l)
+            line.delete(l)
+
+// Mitigierung: normale Linien sofort entfernen wenn berührt
+// Die aktive K1-Linie wird beim Setup-Start entfernt (siehe State Machine)
+if array.size(ce_mid_arr) > 0
+    i = array.size(ce_mid_arr) - 1
+    while i >= 0
+        lvl_close = array.get(ce_close_arr, i)
+        is_bull   = array.get(ce_bull_arr,  i)
+        is_active = (state >= 1 and state <= 4 and i == touched_i)
+        if not is_active
+            mitigated = is_bull ? low <= lvl_close : high >= lvl_close
+            if mitigated
+                array.remove(ce_mid_arr,   i)
+                array.remove(ce_open_arr,  i)
+                array.remove(ce_close_arr, i)
+                array.remove(ce_bull_arr,  i)
+                array.remove(ce_block_arr, i)
+                l = array.remove(ce_line_arr, i)
+                if not na(l)
+                    line.delete(l)
+                if i < touched_i
+                    touched_i -= 1
+        i -= 1
+
+// ══════════════════════════════════════════════
+// SESSION & NEWS FILTER
+// ══════════════════════════════════════════════
+in_session = not use_session or
+     time(timeframe.period, trade_sess, "Europe/Berlin") != 0
+in_news    = use_news and (
+     time(timeframe.period, news1, "Europe/Berlin") != 0 or
+     time(timeframe.period, news2, "Europe/Berlin") != 0 or
+     time(timeframe.period, news3, "Europe/Berlin") != 0)
+can_trade  = in_session and not in_news and strategy.position_size == 0
+
+bgcolor(in_news ? color.new(color.red, 90) : na, title="News Zone")
+
+// Pending State abbrechen wenn News beginnt oder Session endet
+if in_news or not in_session
+    pending_state := 0
+    pending_sl    := na
+    pending_entry := na
+
+// ══════════════════════════════════════════════
+// CE LEVEL SUCHEN – nächsten ungesperrten Level der berührt wird
+// ══════════════════════════════════════════════
+f_get_level() =>
+    float mid_out   = na
+    float open_out  = na
+    float close_out = na
+    bool  bull_out  = na
+    int   idx_out   = -1
+    if array.size(ce_mid_arr) > 0
+        for i = 0 to array.size(ce_mid_arr) - 1
+            if not array.get(ce_block_arr, i)
+                m = array.get(ce_mid_arr, i)
+                if low <= m and high >= m
+                    mid_out   := m
+                    open_out  := array.get(ce_open_arr,  i)
+                    close_out := array.get(ce_close_arr, i)
+                    bull_out  := array.get(ce_bull_arr,  i)
+                    idx_out   := i
+                    break
+    [mid_out, open_out, close_out, bull_out, idx_out]
+
+// ══════════════════════════════════════════════
+// STATE MACHINE
+// ══════════════════════════════════════════════
+// (state + touched_i bereits oben deklariert)
+var float k1_high     = na
+var float k1_low      = na
+var float k2_low      = na
+var float k2_high     = na
+var float sl_price    = na
+var int   k1_bar      = 0
+// Breakeven Tracking
+var float entry_price = na
+var float be_target   = na
+var float tp_price    = na
+var bool  be_done     = false
+var bool  is_rr2      = false
+
+// K4 Tracking
+var float k3_low  = na
+var float k3_high = na
+
+// Direkte Entry Ausführung (kein Delay)
+
+[t_mid, t_open, t_close, t_bull, t_idx] = f_get_level()
+k1_touch = not na(t_mid)
+
+// Richtungserkennung: Open von K1 bestimmt die Richtung
+// LONG:  K1 öffnet ÜBER der Linie (Preis kam von oben) → berührt Linie → LONG
+// SHORT: K1 öffnet UNTER der Linie (Preis kam von unten) → berührt Linie → SHORT
+
+// STATE 0: Warte auf K1
+if state == 0 and k1_touch and can_trade
+    if open > t_mid
+        // K1 öffnet über CE Linie → LONG Setup
+        state     := 2
+        k1_high   := high
+        k1_low    := low
+        sl_price  := low
+        k1_bar    := bar_index
+        touched_i := t_idx
+        l = array.get(ce_line_arr, t_idx)
+        if not na(l)
+            line.delete(l)
+        array.set(ce_line_arr, t_idx, na)
+        label.new(bar_index, low - syminfo.mintick * 5,
+             "K1\n" + str.tostring(t_mid, "#.##"),
+             color=color.new(color.green, 30), textcolor=color.white,
+             style=label.style_label_up, size=size.tiny)
+    else if open < t_mid
+        // K1 öffnet unter CE Linie → SHORT Setup
+        state     := 1
+        k1_high   := high
+        k1_low    := low
+        sl_price  := high
+        k1_bar    := bar_index
+        touched_i := t_idx
+        l = array.get(ce_line_arr, t_idx)
+        if not na(l)
+            line.delete(l)
+        array.set(ce_line_arr, t_idx, na)
+        label.new(bar_index, high + syminfo.mintick * 5,
+             "K1\n" + str.tostring(t_mid, "#.##"),
+             color=color.new(color.red, 30), textcolor=color.white,
+             style=label.style_label_down, size=size.tiny)
+
+// STATE 1: K2 SHORT
+else if state == 1 and bar_index == k1_bar + 1
+    sl_price    := math.max(k1_high, high)
+    k2_low      := low
+    k2_high     := high
+    // Regel: K2 darf nicht über CE Linie schließen bei SHORT
+    ce_lvl = touched_i >= 0 and touched_i < array.size(ce_mid_arr) ? array.get(ce_mid_arr, touched_i) : na
+    k2_invalid = not na(ce_lvl) and close > ce_lvl
+    label.new(bar_index, high + syminfo.mintick * 5,
+         "K2", color=color.new(color.orange, 30), textcolor=color.white,
+         style=label.style_label_down, size=size.tiny)
+    if k2_invalid
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        state := 0
+    else if close < k1_low
+        state := 10
+    else
+        state := 3
+
+// STATE 2: K2 LONG
+else if state == 2 and bar_index == k1_bar + 1
+    sl_price    := math.min(k1_low, low)
+    k2_low      := low
+    k2_high     := high
+    // Regel: K2 darf nicht unter CE Linie schließen bei LONG
+    ce_lvl = touched_i >= 0 and touched_i < array.size(ce_mid_arr) ? array.get(ce_mid_arr, touched_i) : na
+    k2_invalid = not na(ce_lvl) and close < ce_lvl
+    label.new(bar_index, low - syminfo.mintick * 5,
+         "K2", color=color.new(color.orange, 30), textcolor=color.white,
+         style=label.style_label_up, size=size.tiny)
+    if k2_invalid
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        state := 0
+    else if close > k1_high
+        state := 20
+    else
+        state := 4
+
+// STATE 3: K3 SHORT
+else if state == 3 and bar_index == k1_bar + 2
+    sl_price  := math.max(sl_price, high)
+    ce_lvl     = touched_i >= 0 and touched_i < array.size(ce_mid_arr) ? array.get(ce_mid_arr, touched_i) : na
+    k3_invalid = not na(ce_lvl) and close > ce_lvl
+    k3_low    := low
+    k3_high   := high
+    label.new(bar_index, high + syminfo.mintick * 5,
+         "K3", color=color.new(color.purple, 30), textcolor=color.white,
+         style=label.style_label_down, size=size.tiny)
+    if k3_invalid
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        state := 0
+    else if close < k2_low
+        state := 10
+    else
+        state := 5
+
+// STATE 4: K3 LONG
+else if state == 4 and bar_index == k1_bar + 2
+    sl_price  := math.min(sl_price, low)
+    ce_lvl     = touched_i >= 0 and touched_i < array.size(ce_mid_arr) ? array.get(ce_mid_arr, touched_i) : na
+    k3_invalid = not na(ce_lvl) and close < ce_lvl
+    k3_low    := low
+    k3_high   := high
+    label.new(bar_index, low - syminfo.mintick * 5,
+         "K3", color=color.new(color.purple, 30), textcolor=color.white,
+         style=label.style_label_up, size=size.tiny)
+    if k3_invalid
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        state := 0
+    else if close > k2_high
+        state := 20
+    else
+        state := 6
+
+// STATE 5: K4 SHORT (3 Bars nach K1)
+else if state == 5 and bar_index == k1_bar + 3
+    sl_price := math.max(sl_price, high)
+    ce_lvl    = touched_i >= 0 ? array.get(ce_mid_arr, touched_i) : na
+    k4_invalid = not na(ce_lvl) and close > ce_lvl
+    label.new(bar_index, high + syminfo.mintick * 5,
+         "K4", color=color.new(color.fuchsia, 30), textcolor=color.white,
+         style=label.style_label_down, size=size.tiny)
+    if k4_invalid or close >= k3_low
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        state := 0
+    else
+        state := 10
+
+// STATE 6: K4 LONG (3 Bars nach K1)
+else if state == 6 and bar_index == k1_bar + 3
+    sl_price := math.min(sl_price, low)
+    ce_lvl    = touched_i >= 0 ? array.get(ce_mid_arr, touched_i) : na
+    k4_invalid = not na(ce_lvl) and close < ce_lvl
+    label.new(bar_index, low - syminfo.mintick * 5,
+         "K4", color=color.new(color.fuchsia, 30), textcolor=color.white,
+         style=label.style_label_up, size=size.tiny)
+    if k4_invalid or close <= k3_high
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        state := 0
+    else
+        state := 20
+
+// Timeout nach K1+3 Bars
+else if state >= 1 and state <= 6 and bar_index > k1_bar + 3
+    if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+        array.set(ce_block_arr, touched_i, true)
+    state := 0
+
+// ══════════════════════════════════════════════
+// TP & RR BERECHNUNG
+// ══════════════════════════════════════════════
+f_calc_tp(entry, sl, is_short) =>
+    dist  = math.abs(entry - sl)
+    ticks = math.round(dist / tick_size)
+    float tp = na
+    float rr = na
+    bool  ok = false
+    if ticks <= rr1_ticks
+        rr := 2.0
+        ok := true
+    else if ticks <= rr2_ticks
+        rr := 1.2
+        ok := true
+    else if ticks <= rr3_ticks
+        rr := 1.0
+        ok := true
+    else if ticks <= rr4_ticks
+        rr := 3.0
+        ok := true
+    // > rr4_ticks = kein Trade
+    if ok
+        tp := is_short ? entry - dist * rr : entry + dist * rr
+    [tp, rr, ok, ticks]
+
+f_json_num(val) =>
+    str.replace_all(str.tostring(val, format.mintick), ",", ".")
+
+f_json_qty(val) =>
+    str.replace_all(str.tostring(val), ",", ".")
+
+// Symbol für SignalForge fest definieren:
+sf_symbol = input.string("NAS100", "SignalForge Symbol")
+// ══════════════════════════════════════════════
+// ENTRIES
+// ══════════════════════════════════════════════
+// Signal erkannt → Verzögerung starten (nur wenn aktiviert)
+// ── SHORT ENTRY DIREKT ──
+if state == 10 and strategy.position_size == 0 and can_trade
+    entry = close
+    [tp, rr, ok, ticks] = f_calc_tp(entry, sl_price, true)
+    if ok
+        last_trade_hour := hour(time, "Europe/Berlin")
+        risk_amount  = account_size * (risk_pct / 100)
+        sl_dist_pts  = math.abs(entry - sl_price)
+        raw_qty      = risk_amount / (sl_dist_pts * point_value)
+        qty          = math.max(lot_step, math.round(raw_qty / lot_step) * lot_step)
+        qty          := math.min(max_lots, qty)
+        strategy.entry("Short", strategy.short, qty=qty)
+        strategy.exit("Short Exit", "Short", stop=sl_price, limit=tp)
+        entry_price := entry
+        tp_price    := tp
+        be_done     := false
+        is_rr2      := rr > 1.0
+        be_target   := is_rr2 ? entry - (math.abs(entry - tp) * 0.5) : na
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        if show_labels
+            label.new(bar_index, high + syminfo.mintick * 20,
+                 "▼ SHORT\nEntry: " + str.tostring(entry,   "#.##") +
+                 "\nSL: "           + str.tostring(sl_price,"#.##") +
+                 "\nTP: "           + str.tostring(tp,      "#.##") +
+                 "\nRR 1:"          + str.tostring(rr,      "#.#")  +
+                 "\nTicks: "        + str.tostring(ticks)   +
+                 (is_rr2 ? "\nBE @ " + str.tostring(entry - math.abs(entry-tp)*0.5, "#.##") : ""),
+                 color=color.red, textcolor=color.white,
+                 style=label.style_label_down, size=size.small)
+        payload_short = '{"action":"sell","symbol":"NAS100' + '","price":' + f_json_num(entry) + ',"sl":' + f_json_num(sl_price) + ',"tp":' + f_json_num(tp) + ',"lot":' + f_json_qty(qty) + '}'
+        alert(payload_short, alert.freq_once_per_bar_close)
+    state := 0
+
+// ── LONG ENTRY DIREKT ──
+if state == 20 and strategy.position_size == 0 and can_trade
+    entry = close
+    [tp, rr, ok, ticks] = f_calc_tp(entry, sl_price, false)
+    if ok
+        last_trade_hour := hour(time, "Europe/Berlin")
+        risk_amount  = account_size * (risk_pct / 100)
+        sl_dist_pts  = math.abs(entry - sl_price)
+        raw_qty      = risk_amount / (sl_dist_pts * point_value)
+        qty          = math.max(lot_step, math.round(raw_qty / lot_step) * lot_step)
+        qty          := math.min(max_lots, qty)
+        strategy.entry("Long", strategy.long, qty=qty)
+        strategy.exit("Long Exit", "Long", stop=sl_price, limit=tp)
+        entry_price := entry
+        tp_price    := tp
+        be_done     := false
+        is_rr2      := rr > 1.0
+        be_target   := is_rr2 ? entry + (math.abs(tp - entry) * 0.5) : na
+        if touched_i >= 0 and touched_i < array.size(ce_block_arr)
+            array.set(ce_block_arr, touched_i, true)
+        if show_labels
+            label.new(bar_index, low - syminfo.mintick * 20,
+                 "▲ LONG\nEntry: " + str.tostring(entry,   "#.##") +
+                 "\nSL: "          + str.tostring(sl_price,"#.##") +
+                 "\nTP: "          + str.tostring(tp,      "#.##") +
+                 "\nRR 1:"         + str.tostring(rr,      "#.#")  +
+                 "\nTicks: "       + str.tostring(ticks)   +
+                 (is_rr2 ? "\nBE @ " + str.tostring(entry + math.abs(tp-entry)*0.5, "#.##") : ""),
+                 color=color.green, textcolor=color.white,
+                 style=label.style_label_up, size=size.small)
+        alert('{"action":"buy","symbol":"NAS100' + '","price":' + str.tostring(entry, "#.##") + ',"sl":' + str.tostring(sl_price, "#.##") + ',"tp":' + str.tostring(tp, "#.##") + ',"volume":' + str.tostring(qty, "#.##") + '}', alert.freq_once_per_bar_close)
+    state := 0
+
+// ══════════════════════════════════════════════
+// DAILY DRAWDOWN TRACKING
+// ══════════════════════════════════════════════
+current_equity = strategy.equity
+
+// Neuer Tag → Reset
+current_day = dayofmonth
+if last_day != current_day
+    last_day         := current_day
+    day_start_equity := current_equity
+    day_low_equity   := current_equity
+    day_max_dd       := 0.0
+    day_max_dd_pct   := 0.0
+
+// Niedrigsten Punkt des Tages tracken
+if not na(day_low_equity) and current_equity < day_low_equity
+    day_low_equity  := current_equity
+    day_max_dd      := day_start_equity - day_low_equity
+    day_max_dd_pct  := (day_max_dd / day_start_equity) * 100
+
+// ══════════════════════════════════════════════
+// BREAKEVEN LOGIK – SL auf Entry wenn 50% TP erreicht (nur 1:2 Trades)
+// ══════════════════════════════════════════════
+if strategy.position_size != 0 and is_rr2 and not be_done and not na(be_target)
+    if strategy.position_size < 0 and low <= be_target
+        // SHORT: Preis hat 50% TP erreicht → SL auf Entry setzen
+        strategy.exit("Short Exit", "Short", stop=entry_price, limit=tp_price)
+        be_done := true
+        if show_be
+            label.new(bar_index, high + syminfo.mintick * 10,
+                 "⚡ BE gesetzt", color=color.new(color.blue, 30),
+                 textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    else if strategy.position_size > 0 and high >= be_target
+        // LONG: Preis hat 50% TP erreicht → SL auf Entry setzen
+        strategy.exit("Long Exit", "Long", stop=entry_price, limit=tp_price)
+        be_done := true
+        if show_be
+            label.new(bar_index, low - syminfo.mintick * 10,
+                 "⚡ BE gesetzt", color=color.new(color.blue, 30),
+                 textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+// Reset wenn Position geschlossen + Stunden tracken
+var float prev_equity = strategy.equity
+var bool  was_in_pos  = false
+
+if strategy.position_size != 0
+    was_in_pos := true
+
+if strategy.position_size == 0 and was_in_pos and last_trade_hour >= 0
+    // Position wurde gerade geschlossen → schauen ob TP, SL oder BE
+    equity_change = strategy.equity - prev_equity
+    h = last_trade_hour
+    if equity_change > 0
+        if be_done
+            array.set(hour_be, h, array.get(hour_be, h) + 1)
+        else
+            array.set(hour_tp, h, array.get(hour_tp, h) + 1)
+    else
+        array.set(hour_sl, h, array.get(hour_sl, h) + 1)
+    was_in_pos      := false
+    last_trade_hour := -1
+    be_done         := false
+    be_target       := na
+    entry_price     := na
+    tp_price        := na
+    is_rr2          := false
+else if strategy.position_size == 0 and not was_in_pos
+    be_done     := false
+    be_target   := na
+    entry_price := na
+    tp_price    := na
+    is_rr2      := false
+
+prev_equity := strategy.equity
+
+// ══════════════════════════════════════════════
+// PERFORMANCE TABLE
+// ══════════════════════════════════════════════
+// ── Stunden Analyse Tabelle ──
+var table hour_tbl = table.new(position.bottom_right, 5, 25,
+     bgcolor=color.new(color.black, 70),
+     border_color=color.gray, border_width=1)
+
+if barstate.islast and show_hour_analysis
+    table.cell(hour_tbl, 0, 0, "Uhr",  text_color=color.yellow, text_size=size.tiny)
+    table.cell(hour_tbl, 1, 0, "TP",   text_color=color.green,  text_size=size.tiny)
+    table.cell(hour_tbl, 2, 0, "SL",   text_color=color.red,    text_size=size.tiny)
+    table.cell(hour_tbl, 3, 0, "BE",   text_color=color.blue,   text_size=size.tiny)
+    table.cell(hour_tbl, 4, 0, "Win%", text_color=color.white,  text_size=size.tiny)
+
+    // Nur Stunden anzeigen die mindestens 1 Trade hatten
+    row = 1
+    for h = 0 to 23
+        tp_cnt  = array.get(hour_tp, h)
+        sl_cnt  = array.get(hour_sl, h)
+        be_cnt  = array.get(hour_be, h)
+        total   = tp_cnt + sl_cnt + be_cnt
+        if total > 0 and row < 24
+            wr = math.round((tp_cnt + be_cnt) / total * 100)
+            wr_color = wr >= 60 ? color.green : wr >= 40 ? color.orange : color.red
+            h_str = h < 10 ? "0" + str.tostring(h) + ":00" : str.tostring(h) + ":00"
+            table.cell(hour_tbl, 0, row, h_str,            text_color=color.white,  text_size=size.tiny)
+            table.cell(hour_tbl, 1, row, str.tostring(tp_cnt), text_color=color.green,  text_size=size.tiny)
+            table.cell(hour_tbl, 2, row, str.tostring(sl_cnt), text_color=color.red,    text_size=size.tiny)
+            table.cell(hour_tbl, 3, row, str.tostring(be_cnt), text_color=color.blue,   text_size=size.tiny)
+            table.cell(hour_tbl, 4, row, str.tostring(wr) + "%", text_color=wr_color,   text_size=size.tiny)
+            row := row + 1
+
+var table perf = table.new(position.top_right, 2, 12,
+     bgcolor=color.new(color.black, 70),
+     border_color=color.gray, border_width=1)
+
+if barstate.islast
+    win_rate = strategy.closedtrades > 0 ?
+         math.round((strategy.wintrades / strategy.closedtrades) * 100, 1) : 0.0
+    avg_rr = strategy.grossloss != 0 ?
+         math.round(strategy.grossprofit / math.abs(strategy.grossloss), 2) : 0.0
+
+    risk_per_trade = account_size * (risk_pct / 100)
+    table.cell(perf, 0, 0, "📊 NQ Strategy", text_color=color.yellow, text_size=size.small)
+    table.cell(perf, 1, 0, "Risk: $" + str.tostring(risk_per_trade, "#.##") + " (" + str.tostring(risk_pct) + "%)", text_color=color.yellow, text_size=size.small)
+    table.cell(perf, 0, 1, "Net Profit",   text_color=color.white,  text_size=size.small)
+    table.cell(perf, 1, 1, "$" + str.tostring(strategy.netprofit, "#.##"),
+         text_color=strategy.netprofit >= 0 ? color.green : color.red, text_size=size.small)
+    table.cell(perf, 0, 2, "Win Rate",     text_color=color.white,  text_size=size.small)
+    table.cell(perf, 1, 2, str.tostring(win_rate) + "%",
+         text_color=win_rate >= 50 ? color.green : color.red, text_size=size.small)
+    table.cell(perf, 0, 3, "Trades",       text_color=color.white,  text_size=size.small)
+    table.cell(perf, 1, 3, str.tostring(strategy.closedtrades),
+         text_color=color.white, text_size=size.small)
+    table.cell(perf, 0, 4, "Gewinner",     text_color=color.white,  text_size=size.small)
+    table.cell(perf, 1, 4, str.tostring(strategy.wintrades),
+         text_color=color.green, text_size=size.small)
+    table.cell(perf, 0, 5, "Verlierer",    text_color=color.white,  text_size=size.small)
+    table.cell(perf, 1, 5, str.tostring(strategy.losstrades),
+         text_color=color.red, text_size=size.small)
+    table.cell(perf, 0, 6, "Avg RR",       text_color=color.white,  text_size=size.small)
+    table.cell(perf, 1, 6, str.tostring(avg_rr),
+         text_color=avg_rr >= 1 ? color.green : color.red, text_size=size.small)
+
+    // Daily Drawdown Anzeige
+    if show_dd
+        dd_limit_val = day_start_equity * (dd_limit_pct / 100)
+        dd_remaining = dd_limit_val - day_max_dd
+        dd_color     = day_max_dd_pct >= dd_limit_pct ? color.red :
+                       day_max_dd_pct >= dd_limit_pct * 0.75 ? color.orange : color.green
+
+        table.cell(perf, 0, 7, "📉 Daily DD",   text_color=color.yellow, text_size=size.small)
+        table.cell(perf, 1, 7, "",              text_color=color.yellow, text_size=size.small)
+        table.cell(perf, 0, 8, "Heutiger DD",  text_color=color.white,  text_size=size.small)
+        table.cell(perf, 1, 8, "-$" + str.tostring(day_max_dd, "#.##") + " (" + str.tostring(day_max_dd_pct, "#.##") + "%)",
+             text_color=dd_color, text_size=size.small)
+        table.cell(perf, 0, 9, "Limit",        text_color=color.white,  text_size=size.small)
+        table.cell(perf, 1, 9, "-$" + str.tostring(dd_limit_val, "#.##") + " (" + str.tostring(dd_limit_pct, "#.##") + "%)",
+             text_color=color.white, text_size=size.small)
+        table.cell(perf, 0, 10, "Noch verfügbar", text_color=color.white, text_size=size.small)
+        table.cell(perf, 1, 10, "$" + str.tostring(dd_remaining, "#.##"),
+             text_color=dd_remaining > 0 ? color.green : color.red, text_size=size.small)
+        // Warnung wenn über 75% des Limits
+        if day_max_dd_pct >= dd_limit_pct * 0.75
+            table.cell(perf, 0, 11, "⚠️ WARNUNG",  text_color=color.red, text_size=size.small)
+            table.cell(perf, 1, 11, day_max_dd_pct >= dd_limit_pct ? "LIMIT ERREICHT!" : "Nahe am Limit!",
+                 text_color=color.red, text_size=size.small)

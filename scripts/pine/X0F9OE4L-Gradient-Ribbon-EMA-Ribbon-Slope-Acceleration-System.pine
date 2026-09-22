@@ -1,0 +1,144 @@
+//@version=6
+strategy("EMA Ribbon Fan Angle Strategy", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     commission_type=strategy.commission.percent, commission_value=0.05,
+     slippage=1)
+
+// =========================================================
+// INPUTS
+// =========================================================
+// -- EMA ribbon lengths --
+len8  = input.int(8,  "Fastest EMA", group="Ribbon")
+len13 = input.int(13, "EMA 2",       group="Ribbon")
+len21 = input.int(21, "EMA 3",       group="Ribbon")
+len34 = input.int(34, "EMA 4",       group="Ribbon")
+len55 = input.int(55, "Slowest EMA", group="Ribbon")
+
+// -- Fan angle logic --
+slopeLookback  = input.int(5,   "Slope lookback (bars)",              group="Fan Angle")
+fanEnterThresh = input.float(0.8, "Fan expansion entry threshold (%)", group="Fan Angle", step=0.1)
+fanExitThresh  = input.float(0.2, "Fan compression exit threshold (%)", group="Fan Angle", step=0.1)
+
+// -- Confirmation filters --
+rsiLen = input.int(14, "RSI length", group="Confirmation")
+rsiMin = input.float(50, "RSI min (bullish floor / bearish ceiling mirror)", group="Confirmation")
+rsiMax = input.float(70, "RSI max (avoid overbought/oversold extremes)",     group="Confirmation")
+
+volLen    = input.int(20, "Volume average length", group="Confirmation")
+volMult   = input.float(1.0, "Volume must exceed avg x this", group="Confirmation", step=0.1)
+
+// -- Risk management / position sizing --
+riskPct   = input.float(1.0, "Risk per trade (% of equity)", group="Risk", step=0.1)
+atrLen    = input.int(14,  "ATR length",        group="Risk")
+atrMult   = input.float(2.0, "ATR stop multiple", group="Risk", step=0.1)
+rMultiple = input.float(2.0, "Take profit (R multiple)", group="Risk", step=0.1)
+
+// =========================================================
+// RIBBON
+// =========================================================
+ema8  = ta.ema(close, len8)
+ema13 = ta.ema(close, len13)
+ema21 = ta.ema(close, len21)
+ema34 = ta.ema(close, len34)
+ema55 = ta.ema(close, len55)
+
+// Simple % slope over N bars for each EMA
+slope(src) => (src - src[slopeLookback]) / src[slopeLookback] * 100
+
+s8  = slope(ema8)
+s13 = slope(ema13)
+s21 = slope(ema21)
+s34 = slope(ema34)
+s55 = slope(ema55)
+
+// =========================================================
+// FAN LOGIC (bullish + bearish mirror)
+// =========================================================
+// Bullish: all slopes positive, accelerating from slow to fast
+allPositive     = s8 > 0 and s13 > 0 and s21 > 0 and s34 > 0 and s55 > 0
+increasingFanUp = s8 > s13 and s13 > s21 and s21 > s34 and s34 > s55
+fanningOpenUp   = allPositive and increasingFanUp
+
+// Bearish: all slopes negative, accelerating (more negative) from slow to fast
+allNegative       = s8 < 0 and s13 < 0 and s21 < 0 and s34 < 0 and s55 < 0
+increasingFanDown = s8 < s13 and s13 < s21 and s21 < s34 and s34 < s55
+fanningOpenDown   = allNegative and increasingFanDown
+
+// Fan score = spread between fastest and slowest slope -> "how open" the ribbon is
+// Positive score = bullish fan, negative score = bearish fan
+fanScore = s8 - s55
+
+// =========================================================
+// CONFIRMATION
+// =========================================================
+rsi   = ta.rsi(close, rsiLen)
+rsiOkLong  = rsi > rsiMin and rsi < rsiMax
+rsiOkShort = rsi < (100 - rsiMin) and rsi > (100 - rsiMax)
+
+avgVol   = ta.sma(volume, volLen)
+volOk    = volume > avgVol * volMult
+
+// =========================================================
+// ENTRY / EXIT CONDITIONS
+// =========================================================
+longCondition  = fanningOpenUp   and fanScore >  fanEnterThresh and rsiOkLong  and volOk and strategy.position_size == 0
+shortCondition = fanningOpenDown and fanScore < -fanEnterThresh and rsiOkShort and volOk and strategy.position_size == 0
+
+exitLongCondition  = (not increasingFanUp)   or (fanScore <  fanExitThresh)
+exitShortCondition = (not increasingFanDown) or (fanScore > -fanExitThresh)
+
+// =========================================================
+// RISK MANAGEMENT + POSITION SIZING
+// =========================================================
+atrVal       = ta.atr(atrLen)
+stopDistance = atrVal * atrMult
+
+if longCondition
+    riskAmount      = strategy.equity * (riskPct / 100)
+    qty             = riskAmount / stopDistance
+    entryPrice      = close
+    stopPrice       = entryPrice - stopDistance
+    takeProfitPrice = entryPrice + stopDistance * rMultiple
+    strategy.entry("Long", strategy.long, qty=qty)
+    strategy.exit("Exit Long", "Long", stop=stopPrice, limit=takeProfitPrice)
+
+if shortCondition
+    riskAmount      = strategy.equity * (riskPct / 100)
+    qty             = riskAmount / stopDistance
+    entryPrice      = close
+    stopPrice       = entryPrice + stopDistance
+    takeProfitPrice = entryPrice - stopDistance * rMultiple
+    strategy.entry("Short", strategy.short, qty=qty)
+    strategy.exit("Exit Short", "Short", stop=stopPrice, limit=takeProfitPrice)
+
+if exitLongCondition and strategy.position_size > 0
+    strategy.close("Long", comment="Fan compression")
+
+if exitShortCondition and strategy.position_size < 0
+    strategy.close("Short", comment="Fan compression")
+
+// =========================================================
+// VISUALS
+// =========================================================
+p8  = plot(ema8,  "EMA 8",  color=color.new(color.lime,   0),  linewidth=1)
+p13 = plot(ema13, "EMA 13", color=color.new(color.green,  30), linewidth=1)
+p21 = plot(ema21, "EMA 21", color=color.new(color.yellow, 30), linewidth=1)
+p34 = plot(ema34, "EMA 34", color=color.new(color.orange, 30), linewidth=1)
+p55 = plot(ema55, "EMA 55", color=color.new(color.red,    0),  linewidth=1)
+
+// Gradient fill between fastest and slowest EMA, intensity tied to fan score
+// Teal = bullish fan, fuchsia = bearish fan, gray = flat/neutral
+maxFan       = ta.highest(math.abs(fanScore), 100)
+normFan      = maxFan > 0 ? math.max(0, math.min(1, math.abs(fanScore) / maxFan)) : 0
+gradTransp   = 90 - normFan * 80   // 90% transparent when flat, ~10% when fanning hard
+fillColor    = fanScore > 0 ? color.new(color.teal, gradTransp) : fanScore < 0 ? color.new(color.fuchsia, gradTransp) : color.new(color.gray, 95)
+
+fill(p8, p55, color=fillColor, title="Fan Angle Intensity")
+
+// Entry / exit highlights
+bgcolor(longCondition  ? color.new(color.green, 85) : na, title="Long Entry Signal")
+bgcolor(shortCondition ? color.new(color.red,   85) : na, title="Short Entry Signal")
+bgcolor((exitLongCondition and strategy.position_size > 0) or (exitShortCondition and strategy.position_size < 0) ? color.new(color.orange, 88) : na, title="Exit Signal")
+
+plot(fanScore, "Fan Score (debug, hidden on price pane)", display=display.none)

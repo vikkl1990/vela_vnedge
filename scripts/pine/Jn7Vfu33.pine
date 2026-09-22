@@ -1,0 +1,360 @@
+// ╔══════════════════════════════════════════════════════════════╗
+// ║        CNPS Universal Bot Template — Pine Script v6          ║
+// ║  Instrument: VN30! | MACD Trend Following                    ║
+// ║  Version: CNPS 01 MACD                                       ║ 
+// ║  Recommended timeframe: M5 | Slippage = 3                    ║
+// ╚══════════════════════════════════════════════════════════════╝
+//*The cost to open a position in futures trading is roughly VND 30,000,000 per contract.
+//For VN Future Trading, the commission value is set at VND 10,000 per contract traded. Tax is not yet included.
+
+//@version=6
+strategy(
+     title       = "CNPS 01 MACD",
+     shorttitle  = "CNPS 01",
+     overlay     = true,
+     initial_capital    = 100000000,
+     default_qty_type   = strategy.fixed,
+     default_qty_value  = 3,
+     margin_long        = 0,
+     margin_short       = 0,
+     slippage           = 3,
+     commission_type    = strategy.commission.cash_per_contract,
+     commission_value   = 10000,
+     fill_orders_on_standard_ohlc = true
+ )
+
+
+// ════════════════════════════════════════════════════════════════
+// SECTION 1: INPUTS
+// ════════════════════════════════════════════════════════════════
+
+// ── MACD settings ───────────────────────────────────────────────
+macdFast = input.int(
+     12,
+     title="Fast Length",
+     minval=1,
+     group="MACD Settings"
+ )
+
+macdSlow = input.int(
+     26,
+     title="Slow Length",
+     minval=1,
+     group="MACD Settings"
+ )
+
+macdSignal = input.int(
+     9,
+     title="Signal Length",
+     minval=1,
+     group="MACD Settings"
+ )
+
+// ── SMA trend filter ────────────────────────────────────────────
+useTrendFilter = input.bool(
+     true,
+     title="Use SMA Trend Filter?",
+     group="Trend Filter"
+ )
+
+smaLen = input.int(
+     200,
+     title="SMA Length",
+     minval=1,
+     group="Trend Filter"
+ )
+
+// ── Trade direction ─────────────────────────────────────────────
+tradeDir = input.string(
+     "Both",
+     title="Trade Direction",
+     options=["Long", "Short", "Both"],
+     group="Trade Direction"
+ )
+
+// ── Stop loss / Take profit ─────────────────────────────────────
+slPoints = input.float(
+     10.0,
+     title="Stop Loss Points",
+     minval=0.1,
+     step=0.5,
+     group="Stop Loss / Take Profit"
+ )
+
+useTP = input.bool(
+     true,
+     title="Use Take Profit?",
+     group="Stop Loss / Take Profit"
+ )
+
+tpPoints = input.float(
+     30.0,
+     title="Take Profit Points",
+     minval=0.1,
+     step=0.5,
+     group="Stop Loss / Take Profit"
+ )
+
+// ── Time filter ─────────────────────────────────────────────────
+useTimeFilter = input.bool(
+     true,
+     title="Use Time Filter?",
+     group="Time Filter"
+ )
+
+startHour = input.int(
+     9,
+     title="Start Hour",
+     minval=0,
+     maxval=23,
+     group="Time Filter"
+ )
+
+startMinute = input.int(
+     0,
+     title="Start Minute",
+     minval=0,
+     maxval=59,
+     group="Time Filter"
+ )
+
+endHour = input.int(
+     14,
+     title="End Hour",
+     minval=0,
+     maxval=23,
+     group="Time Filter"
+ )
+
+endMinute = input.int(
+     30,
+     title="End Minute",
+     minval=0,
+     maxval=59,
+     group="Time Filter"
+ )
+
+// ── Display settings ────────────────────────────────────────────
+showSignalShapes = input.bool(
+     false,
+     title="Show Signal Arrows?",
+     group="Display"
+ )
+
+
+// ════════════════════════════════════════════════════════════════
+// SECTION 2: INDICATORS
+// ════════════════════════════════════════════════════════════════
+
+// ── SMA trend filter ────────────────────────────────────────────
+smaTrend = ta.sma(close, smaLen)
+
+isBull = smaTrend >= smaTrend[1]
+isBear = smaTrend < smaTrend[1]
+
+// ── MACD ────────────────────────────────────────────────────────
+[macdLine, signalLine, hist] = ta.macd(
+     close,
+     macdFast,
+     macdSlow,
+     macdSignal
+ )
+
+
+// ════════════════════════════════════════════════════════════════
+// SECTION 3: STRATEGY RATIONALE
+// ════════════════════════════════════════════════════════════════
+
+// MACD is used to detect momentum shifts in the market.
+// It compares a fast moving average with a slow moving average,
+// then uses the signal line to identify potential changes in direction.
+//
+// When the MACD line crosses above the signal line,
+// it may indicate that bullish momentum is starting to strengthen.
+// When the MACD line crosses below the signal line,
+// it may indicate that bearish momentum is starting to strengthen.
+//
+// However, MACD crossover signals can become noisy
+// when the market is sideways or when price moves in a narrow range.
+// In those conditions, MACD may produce frequent signals
+// without a strong trend behind them.
+//
+// For that reason, this strategy combines MACD with an SMA trend filter.
+// MACD identifies the momentum shift.
+// The SMA filter checks whether the broader trend supports that signal.
+//
+// If the SMA is rising, the strategy gives priority to Long signals.
+// If the SMA is falling, the strategy gives priority to Short signals.
+// This combination is designed to reduce counter-trend entries
+// and improve the overall quality of trend-following signals.
+
+
+// ════════════════════════════════════════════════════════════════
+// SECTION 4: SIGNAL LOGIC
+// ════════════════════════════════════════════════════════════════
+
+// Signals are confirmed at candle close.
+// Orders are executed on the next candle open.
+//
+// Long signal:
+// The MACD line crosses above the signal line.
+//
+// Short signal:
+// The MACD line crosses below the signal line.
+rawLong = ta.crossover(macdLine, signalLine)
+rawShort = ta.crossunder(macdLine, signalLine)
+
+// ── Apply SMA trend filter ──────────────────────────────────────
+// When the SMA filter is enabled,
+// Long trades require a rising SMA,
+// and Short trades require a falling SMA.
+longSignal = rawLong and (useTrendFilter ? isBull : true)
+shortSignal = rawShort and (useTrendFilter ? isBear : true)
+
+// ── Apply trade direction ───────────────────────────────────────
+canLongDir = tradeDir == "Long" or tradeDir == "Both"
+canShortDir = tradeDir == "Short" or tradeDir == "Both"
+
+
+// ════════════════════════════════════════════════════════════════
+// SECTION 5: TIME FILTER
+// ════════════════════════════════════════════════════════════════
+
+sessionStart = startHour * 60 + startMinute
+sessionEnd = endHour * 60 + endMinute
+currentMinutes = hour(time) * 60 + minute(time)
+
+inSession = useTimeFilter
+     ? currentMinutes >= sessionStart and currentMinutes < sessionEnd
+     : true
+
+// Detect the first candle outside the trading session.
+sessionJustEnded = useTimeFilter and not inSession and inSession[1]
+
+
+// ════════════════════════════════════════════════════════════════
+// SECTION 6: ENTRY / EXIT / REVERSE
+// ════════════════════════════════════════════════════════════════
+
+// ── Close all positions after the trading session ends ──────────
+if sessionJustEnded and strategy.position_size != 0
+    strategy.close_all(comment="Session End")
+
+// ── Entry conditions ────────────────────────────────────────────
+canLong = longSignal and inSession and canLongDir
+canShort = shortSignal and inSession and canShortDir
+
+// ── Stop loss and take profit levels ────────────────────────────
+longSL = strategy.position_avg_price - slPoints
+longTP = strategy.position_avg_price + tpPoints
+
+shortSL = strategy.position_avg_price + slPoints
+shortTP = strategy.position_avg_price - tpPoints
+
+// ── Entries ─────────────────────────────────────────────────────
+// Natural reversal is handled by strategy.entry.
+// A new opposite entry closes the existing position automatically.
+if canLong
+    strategy.entry("Long", strategy.long)
+
+if canShort
+    strategy.entry("Short", strategy.short)
+
+// ── Stop loss / take profit exits ───────────────────────────────
+if strategy.position_size > 0
+    strategy.exit(
+         "Exit Long",
+         "Long",
+         stop=longSL,
+         limit=useTP ? longTP : na
+     )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Exit Short",
+         "Short",
+         stop=shortSL,
+         limit=useTP ? shortTP : na
+     )
+
+
+// ════════════════════════════════════════════════════════════════
+// SECTION 7: PLOTTING
+// ════════════════════════════════════════════════════════════════
+
+// ── SMA trend filter plot ───────────────────────────────────────
+plot(
+     useTrendFilter ? smaTrend : na,
+     title="SMA Trend Filter",
+     color=isBull ? color.new(color.green, 40) : color.new(color.red, 40),
+     linewidth=1
+ )
+
+// ── MACD note ───────────────────────────────────────────────────
+// MACD is an oscillator, so it is not plotted on the price chart.
+// Users can add the built-in MACD indicator manually if needed.
+// Default MACD parameters: Fast=12, Slow=26, Signal=9, Source=close.
+
+// ── Stop loss / take profit plots ───────────────────────────────
+isLong = strategy.position_size > 0
+isShort = strategy.position_size < 0
+
+plot(
+     isLong ? longSL : na,
+     title="Long Stop Loss",
+     color=color.red,
+     style=plot.style_linebr,
+     linewidth=1
+ )
+
+plot(
+     isShort ? shortSL : na,
+     title="Short Stop Loss",
+     color=color.red,
+     style=plot.style_linebr,
+     linewidth=1
+ )
+
+plot(
+     isLong and useTP ? longTP : na,
+     title="Long Take Profit",
+     color=color.green,
+     style=plot.style_linebr,
+     linewidth=1
+ )
+
+plot(
+     isShort and useTP ? shortTP : na,
+     title="Short Take Profit",
+     color=color.green,
+     style=plot.style_linebr,
+     linewidth=1
+ )
+
+// ── Entry signal arrows ─────────────────────────────────────────
+longEntryShape = showSignalShapes and canLong and strategy.position_size <= 0
+shortEntryShape = showSignalShapes and canShort and strategy.position_size >= 0
+
+plotshape(
+     longEntryShape,
+     title="Long Signal",
+     location=location.belowbar,
+     color=color.new(color.green, 0),
+     style=shape.triangleup,
+     size=size.small
+ )
+
+plotshape(
+     shortEntryShape,
+     title="Short Signal",
+     location=location.abovebar,
+     color=color.new(color.red, 0),
+     style=shape.triangledown,
+     size=size.small
+ )
+
+// ── Background outside the trading session ──────────────────────
+bgcolor(
+     useTimeFilter and not inSession ? color.new(color.gray, 90) : na,
+     title="Outside Trading Session"
+ )

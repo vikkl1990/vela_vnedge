@@ -1,0 +1,516 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Triggon_
+
+// =============================================================================
+// Lite / Open-Source release — Triggon
+// =============================================================================
+// This is a free, fully open-source "lite" build of an internal technical-
+// consensus concept. Several filters and sensitivities used in more advanced
+// internal versions are intentionally left out here, and — most importantly —
+// this script carries NO position-sizing or risk-management logic; only a
+// flat 0.05% commission is applied to the results below. See the publication
+// description for the full methodology, scope, and disclaimer.
+//
+// This lite build is not deployed on Triggon's Telegram signal feed — add it
+// to your own TradingView chart to test and evaluate it directly.
+// =============================================================================
+
+// =============================================================================
+// TECHNICAL SUMMARY + CROWD CONSENSUS  —  STRATEGY  —  Pine Script v6
+// ===========================================================
+
+//@version=6
+strategy("Technical Summary + Crowd Consensus — Triggon Lite", shorttitle="TS+CC-Triggon", overlay=true, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.05, slippage=1, calc_on_every_tick=true, max_bars_back=500, max_labels_count=500)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 1 — DATA SOURCE
+// ─────────────────────────────────────────────────────────────────────────────
+
+var G_SRC = "Data Source"
+i_sym = input.symbol("",    "Symbol (blank = chart)",    group=G_SRC)
+i_tf  = input.timeframe("", "Timeframe (blank = chart)", group=G_SRC)
+
+_sym = i_sym == "" ? syminfo.tickerid : i_sym
+_tf  = i_tf  == "" ? timeframe.period  : i_tf
+
+[_o, _h, _l, _c, _v] = request.security(_sym, _tf, [open, high, low, close, volume], lookahead=barmerge.lookahead_off)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 2 — OSCILLATOR TOGGLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+var G_OSC = "Oscillators"
+i_rsi_on   = input.bool(true, "RSI (14)",               group=G_OSC)
+i_stoch_on = input.bool(true, "Stochastic (14,3,3)",    group=G_OSC)
+i_cci_on   = input.bool(true, "CCI (20)",               group=G_OSC)
+i_macd_on  = input.bool(true, "MACD (12,26,9)",         group=G_OSC)
+i_ao_on    = input.bool(true, "Awesome Oscillator",     group=G_OSC)
+i_mom_on   = input.bool(true, "Momentum (10)",          group=G_OSC)
+i_wr_on    = input.bool(true, "Williams %R (14)",       group=G_OSC)
+i_srsi_on  = input.bool(true, "Stoch RSI (3,3,14,14)", group=G_OSC)
+i_uo_on    = input.bool(true, "Ultimate Oscillator",    group=G_OSC)
+i_bbp_on   = input.bool(true, "Bull Bear Power",        group=G_OSC)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 3 — MOVING AVERAGE TOGGLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+var G_MA = "Moving Averages"
+i_ema10_on  = input.bool(true, "EMA 10",  group=G_MA)
+i_sma10_on  = input.bool(true, "SMA 10",  group=G_MA)
+i_ema20_on  = input.bool(true, "EMA 20",  group=G_MA)
+i_sma20_on  = input.bool(true, "SMA 20",  group=G_MA)
+i_ema50_on  = input.bool(true, "EMA 50",  group=G_MA)
+i_sma50_on  = input.bool(true, "SMA 50",  group=G_MA)
+i_ema100_on = input.bool(true, "EMA 100", group=G_MA)
+i_sma100_on = input.bool(true, "SMA 100", group=G_MA)
+i_ema200_on = input.bool(true, "EMA 200", group=G_MA)
+i_sma200_on = input.bool(true, "SMA 200", group=G_MA)
+i_vwma_on   = input.bool(true, "VWMA 20", group=G_MA)
+i_hma_on    = input.bool(true, "HMA 9",   group=G_MA)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 4 — CONSENSUS & DISPLAY SETTINGS
+// ─────────────────────────────────────────────────────────────────────────────
+
+var G_CONS = "Consensus Settings"
+i_thr_very = input.int (85,    "Very Extreme Threshold %", group=G_CONS, minval=51, maxval=99)
+i_thr_ext  = input.int (70,    "Extreme Threshold %",      group=G_CONS, minval=51, maxval=99)
+i_thr_neut = input.int (45,    "Neutral Below %",          group=G_CONS, minval=1,  maxval=70)
+i_reverse  = input.bool(false, "Contrarian Mode",          group=G_CONS)
+
+var G_TBL = "Display"
+i_pos      = input.string("Top Right", "Table Position", group=G_TBL, options=["Top Right","Middle Right","Bottom Right","Top Left","Middle Left","Bottom Left"])
+i_show_det = input.bool(true, "Show Indicator Details", group=G_TBL)
+
+var G_PHASE = "Daily Phase Highlight"
+i_show_hl   = input.bool(true, "Show Background Highlight",   group=G_PHASE, tooltip="Below-1D timeframes only. Paints the chart background by the day's persistent Buy/Sell phase.")
+i_show_lbl  = input.bool(true, "Show Change Labels",           group=G_PHASE, tooltip="Marks the exact candle where the daily phase fully flips from Buy to Sell or vice versa.")
+i_hl_transp = input.int(85, "Highlight Transparency", group=G_PHASE, minval=50, maxval=95)
+
+var G_SIG      = "Signal Filter (Anti-Whipsaw)"
+i_flip_mode    = input.string("At Least (≥)", "Required Consensus", group=G_SIG, options=["At Least (≥)", "At Most (≤)"], tooltip="At Least: only trade when this flip's consensus % is ≥ Threshold (require strong, one-sided conviction — the usual anti-whipsaw setting). At Most: only trade when it's ≤ Threshold (require a weak/quiet reading instead — e.g. for testing low-conviction or contrarian entry ideas).")
+i_flip_thr     = input.int (65,   "Threshold %", group=G_SIG, minval=0, maxval=100, tooltip="e.g. 'At Least' + 40 only trades flips with ≥40% consensus. 'At Most' + 30 only trades flips with ≤30% consensus.")
+i_show_lbl_pct = input.bool(true, "Show Consensus % on Labels",  group=G_SIG, tooltip="Appends each flip's consensus % to its change-label, and dims labels that didn't clear the trade threshold, so you can eyeball a good cutoff from history.")
+
+var G_EMA     = "EMA Filter"
+i_use_ema     = input.bool  (true,    "Require EMA Alignment", group=G_EMA, tooltip="Only take LONG signals whose candle is fully above the EMA, and SHORT signals fully below it (trade with the trend relative to the EMA). A candle straddling the EMA satisfies neither side and is skipped either way.")
+i_ema_len     = input.int   (50,      "EMA Length", group=G_EMA, minval=1)
+i_ema_src_sel = input.string("Close", "EMA Source",  group=G_EMA, options=["Close", "Open", "High", "Low", "HL2", "HLC3", "OHLC4"])
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 5 — UTILITY FUNCTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+bv(v, en) => en and v ==  1 ? 1 : 0
+sv(v, en) => en and v == -1 ? 1 : 0
+nv(v, en) => en and v ==  0 ? 1 : 0
+
+tblPos(p) =>
+    p == "Top Left" ? position.top_left : p == "Middle Left" ? position.middle_left : p == "Bottom Left" ? position.bottom_left : p == "Middle Right" ? position.middle_right : p == "Bottom Right" ? position.bottom_right : position.top_right
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 6 — OSCILLATOR SIGNAL FUNCTIONS  (return +1 / 0 / -1)
+// Unchanged from the original script. Indicator math is NEVER reset — only
+// the daily phase/result tracking in Section 13 resets each day.
+// ─────────────────────────────────────────────────────────────────────────────
+
+rsiSig(c) =>
+    r = ta.rsi(c, 14)
+    int(r >= 70 ? -1 : r <= 30 ? 1 : r > 50 ? 1 : r < 50 ? -1 : 0)
+
+stochSig(h, l, c) =>
+    k = ta.sma(ta.stoch(c, h, l, 14), 3)
+    d = ta.sma(k, 3)
+    int(k >= 80 ? -1 : k <= 20 ? 1 : k > d ? 1 : k < d ? -1 : 0)
+
+cciSig(h, l, c) =>
+    ci = ta.cci((h + l + c) / 3.0, 20)
+    int(ci >= 100 ? 1 : ci <= -100 ? -1 : ci > 0 ? 1 : ci < 0 ? -1 : 0)
+
+macdSig(c) =>
+    [ml, ms, mh] = ta.macd(c, 12, 26, 9)
+    int(ml > ms ? 1 : ml < ms ? -1 : 0)
+
+aoSig(h, l) =>
+    mid = (h + l) / 2.0
+    ao  = ta.sma(mid, 5) - ta.sma(mid, 34)
+    int(ao > 0 ? 1 : ao < 0 ? -1 : 0)
+
+momSig(c) =>
+    mom = c - c[10]
+    int(mom > 0 ? 1 : mom < 0 ? -1 : 0)
+
+wrSig(h, l, c) =>
+    hi14 = ta.highest(h, 14)
+    lo14 = ta.lowest(l, 14)
+    rng  = hi14 - lo14
+    wr   = rng != 0.0 ? -100.0 * (hi14 - c) / rng : -50.0
+    int(wr >= -20.0 ? -1 : wr <= -80.0 ? 1 : wr > -50.0 ? 1 : wr < -50.0 ? -1 : 0)
+
+srsiSig(c) =>
+    r      = ta.rsi(c, 14)
+    lo14   = ta.lowest(r, 14)
+    hi14   = ta.highest(r, 14)
+    drange = hi14 - lo14
+    raw    = drange != 0.0 ? (r - lo14) / drange : 0.5
+    sk     = ta.sma(raw, 3)
+    sd     = ta.sma(sk, 3)
+    int(sk >= 0.8 ? -1 : sk <= 0.2 ? 1 : sk > sd ? 1 : sk < sd ? -1 : 0)
+
+// Ultimate Oscillator — uses math.sum (ta.sum removed in v6)
+uoSig(h, l, c) =>
+    pc       = c[1]
+    bp       = c - math.min(l, pc)
+    trv      = math.max(h, pc) - math.min(l, pc)
+    sbp7     = math.sum(bp,  7)
+    sbp14    = math.sum(bp,  14)
+    sbp28    = math.sum(bp,  28)
+    str7     = math.sum(trv, 7)
+    str14    = math.sum(trv, 14)
+    str28    = math.sum(trv, 28)
+    avg7     = str7  != 0.0 ? sbp7  / str7  : 0.5
+    avg14    = str14 != 0.0 ? sbp14 / str14 : 0.5
+    avg28    = str28 != 0.0 ? sbp28 / str28 : 0.5
+    uo       = 100.0 * (4.0 * avg7 + 2.0 * avg14 + avg28) / 7.0
+    int(uo >= 70.0 ? -1 : uo <= 30.0 ? 1 : uo > 50.0 ? 1 : uo < 50.0 ? -1 : 0)
+
+bbpSig(c) =>
+    bbp = c - ta.ema(c, 13)
+    int(bbp > 0.0 ? 1 : bbp < 0.0 ? -1 : 0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 7 — MOVING AVERAGE SIGNAL FUNCTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+maSig(price, ma_val) => int(price > ma_val ? 1 : price < ma_val ? -1 : 0)
+
+hullMA(src, len) =>
+    half = int(math.round(float(len) / 2.0))
+    sq   = int(math.round(math.sqrt(float(len))))
+    ta.wma(2.0 * ta.wma(src, half) - ta.wma(src, len), sq)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 8 — COMPUTE ALL SIGNALS
+// ─────────────────────────────────────────────────────────────────────────────
+
+v_rsi   = rsiSig(_c)
+v_stoch = stochSig(_h, _l, _c)
+v_cci   = cciSig(_h, _l, _c)
+v_macd  = macdSig(_c)
+v_ao    = aoSig(_h, _l)
+v_mom   = momSig(_c)
+v_wr    = wrSig(_h, _l, _c)
+v_srsi  = srsiSig(_c)
+v_uo    = uoSig(_h, _l, _c)
+v_bbp   = bbpSig(_c)
+
+v_ema10  = maSig(_c, ta.ema(_c, 10))
+v_sma10  = maSig(_c, ta.sma(_c, 10))
+v_ema20  = maSig(_c, ta.ema(_c, 20))
+v_sma20  = maSig(_c, ta.sma(_c, 20))
+v_ema50  = maSig(_c, ta.ema(_c, 50))
+v_sma50  = maSig(_c, ta.sma(_c, 50))
+v_ema100 = maSig(_c, ta.ema(_c, 100))
+v_sma100 = maSig(_c, ta.sma(_c, 100))
+v_ema200 = maSig(_c, ta.ema(_c, 200))
+v_sma200 = maSig(_c, ta.sma(_c, 200))
+v_vwma   = maSig(_c, ta.vwma(_c, 20))
+v_hma    = maSig(_c, hullMA(_c, 9))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 9 — VOTE COUNTING
+// ─────────────────────────────────────────────────────────────────────────────
+
+osc_buy  = bv(v_rsi,i_rsi_on) + bv(v_stoch,i_stoch_on) + bv(v_cci,i_cci_on) + bv(v_macd,i_macd_on) + bv(v_ao,i_ao_on) + bv(v_mom,i_mom_on) + bv(v_wr,i_wr_on) + bv(v_srsi,i_srsi_on) + bv(v_uo,i_uo_on) + bv(v_bbp,i_bbp_on)
+osc_sell = sv(v_rsi,i_rsi_on) + sv(v_stoch,i_stoch_on) + sv(v_cci,i_cci_on) + sv(v_macd,i_macd_on) + sv(v_ao,i_ao_on) + sv(v_mom,i_mom_on) + sv(v_wr,i_wr_on) + sv(v_srsi,i_srsi_on) + sv(v_uo,i_uo_on) + sv(v_bbp,i_bbp_on)
+osc_neut = nv(v_rsi,i_rsi_on) + nv(v_stoch,i_stoch_on) + nv(v_cci,i_cci_on) + nv(v_macd,i_macd_on) + nv(v_ao,i_ao_on) + nv(v_mom,i_mom_on) + nv(v_wr,i_wr_on) + nv(v_srsi,i_srsi_on) + nv(v_uo,i_uo_on) + nv(v_bbp,i_bbp_on)
+
+ma_buy  = bv(v_ema10,i_ema10_on) + bv(v_sma10,i_sma10_on) + bv(v_ema20,i_ema20_on) + bv(v_sma20,i_sma20_on) + bv(v_ema50,i_ema50_on) + bv(v_sma50,i_sma50_on) + bv(v_ema100,i_ema100_on) + bv(v_sma100,i_sma100_on) + bv(v_ema200,i_ema200_on) + bv(v_sma200,i_sma200_on) + bv(v_vwma,i_vwma_on) + bv(v_hma,i_hma_on)
+ma_sell = sv(v_ema10,i_ema10_on) + sv(v_sma10,i_sma10_on) + sv(v_ema20,i_ema20_on) + sv(v_sma20,i_sma20_on) + sv(v_ema50,i_ema50_on) + sv(v_sma50,i_sma50_on) + sv(v_ema100,i_ema100_on) + sv(v_sma100,i_sma100_on) + sv(v_ema200,i_ema200_on) + sv(v_sma200,i_sma200_on) + sv(v_vwma,i_vwma_on) + sv(v_hma,i_hma_on)
+ma_neut = nv(v_ema10,i_ema10_on) + nv(v_sma10,i_sma10_on) + nv(v_ema20,i_ema20_on) + nv(v_sma20,i_sma20_on) + nv(v_ema50,i_ema50_on) + nv(v_sma50,i_sma50_on) + nv(v_ema100,i_ema100_on) + nv(v_sma100,i_sma100_on) + nv(v_ema200,i_ema200_on) + nv(v_sma200,i_sma200_on) + nv(v_vwma,i_vwma_on) + nv(v_hma,i_hma_on)
+
+total_buy  = osc_buy  + ma_buy
+total_sell = osc_sell + ma_sell
+total_neut = osc_neut + ma_neut
+total_all  = total_buy + total_sell + total_neut
+safe_total = math.max(total_all, 1)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 10 — CONSENSUS CALCULATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+dominant_bull = total_buy >= total_sell
+consensus_pct = float(math.max(total_buy, total_sell)) / float(safe_total) * 100.0
+bull_pct      = float(total_buy)  / float(safe_total) * 100.0
+sell_pct      = float(total_sell) / float(safe_total) * 100.0
+neut_pct      = float(total_neut) / float(safe_total) * 100.0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 11 — TECHNICAL BIAS & TIER  (instant, per-candle reading)
+// ─────────────────────────────────────────────────────────────────────────────
+
+_tier = consensus_pct < i_thr_neut ? 0 : consensus_pct < i_thr_ext ? 1 : consensus_pct < i_thr_very ? 2 : 3
+
+_dir_lbl = dominant_bull ? "Buy" : "Sell"
+_ext_lbl = dominant_bull ? "Strong Buy" : "Strong Sell"
+_vex_lbl = dominant_bull ? "Very Strong Buy" : "Very Strong Sell"
+_rev_lbl = dominant_bull ? "Contrarian Short" : "Contrarian Long"
+
+bias_label = _tier == 0 ? "Neutral" : _tier == 1 ? _dir_lbl : _tier == 2 ? (i_reverse ? _rev_lbl : _ext_lbl) : (i_reverse ? _rev_lbl : _vex_lbl)
+
+tier_desc = _tier == 0 ? "Undecided" : _tier == 1 ? "Moderate" : _tier == 2 ? "Strong" : "Very Strong"
+
+bias_bg = bias_label == "Neutral" ? color.new(color.gray, 20) : bias_label == "Buy" ? color.new(#27ae60, 12) : bias_label == "Sell" ? color.new(#e74c3c, 12) : bias_label == "Strong Buy" ? color.new(#1a5e35, 5) : bias_label == "Strong Sell" ? color.new(#7b241c, 5) : bias_label == "Very Strong Buy" ? color.new(#0d3b22, 0) : bias_label == "Very Strong Sell" ? color.new(#4a0e0e, 0) : bias_label == "Contrarian Short" ? color.new(#d35400, 5) : bias_label == "Contrarian Long" ? color.new(#1a6b8a, 5) : color.new(color.gray, 30)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 12 — DAILY PHASE STATE MACHINE
+// Resets each new day on timeframes below 1D. Tracks a persistent BUY/SELL
+// phase that only flips on a full reversal of the dominant side; a neutral
+// candle never breaks an established phase. This section never touches the
+// indicator math above — only the phase/result bookkeeping resets daily,
+// exactly mirroring how each bar's own vote (Section 9-11) is computed.
+//
+// barstate.isconfirmed gate: true for every historical bar already, so this
+// changes nothing about backtest fills. Its only job is to stop the persisted
+// _phase from flipping on a transient intrabar tick now that the script
+// recalculates live (calc_on_every_tick=true) — it only locks in a flip once
+// the realtime bar actually closes, same as it always did on history.
+// ─────────────────────────────────────────────────────────────────────────────
+
+_tfSeconds  = timeframe.in_seconds(_tf)
+_isIntraday = _tfSeconds > 0 and _tfSeconds < 86400
+
+_newDay  = ta.change(time("D")) != 0
+_rawBias = _tier == 0 ? 0 : (dominant_bull ? 1 : -1)
+
+var int _phase          = na
+var int _phaseStartTime = na
+_changeThisBar = false
+
+if _isIntraday and barstate.isconfirmed
+    if _newDay
+        _phase          := na
+        _phaseStartTime := na
+    if _rawBias != 0
+        if na(_phase)
+            _phase          := _rawBias
+            _phaseStartTime := time
+        else if _phase != _rawBias
+            _phase          := _rawBias
+            _phaseStartTime := time
+            _changeThisBar  := true
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 13 — DAILY PHASE HIGHLIGHT  (chart background + flip label)
+// ─────────────────────────────────────────────────────────────────────────────
+
+_signalOK = i_flip_mode == "At Least (≥)" ? consensus_pct >= i_flip_thr : consensus_pct <= i_flip_thr   // this bar's flip strong (or weak) enough to actually trade?
+
+_hlGray  = color.new(color.gray, i_hl_transp)
+_hlGreen = color.new(#27ae60,    i_hl_transp)
+_hlRed   = color.new(#e74c3c,    i_hl_transp)
+
+_barBg = not i_show_hl or not _isIntraday ? na : na(_phase) ? _hlGray : _phase == 1 ? _hlGreen : _hlRed
+
+bgcolor(_barBg, title="Daily Phase Highlight")
+
+if i_show_lbl and _changeThisBar
+    _lblPctTxt = i_show_lbl_pct ? "  " + str.tostring(math.round(consensus_pct)) + "%" : ""
+    _lblTxt    = (_phase == 1 ? "Buy" : "Sell") + _lblPctTxt
+    _lblAlpha  = _signalOK ? 0 : 55
+    _lblCol    = _phase == 1 ? color.new(#27ae60, _lblAlpha) : color.new(#e74c3c, _lblAlpha)
+    _lblStyle  = _phase == 1 ? label.style_label_up : label.style_label_down
+    _lblYloc   = _phase == 1 ? yloc.belowbar : yloc.abovebar
+    label.new(bar_index, na, text=_lblTxt, style=_lblStyle, color=_lblCol, textcolor=color.white, size=size.small, yloc=_lblYloc)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 14 — EMA FILTER + STRATEGY ORDER EXECUTION
+// EMA alignment: a LONG is only allowed when the whole signal candle sits
+// above the EMA, a SHORT only when it sits fully below — trade with the
+// trend relative to the EMA. A candle straddling the EMA (high above it,
+// low below it) satisfies neither condition, so it's skipped automatically,
+// no separate check needed.
+//
+// A trade then fires only when a confirmed Daily Phase flip (_changeThisBar)
+// ALSO clears the consensus threshold (_signalOK) AND the EMA alignment
+// (_emaOK). Reversal is automatic: strategy.entry() in the opposite
+// direction closes the existing position and opens the new one (pyramiding
+// = 0, netting account, one-way).
+// ─────────────────────────────────────────────────────────────────────────────
+
+emaSrcVal(sel) =>
+    sel == "Close" ? _c : sel == "Open" ? _o : sel == "High" ? _h : sel == "Low" ? _l : sel == "HL2" ? (_h + _l) / 2.0 : sel == "HLC3" ? (_h + _l + _c) / 3.0 : (_o + _h + _l + _c) / 4.0
+
+_emaSrc   = emaSrcVal(i_ema_src_sel)
+_emaVal   = ta.ema(_emaSrc, i_ema_len)
+_emaAbove = _l > _emaVal   // whole candle above the EMA
+_emaBelow = _h < _emaVal   // whole candle below the EMA
+_emaOK    = not i_use_ema ? true : _phase == 1 ? _emaAbove : _phase == -1 ? _emaBelow : false
+
+plot(i_use_ema ? _emaVal : na, "EMA Filter", color=color.new(color.blue, 0), linewidth=2)
+
+_tradeSignal = _changeThisBar and _signalOK and _emaOK
+
+var int _lastTradeTime = na
+
+if _tradeSignal
+    _lastTradeTime := time
+    if _phase == 1
+        strategy.entry("Long", strategy.long)
+    else if _phase == -1
+        strategy.entry("Short", strategy.short)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 15 — TABLE HELPERS  (global scope — required by Pine v6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+var table tbl = table.new(tblPos(i_pos), columns=6, rows=15, bgcolor=color.new(color.black, 87), border_width=1, border_color=color.new(color.gray, 65), frame_width=2, frame_color=color.new(color.gray, 45))
+
+gridCellBg(v, enabled) => not enabled ? color.new(color.gray, 82) : v == 1 ? color.new(#27ae60, 70) : v == -1 ? color.new(#e74c3c, 70) : color.new(color.gray, 55)
+gridCellTc(enabled)    => enabled ? color.new(color.white, 5) : color.new(color.gray, 45)
+
+drawGridCell(t, col, row, lbl, v, enabled) =>
+    table.cell(t, col, row, text=lbl, text_color=gridCellTc(enabled), bgcolor=gridCellBg(v, enabled), text_size=size.tiny, text_halign=text.align_center)
+
+// Thermal gauge color: red -> gray -> green, linear on each half of -100..100
+gaugeColor(v) =>
+    v < 0.0 ? color.from_gradient(v, -100.0, 0.0, #e74c3c, color.gray) : color.from_gradient(v, 0.0, 100.0, color.gray, #27ae60)
+
+sym_disp = i_sym == "" ? syminfo.ticker   : i_sym
+tf_disp  = i_tf  == "" ? timeframe.period : i_tf
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 16 — TABLE STRUCTURE  (runs once — merged regions and every static
+// caption are set up here only; nothing here is ever re-merged or re-set on
+// barstate.islast, avoiding Pine's "already merged" error entirely)
+// ─────────────────────────────────────────────────────────────────────────────
+
+if barstate.isfirst
+    _hdBg  = color.new(color.black, 60)
+    _phBg  = color.new(color.black, 60)
+    _capBg = color.new(color.black, 65)
+    _capTc = color.new(color.white, 45)
+
+    table.cell(tbl, 0, 0, text="TS+CC  ·  " + sym_disp + "  ·  [" + tf_disp + "]", text_color=color.white, bgcolor=_hdBg, text_size=size.small, text_halign=text.align_center)
+    table.merge_cells(tbl, 0, 0, 5, 0)
+
+    table.cell(tbl, 0, 1, text="TECHNICAL BIAS", text_color=_capTc, bgcolor=_capBg, text_size=size.tiny, text_halign=text.align_center)
+    table.merge_cells(tbl, 0, 1, 5, 1)
+
+    table.cell(tbl, 0, 2, text="", bgcolor=_phBg)
+    table.merge_cells(tbl, 0, 2, 5, 2)
+
+    table.cell(tbl, 0, 3, text="", bgcolor=_phBg)
+    table.merge_cells(tbl, 0, 3, 5, 3)
+
+    table.cell(tbl, 0, 5, text="", bgcolor=_phBg)
+    table.merge_cells(tbl, 0, 5, 5, 5)
+
+    table.cell(tbl, 0, 6, text="", bgcolor=_phBg)
+    table.merge_cells(tbl, 0, 6, 5, 6)
+
+    table.cell(tbl, 0, 7, text="Oscillators", text_color=color.new(color.white,15), bgcolor=color.new(color.black,80), text_size=size.small, text_halign=text.align_left)
+    table.merge_cells(tbl, 0, 7, 2, 7)
+
+    table.cell(tbl, 0, 8, text="Mov. Averages", text_color=color.new(color.white,15), bgcolor=color.new(color.black,80), text_size=size.small, text_halign=text.align_left)
+    table.merge_cells(tbl, 0, 8, 2, 8)
+
+    if i_show_det
+        table.cell(tbl, 0, 9, text="Oscillators", text_color=color.new(color.white,30), bgcolor=color.new(color.black,65), text_size=size.tiny, text_halign=text.align_center)
+        table.merge_cells(tbl, 0, 9, 5, 9)
+
+        table.cell(tbl, 4, 11, text="", bgcolor=color.new(color.black,84))
+        table.merge_cells(tbl, 4, 11, 5, 11)
+
+        table.cell(tbl, 0, 12, text="Moving Averages", text_color=color.new(color.white,30), bgcolor=color.new(color.black,65), text_size=size.tiny, text_halign=text.align_center)
+        table.merge_cells(tbl, 0, 12, 5, 12)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 17 — TABLE CONTENT  (updates every recalculation on the latest bar;
+// only table.cell() calls here, never table.merge_cells())
+// ─────────────────────────────────────────────────────────────────────────────
+
+if barstate.islast
+    _b75 = color.new(color.black, 75)
+    _b80 = color.new(color.black, 80)
+    _w20 = color.new(color.white, 20)
+
+    // Row 2 — Technical Bias value (hero number; caption sits above it, Row 1)
+    table.cell(tbl, 0, 2, text=bias_label, text_color=color.white, bgcolor=bias_bg, text_size=size.large, text_halign=text.align_center)
+
+    // Row 3 — Consensus % + tier (the precise reading behind Row 2)
+    cons_txt = "Consensus " + str.tostring(math.round(consensus_pct, 1)) + "%  ·  " + tier_desc
+    table.cell(tbl, 0, 3, text=cons_txt, text_color=_w20, bgcolor=_b75, text_size=size.small, text_halign=text.align_center)
+
+    // Row 4 — Thermal gauge: 6 fixed bands from -100 (all-sell) to +100 (all-buy).
+    // Bands are never merged, so this is free to redraw every bar with zero
+    // merge risk. Only the active band gets a marker; the rest are the track.
+    _biasScore = bull_pct - sell_pct
+    _activeSeg = int(math.min(5.0, math.max(0.0, math.floor((_biasScore + 100.0) / 200.0 * 6.0))))
+    for i = 0 to 5
+        _segMid   = -100.0 + (i + 0.5) * (200.0 / 6.0)
+        _isActive = i == _activeSeg
+        _segCol   = color.new(gaugeColor(_isActive ? _biasScore : _segMid), _isActive ? 10 : 65)
+        _segTxt   = _isActive ? (_biasScore >= 0.0 ? "+" : "") + str.tostring(math.round(_biasScore)) : ""
+        table.cell(tbl, i, 4, text=_segTxt, text_color=color.white, bgcolor=_segCol, text_size=size.tiny, text_halign=text.align_center)
+
+    // Row 5 — Day Phase (persists across the day, resets next day; see Section 12)
+    _phaseTimeTxt = na(_phaseStartTime) ? "" : "  ·  " + str.format_time(_phaseStartTime, "HH:mm", syminfo.timezone)
+    _phaseTxt = not _isIntraday ? "Day Phase  ·  n/a on 1D+ charts" : na(_phase) ? "Day Phase  ·  Undecided" : _phase == 1 ? "Day Phase  ·  Buy" + _phaseTimeTxt : "Day Phase  ·  Sell" + _phaseTimeTxt
+    _phaseBg  = not _isIntraday ? color.new(color.gray, 45) : na(_phase) ? color.new(color.gray, 25) : _phase == 1 ? color.new(#27ae60, 15) : color.new(#e74c3c, 15)
+    table.cell(tbl, 0, 5, text=_phaseTxt, text_color=color.white, bgcolor=_phaseBg, text_size=size.normal, text_halign=text.align_center)
+
+    // Row 6 — Position: last open trade, entry price, live P&L (real backtest
+    // state via strategy.*, on the chart's own traded instrument/price)
+    _posSize = strategy.position_size
+    _posAvg  = strategy.position_avg_price
+    _posPnl  = _posSize == 0 ? na : _posSize > 0 ? (close - _posAvg) / _posAvg * 100.0 : (_posAvg - close) / _posAvg * 100.0
+    _posTxt  = _posSize == 0 ? "Position  ·  Flat" : "Position  ·  " + (_posSize > 0 ? "Long" : "Short") + " @ " + str.tostring(_posAvg, format.mintick) + "  ·  " + (_posPnl >= 0.0 ? "+" : "") + str.tostring(math.round(_posPnl, 2)) + "%"
+    _posBg   = _posSize == 0 ? color.new(color.gray, 30) : _posPnl >= 0.0 ? color.new(#27ae60, 15) : color.new(#e74c3c, 15)
+    table.cell(tbl, 0, 6, text=_posTxt, text_color=color.white, bgcolor=_posBg, text_size=size.normal, text_halign=text.align_center)
+
+    // Row 7 & 8 — Oscillator / MA vote counts (labels were set once in Section 16)
+    table.cell(tbl, 3, 7, text="▲ " + str.tostring(osc_buy),  text_color=color.new(#27ae60,0),    bgcolor=_b80, text_size=size.small, text_halign=text.align_center)
+    table.cell(tbl, 4, 7, text="● " + str.tostring(osc_neut), text_color=color.new(color.gray,15), bgcolor=_b80, text_size=size.small, text_halign=text.align_center)
+    table.cell(tbl, 5, 7, text="▼ " + str.tostring(osc_sell), text_color=color.new(#e74c3c,0),    bgcolor=_b80, text_size=size.small, text_halign=text.align_center)
+
+    table.cell(tbl, 3, 8, text="▲ " + str.tostring(ma_buy),  text_color=color.new(#27ae60,0),    bgcolor=_b80, text_size=size.small, text_halign=text.align_center)
+    table.cell(tbl, 4, 8, text="● " + str.tostring(ma_neut), text_color=color.new(color.gray,15), bgcolor=_b80, text_size=size.small, text_halign=text.align_center)
+    table.cell(tbl, 5, 8, text="▼ " + str.tostring(ma_sell), text_color=color.new(#e74c3c,0),    bgcolor=_b80, text_size=size.small, text_halign=text.align_center)
+
+    // Rows 10-11, 13-14 — Compact detail grid (22 indicators as colored badges)
+    if i_show_det
+        drawGridCell(tbl, 0, 10, "RSI",   v_rsi,   i_rsi_on)
+        drawGridCell(tbl, 1, 10, "Stoch", v_stoch, i_stoch_on)
+        drawGridCell(tbl, 2, 10, "CCI",   v_cci,   i_cci_on)
+        drawGridCell(tbl, 3, 10, "MACD",  v_macd,  i_macd_on)
+        drawGridCell(tbl, 4, 10, "AO",    v_ao,    i_ao_on)
+        drawGridCell(tbl, 5, 10, "Mom",   v_mom,   i_mom_on)
+        drawGridCell(tbl, 0, 11, "W%R",   v_wr,    i_wr_on)
+        drawGridCell(tbl, 1, 11, "SRSI",  v_srsi,  i_srsi_on)
+        drawGridCell(tbl, 2, 11, "UO",    v_uo,    i_uo_on)
+        drawGridCell(tbl, 3, 11, "BBP",   v_bbp,   i_bbp_on)
+
+        drawGridCell(tbl, 0, 13, "EMA10",  v_ema10,  i_ema10_on)
+        drawGridCell(tbl, 1, 13, "SMA10",  v_sma10,  i_sma10_on)
+        drawGridCell(tbl, 2, 13, "EMA20",  v_ema20,  i_ema20_on)
+        drawGridCell(tbl, 3, 13, "SMA20",  v_sma20,  i_sma20_on)
+        drawGridCell(tbl, 4, 13, "EMA50",  v_ema50,  i_ema50_on)
+        drawGridCell(tbl, 5, 13, "SMA50",  v_sma50,  i_sma50_on)
+        drawGridCell(tbl, 0, 14, "EMA100", v_ema100, i_ema100_on)
+        drawGridCell(tbl, 1, 14, "SMA100", v_sma100, i_sma100_on)
+        drawGridCell(tbl, 2, 14, "EMA200", v_ema200, i_ema200_on)
+        drawGridCell(tbl, 3, 14, "SMA200", v_sma200, i_sma200_on)
+        drawGridCell(tbl, 4, 14, "VWMA",   v_vwma,   i_vwma_on)
+        drawGridCell(tbl, 5, 14, "HMA9",   v_hma,    i_hma_on)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 18 — DATA WINDOW OUTPUTS  (kept for alerts / external reference;
+// no hlines or on-chart plots since consensus % isn't a price value)
+// ─────────────────────────────────────────────────────────────────────────────
+
+plot(consensus_pct, "Consensus Strength %", display=display.data_window)
+plot(bull_pct,  "Bull %",    display=display.data_window)
+plot(sell_pct,  "Sell %",    display=display.data_window)
+plot(neut_pct,  "Neutral %", display=display.data_window)

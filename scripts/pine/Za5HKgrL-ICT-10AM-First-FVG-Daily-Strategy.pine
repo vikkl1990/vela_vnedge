@@ -1,0 +1,316 @@
+//@version=6
+strategy("ICT 10AM First FVG Daily Strategy", overlay=true, pyramiding=0,
+     initial_capital=100000, default_qty_type=strategy.fixed, default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract, commission_value=0,
+     calc_on_order_fills=true, process_orders_on_close=false,
+     margin_long=1, margin_short=1,
+     max_boxes_count=100, max_lines_count=500, max_labels_count=500)
+
+// The strategy creates exactly one setup per New York trading day:
+// 1) mark the 10:00 open,
+// 2) select the first confirmed three-candle FVG whose middle/displacement
+//    candle is at/after 10:00. The 10:00 candle itself is eligible,
+// 3) place a limit order at the FVG's first-touch boundary,
+// 4) stop at the FVG generator candle's opposite extreme,
+// 5) target the directional extreme formed after 10:00 and before the first touch.
+
+string GROUP_SESSION = "Session"
+string GROUP_ORDER = "Order"
+string GROUP_VISUAL = "Visual"
+
+string timezoneInput = input.string("America/New_York", "Timezone", group=GROUP_SESSION)
+int startHour = input.int(10, "Setup start hour", minval=0, maxval=23, group=GROUP_SESSION)
+int endHour = input.int(16, "Cancel/close hour", minval=1, maxval=23, group=GROUP_SESSION)
+bool closeAtEnd = input.bool(true, "Close open position at session end", group=GROUP_SESSION)
+bool enableWeekendProtection = input.bool(true, "Friday/weekend lock", group=GROUP_SESSION)
+int fridayCloseHour = input.int(15, "Friday close hour", minval=0, maxval=23, group=GROUP_SESSION)
+int fridayCloseMinute = input.int(45, "Friday close minute", minval=0, maxval=59, group=GROUP_SESSION)
+
+float orderQty = input.float(1.0, "Contracts", minval=0.001, step=1.0, group=GROUP_ORDER)
+bool enableLong = input.bool(true, "Enable long", group=GROUP_ORDER)
+bool enableShort = input.bool(true, "Enable short", group=GROUP_ORDER)
+
+bool showFvg = input.bool(true, "Show first FVG", group=GROUP_VISUAL)
+bool showLevels = input.bool(true, "Show open / entry / stop / target", group=GROUP_VISUAL)
+
+int nyHour = hour(time, timezoneInput)
+int nyMinute = minute(time, timezoneInput)
+int nyDay = dayofmonth(time, timezoneInput)
+int nyMonth = month(time, timezoneInput)
+int nyYear = year(time, timezoneInput)
+int nyDayOfWeek = dayofweek(time, timezoneInput)
+int nyMinutes = nyHour * 60 + nyMinute
+
+f_tick(float price) =>
+    math.round(price / syminfo.mintick) * syminfo.mintick
+
+bool newCalendarDay = bar_index > 0 and (nyDay != nyDay[1] or nyMonth != nyMonth[1] or nyYear != nyYear[1])
+bool atStart = nyHour == startHour and nyMinute == 0
+bool inSetupWindow = nyHour >= startHour and nyHour < endHour
+bool atOrAfterEnd = nyHour >= endHour
+bool weekendDay = nyDayOfWeek == dayofweek.saturday or nyDayOfWeek == dayofweek.sunday
+bool fridayCutoff = nyDayOfWeek == dayofweek.friday and nyMinutes >= fridayCloseHour * 60 + fridayCloseMinute
+bool marketTransitionLock = enableWeekendProtection and (weekendDay or fridayCutoff)
+bool canCreateSetup = inSetupWindow and not marketTransitionLock
+bool fvgGeneratorInsideWindow = hour(time[1], timezoneInput) >= startHour and hour(time[1], timezoneInput) < endHour
+
+var float sessionOpen = na
+var float sessionHigh = na
+var float sessionLow = na
+var bool fvgFound = false
+// `varip` prevents fill-state rollback during calc_on_order_fills recalculations.
+varip bool orderPending = false
+varip bool tradedToday = false
+varip bool tradeFinished = false
+varip bool entryConfirmed = false
+varip bool marginErrorDetected = false
+varip int unfilledTouchBar = na
+varip int handledClosedTrades = 0
+var int setupDirection = 0  // 1=long, -1=short
+var int fvgCreatedBar = na
+var float fvgLow = na
+var float fvgHigh = na
+var float entryPrice = na
+var float stopPrice = na
+var float targetPrice = na
+
+var box fvgBox = na
+var line openLine = na
+var line entryLine = na
+var line stopLine = na
+var line targetLine = na
+var table marginWarningTable = table.new(position.bottom_right, 1, 1)
+
+if newCalendarDay
+    strategy.cancel("Daily Long")
+    strategy.cancel("Daily Short")
+    sessionOpen := na
+    sessionHigh := na
+    sessionLow := na
+    fvgFound := false
+    orderPending := false
+    tradedToday := false
+    tradeFinished := false
+    entryConfirmed := false
+    unfilledTouchBar := na
+    handledClosedTrades := strategy.closedtrades
+    setupDirection := 0
+    fvgCreatedBar := na
+    fvgLow := na
+    fvgHigh := na
+    entryPrice := na
+    stopPrice := na
+    targetPrice := na
+    fvgBox := na
+    openLine := na
+    entryLine := na
+    stopLine := na
+    targetLine := na
+
+if atStart
+    sessionOpen := open
+    sessionHigh := high
+    sessionLow := low
+    if showLevels
+        openLine := line.new(bar_index, sessionOpen, bar_index + 1, sessionOpen,
+             extend=extend.none, color=color.black, width=2)
+else if inSetupWindow and not na(sessionOpen)
+    sessionHigh := math.max(sessionHigh, high)
+    sessionLow := math.min(sessionLow, low)
+
+// Accepted: 09:59-10:00-10:01 and 10:00-10:01-10:02 (or later).
+// Rejected: 09:58-09:59-10:00, because its generator candle is before 10:00.
+bool bearishFvg = canCreateSetup and fvgGeneratorInsideWindow and high < low[2]
+bool bullishFvg = canCreateSetup and fvgGeneratorInsideWindow and low > high[2]
+
+if not fvgFound and not na(sessionOpen) and barstate.isconfirmed
+    if bearishFvg
+        fvgFound := true
+        setupDirection := -1
+        fvgCreatedBar := bar_index
+        fvgLow := high
+        fvgHigh := low[2]
+        entryPrice := f_tick(fvgLow)
+        stopPrice := f_tick(high[1])
+        targetPrice := f_tick(sessionLow)
+    else if bullishFvg
+        fvgFound := true
+        setupDirection := 1
+        fvgCreatedBar := bar_index
+        fvgLow := high[2]
+        fvgHigh := low
+        entryPrice := f_tick(fvgHigh)
+        stopPrice := f_tick(low[1])
+        targetPrice := f_tick(sessionHigh)
+
+    if fvgFound
+        color setupColor = setupDirection == 1 ? color.teal : color.orange
+        if showFvg
+            fvgBox := box.new(bar_index - 2, fvgHigh, bar_index + 1, fvgLow,
+                 extend=extend.none, border_color=color.new(setupColor, 100),
+                 bgcolor=color.new(setupColor, 80))
+        if showLevels
+            entryLine := line.new(bar_index, entryPrice, bar_index + 1, entryPrice,
+                 extend=extend.none, color=color.orange, style=line.style_dashed, width=2)
+            stopLine := line.new(bar_index - 1, stopPrice, bar_index + 1, stopPrice,
+                 extend=extend.none, color=color.orange, style=line.style_dashed, width=2)
+            targetLine := line.new(bar_index, targetPrice, bar_index + 1, targetPrice,
+                 extend=extend.none, color=color.new(color.teal, 25), style=line.style_dashed, width=2)
+
+// While the entry limit is still waiting, this completed bar is safely before
+// entry and its new extreme must be included in TP. Once the entry fills, the
+// justEntered block below switches back to [1], excluding the touch bar itself.
+// Submit the limit on the confirmed FVG bar. With process_orders_on_close=false
+// it can first fill on the next bar, removing the former unnecessary extra bar.
+if fvgFound and not tradedToday and strategy.position_size == 0 and bar_index >= fvgCreatedBar and inSetupWindow and not marketTransitionLock
+    float candidateTarget = f_tick(setupDirection == -1 ? sessionLow : sessionHigh)
+    bool validGeometry = setupDirection == -1 ? stopPrice > entryPrice and candidateTarget < entryPrice : stopPrice < entryPrice and candidateTarget > entryPrice
+    if validGeometry
+        targetPrice := candidateTarget
+        if showLevels and not na(targetLine)
+            line.set_y1(targetLine, targetPrice)
+            line.set_y2(targetLine, targetPrice)
+        if not orderPending
+            if setupDirection == 1 and enableLong
+                strategy.entry("Daily Long", strategy.long, qty=orderQty, limit=entryPrice)
+                orderPending := true
+            else if setupDirection == -1 and enableShort
+                strategy.entry("Daily Short", strategy.short, qty=orderQty, limit=entryPrice)
+                orderPending := true
+
+// A setup drawing alone does not prove that its order was accepted. Margin is
+// configured in Strategy Properties and Pine cannot read that percentage back.
+// Detect the actual emulator outcome instead. Record the first touch, then wait
+// one confirmed bar: successful fills clear the pending state during the
+// calc_on_order_fills recalculation, while a rejected order remains pending.
+bool pendingLimitTouched = orderPending and bar_index > fvgCreatedBar and not na(entryPrice) and (setupDirection == 1 ? low <= entryPrice : high >= entryPrice)
+if pendingLimitTouched and strategy.position_size == 0 and strategy.closedtrades == handledClosedTrades and na(unfilledTouchBar)
+    unfilledTouchBar := bar_index
+bool touchStillUnfilled = not na(unfilledTouchBar) and bar_index > unfilledTouchBar and orderPending and not tradedToday and strategy.position_size == 0
+if touchStillUnfilled
+    marginErrorDetected := true
+
+bool justEnteredLong = strategy.position_size > 0 and strategy.position_size[1] <= 0
+bool justEnteredShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+if (justEnteredLong or justEnteredShort) and not entryConfirmed
+    orderPending := false
+    unfilledTouchBar := na
+    tradedToday := true
+    entryConfirmed := true
+    entryPrice := f_tick(strategy.position_avg_price)
+    targetPrice := f_tick(setupDirection == -1 ? sessionLow[1] : sessionHigh[1])
+    if showLevels
+        if not na(entryLine)
+            line.set_y1(entryLine, entryPrice)
+            line.set_y2(entryLine, entryPrice)
+            line.set_color(entryLine, color.black)
+            line.set_style(entryLine, line.style_solid)
+            line.set_width(entryLine, 2)
+        if not na(stopLine)
+            line.set_color(stopLine, color.red)
+            line.set_style(stopLine, line.style_solid)
+            line.set_width(stopLine, 2)
+        if not na(targetLine)
+            line.set_y1(targetLine, targetPrice)
+            line.set_y2(targetLine, targetPrice)
+            line.set_color(targetLine, color.teal)
+            line.set_style(targetLine, line.style_solid)
+            line.set_width(targetLine, 2)
+
+// Submit the complete bracket while the entry limit is still waiting. TradingView
+// keeps this exit linked to its `from_entry` order and activates it the instant
+// that limit fills, rather than waiting for a later position-size calculation.
+// Reissuing it while open also keeps the final causal target current.
+bool longBracketReady = fvgFound and not tradeFinished and setupDirection == 1 and enableLong and not na(stopPrice) and not na(targetPrice)
+bool shortBracketReady = fvgFound and not tradeFinished and setupDirection == -1 and enableShort and not na(stopPrice) and not na(targetPrice)
+if longBracketReady
+    strategy.exit("Daily Long Exit", "Daily Long", stop=stopPrice, limit=targetPrice)
+if shortBracketReady
+    strategy.exit("Daily Short Exit", "Daily Short", stop=stopPrice, limit=targetPrice)
+
+// Never use infinite rays for trade visuals. Grow each guide only while its
+// setup/order/position is alive; TP/SL handling below freezes it at exit_bar.
+bool setupVisualActive = fvgFound and not tradeFinished and (inSetupWindow or strategy.position_size != 0)
+if setupVisualActive
+    if showLevels
+        if not na(openLine)
+            line.set_x2(openLine, bar_index + 1)
+        if not na(entryLine)
+            line.set_x2(entryLine, bar_index + 1)
+        if not na(stopLine)
+            line.set_x2(stopLine, bar_index + 1)
+        if not na(targetLine)
+            line.set_x2(targetLine, bar_index + 1)
+    if showFvg and not na(fvgBox)
+        box.set_right(fvgBox, bar_index + 1)
+
+bool cancelPendingNow = (atOrAfterEnd or marketTransitionLock) and orderPending and strategy.position_size == 0
+if cancelPendingNow
+    strategy.cancel("Daily Long")
+    strategy.cancel("Daily Short")
+    orderPending := false
+
+// Friday/weekend protection is a hard safety close. The optional session-end
+// close only controls ordinary weekdays at `endHour`.
+bool forceCloseNow = strategy.position_size != 0 and (marketTransitionLock or (closeAtEnd and atOrAfterEnd))
+if forceCloseNow
+    strategy.close_all(comment=marketTransitionLock ? "Friday/Weekend Lock" : "Session End")
+
+// `handledClosedTrades` catches same-bar entry+exit exactly once, including
+// intrabar recalculations where position_size never remains visibly non-zero.
+bool tradeClosedThisBar = strategy.closedtrades > handledClosedTrades
+if tradeClosedThisBar
+    handledClosedTrades := strategy.closedtrades
+    orderPending := false
+    unfilledTouchBar := na
+    tradedToday := true
+    tradeFinished := true
+    int lastTrade = strategy.closedtrades - 1
+    // If the position opened and closed within one chart bar, the ordinary
+    // justEntered transition may be skipped. Promote pending visuals here too.
+    if not entryConfirmed
+        entryConfirmed := true
+        entryPrice := f_tick(strategy.closedtrades.entry_price(lastTrade))
+        if showLevels
+            if not na(entryLine)
+                line.set_y1(entryLine, entryPrice)
+                line.set_y2(entryLine, entryPrice)
+                line.set_color(entryLine, color.black)
+                line.set_style(entryLine, line.style_solid)
+            if not na(stopLine)
+                line.set_color(stopLine, color.red)
+                line.set_style(stopLine, line.style_solid)
+            if not na(targetLine)
+                line.set_color(targetLine, color.teal)
+                line.set_style(targetLine, line.style_solid)
+if tradeClosedThisBar and showLevels
+    int lastTrade = strategy.closedtrades - 1
+    int actualExitBar = strategy.closedtrades.exit_bar_index(lastTrade)
+    // `exit_bar_index` is the bar where TP/SL fills. Extend to its right edge
+    // so that bar is visually included, then stop there.
+    if not na(openLine)
+        line.set_extend(openLine, extend.none)
+        line.set_x2(openLine, actualExitBar + 1)
+    if not na(entryLine)
+        line.set_extend(entryLine, extend.none)
+        line.set_x2(entryLine, actualExitBar + 1)
+    if not na(stopLine)
+        line.set_extend(stopLine, extend.none)
+        line.set_x2(stopLine, actualExitBar + 1)
+    if not na(targetLine)
+        line.set_extend(targetLine, extend.none)
+        line.set_x2(targetLine, actualExitBar + 1)
+    if not na(fvgBox)
+        box.set_extend(fvgBox, extend.none)
+        box.set_right(fvgBox, actualExitBar + 1)
+
+table.cell(marginWarningTable, 0, 0,
+     marginErrorDetected ? "Insufficient margin" : "",
+     text_color=color.white,
+     text_size=size.tiny,
+     bgcolor=marginErrorDetected ? color.new(color.red, 15) : color.new(color.black, 100))
+
+// Price guides are rendered exclusively with finite line.new objects above.
+// Keeping plots here would draw a second overlapping layer at every level.
+

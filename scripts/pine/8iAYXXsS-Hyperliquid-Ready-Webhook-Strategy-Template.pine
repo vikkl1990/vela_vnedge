@@ -1,0 +1,223 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  Hyperliquid-Ready Webhook Strategy Template [PopsPineDev]  ·  v1.1
+//  Pine Script® v6  ·  License: Mozilla Public License 2.0 (TradingView default)
+//
+//  WHAT THIS IS
+//  A clean EMA-cross + RSI-filter strategy whose real value is the ALERT
+//  PAYLOAD: a production-grade JSON webhook message with the fields most
+//  templates forget — an idempotency key, a fire-time timestamp for staleness
+//  checks, an auth token, a strategy ownership tag, and (new in v1.1) live
+//  modify_sl events from an ATR trailing stop, so your backend can amend the
+//  exchange-side stop as the trade moves.
+//
+//  The strategy logic is intentionally simple so you can replace it with
+//  your own. The webhook plumbing is the part you keep.
+//
+//  HOW TO USE
+//  1. Add to chart (crypto perps recommended: BTC/ETH/SOL, 15m–4H)
+//  2. Create alert → Condition: this strategy →
+//     "Order fills and alert() function calls"   ← v1.1 needs BOTH:
+//       · order fills carry entries/exits ({{strategy.order.alert_message}})
+//       · alert() calls carry modify_sl trail updates (they send their own
+//         text — the message box placeholder is ignored for those)
+//     In the alert message box put:  {{strategy.order.alert_message}}
+//  3. Point the alert's Webhook URL at your execution backend / bridge.
+//     Works with any TradingView→exchange webhook bridge.
+//
+//  WHY EACH PAYLOAD FIELD EXISTS  (the part nobody explains)
+//  • signal_id  → unique per event (strategy+action+intent+ticker+tf+bar).
+//                 Your backend should treat this as an IDEMPOTENCY KEY:
+//                 TradingView RETRIES webhooks on slow responses — if the
+//                 same signal_id arrives twice, execute once, drop the dup.
+//                 One Redis SET NX and you'll never double-fill an order.
+//  • ts         → fire-time timestamp ({{timenow}}). Reject ENTRIES older
+//                 than N seconds so a delayed/replayed webhook can't trade
+//                 a stale price. ⚠ BUT exempt exits — see LESSON below.
+//  • token      → replace with a long random token, then VERIFY server-side
+//                 (or better: HMAC the body). Anyone who finds your webhook
+//                 URL can POST to it — this field is your lock. Never
+//                 screenshot a chart with your real token visible.
+//  • strategy   → ownership tag. When several strategies share one account,
+//                 your backend can enforce "one strategy owns each coin"
+//                 and reject signals from a non-owner — no silent
+//                 clobbering, no cross-strategy exits, sizes can't stack.
+//  • side_intent→ "entry" | "exit" | "trail". Route on THIS (plus
+//                 reduce_only), not on action names — action strings vary
+//                 between templates; intent doesn't.
+//  • reduce_only→ true on exits and stop amendments, so a close can never
+//                 accidentally flip you into a new position if state
+//                 desyncs between your server and the exchange.
+//
+//  ⚠ THE STALE-EXIT LESSON (this bug cost me a manual recovery on my own
+//  testnet, documented so it doesn't cost you): TradingView composes
+//  strategy.exit alert messages when the order is PLACED, but stop fills
+//  happen INTRABAR later — so exit alerts can arrive with a ts that is
+//  hours old BY DESIGN. Your backend must exempt reduce_only / modify_sl
+//  events from strict freshness checks. A replayed exit is harmless by
+//  construction: reduce_only + idempotency already make it a no-op.
+//
+//  RENAME MAP (wiring to your own backend)
+//  Every backend names fields differently. The contract below is the one my
+//  own executor runs in production; if yours differs, rename in ONE place —
+//  the f_payload() builder:
+//    signal_id → your idempotency key      token    → your auth field
+//    qty       → size hint (% of equity — CLAMP SERVER-SIDE, never trust
+//                the client)               sl_price/tp_price → your stops
+//
+//  Built by PopsPineDev — I build custom TradingView→Hyperliquid execution
+//  pipelines (non-custodial agent wallets; my own capital runs on this
+//  exact contract). Links in signature.
+// ─────────────────────────────────────────────────────────────────────────────
+strategy("Hyperliquid-Ready Webhook Strategy Template [PopsPineDev]",
+     shorttitle = "HL Webhook Template",
+     overlay = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 5,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.045,          // ≈ Hyperliquid taker fee, adjust to your tier
+     slippage = 2,
+     process_orders_on_close = true,    // signals fire on confirmed bars only
+     calc_on_every_tick = false)
+
+// ── INPUTS ───────────────────────────────────────────────────────────────────
+grpStrat  = "Strategy"
+fastLen   = input.int(21,  "Fast EMA",            minval = 1,   group = grpStrat)
+slowLen   = input.int(55,  "Slow EMA",            minval = 2,   group = grpStrat)
+rsiLen    = input.int(14,  "RSI Length",          minval = 2,   group = grpStrat)
+rsiLongMin  = input.int(50, "RSI ≥ for Longs",    minval = 0, maxval = 100, group = grpStrat)
+rsiShortMax = input.int(50, "RSI ≤ for Shorts",   minval = 0, maxval = 100, group = grpStrat)
+allowLongs  = input.bool(true,  "Enable Longs",   group = grpStrat)
+allowShorts = input.bool(true,  "Enable Shorts",  group = grpStrat)
+
+grpRisk   = "Risk (ATR-based)"
+atrLen    = input.int(14,   "ATR Length",         minval = 1,   group = grpRisk)
+slMult    = input.float(1.5, "Stop-Loss  × ATR",  minval = 0.1, step = 0.1, group = grpRisk)
+tpMult    = input.float(3.0, "Take-Profit × ATR", minval = 0.1, step = 0.1, group = grpRisk)
+
+grpTrail  = "Trailing Stop (modify_sl events)"
+useTrail  = input.bool(true,  "ATR Trailing Stop (ratchet)", group = grpTrail,
+     tooltip = "Ratchets the stop toward price as the trade moves. Each improvement fires a modify_sl webhook so your backend can amend the exchange-side stop. Ratchet-only: the stop never loosens.")
+trailMult = input.float(2.0,  "Trail × ATR",                 minval = 0.1, step = 0.1, group = grpTrail)
+minImp    = input.float(0.25, "Min improvement to re-alert (× ATR)", minval = 0.0, step = 0.05, group = grpTrail,
+     tooltip = "Only fire modify_sl when the stop improves by at least this many ATRs. Respects your TradingView alert budget and your backend's rate limits.")
+
+grpHook   = "Webhook Payload"
+stratId   = input.string("hl_webhook_template", "Strategy ID (ownership tag)", group = grpHook,
+     tooltip = "Sent as the 'strategy' field. Multi-strategy backends use this to enforce one-strategy-owns-each-coin. Make it unique per script+market, e.g. my_breakout_btc_4h.")
+qtyPct    = input.float(5.0, "Position Size (% of equity)", minval = 0.1, maxval = 100, step = 0.5, group = grpHook)
+levX      = input.int(3,     "Leverage (sent to backend)",  minval = 1,  maxval = 50, group = grpHook,
+     tooltip = "Informational field for your backend. Cap leverage SERVER-SIDE too — never trust the client alone.")
+hookToken = input.string("REPLACE_WITH_LONG_RANDOM_TOKEN", "Webhook Token", group = grpHook,
+     tooltip = "Your backend must verify this (or HMAC the body). Never publish a chart screenshot showing your real token.")
+
+// ── LOGIC ────────────────────────────────────────────────────────────────────
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+rsiVal  = ta.rsi(close, rsiLen)
+atrVal  = ta.atr(atrLen)
+
+longSignal  = allowLongs  and ta.crossover(emaFast, emaSlow)  and rsiVal >= rsiLongMin
+shortSignal = allowShorts and ta.crossunder(emaFast, emaSlow) and rsiVal <= rsiShortMax
+
+// SL/TP levels captured at entry time
+longSL  = close - atrVal * slMult
+longTP  = close + atrVal * tpMult
+shortSL = close + atrVal * slMult
+shortTP = close - atrVal * tpMult
+
+// ── PAYLOAD BUILDER ──────────────────────────────────────────────────────────
+// One JSON shape for every event (entry / exit / modify_sl). {{timenow}} is
+// substituted by TradingView when the alert actually fires (not at bar
+// close) — that's what you want for staleness checks on entries.
+// signal_id embeds the action + intent so an exit fill and a trail update
+// on the same bar can never collide in your backend's dedup.
+f_payload(_action, _sideIntent, _sl, _tp, _reduceOnly) =>
+    _id = stratId + "-" + _action + "-" + _sideIntent + "-" + syminfo.ticker + "-" + timeframe.period + "-" + str.tostring(time)
+    '{'
+     + '"signal_id":"'  + _id                                  + '",'
+     + '"ts":"{{timenow}}",'
+     + '"token":"'      + hookToken                            + '",'
+     + '"strategy":"'   + stratId                              + '",'
+     + '"action":"'     + _action                              + '",'
+     + '"side_intent":"'+ _sideIntent                          + '",'
+     + '"symbol":"'     + syminfo.ticker                       + '",'
+     + '"exchange":"HYPERLIQUID",'
+     + '"qty":'         + str.tostring(qtyPct)                 + ','
+     + '"leverage":'    + str.tostring(levX)                   + ','
+     + '"price_ref":"{{close}}",'
+     + '"sl_price":'    + str.tostring(_sl,  format.mintick)   + ','
+     + '"tp_price":'    + str.tostring(_tp,  format.mintick)   + ','
+     + '"reduce_only":' + (_reduceOnly ? "true" : "false")
+     + '}'
+
+// ── ORDERS ───────────────────────────────────────────────────────────────────
+// Persistent per-trade state (one position at a time; reversal overwrites)
+var float slStored = na
+var float tpStored = na
+var float trailSL  = na
+
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+if longSignal
+    slStored := longSL
+    tpStored := longTP
+    trailSL  := longSL
+    strategy.entry("Long", strategy.long,
+         alert_message = f_payload("buy",  "entry", longSL,  longTP,  false))
+if shortSignal
+    slStored := shortSL
+    tpStored := shortTP
+    trailSL  := shortSL
+    strategy.entry("Short", strategy.short,
+         alert_message = f_payload("sell", "entry", shortSL, shortTP, false))
+
+// ATR trail ratchet — fires a modify_sl webhook via alert() when the stop
+// improves by at least minImp × ATR. Ratchet-only: never loosens.
+if useTrail and inLong and not longSignal and not shortSignal
+    float candL = close - atrVal * trailMult
+    if candL > trailSL + atrVal * minImp
+        trailSL := candL
+        alert(f_payload("modify_sl", "trail", trailSL, tpStored, true), alert.freq_once_per_bar_close)
+if useTrail and inShort and not longSignal and not shortSignal
+    float candS = close + atrVal * trailMult
+    if candS < trailSL - atrVal * minImp
+        trailSL := candS
+        alert(f_payload("modify_sl", "trail", trailSL, tpStored, true), alert.freq_once_per_bar_close)
+
+// Protective exit — the backtest stop ratchets with the trail so what you
+// backtest is what your backend executes.
+if (longSignal or inLong) and not shortSignal
+    float stopL = useTrail ? trailSL : slStored
+    strategy.exit("Long-X", from_entry = "Long",  stop = stopL, limit = tpStored,
+         alert_message = f_payload("sell", "exit", stopL, tpStored, true))
+if (shortSignal or inShort) and not longSignal
+    float stopS = useTrail ? trailSL : slStored
+    strategy.exit("Short-X", from_entry = "Short", stop = stopS, limit = tpStored,
+         alert_message = f_payload("buy",  "exit", stopS, tpStored, true))
+
+// ── VISUALS ──────────────────────────────────────────────────────────────────
+plot(emaFast, "Fast EMA", color = color.new(color.teal,   0), linewidth = 2)
+plot(emaSlow, "Slow EMA", color = color.new(color.orange, 0), linewidth = 2)
+plot(useTrail and (inLong or inShort) ? trailSL : na, "Trailing Stop",
+     color = color.new(color.red, 0), linewidth = 1, style = plot.style_linebr)
+plotshape(longSignal,  title = "Long",  style = shape.triangleup,   location = location.belowbar, color = color.teal,   size = size.small, text = "LONG")
+plotshape(shortSignal, title = "Short", style = shape.triangledown, location = location.abovebar, color = color.orange, size = size.small, text = "SHORT")
+
+// Payload preview table — verify your JSON before wiring real money.
+// The JSON is chunked across short rows so the table always fits the pane
+// (a single ~400-char cell renders wider than the chart and disappears).
+// barstate.isconfirmed (not islast): islast never fires for a strategy
+// running under a Strategy Tester deep-backtest date range, which silently
+// hides the table. isconfirmed draws on every bar close and works everywhere.
+var table t = table.new(position.bottom_right, 1, 10, border_width = 1)
+if barstate.isconfirmed
+    string pj = f_payload("buy", "entry", longSL, longTP, false)
+    int len = str.length(pj)
+    int rows = math.min((len + 59) / 60, 8)
+    table.clear(t, 0, 0, 0, 9)
+    table.cell(t, 0, 0, "Webhook payload preview (next long entry):", text_color = color.gray, text_size = size.normal, text_halign = text.align_left)
+    for i = 0 to rows - 1
+        table.cell(t, 0, i + 1, str.substring(pj, i * 60, math.min((i + 1) * 60, len)), text_color = color.silver, text_size = size.normal, text_halign = text.align_left)

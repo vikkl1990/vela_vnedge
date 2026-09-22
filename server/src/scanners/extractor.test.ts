@@ -118,3 +118,13 @@ test('non-string alertcondition titles do not crash extraction', () => {
   const ok = extractEvents([{ barIndex: 1, time: 20, type: 'alertcondition' as const, title: undefined as unknown as string, message: 'Bearish Breakout' }], []);
   assert.equal(ok[0]?.side, 'short');
 });
+
+test('strategy() fills reported by the worker become entries and exits', () => {
+  const ev = extractEvents([
+    { barIndex: 10, time: 10_000, type: 'alert', title: 'strategy', message: 'STRATEGY entry long @ 101.5' },
+    { barIndex: 14, time: 14_000, type: 'alert', title: 'strategy', message: 'STRATEGY exit long @ 104' },
+    { barIndex: 20, time: 20_000, type: 'alert', title: 'strategy', message: 'STRATEGY entry short @ 99' },
+  ] as any, []);
+  assert.deepEqual(ev.map(e => [e.kind, e.side, e.price]), [['entry', 'long', 101.5], ['exit', 'long', 104], ['entry', 'short', 99]]);
+  assert.equal(ev[1].exitType, 'close');
+});

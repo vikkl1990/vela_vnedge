@@ -1,0 +1,57 @@
+//@version=5
+strategy("EMA DMI MACD RSI Strategy", overlay=true)
+
+// EMAs
+ema5 = ta.ema(close, 5)
+ema13 = ta.ema(close, 13)
+ema26 = ta.ema(close, 26)
+ema200 = ta.ema(close, 200)
+
+// Plots
+plot(ema5, color=color.green)
+plot(ema13, color=color.orange)
+plot(ema26, color=color.red)
+plot(ema200, color=color.blue)
+
+// RSI
+rsiValue = ta.rsi(close, 14)
+
+// MACD
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+
+// DMI
+[plusDI, minusDI, adxValue] = ta.dmi(14, 14)
+
+// Volume
+volumeMA = ta.sma(volume, 20)
+highVolume = volume > volumeMA
+
+// Higher Timeframe EMA
+htfEMA = request.security(syminfo.tickerid, "60", ta.ema(close, 50))
+
+// ATR
+atrValue = ta.atr(14)
+
+// Buy Signal
+buySignal = ema5 > ema13 and ema13 > ema26 and close > ema200 and macdLine > signalLine and rsiValue > 55 and plusDI > minusDI and adxValue > 20 and highVolume and close > htfEMA
+
+// Sell Signal
+sellSignal = ema5 < ema13 and ema13 < ema26 and close < ema200 and macdLine < signalLine and rsiValue < 45 and minusDI > plusDI and adxValue > 20 and highVolume and close < htfEMA
+
+// Entries
+if buySignal
+    strategy.entry("BUY", strategy.long)
+
+if sellSignal
+    strategy.entry("SELL", strategy.short)
+
+// Exits
+strategy.exit("BUY EXIT", from_entry="BUY", stop=close - atrValue * 1.5, limit=close + atrValue * 3)
+
+strategy.exit("SELL EXIT", from_entry="SELL", stop=close + atrValue * 1.5, limit=close - atrValue * 3)
+
+// Buy Label
+plotshape(buySignal, style=shape.labelup, location=location.belowbar, color=color.green, text="BUY")
+
+// Sell Label
+plotshape(sellSignal, style=shape.labeldown, location=location.abovebar, color=color.red, text="SELL")

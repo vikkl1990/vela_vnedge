@@ -94,6 +94,25 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
       if (a.bar_index < fromIdx) continue;
       alerts.push({ barIndex: a.bar_index, time: a.time ?? timeAt(a.bar_index), type: a.type, title: a.title, message: String(a.message ?? '') });
     }
+    // strategy() scripts trade through strategy.entry / strategy.exit, not alerts. The runtime keeps
+    // their ledger; each fill becomes a machine-readable message at the bar it FILLED on (by default
+    // the bar after the signal), so a strategy can never be acted on before its order could exist.
+    const st = ctx.strategy;
+    if (st) {
+      const seen = new Set<string>();
+      const emit = (idx: number | undefined, verb: 'entry' | 'exit', side: string, price: number) => {
+        if (idx === undefined || idx === null || idx < fromIdx || !(price > 0)) return;
+        const k = `${idx}:${verb}:${side}`;
+        if (seen.has(k)) return;
+        seen.add(k);
+        alerts.push({ barIndex: idx, time: timeAt(idx), type: 'alert', title: 'strategy', message: `STRATEGY ${verb} ${side} @ ${price}` });
+      };
+      for (const t of [...(st.closedtrades ?? []), ...(st.opentrades ?? [])]) {
+        const side = t.size > 0 ? 'long' : 'short';
+        emit(t.entry_bar_index, 'entry', side, Number(t.entry_price));
+        if (t.status === 'closed' || t.exit_bar_index !== undefined) emit(t.exit_bar_index, 'exit', side, Number(t.exit_price));
+      }
+    }
 
     const shapes: WorkerShape[] = [];
     const plots: WorkerPlot[] = [];

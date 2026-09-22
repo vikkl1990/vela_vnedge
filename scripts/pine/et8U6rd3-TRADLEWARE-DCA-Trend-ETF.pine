@@ -1,0 +1,324 @@
+//@version=6
+// Author: cs_lev
+// Strategy: TRADLEWARE-DCA+Trend ETF
+// Hypothesis: contributions and accumulated wealth have different jobs. Monthly DCA
+//             never stops — a fixed dollar amount buys the most shares exactly when
+//             price is depressed (bear markets). The SMA regime filter manages only
+//             the accumulated stack: full exit when price closes below the SMA.
+//             Re-entry is a DIP LADDER: the lump budget (exitedValue * lumpPct)
+//             splits into tranches that buy at fixed %s below the running ATH
+//             during the bear (the ATH doesn't sink with the market, unlike the
+//             SMA); any tranche that never fires deploys at the SMA recovery.
+//             After a fake rally and re-crash the ladder re-arms and rebuys deeper.
+//             Ladder OFF = whole lump at recovery. "DCA During Bear Regime" OFF
+//             restores the original gated behavior (DCA pauses below the SMA).
+// Assumed regime: long-term equity uptrend with periodic bear market exits
+// Timeframe: 1D daily bars
+// Assets: US equity ETFs — validated on MGK, QQQ, VOO, IVW, IVE, RSP, SPYM, SPMO. Current
+//         published defaults are a specific MGK (2020-on) configuration — see "CURRENT
+//         PUBLISHED DEFAULTS" below. The broader 8-asset champion-config research (a
+//         different MGK setup: since 2010, DC on, $200 DCA, rungs 20/30/40) still applies
+//         to the OTHER 7 assets as their own starting point — for QQQ turn Death Cross OFF
+//         and set Hysteresis to 2%; for VOO turn Death Cross OFF too (a real trade-off
+//         there, not a clear win like QQQ) — see reference numbers below.
+// Known failure modes: lags fast crashes (signal at close, fill at next open).
+//                      Whipsaws on brief SMA dips — use death cross option to reduce.
+//                      Long bears (2000-02 style): bear-market DCA buys sit on paper
+//                      losses until the recovery — small but growing exposure below the SMA.
+//                      Dip ladder in a mega-bear: rungs deploy at -20/-30/-40% and the
+//                      market can keep falling — QQQ 2000-02 rode a -50% mark-to-market
+//                      drawdown (vs -26% without the ladder). The return edge is paid
+//                      for in worst-case pain; size the config to what you can hold.
+//                      yfinance (Python) uses adjusted prices; TV uses unadjusted —
+//                      expect small numeric divergence but same trade dates.
+//
+// CURRENT PUBLISHED DEFAULTS (validated 2026-08-15, MGK daily since 2020, capital $20,000,
+// DC off, Hysteresis 2%, $300/mo DCA, lump 95%, rungs 15/20/30):
+//   Python: +120.0% return, Sharpe 1.20, max DD -15.71% (mark-to-market), 88 trades, PF 51.45
+//   TradingView: +114.40% return, max DD 9.89%, 61/83 profitable, PF 34.80
+//   Gap in the expected direction on return (TV excludes dividends). Drawdown and trade
+//   count (88 vs 83) have a real, not-fully-reconciled gap — flagged, not resolved; would
+//   need a TV trade-list export to diff line by line. This is a specific chosen config, not
+//   a rigorous on/off sweep — the "DC off" here isn't a finding that contradicts the MGK
+//   champion-config result below (different date range, DCA amount, and rungs all changed
+//   at once), just what this particular published version uses.
+//
+// EARLIER CHAMPION-CONFIG RESEARCH (Python backtest 2026-07-17, MGK daily since 2010,
+// dividend-adjusted — kept for history, no longer what's shipped as defaults above):
+//   DEFAULTS (ladder 20/30/40, lump 95%, death cross, bear-DCA) → +553%, Sharpe 1.12, max DD -20%
+//   ladder OFF, lump 95%  → +401%, Sharpe 1.04, max DD -18% (≈ ties plain DCA return)
+//   ladder OFF, lump 35%  → +72.5%, Sharpe 0.87, max DD -7.9% (insurance mode, best Calmar)
+//   (benchmarks: DCA monthly +405%, Sharpe 0.88, max DD -33%; HODL +1132%, max DD -36%)
+//   Rung sets 15/25/35 … 25/35/45 all beat plain DCA (parameter plateau, not a lucky spot).
+//   QQQ note: use the config WITHOUT death cross, WITH Hysteresis 2%; ladder on QQQ
+//   returned +1472% vs DCA +1103% but with a -50% drawdown through dot-com.
+//   VOO note (Python backtest 2026-08-15, since 2012): death cross OFF is the validated
+//   reference (+256%, Sharpe 1.10, -18.7% mark-to-market DD) — ON is a real trade-off,
+//   not a clear win like MGK: a dedicated on/off test (no dip ladder, 2026-07-09) found
+//   ON gives smaller drawdown/better Calmar but OFF gives slightly higher return/Sharpe.
+//   Earlier notes calling DC "the strongest combo on MGK/VOO" overstated the VOO half —
+//   that was never actually verified against this number until 2026-08-15.
+
+// initial_capital doubles as a spending cap: TradingView's broker emulator blocks an
+// order it can't cover, so DCA/lump/rung entries stall once this pool (this number plus
+// whatever crash-exit sales have recycled back in) runs dry, resuming only after the
+// next sale refills it. Set to $20,000 to match the published-defaults validation above.
+//
+// Before running this LIVE or forward-testing (not backtesting), manually raise this
+// number so DCA never stalls for lack of book capital over however long you intend to
+// run it: initial_capital >= dcaAmount * 12 * years_you_plan_to_run, rounded up
+// generously for lump/rung headroom (e.g. $300/mo over 20 years ≈ $72,000 → use
+// $250,000+). This CANNOT be computed automatically from the dcaAmount/date-range
+// inputs below — Pine requires strategy() call parameters to be fixed constants at
+// declare-time, not values derived from other inputs — so it's a manual edit to this
+// literal number each time you change dcaAmount or the horizon you plan to run this for.
+strategy("TRADLEWARE-DCA+Trend ETF", overlay=true,
+     initial_capital=20000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.0,
+     slippage=1,
+     pyramiding=500,
+     calc_on_every_tick=false,
+     process_orders_on_close=false,
+     max_labels_count=500)
+
+// === Inputs ===
+// Date range — integer year/month/day fields instead of input.time(), which does
+// not reliably trigger a recalculation in TradingView.
+startYear  = input.int(2020, "Start year",  minval=2000, maxval=2099, group="Date Range")
+startMonth = input.int(1,    "Start month", minval=1,    maxval=12,   group="Date Range")
+startDay   = input.int(1,    "Start day",   minval=1,    maxval=31,   group="Date Range")
+endYear    = input.int(2099, "End year",    minval=2000, maxval=2099, group="Date Range")
+endMonth   = input.int(12,   "End month",   minval=1,    maxval=12,   group="Date Range")
+endDay     = input.int(31,   "End day",     minval=1,    maxval=31,   group="Date Range")
+startDate  = timestamp(startYear, startMonth, startDay, 0, 0)
+endDate    = timestamp(endYear, endMonth, endDay, 23, 59)
+
+smaLen        = input.int(200, "SMA Period", minval=20, maxval=500, group="Strategy",
+     tooltip="Regime filter: exit when daily close drops below this SMA. 200 (≈10 months) is the validated optimum for MGK. Longer = fewer whipsaws, slower exit.")
+hysteresisPct = input.float(0.02, "SMA Hysteresis Band (%)", minval=0.0, maxval=0.10, step=0.01, group="Strategy",
+     tooltip="Dead zone around the SMA to filter marginal crossings: the regime only flips bullish above SMA*(1+x) and bearish below SMA*(1-x), holding its previous state in between. Most crash-exit round trips are small 'insurance premiums' that re-buy flat-or-dearer, not real bear-market protection — this filters out that class of whipsaw. Validated on 5 assets: a broad 2-3% plateau beats 0% on every one. 0 disables (original behavior).")
+dcaAmount     = input.float(300.0, "Monthly DCA ($)", minval=1.0, group="Strategy",
+     tooltip="Fixed dollar amount invested at the first bar of each calendar month. With 'DCA During Bear Regime' on (default) it buys every month regardless of regime; otherwise only while close > SMA.")
+useWholeShareDca = input.bool(false, "Whole-Share DCA (bank remainder)", group="Strategy",
+     tooltip="TradingView's strategy tester (and a live webhook feed) only fills whole-share quantities for stocks/ETFs — a fractional qty rounds down to 0 shares and no order fires at all, which is why a $100 DCA can silently disappear once price is above $100. ON: unspent DCA dollars are banked and carried to next month; once enough has accumulated for at least 1 whole share, a whole-share order fires and any leftover keeps banking. OFF (default): qty = dcaAmount / close exactly — fine for Python-style research, but won't reliably fire once the share price exceeds the monthly amount.")
+lumpPct       = input.float(0.95, "Lump Re-entry (%)", minval=0.0, maxval=1.0, step=0.01, group="Strategy",
+     tooltip="Fraction of the position value at the crash exit redeployed as a lump sum on the first recovery bar. Sized on what was actually in the market — uninvested DCA cash stays in the pool for future monthly buys. 0 = skip lump, resume DCA only. 35% = best Calmar (max insurance); 95% = max-return plateau (95-100% are economically identical; 95% avoids TV's fill artifact at 100%). Higher lump = more return AND more drawdown.")
+useDeathCross = input.bool(false, "Death Cross Confirmation", group="Strategy",
+     tooltip="Require SMA50 > SMA200 for the safe regime. Filters dead-cat bounces, so with bear-market DCA on, the bear stack rides the full recovery instead of being churned at failed rallies. Default is OFF here to match the currently published MGK config (2020-on, see reference numbers above) — this is a specific chosen setup, not a reversal of the earlier finding that DC ON was a clear win in the 2010-on MGK champion-config sweep (different date range, DCA amount, and rungs all changed alongside this one). On VOO it's a genuine trade-off either way: ON gives a smaller drawdown and better Calmar, OFF gives slightly higher return and Sharpe. AVOID on QQQ: through 2000-02 it holds bear buys down an -80% grind and roughly doubles max drawdown — use Hysteresis 2% instead there.")
+dcaAlways     = input.bool(true, "DCA During Bear Regime", group="Strategy",
+     tooltip="ON: monthly contributions never stop — DCA keeps buying through bear markets at depressed prices, while the crash exit still dumps the accumulated stack on the regime flip. OFF: original behavior — DCA pauses below the SMA and those months' contributions stay in cash.")
+
+useDipLadder  = input.bool(true, "Dip-Ladder Re-entry", group="Dip Ladder",
+     tooltip="ON: after a crash exit, the lump budget splits equally across the rungs below and buys INTO the bear as price falls the given %s below the running all-time high; any rung that never fires deploys at the SMA recovery. After a fake rally + re-crash the ladder re-arms and rebuys deeper. OFF: whole lump waits for the SMA recovery (original behavior). WARNING: in a 2000-02-style mega-bear the ladder rides large paper losses (QQQ: -50% vs -26% without).")
+rung1Pct      = input.float(0.15, "Rung 1 (% below ATH)", minval=0.0, maxval=0.9, step=0.05, group="Dip Ladder",
+     tooltip="First tranche buys when close drops this fraction below the running high. This only sets WHEN it fires, not how much: the dollar amount is an equal share of the total lump budget (exitedValue x Lump Re-entry %), split evenly across however many rungs are active — rung1 is not sized any differently than rung2/3 just because it's shallower. 0 disables this rung.")
+rung2Pct      = input.float(0.20, "Rung 2 (% below ATH)", minval=0.0, maxval=0.9, step=0.05, group="Dip Ladder",
+     tooltip="Second tranche trigger. Same equal-share sizing as Rung 1 — see its tooltip. 0 disables this rung.")
+rung3Pct      = input.float(0.30, "Rung 3 (% below ATH)", minval=0.0, maxval=0.9, step=0.05, group="Dip Ladder",
+     tooltip="Third tranche trigger. Same equal-share sizing as Rung 1 — see its tooltip. 0 disables this rung.")
+
+labelOffsetMult = input.float(1.5, "Label offset (ATR multiples)", minval=0, step=0.5, group="Labels",
+     tooltip="Vertical distance of buy/sell trade labels from the bar, in multiples of ATR(14). Higher = more clearance from price action.")
+
+// Appends a tag to a pending trade-label string, joining multiple same-bar events
+// (e.g. a rung and the monthly DCA both firing) into one combined label instead of
+// silently dropping all but the last.
+appendTag(existing, tag) =>
+    existing == "" ? tag : existing + " + " + tag
+
+// Maps an entry ID from Pine's own trade ledger to its display tag. Reading this
+// straight from strategy.opentrades (ground truth: a fill actually happened) instead
+// of tagging at the signal bar — a signal can be attempted and then silently
+// rejected if the account can't cover it (see the initial_capital note above), and
+// tagging at the signal site showed "DCA" for every rejected attempt too.
+tagForId(id) =>
+    id == "dca" ? "DCA" : id == "lump" ? "LUMP" : id == "rung1" ? "RUNG 1" : id == "rung2" ? "RUNG 2" : id == "rung3" ? "RUNG 3" : str.upper(id)
+
+// === Indicators ===
+sma200 = ta.sma(close, smaLen)
+sma50  = ta.sma(close, 50)
+
+// Base regime: close above SMA200, with an optional hysteresis dead zone.
+// The dead zone needs to remember the previous bar's state — it can only flip
+// bullish above SMA*(1+x) or bearish below SMA*(1-x); price sitting between
+// those two lines just holds whatever state it was already in. This filters
+// exactly the marginal SMA crossings that produce most crash-exit whipsaws.
+var bool baseRegime = false
+if hysteresisPct > 0
+    if close > sma200 * (1 + hysteresisPct)
+        baseRegime := true
+    else if close < sma200 * (1 - hysteresisPct)
+        baseRegime := false
+    // else: between the bands — hold the previous state
+else
+    baseRegime := close > sma200
+
+// Safe regime: base regime (and optionally SMA50 also above SMA200)
+safeRegime = baseRegime
+if useDeathCross
+    safeRegime := safeRegime and (sma50 > sma200)
+
+// First bar of each calendar month
+isNewMonth = month != month[1]
+
+// === Crash cycle state ===
+var bool  wasCrash    = false  // set on crash exit; cleared only when lump fires
+var bool  lumpFired   = false  // prevents lump from firing more than once per crash
+var float exitedValue = 0.0    // mark-to-market value of the position at the crash exit bar
+
+// === Dip-ladder state ===
+var bool  rung1Fired    = false
+var bool  rung2Fired    = false
+var bool  rung3Fired    = false
+var float rungCommitted = 0.0   // budget already deployed by fired rungs this bear
+var float runHigh       = na    // running ATH of close, anchored at the window start
+
+// === Whole-share DCA state ===
+var float dcaBankedCash = 0.0   // unspent DCA $ carried forward until it covers 1 whole share
+
+// === Trade-label state ===
+var string pendingCloseReason = ""  // "CRASH EXIT" or "PERIOD END"; consumed on fill
+
+// === Time gate ===
+// Exclude the last confirmed bar so DCA and period-end close_all never fire together.
+inWindow = time >= startDate and time <= endDate and not barstate.islastconfirmedhistory
+
+// Running high — the dip ladder's anchor. Unlike the SMA it does NOT sink
+// during a bear, so "X% below ATH" stays a fixed price level all the way down.
+if inWindow
+    runHigh := na(runHigh) ? close : math.max(runHigh, close)
+
+// === Orders ===
+
+// 1. Crash exit — fires once, on the bar the regime FLIPS bearish (event, not state).
+//    It must be an event: with bear-market DCA running, a state check
+//    (position > 0 while below the SMA) would liquidate every bear buy one bar later.
+//    exitedValue records the position value at this bar's close; fill at next open.
+crashEvent = not safeRegime and safeRegime[1]
+if inWindow and strategy.position_size > 0 and crashEvent
+    exitedValue := strategy.position_size * close
+    strategy.close_all(comment="crash")
+    pendingCloseReason := "CRASH EXIT"
+    wasCrash  := true
+    lumpFired := false
+    // Re-arm the dip ladder for this bear episode
+    rung1Fired    := false
+    rung2Fired    := false
+    rung3Fired    := false
+    rungCommitted := 0.0
+
+// 1b. Dip-ladder tranches — during the bear (after a crash exit), buy equal
+//     slices of the lump budget as price falls fixed %s below the running ATH.
+//     Skipped on the crash-event bar itself (the exit takes precedence there;
+//     a gap-crash rung fires the next bar instead). Fill at next bar's open.
+activeRungs = (rung1Pct > 0 ? 1 : 0) + (rung2Pct > 0 ? 1 : 0) + (rung3Pct > 0 ? 1 : 0)
+if inWindow and useDipLadder and wasCrash and not lumpFired and not safeRegime and not crashEvent and activeRungs > 0
+    perRung = exitedValue * lumpPct / activeRungs
+    if rung1Pct > 0 and not rung1Fired and close <= runHigh * (1.0 - rung1Pct)
+        strategy.entry("rung1", strategy.long, qty=perRung / close, comment="rung1")
+        rung1Fired    := true
+        rungCommitted += perRung
+    if rung2Pct > 0 and not rung2Fired and close <= runHigh * (1.0 - rung2Pct)
+        strategy.entry("rung2", strategy.long, qty=perRung / close, comment="rung2")
+        rung2Fired    := true
+        rungCommitted += perRung
+    if rung3Pct > 0 and not rung3Fired and close <= runHigh * (1.0 - rung3Pct)
+        strategy.entry("rung3", strategy.long, qty=perRung / close, comment="rung3")
+        rung3Fired    := true
+        rungCommitted += perRung
+
+// 2. Lump sum re-entry — one shot on the first recovery bar. Sized on exitedValue
+//    (what was in the market at the crash), NOT total equity, so the uninvested DCA
+//    cash buffer stays intact. With bear-market DCA on, the lump lands ON TOP of the
+//    shares the bear-market buys have already rebuilt — so no position==0 check here
+//    (a bear stack at recovery would block the lump forever). Ordering is still safe:
+//    wasCrash is set on a bearish bar, this block needs a bullish bar, so the crash
+//    close_all has already filled by the time the lump can fire.
+//    Skipped when lumpPct = 0 (resume DCA only).
+if inWindow and wasCrash and not lumpFired and safeRegime
+    // Rungs that already fired come out of the recovery budget
+    lumpBudget = math.max(exitedValue * lumpPct - rungCommitted, 0.0)
+    if lumpBudget > 0
+        strategy.entry("lump", strategy.long, qty=lumpBudget / close, comment="lump")
+    lumpFired := true
+
+// 3. Monthly DCA — first bar of each calendar month. With "DCA During Bear Regime"
+//    on, contributions keep buying below the SMA (fixed dollars buy more shares when
+//    price is low); otherwise only while the regime is safe.
+if inWindow and isNewMonth and (dcaAlways or safeRegime)
+    if useWholeShareDca
+        dcaAvailable = dcaBankedCash + dcaAmount
+        dcaShares    = math.floor(dcaAvailable / close)
+        if dcaShares >= 1
+            strategy.entry("dca", strategy.long, qty=dcaShares, comment="dca")
+            dcaBankedCash := dcaAvailable - dcaShares * close
+        else
+            dcaBankedCash := dcaAvailable
+    else
+        strategy.entry("dca", strategy.long, qty=dcaAmount / close, comment="dca")
+
+// 4. Period-end flat — closes the accumulation for the strategy report
+if barstate.islastconfirmedhistory or time > endDate
+    strategy.close_all(comment="end")
+    pendingCloseReason := "PERIOD END"
+
+// === Trade labels ===
+// Drawn when orders actually fill (next bar's open, matching process_orders_on_close=false),
+// not on the signal bar. Unlike the single-position crypto scripts, several distinct entry
+// types (DCA/lump/rung1-3) can fire, and a crash exit can close many simultaneously-open
+// lots at once — so buy/close detection uses monotonic counters instead of a plain
+// position-size 0-to-1 flip, and the close label blends P&L across every lot closed that bar.
+labelOffset = labelOffsetMult * ta.atr(14)
+
+totalEverOpened = strategy.closedtrades + strategy.opentrades  // only ever grows on a new fill
+nOpenedThisBar  = totalEverOpened - totalEverOpened[1]
+nClosedThisBar  = strategy.closedtrades - strategy.closedtrades[1]
+
+// Pine has no direct "cash" variable — equity is cash plus the mark-to-market value of
+// whatever's still open, so back cash out of that: equity minus open position value.
+cashOnHand = strategy.equity - strategy.position_size * close
+cashStr    = "$" + str.tostring(cashOnHand, "#,###")
+
+if nOpenedThisBar > 0
+    // Read the entry IDs straight from the ledger of trades that are actually open,
+    // rather than tagging at the signal bar — a signal can be attempted and then
+    // silently rejected if the account can't cover it, and tagging at the signal
+    // site would show a tag for every rejected attempt, not just what really filled.
+    buyTags = ""
+    for i = strategy.opentrades - nOpenedThisBar to strategy.opentrades - 1
+        buyTags := appendTag(buyTags, tagForId(strategy.opentrades.entry_id(i)))
+    label.new(bar_index, low - labelOffset,
+              buyTags + " @ " + str.tostring(open, format.mintick) + "\nCash left: " + cashStr,
+              color=color.new(color.green, 20), textcolor=color.white,
+              style=label.style_label_up, size=size.small)
+
+if nClosedThisBar > 0
+    totalCost     = 0.0
+    totalProceeds = 0.0
+    for i = strategy.closedtrades - nClosedThisBar to strategy.closedtrades - 1
+        sz = strategy.closedtrades.size(i)
+        totalCost     += strategy.closedtrades.entry_price(i) * sz
+        totalProceeds += strategy.closedtrades.exit_price(i) * sz
+    pnlPct = totalCost > 0 ? (totalProceeds - totalCost) / totalCost * 100 : na
+    pnlStr = na(pnlPct) ? "n/a" : (pnlPct >= 0 ? "+" : "") + str.tostring(math.round(pnlPct, 2)) + "%"
+    label.new(bar_index, high + labelOffset,
+              pendingCloseReason + " @ " + str.tostring(strategy.closedtrades.exit_price(strategy.closedtrades - 1), format.mintick) + "\nP&L: " + pnlStr + "\nCash left: " + cashStr,
+              color=color.new(color.red, 20), textcolor=color.white,
+              style=label.style_label_down, size=size.small)
+    pendingCloseReason := ""
+
+// === Plotting ===
+plot(sma200, "SMA200", color=color.orange, linewidth=2)
+plot(useDeathCross ? sma50 : na, "SMA50", color=color.new(color.blue, 30))
+// Dip-ladder levels — visible while the ladder is armed (bear, after crash exit)
+ladderArmed = useDipLadder and wasCrash and not lumpFired and not safeRegime
+plot(useDipLadder ? runHigh : na, "Running ATH", color=color.new(color.gray, 50), style=plot.style_linebr)
+plot(ladderArmed and rung1Pct > 0 and not rung1Fired ? runHigh * (1.0 - rung1Pct) : na,
+     "Rung 1 level", color=color.new(color.teal, 20), style=plot.style_linebr)
+plot(ladderArmed and rung2Pct > 0 and not rung2Fired ? runHigh * (1.0 - rung2Pct) : na,
+     "Rung 2 level", color=color.new(color.teal, 40), style=plot.style_linebr)
+plot(ladderArmed and rung3Pct > 0 and not rung3Fired ? runHigh * (1.0 - rung3Pct) : na,
+     "Rung 3 level", color=color.new(color.teal, 60), style=plot.style_linebr)
+bgcolor(inWindow ? (safeRegime ? color.new(color.green, 93) : color.new(color.red, 93)) : na,
+     title="Regime")

@@ -80,6 +80,15 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
     }
   }
 
+  // ----- strategy() orders, as the worker reports them from the runtime's trade ledger -----
+  const st = msg.match(new RegExp(String.raw`^STRATEGY (entry|exit) (long|short) @ ${NUM}`));
+  if (st) {
+    const side = st[2] as Side; const price = Number(st[3]);
+    return st[1] === 'entry'
+      ? { ...base, kind: 'entry', side, price, label: `${side.toUpperCase()} (strategy)` }
+      : { ...base, kind: 'exit', side, exitType: 'close', price, label: `EXIT ${side.toUpperCase()} (strategy)` };
+  }
+
   // ----- Self-Aware Trend System (SATS) machine format -----
   if (/^SATS\b/.test(msg)) {
     const parts = msg.split('|').map(s => s.trim());

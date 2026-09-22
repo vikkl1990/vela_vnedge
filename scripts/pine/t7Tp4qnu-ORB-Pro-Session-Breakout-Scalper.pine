@@ -1,0 +1,281 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blitz_locked
+
+//@version=6
+strategy("ORB Breakout - Scalping Strategy", overlay=true,
+          fill_orders_on_standard_ohlc = true,
+          max_lines_count = 500,
+          max_boxes_count = 500,
+          max_labels_count = 500,
+          commission_type = strategy.commission.percent,
+          commission_value = 0.05,
+          slippage = 2)
+//Inputs
+openingRangeGrp = "Opening Range"
+orMins = input.int(15, "Opening Range Length (Mins)", group = openingRangeGrp)
+startHour   = input.int(9,  "Session Start Hour (24h)", minval=0, maxval=23, group = openingRangeGrp)
+startMinute = input.int(30, "Session Start Minute", minval=0, maxval=59, group = openingRangeGrp)
+endHour     = input.int(16, "Session End Hour (24h)", minval=0, maxval=23, group = openingRangeGrp)
+endMinute   = input.int(0,  "Session End Minute", minval=0, maxval=59, group = openingRangeGrp)
+sessionTZ   = input.string("America/New_York", "Session Timezone", group = openingRangeGrp)
+
+filterGrp = "Filters"
+useRangeSize = input.bool(true, "Require range size filter", group = filterGrp)
+useVWAP = input.bool(true, "Require VWAP filter", group = filterGrp)
+useVolume = input.bool(true, "Require volume confirm", group = filterGrp)
+volMult = input.float(1.5, "Volume must exceed X * avg vol", minval=0.1, group = filterGrp)
+volLookback = input.int(20, "Volume average lookback", minval=1, group = filterGrp)
+useFalseBO = input.bool(true, "Require close beyond range", group = filterGrp)
+confirmBars = input.int(1, "Bars close must hold beyond range", minval=1, group = filterGrp)
+minRangeATRMult = input.float(0.25, "Min OR size (x ATR) to allow trading", minval=0, group = filterGrp)
+maxRangeATRMult = input.float(3.0, "MAX OR size (x ATR) to allow trading", minval=0.1, group = filterGrp)
+atrLen = input.int(14, "ATR length for filters", minval=1, group = filterGrp)
+
+riskGrp = "Risk Management"
+stopMode = input.string("Range", "Stop loss method", options = ["Range","ATR"], group = riskGrp)
+atrStopMult = input.float(1.0, "ATR stop multiplier", minval=0.1, group = riskGrp)
+targetRR = input.float(1.5, "Take profit (R multiple)", minval=0.1, group = riskGrp)
+partialAtr = input.float(1.0, "Take partial profit at R multiple", minval=0.1, group = riskGrp)
+partialPct = input.int(50, "Partial exit size (%)", minval=1, maxval=99, group = riskGrp)
+moveToBreakeven = input.bool(true, "Move stop to breakeven after partial", group = riskGrp)
+maxTradesPerDay = input.int(2, "Max trades per day", minval=1, group = riskGrp)
+
+sizingGrp = "Position Sizing"
+useRiskSizing   = input.bool(true, "Size position by % risk (unchecked = % of equity)", group = sizingGrp)
+riskPctPerTrade = input.float(1.0, "Risk per trade (% of equity, stop-based)", minval=0.1, maxval=10, step=0.1, group = sizingGrp)
+maxPositionPct  = input.float(25.0, "Max position size (% of equity, caps leverage)", minval=1, maxval=100, group = sizingGrp)
+flatEquityPct   = input.float(10.0, "Flat position size (% of equity, used if risk sizing off)", minval=1, maxval=100, step=1, group = sizingGrp)
+
+visualGrp = "Visuals"
+showORBox    = input.bool(true,  "Show opening range box",       group = visualGrp)
+showSessSep  = input.bool(true,  "Show session separators",      group = visualGrp)
+showVWAP     = input.bool(true,  "Show session VWAP",            group = visualGrp)
+showFailedBO = input.bool(true,  "Show failed breakout markers", group = visualGrp)
+showORLabel  = input.bool(true,  "Show OR size label",           group = visualGrp)
+useGradientBox = input.bool(true, "Gradient box by OR/ATR size", group = visualGrp)
+
+orBoxBorderColor = input.color(color.new(color.gray, 40),   "OR Box Border", group = visualGrp)
+rangeHighColor   = input.color(color.new(color.green, 0),   "Range High Line", group = visualGrp)
+rangeLowColor    = input.color(color.new(color.red, 0),     "Range Low Line",  group = visualGrp)
+vwapColor        = input.color(color.new(color.purple, 0),  "VWAP Line",       group = visualGrp)
+sepColor         = input.color(color.new(color.gray, 60),   "Session Separator", group = visualGrp)
+failedBOColor    = input.color(color.new(color.red, 0),     "Failed Breakout Marker", group = visualGrp)
+
+// ============================================================================
+// TIMEFRAME GUARD — the opening-range logic requires multiple bars within
+// the OR window to function. On Daily/Weekly/Monthly charts, a single bar
+// covers the whole session, so rangeLocked can never flip and the strategy
+// silently does nothing. Fail loudly instead.
+// ============================================================================
+if not timeframe.isintraday
+    runtime.error("This ORB strategy requires an intraday chart timeframe (e.g. 1–15 min). It cannot function on Daily/Weekly/Monthly bars.")
+
+
+// ============================================================================
+// SESSION LOGIC — timestamp-based, works identically for stocks, futures,
+// and 24/7 assets like crypto.
+// ============================================================================
+
+todayStart = timestamp(sessionTZ, year(time, sessionTZ), month(time, sessionTZ), dayofmonth(time, sessionTZ), startHour, startMinute)
+todayEnd   = timestamp(sessionTZ, year(time, sessionTZ), month(time, sessionTZ), dayofmonth(time, sessionTZ), endHour, endMinute)
+
+// Session crosses midnight (e.g. 18:00 start, 02:00 end) — push the end
+// timestamp to the next calendar day so inSession spans correctly instead
+// of always evaluating false.
+crossesMidnight = (endHour < startHour) or (endHour == startHour and endMinute <= startMinute)
+todayEnd := crossesMidnight ? todayEnd + 24 * 60 * 60 * 1000 : todayEnd
+
+orEndTime  = todayStart + orMins * 60 * 1000
+inSession  = time >= todayStart and time < todayEnd
+inORWindow = inSession and time < orEndTime
+
+newDay     = dayofmonth(time, sessionTZ) != dayofmonth(time[1], sessionTZ)
+newSession = inORWindow and (not inORWindow[1] or newDay)
+
+//Opening range calculations
+var float rangeHigh = na
+var float rangeLow = na
+var bool rangeLocked = false
+var int tradesToday = 0
+var box orBox = na
+
+if newSession
+    rangeHigh:=high
+    rangeLow:=low
+    rangeLocked:=false
+    tradesToday:=0
+
+if inORWindow and not rangeLocked
+    rangeHigh := math.max(rangeHigh,high)
+    rangeLow := math.min(rangeLow,low)
+
+//Lock range if in session, after OR window
+if inSession and not inORWindow and not rangeLocked and not na(rangeHigh)
+    rangeLocked:=true
+
+rangeSize = rangeHigh-rangeLow
+
+// ============================================================================
+// SUPPORTING INDICATORS
+// ============================================================================
+
+// Manual, session-anchored VWAP — built entirely off our own `newSession`
+// flag rather than ta.vwap()'s internal reset behavior, which is anchored
+// to Pine's own notion of "new day" for the symbol and can misalign badly
+// on 24/7 assets like crypto.
+var float cumPV = na
+var float cumVol = na
+
+if newSession
+    cumPV := 0.0
+    cumVol := 0.0
+
+if inSession
+    cumPV += (high + low + close) / 3 * volume
+    cumVol += volume
+
+sessionVwap = cumVol > 0 ? cumPV / cumVol : na
+
+atrVal = ta.atr(atrLen)
+avgVol = ta.sma(volume,volLookback)
+
+//Filters
+rangeSizeOK = not useRangeSize or (rangeLocked and not na(atrVal) and rangeSize >= atrVal*minRangeATRMult and rangeSize<=atrVal*maxRangeATRMult)
+
+volumeOK = not useVolume or (volume>=avgVol*volMult)
+
+vwapOKLong = not useVWAP or (not na(sessionVwap) and close>sessionVwap)
+vwapOKShort = not useVWAP or (not na(sessionVwap) and close<sessionVwap)
+
+barsAboveRange = ta.barssince(close<=rangeHigh)
+barsBelowRange = ta.barssince(close>=rangeLow)
+confirmedLong = not useFalseBO or (barsAboveRange>=confirmBars)
+confirmedShort = not useFalseBO or (barsBelowRange>=confirmBars)
+
+tradesLeft = tradesToday < maxTradesPerDay
+
+//Entry
+longCondition = rangeLocked and rangeSizeOK and volumeOK and vwapOKLong and confirmedLong and inSession and tradesLeft and close>rangeHigh
+shortCondition = rangeLocked and rangeSizeOK and volumeOK and vwapOKShort and confirmedShort and inSession and tradesLeft and close<rangeLow
+
+doLong = longCondition and tradesLeft
+doShort = shortCondition and not tradesLeft
+
+//Target calculations
+longStop = stopMode == "Range" ? rangeLow: close - atrVal * atrStopMult
+shortStop = stopMode == "Range" ? rangeHigh: close + atrVal * atrStopMult
+
+longRisk = close - longStop
+shortRisk = shortStop - close
+
+longTarget = close + longRisk * targetRR
+shortTarget = close - shortRisk * targetRR
+
+longPartialPrice = close + longRisk * partialAtr
+shortPartialPrice = close - shortRisk * partialAtr
+
+// ============================================================================
+// POSITION SIZING
+// ============================================================================
+riskAmount = strategy.equity * (riskPctPerTrade / 100)
+maxPositionValue = strategy.equity * (maxPositionPct / 100)
+flatPositionValue = strategy.equity * (flatEquityPct / 100)
+
+longQtyByRisk  = (not na(longRisk)  and longRisk  > 0) ? riskAmount / longRisk  : na
+shortQtyByRisk = (not na(shortRisk) and shortRisk > 0) ? riskAmount / shortRisk : na
+
+longQtyCap  = (not na(close) and close > 0) ? maxPositionValue / close : na
+shortQtyCap = (not na(close) and close > 0) ? maxPositionValue / close : na
+
+longQtyFlat  = (not na(close) and close > 0) ? flatPositionValue / close : na
+shortQtyFlat = (not na(close) and close > 0) ? flatPositionValue / close : na
+
+longQtyRaw  = useRiskSizing ? math.min(longQtyByRisk, longQtyCap)   : longQtyFlat
+shortQtyRaw = useRiskSizing ? math.min(shortQtyByRisk, shortQtyCap) : shortQtyFlat
+
+longQty  = na(longQtyRaw)  or longQtyRaw  <= 0 ? 0 : math.floor(longQtyRaw)
+shortQty = na(shortQtyRaw) or shortQtyRaw <= 0 ? 0 : math.floor(shortQtyRaw)
+
+//Execution orders
+if doLong and longQty > 0
+    strategy.entry("Long", strategy.long, qty=longQty)
+    
+    tradesToday+=1
+
+if doShort and shortQty > 0
+    strategy.entry("Short",strategy.short, qty=shortQty)
+    
+    tradesToday+=1
+
+//Partial exit and breakeven (long)
+var float longEntryPrice = na
+var bool longPartialDone = false
+
+if strategy.position_size>0 and strategy.position_size[1]<=0
+    longEntryPrice:=close
+    longPartialDone:=false
+
+if strategy.position_size>0 and not longPartialDone and high>= longPartialPrice
+    strategy.close("Long",qty_percent = partialPct)
+    longPartialDone:=true
+
+longActiveStop = (moveToBreakeven and longPartialDone) ? longEntryPrice : longStop
+if strategy.position_size > 0
+    strategy.exit("Long exit", "Long", stop = longActiveStop, limit = longTarget)
+
+//Partial exit and breakeven (short)
+var float shortEntryPrice = na
+var bool  shortPartialDone = false
+if strategy.position_size < 0 and strategy.position_size[1] >= 0
+    shortEntryPrice := close
+    shortPartialDone := false
+
+if strategy.position_size < 0 and not shortPartialDone and low <= shortPartialPrice
+    strategy.close("Short", qty_percent=partialPct)
+    shortPartialDone := true
+
+shortActiveStop = (moveToBreakeven and shortPartialDone) ? shortEntryPrice : shortStop
+if strategy.position_size < 0
+    strategy.exit("Short exit", from_entry="Short", stop=shortActiveStop, limit=shortTarget)
+
+// Flat close at end of session (avoid holding scalps overnight)
+if not inSession and inSession[1]
+    strategy.close_all(comment="Session End")
+
+// ============================================================================
+// VISUALS (refined)
+// ============================================================================
+if newSession
+    orBox := box.new(bar_index, na, bar_index, na, border_color = orBoxBorderColor,
+                      bgcolor = color.new(color.blue, 85), extend = extend.none)
+
+if inORWindow and not na(orBox)
+    sizeRatio = na(atrVal) or atrVal == 0 ? 0 : math.min(rangeSize / (atrVal * 2), 1)
+    gradColor = useGradientBox ? color.from_gradient(sizeRatio, 0, 1, color.new(color.teal, 85), color.new(color.orange, 60)) : color.new(color.blue, 85)
+    box.set_top(orBox, rangeHigh)
+    box.set_bottom(orBox, rangeLow)
+    box.set_right(orBox, bar_index)
+    box.set_bgcolor(orBox, gradColor)
+
+if showORLabel and rangeLocked and not rangeLocked[1] and not na(atrVal) and atrVal > 0
+    label.new(bar_index, rangeHigh, str.tostring(rangeSize / atrVal, "#.##") + "x ATR",
+               style = label.style_label_down, color = color.new(color.black, 70),
+               textcolor = color.white, size = size.tiny)
+
+
+plot(rangeLocked ? rangeHigh : na, title = "OR High", color = rangeHighColor, style = plot.style_linebr, linewidth = 2)
+plot(rangeLocked ? rangeLow  : na, title = "OR Low",  color = rangeLowColor,  style = plot.style_linebr, linewidth = 2)
+
+plot(showVWAP and inSession ? sessionVwap : na, title = "Session VWAP", color = vwapColor, linewidth = 1)
+
+if showSessSep and newSession and not na(atrVal)
+    line.new(bar_index, low - atrVal, bar_index, high + atrVal, color = sepColor,
+              style = line.style_dotted, extend = extend.both)
+
+failedLong  = showFailedBO and rangeLocked and close[1] > rangeHigh and close < rangeHigh
+failedShort = showFailedBO and rangeLocked and close[1] < rangeLow  and close > rangeLow
+plotshape(failedLong,  title = "Failed Long Breakout",  style = shape.xcross,
+           location = location.abovebar, color = failedBOColor, size = size.tiny)
+plotshape(failedShort, title = "Failed Short Breakout", style = shape.xcross,
+           location = location.belowbar, color = failedBOColor, size = size.tiny)
+

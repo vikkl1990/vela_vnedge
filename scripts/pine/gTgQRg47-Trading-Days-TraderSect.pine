@@ -1,0 +1,124 @@
+//@version=5
+indicator("Combined: Universal Range & Note Taking FIXED", overlay=true)
+
+// ==========================================
+// SHARED SETTINGS & DAY SELECTION
+// ==========================================
+group_days = "Global Day Selection"
+show_mon = input.bool(true, "Monday", group=group_days)
+show_tue = input.bool(true, "Tuesday", group=group_days)
+show_wed = input.bool(true, "Wednesday", group=group_days)
+show_thu = input.bool(true, "Thursday", group=group_days)
+show_fri = input.bool(true, "Friday", group=group_days)
+show_sat = input.bool(false, "Saturday", group=group_days)
+show_sun = input.bool(false, "Sunday", group=group_days)
+
+// Logical check for active day
+is_active_day = (dayofweek == dayofweek.monday and show_mon) or
+                 (dayofweek == dayofweek.tuesday and show_tue) or
+                 (dayofweek == dayofweek.wednesday and show_wed) or
+                 (dayofweek == dayofweek.thursday and show_thu) or
+                 (dayofweek == dayofweek.friday and show_fri) or
+                 (dayofweek == dayofweek.saturday and show_sat) or
+                 (dayofweek == dayofweek.sunday and show_sun)
+
+// ==========================================
+// FUNCTION 1: RANGE HIGHLIGHTER (FIXED FOR GOLD)
+// ==========================================
+group_f1 = "Function 1: Range Settings"
+enable_f1 = input.bool(true, "Enable Range Boxes", group=group_f1)
+box_color = input.color(color.new(color.blue, 85), "Box Fill", group=group_f1)
+border_color = input.color(color.new(color.blue, 40), "Box Border", group=group_f1)
+
+var float day_high = na
+var float day_low = na
+var box range_box = na
+
+// Detecting new daily session start
+is_new_day = ta.change(time("D")) != 0 
+
+if enable_f1
+    if is_active_day
+        if is_new_day
+            day_high := high
+            day_low := low
+            range_box := box.new(left=bar_index, top=day_high, right=bar_index, bottom=day_low, 
+                                 bgcolor=box_color, border_color=border_color)
+        else
+            day_high := math.max(high, day_high)
+            day_low := math.min(low, day_low)
+            box.set_top(range_box, day_high)
+            box.set_bottom(range_box, day_low)
+            box.set_right(range_box, bar_index)
+    else
+        // If it's NOT an active day, we ensure no new data is added to the previous box
+        day_high := na
+        day_low := na
+
+// ==========================================
+// FUNCTION 2: NOTE TAKING & EMA TREND
+// ==========================================
+group_f2 = "Function 2: Note Taking Settings"
+irl_type = input.string("FVG", "Target Type", options=["FVG", "OB", "No IRL"], group=group_f2)
+show_dash = input.bool(true, "Show Dashboard", group=group_f2)
+
+// EMA Trend logic (Invisible confirmation)
+ema9 = ta.ema(close, 9)
+ema18 = ta.ema(close, 18)
+ema_bull = ema9 > ema18
+ema_bear = ema9 < ema18
+
+// Bias Logic: P.Open (Previous Candle Open)
+p_open_val = open[1]
+current_close = close
+
+var string bias_text = "Neutral"
+var color bias_color = color.gray
+var string final_target_name = "None"
+var float target_price_val = na
+
+if is_active_day
+    if current_close > p_open_val and ema_bull
+        bias_text := "BULLISH (Confirmed)"
+        bias_color := color.green
+        final_target_name := (irl_type == "No IRL" ? "High" : irl_type)
+        target_price_val := high[1] 
+    else if current_close < p_open_val and ema_bear
+        bias_text := "BEARISH (Confirmed)"
+        bias_color := color.red
+        final_target_name := (irl_type == "No IRL" ? "Low" : irl_type)
+        target_price_val := low[1] 
+    else
+        bias_text := "Neutral / No Sync"
+        bias_color := color.gray
+        final_target_name := "None"
+        target_price_val := na
+else
+    bias_text := "Inactive Day"
+    bias_color := color.gray
+    final_target_name := "None"
+    target_price_val := na
+
+// ==========================================
+// DASHBOARD
+// ==========================================
+var table dash = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 70), border_width=1, border_color=color.gray)
+
+if barstate.islast and show_dash
+    table.cell(dash, 0, 0, "Day Status", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 0, is_active_day ? "ACTIVE" : "INACTIVE", text_color=is_active_day ? color.green : color.red, text_size=size.small)
+    
+    table.cell(dash, 0, 1, "P.Open Value", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 1, str.tostring(p_open_val, format.mintick), text_color=color.white, text_size=size.small)
+    
+    table.cell(dash, 0, 2, "EMA Trend", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 2, ema_bull ? "BULLISH" : ema_bear ? "BEARISH" : "FLAT", text_color=ema_bull ? color.green : ema_bear ? color.red : color.gray, text_size=size.small)
+
+    table.cell(dash, 0, 3, "Signal Bias", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 3, bias_text, text_color=bias_color, text_size=size.small)
+    
+    table.cell(dash, 0, 4, "Active Target", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 4, final_target_name, text_color=bias_color, text_size=size.small)
+
+    table.cell(dash, 0, 5, "Target Price", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 5, na(target_price_val) ? "N/A" : str.tostring(target_price_val, format.mintick), text_color=bias_color, text_size=size.small)

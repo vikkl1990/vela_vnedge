@@ -1,0 +1,566 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BullByte
+
+//Please check detailed notes on Quantum Flux Candles
+
+//@version=6
+indicator("Ultimate Scalping Tool[BullByte]", shorttitle="UST[BullByte]", overlay=false, format=format.price, precision=2)
+
+// ********** Market Mode & Inputs **********
+marketMode = input.string("Custom", title="Market Mode", options=["Crypto", "Stocks", "Options", "Forex", "Custom"], group="Market Mode Settings")
+
+// ********** Input Groups Reorganization **********
+// Current TF Inputs
+adxlen_input = input.int(14, title="ADX Smoothing", group="Inputs")
+diLen_input = input.int(14, title="DI Length", group="Inputs")
+rsiPeriod_input = input.int(14, title="RSI Period (Momentum)", minval=1, group="Inputs")
+atrPeriod_input = input.int(14, title="ATR Period (Volatility)", minval=1, group="Inputs")
+cmfPeriod_input = input.int(20, title="CMF Period (Volume Pressure)", minval=1, group="Inputs")
+normLookback_input = input.int(50, title="Normalization Lookback", minval=10, group="Inputs")
+wTrend_input = input.float(0.25, title="Trend Weight", step=0.05, group="Inputs")
+wMomentum_input = input.float(0.25, title="Momentum Weight", step=0.05, group="Inputs")
+wVolatility_input = input.float(0.25, title="Volatility Weight", step=0.05, group="Inputs")
+wVolume_input = input.float(0.25, title="Volume Pressure Weight", step=0.05, group="Inputs")
+deltaSmoothing = input.int(3, title="Oscillator Delta Smoothing", minval=1, group="Inputs")
+
+// Set parameters based on Market Mode
+adxlen = marketMode == "Crypto" ? 10 : marketMode == "Stocks" ? 14 : marketMode == "Options" ? 20 : marketMode == "Forex" ? 12 : adxlen_input
+rsiPeriod = marketMode == "Crypto" ? 12 : marketMode == "Stocks" ? 14 : marketMode == "Options" ? 10 : marketMode == "Forex" ? 10 : rsiPeriod_input
+atrPeriod = marketMode == "Crypto" ? 10 : marketMode == "Stocks" ? 14 : marketMode == "Options" ? 14 : marketMode == "Forex" ? 10 : atrPeriod_input
+cmfPeriod = marketMode == "Crypto" ? 14 : marketMode == "Stocks" ? 20 : marketMode == "Options" ? 20 : marketMode == "Forex" ? 10 : cmfPeriod_input
+normLookback = marketMode == "Crypto" ? 30 : marketMode == "Stocks" ? 50 : marketMode == "Options" ? 50 : marketMode == "Forex" ? 30 : normLookback_input
+wTrend = marketMode == "Crypto" ? 0.2 : marketMode == "Stocks" ? 0.4 : marketMode == "Options" ? 0.3 : marketMode == "Forex" ? 0.3 : wTrend_input
+wMomentum = marketMode == "Crypto" ? 0.3 : marketMode == "Stocks" ? 0.2 : marketMode == "Options" ? 0.2 : marketMode == "Forex" ? 0.3 : wMomentum_input
+wVolatility = marketMode == "Crypto" ? 0.3 : marketMode == "Stocks" ? 0.2 : marketMode == "Options" ? 0.4 : marketMode == "Forex" ? 0.2 : wVolatility_input
+wVolume = marketMode == "Crypto" ? 0.2 : marketMode == "Stocks" ? 0.2 : marketMode == "Options" ? 0.1 : marketMode == "Forex" ? 0.2 : wVolume_input
+
+// HTF Inputs
+higher_tf_input = input.string("15", title="Higher Timeframe (e.g., 15, 60, D)", group="HTF")
+higher_tf = marketMode == "Crypto" ? "15" : marketMode == "Stocks" ? "D" : marketMode == "Options" ? "D" : marketMode == "Forex" ? "60" : higher_tf_input
+useLeadingHTF = input.bool(true, title="Use Leading HTF Filter", group="HTF", 
+     tooltip="When enabled, applies higher timeframe EMA crossover filter to signals")
+
+// ********** Style/Lines Group **********
+showFixedLines = input.bool(true, title="Show Fixed Reference Lines", group="Style / Lines")
+fixedUpperLevel = input.float(25.0, title="Fixed Upper Level", step=0.1, group="Style / Lines")
+fixedLowerLevel = input.float(-25.0, title="Fixed Lower Level", step=0.1, group="Style / Lines")
+fixedLineColor = input.color(color.blue, title="Fixed Lines Color", group="Style / Lines")
+fixedLineWidth = input.int(2, title="Fixed Lines Width", minval=1, maxval=5, group="Style / Lines")
+bullBackground = input.color(color.new(color.green, 85), title="Bullish Background", group="Style / Lines")
+bearBackground = input.color(color.new(color.red, 85), title="Bearish Background", group="Style / Lines")
+neutralBackground = input.color(color.new(color.gray, 90), title="Neutral Background", group="Style / Lines")
+
+
+
+
+
+// ********** Filters Group with Info Button **********
+enableReversalFilter = input.bool(false, "Enable DI Reversal Filter", group="Filters", tooltip="Dynamic reversal confirmation (3 bars if ADX>30, else 2).")
+useDynamicThresholds = input.bool(false, title="Use Dynamic Thresholds", group="Filters", tooltip="Enable dynamic upper/lower oscillator thresholds.")
+dynMultiplier = input.float(0.5, title="Dynamic Threshold Multiplier", step=0.1, group="Filters")
+adaptiveWeightsEnabled = input.bool(true, "Enable Adaptive Weighting", group="Filters", tooltip="Auto-adjusts oscillator weights by trend, momentum & volatility.")
+volatilityRegimeThreshold = input.float(0.025, "Volatility Threshold", step=0.001, group="Filters")
+useEarlySignal = input.bool(false, "Enable Early Signal Condition", group="Filters", tooltip="Enables early signal condition based on oscillator delta.")
+earlyDeltaThreshold = input.float(0.5, title="Early Oscillator Delta Threshold", group="Filters")
+
+// ********** Dashboard Settings **********
+shortDashboard = input.bool(false, title="Short Dashboard", group="Dashboard")
+dashboardTextSize = input.string("Small", title="Dashboard Text Size", options=["Tiny", "Small", "Normal"], group="Dashboard")
+dashboardTextSizeConst = dashboardTextSize == "Tiny" ? size.tiny : dashboardTextSize == "Small" ? size.small : size.normal
+
+// New Filters Status Panel
+showFiltersPanel = input.bool(true, title="Show Filters Status Panel", group="Dashboard")
+filtersPanelPosition = input.string("bottom_left", title="Filters Panel Position", options=["top_right", "bottom_right", "top_left", "bottom_left"], group="Dashboard")
+filtersPanelSize = input.string("Small", title="Filters Panel Size", options=["Tiny", "Small", "Normal"], group="Dashboard")
+filtersPanelSizeConst = filtersPanelSize == "Tiny" ? size.tiny : filtersPanelSize == "Small" ? size.small : size.normal
+
+// ********** Calculations **********
+// DI Smoothing Setup 
+diLen = diLen_input
+
+// Functions & Helpers
+dirmovCustom(len) =>
+    up = ta.change(high)
+    down = -ta.change(low)
+    plusDM = na(up) ? 0 : (up > down and up > 0 ? up : 0)
+    minusDM = na(down) ? 0 : (down > up and down > 0 ? down : 0)
+    truerange = ta.rma(ta.tr, len)
+    plus = fixnan(100 * ta.rma(plusDM, len) / truerange)
+    minus = fixnan(100 * ta.rma(minusDM, len) / truerange)
+    [plus, minus]
+
+[plusDI, minusDI] = dirmovCustom(diLen)
+
+adxFunc(_adxlen) =>
+    100 * ta.rma(math.abs(plusDI - minusDI) / ((plusDI + minusDI)==0 ? 1 : (plusDI + minusDI)), _adxlen)
+
+f_htfLeading() =>
+    htf_ema_short = request.security(syminfo.tickerid, higher_tf, ta.ema(close, 9),lookahead=barmerge.lookahead_off) 
+    htf_ema_long = request.security(syminfo.tickerid, higher_tf, ta.ema(close, 21),lookahead=barmerge.lookahead_off)
+    htf_ema_short > htf_ema_long ? 1.0 : htf_ema_short < htf_ema_long ? -1.0 : 0.0
+
+
+
+f_getAdvancedSignalColor(signalText) =>
+    var color result = color.new(color.gray, 0)
+    if signalText == "Strong Buy"
+        result := color.new(color.green, 0)
+    else if signalText == "Strong Sell"
+        result := color.new(color.red, 0)
+    else if signalText == "Momentum Peak - Consider Exit"
+        result := color.new(color.orange, 0)
+    else if signalText == "Early Buy - Momentum Building"
+        result := color.new(color.lime, 0)
+    else if signalText == "Early Sell - Momentum Building"
+        result := color.new(color.orange, 0)
+    else if signalText == "Pullback Buy - Re-entry"
+        result := color.new(color.green, 0)
+    else if signalText == "Pullback Sell - Re-entry"
+        result := color.new(color.red, 0)
+    else if signalText == "Watch - Weakening Momentum" or signalText == "Caution - Momentum Weak"
+        result := color.new(color.yellow, 0)
+    result
+
+// Calculations: Current TF Signals
+adxValue = adxFunc(adxlen)
+trendDir = plusDI >= minusDI ? 1.0 : -1.0
+normTrend = trendDir * math.min(math.max((adxValue - 20) / 20, 0.0), 1.0)
+rsiValue = ta.rsi(close, rsiPeriod)
+normMomentum = (rsiValue - 50) / 50
+atrValue = ta.atr(atrPeriod)
+atrRatio = atrValue / close
+atrRatioHigh = ta.highest(atrRatio, normLookback)
+atrRatioLow = ta.lowest(atrRatio, normLookback)
+normVolatility_raw = (atrRatio - atrRatioLow) / math.max((atrRatioHigh - atrRatioLow), 0.0001)
+normVolatility = normVolatility_raw * 2 - 1
+moneyFlowMultiplier = ((close - low) - (high - close)) / math.max(high - low, 0.0001)
+moneyFlowVolume = moneyFlowMultiplier * volume
+smoothedMFV = ta.sma(moneyFlowVolume, cmfPeriod)
+smoothedVolume = ta.sma(volume, cmfPeriod)
+cmfValue = smoothedMFV / math.max(smoothedVolume, 0.0001)
+normCMF = math.min(math.max(cmfValue, -1), 1)
+
+// ********** Adaptive Weighting & Oscillator Calculation **********
+dynamicTrendWeight = adxValue > 25 ? wTrend * 1.5 : wTrend * 0.75
+dynamicVolatilityWeight = atrRatio > volatilityRegimeThreshold ? wVolatility * 2.0 : wVolatility * 0.5
+dynamicMomentumWeight = math.abs(rsiValue - 50) > 30 ? wMomentum * 1.2 : wMomentum * 0.8
+
+totalWeight = adaptiveWeightsEnabled ? 
+  (dynamicTrendWeight + dynamicMomentumWeight + dynamicVolatilityWeight + wVolume) :
+  (wTrend + wMomentum + wVolatility + wVolume)
+  
+if totalWeight == 0
+    totalWeight := 1.0
+    
+
+oscillator_raw = (adaptiveWeightsEnabled ?
+  (dynamicTrendWeight * normTrend + 
+   dynamicMomentumWeight * normMomentum + 
+   dynamicVolatilityWeight * normVolatility + 
+   wVolume * normCMF) :
+  (wTrend * normTrend + 
+   wMomentum * normMomentum + 
+   wVolatility * normVolatility + 
+   wVolume * normCMF)) / totalWeight
+
+oscillator = oscillator_raw * 100
+oscDelta = oscillator - oscillator[1]
+oscDeltaSmooth = ta.sma(oscDelta, deltaSmoothing)
+osc_std = ta.stdev(oscillator, 50)
+
+// ********** Quantum Flux Candle Section **********
+qfcDisplayMode = input.string("Quantum Flux Candle",
+     title="Oscillator Display",
+     options=["Line","Quantum Flux Candle"],
+     group="Quantum Flux Settings")
+qfc_show       = input.bool(true,
+     title="Show Quantum Flux Candle",
+     group="Quantum Flux Settings")
+qfc_up_col     = input.color(color.new(color.green,0),
+     title="Up Color", group="Quantum Flux Settings")
+qfc_dn_col     = input.color(color.new(#EB4C42,0),
+     title="Down Color", group="Quantum Flux Settings")
+qfcMA_len      = input.int(10,
+     title="Flux MA Period", group="Quantum Flux Settings")
+qfcScale       = input.float(100.0,
+     title="Flux Candle Scale", group="Quantum Flux Settings")
+
+// normalize range 0–100 oscillator back to 0–1 for MA
+FM     = oscillator / qfcScale
+FM_can = FM[1]
+
+// compute moving average on the normalized FM
+qfcMA = ta.ema(FM, qfcMA_len)
+
+plot(FM * qfcScale, title="FM (Flux Oscillator)", style=plot.style_line, linewidth=1, color=color.new(color.blue, 0))
+plot(qfcMA * qfcScale, title="Flux MA",           style=plot.style_line, linewidth=1, color=color.new(color.orange, 0))
+
+
+// line-mode plot (re-scaled to 0–100)
+qfcLine = qfcDisplayMode=="Line" ? FM * qfcScale : na
+plot(qfcLine,
+     title="QF Oscillator Line",
+     style=plot.style_line,
+     linewidth=2,
+     color=FM >= 0 ? color.green : color.red)
+
+// candle OHLC (scaled to 0–100)
+qfc_open  = qfcDisplayMode=="Quantum Flux Candle" and qfc_show ? FM_can * qfcScale : na
+qfc_high  = qfcDisplayMode=="Quantum Flux Candle" and qfc_show ? FM *     qfcScale : na
+qfc_low   = qfcDisplayMode=="Quantum Flux Candle" and qfc_show
+           ? math.min(FM_can, FM) * qfcScale
+           : na
+
+qfc_close = qfcDisplayMode=="Quantum Flux Candle" and qfc_show ? FM *     qfcScale : na
+
+// color logic via MA filter
+qfc_bull = FM > qfcMA
+qfc_bear = FM < qfcMA
+qfc_col  = qfc_bull ? qfc_up_col : qfc_bear ? qfc_dn_col : color.gray
+
+
+// Dynamic thresholds recalculated every 
+minStd = 0.1                                    
+stableStd = nz(osc_std, minStd)                
+stableStd := math.max(stableStd, minStd)  
+dynamicThresholdUpper = 25 + stableStd * dynMultiplier
+dynamicThresholdLower = -25 - stableStd * dynMultiplier
+dynamicPeakUpper      = 35 + stableStd * dynMultiplier
+dynamicPeakLower      = -35 - stableStd * dynMultiplier
+buyThreshold = useDynamicThresholds ? dynamicThresholdUpper : 25
+sellThreshold = useDynamicThresholds ? dynamicThresholdLower : -25
+peakThresholdUpper = useDynamicThresholds ? dynamicPeakUpper : 35
+peakThresholdLower = useDynamicThresholds ? dynamicPeakLower : -35
+
+strongBullishMomentum = oscillator > buyThreshold
+strongBearishMomentum = oscillator < sellThreshold
+neutralMomentum = math.abs(oscillator) <= buyThreshold
+pullbackBuy = neutralMomentum and (normTrend > 0.2)
+pullbackSell = neutralMomentum and (normTrend < -0.2)
+
+// ********** Signal Generation **********
+var string tradeSignal = "No Trade"
+if (strongBullishMomentum and (normTrend > 0.2))
+    tradeSignal := "Strong Buy"
+else if (strongBearishMomentum and (normTrend < -0.2))
+    tradeSignal := "Strong Sell"
+else if (pullbackBuy)
+    tradeSignal := "Pullback Buy"
+else if (pullbackSell)
+    tradeSignal := "Pullback Sell"
+else
+    tradeSignal := "No Trade"
+
+// Early Signal Logic moved before main signal override
+string advancedSignal = "No Trade"
+if useEarlySignal
+    if (oscillator < buyThreshold) and (oscDeltaSmooth > earlyDeltaThreshold) and (normTrend > 0.2)
+        advancedSignal := "Early Buy - Momentum Building"
+    else if (oscillator < sellThreshold) and (oscDeltaSmooth < -earlyDeltaThreshold) and (normTrend < -0.2)
+        advancedSignal := "Early Sell - Momentum Building"
+
+if advancedSignal == "No Trade"
+    if (trendDir > 0)
+        if (oscillator > peakThresholdUpper)
+            advancedSignal := oscDeltaSmooth < 0 ? "Momentum Peak - Consider Exit" : "Strong Buy"
+        else if (oscillator > buyThreshold and oscillator <= peakThresholdUpper)
+            advancedSignal := oscDeltaSmooth > 0 ? "Early Buy - Momentum Building" : "Watch - Weakening Momentum"
+        else if (oscillator > 0 and oscillator <= buyThreshold)
+            advancedSignal := oscDeltaSmooth > 0 ? "Pullback Buy - Re-entry" : "Caution - Momentum Weak"
+        else
+            advancedSignal := "No Trade"
+    else if (trendDir < 0)
+        if (oscillator < peakThresholdLower)
+            advancedSignal := oscDeltaSmooth > 0 ? "Momentum Peak - Consider Exit" : "Strong Sell"
+        else if (oscillator < sellThreshold and oscillator >= peakThresholdLower)
+            advancedSignal := oscDeltaSmooth < 0 ? "Early Sell - Momentum Building" : "Watch - Weakening Momentum"
+        else if (oscillator < 0 and oscillator >= sellThreshold)
+            advancedSignal := oscDeltaSmooth < 0 ? "Pullback Sell - Re-entry" : "Caution - Momentum Weak"
+        else
+            advancedSignal := "No Trade"
+    else
+        advancedSignal := "No Trade"
+
+advancedSignalColor = f_getAdvancedSignalColor(advancedSignal)
+
+
+
+
+// ————— HTF ADX helper (for use inside security) —————
+f_htfADX_HTF(_len) =>
+    tf_up        = ta.change(high)
+    tf_down      = -ta.change(low)
+    tf_plusDM    = (tf_up   > tf_down and tf_up   > 0) ? tf_up   : 0
+    tf_minusDM   = (tf_down > tf_up   and tf_down > 0) ? tf_down : 0
+    tf_tr        = ta.rma(ta.tr, _len)
+    tf_plus      = fixnan(100 * ta.rma(tf_plusDM, _len) / tf_tr)
+    tf_minus     = fixnan(100 * ta.rma(tf_minusDM, _len) / tf_tr)
+    tf_adx       = 100 * ta.rma(
+                       math.abs(tf_plus - tf_minus) /
+                       (tf_plus + tf_minus == 0 ? 1 : tf_plus + tf_minus),
+                       _len
+                   )
+    dir = tf_plus >= tf_minus ? 1.0 : -1.0
+    dir * math.min(math.max((tf_adx - 20) / 20, 0.0), 1.0)
+
+// ********** HTF Trend Filter **********
+var float htf_trend_value = na
+if useLeadingHTF
+    htf_trend_value := f_htfLeading()
+else
+    htf_trend_value := request.security(syminfo.tickerid, higher_tf, f_htfADX_HTF(adxlen))
+
+
+htfTrendStatus = useLeadingHTF ? 
+     (htf_trend_value == 1.0 ? "Bullish" : 
+      htf_trend_value == -1.0 ? "Bearish" : 
+      "Neutral") : 
+     "HTF Filter: Off"
+
+// ********** Dynamic DI Reversal Filter **********
+diDiff = plusDI - minusDI
+diDiffSma = ta.sma(diDiff, 3)
+var int reversalHoldBars = 0
+reversalConfirmed = (adxValue > 30) and (diDiff < 0) and (diDiffSma < 0)
+if reversalConfirmed
+    reversalHoldBars += 1
+else
+    reversalHoldBars := 0
+dynamicReversalThreshold = adxValue > 30 ? 3 : 2
+realReversal = reversalHoldBars >= dynamicReversalThreshold
+
+var int reversalHoldBarsUp = 0
+reversalConfirmedUp = (adxValue > 30) and (diDiff > 0) and (diDiffSma > 0)
+if reversalConfirmedUp
+    reversalHoldBarsUp += 1
+else
+    reversalHoldBarsUp := 0
+realReversalUp = reversalHoldBarsUp >= dynamicReversalThreshold
+
+if enableReversalFilter and (adxValue > 30) and
+   ((trendDir < 0 and not realReversal) or (trendDir > 0 and not realReversalUp))
+    tradeSignal := "No Trade"
+    advancedSignal := "No Trade"
+
+// ********** Background Color Based on ADX & DI **********
+var color bgColorFinal = na
+if adxValue < 20
+    bgColorFinal := neutralBackground
+else
+    if trendDir > 0
+        bgColorFinal := adxValue < 30 ? bullBackground : color.new(bullBackground, 70)
+    else if trendDir < 0
+        bgColorFinal := adxValue < 30 ? bearBackground : color.new(bearBackground, 70)
+    else
+        bgColorFinal := neutralBackground
+
+bgcolor(bgColorFinal)
+
+//Declaring Vwap
+
+vwap_val = ta.vwap(close)
+
+// ********** Final Quantum Flux Candle Color Calculation **********
+bullishCondition = (tradeSignal == "Strong Buy") and (advancedSignal == "Strong Buy") and ((useLeadingHTF and (htf_trend_value == 1.0)) or (not useLeadingHTF))
+bearishCondition = (tradeSignal == "Strong Sell") and (advancedSignal == "Strong Sell") and ((useLeadingHTF and (htf_trend_value == -1.0)) or (not useLeadingHTF))
+final_qfc_bar_color = bullishCondition ? color.yellow : bearishCondition ? color.purple : 
+                      (oscillator >= 0 ? qfc_up_col : qfc_dn_col)
+
+// ********** Oscillator / Quantum Flux Candle Plotting **********
+oscColor = oscillator >= 0 ? color.new(color.green, 0) : color.new(color.red, 0)
+plotcandle(qfc_open, qfc_high, qfc_low, qfc_close, title="Quantum Flux Candle", 
+           color=(qfcDisplayMode=="Quantum Flux Candle" and qfc_show ? final_qfc_bar_color : na), 
+           bordercolor=(qfcDisplayMode=="Quantum Flux Candle" and qfc_show ? final_qfc_bar_color : na), 
+           wickcolor=(qfcDisplayMode=="Quantum Flux Candle" and qfc_show ? final_qfc_bar_color : na))
+
+// Fixed reference lines
+hline(showFixedLines ? fixedUpperLevel : na, "Fixed Upper Ref", color=fixedLineColor, linewidth=fixedLineWidth, linestyle=hline.style_dotted)
+hline(showFixedLines ? fixedLowerLevel : na, "Fixed Lower Ref", color=fixedLineColor, linewidth=fixedLineWidth, linestyle=hline.style_dotted)
+
+// ********** Dynamic Bands Calculation **********
+useDynamicBands = input.bool(false, title="Enable Dynamic Bands", group="Style / Lines")
+bandLength = input.int(20, "Band Length", minval=5, group="Style / Lines")
+bandMultiplier = input.float(1.5, "Band Multiplier", step=0.1, group="Style / Lines")
+
+// Calculate band values
+basis = ta.sma(oscillator, bandLength)
+dev = ta.stdev(oscillator, bandLength) * bandMultiplier
+upperBand = basis + dev
+lowerBand = basis - dev
+
+// Plot bands only when enabled
+bandColor = color.new(color.purple, 20)
+plot(useDynamicBands ? upperBand : na, "Upper Band", bandColor, 2, plot.style_stepline)
+plot(useDynamicBands ? lowerBand : na, "Lower Band", bandColor, 2, plot.style_stepline)
+plot(useDynamicBands ? basis : na, "Basis Line", color.new(color.blue, 0), 1)
+
+
+// ********** Dashboard with New Theme **********
+var table dashboard = table.new(position.top_right, 2, shortDashboard ? 9 : 13, border_width=2, frame_color=color.new(color.blue, 0), frame_width=1, force_overlay=true)
+var table filtersPanel = table.new(filtersPanelPosition == "top_right" ? position.top_right : filtersPanelPosition == "bottom_right" ? position.bottom_right : filtersPanelPosition == "top_left" ? position.top_left : position.bottom_left, 2, 6, border_width=2, frame_color=color.new(color.blue, 0), frame_width=1, force_overlay=true)
+
+
+// New color theme
+panelBg = color.new(color.black, 20)
+textCol = color.white
+onCol = color.green
+offCol = color.red
+neutralCol = color.new(color.gray, 10)
+
+//Adding Adx BG logic
+
+adxBg = adxValue > adxValue[1] ? color.new(color.green, 0) : adxValue < adxValue[1] ? color.new(color.red, 0) : neutralCol
+
+// ── Dashboard RSI Coloring ──────────────────────────────────────────────────
+// allowing user to choose what counts as overbought/oversold
+rsiObLevel  = input.int(70, title="RSI Overbought Level",  group="Dashboard")
+rsiOsLevel  = input.int(30, title="RSI Oversold Level",  group="Dashboard")
+// pick green if above OB, red if below OS, yellow otherwise
+rsiColor    = rsiValue > rsiObLevel ? color.green :
+              rsiValue < rsiOsLevel ? color.red :
+                                      color.yellow
+
+// Update dashboard cells with new colors
+if shortDashboard
+    table.cell(dashboard, 0, 0, "ULTIMATE SCALPING TOOL", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 0, "Metrics", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    trendStatus = normTrend >= 0.75 ? "Strong Bullish" : normTrend >= 0.4 ? "Moderate Bullish" : normTrend <= -0.75 ? "Strong Bearish" : normTrend <= -0.4 ? "Moderate Bearish" : "Sideways"
+    table.cell(dashboard, 0, 1, "Trend (TF)", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 1, trendStatus, 
+      bgcolor=(normTrend >= 0.75 ? onCol : normTrend <= -0.75 ? offCol : neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    momentumStatus = strongBullishMomentum ? "Strong Bullish" : strongBearishMomentum ? "Strong Bearish" : "Neutral"
+    table.cell(dashboard, 0, 2, "Momentum (TF)", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 2, momentumStatus, 
+      bgcolor=(strongBullishMomentum ? onCol : strongBearishMomentum ? offCol : neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 3, "Basic Signal", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 3, tradeSignal, 
+      bgcolor=(tradeSignal=="Strong Buy" ? onCol : 
+             tradeSignal=="Strong Sell" ? offCol : 
+             tradeSignal=="Pullback Buy" ? onCol : 
+             tradeSignal=="Pullback Sell" ? offCol : 
+             neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 4, "Advanced Signal", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 4, advancedSignal, bgcolor=advancedSignalColor, text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 5, "HTF Filter", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 5, htfTrendStatus, 
+      bgcolor=(htf_trend_value==1.0 ? onCol : htf_trend_value==-1.0 ? offCol : neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+      
+    vwap_color = close > vwap_val ? onCol : offCol
+    table.cell(dashboard, 0, 6, "VWAP", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 6, str.tostring(vwap_val, "#.##"), bgcolor=vwap_color, text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 7, "ADX", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 7, str.tostring(adxValue, "#.##") + (adxValue > adxValue[1] ? " " : adxValue < adxValue[1] ? " " : ""), bgcolor=adxBg, text_color=textCol, text_size=dashboardTextSizeConst)
+
+    
+    table.cell(dashboard, 0, 8, "Regime", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 8, atrRatio > 0.02 ? "High Volatility" : atrRatio < 0.01 ? "Low Volatility" : "Moderate", 
+           bgcolor=(atrRatio > 0.02 ? offCol : atrRatio < 0.01 ? onCol : onCol), 
+           text_color=textCol, text_size=dashboardTextSizeConst)
+    
+else
+    table.cell(dashboard, 0, 0, "ULTIMATE SCALPING TOOL", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 0, "Metrics", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    
+    trendStatus = normTrend >= 0.75 ? "Strong Bullish" : normTrend >= 0.4 ? "Moderate Bullish" : normTrend <= -0.75 ? "Strong Bearish" : normTrend <= -0.4 ? "Moderate Bearish" : "Sideways"
+    table.cell(dashboard, 0, 1, "Trend (TF)", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 1, trendStatus, 
+      bgcolor=(normTrend >= 0.75 ? onCol : normTrend <= -0.75 ? offCol : neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    momentumStatus = strongBullishMomentum ? "Strong Bullish" : strongBearishMomentum ? "Strong Bearish" : "Neutral"
+    table.cell(dashboard, 0, 2, "Momentum (TF)", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 2, momentumStatus, 
+      bgcolor=(strongBullishMomentum ? onCol : strongBearishMomentum ? offCol : neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 3, "Volume (CMF)", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    volumeStatus = normCMF > 0.6 ? "Very High Buying" : normCMF > 0.3 ? "High Buying" : normCMF > 0.1 ? "Moderate Buying" : normCMF < -0.6 ? "Very High Selling" : normCMF < -0.3 ? "High Selling" : normCMF < -0.1 ? "Moderate Selling" : "Neutral"
+    table.cell(dashboard, 1, 3, volumeStatus, 
+      bgcolor=(normCMF > 0.3 ? onCol : normCMF < -0.3 ? offCol : neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 4, "Basic Signal", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 4, tradeSignal, 
+      bgcolor=(tradeSignal=="Strong Buy" ? onCol : 
+             tradeSignal=="Strong Sell" ? offCol : 
+             tradeSignal=="Pullback Buy" ? onCol : 
+             tradeSignal=="Pullback Sell" ? offCol : 
+             neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 5, "Advanced Signal", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 5, advancedSignal, bgcolor=advancedSignalColor, text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 6, "RSI", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 6, str.tostring(rsiValue, "#.##"),bgcolor=rsiColor, text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 7, "HTF Filter", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 7, htfTrendStatus, 
+      bgcolor=(htf_trend_value==1.0 ? onCol : htf_trend_value==-1.0 ? offCol : neutralCol), 
+      text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    vwap_color = close > vwap_val ? onCol : offCol
+    table.cell(dashboard, 0, 8, "VWAP", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 8, str.tostring(vwap_val, "#.##"), bgcolor=vwap_color, text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 9, "ADX", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 9, str.tostring(adxValue, "#.##") + (adxValue > adxValue[1] ? " " : adxValue < adxValue[1] ? " " : ""), bgcolor=adxBg, text_color=textCol, text_size=dashboardTextSizeConst)
+
+    
+    table.cell(dashboard, 0, 10, "Mode", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 10, marketMode, bgcolor=onCol, text_color=textCol, text_size=dashboardTextSizeConst)
+    
+    table.cell(dashboard, 0, 11, "Regime", bgcolor=panelBg, text_color=textCol, text_size=dashboardTextSizeConst)
+    table.cell(dashboard, 1, 11, atrRatio > 0.02 ? "High Volatility" : atrRatio < 0.01 ? "Low Volatility" : "Moderate", 
+           bgcolor=(atrRatio > 0.02 ? offCol : atrRatio < 0.01 ? onCol : onCol), 
+           text_color=textCol, text_size=dashboardTextSizeConst)
+
+// Filters Status Panel
+if showFiltersPanel
+    table.cell(filtersPanel, 0, 0, "Filter", bgcolor=panelBg, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 1, 0, "Status", bgcolor=panelBg, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 0, 1, "DI Reversal Filter", bgcolor=panelBg, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 1, 1, enableReversalFilter ? "On" : "Off", bgcolor=enableReversalFilter ? onCol : offCol, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 0, 2, "Dynamic Thresholds", bgcolor=panelBg, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 1, 2, useDynamicThresholds ? "On" : "Off", bgcolor=useDynamicThresholds ? onCol : offCol, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 0, 3, "Adaptive Weighting", bgcolor=panelBg, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 1, 3, adaptiveWeightsEnabled ? "On" : "Off", bgcolor=adaptiveWeightsEnabled ? onCol : offCol, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 0, 4, "Early Signal", bgcolor=panelBg, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 1, 4, useEarlySignal ? "On" : "Off", bgcolor=useEarlySignal ? onCol : offCol, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 0, 5, "Leading HTF Filter", bgcolor=panelBg, text_color=textCol, text_size=filtersPanelSizeConst)
+    table.cell(filtersPanel, 1, 5, useLeadingHTF ? "On" : "Off", bgcolor=useLeadingHTF ? onCol : offCol, text_color=textCol, text_size=filtersPanelSizeConst)
+
+// ── Alert Conditions ──────────────────────────
+// Using [1] comparison so alert fires ONCE on signal change, not every bar
+
+alertcondition(tradeSignal == "Strong Buy" and tradeSignal[1] != "Strong Buy", title="UST Strong Buy", message="UST: Strong Buy Signal")
+alertcondition(tradeSignal == "Strong Sell" and tradeSignal[1] != "Strong Sell", title="UST Strong Sell", message="UST: Strong Sell Signal")
+alertcondition(tradeSignal == "Pullback Buy" and tradeSignal[1] != "Pullback Buy", title="UST Pullback Buy", message="UST: Pullback Buy Signal")
+alertcondition(tradeSignal == "Pullback Sell" and tradeSignal[1] != "Pullback Sell", title="UST Pullback Sell", message="UST: Pullback Sell Signal")
+alertcondition(advancedSignal == "Early Buy - Momentum Building" and advancedSignal[1] != "Early Buy - Momentum Building", title="UST Early Buy", message="UST: Early Buy – Momentum Building")
+alertcondition(advancedSignal == "Early Sell - Momentum Building" and advancedSignal[1] != "Early Sell - Momentum Building", title="UST Early Sell", message="UST: Early Sell – Momentum Building")
+alertcondition(advancedSignal == "Momentum Peak - Consider Exit" and advancedSignal[1] != "Momentum Peak - Consider Exit", title="UST Momentum Peak", message="UST: Momentum Peak – Consider Exit")
+alertcondition(advancedSignal == "Pullback Buy - Re-entry" and advancedSignal[1] != "Pullback Buy - Re-entry", title="UST Pullback Buy Re-entry", message="UST: Pullback Buy – Re-entry")
+alertcondition(advancedSignal == "Pullback Sell - Re-entry" and advancedSignal[1] != "Pullback Sell - Re-entry", title="UST Pullback Sell Re-entry", message="UST: Pullback Sell – Re-entry")
+
+// ── Changelog ─────────────────────────────────
+// v1.1 – 
+// • Added 9 native alertcondition() calls:
+//     - Strong Buy / Strong Sell
+//     - Pullback Buy / Pullback Sell
+//     - Early Buy / Early Sell (Momentum Building)
+//     - Pullback Buy Re-entry / Pullback Sell Re-entry
+//     - Momentum Peak – Consider Exit
+//   Alerts can now be set directly from TradingView's
+//   alert menu without any code editing.
+// ──────────────────────────────────────────────

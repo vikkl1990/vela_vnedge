@@ -1,0 +1,127 @@
+//@version=5
+strategy("Simple Smart Buy/Sell Strategy", overlay=true)
+
+// ======================================
+// SIMPLE & SMART TREND STRATEGY
+// ======================================
+// Best on:
+// - SPY
+// - QQQ
+// - 5 Minute Chart
+//
+// BUY:
+// - Trend bullish
+// - Pullback finished
+// - Momentum returns
+//
+// SELL:
+// - Trend bearish
+// - Bounce fails
+// - Momentum drops
+// ======================================
+
+// INDICATORS
+ema9  = ta.ema(close, 9)
+ema20 = ta.ema(close, 20)
+vwapValue = ta.vwap(close)
+
+// PLOTS
+plot(ema9, color=color.lime, linewidth=2, title="EMA 9")
+plot(ema20, color=color.red, linewidth=2, title="EMA 20")
+plot(vwapValue, color=color.orange, linewidth=2, title="VWAP")
+
+// ======================================
+// BUY CONDITIONS
+// ======================================
+
+// Trend bullish
+bullTrend =
+     close > vwapValue and
+     ema9 > ema20
+
+// Pullback and recovery
+buySignal =
+     bullTrend and
+     low <= ema9 and
+     close > high[1]
+
+// ======================================
+// SELL CONDITIONS
+// ======================================
+
+// Trend bearish
+bearTrend =
+     close < vwapValue and
+     ema9 < ema20
+
+// Failed bounce and breakdown
+sellSignal =
+     bearTrend and
+     high >= ema9 and
+     close < low[1]
+
+// ======================================
+// ENTRIES
+// ======================================
+
+if buySignal
+    strategy.entry("BUY", strategy.long)
+
+if sellSignal
+    strategy.entry("SELL", strategy.short)
+
+// ======================================
+// EXITS
+// ======================================
+
+atr = ta.atr(14)
+
+strategy.exit(
+     "TP/SL BUY",
+     from_entry="BUY",
+     stop=close - atr,
+     limit=close + (atr * 2))
+
+strategy.exit(
+     "TP/SL SELL",
+     from_entry="SELL",
+     stop=close + atr,
+     limit=close - (atr * 2))
+
+// ======================================
+// VISUAL SIGNALS
+// ======================================
+
+plotshape(
+     buySignal,
+     title="BUY SIGNAL",
+     text="BUY",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.lime,
+     textcolor=color.black,
+     size=size.small)
+
+plotshape(
+     sellSignal,
+     title="SELL SIGNAL",
+     text="SELL",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     textcolor=color.white,
+     size=size.small)
+
+// ======================================
+// ALERTS
+// ======================================
+
+alertcondition(
+     buySignal,
+     title="BUY ALERT",
+     message="BUY Signal Triggered")
+
+alertcondition(
+     sellSignal,
+     title="SELL ALERT",
+     message="SELL Signal Triggered")

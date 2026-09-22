@@ -1,0 +1,136 @@
+//@version=6
+strategy(
+    "VuManChu WT Zero Cross Strategy V1.2.2",
+    overlay = true,
+    pyramiding = 0,
+    process_orders_on_close = true,
+    calc_on_order_fills = true,
+    default_qty_type = strategy.percent_of_equity,
+    default_qty_value = 2)
+
+//=====================================================
+// INPUTS
+//=====================================================
+
+// WaveTrend
+wtChannelLen = input.int(9,  "WT Channel Length", minval = 1, group = "WaveTrend")
+wtAverageLen = input.int(27, "WT Average Length", minval = 1, group = "WaveTrend")
+wtMALen      = input.int(3,  "WT MA Length",      minval = 1, group = "WaveTrend")
+wtSource     = input.source(hlc3, "WT Source",    group = "WaveTrend")
+
+// Trend Filter
+enableTrendFilter = input.bool(false, "Enable Trend Filter", group = "Trend Filter")
+emaLength         = input.int(200,   "EMA Length", minval = 1, group = "Trend Filter")
+
+// Visuals
+showEMA    = input.bool(true, "Show EMA",          group = "Visuals")
+showArrows = input.bool(true, "Show Entry Arrows",  group = "Visuals")
+showTPDots = input.bool(true, "Show TP Dots",       group = "Visuals")
+
+//=====================================================
+// WAVETREND
+//=====================================================
+
+esa = ta.ema(wtSource, wtChannelLen)
+de  = ta.ema(math.abs(wtSource - esa), wtChannelLen)
+ci  = (wtSource - esa) / (0.015 * de)
+
+wt1 = ta.ema(ci, wtAverageLen)
+wt2 = ta.sma(wt1, wtMALen)
+
+// Zero-line crosses
+longSignal  = ta.crossover(wt1, 0)
+shortSignal = ta.crossunder(wt1, 0)
+
+// WT1/WT2 cross in extreme zone
+wtCross     = ta.cross(wt1, wt2)
+wtCrossUp   = wt1 > wt2
+wtCrossDown = wt1 < wt2
+
+buyCircle  = wtCross and wtCrossUp   and wt1 < -60 and wt2 < -60
+sellCircle = wtCross and wtCrossDown and wt1 > 60  and wt2 > 60
+
+//=====================================================
+// TREND FILTER
+//=====================================================
+
+emaFilter = ta.ema(close, emaLength)
+
+longAllowed  = not enableTrendFilter or close > emaFilter
+shortAllowed = not enableTrendFilter or close < emaFilter
+
+//=====================================================
+// STRATEGY LOGIC — all under isconfirmed
+//=====================================================
+
+if barstate.isconfirmed
+
+    // --- ENTRIES & REVERSALS ---
+    if longSignal and longAllowed
+        strategy.close("Short")
+        strategy.entry("Long", strategy.long)
+
+    else if shortSignal and shortAllowed
+        strategy.close("Long")
+        strategy.entry("Short", strategy.short)
+
+    // Filter blocks reversal but still close existing trade
+    else if longSignal and not longAllowed and strategy.position_size < 0
+        strategy.close("Short")
+
+    else if shortSignal and not shortAllowed and strategy.position_size > 0
+        strategy.close("Long")
+
+    // --- TAKE PROFITS (only fires when NOT an entry bar) ---
+    else if strategy.position_size > 0 and sellCircle
+        strategy.close("Long", qty_percent = 50)
+
+    else if strategy.position_size < 0 and buyCircle
+        strategy.close("Short", qty_percent = 50)
+
+//=====================================================
+// VISUALS
+//=====================================================
+
+plot(showEMA ? emaFilter : na, "EMA Filter", color = color.yellow, linewidth = 2)
+
+plotshape(
+    showArrows and longSignal,
+    title    = "Long Entry",
+    style    = shape.arrowup,
+    location = location.belowbar,
+    size     = size.small,
+    color    = color.green)
+
+plotshape(
+    showArrows and shortSignal,
+    title    = "Short Entry",
+    style    = shape.arrowdown,
+    location = location.abovebar,
+    size     = size.small,
+    color    = color.red)
+
+plotshape(
+    showTPDots and (strategy.position_size > 0 and sellCircle),
+    title    = "Long TP",
+    style    = shape.circle,
+    location = location.abovebar,
+    size     = size.tiny,
+    color    = color.red)
+
+plotshape(
+    showTPDots and (strategy.position_size < 0 and buyCircle),
+    title    = "Short TP",
+    style    = shape.circle,
+    location = location.belowbar,
+    size     = size.tiny,
+    color    = color.green)
+
+//=====================================================
+// ALERTS
+//=====================================================
+
+alertcondition(longSignal,  "Long Entry",  "WT1 crossed above zero")
+alertcondition(shortSignal, "Short Entry", "WT1 crossed below zero")
+alertcondition(strategy.position_size > 0 and sellCircle, "Long TP",  "WT Long TP signal")
+alertcondition(strategy.position_size < 0 and buyCircle,  "Short TP", "WT Short TP signal")

@@ -1,0 +1,116 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © exlux99
+
+//@version=5
+indicator(title='ICHIMOKU Crypto Swing Alert', overlay=true)
+//
+
+o = open
+c = close
+src = close
+price = close
+
+
+uptrendlength = input(4, title='Uptrend Length')
+downtrendlength = input(4, title='Downtrend Length')
+
+
+
+//KDJ// 
+ilong = 9
+isig = 3
+bcwsma(s, l, m) =>
+    _s = s
+    _l = l
+    _m = m
+    _bcwsma = _m * _s + _l - _m
+    _bcwsma
+
+h = ta.highest(high, ilong)
+l = ta.lowest(low, ilong)
+RSV = 100 * ((c - l) / (h - l))
+pK = bcwsma(RSV, isig, 1)
+pD = bcwsma(pK, isig, 1)
+pJ = 3 * pK - 2 * pD
+KD = math.avg(pK, pD)
+
+
+/// --- TREND --- ///
+avghigh = ta.sma(h, uptrendlength)
+avglow = ta.sma(l, downtrendlength)
+uptrend = h > avghigh
+downtrend = l < avglow
+
+//ICHIMOKU BUY & SELL// 
+conversionPeriods = input(9)
+basePeriods = input(26)
+laggingSpan2Periods = input(52)
+displacement = input(26)
+
+donchian(len) =>
+    math.avg(ta.lowest(len), ta.highest(len))
+resolve(src, default) =>
+    if na(src)
+        default
+    else
+        src
+conversionLine = donchian(conversionPeriods)
+baseLine = donchian(basePeriods)
+leadLine1 = math.avg(conversionLine, baseLine)[displacement]
+leadLine2 = donchian(laggingSpan2Periods)[displacement]
+tk_cross_bull = ta.crossover(conversionLine, baseLine)
+tk_cross_bear = ta.crossunder(conversionLine, baseLine)
+cross_y = (conversionLine[1] * (baseLine - baseLine[1]) - baseLine[1] * (conversionLine - conversionLine[1])) / (baseLine - baseLine[1] - (conversionLine - conversionLine[1]))
+tk_cross_below_kumo = cross_y <= leadLine2[1] and cross_y <= leadLine1[1] and cross_y <= leadLine2 and cross_y <= leadLine1
+tk_cross_above_kumo = cross_y >= leadLine2[1] and cross_y >= leadLine1[1] and cross_y >= leadLine2 and cross_y >= leadLine1
+tk_cross_inside_kumo = not tk_cross_below_kumo and not tk_cross_above_kumo
+
+//
+//BUY & SELL
+buycond = (tk_cross_below_kumo or tk_cross_inside_kumo or tk_cross_above_kumo) and ta.rising(pJ[1], 1) and uptrend
+sellcond = (tk_cross_below_kumo or tk_cross_inside_kumo or tk_cross_above_kumo) and ta.falling(pJ[1], 1) and downtrend
+
+
+fromDay = input.int(defval=1, title='From Day', minval=1, maxval=31)
+fromMonth = input.int(defval=1, title='From Month', minval=1, maxval=12)
+fromYear = input.int(defval=2020, title='From Year', minval=1970)
+//monday and session 
+// To Date Inputs
+toDay = input.int(defval=31, title='To Day', minval=1, maxval=31)
+toMonth = input.int(defval=12, title='To Month', minval=1, maxval=12)
+toYear = input.int(defval=2021, title='To Year', minval=1970)
+
+startDate = timestamp(fromYear, fromMonth, fromDay, 00, 00)
+finishDate = timestamp(toYear, toMonth, toDay, 00, 00)
+time_cond = time >= startDate and time <= finishDate
+
+
+
+// ------------------------- Strategy Logic --------------------------------- //
+var longOpeneds = false
+var shortOpeneds = false
+var int timeOfBuys = na
+
+
+
+longConditions = buycond and not longOpeneds 
+
+if longConditions
+    longOpeneds := true
+    timeOfBuys := time
+
+
+longExitSignals = sellcond
+exitLongConditions = longOpeneds[1] and longExitSignals
+
+if exitLongConditions
+    longOpeneds := false
+    timeOfBuys := na
+
+
+alertcondition(condition=longConditions, title="Long", message='Long')
+alertcondition(condition=exitLongConditions, title="Short", message='Short')
+
+plotshape(longConditions, style=shape.labelup, location=location.belowbar, color=color.green, size=size.tiny, title="Long", text="Long", textcolor=color.white)
+plotshape(exitLongConditions , style=shape.labeldown, location=location.abovebar, color=color.red, size=size.tiny, title="Short ", text="Short ", textcolor=color.white)
+

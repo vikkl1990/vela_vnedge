@@ -1,0 +1,168 @@
+//@version=5
+// =============================================================================
+//  Triple-RSI DCA  (Exchange-Agnostic, RSI-signal-based)
+//
+//  Source bot logic: Bot::MultiBot, RSI-driven DCA Long, no leverage assumption,
+//  max_active_deals 9, allowed_deals_on_same_pair 2.
+//
+//  Pine limitation: a strategy can trade only one symbol. Attach this script
+//  to each pair's chart separately. The logic is identical per pair and works
+//  across any exchange/instrument (Spot, Perpetual, Linear Futures).
+//  Adjust commission_value below to match the venue you backtest on.
+//
+//  Mapping notes:
+//    base_order_volume        = 20.075 USD  (quote_currency)
+//    safety_order_volume      = 15.075 USD  (1st SO)
+//    max_safety_orders        = 3
+//    martingale_volume_coef   = 1.9    (each SO 1.9× the previous one)
+//    safety_order_step_pct    = 1.0 %  (1st SO deviation, also "min gate" for signal-SOs)
+//    martingale_step_coef     = 1.65   (price-deviation scale)
+//    safety_order_calc_mode   = base   (deviation measured from BASE order price)
+//    take_profit              = 1.9 %  (take_profit_type = total_bought_volume → from AVG)
+//    deal_close_type          = percent (no signal close, pure %-TP)
+//    stop_loss                = 0  (disabled)
+//    leverage                 = 1×  (no leverage assumed; tweak margin_long if needed)
+//    commission default       = 0.1 % (neutral; adjust per exchange — see notes below)
+//    backtest window          = unlimited by default (toggle in inputs)
+//
+//  Commission reference (set commission_value in strategy() to match your venue):
+//    Bybit Perpetual / Linear Futures (taker)   : ~0.055
+//    Binance Futures USD-M (taker)              : ~0.04
+//    Binance Spot (taker)                       : ~0.10
+//    Kraken Spot (taker)                        : ~0.40
+//    Coinbase Advanced (taker)                  : ~0.40 / ~0.60
+//
+//  Signals (from strategy_list & safety_strategy_list):
+//    BO  entry   : RSI(14, 15m) crosses above 30                        ← deal-start
+//    SO  trigger : (RSI(14, 30m) crosses above 30) OR (RSI(7, 5m) crosses above 30)
+//                  AND price ≤ base × (1 − cumulative_deviation)
+//
+//  Cumulative SO deviations (from BASE):
+//    SO1 = 1.00 %  →  SO2 = 2.65 %  →  SO3 = 5.37 %
+//  SO sizes (martingale ×1.9):
+//    SO1 = 15.075  →  SO2 = 28.6425  →  SO3 = 54.42075
+//  Per-pair max position notional ≈ 118.21 USD
+// =============================================================================
+
+strategy("Multi Long Bot — Single-Pair Replica",
+     overlay                 = true,
+     initial_capital         = 200,
+     default_qty_type        = strategy.cash,
+     default_qty_value       = 20.075,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.1,        // Neutral default — adjust per venue (see header notes)
+     slippage                = 5,
+     pyramiding              = 4,          // BO + 3 SO
+     currency                = currency.USD)
+
+// ============================ INPUTS =========================================
+boVol     = input.float(20.075, "Base Order Volume (USD)",          minval = 0.5,  step = 0.001, group = "USD-Multi — Order Sizing")
+soVol     = input.float(15.075, "Safety Order Volume (1st, USD)",   minval = 0.5,  step = 0.001, group = "USD-Multi — Order Sizing")
+maxSO     = input.int  (3,      "Max Safety Orders",                minval = 0, maxval = 10,     group = "USD-Multi — Order Sizing")
+volScale  = input.float(1.9,    "Volume Scale (martingale)",        minval = 1.0,  step = 0.01,  group = "USD-Multi — Order Sizing")
+
+stepPct   = input.float(1.0,    "Price Step % (1st SO)",            minval = 0.01, step = 0.05, group = "USD-Multi — Price Deviation") / 100.0
+stepScale = input.float(1.65,   "Step Scale (martingale)",          minval = 1.0,  step = 0.01, group = "USD-Multi — Price Deviation")
+
+tpPct     = input.float(1.9,    "Take Profit % (from AVG)",         minval = 0.01, step = 0.05, group = "USD-Multi — Take Profit") / 100.0
+
+useEntryRsi = input.bool   (true, "Require RSI cross-above for BO entry", group = "USD-Multi — Entry Signal (deal start)")
+entryLen    = input.int    (14,   "Entry RSI Length",       minval = 2,    group = "USD-Multi — Entry Signal (deal start)")
+entryThr    = input.float  (30,   "Entry RSI Threshold",                   group = "USD-Multi — Entry Signal (deal start)")
+entryTF     = input.timeframe("15", "Entry RSI Timeframe",                 group = "USD-Multi — Entry Signal (deal start)")
+
+useSoSignal = input.bool   (true, "Require RSI cross-above for SO entry (OR of two TFs)", group = "USD-Multi — SO Signals")
+so1Len      = input.int    (14,   "SO Sig 1 — RSI Length", minval = 2,     group = "USD-Multi — SO Signals")
+so1Thr      = input.float  (30,   "SO Sig 1 — RSI Threshold",              group = "USD-Multi — SO Signals")
+so1TF       = input.timeframe("30","SO Sig 1 — RSI Timeframe",             group = "USD-Multi — SO Signals")
+so2Len      = input.int    (7,    "SO Sig 2 — RSI Length", minval = 2,     group = "USD-Multi — SO Signals")
+so2Thr      = input.float  (30,   "SO Sig 2 — RSI Threshold",              group = "USD-Multi — SO Signals")
+so2TF       = input.timeframe("5", "SO Sig 2 — RSI Timeframe",             group = "USD-Multi — SO Signals")
+
+
+useDateFilter = input.bool(false, "Limit by date window?",                 group = "USD-Multi — Backtest Window")
+fromTs        = input.time(timestamp("2024-01-01 00:00 +0000"), "From",    group = "USD-Multi — Backtest Window")
+toTs          = input.time(timestamp("2030-01-01 00:00 +0000"), "To",      group = "USD-Multi — Backtest Window")
+inWindow      = useDateFilter ? (time >= fromTs and time <= toTs) : true
+
+// ============================ STATE ==========================================
+var float basePx   = na
+var float avgPx    = na
+var float costSum  = 0.0
+var float qtySum   = 0.0
+var int   soFilled = 0
+
+// ============================ SIGNALS ========================================
+entryRsi    = request.security(syminfo.tickerid, entryTF, ta.rsi(close, entryLen)[1], lookahead = barmerge.lookahead_on)
+entrySignal = useEntryRsi ? ta.crossover(entryRsi, entryThr) : true
+
+so1Rsi  = request.security(syminfo.tickerid, so1TF, ta.rsi(close, so1Len)[1], lookahead = barmerge.lookahead_on)
+so2Rsi  = request.security(syminfo.tickerid, so2TF, ta.rsi(close, so2Len)[1], lookahead = barmerge.lookahead_on)
+soSig   = useSoSignal ? (ta.crossover(so1Rsi, so1Thr) or ta.crossover(so2Rsi, so2Thr)) : true
+
+// ============================ HELPERS ========================================
+// Cumulative deviation from base price after k SOs filled
+f_cumDev(k) =>
+    s = 0.0
+    if k > 0
+        for i = 0 to k - 1
+            s += math.pow(stepScale, i)
+    s * stepPct
+
+nextIdx = soFilled + 1
+nextDev = nextIdx > 0 and nextIdx <= maxSO ? f_cumDev(nextIdx) : na
+nextPx  = not na(basePx) and not na(nextDev) ? basePx * (1.0 - nextDev) : na
+nextUsd = soVol * math.pow(volScale, math.max(soFilled, 0))
+
+// ============================ ENTRY: BASE ORDER ==============================
+if inWindow and strategy.position_size == 0 and na(basePx) and entrySignal
+    fillPx = close
+    qty    = boVol / fillPx
+    strategy.entry("BO", strategy.long, qty = qty)
+    basePx   := fillPx
+    avgPx    := fillPx
+    costSum  := boVol
+    qtySum   := qty
+    soFilled := 0
+
+// ============================ SAFETY ORDERS ==================================
+// With safety_strategy_list set, SO fires when signal triggers AND price
+// has dropped at least the cumulative deviation gate. Market order on signal.
+if inWindow and strategy.position_size > 0 and soFilled < maxSO and not na(nextPx)
+    if low <= nextPx and soSig
+        execPx = math.min(open, nextPx)
+        qty    = nextUsd / execPx
+        strategy.entry("SO" + str.tostring(nextIdx), strategy.long, qty = qty)
+        costSum  := costSum + nextUsd
+        qtySum   := qtySum  + qty
+        avgPx    := costSum / qtySum
+        soFilled := soFilled + 1
+
+// ============================ EXIT: TP (from AVG) ============================
+// take_profit_type = total_bought_volume  → percent from AVERAGE entry
+tpPx = not na(avgPx) ? avgPx * (1.0 + tpPct) : na
+if strategy.position_size > 0 and not na(tpPx) and high >= tpPx and inWindow
+    strategy.close_all(comment = "TP")
+    basePx   := na
+    avgPx    := na
+    costSum  := 0.0
+    qtySum   := 0.0
+    soFilled := 0
+
+// ============================ VISUALS ========================================
+plot(strategy.position_size > 0 ? basePx : na, "Base Entry", color = color.new(color.aqua  , 0), linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? avgPx  : na, "Avg Entry",  color = color.new(color.yellow, 0), linewidth = 2, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? tpPx   : na, "TP Target",  color = color.new(color.green , 0), linewidth = 1, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? nextPx : na, "Next SO",    color = color.new(color.red   , 0), linewidth = 1, style = plot.style_linebr)
+
+plotshape(entrySignal and strategy.position_size == 0 and inWindow, "BO Signal", style = shape.triangleup,   location = location.belowbar, color = color.new(color.lime , 0), size = size.tiny)
+plotshape(soSig       and strategy.position_size  > 0 and inWindow, "SO Signal", style = shape.triangledown, location = location.abovebar, color = color.new(color.fuchsia,0), size = size.tiny)
+
+bgcolor(strategy.closedtrades > nz(strategy.closedtrades[1]) ? color.new(color.green, 85) : na)
+
+// ============================ ALERTS / WEBHOOK (DCA Bot) =====================
+var string MSG_DEAL_OPEN  = '{"message_type":"bot","bot_id":<BOT_ID>,"email_token":"<EMAIL_TOKEN>","delay_seconds":0,"pair":"USD_{{ticker}}","action":"start_new_deal"}'
+var string MSG_DEAL_CLOSE = '{"message_type":"bot","bot_id":<BOT_ID>,"email_token":"<EMAIL_TOKEN>","pair":"USD_{{ticker}}","action":"close_at_market_price"}'
+
+alertcondition(strategy.position_size > 0 and strategy.position_size[1] == 0,             title = "Deal Entry",  message = '{"action":"start_new_deal"}')
+alertcondition(strategy.position_size > 0 and not na(tpPx) and high >= tpPx and inWindow, title = "Deal TP",     message = '{"action":"close_at_market_price"}')

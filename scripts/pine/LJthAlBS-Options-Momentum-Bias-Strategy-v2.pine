@@ -1,0 +1,113 @@
+//@version=5
+strategy("Options Momentum Bias Strategy v2", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, pyramiding=0, calc_on_every_tick=true)
+
+// === Inputs ===
+fastEmaLen      = input.int(9, "Fast EMA Length", minval=1)
+slowEmaLen      = input.int(20, "Slow EMA Length", minval=1)
+trendEmaLen     = input.int(50, "Trend EMA Length", minval=1)
+volLen          = input.int(20, "Volume Avg Length", minval=1)
+volMult         = input.float(1.2, "Volume Multiplier", step=0.1)
+atrLen          = input.int(14, "ATR Length", minval=1)
+stopATR         = input.float(1.0, "Stop Loss ATR Mult", step=0.1)
+targetATR       = input.float(1.5, "Target ATR Mult", step=0.1)
+pullbackLookback= input.int(3, "Pullback Lookback Bars", minval=1)
+cooldownBars    = input.int(5, "Signal Cooldown Bars", minval=0)
+useSession      = input.bool(true, "Use Regular Session Filter")
+sessionInput    = input.session("0930-1600", "Session")
+showBg          = input.bool(true, "Show Bias Background")
+showLabels      = input.bool(true, "Show CALL/PUT Labels")
+showVWAP        = input.bool(true, "Show VWAP")
+showEMAs        = input.bool(true, "Show EMAs")
+
+// === Session ===
+inSession = not na(time(timeframe.period, sessionInput))
+sessionOK = useSession ? inSession : true
+
+// === Core calculations ===
+vwapValue = ta.vwap(close)
+fastEma   = ta.ema(close, fastEmaLen)
+slowEma   = ta.ema(close, slowEmaLen)
+trendEma  = ta.ema(close, trendEmaLen)
+avgVol    = ta.sma(volume, volLen)
+atr       = ta.atr(atrLen)
+
+volActive = volume > avgVol * volMult
+
+// === Bias ===
+bullBias = close > vwapValue and fastEma > slowEma and close > trendEma
+bearBias = close < vwapValue and fastEma < slowEma and close < trendEma
+
+// === Pullback logic ===
+// For bullish setup: recent low touched/undercut fast EMA or previous bar weakness existed
+bullPullback = ta.lowest(low, pullbackLookback) <= fastEma
+bearPullback = ta.highest(high, pullbackLookback) >= fastEma
+
+// === Trigger logic ===
+// Stronger than your original version:
+// - bullish bias
+// - active volume
+// - pullback happened recently
+// - candle closes bullish through prior bar high
+// - fast EMA is rising
+bullBreak = close > high[1] and close > open and fastEma > fastEma[1]
+bearBreak = close < low[1] and close < open and fastEma < fastEma[1]
+
+bullSignalRaw = sessionOK and bullBias and volActive and bullPullback and bullBreak
+bearSignalRaw = sessionOK and bearBias and volActive and bearPullback and bearBreak
+
+// === Cooldown ===
+var int lastBullBar = na
+var int lastBearBar = na
+
+bullCooldownOK = na(lastBullBar) or (bar_index - lastBullBar > cooldownBars)
+bearCooldownOK = na(lastBearBar) or (bar_index - lastBearBar > cooldownBars)
+
+bullSignal = bullSignalRaw and bullCooldownOK and strategy.position_size <= 0
+bearSignal = bearSignalRaw and bearCooldownOK and strategy.position_size >= 0
+
+if bullSignal
+    lastBullBar := bar_index
+
+if bearSignal
+    lastBearBar := bar_index
+
+// === Entries ===
+if bullSignal
+    strategy.entry("CALL", strategy.long)
+
+if bearSignal
+    strategy.entry("PUT", strategy.short)
+
+// === Exits ===
+longStop   = strategy.position_avg_price - atr * stopATR
+longTarget = strategy.position_avg_price + atr * targetATR
+
+shortStop   = strategy.position_avg_price + atr * stopATR
+shortTarget = strategy.position_avg_price - atr * targetATR
+
+strategy.exit("CALL Exit", from_entry="CALL", stop=longStop, limit=longTarget)
+strategy.exit("PUT Exit", from_entry="PUT", stop=shortStop, limit=shortTarget)
+
+// === Emergency exits on structure failure ===
+if strategy.position_size > 0 and close < vwapValue
+    strategy.close("CALL", comment="Lost VWAP")
+
+if strategy.position_size < 0 and close > vwapValue
+    strategy.close("PUT", comment="Reclaimed VWAP")
+
+// === Plots ===
+plot(showVWAP ? vwapValue : na, title="VWAP", color=color.yellow, linewidth=2)
+plot(showEMAs ? fastEma : na, title="Fast EMA", color=color.green, linewidth=1)
+plot(showEMAs ? slowEma : na, title="Slow EMA", color=color.red, linewidth=1)
+plot(showEMAs ? trendEma : na, title="Trend EMA", color=color.blue, linewidth=1)
+
+// === Background ===
+bgcolor(showBg ? bullBias ? color.new(color.green, 90) : bearBias ? color.new(color.red, 90) : na : na)
+
+// === Labels on chart ===
+plotshape(showLabels and bullSignal, title="CALL Signal", location=location.belowbar, style=shape.labelup, color=color.new(color.green, 0), textcolor=color.white, text="CALL", size=size.tiny)
+plotshape(showLabels and bearSignal, title="PUT Signal", location=location.abovebar, style=shape.labeldown, color=color.new(color.red, 0), textcolor=color.white, text="PUT", size=size.tiny)
+
+// === Alerts ===
+alertcondition(bullSignal, title="CALL Signal Alert", message="CALL setup detected")
+alertcondition(bearSignal, title="PUT Signal Alert", message="PUT setup detected")

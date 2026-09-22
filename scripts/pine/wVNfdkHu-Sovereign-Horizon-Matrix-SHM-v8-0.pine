@@ -1,0 +1,493 @@
+//@version=6
+strategy("Sovereign Horizon Matrix (SHM) v8.0", overlay=true, max_labels_count=500, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=80, pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.075, slippage=30, margin_long=25, margin_short=33.3)
+
+// ==========================================
+// 1. INPUTS & CONFIGURATION
+// ==========================================
+// Core Framework Settings
+var_fast_wma_len = input.int(63, title="Fast Institutional WMA Length", group="Core Framework")
+var_slow_wma_len = input.int(510, title="Macro Baseline WMA Length", group="Core Framework")
+macro_envel_pct  = input.float(1.0, title="Macro 480 Envelope %", group="Core Framework") / 100.0
+fast_envel_pct   = input.float(0.75, title="Fast 65 Envelope %", group="Core Framework") / 100.0
+sensitivity      = input.int(41, title="Structural Sensitivity Filter", group="Core Framework")
+src              = input.source(ohlc4, title="Price Source Data", group="Core Framework")
+wma_offset       = input.int(1, title="WMA Visual Offset", minval=-500, maxval=500, group="Core Framework", tooltip="Shifts WMA plots right (positive) or left (negative) visually.")
+
+// Break & Retest (B&R) Engine Execution Settings
+var string G_BNR_EXEC = "B&R Execution Matrix"
+bnr_exec_mode = input.string("Baseline Only", title="B&R Signal Execution Mode", options=["Baseline Only", "Standalone (B&R Only)", "Combined (Baseline OR B&R)"], group=G_BNR_EXEC, tooltip="Select how Break & Retest signals interact with strategy entries.")
+
+// Micro Break & Retest Engine (Fast WMA)
+var string G_MICRO    = "Micro B&R Engine (Fast WMA)"
+use_micro_bnr         = input.bool(false, "Enable Micro B&R Engine", group=G_MICRO)
+use_micro_visuals     = input.bool(false, "Enable Micro B&R Visual Labels", group=G_MICRO)
+micro_proximity_pct   = input.float(1.8, "Micro Proximity Depth (%)", minval=0.1, step=0.1, tooltip="Allows retests to trigger within X% distance of the Fast WMA.", group=G_MICRO) / 100.0
+micro_touch_depth_pct = input.float(0.0, "Micro WMA Touch Depth (%)", minval=0.0, step=0.1, tooltip="Maximum allowed penetration depth past Fast WMA during retest.", group=G_MICRO) / 100.0
+micro_min_bars        = input.int(1, "Micro Min Bars After Break", minval=1, tooltip="Minimum candles required after breakout before retest triggers.", group=G_MICRO)
+micro_max_bars        = input.int(4, "Micro Max Retest Window (Bars)", minval=3, tooltip="Max bars allowed for pullbacks.", group=G_MICRO)
+
+// Macro Break & Retest Engine (Macro Baseline WMA)
+var string G_MACRO    = "Macro B&R Engine (Macro Baseline WMA)"
+use_macro_bnr         = input.bool(false, "Enable Macro B&R Engine", group=G_MACRO)
+use_macro_visuals     = input.bool(false, "Enable Macro B&R Visual Labels", group=G_MACRO)
+macro_proximity_pct   = input.float(63.0, "Macro Proximity Depth (%)", minval=0.1, step=0.1, tooltip="Allows retests to trigger within X% distance of the Macro WMA.", group=G_MACRO) / 100.0
+macro_touch_depth_pct = input.float(0.7, "Macro WMA Touch Depth (%)", minval=0.0, step=0.1, tooltip="Maximum allowed penetration depth past Macro WMA during retest.", group=G_MACRO) / 100.0
+macro_min_bars        = input.int(2, "Macro Min Bars After Break", minval=1, tooltip="Minimum candles required after breakout before retest triggers.", group=G_MACRO)
+macro_max_bars        = input.int(4000, "Macro Max Retest Window (Bars)", minval=3, tooltip="Max bars allowed for pullbacks.", group=G_MACRO)
+
+// EXPERIMENTAL BASELINE PRICE ACTION TOGGLE MODULE
+var string G_PA_TEST = "Experimental Baseline PA Module"
+use_pa_test          = input.bool(true, title="Enable Experimental Baseline PA Module", tooltip="Turn ON to bypass standard entries and isolate pure line-crossing mechanics.", group=G_PA_TEST)
+use_body_trigger     = input.bool(true, title="► Use Candle Body Trigger (Close Cross)", tooltip="Trigger entries when the candle CLOSE crosses the Fast WMA line.", group=G_PA_TEST)
+use_wick_trigger     = input.bool(true, title="► Use Candle Wick Trigger (High/Low Cross)", tooltip="Trigger entries immediately when the candle WICK (High/Low) crosses the Fast WMA line.", group=G_PA_TEST)
+
+// Idea 2: Macro Tide Filter (480 WMA Rules)
+use_macro_tide = input.bool(false, title="Enable Macro Tide Filter", tooltip="Only allows BUYs above the 480 WMA and SELLs below the 480 WMA.", group="Idea 2: Macro Tide")
+
+// Idea 3: RSI Momentum Matrix Filter (With Timeframe Locking)
+use_rsi_filter  = input.bool(true, title="Enable RSI Momentum Filter", tooltip="Filters entries using momentum thresholds to prevent chasing exhausted moves.", group="Idea 3: RSI Filter")
+rsi_tf          = input.timeframe("1440", title="Locked RSI Timeframe", tooltip="Select '1440' (24 Hours) to lock RSI to a 24h rolling period, or change to any timeframe. Leave empty or match chart timeframe to disable locking.", group="Idea 3: RSI Filter")
+rsi_len         = input.int(33, title="RSI Lookback Period", group="Idea 3: RSI Filter")
+rsi_long_min    = input.float(42.0, title="Min RSI for Longs (Velocity Gate)", group="Idea 3: RSI Filter")
+rsi_long_max    = input.float(48.0, title="Max RSI for Longs (Exhaustion Cap)", group="Idea 3: RSI Filter")
+rsi_short_max   = input.float(52.0, title="Max RSI for Shorts (Velocity Gate)", group="Idea 3: RSI Filter")
+rsi_short_min   = input.float(46.0, title="Min RSI for Shorts (Exhaustion Floor)", group="Idea 3: RSI Filter")
+
+// Supertrend Integration Settings
+st_atr_len    = input.int(1, title="Supertrend ATR Length", group="Supertrend Extensions")
+st_factor     = input.float(0.0, title="Supertrend Multiplier", group="Supertrend Extensions")
+link_strategy = input.bool(false, title="Link Main Supertrend to Strategy Entry/Exit?", group="Supertrend Extensions")
+
+// Risk Management Base Settings
+var string G_RISK = "Risk Engine Base Parameters"
+sl_anchor = input.string("Trigger Candle Extreme", title="Stop Loss Reference Anchor", options=["Trigger Candle Extreme", "Actual Execution Price"], group=G_RISK, tooltip="Choose whether SL % is measured from signal candle High/Low or your exact fill price.")
+sl_pct    = input.float(3.0, title="Stop Loss Buffer (%)", tooltip="Percentage distance for initial stop loss calculation.", group=G_RISK) / 100.0
+use_reentry_reset = input.bool(false, title="Enable Same-Direction Re-Entry Reset", tooltip="When active, triggering a new signal in the same direction closes the existing trade and resets entry/stop levels at current price.", group=G_RISK)
+
+// EXCLUSIVE RISK MANAGEMENT MODULE SELECTOR
+var string G_EXITS = "EXCLUSIONARY RISK MANAGEMENT SELECTOR"
+exit_mode = input.string("Module 3: Candle-Close Trail", title="Active Risk Engine Module", 
+             options=["Module 1: 3-Phase TP & BE", "Module 2: 65 WMA Ribbon Trail", "Module 3: Candle-Close Trail", "Disabled"], 
+             group=G_EXITS, tooltip="Selects the single active exit engine. Selecting one automatically deactivates all others.")
+
+bool use_mod1 = (exit_mode == "Module 1: 3-Phase TP & BE")
+bool use_mod2 = (exit_mode == "Module 2: 65 WMA Ribbon Trail")
+bool use_mod3 = (exit_mode == "Module 3: Candle-Close Trail")
+
+// MODULE 1 SETTINGS
+var string G_MOD1 = "SHM Module 1: 3-Phase TP & Breakeven Settings"
+enable_be_at_tp1  = input.bool(true, title="► Move Stop Loss to Breakeven at TP1", group=G_MOD1)
+tp1_target_pct    = input.float(1.0, title="TP 1 Target (%)", step=0.1, group=G_MOD1)
+tp1_qty_pct       = input.float(33.33, title="► TP 1 Exit Quantity (%)", step=1.0, tooltip="33.33% = 1 of 3 contracts", group=G_MOD1)
+tp2_target_pct    = input.float(2.0, title="TP 2 Target (%)", step=0.1, group=G_MOD1)
+tp2_qty_pct       = input.float(33.33, title="► TP 2 Exit Quantity (%)", step=1.0, group=G_MOD1)
+tp3_target_pct    = input.float(3.0, title="TP 3 Target (%)", step=0.1, group=G_MOD1)
+tp3_qty_pct       = input.float(33.34, title="► TP 3 Exit Quantity (%)", step=1.0, group=G_MOD1)
+
+// MODULE 2 SETTINGS
+var string G_WMA  = "SHM Module 2: 63 WMA Trend Line Trail"
+wma_len           = input.int(1, "WMA Lookback Period", group=G_WMA)
+wma_buffer_pct    = input.float(0.0, "WMA Line Percentage Buffer (%)", minval=0.0, step=0.1, group=G_WMA)
+
+// MODULE 3 SETTINGS
+var string G_CANDLE = "SHM Module 3: Candle-Close Percentage Trail"
+candle_trail_pct  = input.float(77.2, "Candle Trail Percentage Distance (%)", minval=0.0, step=0.1, group=G_CANDLE)
+
+// ==========================================
+// 2. INDICATOR MATHEMATICS & FILTERS
+// ==========================================
+fast_wma = ta.wma(src, var_fast_wma_len)
+slow_wma = ta.wma(src, var_slow_wma_len)
+
+upper_envelope = slow_wma * (1 + macro_envel_pct)
+lower_envelope = slow_wma * (1 - macro_envel_pct)
+
+fast_upper_envelope = fast_wma * (1 + fast_envel_pct)
+fast_lower_envelope = fast_wma * (1 - fast_envel_pct)
+
+filter_ma = ta.sma(src, sensitivity)
+
+macro_bullish = not use_macro_tide or (close > slow_wma)
+macro_bearish = not use_macro_tide or (close < slow_wma)
+
+rsi_raw = ta.rsi(src, rsi_len)
+rsi_val = request.security(syminfo.tickerid, rsi_tf, rsi_raw[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+rsi_long_ok  = not use_rsi_filter or (rsi_val >= rsi_long_min and rsi_val <= rsi_long_max)
+rsi_short_ok = not use_rsi_filter or (rsi_val <= rsi_short_max and rsi_val >= rsi_short_min)
+
+st_atr = ta.atr(st_atr_len)
+
+// --- Engine 1: Main Fast WMA Supertrend ---
+src_up = fast_wma - (st_factor * st_atr)
+src_dn = fast_wma + (st_factor * st_atr)
+var float up_band = 0.0
+var float dn_band = 0.0
+var int direction = 1
+up_band := nz(up_band[1]) == 0.0 ? src_up : (close[1] > up_band[1] ? math.max(src_up, up_band[1]) : src_up)
+dn_band := nz(dn_band[1]) == 0.0 ? src_dn : (close[1] < dn_band[1] ? math.min(src_dn, dn_band[1]) : src_dn)
+direction := close > dn_band[1] ? -1 : (close < up_band[1] ? 1 : nz(direction[1], 1))
+supertrend = direction == -1 ? up_band : dn_band
+
+// --- Engine 2: Upper Fast WMA Envelope Supertrend ---
+src_up_u = fast_upper_envelope - (st_factor * st_atr)
+src_dn_u = fast_upper_envelope + (st_factor * st_atr)
+var float up_band_u = 0.0
+var float dn_band_u = 0.0
+var int direction_u = 1
+up_band_u := nz(up_band_u[1]) == 0.0 ? src_up_u : (close[1] > up_band_u[1] ? math.max(src_up_u, up_band_u[1]) : src_up_u)
+dn_band_u := nz(dn_band_u[1]) == 0.0 ? src_dn_u : (close[1] < dn_band_u[1] ? math.min(src_dn_u, dn_band_u[1]) : src_dn_u)
+direction_u := close > dn_band_u[1] ? -1 : (close < up_band_u[1] ? 1 : nz(direction_u[1], 1))
+supertrend_u = direction_u == -1 ? up_band_u : dn_band_u
+
+// --- Engine 3: Lower Fast WMA Envelope Supertrend ---
+src_up_l = fast_lower_envelope - (st_factor * st_atr)
+src_dn_l = fast_lower_envelope + (st_factor * st_atr)
+var float up_band_l = 0.0
+var float dn_band_l = 0.0
+var int direction_l = 1
+up_band_l := nz(up_band_l[1]) == 0.0 ? src_up_l : (close[1] > up_band_l[1] ? math.max(src_up_l, up_band_l[1]) : src_up_l)
+dn_band_l := nz(dn_band_l[1]) == 0.0 ? src_dn_l : (close[1] < dn_band_l[1] ? math.min(src_dn_l, dn_band_l[1]) : src_dn_l)
+direction_l := close > dn_band_l[1] ? -1 : (close < up_band_l[1] ? 1 : nz(direction_l[1], 1))
+supertrend_l = direction_l == -1 ? up_band_l : dn_band_l
+
+st_bullish = (direction == -1)
+st_bearish = (direction == 1)
+
+// =========================================================================
+// BREAK & RETEST MATH ENGINES
+// =========================================================================
+var int bars_since_micro_bull = 0
+var int bars_since_micro_bear = 0
+
+if ta.crossover(close, fast_wma)
+    bars_since_micro_bull := 0
+else
+    bars_since_micro_bull += 1
+
+if ta.crossunder(close, fast_wma)
+    bars_since_micro_bear := 0
+else
+    bars_since_micro_bear += 1
+
+bool micro_bull_touch  = (bars_since_micro_bull >= micro_min_bars) and (bars_since_micro_bull <= micro_max_bars) and (low <= fast_wma * (1 + micro_proximity_pct)) and (low >= fast_wma * (1 - micro_touch_depth_pct))
+bool micro_bull_bounce = micro_bull_touch and (close > open) and (close > fast_wma)
+
+bool micro_bear_touch  = (bars_since_micro_bear >= micro_min_bars) and (bars_since_micro_bear <= micro_max_bars) and (high >= fast_wma * (1 - micro_proximity_pct)) and (high <= fast_wma * (1 + micro_touch_depth_pct))
+bool micro_bear_bounce = micro_bear_touch and (close < open) and (close < fast_wma)
+
+var bool micro_bull_fired = false
+if bars_since_micro_bull == 0
+    micro_bull_fired := false
+
+bool signal_micro_bull = false
+if micro_bull_bounce and not micro_bull_fired
+    signal_micro_bull := true
+    micro_bull_fired  := true
+
+var bool micro_bear_fired = false
+if bars_since_micro_bear == 0
+    micro_bear_fired := false
+
+bool signal_micro_bear = false
+if micro_bear_bounce and not micro_bear_fired
+    signal_micro_bear := true
+    micro_bear_fired  := true
+
+var int bars_since_macro_bull = 0
+var int bars_since_macro_bear = 0
+
+if ta.crossover(close, slow_wma)
+    bars_since_macro_bull := 0
+else
+    bars_since_macro_bull += 1
+
+if ta.crossunder(close, slow_wma)
+    bars_since_macro_bear := 0
+else
+    bars_since_macro_bear += 1
+
+bool macro_bull_touch  = (bars_since_macro_bull >= macro_min_bars) and (bars_since_macro_bull <= macro_max_bars) and (low <= slow_wma * (1 + macro_proximity_pct)) and (low >= slow_wma * (1 - macro_touch_depth_pct))
+bool macro_bull_bounce = macro_bull_touch and (close > open) and (close > slow_wma)
+
+bool macro_bear_touch  = (bars_since_macro_bear >= macro_min_bars) and (bars_since_macro_bear <= macro_max_bars) and (high >= slow_wma * (1 - macro_proximity_pct)) and (high <= slow_wma * (1 + macro_touch_depth_pct))
+bool macro_bear_bounce = macro_bear_touch and (close < open) and (close < slow_wma)
+
+var bool macro_bull_fired = false
+if bars_since_macro_bull == 0
+    macro_bull_fired := false
+
+bool signal_macro_bull = false
+if macro_bull_bounce and not macro_bull_fired
+    signal_macro_bull := true
+    macro_bull_fired  := true
+
+var bool macro_bear_fired = false
+if bars_since_macro_bear == 0
+    macro_bear_fired := false
+
+bool signal_macro_bear = false
+if macro_bear_bounce and not macro_bear_fired
+    signal_macro_bear := true
+    macro_bear_fired  := true
+
+// ==========================================
+// 3. PLOTS & VISUALIZATION
+// ==========================================
+plot(slow_wma, color=color.rgb(125, 129, 140), linewidth=1, title="480 WMA Tide Line", offset=wma_offset)
+plot(upper_envelope, color=color.rgb(250, 170, 104, 50), linewidth=1, title="Upper 480 Envelope", offset=wma_offset)
+plot(lower_envelope, color=color.rgb(250, 170, 104, 50), linewidth=1, title="Lower 480 Envelope", offset=wma_offset)
+
+plot_fast_up = plot(fast_upper_envelope, color=color.new(#22ab94, 100), title="Fast Upper Boundary (Invisible)", offset=wma_offset)
+plot_fast_dn = plot(fast_lower_envelope, color=color.new(#22ab94, 100), title="Fast Lower Boundary (Invisible)", offset=wma_offset)
+plot(fast_wma, color=color.new(#22ab94, 60), title="Fast Mid Baseline", offset=wma_offset)
+fill(plot_fast_up, plot_fast_dn, color=color.new(#22ab94, 90), title="Fast WMA Matrix Cloud")
+
+bodyMiddle = plot((open + close) / 2, display=display.none, title="Candle Midpoint")
+
+upTrend = plot(direction < 0 ? supertrend : na, "Main Up Trend", color=color.rgb(184, 184, 184, 50), style=plot.style_linebr, linewidth=1, offset=wma_offset)
+downTrend = plot(direction < 0 ? na : supertrend, "Main Down Trend", color=color.rgb(184, 184, 184, 50), style=plot.style_linebr, linewidth=1, offset=wma_offset)
+fill(bodyMiddle, upTrend, color=color.rgb(34, 171, 148, 92), title="Main Bullish Cloud")
+fill(bodyMiddle, downTrend, color=color.rgb(238, 32, 0, 92), title="Main Bearish Cloud")
+
+upTrend_u = plot(direction_u < 0 ? supertrend_u : na, "Upper Env Up Trend", color=#22ab943f, style=plot.style_linebr, linewidth=1, offset=wma_offset)
+downTrend_u = plot(direction_u < 0 ? na : supertrend_u, "Upper Env Down Trend", color=#ee2000, style=plot.style_linebr, linewidth=2, offset=wma_offset)
+fill(bodyMiddle, upTrend_u, color=color.rgb(34, 171, 148, 95), title="Upper Env Bullish Cloud")
+fill(bodyMiddle, downTrend_u, color=color.rgb(238, 32, 0, 95), title="Upper Env Bearish Cloud")
+
+upTrend_l = plot(direction_l < 0 ? supertrend_l : na, "Lower Env Up Trend", color=#22ab94, style=plot.style_linebr, linewidth=2, offset=wma_offset)
+downTrend_l = plot(direction_l < 0 ? na : supertrend_l, "Lower Env Down Trend", color=color.rgb(238, 32, 0, 75), style=plot.style_linebr, linewidth=1, offset=wma_offset)
+fill(bodyMiddle, upTrend_l, color=color.rgb(34, 171, 148, 95), title="Lower Env Bullish Cloud")
+fill(bodyMiddle, downTrend_l, color=color.rgb(238, 32, 0, 95), title="Lower Env Bearish Cloud")
+
+plotshape(use_micro_visuals and use_micro_bnr and signal_micro_bull, title="Micro B&R Buy", style=shape.triangleup, location=location.belowbar, color=color.new(#00E676, 20), text="µB&R\nBUY", textcolor=color.rgb(54, 58, 69, 100), size=size.tiny)
+plotshape(use_micro_visuals and use_micro_bnr and signal_micro_bear, title="Micro B&R Sell", style=shape.triangledown, location=location.abovebar, color=color.new(#FF1744, 20), text="µB&R\nSELL", textcolor=color.rgb(255, 255, 255, 100), size=size.tiny)
+
+plotshape(use_macro_visuals and use_macro_bnr and signal_macro_bull, title="MACRO B&R Buy", style=shape.triangleup, location=location.belowbar, color=color.new(#2962FF, 0), text="MACRO B&R\nBUY", textcolor=color.rgb(255, 255, 255, 100), size=size.small)
+plotshape(use_macro_visuals and use_macro_bnr and signal_macro_bear, title="MACRO B&R Sell", style=shape.triangledown, location=location.abovebar, color=color.new(#FF6D00, 0), text="MACRO B&R\nSELL", textcolor=color.rgb(255, 255, 255, 100), size=size.small)
+
+// ==========================================
+// 4. STRATEGY ENTRY ENGINE
+// ==========================================
+body_cross_fast_up   = ta.crossover(close, fast_wma)
+body_cross_slow_up   = ta.crossover(close, slow_wma)
+body_break_up        = body_cross_fast_up or body_cross_slow_up
+
+body_cross_fast_dn   = ta.crossunder(close, fast_wma)
+body_cross_slow_dn   = ta.crossunder(close, slow_wma)
+body_break_down      = body_cross_fast_dn or body_cross_slow_dn
+
+wick_cross_fast_up   = ta.crossover(high, fast_wma)
+wick_cross_slow_up   = ta.crossover(high, slow_wma)
+wick_break_up        = wick_cross_fast_up or wick_cross_slow_up
+
+wick_cross_fast_dn   = ta.crossunder(low, fast_wma)
+wick_cross_slow_dn   = ta.crossunder(low, slow_wma)
+wick_break_down      = wick_cross_fast_dn or wick_cross_slow_dn
+
+bool raw_breakout_long  = false
+bool raw_breakout_short = false
+
+if use_pa_test
+    bool has_active_toggle = use_body_trigger or use_wick_trigger
+    if has_active_toggle
+        raw_breakout_long  := (use_body_trigger and body_break_up) or (use_wick_trigger and wick_break_up)
+        raw_breakout_short := (use_body_trigger and body_break_down) or (use_wick_trigger and wick_break_down)
+    else
+        raw_breakout_long  := body_break_up
+        raw_breakout_short := body_break_down
+else
+    raw_breakout_long  := body_break_up
+    raw_breakout_short := body_break_down
+
+// Gated B&R Signal Conditions
+bool active_micro_bull = use_micro_bnr and signal_micro_bull
+bool active_micro_bear = use_micro_bnr and signal_micro_bear
+
+bool active_macro_bull = use_macro_bnr and signal_macro_bull
+bool active_macro_bear = use_macro_bnr and signal_macro_bear
+
+bool bnr_bull_signal = active_micro_bull or active_macro_bull
+bool bnr_bear_signal = active_micro_bear or active_macro_bear
+
+bool trigger_long  = false
+bool trigger_short = false
+
+if bnr_exec_mode == "Baseline Only"
+    trigger_long  := raw_breakout_long
+    trigger_short := raw_breakout_short
+else if bnr_exec_mode == "Standalone (B&R Only)"
+    trigger_long  := bnr_bull_signal
+    trigger_short := bnr_bear_signal
+else // Combined (Baseline OR B&R)
+    trigger_long  := raw_breakout_long or bnr_bull_signal
+    trigger_short := raw_breakout_short or bnr_bear_signal
+
+longCondition  = (link_strategy ? (trigger_long and st_bullish and close > filter_ma) : (trigger_long and close > filter_ma)) and macro_bullish and rsi_long_ok
+shortCondition = (link_strategy ? (trigger_short and st_bearish and close < filter_ma) : (trigger_short and close < filter_ma)) and macro_bearish and rsi_short_ok
+
+var float active_sl = na
+var int trade_state = 0
+
+if (longCondition)
+    strategy.entry("Buy", strategy.long)
+    if sl_anchor == "Trigger Candle Extreme"
+        active_sl := low * (1 - sl_pct)
+    trade_state := 1
+
+if (shortCondition)
+    strategy.entry("Sell", strategy.short)
+    if sl_anchor == "Trigger Candle Extreme"
+        active_sl := high * (1 + sl_pct)
+    trade_state := -1
+
+if strategy.position_size > 0 and strategy.position_size[1] <= 0
+    if sl_anchor == "Actual Execution Price"
+        active_sl := strategy.position_avg_price * (1 - sl_pct)
+
+if strategy.position_size < 0 and strategy.position_size[1] >= 0
+    if sl_anchor == "Actual Execution Price"
+        active_sl := strategy.position_avg_price * (1 + sl_pct)
+
+// ==========================================
+// 5. VISUAL LABELS & FALSE SIGNAL LOCATOR
+// ==========================================
+plotshape(longCondition, title="Buy Visual Label", style=shape.labelup, location=location.belowbar, color=#22ab94, text="BUY", textcolor=color.white, size=size.tiny)
+plotshape(shortCondition, title="Sell Visual Label", style=shape.labeldown, location=location.abovebar, color=#f23645, text="SELL", textcolor=color.white, size=size.tiny)
+
+bool long_fail_trigger  = (trade_state == 1 and low <= active_sl)
+bool short_fail_trigger = (trade_state == -1 and high >= active_sl)
+
+if (strategy.position_size == 0 and not longCondition and not shortCondition)
+    active_sl   := na
+    trade_state := 0
+
+plot(active_sl, title="SHM System Stop Line", 
+     color=trade_state == 1 ? color.rgb(34, 171, 148, 75): trade_state == -1 ? color.rgb(238, 32, 0, 75): na, 
+     linewidth=2, style=plot.style_linebr)
+
+plotshape(long_fail_trigger, title="False Buy Indicator", style=shape.xcross, location=location.belowbar, color=#22ab94, text="FAKE\nBUY", textcolor=#22ab9400, size=size.tiny)
+plotshape(short_fail_trigger, title="False Sell Indicator", style=shape.xcross, location=location.abovebar, color=#ee2000, text="FAKE\nSELL", textcolor=#f2364600, size=size.tiny)
+
+// =========================================================================
+// 6. MUTUALLY EXCLUSIVE RISK ENGINE EXECUTION
+// =========================================================================
+
+// Module State Variable Tracking
+var float entry_price      = na
+var bool  tp1_hit_long     = false
+var bool  tp1_hit_short    = false
+var float peak_candle_cl   = na
+var float valley_candle_cl = na
+
+if strategy.position_size > 0 and strategy.position_size[1] <= 0
+    entry_price      := strategy.position_avg_price
+    tp1_hit_long     := false
+    peak_candle_cl   := close
+
+if strategy.position_size < 0 and strategy.position_size[1] >= 0
+    entry_price      := strategy.position_avg_price
+    tp1_hit_short    := false
+    valley_candle_cl := close
+
+if strategy.position_size == 0
+    entry_price      := na
+    tp1_hit_long     := false
+    tp1_hit_short    := false
+    peak_candle_cl   := na
+    valley_candle_cl := na
+
+if strategy.position_size > 0 and close > peak_candle_cl
+    peak_candle_cl := close
+
+if strategy.position_size < 0 and close < valley_candle_cl
+    valley_candle_cl := close
+
+// -------------------------------------------------------------------------
+// MODULE 1: 3-PHASE TAKE PROFIT & BREAKEVEN
+// -------------------------------------------------------------------------
+long_tp1  = entry_price * (1 + tp1_target_pct / 100)
+long_tp2  = entry_price * (1 + tp2_target_pct / 100)
+long_tp3  = entry_price * (1 + tp3_target_pct / 100)
+
+short_tp1 = entry_price * (1 - tp1_target_pct / 100)
+short_tp2 = entry_price * (1 - tp2_target_pct / 100)
+short_tp3 = entry_price * (1 - tp3_target_pct / 100)
+
+if strategy.position_size > 0 and high >= long_tp1
+    tp1_hit_long := true
+
+if strategy.position_size < 0 and low <= short_tp1
+    tp1_hit_short := true
+
+float mod1_sl_long  = (enable_be_at_tp1 and tp1_hit_long)  ? entry_price : active_sl
+float mod1_sl_short = (enable_be_at_tp1 and tp1_hit_short) ? entry_price : active_sl
+
+if use_mod1 and strategy.position_size > 0
+    if tp1_qty_pct > 0
+        strategy.exit("Long TP1", from_entry="Buy", qty_percent=tp1_qty_pct, limit=long_tp1, stop=mod1_sl_long)
+    if tp2_qty_pct > 0
+        strategy.exit("Long TP2", from_entry="Buy", qty_percent=tp2_qty_pct, limit=long_tp2, stop=mod1_sl_long)
+    if tp3_qty_pct > 0
+        strategy.exit("Long TP3", from_entry="Buy", qty_percent=tp3_qty_pct, limit=long_tp3, stop=mod1_sl_long)
+
+if use_mod1 and strategy.position_size < 0
+    if tp1_qty_pct > 0
+        strategy.exit("Short TP1", from_entry="Sell", qty_percent=tp1_qty_pct, limit=short_tp1, stop=mod1_sl_short)
+    if tp2_qty_pct > 0
+        strategy.exit("Short TP2", from_entry="Sell", qty_percent=tp2_qty_pct, limit=short_tp2, stop=mod1_sl_short)
+    if tp3_qty_pct > 0
+        strategy.exit("Short TP3", from_entry="Sell", qty_percent=tp3_qty_pct, limit=short_tp3, stop=mod1_sl_short)
+
+// -------------------------------------------------------------------------
+// MODULE 2: 65 WMA RIBBON TRAIL
+// -------------------------------------------------------------------------
+wma_high_ribbon = ta.wma(high, wma_len)
+wma_low_ribbon  = ta.wma(low, wma_len)
+
+float mod2_sl_long  = wma_low_ribbon * (1 - (wma_buffer_pct / 100))
+float mod2_sl_short = wma_high_ribbon * (1 + (wma_buffer_pct / 100))
+
+float active_mod2_sl_long  = na(active_sl) ? mod2_sl_long  : math.max(mod2_sl_long, active_sl)
+float active_mod2_sl_short = na(active_sl) ? mod2_sl_short : math.min(mod2_sl_short, active_sl)
+
+if use_mod2 and strategy.position_size > 0
+    strategy.exit("Long WMA Exit", from_entry="Buy", stop=active_mod2_sl_long)
+
+if use_mod2 and strategy.position_size < 0
+    strategy.exit("Short WMA Exit", from_entry="Sell", stop=active_mod2_sl_short)
+
+// -------------------------------------------------------------------------
+// MODULE 3: CANDLE-CLOSE PERCENTAGE TRAIL
+// -------------------------------------------------------------------------
+float mod3_sl_long  = peak_candle_cl * (1 - (candle_trail_pct / 100))
+float mod3_sl_short = valley_candle_cl * (1 + (candle_trail_pct / 100))
+
+float active_mod3_sl_long  = na(active_sl) ? mod3_sl_long  : math.max(mod3_sl_long, active_sl)
+float active_mod3_sl_short = na(active_sl) ? mod3_sl_short : math.min(mod3_sl_short, active_sl)
+
+if use_mod3 and strategy.position_size > 0
+    strategy.exit("Long Candle Trail Exit", from_entry="Buy", stop=active_mod3_sl_long)
+
+if use_mod3 and strategy.position_size < 0
+    strategy.exit("Short Candle Trail Exit", from_entry="Sell", stop=active_mod3_sl_short)
+
+// -------------------------------------------------------------------------
+// FALLBACK EXITS (WHEN ALL MODULES ARE DISABLED)
+// -------------------------------------------------------------------------
+if exit_mode == "Disabled" and strategy.position_size > 0
+    strategy.exit("Long Guardrail", from_entry="Buy", stop=active_sl)
+
+if exit_mode == "Disabled" and strategy.position_size < 0
+    strategy.exit("Short Guardrail", from_entry="Sell", stop=active_sl)
+
+// -------------------------------------------------------------------------
+// VISUAL TARGET LINES (MODULE 1 TARGET PLOTS)
+// -------------------------------------------------------------------------
+plot(use_mod1 and strategy.position_size > 0 and tp1_qty_pct > 0 ? long_tp1 : na, "Long TP1 Target", color=color.green, style=plot.style_linebr, linewidth=1)
+plot(use_mod1 and strategy.position_size > 0 and tp2_qty_pct > 0 ? long_tp2 : na, "Long TP2 Target", color=color.green, style=plot.style_linebr, linewidth=1)
+plot(use_mod1 and strategy.position_size > 0 and tp3_qty_pct > 0 ? long_tp3 : na, "Long TP3 Target", color=color.teal,  style=plot.style_linebr, linewidth=2)
+
+plot(use_mod1 and strategy.position_size < 0 and tp1_qty_pct > 0 ? short_tp1 : na, "Short TP1 Target", color=color.red,   style=plot.style_linebr, linewidth=1)
+plot(use_mod1 and strategy.position_size < 0 and tp2_qty_pct > 0 ? short_tp2 : na, "Short TP2 Target", color=color.red,   style=plot.style_linebr, linewidth=1)
+plot(use_mod1 and strategy.position_size < 0 and tp3_qty_pct > 0 ? short_tp3 : na, "Short TP3 Target", color=color.maroon, style=plot.style_linebr, linewidth=2)

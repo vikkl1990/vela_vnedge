@@ -1,0 +1,310 @@
+//@version=5
+indicator("Anomaly Rejection Channel [ARC] Pro", overlay=true, max_bars_back=500, max_labels_count=500)
+
+// ============================================================================
+// === SETTINGS ===
+// ============================================================================
+
+grp_chan = "📊 Channel Settings"
+preset = input.string("Balanced", "Parameter Preset", options=["Conservative", "Balanced", "Aggressive", "Scalping"], group=grp_chan)
+length = input.int(20, "VWMA/ATR Period", minval=5, maxval=100, group=grp_chan)
+mult_base = input.float(2.0, "Base ATR Multiplier", step=0.1, group=grp_chan)
+adaptive_mult = input.bool(true, "Adaptive Multiplier (Volatility)", group=grp_chan)
+
+grp_filter = "🎯 Signal Filters"
+vol_length = input.int(20, "Volume MA Period", minval=5, group=grp_filter)
+exhaustion_ratio = input.float(0.7, "Volume Exhaustion Ratio", step=0.1, group=grp_filter)
+climax_ratio = input.float(1.5, "Volume Climax Ratio", step=0.1, group=grp_filter)
+wick_ratio = input.float(0.4, "Min Wick % of Range", step=0.05, group=grp_filter)
+min_wick_pts = input.float(0, "Min Absolute Wick Size (points)", step=0.1, group=grp_filter)
+
+grp_trend = "📈 Trend Context"
+use_trend_filter = input.bool(true, "Filter Signals by Trend", group=grp_trend)
+trend_length = input.int(50, "Trend Line Period", minval=10, group=grp_trend)
+allow_counter_trend = input.bool(false, "Allow Counter-Trend Signals", group=grp_trend)
+
+grp_confirm = "✅ Signal Confirmation"
+require_next_candle = input.bool(true, "Require Next Candle Confirmation", group=grp_confirm)
+close_inside_channel = input.bool(true, "Confirmation: Close Inside Channel", group=grp_confirm)
+signal_delay = input.int(0, "Additional Signal Delay (bars)", minval=0, maxval=3, group=grp_confirm)
+
+grp_mtf = "🌐 Multi-TimeFrame (MTF)"
+use_mtf = input.bool(true, "Use Higher TF Confirmation", group=grp_mtf)
+htf = input.timeframe("240", "Higher TimeFrame", group=grp_mtf)
+mtf_mode = input.string("Trend+Rejection", "MTF Mode", options=["Trend Only", "Rejection Only", "Trend+Rejection"], group=grp_mtf)
+mtf_strict = input.bool(false, "Strict Mode: Block on MTF Conflict", group=grp_mtf)
+
+grp_signal = "🎨 Signal Display"
+show_signal_strength = input.bool(true, "Show Signal Strength (Color)", group=grp_signal)
+show_breakout_mode = input.bool(false, "Mode: Trade Breakouts (Not Rejections)", group=grp_signal)
+alert_once_per_bar = input.bool(true, "Alert: Max 1 per Bar", group=grp_signal)
+
+// ============================================================================
+// === PRESET PARAMETERS ===
+// ============================================================================
+
+var float mult = na
+var float final_wick_ratio = na
+var float final_climax_ratio = na
+
+if preset == "Conservative"
+    mult := 2.5
+    final_wick_ratio := math.max(wick_ratio, 0.5)
+    final_climax_ratio := math.max(climax_ratio, 1.8)
+else if preset == "Aggressive"
+    mult := 1.5
+    final_wick_ratio := math.min(wick_ratio, 0.35)
+    final_climax_ratio := math.min(climax_ratio, 1.3)
+else if preset == "Scalping"
+    mult := 1.8
+    final_wick_ratio := math.max(wick_ratio, 0.3)
+    final_climax_ratio := 1.4
+else // Balanced
+    mult := mult_base
+    final_wick_ratio := wick_ratio
+    final_climax_ratio := climax_ratio
+
+// ============================================================================
+// === ADAPTIVE MULTIPLIER (VOLATILITY) ===
+// ============================================================================
+
+norm_vol = ta.atr(100) / ta.sma(close, 100)
+vol_regime = norm_vol > ta.sma(norm_vol, 50) ? "HIGH" : "LOW"
+
+adaptive_mult_val = adaptive_mult ? (vol_regime == "HIGH" ? mult * 0.85 : mult * 1.15) : mult
+
+// ============================================================================
+// === CHANNEL CALCULATION ===
+// ============================================================================
+
+basis = ta.vwma(close, length)
+atr = ta.atr(length)
+
+upper_band = basis + (atr * adaptive_mult_val)
+lower_band = basis - (atr * adaptive_mult_val)
+
+trend_line = ta.sma(basis, trend_length)
+trend_direction = trend_line > trend_line[1] ? 1 : trend_line < trend_line[1] ? -1 : 0
+
+// ============================================================================
+// === VOLUME ANALYSIS (SEPARATED LOGIC) ===
+// ============================================================================
+
+vol_ma = ta.sma(volume, vol_length)
+vol_ratio = volume / vol_ma
+
+bear_vol_exhaustion = vol_ratio < exhaustion_ratio and close < open
+bear_vol_climax = vol_ratio > final_climax_ratio and close < open and close < close[1]
+bear_volume_confirmed = bear_vol_exhaustion or bear_vol_climax
+
+bull_vol_exhaustion = vol_ratio < exhaustion_ratio and close > open
+bull_vol_climax = vol_ratio > final_climax_ratio and close > open and close > close[1]
+bull_volume_confirmed = bull_vol_exhaustion or bull_vol_climax
+
+// ============================================================================
+// === CANDLE ANATOMY ===
+// ============================================================================
+
+total_range = high - low
+eff_range = total_range == 0 ? syminfo.mintick : total_range
+
+upper_wick = high - math.max(close, open)
+lower_wick = math.min(close, open) - low
+
+upper_wick_pct = upper_wick / eff_range
+lower_wick_pct = lower_wick / eff_range
+
+point_value = syminfo.mintick
+upper_wick_pts = upper_wick / point_value
+lower_wick_pts = lower_wick / point_value
+
+// ============================================================================
+// === BASE TRAP LOGIC ===
+// ============================================================================
+
+bear_trap_base = high > upper_band and close < upper_band and upper_wick_pct > final_wick_ratio and upper_wick_pts >= min_wick_pts and bear_volume_confirmed
+
+bull_trap_base = low < lower_band and close > lower_band and lower_wick_pct > final_wick_ratio and lower_wick_pts >= min_wick_pts and bull_volume_confirmed
+
+// ============================================================================
+// === TREND FILTER ===
+// ============================================================================
+
+if use_trend_filter
+    if trend_direction == 1 and not allow_counter_trend
+        bear_trap_base := false
+    if trend_direction == -1 and not allow_counter_trend
+        bull_trap_base := false
+
+// ============================================================================
+// === NEXT CANDLE CONFIRMATION ===
+// ============================================================================
+
+var bool bear_trap_pending = false
+var bool bull_trap_pending = false
+
+if require_next_candle
+    if bear_trap_base
+        bear_trap_pending := true
+    else if bear_trap_pending
+        confirmed = close_inside_channel ? (close < upper_band and close < open) : (close < open)
+        bear_trap_base := confirmed
+        bear_trap_pending := false
+    
+    if bull_trap_base
+        bull_trap_pending := true
+    else if bull_trap_pending
+        confirmed = close_inside_channel ? (close > lower_band and close > open) : (close > open)
+        bull_trap_base := confirmed
+        bull_trap_pending := false
+
+bear_trap = bear_trap_base and bar_index >= signal_delay ? bear_trap_base[signal_delay] : false
+bull_trap = bull_trap_base and bar_index >= signal_delay ? bull_trap_base[signal_delay] : false
+
+// ============================================================================
+// === MTF CONFIRMATION (FIXED LOGIC) ===
+// ============================================================================
+
+var bool mtf_bear_confirmed = true
+var bool mtf_bull_confirmed = true
+var string mtf_state_txt = "Disabled"
+var color mtf_state_color = color.gray
+
+[req_basis, req_atr, req_close, req_open, req_high, req_low] = request.security(syminfo.tickerid, htf, [ta.vwma(close, length), ta.atr(length), close, open, high, low], lookahead=barmerge.lookahead_off)
+
+if use_mtf
+    htf_basis = req_basis
+    htf_upper = req_basis + (req_atr * mult)
+    htf_lower = req_basis - (req_atr * mult)
+    htf_close = req_close
+    htf_open  = req_open
+    htf_high  = req_high
+    htf_low   = req_low
+    
+    htf_trend = htf_basis > htf_basis[1] ? 1 : htf_basis < htf_basis[1] ? -1 : 0
+    
+    htf_upper_wick = htf_high - math.max(htf_close, htf_open)
+    htf_lower_wick = math.min(htf_close, htf_open) - htf_low
+    htf_range = htf_high - htf_low
+    htf_eff_range = htf_range == 0 ? syminfo.mintick : htf_range
+    htf_upper_wick_pct = htf_upper_wick / htf_eff_range
+    htf_lower_wick_pct = htf_lower_wick / htf_eff_range
+    
+    htf_bear_trap = htf_high > htf_upper and htf_close < htf_upper and htf_upper_wick_pct > final_wick_ratio
+    htf_bull_trap = htf_low < htf_lower and htf_close > htf_lower and htf_lower_wick_pct > final_wick_ratio
+    
+    if mtf_mode == "Trend Only" or mtf_mode == "Trend+Rejection"
+        // Разрешаем шорты, если старший тренд НЕ вверх (т.е. вниз или флэт)
+        mtf_bear_confirmed := htf_trend != 1
+        // Разрешаем лонги, если старший тренд НЕ вниз (т.е. вверх или флэт)
+        mtf_bull_confirmed := htf_trend != -1
+    
+    if mtf_mode == "Rejection Only" or mtf_mode == "Trend+Rejection"
+        mtf_bear_confirmed := mtf_bear_confirmed and (htf_bear_trap or not mtf_strict)
+        mtf_bull_confirmed := mtf_bull_confirmed and (htf_bull_trap or not mtf_strict)
+    
+    if mtf_strict
+        bear_trap := bear_trap and mtf_bear_confirmed
+        bull_trap := bull_trap and mtf_bull_confirmed
+        
+    // Логика для красивого отображения статуса в таблице
+    if mtf_bull_confirmed and not mtf_bear_confirmed
+        mtf_state_txt := "Bulls Only ▲"
+        mtf_state_color := color.green
+    else if mtf_bear_confirmed and not mtf_bull_confirmed
+        mtf_state_txt := "Bears Only ▼"
+        mtf_state_color := color.red
+    else if mtf_bull_confirmed and mtf_bear_confirmed
+        mtf_state_txt := "All OK ✓"
+        mtf_state_color := color.green
+    else
+        mtf_state_txt := "Blocked ⚠"
+        mtf_state_color := color.orange
+
+// ============================================================================
+// === SIGNAL STRENGTH GRADING ===
+// ============================================================================
+
+bear_score = 0
+bear_score += bear_volume_confirmed ? 1 : 0
+bear_score += upper_wick_pct > (final_wick_ratio * 1.5) ? 1 : 0
+bear_score += (use_trend_filter and trend_direction == -1) ? 1 : 0
+
+bull_score = 0
+bull_score += bull_volume_confirmed ? 1 : 0
+bull_score += lower_wick_pct > (final_wick_ratio * 1.5) ? 1 : 0
+bull_score += (use_trend_filter and trend_direction == 1) ? 1 : 0
+
+bear_color = bear_score >= 2 ? color.red : bear_score == 1 ? color.orange : color.gray
+bull_color = bull_score >= 2 ? color.green : bull_score == 1 ? color.lime : color.gray
+
+if show_breakout_mode
+    breakout_up = close > upper_band and volume > vol_ma * 1.2 and close > open
+    breakout_down = close < lower_band and volume > vol_ma * 1.2 and close < open
+    
+    bear_trap := breakout_down
+    bull_trap := breakout_up
+    bear_color := color.red
+    bull_color := color.green
+
+// ============================================================================
+// === PLOTTING ===
+// ============================================================================
+
+color_basis = color.new(color.gray, 0)
+color_upper = color.new(color.red, 70)
+color_lower = color.new(color.green, 70)
+color_fill  = color.new(color.blue, 90)
+
+plot(basis, color=color_basis, title="Baseline (VWMA)", linewidth=1)
+p_upper = plot(upper_band, color=color_upper, title="Upper Band")
+p_lower = plot(lower_band, color=color_lower, title="Lower Band")
+fill(p_upper, p_lower, color=color_fill, title="Channel Background")
+
+// Trend line plot
+plot_trend = use_trend_filter ? trend_line : na
+plot(plot_trend, color=color.new(color.purple, 50), title="Trend Line", style=plot.style_circles)
+
+plotshape(bear_trap, title="Bear Trap", style=shape.xcross, location=location.abovebar, color=bear_color, size=size.auto, text="TRAP")
+plotshape(bull_trap, title="Bull Trap", style=shape.xcross, location=location.belowbar, color=bull_color, size=size.auto, text="TRAP")
+
+if show_signal_strength and barstate.islast
+    label.new(bar_index, high, text="MTF: " + mtf_state_txt + "\nVol: " + vol_regime, style=label.style_label_lower_left, color=color.new(color.gray, 80), textcolor=color.white, size=size.normal)
+
+// ============================================================================
+// === ALERTS ===
+// ============================================================================
+
+if alert_once_per_bar
+    if bear_trap and not bear_trap[1]
+        alert_message = "🔴 ARC: Bear Trap Detected!\nPrice: " + str.tostring(close) + "\nStrength: " + (bear_score >= 2 ? "HIGH" : "Medium") + "\nTrend: " + (trend_direction == 1 ? "UP" : trend_direction == -1 ? "DOWN" : "FLAT")
+        alert(alert_message, alert.freq_once_per_bar)
+    if bull_trap and not bull_trap[1]
+        alert_message = "🟢 ARC: Bull Trap Detected!\nPrice: " + str.tostring(close) + "\nStrength: " + (bull_score >= 2 ? "HIGH" : "Medium") + "\nTrend: " + (trend_direction == 1 ? "UP" : trend_direction == -1 ? "DOWN" : "FLAT")
+        alert(alert_message, alert.freq_once_per_bar)
+else
+    if bear_trap
+        alert_message = "🔴 ARC: Bear Trap Detected!\nPrice: " + str.tostring(close) + "\nStrength: " + (bear_score >= 2 ? "HIGH" : "Medium") + "\nTrend: " + (trend_direction == 1 ? "UP" : trend_direction == -1 ? "DOWN" : "FLAT")
+        alert(alert_message, alert.freq_all)
+    if bull_trap
+        alert_message = "🟢 ARC: Bull Trap Detected!\nPrice: " + str.tostring(close) + "\nStrength: " + (bull_score >= 2 ? "HIGH" : "Medium") + "\nTrend: " + (trend_direction == 1 ? "UP" : trend_direction == -1 ? "DOWN" : "FLAT")
+        alert(alert_message, alert.freq_all)
+
+// ============================================================================
+// === INFO TABLE ===
+// ============================================================================
+
+var table info_table = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black, 80), frame_color=color.gray, frame_width=1)
+if barstate.islast and show_signal_strength
+    table.cell(info_table, 0, 0, "Parameter", text_color=color.white, text_size=size.normal)
+    table.cell(info_table, 1, 0, "Value", text_color=color.white, text_size=size.normal)
+    
+    table.cell(info_table, 0, 1, "Trend", text_color=color.white, text_size=size.normal)
+    trend_txt = trend_direction == 1 ? "UP ▲" : trend_direction == -1 ? "DOWN ▼" : "FLAT →"
+    table.cell(info_table, 1, 1, trend_txt, text_color=trend_direction == 1 ? color.green : trend_direction == -1 ? color.red : color.gray, text_size=size.normal)
+    
+    table.cell(info_table, 0, 2, "Volatility", text_color=color.white, text_size=size.normal)
+    table.cell(info_table, 1, 2, vol_regime, text_color=vol_regime == "HIGH" ? color.orange : color.blue, text_size=size.normal)
+    
+    table.cell(info_table, 0, 3, "MTF Status", text_color=color.white, text_size=size.normal)
+    table.cell(info_table, 1, 3, mtf_state_txt, text_color=mtf_state_color, text_size=size.normal)

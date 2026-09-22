@@ -1,0 +1,112 @@
+//@version=6
+strategy("SilverStream v2",
+ overlay=true,
+ initial_capital=200000,
+ default_qty_type=strategy.fixed,
+ default_qty_value=1,
+ pyramiding=1)
+
+//====================
+// INPUTS
+//====================
+
+fastEMA = input.int(30,"Fast EMA")
+slowEMA = input.int(50,"Slow EMA")
+
+targetMove = input.float(2.0,"Target Move ($)")
+stopMove = input.float(1.0,"Stop Move ($)")
+
+cooldownBars = input.int(3,"Trade Cooldown")
+
+//====================
+// EMA TREND
+//====================
+
+emaFast = ta.ema(close, fastEMA)
+emaSlow = ta.ema(close, slowEMA)
+
+longTrend = emaFast > emaSlow
+shortTrend = emaFast < emaSlow
+
+//====================
+// BREAKOUT ENTRY
+//====================
+
+bullBreak = close > high[1]
+bearBreak = close < low[1]
+
+//====================
+// SIGNALS
+//====================
+
+buySignal = longTrend and bullBreak
+sellSignal = shortTrend and bearBreak
+
+//====================
+// COOLDOWN CONTROL
+//====================
+
+var int lastTradeBar = na
+cooldownOK = na(lastTradeBar) or bar_index - lastTradeBar > cooldownBars
+
+buy = buySignal and cooldownOK
+sell = sellSignal and cooldownOK
+
+//====================
+// EXECUTION
+//====================
+
+if buy
+    strategy.entry("BUY", strategy.long)
+    lastTradeBar := bar_index
+
+if sell
+    strategy.entry("SELL", strategy.short)
+    lastTradeBar := bar_index
+
+//====================
+// EXIT TARGETS
+//====================
+
+longTarget = strategy.position_avg_price + targetMove
+longStop = strategy.position_avg_price - stopMove
+
+shortTarget = strategy.position_avg_price - targetMove
+shortStop = strategy.position_avg_price + stopMove
+
+strategy.exit("Exit Buy",
+ from_entry="BUY",
+ limit=longTarget,
+ stop=longStop)
+
+strategy.exit("Exit Sell",
+ from_entry="SELL",
+ limit=shortTarget,
+ stop=shortStop)
+
+//====================
+// VISUAL SIGNALS
+//====================
+
+plot(emaFast,color=color.green)
+plot(emaSlow,color=color.red)
+
+plotshape(buy,
+ location=location.belowbar,
+ style=shape.triangleup,
+ color=color.green,
+ text="BUY")
+
+plotshape(sell,
+ location=location.abovebar,
+ style=shape.triangledown,
+ color=color.red,
+ text="SELL")
+
+exitSignal = strategy.position_size == 0 and strategy.position_size[1] != 0
+
+plotshape(exitSignal,
+ location=location.absolute,
+ style=shape.circle,
+ color=color.yellow,
+ text="EXIT")

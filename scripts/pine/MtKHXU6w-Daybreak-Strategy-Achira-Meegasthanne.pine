@@ -1,0 +1,155 @@
+//@version=6
+strategy('Daybreak Strategy', overlay = true)
+
+
+// Inputs
+Sensitivity = input(0.5, "Sensitivity")
+Profit = input(40, "Take Profit (in ticks)")
+Loss   = input(25, "Stop Loss (in ticks)")
+
+bullCol= input(color.new(#0df1c6, 20), 'Up Color')
+bearCol= input(#871ee9, 'Dn Color')
+//-
+
+atr = ta.atr(14)
+is1H = timeframe.period == "60"
+
+// Track open range only once per day
+var float openRangeHigh = na
+var float openRangeLow  = na
+var bool  ordersPlaced  = false
+
+// Detect new day and 09:00 bar
+newDay     = ta.change(time("D")) != 0
+
+isOpenBar  = (hour(time) == 9)
+
+// Capture 09:00 bar high/low once per day
+if newDay
+    openRangeHigh := na
+    openRangeLow  := na
+    ordersPlaced  := false
+
+if isOpenBar and na(openRangeHigh)
+    openRangeHigh := high
+    openRangeLow  := low
+
+// Place orders only once
+if not ordersPlaced and not na(openRangeHigh) and is1H
+    strategy.entry("Long", strategy.long, stop = openRangeHigh + atr*Sensitivity, qty = 1)
+    strategy.exit("Exit Long", from_entry = "Long", profit = Profit, loss = Loss)
+
+    strategy.entry("Short", strategy.short, stop = openRangeLow - atr*Sensitivity, qty = 1)
+    strategy.exit("Exit Short", from_entry = "Short", profit = Profit, loss = Loss)
+
+    ordersPlaced := true
+
+// Cancel untriggered orders at 21:30 (EOD)
+inEndSession = not na(time(timeframe.period, "2130-2200:23456")) and is1H
+if inEndSession 
+    strategy.cancel("Long")
+    strategy.cancel("Short")
+
+// Plots for visual reference
+plot(is1H?openRangeHigh:na, "Buy Stop", color=bullCol, linewidth=1,style = plot.style_stepline)
+plot(is1H?openRangeLow:na, "Sell Stop", color=bearCol, linewidth=1,style = plot.style_stepline)
+
+// Dashboard setup
+dashboard           = "DISPLAY"
+showDashboard       = input.bool(true, "Dashboard", tooltip = "Changes the size of the dashboard", group = dashboard, display = display.none)
+dashboardType       = "Optimal"//input.string("Optimal", "Dashboard Type", ["Optimal","Optimization", "Sensitivity"], tooltip = "Changes dashboard positions", group = dashboard, display = display.none)
+dashboardLocation   = "Top Right"//input.string("Top Right", "Dashboard Location", ["Top Right", "Bottom Right", "Bottom Left"], tooltip = "Changes dashboard positions", group = dashboard, display = display.none)
+dashboardSize       = input.string("Small", "Dashboard Size", ["Tiny", "Small", "Normal", "Large"], tooltip = "Changes the size of the dashboard", group = dashboard, display = display.none)
+dashboardbg         = input.color(#1e222d, "Dashboard Color", tooltip = "Changes the size of the dashboard", group = dashboard, display = display.none)
+
+
+
+table_position = dashboardLocation == 'Bottom Left' ? position.bottom_left 
+  : dashboardLocation == 'Top Right' ? position.top_right 
+  : position.bottom_right
+
+table_size = dashboardSize == 'Tiny' ? size.tiny 
+  : dashboardSize == 'Small' ? size.small 
+  : size.normal
+
+tb = table.new(table_position, 8, 19
+  , bgcolor = dashboardbg
+  , border_color = #373a46
+  , border_width = 1
+  , frame_color = #373a46
+  , frame_width = 1)
+
+// Declare performance tracking variables
+var balance = strategy.initial_capital
+var drawdown = 0.0
+var maxDrawdown = 0.0
+var maxBalance = 0.0
+var totalWins = 0
+var totalLoss = 0
+
+// Prepare stats table
+var table testTable = table.new(position.bottom_right, 5, 2, border_color = #373a46, border_width=1, frame_color = #373a46,frame_width = 1)
+f_fillCell(_table, _column, _row, _title, _value, _bgcolor, _txtcolor) =>
+    _cellText = _title + "\n" + _value
+    table.cell(_table, _column, _row, _cellText, bgcolor=_bgcolor, text_color=_txtcolor,text_size = table_size)
+    
+// Custom function to truncate (cut) excess decimal places
+truncate(_number, _decimalPlaces) =>
+    _factor = math.pow(10, _decimalPlaces)
+    int(_number * _factor) / _factor
+
+
+orbRange = openRangeHigh - openRangeLow
+orbMid   = (openRangeHigh + openRangeLow) / 2
+
+// Detect bias (based on opening candle)
+orbBull = openRangeHigh > openRangeLow ? close > open : false
+
+// Track last trade direction
+var string lastTrade = "None"
+
+if strategy.position_size > 0
+    lastTrade := "Long"
+if strategy.position_size < 0
+    lastTrade := "Short"
+
+if barstate.isnew
+    table.cell(tb, 0, 0, not is1H?"Use 1H TF Beacuse ORB Uses 9:00 Candle Range": '    Daybreak  Strategy   ', text_color = color.white, text_size = table_size)
+    table.merge_cells(tb, 0, 0, 1, 0)
+    if is1H
+        // Existing
+        tb.cell(0, 2, "Bias", text_color = color.white, text_size = table_size, text_halign = text.align_left)
+        //tb.cell(0, 3, "Best Profits", text_color = color.white, text_size = table_size, text_halign = text.align_left)
+
+        tb.cell(1, 2, orbBull?"Long":"Short", text_color = orbBull?bullCol:bearCol,bgcolor = orbBull?color.new(bullCol,70):color.new(bearCol,70), text_size = table_size)
+        //tb.cell(1, 3, str.tostring(50), text_color= bullCol, text_size=table_size, bgcolor = color.new(bullCol,70))
+
+        // ===== ORB DATA =====
+        tb.cell(0, 5, "High", text_color = color.white, text_size = table_size)
+        tb.cell(1, 5, str.tostring(openRangeHigh), text_color = bullCol, text_size = table_size)
+
+        tb.cell(0, 6, "Low", text_color = color.white, text_size = table_size)
+        tb.cell(1, 6, str.tostring(openRangeLow), text_color = bearCol, text_size = table_size)
+
+        tb.cell(0, 7, "Range", text_color = color.white, text_size = table_size)
+        tb.cell(1, 7, str.tostring(truncate(orbRange, 2)), text_color = color.white, text_size = table_size)
+
+        tb.cell(0, 8, "Mid", text_color = color.white, text_size = table_size)
+        tb.cell(1, 8, str.tostring(truncate(orbMid, 2)), text_color = color.white, text_size = table_size)
+// Draw stats table
+var bgcolor = dashboardbg 
+if true and is1H
+    if true
+        // Update table
+        dollarReturn = strategy.netprofit
+        f_fillCell(testTable, 0, 0, "Total Trades:", str.tostring(strategy.closedtrades), bgcolor, color.white)
+        f_fillCell(testTable, 0, 1, "Win Rate:", str.tostring(truncate((strategy.wintrades/strategy.closedtrades)*100,2)) + "%", bgcolor, color.white)
+        f_fillCell(testTable, 1, 0, "Starting:", "$" + str.tostring(strategy.initial_capital), bgcolor, color.white)
+        f_fillCell(testTable, 1, 1, "Ending:", "$" + str.tostring(truncate(strategy.initial_capital + strategy.netprofit,2)), bgcolor, color.white)
+        f_fillCell(testTable, 2, 0, "Avg Win:", "$"+ str.tostring(truncate(strategy.grossprofit / strategy.wintrades, 2)), bgcolor, color.white)
+        f_fillCell(testTable, 2, 1, "Avg Loss:", "$"+ str.tostring(truncate(strategy.grossloss / strategy.losstrades, 2)), bgcolor, color.white)
+        f_fillCell(testTable, 3, 0, "Profit Factor:", str.tostring(truncate(strategy.grossprofit / strategy.grossloss,2)), strategy.grossprofit > strategy.grossloss ? bullCol : bearCol, color.white)
+        f_fillCell(testTable, 3, 1, "Max Runup:",  str.tostring(truncate(strategy.max_runup, 2 )), bgcolor, color.white)
+        f_fillCell(testTable, 4, 0, "Return:", (dollarReturn > 0 ? "+" : "") + str.tostring(truncate((dollarReturn / strategy.initial_capital)*100,2)) + "%", dollarReturn > 0 ? bullCol : bearCol, color.white)
+        f_fillCell(testTable, 4, 1, "Max DD:", str.tostring(truncate((strategy.max_drawdown / strategy.equity) * 100 ,2)) + "%", bgcolor, color.white)
+// --- END TESTER CODE --- ///////////////

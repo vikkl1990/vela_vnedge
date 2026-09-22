@@ -1,0 +1,278 @@
+//@version=6
+strategy('Sector Rotation Z-Score Strategy', default_qty_type = strategy.fixed, default_qty_value = 10, calc_on_every_tick = false)
+
+// ─── Inputs ───
+
+ticker1 = input.string('BTC', 'Ticker 1')
+ticker2 = input.string('RSP', 'Ticker 2')
+length = input.int(63, 'Z-Score Lookback', minval = 1)
+
+// Option 3: smoothing
+useMA = input.bool(true, 'Use Moving Average of Z-Score for logic')
+maLen = input.int(3, 'Z-Score MA Length', minval = 1)
+
+// Buffer zones (in z-score units)
+negBuffer = input.float(0.05, 'Negative Buffer (larger = long enters earlier)', minval = 0.0, step = 0.1)
+posBuffer = input.float(0.05, 'Positive Buffer (larger = long exits earlier)', minval = 0.0, step = 0.1)
+
+// Option 1: short side
+enableShort = input.bool(false, 'Enable Short Side (opposite of long)')
+extremeLevel = input.float(-1.5, 'Extreme Rotation Level (short entry trigger)', step = 0.1)
+
+// Option 2: percent TP/SL
+usePctExit = input.bool(true, 'Use Percent TP/SL')
+tpPct = input.float(100.0, 'Take Profit %', minval = 0.0, step = 0.1)
+slPct = input.float(15.0, 'Stop Loss %', minval = 0.0, step = 0.1)
+
+// ADX gate inputs
+adxLen = input.int(14, 'ADX Length', minval = 1, group = 'ADX Gates')
+useAdxEntry = input.bool(true, 'Require Minimum ADX for Entry', group = 'ADX Gates')
+adxEntryMin = input.float(10.0, 'Min ADX for Entry', minval = 0.0, step = 0.5, group = 'ADX Gates')
+useAdxExit = input.bool(true, 'Exit When ADX Falls Below Threshold', group = 'ADX Gates')
+adxExitLevel = input.float(6.5, 'ADX Exit Threshold', minval = 0.0, step = 0.5, group = 'ADX Gates')
+
+// PPP (Price % of Pivots) gate inputs
+usePppEntry = input.bool(true, 'Require PPP Bias Match for Entry', group = 'PPP Gates')
+pppWindow = input.int(6, 'PPP Bias Match Window (bars, ± around cross)', minval = 0, maxval = 50, group = 'PPP Gates')
+usePppExit = input.bool(false, 'Exit When PPP Bias Flips Against Trade', group = 'PPP Gates')
+requirePppConfirmExit = input.bool(false, 'Require PPP Confirmation to Exit (z-cross AND PPP against trade)', group = 'PPP Gates')
+pppLeftBars = input.int(3, 'PPP Pivot Left Bars', minval = 1, maxval = 25, group = 'PPP Gates')
+pppRightBars = input.int(3, 'PPP Pivot Right Bars', minval = 1, maxval = 25, group = 'PPP Gates')
+pppSmooth = input.int(1, 'PPP Smoothing Length', minval = 1, group = 'PPP Gates')
+
+
+// ─── Date Range ───
+useDateRange = input.bool(false, 'Use Date Range Filter', group = 'Date Range')
+startTime = input.time(timestamp('01 Jan 2020 00:00 +0000'), 'Start Date', group = 'Date Range')
+endTime = input.time(timestamp('01 Jan 2030 00:00 +0000'), 'End Date', group = 'Date Range')
+
+inDateRange = not useDateRange or time >= startTime and time <= endTime
+
+// ─── Leg resolution ───
+useFallback = input.bool(true, 'Fall back to constant 1.0 when a leg is unresolvable or frozen', group = 'Legs')
+staleBars = input.int(20, 'Frozen-leg detection window (0 = off)', minval = 0, group = 'Legs')
+
+sw = math.max(staleBars, 1)
+
+// Numeric literals ("1", "100") bypass symbol lookup entirely
+num1 = str.tonumber(ticker1)
+num2 = str.tonumber(ticker2)
+
+// ignore_invalid_symbol returns na instead of halting the script
+raw1 = request.security(ticker1, timeframe.period, close, ignore_invalid_symbol = true)
+raw2 = request.security(ticker2, timeframe.period, close, ignore_invalid_symbol = true)
+
+// Frozen = zero range over the window (what gaps_off does to a dead series)
+frozen1 = staleBars > 0 and not na(raw1) and ta.highest(nz(raw1), sw) - ta.lowest(nz(raw1), sw) == 0
+frozen2 = staleBars > 0 and not na(raw2) and ta.highest(nz(raw2), sw) - ta.lowest(nz(raw2), sw) == 0
+
+bad1 = na(raw1) or useFallback and frozen1
+bad2 = na(raw2) or useFallback and frozen2
+
+qqq = not na(num1) ? num1 : useFallback and bad1 ? 1.0 : raw1
+rsp = not na(num2) ? num2 : useFallback and bad2 ? 1.0 : raw2
+
+// ─── Z-Score ───
+legOK = not na(qqq) and not na(rsp) and qqq > 0 and rsp > 0
+ratio = legOK ? math.log(qqq / rsp) : na
+mean = ta.sma(ratio, length)
+stdev = ta.stdev(ratio, length)
+zscore = (ratio - mean) / stdev
+
+// Signal source (raw or smoothed)
+sig = useMA ? ta.sma(zscore, maLen) : zscore
+
+// ─── ADX / DI ───
+var float SmoothedTrueRange = na
+var float SmoothedDirectionalMovementPlus = na
+var float SmoothedDirectionalMovementMinus = na
+
+TrueRange = math.max(math.max(high - low, math.abs(high - nz(close[1]))), math.abs(low - nz(close[1])))
+DirectionalMovementPlus = high - nz(high[1]) > nz(low[1]) - low ? math.max(high - nz(high[1]), 0) : 0
+DirectionalMovementMinus = nz(low[1]) - low > high - nz(high[1]) ? math.max(nz(low[1]) - low, 0) : 0
+
+SmoothedTrueRange := nz(SmoothedTrueRange[1]) - nz(SmoothedTrueRange[1]) / adxLen + TrueRange
+SmoothedDirectionalMovementPlus := nz(SmoothedDirectionalMovementPlus[1]) - nz(SmoothedDirectionalMovementPlus[1]) / adxLen + DirectionalMovementPlus
+SmoothedDirectionalMovementMinus := nz(SmoothedDirectionalMovementMinus[1]) - nz(SmoothedDirectionalMovementMinus[1]) / adxLen + DirectionalMovementMinus
+
+DIPlus = SmoothedDirectionalMovementPlus / SmoothedTrueRange * 100
+DIMinus = SmoothedDirectionalMovementMinus / SmoothedTrueRange * 100
+DX = math.abs(DIPlus - DIMinus) / (DIPlus + DIMinus) * 100
+ADX = ta.sma(DX, adxLen)
+
+adxEntryOK = not useAdxEntry or ADX >= adxEntryMin
+adxExitSignal = useAdxExit and ta.crossunder(ADX, adxExitLevel)
+
+// ─── PPP (Price % of Pivots) bias ───
+pivotHigh = ta.pivothigh(high, pppLeftBars, pppRightBars)
+pivotLow = ta.pivotlow(low, pppLeftBars, pppRightBars)
+
+var float lastPivotHigh = na
+var float lastPivotLow = na
+if not na(pivotHigh)
+    lastPivotHigh := pivotHigh
+    lastPivotHigh
+if not na(pivotLow)
+    lastPivotLow := pivotLow
+    lastPivotLow
+
+highPivotPercent = na(lastPivotHigh) ? na : close / lastPivotHigh * 100
+lowPivotPercent = na(lastPivotLow) ? na : lastPivotLow / close * 100
+smoothedHighPct = ta.ema(highPivotPercent, pppSmooth)
+smoothedLowPct = ta.ema(lowPivotPercent, pppSmooth)
+
+// Bias: bullish when price sits closer to its high pivot than the low pivot sits to price
+pppBull = not na(smoothedHighPct) and not na(smoothedLowPct) and smoothedHighPct > smoothedLowPct
+pppBear = not na(smoothedHighPct) and not na(smoothedLowPct) and smoothedLowPct > smoothedHighPct
+
+// Has bias matched within the trailing window (now or in the last pppWindow bars)?
+bullRecent = pppWindow > 0 ? nz(ta.barssince(pppBull), 999999) <= pppWindow : pppBull
+bearRecent = pppWindow > 0 ? nz(ta.barssince(pppBear), 999999) <= pppWindow : pppBear
+
+// ─── Buffer thresholds ───
+longEntryLevel = -negBuffer // larger negBuffer => earlier entry
+longExitLevel = posBuffer // larger posBuffer => earlier exit
+
+// ─── Cross conditions (buffered) ───
+crossUp = ta.crossover(sig, longEntryLevel) // long entry / short exit
+crossDown = ta.crossunder(sig, longExitLevel) // long exit
+exitExtreme = ta.crossover(sig, extremeLevel) // short entry: histogram leaves extreme-low zone
+
+// ─── PPP entry gate with ± window ───
+// A cross is "armed" for pppWindow bars; entry fires when bias matches within the window
+// (covers bias matching before the cross via bullRecent/bearRecent, and after via the armed countdown).
+var int longArmed = 0
+var int shortArmed = 0
+
+// Arm on a fresh cross
+if crossUp
+    longArmed := pppWindow + 1
+    longArmed
+if exitExtreme and enableShort
+    shortArmed := pppWindow + 1
+    shortArmed
+
+
+// Bias-match check for longs: matches now, matched in trailing window, or matches while armed from an earlier cross
+longBiasOK = not usePppEntry or pppBull or bullRecent
+shortBiasOK = not usePppEntry or pppBear or bearRecent
+
+// Determine entry trigger this bar
+longCrossReady = crossUp or longArmed > 0 and pppBull
+shortCrossReady = (exitExtreme or shortArmed > 0 and pppBear) and enableShort
+
+longEntry = longCrossReady and adxEntryOK and longBiasOK and inDateRange
+shortEntry = shortCrossReady and adxEntryOK and shortBiasOK and inDateRange
+
+// Decrement / clear armed counters
+if longArmed > 0
+    longArmed := longArmed - 1
+    longArmed
+if shortArmed > 0
+    shortArmed := shortArmed - 1
+    shortArmed
+if longEntry
+    longArmed := 0
+    longArmed
+if shortEntry
+    shortArmed := 0
+    shortArmed
+
+// ─── PPP exit signal (bias flips against open trade) ───
+pppLongExit = usePppExit and strategy.position_size > 0 and pppBear
+pppShortExit = usePppExit and strategy.position_size < 0 and pppBull
+
+// ─── Latched z-cross (persists until PPP confirms, when confirmation mode is on) ───
+var bool longZCrossed = false
+var bool shortZCrossed = false
+
+if strategy.position_size <= 0
+    longZCrossed := false
+    longZCrossed
+if strategy.position_size >= 0
+    shortZCrossed := false
+    shortZCrossed
+
+if strategy.position_size > 0 and crossDown
+    longZCrossed := true
+    longZCrossed
+if strategy.position_size < 0 and crossUp
+    shortZCrossed := true
+    shortZCrossed
+
+
+// ─── Exit event flags ───
+longExit = if strategy.position_size > 0
+    requirePppConfirmExit ? longZCrossed and pppBear : crossDown or adxExitSignal or pppLongExit
+else
+    false
+
+shortExit = if enableShort and strategy.position_size < 0
+    requirePppConfirmExit ? shortZCrossed and pppBull : crossUp or adxExitSignal or pppShortExit
+else
+    false
+
+// Clear latches once the exit fires
+if longExit
+    longZCrossed := false
+    longZCrossed
+if shortExit
+    shortZCrossed := false
+    shortZCrossed
+
+
+// ─── Discord-friendly messages ───
+priceStr = str.tostring(close, format.mintick)
+buyMsg = '🟢 ' + syminfo.ticker + ' BUY SIGNAL AT ' + priceStr + ' // ' + ticker1 + ' strengthening relative to ' + ticker2 // " + ticker1 + " strengthening relative to " + ticker2
+sellMsg = '🔴 ' + syminfo.ticker + ' SELL / CLOSE LONG AT ' + priceStr + ' // ' + ticker1 + ' weakening relative to ' + ticker2 // " + ticker1 + " weakening relative to " + ticker2
+shortMsg = '🔻 ' + syminfo.ticker + ' SHORT SIGNAL AT ' + priceStr + ' // ' + ticker1 + ' weakening relative to ' + ticker2 // " + ticker1 + " weakening relative to " + ticker2
+coverMsg = '🔺 ' + syminfo.ticker + ' COVER / CLOSE SHORT AT ' + priceStr + ' // ' + ticker1 + ' strengthening relative to ' + ticker2 // " + ticker1 + " strengthening relative to " + ticker2
+
+lTpMsg = '✅ {{syminfo.ticker}} TAKE PROFIT HIT (LONG) AT {{close}} // ' + ticker1 + ' vs ' + ticker2 // " + ticker1 + " vs " + ticker2
+lSlMsg = '🛑 {{syminfo.ticker}} STOP LOSS HIT (LONG) AT {{close}} // ' + ticker1 + ' vs ' + ticker2 // " + ticker1 + " vs " + ticker2
+sTpMsg = '✅ {{syminfo.ticker}} TAKE PROFIT HIT (SHORT) AT {{close}} // ' + ticker1 + ' vs ' + ticker2 // " + ticker1 + " vs " + ticker2
+sSlMsg = '🛑 {{syminfo.ticker}} STOP LOSS HIT (SHORT) AT {{close}} // ' + ticker1 + ' vs ' + ticker2 // " + ticker1 + " vs " + ticker2
+
+// ─── Entries / Exits (with alerts) ───
+if longEntry
+    strategy.entry('Long', strategy.long)
+    alert(buyMsg, alert.freq_once_per_bar_close)
+if longExit
+    strategy.close('Long')
+    alert(sellMsg, alert.freq_once_per_bar_close)
+
+if enableShort
+    if shortEntry
+        strategy.entry('Short', strategy.short)
+        alert(shortMsg, alert.freq_once_per_bar_close)
+    if shortExit
+        strategy.close('Short')
+        alert(coverMsg, alert.freq_once_per_bar_close)
+
+// ─── Close everything when leaving the date range ───
+if useDateRange and not inDateRange and strategy.position_size != 0
+    strategy.close_all('Out of Date Range')
+
+// ─── Percent TP/SL (optional) ───
+if usePctExit
+    if strategy.position_size > 0
+        strategy.exit('L-Exit', from_entry = 'Long', profit = tpPct * close / 100 / syminfo.mintick, loss = slPct * close / 100 / syminfo.mintick, alert_profit = lTpMsg, alert_loss = lSlMsg)
+    if strategy.position_size < 0
+        strategy.exit('S-Exit', from_entry = 'Short', profit = tpPct * close / 100 / syminfo.mintick, loss = slPct * close / 100 / syminfo.mintick, alert_profit = sTpMsg, alert_loss = sSlMsg)
+
+// ─── Alert conditions (for TradingView alert dialog) ───
+alertcondition(longEntry, 'Long Entry', 'BUY SIGNAL')
+alertcondition(longExit, 'Long Exit', 'SELL / CLOSE LONG')
+alertcondition(shortEntry, 'Short Entry', 'SHORT SIGNAL')
+alertcondition(shortExit, 'Short Exit', 'COVER / CLOSE SHORT')
+
+// ─── Plotting ───
+plot(sig, 'Z-Score', color = sig >= 0 ? color.new(#00FFAA, 0) : color.new(#FF5252, 0), style = plot.style_columns, linewidth = 4)
+hline(0, 'Zero', color = color.gray, linestyle = hline.style_dashed)
+plot(longEntryLevel, 'Long Entry Buffer', color = color.new(color.lime, 40), linewidth = 1)
+plot(longExitLevel, 'Long Exit Buffer', color = color.new(color.orange, 40), linewidth = 1)
+hline(2, '+2', color = color.new(color.green, 30))
+hline(-2, '-2 Extreme', color = color.new(color.red, 30))
+bgcolor(sig < extremeLevel ? color.new(color.red, 92) : na, title = 'Extreme Rotation Highlight')
+// PPP bias tint (subtle, on the z-score pane)
+bgcolor(usePppEntry or usePppExit ? pppBull ? color.new(color.green, 95) : pppBear ? color.new(color.red, 95) : na : na, title = 'PPP Bias')

@@ -1,0 +1,169 @@
+//@version=5
+indicator(shorttitle="bbs", title="Bollinger Bands Scalper + VWAP", overlay=true, timeframe="", timeframe_gaps=true)
+
+//trendicator
+
+length = input.int(20, minval=1, title='Trendicator Length', group="Trendicator Settings")
+src2 = input(close, title='Trendicator Source', group="Trendicator Settings")
+matype = input.int(1, minval=1, maxval=5, title='Trendicator Type: 1=SMA, 2=EMA, 3=HMA, 4=WMA, 5=VWMA', group="Trendicator Settings")
+
+SMA = ta.sma(src2, length)
+EMA = ta.ema(src2, length)
+HMA = ta.wma(2 * ta.wma(src2, length / 2) - ta.wma(src2, length), math.round(math.sqrt(length)))
+WMA = ta.wma(src2, length)
+VWMA = ta.vwma(src2, length)
+
+
+avgval = matype == 1 ? SMA : matype == 2 ? EMA : matype == 3 ? HMA : matype == 4 ? WMA : matype == 5 ? VWMA : na
+Pcolor = avgval > avgval[1] ? color.new(#3179f5, 0) : color.new(#ec407a, 0)
+
+plot(avgval, title='trendicator (ie: color changing moving average)', color=Pcolor, linewidth=2, style=plot.style_circles)
+
+//praise be lady VVWAP!
+
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+computeVWAP(src, isNewPeriod) =>
+	var float sumSrcVol = na
+	var float sumVol = na
+    var float sumSrcSrcVol = na
+
+	sumSrcVol := isNewPeriod ? src * volume : src * volume + sumSrcVol[1]
+	sumVol := isNewPeriod ? volume : volume + sumVol[1]
+	// sumSrcSrcVol calculates the dividend of the equation that is later used to calculate the standard deviation
+	sumSrcSrcVol := isNewPeriod ? volume * math.pow(src, 2) : volume * math.pow(src, 2) + sumSrcSrcVol[1]
+
+	_vwap = sumSrcVol / sumVol
+	variance = sumSrcSrcVol / sumVol - math.pow(_vwap, 2)
+	variance := variance < 0 ? 0 : variance
+	stDev = math.sqrt(variance)
+
+	[_vwap, stDev]
+
+computeStdevBands(value, stdev, bandMult) =>
+    float upperBand = value + stdev * bandMult
+    float lowerBand = value - stdev * bandMult
+    [upperBand, lowerBand]
+
+hideonDWM = input(false, title="Hide VWAP on 1D or Above", group="VWAP Settings: Praise Be Lady VWAP")
+var anchor = input.string(defval = "Session", title="VWAP Anchor Period",
+ options=["Session", "Week", "Month", "Quarter", "Year", "Decade", "Century", "Earnings", "Dividends", "Splits"], group="VWAP Settings: Praise Be Lady VWAP")
+src = input(title = "VWAP Source", defval = hlc3, group="VWAP Settings: Praise Be Lady VWAP")
+offset = input(0, title="VWAP Offset", group="VWAP Settings: Praise Be Lady VWAP")
+
+showBand_1 = input(true, title="", group="VWAP Settings: Praise Be Lady VWAP", inline="band_1")
+stdevMult_1 = input(1.0, title="VWAP Bands Multiplier #1", group="VWAP Settings: Praise Be Lady VWAP", inline="band_1")
+showBand_2 = input(true, title="", group="VWAP Settings: Praise Be Lady VWAP", inline="band_2")
+stdevMult_2 = input(2.0, title="VWAP Bands Multiplier #2", group="VWAP Settings: Praise Be Lady VWAP", inline="band_2")
+showBand_3 = input(true, title="", group="VWAP Settings: Praise Be Lady VWAP", inline="band_3")
+stdevMult_3 = input(3.0, title="VWAP Bands Multiplier #3", group="VWAP Settings: Praise Be Lady VWAP", inline="band_3")
+
+timeChange(period) =>
+	ta.change(time(period))
+
+new_earnings = request.earnings(syminfo.tickerid, earnings.actual, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol=true)
+new_dividends = request.dividends(syminfo.tickerid, dividends.gross, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol=true)
+new_split = request.splits(syminfo.tickerid, splits.denominator, barmerge.gaps_on, barmerge.lookahead_on, ignore_invalid_symbol=true)
+
+isNewPeriod = switch anchor
+	"Earnings" => not na(new_earnings)
+	"Dividends" => not na(new_dividends)
+	"Splits" => not na(new_split)
+	"Session" => timeChange("D")
+	"Week" => timeChange("W")
+	"Month" => timeChange("M")
+	"Quarter" => timeChange("3M")
+	"Year" => timeChange("12M")
+	"Decade" => timeChange("12M") and year % 10 == 0
+	"Century" => timeChange("12M") and year % 100 == 0
+	=> false
+
+isEsdAnchor = anchor == "Earnings" or anchor == "Dividends" or anchor == "Splits"
+if na(src[1]) and not isEsdAnchor
+	isNewPeriod := true
+
+float vwapValue = na
+float stdev = na
+float upperBandValue1 = na
+float lowerBandValue1 = na
+float upperBandValue2 = na
+float lowerBandValue2 = na
+float upperBandValue3 = na
+float lowerBandValue3 = na
+
+if not (hideonDWM and timeframe.isdwm)
+    [_vwap, _stdev] = computeVWAP(src, isNewPeriod)
+    vwapValue := _vwap
+    stdev := _stdev
+	[upBV1, loBV1] = computeStdevBands(vwapValue, stdev, stdevMult_1)
+	upperBandValue1 := showBand_1 ? upBV1 : na
+	lowerBandValue1 := showBand_1 ? loBV1 : na
+	[upBV2, loBV2] = computeStdevBands(vwapValue, stdev, stdevMult_2)
+	upperBandValue2 := showBand_2 ? upBV2 : na
+	lowerBandValue2 := showBand_2 ? loBV2 : na
+	[upBV3, loBV3] = computeStdevBands(vwapValue, stdev, stdevMult_3)
+	upperBandValue3 := showBand_3 ? upBV3 : na
+	lowerBandValue3 := showBand_3 ? loBV3 : na
+
+plot(vwapValue, title="VWAP", color=#00bcd4, offset=offset)
+
+upperBand_1 = plot(upperBandValue1, title="VWAP Upper Band #1", color= color.new(#006064, 67), offset=offset, display = display.none)
+lowerBand_1 = plot(lowerBandValue1, title="VWAP Lower Band #1", color= color.new(#006064, 67), offset=offset, display = display.none)
+fill(upperBand_1, lowerBand_1, title="VWAP Bands Fill #1", color= color.new(#512da8, 90), display = display.none)
+
+upperBand_2 = plot(upperBandValue2, title="VWAP Upper Band #2", color= color.new(#006064, 67), offset=offset, display = display.none)
+lowerBand_2 = plot(lowerBandValue2, title="VWAP Lower Band #2", color= color.new(#006064, 67), offset=offset, display = display.none)
+fill(upperBand_2, lowerBand_2, title="VWAP Bands Fill #2", color= color.new(#512da8, 90), display = display.none)
+
+upperBand_3 = plot(upperBandValue3, title="VWAP Upper Band #3", color= color.new(#006064, 67), offset=offset,display = display.none)
+lowerBand_3 = plot(lowerBandValue3, title="VWAP Lower Band #3", color= color.new(#006064, 67), offset=offset,display = display.none)
+fill(upperBand_3, lowerBand_3, title="VWAP Bands Fill #3", color= color.new(#512da8, 90), display = display.none)
+
+
+
+//bollinger bands 1 (BB1)
+
+BB1_Length = input.int(20, minval=1, group="Bollinger Bands 1 Settings")
+src_BB1 = input(close, title="BB1 Source", group="Bollinger Bands 1 Settings")
+mult_BB1 = input.float(1.0, minval=0.001, maxval=50, title="BB1 StdDev", group="Bollinger Bands 1 Settings")
+basis_BB1 = ta.sma(src_BB1, BB1_Length)
+dev_BB1 = mult_BB1 * ta.stdev(src_BB1, BB1_Length)
+upper_BB1 = basis_BB1 + dev_BB1
+lower_BB1 = basis_BB1 - dev_BB1
+offset_BB1 = input.int(0, "BB1 Offset", minval = -500, maxval = 500, group="Bollinger Bands 1 Settings")
+plot(basis_BB1, "BB1 Basis", color = color.new(#ff9800, 100), offset = offset_BB1, display = display.none)
+p1_BB1 = plot(upper_BB1, "BB1 Upper", color= color.new(#006064, 67), offset = offset_BB1)
+p2_BB1 = plot(lower_BB1, "BB1 Lower", color= color.new(#006064, 67), offset = offset_BB1)
+fill(p1_BB1, p2_BB1, title = "BB1 Background", color= color.new(#512da8, 87))
+
+//bollinger bands 2 (BB2)
+BB2_Length = input.int(20, minval=1, group="Bollinger Bands 2 Settings")
+src_BB2 = input(close, title="BB2 Source", group="Bollinger Bands 2 Settings")
+mult_BB2 = input.float(2.0, minval=0.001, maxval=50, title="BB2 StdDev", group="Bollinger Bands 2 Settings")
+basis_BB2 = ta.sma(src_BB2, BB2_Length)
+dev_BB2 = mult_BB2 * ta.stdev(src_BB2, BB2_Length)
+upper_BB2 = basis_BB2 + dev_BB2
+lower_BB2 = basis_BB2 - dev_BB2
+offset_BB2 = input.int(0, "BB2 Offset", minval = -500, maxval = 500, group="Bollinger Bands 2 Settings")
+plot(basis_BB2, "BB2 Basis", color = color.new(#ff9800, 100), offset = offset_BB2, display = display.none)
+p1_BB2 = plot(upper_BB2, "BB2 Upper", color= color.new(#006064, 67), offset = offset_BB2)
+p2_BB2 = plot(lower_BB2, "BB2 Lower", color= color.new(#006064, 67), offset = offset_BB2)
+fill(p1_BB2, p2_BB2, title = "BB2 Background", color= color.new(#512da8, 87))
+
+//bollinger bands 3 (BB3)
+BB3_Length = input.int(20, minval=1, group="Bollinger Bands 3 Settings")
+src_BB3 = input(close, title="BB3 Source", group="Bollinger Bands 3 Settings")
+mult_BB3 = input.float(3.0, minval=0.001, maxval=50, title="BB3 StdDev", group="Bollinger Bands 3 Settings")
+basis_BB3 = ta.sma(src_BB3, BB3_Length)
+dev_BB3 = mult_BB3 * ta.stdev(src_BB3, BB3_Length)
+upper_BB3 = basis_BB3 + dev_BB3
+lower_BB3 = basis_BB3 - dev_BB3
+offset_BB3 = input.int(0, "BB3 Offset", minval = -500, maxval = 500, group="Bollinger Bands 3 Settings")
+plot(basis_BB3, "BB3 Basis", color = color.new(#ff9800, 100), offset = offset_BB3, display = display.none)
+p1_BB3 = plot(upper_BB3, "BB3 Upper", color= color.new(#006064, 67), offset = offset_BB3)
+p2_BB3 = plot(lower_BB3, "BB3 Lower", color= color.new(#006064, 67), offset = offset_BB3)
+fill(p1_BB3, p2_BB3, title = "BB3 Background", color= color.new(#512da8, 87))
+

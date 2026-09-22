@@ -1,0 +1,168 @@
+//@version=6
+strategy("Rangos Manipulados PRO EURUSD/GBPUSD [STRATEGY]", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500, pyramiding=0)
+
+//====================================================
+//==================== CONFIG ========================
+//====================================================
+
+modoEntrada = input.string("Simple", "Tipo de Confirmación", options=["Simple", "Institucional"])
+
+mostrarRangos = input.bool(true, "Mostrar Rangos")
+mostrarDashboard = input.bool(true, "Mostrar Dashboard")
+mostrarTP_SL = input.bool(true, "Mostrar TP y SL")
+
+rr = input.float(2.0, "Risk Reward", step=0.1)
+bufferPips = input.float(4.0, "Buffer SL en pips")
+
+//====================================================
+//==================== HORARIO =======================
+//====================================================
+
+sessionFrankfurt = input.session("0800-1700", "Horario Operativo")
+enHorario = not na(time(timeframe.period, sessionFrankfurt, "Europe/Madrid"))
+
+//====================================================
+//==================== PIPS ==========================
+//====================================================
+
+pip = syminfo.mintick * 10
+buffer = bufferPips * pip
+
+//====================================================
+//==================== H1 DATA =======================
+//====================================================
+
+h1High = request.security(syminfo.tickerid, "60", high)
+h1Low = request.security(syminfo.tickerid, "60", low)
+h1Close = request.security(syminfo.tickerid, "60", close)
+
+h1PrevHigh = request.security(syminfo.tickerid, "60", high[1])
+h1PrevLow = request.security(syminfo.tickerid, "60", low[1])
+
+//====================================================
+//=========== MANIPULACION H1 ========================
+//====================================================
+
+h1ManipBuy = (h1Low < h1PrevLow and h1Close > h1PrevLow)
+h1ManipSell = (h1High > h1PrevHigh and h1Close < h1PrevHigh)
+
+//====================================================
+//============= MANIPULACION M15 =====================
+//====================================================
+
+prevHigh = high[1]
+prevLow = low[1]
+
+sweepBuy = low < prevLow
+sweepSell = high > prevHigh
+
+//====================================================
+//============= DEFINICION SIMPLE ====================
+//====================================================
+
+simpleBuy = close > open and close > high[1]
+simpleSell = close < open and close < low[1]
+
+//====================================================
+//======= DEFINICION INSTITUCIONAL ===================
+//====================================================
+
+bodySize = math.abs(close - open)
+fullRange = high - low
+atr = ta.atr(14)
+
+institucionalBuy = (
+    close > open and
+    bodySize > fullRange * 0.6 and
+    fullRange > atr * 0.8 and
+    close >= high - (fullRange * 0.2)
+)
+
+institucionalSell = (
+    close < open and
+    bodySize > fullRange * 0.6 and
+    fullRange > atr * 0.8 and
+    close <= low + (fullRange * 0.2)
+)
+
+//====================================================
+//=========== SELECCION DE MODO ======================
+//====================================================
+
+confirmBuy = modoEntrada == "Simple" ? simpleBuy : institucionalBuy
+confirmSell = modoEntrada == "Simple" ? simpleSell : institucionalSell
+
+//====================================================
+//================ ENTRADAS ==========================
+//====================================================
+
+buySignal = enHorario and h1ManipBuy and sweepBuy and confirmBuy
+sellSignal = enHorario and h1ManipSell and sweepSell and confirmSell
+
+//====================================================
+//==================== SL / TP =======================
+//====================================================
+
+buySL = low - buffer
+buyRisk = close - buySL
+buyTP = close + (buyRisk * rr)
+
+sellSL = high + buffer
+sellRisk = sellSL - close
+sellTP = close - (sellRisk * rr)
+
+//====================================================
+//==================== TRADES ========================
+//====================================================
+
+if (buySignal and strategy.position_size == 0)
+    strategy.entry("BUY", strategy.long)
+    strategy.exit("BUY TP/SL", "BUY", stop=buySL, limit=buyTP)
+
+if (sellSignal and strategy.position_size == 0)
+    strategy.entry("SELL", strategy.short)
+    strategy.exit("SELL TP/SL", "SELL", stop=sellSL, limit=sellTP)
+
+//====================================================
+//==================== FLECHAS =======================
+//====================================================
+
+plotshape(buySignal, title="BUY", style=shape.arrowup, location=location.belowbar, color=color.lime, size=size.large, text="BUY")
+plotshape(sellSignal, title="SELL", style=shape.arrowdown, location=location.abovebar, color=color.red, size=size.large, text="SELL")
+
+//====================================================
+//==================== RANGOS ========================
+//====================================================
+
+if mostrarRangos
+    if buySignal
+        box.new(bar_index - 1, prevHigh, bar_index + 3, prevLow, border_color=color.lime, bgcolor=color.new(color.lime, 90), xloc=xloc.bar_index)
+
+    if sellSignal
+        box.new(bar_index - 1, prevHigh, bar_index + 3, prevLow, border_color=color.red, bgcolor=color.new(color.red, 90), xloc=xloc.bar_index)
+
+//====================================================
+//================ DASHBOARD =========================
+//====================================================
+
+var table dashboard = table.new(position.top_right, 2, 4)
+
+if mostrarDashboard
+    table.cell(dashboard, 0, 0, "Modo")
+    table.cell(dashboard, 1, 0, modoEntrada)
+
+    table.cell(dashboard, 0, 1, "H1 BUY")
+    table.cell(dashboard, 1, 1, h1ManipBuy ? "SI" : "NO")
+
+    table.cell(dashboard, 0, 2, "H1 SELL")
+    table.cell(dashboard, 1, 2, h1ManipSell ? "SI" : "NO")
+
+    table.cell(dashboard, 0, 3, "Horario")
+    table.cell(dashboard, 1, 3, enHorario ? "ACTIVO" : "OFF")
+
+//====================================================
+//================ ALERTAS ===========================
+//====================================================
+
+alertcondition(buySignal, title="BUY SIGNAL", message="BUY EURUSD/GBPUSD")
+alertcondition(sellSignal, title="SELL SIGNAL", message="SELL EURUSD/GBPUSD")

@@ -1,0 +1,189 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+
+// last_modified: 02-06-2023
+//@version=6
+
+// ============================================================================
+// STRATEGY: NQ HMA Midday Strategy
+// Developer: QuantByBoji
+// All Rights Reserved
+// ============================================================================
+// EDUCATIONAL PURPOSES ONLY
+// This strategy is provided for educational purposes only. Past performance does not 
+// guarantee future results. Trading futures involves substantial risk of loss.
+// ============================================================================
+
+// NOTE: A Python version of this strategy exists with walk-forward optimization 
+// capabilities. Parameters should be re-tuned when market regime changes occur.
+// ============================================================================
+
+strategy('Prod_1st_NQ15HMADY')
+
+
+t = time(timeframe.period, '0830-1545:23456')
+bgcolor(not na(t) ? color.green : na)
+
+
+// Fixed Parameters////////////////////////////////
+atr_period_long = input.int(14)
+atr_period_short = input.int(14)
+useTrueRange = input(true)
+multy = input.float(3)
+SF2 = input(2, title = 'RSI Smoothing')
+RSI_Period2 = input(14, title = 'RSI 2 Length')
+
+//////////////// Optimization///////////////////////////////////
+len_h = input(10)
+len_l = input(10)
+
+atr_multiplier_TP_long = input.float(2)
+atr_multiplier_TP_short = input.float(2)
+atr_multiplier_STL_long = input.float(2)
+atr_multiplier_STL_short = input.float(2)
+
+adxlen_long = input(15)
+dilen_long = input(15)
+adxlen_short = input(15)
+dilen_short = input(15)
+adx_val_long = 17
+adx_val_short = 17
+
+ThreshHold2_long = input(6, title = 'Thresh-hold')
+ThreshHold2_short = input(6, title = 'Thresh-hold')
+
+
+len_org_long = input(100)
+len_org_short = input(100)
+
+len_ema_long = input(200)
+len_ema_short = input(200)
+
+/////////////////////////////////////////////
+
+// hma_org_long= ta.wma(2 * ta.wma(close, len_org_long / 2) - ta.wma(close, len_org_long), math.round(math.sqrt(len_org_long)))
+// hma_org_short= ta.wma(2 * ta.wma(close, len_org_short / 2) - ta.wma(close, len_org_short), math.round(math.sqrt(len_org_short)))
+
+
+
+hma_high = ta.wma(2 * ta.wma(high, len_h / 2) - ta.wma(high, len_h), math.round(math.sqrt(len_h)))
+hma_low = ta.wma(2 * ta.wma(low, len_l / 2) - ta.wma(low, len_l), math.round(math.sqrt(len_l)))
+
+
+
+// Exisiting code start
+Hlv3 = int(na)
+Hlv3 := close > hma_high ? 1 : close < hma_low ? -1 : Hlv3[1]
+bojiExit = Hlv3 < 0 ? hma_high : hma_low
+
+bojiz_long = ta.crossover(close, bojiExit)
+bojiz_short = ta.crossover(bojiExit, close)
+// Exisiting code end
+
+
+
+
+
+Rsi2 = ta.rsi(close, RSI_Period2)
+RsiMa2 = ta.ema(Rsi2, SF2)
+
+/////////////////////////////////////// ADX
+
+
+
+/////////Long
+dirmov(len) =>
+    up = ta.change(high)
+    down = -ta.change(low)
+    plusDM = na(up) ? na : up > down and up > 0 ? up : 0
+    minusDM = na(down) ? na : down > up and down > 0 ? down : 0
+    truerange = ta.rma(ta.tr, len)
+    plus = fixnan(100 * ta.rma(plusDM, len) / truerange)
+    minus = fixnan(100 * ta.rma(minusDM, len) / truerange)
+    [plus, minus]
+adx(dilen_long, adxlen_long) =>
+    [plus, minus] = dirmov(dilen_long)
+    sum = plus + minus
+    adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen_long)
+    adx
+sig_long = adx(dilen_long, adxlen_long)
+
+/////////short
+dirmov_short(len) =>
+    up = ta.change(high)
+    down = -ta.change(low)
+    plusDM = na(up) ? na : up > down and up > 0 ? up : 0
+    minusDM = na(down) ? na : down > up and down > 0 ? down : 0
+    truerange = ta.rma(ta.tr, len)
+    plus = fixnan(100 * ta.rma(plusDM, len) / truerange)
+    minus = fixnan(100 * ta.rma(minusDM, len) / truerange)
+    [plus, minus]
+adx_short(dilen_short, adxlen_short) =>
+    [plus, minus] = dirmov(dilen_short)
+    sum = plus + minus
+    adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), adxlen_short)
+    adx
+sig_short = adx(dilen_short, adxlen_short)
+
+//////////////////////////////////////////////////////////
+// period = input(5)
+// maV= ta.sma(volume, period)
+// Vroc=(maV-maV[1])*100/maV[1]
+Croc = (close - close[1]) * 100 / close[1]
+
+
+len_rsi = input(14)
+rsi = ta.rsi(close, len_rsi)
+
+
+// len_kel=20
+
+range0 = useTrueRange ? ta.tr : high - low
+rangema_long = ta.ema(range0, len_org_long)
+rangema_short = ta.ema(range0, len_org_short)
+// upperk = hma_org_long + rangema_long * multy
+// lowerk = hma_org_short - rangema_short * multy
+
+ema_crossover = ta.crossover(close, ta.ema(close, 200)) or ta.crossover(ta.ema(close, 200), close) or ta.crossover(close[1], ta.ema(close, 200)) or ta.crossover(ta.ema(close, 200), close[1]) or low <= ta.ema(close, 200) and high >= ta.ema(close, 200) //or ((low[1] <= ta.ema(close,200)) and (high[1] >= ta.ema(close,200)))
+
+longCondition = ta.crossover(close, bojiExit) and ta.ema(close, len_ema_long) < close and na(t) == bool(0) and strategy.position_size == 0 and ta.roc(close, 3) > 0 and not ema_crossover //and cci >-167.19//and Vroc>0 and roc > 0.05 and k_rsi<80
+shortCondition = ta.crossover(bojiExit, close) and ta.ema(close, len_ema_short) > close and na(t) == bool(0) and strategy.position_size == 0 and ta.roc(close, 3) < 0 and not ema_crossover // and  RsiMa2 - 50 <= ThreshHold2_short  and lowerk > close and sig_short > adx_val_short and rsi > 30 //and cci > -167.19//and Vroc < 0 and roc> 0.05  and d_rsi>10
+
+
+if longCondition
+    strategy.entry('long', strategy.long, 1, limit = close)
+    // strategy.entry("short",strategy.short,1,limit=close , when= shortCondition)
+
+
+
+float open_bar = na
+// open_bar:=request.security(syminfo.tickerid, "15", open[-1])
+
+if longCondition
+    open_bar := strategy.position_avg_price
+    open_bar
+plot(open_bar)
+
+
+
+float long_sl = na
+float long_tp = na
+float short_sl = na
+float short_tp = na
+
+long_tp := ta.valuewhen(longCondition == bool(1), ta.atr(atr_period_long) * atr_multiplier_TP_long / 0.25, 0)
+long_sl := ta.valuewhen(longCondition == bool(1), ta.atr(atr_period_long) * atr_multiplier_STL_long / 0.25, 0)
+short_tp := ta.valuewhen(shortCondition == bool(1), ta.atr(atr_period_short) * atr_multiplier_TP_short / 0.25, 0)
+short_sl := ta.valuewhen(shortCondition == bool(1), ta.atr(atr_period_short) * atr_multiplier_STL_short / 0.25, 0)
+
+
+strategy.exit('long', from_entry = 'long', comment = 'exit long', qty = 1, profit = long_tp, loss = long_sl) //, stop=long_sl)
+strategy.exit('long', from_entry = 'short', comment = 'exit short', qty = 1, profit = short_tp, loss = short_sl)
+
+
+
+
+// strategy.exit('long', from_entry='long', comment='exit long', qty=1,  profit=53 , loss=60)//, stop=long_sl)
+// strategy.exit('long', from_entry='short', comment='exit short', qty=1 ,profit=53 ,loss= 60) 
+
+if na(t)
+    strategy.close_all(comment = 'END of DAY')

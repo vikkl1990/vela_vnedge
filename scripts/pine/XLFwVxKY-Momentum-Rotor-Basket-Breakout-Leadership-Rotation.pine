@@ -1,0 +1,190 @@
+//@version=6
+// =============================================================================
+// Relative Momentum Rotation (Basket Breakout) - Strategy
+// =============================================================================
+strategy("Relative Momentum Rotation (Basket Breakout)", shorttitle="RelMomRotation",
+     overlay=true,
+     initial_capital=10000,
+     currency=currency.USD,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     pyramiding=0,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     slippage=2,
+     margin_long=100,
+     margin_short=100,
+     process_orders_on_close=true)
+
+// ================= INPUTS =================
+grpMom = "Momentum & Breakout"
+lenMom   = input.int(20, "Momentum Lookback (ROC bars)", minval=1, group=grpMom)
+lenBreak = input.int(30, "Breakout Lookback (N bars)", minval=1, group=grpMom)
+
+grpRisk = "Risk Management"
+riskPct  = input.float(2.0, "Risk % of Equity per Trade", minval=0.1, maxval=10, group=grpRisk) / 100
+atrLen   = input.int(14, "ATR Length", group=grpRisk)
+atrMult  = input.float(2.0, "ATR Stop Multiple", group=grpRisk)
+rrMult   = input.float(2.0, "Reward:Risk Multiple (Take Profit)", group=grpRisk)
+
+grpFilters = "Optional Filters"
+useRotationConfirm  = input.bool(false, "Require N Bars Lost Leadership Before Rotating Out", group=grpFilters)
+rotationConfirmBars = input.int(3, "Bars Not Top-Ranked Before Exit", minval=1, group=grpFilters)
+useRegimeFilter      = input.bool(true, "Require Price Above Regime SMA to Enter", group=grpFilters)
+regimeLen            = input.int(200, "Regime SMA Length", minval=1, group=grpFilters)
+
+grpBasket = "Basket Symbols (edit to your own list)"
+sym1 = input.symbol("NASDAQ:AAPL", "Symbol 1", group=grpBasket)
+sym2 = input.symbol("NASDAQ:MSFT", "Symbol 2", group=grpBasket)
+sym3 = input.symbol("NASDAQ:NVDA", "Symbol 3", group=grpBasket)
+sym4 = input.symbol("NASDAQ:GOOGL", "Symbol 4", group=grpBasket)
+sym5 = input.symbol("NASDAQ:AMZN", "Symbol 5", group=grpBasket)
+sym6 = input.symbol("NASDAQ:META", "Symbol 6", group=grpBasket)
+sym7 = input.symbol("NASDAQ:TSLA", "Symbol 7", group=grpBasket)
+sym8 = input.symbol("NASDAQ:AVGO", "Symbol 8", group=grpBasket)
+
+grpVis = "Visuals"
+showTable    = input.bool(true, "Show Leaderboard Table", group=grpVis)
+bullColor    = input.color(#00FFAA, "Bullish Color", group=grpVis)
+bearColor    = input.color(#FF0000, "Bearish Color", group=grpVis)
+showGlow     = input.bool(true, "Show Line Glow", group=grpVis)
+showRibbon   = input.bool(true, "Show Gradient Ribbon", group=grpVis)
+showLabels   = input.bool(true, "Show Buy/Sell Arrows", group=grpVis)
+
+// ================= HELPERS =================
+f_roc(sym) =>
+    request.security(sym, timeframe.period, ta.roc(close, lenMom), lookahead=barmerge.lookahead_off)
+
+// ================= FETCH BASKET DATA (no lookahead bias) =================
+roc1 = f_roc(sym1)
+roc2 = f_roc(sym2)
+roc3 = f_roc(sym3)
+roc4 = f_roc(sym4)
+roc5 = f_roc(sym5)
+roc6 = f_roc(sym6)
+roc7 = f_roc(sym7)
+roc8 = f_roc(sym8)
+
+// ================= RANKING =================
+symArr = array.from(sym1, sym2, sym3, sym4, sym5, sym6, sym7, sym8)
+rocArr = array.from(roc1, roc2, roc3, roc4, roc5, roc6, roc7, roc8)
+
+sortedIdx = array.sort_indices(rocArr, order.descending)
+topIdx    = array.get(sortedIdx, 0)
+topSym    = array.get(symArr, topIdx)
+maxAbsRoc = math.max(math.abs(roc1), math.abs(roc2), math.abs(roc3), math.abs(roc4),
+     math.abs(roc5), math.abs(roc6), math.abs(roc7), math.abs(roc8))
+
+currentSym   = syminfo.tickerid
+idxOfCurrent = array.indexof(symArr, currentSym)
+isInBasket   = idxOfCurrent != -1
+isTop        = isInBasket and topSym == currentSym
+currentRank  = isInBasket ? array.indexof(sortedIdx, idxOfCurrent) + 1 : na
+
+// ================= BREAKOUT LEVEL =================
+breakLevel  = ta.highest(high[1], lenBreak)
+breakoutNow = close > breakLevel
+
+// ================= LEADER STREAK COUNTER =================
+var int leaderBars = 0
+leaderBars := topSym == topSym[1] ? leaderBars + 1 : 1
+
+// ================= REGIME FILTER =================
+regimeSMA    = ta.sma(close, regimeLen)
+regimeOK     = not useRegimeFilter or close > regimeSMA
+
+// ================= BASKET BREADTH (risk-on/off gauge) =================
+posCount = (roc1 > 0 ? 1 : 0) + (roc2 > 0 ? 1 : 0) + (roc3 > 0 ? 1 : 0) + (roc4 > 0 ? 1 : 0) +
+     (roc5 > 0 ? 1 : 0) + (roc6 > 0 ? 1 : 0) + (roc7 > 0 ? 1 : 0) + (roc8 > 0 ? 1 : 0)
+breadthPct = posCount / 8.0 * 100
+
+// ================= RISK / POSITION SIZING =================
+atrVal       = ta.atr(atrLen)
+stopPrice    = close - atrMult * atrVal
+riskPerShare = close - stopPrice
+riskAmount   = strategy.equity * riskPct
+qty          = riskPerShare > 0 ? riskAmount / riskPerShare : 0.0
+tpPrice      = close + riskPerShare * rrMult
+
+// ================= ENTRIES / EXITS =================
+longCondition = isInBasket and isTop and breakoutNow and regimeOK and strategy.position_size == 0 and qty > 0
+
+if longCondition
+    strategy.entry("Long", strategy.long, qty=qty)
+    strategy.exit("Exit", "Long", stop=stopPrice, limit=tpPrice)
+
+var int notTopBars = 0
+if strategy.position_size > 0 and isInBasket
+    notTopBars := isTop ? 0 : notTopBars + 1
+else
+    notTopBars := 0
+
+rotateOutTrigger = strategy.position_size > 0 and isInBasket and not isTop
+rotateOut = useRotationConfirm ? rotateOutTrigger and notTopBars >= rotationConfirmBars : rotateOutTrigger
+
+if rotateOut
+    strategy.close("Long", comment="Rotate Out")
+
+// ================= TREND LINE (glow + ribbon) =================
+var int trendState = 0
+trendState := breakLevel > breakLevel[1] ? 1 : breakLevel < breakLevel[1] ? -1 : trendState[1]
+trendColor = trendState == 1 ? bullColor : bearColor
+
+plot(showGlow ? breakLevel : na, "Trend Line Glow", color.new(trendColor, 82), 7)
+filterPlot = plot(breakLevel, "Trend State Line", trendColor, 3)
+pricePlot  = plot(hl2, "Price Midpoint", display = display.none)
+ribbonColor = showRibbon ? color.new(trendColor, 20) : na
+fill(filterPlot, pricePlot, hl2, breakLevel, na, ribbonColor, title = "Trend State Ribbon")
+
+// ================= SIGNAL ARROWS (minimal text labels, like TSS_Strat) =================
+if showLabels and barstate.isconfirmed
+    if longCondition
+        label.new(bar_index, breakLevel, "▲", style=label.style_label_up,
+             color=color.new(bullColor, 30), textcolor=color.white, size=size.small)
+    if rotateOut
+        label.new(bar_index, breakLevel, "▼", style=label.style_label_down,
+             color=color.new(bearColor, 30), textcolor=color.white, size=size.small)
+
+// ================= ALERTS =================
+alertcondition(longCondition, "Rotation Buy Signal",
+     "{{ticker}} is now the basket leader and breaking out.")
+alertcondition(rotateOut, "Rotation Exit Signal",
+     "{{ticker}} lost basket leadership - position closed.")
+
+if barstate.isconfirmed and topSym != topSym[1]
+    alert("New basket leader: " + topSym, alert.freq_once_per_bar_close)
+
+// ================= LEADERBOARD + STATE DASHBOARD =================
+color neutralColor = color.rgb(148, 163, 184)
+var table lb = table.new(position.top_right, 3, 12, frame_color=color.new(neutralColor, 55),
+     frame_width=1, border_color=color.new(neutralColor, 80), border_width=1)
+
+f_trendGlyph(cur, prev) =>
+    cur > prev ? "↑" : cur < prev ? "↓" : "·"
+
+if showTable and barstate.islast
+    table.cell(lb, 0, 0, "#", text_color=neutralColor, bgcolor=color.new(color.black, 82), text_size=size.small)
+    table.cell(lb, 1, 0, "Symbol", text_color=neutralColor, bgcolor=color.new(color.black, 82), text_size=size.small)
+    table.cell(lb, 2, 0, "Mom", text_color=neutralColor, bgcolor=color.new(color.black, 82), text_size=size.small)
+
+    prevRocArr = array.from(roc1[1], roc2[1], roc3[1], roc4[1], roc5[1], roc6[1], roc7[1], roc8[1])
+
+    for i = 0 to array.size(sortedIdx) - 1
+        idx   = array.get(sortedIdx, i)
+        s     = array.get(symArr, idx)
+        r     = array.get(rocArr, idx)
+        rPrev = array.get(prevRocArr, idx)
+        rowBg = idx == topIdx ? color.new(bullColor, 88) : s == currentSym ? color.new(neutralColor, 88) : color.new(color.black, 88)
+        cellColor = maxAbsRoc > 0 ? (r >= 0 ? color.from_gradient(r, 0.0, maxAbsRoc, neutralColor, bullColor) : color.from_gradient(r, -maxAbsRoc, 0.0, bearColor, neutralColor)) : neutralColor
+        table.cell(lb, 0, i + 1, str.tostring(i + 1), text_color=neutralColor, bgcolor=rowBg, text_size=size.small)
+        table.cell(lb, 1, i + 1, s, text_color=color.white, bgcolor=rowBg, text_size=size.small)
+        table.cell(lb, 2, i + 1, str.tostring(r, "#.#") + " " + f_trendGlyph(r, rPrev), text_color=cellColor, bgcolor=rowBg, text_size=size.small)
+
+    stateText = isInBasket ? (isTop ? "Leading" : "Rank " + str.tostring(currentRank)) : "Not in basket"
+    table.cell(lb, 0, 9, "State", text_color=neutralColor, bgcolor=color.new(color.black, 86), text_size=size.small)
+    table.cell(lb, 1, 9, stateText, text_color=color.white, bgcolor=color.new(color.black, 86), text_size=size.small)
+    table.cell(lb, 2, 9, str.tostring(leaderBars) + "b", text_color=neutralColor, bgcolor=color.new(color.black, 86), text_size=size.small)
+
+    table.cell(lb, 0, 10, "Breadth", text_color=neutralColor, bgcolor=color.new(color.black, 82), text_size=size.small)
+    table.cell(lb, 1, 10, str.tostring(breadthPct, "#") + "%", text_color=color.from_gradient(breadthPct, 0, 100, bearColor, bullColor), bgcolor=color.new(color.black, 82), text_size=size.small)
+    table.cell(lb, 2, 10, "", text_color=neutralColor, bgcolor=color.new(color.black, 82), text_size=size.small)

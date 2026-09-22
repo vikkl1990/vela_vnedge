@@ -1,0 +1,609 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blitz_locked
+
+//@version=6
+strategy("SMC Strategy - OB + FVG + Liquidity Sweep", overlay = true,
+          fill_orders_on_standard_ohlc = true,
+          max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500,
+          commission_type = strategy.commission.percent, commission_value = 0.05,
+          slippage = 2)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+structGrp = "Market Structure"
+swingLen  = input.int(5, "Swing Detection Length", minval = 1, group = structGrp)
+obLookback = input.int(15, "OB Search Lookback (bars)", minval = 1, group = structGrp,
+                        tooltip = "A true OB is the LAST opposite-colored candle before displacement — this searches backward to find it, rather than assuming it's exactly 1 bar back.")
+requireFVGConfluence = input.bool(false, "Require FVG Confluence (BOS must create an FVG)", group = structGrp)
+fvgCheckWindow        = input.int(3, "FVG Confluence Window (bars after BOS)", minval = 1, group = structGrp)
+
+displacementGrp     = "Displacement"
+requireDisplacement = input.bool(true, "Require Displacement Candle for BOS", group = displacementGrp)
+displacementATRMult = input.float(1.2, "Min Displacement Body (x ATR)", minval = 0.1, group = displacementGrp)
+
+htfGrp      = "Higher Timeframe Bias"
+useHTFBias  = input.bool(false, "Require HTF Trend Alignment", group = htfGrp)
+htfTF       = input.timeframe("240", "HTF Timeframe", group = htfGrp)
+htfMALen    = input.int(50, "HTF MA Length", minval = 1, group = htfGrp)
+
+poolGrp     = "Liquidity Pools"
+maxPools    = input.int(15, "Max Pools Tracked (per side)", minval = 1, group = poolGrp)
+poolMaxAge  = input.int(300, "Pool Max Age (bars)", minval = 1, group = poolGrp)
+
+retestGrp          = "Liquidity & Retest"
+retestTimeoutBars  = input.int(30, "Sweep→Confirmation Timeout (bars)", minval = 1, group = retestGrp)
+touchTimeoutBars   = input.int(20, "Freeze→Touch Timeout (bars)", minval = 1, group = retestGrp)
+confirmTimeoutBars = input.int(10, "Touch→Confirmation Timeout (bars)", minval = 1, group = retestGrp)
+requireOBRetest    = input.bool(true, "Require OB Retest (off = enter directly on confirmed reversal)", group = retestGrp)
+confirmationMode   = input.string("None", "Confirmation After Retest Touch", group = retestGrp,
+                                   options = ["None", "Rejection Candle", "Engulfing Candle", "Close Back Through OB", "Break Retest Candle High/Low"])
+rejectionWickRatio = input.float(1.2, "Rejection Wick / Body Ratio", minval = 0.1, group = retestGrp)
+
+riskGrp         = "Risk Management"
+stopMode        = input.string("Order Block", "Stop Loss Method", options = ["Order Block", "ATR", "Percent"], group = riskGrp)
+targetMode      = input.string("R Multiple", "Take Profit Mode", options = ["R Multiple", "Nearest Liquidity Pool"], group = riskGrp)
+atrLen          = input.int(14, "ATR Length", minval = 1, group = riskGrp)
+atrStopMult     = input.float(1.0, "ATR Stop Multiplier", minval = 0.1, group = riskGrp)
+stopBufferATR   = input.float(0.1, "Extra Stop Buffer (x ATR)", minval = 0, group = riskGrp)
+targetRR        = input.float(2.0, "Take Profit (R Multiple, if not using Liquidity Pool)", minval = 0.1, group = riskGrp)
+pctStopValue    = input.float(1.0, "Stop Loss % (Percent mode)", minval = 0.1, group = riskGrp)
+pctTargetValue  = input.float(1.5, "Take Profit % (Percent mode)", minval = 0.1, group = riskGrp)
+moveToBreakeven = input.bool(true, "Move Stop to Breakeven at 1R", group = riskGrp)
+minOBAgeBars    = input.int(3, "OB Mitigation Grace Period (bars, visual only)", minval = 0, group = riskGrp)
+
+sizingGrp       = "Position Sizing"
+useRiskSizing   = input.bool(true, "Size by % Risk (unchecked = flat % of equity)", group = sizingGrp)
+riskPctPerTrade = input.float(1.0, "Risk per Trade (% of Equity)", minval = 0.1, maxval = 10, step = 0.1, group = sizingGrp)
+maxPositionPct  = input.float(25.0, "Max Position Size (% of Equity)", minval = 1, maxval = 100, group = sizingGrp)
+flatEquityPct   = input.float(10.0, "Flat Position Size (% of Equity)", minval = 1, maxval = 100, group = sizingGrp)
+
+visualGrp   = "Visuals"
+showOB      = input.bool(true, "Show Order Blocks", group = visualGrp)
+showFVG     = input.bool(true, "Show Fair Value Gaps", group = visualGrp)
+showSweeps  = input.bool(true, "Show Liquidity Sweeps", group = visualGrp)
+showZones   = input.bool(true, "Show Premium/Discount Zones", group = visualGrp)
+showLabels  = input.bool(true, "Show Entry Labels", group = visualGrp)
+showHTFTint = input.bool(true, "Show HTF Bias Background Tint", group = visualGrp)
+mitigationFadeBars = input.int(5, "Order Block Fade Duration (bars)", minval = 1, group = visualGrp)
+
+bullColor = input.color(color.teal, "Bullish Color", group = visualGrp)
+bearColor = input.color(color.red, "Bearish Color", group = visualGrp)
+
+glowGrp           = "Trend Glow"
+showTrendGlow     = input.bool(true, "Show Trend Glow Line", group = glowGrp)
+glowSmoothLen     = input.int(20, "Glow Line Smoothing Length", minval = 1, group = glowGrp)
+showTrendRibbon   = input.bool(true, "Show Trend Ribbon Fill", group = glowGrp)
+paintTrendCandles = input.bool(false, "Color Candles by Trend", group = glowGrp)
+
+// ============================================================================
+// MARKET STRUCTURE
+// ============================================================================
+swingHigh = ta.pivothigh(high, swingLen, swingLen)
+swingLow  = ta.pivotlow(low, swingLen, swingLen)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+var int   trendState    = 0
+
+if not na(swingHigh)
+    lastSwingHigh := swingHigh
+if not na(swingLow)
+    lastSwingLow := swingLow
+
+atrVal = ta.atr(atrLen)
+
+// TIER 1 #2: Displacement requirement — a BOS only counts if the breaking
+// candle's body is a genuine impulsive move, not a slow grind through the level.
+displacementUp   = math.abs(close - open) >= atrVal * displacementATRMult and close > open
+displacementDown = math.abs(close - open) >= atrVal * displacementATRMult and close < open
+
+bosUp   = ta.crossover(close, lastSwingHigh)  and (not requireDisplacement or displacementUp)
+bosDown = ta.crossunder(close, lastSwingLow) and (not requireDisplacement or displacementDown)
+
+if bosUp
+    trendState := 1
+if bosDown
+    trendState := -1
+
+// ============================================================================
+// TIER 1 #4: REAL LIQUIDITY POOLS
+// Instead of only checking the single most recent swing, every pivot is
+// pushed into an array and tracked until swept or aged out — so a sweep can
+// take out any untaken pool, matching how liquidity actually accumulates at
+// multiple prior highs/lows (equal highs/lows, older swings, etc.).
+// ============================================================================
+var array<float> poolHighPrices = array.new_float()
+var array<int>   poolHighBars   = array.new_int()
+var array<float> poolLowPrices  = array.new_float()
+var array<int>   poolLowBars    = array.new_int()
+
+if not na(swingHigh)
+    array.push(poolHighPrices, swingHigh)
+    array.push(poolHighBars, bar_index - swingLen)
+    if array.size(poolHighPrices) > maxPools
+        array.shift(poolHighPrices)
+        array.shift(poolHighBars)
+
+if not na(swingLow)
+    array.push(poolLowPrices, swingLow)
+    array.push(poolLowBars, bar_index - swingLen)
+    if array.size(poolLowPrices) > maxPools
+        array.shift(poolLowPrices)
+        array.shift(poolLowBars)
+
+if array.size(poolHighBars) > 0
+    for i = array.size(poolHighBars) - 1 to 0
+        if bar_index - array.get(poolHighBars, i) > poolMaxAge
+            array.remove(poolHighPrices, i)
+            array.remove(poolHighBars, i)
+
+if array.size(poolLowBars) > 0
+    for i = array.size(poolLowBars) - 1 to 0
+        if bar_index - array.get(poolLowBars, i) > poolMaxAge
+            array.remove(poolLowPrices, i)
+            array.remove(poolLowBars, i)
+
+bool  sweepHighFound = false
+float sweptHighVal   = na
+if array.size(poolHighPrices) > 0
+    for i = array.size(poolHighPrices) - 1 to 0
+        p = array.get(poolHighPrices, i)
+        if high > p and close < p
+            sweepHighFound := true
+            sweptHighVal   := p
+            array.remove(poolHighPrices, i)
+            array.remove(poolHighBars, i)
+            break
+
+bool  sweepLowFound = false
+float sweptLowVal   = na
+if array.size(poolLowPrices) > 0
+    for i = array.size(poolLowPrices) - 1 to 0
+        p = array.get(poolLowPrices, i)
+        if low < p and close > p
+            sweepLowFound := true
+            sweptLowVal   := p
+            array.remove(poolLowPrices, i)
+            array.remove(poolLowBars, i)
+            break
+
+liquiditySweepHigh = sweepHighFound
+liquiditySweepLow  = sweepLowFound
+
+// ============================================================================
+// TIER 1 #3: HTF BIAS
+// ============================================================================
+htfMA   = request.security(syminfo.tickerid, htfTF, ta.sma(close, htfMALen), lookahead = barmerge.lookahead_off)
+htfCls  = request.security(syminfo.tickerid, htfTF, close, lookahead = barmerge.lookahead_off)
+htfBias = htfCls > htfMA ? 1 : htfCls < htfMA ? -1 : 0
+
+bgcolor(showHTFTint and useHTFBias ? (htfBias == 1 ? color.new(bullColor, 95) : htfBias == -1 ? color.new(bearColor, 95) : na) : na)
+
+// ============================================================================
+// STAGE 1: SWEEP -> BOS (now pool-based sweep + displacement-filtered BOS)
+// ============================================================================
+var bool sweepArmedLong  = false
+var bool sweepArmedShort = false
+var int  sweepArmedLongBar  = na
+var int  sweepArmedShortBar = na
+
+if liquiditySweepLow and trendState <= 0
+    sweepArmedLong := true
+    sweepArmedLongBar := bar_index
+
+if liquiditySweepHigh and trendState >= 0
+    sweepArmedShort := true
+    sweepArmedShortBar := bar_index
+
+if sweepArmedLong and bar_index - sweepArmedLongBar > retestTimeoutBars
+    sweepArmedLong := false
+if sweepArmedShort and bar_index - sweepArmedShortBar > retestTimeoutBars
+    sweepArmedShort := false
+
+if bosDown
+    sweepArmedLong := false
+if bosUp
+    sweepArmedShort := false
+
+longConfirmed  = bosUp   and sweepArmedLong  and (not useHTFBias or htfBias == 1)
+shortConfirmed = bosDown and sweepArmedShort and (not useHTFBias or htfBias == -1)
+
+// ============================================================================
+// TIER 1 #1: CORRECT OB IDENTIFICATION
+// Scans backward from the displacement candle for the LAST opposite-colored
+// candle — this is the real definition of an order block, not simply
+// "whatever candle happens to be immediately before the BOS bar."
+// ============================================================================
+f_findOB(bullish, maxLookback) =>
+    float obTop = na
+    float obBot = na
+    int   obBarIdx = na
+    if bullish
+        for i = 1 to maxLookback
+            if close[i] < open[i]
+                obTop := high[i]
+                obBot := low[i]
+                obBarIdx := bar_index[i]
+                break
+    else
+        for i = 1 to maxLookback
+            if close[i] > open[i]
+                obTop := high[i]
+                obBot := low[i]
+                obBarIdx := bar_index[i]
+                break
+    [obTop, obBot, obBarIdx]
+
+// ============================================================================
+// FAIR VALUE GAPS
+// ============================================================================
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+
+if showFVG and bullFVG
+    box.new(bar_index[2], high[2], bar_index, low, bgcolor = color.new(color.blue, 88),
+            border_color = color.new(color.blue, 60))
+if showFVG and bearFVG
+    box.new(bar_index[2], low[2], bar_index, high, bgcolor = color.new(color.purple, 88),
+            border_color = color.new(color.purple, 60))
+
+// ============================================================================
+// ORDER BLOCKS (visual box, drawn from the CORRECTLY identified candle)
+// ============================================================================
+var box bullOB = na
+var box bearOB = na
+var int bullOBMitigatedBar = na
+var int bearOBMitigatedBar = na
+// ============================================================================
+// STAGE 2: FREEZE OB BOUNDARIES (+ optional FVG confluence gate)
+// FIX: Pine Script functions cannot reassign global variables via ':=' —
+// only return values. The freeze logic is now inlined at each call site
+// instead of living inside f_freezeBull()/f_freezeBear() functions.
+// ============================================================================
+var float frozenBullTop    = na
+var float frozenBullBottom = na
+var int   frozenBullBar    = na
+var bool  bullArmed        = false
+var bool  bullTouched      = false
+var float bullRetestHigh   = na
+var int   bullTouchBar     = na
+
+var float frozenBearTop    = na
+var float frozenBearBottom = na
+var int   frozenBearBar    = na
+var bool  bearArmed        = false
+var bool  bearTouched      = false
+var float bearRetestLow    = na
+var int   bearTouchBar     = na
+
+var bool  pendingBullFVG    = false
+var bool  pendingBearFVG    = false
+var int   pendingBullFVGBar = na
+var int   pendingBearFVGBar = na
+var float pendingBullOBTop  = na
+var float pendingBullOBBot  = na
+var float pendingBearOBTop  = na
+var float pendingBearOBBot  = na
+
+if longConfirmed
+    [obTop, obBot, obBarIdx] = f_findOB(true, obLookback)
+    if not na(obTop)
+        if not na(bullOB)
+            box.delete(bullOB)
+        bullOB := box.new(obBarIdx, obTop, obBarIdx, obBot,
+                           bgcolor = showOB ? color.new(bullColor, 85) : na,
+                           border_color = showOB ? color.new(bullColor, 30) : na, extend = extend.right)
+        bullOBMitigatedBar := na
+        if requireFVGConfluence
+            pendingBullFVG    := true
+            pendingBullFVGBar := bar_index
+            pendingBullOBTop  := obTop
+            pendingBullOBBot  := obBot
+        else
+            // Inlined freeze (was f_freezeBull)
+            frozenBullTop    := obTop
+            frozenBullBottom := obBot
+            frozenBullBar    := bar_index
+            bullArmed        := true
+            bullTouched      := false
+            bullRetestHigh   := na
+
+if shortConfirmed
+    [obTop, obBot, obBarIdx] = f_findOB(false, obLookback)
+    if not na(obTop)
+        if not na(bearOB)
+            box.delete(bearOB)
+        bearOB := box.new(obBarIdx, obTop, obBarIdx, obBot,
+                           bgcolor = showOB ? color.new(bearColor, 85) : na,
+                           border_color = showOB ? color.new(bearColor, 30) : na, extend = extend.right)
+        bearOBMitigatedBar := na
+        if requireFVGConfluence
+            pendingBearFVG    := true
+            pendingBearFVGBar := bar_index
+            pendingBearOBTop  := obTop
+            pendingBearOBBot  := obBot
+        else
+            // Inlined freeze (was f_freezeBear)
+            frozenBearTop    := obTop
+            frozenBearBottom := obBot
+            frozenBearBar    := bar_index
+            bearArmed        := true
+            bearTouched      := false
+            bearRetestLow    := na
+
+// Resolve pending FVG confluence checks
+if pendingBullFVG
+    if bullFVG
+        // Inlined freeze (was f_freezeBull)
+        frozenBullTop    := pendingBullOBTop
+        frozenBullBottom := pendingBullOBBot
+        frozenBullBar    := bar_index
+        bullArmed        := true
+        bullTouched      := false
+        bullRetestHigh   := na
+        pendingBullFVG   := false
+    else if bar_index - pendingBullFVGBar > fvgCheckWindow
+        pendingBullFVG := false
+
+if pendingBearFVG
+    if bearFVG
+        // Inlined freeze (was f_freezeBear)
+        frozenBearTop    := pendingBearOBTop
+        frozenBearBottom := pendingBearOBBot
+        frozenBearBar    := bar_index
+        bearArmed        := true
+        bearTouched      := false
+        bearRetestLow    := na
+        pendingBearFVG   := false
+    else if bar_index - pendingBearFVGBar > fvgCheckWindow
+        pendingBearFVG := false
+
+// Invalidate a pending setup if the market reverses hard the other way.
+if bosDown
+    bullArmed      := false
+    bullTouched    := false
+    pendingBullFVG := false
+if bosUp
+    bearArmed      := false
+    bearTouched    := false
+    pendingBearFVG := false
+// ============================================================================
+// STAGE 3: WAIT -> ANY FUTURE CANDLE OVERLAPS THE FROZEN ZONE
+// ============================================================================
+if bullArmed
+    if bar_index - frozenBullBar > touchTimeoutBars
+        bullArmed := false
+    else
+        overlapLong = high >= frozenBullBottom and low <= frozenBullTop
+        if overlapLong
+            bullArmed      := false
+            bullTouched     := true
+            bullRetestHigh  := high
+            bullTouchBar    := bar_index
+
+if bearArmed
+    if bar_index - frozenBearBar > touchTimeoutBars
+        bearArmed := false
+    else
+        overlapShort = low <= frozenBearTop and high >= frozenBearBottom
+        if overlapShort
+            bearArmed      := false
+            bearTouched     := true
+            bearRetestLow   := low
+            bearTouchBar    := bar_index
+
+// ============================================================================
+// STAGE 4: CONFIRMATION FILTER
+// ============================================================================
+bullConfirmNow = false
+bearConfirmNow = false
+
+if bullTouched
+    if bar_index - bullTouchBar > confirmTimeoutBars
+        bullTouched := false
+    else
+        bullBody      = math.abs(close - open)
+        bullLowerWick = math.min(open, close) - low
+        patternOK = switch confirmationMode
+            "None"                         => true
+            "Rejection Candle"             => close > open and bullLowerWick > bullBody * rejectionWickRatio
+            "Engulfing Candle"             => close > open and close[1] < open[1] and open <= close[1] and close >= open[1]
+            "Close Back Through OB"        => close > frozenBullTop
+            "Break Retest Candle High/Low" => close > bullRetestHigh
+            => true
+        if patternOK
+            bullConfirmNow := true
+            bullTouched    := false
+
+if bearTouched
+    if bar_index - bearTouchBar > confirmTimeoutBars
+        bearTouched := false
+    else
+        bearBody      = math.abs(close - open)
+        bearUpperWick = high - math.max(open, close)
+        patternOK = switch confirmationMode
+            "None"                         => true
+            "Rejection Candle"             => close < open and bearUpperWick > bearBody * rejectionWickRatio
+            "Engulfing Candle"             => close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
+            "Close Back Through OB"        => close < frozenBearBottom
+            "Break Retest Candle High/Low" => close < bearRetestLow
+            => true
+        if patternOK
+            bearConfirmNow := true
+            bearTouched    := false
+
+// ============================================================================
+// FINAL ENTRY CONDITIONS
+// ============================================================================
+longSetup  = requireOBRetest ? bullConfirmNow  : longConfirmed
+shortSetup = requireOBRetest ? bearConfirmNow  : shortConfirmed
+
+// ============================================================================
+// STOP / TARGET CALCULATION
+// ============================================================================
+longOBBottomActive = requireOBRetest ? frozenBullBottom : (not na(bullOB) ? box.get_bottom(bullOB) : na)
+shortOBTopActive   = requireOBRetest ? frozenBearTop    : (not na(bearOB) ? box.get_top(bearOB)    : na)
+
+longStop  = switch stopMode
+    "Order Block" => not na(longOBBottomActive) ? longOBBottomActive - atrVal * stopBufferATR : close - atrVal * atrStopMult
+    "ATR"         => close - atrVal * atrStopMult
+    => close * (1 - pctStopValue / 100)
+
+shortStop = switch stopMode
+    "Order Block" => not na(shortOBTopActive) ? shortOBTopActive + atrVal * stopBufferATR : close + atrVal * atrStopMult
+    "ATR"         => close + atrVal * atrStopMult
+    => close * (1 + pctStopValue / 100)
+
+longRisk  = close - longStop
+shortRisk = shortStop - close
+
+// TIER 1 #4 (TP side): optional take-profit at the nearest untaken liquidity pool
+f_nearestAbove(price) =>
+    float nearest = na
+    if array.size(poolHighPrices) > 0
+        for i = 0 to array.size(poolHighPrices) - 1
+            p = array.get(poolHighPrices, i)
+            if p > price and (na(nearest) or p < nearest)
+                nearest := p
+    nearest
+
+f_nearestBelow(price) =>
+    float nearest = na
+    if array.size(poolLowPrices) > 0
+        for i = 0 to array.size(poolLowPrices) - 1
+            p = array.get(poolLowPrices, i)
+            if p < price and (na(nearest) or p > nearest)
+                nearest := p
+    nearest
+
+longLiqTarget  = f_nearestAbove(close)
+shortLiqTarget = f_nearestBelow(close)
+
+longTarget  = stopMode == "Percent" ? close * (1 + pctTargetValue / 100) :
+              (targetMode == "Nearest Liquidity Pool" and not na(longLiqTarget) ? longLiqTarget : close + longRisk * targetRR)
+shortTarget = stopMode == "Percent" ? close * (1 - pctTargetValue / 100) :
+              (targetMode == "Nearest Liquidity Pool" and not na(shortLiqTarget) ? shortLiqTarget : close - shortRisk * targetRR)
+
+// ============================================================================
+// POSITION SIZING
+// ============================================================================
+riskAmount        = strategy.equity * (riskPctPerTrade / 100)
+maxPositionValue  = strategy.equity * (maxPositionPct / 100)
+flatPositionValue = strategy.equity * (flatEquityPct / 100)
+
+longQtyByRisk  = (not na(longRisk)  and longRisk  > 0) ? riskAmount / longRisk  : na
+shortQtyByRisk = (not na(shortRisk) and shortRisk > 0) ? riskAmount / shortRisk : na
+
+longQtyCap  = (close > 0) ? maxPositionValue / close : na
+shortQtyCap = (close > 0) ? maxPositionValue / close : na
+
+longQtyFlat  = (close > 0) ? flatPositionValue / close : na
+shortQtyFlat = (close > 0) ? flatPositionValue / close : na
+
+longQtyRaw  = useRiskSizing ? math.min(longQtyByRisk, longQtyCap)   : longQtyFlat
+shortQtyRaw = useRiskSizing ? math.min(shortQtyByRisk, shortQtyCap) : shortQtyFlat
+
+longQty  = na(longQtyRaw)  or longQtyRaw  <= 0 ? 0 : math.floor(longQtyRaw)
+shortQty = na(shortQtyRaw) or shortQtyRaw <= 0 ? 0 : math.floor(shortQtyRaw)
+
+// ============================================================================
+// EXECUTION -> DISCARD FROZEN OB
+// ============================================================================
+var float pendingLongStop  = na
+var float pendingShortStop = na
+
+if longSetup and longQty > 0
+    strategy.entry("Long", strategy.long, qty = longQty)
+    pendingLongStop  := longStop
+    frozenBullTop    := na
+    frozenBullBottom := na
+    frozenBullBar    := na
+    bullRetestHigh   := na
+
+if shortSetup and shortQty > 0
+    strategy.entry("Short", strategy.short, qty = shortQty)
+    pendingShortStop := shortStop
+    frozenBearTop    := na
+    frozenBearBottom := na
+    frozenBearBar    := na
+    bearRetestLow    := na
+
+// ============================================================================
+// EXIT LOGIC
+// ============================================================================
+var float longEntryPrice  = na
+var float shortEntryPrice = na
+var float longInitStop    = na
+var float shortInitStop   = na
+var bool  longBEDone      = false
+var bool  shortBEDone     = false
+
+if strategy.position_size > 0 and strategy.position_size[1] <= 0
+    longEntryPrice := close
+    longInitStop    := pendingLongStop
+    longBEDone      := false
+
+if strategy.position_size < 0 and strategy.position_size[1] >= 0
+    shortEntryPrice := close
+    shortInitStop    := pendingShortStop
+    shortBEDone      := false
+
+if moveToBreakeven and strategy.position_size > 0 and not longBEDone
+    if high >= longEntryPrice + (longEntryPrice - longInitStop)
+        longBEDone := true
+
+if moveToBreakeven and strategy.position_size < 0 and not shortBEDone
+    if low <= shortEntryPrice - (shortInitStop - shortEntryPrice)
+        shortBEDone := true
+
+longActiveStop  = (moveToBreakeven and longBEDone)  ? longEntryPrice  : longInitStop
+shortActiveStop = (moveToBreakeven and shortBEDone) ? shortEntryPrice : shortInitStop
+
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long", stop = longActiveStop, limit = longTarget)
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", "Short", stop = shortActiveStop, limit = shortTarget)
+
+// ============================================================================
+// VISUALS
+// ============================================================================
+plotshape(showSweeps and liquiditySweepHigh, style = shape.xcross, location = location.abovebar,
+          color = color.new(color.orange, 40), size = size.small)
+plotshape(showSweeps and liquiditySweepHigh, style = shape.xcross, location = location.abovebar,
+          color = color.new(color.orange, 80), size = size.normal)
+
+plotshape(showSweeps and liquiditySweepLow, style = shape.xcross, location = location.belowbar,
+          color = color.new(color.orange, 40), size = size.small)
+plotshape(showSweeps and liquiditySweepLow, style = shape.xcross, location = location.belowbar,
+          color = color.new(color.orange, 80), size = size.normal)
+
+eq = (lastSwingHigh + lastSwingLow) / 2
+premiumZone  = plot(showZones ? lastSwingHigh : na, display = display.none)
+discountZone = plot(showZones ? lastSwingLow  : na, display = display.none)
+eqLine       = plot(showZones ? eq : na, "Equilibrium", color.new(color.white, 50))
+
+fill(premiumZone, eqLine, color = showZones ? color.new(color.red, 90) : na, title = "Premium Zone")
+fill(discountZone, eqLine, color = showZones ? color.new(color.green, 90) : na, title = "Discount Zone")
+
+plotshape(showLabels and longSetup, style = shape.labelup, location = location.belowbar,
+          color = color.new(bullColor, 70), size = size.tiny)
+plotshape(showLabels and longSetup, style = shape.labelup, location = location.belowbar,
+          color = bullColor, text = "BUY", textcolor = color.white, size = size.small)
+
+plotshape(showLabels and shortSetup, style = shape.labeldown, location = location.abovebar,
+          color = color.new(bearColor, 70), size = size.tiny)
+plotshape(showLabels and shortSetup, style = shape.labeldown, location = location.abovebar,
+          color = bearColor, text = "SELL", textcolor = color.white, size = size.small)
+
+trendGlowSrc   = ta.hma(close, glowSmoothLen)
+trendGlowColor = trendState == 1 ? bullColor : trendState == -1 ? bearColor : color.gray
+
+plot(showTrendGlow ? trendGlowSrc : na, "Trend Glow", color.new(trendGlowColor, 82), 7)
+trendLinePlot = plot(showTrendGlow ? trendGlowSrc : na, "Trend Line", trendGlowColor, 2)
+priceRefPlot  = plot(showTrendRibbon ? hl2 : na, "Price Reference", display = display.none)
+
+fill(trendLinePlot, priceRefPlot, color = showTrendRibbon ? color.new(trendGlowColor, 88) : na, title = "Trend Ribbon")
+
+barcolor(paintTrendCandles ? trendGlowColor : na, title = "Trend Candles")

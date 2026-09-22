@@ -1,0 +1,175 @@
+//@version=6
+strategy("EMA Trend + MTF Stochastic Strategy", shorttitle="EMA+MTF Stoch", overlay=true,
+     pyramiding=0, initial_capital=10000, currency=currency.USD,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.02)
+
+// ============================================================================
+// TREND FILTER
+// ============================================================================
+grpTrend = "Trend Filter (EMA)"
+emaFastLen = input.int(38, "EMA Fast", minval=1, group=grpTrend)
+emaSlowLen = input.int(62, "EMA Slow", minval=1, group=grpTrend)
+
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+trendUp   = emaFast > emaSlow
+trendDown = emaFast < emaSlow
+
+emaCol = trendUp ? color.lime : trendDown ? color.red : color.yellow
+p1 = plot(emaSlow, "EMA Slow", color=emaCol, linewidth=2)
+p2 = plot(emaFast, "EMA Fast", color=emaCol, linewidth=1)
+fill(p1, p2, color=color.new(color.gray, 85))
+
+// ============================================================================
+// STOCHASTIC TIMING TRIGGER
+// ============================================================================
+grpStoch = "MTF Stochastic"
+len      = input.int(11, "Stoch Length", minval=1, group=grpStoch)
+smoothK  = input.int(3, "SmoothK", minval=1, group=grpStoch)
+smoothD  = input.int(3, "SmoothD", minval=1, group=grpStoch)
+upLine   = input.int(80, "Upper Line", minval=50, maxval=90, group=grpStoch)
+lowLine  = input.int(20, "Lower Line", minval=10, maxval=50, group=grpStoch)
+
+k = ta.sma(ta.stoch(close, high, low, len), smoothK)
+d = ta.sma(k, smoothD)
+
+mtfRes = timeframe.period == "1" ? "5" : timeframe.period == "5" ? "15" : timeframe.period == "15" ? "30" :
+     timeframe.period == "30" ? "60" : timeframe.period == "60" ? "240" : timeframe.period == "240" ? "D" :
+     timeframe.period == "D" ? "W" : "M"
+
+f_stoch() =>
+    kk = ta.sma(ta.stoch(close, high, low, len), smoothK)
+    dd = ta.sma(kk, smoothD)
+    [ta.linreg(kk, len, 0), ta.linreg(dd, len, 0)]
+
+[mtfK, mtfD] = request.security(syminfo.tickerid, mtfRes, f_stoch(), lookahead=barmerge.lookahead_off)
+
+// ============================================================================
+// ENTRY
+// ============================================================================
+grpEntry = "Entry Logic"
+requireTrend = input.bool(true, "Require EMA Trend Agreement?", group=grpEntry)
+tradeDir = input.string("Both", "Trade Direction", options=["Both", "Long Only", "Short Only"], group=grpEntry)
+
+stochLong  = ta.crossover(mtfK, 50) and k > 50 and ta.change(k, 1) > 0 and k > d and mtfK > mtfD
+stochShort = ta.crossunder(mtfD, 50) and k < 50 and ta.change(k, 1) < 0 and k < d and mtfK < mtfD
+
+longCondition  = stochLong  and (not requireTrend or trendUp)   and tradeDir != "Short Only"
+shortCondition = stochShort and (not requireTrend or trendDown) and tradeDir != "Long Only"
+
+// ============================================================================
+// RISK / EXIT SETTINGS — staged, ATR-scaled throughout (no fixed-tick trail)
+// ============================================================================
+grpExit = "Exit Logic"
+atrLen         = input.int(14, "ATR Length", minval=1, group=grpExit)
+atrStopMult    = input.float(1.5, "ATR Initial Stop Multiple", minval=0.1, step=0.1, group=grpExit)
+breakEvenR     = input.float(1.0, "Move Stop To Breakeven At (R)", minval=0.1, step=0.1, group=grpExit)
+trailStartR    = input.float(1.5, "Start ATR Trailing At (R)", minval=0.1, step=0.1, group=grpExit)
+trailATRMult   = input.float(1.5, "ATR Trailing Stop Multiple", minval=0.1, step=0.1, group=grpExit)
+useTrendExit   = input.bool(true, "Exit If EMA Trend Flips Against Position?", group=grpExit)
+maxBarsInTrade = input.int(60, "Max Bars In Trade (time stop, 0=off)", minval=0, group=grpExit)
+
+exitLongSignal  = ta.crossunder(mtfD, upLine)
+exitShortSignal = ta.crossover(mtfK, lowLine)
+
+atrVal = ta.atr(atrLen)
+
+// ============================================================================
+// POSITION SIZING
+// ============================================================================
+grpSize = "Position Sizing"
+sizeMode    = input.string("Risk-Based (ATR stop)", "Sizing Mode", options=["Percent of Equity", "Risk-Based (ATR stop)"], group=grpSize)
+equityPct   = input.float(100, "Percent of Equity per Trade", minval=1, maxval=100, group=grpSize)
+riskPercent = input.float(1.0, "Risk % of Equity (Risk-Based only)", minval=0.1, step=0.1, group=grpSize)
+
+riskCapital = strategy.equity * (riskPercent / 100)
+stopDistEstimate = atrVal * atrStopMult
+qty = sizeMode == "Risk-Based (ATR stop)" ? (stopDistEstimate > 0 ? riskCapital / stopDistEstimate : 0.0) : (strategy.equity * equityPct / 100) / close
+
+// ============================================================================
+// ORDERS + STAGED STOP MANAGEMENT
+// ============================================================================
+var int   entryBar      = na
+var float entryPrice    = na
+var float entryStopDist = na
+var float stopLevel     = na
+
+if longCondition and strategy.position_size <= 0 and qty > 0
+    entryStopDist := atrVal * atrStopMult
+    stopLevel := close - entryStopDist
+    entryPrice := close
+    strategy.entry("Long", strategy.long, qty=qty)
+    entryBar := bar_index
+
+if shortCondition and strategy.position_size >= 0 and qty > 0
+    entryStopDist := atrVal * atrStopMult
+    stopLevel := close + entryStopDist
+    entryPrice := close
+    strategy.entry("Short", strategy.short, qty=qty)
+    entryBar := bar_index
+
+// staged stop logic, recalculated every bar while in a position
+if strategy.position_size > 0 and not na(entryStopDist) and entryStopDist > 0
+    currentR = (close - entryPrice) / entryStopDist
+    if currentR >= trailStartR
+        stopLevel := math.max(stopLevel, close - atrVal * trailATRMult)   // ATR trail, only after target reached
+    else if currentR >= breakEvenR
+        stopLevel := math.max(stopLevel, entryPrice)                       // lock breakeven
+    // else: stopLevel stays at the original ATR initial stop
+
+if strategy.position_size < 0 and not na(entryStopDist) and entryStopDist > 0
+    currentR = (entryPrice - close) / entryStopDist
+    if currentR >= trailStartR
+        stopLevel := math.min(stopLevel, close + atrVal * trailATRMult)
+    else if currentR >= breakEvenR
+        stopLevel := math.min(stopLevel, entryPrice)
+
+if strategy.position_size > 0
+    strategy.exit("Long Exit", from_entry="Long", stop=stopLevel)
+    if exitLongSignal
+        strategy.close("Long", comment="Stoch Fade")
+    if useTrendExit and trendDown
+        strategy.close("Long", comment="Trend Flip")
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", from_entry="Short", stop=stopLevel)
+    if exitShortSignal
+        strategy.close("Short", comment="Stoch Fade")
+    if useTrendExit and trendUp
+        strategy.close("Short", comment="Trend Flip")
+
+if maxBarsInTrade > 0 and strategy.position_size != 0 and not na(entryBar) and (bar_index - entryBar) >= maxBarsInTrade
+    strategy.close_all(comment="Time Stop")
+    entryBar := na
+
+if strategy.position_size == 0
+    entryBar := na
+    entryPrice := na
+    entryStopDist := na
+    stopLevel := na
+
+// ============================================================================
+// VISUALS
+// ============================================================================
+grpVis = "Visuals"
+showMeter = input.bool(true, "Show Confirmation Meter", group=grpVis)
+showLevels = input.bool(true, "Show Stop Line", group=grpVis)
+
+bullScore = (trendUp ? 40 : 0) + (k > d ? 20 : 0) + (mtfK > mtfD ? 20 : 0) + (k > 50 ? 20 : 0)
+bearScore = (trendDown ? 40 : 0) + (k < d ? 20 : 0) + (mtfK < mtfD ? 20 : 0) + (k < 50 ? 20 : 0)
+
+var table meter = table.new(position.top_right, 11, 2, border_width=1)
+if showMeter and barstate.islast
+    table.cell(meter, 0, 0, "BULL " + str.tostring(bullScore), text_color=color.white, bgcolor=color.new(color.green, 40))
+    table.cell(meter, 0, 1, "BEAR " + str.tostring(bearScore), text_color=color.white, bgcolor=color.new(color.red, 40))
+    for i = 1 to 10
+        table.cell(meter, i, 0, "", bgcolor = i <= math.round(bullScore / 10) ? color.green : color.new(color.gray, 80))
+        table.cell(meter, i, 1, "", bgcolor = i <= math.round(bearScore / 10) ? color.red : color.new(color.gray, 80))
+
+plot(showLevels and strategy.position_size != 0 ? stopLevel : na, "Stop", color=color.red, style=plot.style_circles, linewidth=2)
+
+plotshape(longCondition, "Long Entry", shape.triangleup, location.belowbar, color=color.lime, size=size.small)
+plotshape(shortCondition, "Short Entry", shape.triangledown, location.abovebar, color=color.red, size=size.small)
+

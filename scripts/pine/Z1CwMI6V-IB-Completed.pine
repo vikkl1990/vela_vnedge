@@ -1,0 +1,1091 @@
+//@version=6
+strategy("IB Completed", overlay = true, max_lines_count  = 500, max_labels_count = 500, max_boxes_count = 500, initial_capital   = 25000, currency = currency.USD, default_qty_type  = strategy.fixed, default_qty_value = 1, calc_on_every_tick = false, process_orders_on_close = false, pyramiding = 0, commission_type = strategy.commission.cash_per_contract, commission_value = 0, margin_long = 4, margin_short = 4)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         INPUTS                                          ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+// ─── Opening Range Window ────────────────────────────────────────────────────
+g_ib = "Opening Range Window"
+ibStartHour = input.int(9,  "Start Hour",   minval = 0, maxval = 23, group = g_ib)
+ibStartMin  = input.int(30, "Start Minute", minval = 0, maxval = 59, group = g_ib)
+ibEndHour   = input.int(10, "End Hour",     minval = 0, maxval = 23, group = g_ib)
+ibEndMin    = input.int(30, "End Minute",   minval = 0, maxval = 59, group = g_ib)
+ibTz        = input.string("America/New_York", "Timezone", options = ["America/New_York","America/Chicago","America/Los_Angeles","Europe/London","Asia/Tokyo","Asia/Singapore","Australia/Sydney"], group = g_ib)
+
+// ─── Pivot Detection (stop-loss reference) ───────────────────────────────────
+g_piv = "Pivot Settings"
+pivotLeft  = input.int(2, "Pivot Left bars",  minval = 1, group = g_piv, tooltip = "Bars required to the LEFT of a swing to confirm it as a pivot.")
+pivotRight = input.int(2, "Pivot Right bars", minval = 1, group = g_piv, tooltip = "Bars required to the RIGHT of a swing. Higher = more lag, less noise.")
+
+// ─── Trigger SMA ─────────────────────────────────────────────────────────────
+g_sma = "Trigger SMA"
+smaLen   = input.int(9, "SMA Length", minval = 1, group = g_sma, tooltip = "Period for the SMA used to trigger entries. Default is 9.")
+smaSrc   = input.source(close, "SMA Source", group = g_sma)
+showSMA  = input.bool(true,  "Show SMA on chart", group = g_sma)
+smaColor = input.color(color.orange, "SMA Color", group = g_sma)
+
+// ─── Higher Timeframe Filter ─────────────────────────────────────────────────
+g_htf = "Higher Timeframe Filter"
+htfEnabled   = input.bool(true, "Enable HTF Filter", group = g_htf, tooltip = "When ON, longs require close > HTF MA; shorts require close < HTF MA.")
+htfTimeframe = input.timeframe("240", "HTF Timeframe", group = g_htf, tooltip = "Timeframe for the trend filter. 240 = 4H, D = daily, W = weekly.")
+htfMaType    = input.string("SMA", "HTF MA Type", options = ["SMA", "EMA", "WMA", "VWMA"], group = g_htf)
+htfMaLen     = input.int(9, "HTF MA Length", minval = 1, group = g_htf)
+showHtfMa    = input.bool(true, "Show HTF MA on chart", group = g_htf)
+htfMaColor   = input.color(color.new(color.purple, 0), "HTF MA Color", group = g_htf)
+
+// ─── Risk / Stop Loss ────────────────────────────────────────────────────────
+g_risk = "Risk / Stop Loss"
+stopMode         = input.string("Points", "Stop Offset Mode", options = ["Points", "Percentage"], group = g_risk, tooltip = "Points = fixed price offset. Percentage = percentage of the reference price.")
+stopOffsetPts    = input.float(2.0,  "Stop Offset (Points)", minval = 0.0, step = 0.25, group = g_risk, tooltip = "Points below higher low (long) or above lower high (short).")
+stopOffsetPctIn  = input.float(0.02, "Stop Offset (%)",      minval = 0.0, step = 0.01, group = g_risk, tooltip = "Percentage offset for stop. Used when mode = Percentage.") / 100.0
+invalidateOnIBBreach = input.bool(false, "Invalidate setup if price breaches opposite IB level", group = g_risk, tooltip = "If ON: a LONG setup is canceled if price prints below IB low. Mirror for shorts.")
+
+// ─── Position Sizing ─────────────────────────────────────────────────────────
+g_size = "Position Sizing"
+sizingMode  = input.string("Fixed", "Sizing Mode", options = ["Fixed", "Risk-Based"], group = g_size, tooltip = "Fixed = set number of contracts. Risk-Based = calculate from dollar risk and stop distance.")
+fixedQty    = input.int(1,     "Fixed Contracts",  minval = 1, group = g_size)
+riskAmount  = input.float(500, "Risk Amount ($)",   minval = 1, step = 50, group = g_size, tooltip = "Maximum dollar risk per trade. Used when Sizing Mode = Risk-Based.")
+tickVal     = input.float(1.25, "Tick Value ($)",   minval = 0.01, step = 0.25, group = g_size, tooltip = "Dollar value of one tick. MES=$1.25, ES=$12.50, MNQ=$0.50, NQ=$5.00.")
+
+// ─── Exit Scaling (R-Multiples) ──────────────────────────────────────────────
+g_exit = "Exit Scaling (R-Multiples)"
+exitMode  = input.string("Percentage", "Exit Mode", options = ["Percentage", "Contracts"], group = g_exit, tooltip = "Percentage = exit a % of position at each R. Contracts = exit fixed qty at each R.")
+r1ExitPct = input.float(50,  "1R Exit %",   minval = 0, maxval = 100, step = 5, group = g_exit)
+r2ExitPct = input.float(25,  "2R Exit %",   minval = 0, maxval = 100, step = 5, group = g_exit)
+r3ExitPct = input.float(25,  "3R Exit %",   minval = 0, maxval = 100, step = 5, group = g_exit)
+r4ExitPct = input.float(0,   "4R Exit %",   minval = 0, maxval = 100, step = 5, group = g_exit)
+r5ExitPct = input.float(0,   "5R Exit %",   minval = 0, maxval = 100, step = 5, group = g_exit)
+r1ExitQty = input.int(5,  "1R Exit Contracts", minval = 0, group = g_exit)
+r2ExitQty = input.int(3,  "2R Exit Contracts", minval = 0, group = g_exit)
+r3ExitQty = input.int(2,  "3R Exit Contracts", minval = 0, group = g_exit)
+r4ExitQty = input.int(0,  "4R Exit Contracts", minval = 0, group = g_exit)
+r5ExitQty = input.int(0,  "5R Exit Contracts", minval = 0, group = g_exit)
+
+// ─── Break-Even Stop ─────────────────────────────────────────────────────────
+g_be = "Break-Even Stop"
+beEnabled = input.bool(true,  "Enable Break-Even Stop", group = g_be)
+beAfterR  = input.float(2.0,  "Move to BE After R-Multiple", minval = 0.5, step = 0.5, group = g_be, tooltip = "Move stop to entry price after this R-multiple is reached.")
+
+// ─── Session & Risk ──────────────────────────────────────────────────────────
+g_sess = "Session & Risk"
+tradeCutoffHour = input.int(15, "Stop New Entries at Hour (24h)", minval = 0, maxval = 23, group = g_sess)
+tradeCutoffMin  = input.int(45, "Stop New Entries at Minute",     minval = 0, maxval = 59, group = g_sess)
+goFlatHour      = input.int(15, "Go Flat at Hour (24h)",          minval = 0, maxval = 23, group = g_sess, tooltip = "Force-close any open position at this time.")
+goFlatMin       = input.int(55, "Go Flat at Minute",              minval = 0, maxval = 59, group = g_sess)
+enableLongs     = input.bool(true, "Enable Long Trades",  group = g_sess)
+enableShorts    = input.bool(true, "Enable Short Trades", group = g_sess)
+
+// ─── IB Size Filter ──────────────────────────────────────────────────────────
+g_ibSize = "IB Size Filter"
+useIBSizeFilter = input.bool(false, "Enable IB Size Filter", group = g_ibSize, tooltip = "When ON, trades are blocked if the IB range exceeds Max IB Size. Tick count always shown.")
+maxIBTicks      = input.int(100, "Max IB Size (ticks)", minval = 1, group = g_ibSize, tooltip = "Maximum allowed IB range in ticks. If exceeded, no entries fire for the day.")
+
+// ─── Day-of-Week Filter ──────────────────────────────────────────────────────
+g_dow = "Day-of-Week Filter"
+skipSun = input.bool(false, "Skip Sunday",    group = g_dow, tooltip = "When checked, no trades will fire on Sunday sessions.")
+skipMon = input.bool(false, "Skip Monday",    group = g_dow, tooltip = "When checked, no trades will fire on Monday.")
+skipTue = input.bool(false, "Skip Tuesday",   group = g_dow, tooltip = "When checked, no trades will fire on Tuesday.")
+skipWed = input.bool(false, "Skip Wednesday", group = g_dow, tooltip = "When checked, no trades will fire on Wednesday.")
+skipThu = input.bool(false, "Skip Thursday",  group = g_dow, tooltip = "When checked, no trades will fire on Thursday.")
+skipFri = input.bool(false, "Skip Friday",    group = g_dow, tooltip = "When checked, no trades will fire on Friday.")
+skipSat = input.bool(false, "Skip Saturday",  group = g_dow, tooltip = "When checked, no trades will fire on Saturday.")
+
+dowToday = dayofweek(time, ibTz)
+dayBlocked = (skipSun and dowToday == dayofweek.sunday) or (skipMon and dowToday == dayofweek.monday) or (skipTue and dowToday == dayofweek.tuesday) or (skipWed and dowToday == dayofweek.wednesday) or (skipThu and dowToday == dayofweek.thursday) or (skipFri and dowToday == dayofweek.friday) or (skipSat and dowToday == dayofweek.saturday)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║           LOCATION / TREND FILTERS                                      ║
+// ║  Each level can be shown and/or used as an entry filter.                ║
+// ║  Long: close > level.   Short: close < level.                           ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+// ─── Previous Week High / Low ────────────────────────────────────────────────
+g_fPW = "Filter: Previous Week H/L"
+showPWHL   = input.bool(false, "Show PWH / PWL",       group = g_fPW)
+filterPWH  = input.bool(false, "Filter: price vs PWH", group = g_fPW, tooltip = "Long requires close > PWH. Short requires close < PWH.")
+filterPWL  = input.bool(false, "Filter: price vs PWL", group = g_fPW, tooltip = "Long requires close > PWL. Short requires close < PWL.")
+
+// ─── Previous Day High / Low ─────────────────────────────────────────────────
+g_fPD = "Filter: Previous Day H/L"
+showPDHL   = input.bool(false, "Show PDH / PDL",       group = g_fPD)
+filterPDH  = input.bool(false, "Filter: price vs PDH", group = g_fPD)
+filterPDL  = input.bool(false, "Filter: price vs PDL", group = g_fPD)
+pdSessionStartHour = input.int(18, "Futures Day Start Hour (ET)", minval = 0, maxval = 23, group = g_fPD)
+
+// ─── Magic Lines (Pre-Market H/L) ───────────────────────────────────────────
+g_fML = "Filter: Magic Lines"
+showMagic    = input.bool(false, "Show Magic Lines",            group = g_fML)
+mlWindow     = input.session("0300-0700", "Magic Lines Window (ET)", group = g_fML)
+filterMagicH = input.bool(false, "Filter: price vs Magic High", group = g_fML)
+filterMagicL = input.bool(false, "Filter: price vs Magic Low",  group = g_fML)
+
+// ─── Overnight Low ──────────────────────────────────────────────────────────
+g_fONL = "Filter: Overnight Low"
+showONL    = input.bool(false, "Show ONL",             group = g_fONL)
+filterONL  = input.bool(false, "Filter: price vs ONL", group = g_fONL)
+
+// ─── Daily 9 SMA ────────────────────────────────────────────────────────────
+g_fD9 = "Filter: Daily 9 SMA"
+showD9     = input.bool(false, "Show Daily 9 SMA",           group = g_fD9)
+d9Len      = input.int(9,     "Daily SMA Length", minval = 1, group = g_fD9)
+filterD9   = input.bool(false, "Filter: price vs Daily 9 SMA", group = g_fD9)
+
+// ─── 4H 9 SMA ───────────────────────────────────────────────────────────────
+g_fH4 = "Filter: 4H 9 SMA"
+showH4     = input.bool(false, "Show 4H 9 SMA",           group = g_fH4)
+h4Len      = input.int(9,     "4H SMA Length", minval = 1, group = g_fH4)
+filterH4   = input.bool(false, "Filter: price vs 4H 9 SMA", group = g_fH4)
+
+// ─── 100 SMA (W / D / 4H / 1H) ─────────────────────────────────────────────
+g_f100 = "Filter: 100 SMA"
+show100W    = input.bool(false, "Show Weekly 100 SMA",    group = g_f100)
+filter100W  = input.bool(false, "Filter: price vs W 100", group = g_f100)
+show100D    = input.bool(false, "Show Daily 100 SMA",     group = g_f100)
+filter100D  = input.bool(false, "Filter: price vs D 100", group = g_f100)
+show100H4   = input.bool(false, "Show 4H 100 SMA",       group = g_f100)
+filter100H4 = input.bool(false, "Filter: price vs 4H 100",group = g_f100)
+show100H1   = input.bool(false, "Show 1H 100 SMA",       group = g_f100)
+filter100H1 = input.bool(false, "Filter: price vs 1H 100",group = g_f100)
+
+// ─── 200 SMA (W / D / 4H / 1H) ─────────────────────────────────────────────
+g_f200 = "Filter: 200 SMA"
+show200W    = input.bool(false, "Show Weekly 200 SMA",    group = g_f200)
+filter200W  = input.bool(false, "Filter: price vs W 200", group = g_f200)
+show200D    = input.bool(false, "Show Daily 200 SMA",     group = g_f200)
+filter200D  = input.bool(false, "Filter: price vs D 200", group = g_f200)
+show200H4   = input.bool(false, "Show 4H 200 SMA",       group = g_f200)
+filter200H4 = input.bool(false, "Filter: price vs 4H 200",group = g_f200)
+show200H1   = input.bool(false, "Show 1H 200 SMA",       group = g_f200)
+filter200H1 = input.bool(false, "Filter: price vs 1H 200",group = g_f200)
+
+// ─── Display ─────────────────────────────────────────────────────────────────
+g_disp = "Display"
+lineEndHour       = input.int(16, "IB Lines End at Hour (24h)", minval = 0, maxval = 23, group = g_disp)
+lineEndMin        = input.int(0,  "IB Lines End at Minute",     minval = 0, maxval = 59, group = g_disp)
+tradeLineLength   = input.int(10, "Trade Line Length (bars)",   minval = 1, group = g_disp)
+ibLineColor       = input.color(color.blue, "IB High/Low Line Color", group = g_disp)
+ibLineStyleStr    = input.string("solid", "IB Line Style",        options = ["solid","dashed","dotted"], group = g_disp)
+tradeLineStyleStr = input.string("solid", "Trade Level Line Style", options = ["solid","dashed","dotted"], group = g_disp)
+showIBBox         = input.bool(true, "Show IB Box",   group = g_disp)
+ibBoxBorderColor  = input.color(color.new(color.blue, 0),  "IB Box Border", group = g_disp)
+ibBoxFillColor    = input.color(color.new(color.blue, 85), "IB Box Fill",   group = g_disp)
+ibBoxBorderWidth  = input.int(2, "IB Box Border Width", minval = 1, maxval = 5, group = g_disp)
+showIBLabels      = input.bool(true, "Show IB High/Low labels", group = g_disp)
+show5RLine        = input.bool(false, "Show 5R line", group = g_disp, tooltip = "Draw the 5R level on the chart. Off by default to reduce clutter.")
+
+// ─── IB Level Lines (25 / 50 / 75%) ─────────────────────────────────────────
+g_ibLvl = "IB Level Lines"
+showIBLvls   = input.bool(true,  "Show IB 25% / 50% / 75% Lines", group = g_ibLvl)
+ibLvlColor   = input.color(color.new(color.orange, 30), "IB Level Color", group = g_ibLvl)
+ibLvlWidth   = input.int(1, "IB Level Width", minval = 1, maxval = 5, group = g_ibLvl)
+ibLvlStyleStr = input.string("Dashed", "IB Level Style", options = ["Solid","Dashed","Dotted"], group = g_ibLvl)
+
+// ─── Info Panel ──────────────────────────────────────────────────────────────
+g_info = "Info Panel"
+showInfoPanel = input.bool(true, "Show Info Panel", group = g_info)
+infoSize      = input.string("Normal", "Info Label Text Size", options = ["Tiny","Small","Normal","Large","Huge"], group = g_info)
+
+// ─── Setup Colors ────────────────────────────────────────────────────────────
+g_long  = "Long Setup Colors"
+longTriColor   = input.color(color.new(color.green, 0),  "Entry Triangle", group = g_long)
+longStopColor  = input.color(color.new(color.red,   0),  "Stop Loss",      group = g_long)
+longEntryColor = input.color(color.new(color.blue,  0),  "Entry",          group = g_long)
+long1RColor    = input.color(color.new(color.green, 0),  "1R", group = g_long)
+long2RColor    = input.color(color.new(color.green, 20), "2R", group = g_long)
+long3RColor    = input.color(color.new(color.green, 40), "3R", group = g_long)
+long4RColor    = input.color(color.new(color.green, 60), "4R", group = g_long)
+long5RColor    = input.color(color.new(color.green, 75), "5R", group = g_long)
+
+g_short = "Short Setup Colors"
+shortTriColor   = input.color(color.new(color.red,  0),  "Entry Triangle", group = g_short)
+shortStopColor  = input.color(color.new(color.red,  0),  "Stop Loss",      group = g_short)
+shortEntryColor = input.color(color.new(color.blue, 0),  "Entry",          group = g_short)
+short1RColor    = input.color(color.new(color.red,  0),  "1R", group = g_short)
+short2RColor    = input.color(color.new(color.red,  20), "2R", group = g_short)
+short3RColor    = input.color(color.new(color.red,  40), "3R", group = g_short)
+short4RColor    = input.color(color.new(color.red,  60), "4R", group = g_short)
+short5RColor    = input.color(color.new(color.red,  75), "5R", group = g_short)
+
+g_colors = "Bias Label Colors"
+bullColor = input.color(color.green, "Bullish Color", group = g_colors)
+bearColor = input.color(color.red,   "Bearish Color", group = g_colors)
+
+// ─── Style Conversions ───────────────────────────────────────────────────────
+ibLineStyle    = ibLineStyleStr    == "dashed" ? line.style_dashed : ibLineStyleStr    == "dotted" ? line.style_dotted : line.style_solid
+tradeLineStyle = tradeLineStyleStr == "dashed" ? line.style_dashed : tradeLineStyleStr == "dotted" ? line.style_dotted : line.style_solid
+ibLvlStyle     = ibLvlStyleStr     == "Dashed" ? line.style_dashed : ibLvlStyleStr     == "Dotted" ? line.style_dotted : line.style_solid
+
+f_infoSz(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Large" ? size.large : s == "Huge" ? size.huge : size.normal
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     TRIGGER SMA                                         ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+smaTrig = ta.sma(smaSrc, smaLen)
+plot(showSMA ? smaTrig : na, title = "Entry SMA", color = smaColor, linewidth = 2)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║              HIGHER TIMEFRAME MOVING AVERAGE (trend filter)              ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+htfMaCalc() =>
+    if htfMaType == "EMA"
+        ta.ema(close, htfMaLen)
+    else if htfMaType == "WMA"
+        ta.wma(close, htfMaLen)
+    else if htfMaType == "VWMA"
+        ta.vwma(close, htfMaLen)
+    else
+        ta.sma(close, htfMaLen)
+
+htfMaValue = request.security(syminfo.tickerid, htfTimeframe, htfMaCalc(), lookahead = barmerge.lookahead_off)
+htfLongOk  = not htfEnabled or (not na(htfMaValue) and close > htfMaValue)
+htfShortOk = not htfEnabled or (not na(htfMaValue) and close < htfMaValue)
+
+plot(showHtfMa and htfEnabled and not na(htfMaValue) ? htfMaValue : na, title = "HTF MA", color = htfMaColor, linewidth = 3, style = plot.style_linebr)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║              LOCATION LEVEL CALCULATIONS                                ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+// ─── Previous Week High / Low (futures week: Sunday 18:00 ET) ────────────────
+inSunWeekOpen     = dayofweek(time, ibTz) == dayofweek.sunday and hour(time, ibTz) >= 18
+prevInSunWeekOpen = na(time[1]) ? false : (dayofweek(time[1], ibTz) == dayofweek.sunday and hour(time[1], ibTz) >= 18)
+isNewWeek         = na(time[1]) ? false : (inSunWeekOpen and not prevInSunWeekOpen)
+
+var float curWeekHigh = na,  var float curWeekLow = na
+var float pwHigh      = na,  var float pwLow      = na
+
+if isNewWeek
+    if not na(curWeekHigh)
+        pwHigh := curWeekHigh
+        pwLow  := curWeekLow
+    curWeekHigh := high
+    curWeekLow  := low
+else
+    curWeekHigh := na(curWeekHigh) ? high : math.max(curWeekHigh, high)
+    curWeekLow  := na(curWeekLow)  ? low  : math.min(curWeekLow,  low)
+
+plot(showPWHL ? pwHigh : na, "PWH", color = #9370DB, linewidth = 2, style = plot.style_stepline)
+plot(showPWHL ? pwLow  : na, "PWL", color = #9370DB, linewidth = 2, style = plot.style_stepline)
+
+// ─── Previous Day High / Low (futures day boundary) ─────────────────────────
+etHourPD    = hour(time, ibTz)
+isNewFutDay = na(etHourPD[1]) ? false : (etHourPD >= pdSessionStartHour and etHourPD[1] < pdSessionStartHour)
+
+var float curDayHigh = na,  var float curDayLow = na
+var float pdHigh     = na,  var float pdLow     = na
+
+if isNewFutDay
+    if not na(curDayHigh)
+        pdHigh := curDayHigh
+        pdLow  := curDayLow
+    curDayHigh := high
+    curDayLow  := low
+else
+    curDayHigh := na(curDayHigh) ? high : math.max(curDayHigh, high)
+    curDayLow  := na(curDayLow)  ? low  : math.min(curDayLow,  low)
+
+plot(showPDHL ? pdHigh : na, "PDH", color = #0000CD, linewidth = 2, style = plot.style_stepline)
+plot(showPDHL ? pdLow  : na, "PDL", color = #0000CD, linewidth = 2, style = plot.style_stepline)
+
+// ─── Magic Lines (pre-market high / low window) ─────────────────────────────
+inMagicWindow = not na(time(timeframe.period, mlWindow, ibTz))
+isNewDayML    = ta.change(time("D")) != 0
+
+var float magicHigh = na,  var float magicLow = na
+if isNewDayML
+    magicHigh := na
+    magicLow  := na
+if inMagicWindow
+    magicHigh := na(magicHigh) ? high : math.max(magicHigh, high)
+    magicLow  := na(magicLow)  ? low  : math.min(magicLow,  low)
+
+mlReady = hour(time, ibTz) >= 7
+plot(showMagic and mlReady ? magicHigh : na, "Magic High", color = #00CD00, linewidth = 2, style = plot.style_linebr)
+plot(showMagic and mlReady ? magicLow  : na, "Magic Low",  color = #00CD00, linewidth = 2, style = plot.style_linebr)
+
+// ─── Overnight Low ──────────────────────────────────────────────────────────
+hONL  = hour(time, ibTz)
+mONL  = minute(time, ibTz)
+hmONL = hONL * 100 + mONL
+
+inOvernightONL = (hmONL >= 1800) or (hmONL < 930)
+isEveningStart = (hONL == 18 and mONL == 0)
+
+var float overnightLow = na
+if isEveningStart
+    overnightLow := low
+if inOvernightONL and not isEveningStart
+    if na(overnightLow) or low < overnightLow
+        overnightLow := low
+
+onlReady = hmONL >= 930 and hmONL < 1600
+plot(showONL and onlReady and not na(overnightLow) ? overnightLow : na, "ONL", color = color.yellow, linewidth = 2, style = plot.style_linebr)
+
+// ─── Higher-Timeframe SMAs (request.security) ───────────────────────────────
+smaD9    = request.security(syminfo.tickerid, "D",   ta.sma(close, d9Len),  lookahead = barmerge.lookahead_off)
+sma4h9   = request.security(syminfo.tickerid, "240", ta.sma(close, h4Len),  lookahead = barmerge.lookahead_off)
+sma100W  = request.security(syminfo.tickerid, "W",   ta.sma(close, 100),    lookahead = barmerge.lookahead_off)
+sma100D  = request.security(syminfo.tickerid, "D",   ta.sma(close, 100),    lookahead = barmerge.lookahead_off)
+sma100H4 = request.security(syminfo.tickerid, "240", ta.sma(close, 100),    lookahead = barmerge.lookahead_off)
+sma100H1 = request.security(syminfo.tickerid, "60",  ta.sma(close, 100),    lookahead = barmerge.lookahead_off)
+sma200W  = request.security(syminfo.tickerid, "W",   ta.sma(close, 200),    lookahead = barmerge.lookahead_off)
+sma200D  = request.security(syminfo.tickerid, "D",   ta.sma(close, 200),    lookahead = barmerge.lookahead_off)
+sma200H4 = request.security(syminfo.tickerid, "240", ta.sma(close, 200),    lookahead = barmerge.lookahead_off)
+sma200H1 = request.security(syminfo.tickerid, "60",  ta.sma(close, 200),    lookahead = barmerge.lookahead_off)
+
+plot(showD9    ? smaD9    : na, "Daily 9 SMA", color = #CD0000,        linewidth = 2)
+plot(showH4    ? sma4h9   : na, "4H 9 SMA",    color = color.fuchsia,  linewidth = 2)
+plot(show100W  ? sma100W  : na, "W 100 SMA",   color = #A9A9A9,       linewidth = 2)
+plot(show100D  ? sma100D  : na, "D 100 SMA",   color = #A9A9A9,       linewidth = 2)
+plot(show100H4 ? sma100H4 : na, "4H 100 SMA",  color = #A9A9A9,       linewidth = 2)
+plot(show100H1 ? sma100H1 : na, "1H 100 SMA",  color = #A9A9A9,       linewidth = 2)
+plot(show200W  ? sma200W  : na, "W 200 SMA",   color = #000000,       linewidth = 2)
+plot(show200D  ? sma200D  : na, "D 200 SMA",   color = #000000,       linewidth = 2)
+plot(show200H4 ? sma200H4 : na, "4H 200 SMA",  color = #000000,       linewidth = 2)
+plot(show200H1 ? sma200H1 : na, "1H 200 SMA",  color = #000000,       linewidth = 2)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║           TREND FILTER EVALUATION                                       ║
+// ║  A level that is toggled ON must be satisfied for the trade to fire.    ║
+// ║  Long: close > level.   Short: close < level.                           ║
+// ║  If the level value is na, the filter is ignored (passes).              ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+f_above(bool on, float lvl) => not on or na(lvl) or close > lvl
+f_below(bool on, float lvl) => not on or na(lvl) or close < lvl
+
+longFilterOK = true
+longFilterOK := longFilterOK and f_above(filterPWH,   pwHigh)
+longFilterOK := longFilterOK and f_above(filterPWL,   pwLow)
+longFilterOK := longFilterOK and f_above(filterPDH,   pdHigh)
+longFilterOK := longFilterOK and f_above(filterPDL,   pdLow)
+longFilterOK := longFilterOK and f_above(filterMagicH, magicHigh)
+longFilterOK := longFilterOK and f_above(filterMagicL, magicLow)
+longFilterOK := longFilterOK and f_above(filterONL,   overnightLow)
+longFilterOK := longFilterOK and f_above(filterD9,    smaD9)
+longFilterOK := longFilterOK and f_above(filterH4,    sma4h9)
+longFilterOK := longFilterOK and f_above(filter100W,  sma100W)
+longFilterOK := longFilterOK and f_above(filter100D,  sma100D)
+longFilterOK := longFilterOK and f_above(filter100H4, sma100H4)
+longFilterOK := longFilterOK and f_above(filter100H1, sma100H1)
+longFilterOK := longFilterOK and f_above(filter200W,  sma200W)
+longFilterOK := longFilterOK and f_above(filter200D,  sma200D)
+longFilterOK := longFilterOK and f_above(filter200H4, sma200H4)
+longFilterOK := longFilterOK and f_above(filter200H1, sma200H1)
+
+shortFilterOK = true
+shortFilterOK := shortFilterOK and f_below(filterPWH,   pwHigh)
+shortFilterOK := shortFilterOK and f_below(filterPWL,   pwLow)
+shortFilterOK := shortFilterOK and f_below(filterPDH,   pdHigh)
+shortFilterOK := shortFilterOK and f_below(filterPDL,   pdLow)
+shortFilterOK := shortFilterOK and f_below(filterMagicH, magicHigh)
+shortFilterOK := shortFilterOK and f_below(filterMagicL, magicLow)
+shortFilterOK := shortFilterOK and f_below(filterONL,   overnightLow)
+shortFilterOK := shortFilterOK and f_below(filterD9,    smaD9)
+shortFilterOK := shortFilterOK and f_below(filterH4,    sma4h9)
+shortFilterOK := shortFilterOK and f_below(filter100W,  sma100W)
+shortFilterOK := shortFilterOK and f_below(filter100D,  sma100D)
+shortFilterOK := shortFilterOK and f_below(filter100H4, sma100H4)
+shortFilterOK := shortFilterOK and f_below(filter100H1, sma100H1)
+shortFilterOK := shortFilterOK and f_below(filter200W,  sma200W)
+shortFilterOK := shortFilterOK and f_below(filter200D,  sma200D)
+shortFilterOK := shortFilterOK and f_below(filter200H4, sma200H4)
+shortFilterOK := shortFilterOK and f_below(filter200H1, sma200H1)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     SESSION DETECTION                                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+locH = hour(time, ibTz)
+locM = minute(time, ibTz)
+currentMinOfDay     = locH * 60 + locM
+sessionStartMin     = ibStartHour * 60 + ibStartMin
+sessionEndMin       = ibEndHour   * 60 + ibEndMin
+tradeCutoffMinOfDay = tradeCutoffHour * 60 + tradeCutoffMin
+goFlatMinOfDay      = goFlatHour * 60 + goFlatMin
+
+inIBSession     = currentMinOfDay >= sessionStartMin and currentMinOfDay < sessionEndMin
+afterIBSession  = currentMinOfDay >= sessionEndMin
+pastTradeCutoff = currentMinOfDay >= tradeCutoffMinOfDay
+pastGoFlat      = currentMinOfDay >= goFlatMinOfDay
+isNewDay        = ta.change(dayofmonth(time, ibTz)) != 0
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                   IB (INITIAL BALANCE) TRACKING                         ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+var float ibHigh      = na
+var float ibLow       = na
+var float ibOpen      = na
+var float ibClose     = na
+var bool  ibComplete  = false
+var int   ibHighBar   = na
+var int   ibLowBar    = na
+var bool  ibLowFirst  = false
+var bool  ibIsBull    = false
+var float ibClosePct  = na
+var float ibRng       = na
+
+if isNewDay
+    ibHigh     := na
+    ibLow      := na
+    ibOpen     := na
+    ibClose    := na
+    ibComplete := false
+    ibHighBar  := na
+    ibLowBar   := na
+    ibLowFirst := false
+    ibIsBull   := false
+    ibClosePct := na
+    ibRng      := na
+
+if inIBSession
+    if na(ibOpen)
+        ibOpen := open
+    ibClose := close
+    if na(ibHigh) or high > ibHigh
+        ibHigh    := na(ibHigh) ? high : math.max(ibHigh, high)
+        ibHighBar := bar_index
+    if na(ibLow) or low < ibLow
+        ibLow    := na(ibLow) ? low : math.min(ibLow, low)
+        ibLowBar := bar_index
+
+ibJustClosed = afterIBSession and not afterIBSession[1]
+
+if ibJustClosed and not na(ibHigh) and not ibComplete
+    ibComplete := true
+    ibRng      := ibHigh - ibLow
+    ibLowFirst := ibLowBar != ibHighBar ? ibLowBar < ibHighBar : ibClose > ibOpen
+    ibIsBull   := ibClose > ibOpen
+    ibClosePct := ibRng > 0 ? (ibClose - ibLow) / ibRng : 0.5
+
+if afterIBSession and not na(ibHigh) and not ibComplete
+    ibComplete := true
+    ibRng      := ibHigh - ibLow
+    ibLowFirst := ibLowBar != ibHighBar ? ibLowBar < ibHighBar : ibClose > ibOpen
+    ibIsBull   := ibClose > ibOpen
+    ibClosePct := ibRng > 0 ? (ibClose - ibLow) / ibRng : 0.5
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                IB BOX / LABELS / BIAS LABELS                            ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+var int   ibStartBarIndex = na
+var int   ibEndBarIndex   = na
+var box   ibBox           = na
+var label labelIBHigh     = na
+var label labelIBLow      = na
+
+if isNewDay
+    if not na(labelIBHigh)
+        label.delete(labelIBHigh)
+    if not na(labelIBLow)
+        label.delete(labelIBLow)
+    if not na(ibBox)
+        box.delete(ibBox)
+    labelIBHigh     := na
+    labelIBLow      := na
+    ibBox           := na
+    ibStartBarIndex := na
+    ibEndBarIndex   := na
+
+if inIBSession and na(ibStartBarIndex)
+    ibStartBarIndex := bar_index
+
+if inIBSession and showIBBox and not na(ibStartBarIndex)
+    if na(ibBox)
+        ibBox := box.new(ibStartBarIndex, ibHigh, bar_index, ibLow, border_color = ibBoxBorderColor, border_width = ibBoxBorderWidth, bgcolor = ibBoxFillColor)
+    else
+        box.set_right(ibBox,  bar_index)
+        box.set_top(ibBox,    ibHigh)
+        box.set_bottom(ibBox, ibLow)
+
+if ibJustClosed
+    ibEndBarIndex := bar_index - 1
+    if not na(ibBox) and showIBBox
+        box.set_right(ibBox,  ibEndBarIndex)
+        box.set_top(ibBox,    ibHigh)
+        box.set_bottom(ibBox, ibLow)
+
+    if showIBLabels and not na(ibHigh) and not na(ibLow)
+        labelIBHigh := label.new(bar_index, ibHigh, "IB High " + str.tostring(ibHigh, format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = ibLineColor, size = size.small)
+        labelIBLow  := label.new(bar_index, ibLow,  "IB Low "  + str.tostring(ibLow,  format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = ibLineColor, size = size.small)
+
+    // ─── IB Bias Labels (which side formed first + bull/bear) ────────────────
+    int midBar = na(ibStartBarIndex) ? bar_index : math.round(math.avg(ibStartBarIndex, ibEndBarIndex))
+    if ibLowFirst
+        label.new(midBar, ibLow, "▲ Low First", style = label.style_label_up, color = color.new(bearColor, 30), textcolor = color.white, size = size.small)
+    else
+        label.new(midBar, ibHigh, "▼ High First", style = label.style_label_down, color = color.new(bullColor, 30), textcolor = color.white, size = size.small)
+
+    if ibIsBull
+        label.new(bar_index, ibHigh, "BULL", style = label.style_label_down, color = bullColor, textcolor = color.white, size = size.normal)
+    else
+        label.new(bar_index, ibLow, "BEAR", style = label.style_label_up, color = bearColor, textcolor = color.white, size = size.normal)
+
+// ─── IB Range in Ticks + Size Label ──────────────────────────────────────────
+var float ibRangeTicks = na
+var label labelIBSize  = na
+
+if isNewDay
+    ibRangeTicks := na
+    if not na(labelIBSize)
+        label.delete(labelIBSize)
+    labelIBSize := na
+
+if ibJustClosed and not na(ibHigh) and not na(ibLow)
+    ibRangeTicks := math.round((ibHigh - ibLow) / syminfo.mintick)
+    ibSizeLblColor = useIBSizeFilter and ibRangeTicks > maxIBTicks ? color.red : color.green
+    midBarTick = na(ibStartBarIndex) ? bar_index : math.round(math.avg(ibStartBarIndex, ibEndBarIndex))
+    labelIBSize := label.new(midBarTick, ibHigh, str.tostring(ibRangeTicks, "#") + " ticks", style = label.style_label_down, color = ibSizeLblColor, textcolor = color.white, size = size.normal)
+
+ibSizeOK = not useIBSizeFilter or na(ibRangeTicks) or ibRangeTicks <= maxIBTicks
+
+// ─── IB Level Lines (25% / 50% / 75%) ───────────────────────────────────────
+var line lnIBH = na, var line lnIBL = na
+var line ln25  = na, var line ln50  = na, var line ln75 = na
+
+if ibJustClosed and showIBLvls and not na(ibRng)
+    float p25 = ibLow + ibRng * 0.25
+    float p50 = ibLow + ibRng * 0.50
+    float p75 = ibLow + ibRng * 0.75
+    lnIBH := line.new(bar_index, ibHigh, bar_index, ibHigh, color = ibLvlColor, style = ibLvlStyle, width = ibLvlWidth)
+    lnIBL := line.new(bar_index, ibLow,  bar_index, ibLow,  color = ibLvlColor, style = ibLvlStyle, width = ibLvlWidth)
+    ln25  := line.new(bar_index, p25,    bar_index, p25,    color = ibLvlColor, style = ibLvlStyle, width = ibLvlWidth)
+    ln50  := line.new(bar_index, p50,    bar_index, p50,    color = ibLvlColor, style = ibLvlStyle, width = ibLvlWidth)
+    ln75  := line.new(bar_index, p75,    bar_index, p75,    color = ibLvlColor, style = ibLvlStyle, width = ibLvlWidth)
+    label.new(bar_index, ibHigh, "IB H", style = label.style_label_left, color = ibLvlColor, textcolor = color.white, size = size.tiny)
+    label.new(bar_index, ibLow,  "IB L", style = label.style_label_left, color = ibLvlColor, textcolor = color.white, size = size.tiny)
+    label.new(bar_index, p25,    "25%",  style = label.style_label_left, color = ibLvlColor, textcolor = color.white, size = size.tiny)
+    label.new(bar_index, p50,    "50%",  style = label.style_label_left, color = ibLvlColor, textcolor = color.white, size = size.tiny)
+    label.new(bar_index, p75,    "75%",  style = label.style_label_left, color = ibLvlColor, textcolor = color.white, size = size.tiny)
+
+// Extend IB level lines bar by bar
+if afterIBSession and ibComplete and showIBLvls
+    lineEndMinOfDay = lineEndHour * 60 + lineEndMin
+    if currentMinOfDay <= lineEndMinOfDay
+        if not na(lnIBH)
+            line.set_x2(lnIBH, bar_index)
+        if not na(lnIBL)
+            line.set_x2(lnIBL, bar_index)
+        if not na(ln25)
+            line.set_x2(ln25, bar_index)
+        if not na(ln50)
+            line.set_x2(ln50, bar_index)
+        if not na(ln75)
+            line.set_x2(ln75, bar_index)
+
+// ─── IB High/Low Step Lines ─────────────────────────────────────────────────
+ibLineWindow = ibComplete and currentMinOfDay <= (lineEndHour * 60 + lineEndMin)
+plot(ibLineWindow ? ibHigh : na, title = "IB High Line", color = ibLineColor, linewidth = 2, style = plot.style_linebr)
+plot(ibLineWindow ? ibLow  : na, title = "IB Low Line",  color = ibLineColor, linewidth = 2, style = plot.style_linebr)
+
+bgcolor(inIBSession and showIBBox ? color.new(ibBoxBorderColor, 92) : na, title = "IB Session Background")
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         PIVOTS                                          ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+phPrice = ta.pivothigh(high, pivotLeft, pivotRight)
+plPrice = ta.pivotlow(low,   pivotLeft, pivotRight)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     STATE VARIABLES                                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+// ─── One Trade Per Session Flag ──────────────────────────────────────────────
+var bool sessionTradeDone = false   // TRUE after any entry fires → blocks all further entries
+
+// ─── Long ────────────────────────────────────────────────────────────────────
+var bool  L_brokeAbove     = false
+var int   L_brokeAboveBar  = na
+var bool  L_retested       = false
+var int   L_retestBar      = na
+var float L_retestLow      = na
+var float L_lowerHigh      = na
+var int   L_lowerHighBar   = na
+var float L_higherLow      = na
+var int   L_higherLowBar   = na
+var bool  L_entryDone      = false
+var float L_entryPrice     = na
+var float L_stopPrice      = na
+var int   L_tradeQty       = na
+
+// ─── Short ───────────────────────────────────────────────────────────────────
+var bool  S_brokeBelow     = false
+var int   S_brokeBelowBar  = na
+var bool  S_retested       = false
+var int   S_retestBar      = na
+var float S_retestHigh     = na
+var float S_higherLow      = na
+var int   S_higherLowBar   = na
+var float S_lowerHigh      = na
+var int   S_lowerHighBar   = na
+var bool  S_entryDone      = false
+var float S_entryPrice     = na
+var float S_stopPrice      = na
+var int   S_tradeQty       = na
+
+// ─── Break-Even State ────────────────────────────────────────────────────────
+var bool  beDone  = false
+var float beStop  = na
+var float oneR    = na   // stored 1R distance for BE calculation
+
+// Reset everything at start of new day
+if isNewDay
+    sessionTradeDone := false
+    L_brokeAbove     := false
+    L_brokeAboveBar  := na
+    L_retested       := false
+    L_retestBar      := na
+    L_retestLow      := na
+    L_lowerHigh      := na
+    L_lowerHighBar   := na
+    L_higherLow      := na
+    L_higherLowBar   := na
+    L_entryDone      := false
+    L_entryPrice     := na
+    L_stopPrice      := na
+    L_tradeQty       := na
+    S_brokeBelow     := false
+    S_brokeBelowBar  := na
+    S_retested       := false
+    S_retestBar      := na
+    S_retestHigh     := na
+    S_higherLow      := na
+    S_higherLowBar   := na
+    S_lowerHigh      := na
+    S_lowerHighBar   := na
+    S_entryDone      := false
+    S_entryPrice     := na
+    S_stopPrice      := na
+    S_tradeQty       := na
+    beDone           := false
+    beStop           := na
+    oneR             := na
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                   ENTRY BAR FLAGS                                       ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+isLongEntryBar  = false
+isShortEntryBar = false
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║             HELPER: calculate stop price from pivot reference            ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+calcStopLong(float pivotRef) =>
+    stopMode == "Points" ? pivotRef - stopOffsetPts : pivotRef * (1.0 - stopOffsetPctIn)
+
+calcStopShort(float pivotRef) =>
+    stopMode == "Points" ? pivotRef + stopOffsetPts : pivotRef * (1.0 + stopOffsetPctIn)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║             HELPER: calculate position size                             ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+calcQty(float entryP, float stopP) =>
+    int qty = fixedQty
+    if sizingMode == "Risk-Based"
+        float dist = math.abs(entryP - stopP)
+        float ticks = dist / syminfo.mintick
+        float riskPerContract = ticks * tickVal
+        qty := riskPerContract > 0 ? int(math.floor(riskAmount / riskPerContract)) : 1
+        qty := math.max(qty, 1)
+    qty
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                   LONG DETECTION LOGIC                                  ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+if ibComplete and not L_entryDone and not sessionTradeDone
+    if not na(phPrice)
+        if phPrice > ibHigh
+            L_lowerHigh    := phPrice
+            L_lowerHighBar := bar_index - pivotRight
+            L_higherLow    := na
+            L_higherLowBar := na
+
+    if not na(plPrice) and not na(L_lowerHighBar)
+        plBar = bar_index - pivotRight
+        if plBar > L_lowerHighBar
+            L_higherLow    := plPrice
+            L_higherLowBar := plBar
+
+    // 1. Break above IB high
+    if not L_brokeAbove and high > ibHigh
+        L_brokeAbove    := true
+        L_brokeAboveBar := bar_index
+
+    // Optional invalidation
+    if invalidateOnIBBreach and L_brokeAbove and not L_entryDone and low < ibLow
+        L_brokeAbove     := false
+        L_brokeAboveBar  := na
+        L_retested       := false
+        L_retestBar      := na
+        L_retestLow      := na
+
+    // 2. Retest: low touches/pierces IB high AND close < SMA
+    if L_brokeAbove and not L_retested and not na(L_brokeAboveBar) and bar_index > L_brokeAboveBar and not na(smaTrig) and low <= ibHigh and close < smaTrig
+        L_retested  := true
+        L_retestBar := bar_index
+
+    // Track lowest low during retest phase
+    if L_retested
+        L_retestLow := na(L_retestLow) ? low : math.min(L_retestLow, low)
+
+    // 3. Entry: close back above SMA AND above IB high AND all filters agree
+    //    BLOCKED if: past trade cutoff, past go-flat, session trade already done, IB too large
+    if enableLongs and L_retested and not pastTradeCutoff and not pastGoFlat and not dayBlocked and ibSizeOK and htfLongOk and longFilterOK and not na(L_retestBar) and bar_index > L_retestBar and not na(smaTrig) and close > smaTrig and close > ibHigh
+        stopRefL = not na(L_higherLow) ? L_higherLow : L_retestLow
+        L_entryPrice   := close
+        L_stopPrice    := calcStopLong(stopRefL)
+        L_tradeQty     := calcQty(close, L_stopPrice)
+        L_entryDone    := true
+        sessionTradeDone := true
+        isLongEntryBar := true
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                   SHORT DETECTION LOGIC                                 ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+if ibComplete and not S_entryDone and not sessionTradeDone
+    if not na(plPrice)
+        if plPrice < ibLow
+            S_higherLow    := plPrice
+            S_higherLowBar := bar_index - pivotRight
+            S_lowerHigh    := na
+            S_lowerHighBar := na
+
+    if not na(phPrice) and not na(S_higherLowBar)
+        phBar = bar_index - pivotRight
+        if phBar > S_higherLowBar
+            S_lowerHigh    := phPrice
+            S_lowerHighBar := phBar
+
+    // 1. Break below IB low
+    if not S_brokeBelow and low < ibLow
+        S_brokeBelow    := true
+        S_brokeBelowBar := bar_index
+
+    // Optional invalidation
+    if invalidateOnIBBreach and S_brokeBelow and not S_entryDone and high > ibHigh
+        S_brokeBelow     := false
+        S_brokeBelowBar  := na
+        S_retested       := false
+        S_retestBar      := na
+        S_retestHigh     := na
+
+    // 2. Retest: high touches/pierces IB low AND close > SMA
+    if S_brokeBelow and not S_retested and not na(S_brokeBelowBar) and bar_index > S_brokeBelowBar and not na(smaTrig) and high >= ibLow and close > smaTrig
+        S_retested  := true
+        S_retestBar := bar_index
+
+    // Track highest high during retest phase
+    if S_retested
+        S_retestHigh := na(S_retestHigh) ? high : math.max(S_retestHigh, high)
+
+    // 3. Entry: close back below SMA AND below IB low AND all filters agree
+    //    BLOCKED if: past trade cutoff, past go-flat, session trade already done, IB too large
+    if enableShorts and S_retested and not pastTradeCutoff and not pastGoFlat and not dayBlocked and ibSizeOK and htfShortOk and shortFilterOK and not na(S_retestBar) and bar_index > S_retestBar and not na(smaTrig) and close < smaTrig and close < ibLow
+        stopRefS = not na(S_lowerHigh) ? S_lowerHigh : S_retestHigh
+        S_entryPrice    := close
+        S_stopPrice     := calcStopShort(stopRefS)
+        S_tradeQty      := calcQty(close, S_stopPrice)
+        S_entryDone     := true
+        sessionTradeDone := true
+        isShortEntryBar := true
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║          HELPER: distribute contracts across R-levels                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+calcExitQtys(int totalQty) =>
+    int q1 = 0
+    int q2 = 0
+    int q3 = 0
+    int q4 = 0
+    int q5 = 0
+    if exitMode == "Percentage"
+        q1 := r1ExitPct > 0 ? int(math.floor(totalQty * r1ExitPct / 100.0)) : 0
+        q2 := r2ExitPct > 0 ? int(math.floor(totalQty * r2ExitPct / 100.0)) : 0
+        q3 := r3ExitPct > 0 ? int(math.floor(totalQty * r3ExitPct / 100.0)) : 0
+        q4 := r4ExitPct > 0 ? int(math.floor(totalQty * r4ExitPct / 100.0)) : 0
+        q5 := r5ExitPct > 0 ? int(math.floor(totalQty * r5ExitPct / 100.0)) : 0
+        int allocated = q1 + q2 + q3 + q4 + q5
+        int roundRem  = totalQty - allocated
+        float pctSum  = r1ExitPct + r2ExitPct + r3ExitPct + r4ExitPct + r5ExitPct
+        if roundRem > 0 and pctSum >= 100.0
+            if q5 > 0
+                q5 += roundRem
+            else if q4 > 0
+                q4 += roundRem
+            else if q3 > 0
+                q3 += roundRem
+            else if q2 > 0
+                q2 += roundRem
+            else
+                q1 += roundRem
+    else
+        q1 := math.min(r1ExitQty, totalQty)
+        q2 := math.min(r2ExitQty, totalQty - q1)
+        q3 := math.min(r3ExitQty, totalQty - q1 - q2)
+        q4 := math.min(r4ExitQty, totalQty - q1 - q2 - q3)
+        q5 := math.min(r5ExitQty, totalQty - q1 - q2 - q3 - q4)
+    int rem = totalQty - q1 - q2 - q3 - q4 - q5
+    rem := math.max(rem, 0)
+    array.from(q1, q2, q3, q4, q5, rem)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║               STRATEGY ENTRIES & SCALED EXITS                           ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+// ─── LONG entry ──────────────────────────────────────────────────────────────
+if isLongEntryBar and enableLongs
+    float riskPts = L_entryPrice - L_stopPrice
+    int   qty     = L_tradeQty
+    oneR := riskPts
+
+    string msg = '{"side":"BUY","ticker":"' + syminfo.ticker + '","qty":' + str.tostring(qty) + ',"entry":' + str.tostring(L_entryPrice, format.mintick) + ',"stop":' + str.tostring(L_stopPrice, format.mintick) + ',"1R":' + str.tostring(L_entryPrice + riskPts, format.mintick) + '}'
+
+    strategy.entry("Long", strategy.long, qty = qty, alert_message = msg)
+
+    int[] eq = calcExitQtys(qty)
+    int eq1 = array.get(eq, 0)
+    int eq2 = array.get(eq, 1)
+    int eq3 = array.get(eq, 2)
+    int eq4 = array.get(eq, 3)
+    int eq5 = array.get(eq, 4)
+    int eqR = array.get(eq, 5)
+
+    if eq1 > 0
+        strategy.exit("L 1R", "Long", qty = eq1, limit = L_entryPrice + 1.0 * riskPts, stop = L_stopPrice, alert_message = '{"side":"SELL","level":"1R","qty":' + str.tostring(eq1) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq2 > 0
+        strategy.exit("L 2R", "Long", qty = eq2, limit = L_entryPrice + 2.0 * riskPts, stop = L_stopPrice, alert_message = '{"side":"SELL","level":"2R","qty":' + str.tostring(eq2) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq3 > 0
+        strategy.exit("L 3R", "Long", qty = eq3, limit = L_entryPrice + 3.0 * riskPts, stop = L_stopPrice, alert_message = '{"side":"SELL","level":"3R","qty":' + str.tostring(eq3) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq4 > 0
+        strategy.exit("L 4R", "Long", qty = eq4, limit = L_entryPrice + 4.0 * riskPts, stop = L_stopPrice, alert_message = '{"side":"SELL","level":"4R","qty":' + str.tostring(eq4) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq5 > 0
+        strategy.exit("L 5R", "Long", qty = eq5, limit = L_entryPrice + 5.0 * riskPts, stop = L_stopPrice, alert_message = '{"side":"SELL","level":"5R","qty":' + str.tostring(eq5) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eqR > 0
+        strategy.exit("L SL", "Long", qty = eqR, stop = L_stopPrice, alert_message = '{"side":"SELL","level":"SL","qty":' + str.tostring(eqR) + ',"ticker":"' + syminfo.ticker + '"}')
+
+    alert(msg, alert.freq_once_per_bar_close)
+
+// ─── SHORT entry ─────────────────────────────────────────────────────────────
+if isShortEntryBar and enableShorts
+    float riskPts = S_stopPrice - S_entryPrice
+    int   qty     = S_tradeQty
+    oneR := riskPts
+
+    string msg = '{"side":"SELL","ticker":"' + syminfo.ticker + '","qty":' + str.tostring(qty) + ',"entry":' + str.tostring(S_entryPrice, format.mintick) + ',"stop":' + str.tostring(S_stopPrice, format.mintick) + ',"1R":' + str.tostring(S_entryPrice - riskPts, format.mintick) + '}'
+
+    strategy.entry("Short", strategy.short, qty = qty, alert_message = msg)
+
+    int[] eq = calcExitQtys(qty)
+    int eq1 = array.get(eq, 0)
+    int eq2 = array.get(eq, 1)
+    int eq3 = array.get(eq, 2)
+    int eq4 = array.get(eq, 3)
+    int eq5 = array.get(eq, 4)
+    int eqR = array.get(eq, 5)
+
+    if eq1 > 0
+        strategy.exit("S 1R", "Short", qty = eq1, limit = S_entryPrice - 1.0 * riskPts, stop = S_stopPrice, alert_message = '{"side":"BUY","level":"1R","qty":' + str.tostring(eq1) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq2 > 0
+        strategy.exit("S 2R", "Short", qty = eq2, limit = S_entryPrice - 2.0 * riskPts, stop = S_stopPrice, alert_message = '{"side":"BUY","level":"2R","qty":' + str.tostring(eq2) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq3 > 0
+        strategy.exit("S 3R", "Short", qty = eq3, limit = S_entryPrice - 3.0 * riskPts, stop = S_stopPrice, alert_message = '{"side":"BUY","level":"3R","qty":' + str.tostring(eq3) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq4 > 0
+        strategy.exit("S 4R", "Short", qty = eq4, limit = S_entryPrice - 4.0 * riskPts, stop = S_stopPrice, alert_message = '{"side":"BUY","level":"4R","qty":' + str.tostring(eq4) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eq5 > 0
+        strategy.exit("S 5R", "Short", qty = eq5, limit = S_entryPrice - 5.0 * riskPts, stop = S_stopPrice, alert_message = '{"side":"BUY","level":"5R","qty":' + str.tostring(eq5) + ',"ticker":"' + syminfo.ticker + '"}')
+    if eqR > 0
+        strategy.exit("S SL", "Short", qty = eqR, stop = S_stopPrice, alert_message = '{"side":"BUY","level":"SL","qty":' + str.tostring(eqR) + ',"ticker":"' + syminfo.ticker + '"}')
+
+    alert(msg, alert.freq_once_per_bar_close)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                   BREAK-EVEN STOP                                       ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+if beEnabled and strategy.position_size != 0 and not beDone and not na(oneR) and oneR > 0
+    float aep = strategy.position_avg_price
+    if strategy.position_size > 0
+        float rNow = (high - aep) / oneR
+        if rNow >= beAfterR
+            beDone := true
+            beStop := aep
+    if strategy.position_size < 0
+        float rNow = (aep - low) / oneR
+        if rNow >= beAfterR
+            beDone := true
+            beStop := aep
+
+if beDone and strategy.position_size > 0
+    strategy.exit("BE Stop", "Long", stop = beStop, comment_loss = "BE Stop", alert_message = '{"side":"SELL","level":"BE","ticker":"' + syminfo.ticker + '","price":' + str.tostring(beStop, format.mintick) + '}')
+if beDone and strategy.position_size < 0
+    strategy.exit("BE Stop", "Short", stop = beStop, comment_loss = "BE Stop", alert_message = '{"side":"BUY","level":"BE","ticker":"' + syminfo.ticker + '","price":' + str.tostring(beStop, format.mintick) + '}')
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║               GO FLAT: force-close at end of session                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+if pastGoFlat and strategy.position_size != 0
+    strategy.close_all(comment = "EOD Flat", alert_message = '{"side":"FLAT","level":"EOD","ticker":"' + syminfo.ticker + '"}')
+    alert("EOD FLAT | " + syminfo.ticker + " | All positions closed", alert.freq_once_per_bar_close)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     ENTRY TRIANGLES                                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+plotshape(isLongEntryBar  and enableLongs,  "Long Entry",  shape.triangleup,   location.belowbar, color = longTriColor,  size = size.small)
+plotshape(isShortEntryBar and enableShorts, "Short Entry", shape.triangledown, location.abovebar, color = shortTriColor, size = size.small)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                 DRAW LONG TRADE LEVELS ON ENTRY BAR                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+if isLongEntryBar and enableLongs
+    r      = L_entryPrice - L_stopPrice
+    lb     = bar_index
+    rb     = bar_index + tradeLineLength
+    pSL    = L_stopPrice
+    pEntry = L_entryPrice
+    p1     = L_entryPrice + 1.0 * r
+    p2     = L_entryPrice + 2.0 * r
+    p3     = L_entryPrice + 3.0 * r
+    p4     = L_entryPrice + 4.0 * r
+    p5     = L_entryPrice + 5.0 * r
+
+    line.new(lb, pSL,    rb, pSL,    color = longStopColor,  width = 2, style = tradeLineStyle)
+    line.new(lb, pEntry, rb, pEntry, color = longEntryColor, width = 2, style = tradeLineStyle)
+    line.new(lb, p1,     rb, p1,     color = long1RColor,    width = 2, style = tradeLineStyle)
+    line.new(lb, p2,     rb, p2,     color = long2RColor,    width = 2, style = tradeLineStyle)
+    line.new(lb, p3,     rb, p3,     color = long3RColor,    width = 2, style = tradeLineStyle)
+    line.new(lb, p4,     rb, p4,     color = long4RColor,    width = 2, style = tradeLineStyle)
+    if show5RLine
+        line.new(lb, p5, rb, p5,     color = long5RColor,    width = 2, style = tradeLineStyle)
+
+    qtyStr = " | Qty " + str.tostring(L_tradeQty)
+    label.new(rb, pSL,    "SL "    + str.tostring(pSL,    format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = longStopColor,  size = size.small)
+    label.new(rb, pEntry, "Entry " + str.tostring(pEntry, format.mintick) + qtyStr, style = label.style_label_left, color = color.new(color.black, 100), textcolor = longEntryColor, size = size.small)
+    label.new(rb, p1,     "1R "    + str.tostring(p1,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = long1RColor,    size = size.small)
+    label.new(rb, p2,     "2R "    + str.tostring(p2,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = long2RColor,    size = size.small)
+    label.new(rb, p3,     "3R "    + str.tostring(p3,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = long3RColor,    size = size.small)
+    label.new(rb, p4,     "4R "    + str.tostring(p4,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = long4RColor,    size = size.small)
+    if show5RLine
+        label.new(rb, p5, "5R "    + str.tostring(p5,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = long5RColor,    size = size.small)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                 DRAW SHORT TRADE LEVELS ON ENTRY BAR                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+if isShortEntryBar and enableShorts
+    r      = S_stopPrice - S_entryPrice
+    lb     = bar_index
+    rb     = bar_index + tradeLineLength
+    pSL    = S_stopPrice
+    pEntry = S_entryPrice
+    p1     = S_entryPrice - 1.0 * r
+    p2     = S_entryPrice - 2.0 * r
+    p3     = S_entryPrice - 3.0 * r
+    p4     = S_entryPrice - 4.0 * r
+    p5     = S_entryPrice - 5.0 * r
+
+    line.new(lb, pSL,    rb, pSL,    color = shortStopColor,  width = 2, style = tradeLineStyle)
+    line.new(lb, pEntry, rb, pEntry, color = shortEntryColor, width = 2, style = tradeLineStyle)
+    line.new(lb, p1,     rb, p1,     color = short1RColor,    width = 2, style = tradeLineStyle)
+    line.new(lb, p2,     rb, p2,     color = short2RColor,    width = 2, style = tradeLineStyle)
+    line.new(lb, p3,     rb, p3,     color = short3RColor,    width = 2, style = tradeLineStyle)
+    line.new(lb, p4,     rb, p4,     color = short4RColor,    width = 2, style = tradeLineStyle)
+    if show5RLine
+        line.new(lb, p5, rb, p5,     color = short5RColor,    width = 2, style = tradeLineStyle)
+
+    qtyStr = " | Qty " + str.tostring(S_tradeQty)
+    label.new(rb, pSL,    "SL "    + str.tostring(pSL,    format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = shortStopColor,  size = size.small)
+    label.new(rb, pEntry, "Entry " + str.tostring(pEntry, format.mintick) + qtyStr, style = label.style_label_left, color = color.new(color.black, 100), textcolor = shortEntryColor, size = size.small)
+    label.new(rb, p1,     "1R "    + str.tostring(p1,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = short1RColor,    size = size.small)
+    label.new(rb, p2,     "2R "    + str.tostring(p2,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = short2RColor,    size = size.small)
+    label.new(rb, p3,     "3R "    + str.tostring(p3,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = short3RColor,    size = size.small)
+    label.new(rb, p4,     "4R "    + str.tostring(p4,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = short4RColor,    size = size.small)
+    if show5RLine
+        label.new(rb, p5, "5R "    + str.tostring(p5,     format.mintick), style = label.style_label_left, color = color.new(color.black, 100), textcolor = short5RColor,    size = size.small)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     INFO PANEL                                          ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+var label infoLbl = na
+
+if showInfoPanel and ibComplete and afterIBSession
+    // Determine setup status
+    string sTxt = "No Setup"
+    if L_entryDone
+        sTxt := "Long Taken"
+    else if S_entryDone
+        sTxt := "Short Taken"
+    else if L_retested
+        sTxt := "Long Armed"
+    else if S_retested
+        sTxt := "Short Armed"
+    else if L_brokeAbove
+        sTxt := "Broke Above IB"
+    else if S_brokeBelow
+        sTxt := "Broke Below IB"
+
+    // Position status
+    string pTxt = "Flat"
+    if strategy.position_size > 0
+        pTxt := "LONG " + str.tostring(int(math.abs(strategy.position_size)))
+    else if strategy.position_size < 0
+        pTxt := "SHORT " + str.tostring(int(math.abs(strategy.position_size)))
+
+    // Close percentage bucket
+    string closeBucket = "—"
+    if not na(ibClosePct)
+        if ibClosePct >= 0.75
+            closeBucket := "Top 25%"
+        else if ibClosePct >= 0.50
+            closeBucket := "Upper Mid"
+        else if ibClosePct >= 0.25
+            closeBucket := "Lower Mid"
+        else
+            closeBucket := "Bottom 25%"
+
+    string txt = "═══ IB " + syminfo.ticker + " ═══"
+         + "\nIB High:        " + str.tostring(ibHigh, format.mintick)
+         + "\nIB Low:         " + str.tostring(ibLow,  format.mintick)
+         + "\nIB Range:       " + str.tostring(ibRng,  format.mintick)
+         + "\nIB Ticks:       " + (not na(ibRangeTicks) ? str.tostring(ibRangeTicks, "#") : "—")
+         + "\nFormed First:   " + (ibLowFirst ? "Low" : "High")
+         + "\nIB Bias:        " + (ibIsBull ? "Bullish" : "Bearish")
+         + "\nClose Zone:     " + closeBucket
+         + "\n──── Trade ────"
+         + "\nSetup:          " + sTxt
+         + "\n1 Trade/Sess:   " + (sessionTradeDone ? "Done" : "Available")
+         + "\nContracts:      " + (L_entryDone ? str.tostring(L_tradeQty) : S_entryDone ? str.tostring(S_tradeQty) : "—")
+         + "\n1R Distance:    " + (not na(oneR) ? str.tostring(math.round(oneR, 2)) + " pts" : "—")
+         + "\nPosition:       " + pTxt
+         + "\nBE Stop:        " + (beDone ? str.tostring(beStop, format.mintick) : "—")
+         + "\nHTF MA:         " + (not na(htfMaValue) ? str.tostring(math.round(htfMaValue, 2)) : "—")
+         + "\nIB Size OK:     " + (ibSizeOK ? "Yes" : "BLOCKED")
+         + "\nDay Allowed:    " + (dayBlocked ? "BLOCKED" : "Yes")
+
+    if not na(infoLbl)
+        label.delete(infoLbl)
+    infoLbl := label.new(na(ibStartBarIndex) ? bar_index : ibStartBarIndex, ibHigh + ibRng * 1.2, txt, style = label.style_label_lower_left, color = color.new(color.black, 15), textcolor = color.white, size = f_infoSz(infoSize), textalign = text.align_left)
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     ALERT CONDITIONS                                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+alertcondition(ibJustClosed,    title = "IB Complete",    message = "IB Gold: Initial Balance complete")
+alertcondition(isLongEntryBar,  title = "Long Entry",     message = "IB Gold: Long entry triggered")
+alertcondition(isShortEntryBar, title = "Short Entry",    message = "IB Gold: Short entry triggered")

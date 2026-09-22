@@ -1,0 +1,161 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════
+// VWAP Trend Momentum [Artillery] - session-VWAP pullback strategy
+// with EMA-slope trend gating and optional rejection-candle / ADX
+// confirmation filters.
+// Consolidated edition: one script replacing "VWAP Trend Momentum",
+// "VWAP Trend Momentum v2" and the market-specific "MNQ VWAP Trend"
+// publications. All code is original; the third-party-derived trailing
+// stop used by the oldest version has been removed entirely.
+// Educational tool. Not financial advice.
+// ═══════════════════════════════════════════════════════════════════
+strategy("VWAP Trend Momentum [Artillery]", shorttitle="VWAP TM", overlay=true,
+     initial_capital=50000, default_qty_type=strategy.fixed, default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract, commission_value=4.0,
+     slippage=2, calc_on_every_tick=false, margin_long=10, margin_short=10,
+     max_labels_count=300)
+
+// ── Inputs ───────────────────────────────────────────────────
+grpS = "Session (ET)"
+i_useSession = input.bool(true, "Restrict to session window", group=grpS)
+i_sStartH = input.int(9, "Start hour (ET)", minval=0, maxval=23, group=grpS)
+i_sStartM = input.int(45, "Start minute", minval=0, maxval=59, group=grpS)
+i_sEndH = input.int(15, "End hour (ET)", minval=0, maxval=23, group=grpS)
+i_sEndM = input.int(30, "End minute", minval=0, maxval=59, group=grpS)
+i_flatEOD = input.bool(true, "Flatten at session end", group=grpS)
+
+grpT = "Trend"
+i_emaLen = input.int(34, "EMA length", group=grpT)
+i_slopeLen = input.int(3, "EMA slope lookback", group=grpT)
+i_useEma50 = input.bool(true, "Require price beyond EMA50", group=grpT)
+
+grpE = "Entry"
+i_pullbackDist = input.float(0.15, "Max pullback to VWAP %", group=grpE)
+i_longOnly = input.bool(false, "Long only", group=grpE)
+i_maxTrades = input.int(3, "Max trades/day", minval=1, maxval=10, group=grpE)
+
+grpC = "Confirmation (optional)"
+i_useRej = input.bool(false, "Require rejection candle", group=grpC, tooltip="The bounce bar must show a rejection wick toward VWAP: wick at least the set % of bar range, body at least the set % of range.")
+i_wickPct = input.float(40, "Min wick % of range", minval=10, maxval=80, group=grpC)
+i_bodyPct = input.float(15, "Min body % of range", minval=5, maxval=50, group=grpC)
+i_useAdx = input.bool(false, "Require ADX floor", group=grpC)
+i_adxLen = input.int(14, "ADX length", minval=7, maxval=30, group=grpC)
+i_adxMin = input.int(14, "ADX minimum", minval=8, maxval=30, group=grpC)
+
+grpR = "Risk"
+i_atrLen = input.int(14, "ATR length", group=grpR)
+i_slMult = input.float(1.5, "SL x ATR", step=0.1, group=grpR)
+i_tpMult = input.float(4.5, "TP x ATR", step=0.1, group=grpR)
+i_beTrig = input.float(99.0, "Breakeven trigger x ATR (99=off)", step=0.1, group=grpR)
+
+grpV = "Visuals"
+i_showDash = input.bool(true, "Show dashboard", group=grpV)
+i_showLabels = input.bool(true, "Show BUY/SELL labels", group=grpV)
+i_showSess = input.bool(true, "Shade session", group=grpV)
+
+c_bull = #00dcb4
+c_bear = #ff4976
+c_gold = #f0b90b
+
+// ── Session clock ────────────────────────────────────────────
+etH = hour(time, "America/New_York")
+etM = minute(time, "America/New_York")
+nowM = etH*60 + etM
+sM = i_sStartH*60 + i_sStartM
+eM = i_sEndH*60 + i_sEndM
+inSession = i_useSession ? (sM <= eM ? (nowM >= sM and nowM < eM) : (nowM >= sM or nowM < eM)) : true
+sessEnd = i_useSession and nowM >= eM and nowM[1] < eM
+newDay = ta.change(time("D")) != 0
+
+// ── Session VWAP ─────────────────────────────────────────────
+var float svNum = 0.0
+var float svDen = 0.0
+svNum := newDay ? 0.0 : svNum
+svDen := newDay ? 0.0 : svDen
+svNum += ((high+low+close)/3.0) * math.max(volume,1.0)
+svDen += math.max(volume,1.0)
+sVwap = svDen > 0 ? svNum/svDen : close
+
+var int tCount = 0
+tCount := newDay ? 0 : tCount
+
+// ── Trend engine ─────────────────────────────────────────────
+ema20 = ta.ema(close, i_emaLen)
+ema50 = ta.ema(close, 50)
+emaSlope = ema20 - ema20[i_slopeLen]
+atr = ta.atr(i_atrLen)
+slopeOk = not na(atr) and math.abs(emaSlope) > atr*0.05
+e50Long = not i_useEma50 or close > ema50
+e50Short = not i_useEma50 or close < ema50
+bullTrend = close > sVwap and emaSlope > 0 and slopeOk and e50Long
+bearTrend = close < sVwap and emaSlope < 0 and slopeOk and e50Short and not i_longOnly
+
+// ── Pullback + bounce ────────────────────────────────────────
+vwapDist = math.abs(close-sVwap)/close*100
+nearVwap = vwapDist <= i_pullbackDist
+wasNear = nearVwap or nearVwap[1] or nearVwap[2] or nearVwap[3]
+bounceLong = wasNear and close > sVwap and close > high[1]
+bounceShort = wasNear and close < sVwap and close < low[1]
+
+// ── Optional confirmations (from the retired MNQ VWAP Trend) ─
+rng = math.max(high - low, syminfo.mintick)
+lowWickPct = (math.min(open, close) - low) / rng * 100
+highWickPct = (high - math.max(open, close)) / rng * 100
+bodyOkPct = math.abs(close - open) / rng * 100
+rejLong = not i_useRej or (lowWickPct >= i_wickPct and bodyOkPct >= i_bodyPct and close > open)
+rejShort = not i_useRej or (highWickPct >= i_wickPct and bodyOkPct >= i_bodyPct and close < open)
+[diP, diM, adxV] = ta.dmi(i_adxLen, i_adxLen)
+adxOk = not i_useAdx or adxV >= i_adxMin
+
+// ── Signals ──────────────────────────────────────────────────
+canTrade = tCount < i_maxTrades and strategy.position_size == 0 and inSession and not na(atr) and atr > 0
+goLong = canTrade and bullTrend and bounceLong and rejLong and adxOk
+goShort = canTrade and bearTrend and bounceShort and rejShort and adxOk
+
+// ── Execution ────────────────────────────────────────────────
+var float entryPx = na
+var float slPx = na
+var float tpPx = na
+entryPx := goLong or goShort ? close : entryPx
+slPx := goLong ? close - atr*i_slMult : goShort ? close + atr*i_slMult : slPx
+tpPx := goLong ? close + atr*i_tpMult : goShort ? close - atr*i_tpMult : tpPx
+if goLong
+    strategy.entry("Long", strategy.long)
+    tCount += 1
+if goShort
+    strategy.entry("Short", strategy.short)
+    tCount += 1
+beLong = strategy.position_size > 0 and high >= entryPx + atr*i_beTrig
+beShort = strategy.position_size < 0 and low <= entryPx - atr*i_beTrig
+slPx := beLong ? math.max(slPx, entryPx) : beShort ? math.min(slPx, entryPx) : slPx
+if strategy.position_size > 0
+    strategy.exit("XL", "Long", stop=slPx, limit=tpPx)
+if strategy.position_size < 0
+    strategy.exit("XS", "Short", stop=slPx, limit=tpPx)
+if i_flatEOD and sessEnd and strategy.position_size != 0
+    strategy.close_all("EOD")
+
+// ── Visuals ──────────────────────────────────────────────────
+if i_showLabels and goLong
+    label.new(bar_index, low, "BUY", style=label.style_label_up, color=c_bull, textcolor=color.black, size=size.small)
+if i_showLabels and goShort
+    label.new(bar_index, high, "SELL", style=label.style_label_down, color=c_bear, textcolor=color.white, size=size.small)
+plot(sVwap, "VWAP", color=color.new(c_gold,10), linewidth=2)
+plot(ema20, "EMA", color=color.new(#448aff,40))
+plot(i_useEma50 ? ema50 : na, "EMA50", color=color.new(#b388ff,50))
+bgcolor(i_showSess and inSession ? color.new(c_bull, 94) : na, title="Session")
+
+var table dash = table.new(position.top_right, 2, 6, bgcolor=color.new(#0e1726,10), border_color=#1e3a5f, border_width=1, frame_color=#1e3a5f, frame_width=1)
+if i_showDash and barstate.islast
+    table.cell(dash, 0, 0, "VWAP MOMENTUM", text_color=c_gold, text_size=size.small)
+    table.cell(dash, 1, 0, "ARTILLERY", text_color=c_bull, text_size=size.small)
+    table.cell(dash, 0, 1, "Bias", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 1, close>sVwap?"ABOVE":"BELOW", text_color=close>sVwap?c_bull:c_bear, text_size=size.tiny)
+    table.cell(dash, 0, 2, "Trend", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 2, bullTrend?"BULL":bearTrend?"BEAR":"WAIT", text_color=bullTrend?c_bull:bearTrend?#ff9100:color.gray, text_size=size.tiny)
+    table.cell(dash, 0, 3, "Position", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 3, strategy.position_size>0?"LONG":strategy.position_size<0?"SHORT":"FLAT", text_color=strategy.position_size>0?c_bull:strategy.position_size<0?c_bear:color.gray, text_size=size.tiny)
+    table.cell(dash, 0, 4, "R:R", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 4, str.tostring(i_tpMult/i_slMult, "#.#")+":1", text_color=#18ffff, text_size=size.tiny)
+    table.cell(dash, 0, 5, "Session", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 5, inSession?"OPEN":"CLOSED", text_color=inSession?c_bull:color.gray, text_size=size.tiny)

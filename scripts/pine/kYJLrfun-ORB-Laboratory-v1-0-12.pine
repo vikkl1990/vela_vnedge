@@ -1,0 +1,1209 @@
+//@version=6
+strategy("ORB Laboratory v1.0.12",overlay = true,pyramiding = 0,calc_on_every_tick = false,calc_on_order_fills = false,process_orders_on_close = true,default_qty_type = strategy.fixed,default_qty_value = 1,commission_type = strategy.commission.cash_per_order,commission_value = 0,slippage = 0,max_boxes_count = 100,max_lines_count = 200,max_labels_count = 500)
+
+// ============================================================================
+// ORB LABORATORY v1.0.12
+// Modular multi-session ORB research strategy.
+// Includes:
+// • Breakout touch / close
+// • ORB retest
+// • FVG retest
+// • Sweep reversal
+// • Fade first breakout
+// • First-break decision tree
+// • Multiple stop / target modes
+// • Risk USD / risk % / fixed quantity
+// • EMA, VWAP, previous-close, range, volume, ADX, weekday filters
+// • One total / once per direction / max number / unlimited
+// • Entry cutoff, force close, daily limits, breakeven, bar-close trailing
+// • Optional bid/ask trigger-timing model for Breakout (Touch) entries
+// • Optional bid/ask stop-trigger model for long / short exits
+// • Direction-selective breakout buffer: Both / Longs Only / Shorts Only / Off
+// ============================================================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. GLOBAL EXECUTION
+// ─────────────────────────────────────────────────────────────────────────────
+gExec = "01 • Execution"
+
+strategyTz = input.string("America/New_York", "Strategy Time Zone", group = gExec)
+
+entryModel = input.string("Breakout (Close)","Entry Model",options = ["Breakout (Touch)","Breakout (Close)","Break + Retest ORB","Break + Retest FVG","Sweep Reversal","Fade First Breakout","First-Break Decision Tree"],group = gExec)
+
+directionMode = input.string("Both","Direction",options = ["Both", "Long Only", "Short Only"],group = gExec)
+
+entryAllowance = input.string("Once Per Direction","Entry Allowance",options = ["One Total", "Once Per Direction", "Maximum Number", "Unlimited"],group = gExec)
+
+maxEntriesPerOrb = input.int(3, "Maximum Entries Per ORB", minval = 1, maxval = 20, group = gExec)
+maxEntriesPerDay = input.int(6, "Maximum Entries Per Day", minval = 1, maxval = 100, group = gExec)
+
+stopAfterFirstWin = input.bool(false, "Stop Trading After First Win", group = gExec)
+stopAfterFirstLoss = input.bool(false, "Stop Trading After First Loss", group = gExec)
+
+noEntryHour = input.int(11, "No New Entries After", minval = 0, maxval = 23, group = gExec, inline = "cut")
+noEntryMinute = input.int(0, ":", minval = 0, maxval = 59, group = gExec, inline = "cut")
+
+forceCloseEnabled = input.bool(true, "Force Close", group = gExec, inline = "fc")
+forceCloseHour = input.int(15, "At", minval = 0, maxval = 23, group = gExec, inline = "fc")
+forceCloseMinute = input.int(55, ":", minval = 0, maxval = 59, group = gExec, inline = "fc")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. WEEKDAYS
+// ─────────────────────────────────────────────────────────────────────────────
+gDays = "02 • Days"
+
+tradeMon = input.bool(true, "Monday", group = gDays, inline = "d1")
+tradeTue = input.bool(true, "Tuesday", group = gDays, inline = "d1")
+tradeWed = input.bool(true, "Wednesday", group = gDays, inline = "d1")
+tradeThu = input.bool(true, "Thursday", group = gDays, inline = "d1")
+tradeFri = input.bool(true, "Friday", group = gDays, inline = "d1")
+tradeSat = input.bool(false, "Saturday", group = gDays, inline = "d2")
+tradeSun = input.bool(false, "Sunday", group = gDays, inline = "d2")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. ORB WINDOWS
+// ─────────────────────────────────────────────────────────────────────────────
+gOrb1 = "03 • ORB 1"
+orb1Enabled = input.bool(true, "Enable", group = gOrb1)
+orb1Name = input.string("New York Open", "Name", group = gOrb1)
+orb1Hour = input.int(9, "Start", minval = 0, maxval = 23, group = gOrb1, inline = "o1")
+orb1Minute = input.int(30, ":", minval = 0, maxval = 59, group = gOrb1, inline = "o1")
+orb1Length = input.int(15, "Length (minutes)", minval = 1, maxval = 240, group = gOrb1)
+orb1Long = input.bool(true, "Longs", group = gOrb1, inline = "o1d")
+orb1Short = input.bool(true, "Shorts", group = gOrb1, inline = "o1d")
+
+gOrb2 = "04 • ORB 2"
+orb2Enabled = input.bool(false, "Enable", group = gOrb2)
+orb2Name = input.string("Secondary Open", "Name", group = gOrb2)
+orb2Hour = input.int(10, "Start", minval = 0, maxval = 23, group = gOrb2, inline = "o2")
+orb2Minute = input.int(0, ":", minval = 0, maxval = 59, group = gOrb2, inline = "o2")
+orb2Length = input.int(15, "Length (minutes)", minval = 1, maxval = 240, group = gOrb2)
+orb2Long = input.bool(true, "Longs", group = gOrb2, inline = "o2d")
+orb2Short = input.bool(true, "Shorts", group = gOrb2, inline = "o2d")
+
+gOrb3 = "05 • ORB 3"
+orb3Enabled = input.bool(false, "Enable", group = gOrb3)
+orb3Name = input.string("Late Open", "Name", group = gOrb3)
+orb3Hour = input.int(10, "Start", minval = 0, maxval = 23, group = gOrb3, inline = "o3")
+orb3Minute = input.int(30, ":", minval = 0, maxval = 59, group = gOrb3, inline = "o3")
+orb3Length = input.int(15, "Length (minutes)", minval = 1, maxval = 240, group = gOrb3)
+orb3Long = input.bool(true, "Longs", group = gOrb3, inline = "o3d")
+orb3Short = input.bool(true, "Shorts", group = gOrb3, inline = "o3d")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. ENTRY DETAILS
+// ─────────────────────────────────────────────────────────────────────────────
+gEntry = "06 • Entry Details"
+
+bufferMode = input.string("Ticks", "Breakout Buffer Unit", options = ["Ticks", "ORB %", "ATR"], group = gEntry)
+longBreakoutBuffer = input.float(1.0, "Long Breakout Buffer", minval = 0, step = 0.1, group = gEntry, tooltip = "Additional confirmation above the ORB high for long Breakout (Touch) entries.")
+shortBreakoutBuffer = input.float(1.0, "Short Breakout Buffer", minval = 0, step = 0.1, group = gEntry, tooltip = "Additional confirmation below the ORB low for short Breakout (Touch) entries.")
+
+// Bid/ask trigger-timing model for resting Breakout (Touch) orders.
+// The chart trigger is shifted toward the current chart price, while sizing and
+// Calculation-price dropdowns determine whether Fixed-R math uses the intended or spread-shifted prices.
+// IMPORTANT: TradingView still records the chart-trigger price as the actual fill,
+// so built-in Strategy Tester P&L is an approximation when this model is enabled.
+spreadApplication = input.string("Off", "Bid/Ask Trigger Model", options = ["Off", "Longs Only", "Shorts Only", "Both"], group = gEntry)
+stopSpreadApplication = input.string("Off", "Bid/Ask Stop Model", options = ["Off", "Long Stops Only", "Short Stops Only", "Both"], group = gEntry)
+spreadUnit = input.string("Ticks", "Spread Unit", options = ["Ticks", "Price"], group = gEntry, inline = "spr")
+spreadValue = input.float(0.0, "Spread", minval = 0.0, step = 0.1, group = gEntry, inline = "spr")
+entryCalculationPrice = input.string(
+     "Corrected Entry",
+     "Entry Calculation Price",
+     options = ["Corrected Entry", "Chart Trigger"],
+     group = gEntry,
+     tooltip = "Choose the entry price used for Fixed-R target calculations. Corrected Entry uses the intended execution level; Chart Trigger uses the spread-shifted TradingView trigger. This setting does not change order execution or quantity.")
+stopCalculationPrice = input.string(
+     "Corrected Stop",
+     "Stop Calculation Price",
+     options = ["Corrected Stop", "Original Stop"],
+     group = gEntry,
+     tooltip = "Choose the stop price used for position sizing, original risk, and Fixed-R target calculations. Corrected Stop uses the spread-shifted TradingView stop; Original Stop uses the structural stop.")
+
+retestExpiryBars = input.int(10, "ORB Retest Expiry (bars)", minval = 1, maxval = 200, group = gEntry)
+retestConfirmation = input.string("Close Outside","ORB Retest Confirmation",options = ["Touch Only", "Close Outside", "Rejection Candle"],group = gEntry)
+
+maxExtensionOrb = input.float(0.75,"Maximum Extension Before Retest/Fade (ORB ×)",minval = 0.05,step = 0.05,group = gEntry)
+
+fvgEntryLevel = input.string("Midpoint","FVG Entry Level",options = ["Near Edge", "Midpoint", "Full Fill"],group = gEntry)
+
+fvgMinAtr = input.float(0.10, "Minimum FVG Size (ATR ×)", minval = 0, step = 0.05, group = gEntry)
+fvgMustRemainOutside = input.bool(true, "FVG Must Remain Outside ORB", group = gEntry)
+fvgExpiryBars = input.int(12, "FVG Expiry (bars)", minval = 1, maxval = 200, group = gEntry)
+
+sweepConfirmation = input.string("Close Back Inside","Sweep / Fade Confirmation",options = ["Close Back Inside", "Rejection Candle"],group = gEntry)
+
+fadeTargetPreference = input.string("Opposite Boundary","Fade Target",options = ["Midpoint", "Opposite Boundary", "Fixed R"],group = gEntry)
+
+decisionTreeContinuation = input.string("Close Outside","Decision Tree Continuation",options = ["Touch", "Close Outside", "Retest Holds"],group = gEntry)
+
+failureTimeoutBars = input.int(8, "First-Break Failure Timeout (bars)", minval = 1, maxval = 100, group = gEntry)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. FILTERS
+// ─────────────────────────────────────────────────────────────────────────────
+gFilters = "07 • Conditions"
+
+useEmaBias = input.bool(false, "EMA Bias", group = gFilters)
+emaLength = input.int(200, "EMA Length", minval = 1, group = gFilters)
+emaBiasMode = input.string("Price vs EMA","EMA Rule",options = ["Price vs EMA", "EMA Slope", "Both"],group = gFilters)
+
+useVwapBias = input.bool(false, "VWAP Bias", group = gFilters)
+vwapBiasMode = input.string("Price vs VWAP","VWAP Rule",options = ["Price vs VWAP", "VWAP Slope", "Both"],group = gFilters)
+
+usePrevCloseBias = input.bool(false, "Previous Close Bias", group = gFilters)
+prevCloseMode = input.string("Price vs Previous Close","Previous Close Rule",options = ["Price vs Previous Close", "ORB vs Previous Close"],group = gFilters)
+
+useRangeFilter = input.bool(true, "Minimum / Maximum ORB Range", group = gFilters)
+rangeUnit = input.string("Ticks", "ORB Range Unit", options = ["Ticks", "ATR", "Percent"], group = gFilters)
+minOrbRange = input.float(10, "Minimum ORB Range", minval = 0, step = 0.1, group = gFilters)
+maxOrbRange = input.float(500, "Maximum ORB Range", minval = 0.1, step = 0.1, group = gFilters)
+
+useVolumeFilter = input.bool(false, "Relative Volume Filter", group = gFilters)
+volumeLength = input.int(20, "Volume Average Length", minval = 1, group = gFilters)
+volumeMultiplier = input.float(1.2, "Minimum Relative Volume", minval = 0, step = 0.1, group = gFilters)
+
+useAdxFilter = input.bool(false, "ADX Filter", group = gFilters)
+adxLength = input.int(14, "ADX Length", minval = 1, group = gFilters)
+minAdx = input.float(20, "Minimum ADX", minval = 0, step = 0.5, group = gFilters)
+
+maxBreakoutCandleAtr = input.float(3.0,"Maximum Breakout Candle Size (ATR ×)",minval = 0.1,step = 0.1,group = gFilters)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. STOPS, TARGETS, RISK
+// ─────────────────────────────────────────────────────────────────────────────
+gRisk = "08 • Stops, Targets & Risk"
+
+stopModel = input.string("Candle Extreme","Stop Loss",options = ["Candle Extreme","ATR","ORB Midpoint","ORB Opposite Range","Breakout Extreme","ORB Percentage","FVG Invalidation"],group = gRisk)
+
+stopAtrMult = input.float(1.0, "ATR Stop Multiplier", minval = 0.05, step = 0.05, group = gRisk)
+stopOrbPercent = input.float(50, "Stop Distance (% of ORB)", minval = 1, step = 1, group = gRisk)
+stopBufferTicks = input.float(1, "Stop Buffer (ticks)", minval = 0, step = 1, group = gRisk)
+
+targetModel = input.string("Fixed R","Profit Target",options = ["Fixed R", "ORB Projection", "ATR", "ORB Midpoint", "ORB Opposite Range"],group = gRisk)
+
+targetR = input.float(1.5, "Target R Multiple", minval = 0.1, step = 0.1, group = gRisk)
+targetOrbMult = input.float(1.0, "ORB Projection Multiplier", minval = 0.1, step = 0.1, group = gRisk)
+targetAtrMult = input.float(2.0, "ATR Target Multiplier", minval = 0.1, step = 0.1, group = gRisk)
+
+riskMode = input.string("Risk USD","Position Sizing",options = ["Risk USD", "Risk % of Equity", "Fixed Quantity"],group = gRisk)
+
+riskUsd = input.float(500, "Risk Per Trade (USD)", minval = 0.01, step = 1, group = gRisk)
+riskPercent = input.float(0.50, "Risk Per Trade (% equity)", minval = 0.01, maxval = 10, step = 0.05, group = gRisk)
+fixedQuantity = input.float(1, "Fixed Quantity", minval = 0.000001, step = 1, group = gRisk)
+
+quantityStep = input.float(1, "Quantity Step", minval = 0.000001, group = gRisk)
+minimumQuantity = input.float(1, "Minimum Quantity", minval = 0.000001, group = gRisk)
+maximumQuantity = input.float(1000000, "Maximum Quantity", minval = 0.000001, group = gRisk)
+
+maxDailyPlannedRiskUsd = input.float(0,"Maximum Planned Risk Per Day (USD, 0 = off)",minval = 0,step = 1,group = gRisk)
+
+useBreakEven = input.bool(false, "Move Stop to Breakeven", group = gRisk)
+breakEvenAtR = input.float(1.0, "Breakeven Activation (R)", minval = 0.1, step = 0.1, group = gRisk)
+breakEvenOffsetTicks = input.float(0, "Breakeven Offset (ticks)", step = 1, group = gRisk)
+
+useBarCloseTrail = input.bool(false, "Bar-Close ATR Trail", group = gRisk)
+trailActivationR = input.float(1.0, "Trail Activation (R)", minval = 0.1, step = 0.1, group = gRisk)
+trailAtrMult = input.float(1.0, "Trail Distance (ATR ×)", minval = 0.05, step = 0.05, group = gRisk)
+
+timeExitBars = input.int(0, "Exit After Bars (0 = off)", minval = 0, maxval = 10000, group = gRisk)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. VISUALS
+// ─────────────────────────────────────────────────────────────────────────────
+gVisual = "09 • Visuals & Debug"
+
+showBoxes = input.bool(true, "Show ORB Boxes", group = gVisual)
+showMidpoint = input.bool(true, "Show Midpoints", group = gVisual)
+showSignals = input.bool(true, "Show Signal Labels", group = gVisual)
+showBlockedReasons = input.bool(false, "Show Blocked Reasons", group = gVisual)
+showDashboard = input.bool(true, "Show Dashboard", group = gVisual)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. CORE SERIES
+// ─────────────────────────────────────────────────────────────────────────────
+atr = ta.atr(14)
+ema = ta.ema(close, emaLength)
+vwap = ta.vwap(hlc3)
+confirmedDailyClose = request.security(
+     syminfo.tickerid,
+     "D",
+     close,
+     gaps = barmerge.gaps_off,
+     lookahead = barmerge.lookahead_off)
+prevClose = confirmedDailyClose[1]
+volumeAvg = ta.sma(volume, volumeLength)
+[diPlus, diMinus, adx] = ta.dmi(adxLength, adxLength)
+
+localMinutes = hour(time, strategyTz) * 60 + minute(time, strategyTz)
+newLocalDay = dayofmonth(time, strategyTz) != dayofmonth(time[1], strategyTz) or
+     month(time, strategyTz) != month(time[1], strategyTz)
+
+dayNum = dayofweek(time, strategyTz)
+dayAllowed = (dayNum == dayofweek.monday and tradeMon) or(dayNum == dayofweek.tuesday and tradeTue) or(dayNum == dayofweek.wednesday and tradeWed) or(dayNum == dayofweek.thursday and tradeThu) or(dayNum == dayofweek.friday and tradeFri) or(dayNum == dayofweek.saturday and tradeSat) or(dayNum == dayofweek.sunday and tradeSun)
+
+entryCutoffMinutes = noEntryHour * 60 + noEntryMinute
+forceCloseMinutes = forceCloseHour * 60 + forceCloseMinute
+beforeEntryCutoff = localMinutes < entryCutoffMinutes
+
+longGloballyAllowed = directionMode != "Short Only"
+shortGloballyAllowed = directionMode != "Long Only"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. ORB ARRAYS / STATE
+// ─────────────────────────────────────────────────────────────────────────────
+var enabledA = array.from(orb1Enabled, orb2Enabled, orb3Enabled)
+var namesA = array.from(orb1Name, orb2Name, orb3Name)
+var startsA = array.from(orb1Hour * 60 + orb1Minute, orb2Hour * 60 + orb2Minute, orb3Hour * 60 + orb3Minute)
+var lengthsA = array.from(orb1Length, orb2Length, orb3Length)
+var longsA = array.from(orb1Long, orb2Long, orb3Long)
+var shortsA = array.from(orb1Short, orb2Short, orb3Short)
+
+var orbHighA = array.new_float(3, na)
+var orbLowA = array.new_float(3, na)
+var orbMidA = array.new_float(3, na)
+var buildingA = array.new_bool(3, false)
+var completeA = array.new_bool(3, false)
+
+var totalEntriesA = array.new_int(3, 0)
+var longEntriesA = array.new_int(3, 0)
+var shortEntriesA = array.new_int(3, 0)
+
+var firstBreakSideA = array.new_int(3, 0)
+var firstBreakBarA = array.new_int(3, na)
+var firstBreakExtremeA = array.new_float(3, na)
+var firstBreakConsumedA = array.new_bool(3, false)
+
+var breakoutSideA = array.new_int(3, 0)
+var breakoutBarA = array.new_int(3, na)
+var retestArmedA = array.new_bool(3, false)
+
+var fvgTopA = array.new_float(3, na)
+var fvgBottomA = array.new_float(3, na)
+var fvgSideA = array.new_int(3, 0)
+var fvgBarA = array.new_int(3, na)
+
+var boxA = array.new_box(3, na)
+var highLineA = array.new_line(3, na)
+var lowLineA = array.new_line(3, na)
+var midLineA = array.new_line(3, na)
+
+var int[] gDailyEntries = array.new_int(1, 0)
+var float[] gDailyPlannedRiskUsd = array.new_float(1, 0.0)
+var bool winnerSeen = false
+var bool loserSeen = false
+var int lastClosedTrades = 0
+
+var float[] gActiveStop = array.new_float(1, na)
+var float[] gActiveTarget = array.new_float(1, na)
+var float[] gOriginalRisk = array.new_float(1, na)
+var float[] gEntryAtr = array.new_float(1, na)
+var float[] gBestClose = array.new_float(1, na)
+var int[] gActiveEntryBar = array.new_int(1, na)
+var int[] gActiveOrbIndex = array.new_int(1, na)
+var int[] gActiveDirection = array.new_int(1, 0)
+var string[] gActiveEntryId = array.new_string(1, "")
+
+// Pending stop-entry state for true intrabar Breakout (Touch) orders.
+var float[] pendingLongStopA = array.new_float(3, na)
+var float[] pendingLongTargetA = array.new_float(3, na)
+var float[] pendingLongAtrA = array.new_float(3, na)
+var float[] pendingLongRiskA = array.new_float(3, na)
+var bool[] pendingLongArmedA = array.new_bool(3, false)
+var float[] pendingShortStopA = array.new_float(3, na)
+var float[] pendingShortTargetA = array.new_float(3, na)
+var float[] pendingShortAtrA = array.new_float(3, na)
+var float[] pendingShortRiskA = array.new_float(3, na)
+var bool[] pendingShortArmedA = array.new_bool(3, false)
+
+
+// Reset daily state.
+if newLocalDay
+    array.set(gDailyEntries, 0, 0)
+    array.set(gDailyPlannedRiskUsd, 0, 0.0)
+    winnerSeen := false
+    loserSeen := false
+
+    for i = 0 to 2
+        array.set(orbHighA, i, na)
+        array.set(orbLowA, i, na)
+        array.set(orbMidA, i, na)
+        array.set(buildingA, i, false)
+        array.set(completeA, i, false)
+
+        array.set(totalEntriesA, i, 0)
+        array.set(longEntriesA, i, 0)
+        array.set(shortEntriesA, i, 0)
+
+        array.set(firstBreakSideA, i, 0)
+        array.set(firstBreakBarA, i, na)
+        array.set(firstBreakExtremeA, i, na)
+        array.set(firstBreakConsumedA, i, false)
+
+        array.set(breakoutSideA, i, 0)
+        array.set(breakoutBarA, i, na)
+        array.set(retestArmedA, i, false)
+
+        array.set(fvgTopA, i, na)
+        array.set(fvgBottomA, i, na)
+        array.set(fvgSideA, i, 0)
+        array.set(fvgBarA, i, na)
+
+        // Cancel and clear any unfilled touch-entry orders from the prior day.
+        strategy.cancel("ORB" + str.tostring(i + 1) + "-L")
+        strategy.cancel("ORB" + str.tostring(i + 1) + "-S")
+        array.set(pendingLongArmedA, i, false)
+        array.set(pendingShortArmedA, i, false)
+        array.set(pendingLongStopA, i, na)
+        array.set(pendingLongTargetA, i, na)
+        array.set(pendingLongAtrA, i, na)
+        array.set(pendingLongRiskA, i, na)
+        array.set(pendingShortStopA, i, na)
+        array.set(pendingShortTargetA, i, na)
+        array.set(pendingShortAtrA, i, na)
+        array.set(pendingShortRiskA, i, na)
+
+        bx = array.get(boxA, i)
+        if not na(bx)
+            box.delete(bx)
+        array.set(boxA, i, na)
+
+        hl = array.get(highLineA, i)
+        ll = array.get(lowLineA, i)
+        ml = array.get(midLineA, i)
+
+        if not na(hl)
+            line.delete(hl)
+        if not na(ll)
+            line.delete(ll)
+        if not na(ml)
+            line.delete(ml)
+
+        array.set(highLineA, i, na)
+        array.set(lowLineA, i, na)
+        array.set(midLineA, i, na)
+
+// Closed-trade tracking.
+if strategy.closedtrades > lastClosedTrades
+    lastPnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    winnerSeen := winnerSeen or lastPnl > 0
+    loserSeen := loserSeen or lastPnl <= 0
+    lastClosedTrades := strategy.closedtrades
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+f_breakBuffer(int direction, float orbRange) =>
+    selectedBuffer = direction == 1 ? longBreakoutBuffer : shortBreakoutBuffer
+    bufferMode == "Ticks" ? selectedBuffer * syminfo.mintick :
+     bufferMode == "ORB %" ? orbRange * selectedBuffer / 100.0 :
+     atr * selectedBuffer
+
+f_spreadPrice() =>
+    spreadUnit == "Ticks" ? spreadValue * syminfo.mintick : spreadValue
+
+f_spreadApplies(int direction) =>
+    spreadApplication == "Both" or
+     direction == 1 and spreadApplication == "Longs Only" or
+     direction == -1 and spreadApplication == "Shorts Only"
+
+// On a bid chart, a long ask-trigger can occur while bid is one spread below the
+// intended buy price. The short adjustment is the symmetric optional case for an
+// ask-based chart or other testing assumptions.
+f_chartTrigger(int direction, float intendedFillPrice) =>
+    spr = f_spreadApplies(direction) ? f_spreadPrice() : 0.0
+    direction == 1 ? intendedFillPrice - spr : intendedFillPrice + spr
+
+f_stopSpreadApplies(int direction) =>
+    stopSpreadApplication == "Both" or
+     direction == 1 and stopSpreadApplication == "Long Stops Only" or
+     direction == -1 and stopSpreadApplication == "Short Stops Only"
+
+// Shift the visible chart stop away from the position by one modeled spread.
+// The structural stop remains available as the Original Stop calculation option.
+f_chartStop(int direction, float intendedStopPrice) =>
+    spr = f_stopSpreadApplies(direction) ? f_spreadPrice() : 0.0
+    direction == 1 ? intendedStopPrice - spr : intendedStopPrice + spr
+
+f_rangeMetric(float orbRange) =>
+    rangeUnit == "Ticks" ? orbRange / syminfo.mintick :
+     rangeUnit == "ATR" ? orbRange / math.max(atr, syminfo.mintick) :
+     orbRange / close * 100.0
+
+f_capacityOk(int orbIndex, int direction) =>
+    total = array.get(totalEntriesA, orbIndex)
+    dirCount = direction == 1 ? array.get(longEntriesA, orbIndex) : array.get(shortEntriesA, orbIndex)
+
+    entryModeOk = entryAllowance == "Unlimited" ? true :
+     entryAllowance == "One Total" ? total == 0 :
+     entryAllowance == "Once Per Direction" ? dirCount == 0 :
+     total < maxEntriesPerOrb
+
+    dailyRiskOk = maxDailyPlannedRiskUsd <= 0 or
+     array.get(gDailyPlannedRiskUsd, 0) + riskUsd <= maxDailyPlannedRiskUsd
+
+    entryModeOk and
+     array.get(gDailyEntries, 0) < maxEntriesPerDay and
+     dailyRiskOk and
+     not (stopAfterFirstWin and winnerSeen) and
+     not (stopAfterFirstLoss and loserSeen)
+
+f_biasOk(int direction, float orbHigh, float orbLow) =>
+    emaPriceOk = direction == 1 ? close > ema : close < ema
+    emaSlopeOk = direction == 1 ? ema > ema[1] : ema < ema[1]
+
+    emaOk = not useEmaBias or
+     (emaBiasMode == "Price vs EMA" ? emaPriceOk :
+      emaBiasMode == "EMA Slope" ? emaSlopeOk :
+      emaPriceOk and emaSlopeOk)
+
+    vwapPriceOk = direction == 1 ? close > vwap : close < vwap
+    vwapSlopeOk = direction == 1 ? vwap > vwap[1] : vwap < vwap[1]
+
+    vwapOk = not useVwapBias or
+     (vwapBiasMode == "Price vs VWAP" ? vwapPriceOk :
+      vwapBiasMode == "VWAP Slope" ? vwapSlopeOk :
+      vwapPriceOk and vwapSlopeOk)
+
+    prevPriceOk = direction == 1 ? close > prevClose : close < prevClose
+    prevOrbOk = direction == 1 ? orbLow > prevClose : orbHigh < prevClose
+
+    prevOk = not usePrevCloseBias or
+     (prevCloseMode == "Price vs Previous Close" ? prevPriceOk : prevOrbOk)
+
+    volumeOk = not useVolumeFilter or volume >= volumeAvg * volumeMultiplier
+    adxOk = not useAdxFilter or adx >= minAdx
+    candleOk = high - low <= atr * maxBreakoutCandleAtr
+
+    emaOk and vwapOk and prevOk and volumeOk and adxOk and candleOk
+
+f_qty(float entryPrice, float stopPrice) =>
+    stopDistance = math.abs(entryPrice - stopPrice)
+    cashPerUnit = stopDistance * math.max(syminfo.pointvalue, 0.0000001)
+
+    rawQty = riskMode == "Risk USD" ?
+     riskUsd / math.max(cashPerUnit, 0.0000001) :
+     riskMode == "Risk % of Equity" ?
+     (strategy.equity * riskPercent / 100.0) / math.max(cashPerUnit, 0.0000001) :
+     fixedQuantity
+
+    steppedQty = math.floor(rawQty / quantityStep) * quantityStep
+    math.max(minimumQuantity, math.min(maximumQuantity, steppedQty))
+
+f_stop(int direction, float orbHigh, float orbLow, float breakoutExtreme, float fvgTop, float fvgBottom) =>
+    buffer = stopBufferTicks * syminfo.mintick
+    midpoint = (orbHigh + orbLow) / 2.0
+    orbRange = orbHigh - orbLow
+
+    candleStop = direction == 1 ? low - buffer : high + buffer
+    atrStop = direction == 1 ? close - atr * stopAtrMult : close + atr * stopAtrMult
+    midpointStop = midpoint
+    oppositeStop = direction == 1 ? orbLow - buffer : orbHigh + buffer
+    breakoutStop = direction == 1 ? breakoutExtreme - buffer : breakoutExtreme + buffer
+    percentStop = direction == 1 ?
+     close - orbRange * stopOrbPercent / 100.0 :
+     close + orbRange * stopOrbPercent / 100.0
+    fvgStop = direction == 1 ? fvgBottom - buffer : fvgTop + buffer
+
+    selected = stopModel == "Candle Extreme" ? candleStop :
+     stopModel == "ATR" ? atrStop :
+     stopModel == "ORB Midpoint" ? midpointStop :
+     stopModel == "ORB Opposite Range" ? oppositeStop :
+     stopModel == "Breakout Extreme" ? breakoutStop :
+     stopModel == "ORB Percentage" ? percentStop :
+     fvgStop
+
+    direction == 1 ?
+     math.min(selected, close - syminfo.mintick) :
+     math.max(selected, close + syminfo.mintick)
+
+f_target(int direction, float entryPrice, float stopPrice, float orbHigh, float orbLow, bool isFade) =>
+    midpoint = (orbHigh + orbLow) / 2.0
+    orbRange = orbHigh - orbLow
+    risk = math.abs(entryPrice - stopPrice)
+
+    fixedR = direction == 1 ?
+     entryPrice + risk * targetR :
+     entryPrice - risk * targetR
+
+    projection = direction == 1 ?
+     orbHigh + orbRange * targetOrbMult :
+     orbLow - orbRange * targetOrbMult
+
+    atrTarget = direction == 1 ?
+     entryPrice + atr * targetAtrMult :
+     entryPrice - atr * targetAtrMult
+
+    opposite = direction == 1 ? orbHigh : orbLow
+
+    fadeTarget = fadeTargetPreference == "Midpoint" ? midpoint :
+     fadeTargetPreference == "Opposite Boundary" ? opposite :
+     fixedR
+
+    isFade ? fadeTarget :
+     targetModel == "Fixed R" ? fixedR :
+     targetModel == "ORB Projection" ? projection :
+     targetModel == "ATR" ? atrTarget :
+     targetModel == "ORB Midpoint" ? midpoint :
+     opposite
+
+f_markEntry(int orbIndex, int direction) =>
+    array.set(totalEntriesA, orbIndex, array.get(totalEntriesA, orbIndex) + 1)
+
+    if direction == 1
+        array.set(longEntriesA, orbIndex, array.get(longEntriesA, orbIndex) + 1)
+    else
+        array.set(shortEntriesA, orbIndex, array.get(shortEntriesA, orbIndex) + 1)
+
+    array.set(gDailyEntries, 0, array.get(gDailyEntries, 0) + 1)
+
+    if riskMode == "Risk USD"
+        array.set(gDailyPlannedRiskUsd, 0, array.get(gDailyPlannedRiskUsd, 0) + riskUsd)
+
+f_stopAtPrice(int direction, float entryPrice, float orbHigh, float orbLow, float breakoutExtreme, float fvgTop, float fvgBottom) =>
+    buffer = stopBufferTicks * syminfo.mintick
+    midpoint = (orbHigh + orbLow) / 2.0
+    orbRange = orbHigh - orbLow
+
+    candleStop = direction == 1 ? low - buffer : high + buffer
+    atrStop = direction == 1 ? entryPrice - atr * stopAtrMult : entryPrice + atr * stopAtrMult
+    midpointStop = midpoint
+    oppositeStop = direction == 1 ? orbLow - buffer : orbHigh + buffer
+    breakoutStop = direction == 1 ? breakoutExtreme - buffer : breakoutExtreme + buffer
+    percentStop = direction == 1 ?
+     entryPrice - orbRange * stopOrbPercent / 100.0 :
+     entryPrice + orbRange * stopOrbPercent / 100.0
+    fvgStop = direction == 1 ? fvgBottom - buffer : fvgTop + buffer
+
+    selected = stopModel == "Candle Extreme" ? candleStop :
+     stopModel == "ATR" ? atrStop :
+     stopModel == "ORB Midpoint" ? midpointStop :
+     stopModel == "ORB Opposite Range" ? oppositeStop :
+     stopModel == "Breakout Extreme" ? breakoutStop :
+     stopModel == "ORB Percentage" ? percentStop :
+     fvgStop
+
+    direction == 1 ?
+     math.min(selected, entryPrice - syminfo.mintick) :
+     math.max(selected, entryPrice + syminfo.mintick)
+
+f_armTouch(int orbIndex, int direction, float triggerPrice, float orbHigh, float orbLow, float breakoutExtreme, float fvgTop, float fvgBottom) =>
+    orbDirectionOk = direction == 1 ?
+     longGloballyAllowed and array.get(longsA, orbIndex) :
+     shortGloballyAllowed and array.get(shortsA, orbIndex)
+
+    rangeMetric = f_rangeMetric(orbHigh - orbLow)
+    rangeOk = not useRangeFilter or
+     (rangeMetric >= minOrbRange and rangeMetric <= maxOrbRange)
+    capacityOk = f_capacityOk(orbIndex, direction)
+    biasOk = f_biasOk(direction, orbHigh, orbLow)
+    alreadyArmed = direction == 1 ? array.get(pendingLongArmedA, orbIndex) : array.get(pendingShortArmedA, orbIndex)
+    generalOk = dayAllowed and beforeEntryCutoff and strategy.position_size == 0 and not alreadyArmed
+
+    if orbDirectionOk and rangeOk and capacityOk and biasOk and generalOk
+        intendedFillPrice = triggerPrice
+        chartTriggerPrice = f_chartTrigger(direction, intendedFillPrice)
+        stopPrice = f_stopAtPrice(direction, intendedFillPrice, orbHigh, orbLow, breakoutExtreme, fvgTop, fvgBottom)
+        chartStopPrice = f_chartStop(direction, stopPrice)
+        targetEntryPrice = entryCalculationPrice == "Corrected Entry" ? intendedFillPrice : chartTriggerPrice
+        riskStopPrice = stopCalculationPrice == "Corrected Stop" ? chartStopPrice : stopPrice
+        targetPrice = f_target(direction, targetEntryPrice, riskStopPrice, orbHigh, orbLow, false)
+        qty = f_qty(intendedFillPrice, riskStopPrice)
+        entryId = "ORB" + str.tostring(orbIndex + 1) + (direction == 1 ? "-L" : "-S")
+
+        // The visible chart trigger can be shifted for bid/ask timing, but risk
+        // calculation settings independently select the entry and stop used for risk math.
+        strategy.entry(
+             entryId,
+             direction == 1 ? strategy.long : strategy.short,
+             qty = qty,
+             stop = chartTriggerPrice,
+             oca_name = "ORB-TOUCH-" + str.tostring(year(time, strategyTz)) + "-" +
+                  str.tostring(month(time, strategyTz)) + "-" +
+                  str.tostring(dayofmonth(time, strategyTz)),
+             oca_type = strategy.oca.cancel)
+        strategy.exit("X-" + entryId, from_entry = entryId, stop = chartStopPrice, limit = targetPrice)
+
+        if direction == 1
+            array.set(pendingLongStopA, orbIndex, stopPrice)
+            array.set(pendingLongTargetA, orbIndex, targetPrice)
+            array.set(pendingLongAtrA, orbIndex, atr)
+            array.set(pendingLongRiskA, orbIndex, math.abs(intendedFillPrice - riskStopPrice))
+            array.set(pendingLongArmedA, orbIndex, true)
+        else
+            array.set(pendingShortStopA, orbIndex, stopPrice)
+            array.set(pendingShortTargetA, orbIndex, targetPrice)
+            array.set(pendingShortAtrA, orbIndex, atr)
+            array.set(pendingShortRiskA, orbIndex, math.abs(intendedFillPrice - riskStopPrice))
+            array.set(pendingShortArmedA, orbIndex, true)
+
+f_submit(int orbIndex, int direction, bool isFade, float orbHigh, float orbLow, float breakoutExtreme, float fvgTop, float fvgBottom, string reason) =>
+    orbDirectionOk = direction == 1 ?
+     longGloballyAllowed and array.get(longsA, orbIndex) :
+     shortGloballyAllowed and array.get(shortsA, orbIndex)
+
+    rangeMetric = f_rangeMetric(orbHigh - orbLow)
+    rangeOk = not useRangeFilter or
+     (rangeMetric >= minOrbRange and rangeMetric <= maxOrbRange)
+
+    capacityOk = f_capacityOk(orbIndex, direction)
+    biasOk = f_biasOk(direction, orbHigh, orbLow)
+    generalOk = dayAllowed and beforeEntryCutoff and strategy.position_size == 0
+
+    if orbDirectionOk and rangeOk and capacityOk and biasOk and generalOk
+        stopPrice = f_stop(direction, orbHigh, orbLow, breakoutExtreme, fvgTop, fvgBottom)
+        chartStopPrice = f_chartStop(direction, stopPrice)
+        riskStopPrice = stopCalculationPrice == "Corrected Stop" ? chartStopPrice : stopPrice
+        targetPrice = f_target(direction, close, riskStopPrice, orbHigh, orbLow, isFade)
+        qty = f_qty(close, riskStopPrice)
+
+        entryId = "ORB" + str.tostring(orbIndex + 1) + (direction == 1 ? "-L" : "-S")
+
+        strategy.entry(
+             entryId,
+             direction == 1 ? strategy.long : strategy.short,
+             qty = qty)
+
+        array.set(gActiveStop, 0, stopPrice)
+        array.set(gActiveTarget, 0, targetPrice)
+        array.set(gOriginalRisk, 0, math.abs(close - riskStopPrice))
+        array.set(gEntryAtr, 0, atr)
+        array.set(gBestClose, 0, close)
+        array.set(gActiveEntryBar, 0, bar_index)
+        array.set(gActiveOrbIndex, 0, orbIndex)
+        array.set(gActiveDirection, 0, direction)
+        array.set(gActiveEntryId, 0, entryId)
+
+        f_markEntry(orbIndex, direction)
+
+        if showSignals
+            label.new(
+                 bar_index,
+                 direction == 1 ? low : high,
+                 array.get(namesA, orbIndex) + "\n" + reason,
+                 style = direction == 1 ? label.style_label_up : label.style_label_down,
+                 color = direction == 1 ? color.new(color.green, 15) : color.new(color.red, 15),
+                 textcolor = color.white)
+
+    else if showBlockedReasons and generalOk
+        blockedReason = not orbDirectionOk ? "Direction disabled" :
+             not rangeOk ? "Range filter" :
+             not capacityOk ? "Entry / daily limit" :
+             not biasOk ? "Bias / condition filter" :
+             "Blocked"
+
+        label.new(
+             bar_index,
+             high,
+             "ORB " + str.tostring(orbIndex + 1) + ": " + blockedReason,
+             style = label.style_label_down,
+             color = color.new(color.gray, 55),
+             textcolor = color.white)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. BUILD ORBS AND PROCESS ENTRY MODELS
+// ─────────────────────────────────────────────────────────────────────────────
+for i = 0 to 2
+    enabled = array.get(enabledA, i)
+    startMinute = array.get(startsA, i)
+    endMinute = startMinute + array.get(lengthsA, i)
+
+    // Finalize on the close of the last ORB bar, so resting breakout
+    // orders are submitted before the first post-range bar begins.
+    // This also handles a one-bar ORB correctly.
+    startHourLocal = int(math.floor(startMinute / 60))
+    startMinuteLocal = startMinute % 60
+    orbStartTs = timestamp(strategyTz, year(time, strategyTz), month(time, strategyTz), dayofmonth(time, strategyTz), startHourLocal, startMinuteLocal)
+    orbEndTs = orbStartTs + array.get(lengthsA, i) * 60 * 1000
+    inBuild = enabled and time >= orbStartTs and time < orbEndTs
+    finishesThisBar = inBuild and time_close >= orbEndTs
+    justStarted = inBuild and not array.get(buildingA, i)
+
+    // Do not depend on `buildingA` already being true here. On a one-bar ORB,
+    // the first range bar is also the final range bar, so both events occur
+    // during the same calculation.
+    justCompleted = finishesThisBar and not array.get(completeA, i)
+
+    if justStarted
+        array.set(orbHighA, i, high)
+        array.set(orbLowA, i, low)
+        array.set(orbMidA, i, (high + low) / 2.0)
+        array.set(buildingA, i, true)
+        array.set(completeA, i, false)
+
+        if showBoxes
+            bx = box.new(
+                 left = bar_index,
+                 top = high,
+                 right = bar_index,
+                 bottom = low,
+                 bgcolor = color.new(color.blue, 88),
+                 border_color = color.new(color.blue, 35))
+            array.set(boxA, i, bx)
+
+    if inBuild
+        orbHi = math.max(nz(array.get(orbHighA, i), high), high)
+        orbLo = math.min(nz(array.get(orbLowA, i), low), low)
+
+        array.set(orbHighA, i, orbHi)
+        array.set(orbLowA, i, orbLo)
+        array.set(orbMidA, i, (orbHi + orbLo) / 2.0)
+
+        bx = array.get(boxA, i)
+        if showBoxes and not na(bx)
+            box.set_right(bx, bar_index)
+            box.set_top(bx, orbHi)
+            box.set_bottom(bx, orbLo)
+
+    if justCompleted
+        array.set(buildingA, i, false)
+        array.set(completeA, i, true)
+
+        orbHi = array.get(orbHighA, i)
+        orbLo = array.get(orbLowA, i)
+        orbMid = (orbHi + orbLo) / 2.0
+
+        array.set(orbMidA, i, orbMid)
+
+        highLine = line.new(
+             bar_index,
+             orbHi,
+             bar_index + 1,
+             orbHi,
+             extend = extend.right,
+             color = color.new(color.green, 20))
+
+        lowLine = line.new(
+             bar_index,
+             orbLo,
+             bar_index + 1,
+             orbLo,
+             extend = extend.right,
+             color = color.new(color.red, 20))
+
+        array.set(highLineA, i, highLine)
+        array.set(lowLineA, i, lowLine)
+
+        if showMidpoint
+            midLine = line.new(
+                 bar_index,
+                 orbMid,
+                 bar_index + 1,
+                 orbMid,
+                 extend = extend.right,
+                 color = color.new(color.gray, 45),
+                 style = line.style_dashed)
+
+            array.set(midLineA, i, midLine)
+
+    if enabled and array.get(completeA, i)
+        orbHi = array.get(orbHighA, i)
+        orbLo = array.get(orbLowA, i)
+        orbRange = orbHi - orbLo
+        longBuffer = f_breakBuffer(1, orbRange)
+        shortBuffer = f_breakBuffer(-1, orbRange)
+
+        longTouch = high >= orbHi + longBuffer
+        shortTouch = low <= orbLo - shortBuffer
+        longClose = close > orbHi + longBuffer
+        shortClose = close < orbLo - shortBuffer
+
+        // Permanent first-break record.
+        if array.get(firstBreakSideA, i) == 0
+            if longTouch and not shortTouch
+                array.set(firstBreakSideA, i, 1)
+                array.set(firstBreakBarA, i, bar_index)
+                array.set(firstBreakExtremeA, i, high)
+
+            else if shortTouch and not longTouch
+                array.set(firstBreakSideA, i, -1)
+                array.set(firstBreakBarA, i, bar_index)
+                array.set(firstBreakExtremeA, i, low)
+
+        // Keep extending the first-break extreme until consumed/expired.
+        firstSide = array.get(firstBreakSideA, i)
+        if firstSide == 1 and not array.get(firstBreakConsumedA, i)
+            array.set(
+                 firstBreakExtremeA,
+                 i,
+                 math.max(nz(array.get(firstBreakExtremeA, i), high), high))
+
+        if firstSide == -1 and not array.get(firstBreakConsumedA, i)
+            array.set(
+                 firstBreakExtremeA,
+                 i,
+                 math.min(nz(array.get(firstBreakExtremeA, i), low), low))
+
+        // Breakout state for retest models.
+        if longClose and array.get(breakoutSideA, i) == 0
+            array.set(breakoutSideA, i, 1)
+            array.set(breakoutBarA, i, bar_index)
+            array.set(retestArmedA, i, true)
+
+        if shortClose and array.get(breakoutSideA, i) == 0
+            array.set(breakoutSideA, i, -1)
+            array.set(breakoutBarA, i, bar_index)
+            array.set(retestArmedA, i, true)
+
+        // Directional FVG detection.
+        bullFvg = low > high[2] and low - high[2] >= atr * fvgMinAtr
+        bearFvg = high < low[2] and low[2] - high >= atr * fvgMinAtr
+
+        if array.get(breakoutSideA, i) == 1 and bullFvg
+            validOutside = not fvgMustRemainOutside or high[2] >= orbHi
+
+            if validOutside
+                array.set(fvgBottomA, i, high[2])
+                array.set(fvgTopA, i, low)
+                array.set(fvgSideA, i, 1)
+                array.set(fvgBarA, i, bar_index)
+
+        if array.get(breakoutSideA, i) == -1 and bearFvg
+            validOutside = not fvgMustRemainOutside or low[2] <= orbLo
+
+            if validOutside
+                array.set(fvgBottomA, i, high)
+                array.set(fvgTopA, i, low[2])
+                array.set(fvgSideA, i, -1)
+                array.set(fvgBarA, i, bar_index)
+
+        fvgTop = array.get(fvgTopA, i)
+        fvgBottom = array.get(fvgBottomA, i)
+
+        // 1. Breakout touch — arm resting stop orders before the breakout occurs.
+        if entryModel == "Breakout (Touch)"
+            f_armTouch(i, 1, orbHi + longBuffer, orbHi, orbLo, orbLo, fvgTop, fvgBottom)
+            f_armTouch(i, -1, orbLo - shortBuffer, orbHi, orbLo, orbHi, fvgTop, fvgBottom)
+
+        // 2. Breakout close
+        if entryModel == "Breakout (Close)"
+            if longClose
+                f_submit(i, 1, false, orbHi, orbLo, low, fvgTop, fvgBottom, "Breakout Close")
+            if shortClose
+                f_submit(i, -1, false, orbHi, orbLo, high, fvgTop, fvgBottom, "Breakout Close")
+
+        // 3. ORB retest
+        if entryModel == "Break + Retest ORB" and array.get(retestArmedA, i)
+            breakSide = array.get(breakoutSideA, i)
+            breakBar = array.get(breakoutBarA, i)
+            withinExpiry = not na(breakBar) and bar_index - breakBar <= retestExpiryBars
+
+            longNotOverextended = high <= orbHi + orbRange * maxExtensionOrb
+            shortNotOverextended = low >= orbLo - orbRange * maxExtensionOrb
+
+            longRejection = low <= orbHi and close > open and close > orbHi
+            shortRejection = high >= orbLo and close < open and close < orbLo
+
+            longRetest = low <= orbHi and
+                 (retestConfirmation == "Touch Only" or
+                  retestConfirmation == "Close Outside" and close > orbHi or
+                  retestConfirmation == "Rejection Candle" and longRejection)
+
+            shortRetest = high >= orbLo and
+                 (retestConfirmation == "Touch Only" or
+                  retestConfirmation == "Close Outside" and close < orbLo or
+                  retestConfirmation == "Rejection Candle" and shortRejection)
+
+            if withinExpiry and longNotOverextended and breakSide == 1 and longRetest
+                f_submit(i, 1, false, orbHi, orbLo, low, fvgTop, fvgBottom, "ORB Retest")
+                array.set(retestArmedA, i, false)
+
+            if withinExpiry and shortNotOverextended and breakSide == -1 and shortRetest
+                f_submit(i, -1, false, orbHi, orbLo, high, fvgTop, fvgBottom, "ORB Retest")
+                array.set(retestArmedA, i, false)
+
+            if not withinExpiry
+                array.set(retestArmedA, i, false)
+
+        // 4. FVG retest
+        if entryModel == "Break + Retest FVG"
+            fvgSide = array.get(fvgSideA, i)
+            fvgBar = array.get(fvgBarA, i)
+
+            fvgValid = fvgSide != 0 and
+                 not na(fvgBar) and
+                 bar_index - fvgBar <= fvgExpiryBars
+
+            fvgLevel = fvgEntryLevel == "Near Edge" ?
+                 (fvgSide == 1 ? fvgTop : fvgBottom) :
+                 fvgEntryLevel == "Midpoint" ?
+                 (fvgTop + fvgBottom) / 2.0 :
+                 (fvgSide == 1 ? fvgBottom : fvgTop)
+
+            fvgTouched = fvgValid and low <= fvgLevel and high >= fvgLevel
+
+            if fvgTouched and fvgSide == 1
+                f_submit(i, 1, false, orbHi, orbLo, fvgBottom, fvgTop, fvgBottom, "FVG Retest")
+                array.set(fvgSideA, i, 0)
+
+            if fvgTouched and fvgSide == -1
+                f_submit(i, -1, false, orbHi, orbLo, fvgTop, fvgTop, fvgBottom, "FVG Retest")
+                array.set(fvgSideA, i, 0)
+
+            if fvgSide != 0 and not fvgValid
+                array.set(fvgSideA, i, 0)
+
+        // 5. Sweep reversal
+        sweepHigh = high > orbHi + longBuffer and close < orbHi
+        sweepLow = low < orbLo - shortBuffer and close > orbLo
+
+        highRejection = sweepHigh and close < open
+        lowRejection = sweepLow and close > open
+
+        if entryModel == "Sweep Reversal"
+            validHighSweep = sweepConfirmation == "Close Back Inside" ? sweepHigh : highRejection
+            validLowSweep = sweepConfirmation == "Close Back Inside" ? sweepLow : lowRejection
+
+            if validHighSweep
+                f_submit(i, -1, true, orbHi, orbLo, high, fvgTop, fvgBottom, "High Sweep")
+
+            if validLowSweep
+                f_submit(i, 1, true, orbHi, orbLo, low, fvgTop, fvgBottom, "Low Sweep")
+
+        // 6. Fade first breakout
+        if entryModel == "Fade First Breakout" and not array.get(firstBreakConsumedA, i)
+            side = array.get(firstBreakSideA, i)
+            firstBar = array.get(firstBreakBarA, i)
+            firstExtreme = array.get(firstBreakExtremeA, i)
+
+            withinFailureWindow = not na(firstBar) and bar_index - firstBar <= failureTimeoutBars
+            highExtensionOk = side == 1 and firstExtreme <= orbHi + orbRange * maxExtensionOrb
+            lowExtensionOk = side == -1 and firstExtreme >= orbLo - orbRange * maxExtensionOrb
+
+            failedHigh = side == 1 and close < orbHi and withinFailureWindow and highExtensionOk
+            failedLow = side == -1 and close > orbLo and withinFailureWindow and lowExtensionOk
+
+            if failedHigh
+                f_submit(i, -1, true, orbHi, orbLo, firstExtreme, fvgTop, fvgBottom, "Fade First High Break")
+                array.set(firstBreakConsumedA, i, true)
+
+            if failedLow
+                f_submit(i, 1, true, orbHi, orbLo, firstExtreme, fvgTop, fvgBottom, "Fade First Low Break")
+                array.set(firstBreakConsumedA, i, true)
+
+        // 7. First-break decision tree
+        if entryModel == "First-Break Decision Tree" and not array.get(firstBreakConsumedA, i)
+            side = array.get(firstBreakSideA, i)
+            firstBar = array.get(firstBreakBarA, i)
+            firstExtreme = array.get(firstBreakExtremeA, i)
+
+            withinFailureWindow = not na(firstBar) and bar_index - firstBar <= failureTimeoutBars
+
+            longContinuation = side == 1 and
+                 (decisionTreeContinuation == "Touch" ? longTouch :
+                  decisionTreeContinuation == "Close Outside" ? longClose :
+                  low <= orbHi and close > orbHi)
+
+            shortContinuation = side == -1 and
+                 (decisionTreeContinuation == "Touch" ? shortTouch :
+                  decisionTreeContinuation == "Close Outside" ? shortClose :
+                  high >= orbLo and close < orbLo)
+
+            failedHigh = side == 1 and close < orbHi and bar_index > firstBar and withinFailureWindow
+            failedLow = side == -1 and close > orbLo and bar_index > firstBar and withinFailureWindow
+
+            if longContinuation
+                f_submit(i, 1, false, orbHi, orbLo, low, fvgTop, fvgBottom, "Decision: Continuation")
+                array.set(firstBreakConsumedA, i, true)
+
+            else if shortContinuation
+                f_submit(i, -1, false, orbHi, orbLo, high, fvgTop, fvgBottom, "Decision: Continuation")
+                array.set(firstBreakConsumedA, i, true)
+
+            else if failedHigh
+                f_submit(i, -1, true, orbHi, orbLo, firstExtreme, fvgTop, fvgBottom, "Decision: Failed High")
+                array.set(firstBreakConsumedA, i, true)
+
+            else if failedLow
+                f_submit(i, 1, true, orbHi, orbLo, firstExtreme, fvgTop, fvgBottom, "Decision: Failed Low")
+                array.set(firstBreakConsumedA, i, true)
+
+// Detect a newly filled resting touch order on the next strategy calculation.
+// The OCA group cancels competing touch orders immediately.
+newTouchFill = entryModel == "Breakout (Touch)" and strategy.position_size != 0 and strategy.position_size[1] == 0
+if newTouchFill
+    filledId = strategy.opentrades.entry_id(0)
+    filledDirection = strategy.position_size > 0 ? 1 : -1
+    filledOrb = str.contains(filledId, "ORB1") ? 0 : str.contains(filledId, "ORB2") ? 1 : 2
+
+    if filledDirection == 1
+        array.set(gActiveStop, 0, array.get(pendingLongStopA, filledOrb))
+        array.set(gActiveTarget, 0, array.get(pendingLongTargetA, filledOrb))
+        array.set(gEntryAtr, 0, array.get(pendingLongAtrA, filledOrb))
+        array.set(gOriginalRisk, 0, array.get(pendingLongRiskA, filledOrb))
+    else
+        array.set(gActiveStop, 0, array.get(pendingShortStopA, filledOrb))
+        array.set(gActiveTarget, 0, array.get(pendingShortTargetA, filledOrb))
+        array.set(gEntryAtr, 0, array.get(pendingShortAtrA, filledOrb))
+        array.set(gOriginalRisk, 0, array.get(pendingShortRiskA, filledOrb))
+
+    array.set(gBestClose, 0, strategy.position_avg_price)
+    array.set(gActiveEntryBar, 0, bar_index)
+    array.set(gActiveOrbIndex, 0, filledOrb)
+    array.set(gActiveDirection, 0, filledDirection)
+    array.set(gActiveEntryId, 0, filledId)
+    f_markEntry(filledOrb, filledDirection)
+
+    // Once one side fills, cancel every other unfilled touch order.
+    for j = 0 to 2
+        longId = "ORB" + str.tostring(j + 1) + "-L"
+        shortId = "ORB" + str.tostring(j + 1) + "-S"
+        if longId != filledId
+            strategy.cancel(longId)
+        if shortId != filledId
+            strategy.cancel(shortId)
+        array.set(pendingLongArmedA, j, false)
+        array.set(pendingShortArmedA, j, false)
+
+    if showSignals
+        label.new(
+             bar_index,
+             filledDirection == 1 ? low : high,
+             array.get(namesA, filledOrb) + "\nBreakout Touch Fill",
+             style = filledDirection == 1 ? label.style_label_up : label.style_label_down,
+             color = filledDirection == 1 ? color.new(color.green, 15) : color.new(color.red, 15),
+             textcolor = color.white)
+
+// Cancel unfilled touch entries at the entry cutoff.
+if entryModel == "Breakout (Touch)" and not beforeEntryCutoff and strategy.position_size == 0
+    for j = 0 to 2
+        strategy.cancel("ORB" + str.tostring(j + 1) + "-L")
+        strategy.cancel("ORB" + str.tostring(j + 1) + "-S")
+        array.set(pendingLongArmedA, j, false)
+        array.set(pendingShortArmedA, j, false)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. ACTIVE POSITION MANAGEMENT
+// ─────────────────────────────────────────────────────────────────────────────
+if strategy.position_size != 0
+    isLong = strategy.position_size > 0
+    avgEntry = strategy.position_avg_price
+
+    array.set(
+         gBestClose,
+         0,
+         isLong ?
+          math.max(nz(array.get(gBestClose, 0), close), close) :
+          math.min(nz(array.get(gBestClose, 0), close), close))
+
+    if useBreakEven and array.get(gOriginalRisk, 0) > 0
+        breakEvenActivated = isLong ?
+             high >= avgEntry + array.get(gOriginalRisk, 0) * breakEvenAtR :
+             low <= avgEntry - array.get(gOriginalRisk, 0) * breakEvenAtR
+
+        if breakEvenActivated
+            breakEvenStop = isLong ?
+                 avgEntry + breakEvenOffsetTicks * syminfo.mintick :
+                 avgEntry - breakEvenOffsetTicks * syminfo.mintick
+
+            array.set(
+                 gActiveStop,
+                 0,
+                 isLong ?
+                  math.max(array.get(gActiveStop, 0), breakEvenStop) :
+                  math.min(array.get(gActiveStop, 0), breakEvenStop))
+
+    if useBarCloseTrail and barstate.isconfirmed and array.get(gOriginalRisk, 0) > 0
+        trailActivated = isLong ?
+             array.get(gBestClose, 0) >= avgEntry + array.get(gOriginalRisk, 0) * trailActivationR :
+             array.get(gBestClose, 0) <= avgEntry - array.get(gOriginalRisk, 0) * trailActivationR
+
+        if trailActivated
+            trailCandidate = isLong ?
+                 array.get(gBestClose, 0) - array.get(gEntryAtr, 0) * trailAtrMult :
+                 array.get(gBestClose, 0) + array.get(gEntryAtr, 0) * trailAtrMult
+
+            array.set(
+                 gActiveStop,
+                 0,
+                 isLong ?
+                  math.max(array.get(gActiveStop, 0), trailCandidate) :
+                  math.min(array.get(gActiveStop, 0), trailCandidate))
+
+    activeDirection = isLong ? 1 : -1
+    modeledActiveStop = f_chartStop(activeDirection, array.get(gActiveStop, 0))
+
+    strategy.exit(
+         "X-" + array.get(gActiveEntryId, 0),
+         from_entry = array.get(gActiveEntryId, 0),
+         stop = modeledActiveStop,
+         limit = array.get(gActiveTarget, 0))
+
+    if timeExitBars > 0 and not na(array.get(gActiveEntryBar, 0)) and bar_index - array.get(gActiveEntryBar, 0) >= timeExitBars
+        strategy.close(array.get(gActiveEntryId, 0), comment = "Time Exit")
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    array.set(gActiveStop, 0, na)
+    array.set(gActiveTarget, 0, na)
+    array.set(gOriginalRisk, 0, na)
+    array.set(gEntryAtr, 0, na)
+    array.set(gBestClose, 0, na)
+    array.set(gActiveEntryBar, 0, na)
+    array.set(gActiveOrbIndex, 0, na)
+    array.set(gActiveDirection, 0, 0)
+    array.set(gActiveEntryId, 0, "")
+
+// Force close.
+if forceCloseEnabled and localMinutes >= forceCloseMinutes and strategy.position_size != 0
+    strategy.close_all(comment = "Force Close")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. PLOTS / DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────────
+plot(useEmaBias ? ema : na, "EMA Bias", color = color.orange)
+plot(useVwapBias ? vwap : na, "VWAP Bias", color = color.purple)
+
+plot(
+     strategy.position_size != 0 ? array.get(gActiveStop, 0) : na,
+     "Active Stop",
+     color = color.red,
+     style = plot.style_linebr,
+     linewidth = 2)
+
+plot(
+     strategy.position_size != 0 ? array.get(gActiveTarget, 0) : na,
+     "Active Target",
+     color = color.green,
+     style = plot.style_linebr,
+     linewidth = 2)
+
+var table dashboard = table.new(position.top_right, 2, 9, border_width = 1)
+
+if showDashboard and barstate.islast
+    table.cell(dashboard, 0, 0, "ORB Laboratory", bgcolor = color.new(color.blue, 65), text_color = color.white)
+    table.cell(dashboard, 1, 0, "v1.0.11", bgcolor = color.new(color.blue, 65), text_color = color.white)
+
+    table.cell(dashboard, 0, 1, "Entry Model")
+    table.cell(dashboard, 1, 1, entryModel)
+
+    table.cell(dashboard, 0, 2, "Daily Entries")
+    table.cell(dashboard, 1, 2, str.tostring(array.get(gDailyEntries, 0)) + " / " + str.tostring(maxEntriesPerDay))
+
+    table.cell(dashboard, 0, 3, "Planned Risk")
+    table.cell(dashboard, 1, 3, "$" + str.tostring(array.get(gDailyPlannedRiskUsd, 0), "#.##"))
+
+    table.cell(dashboard, 0, 4, "EMA Bias")
+    table.cell(dashboard, 1, 4, useEmaBias ? (close > ema ? "Bull" : "Bear") : "Off")
+
+    table.cell(dashboard, 0, 5, "VWAP Bias")
+    table.cell(dashboard, 1, 5, useVwapBias ? (close > vwap ? "Bull" : "Bear") : "Off")
+
+    table.cell(dashboard, 0, 6, "Previous Close")
+    table.cell(dashboard, 1, 6, str.tostring(prevClose, format.mintick))
+
+    table.cell(dashboard, 0, 7, "Position")
+    table.cell(
+         dashboard,
+         1,
+         7,
+         strategy.position_size > 0 ? "Long" :
+          strategy.position_size < 0 ? "Short" :
+          "Flat")
+
+    table.cell(dashboard, 0, 8, "Entry Cutoff")
+    table.cell(
+         dashboard,
+         1,
+         8,
+         str.format("{0,number,00}:{1,number,00}", noEntryHour, noEntryMinute))

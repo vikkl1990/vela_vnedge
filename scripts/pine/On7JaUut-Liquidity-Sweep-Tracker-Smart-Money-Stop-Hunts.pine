@@ -1,0 +1,662 @@
+//@version=6
+strategy("Liquidity Sweep Reversal", overlay=true,
+     max_bars_back=500, max_boxes_count=400, max_labels_count=500, max_lines_count=200,
+     initial_capital=100000, default_qty_type=strategy.percent_of_equity,
+     default_qty_value=25, commission_type=strategy.commission.percent,
+     commission_value=0.02)
+
+// Position sizing exposed as an input — used to compute explicit qty at entry time
+qtyPercent = input.float(25, "Position Size (% of Equity)", minval=1, maxval=100, group="Position Sizing")
+
+// ============================= INPUTS =============================
+gS  = "Swing / Liquidity Detection"
+swingLen   = input.int(7, "Swing Lookback (L/R bars)", minval=2, group=gS)
+maxSwings  = input.int(20, "Max Tracked Swings/Side", minval=5, maxval=50, group=gS)
+touchTol   = input.float(0.15, "Touch Tolerance (x ATR)", minval=0.01, step=0.01, group=gS)
+
+gSw = "Sweep Detection"
+atrLen          = input.int(14, "ATR Length", group=gSw)
+atrRegimeLen    = input.int(50, "ATR Regime Avg Length", group=gSw)
+sweepBufferMult = input.float(0.15, "Min Sweep Buffer (x ATR)", minval=0.02, step=0.01, group=gSw)
+confirmBars     = input.int(5, "Max Bars to Confirm Rejection (N)", minval=1, maxval=15, group=gSw)
+
+gSt = "Market Structure (BOS)"
+useStructInvalidate = input.bool(true, "Exit on Opposing BOS (Structure Flip)", group=gSt)
+
+gF = "Fair Value Gaps"
+useFVGTarget  = input.bool(true, "Use Nearest FVG as Interim Target", group=gF)
+maxFVG        = input.int(20, "Max Tracked FVGs/Side", group=gF)
+showFVG       = input.bool(true, "Show FVG Zones", group=gF)
+
+gC = "Confirmation Triggers (optional, OR logic — all OFF by default)"
+useEngulf     = input.bool(false, "Require Engulfing Candle", group=gC)
+useDisp       = input.bool(false, "Require Displacement Candle", group=gC)
+dispBodyMult  = input.float(0.5, "Displacement Body (x ATR)", minval=0.1, step=0.1, group=gC)
+useSweepBreak = input.bool(false, "Require Break of Sweep Candle", group=gC)
+
+gV = "Confidence Weights"
+wDepth   = input.float(15, "Weight: Sweep Depth", group=gV)
+wTouch   = input.float(15, "Weight: Touch Count", group=gV)
+wStruct  = input.float(15, "Weight: Structure Alignment", group=gV)
+wRegime  = input.float(10, "Weight: ATR Regime", group=gV)
+wDisp    = input.float(20, "Weight: Post-Sweep Displacement", group=gV)
+wVolume  = input.float(12.5, "Weight: Volume Spike", group=gV)
+wHTF     = input.float(12.5, "Weight: HTF Proximity", group=gV)
+minConfidence = input.int(0, "Minimum Confidence to Trade", minval=0, maxval=100, group=gV)
+
+depthIdealMin = input.float(0.05, "Depth Score Ideal Min (x ATR)", group=gV)
+depthIdealMax = input.float(1.5, "Depth Score Ideal Max (x ATR)", group=gV)
+touchCap      = input.int(2, "Touch Count Score Cap", group=gV)
+regimeLowRef  = input.float(0.5, "ATR Regime Low Ref", group=gV)
+regimeHighRef = input.float(2.5, "ATR Regime High Ref", group=gV)
+dispIdealATR  = input.float(0.8, "Displacement Score Ideal (x ATR)", group=gV)
+
+gVol = "Volume / HTF Filters (both OFF by default)"
+useVolFilter = input.bool(false, "Require Volume Spike to Enter", group=gVol)
+volMult      = input.float(1.2, "Volume Spike Multiplier", minval=1.0, step=0.1, group=gVol)
+volAvgLen    = input.int(20, "Volume Average Length", group=gVol)
+useHTFFilter = input.bool(false, "Require HTF Zone Proximity to Enter", group=gVol)
+htfTF        = input.timeframe("240", "HTF Timeframe", group=gVol)
+htfSwingLen  = input.int(10, "HTF Swing Lookback", group=gVol)
+htfProxATR   = input.float(2.0, "HTF Proximity Ref (x ATR)", minval=0.1, step=0.1, group=gVol)
+
+gR = "Risk/Reward & Adaptive Stops"
+useMinRR         = input.bool(false, "Require Minimum R:R to Enter", group=gR)
+minRR            = input.float(1.0, "Minimum Reward:Risk", minval=0.1, step=0.1, group=gR)
+requireOpposingTarget = input.bool(false, "Require Real Opposing Swing as Target (else ATR fallback)", group=gR)
+fallbackTargetATR = input.float(3.0, "Fallback Target Distance (x ATR)", minval=0.5, step=0.5, group=gR)
+stopBufferATR    = input.float(0.1, "Base Stop Buffer (x ATR)", minval=0.0, step=0.05, group=gR)
+minRegimeMult    = input.float(0.5, "Min Regime Multiplier", group=gR)
+maxRegimeMult    = input.float(2.0, "Max Regime Multiplier", group=gR)
+maxStopATR       = input.float(5.0, "Max Stop Distance (x ATR)", minval=0.5, group=gR)
+trailBufferATR   = input.float(0.1, "Structural Trail Buffer (x ATR)", group=gR)
+
+gE = "Exit Management"
+partialPct     = input.float(50, "Partial Close % at TP1 (FVG)", minval=10, maxval=90, group=gE)
+useAtrBackstop = input.bool(true, "ATR Trail Backstop (before structure forms)", group=gE)
+trailAtrMult   = input.float(2.5, "Backstop ATR Trail Mult", minval=0.5, step=0.1, group=gE)
+useTimeExit    = input.bool(true, "Enable Time-Based Exit (secondary)", group=gE)
+timeExitBars   = input.int(20, "Exit After N Bars if Flat & No Favorable BOS", minval=1, group=gE)
+
+gVis = "Visuals"
+showHeatmap      = input.bool(true, "Show Liquidity Lines", group=gVis)
+showSignalLabels = input.bool(true, "Show Buy/Sell Labels", group=gVis)
+showLineGlow     = input.bool(true, "Show Stop/Target Glow", group=gVis)
+showTable        = input.bool(true, "Show Win-Rate Table", group=gVis)
+
+// ============================= HELPERS =============================
+f_triScore(x, idealMin, idealMax) =>
+    float s = na
+    if x < idealMin
+        s := idealMin > 0 ? x / idealMin * 100 : 0.0
+    else if x <= idealMax
+        s := 100.0
+    else
+        s := math.max(0.0, 100.0 - (x - idealMax) / idealMax * 100)
+    s
+
+f_clampScore(ratio, lo, hi) =>
+    math.min(100.0, math.max(0.0, (ratio - lo) / (hi - lo) * 100))
+
+f_calcQty() =>
+    (strategy.equity * (qtyPercent / 100)) / close
+
+// ============================= CORE SERIES =============================
+atr         = ta.atr(atrLen)
+atrLongAvg  = ta.sma(atr, atrRegimeLen)
+regimeRatio = atrLongAvg > 0 ? atr / atrLongAvg : 1.0
+volAvg      = ta.sma(volume, volAvgLen)
+volSpikeNow = volume > volAvg * volMult
+
+// ============================= SWING ARRAYS =============================
+var float[] swHighPrice  = array.new<float>()
+var int[]   swHighBar    = array.new<int>()
+var int[]   swHighTouch  = array.new<int>()
+var bool[]  swHighBroken = array.new<bool>()
+var line[]  swHighLine   = array.new<line>()
+
+var float[] swLowPrice  = array.new<float>()
+var int[]   swLowBar    = array.new<int>()
+var int[]   swLowTouch  = array.new<int>()
+var bool[]  swLowBroken = array.new<bool>()
+var line[]  swLowLine   = array.new<line>()
+
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low, swingLen, swingLen)
+
+if not na(ph)
+    array.push(swHighPrice, ph)
+    array.push(swHighBar, bar_index - swingLen)
+    array.push(swHighTouch, 1)
+    array.push(swHighBroken, false)
+    array.push(swHighLine, na)
+    if array.size(swHighPrice) > maxSwings
+        array.shift(swHighPrice)
+        array.shift(swHighBar)
+        array.shift(swHighTouch)
+        array.shift(swHighBroken)
+        removedLineHigh = array.shift(swHighLine)
+        if not na(removedLineHigh)
+            line.delete(removedLineHigh)
+
+if not na(pl)
+    array.push(swLowPrice, pl)
+    array.push(swLowBar, bar_index - swingLen)
+    array.push(swLowTouch, 1)
+    array.push(swLowBroken, false)
+    array.push(swLowLine, na)
+    if array.size(swLowPrice) > maxSwings
+        array.shift(swLowPrice)
+        array.shift(swLowBar)
+        array.shift(swLowTouch)
+        array.shift(swLowBroken)
+        removedLineLow = array.shift(swLowLine)
+        if not na(removedLineLow)
+            line.delete(removedLineLow)
+
+if array.size(swHighPrice) > 0
+    for i = 0 to array.size(swHighPrice) - 1
+        lvl = array.get(swHighPrice, i)
+        if math.abs(high - lvl) <= atr * touchTol and bar_index != array.get(swHighBar, i)
+            array.set(swHighTouch, i, array.get(swHighTouch, i) + 1)
+
+if array.size(swLowPrice) > 0
+    for i = 0 to array.size(swLowPrice) - 1
+        lvl = array.get(swLowPrice, i)
+        if math.abs(low - lvl) <= atr * touchTol and bar_index != array.get(swLowBar, i)
+            array.set(swLowTouch, i, array.get(swLowTouch, i) + 1)
+
+// ============================= HTF ZONES =============================
+htfPH = request.security(syminfo.tickerid, htfTF, ta.pivothigh(high, htfSwingLen, htfSwingLen), lookahead=barmerge.lookahead_off)
+htfPL = request.security(syminfo.tickerid, htfTF, ta.pivotlow(low, htfSwingLen, htfSwingLen), lookahead=barmerge.lookahead_off)
+var float lastHtfHigh = na
+var float lastHtfLow  = na
+if not na(htfPH)
+    lastHtfHigh := htfPH
+if not na(htfPL)
+    lastHtfLow := htfPL
+
+// ============================= MARKET STRUCTURE (BOS) =============================
+var string structureBias = "neutral"
+bosBullNow = false
+bosBearNow = false
+latestSwHigh    = array.size(swHighPrice) > 0 ? array.get(swHighPrice, array.size(swHighPrice) - 1) : na
+latestSwLow     = array.size(swLowPrice) > 0  ? array.get(swLowPrice, array.size(swLowPrice) - 1)   : na
+latestSwHighBar = array.size(swHighBar) > 0 ? array.get(swHighBar, array.size(swHighBar) - 1) : na
+latestSwLowBar  = array.size(swLowBar) > 0  ? array.get(swLowBar, array.size(swLowBar) - 1)   : na
+
+if not na(latestSwHigh) and close > latestSwHigh and structureBias != "bullish"
+    structureBias := "bullish"
+    bosBullNow := true
+if not na(latestSwLow) and close < latestSwLow and structureBias != "bearish"
+    structureBias := "bearish"
+    bosBearNow := true
+
+// ============================= FVG ENGINE =============================
+var float[] bullTop    = array.new<float>()
+var float[] bullBot    = array.new<float>()
+var bool[]  bullFilled = array.new<bool>()
+var box[]   bullBox    = array.new<box>()
+
+var float[] bearTop    = array.new<float>()
+var float[] bearBot    = array.new<float>()
+var bool[]  bearFilled = array.new<bool>()
+var box[]   bearBox    = array.new<box>()
+
+bullGap = low > high[2]
+bearGap = high < low[2]
+
+if bullGap
+    array.push(bullTop, low)
+    array.push(bullBot, high[2])
+    array.push(bullFilled, false)
+    array.push(bullBox, na)
+    if array.size(bullTop) > maxFVG
+        array.shift(bullTop)
+        array.shift(bullBot)
+        array.shift(bullFilled)
+        removedBoxBull = array.shift(bullBox)
+        if not na(removedBoxBull)
+            box.delete(removedBoxBull)
+
+if bearGap
+    array.push(bearTop, low[2])
+    array.push(bearBot, high)
+    array.push(bearFilled, false)
+    array.push(bearBox, na)
+    if array.size(bearTop) > maxFVG
+        array.shift(bearTop)
+        array.shift(bearBot)
+        array.shift(bearFilled)
+        removedBoxBear = array.shift(bearBox)
+        if not na(removedBoxBear)
+            box.delete(removedBoxBear)
+
+if array.size(bullTop) > 0
+    for i = 0 to array.size(bullTop) - 1
+        if not array.get(bullFilled, i) and low <= array.get(bullTop, i)
+            array.set(bullFilled, i, true)
+
+if array.size(bearTop) > 0
+    for i = 0 to array.size(bearTop) - 1
+        if not array.get(bearFilled, i) and high >= array.get(bearBot, i)
+            array.set(bearFilled, i, true)
+
+// ============================= SWEEP STATE MACHINE =============================
+var float pendingHighLevel     = na
+var float pendingHighExtreme   = na
+var float pendingHighCandleLow = na
+var int   pendingHighBarsLeft  = 0
+var int   pendingHighTouches   = 0
+var bool  pendingHighVolFlag   = false
+
+var float pendingLowLevel      = na
+var float pendingLowExtreme    = na
+var float pendingLowCandleHigh = na
+var int   pendingLowBarsLeft   = 0
+var int   pendingLowTouches    = 0
+var bool  pendingLowVolFlag    = false
+
+bool  confirmedSweepHigh = false
+bool  confirmedSweepLow  = false
+float sigConf = na
+float sigStop = na
+float sigT1   = na
+float sigT2   = na
+
+if na(pendingHighLevel) and array.size(swHighPrice) > 0
+    for i = array.size(swHighPrice) - 1 to 0
+        level = array.get(swHighPrice, i)
+        if not array.get(swHighBroken, i) and high > level + atr * sweepBufferMult
+            pendingHighLevel     := level
+            pendingHighExtreme   := high
+            pendingHighCandleLow := low
+            pendingHighBarsLeft  := confirmBars
+            pendingHighVolFlag   := volSpikeNow
+            pendingHighTouches   := array.get(swHighTouch, i)
+            array.set(swHighBroken, i, true)
+            break
+
+if na(pendingLowLevel) and array.size(swLowPrice) > 0
+    for i = array.size(swLowPrice) - 1 to 0
+        level = array.get(swLowPrice, i)
+        if not array.get(swLowBroken, i) and low < level - atr * sweepBufferMult
+            pendingLowLevel      := level
+            pendingLowExtreme    := low
+            pendingLowCandleHigh := high
+            pendingLowBarsLeft   := confirmBars
+            pendingLowVolFlag    := volSpikeNow
+            pendingLowTouches    := array.get(swLowTouch, i)
+            array.set(swLowBroken, i, true)
+            break
+
+// --- Manage / confirm HIGH sweep (bearish setup) ---
+if not na(pendingHighLevel)
+    pendingHighExtreme := math.max(pendingHighExtreme, high)
+    if close < pendingHighLevel
+        bearEngulf = close < open and open >= close[1] and close <= open[1] and (open - close) >= math.abs(close[1] - open[1])
+        bearDisp   = (open - close) >= atr * dispBodyMult and close < open
+        bearBreak  = close < pendingHighCandleLow
+        trigCount  = (useEngulf ? 1 : 0) + (useDisp ? 1 : 0) + (useSweepBreak ? 1 : 0)
+        trigPass   = (useEngulf and bearEngulf ? 1 : 0) + (useDisp and bearDisp ? 1 : 0) + (useSweepBreak and bearBreak ? 1 : 0)
+        triggerOk  = trigCount == 0 or trigPass > 0
+
+        depth       = (pendingHighExtreme - pendingHighLevel) / atr
+        depthScore  = f_triScore(depth, depthIdealMin, depthIdealMax)
+        touchScore  = math.min(100.0, pendingHighTouches / float(touchCap) * 100)
+        structScore = structureBias == "bearish" ? 100.0 : structureBias == "neutral" ? 55.0 : 25.0
+        regimeScore = f_clampScore(regimeRatio, regimeLowRef, regimeHighRef)
+        netMove     = pendingHighExtreme - close
+        dispScore   = math.min(100.0, netMove / (atr * dispIdealATR) * 100)
+        volRatio    = volAvg > 0 ? volume / volAvg : 1.0
+        volScore    = useVolFilter ? math.min(100.0, math.max(0.0, (volRatio - 1) / volMult * 100)) : 50.0
+        htfDist     = na(lastHtfHigh) ? na : math.abs(pendingHighLevel - lastHtfHigh) / atr
+        htfScore    = useHTFFilter and not na(htfDist) ? math.max(0.0, 100 - (htfDist / htfProxATR) * 100) : 50.0
+
+        totalW = wDepth + wTouch + wStruct + wRegime + wDisp + wVolume + wHTF
+        conf   = (depthScore*wDepth + touchScore*wTouch + structScore*wStruct + regimeScore*wRegime + dispScore*wDisp + volScore*wVolume + htfScore*wHTF) / totalW
+
+        regimeMult  = math.min(maxRegimeMult, math.max(minRegimeMult, regimeRatio))
+        rawStop     = pendingHighExtreme + atr * stopBufferATR * regimeMult
+        stopDistCap = atr * maxStopATR
+        stop        = math.min(rawStop, close + stopDistCap)
+
+        float t2 = na
+        if array.size(swLowPrice) > 0
+            for i = array.size(swLowPrice) - 1 to 0
+                lvl = array.get(swLowPrice, i)
+                if not array.get(swLowBroken, i) and lvl < close
+                    if na(t2) or lvl > t2
+                        t2 := lvl
+
+        if na(t2) and not requireOpposingTarget
+            t2 := close - atr * fallbackTargetATR
+
+        float t1 = na
+        if useFVGTarget
+            if array.size(bullTop) > 0
+                for i = 0 to array.size(bullTop) - 1
+                    mid = (array.get(bullTop, i) + array.get(bullBot, i)) / 2
+                    if not array.get(bullFilled, i) and mid < close and (na(t2) or mid > t2) and (na(t1) or mid > t1)
+                        t1 := mid
+            if array.size(bearTop) > 0
+                for i = 0 to array.size(bearTop) - 1
+                    mid = (array.get(bearTop, i) + array.get(bearBot, i)) / 2
+                    if not array.get(bearFilled, i) and mid < close and (na(t2) or mid > t2) and (na(t1) or mid > t1)
+                        t1 := mid
+        if na(t1)
+            t1 := t2
+
+        rr = (not na(t2) and (stop - close) > 0) ? (close - t2) / (stop - close) : na
+        rrOk = useMinRR ? (not na(rr) and math.abs(rr) >= minRR) : true
+        volOk = not useVolFilter or pendingHighVolFlag
+        htfOk = not useHTFFilter or (not na(htfDist) and htfDist <= htfProxATR)
+
+        if conf >= minConfidence and volOk and htfOk and triggerOk and rrOk and not na(t2)
+            confirmedSweepHigh := true
+            sigConf := conf
+            sigStop := stop
+            sigT1   := t1
+            sigT2   := t2
+        pendingHighLevel := na
+    else
+        pendingHighBarsLeft -= 1
+        if pendingHighBarsLeft <= 0
+            pendingHighLevel := na
+
+// --- Manage / confirm LOW sweep (bullish setup) ---
+if not na(pendingLowLevel)
+    pendingLowExtreme := math.min(pendingLowExtreme, low)
+    if close > pendingLowLevel
+        bullEngulf = close > open and open <= close[1] and close >= open[1] and (close - open) >= math.abs(open[1] - close[1])
+        bullDisp   = (close - open) >= atr * dispBodyMult and close > open
+        bullBreak  = close > pendingLowCandleHigh
+        trigCount  = (useEngulf ? 1 : 0) + (useDisp ? 1 : 0) + (useSweepBreak ? 1 : 0)
+        trigPass   = (useEngulf and bullEngulf ? 1 : 0) + (useDisp and bullDisp ? 1 : 0) + (useSweepBreak and bullBreak ? 1 : 0)
+        triggerOk  = trigCount == 0 or trigPass > 0
+
+        depth       = (pendingLowLevel - pendingLowExtreme) / atr
+        depthScore  = f_triScore(depth, depthIdealMin, depthIdealMax)
+        touchScore  = math.min(100.0, pendingLowTouches / float(touchCap) * 100)
+        structScore = structureBias == "bullish" ? 100.0 : structureBias == "neutral" ? 55.0 : 25.0
+        regimeScore = f_clampScore(regimeRatio, regimeLowRef, regimeHighRef)
+        netMove     = close - pendingLowExtreme
+        dispScore   = math.min(100.0, netMove / (atr * dispIdealATR) * 100)
+        volRatio    = volAvg > 0 ? volume / volAvg : 1.0
+        volScore    = useVolFilter ? math.min(100.0, math.max(0.0, (volRatio - 1) / volMult * 100)) : 50.0
+        htfDist     = na(lastHtfLow) ? na : math.abs(pendingLowLevel - lastHtfLow) / atr
+        htfScore    = useHTFFilter and not na(htfDist) ? math.max(0.0, 100 - (htfDist / htfProxATR) * 100) : 50.0
+
+        totalW = wDepth + wTouch + wStruct + wRegime + wDisp + wVolume + wHTF
+        conf   = (depthScore*wDepth + touchScore*wTouch + structScore*wStruct + regimeScore*wRegime + dispScore*wDisp + volScore*wVolume + htfScore*wHTF) / totalW
+
+        regimeMult  = math.min(maxRegimeMult, math.max(minRegimeMult, regimeRatio))
+        rawStop     = pendingLowExtreme - atr * stopBufferATR * regimeMult
+        stopDistCap = atr * maxStopATR
+        stop        = math.max(rawStop, close - stopDistCap)
+
+        float t2b = na
+        if array.size(swHighPrice) > 0
+            for i = array.size(swHighPrice) - 1 to 0
+                lvl = array.get(swHighPrice, i)
+                if not array.get(swHighBroken, i) and lvl > close
+                    if na(t2b) or lvl < t2b
+                        t2b := lvl
+
+        if na(t2b) and not requireOpposingTarget
+            t2b := close + atr * fallbackTargetATR
+
+        float t1b = na
+        if useFVGTarget
+            if array.size(bullTop) > 0
+                for i = 0 to array.size(bullTop) - 1
+                    mid = (array.get(bullTop, i) + array.get(bullBot, i)) / 2
+                    if not array.get(bullFilled, i) and mid > close and (na(t2b) or mid < t2b) and (na(t1b) or mid < t1b)
+                        t1b := mid
+            if array.size(bearTop) > 0
+                for i = 0 to array.size(bearTop) - 1
+                    mid = (array.get(bearTop, i) + array.get(bearBot, i)) / 2
+                    if not array.get(bearFilled, i) and mid > close and (na(t2b) or mid < t2b) and (na(t1b) or mid < t1b)
+                        t1b := mid
+        if na(t1b)
+            t1b := t2b
+
+        rr = (not na(t2b) and (close - stop) > 0) ? (t2b - close) / (close - stop) : na
+        rrOk = useMinRR ? (not na(rr) and math.abs(rr) >= minRR) : true
+        volOk = not useVolFilter or pendingLowVolFlag
+        htfOk = not useHTFFilter or (not na(htfDist) and htfDist <= htfProxATR)
+
+        if conf >= minConfidence and volOk and htfOk and triggerOk and rrOk and not na(t2b)
+            confirmedSweepLow := true
+            sigConf := conf
+            sigStop := stop
+            sigT1   := t1b
+            sigT2   := t2b
+        pendingLowLevel := na
+    else
+        pendingLowBarsLeft -= 1
+        if pendingLowBarsLeft <= 0
+            pendingLowLevel := na
+
+// ============================= TRADE STATE =============================
+var float curStop     = na
+var float curT1       = na
+var float curT2       = na
+var float curConf     = na
+var float structTrail = na
+var int   entryBarIdx = na
+var bool  favBOSSeen  = false
+var float[] tradeConfidence = array.new<float>()
+
+if confirmedSweepHigh and strategy.position_size <= 0
+    strategy.close("Long")
+    strategy.entry("Short", strategy.short, qty=f_calcQty())
+    curStop := sigStop
+    curT1   := sigT1
+    curT2   := sigT2
+    curConf := sigConf
+    structTrail := na
+    entryBarIdx := bar_index
+    favBOSSeen := false
+    array.push(tradeConfidence, sigConf)
+
+if confirmedSweepLow and strategy.position_size >= 0
+    strategy.close("Short")
+    strategy.entry("Long", strategy.long, qty=f_calcQty())
+    curStop := sigStop
+    curT1   := sigT1
+    curT2   := sigT2
+    curConf := sigConf
+    structTrail := na
+    entryBarIdx := bar_index
+    favBOSSeen := false
+    array.push(tradeConfidence, sigConf)
+
+// ============================= EXITS (structure-first) =============================
+if strategy.position_size > 0
+    if bosBullNow
+        favBOSSeen := true
+    if not na(latestSwLowBar) and latestSwLowBar > entryBarIdx
+        cand = latestSwLow - atr * trailBufferATR
+        if na(structTrail) or cand > structTrail
+            structTrail := cand
+    stopUse = na(structTrail) ? curStop : math.max(curStop, structTrail)
+    if useAtrBackstop
+        stopUse := math.max(stopUse, close - atr * trailAtrMult)
+    if useStructInvalidate and bosBearNow
+        strategy.close("Long", comment="Structure Flip")
+    else
+        strategy.exit("Long Exit", "Long", stop=stopUse, limit=curT1, qty_percent=partialPct)
+    if useTimeExit and not favBOSSeen and (bar_index - entryBarIdx) >= timeExitBars and strategy.openprofit <= 0
+        strategy.close("Long", comment="Time Exit")
+
+if strategy.position_size < 0
+    if bosBearNow
+        favBOSSeen := true
+    if not na(latestSwHighBar) and latestSwHighBar > entryBarIdx
+        cand = latestSwHigh + atr * trailBufferATR
+        if na(structTrail) or cand < structTrail
+            structTrail := cand
+    stopUse = na(structTrail) ? curStop : math.min(curStop, structTrail)
+    if useAtrBackstop
+        stopUse := math.min(stopUse, close + atr * trailAtrMult)
+    if useStructInvalidate and bosBullNow
+        strategy.close("Short", comment="Structure Flip")
+    else
+        strategy.exit("Short Exit", "Short", stop=stopUse, limit=curT1, qty_percent=partialPct)
+    if useTimeExit and not favBOSSeen and (bar_index - entryBarIdx) >= timeExitBars and strategy.openprofit <= 0
+        strategy.close("Short", comment="Time Exit")
+
+if strategy.position_size == 0
+    structTrail := na
+
+// ============================= WIN-RATE TRACKING =============================
+var int lowWin   = 0
+var int lowLoss  = 0
+var int medWin   = 0
+var int medLoss  = 0
+var int highWin  = 0
+var int highLoss = 0
+var int lastClosedCount = 0
+
+if strategy.closedtrades > lastClosedCount
+    idx    = strategy.closedtrades - 1
+    profit = strategy.closedtrades.profit(idx)
+    conf   = idx < array.size(tradeConfidence) ? array.get(tradeConfidence, idx) : 50.0
+    win    = profit > 0
+    if conf < 40
+        if win
+            lowWin += 1
+        else
+            lowLoss += 1
+    else if conf < 70
+        if win
+            medWin += 1
+        else
+            medLoss += 1
+    else
+        if win
+            highWin += 1
+        else
+            highLoss += 1
+    lastClosedCount := strategy.closedtrades
+
+// ============================= VISUALS =============================
+
+// --- Liquidity Lines: thin horizontal line at each unswept swing level ---
+// Opacity and width both scale with touch count (more touches = more solid/thicker).
+// A line disappears the moment its level is swept — only active resting liquidity is shown.
+if showHeatmap
+    if array.size(swHighPrice) > 0
+        for i = 0 to array.size(swHighPrice) - 1
+            existingLine = array.get(swHighLine, i)
+            if array.get(swHighBroken, i)
+                if not na(existingLine)
+                    line.delete(existingLine)
+                    array.set(swHighLine, i, na)
+            else
+                lvl       = array.get(swHighPrice, i)
+                startBar  = array.get(swHighBar, i)
+                touches   = array.get(swHighTouch, i)
+                lineAlpha = int(math.max(20, 82 - touches * 14))
+                lineWidth = int(math.min(4, 1 + touches))
+                lineCol   = color.new(color.red, lineAlpha)
+                if na(existingLine)
+                    array.set(swHighLine, i, line.new(startBar, lvl, bar_index, lvl, color=lineCol, width=lineWidth, extend=extend.right))
+                else
+                    line.set_color(existingLine, lineCol)
+                    line.set_width(existingLine, lineWidth)
+
+    if array.size(swLowPrice) > 0
+        for i = 0 to array.size(swLowPrice) - 1
+            existingLine = array.get(swLowLine, i)
+            if array.get(swLowBroken, i)
+                if not na(existingLine)
+                    line.delete(existingLine)
+                    array.set(swLowLine, i, na)
+            else
+                lvl       = array.get(swLowPrice, i)
+                startBar  = array.get(swLowBar, i)
+                touches   = array.get(swLowTouch, i)
+                lineAlpha = int(math.max(20, 82 - touches * 14))
+                lineWidth = int(math.min(4, 1 + touches))
+                lineCol   = color.new(color.lime, lineAlpha)
+                if na(existingLine)
+                    array.set(swLowLine, i, line.new(startBar, lvl, bar_index, lvl, color=lineCol, width=lineWidth, extend=extend.right))
+                else
+                    line.set_color(existingLine, lineCol)
+                    line.set_width(existingLine, lineWidth)
+
+// --- FVG Zones ---
+if showFVG
+    if array.size(bullTop) > 0
+        for i = 0 to array.size(bullTop) - 1
+            bx = array.get(bullBox, i)
+            col = array.get(bullFilled, i) ? color.new(color.gray, 90) : color.new(color.teal, 80)
+            if na(bx)
+                array.set(bullBox, i, box.new(bar_index - 2, array.get(bullTop, i), bar_index, array.get(bullBot, i), border_color=na, bgcolor=col))
+            else
+                box.set_right(bx, bar_index)
+                box.set_bgcolor(bx, col)
+    if array.size(bearTop) > 0
+        for i = 0 to array.size(bearTop) - 1
+            bx = array.get(bearBox, i)
+            col = array.get(bearFilled, i) ? color.new(color.gray, 90) : color.new(color.orange, 80)
+            if na(bx)
+                array.set(bearBox, i, box.new(bar_index - 2, array.get(bearTop, i), bar_index, array.get(bearBot, i), border_color=na, bgcolor=col))
+            else
+                box.set_right(bx, bar_index)
+                box.set_bgcolor(bx, col)
+
+// --- Buy/Sell Signal Labels (simple, single label each) ---
+if showSignalLabels and confirmedSweepHigh
+    label.new(bar_index, high + atr * 0.5, "SELL  " + str.tostring(math.round(sigConf)) + "%",
+         style=label.style_label_down, color=color.new(color.red, 15), textcolor=color.white, size=size.small)
+
+if showSignalLabels and confirmedSweepLow
+    label.new(bar_index, low - atr * 0.5, "BUY  " + str.tostring(math.round(sigConf)) + "%",
+         style=label.style_label_up, color=color.new(color.lime, 15), textcolor=color.black, size=size.small)
+
+// --- Active Stop / Target lines with confidence-scaled glow ---
+glowAlpha = int(math.max(15, math.min(85, 85 - nz(curConf, 50) * 0.7)))
+glowSize  = atr * 0.15
+
+pStopLine   = plot(strategy.position_size != 0 ? curStop : na, color=color.orange, style=plot.style_linebr, linewidth=2, title="Active Stop")
+pTargetLine = plot(strategy.position_size != 0 ? curT2 : na, color=color.blue, style=plot.style_linebr, linewidth=2, title="Final Target")
+
+pStopGlowUp = plot(strategy.position_size != 0 ? curStop + glowSize : na, display=display.none, editable=false)
+pStopGlowDn = plot(strategy.position_size != 0 ? curStop - glowSize : na, display=display.none, editable=false)
+fill(pStopLine, pStopGlowUp, showLineGlow ? color.new(color.orange, glowAlpha) : na, title="Stop Glow Upper")
+fill(pStopLine, pStopGlowDn, showLineGlow ? color.new(color.orange, glowAlpha) : na, title="Stop Glow Lower")
+
+pTargetGlowUp = plot(strategy.position_size != 0 ? curT2 + glowSize : na, display=display.none, editable=false)
+pTargetGlowDn = plot(strategy.position_size != 0 ? curT2 - glowSize : na, display=display.none, editable=false)
+fill(pTargetLine, pTargetGlowUp, showLineGlow ? color.new(color.blue, glowAlpha) : na, title="Target Glow Upper")
+fill(pTargetLine, pTargetGlowDn, showLineGlow ? color.new(color.blue, glowAlpha) : na, title="Target Glow Lower")
+
+// --- Win-Rate Table ---
+if showTable and barstate.islast
+    var table winTable = table.new(position.top_right, 4, 4, border_width=1, bgcolor=color.new(color.black, 70))
+    table.cell(winTable, 0, 0, "Tier", bgcolor=color.gray, text_color=color.white)
+    table.cell(winTable, 1, 0, "Trades", bgcolor=color.gray, text_color=color.white)
+    table.cell(winTable, 2, 0, "Wins", bgcolor=color.gray, text_color=color.white)
+    table.cell(winTable, 3, 0, "Win %", bgcolor=color.gray, text_color=color.white)
+
+    lowT  = lowWin + lowLoss
+    medT  = medWin + medLoss
+    highT = highWin + highLoss
+
+    table.cell(winTable, 0, 1, "Low (0-40)", text_color=color.white)
+    table.cell(winTable, 1, 1, str.tostring(lowT), text_color=color.white)
+    table.cell(winTable, 2, 1, str.tostring(lowWin), text_color=color.white)
+    table.cell(winTable, 3, 1, lowT > 0 ? str.tostring(math.round(lowWin/float(lowT)*100)) + "%" : "-", text_color=color.white)
+
+    table.cell(winTable, 0, 2, "Med (40-70)", text_color=color.white)
+    table.cell(winTable, 1, 2, str.tostring(medT), text_color=color.white)
+    table.cell(winTable, 2, 2, str.tostring(medWin), text_color=color.white)
+    table.cell(winTable, 3, 2, medT > 0 ? str.tostring(math.round(medWin/float(medT)*100)) + "%" : "-", text_color=color.white)
+
+    table.cell(winTable, 0, 3, "High (70-100)", text_color=color.white)
+    table.cell(winTable, 1, 3, str.tostring(highT), text_color=color.white)
+    table.cell(winTable, 2, 3, str.tostring(highWin), text_color=color.white)
+    table.cell(winTable, 3, 3, highT > 0 ? str.tostring(math.round(highWin/float(highT)*100)) + "%" : "-", text_color=color.white)

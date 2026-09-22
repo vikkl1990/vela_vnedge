@@ -1,0 +1,403 @@
+//@version=5
+strategy("PROP_Scalper_V2 FINAL", shorttitle="PROP_NR_V2_FINAL", overlay=true, pyramiding=0, explicit_plot_zorder=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10, calc_on_every_tick=false, process_orders_on_close=true)
+
+//==================================================
+// INPUTS
+//==================================================
+groupNR = "NON REPAINT"
+res = input.timeframe("15", "Timeframe", group=groupNR)
+useRes = input.bool(true, "Use Alternate Signals", group=groupNR)
+intRes = input.int(8, "Multiplier for Alternate Signals", minval=1, group=groupNR)
+basisType = input.string("ALMA", "MA Type", options=["TEMA", "HullMA", "ALMA"], group=groupNR)
+basisLen = input.int(2, "MA Period", minval=1, group=groupNR)
+offsetSigma = input.int(5, "Offset for LSMA / Sigma for ALMA", minval=0, group=groupNR)
+offsetALMA = input.float(0.85, "Offset for ALMA", minval=0, step=0.01, group=groupNR)
+delayOffset = input.int(0, "Delay Open/Close MA", minval=0, step=1, group=groupNR, tooltip="Forces Non-Repainting")
+tradeType = input.string("BOTH", "Trade Direction", options=["LONG", "SHORT", "BOTH", "NONE"], group=groupNR)
+useHA = input.bool(false, "Signals for Heikin Ashi Candles", group=groupNR)
+
+groupRisk = "Risk Management"
+exitMode = input.string("ATR", "Exit Mode", options=["Percent", "ATR"], group=groupRisk)
+
+tp1Pct = input.float(1.0, "TP1 %", step=0.1, group=groupRisk)
+tp1Qty = input.float(50.0, "TP1 Qty %", step=1, group=groupRisk)
+tp2Pct = input.float(1.5, "TP2 %", step=0.1, group=groupRisk)
+tp2Qty = input.float(30.0, "TP2 Qty %", step=1, group=groupRisk)
+tp3Pct = input.float(2.0, "TP3 %", step=0.1, group=groupRisk)
+tp3Qty = input.float(20.0, "TP3 Qty %", step=1, group=groupRisk)
+slPct = input.float(0.5, "Stop Loss %", step=0.1, group=groupRisk)
+
+tp1AtrMult = input.float(1.0, "TP1 ATR Mult", step=0.1, group=groupRisk)
+tp2AtrMult = input.float(1.5, "TP2 ATR Mult", step=0.1, group=groupRisk)
+tp3AtrMult = input.float(2.0, "TP3 ATR Mult", step=0.1, group=groupRisk)
+slAtrMult = input.float(1.0, "SL ATR Mult", step=0.1, group=groupRisk)
+
+groupFilter = "Prop Filters"
+useSession = input.bool(true, "Enable Session Filter", group=groupFilter)
+sessionTime = input.session("0700-1700", "Allowed Session", group=groupFilter)
+atrLen = input.int(14, "ATR Length", minval=1, group=groupFilter)
+atrMaLen = input.int(20, "ATR Average Length", minval=1, group=groupFilter)
+atrMultMin = input.float(0.5, "Min ATR Multiplier", minval=0.1, step=0.1, group=groupFilter)
+atrMultMax = input.float(3.0, "Max ATR Multiplier", minval=0.5, step=0.1, group=groupFilter)
+useBE = input.bool(true, "Move SL to Break Even After TP1", group=groupFilter)
+
+groupTrend = "Trend Filters"
+useHTFTrendFilter = input.bool(true, "Enable HTF Trend Filter", group=groupTrend)
+htfTf = input.timeframe("15", "HTF Trend Timeframe", options=["3", "5", "15", "30", "60"], group=groupTrend)
+htfFastLen = input.int(20, "HTF Fast EMA", minval=1, group=groupTrend)
+htfSlowLen = input.int(50, "HTF Slow EMA", minval=1, group=groupTrend)
+htfBaseLen = input.int(200, "HTF Baseline MA", minval=1, group=groupTrend)
+htfBaseType = input.string("EMA", "HTF Baseline Type", options=["EMA", "SMA"], group=groupTrend)
+
+useADXFilter = input.bool(true, "Enable ADX Filter", group=groupTrend)
+adxLen = input.int(14, "ADX DI Length", minval=1, group=groupTrend)
+adxSmooth = input.int(14, "ADX Smoothing", minval=1, group=groupTrend)
+adxThreshold = input.float(20.0, "ADX Threshold", step=0.5, group=groupTrend)
+
+useCooldown = input.bool(true, "Enable Cooldown", group=groupTrend)
+cooldownBars = input.int(3, "Cooldown Bars After Exit", minval=0, group=groupTrend)
+
+oneTradePerLeg = input.bool(true, "One Trade Per Trend Leg", group=groupTrend)
+resetOnHTFFlip = input.bool(true, "Reset Leg On HTF Flip", group=groupTrend)
+
+groupAuto = "Trade Automation Commands"
+openLongCmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"buy\",\n\"order_contracts\": 0.2,\n\"price\": {{close}},\n\"tv_order_id\": \"LONG_XAUUSD\"\n}", "Open Long Command", group=groupAuto)
+openShortCmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"sell\",\n\"order_contracts\": 0.2,\n\"price\": {{close}},\n\"tv_order_id\": \"SHORT_XAUUSD\"\n}", "Open Short Command", group=groupAuto)
+
+longTP1Cmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"order_contracts\": 0.10,\n\"price\": {{close}},\n\"tv_order_id\": \"LONG_XAUUSD\"\n}", "Long TP1 Command", group=groupAuto)
+longTP2Cmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"order_contracts\": 0.06,\n\"price\": {{close}},\n\"tv_order_id\": \"LONG_XAUUSD\"\n}", "Long TP2 Command", group=groupAuto)
+longTP3Cmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"order_contracts\": 0.04,\n\"price\": {{close}},\n\"tv_order_id\": \"LONG_XAUUSD\"\n}", "Long TP3 Command", group=groupAuto)
+
+shortTP1Cmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"order_contracts\": 0.10,\n\"price\": {{close}},\n\"tv_order_id\": \"SHORT_XAUUSD\"\n}", "Short TP1 Command", group=groupAuto)
+shortTP2Cmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"order_contracts\": 0.06,\n\"price\": {{close}},\n\"tv_order_id\": \"SHORT_XAUUSD\"\n}", "Short TP2 Command", group=groupAuto)
+shortTP3Cmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"order_contracts\": 0.04,\n\"price\": {{close}},\n\"tv_order_id\": \"SHORT_XAUUSD\"\n}", "Short TP3 Command", group=groupAuto)
+
+longCloseCmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"close_side\": \"buy\",\n\"order_contracts\": 0.2,\n\"price\": {{close}},\n\"tv_order_id\": \"LONG_XAUUSD\"\n}", "Long 100% Close Command", group=groupAuto)
+shortCloseCmd = input.text_area("{\n\"platform_name\": \"metatrader5\",\n\"ticker\": \"XAUUSD\",\n\"order_action\": \"flat\",\n\"close_side\": \"sell\",\n\"order_contracts\": 0.2,\n\"price\": {{close}},\n\"tv_order_id\": \"SHORT_XAUUSD\"\n}", "Short 100% Close Command", group=groupAuto)
+
+groupDisplay = "Display"
+showLabels = input.bool(true, "Show Labels", group=groupDisplay)
+colorBars = input.bool(true, "Color Bars", group=groupDisplay)
+showTable = input.bool(true, "Show Stats Table", group=groupDisplay)
+showFilterTable = input.bool(true, "Show Filter Table", group=groupDisplay)
+plotHTFBase = input.bool(true, "Plot HTF Baseline", group=groupDisplay)
+
+//==================================================
+// FUNCTIONS
+//==================================================
+variant(_type, _src, _len, _offSig, _offALMA) =>
+    ema1 = ta.ema(_src, _len)
+    ema2 = ta.ema(ema1, _len)
+    ema3 = ta.ema(ema2, _len)
+    tema = 3.0 * (ema1 - ema2) + ema3
+    halfLen = math.max(1, int(math.round(_len / 2.0)))
+    sqrtLen = math.max(1, int(math.round(math.sqrt(_len))))
+    hull = ta.wma(2.0 * ta.wma(_src, halfLen) - ta.wma(_src, _len), sqrtLen)
+    alma = ta.alma(_src, _len, _offALMA, _offSig)
+    _type == "TEMA" ? tema : _type == "HullMA" ? hull : alma
+
+noRepaintSecurity(_symbol, _tf, _expr) =>
+    request.security(_symbol, _tf, _expr[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+resoNR(_exp, _use, _res) =>
+    _use ? noRepaintSecurity(syminfo.tickerid, _res, _exp) : _exp
+
+f_cross_over(_a, _b) =>
+    _a > _b and _a[1] <= _b[1]
+
+f_cross_under(_a, _b) =>
+    _a < _b and _a[1] >= _b[1]
+
+//==================================================
+// TIMEFRAME RESOLUTION
+//==================================================
+stratRes = timeframe.ismonthly ? str.tostring(timeframe.multiplier * intRes) + "M" :
+     timeframe.isweekly ? str.tostring(timeframe.multiplier * intRes) + "W" :
+     timeframe.isdaily ? str.tostring(timeframe.multiplier * intRes) + "D" :
+     timeframe.isintraday ? str.tostring(timeframe.multiplier * intRes) :
+     "60"
+
+// Optional safety: HTF should not be lower than chart TF.
+if useHTFTrendFilter and timeframe.in_seconds(htfTf) < timeframe.in_seconds(timeframe.period)
+    runtime.error("HTF Trend Timeframe must be greater than or equal to chart timeframe.")
+
+//==================================================
+// PRICE SERIES
+//==================================================
+srcClose = useHA ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close, lookahead=barmerge.lookahead_off) : close
+srcOpen  = useHA ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, open, lookahead=barmerge.lookahead_off) : open
+
+closeSeries = variant(basisType, srcClose[delayOffset], basisLen, offsetSigma, offsetALMA)
+openSeries  = variant(basisType, srcOpen[delayOffset], basisLen, offsetSigma, offsetALMA)
+
+closeSeriesAlt = resoNR(closeSeries, useRes, stratRes)
+openSeriesAlt  = resoNR(openSeries, useRes, stratRes)
+
+//==================================================
+// FILTERS
+//==================================================
+inSession = not useSession or not na(time(timeframe.period, sessionTime))
+atrValue = ta.atr(atrLen)
+atrAvg = ta.sma(atrValue, atrMaLen)
+atrFilter = atrValue > atrAvg * atrMultMin and atrValue < atrAvg * atrMultMax
+
+//==================================================
+// HTF TREND FILTERS
+//==================================================
+htfFast = request.security(syminfo.tickerid, htfTf, ta.ema(close[1], htfFastLen), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+htfSlow = request.security(syminfo.tickerid, htfTf, ta.ema(close[1], htfSlowLen), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+htfBase = request.security(syminfo.tickerid, htfTf, htfBaseType == "EMA" ? ta.ema(close[1], htfBaseLen) : ta.sma(close[1], htfBaseLen), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+htfClose = request.security(syminfo.tickerid, htfTf, close[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+htfBull = htfFast > htfSlow and htfClose > htfBase
+htfBear = htfFast < htfSlow and htfClose < htfBase
+
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxSmooth)
+adxPass = not useADXFilter or adxValue >= adxThreshold
+
+//==================================================
+// STATE
+//==================================================
+var float longEntryPrice = na
+var float shortEntryPrice = na
+var bool longTP1Hit = false
+var bool shortTP1Hit = false
+var float entryAtrLong = na
+var float entryAtrShort = na
+var int lastFlatBar = na
+var bool longLegTraded = false
+var bool shortLegTraded = false
+
+inLong = strategy.position_size > 0
+inShort = strategy.position_size < 0
+flatNow = strategy.position_size == 0
+justClosedTrade = strategy.position_size == 0 and strategy.position_size[1] != 0
+
+if justClosedTrade
+    lastFlatBar := bar_index
+
+cooldownPass = not useCooldown or na(lastFlatBar) or (bar_index - lastFlatBar > cooldownBars)
+
+htfBullFlip = htfBull and not htfBull[1]
+htfBearFlip = htfBear and not htfBear[1]
+
+if resetOnHTFFlip
+    if htfBullFlip
+        longLegTraded := false
+    if htfBearFlip
+        shortLegTraded := false
+
+longLegPass = not oneTradePerLeg or not longLegTraded
+shortLegPass = not oneTradePerLeg or not shortLegTraded
+
+trendLongPass = not useHTFTrendFilter or htfBull
+trendShortPass = not useHTFTrendFilter or htfBear
+
+//==================================================
+// SIGNALS
+//==================================================
+allowLong = tradeType == "LONG" or tradeType == "BOTH"
+allowShort = tradeType == "SHORT" or tradeType == "BOTH"
+
+rawLongSignal = f_cross_over(closeSeriesAlt, openSeriesAlt) and inSession and atrFilter and allowLong
+rawShortSignal = f_cross_under(closeSeriesAlt, openSeriesAlt) and inSession and atrFilter and allowShort
+
+longSignal = rawLongSignal and trendLongPass and adxPass and cooldownPass and longLegPass
+shortSignal = rawShortSignal and trendShortPass and adxPass and cooldownPass and shortLegPass
+
+//==================================================
+// ORDERS
+//==================================================
+if longSignal and barstate.isconfirmed and not inLong
+    strategy.close("Short", alert_message=shortCloseCmd)
+    strategy.entry("Long", strategy.long, alert_message=openLongCmd)
+
+if shortSignal and barstate.isconfirmed and not inShort
+    strategy.close("Long", alert_message=longCloseCmd)
+    strategy.entry("Short", strategy.short, alert_message=openShortCmd)
+
+newLong = strategy.position_size > 0 and strategy.position_size[1] <= 0
+newShort = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+if newLong
+    longEntryPrice := strategy.position_avg_price
+    entryAtrLong := atrValue
+    longTP1Hit := false
+    longLegTraded := true
+
+if newShort
+    shortEntryPrice := strategy.position_avg_price
+    entryAtrShort := atrValue
+    shortTP1Hit := false
+    shortLegTraded := true
+
+if flatNow
+    longEntryPrice := na
+    shortEntryPrice := na
+    entryAtrLong := na
+    entryAtrShort := na
+    longTP1Hit := false
+    shortTP1Hit := false
+
+//==================================================
+// EXIT LEVELS
+//==================================================
+useAtrMode = exitMode == "ATR"
+
+// Long
+longSL_percent  = inLong and not na(longEntryPrice) ? longEntryPrice * (1.0 - slPct / 100.0) : na
+longTP1_percent = inLong and not na(longEntryPrice) ? longEntryPrice * (1.0 + tp1Pct / 100.0) : na
+longTP2_percent = inLong and not na(longEntryPrice) ? longEntryPrice * (1.0 + tp2Pct / 100.0) : na
+longTP3_percent = inLong and not na(longEntryPrice) ? longEntryPrice * (1.0 + tp3Pct / 100.0) : na
+
+longSL_atr  = inLong and not na(longEntryPrice) and not na(entryAtrLong) ? longEntryPrice - entryAtrLong * slAtrMult : na
+longTP1_atr = inLong and not na(longEntryPrice) and not na(entryAtrLong) ? longEntryPrice + entryAtrLong * tp1AtrMult : na
+longTP2_atr = inLong and not na(longEntryPrice) and not na(entryAtrLong) ? longEntryPrice + entryAtrLong * tp2AtrMult : na
+longTP3_atr = inLong and not na(longEntryPrice) and not na(entryAtrLong) ? longEntryPrice + entryAtrLong * tp3AtrMult : na
+
+longSL  = useAtrMode ? longSL_atr : longSL_percent
+longTP1 = useAtrMode ? longTP1_atr : longTP1_percent
+longTP2 = useAtrMode ? longTP2_atr : longTP2_percent
+longTP3 = useAtrMode ? longTP3_atr : longTP3_percent
+
+if inLong and not longTP1Hit and not na(longTP1) and high >= longTP1
+    longTP1Hit := true
+
+longStopActive = inLong ? (useBE and longTP1Hit ? longEntryPrice : longSL) : na
+
+// Short
+shortSL_percent  = inShort and not na(shortEntryPrice) ? shortEntryPrice * (1.0 + slPct / 100.0) : na
+shortTP1_percent = inShort and not na(shortEntryPrice) ? shortEntryPrice * (1.0 - tp1Pct / 100.0) : na
+shortTP2_percent = inShort and not na(shortEntryPrice) ? shortEntryPrice * (1.0 - tp2Pct / 100.0) : na
+shortTP3_percent = inShort and not na(shortEntryPrice) ? shortEntryPrice * (1.0 - tp3Pct / 100.0) : na
+
+shortSL_atr  = inShort and not na(shortEntryPrice) and not na(entryAtrShort) ? shortEntryPrice + entryAtrShort * slAtrMult : na
+shortTP1_atr = inShort and not na(shortEntryPrice) and not na(entryAtrShort) ? shortEntryPrice - entryAtrShort * tp1AtrMult : na
+shortTP2_atr = inShort and not na(shortEntryPrice) and not na(entryAtrShort) ? shortEntryPrice - entryAtrShort * tp2AtrMult : na
+shortTP3_atr = inShort and not na(shortEntryPrice) and not na(entryAtrShort) ? shortEntryPrice - entryAtrShort * tp3AtrMult : na
+
+shortSL  = useAtrMode ? shortSL_atr : shortSL_percent
+shortTP1 = useAtrMode ? shortTP1_atr : shortTP1_percent
+shortTP2 = useAtrMode ? shortTP2_atr : shortTP2_percent
+shortTP3 = useAtrMode ? shortTP3_atr : shortTP3_percent
+
+if inShort and not shortTP1Hit and not na(shortTP1) and low <= shortTP1
+    shortTP1Hit := true
+
+shortStopActive = inShort ? (useBE and shortTP1Hit ? shortEntryPrice : shortSL) : na
+
+//==================================================
+// EXITS
+//==================================================
+if inLong and not na(longEntryPrice)
+    strategy.exit("LXTP1", from_entry="Long", qty_percent=tp1Qty, limit=longTP1, stop=longStopActive, alert_profit=longTP1Cmd, alert_loss=longCloseCmd)
+    strategy.exit("LXTP2", from_entry="Long", qty_percent=tp2Qty, limit=longTP2, stop=longStopActive, alert_profit=longTP2Cmd, alert_loss=longCloseCmd)
+    strategy.exit("LXTP3", from_entry="Long", qty_percent=tp3Qty, limit=longTP3, stop=longStopActive, alert_profit=longTP3Cmd, alert_loss=longCloseCmd)
+
+if inShort and not na(shortEntryPrice)
+    strategy.exit("SXTP1", from_entry="Short", qty_percent=tp1Qty, limit=shortTP1, stop=shortStopActive, alert_profit=shortTP1Cmd, alert_loss=shortCloseCmd)
+    strategy.exit("SXTP2", from_entry="Short", qty_percent=tp2Qty, limit=shortTP2, stop=shortStopActive, alert_profit=shortTP2Cmd, alert_loss=shortCloseCmd)
+    strategy.exit("SXTP3", from_entry="Short", qty_percent=tp3Qty, limit=shortTP3, stop=shortStopActive, alert_profit=shortTP3Cmd, alert_loss=shortCloseCmd)
+
+//==================================================
+// PLOTS
+//==================================================
+plot(closeSeriesAlt, title="Close MA", color=color.new(color.green, 0), linewidth=2)
+plot(openSeriesAlt, title="Open MA", color=color.new(color.red, 0), linewidth=2)
+plot(plotHTFBase ? htfBase : na, title="HTF Baseline", color=color.new(color.blue, 0), linewidth=2)
+
+plot(inLong ? longTP1 : na, title="Long TP1", color=color.new(color.green, 20), style=plot.style_linebr)
+plot(inLong ? longTP2 : na, title="Long TP2", color=color.new(color.green, 35), style=plot.style_linebr)
+plot(inLong ? longTP3 : na, title="Long TP3", color=color.new(color.green, 50), style=plot.style_linebr)
+plot(inLong ? longStopActive : na, title="Long Stop", color=color.new(color.red, 0), style=plot.style_linebr)
+
+plot(inShort ? shortTP1 : na, title="Short TP1", color=color.new(color.green, 20), style=plot.style_linebr)
+plot(inShort ? shortTP2 : na, title="Short TP2", color=color.new(color.green, 35), style=plot.style_linebr)
+plot(inShort ? shortTP3 : na, title="Short TP3", color=color.new(color.green, 50), style=plot.style_linebr)
+plot(inShort ? shortStopActive : na, title="Short Stop", color=color.new(color.red, 0), style=plot.style_linebr)
+
+plotshape(showLabels and longSignal, title="Buy", text="BUY", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, size=size.tiny)
+plotshape(showLabels and shortSignal, title="Sell", text="SELL", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.tiny)
+
+barcolor(colorBars ? (closeSeriesAlt > openSeriesAlt ? color.new(color.green, 70) : color.new(color.red, 70)) : na)
+
+//==================================================
+// ALERTS
+//==================================================
+alertcondition(longSignal, title="Long Alert", message="SWIFT NR PROP V2 FINAL: Long")
+alertcondition(shortSignal, title="Short Alert", message="SWIFT NR PROP V2 FINAL: Short")
+
+//==================================================
+// STATS + FILTERS TABLE
+//==================================================
+closedTrades = strategy.closedtrades
+winTrades = strategy.wintrades
+lossTrades = strategy.losstrades
+winRate = closedTrades > 0 ? (winTrades / closedTrades) * 100.0 : na
+netProfit = strategy.netprofit
+grossProfit = strategy.grossprofit
+grossLoss = strategy.grossloss
+profitFactor = grossLoss != 0 ? grossProfit / math.abs(grossLoss) : na
+
+var table panel = table.new(position.bottom_right, 2, 17, border_width=1, frame_color=color.new(color.white, 70), border_color=color.new(color.white, 70))
+
+headerBg  = color.rgb(95, 95, 110)
+headerTxt = color.white
+cellBg    = color.new(color.black, 15)
+cellTxt   = color.rgb(235, 235, 235)
+passBg    = color.rgb(20, 90, 35)
+blockBg   = color.rgb(120, 35, 35)
+neutralBg = color.rgb(120, 90, 20)
+statusTxt = color.white
+
+if barstate.islast
+    table.cell(panel, 0, 0, "Metric", bgcolor=headerBg, text_color=headerTxt)
+    table.cell(panel, 1, 0, "Value", bgcolor=headerBg, text_color=headerTxt)
+
+    table.cell(panel, 0, 1, "Exit Mode", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 1, exitMode, bgcolor=cellBg, text_color=cellTxt)
+
+    table.cell(panel, 0, 2, "Closed Trades", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 2, str.tostring(closedTrades), bgcolor=cellBg, text_color=cellTxt)
+
+    table.cell(panel, 0, 3, "Win Trades", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 3, str.tostring(winTrades), bgcolor=cellBg, text_color=cellTxt)
+
+    table.cell(panel, 0, 4, "Loss Trades", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 4, str.tostring(lossTrades), bgcolor=cellBg, text_color=cellTxt)
+
+    table.cell(panel, 0, 5, "Win Rate %", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 5, na(winRate) ? "N/A" : str.tostring(winRate, "#.##"), bgcolor=cellBg, text_color=cellTxt)
+
+    table.cell(panel, 0, 6, "Net Profit", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 6, str.tostring(netProfit, "#.##"), bgcolor=cellBg, text_color=cellTxt)
+
+    table.cell(panel, 0, 7, "Profit Factor", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 7, na(profitFactor) ? "N/A" : str.tostring(profitFactor, "#.##"), bgcolor=cellBg, text_color=cellTxt)
+
+    table.cell(panel, 0, 8, "", bgcolor=color.new(color.black, 100))
+    table.cell(panel, 1, 8, "", bgcolor=color.new(color.black, 100))
+
+    table.cell(panel, 0, 9, "Filter", bgcolor=headerBg, text_color=headerTxt)
+    table.cell(panel, 1, 9, "Status", bgcolor=headerBg, text_color=headerTxt)
+
+    table.cell(panel, 0, 10, "Session", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 10, inSession ? "PASS" : "BLOCK", bgcolor=inSession ? passBg : blockBg, text_color=statusTxt)
+
+    table.cell(panel, 0, 11, "ATR Filter", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 11, atrFilter ? "PASS" : "BLOCK", bgcolor=atrFilter ? passBg : blockBg, text_color=statusTxt)
+
+    table.cell(panel, 0, 12, "HTF Trend", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 12, htfBull ? "BULL" : htfBear ? "BEAR" : "NEUTRAL", bgcolor=htfBull ? passBg : htfBear ? blockBg : neutralBg, text_color=statusTxt)
+
+    table.cell(panel, 0, 13, "ADX", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 13, adxPass ? "PASS" : "BLOCK", bgcolor=adxPass ? passBg : blockBg, text_color=statusTxt)
+
+    table.cell(panel, 0, 14, "Cooldown", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 14, cooldownPass ? "PASS" : "BLOCK", bgcolor=cooldownPass ? passBg : blockBg, text_color=statusTxt)
+
+    table.cell(panel, 0, 15, "Long Leg", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 15, longLegPass ? "PASS" : "BLOCK", bgcolor=longLegPass ? passBg : blockBg, text_color=statusTxt)
+
+    table.cell(panel, 0, 16, "Short Leg", bgcolor=cellBg, text_color=cellTxt)
+    table.cell(panel, 1, 16, shortLegPass ? "PASS" : "BLOCK", bgcolor=shortLegPass ? passBg : blockBg, text_color=statusTxt)

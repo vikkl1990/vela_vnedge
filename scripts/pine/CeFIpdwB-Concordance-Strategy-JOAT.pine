@@ -1,0 +1,450 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © officialjackofalltrades
+//@version=6
+strategy("Concordance Strategy [JOAT]", shorttitle = "JCS [JOAT]", overlay = true, initial_capital = 100000, commission_type = strategy.commission.percent, commission_value = 0.02, pyramiding = 0, max_labels_count = 200, max_lines_count = 200, max_boxes_count = 80)
+
+string groupRegime = "Regime Matrix"
+string groupLiquidity = "Liquidity Matrix"
+string groupConfluence = "Confluence Matrix"
+string groupSignal = "Signal Matrix"
+string groupRisk = "Risk Matrix"
+string groupSession = "Session Matrix"
+string groupDisplay = "Display Matrix"
+
+int fastLen = input.int(34, "Fast Baseline", minval = 2, group = groupRegime)
+int slowLen = input.int(89, "Slow Baseline", minval = 5, group = groupRegime)
+int anchorLen = input.int(200, "Anchor Baseline", minval = 20, group = groupRegime)
+string htfTf = input.timeframe("240", "Bias Timeframe", group = groupRegime)
+int slopeLookback = input.int(8, "Slope Lookback", minval = 1, group = groupRegime)
+int adxLen = input.int(14, "ADX Length", minval = 2, group = groupRegime)
+int bbLen = input.int(20, "Compression Length", minval = 5, group = groupRegime)
+float bbDev = input.float(2.0, "Band Deviation", minval = 0.5, step = 0.1, group = groupRegime)
+int kcLen = input.int(20, "Keltner Length", minval = 5, group = groupRegime)
+float kcMult = input.float(1.5, "Keltner Multiplier", minval = 0.5, step = 0.1, group = groupRegime)
+float adxGate = input.float(14.0, "ADX Gate", minval = 5.0, step = 0.5, group = groupRegime)
+
+int sweepWindow = input.int(18, "Sweep Confirmation Window", minval = 2, group = groupLiquidity)
+int swingLen = input.int(5, "Structure Length", minval = 2, group = groupLiquidity)
+bool requireDisplacement = input.bool(true, "Require Displacement", group = groupLiquidity)
+float displacementFactor = input.float(1.25, "Displacement Multiplier", minval = 0.5, step = 0.05, group = groupLiquidity)
+bool useWeeklyLevels = input.bool(true, "Use Weekly Sweeps", group = groupLiquidity)
+float sweepAtrBuffer = input.float(0.10, "Sweep ATR Buffer", minval = 0.0, step = 0.01, group = groupLiquidity)
+
+int fibLookback = input.int(80, "Fib Lookback", minval = 20, group = groupConfluence)
+int fibPivotLen = input.int(8, "Fib Pivot Length", minval = 2, group = groupConfluence)
+float confluenceTolerance = input.float(0.15, "Confluence Tolerance %", minval = 0.01, step = 0.01, group = groupConfluence)
+bool requireOte = input.bool(true, "Require OTE Interaction", group = groupConfluence)
+bool requireHtfAgreement = input.bool(true, "Require HTF Agreement", group = groupConfluence)
+
+int pressureLen = input.int(100, "Pressure Normalization", minval = 20, group = groupSignal)
+int volumeLen = input.int(20, "Volume Baseline", minval = 5, group = groupSignal)
+int sigmaWindow = input.int(89, "Sigma Window", minval = 20, group = groupSignal)
+int sigmaStep = input.int(5, "Sigma Step", minval = 1, group = groupSignal)
+int sigmaMax = input.int(144, "Sigma Max Window", minval = 34, group = groupSignal)
+int momentumLen = input.int(14, "Momentum Length", minval = 2, group = groupSignal)
+float entryScoreGate = input.float(4.5, "Entry Score Gate", minval = 2.0, maxval = 12.0, step = 0.25, group = groupSignal)
+float rvolGate = input.float(1.05, "RVOL Gate", minval = 0.5, step = 0.05, group = groupSignal)
+
+float riskPct = input.float(1.0, "Risk % of Equity", minval = 0.1, step = 0.1, group = groupRisk)
+float stopAtr = input.float(1.6, "Stop ATR", minval = 0.2, step = 0.1, group = groupRisk)
+float stopStructureBuffer = input.float(0.25, "Structure Buffer ATR", minval = 0.0, step = 0.05, group = groupRisk)
+float takeProfitOne = input.float(1.5, "TP1 R", minval = 0.5, step = 0.25, group = groupRisk)
+float takeProfitTwo = input.float(2.8, "TP2 R", minval = 1.0, step = 0.25, group = groupRisk)
+float breakEvenAt = input.float(1.1, "Break-Even Trigger R", minval = 0.5, step = 0.1, group = groupRisk)
+float trailAtr = input.float(1.2, "Trailing ATR", minval = 0.2, step = 0.1, group = groupRisk)
+bool useTimeExit = input.bool(true, "Use Time Exit", group = groupRisk)
+int maxBarsInTrade = input.int(40, "Max Bars In Trade", minval = 5, group = groupRisk)
+
+string londonSession = input.session("0300-0600", "London Window", group = groupSession)
+string newYorkSession = input.session("0930-1130", "New York Window", group = groupSession)
+string closeSession = input.session("1500-1600", "Closing Window", group = groupSession)
+bool tradeLondon = input.bool(true, "Trade London", group = groupSession)
+bool tradeNewYork = input.bool(true, "Trade New York", group = groupSession)
+bool avoidClose = input.bool(true, "Avoid Closing Window", group = groupSession)
+
+bool showDashboard = input.bool(true, "Show Dashboard", group = groupDisplay)
+bool tintBars = input.bool(true, "Tint Bars", group = groupDisplay)
+bool showCloud = input.bool(true, "Show Baseline Cloud", group = groupDisplay)
+bool showFibBand = input.bool(true, "Show OTE Band", group = groupDisplay)
+bool showStructureLevels = input.bool(true, "Show Structure Levels", group = groupDisplay)
+bool showRiskLines = input.bool(true, "Show Risk Lines", group = groupDisplay)
+
+color bullColor = input.color(color.rgb(38, 181, 147), "Bull Theme", group = groupDisplay)
+color bullSoft = input.color(color.rgb(91, 204, 173), "Bull Soft", group = groupDisplay)
+color bearColor = input.color(color.rgb(205, 91, 110), "Bear Theme", group = groupDisplay)
+color bearSoft = input.color(color.rgb(170, 109, 124), "Bear Soft", group = groupDisplay)
+color neutralColor = input.color(color.rgb(121, 133, 159), "Neutral", group = groupDisplay)
+color accentColor = input.color(color.rgb(221, 190, 94), "Accent", group = groupDisplay)
+color panelBg = input.color(color.rgb(13, 18, 28), "Dashboard Background", group = groupDisplay)
+color panelBorder = input.color(color.rgb(38, 50, 70), "Dashboard Border", group = groupDisplay)
+
+inSession(string sess) =>
+    not na(time(timeframe.period, sess))
+
+clamp01(float value) =>
+    math.max(0.0, math.min(1.0, value))
+
+scoreToColor(float score, float negativeGate, float positiveGate) =>
+    score >= positiveGate ? bullColor : score <= negativeGate ? bearColor : neutralColor
+
+fibLevel(float hi, float lo, bool downswing, float ratio) =>
+    float rangeValue = hi - lo
+    downswing ? lo + rangeValue * ratio : hi - rangeValue * ratio
+
+safeZ(float source, int length) =>
+    float meanValue = ta.sma(source, length)
+    float stdValue = ta.stdev(source, length)
+    stdValue > 0 ? (source - meanValue) / stdValue : 0.0
+
+float fastBase = ta.ema(close, fastLen)
+float slowBase = ta.ema(close, slowLen)
+float anchorBase = ta.ema(close, anchorLen)
+float fastSlope = fastBase - fastBase[slopeLookback]
+float slowSlope = slowBase - slowBase[slopeLookback]
+
+float htfFast = request.security(syminfo.tickerid, htfTf, ta.ema(close[1], fastLen), lookahead = barmerge.lookahead_on)
+float htfSlow = request.security(syminfo.tickerid, htfTf, ta.ema(close[1], slowLen), lookahead = barmerge.lookahead_on)
+float htfAnchor = request.security(syminfo.tickerid, htfTf, ta.ema(close[1], anchorLen), lookahead = barmerge.lookahead_on)
+
+bool localBull = fastBase > slowBase and slowBase > anchorBase
+bool localBear = fastBase < slowBase and slowBase < anchorBase
+bool htfBull = htfFast > htfSlow and htfSlow > htfAnchor
+bool htfBear = htfFast < htfSlow and htfSlow < htfAnchor
+
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxLen)
+float atrValue = ta.atr(14)
+float atrPct = close != 0 ? atrValue / close * 100.0 : 0.0
+float basis = ta.ema(close, bbLen)
+float stdevValue = ta.stdev(close, bbLen)
+float bbUpper = basis + stdevValue * bbDev
+float bbLower = basis - stdevValue * bbDev
+float trBasis = ta.ema(ta.tr(true), kcLen)
+float kcUpper = basis + trBasis * kcMult
+float kcLower = basis - trBasis * kcMult
+bool squeezeOn = bbUpper < kcUpper and bbLower > kcLower
+float bbWidth = basis != 0 ? (bbUpper - bbLower) / basis : 0.0
+float widthMean = ta.sma(bbWidth, bbLen)
+bool expansion = widthMean > 0 and bbWidth > widthMean * 1.15
+
+float trendScore = 0.0
+trendScore += localBull ? 2.0 : localBear ? -2.0 : 0.0
+trendScore += htfBull ? 2.0 : htfBear ? -2.0 : 0.0
+trendScore += fastSlope > 0 ? 1.0 : fastSlope < 0 ? -1.0 : 0.0
+trendScore += slowSlope > 0 ? 1.0 : slowSlope < 0 ? -1.0 : 0.0
+trendScore += adxValue > adxGate ? (diPlus > diMinus ? 1.0 : diMinus > diPlus ? -1.0 : 0.0) : 0.0
+trendScore += squeezeOn ? 0.0 : expansion ? (close > anchorBase ? 1.0 : -1.0) : 0.0
+
+bool regimeBull = trendScore >= 3 and adxValue > adxGate * 0.75
+bool regimeBear = trendScore <= -3 and adxValue > adxGate * 0.75
+bool regimeNeutral = not regimeBull and not regimeBear
+bool softBull = trendScore > 0 and localBull and htfFast >= htfSlow
+bool softBear = trendScore < 0 and localBear and htfFast <= htfSlow
+
+[priorDayHigh, priorDayLow] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[priorWeekHigh, priorWeekLow] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+float pivotHigh = ta.pivothigh(high, swingLen, swingLen)
+float pivotLow = ta.pivotlow(low, swingLen, swingLen)
+var float lastStructureHigh = na
+var float lastStructureLow = na
+var int lastStructureHighBar = na
+var int lastStructureLowBar = na
+if not na(pivotHigh)
+    lastStructureHigh := pivotHigh
+    lastStructureHighBar := bar_index - swingLen
+if not na(pivotLow)
+    lastStructureLow := pivotLow
+    lastStructureLowBar := bar_index - swingLen
+
+float bodySize = math.abs(close - open)
+float averageBody = ta.sma(bodySize, 20)
+float volumeMean = ta.sma(volume, volumeLen)
+float relativeVolume = volumeMean > 0 ? volume / volumeMean : 1.0
+bool displacementUp = close > open and bodySize > averageBody * displacementFactor
+bool displacementDown = close < open and bodySize > averageBody * displacementFactor
+
+bool buySideSweepDay = not na(priorDayLow) and low < priorDayLow - atrValue * sweepAtrBuffer and close > priorDayLow
+bool sellSideSweepDay = not na(priorDayHigh) and high > priorDayHigh + atrValue * sweepAtrBuffer and close < priorDayHigh
+bool buySideSweepWeek = useWeeklyLevels and not na(priorWeekLow) and low < priorWeekLow - atrValue * sweepAtrBuffer and close > priorWeekLow
+bool sellSideSweepWeek = useWeeklyLevels and not na(priorWeekHigh) and high > priorWeekHigh + atrValue * sweepAtrBuffer and close < priorWeekHigh
+bool buySideSweep = buySideSweepDay or buySideSweepWeek
+bool sellSideSweep = sellSideSweepDay or sellSideSweepWeek
+
+var bool activeBidSweep = false
+var bool activeOfferSweep = false
+var int bidSweepBar = na
+var int offerSweepBar = na
+if buySideSweep and barstate.isconfirmed
+    activeBidSweep := true
+    bidSweepBar := bar_index
+if sellSideSweep and barstate.isconfirmed
+    activeOfferSweep := true
+    offerSweepBar := bar_index
+if activeBidSweep and not na(bidSweepBar) and bar_index - bidSweepBar > sweepWindow
+    activeBidSweep := false
+    bidSweepBar := na
+if activeOfferSweep and not na(offerSweepBar) and bar_index - offerSweepBar > sweepWindow
+    activeOfferSweep := false
+    offerSweepBar := na
+
+bool bullishBreak = not na(lastStructureHigh) and close > lastStructureHigh and close[1] <= lastStructureHigh
+bool bearishBreak = not na(lastStructureLow) and close < lastStructureLow and close[1] >= lastStructureLow
+bool longLiquidityStack = activeBidSweep and bullishBreak and (not requireDisplacement or displacementUp)
+bool shortLiquidityStack = activeOfferSweep and bearishBreak and (not requireDisplacement or displacementDown)
+
+float fibPivotHigh = ta.pivothigh(high, fibPivotLen, fibPivotLen)
+float fibPivotLow = ta.pivotlow(low, fibPivotLen, fibPivotLen)
+var float anchorHigh = ta.highest(high, fibLookback)
+var float anchorLow = ta.lowest(low, fibLookback)
+var int anchorHighBar = bar_index - ta.highestbars(high, fibLookback)
+var int anchorLowBar = bar_index - ta.lowestbars(low, fibLookback)
+if not na(fibPivotHigh)
+    anchorHigh := fibPivotHigh
+    anchorHighBar := bar_index - fibPivotLen
+if not na(fibPivotLow)
+    anchorLow := fibPivotLow
+    anchorLowBar := bar_index - fibPivotLen
+
+bool downSwing = anchorLowBar > anchorHighBar
+float fib236 = fibLevel(anchorHigh, anchorLow, downSwing, 0.236)
+float fib382 = fibLevel(anchorHigh, anchorLow, downSwing, 0.382)
+float fib500 = fibLevel(anchorHigh, anchorLow, downSwing, 0.500)
+float fib618 = fibLevel(anchorHigh, anchorLow, downSwing, 0.618)
+float fib705 = fibLevel(anchorHigh, anchorLow, downSwing, 0.705)
+float fib786 = fibLevel(anchorHigh, anchorLow, downSwing, 0.786)
+float fib1272 = fibLevel(anchorHigh, anchorLow, downSwing, 1.272)
+float fib1618 = fibLevel(anchorHigh, anchorLow, downSwing, 1.618)
+
+float htfHigh = request.security(syminfo.tickerid, htfTf, ta.highest(high[1], fibLookback), lookahead = barmerge.lookahead_on)
+float htfLow = request.security(syminfo.tickerid, htfTf, ta.lowest(low[1], fibLookback), lookahead = barmerge.lookahead_on)
+bool htfDown = request.security(syminfo.tickerid, htfTf, ta.lowestbars(low[1], fibLookback) < ta.highestbars(high[1], fibLookback), lookahead = barmerge.lookahead_on)
+float htf236 = fibLevel(htfHigh, htfLow, htfDown, 0.236)
+float htf382 = fibLevel(htfHigh, htfLow, htfDown, 0.382)
+float htf500 = fibLevel(htfHigh, htfLow, htfDown, 0.500)
+float htf618 = fibLevel(htfHigh, htfLow, htfDown, 0.618)
+float htf705 = fibLevel(htfHigh, htfLow, htfDown, 0.705)
+float htf786 = fibLevel(htfHigh, htfLow, htfDown, 0.786)
+
+float tolerance = close * confluenceTolerance / 100.0
+int confluenceCount = 0
+confluenceCount += math.abs(fib236 - htf236) <= tolerance ? 1 : 0
+confluenceCount += math.abs(fib382 - htf382) <= tolerance ? 1 : 0
+confluenceCount += math.abs(fib500 - htf500) <= tolerance ? 1 : 0
+confluenceCount += math.abs(fib618 - htf618) <= tolerance ? 1 : 0
+confluenceCount += math.abs(fib705 - htf705) <= tolerance ? 1 : 0
+confluenceCount += math.abs(fib786 - htf786) <= tolerance ? 1 : 0
+bool longOte = not downSwing and close <= math.max(fib786, fib618) and close >= math.min(fib786, fib618)
+bool shortOte = downSwing and close <= math.max(fib786, fib618) and close >= math.min(fib786, fib618)
+bool htfConcordant = not requireHtfAgreement or (downSwing == htfDown)
+
+float moneyFlowMultiplier = high == low ? 0.0 : ((2.0 * close - low - high) / (high - low))
+float weightedFlow = moneyFlowMultiplier * volume * math.max(relativeVolume, 1.0)
+float flowLine = ta.cum(weightedFlow)
+float flowMean = ta.sma(flowLine, pressureLen)
+float flowStd = ta.stdev(flowLine, pressureLen)
+float pressureZ = flowStd > 0 ? (flowLine - flowMean) / flowStd : 0.0
+float momentum = ta.rsi(close, momentumLen)
+float momentumBias = (momentum - 50.0) / 10.0
+float deltaProxy = volume * (close - open)
+float deltaZ = safeZ(deltaProxy, 20)
+float pressureComposite = pressureZ * 0.55 + momentumBias * 0.25 + deltaZ * 0.20
+bool pressureBull = pressureComposite > 0 and pressureComposite > pressureComposite[1]
+bool pressureBear = pressureComposite < 0 and pressureComposite < pressureComposite[1]
+
+float bestSlope = na
+float bestIntercept = na
+float bestR2 = na
+float bestStd = na
+int bestWindow = na
+for lengthValue = sigmaWindow to sigmaMax by sigmaStep
+    float sumX = 0.0
+    float sumY = 0.0
+    float sumXY = 0.0
+    float sumXX = 0.0
+    float sumYY = 0.0
+    for i = 0 to lengthValue - 1
+        float x = i
+        float y = close[lengthValue - 1 - i]
+        sumX += x
+        sumY += y
+        sumXY += x * y
+        sumXX += x * x
+        sumYY += y * y
+    float denominator = lengthValue * sumXX - sumX * sumX
+    float varianceDenominator = lengthValue * sumYY - sumY * sumY
+    if denominator > 0 and varianceDenominator > 0
+        float slopeValue = (lengthValue * sumXY - sumX * sumY) / denominator
+        float interceptValue = (sumY - slopeValue * sumX) / lengthValue
+        float corrNumerator = lengthValue * sumXY - sumX * sumY
+        float rValue = corrNumerator / math.sqrt(denominator * varianceDenominator)
+        float r2Value = rValue * rValue
+        float squaredError = 0.0
+        for j = 0 to lengthValue - 1
+            float predicted = interceptValue + slopeValue * j
+            float actual = close[lengthValue - 1 - j]
+            squaredError += math.pow(actual - predicted, 2)
+        float stdValue = math.sqrt(squaredError / math.max(lengthValue - 2, 1))
+        if (na(bestR2) or r2Value > bestR2) and r2Value >= 0.50
+            bestSlope := slopeValue
+            bestIntercept := interceptValue
+            bestR2 := r2Value
+            bestStd := stdValue
+            bestWindow := lengthValue
+
+float sigmaCenter = na
+float sigmaUpper = na
+float sigmaLower = na
+if not na(bestWindow)
+    sigmaCenter := bestIntercept + bestSlope * bestWindow
+    sigmaUpper := sigmaCenter + bestStd * 1.4
+    sigmaLower := sigmaCenter - bestStd * 1.4
+bool sigmaBull = not na(sigmaLower) and close > sigmaLower and close[1] <= sigmaLower[1] and bestSlope > 0
+bool sigmaBear = not na(sigmaUpper) and close < sigmaUpper and close[1] >= sigmaUpper[1] and bestSlope < 0
+
+float ledgerIntensity = ta.highest(volume, fibLookback) > 0 ? volume / ta.highest(volume, fibLookback) : 0.0
+bool ledgerBull = ledgerIntensity > 0.70 and deltaZ > 0 and relativeVolume >= rvolGate
+bool ledgerBear = ledgerIntensity > 0.70 and deltaZ < 0 and relativeVolume >= rvolGate
+
+bool londonOpen = inSession(londonSession)
+bool newYorkOpen = inSession(newYorkSession)
+bool closingWindow = inSession(closeSession)
+bool sessionEnabled = (tradeLondon and londonOpen) or (tradeNewYork and newYorkOpen) or (not tradeLondon and not tradeNewYork)
+bool sessionPass = not timeframe.isintraday ? true : sessionEnabled and (not avoidClose or not closingWindow)
+
+float longScore = 0.0
+longScore += regimeBull ? 2.0 : 0.0
+longScore += longLiquidityStack ? 2.0 : 0.0
+longScore += (not requireOte or longOte) ? 1.0 : 0.0
+longScore += htfConcordant ? 1.0 : 0.0
+longScore += confluenceCount >= 2 ? 1.0 : confluenceCount >= 1 ? 0.5 : 0.0
+longScore += pressureBull ? 1.0 : 0.0
+longScore += sigmaBull ? 1.0 : 0.0
+longScore += ledgerBull ? 1.0 : 0.0
+longScore += relativeVolume >= rvolGate ? 1.0 : 0.0
+
+float shortScore = 0.0
+shortScore += regimeBear ? 2.0 : 0.0
+shortScore += shortLiquidityStack ? 2.0 : 0.0
+shortScore += (not requireOte or shortOte) ? 1.0 : 0.0
+shortScore += htfConcordant ? 1.0 : 0.0
+shortScore += confluenceCount >= 2 ? 1.0 : confluenceCount >= 1 ? 0.5 : 0.0
+shortScore += pressureBear ? 1.0 : 0.0
+shortScore += sigmaBear ? 1.0 : 0.0
+shortScore += ledgerBear ? 1.0 : 0.0
+shortScore += relativeVolume >= rvolGate ? 1.0 : 0.0
+
+float softEntryGate = math.max(entryScoreGate - 1.5, 3.0)
+bool longEntry = barstate.isconfirmed and sessionPass and ((longScore >= entryScoreGate and regimeBull and htfConcordant) or (longScore >= softEntryGate and softBull and pressureBull and sigmaBull and (confluenceCount >= 1 or ledgerBull)))
+bool shortEntry = barstate.isconfirmed and sessionPass and ((shortScore >= entryScoreGate and regimeBear and htfConcordant) or (shortScore >= softEntryGate and softBear and pressureBear and sigmaBear and (confluenceCount >= 1 or ledgerBear)))
+
+float longStructureStop = math.min(math.min(nz(priorDayLow, low), nz(priorWeekLow, low)), nz(lastStructureLow, low))
+float shortStructureStop = math.max(math.max(nz(priorDayHigh, high), nz(priorWeekHigh, high)), nz(lastStructureHigh, high))
+float longStopCandidate = math.min(low, longStructureStop) - atrValue * stopStructureBuffer - atrValue * stopAtr
+float shortStopCandidate = math.max(high, shortStructureStop) + atrValue * stopStructureBuffer + atrValue * stopAtr
+float longRisk = close - longStopCandidate
+float shortRisk = shortStopCandidate - close
+float riskValue = strategy.equity * riskPct * 0.01
+float volatilityThrottle = atrPct > 3.5 ? 0.60 : atrPct > 2.2 ? 0.80 : 1.00
+float longQty = longRisk > syminfo.mintick ? (riskValue / longRisk) * volatilityThrottle : 0.0
+float shortQty = shortRisk > syminfo.mintick ? (riskValue / shortRisk) * volatilityThrottle : 0.0
+
+if longEntry and strategy.position_size <= 0 and longQty > 0
+    strategy.entry("Long", strategy.long, qty = longQty)
+if shortEntry and strategy.position_size >= 0 and shortQty > 0
+    strategy.entry("Short", strategy.short, qty = shortQty)
+
+var int entryBar = na
+var float activeInitialRisk = na
+if strategy.position_size != 0 and strategy.position_size[1] == 0
+    entryBar := bar_index
+    activeInitialRisk := strategy.position_size > 0 ? longRisk : shortRisk
+if strategy.position_size == 0
+    entryBar := na
+    activeInitialRisk := na
+
+float avgPrice = strategy.position_avg_price
+float initialRisk = nz(activeInitialRisk, atrValue * stopAtr)
+float longStopBase = avgPrice - initialRisk
+float shortStopBase = avgPrice + initialRisk
+bool longBreakEven = strategy.position_size > 0 and close >= avgPrice + initialRisk * breakEvenAt
+bool shortBreakEven = strategy.position_size < 0 and close <= avgPrice - initialRisk * breakEvenAt
+float longTrail = close - atrValue * trailAtr
+float shortTrail = close + atrValue * trailAtr
+float liveLongStop = strategy.position_size > 0 ? math.max(math.max(longStopBase, longBreakEven ? avgPrice : longStopBase), longTrail) : na
+float liveShortStop = strategy.position_size < 0 ? math.min(math.min(shortStopBase, shortBreakEven ? avgPrice : shortStopBase), shortTrail) : na
+float longTpOne = avgPrice + initialRisk * takeProfitOne
+float longTpTwo = avgPrice + initialRisk * takeProfitTwo
+float shortTpOne = avgPrice - initialRisk * takeProfitOne
+float shortTpTwo = avgPrice - initialRisk * takeProfitTwo
+
+if strategy.position_size > 0
+    strategy.exit("Long TP1", "Long", qty_percent = 50, stop = liveLongStop, limit = longTpOne)
+    strategy.exit("Long TP2", "Long", qty_percent = 50, stop = liveLongStop, limit = longTpTwo)
+
+if strategy.position_size < 0
+    strategy.exit("Short TP1", "Short", qty_percent = 50, stop = liveShortStop, limit = shortTpOne)
+    strategy.exit("Short TP2", "Short", qty_percent = 50, stop = liveShortStop, limit = shortTpTwo)
+
+bool closeLongOnRegimeLoss = strategy.position_size > 0 and trendScore <= 0 and pressureComposite < 0
+bool closeShortOnRegimeLoss = strategy.position_size < 0 and trendScore >= 0 and pressureComposite > 0
+if closeLongOnRegimeLoss
+    strategy.close("Long")
+if closeShortOnRegimeLoss
+    strategy.close("Short")
+if useTimeExit and strategy.position_size != 0 and not na(entryBar) and bar_index - entryBar >= maxBarsInTrade
+    strategy.close(strategy.position_size > 0 ? "Long" : "Short")
+
+color regimeTone = regimeBull ? color.new(bullColor, 82) : regimeBear ? color.new(bearColor, 82) : color.new(neutralColor, 90)
+color barTone = longEntry ? bullColor : shortEntry ? bearColor : regimeBull ? color.new(bullColor, 55) : regimeBear ? color.new(bearColor, 55) : na
+barcolor(tintBars ? barTone : na)
+bgcolor(sessionPass ? na : color.new(color.rgb(29, 23, 37), 88))
+
+plotAnchor = plot(anchorBase, "Anchor Baseline", color = color.new(neutralColor, 0), linewidth = 2)
+plotFast = plot(fastBase, "Fast Baseline", color = color.new(bullColor, 25), linewidth = 2)
+plotSlow = plot(slowBase, "Slow Baseline", color = color.new(bearColor, 25), linewidth = 2)
+fill(plotFast, plotSlow, color = showCloud ? (regimeBull ? color.new(bullColor, 86) : regimeBear ? color.new(bearColor, 86) : color.new(neutralColor, 90)) : na, title = "Baseline Cloud")
+
+plot(showStructureLevels ? lastStructureHigh : na, "Structure High", color = color.new(accentColor, 15), linewidth = 1, style = plot.style_linebr)
+plot(showStructureLevels ? lastStructureLow : na, "Structure Low", color = color.new(color.rgb(88, 142, 213), 15), linewidth = 1, style = plot.style_linebr)
+plot(not na(sigmaCenter) ? sigmaCenter : na, "Sigma Center", color = color.new(neutralColor, 40), linewidth = 1)
+plot(not na(sigmaUpper) ? sigmaUpper : na, "Sigma Upper", color = color.new(bearSoft, 50), linewidth = 1)
+plot(not na(sigmaLower) ? sigmaLower : na, "Sigma Lower", color = color.new(bullSoft, 50), linewidth = 1)
+
+oteHigh = plot(showFibBand ? math.max(fib786, fib618) : na, "OTE High", color = color.new(accentColor, 60), linewidth = 1, style = plot.style_linebr)
+oteLow = plot(showFibBand ? math.min(fib786, fib618) : na, "OTE Low", color = color.new(accentColor, 60), linewidth = 1, style = plot.style_linebr)
+fill(oteHigh, oteLow, color = showFibBand ? color.new(accentColor, 88) : na, title = "OTE Band")
+
+plot(showRiskLines and strategy.position_size > 0 ? liveLongStop : na, "Long Stop", color = color.new(bearColor, 0), linewidth = 1, style = plot.style_linebr)
+plot(showRiskLines and strategy.position_size > 0 ? longTpOne : na, "Long TP1", color = color.new(accentColor, 0), linewidth = 1, style = plot.style_linebr)
+plot(showRiskLines and strategy.position_size > 0 ? longTpTwo : na, "Long TP2", color = color.new(bullColor, 0), linewidth = 1, style = plot.style_linebr)
+plot(showRiskLines and strategy.position_size < 0 ? liveShortStop : na, "Short Stop", color = color.new(bullColor, 0), linewidth = 1, style = plot.style_linebr)
+plot(showRiskLines and strategy.position_size < 0 ? shortTpOne : na, "Short TP1", color = color.new(accentColor, 0), linewidth = 1, style = plot.style_linebr)
+plot(showRiskLines and strategy.position_size < 0 ? shortTpTwo : na, "Short TP2", color = color.new(bearColor, 0), linewidth = 1, style = plot.style_linebr)
+
+var table dash = table.new(position.top_right, 2, 11, bgcolor = color.new(panelBg, 8), frame_color = panelBorder, frame_width = 1, border_color = panelBorder, border_width = 1)
+if showDashboard and barstate.islast
+    table.cell(dash, 0, 0, "Concordance", text_color = color.rgb(162, 174, 193), bgcolor = color.new(panelBg, 0))
+    table.cell(dash, 1, 0, "State", text_color = color.rgb(162, 174, 193), bgcolor = color.new(panelBg, 0))
+    table.cell(dash, 0, 1, "Regime", text_color = color.white)
+    table.cell(dash, 1, 1, regimeBull ? "Bull Expansion" : regimeBear ? "Bear Expansion" : "Balance", text_color = regimeBull ? bullColor : regimeBear ? bearColor : neutralColor)
+    table.cell(dash, 0, 2, "Trend Score", text_color = color.white)
+    table.cell(dash, 1, 2, str.tostring(trendScore, "#.0"), text_color = scoreToColor(trendScore, -2.0, 2.0))
+    table.cell(dash, 0, 3, "Liquidity", text_color = color.white)
+    table.cell(dash, 1, 3, longLiquidityStack ? "Bid Sweep" : shortLiquidityStack ? "Offer Sweep" : activeBidSweep ? "Bid Active" : activeOfferSweep ? "Offer Active" : "Idle", text_color = longLiquidityStack or activeBidSweep ? bullColor : shortLiquidityStack or activeOfferSweep ? bearColor : neutralColor)
+    table.cell(dash, 0, 4, "Confluence", text_color = color.white)
+    table.cell(dash, 1, 4, str.tostring(confluenceCount) + " / 6", text_color = confluenceCount >= 2 ? accentColor : neutralColor)
+    table.cell(dash, 0, 5, "OTE", text_color = color.white)
+    table.cell(dash, 1, 5, longOte ? "Demand Pocket" : shortOte ? "Supply Pocket" : "Outside", text_color = longOte ? bullSoft : shortOte ? bearSoft : neutralColor)
+    table.cell(dash, 0, 6, "Pressure", text_color = color.white)
+    table.cell(dash, 1, 6, str.tostring(pressureComposite, "#.00"), text_color = pressureComposite >= 0 ? bullColor : bearColor)
+    table.cell(dash, 0, 7, "Sigma", text_color = color.white)
+    table.cell(dash, 1, 7, na(bestR2) ? "Unavailable" : str.tostring(bestR2, "#.00"), text_color = na(bestR2) ? neutralColor : bestR2 >= 0.60 ? accentColor : neutralColor)
+    table.cell(dash, 0, 8, "Ledger", text_color = color.white)
+    table.cell(dash, 1, 8, str.tostring(relativeVolume, "#.00") + "x", text_color = relativeVolume >= rvolGate ? accentColor : neutralColor)
+    table.cell(dash, 0, 9, "Entry Score", text_color = color.white)
+    table.cell(dash, 1, 9, str.tostring(math.max(longScore, shortScore), "#.0"), text_color = math.max(longScore, shortScore) >= entryScoreGate ? accentColor : neutralColor)
+    table.cell(dash, 0, 10, "Position", text_color = color.white)
+    table.cell(dash, 1, 10, strategy.position_size > 0 ? "Long" : strategy.position_size < 0 ? "Short" : "Flat", text_color = strategy.position_size > 0 ? bullColor : strategy.position_size < 0 ? bearColor : neutralColor)
+
+alertcondition(longEntry, "Concordance Long", "JOAT Concordance Strategy [JOAT] long setup on {{ticker}}")
+alertcondition(shortEntry, "Concordance Short", "JOAT Concordance Strategy [JOAT] short setup on {{ticker}}")

@@ -1,0 +1,52 @@
+//@version=5
+indicator("XRP Scalping - Pre-cruce EMA anticipado (validación doble)", overlay=true)
+
+// Parámetros
+ema_fast_len   = input.int(9, title="EMA Rápida")
+ema_slow_len   = input.int(21, title="EMA Lenta")
+rsi_len        = input.int(14, title="RSI período")
+rsi_min_compra = input.int(40, title="RSI mínimo para compra")
+rsi_max_venta  = input.int(70, title="RSI máximo para venta")
+gap_trigger    = input.float(0.01, title="Máxima distancia EMAs para anticipar", step=0.001)
+pre_requisitos = input.int(2, title="Pre-cruces requeridos para validar señal confirmada")
+
+// Indicadores
+ema_rapida = ta.ema(close, ema_fast_len)
+ema_lenta  = ta.ema(close, ema_slow_len)
+rsi        = ta.rsi(close, rsi_len)
+ema_slope  = ema_rapida - ema_rapida[1]
+
+// Señales anticipadas
+pre_cruce_alcista = (ema_rapida < ema_lenta) and (ema_lenta - ema_rapida) <= gap_trigger and ema_slope > 0 and rsi > rsi_min_compra
+pre_cruce_bajista = (ema_rapida > ema_lenta) and (ema_rapida - ema_lenta) <= gap_trigger and ema_slope < 0 and rsi < rsi_max_venta
+
+// Contadores acumulativos
+
+var int hist_pre_alcista = 0
+var int hist_pre_bajista = 0
+
+hist_pre_alcista := pre_cruce_alcista ? nz(hist_pre_alcista[1]) + 1 : 0
+hist_pre_bajista := pre_cruce_bajista ? nz(hist_pre_bajista[1]) + 1 : 0
+
+// Señales confirmadas (solo si hubo suficientes pre-cruces)
+cruce_arriba_base = ta.crossover(ema_rapida, ema_lenta) and rsi > rsi_min_compra
+cruce_abajo_base  = ta.crossunder(ema_rapida, ema_lenta) and rsi < rsi_max_venta
+
+cruce_arriba = cruce_arriba_base and hist_pre_alcista[1] >= pre_requisitos
+cruce_abajo  = cruce_abajo_base and hist_pre_bajista[1] >= pre_requisitos
+
+// === Gráficos ===
+plot(ema_rapida, title="EMA 9", color=color.teal)
+plot(ema_lenta, title="EMA 21", color=color.orange)
+
+plotshape(pre_cruce_alcista, location=location.belowbar, color=color.lime, style=shape.circle, size=size.tiny, title="Pre-Compra")
+plotshape(pre_cruce_bajista, location=location.abovebar, color=color.red, style=shape.circle, size=size.tiny, title="Pre-Venta")
+
+plotshape(cruce_arriba, location=location.belowbar, color=color.green, style=shape.labelup, text="Buy", textcolor=color.white, title="Compra")
+plotshape(cruce_abajo, location=location.abovebar, color=color.red, style=shape.labeldown, text="Sell", textcolor=color.white, title="Venta")
+
+// === Alertas ===
+alertcondition(pre_cruce_alcista, title="Pre-compra posible", message="⏳ EMA 9 se acerca a EMA 21 con RSI fuerte")
+alertcondition(pre_cruce_bajista, title="Pre-venta posible", message="⏳ EMA 9 cae hacia EMA 21 con RSI débil")
+alertcondition(cruce_arriba, title="Alerta Compra", message="🟢 XRP: COMPRA (confirmada tras múltiples pre-cruces)")
+alertcondition(cruce_abajo, title="Alerta Venta", message="🔴 XRP: VENTA (confirmada tras múltiples pre-cruces)")

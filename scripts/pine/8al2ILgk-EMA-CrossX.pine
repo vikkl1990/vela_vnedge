@@ -1,0 +1,56 @@
+//@version=5
+strategy("EMA CrossX", overlay=true, initial_capital=1000, default_qty_type=strategy.fixed, default_qty_value=1)
+
+// --- INPUTS ---
+fastLen  = input.int(9, "Fast EMA Length")
+slowLen  = input.int(19, "Slow EMA Length")
+waitBars = input.int(2, "Entry Delay (Candles)", minval=0)
+
+// Strict Risk Inputs
+takeProfitPoints = input.float(4.0, "Take Profit (Points)")
+stopLossPoints   = input.float(2.5, "Stop Loss (Points)")
+
+// Trailing Option
+useTrailing      = input.bool(true, "Enable Trailing Stop (Overrides Fixed TP)?")
+trailingDistPts  = input.float(1.0, "Trailing Distance (Points)")
+
+// --- CALCULATIONS ---
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+plot(emaFast, color=color.blue, title="EMA Fast")
+plot(emaSlow, color=color.orange, title="EMA Slow")
+
+// --- LOGIC ---
+// 1. Identify Cross
+crossHappened = ta.crossover(emaFast, emaSlow)
+
+// 2. Check Delay
+// If waitBars = 3, we enter if the cross happened 3 bars ago
+enterLong = crossHappened[waitBars]
+
+// --- EXECUTION ---
+if enterLong
+    strategy.entry("Long", strategy.long)
+
+// --- STRICT EXIT LOGIC ---
+
+if strategy.position_size > 0
+    float entryPrice = strategy.position_avg_price
+    
+    // Calculate Exact Price Levels
+    float slLevel = entryPrice - stopLossPoints
+    float tpLevel = entryPrice + takeProfitPoints
+    
+    // TRAILING LOGIC vs FIXED LOGIC
+    if useTrailing
+        // Convert points to ticks for trailing offset
+        float trailOffsetTicks = trailingDistPts / syminfo.mintick
+        // Strict Trailing Exit
+        strategy.exit("Exit Trail", "Long", stop=slLevel, trail_points=0, trail_offset=trailOffsetTicks)
+    else
+        // STRICT Fixed Exit using LIMIT (TP) and STOP (SL)
+        strategy.exit("Exit Fixed", "Long", stop=slLevel, limit=tpLevel)
+
+// --- VISUAL CONFIRMATION ---
+plotshape(crossHappened, style=shape.cross, location=location.belowbar, color=color.gray, size=size.tiny, title="Cross")
+plotshape(enterLong, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Buy", text="BUY")

@@ -1,0 +1,80 @@
+//@version=5
+strategy("@santoshpsiii Crypto Algo", overlay=true, initial_capital=1000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// ========================== INPUTS ==========================
+st_len     = input.int(10, title="ST ATR Length")
+st_mult    = input.float(3.0, title="ST Multiplier")
+bb_len     = input.int(20, title="BB Length")
+bb_mult    = input.float(2.0, title="BB StdDev")
+bbw_ma_len = input.int(20, title="BBW Base MA Length")
+
+// ========================== CALCULATIONS ==========================
+[_, st_dir] = ta.supertrend(st_mult, st_len)
+
+// Fetch Multi-Timeframe SuperTrend Status
+f_st(tf) =>
+    [_, dir] = request.security(syminfo.tickerid, tf, ta.supertrend(st_mult, st_len), barmerge.gaps_off, barmerge.lookahead_off)
+    dir == -1
+
+st_5m  = f_st("5")
+st_15m = f_st("15")
+st_1h  = f_st("60")
+st_4h  = f_st("240")
+
+// Bollinger Bands Width (Chop Filter)
+[basis, upper, lower] = ta.bb(close, bb_len, bb_mult)
+bbw = (upper - lower) / basis
+bbw_ma = ta.sma(bbw, bbw_ma_len)
+is_trending = bbw > bbw_ma
+
+market_status = is_trending ? "TRENDING" : "WAITING"
+status_color  = is_trending ? color.green : color.orange
+
+// ========================== SIGNAL LOGIC ==========================
+buy_entry   = is_trending and ta.change(st_dir) and st_dir == -1
+short_entry = is_trending and ta.change(st_dir) and st_dir == 1
+
+exit_long   = ta.change(st_dir) and st_dir == 1
+exit_short  = ta.change(st_dir) and st_dir == -1
+
+// ========================== EXECUTION ==========================
+if buy_entry
+    strategy.entry("Long", strategy.long, comment="Open Long")
+    alert('{"action": "buy_long", "user": "santoshpsiii"}', alert.freq_once_per_bar_close)
+
+if exit_long
+    strategy.close("Long", comment="Close Long")
+    alert('{"action": "close_long", "user": "santoshpsiii"}', alert.freq_once_per_bar_close)
+
+if short_entry
+    strategy.entry("Short", strategy.short, comment="Open Short")
+    alert('{"action": "sell_short", "user": "santoshpsiii"}', alert.freq_once_per_bar_close)
+
+if exit_short
+    strategy.close("Short", comment="Close Short")
+    alert('{"action": "close_short", "user": "santoshpsiii"}', alert.freq_once_per_bar_close)
+
+// ========================== SHORT DASHBOARD ==========================
+var table d = table.new(position.top_right, 2, 6, color.new(color.black, 20), color.gray, 1)
+
+if barstate.islast
+    table.cell(d, 0, 0, "TF", text_color=color.white, bgcolor=color.gray)
+    table.cell(d, 1, 0, "Trend", text_color=color.white, bgcolor=color.gray)
+    
+    table.cell(d, 0, 1, "5M", text_color=color.white)
+    table.cell(d, 1, 1, st_5m ? "BULL" : "BEAR", bgcolor=st_5m ? color.green : color.red, text_color=color.white)
+    
+    table.cell(d, 0, 2, "15M", text_color=color.white)
+    table.cell(d, 1, 2, st_15m ? "BULL" : "BEAR", bgcolor=st_15m ? color.green : color.red, text_color=color.white)
+    
+    table.cell(d, 0, 3, "1H", text_color=color.white)
+    table.cell(d, 1, 3, st_1h ? "BULL" : "BEAR", bgcolor=st_1h ? color.green : color.red, text_color=color.white)
+    
+    table.cell(d, 0, 4, "4H", text_color=color.white)
+    table.cell(d, 1, 4, st_4h ? "BULL" : "BEAR", bgcolor=st_4h ? color.green : color.red, text_color=color.white)
+    
+    table.cell(d, 0, 5, "State", text_color=color.white, bgcolor=color.blue)
+    table.cell(d, 1, 5, market_status, bgcolor=status_color, text_color=color.white)
+
+// ========================== VISUALS ==========================
+bgcolor(not is_trending ? color.new(color.orange, 95) : na)

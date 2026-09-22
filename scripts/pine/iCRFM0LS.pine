@@ -1,0 +1,133 @@
+// @version=5
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © wielkieef
+
+strategy(title="Real Strength Scalper [5m]", overlay=false, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=3, commission_type=strategy.commission.percent, commission_value=0.04, slippage=3, process_orders_on_close=true, max_lines_count=500, max_labels_count=500)
+
+// ===== INPUTS =====
+momLen    = input.int(9,    "Momentum (ROC) length",  minval=1,   group="Strength")
+volLen    = input.int(20,   "Volume MA length",        minval=1,   group="Strength")
+adxLen    = input.int(14,   "ADX length",              minval=1,   group="Strength")
+diLen     = input.int(14,   "DI length",               minval=1,   group="Strength")
+smoothLen = input.int(8,    "Histogram smoothing",     minval=1,   group="Strength")
+
+adxMin    = input.float(14.0, "Min ADX",               minval=0,   group="Filters")
+volMin    = input.float(1.2,  "Min Volume Ratio",      minval=0.1, step=0.1, group="Filters")
+strThr    = input.float(1.0,  "Strength threshold",    step=0.1,   group="Filters")
+
+smaFast   = input.int(30,    "SMA Fast",               minval=1,   group="Trend Filter")
+smaSlow   = input.int(60,    "SMA Slow",               minval=1,   group="Trend Filter")
+useTrend  = input.bool(true, "Use SMA Trend Filter",               group="Trend Filter")
+
+slPct     = input.float(1.0, "Stop Loss %",            minval=0.1, step=0.1, group="Risk")
+
+peakDrop  = input.float(25.0, "Peak drop % to exit",   minval=1, maxval=99, step=5, group="Exit")
+minHold   = input.int(3,      "Min bars before peak/flip exit", minval=0, group="Exit")
+flipThr   = input.float(0.8,  "Flip exit threshold (with SMA hold)", step=0.1, group="Exit")
+
+// ===== CALC =====
+mom      = ta.roc(close, momLen)
+volRatio = volume / ta.sma(volume, volLen)
+[diPlus, diMinus, adxVal] = ta.dmi(diLen, adxLen)
+adxBoost = adxVal / 20.0
+
+rawStr   = mom * math.max(volRatio, 0.3) * math.max(adxBoost, 0.3)
+strength = ta.ema(rawStr, smoothLen)
+
+bullDir   = diPlus  > diMinus
+bearDir   = diMinus > diPlus
+strongAdx = adxVal  >= adxMin
+strongVol = volRatio >= volMin
+
+fastMA    = ta.sma(close, smaFast)
+slowMA    = ta.sma(close, smaSlow)
+uptrend   = fastMA > slowMA
+downtrend = fastMA < slowMA
+
+// ===== HISTOGRAM =====
+hColor = strength > 0 and strength > strength[1] ? color.new(#00e676, 0)  : strength > 0 ? color.new(#00e676, 55) : strength < 0 and strength < strength[1] ? color.new(#ff1744, 0)  : color.new(#ff1744, 55)
+plot(strength, "Strength", color=hColor, style=plot.style_columns)
+hline(0,        "Zero",      color=color.new(color.gray, 50))
+hline( strThr,  "+Thr",      color=color.new(color.gray, 70), linestyle=hline.style_dashed)
+hline(-strThr,  "-Thr",      color=color.new(color.gray, 70), linestyle=hline.style_dashed)
+hline( flipThr, "+Flip Thr", color=color.new(color.yellow, 60), linestyle=hline.style_dotted)
+hline(-flipThr, "-Flip Thr", color=color.new(color.yellow, 60), linestyle=hline.style_dotted)
+
+plot(fastMA, "SMA Fast", color=color.new(color.aqua, 0),   force_overlay=true)
+plot(slowMA, "SMA Slow", color=color.new(color.orange, 0), force_overlay=true)
+
+// ===== SIGNALS =====
+longSig  = strength >  strThr and strongAdx and strongVol and bullDir and strength > strength[1] and (not useTrend or uptrend)
+shortSig = strength < -strThr and strongAdx and strongVol and bearDir and strength < strength[1] and (not useTrend or downtrend)
+
+// ===== PEAK TRACKING =====
+var float longPeak  = na
+var float shortPeak = na
+var int   entryBar  = na
+
+if strategy.position_size > 0 and strategy.position_size[1] <= 0
+    longPeak := strength
+    entryBar := bar_index
+
+if strategy.position_size < 0 and strategy.position_size[1] >= 0
+    shortPeak := strength
+    entryBar  := bar_index
+
+if strategy.position_size > 0
+    longPeak := math.max(nz(longPeak, strength), strength)
+
+if strategy.position_size < 0
+    shortPeak := math.min(nz(shortPeak, strength), strength)
+
+barsHeld    = na(entryBar) ? 0 : bar_index - entryBar
+
+longPkExit  = longPeak  > 0 and strength < longPeak  * (1 - peakDrop/100) and barsHeld >= minHold
+shortPkExit = shortPeak < 0 and strength > shortPeak * (1 - peakDrop/100) and barsHeld >= minHold
+
+longFlipExit  = strength <= -flipThr and barsHeld >= minHold
+shortFlipExit = strength >=  flipThr and barsHeld >= minHold
+
+longExit  = strategy.position_size > 0 and not na(longPeak)  and (uptrend   ? longFlipExit  : longPkExit)
+shortExit = strategy.position_size < 0 and not na(shortPeak) and (downtrend ? shortFlipExit : shortPkExit)
+
+// ===== RE-ENTRY LOCK =====
+var bool longLocked  = false
+var bool shortLocked = false
+
+longSLHit  = strategy.position_size[1] > 0 and strategy.position_size == 0
+shortSLHit = strategy.position_size[1] < 0 and strategy.position_size == 0
+
+if longSLHit
+    longLocked := true
+if shortSLHit
+    shortLocked := true
+
+if longLocked and strength <= 0
+    longLocked := false
+if shortLocked and strength >= 0
+    shortLocked := false
+
+// ===== EXECUTE =====
+if longSig and strategy.position_size <= 0 and not longLocked
+    strategy.entry("L", strategy.long)
+
+if shortSig and strategy.position_size >= 0 and not shortLocked
+    strategy.entry("S", strategy.short)
+
+if strategy.position_size > 0
+    slPrice = strategy.position_avg_price * (1 - slPct/100)
+    strategy.exit("L-SL", from_entry="L", stop=slPrice)
+    if longExit
+        strategy.close("L", comment=uptrend ? "flip" : "peak")
+        longLocked := false
+else
+    longPeak := na
+
+if strategy.position_size < 0
+    slPrice = strategy.position_avg_price * (1 + slPct/100)
+    strategy.exit("S-SL", from_entry="S", stop=slPrice)
+    if shortExit
+        strategy.close("S", comment=downtrend ? "flip" : "peak")
+        shortLocked := false
+else
+    shortPeak := na

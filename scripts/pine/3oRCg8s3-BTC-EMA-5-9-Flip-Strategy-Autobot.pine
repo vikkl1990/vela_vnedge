@@ -1,0 +1,79 @@
+//@version=5
+strategy("SAFE PUBLIC – BTC EMA 5/9 Trend Strategy (Delta Ready)",
+     overlay=true,
+     calc_on_every_tick=false,
+     process_orders_on_close=true,
+     initial_capital=100000,
+     default_qty_type=strategy.fixed,
+     default_qty_value=20)  // always fixed lots, never increases automatically
+
+// ===== INPUTS =====
+orderQty = input.int(20, "Order Quantity (Lots)") // safe fixed quantity
+useATR   = input.bool(true, "Use ATR Volatility Filter")
+useST    = input.bool(true, "Use Supertrend Filter")
+useHTF   = input.bool(true, "Use Higher Timeframe Trend Filter")
+
+// ===== BASE EMAs =====
+fastEMA = ta.ema(close, 5)
+slowEMA = ta.ema(close, 9)
+ema20   = ta.ema(close, 20)
+ema50   = ta.ema(close, 50)
+
+plot(fastEMA, color=color.new(color.green, 0), title="EMA 5")
+plot(slowEMA, color=color.new(color.red,   0), title="EMA 9")
+plot(ema20,  color=color.yellow, title="EMA 20")
+plot(ema50,  color=color.blue,   title="EMA 50")
+
+// ===== HIGHER TIMEFRAME TREND (1 HOUR) =====
+htfEMA20 = request.security(syminfo.tickerid, "60", ta.ema(close, 20))
+htfEMA50 = request.security(syminfo.tickerid, "60", ta.ema(close, 50))
+htfUp    = htfEMA20 > htfEMA50
+htfDown  = htfEMA20 < htfEMA50
+
+// ===== SUPERTREND FILTER =====
+[stLine, stDir] = ta.supertrend(3, 10)
+stBuy  = stDir == 1
+stSell = stDir == -1
+
+// ===== ATR VOLATILITY FILTER =====
+atr = ta.atr(14)
+atrPerc = (atr / close) * 100
+atrOK = atrPerc > 0.30   // safe threshold: avoid low volatility days
+
+// ===== TREND CONDITIONS =====
+upTrend   = ema20 > ema50
+downTrend = ema20 < ema50
+
+// ===== SIGNALS =====
+bullCross = ta.crossover(fastEMA, slowEMA) and barstate.isconfirmed
+bearCross = ta.crossunder(fastEMA, slowEMA) and barstate.isconfirmed
+
+// ===== FINAL SAFE ENTRY CONDITIONS =====
+buyAllowed  = upTrend and htfUp and stBuy and atrOK
+sellAllowed = downTrend and htfDown and stSell and atrOK
+
+// ===== SAFE ENTRY / EXIT LOGIC =====
+
+// BUY LOGIC
+if bullCross
+    // Always close old trade first
+    if strategy.position_size < 0
+        strategy.close("Short")
+    // Enter long only if all filters pass
+    if buyAllowed
+        strategy.close_all()
+        strategy.entry("Long", strategy.long, qty=orderQty)
+
+// SELL LOGIC
+if bearCross
+    // Always close old trade first
+    if strategy.position_size > 0
+        strategy.close("Long")
+    // Enter short only if all filters pass
+    if sellAllowed
+        strategy.close_all()
+        strategy.entry("Short", strategy.short, qty=orderQty)
+
+// ===== ALERTS =====
+alertcondition(bullCross and buyAllowed, "BUY", "BUY")
+alertcondition(bearCross and sellAllowed, "SELL", "SELL")

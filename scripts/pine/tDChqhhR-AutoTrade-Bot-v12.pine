@@ -1,0 +1,156 @@
+// © dayrelfit24 — Auto-Trade Bot v12 (1H EMA-115 Confirmation + Longs Only Mode)
+// Base: ABotV11 sweep logic | New: 1H EMA-115 filter | Sweep=14 | 5R
+//@version=6
+strategy("Auto-Trade Bot v12 [Dayrel] — EMA115", shorttitle="ABotV12",
+         overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+         initial_capital=10000, commission_type=strategy.commission.percent,
+         commission_value=0.05, fill_orders_on_standard_ohlc=true)
+
+// ── INPUTS ───────────────────────────────────────────────────────────────────
+i_longs_only   = input.bool(true,   "Longs Only Mode",        group="⚙️ Mode")
+i_hma_len      = input.int(20,      "HMA Length",             group="📈 HMA",    minval=5)
+i_sweep_len    = input.int(14,      "Sweep Lookback (bars)",  group="🔍 Sweep",  minval=3, maxval=50)
+i_willy_len    = input.int(14,      "%R Length",              group="🟡 Willy",  minval=1)
+i_willy_ema    = input.int(13,      "%R EMA Length",          group="🟡 Willy",  minval=1)
+i_willy_os     = input.float(-79.0, "%R Oversold Level",      group="🟡 Willy",  minval=-100, maxval=-50, step=1)
+i_willy_window = input.int(70,      "OS/OB Lookback (bars)",  group="🟡 Willy",  minval=5, maxval=200)
+i_ema_len      = input.int(115,     "EMA Length (1H TF)",     group="📊 EMA115", minval=10, maxval=500)
+i_rr           = input.float(5.0,   "Risk to Reward Ratio",   group="💰 R:R",    minval=0.1, step=0.1)
+
+// ── HMA ──────────────────────────────────────────────────────────────────────
+hma(src, len) =>
+    ta.wma(2 * ta.wma(src, math.floor(len / 2)) - ta.wma(src, len), math.floor(math.sqrt(len)))
+
+hma20       = hma(close, i_hma_len)
+hma_rising  = hma20 >= hma20[1] and hma20[1] >= hma20[2]
+hma_falling = hma20 <= hma20[1] and hma20[1] <= hma20[2]
+
+// ── 1H EMA-115 ───────────────────────────────────────────────────────────────
+ema115_1h   = request.security(syminfo.tickerid, "60", ta.ema(close, i_ema_len), lookahead=barmerge.lookahead_off)
+ema_rising  = ema115_1h >= ema115_1h[1] and ema115_1h[1] >= ema115_1h[2]
+ema_falling = ema115_1h <= ema115_1h[1] and ema115_1h[1] <= ema115_1h[2]
+
+// ── WILLIAMS %R ──────────────────────────────────────────────────────────────
+i_willy_ob  = -(100 + i_willy_os)
+willy       = ta.wpr(i_willy_len)
+willy_ema_v = ta.ema(willy, i_willy_ema)
+willy_above = willy > willy_ema_v
+willy_below = willy < willy_ema_v
+
+var int last_os_bar = -1000
+var int last_ob_bar = -1000
+if willy <= i_willy_os
+    last_os_bar := bar_index
+if willy >= i_willy_ob
+    last_ob_bar := bar_index
+
+from_os = (bar_index - last_os_bar) <= i_willy_window
+from_ob = (bar_index - last_ob_bar) <= i_willy_window
+
+// ── LONG SWEEP TRACKER ───────────────────────────────────────────────────────
+recent_swing_low = ta.lowest(low[1], i_sweep_len)
+is_long_sweep    = low < recent_swing_low
+
+var float long_sweep_high = na
+var float long_sweep_low  = na
+var bool  long_sweep_on   = false
+
+if is_long_sweep
+    long_sweep_high := high
+    long_sweep_low  := low
+    long_sweep_on   := true
+
+// ── SHORT SWEEP TRACKER ──────────────────────────────────────────────────────
+recent_swing_high = ta.highest(high[1], i_sweep_len)
+is_short_sweep    = high > recent_swing_high
+
+var float short_sweep_low  = na
+var float short_sweep_high = na
+var bool  short_sweep_on   = false
+
+if is_short_sweep
+    short_sweep_low  := low
+    short_sweep_high := high
+    short_sweep_on   := true
+
+// ── HIGHER LOW / LOWER HIGH (LP entries) ─────────────────────────────────────
+var float last_long_sl  = na
+var float prev_long_sl  = na
+var float last_short_sh = na
+var float prev_short_sh = na
+
+if is_long_sweep
+    prev_long_sl := last_long_sl
+    last_long_sl := low
+
+if is_short_sweep
+    prev_short_sh := last_short_sh
+    last_short_sh := high
+
+higher_low = not na(prev_long_sl)  and last_long_sl  > prev_long_sl
+lower_high = not na(prev_short_sh) and last_short_sh < prev_short_sh
+
+// ── LONG ENTRY ───────────────────────────────────────────────────────────────
+long_base = long_sweep_on and (close > open) and close > long_sweep_high and close > hma20 and hma_rising and close > ema115_1h and ema_rising
+if long_base
+    long_sweep_on := false
+
+long_hp  = long_base and willy_above and from_os
+long_lp  = long_base and willy_above and not from_os and higher_low
+long_sig = long_hp or long_lp
+
+// ── SHORT ENTRY (disabled in Longs Only mode) ─────────────────────────────────
+short_base = not i_longs_only and short_sweep_on and (close < open) and close < short_sweep_low and close < hma20 and hma_falling and close < ema115_1h and ema_falling
+if short_base
+    short_sweep_on := false
+
+short_hp  = short_base and willy_below and from_ob
+short_lp  = short_base and willy_below and not from_ob and lower_high
+short_sig = short_hp or short_lp
+
+// ── SL / TP ──────────────────────────────────────────────────────────────────
+tick = syminfo.mintick
+
+l_sl   = not na(long_sweep_low)   ? long_sweep_low   - tick : close * 0.995
+l_risk = math.max(close - l_sl,   tick)
+l_tp   = close + l_risk * i_rr
+
+s_sl   = not na(short_sweep_high) ? short_sweep_high + tick : close * 1.005
+s_risk = math.max(s_sl  - close,  tick)
+s_tp   = close - s_risk * i_rr
+
+var float t_sl = na
+var float t_tp = na
+
+if long_sig and strategy.position_size == 0
+    t_sl := l_sl
+    t_tp := l_tp
+    strategy.entry("Long", strategy.long)
+
+if short_sig and strategy.position_size == 0
+    t_sl := s_sl
+    t_tp := s_tp
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit("Exit Long",  "Long",  stop=t_sl, limit=t_tp, comment_profit="TP 🎯 5R", comment_loss="SL ❌")
+if strategy.position_size < 0
+    strategy.exit("Exit Short", "Short", stop=t_sl, limit=t_tp, comment_profit="TP 🎯 5R", comment_loss="SL ❌")
+
+// ── ALERTS ───────────────────────────────────────────────────────────────────
+if long_sig
+    alert('{"action":"buy","symbol":"'  + syminfo.ticker + '","entry":' + str.tostring(math.round(close, 5)) + ',"sl":' + str.tostring(math.round(l_sl, 5)) + ',"tp1":' + str.tostring(math.round(l_tp, 5)) + ',"timeframe":"' + timeframe.period + '","mode":"swing","type":"ema115"}', alert.freq_once_per_bar_close)
+if short_sig
+    alert('{"action":"sell","symbol":"' + syminfo.ticker + '","entry":' + str.tostring(math.round(close, 5)) + ',"sl":' + str.tostring(math.round(s_sl, 5)) + ',"tp1":' + str.tostring(math.round(s_tp, 5)) + ',"timeframe":"' + timeframe.period + '","mode":"swing","type":"ema115"}', alert.freq_once_per_bar_close)
+
+// ── VISUALS ──────────────────────────────────────────────────────────────────
+hma_color = hma_rising and close > ema115_1h ? color.new(#00e5ff, 0) : hma_falling and close < ema115_1h ? color.new(#ff4757, 0) : color.new(color.gray, 0)
+ema_color = ema_rising ? color.new(#f7b731, 0) : color.new(#a55eea, 0)
+
+plot(hma20,     "HMA 20",       color=hma_color, linewidth=2)
+plot(ema115_1h, "EMA 115 (1H)", color=ema_color, linewidth=1)
+
+plotshape(long_hp,  title="Long HP",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime,   0), size=size.normal)
+plotshape(long_lp,  title="Long LP",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.yellow, 0), size=size.small)
+plotshape(not i_longs_only and short_hp, title="Short HP", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,    0), size=size.normal)
+plotshape(not i_longs_only and short_lp, title="Short LP", style=shape.triangledown, location=location.abovebar, color=color.new(color.orange, 0), size=size.small)
