@@ -34,10 +34,32 @@ export function toKlines(bars: ProviderBar[], tfSeconds: number): Kline[] {
  * own market for every requested symbol. An empty id means the scanner's own market.
  */
 export function deltaSymbolFor(tickerId: string | undefined, primary: string): string {
+  return parseTicker(tickerId, primary).symbol;
+}
+
+/**
+ * Split a Pine ticker id into the Delta market and its chart-type modifier. `BTCUSD;HEIKINASHI`
+ * (what `ticker.heikinashi()` produces) asks for the same market drawn as Heikin-Ashi candles; the
+ * other chart types (Renko, Kagi, point & figure, line break, range) cannot be derived from time
+ * bars and are refused rather than silently served as ordinary candles.
+ */
+export function parseTicker(tickerId: string | undefined, primary: string): { symbol: string; modifier: string | null } {
   const raw = String(tickerId ?? '').trim();
-  if (!raw) return primary.toUpperCase();
-  const sym = (raw.includes(':') ? raw.slice(raw.lastIndexOf(':') + 1) : raw).toUpperCase().replace(/\.P$/, '');
-  return sym.replace(/USDT$/, 'USD');
+  if (!raw) return { symbol: primary.toUpperCase(), modifier: null };
+  const [head, ...rest] = raw.split(';');
+  const sym = (head.includes(':') ? head.slice(head.lastIndexOf(':') + 1) : head).toUpperCase().replace(/\.P$/, '');
+  return { symbol: sym.replace(/USDT$/, 'USD'), modifier: rest.length ? rest.join(';').toUpperCase() : null };
+}
+
+/** Heikin-Ashi candles from ordinary ones: averaged open/close, extremes spanning both. */
+export function toHeikinAshi(kl: Kline[]): Kline[] {
+  let prevOpen = 0, prevClose = 0;
+  return kl.map((k, i) => {
+    const close = (k.open + k.high + k.low + k.close) / 4;
+    const open = i === 0 ? (k.open + k.close) / 2 : (prevOpen + prevClose) / 2;
+    prevOpen = open; prevClose = close;
+    return { ...k, open, close, high: Math.max(k.high, open, close), low: Math.min(k.low, open, close) };
+  });
 }
 
 /**
@@ -61,20 +83,22 @@ export class DeltaPineProvider {
 
   async getMarketData(tickerId: string, timeframe: string, limit?: number): Promise<Kline[]> {
     const tf = String(timeframe ?? this.primaryPineTf);
-    const symbol = deltaSymbolFor(tickerId, this.opts.symbol);
+    const { symbol, modifier } = parseTicker(tickerId, this.opts.symbol);
+    if (modifier && modifier !== 'HEIKINASHI') throw new Error(`request.security(${tickerId}): ${modifier} charts are not supported`);
+    const shape = (kl: Kline[]) => (modifier === 'HEIKINASHI' ? toHeikinAshi(kl) : kl);
     const own = symbol === this.opts.symbol.toUpperCase();
     const sameTf = !pineTfToDelta(tf) || pineTfToDelta(tf) === this.opts.tf || tf === this.primaryPineTf;
     const deltaTf = sameTf ? this.opts.tf : pineTfToDelta(tf)!;
     const lastMs = this.opts.bars.at(-1)?.time ?? Date.now();
     if (own && sameTf) {
-      const kl = toKlines(this.opts.bars, TF_SECONDS[this.opts.tf]);
+      const kl = shape(toKlines(this.opts.bars, TF_SECONDS[this.opts.tf]));
       return limit ? kl.slice(-limit) : kl;
     }
     const monthsM = deltaTf.match(/^(\d+)M$/);
     const months = monthsM ? Number(monthsM[1]) : 0;
     const secs = TF_SECONDS[deltaTf] ?? (deltaTf === '1w' ? 604800 : months ? 2592000 * months : undefined);
     if (!secs) return [];
-    const key = `${symbol}:${deltaTf}:${lastMs}`;
+    const key = `${symbol}:${deltaTf}:${modifier ?? ''}:${lastMs}`;
     if (this.cache.has(key)) return this.cache.get(key)!;
     if (!this.opts.fetchOther) {
       if (!own) throw new Error(`request.security(${tickerId}): no data source for another market`);
@@ -99,7 +123,7 @@ export class DeltaPineProvider {
     if (!own && raw.length === 0) throw new Error(`request.security(${tickerId}): ${symbol} is not a Delta market; external series are not supported`);
     // Only bars that opened at or before the last primary bar (no look-ahead beyond the current HTF bar).
     const bars = raw.filter(b => b.time <= lastMs);
-    const kl = months ? toMonthlyKlines(bars, months) : toKlines(bars, secs);
+    const kl = shape(months ? toMonthlyKlines(bars, months) : toKlines(bars, secs));
     this.cache.set(key, kl);
     return limit ? kl.slice(-limit) : kl;
   }

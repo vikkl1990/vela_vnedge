@@ -29,7 +29,11 @@ const MARKETS = (process.env.MARKETS ?? 'BTCUSD,ETHUSD,SOLUSD,XRPUSD,DOGEUSD').s
 const CONC = Number(process.env.CONCURRENCY ?? 8);
 const STRESS = Number(process.env.STRESS_BPS ?? 10);
 const BARS: Record<string, number> = { '5m': 4000, '15m': 4000, '1h': 3000, '4h': 2000 };
-const SUB: Record<string, string> = { '5m': '1m', '15m': '1m', '1h': '5m', '4h': '5m' };
+/**
+ * Candles the exits are resolved on. 1m for the fast timeframes; 15m for 1h and 4h, which is still
+ * far finer than the signal bar and costs one request per market instead of twenty for deep 5m.
+ */
+const SUB: Record<string, string> = { '5m': '1m', '15m': '1m', '1h': '15m', '4h': '15m' };
 const out = fs.createWriteStream(process.env.OUT ?? '/tmp/survey.tsv', { flags: process.env.APPEND ? 'a' : 'w' });
 if (!process.env.APPEND) out.write(['scanner', 'tf', 'symbol', 'trades', 'wins', 'net', 'pf', 'avgR', 'netStress', 'windowsUp', 'days'].join('\t') + '\n');
 
@@ -45,10 +49,13 @@ async function bars(symbol: string, tf: string, n: number): Promise<Bar[]> {
 }
 for (const s of MARKETS) { const p = await rest.product(s); market.set(s, { contractValue: Number(p?.contract_value ?? 0.001), tickSize: Number(p?.tick_size ?? 0.5) }); }
 // candles first, once: the sub-series covers the longest span needed per market
-for (const s of MARKETS) for (const tf of TFS) {
-  const b = await bars(s, tf, BARS[tf]);
-  const need = Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]);
-  await bars(s, SUB[tf], Math.min(need, 80_000));
+for (const s of MARKETS) {
+  for (const tf of TFS) {
+    const b = await bars(s, tf, BARS[tf]);
+    const need = Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]);
+    await bars(s, SUB[tf], Math.min(need, 60_000));
+  }
+  console.error(`  candles ready: ${s}`);
 }
 console.error(`survey: ${ids.length} scripts × ${TFS.join(',')} × ${MARKETS.length} markets, concurrency ${CONC}`);
 

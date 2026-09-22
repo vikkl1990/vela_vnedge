@@ -10,7 +10,7 @@
  * Live scanners always go first: shadow runs are queued a little after each bar close and are
  * skipped entirely when the worker queue is backed up.
  */
-import type { AppConfig } from '../config.ts';
+import { TF_SECONDS, type AppConfig } from '../config.ts';
 import type { CandleStore, Bar } from '../data/candleStore.ts';
 import type { PinePool } from '../pine/pool.ts';
 import type { ScannerRegistry } from '../scanners/registry.ts';
@@ -43,8 +43,9 @@ export class ShadowRunner {
   symbols(): string[] { return [...new Set([...this.pairs.map(r => r.symbol), ...this.deps.paper.openPositions().map(p => p.symbol)])]; }
 
   start() {
+    // each pair runs on its own timeframe: the daily screen is 15m, but a survey can admit 1h or 4h pairs
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
-      if (!e.historical && e.tf === this.deps.cfgRef().incubator.tf) this.onBarClosed(e.symbol, e.tf);
+      if (!e.historical && this.pairs.some(r => r.tf === e.tf)) this.onBarClosed(e.symbol, e.tf);
     });
     void this.sync();
     this.timer = setInterval(() => void this.sync(), SYNC_MS);
@@ -57,14 +58,13 @@ export class ShadowRunner {
   async sync(): Promise<void> {
     const cfg = this.deps.cfgRef();
     if (!cfg.incubator?.enabled) { this.pairs = []; return; }
-    const tf = cfg.incubator.tf;
-    this.pairs = this.deps.store.list(ACTIVE_STAGES).filter(r => r.tf === tf && this.deps.registry.get(r.scannerId)?.status === 'ok');
+    this.pairs = this.deps.store.list(ACTIVE_STAGES).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
     // symbols of open shadow positions keep their 1m feed until those positions close
     const symbols = new Set(this.symbols());
     this.deps.subscribe?.([...symbols]);
     for (const symbol of symbols) {
       try {
-        if (this.pairs.some(r => r.symbol === symbol) && !this.deps.candles.has(symbol, tf)) await this.deps.candles.track(symbol, tf, cfg.historyBars);
+        for (const tf of new Set(this.pairs.filter(r => r.symbol === symbol).map(r => r.tf))) if (!this.deps.candles.has(symbol, tf)) await this.deps.candles.track(symbol, tf, cfg.historyBars);
         if (!this.deps.candles.has(symbol, '1m')) await this.deps.candles.track(symbol, '1m', 300);
       } catch (e: any) { log.warn(`shadow: cannot track ${symbol}: ${e?.message ?? e}`); }
     }

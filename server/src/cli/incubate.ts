@@ -14,6 +14,7 @@
  * thousands of comparisons, and hundreds will pass by luck; what it passes merely earns a slot in
  * the shadow book, where the evidence that decides promotion is collected (decision 17).
  */
+import fs from 'node:fs';
 import { Db } from '../db.ts';
 import { DeltaRest } from '../delta/rest.ts';
 import { PinePool } from '../pine/pool.ts';
@@ -40,6 +41,16 @@ const out = (m: string) => console.log(`[incubate ${new Date().toISOString().sli
 const synced = syncLive(store, cfg);
 out(`live fleet synced: +${synced.added} −${synced.removed}`);
 
+// ADD=file.json: record screen results produced elsewhere (e.g. `npm run survey` on another machine),
+// [{ scannerId, symbol, tf, result: ScreenResult }], before judging
+if (process.env.ADD) {
+  let added = 0;
+  for (const x of JSON.parse(fs.readFileSync(process.env.ADD, 'utf8'))) {
+    const k = recordScreen(store, { scannerId: x.scannerId, symbol: x.symbol, tf: x.tf }, { ...x.result, at: Date.now() }, inc);
+    if (k === 'new' || k === 'updated') added++;
+  }
+  out(`recorded ${added} screen results from ${process.env.ADD}`);
+}
 const sliceArg = process.env.SLICE ?? String(Math.floor(Date.now() / DAY) % inc.screen.slices);
 const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0 };
 
