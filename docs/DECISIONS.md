@@ -396,3 +396,22 @@ dimension are what can be trusted:
   to 2R is about the same (+83R to +90R). Start at 1.25R or later and stop tuning it.
 - Share kept and the 0.5R lock at 1R: trade-offs, not improvements. The lock costs a little total
   and buys back the old 55% win rate and the highest PF.
+
+## 16. Deployed: 0.5R lock at 1R, the fleet cut to ten pairs, and auto-tune switched off
+
+**Exit.** Decision 14's trail (keep 60% of the peak from 1.5R) plus `floorAtR 1`, `floorKeepR 0.5`:
+once a trade has been +1R the stop moves to +0.5R, so a trade that reached +1R can no longer end as a
+loss. On the VM fleet this was the most consistent rule tested (decision 15): PF 1.26–1.29, 55–56%
+win rate, 6–7 of 8 windows.
+
+**Fleet.** From `npm run deepdive` (41 days, 1m exits, GST): kept every pair rated KEEP or WEAK,
+removed every DROP.
+
+| kept (10) | removed (7) |
+|---|---|
+| dynamic-trend-bands FILUSD, kinetic-momentum UNIUSD + PIEVERSEUSD, high-volume-breakout ZECUSD, liquidity-trail-matrix ETHUSD, session-breakout-context SOLUSD, supertrend-cluster BTCUSD, smart-swing-vwap AKEUSD + EVAAUSD, smart-money-breakout AKEUSD | ai-predictive-flow UNIUSD (332 trades, dies at 10 bps), smart-swing-vwap LINKUSD, supertrend-cluster ETHUSD, session-killzones AKEUSD, adaptive-atr-extension SOLUSD, fia-trend-momentum BTCUSD, pivot-channel-breaks ZECUSD |
+
+**Auto-tune off.** On the 14:30 restart it removed four of the kept pairs, including kinetic-momentum
+UNIUSD (PF 2.18 over 41 days). It judges on the last ~10 days of bar-level backtests, keeps a pair on
+3 trades and any profit, runs every six hours and can only ever remove: over weeks it would switch
+the fleet off by chance, and it overrides every decision above. Fleet changes are made by review.
