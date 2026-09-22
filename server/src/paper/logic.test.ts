@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
+import { applyBar, applyLiveBar, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false };
 
@@ -307,6 +307,12 @@ test('the volatility trail measures its distance in current ATR, not in entry ri
   applyBar(noAtr, { time: 1, high: 120, low: 99, close: 119 }, { ...c, trailDistanceR: 1 }, undefined);
   assert.equal(noAtr.sl, 115, `fallback trail, got ${noAtr.sl}`);
   assert.equal(DEFAULT_CONFIG.paper.trailAtrMult, 0, 'ships disabled');
+
+  // the live 1m path hands the ATR through, so live trails exactly like the backtest
+  const live = openPosition({ id: 2, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10,
+    contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [300], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: false });
+  applyLiveBar(live, { time: 60_000, high: 120, low: 99, close: 119 }, c, 120_000, 5);
+  assert.equal(live.sl, 105, `live ATR trail, got ${live.sl}`);
 });
 
 test('a reversal only banks the trade once it is actually ahead', () => {

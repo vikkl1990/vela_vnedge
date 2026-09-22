@@ -78,6 +78,11 @@ const policies: Policy[] = [
 
   // volatility exits (decision 7): worse and far less consistent
   { name: 'ATR trail 3x from 1R', cfg: p => ({ ...p, trailGiveBackPct: 0, trailAtrMult: 3 }) },
+  { name: 'ATR trail 2x from 1R', cfg: p => ({ ...p, trailGiveBackPct: 0, trailAtrMult: 2 }) },
+  { name: 'ATR trail 2.5x from 1R', cfg: p => ({ ...p, trailGiveBackPct: 0, trailAtrMult: 2.5 }) },
+  { name: 'ATR trail 4x from 1R', cfg: p => ({ ...p, trailGiveBackPct: 0, trailAtrMult: 4 }) },
+  { name: 'ATR trail 3x from 0.5R', cfg: p => ({ ...p, trailAfterR: 0.5, trailGiveBackPct: 0, trailAtrMult: 3 }) },
+  { name: 'ATR trail 3x from 2R', cfg: p => ({ ...p, trailAfterR: 2, trailGiveBackPct: 0, trailAtrMult: 3 }) },
 
   // reversals (decision 8): the requested variant was worst; reversing less helped slightly
   { name: 'reverse only above break-even', cfg: p => ({ ...p, reversalMinR: 0.01 }) },

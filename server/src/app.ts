@@ -1,3 +1,4 @@
+import { lastAtr } from './data/indicators.ts';
 import { ConfigStore, DATA_DIR, type AppConfig } from './config.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
@@ -58,6 +59,7 @@ export class App {
     const workers = new WorkerTracker();
     this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined, undefined, workers.factory);
     this.paper = new PaperEngine(this.db, cfg);
+    this.paper.atrFor = (symbol, tf) => lastAtr(this.candles.get(symbol, tf, { closedOnly: true, limit: 60 }), 14);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.resolvedSymbols = cfg().symbols;

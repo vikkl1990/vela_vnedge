@@ -67,8 +67,10 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         while (si < sub.length && sub[si].time < bar.time) si++;
         const start = si;
         // no 1m data for this bar (gap in the feed): fall back to the bar itself
-        if (si >= sub.length || sub[si].time >= bar.time + tfMs) applyBar(open, bar, cfg, atr[i]);
-        for (let j = start; open && open.status === 'open' && j < sub.length && sub[j].time < bar.time + tfMs; j++) applyBar(open, sub[j], cfg, atr[i]);
+        // live only knows the ATR of the last closed signal bar, so the 1m path uses that too
+        const atrKnown = atr[i - 1] ?? atr[i];
+        if (si >= sub.length || sub[si].time >= bar.time + tfMs) applyBar(open, bar, cfg, atrKnown);
+        for (let j = start; open && open.status === 'open' && j < sub.length && sub[j].time < bar.time + tfMs; j++) applyBar(open, sub[j], cfg, atrKnown);
       } else applyBar(open, bar, cfg, atr[i]);
       if (open.status === 'closed') finish(open);
     }

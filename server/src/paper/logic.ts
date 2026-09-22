@@ -393,7 +393,7 @@ export interface PriceBar { time: number; high: number; low: number; close: numb
  * OHLC extremes are cumulative; replaying an old low after TP1 must not hit the new BE stop.
  * In an entry minute without a baseline, only the current close is known to be post-entry.
  */
-export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, observedAt: number): Fill[] {
+export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, observedAt: number, atrNow?: number): Fill[] {
   const previous = pos.lastPriceBar;
   if (pos.status !== 'open' || observedAt < pos.entryAt || bar.time + 60_000 <= pos.entryAt) return [];
   if (previous && bar.time < previous.time) return [];
@@ -407,7 +407,7 @@ export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, obs
     high = low = bar.close;
   }
   pos.lastPriceBar = { ...bar };
-  return applyBar(pos, { time: observedAt, high, low, close: bar.close }, cfg);
+  return applyBar(pos, { time: observedAt, high, low, close: bar.close }, cfg, atrNow);
 }
 
 /** Where a position stands right now, in R, counting realised legs, fees and the open mark. */

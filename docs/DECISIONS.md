@@ -319,5 +319,24 @@ Consequences:
 - Decision 12's replay compared live with the bar-level backtest; its twelve trades were mostly
   plain stop-outs, where the two models agree, so its conclusion stands.
 
-Not changed yet. Changing the exit during the freeze resets the live sample (decision 3), so it is
-the owner's call; the evidence above is what that call should rest on.
+**Follow-up: ATR trail widths on 1m, with the look-ahead removed.** The first 1m run gave the trail
+the ATR of the bar still in progress, which live cannot know. Using the last closed bar (as live
+now does, via `PaperEngine.atrFor`), each candidate against the live policy, window by window:
+
+| policy | net | PF | beats live in | net gain | gain without its best window |
+|---|---|---|---|---|---|
+| live: keep 75% from 1R | +1496 | 1.08 | – | – | – |
+| give back 50% from 1R | +1586 | 1.08 | 5/8 | +22 | −454 |
+| ATR 2× from 1R | +2143 | 1.11 | 4/8 | +366 | −493 |
+| ATR 2.5× from 1R | +2239 | 1.11 | 4/8 | +497 | −680 |
+| ATR 3× from 1R | +3128 | 1.14 | 4/8 | +798 | −1056 |
+| ATR 3× from 0.5R | +3120 | 1.14 | 4/8 | +877 | −983 |
+
+The ATR trails earn more in total only by riding one or two strong trends further, and give it back
+in chop. None beats the live policy in most windows, and every one of them is behind once its single
+best window is removed. That is a different risk profile, not an improvement, so **the live exit is
+not changed**. The 1m replay removed the illusion that the live trail was strong; it did not find a
+better one.
+
+Tick fills (`fillSource: tape`) were not adopted either: the tape path never runs the trail at all,
+and there is no tick history to test it on.

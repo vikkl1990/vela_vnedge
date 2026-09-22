@@ -67,6 +67,12 @@ export class PaperEngine extends EventEmitter {
    */
   readonly priceSource = { quote: 0, slippage: 0, rejectedNoQuote: 0 };
 
+  /**
+   * Current ATR of a position's own timeframe (last closed bars), for the ATR trail. Without it the
+   * trail falls back to a fixed R distance, which is not the rule the backtest measured.
+   */
+  atrFor?: (symbol: string, tf: string) => number | undefined;
+
   constructor(db: Db, cfgRef: () => AppConfig) {
     super();
     this.db = db; this.cfgRef = cfgRef;
@@ -412,7 +418,7 @@ export class PaperEngine extends EventEmitter {
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
-      const fills = applyLiveBar(pos, bar, this.paper, eventAt);
+      const fills = applyLiveBar(pos, bar, this.paper, eventAt, (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       if (fills.length) this.applyFills(pos, fills);
       else if (pos.lastPriceBar !== previous) this.persist(pos);
     }
