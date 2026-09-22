@@ -7,6 +7,8 @@ import type { WorkerJob, WorkerResult } from './worker.ts';
 
 const log = logger.scoped('pool');
 const WORKER_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker.ts');
+/** Heap ceiling per worker thread (MB); override with VNEDGE_WORKER_HEAP_MB. */
+export const WORKER_HEAP_MB = Number(process.env.VNEDGE_WORKER_HEAP_MB) || 1536;
 
 interface PoolWorker {
   on(event: string, listener: (...args: any[]) => void): unknown;
@@ -40,7 +42,13 @@ export class PinePool {
   private createWorker: (index: number) => PoolWorker;
 
   constructor(size = Math.max(2, Math.min(6, (os.cpus()?.length ?? 4) - 1)), timeoutMs = 90_000,
-    createWorker: (index: number) => PoolWorker = index => new Worker(WORKER_FILE, { workerData: { index }, execArgv: ['--no-warnings=ExperimentalWarning'] })) {
+    createWorker: (index: number) => PoolWorker = index => new Worker(WORKER_FILE, {
+      workerData: { index }, execArgv: ['--no-warnings=ExperimentalWarning'],
+      // A script that runs away with memory must fail its own job, not take the machine down:
+      // one did, filling 22 GB until the VM stopped answering. V8 ends the worker at this heap
+      // size, the pool fails the job and replaces the worker.
+      resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
+    })) {
     this.size = size; this.timeoutMs = timeoutMs; this.createWorker = createWorker;
     for (let i = 0; i < size; i++) this.spawn(i);
     this.timeoutTimer = setInterval(() => this.reapTimeouts(), 5_000);
@@ -75,7 +83,9 @@ export class PinePool {
       const p = slot.busy;
       if (p && p.job.id === msg.id) { slot.busy = null; p.resolve(msg); this.pump(); }
     });
-    w.on('error', (err: Error) => {
+    w.on('error', (err: Error & { code?: string }) => {
+      // name the job that exhausted its heap, so a runaway script identifies itself in the log
+      if (err.code === 'ERR_WORKER_OUT_OF_MEMORY') log.error(`worker ${index} ran out of memory (cap ${WORKER_HEAP_MB} MB) on ${slot.busy?.job.scannerId ?? '?'} ${slot.busy?.job.symbol ?? ''}`);
       log.error(`worker ${index} crashed: ${err.message}`);
       this.retire(slot, 'worker crashed: ' + err.message);
     });

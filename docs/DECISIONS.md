@@ -529,3 +529,14 @@ pairs. `minRiskFeeRatioBySymbol` exists for a per-market override; it is not set
 Found in passing: the local bot on 8787 (started 2026-09-22 00:51, older code) rewrote the local
 `data/config.json` from memory, reverting the exit to 75% from 1R. The VM is unaffected; `exits.ts`
 now takes `PAPER=file` so tests cannot silently use a stale local config.
+
+## 22. Memory caps after a runaway script froze the VM
+
+On 2026-09-22 the incubator's screen (slice 5) drove the VM to 98% of 24 GB from 16:10 UTC until SSH
+stopped answering; it needed a forced reboot. The kernel log shows the same failure killed the
+library sweep the day before (22 GB resident). The script responsible was not reproduced on BTCUSD
+or SOLUSD, nor PO3 on all 35 markets; it is one of slice 5's scripts on one market. Rather than hunt
+through 160 × 36 runs, the damage is now bounded: each Pine worker has a 1.5 GB heap cap
+(`VNEDGE_WORKER_HEAP_MB`; the job fails, the worker is replaced, and the log names the script and
+market), the daily job's main thread 3 GB, the job 8 GB (`MemoryMax`), the bot 10 GB. Verified with a
+deliberately runaway script: stopped in 0.5 s at 409 MB, the next job ran normally.

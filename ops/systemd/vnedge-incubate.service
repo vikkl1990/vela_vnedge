@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/opt/vnedge/server
-ExecStart=/usr/local/bin/node --no-warnings=ExperimentalWarning src/cli/incubate.ts
+ExecStart=/usr/local/bin/node --no-warnings=ExperimentalWarning --max-old-space-size=3072 src/cli/incubate.ts
 Environment=NODE_ENV=production
 Environment=VNEDGE_DATA_DIR=/opt/vnedge/data
 # half the cores, at the lowest priority: the live bot always comes first
@@ -18,6 +18,11 @@ IOSchedulingClass=idle
 CPUWeight=20
 # a full slice is ~230 scripts × ~40 markets; stop a runaway rather than overlap the next day
 TimeoutStartSec=6h
+# one runaway script filled 22 GB and froze the VM (2026-09-22); each worker is capped at 1.5 GB of
+# heap by the pool, and this caps the whole job
+MemoryHigh=6G
+MemoryMax=8G
+MemorySwapMax=0
 StandardOutput=append:/opt/vnedge/data/logs/incubate.out
 StandardError=append:/opt/vnedge/data/logs/incubate.err
 NoNewPrivileges=true
