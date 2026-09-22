@@ -508,3 +508,24 @@ The offer itself is worth ~6% on the fleet with no change in behaviour: quick st
 close inside the window. Taking profit early to stay inside it, or scratching trades that are not
 working at the window's end, still loses more than the fee saves. Enabled on the VM on the
 assumption that the account has opted in; if it has not, paper results are ~6% flattered.
+
+## 21. Tested: a stricter cost filter (minimum stop in round-trip fees). Not adopted; available per market.
+
+Costs in R are roughly round-trip % ÷ stop %, so tight stops pay a third of every R on BTC. The
+filter `minRiskFeeRatio` (live 4× = a 0.47% minimum stop) was raised in the full engine, 1m exits,
+VM paper settings (`PAPER=`, `POLICIES=costfilter`):
+
+| sample | 4× (live) | 6× | 8× | 10× | 12× |
+|---|---|---|---|---|---|
+| VM 17-pair list, net | +2019 | +1727 | +1077 | +883 | +874 |
+| 34 BTC/ETH pairs, net | −652 (PF 0.92) | +394 (1.14) | +548 (1.89, 5/7 windows) | +182 | +147 |
+
+On alts the filter only removes profitable trades. On the broad BTC/ETH universe any threshold of 6×
+or more turns losing into winning. But on the VM's actual fleet a BTC/ETH-only 8× filter lowers the
+result (+2228 → +2049): its two BTC/ETH pairs were selected because they already beat their costs,
+which is the filter's job done per pair. The incubator's after-cost screen does the same for new
+pairs. `minRiskFeeRatioBySymbol` exists for a per-market override; it is not set.
+
+Found in passing: the local bot on 8787 (started 2026-09-22 00:51, older code) rewrote the local
+`data/config.json` from memory, reverting the exit to 75% from 1R. The VM is unaffected; `exits.ts`
+now takes `PAPER=file` so tests cannot silently use a stale local config.

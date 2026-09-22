@@ -120,8 +120,8 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
  * Stop distance versus round-trip taker fees. Returns an error string when the stop is so
  * tight that fees would consume more than 1/minRiskFeeRatio of the risk (0 disables).
  */
-export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig): string | null {
-  const ratio = cfg.minRiskFeeRatio ?? 0;
+export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig, symbol?: string): string | null {
+  const ratio = (symbol ? cfg.minRiskFeeRatioBySymbol?.[symbol] : undefined) ?? cfg.minRiskFeeRatio ?? 0;
   if (!(ratio > 0)) return null;
   const risk = Math.abs(entry - sl);
   const feeRoundTrip = entry * (cfg.feeRatePct / 100) * (1 + (cfg.feeTaxPct ?? 0) / 100) * 2;

@@ -235,7 +235,7 @@ export class PaperEngine extends EventEmitter {
     this.fillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
-    const feeErr = checkRiskVsFees(price, levels.sl, cfg);
+    const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol);
     if (feeErr) return { action: 'rejected', reason: feeErr, closed };
     // portfolio risk layer: kill switches, position caps, cooldowns, regime filter, drawdown scaling
     let leverageMult = 1;
@@ -300,7 +300,7 @@ export class PaperEngine extends EventEmitter {
     // the signal's levels are absolute; the fill price must still sit on the right side of them
     const levels = resolveLevels({ side: pe.side, price, sl: pe.levels.sl, tp: pe.levels.tp }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
-    const feeErr = checkRiskVsFees(price, levels.sl, cfg);
+    const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol);
     if (feeErr) return cancel(feeErr);
     if (this.open.size >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
     // the portfolio risk layer was consulted when the entry was queued; the book can have

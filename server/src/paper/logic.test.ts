@@ -387,3 +387,11 @@ test('Scalper Offer: no closing fee inside the window (30 min BTC/ETH, 15 min ot
   const bt = openPosition({ id: 2, scannerId: 's', scannerName: 's', symbol: 'SOLUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, openedAt: 15 * MIN, sl: 95, tp: [300], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: on, bt: true });
   assert.equal(fillExit(bt, 101, 10, 'be', 29 * MIN, on, false).fee, 0);
 });
+
+test('the fee filter can be stricter on chosen markets', () => {
+  const c = { ...DEFAULT_CONFIG.paper, feeRatePct: 0.05, feeTaxPct: 18, minRiskFeeRatio: 4, minRiskFeeRatioBySymbol: { BTCUSD: 8 } };
+  // a 0.6% stop: 5× the 0.118% round trip — passes 4×, fails 8×
+  assert.equal(checkRiskVsFees(100, 99.4, c, 'SOLUSD'), null);
+  assert.ok(checkRiskVsFees(100, 99.4, c, 'BTCUSD'));
+  assert.equal(checkRiskVsFees(100, 99.4, c), null, 'no symbol: the global ratio');
+});

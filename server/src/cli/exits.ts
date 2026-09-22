@@ -38,6 +38,8 @@ const WINDOWS = Math.max(2, Number(windowsArg));
 const EXIT_1M = process.env.EXIT_1M === '1';
 
 const cfg = new ConfigStore().get();
+// PAPER=file.json: take the paper settings from a file (e.g. the VM's), not whatever the local config holds
+if (process.env.PAPER) Object.assign(cfg.paper, JSON.parse(fs.readFileSync(process.env.PAPER, 'utf8')));
 const registry = new ScannerRegistry();
 const rest = new DeltaRest();
 
@@ -118,7 +120,18 @@ const standardPolicies: Policy[] = [
   { name: 'stop 1.0 ATR', cfg: p => ({ ...p, fallbackAtrSl: 1.0 }) },
   { name: 'stop 2.5 ATR', cfg: p => ({ ...p, fallbackAtrSl: 2.5 }) },
 ];
-const policies: Policy[] = process.env.POLICIES === 'source' ? sourcePolicies : standardPolicies;
+/**
+ * POLICIES=costfilter: skip entries whose stop is too tight for the round-trip cost. The filter is
+ * `minRiskFeeRatio`: the stop distance must be at least this many round-trip fees (with GST).
+ * Everything else is the local config's live exit.
+ */
+const costPolicies: Policy[] = [4, 6, 8, 10, 12, 16].map(k => ({ name: `stop ≥ ${k}× round-trip fee${k === 4 ? ' (live)' : ''}`, cfg: (p: PaperConfig) => ({ ...p, minRiskFeeRatio: k }) }));
+costPolicies.push(
+  { name: 'BTC/ETH ≥ 8×, others 4×', cfg: (p: PaperConfig) => ({ ...p, minRiskFeeRatio: 4, minRiskFeeRatioBySymbol: { BTCUSD: 8, ETHUSD: 8 } }) },
+  { name: 'BTC/ETH ≥ 6×, others 4×', cfg: (p: PaperConfig) => ({ ...p, minRiskFeeRatio: 4, minRiskFeeRatioBySymbol: { BTCUSD: 6, ETHUSD: 6 } }) },
+);
+if (process.env.POLICIES === 'costfilter' && process.env.ONLY_MAJORS_ROWS === '1') costPolicies.splice(1, 5);
+const policies: Policy[] = process.env.POLICIES === 'source' ? sourcePolicies : process.env.POLICIES === 'costfilter' ? costPolicies : standardPolicies;
 
 interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }
 const blank = (): Agg => ({ trades: 0, pnl: 0, gp: 0, gl: 0, fees: 0, wins: 0, r: 0, barsHeld: 0, barsToFirstTp: 0, firstTpCount: 0 });

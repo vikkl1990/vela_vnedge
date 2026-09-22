@@ -23,6 +23,12 @@ export interface PaperConfig {
   maintenanceMarginPct: number;
   /** Reject entries whose stop distance is less than this multiple of the round-trip taker fee (0 = off). */
   minRiskFeeRatio: number;
+  /**
+   * Per-market override of `minRiskFeeRatio`. BTC and ETH trade with tight stops, so costs are a
+   * third of every R there; a wider minimum turns them from losing to profitable while the same
+   * minimum on alts only removes good trades (decision 21).
+   */
+  minRiskFeeRatioBySymbol?: Record<string, number>;
   /** Hard cap: the modelled loss at the stop may never exceed this % of equity, in ANY sizing mode (0 = off). */
   maxStopLossPct: number;
   /**
