@@ -17,6 +17,10 @@
  *   - after: how far price continued in the trade's direction over a fixed horizon past the exit
  *            (a maximum over that horizon, so an upper bound on what a better exit could reach)
  *   - bars held, and bars to the first profit-taking fill
+ *
+ * EXIT_1M=1 resolves every exit on 1-minute candles inside each bar, which is how the live engine
+ * executes. Exit policies must be compared that way: on bar-level fills a trail can only tighten
+ * once per bar, which flatters every trailing rule relative to live.
  */
 import { DeltaRest } from '../delta/rest.ts';
 import { PinePool } from '../pine/pool.ts';
@@ -30,6 +34,7 @@ import type { Bar } from '../data/candleStore.ts';
 const [barsArg = '4000', tfArg = '15m', windowsArg = '8'] = process.argv.slice(2);
 const HORIZON_BARS = 20;
 const WINDOWS = Math.max(2, Number(windowsArg));
+const EXIT_1M = process.env.EXIT_1M === '1';
 
 const cfg = new ConfigStore().get();
 const registry = new ScannerRegistry();
@@ -67,6 +72,8 @@ const policies: Policy[] = [
   { name: 'break-even after TP1 instead', cfg: p => ({ ...p, trailAfterR: 0, breakEvenAfterTp1: true }) },
   { name: 'floor 0.5R keep 0.25R', cfg: p => ({ ...p, floorAtR: 0.5, floorKeepR: 0.25 }) },
   { name: 'give back 50% from 0.4R', cfg: p => ({ ...p, trailAfterR: 0.4, trailGiveBackPct: 50 }) },
+  { name: 'give back 50% from 1R', cfg: p => ({ ...p, trailGiveBackPct: 50 }) },
+  { name: 'keep 75% from 2R', cfg: p => ({ ...p, trailAfterR: 2 }) },
   { name: 'time stop: 12 bars under 1R', cfg: p => ({ ...p, staleBars: 12, staleMinR: 1 }) },
 
   // volatility exits (decision 7): worse and far less consistent
@@ -131,6 +138,11 @@ for (const p of pairs) {
     const candles = await rest.recentCandles(p.symbol, p.tf, Number(barsArg), TF_SECONDS[p.tf]);
     const bars: Bar[] = candles.slice(0, -1).map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
     if (bars.length < 400) { console.error(`skip ${p.id} ${p.symbol}: only ${bars.length} bars`); continue; }
+    let m1: Bar[] | undefined;
+    if (EXIT_1M) {
+      const c1 = await rest.recentCandles(p.symbol, '1m', Math.ceil((bars.length + 2) * tfMs / 60_000), 60);
+      m1 = c1.slice(0, -1).map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+    }
     const s = registry.get(p.id)!;
     const res = await pool.run({ scannerId: s.id, source: s.patched, symbol: p.symbol, tf: p.tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: cfg.scanners[p.id]?.inputs });
     if (!res.ok) { console.error(`skip ${p.id} ${p.symbol}: ${res.error}`); continue; }
@@ -144,7 +156,7 @@ for (const p of pairs) {
       const mode = pol.exitMode ?? p.exitMode;
       const run = (b: Bar[]) => {
         const from = b[0].time, to = b.at(-1)!.time;
-        return runBacktest({ scannerId: s.id, scannerName: s.id, symbol: p.symbol, tf: p.tf, bars: b, events: events.filter(e => e.barTime >= from && e.barTime <= to), cfg: paper, exitMode: mode, contractValue: market.contractValue, tickSize: market.tickSize });
+        return runBacktest({ scannerId: s.id, scannerName: s.id, symbol: p.symbol, tf: p.tf, bars: b, events: events.filter(e => e.barTime >= from && e.barTime <= to), cfg: paper, exitMode: mode, contractValue: market.contractValue, tickSize: market.tickSize, subBars: m1 });
       };
       const whole = run(bars);
       const acc = pooled.get(pol.name) ?? blank();

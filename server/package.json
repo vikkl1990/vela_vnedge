@@ -15,8 +15,10 @@
     "losses": "node --no-warnings=ExperimentalWarning src/cli/losses.ts",
     "timeframes": "node --no-warnings=ExperimentalWarning src/cli/timeframes.ts",
     "hybrid": "node --no-warnings=ExperimentalWarning src/cli/hybrid.ts",
+    "intrabar": "node --no-warnings=ExperimentalWarning src/cli/intrabar.ts",
     "sweep": "node --no-warnings=ExperimentalWarning src/cli/sweep.ts",
-    "replay": "node --no-warnings=ExperimentalWarning src/cli/replay.ts"
+    "replay": "node --no-warnings=ExperimentalWarning src/cli/replay.ts",
+    "tune": "node --no-warnings=ExperimentalWarning src/cli/tune.ts"
   },
   "dependencies": {
     "pinets": "^0.9.34"

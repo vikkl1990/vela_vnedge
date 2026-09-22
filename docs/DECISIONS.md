@@ -288,3 +288,36 @@ factor of 500 with concurrency, while the backtest runs every pair on its own pu
 R per trade matches, as the replay shows; dollar results do not. A position too small to matter is
 noise, and skipping entries below a minimum risk would be reasonable — noted for the review rather
 than changed during the freeze.
+
+## 13. Backtests resolved exits on the signal bar; live resolves them on 1m. The gap is large.
+
+The live engine checks stops, targets and the trail on every 1-minute candle. The backtest checked
+them once per 15m bar. The backtest can now replay each bar's 1m path (`subBars` in
+`runBacktest`; `npm run intrabar`; `EXIT_1M=1 npm run exits`), and the two disagree badly for the
+policy that is live:
+
+| live policy, 41 pairs, 4000 × 15m | net | PF | windows up | median window |
+|---|---|---|---|---|
+| exits on the 15m bar (what decisions 6–11 used) | +4412 | 1.19 | 6/8 | +442 |
+| exits on 1m candles (what live does) | +1191 | 1.05 | 3/8 | −43 |
+
+Ambiguous bars are not the cause: only 6 of 2339 trades change sign. The trail is. On bar-level
+fills a give-back trail can only tighten once per bar, which lets a trade breathe for fifteen
+minutes; on 1m it tightens every minute and is shaken out by noise. Every tight trailing rule was
+flattered the same way (floor 0.5R: +2768 → −1088; give back 50% from 0.4R: +2515 → −443). Rules
+that do not trail tightly barely move: no trail +4596 → +4669, ATR trail 3× from 1R +3441 → +3007
+(5/8 windows under both models).
+
+Consequences:
+
+- Decisions 6 and 7 were taken on the flattering model. The ATR trail that decision 7 rejected is
+  the one policy that is both robust to fill resolution and up in most windows on 1m.
+- Exit policies must be compared with `EXIT_1M=1` from now on. Entry-side results (which scanners,
+  which timeframe) are much less affected, since entries still happen at the signal bar's close.
+- Higher-timeframe results are flattered more, not less: a 4h bar holds 240 minutes of path. The
+  SATS 4h result (PF 1.10 out of sample, bar-level) must be read with that in mind.
+- Decision 12's replay compared live with the bar-level backtest; its twelve trades were mostly
+  plain stop-outs, where the two models agree, so its conclusion stands.
+
+Not changed yet. Changing the exit during the freeze resets the live sample (decision 3), so it is
+the owner's call; the evidence above is what that call should rest on.

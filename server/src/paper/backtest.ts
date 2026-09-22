@@ -1,6 +1,12 @@
 /**
  * In-memory backtest of one scanner over a candle history using the exact same fill logic
  * as the live paper engine (bar-level fills: SL before TP on the same bar).
+ *
+ * With `subBars` (1-minute candles) the exits are resolved on the 1m path inside each signal bar,
+ * the way the live engine sees them, instead of on the signal bar's OHLC. A 15m bar whose range
+ * covers both the stop and a target is otherwise ambiguous and scored stop-first, and a trail can
+ * only move once per signal bar; on the 1m path both happen in the order they actually did.
+ * Entries and script events still act on the signal bar, exactly as before.
  */
 import type { PaperConfig, ExitMode } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
@@ -8,6 +14,7 @@ import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
 import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, type Position } from './logic.ts';
 import { tradeOf } from './engine.ts';
+import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
 import { computeFeatures } from '../ml/features.ts';
 
@@ -16,6 +23,8 @@ export interface BacktestInput {
   bars: Bar[];                // closed bars, ascending — the same bars the script ran on
   events: ScanEvent[];        // extracted from the script run (all bars)
   cfg: PaperConfig; exitMode: ExitMode; contractValue: number; tickSize: number;
+  /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
+  subBars?: Bar[];
 }
 
 export interface BacktestResult {
@@ -44,13 +53,23 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
 
   const finish = (p: Position) => { closed.push(p); equity += p.realizedPnl - p.fees; curve.push({ at: p.exitAt!, equity }); open = null; };
 
+  const tfMs = (TF_SECONDS[inp.tf] ?? 0) * 1000;
+  const sub = inp.subBars && inp.subBars.length && tfMs > 60_000 ? inp.subBars : null;
+  let si = 0;   // cursor into `sub`, only ever moves forward
+
   let busted = false;
   for (let i = 0; i < bars.length && !busted; i++) {
     const bar = bars[i];
     if (equity <= Math.max(0, cfg.initialEquity * 0.02)) { busted = true; rejected['purse_wiped'] = (rejected['purse_wiped'] ?? 0) + 1; break; }
     // 1. level fills on this bar for a position opened on an earlier bar
     if (open && open.entryAt < bar.time) {
-      applyBar(open, bar, cfg, atr[i]);
+      if (sub) {
+        while (si < sub.length && sub[si].time < bar.time) si++;
+        const start = si;
+        // no 1m data for this bar (gap in the feed): fall back to the bar itself
+        if (si >= sub.length || sub[si].time >= bar.time + tfMs) applyBar(open, bar, cfg, atr[i]);
+        for (let j = start; open && open.status === 'open' && j < sub.length && sub[j].time < bar.time + tfMs; j++) applyBar(open, sub[j], cfg, atr[i]);
+      } else applyBar(open, bar, cfg, atr[i]);
       if (open.status === 'closed') finish(open);
     }
     // 2. script events on this bar (exits first, then entries)
