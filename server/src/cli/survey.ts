@@ -29,6 +29,10 @@ const MARKETS = (process.env.MARKETS ?? 'BTCUSD,ETHUSD,SOLUSD,XRPUSD,DOGEUSD').s
 const CONC = Number(process.env.CONCURRENCY ?? 8);
 const STRESS = Number(process.env.STRESS_BPS ?? 10);
 const BARS: Record<string, number> = { '5m': 4000, '15m': 4000, '1h': 3000, '4h': 2000 };
+/** DEEP=15m:12000,1h:6000 asks for a longer history than the default per timeframe. */
+for (const part of (process.env.DEEP ?? '').split(',').filter(Boolean)) {
+  const [tf, n] = part.split(':'); BARS[tf] = Number(n);
+}
 /**
  * Candles the exits are resolved on. 1m for the fast timeframes; 15m for 1h and 4h, which is still
  * far finer than the signal bar and costs one request per market instead of twenty for deep 5m.

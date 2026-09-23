@@ -4,7 +4,7 @@ import { Db } from '../db.ts';
 import { DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
-import { demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR } from './gate.ts';
+import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR } from './gate.ts';
 import { approve, evaluate, recordScreen, reject, syncLive, type ScreenResult } from './cycle.ts';
 
 const DAY = 86400_000;
@@ -138,4 +138,85 @@ test('the shadow book never touches the live account', () => {
   assert.equal(live.closedPositions().length, 0);
   assert.equal(shadow.closedPositions().length, 1);
   assert.equal(live.equity(), cfg.paper.initialEquity);
+});
+
+/** Five markets of one scanner, each with `n` trades over `days`. */
+function cohort(symbols: string[], n: number, days: number, win: number, since = T0) {
+  return symbols.map(symbol => ({ symbol, since, trades: series(n, days, win, 2, since + 1000) }));
+}
+
+test('pooling a scanner across its markets reaches a verdict that no single market can', () => {
+  const g = DEFAULT_CONFIG.incubator.gate;
+  const members = cohort(['a', 'b', 'c', 'd', 'e'], 8, 20, 2);
+  const now = T0 + 21 * DAY;
+  // eight trades on one market is not a sample, however good it looks
+  assert.equal(gateVerdict(pairStats(members[0].trades, T0, now), g).decision, 'brewing');
+  const c = cohortStats(members, now, g.minMarketTrades);
+  assert.equal(c.trades, 40);
+  assert.equal(c.markets, 5);
+  assert.equal(cohortVerdict(c, g).decision, 'propose');
+});
+
+test('a cohort carried by one market is not promoted', () => {
+  const g = DEFAULT_CONFIG.incubator.gate;
+  const now = T0 + 21 * DAY;
+  const members = [
+    { symbol: 'winner', since: T0, trades: series(24, 20, 6, 2, T0 + 1000) },
+    ...cohort(['b', 'c', 'd', 'e'], 8, 20, 0.6),
+  ];
+  const c = cohortStats(members, now, g.minMarketTrades);
+  assert.ok((c.pfR ?? 0) > g.minPfR, 'pooled profit factor passes');
+  assert.equal(c.positiveMarkets, 1);
+  assert.equal(cohortVerdict(c, g).decision, 'brewing');
+  assert.match(cohortVerdict(c, g).reasons.join(' '), /1\/5 markets positive/);
+});
+
+test('a cohort that fails on a full pooled sample retires together', () => {
+  const { store, cfg, insertTrade, screen } = world();
+  const markets = ['m1', 'm2', 'm3', 'm4', 'm5'];
+  for (const m of markets) { recordScreen(store, { scannerId: 'dud', symbol: m, tf: '15m' }, screen(), cfg.incubator, T0); }
+  assert.equal(evaluate(store, cfg, T0).admitted.length, 5);
+  for (const m of markets) for (const t of series(8, 20, 0.4, 2, T0 + 1000)) insertTrade(2, 'dud', m, t);
+  const rep = evaluate(store, cfg, T0 + 21 * DAY);
+  assert.equal(rep.retired.length, 5, 'the whole cohort goes, not one market at a time');
+  assert.equal(store.list(['shadow', 'proposed']).length, 0);
+});
+
+test('slots are filled by cohort, and running cohorts are topped up first', () => {
+  const { store, cfg, screen } = world();
+  cfg.incubator.maxShadow = 6;
+  for (const m of ['x1', 'x2']) recordScreen(store, { scannerId: 'x', symbol: m, tf: '15m' }, screen(), cfg.incubator, T0);
+  assert.equal(evaluate(store, cfg, T0).admitted.length, 2);
+
+  // three more of x, and a rival scanner with a better screen: x is topped up to five first
+  for (const m of ['x3', 'x4', 'x5']) recordScreen(store, { scannerId: 'x', symbol: m, tf: '15m' }, screen(), cfg.incubator, T0 + DAY);
+  for (const m of ['y1', 'y2', 'y3']) recordScreen(store, { scannerId: 'y', symbol: m, tf: '15m' }, screen({ profitFactor: 3, trades: 80 }), cfg.incubator, T0 + DAY);
+  const rep = evaluate(store, cfg, T0 + 2 * DAY);
+  assert.deepEqual(rep.admitted.sort(), ['x x3 15m', 'x x4 15m', 'x x5 15m']);
+  assert.equal(rep.free, 1, 'the last slot stays free: y cannot fill a cohort with it');
+  assert.equal(store.list(['shadow']).filter(r => r.scannerId === 'x').length, 5);
+});
+
+test('gate.pool "pair" keeps the original one-market-at-a-time judgement', () => {
+  const { store, cfg, insertTrade, screen } = world();
+  cfg.incubator.gate.pool = 'pair';
+  for (const m of ['p1', 'p2']) recordScreen(store, { scannerId: 'p', symbol: m, tf: '15m' }, screen(), cfg.incubator, T0);
+  evaluate(store, cfg, T0);
+  for (const t of series(40, 20, 2, 2, T0 + 1000)) insertTrade(2, 'p', 'p1', t);
+  for (const t of series(8, 20, 2, 2, T0 + 1000)) insertTrade(2, 'p', 'p2', t);
+  const rep = evaluate(store, cfg, T0 + 21 * DAY);
+  assert.deepEqual(rep.proposed, ['p p1 15m'], 'only the market with its own full sample');
+});
+
+test('cohort size and the retirement clock follow the timeframe', () => {
+  const { store, cfg, screen } = world();
+  cfg.incubator.maxShadow = 30;
+  const markets = Array.from({ length: 14 }, (_, i) => `m${i}`);
+  for (const m of markets) recordScreen(store, { scannerId: 'slow', symbol: m, tf: '4h' }, screen(), cfg.incubator, T0);
+  assert.equal(evaluate(store, cfg, T0).admitted.length, 12, '4h trades rarely: twelve markets, not five');
+
+  // at 4h a cohort gets 90 days, not 45, before it is retired unproven
+  const thin = cohortStats(cohort(markets.slice(0, 12), 1, 50), T0 + 50 * DAY, cfg.incubator.gate.minMarketTrades);
+  assert.equal(cohortVerdict(thin, { ...cfg.incubator.gate, maxDays: cfg.incubator.gate.maxDaysByTf['4h'] }).decision, 'brewing');
+  assert.equal(cohortVerdict(thin, cfg.incubator.gate).decision, 'retire', 'the 15m clock would have retired it');
 });

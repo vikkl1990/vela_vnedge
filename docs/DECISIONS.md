@@ -697,3 +697,43 @@ someone reads the 1,300-line source properly.
 **Also found:** the VM had been changed to 336 scanners on a top-20 universe (~6,700 runs per bar
 close against 6 workers). Jobs were expiring after 2.7 hours in the queue, so almost nothing traded:
 4 trades in 12 hours. Restored to the tested fleet, now six pairs.
+
+## 29. The promotion gate judges a scanner across its markets, not one market at a time
+
+The gate asked each shadow pair for 30 trades inside 45 days. One market produces 0.35 trades a day,
+so on 15m that sample lands at about day 35, on 1h at day 175, and on 4h never: 65 of the 100 shadow
+pairs were on a path to retirement without a verdict, while 54 screened candidates waited for a slot
+behind them. A gate that cannot be reached is not a standard, it is a stall.
+
+What is being judged is a scanner, not the market it happened to be admitted on, so the evidence is
+now pooled per scanner × timeframe. Five markets reach the same sample five times sooner, and the
+pooled result is the better question anyway: a rule that works on one market and fails on four is
+luck, and the per-pair gate could not see that.
+
+Three things keep pooling honest:
+
+- **Breadth.** At least half of the markets with enough trades to judge must be net positive, so a
+  cohort carried by one lucky market brews instead of being promoted.
+- **Whole-cohort retirement.** A cohort that fails on a full pooled sample retires together, which
+  frees its slots for the queue instead of dribbling out one market at a time.
+- **Per-market promotion.** Only the best markets of a passing cohort are proposed — at most
+  `promote.maxPerWeek`, since nothing more can be approved in a week anyway. The rest keep trading
+  as evidence.
+
+Cohort size and the retirement clock now follow the timeframe, because the rates differ by an order
+of magnitude. Measured across 28 markets on the 36 scripts that survived the library sweep: 0.77
+trades per market-day on 15m, 0.28 on 1h, 0.064 on 4h. So 15m is admitted on 5 markets and reaches
+30 pooled trades in about 8 days; 1h on 8 markets, about 14 days; 4h on 12 markets, about 39 days,
+with the retirement clock extended to 60 days on 1h and 90 on 4h. `minDays` still holds at 14, so
+nothing is promoted on a week of luck however fast the trades arrive.
+
+Admission fills cohorts rather than single pairs: cohorts already brewing are topped up first, and a
+new cohort only starts when enough of its markets passed the screen to fill `minCohortMarkets` slots.
+The 17 single-market cohorts already in the book are left alone — they are topped up when their
+other markets pass a screen, and otherwise retire on their own clock.
+
+`gate.pool: 'pair'` restores the old behaviour exactly, and the old path is still covered by tests.
+
+**Revisit if** the 100 shadow slots stop being the binding constraint, or if pooled cohorts start
+passing the gate and then failing live — which would mean the market, not the scanner, was the thing
+that mattered.

@@ -131,15 +131,21 @@ The incubator (decision 17) is the only route into the fleet:
    live ──last 50 trades below PF 0.9──► demotion proposed
 ```
 
-The gate: **≥30 trades over ≥14 days, profit factor ≥1.2, ≥60% of weeks positive, ≥0.1R per trade**,
-and no more than 50% of its trades overlapping an existing pair. Unproven after 45 days and it is
-retired. At most 2 promotions a week; nothing is promoted without your click.
+**The gate judges a scanner, not a market** (decision 29). Evidence is pooled across every market a
+scanner runs on one timeframe — its cohort — and the cohort passes or fails together:
 
-**This gate does not currently work, and that is the open item at the top of the list.** At the
-observed 0.35 trades per pair-day, a 15m pair needs ~35 days to reach 30 trades, a 1h pair ~175, and
-the 4h pairs have produced nothing at all — against a 45-day retirement limit. Sixty-five of the 100
-shadow pairs cannot pass before they are retired, while 54 candidates wait for a slot. See `STATE.md`
-for today's numbers.
+| | requirement |
+|---|---|
+| sample | ≥30 pooled trades over ≥14 days |
+| quality | profit factor ≥1.2, ≥0.1R per trade, ≥60% of weeks positive |
+| breadth | ≥50% of the markets with enough trades to judge are net positive |
+| originality | ≤50% of entries overlapping a live pair |
+| clock | retired unproven after 45 days on 15m, 60 on 1h, 90 on 4h |
+
+Cohort size follows how often a timeframe trades — 5 markets on 15m, 8 on 1h, 12 on 4h — so a pooled
+sample lands in roughly 8, 14 and 39 days respectively. Only the best markets of a passing cohort are
+proposed, at most 2 a week, and nothing is promoted without your click. See `STATE.md` for today's
+numbers.
 
 ---
 
@@ -170,13 +176,12 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 
 ## Open items, in priority order
 
-1. **Fix the incubator gate** so evidence pools rather than expiring — nothing new can enter the fleet until this works.
-2. **Shadow-book admission** should favour pairs that trade, so the 54 queued candidates get slots.
-3. **Alerting** — the Telegram token is still unset, so a halt or a crash is silent (decision 5).
-4. **Audit findings 2, 3, 11, 12** — the first two block exchange mirroring.
-5. **The Mac bot** runs a different 33-pair fleet than the VM's 6. Two records, one of them noise: mirror it or stop it.
-6. **`liquidity-trail-matrix`** fails every run with an array-bounds error and sat in the live fleet doing nothing.
-7. **The 100-trade review**, when the trades exist.
+1. **Incubator page** should show cohort progress and the real time to a verdict (the gate itself is fixed — decision 29).
+2. **Alerting** — the Telegram token is still unset, so a halt or a crash is silent (decision 5).
+3. **Audit findings 2, 3, 11, 12** — the first two block exchange mirroring.
+4. **The Mac bot** runs a different 33-pair fleet than the VM's 6. Two records, one of them noise: mirror it or stop it.
+5. **`liquidity-trail-matrix`** fails every run with an array-bounds error and sat in the live fleet doing nothing.
+6. **The 100-trade review**, when the trades exist.
 
 ## The rules of this repo
 

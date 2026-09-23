@@ -35,6 +35,38 @@ export function pairStats(trades: TradeR[], since: number, now = Date.now()): Pa
   };
 }
 
+export interface CohortMember { symbol: string; since: number; trades: TradeR[] }
+export interface MarketLine { symbol: string; trades: number; netR: number; avgR: number }
+export interface CohortStats extends PairStats {
+  markets: number; marketsJudged: number; positiveMarkets: number; positiveMarketsPct: number; perMarket: MarketLine[];
+}
+
+/**
+ * One scanner on one timeframe, judged on every market it runs in the shadow book at once.
+ *
+ * A single market produces about 0.35 trades a day, so a 30-trade sample takes five weeks on 15m and
+ * half a year on 1h — longer than the 45 days a pair is allowed to brew. The edge being judged
+ * belongs to the scanner, not to the market it happened to be admitted on, so the evidence is pooled
+ * across its markets: five markets reach the same sample five times sooner. Each market's own trades
+ * count only from the day that market joined, and the cohort's age is the age of its oldest member.
+ */
+export function cohortStats(members: CohortMember[], now = Date.now(), minMarketTrades = 3): CohortStats {
+  const since = Math.min(...members.map(m => m.since));
+  const per = members.map(m => {
+    const t = m.trades.filter(x => x.entryAt >= m.since);
+    const netR = t.reduce((a, x) => a + x.r, 0);
+    return { symbol: m.symbol, trades: t.length, netR, avgR: t.length ? netR / t.length : 0 };
+  });
+  const base = pairStats(members.flatMap(m => m.trades.filter(x => x.entryAt >= m.since)), since, now);
+  const judged = per.filter(p => p.trades >= minMarketTrades);
+  const positive = judged.filter(p => p.netR > 0).length;
+  return {
+    ...base, markets: members.length, marketsJudged: judged.length, positiveMarkets: positive,
+    positiveMarketsPct: judged.length ? positive / judged.length * 100 : 0,
+    perMarket: per.sort((a, b) => b.avgR - a.avgR),
+  };
+}
+
 export type GateVerdict = { decision: 'propose' | 'brewing' | 'retire'; reasons: string[] };
 
 /**
@@ -57,6 +89,19 @@ export function gateVerdict(s: PairStats, g: IncubatorConfig['gate'], overlapPct
   if (s.trades >= g.minTrades && pf < g.failPfR) return { decision: 'retire', reasons: [`failed on a full sample: PF ${fmtPf(s.pfR)} < ${g.failPfR} over ${s.trades} trades`] };
   if (s.days >= g.maxDays) return { decision: 'retire', reasons: [`not proven after ${g.maxDays} days: ${failing.join('; ')}`] };
   return { decision: 'brewing', reasons: failing };
+}
+
+/**
+ * The same gate, plus breadth: a cohort carried by one lucky market is not a scanner with an edge.
+ * Breadth is only asked of cohorts with at least two markets that have traded enough to judge.
+ */
+export function cohortVerdict(s: CohortStats, g: IncubatorConfig['gate'], overlap = 0): GateVerdict {
+  const v = gateVerdict(s, g, overlap);
+  const broad = s.marketsJudged < 2 || s.positiveMarketsPct >= g.minPositiveMarketsPct;
+  const breadth = `${s.positiveMarkets}/${s.marketsJudged} markets positive (need ${g.minPositiveMarketsPct}%)`;
+  if (broad) return v.decision === 'propose' ? { ...v, reasons: [...v.reasons, breadth] } : v;
+  if (v.decision === 'retire') return v;
+  return { decision: 'brewing', reasons: [...v.reasons.filter(r => !r.startsWith('propose')), breadth] };
 }
 
 /** Live → proposed for demotion, judged on its most recent `window` trades. */
