@@ -61,6 +61,7 @@ export interface Position {
 }
 
 export interface EntryRequest {
+  symbol?: string;
   side: Side;
   price: number;         // signal/reference price
   sl?: number;
@@ -78,7 +79,7 @@ export interface SizingInputs {
   cfg: PaperConfig;
 }
 
-export interface LevelResult { sl: number; tp: number[]; source: Position['levelsSource']; reason?: string }
+export interface LevelResult { sl: number; tp: number[]; tpSplit?: number[]; source: Position['levelsSource']; reason?: string }
 
 export function roundTick(p: number, tick: number): number {
   if (!tick || tick <= 0) return p;
@@ -90,6 +91,7 @@ export function roundTick(p: number, tick: number): number {
 
 /** Resolve SL/TP levels, filling gaps with ATR-based defaults. */
 export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number): LevelResult | { error: string } {
+  const policy = req.symbol ? cfg.takeProfitBySymbol?.[req.symbol] : null;
   const dir = req.side === 'long' ? 1 : -1;
   const entry = req.price;
   if (!Number.isFinite(entry) || entry <= 0) return { error: 'invalid entry price' };
@@ -103,17 +105,20 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
   }
   const risk = Math.abs(entry - sl!);
   if (risk <= 0) return { error: 'zero risk distance' };
-  let tp = (req.tp ?? []).filter(v => Number.isFinite(v) && v > 0 && (req.side === 'long' ? v > entry : v < entry));
+  let tp = (policy?.mode === 'override' ? [] : req.tp ?? []).filter(v => Number.isFinite(v) && v > 0 && (req.side === 'long' ? v > entry : v < entry));
   tp.sort((a, b) => (req.side === 'long' ? a - b : b - a));
+  const usePair = Boolean(policy && tp.length === 0);
   if (tp.length === 0) {
-    tp = cfg.fallbackRR.map(rr => entry + dir * rr * risk);
+    tp = (policy?.rr ?? cfg.fallbackRR).map(rr => entry + dir * rr * risk);
     source = source === 'script' ? 'mixed' : 'atr-fallback';
   }
   sl = roundTick(sl!, tick);
   tp = [...new Set(tp.slice(0, 3).map(v => roundTick(v, tick)))];
   if (!validSl(sl)) return { error: 'stop invalid after tick rounding' };
   if (!tp.length || tp.some(v => !Number.isFinite(v) || v <= 0 || (req.side === 'long' ? v <= entry : v >= entry))) return { error: 'target invalid after tick rounding' };
-  return { sl, tp, source };
+  // Pair allocations need distinct levels; silently merging rounded levels changes their shares.
+  if (usePair && tp.length !== 3) return { error: 'pair TP policy needs three distinct targets after tick rounding' };
+  return { sl, tp, source, ...(usePair ? { tpSplit: [...policy!.split] } : {}) };
 }
 
 /**
@@ -203,6 +208,19 @@ export function splitLegs(qty: number, split: number[], tpCount: number): number
   return legs;
 }
 
+/** Pair policies assign rounding remainders to earlier funded targets, not always TP3. */
+export function splitPairLegs(qty: number, split: number[], tpCount: number): number[] {
+  const weights = split.slice(0, tpCount);
+  const raw = weights.map(w => qty * w);
+  const legs = raw.map(Math.floor);
+  const order = weights.map((w, i) => ({ i, w, fraction: raw[i] - legs[i] }))
+    .filter(x => x.w > 0).sort((a, b) => b.fraction - a.fraction || a.i - b.i);
+  if (qty === 1) { legs.fill(0); legs[weights.findIndex(w => w > 0)] = 1; return legs; }
+  const remaining = qty - legs.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < remaining; i++) legs[order[i % order.length].i]++;
+  return legs;
+}
+
 export function feeFor(price: number, qty: number, contractValue: number, cfg: PaperConfig, maker = false): number {
   const rate = maker ? (cfg.makerFeeRatePct ?? cfg.feeRatePct) : cfg.feeRatePct;
   return price * qty * contractValue * (rate / 100) * (1 + (cfg.feeTaxPct ?? 0) / 100);
@@ -256,6 +274,7 @@ export interface OpenParams {
   mlProb?: number | null;
   /** True when `entryPrice` is already an executable quote, so only depth impact is added. */
   quoted?: boolean;
+  tpSplit?: number[];
   /** Last cumulative live candle observed; retained across restarts. */
   lastPriceBar?: PriceBar;
   /** Actual fill time when it differs from `at` (the backtest fills at the signal bar's close). */
@@ -278,7 +297,7 @@ export function openPosition(p: OpenParams): Position {
   const notional = p.entryPrice * p.qty * p.contractValue;
   const fillPrice = p.quoted ? impactOnly(p.entryPrice, side, p.cfg, notional) : slip(p.entryPrice, side, p.cfg, notional);
   const fee = feeFor(fillPrice, p.qty, p.contractValue, p.cfg);
-  const legs = splitLegs(p.qty, p.cfg.tpSplit, p.tp.length);
+  const legs = p.tpSplit ? splitPairLegs(p.qty, p.tpSplit, p.tp.length) : splitLegs(p.qty, p.cfg.tpSplit, p.tp.length);
   return {
     id: p.id, status: 'open', scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side,
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,

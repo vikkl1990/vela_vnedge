@@ -11,7 +11,16 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
 export type ExitMode = 'levels' | 'script' | 'both';
 
+export interface PairTakeProfit {
+  /** Preserve valid script targets, or replace them with this pair's risk multiples. */
+  mode: 'fallback' | 'override';
+  rr: [number, number, number];
+  split: [number, number, number];
+}
+
 export interface PaperConfig {
+  /** Exact exchange symbols. null removes an override through the merge-based API. */
+  takeProfitBySymbol?: Record<string, PairTakeProfit | null>;
   initialEquity: number;
   riskPerTradePct: number;
   maxLeverage: number;
@@ -424,6 +433,18 @@ export function validateConfig(c: AppConfig): string[] {
   for (const tf of c.timeframes || []) if (!(tf in TF_SECONDS)) errs.push(`unsupported timeframe ${tf}`);
   if (!(c.historyBars >= 200 && c.historyBars <= 4000)) errs.push('historyBars must be 200..4000');
   const p = c.paper;
+  if (p.takeProfitBySymbol !== undefined) {
+    const policies = p.takeProfitBySymbol;
+    if (!policies || typeof policies !== 'object' || Array.isArray(policies)) errs.push('paper.takeProfitBySymbol must be a symbol map');
+    else for (const [symbol, policy] of Object.entries(policies)) {
+      const key = `paper.takeProfitBySymbol.${symbol}`;
+      if (!/^[A-Z0-9]+$/.test(symbol)) errs.push(`${key}: use an uppercase exchange symbol`);
+      if (policy === null) continue;
+      if (!policy || typeof policy !== 'object' || !['fallback', 'override'].includes(policy.mode)) { errs.push(`${key}.mode must be fallback|override`); continue; }
+      if (!Array.isArray(policy.rr) || policy.rr.length !== 3 || !policy.rr.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1]))) errs.push(`${key}.rr must be 3 positive, strictly increasing numbers`);
+      if (!Array.isArray(policy.split) || policy.split.length !== 3 || !policy.split.every(v => Number.isFinite(v) && v >= 0 && v <= 1) || Math.abs(policy.split.reduce((a, b) => a + b, 0) - 1) > 1e-6) errs.push(`${key}.split must be 3 fractions summing to 1`);
+    }
+  }
   if (!(p.initialEquity > 0)) errs.push('paper.initialEquity must be > 0');
   if (!(p.riskPerTradePct > 0 && p.riskPerTradePct <= 20)) errs.push('paper.riskPerTradePct must be 0..20');
   if (!(p.maxLeverage >= 1 && p.maxLeverage <= 200)) errs.push('paper.maxLeverage must be 1..200');
@@ -476,6 +497,18 @@ export function validateConfig(c: AppConfig): string[] {
 export function validateRealismAndRisk(c: AppConfig): string[] {
   const errs: string[] = [];
   const p = c.paper;
+  if (p.takeProfitBySymbol !== undefined) {
+    const policies = p.takeProfitBySymbol;
+    if (!policies || typeof policies !== 'object' || Array.isArray(policies)) errs.push('paper.takeProfitBySymbol must be a symbol map');
+    else for (const [symbol, policy] of Object.entries(policies)) {
+      const key = `paper.takeProfitBySymbol.${symbol}`;
+      if (!/^[A-Z0-9]+$/.test(symbol)) errs.push(`${key}: use an uppercase exchange symbol`);
+      if (policy === null) continue;
+      if (!policy || typeof policy !== 'object' || !['fallback', 'override'].includes(policy.mode)) { errs.push(`${key}.mode must be fallback|override`); continue; }
+      if (!Array.isArray(policy.rr) || policy.rr.length !== 3 || !policy.rr.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1]))) errs.push(`${key}.rr must be 3 positive, strictly increasing numbers`);
+      if (!Array.isArray(policy.split) || policy.split.length !== 3 || !policy.split.every(v => Number.isFinite(v) && v >= 0 && v <= 1) || Math.abs(policy.split.reduce((a, b) => a + b, 0) - 1) > 1e-6) errs.push(`${key}.split must be 3 fractions summing to 1`);
+    }
+  }
   if (!['candles', 'tape'].includes(p.fillSource)) errs.push('paper.fillSource must be candles|tape');
   if (!['touch', 'through'].includes(p.limitFill)) errs.push('paper.limitFill must be touch|through');
   if (!(Number.isFinite(p.depthUsdPerBp) && p.depthUsdPerBp >= 0)) errs.push('paper.depthUsdPerBp must be ≥ 0');

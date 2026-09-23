@@ -442,7 +442,7 @@ export class ScannerEngine extends EventEmitter {
       let features: Record<string, number> | undefined; let mlProb: number | null = null;
       if (this.ml && atr) {
         const price = ev.price && ev.price > 0 ? ev.price : refPrice;
-        const levels = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr }, this.cfgRef().paper, market.tickSize);
+        const levels = resolveLevels({ symbol, side: ev.side, price, sl: ev.sl, tp: ev.tp, atr }, this.cfgRef().paper, market.tickSize);
         if (!('error' in levels)) {
           features = this.ml.features({ bars, i: bars.length - 1, ev, entry: price, sl: levels.sl, tp1: levels.tp[0], atr, levelsSource: levels.source });
           const sc = this.ml.score(s.id, features as any); mlProb = sc?.prob ?? null;
