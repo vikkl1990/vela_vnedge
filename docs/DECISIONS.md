@@ -594,3 +594,22 @@ either way, and the trail is what ends these trades.
 **UI corrected** (the review's last point): targets carrying no contracts are dimmed rather than
 struck through, the active target shows its distance in percent, and each position states where the
 stop moves to +0.5R and where the trail starts.
+
+## 25. Tested: stops taken from the lines a script draws. Worse than the ATR fallback; not adopted.
+
+Decision 24 left one way to get real levels out of scripts that signal through shapes: use the
+series they plot. `selectTrail` already identifies the line that behaves like a trailing stop, so
+`npm run plotstops` sets the stop from it (targets recomputed from the new risk) and compares.
+
+| stop source | 9 live pairs | 17-pair set | PF (17) | windows (17) | used on |
+|---|---|---|---|---|---|
+| ATR fallback (live) | +2199 | **+2035** | 1.27 | 7/8 | – |
+| plotted line | +1236 | +756 | 1.10 | 5/8 | 28% |
+| plotted line + 0.25 ATR | +1376 | +1351 | 1.18 | 6/8 | 28% |
+| line if 0.3–4 ATR away | +2275 | +1872 | 1.24 | 6/8 | 16% |
+| line if 0.5–2 ATR away | — | +1900 | 1.25 | 7/8 | 8% |
+
+Raw lines sit a median 2.3–4.7 ATR from price: too wide, so position size shrinks and the edge with
+it. Filtering to a sane distance only helps by doing nothing on most entries, and the 3.5% gain on
+the nine live pairs (which were selected on overlapping data) did not replicate on seventeen. Only
+4 of 9 scanners draw a usable line at all. The ATR fallback stays.
