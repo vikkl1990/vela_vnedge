@@ -613,3 +613,25 @@ Raw lines sit a median 2.3–4.7 ATR from price: too wide, so position size shri
 it. Filtering to a sane distance only helps by doing nothing on most entries, and the 3.5% gain on
 the nine live pairs (which were selected on overlapping data) did not replicate on seventeen. Only
 4 of 9 scanners draw a usable line at all. The ATR fallback stays.
+
+## 26. Portfolio replay: on one shared account, the wide targets still win
+
+Every earlier target test measured pairs on separate purses and reported R, which cannot see the one
+cost a distant target plausibly has: margin held by a waiting trade is margin the next signal cannot
+use. `npm run portfolio` replays all nine live pairs through the real paper engine on ONE account —
+same sizing, margin, position cap, fees, Scalper Offer and exit rules — and compares in dollars.
+
+| target policy | entries | blocked | net $ | PF | max DD |
+|---|---|---|---|---|---|
+| live: 2/4/6 R | 301 | 148 | **+8239** | 2.09 | 19.0% |
+| 2/3/4 R | 306 | 143 | +6151 | 1.97 | 18.7% |
+| 1.5/3/4.5 R | 304 | 145 | +6186 | 1.95 | 19.1% |
+| 1/2/3 R | 306 | 143 | +3705 | 1.76 | 16.9% |
+| live targets, half off at TP1 | 302 | 147 | +4642 | 1.87 | 17.3% |
+
+Closer targets free capacity for five more entries out of ~450 and cost 25–70% of the profit: the
+trail returns the margin long before the target would. (Absolute returns are flattered — this span
+overlaps fleet selection — but the comparison between policies is like for like.)
+
+This also closes the audit's "shared-capital portfolio replay" gap (decision 18, finding 12). The
+UI now calls TP3 a ceiling rather than a target.

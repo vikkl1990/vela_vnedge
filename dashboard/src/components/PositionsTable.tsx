@@ -252,7 +252,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               return (
                 <div className="small muted">
                   {plan.active != null && plan.pct != null && (
-                    <>Active target {fmtPrice(plan.active, tick)} — needs {plan.pct.toFixed(2)}% from entry. </>
+                    <>Ceiling {fmtPrice(plan.active, tick)} (+6R, {plan.pct.toFixed(2)}% away) — rarely reached; the trail usually ends the trade. </>
                   )}
                   Protection: stop moves to {fmtPrice(plan.lockPrice, tick)} once price reaches {fmtPrice(plan.lockAt, tick)} (+1R); from {fmtPrice(plan.trailAt, tick)} (+1.5R) it trails 60% of the best price.
                 </div>
