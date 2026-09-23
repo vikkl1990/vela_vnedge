@@ -1,10 +1,10 @@
 import { memo, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useClosePosition, useMarkets } from '../api/queries'
+import { useClosePosition, useExecution, useMarkets } from '../api/queries'
 import type { Position } from '../api/types'
-import { fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
+import { fmtInt, fmtMoney, fmtPrice, fmtR, timeAgo } from '../lib/format'
 import { useToast } from '../lib/toast'
-import { useLivePrice } from '../sse/prices'
+import { useLivePrice, useLiveTick } from '../sse/prices'
 import { DataTable, type Column } from './DataTable'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { ConfirmDialog, Pill, Pnl, SidePill, StatusDot, Time } from './ui'
@@ -20,27 +20,51 @@ function livePnl(p: Position, price: number | undefined): number {
  * Leaf cells subscribe to ticks for their own symbol, so a BTCUSD tick re-renders
  * only BTCUSD cells — the table and the other rows stay untouched.
  */
+/** Last traded price, dimmed and explained when the feed for this symbol has gone quiet. */
 const LiveMark = memo(function LiveMark({ p, tick }: { p: Position; tick?: number }) {
-  const price = useLivePrice(p.symbol, p.markPrice)
-  return <span className="mono">{fmtPrice(price ?? p.markPrice, tick)}</span>
+  const { price, ageMs, stale } = useLiveTick(p.symbol, p.markPrice)
+  return (
+    <span className={`mono ${stale ? 'price-stale' : ''}`} title={stale ? `no tick for ${ageMs === null ? 'this symbol yet' : timeAgo(Date.now() - ageMs)} — this is the server's last value, so the P&L beside it may be out of date` : undefined}>
+      {fmtPrice(price ?? p.markPrice, tick)}
+    </span>
+  )
 })
 const LiveNotional = memo(function LiveNotional({ p }: { p: Position }) {
   const price = useLivePrice(p.symbol, p.markPrice)
   return <span className="mono">{fmtMoney(p.qtyOpen * p.contractValue * (price ?? p.markPrice), 2)}</span>
 })
 const LiveUpnl = memo(function LiveUpnl({ p }: { p: Position }) {
-  const price = useLivePrice(p.symbol, p.markPrice)
-  return <Pnl value={livePnl(p, price)} />
+  const { price, stale } = useLiveTick(p.symbol, p.markPrice)
+  return <span className={stale ? 'price-stale' : ''} title={stale ? 'estimated from a price that is not live' : undefined}><Pnl value={livePnl(p, price)} /></span>
 })
 const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
   const price = useLivePrice(p.symbol, p.markPrice)
   return <StatusDot tone={livePnl(p, price) >= 0 ? 'ok' : 'danger'} />
 })
 
+/**
+ * What the stop is actually doing. `breakEven` on its own is not the whole story: the trail moves
+ * the stop above entry, which locks in profit rather than merely removing the loss.
+ */
+function stopState(p: Position): { badge: string | null; tone: 'muted' | 'ok'; title: string } {
+  if (p.sl == null) return { badge: null, tone: 'muted', title: '' }
+  const locked = (p.side === 'long' ? p.sl - p.entryPrice : p.entryPrice - p.sl) * p.qtyOpen * (p.contractValue || 1)
+  if (locked > 0.005) return { badge: 'LOCKED', tone: 'ok', title: `Stop is beyond entry: about ${fmtMoney(locked)} is protected if it is hit (before exit costs)` }
+  if (p.breakEven || Math.abs(locked) <= 0.005) return { badge: 'BE', tone: 'muted', title: 'Stop is at entry: no loss if it is hit, before exit costs' }
+  return { badge: null, tone: 'muted', title: '' }
+}
+
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
   // Eighteen columns need about 1500px. Below that, drop the derived values rather than making
   // the reader scroll sideways: notional, margin and liquidation can all be inferred from the
   // rest, so they are the first to go, and the per-trade result figures follow.
+  const exec = useExecution()
+  const mode = exec.data?.mode ?? 'paper'
+  const mirrored = mode !== 'paper' && !exec.data?.dryRun
+  const venue = {
+    mirrored,
+    text: mirrored ? `— paper book and ${exec.data?.host ?? mode} account` : mode === 'paper' ? '(paper only)' : `(paper only; ${mode} is in dry-run)`,
+  }
   const narrow = useMediaQuery('(max-width: 1440px)')
   const veryNarrow = useMediaQuery('(max-width: 1180px)')
   const dense = compact || veryNarrow
@@ -85,7 +109,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
       { key: 'entry', header: 'Entry', numeric: true, value: (p) => p.entryPrice, render: (p) => <span className="mono">{fmtPrice(p.entryPrice, tick(p.symbol))}</span> },
-      { key: 'mark', header: 'Mark', numeric: true, value: (p) => p.markPrice, render: (p) => <LiveMark p={p} tick={tick(p.symbol)} /> },
+      { key: 'mark', header: 'Last', numeric: true, value: (p) => p.markPrice, render: (p) => <LiveMark p={p} tick={tick(p.symbol)} /> },
       {
         key: 'lev',
         header: 'Lev',
@@ -97,6 +121,11 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ? []
         : ([
             { key: 'notional', header: 'Notional', numeric: true, value: (p) => p.qtyOpen * p.contractValue * p.markPrice, render: (p) => <LiveNotional p={p} /> },
+          ] as Column<Position>[])),
+      // margin and liquidation are risk, not detail: they stay until the table is genuinely tiny
+      ...(compact
+        ? []
+        : ([
             { key: 'margin', header: 'Margin', numeric: true, value: (p) => p.margin ?? 0, render: (p) => <span className="mono">{p.margin != null ? fmtMoney(p.margin, 2) : '–'}</span> },
             { key: 'liq', header: 'Liq', numeric: true, value: (p) => p.liqPrice ?? 0, render: (p) => <span className="mono loss">{p.liqPrice != null ? fmtPrice(p.liqPrice, tick(p.symbol)) : '–'}</span> },
           ] as Column<Position>[])),
@@ -108,9 +137,9 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         render: (p) => (
           <span className="mono">
             {fmtPrice(p.sl, tick(p.symbol))}
-            {p.breakEven && (
-              <Pill tone="muted" className="ml" title="Stop moved to break-even">
-                BE
+            {stopState(p).badge && (
+              <Pill tone={stopState(p).tone} className="ml" title={stopState(p).title}>
+                {stopState(p).badge}
               </Pill>
             )}
           </span>
@@ -225,7 +254,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
       <ConfirmDialog
         open={!!closing}
         title={closing ? `Close ${closing.side.toUpperCase()} ${closing.symbol}?` : ''}
-        body={closing ? <p>Closes {fmtInt(closing.qtyOpen)} contracts at market (paper).</p> : null}
+        body={closing ? <p>Closes {fmtInt(closing.qtyOpen)} contracts at market {venue.text}.{venue.mirrored && <><br /><span className="muted small">The paper book closes immediately; the exchange order is sent after it and is confirmed separately on the exchange.</span></>}</p> : null}
         confirmLabel="Close position"
         danger
         busy={pending}
@@ -234,7 +263,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           if (!closing) return
           close.mutate(closing.id, {
             onSuccess: () => {
-              toast.success(`Closed ${closing.symbol}`)
+              toast.success(venue.mirrored ? `Close requested: ${closing.symbol} closed in the paper book` : `Closed ${closing.symbol}`)
               setClosing(null)
             },
             onError: (e) => toast.error('Close failed', e.message),

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useCloseAll, useMarkets, useOrders, usePositions, useScannerIndex, useTrades } from '../api/queries'
+import { useCloseAll, useExecution, useMarkets, useOrders, usePositions, useScannerIndex, useTrades } from '../api/queries'
 import type { Order, Trade } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
@@ -16,6 +16,9 @@ export function Trades() {
   const scanners = useScannerIndex()
   const markets = useMarkets()
   const closeAll = useCloseAll()
+  const exec = useExecution()
+  const mode = exec.data?.mode ?? 'paper'
+  const mirrored = mode !== 'paper' && !exec.data?.dryRun
   const toast = useToast()
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
   const [scanner, setScanner] = useState('')
@@ -209,7 +212,7 @@ export function Trades() {
       <ConfirmDialog
         open={confirmCloseAll}
         title={`Close all ${openCount} open position${openCount === 1 ? '' : 's'}?`}
-        body={<p>Every open position is closed at market (paper). This cannot be undone.</p>}
+        body={<p>Every open position is closed at market {mirrored ? `— paper book and ${exec.data?.host ?? mode} account` : mode === 'paper' ? '(paper only)' : `(paper only; ${mode} is in dry-run)`}. This cannot be undone.{mirrored && <><br /><span className="muted small">The paper book closes immediately; exchange orders follow and are confirmed separately on the exchange.</span></>}</p>}
         confirmLabel="Close all"
         danger
         busy={closeAll.isPending}
@@ -218,7 +221,7 @@ export function Trades() {
           closeAll.mutate(undefined, {
             onSuccess: () => {
               setConfirmCloseAll(false)
-              toast.success('All positions closed')
+              toast.success(mirrored ? 'Close requested: the paper book is flat' : 'All positions closed')
             },
             onError: (e) => toast.error('Close all failed', e.message),
           })

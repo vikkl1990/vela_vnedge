@@ -168,7 +168,7 @@ export class ApiServer {
     a.candles.on('closed', (e: any) => this.broadcast('candle', { symbol: e.symbol, tf: e.tf, bar: e.bar, closed: true }));
     a.scanners.on('signal', (s: any) => this.broadcast('signal', s));
     a.scanners.on('scanner', (s: any) => this.broadcast('scanner', s));
-    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: positionView(e.position, a.paper.mark(e.position.symbol)) }));
+    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: positionView(e.position, a.paper.mark(e.position.symbol), a.marks.mark(e.position.symbol) ?? null) }));
     a.paper.on('trade', (t: any) => this.broadcast('trade', t));
     a.paper.on('order', (o: any) => this.broadcast('order', o));
     a.paper.on('stats', (s: any) => this.broadcast('stats', s));
@@ -271,7 +271,7 @@ export class ApiServer {
         return { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
       });
     });
-    this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => positionView(p, a.paper.mark(p.symbol))));
+    this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => positionView(p, a.paper.mark(p.symbol), a.marks.mark(p.symbol) ?? null)));
     this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return positionView(pos); });
     this.add('POST', '/api/paper/close-all', () => ({ closed: a.paper.closeAll() }));
     this.add('POST', '/api/paper/reset', () => { a.paper.reset(); return a.paper.stats(); });

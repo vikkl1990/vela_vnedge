@@ -1,4 +1,6 @@
 import type {
+  ExecutionStatus,
+  RiskState,
   IncubatorPair,
   IncubatorView,
   ScannerIndexEntry,
@@ -105,6 +107,10 @@ export const api = {
   me: () => get<Session>('/auth/me'),
   changePassword: (body: { current: string; next: string }) => post<{ ok: true }>('/auth/password', body),
   updateProfile: (body: { displayName: string }) => post<{ user: Me }>('/auth/profile', body),
+  // risk and exchange state
+  risk: () => get<RiskState>('/risk'),
+  execution: () => get<ExecutionStatus>('/execution'),
+
   // incubator
   incubator: () => get<IncubatorView>('/incubator'),
   incubatorDecide: (v: { id: number; action: 'approve' | 'reject'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),

@@ -1297,3 +1297,10 @@ body { overflow-x: clip; }
 /* incubator */
 .plain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .nowrap { white-space: nowrap; }
+
+/* risk / protection banner: only rendered when something needs attention */
+.risk-banner { display: grid; gap: 6px; margin: 0 0 12px; }
+.risk-banner-item { padding: 8px 12px; border-radius: 8px; border: 1px solid; font-size: 13px; }
+.risk-banner-item.risk-danger { border-color: color-mix(in srgb, var(--loss) 55%, transparent); background: color-mix(in srgb, var(--loss) 12%, transparent); }
+.risk-banner-item.risk-warn { border-color: color-mix(in srgb, var(--warn, #d98f00) 55%, transparent); background: color-mix(in srgb, var(--warn, #d98f00) 10%, transparent); }
+.price-stale { opacity: .6; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }

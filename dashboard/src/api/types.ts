@@ -268,6 +268,8 @@ export interface Position {
   fees: number
   riskAmount: number
   rMultiple: number
+  /** Delta's own mark price (what an exchange liquidates against), when known. */
+  exchangeMark?: number | null
 }
 
 export interface Fill {
@@ -507,4 +509,21 @@ export interface IncubatorView {
   lastRun: { at: number; slice: string; scripts: number; symbols: number; runs: number; passed: number; new: number; ms: number; report?: { admitted: string[]; proposed: string[]; retired: string[]; demoteProposed: string[] } } | null
   runner: { runs: number; skipped: number; errors: number; entries: number; lastBarAt: number; active: number }
   pairs: IncubatorPair[]; events: IncubatorEvent[]
+}
+
+
+// ---- risk and exchange state ----
+export interface RiskPeriod { start: number; startEquity: number; pnl: number; pnlPct: number; limitPct: number; tripped: boolean; trippedAt: number | null }
+export interface RiskState {
+  at: number; enabled: boolean; halted: boolean; haltReason: string | null
+  manualHalt: { reason: string; at: number } | null
+  equity: number; peakEquity: number; drawdownPct: number; leverageMult: number
+  day: RiskPeriod; week: RiskPeriod
+  [k: string]: unknown
+}
+export interface BracketOrder { id: number | string; price: number; size: number; leg?: number }
+export interface ExecutionStatus {
+  mode: string; host: string | null; hasKeys: boolean; dryRun: boolean; bracket: boolean
+  brackets: Array<{ positionId: number; symbol: string; stop: BracketOrder | null; tps: BracketOrder[] }>
+  lastReconcile: { at: number; ok: boolean; drift: Array<{ kind?: string; symbol?: string; detail?: string } | string>; positions: number; orders: number; error?: string } | null
 }

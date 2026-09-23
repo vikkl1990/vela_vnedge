@@ -620,7 +620,12 @@ export function rowToPosition(r: any): Position {
 }
 function safe(s: string, d: any) { try { return JSON.parse(s); } catch { return d; } }
 
-export function positionView(p: Position, mark?: number) {
+/**
+ * `mark` is the last traded price the engine values the position at; `exchangeMark` is Delta's own
+ * mark price, the reference an exchange liquidates against. They are different numbers and the UI
+ * must not present one as the other.
+ */
+export function positionView(p: Position, mark?: number, exchangeMark?: number | null) {
   const m = mark ?? p.entryPrice;
   return {
     id: p.id, scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side, qty: p.qty, qtyOpen: p.qtyOpen, contractValue: p.contractValue,
@@ -631,6 +636,7 @@ export function positionView(p: Position, mark?: number) {
     levelsSource: p.levelsSource, leverage: p.leverage, marginLeverage: p.marginLeverage, liqPrice: p.liqPrice, signalId: p.signalId, status: p.status,
     notional: p.qtyOpen * p.contractValue * m, notionalEntry: p.qty * p.contractValue * p.entryPrice, mlProb: p.mlProb ?? null,
     margin: (p.marginLeverage ?? p.leverage) > 0 ? notionalOf(p) / (p.marginLeverage ?? p.leverage) : null,
+    exchangeMark: exchangeMark ?? null,
   };
 }
 

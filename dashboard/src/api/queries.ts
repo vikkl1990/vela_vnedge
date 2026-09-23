@@ -27,6 +27,16 @@ export const qk = {
 
 type Opts<T> = Omit<UseQueryOptions<T, ApiError>, 'queryKey' | 'queryFn'>
 
+/** Portfolio risk state: halts, loss limits, drawdown scaling. */
+export function useRisk() {
+  return useQuery({ queryKey: ['risk'], queryFn: api.risk, refetchInterval: 20_000, retry: false })
+}
+
+/** Exchange mirroring: mode, protective orders in place, last reconciliation. */
+export function useExecution() {
+  return useQuery({ queryKey: ['execution'], queryFn: api.execution, refetchInterval: 30_000, retry: false })
+}
+
 export function useHealth() {
   return useQuery<ReturnType<typeof api.health> extends Promise<infer T> ? T : never, ApiError>({
     queryKey: qk.health,

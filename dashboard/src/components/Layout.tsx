@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useBackendOnline, useHealth, usePositions, useResetPaper, useScannerIndex, useStats } from '../api/queries'
+import { RiskBanner } from './RiskBanner'
 import { useAuth } from '../auth/AuthGate'
 import { useDensity } from '../lib/density'
 import { fmtAge, fmtMoney, fmtPnl, LOCAL_TZ, pnlClass } from '../lib/format'
@@ -254,6 +255,7 @@ export function Layout() {
             </span>
           </aside>
           <main className="main" id="main" tabIndex={-1}>
+            <RiskBanner />
             <RouteErrorBoundary>
               <Outlet />
             </RouteErrorBoundary>
