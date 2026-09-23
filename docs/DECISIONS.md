@@ -567,3 +567,30 @@ promotion gate needs ≥30 shadow trades over ≥14 days first.
 
 **Also fixed:** `request.security(SYM;HEIKINASHI)` is served by transforming the same candles (other
 chart types are refused); the shadow runner runs each pair on its own timeframe.
+
+## 24. Target policy reviewed: the wide 6R target is not the problem, and closer targets are worse
+
+An external review of the live trades was checked line by line against the VM database and every
+figure held: 32 of 33 positions used ATR-fallback levels, the fallback targets are 2R/4R/6R with
+0%/0%/100% allocation, and of 15 stop-outs 10 never passed +0.25R, 11 never +0.5R and none reached
++1R. AKE's TP3 really was 17.4% away.
+
+**Why the fallback rate is so high — not an extraction bug.** Of 49 recent entry signals, 47 arrive
+as chart shapes (`plotshape BUY`) or alertcondition text, neither of which can carry a price. The
+two scripts that publish structured alerts do supply SL/TP and are read as script levels. Deriving
+stops from plotted series (a SuperTrend line, a channel edge) is the open possibility here.
+
+**What the market offers** (`npm run targets`, 296 fleet entries, raw 1m paths to the stop or 24 h):
+61% reach +1R, 44% +2R, 21% +6R; median best +1.43R. Of 218 stop-outs, 28% never reached +0.25R
+(entry quality) and 72% were ahead and gave it back (exit policy). Reachability varies by pair:
+dynamic-trend-bands on FILUSD reaches 6R on 36% of entries (median peak 3.49R), while
+smart-money-breakout on AKEUSD reaches it on 8% (median peak 0.74R).
+
+**Closer targets tested per pair** (`PAIRS=1 npm run exitlab`, same paths, full costs): every one of
+the eight pairs keeps the 6R cap. Fleet 107.1R against 57.2R at a 2R target, 66.5R at 3R, 81.1R at
+4R; half off at 1R/2R/3R all lose too. The wide target is not what costs money — it is rarely hit
+either way, and the trail is what ends these trades.
+
+**UI corrected** (the review's last point): targets carrying no contracts are dimmed rather than
+struck through, the active target shows its distance in percent, and each position states where the
+stop moves to +0.5R and where the trail starts.

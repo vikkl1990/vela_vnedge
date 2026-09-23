@@ -43,6 +43,21 @@ const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
 })
 
 /**
+ * How the exit is set up for this position: which target can actually fill, how far away it is, and
+ * where the stop starts protecting. Targets carrying no contracts cannot fill whatever price does,
+ * and the trail — not the target — is what usually ends these trades.
+ */
+function exitPlan(p: Position) {
+  const dir = p.side === 'long' ? 1 : -1
+  const risk = Math.abs(p.entryPrice - (p.slOriginal ?? p.sl ?? p.entryPrice))
+  const live = [0, 1, 2].filter((i) => p.tp?.[i] != null && (p.legs?.[i] ?? 1) > 0 && !p.tpHit?.[i])
+  const active = live.length ? p.tp![live[0]] : null
+  const pct = active != null && p.entryPrice ? ((active - p.entryPrice) * dir) / p.entryPrice * 100 : null
+  const atR = (r: number) => p.entryPrice + dir * risk * r
+  return { active, pct, risk, lockAt: atR(1), lockPrice: atR(0.5), trailAt: atR(1.5) }
+}
+
+/**
  * What the stop is actually doing. `breakEven` on its own is not the whole story: the trail moves
  * the stop above entry, which locks in profit rather than merely removing the loss.
  */
@@ -221,7 +236,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <div><dt>Risk (USD)</dt><dd>{fmtMoney(p.riskAmount)}</dd></div>
             </dl>
             <div className="small">
-              Targets:{' '}
+              Targets (only a funded one can fill):{' '}
               {[0, 1, 2].map((i) => {
                 const size = p.legs?.[i]
                 const funded = size === undefined ? true : size > 0
@@ -232,6 +247,17 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                 )
               })}
             </div>
+            {(() => {
+              const plan = exitPlan(p)
+              return (
+                <div className="small muted">
+                  {plan.active != null && plan.pct != null && (
+                    <>Active target {fmtPrice(plan.active, tick)} — needs {plan.pct.toFixed(2)}% from entry. </>
+                  )}
+                  Protection: stop moves to {fmtPrice(plan.lockPrice, tick)} once price reaches {fmtPrice(plan.lockAt, tick)} (+1R); from {fmtPrice(plan.trailAt, tick)} (+1.5R) it trails 60% of the best price.
+                </div>
+              )
+            })()}
             <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>
           </article>
         })}

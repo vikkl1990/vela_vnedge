@@ -389,3 +389,48 @@ if (process.env.SCALP === '1') {
     }
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// PAIRS=1: the same take-profit question asked per scanner/market, because reachability differs.
+// One pair reaches 6R on a third of its entries; another almost never gets past 1R, so a single
+// fixed target cannot be right for both. Rules keep the live stop logic (lock +0.5R at 1R, trail
+// 60% of the peak from 1.5R) and change only where profit is banked.
+if (process.env.PAIRS === '1') {
+  const live = (tp: number, partial?: { at: number; share: number }) => (path: Min[]) => {
+    let stop = -1, peak = 0, banked = 0, left = 1;
+    for (const m of path) {
+      if (m.lo <= stop) return banked + left * stop;
+      if (partial && left === 1 && m.hi >= partial.at) { banked += partial.share * partial.at; left -= partial.share; }
+      if (m.hi >= tp) return banked + left * tp;
+      peak = Math.max(peak, m.hi);
+      stop = Math.max(stop, peak >= 1.5 ? peak * 0.6 : peak >= 1 ? 0.5 : -1);
+    }
+    return banked + left * (path.at(-1)?.close ?? 0);
+  };
+  const rules: Array<{ name: string; run: (p: Min[]) => number }> = [
+    { name: 'live (TP 6R)', run: live(6) },
+    { name: 'TP 2R', run: live(2) },
+    { name: 'TP 3R', run: live(3) },
+    { name: 'TP 4R', run: live(4) },
+    { name: 'half at 1R', run: live(6, { at: 1, share: 0.5 }) },
+    { name: 'half at 2R', run: live(6, { at: 2, share: 0.5 }) },
+    { name: 'half at 3R', run: live(6, { at: 3, share: 0.5 }) },
+  ];
+  const groups = new Map<string, typeof cases>();
+  for (const c of cases) {
+    const k = `${c.e.scanner} ${c.e.symbol}`;
+    groups.set(k, [...(groups.get(k) ?? []), c]);
+  }
+  console.log(`\nTARGETS PER PAIR · net R after costs, live stop logic throughout\n`);
+  console.log(`  ${'pair'.padEnd(46)} ${'n'.padStart(4)} ${rules.map(r => r.name.padStart(12)).join('')}   best`);
+  const totals = rules.map(() => 0);
+  for (const [k, g] of [...groups.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    if (g.length < 20) continue;
+    const scores = rules.map(r => g.reduce((a, c) => a + r.run(c.path) - c.cost, 0));
+    scores.forEach((v, i) => { totals[i] += v; });
+    const best = scores.indexOf(Math.max(...scores));
+    console.log(`  ${k.slice(0, 46).padEnd(46)} ${String(g.length).padStart(4)} ${scores.map(v => v.toFixed(1).padStart(12)).join('')}   ${rules[best].name}${best === 0 ? '' : ` (+${(scores[best] - scores[0]).toFixed(1)}R)`}`);
+  }
+  console.log(`  ${'ALL PAIRS'.padEnd(46)} ${String(cases.length).padStart(4)} ${totals.map(v => v.toFixed(1).padStart(12)).join('')}   ${rules[totals.indexOf(Math.max(...totals))].name}`);
+  console.log('\n  a per-pair target only pays if the same pair keeps choosing it out of sample; the column to trust is ALL PAIRS.');
+}
