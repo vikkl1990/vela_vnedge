@@ -1,0 +1,281 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © uzairblaoch
+//@version=5
+indicator("9/15 EMA Scalper v3", "9-15 EMA Scalper v3", overlay = true, max_labels_count = 500)
+
+//========================
+// Inputs
+//========================
+fastLen        = input.int(9,  "Fast EMA")
+slowLen        = input.int(15, "Slow EMA")
+rr             = input.float(2.0, "Reward : Risk (TP)", minval = 0.5, step = 0.5)
+showText       = input.bool(true, "Show label text")
+
+bodyMinRatio   = input.float(0.6, "Min body % of candle (0–1)", minval = 0.1, maxval = 0.9)
+oppWickMax     = input.float(0.3, "Max opposite wick % (0–1)", minval = 0.05, maxval = 0.9)
+
+angleLookback  = input.int(3, "EMA angle lookback (bars)", minval = 1, maxval = 10)
+minSlopePts    = input.float(0.3, "Min EMA9 slope (points)", minval = 0.05)
+minEmaGap      = input.float(0.5, "Min EMA gap (points)", minval = 0.0)
+
+slBufPts       = input.float(1.0, "SL/TP tolerance (points)", minval = 0.0)
+maxTradeBars   = input.int(50, "Max bars to keep trade open", minval = 5)
+
+// FVG / displacement
+bigBodyMult    = input.float(2.0, "Big candle: body > avgBody *", minval = 1.0, maxval = 5.0)
+retraceMin     = input.float(0.3, "FVG min retrace %", minval = 0.0, maxval = 1.0)
+retraceMax     = input.float(0.7, "FVG max retrace %", minval = 0.0, maxval = 1.0)
+fvgOneBarOnly  = input.bool(true, "FVG: only next bar (1 chance)")
+
+// FVG style: conservative = low/high must respect displacement; aggressive = only touch zone
+fvgMode        = input.string("Conservative", "FVG Entry Mode", options = ["Conservative", "Aggressive"])
+
+//========================
+// EMAs
+//========================
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+
+plot(emaFast, color = color.new(color.blue, 0), title = "EMA 9")
+plot(emaSlow, color = color.new(color.red,  0), title = "EMA 15")
+
+//========================
+// Helpers
+//========================
+f_body(o, c)  => math.abs(c - o)
+f_rng(h, l)   => h - l
+
+body    = f_body(open, close)
+cRange  = f_rng(high, low)
+avgBody = ta.sma(body, 20)
+
+// strong directional candles
+f_strongBull(o, c, h, l) =>
+    f_rng(h, l) > 0 and c > o and f_body(o, c) / f_rng(h, l) >= bodyMinRatio and (h - math.max(o, c)) <= f_rng(h, l) * oppWickMax
+
+f_strongBear(o, c, h, l) =>
+    f_rng(h, l) > 0 and c < o and f_body(o, c) / f_rng(h, l) >= bodyMinRatio and (math.min(o, c) - l) <= f_rng(h, l) * oppWickMax
+
+// EMA slope / trend
+slopeFast = emaFast - emaFast[angleLookback]
+gapFast   = math.abs(emaFast - emaSlow)
+
+upTrend   = emaFast > emaSlow and slopeFast >  minSlopePts and gapFast > minEmaGap
+downTrend = emaFast < emaSlow and slopeFast < -minSlopePts and gapFast > minEmaGap
+
+// candle relative to EMAs (for touch / cross logic)
+cMin = math.min(open, close)
+cMax = math.max(open, close)
+
+emaTouchFast = cMin <= emaFast and cMax >= emaFast
+emaTouchSlow = cMin <= emaSlow and cMax >= emaSlow
+emaTouchAny  = emaTouchFast or emaTouchSlow
+
+//========================
+// Simple classification: pin, engulfing, displacement
+// (used mainly so FVG only comes from displacement candles)
+//========================
+isBullPin = close > open and f_rng(high, low) > 0 and (open - low) > (high - close) * 2.0 and (open - low) / f_rng(high, low) >= 0.6 and low <= emaFast and emaFast <= cMax
+isBearPin = close < open and f_rng(high, low) > 0 and (high - close) > (open - low) * 2.0 and (high - close) / f_rng(high, low) >= 0.6 and cMin <= emaFast and emaFast <= high
+
+isBullEngulf = close > open and close > high[1] and open < low[1] and emaTouchAny
+isBearEngulf = close < open and close < low[1]  and open > high[1] and emaTouchAny
+
+isDispBull = body > avgBody * bigBodyMult and f_strongBull(open, close, high, low) and emaTouchAny and upTrend
+isDispBear = body > avgBody * bigBodyMult and f_strongBear(open, close, high, low) and emaTouchAny and downTrend
+
+//========================
+// Trade state
+//========================
+var bool  inTrade    = false
+var int   tradeDir   = 0          // +1 buy, -1 sell
+var float entryPrice = na
+var float slPrice    = na
+var float tpPrice    = na
+var int   entryBar   = na
+
+// SL/TP + timeout
+if inTrade and tradeDir == 1
+    hitTP    = high >= tpPrice - slBufPts or close >= tpPrice - slBufPts
+    hitSL    = low  <= slPrice + slBufPts or close <= slPrice + slBufPts
+    timedOut = bar_index - entryBar >= maxTradeBars
+    if hitTP or hitSL or timedOut
+        inTrade := false
+
+if inTrade and tradeDir == -1
+    hitTP    = low  <= tpPrice + slBufPts or close <= tpPrice + slBufPts
+    hitSL    = high >= slPrice - slBufPts or close >= slPrice - slBufPts
+    timedOut = bar_index - entryBar >= maxTradeBars
+    if hitTP or hitSL or timedOut
+        inTrade := false
+
+//========================
+// Normal EMA-body entries (pin / engulf / strong candle)
+//========================
+emaInBody    = cMin <= emaFast and cMax >= emaFast
+
+buyCore  = upTrend   and emaInBody and (f_strongBull(open, close, high, low) or isBullPin or isBullEngulf)
+sellCore = downTrend and emaInBody and (f_strongBear(open, close, high, low) or isBearPin or isBearEngulf)
+
+// prevent double-counting displacement candles: if it's displacement we will prefer FVG logic
+normalBuy  = buyCore  and not isDispBull
+normalSell = sellCore and not isDispBear
+
+//========================
+// FVG state from displacement candles
+//========================
+var bool  waitingBullFVG = false
+var bool  waitingBearFVG = false
+var float bullH0         = na
+var float bullL0         = na
+var float bearH0         = na
+var float bearL0         = na
+var int   bullBarIndex   = na
+var int   bearBarIndex   = na
+
+// mark displacement for future FVG
+if isDispBull and not inTrade
+    waitingBullFVG := true
+    bullH0         := high
+    bullL0         := low
+    bullBarIndex   := bar_index
+
+if isDispBear and not inTrade
+    waitingBearFVG := true
+    bearH0         := high
+    bearL0         := low
+    bearBarIndex   := bar_index
+
+// auto-expire after one bar if option true
+if waitingBullFVG and fvgOneBarOnly and bar_index > bullBarIndex + 1
+    waitingBullFVG := false
+if waitingBearFVG and fvgOneBarOnly and bar_index > bearBarIndex + 1
+    waitingBearFVG := false
+
+//========================
+// FVG retest
+//========================
+bool  fvgBuySignal  = false
+bool  fvgSellSignal = false
+float fvgBuyEntry   = na
+float fvgSellEntry  = na
+float fvgBuySL      = na
+float fvgSellSL     = na
+
+// bullish FVG
+if waitingBullFVG and not inTrade and bar_index == bullBarIndex + 1
+    bullR        = bullH0 - bullL0
+    bullZoneLow  = bullH0 - bullR * retraceMax
+    bullZoneHigh = bullH0 - bullR * retraceMin
+    touchAgg     = low <= bullZoneHigh and high >= bullZoneLow
+    touchCons    = touchAgg and low > bullL0
+    bullRetest   = fvgMode == "Aggressive" ? touchAgg : touchCons
+    if bullRetest
+        fvgBuySignal := true
+        fvgBuyEntry  := math.max(bullZoneLow, low)
+        fvgBuySL     := bullL0
+    waitingBullFVG := false
+
+// bearish FVG
+if waitingBearFVG and not inTrade and bar_index == bearBarIndex + 1
+    bearR        = bearH0 - bearL0
+    bearZoneLow  = bearL0 + bearR * retraceMin
+    bearZoneHigh = bearL0 + bearR * retraceMax
+    touchAgg     = high >= bearZoneLow and low <= bearZoneHigh
+    touchCons    = touchAgg and high < bearH0
+    bearRetest   = fvgMode == "Aggressive" ? touchAgg : touchCons
+    if bearRetest
+        fvgSellSignal := true
+        fvgSellEntry  := math.min(bearZoneHigh, high)
+        fvgSellSL     := bearH0
+    waitingBearFVG := false
+
+//========================
+// Final signals
+//========================
+instantBuySignal  = normalBuy  and not inTrade and barstate.isconfirmed
+instantSellSignal = normalSell and not inTrade and barstate.isconfirmed
+
+//========================
+// Arrow series (must be global for plotshape)
+//========================
+buyArrowSeries  = instantBuySignal or fvgBuySignal
+sellArrowSeries = instantSellSignal or fvgSellSignal
+
+plotshape(buyArrowSeries,  title = "Buy Arrow",  style = shape.triangleup,   location = location.belowbar, size = size.tiny, color = color.new(color.green, 20), offset = 0)
+plotshape(sellArrowSeries, title = "Sell Arrow", style = shape.triangledown, location = location.abovebar, size = size.tiny, color = color.new(color.red,   20), offset = 0)
+
+//========================
+// Execute “virtual” trades & labels
+//========================
+f_labelOffset(lowP, highP) =>
+    r = highP - lowP
+    r > 0 ? r * 2.0 : syminfo.mintick * 20.0
+
+//--- normal BUY
+if instantBuySignal
+    e  = close
+    sl = low
+    r  = e - sl
+    tp = e + r * rr
+    offs = f_labelOffset(low, high)
+    y   = sl - offs
+    t   = showText ? "BUY\nE: " + str.tostring(e, format.mintick) + "\nSL: " + str.tostring(sl, format.mintick) + "\nTP: " + str.tostring(tp, format.mintick) : "BUY"
+    label.new(bar_index, y, t, style = label.style_label_up, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+    inTrade    := true
+    tradeDir   := 1
+    entryPrice := e
+    slPrice    := sl
+    tpPrice    := tp
+    entryBar   := bar_index
+
+//--- normal SELL
+if instantSellSignal
+    e  = close
+    sl = high
+    r  = sl - e
+    tp = e - r * rr
+    offs = f_labelOffset(low, high)
+    y   = sl + offs
+    t   = showText ? "SELL\nE: " + str.tostring(e, format.mintick) + "\nSL: " + str.tostring(sl, format.mintick) + "\nTP: " + str.tostring(tp, format.mintick) : "SELL"
+    label.new(bar_index, y, t, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+    inTrade    := true
+    tradeDir   := -1
+    entryPrice := e
+    slPrice    := sl
+    tpPrice    := tp
+    entryBar   := bar_index
+
+//--- FVG BUY
+if fvgBuySignal and not inTrade
+    e  = fvgBuyEntry
+    sl = fvgBuySL
+    r  = e - sl
+    tp = e + r * rr
+    offs = f_labelOffset(low, high)
+    y   = sl - offs
+    t   = showText ? "BUY FVG\nE: " + str.tostring(e, format.mintick) + "\nSL: " + str.tostring(sl, format.mintick) + "\nTP: " + str.tostring(tp, format.mintick) : "BUY FVG"
+    label.new(bar_index, y, t, style = label.style_label_up, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+    inTrade    := true
+    tradeDir   := 1
+    entryPrice := e
+    slPrice    := sl
+    tpPrice    := tp
+    entryBar   := bar_index
+
+//--- FVG SELL
+if fvgSellSignal and not inTrade
+    e  = fvgSellEntry
+    sl = fvgSellSL
+    r  = sl - e
+    tp = e - r * rr
+    offs = f_labelOffset(low, high)
+    y   = sl + offs
+    t   = showText ? "SELL FVG\nE: " + str.tostring(e, format.mintick) + "\nSL: " + str.tostring(sl, format.mintick) + "\nTP: " + str.tostring(tp, format.mintick) : "SELL FVG"
+    label.new(bar_index, y, t, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+    inTrade    := true
+    tradeDir   := -1
+    entryPrice := e
+    slPrice    := sl
+    tpPrice    := tp
+    entryBar   := bar_index

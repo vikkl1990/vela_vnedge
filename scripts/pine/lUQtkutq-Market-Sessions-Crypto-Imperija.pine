@@ -1,0 +1,511 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// at https://mozilla.org/MPL/2.0/
+//@version=6
+indicator("Market Sessions [Crypto Imperija]", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000)
+
+// Limits
+int KEEP_SESSION_BOXES = 220
+int KEEP_LEVEL_OBJECTS = 250
+int KEEP_RECLAIM_WATCH = 250
+
+// Inputs
+groupGeneral = "General Settings"
+
+showSessionBoxes = input.bool(true, "Show Session Boxes", group = groupGeneral)
+showSessionNames = input.bool(true, "Show Session Names", group = groupGeneral)
+showMitigatedLevels = input.bool(false, "Show Mitigated Levels", tooltip = "Keep swept session levels visible as faded lines.", group = groupGeneral)
+showSessionLevels = input.bool(true, "Show Completed Session High / Low", tooltip = "Draw high and low levels after each session finishes.", group = groupGeneral)
+showSessionLevelLabels = input.bool(true, "Show Session Level Labels", tooltip = "Show text labels on completed session high and low levels.", group = groupGeneral)
+showSessionLevelPrices = input.bool(true, "Show Prices On Session Level Labels", tooltip = "Add the price value to each session level label.", group = groupGeneral)
+hideWeekends = input.bool(false, "Hide Weekend Sessions", group = groupGeneral)
+sessionLevelDistanceBars = input.int(200, "Session Level Distance", tooltip = "Minimum 1 / Maximum 500", minval = 1, maxval = 500, group = groupGeneral)
+levelLabelSizeInput = input.string("Small", "Session Level Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupGeneral)
+sessionLevelLineStyleInput = input.string("Solid", "Session Level Line Style", options = ["Solid", "Dashed", "Dotted"], group = groupGeneral)
+sessionLevelLineWidth = input.int(1, "Session Level Line Width", tooltip = "Minimum 1 / Maximum 4", minval = 1, maxval = 4, group = groupGeneral)
+boxBorderStyleInput = input.string("Solid", "Session Box Border Style", options = ["Solid", "Dashed", "Dotted"], group = groupGeneral)
+boxBorderWidth = input.int(1, "Session Box Border Width", tooltip = "Minimum 1 / Maximum 4", minval = 1, maxval = 4, group = groupGeneral)
+sessionBoxTextSizeInput = input.string("Small", "Session Box Text Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupGeneral)
+
+// Session inputs
+groupMain = "Session Settings"
+
+showAsia = input.bool(true, "Show Asian Session", group = groupMain)
+asiaSession = input.session("0200-1000:1234567", "", group = groupMain, inline = "asiaTime")
+asiaName = input.string("Asian", "", group = groupMain, inline = "asiaNameColor")
+asiaColor = input.color(color.new(color.rgb(245, 158, 11), 90), "", group = groupMain, inline = "asiaNameColor")
+
+showLondon = input.bool(true, "Show London Session", group = groupMain)
+londonSession = input.session("0900-1730:1234567", "", group = groupMain, inline = "londonTime")
+londonName = input.string("London", "", group = groupMain, inline = "londonNameColor")
+londonColor = input.color(color.new(color.rgb(59, 130, 246), 90), "", group = groupMain, inline = "londonNameColor")
+
+showNewYork = input.bool(true, "Show NY Session", group = groupMain)
+nySession = input.session("1630-2300:1234567", "", group = groupMain, inline = "nyTime")
+nyName = input.string("NY", "", group = groupMain, inline = "nyNameColor")
+nyColor = input.color(color.new(color.rgb(239, 68, 68), 91), "", group = groupMain, inline = "nyNameColor")
+
+showClosed = input.bool(true, "Show Closed Session", group = groupMain)
+closedSession = input.session("2300-0200:1234567", "", group = groupMain, inline = "closedTime")
+closedName = input.string("Closed", "", group = groupMain, inline = "closedNameColor")
+closedColor = input.color(color.new(color.rgb(148, 163, 184), 91), "", group = groupMain, inline = "closedNameColor")
+
+// Colors
+f_clampTransp(float value) => int(math.round(math.max(0.0, math.min(100.0, value))))
+f_lineColorFromBoxColor(color col) => color.new(col, f_clampTransp(color.t(col) >= 99.0 ? 100.0 : math.max(0.0, color.t(col) - 72.0)))
+f_textColorFromBoxColor(color col) => color.new(col, f_clampTransp(color.t(col) >= 99.0 ? 100.0 : math.max(0.0, color.t(col) - 90.0)))
+
+asiaBoxColor = asiaColor
+asiaBorderColor = f_lineColorFromBoxColor(asiaColor)
+asiaTextColor = f_textColorFromBoxColor(asiaColor)
+
+londonBoxColor = londonColor
+londonBorderColor = f_lineColorFromBoxColor(londonColor)
+londonTextColor = f_textColorFromBoxColor(londonColor)
+
+nyBoxColor = nyColor
+nyBorderColor = f_lineColorFromBoxColor(nyColor)
+nyTextColor = f_textColorFromBoxColor(nyColor)
+
+closedBoxColor = closedColor
+closedBorderColor = f_lineColorFromBoxColor(closedColor)
+closedTextColor = f_textColorFromBoxColor(closedColor)
+
+// Time
+tfSec = timeframe.in_seconds(timeframe.period)
+safeTfSec = nz(tfSec, 60)
+distMs = int(sessionLevelDistanceBars * safeTfSec * 1000)
+chartTfMs = int(safeTfSec * 1000)
+
+rightTime() => time + distMs
+alignTimeToChartBarStart(int ts) => chartTfMs > 0 ? int(math.floor(float(ts) / float(chartTfMs)) * float(chartTfMs)) : ts
+alignTimeToChartBarEnd(int ts) => chartTfMs > 0 ? alignTimeToChartBarStart(ts) + chartTfMs : ts
+
+// Objects
+var array<box> storedSessionBoxes = array.new_box()
+
+var array<line> activeLiquidityLines = array.new_line()
+var array<label> activeLiquidityLabels = array.new_label()
+var array<float> activeLiquidityPrices = array.new_float()
+var array<bool> activeLiquidityIsHigh = array.new_bool()
+var array<bool> activeLiquidityIsActive = array.new_bool()
+var array<color> activeLiquidityColors = array.new_color()
+var array<string> activeLiquidityNames = array.new_string()
+var array<float> reclaimWatchPrices = array.new_float()
+var array<bool> reclaimWatchIsHigh = array.new_bool()
+var array<string> reclaimWatchNames = array.new_string()
+
+// Session state arrays
+int SESSION_ASIA = 0
+int SESSION_LONDON = 1
+int SESSION_NY = 2
+int SESSION_CLOSED = 3
+
+var array<box> sessionBoxes = array.new_box(4, na)
+var array<float> sessionHighs = array.new_float(4, na)
+var array<float> sessionLows = array.new_float(4, na)
+var array<int> sessionHighTimes = array.new_int(4, na)
+var array<int> sessionLowTimes = array.new_int(4, na)
+var array<bool> sessionLevelsDrawnThisCycle = array.new_bool(4, false)
+
+// Helpers
+f_allowSessionBar() =>
+    int dow = dayofweek(time, "Etc/UTC")
+    not hideWeekends or (dow != dayofweek.saturday and dow != dayofweek.sunday)
+
+f_inSession(string sess) => timeframe.isintraday and f_allowSessionBar() and not na(time(timeframe.period, sess, "Etc/UTC"))
+f_sessionStarted(bool inSess) => inSess and not (bar_index > 0 ? inSess[1] : false)
+f_sessionEnded(bool inSess) => not inSess and (bar_index > 0 ? inSess[1] : false)
+f_price(float x) => na(x) ? "n/a" : str.tostring(x, format.mintick)
+
+f_size(string sizeInput) =>
+    switch sizeInput
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.small
+
+f_lineStyle(string styleInput) =>
+    switch styleInput
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+f_cleanName(string nameInput, string fallbackName) => str.length(str.trim(nameInput)) > 0 ? str.trim(nameInput) : fallbackName
+
+f_sessionTimeText(string sess) =>
+    str.length(sess) >= 9 ? str.substring(sess, 0, 2) + ":" + str.substring(sess, 2, 4) + " - " + str.substring(sess, 5, 7) + ":" + str.substring(sess, 7, 9) : sess
+
+f_boxText(string title, string sess) => showSessionNames ? title + "\n" + f_sessionTimeText(sess) : ""
+
+f_levelLabelTextFromName(string name, float price) =>
+    string txt = name
+    txt := showSessionLevelPrices ? txt + " (" + f_price(price) + ")" : txt
+    txt
+
+f_shouldDrawSessionLevels(bool showThisSession) =>
+    showSessionLevels and showThisSession
+
+// Storage
+f_storeSessionBox(box b) =>
+    if not na(b)
+        array.push(storedSessionBoxes, b)
+
+        if array.size(storedSessionBoxes) > KEEP_SESSION_BOXES
+            box old = array.shift(storedSessionBoxes)
+            box.delete(old)
+
+f_removeReclaimWatchAt(int idx) =>
+    if idx >= 0 and idx < array.size(reclaimWatchPrices)
+        array.remove(reclaimWatchPrices, idx)
+        array.remove(reclaimWatchIsHigh, idx)
+        array.remove(reclaimWatchNames, idx)
+
+f_storeReclaimWatch(float price, bool isHigh, string name) =>
+    if not na(price)
+        array.push(reclaimWatchPrices, price)
+        array.push(reclaimWatchIsHigh, isHigh)
+        array.push(reclaimWatchNames, name)
+
+        if array.size(reclaimWatchPrices) > KEEP_RECLAIM_WATCH
+            array.shift(reclaimWatchPrices)
+            array.shift(reclaimWatchIsHigh)
+            array.shift(reclaimWatchNames)
+
+f_removeLiquidityAt(int idx) =>
+    if idx >= 0 and idx < array.size(activeLiquidityLines)
+        line levelLine = array.get(activeLiquidityLines, idx)
+        label levelLabel = array.get(activeLiquidityLabels, idx)
+
+        if not na(levelLine)
+            line.delete(levelLine)
+
+        if not na(levelLabel)
+            label.delete(levelLabel)
+
+        array.remove(activeLiquidityLines, idx)
+        array.remove(activeLiquidityLabels, idx)
+        array.remove(activeLiquidityPrices, idx)
+        array.remove(activeLiquidityIsHigh, idx)
+        array.remove(activeLiquidityIsActive, idx)
+        array.remove(activeLiquidityColors, idx)
+        array.remove(activeLiquidityNames, idx)
+
+f_storeLiquidityLevel(line l, label lb, float price, bool isHigh, color col, string name) =>
+    if not na(l)
+        array.push(activeLiquidityLines, l)
+        array.push(activeLiquidityLabels, lb)
+        array.push(activeLiquidityPrices, price)
+        array.push(activeLiquidityIsHigh, isHigh)
+        array.push(activeLiquidityIsActive, true)
+        array.push(activeLiquidityColors, col)
+        array.push(activeLiquidityNames, name)
+
+        if array.size(activeLiquidityLines) > KEEP_LEVEL_OBJECTS
+            line oldLine = array.shift(activeLiquidityLines)
+            label oldLabel = array.shift(activeLiquidityLabels)
+
+            array.shift(activeLiquidityPrices)
+            array.shift(activeLiquidityIsHigh)
+            array.shift(activeLiquidityIsActive)
+            array.shift(activeLiquidityColors)
+            array.shift(activeLiquidityNames)
+
+            if not na(oldLine)
+                line.delete(oldLine)
+
+            if not na(oldLabel)
+                label.delete(oldLabel)
+
+// Updates
+f_updateActiveLiquidityObjects() =>
+    int count = array.size(activeLiquidityLines)
+
+    if count > 0
+        int xRight = rightTime()
+
+        for i = 0 to count - 1
+            bool isActive = array.get(activeLiquidityIsActive, i)
+
+            if isActive
+                line levelLine = array.get(activeLiquidityLines, i)
+                float levelPrice = array.get(activeLiquidityPrices, i)
+
+                if not na(levelLine)
+                    line.set_x2(levelLine, xRight)
+                    line.set_y2(levelLine, levelPrice)
+
+                if i < array.size(activeLiquidityLabels)
+                    label levelLabel = array.get(activeLiquidityLabels, i)
+
+                    if not na(levelLabel)
+                        label.set_x(levelLabel, xRight)
+                        label.set_y(levelLabel, levelPrice)
+
+// Sweeps
+f_handleMitigatedLiquidityLevels() =>
+    int count = array.size(activeLiquidityLines)
+
+    bool sweepAny = false
+    string sweepMessage = ""
+
+    if count > 0 and f_allowSessionBar()
+        int i = count - 1
+
+        while i >= 0
+            bool isActive = array.get(activeLiquidityIsActive, i)
+
+            if isActive
+                float levelPrice = array.get(activeLiquidityPrices, i)
+                bool isHigh = array.get(activeLiquidityIsHigh, i)
+                bool swept = isHigh ? high >= levelPrice : low <= levelPrice
+
+                if swept
+                    line levelLine = array.get(activeLiquidityLines, i)
+                    label levelLabel = array.get(activeLiquidityLabels, i)
+                    color levelColor = array.get(activeLiquidityColors, i)
+                    string levelName = array.get(activeLiquidityNames, i)
+                    int hitTime = alignTimeToChartBarEnd(time)
+
+                    sweepAny := true
+
+                    string oneMessage = syminfo.ticker + " " + timeframe.period + " swept " + f_levelLabelTextFromName(levelName, levelPrice)
+                    sweepMessage := str.length(sweepMessage) > 0 ? sweepMessage + " | " + oneMessage : oneMessage
+
+                    f_storeReclaimWatch(levelPrice, isHigh, levelName)
+
+                    if showMitigatedLevels
+                        array.set(activeLiquidityIsActive, i, false)
+
+                        if not na(levelLine)
+                            line.set_x2(levelLine, hitTime)
+                            line.set_y2(levelLine, levelPrice)
+                            line.set_extend(levelLine, extend.none)
+                            line.set_style(levelLine, line.style_dotted)
+                            line.set_color(levelLine, color.new(levelColor, 58))
+
+                        if not na(levelLabel)
+                            label.set_x(levelLabel, hitTime)
+                            label.set_y(levelLabel, levelPrice)
+                            label.set_text(levelLabel, f_levelLabelTextFromName(levelName, levelPrice))
+                            label.set_textcolor(levelLabel, color.new(levelColor, 58))
+                            label.set_color(levelLabel, color.new(levelColor, 100))
+                    else
+                        f_removeLiquidityAt(i)
+
+            i -= 1
+
+    [sweepAny, sweepMessage]
+
+// Reclaims
+f_handleReclaimedLiquidityLevels() =>
+    int count = array.size(reclaimWatchPrices)
+
+    bool reclaimAny = false
+    string reclaimMessage = ""
+
+    if count > 0 and f_allowSessionBar()
+        int i = count - 1
+
+        while i >= 0
+            float levelPrice = array.get(reclaimWatchPrices, i)
+            bool isHigh = array.get(reclaimWatchIsHigh, i)
+            string levelName = array.get(reclaimWatchNames, i)
+            bool reclaimed = barstate.isconfirmed and (isHigh ? close < levelPrice : close > levelPrice)
+
+            if reclaimed
+                reclaimAny := true
+
+                string reclaimSideText = isHigh ? " | close back below" : " | close back above"
+                string oneMessage = syminfo.ticker + " " + timeframe.period + " swept and reclaimed " + f_levelLabelTextFromName(levelName, levelPrice) + reclaimSideText
+                reclaimMessage := str.length(reclaimMessage) > 0 ? reclaimMessage + " | " + oneMessage : oneMessage
+
+                f_removeReclaimWatchAt(i)
+
+            i -= 1
+
+    [reclaimAny, reclaimMessage]
+
+// Cleanup
+f_cleanupHiddenMitigatedLevels() =>
+    if not showMitigatedLevels and array.size(activeLiquidityLines) > 0
+        int i = array.size(activeLiquidityLines) - 1
+
+        while i >= 0
+            bool isActive = array.get(activeLiquidityIsActive, i)
+
+            if not isActive
+                f_removeLiquidityAt(i)
+
+            i -= 1
+
+// Drawings
+f_drawLiquidityLevels(bool shouldDraw, string shortName, float hi, float lo, int hiTime, int loTime, color col, string lblSize, string levelStyle, int levelWidth) =>
+    if shouldDraw and f_allowSessionBar() and not na(hi) and not na(lo)
+        int fallbackTime = time
+        int hiX1 = na(hiTime) ? fallbackTime : alignTimeToChartBarStart(hiTime)
+        int loX1 = na(loTime) ? fallbackTime : alignTimeToChartBarStart(loTime)
+        int xRight = rightTime()
+
+        string hiName = shortName + " HIGH"
+        string loName = shortName + " LOW"
+
+        line hiLine = line.new(x1 = hiX1, y1 = hi, x2 = xRight, y2 = hi, xloc = xloc.bar_time, extend = extend.none, color = col, style = levelStyle, width = levelWidth)
+        line loLine = line.new(x1 = loX1, y1 = lo, x2 = xRight, y2 = lo, xloc = xloc.bar_time, extend = extend.none, color = col, style = levelStyle, width = levelWidth)
+
+        label hiLabel = na
+        label loLabel = na
+
+        if showSessionLevelLabels
+            hiLabel := label.new(x = xRight, y = hi, xloc = xloc.bar_time, yloc = yloc.price, text = f_levelLabelTextFromName(hiName, hi), style = label.style_none, color = color.new(col, 100), textcolor = col, size = lblSize, textalign = text.align_center)
+            loLabel := label.new(x = xRight, y = lo, xloc = xloc.bar_time, yloc = yloc.price, text = f_levelLabelTextFromName(loName, lo), style = label.style_none, color = color.new(col, 100), textcolor = col, size = lblSize, textalign = text.align_center)
+
+        f_storeLiquidityLevel(hiLine, hiLabel, hi, true, col, hiName)
+        f_storeLiquidityLevel(loLine, loLabel, lo, false, col, loName)
+
+// Reusable session logic
+f_processSession(int idx, bool showThisSession, bool inSess, bool sessionStart, bool sessionEnd, string title, string sess, color boxColor, color borderColor, color textColor, string textSize, string borderStyle, int borderWidth, string lblSize, string levelStyle, int levelWidth) =>
+    if sessionStart
+        array.set(sessionHighs, idx, high)
+        array.set(sessionLows, idx, low)
+        array.set(sessionHighTimes, idx, time)
+        array.set(sessionLowTimes, idx, time)
+
+        if showSessionBoxes and showThisSession
+            box newBox = box.new(left = bar_index, top = high, right = bar_index, bottom = low, xloc = xloc.bar_index, bgcolor = boxColor, border_color = borderColor, border_style = borderStyle, border_width = borderWidth, text = f_boxText(title, sess), text_color = textColor, text_size = textSize, text_halign = text.align_center, text_valign = text.align_top)
+            array.set(sessionBoxes, idx, newBox)
+            f_storeSessionBox(newBox)
+
+    if inSess
+        float currentHigh = array.get(sessionHighs, idx)
+        float currentLow = array.get(sessionLows, idx)
+
+        if na(currentHigh) or high > currentHigh
+            array.set(sessionHighs, idx, high)
+            array.set(sessionHighTimes, idx, time)
+
+        if na(currentLow) or low < currentLow
+            array.set(sessionLows, idx, low)
+            array.set(sessionLowTimes, idx, time)
+
+        box activeBox = array.get(sessionBoxes, idx)
+
+        if showSessionBoxes and showThisSession and not na(activeBox)
+            box.set_right(activeBox, bar_index)
+            box.set_top(activeBox, array.get(sessionHighs, idx))
+            box.set_bottom(activeBox, array.get(sessionLows, idx))
+
+    if sessionEnd and not array.get(sessionLevelsDrawnThisCycle, idx)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showThisSession), title, array.get(sessionHighs, idx), array.get(sessionLows, idx), array.get(sessionHighTimes, idx), array.get(sessionLowTimes, idx), borderColor, lblSize, levelStyle, levelWidth)
+        array.set(sessionLevelsDrawnThisCycle, idx, true)
+
+// Prepared values
+sessionBoxTextSize = f_size(sessionBoxTextSizeInput)
+levelLabelSize = f_size(levelLabelSizeInput)
+boxBorderStyle = f_lineStyle(boxBorderStyleInput)
+sessionLevelLineStyle = f_lineStyle(sessionLevelLineStyleInput)
+
+asiaTitle = f_cleanName(asiaName, "Asian")
+londonTitle = f_cleanName(londonName, "London")
+nyTitle = f_cleanName(nyName, "NY")
+closedTitle = f_cleanName(closedName, "Closed")
+
+// Session detection
+inAsia = showAsia and f_inSession(asiaSession)
+inLondon = showLondon and f_inSession(londonSession)
+inNY = showNewYork and f_inSession(nySession)
+inClosed = showClosed and f_inSession(closedSession)
+
+asiaStart = f_sessionStarted(inAsia)
+londonStart = f_sessionStarted(inLondon)
+nyStart = f_sessionStarted(inNY)
+closedStart = f_sessionStarted(inClosed)
+
+asiaEnded = f_sessionEnded(inAsia)
+londonEnded = f_sessionEnded(inLondon)
+nyEnded = f_sessionEnded(inNY)
+closedEnded = f_sessionEnded(inClosed)
+
+asiaAlreadyActive = inAsia and not asiaStart
+londonAlreadyActive = inLondon and not londonStart
+nyAlreadyActive = inNY and not nyStart
+closedAlreadyActive = inClosed and not closedStart
+
+// Session resets
+if asiaStart
+    array.set(sessionLevelsDrawnThisCycle, SESSION_ASIA, false)
+
+if londonStart
+    array.set(sessionLevelsDrawnThisCycle, SESSION_LONDON, false)
+
+if nyStart
+    array.set(sessionLevelsDrawnThisCycle, SESSION_NY, false)
+
+if closedStart
+    array.set(sessionLevelsDrawnThisCycle, SESSION_CLOSED, false)
+
+// Overlap levels
+if asiaStart and showClosed and closedAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_CLOSED)
+    f_drawLiquidityLevels(f_shouldDrawSessionLevels(showClosed), closedTitle, array.get(sessionHighs, SESSION_CLOSED), array.get(sessionLows, SESSION_CLOSED), array.get(sessionHighTimes, SESSION_CLOSED), array.get(sessionLowTimes, SESSION_CLOSED), closedBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+    array.set(sessionLevelsDrawnThisCycle, SESSION_CLOSED, true)
+
+if londonStart
+    if showAsia and asiaAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_ASIA)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showAsia), asiaTitle, array.get(sessionHighs, SESSION_ASIA), array.get(sessionLows, SESSION_ASIA), array.get(sessionHighTimes, SESSION_ASIA), array.get(sessionLowTimes, SESSION_ASIA), asiaBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_ASIA, true)
+
+    if showClosed and closedAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_CLOSED)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showClosed), closedTitle, array.get(sessionHighs, SESSION_CLOSED), array.get(sessionLows, SESSION_CLOSED), array.get(sessionHighTimes, SESSION_CLOSED), array.get(sessionLowTimes, SESSION_CLOSED), closedBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_CLOSED, true)
+
+if nyStart
+    if showLondon and londonAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_LONDON)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showLondon), londonTitle, array.get(sessionHighs, SESSION_LONDON), array.get(sessionLows, SESSION_LONDON), array.get(sessionHighTimes, SESSION_LONDON), array.get(sessionLowTimes, SESSION_LONDON), londonBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_LONDON, true)
+
+    if showAsia and asiaAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_ASIA)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showAsia), asiaTitle, array.get(sessionHighs, SESSION_ASIA), array.get(sessionLows, SESSION_ASIA), array.get(sessionHighTimes, SESSION_ASIA), array.get(sessionLowTimes, SESSION_ASIA), asiaBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_ASIA, true)
+
+    if showClosed and closedAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_CLOSED)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showClosed), closedTitle, array.get(sessionHighs, SESSION_CLOSED), array.get(sessionLows, SESSION_CLOSED), array.get(sessionHighTimes, SESSION_CLOSED), array.get(sessionLowTimes, SESSION_CLOSED), closedBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_CLOSED, true)
+
+if closedStart
+    if showNewYork and nyAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_NY)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showNewYork), nyTitle, array.get(sessionHighs, SESSION_NY), array.get(sessionLows, SESSION_NY), array.get(sessionHighTimes, SESSION_NY), array.get(sessionLowTimes, SESSION_NY), nyBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_NY, true)
+
+    if showLondon and londonAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_LONDON)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showLondon), londonTitle, array.get(sessionHighs, SESSION_LONDON), array.get(sessionLows, SESSION_LONDON), array.get(sessionHighTimes, SESSION_LONDON), array.get(sessionLowTimes, SESSION_LONDON), londonBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_LONDON, true)
+
+    if showAsia and asiaAlreadyActive and not array.get(sessionLevelsDrawnThisCycle, SESSION_ASIA)
+        f_drawLiquidityLevels(f_shouldDrawSessionLevels(showAsia), asiaTitle, array.get(sessionHighs, SESSION_ASIA), array.get(sessionLows, SESSION_ASIA), array.get(sessionHighTimes, SESSION_ASIA), array.get(sessionLowTimes, SESSION_ASIA), asiaBorderColor, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+        array.set(sessionLevelsDrawnThisCycle, SESSION_ASIA, true)
+
+// Process sessions
+f_processSession(SESSION_ASIA, showAsia, inAsia, asiaStart, asiaEnded, asiaTitle, asiaSession, asiaBoxColor, asiaBorderColor, asiaTextColor, sessionBoxTextSize, boxBorderStyle, boxBorderWidth, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+
+f_processSession(SESSION_LONDON, showLondon, inLondon, londonStart, londonEnded, londonTitle, londonSession, londonBoxColor, londonBorderColor, londonTextColor, sessionBoxTextSize, boxBorderStyle, boxBorderWidth, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+
+f_processSession(SESSION_NY, showNewYork, inNY, nyStart, nyEnded, nyTitle, nySession, nyBoxColor, nyBorderColor, nyTextColor, sessionBoxTextSize, boxBorderStyle, boxBorderWidth, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+
+f_processSession(SESSION_CLOSED, showClosed, inClosed, closedStart, closedEnded, closedTitle, closedSession, closedBoxColor, closedBorderColor, closedTextColor, sessionBoxTextSize, boxBorderStyle, boxBorderWidth, levelLabelSize, sessionLevelLineStyle, sessionLevelLineWidth)
+
+// Alerts
+[sessionSweepAlert, sessionSweepMessage] = f_handleMitigatedLiquidityLevels()
+[sessionReclaimAlert, sessionReclaimMessage] = f_handleReclaimedLiquidityLevels()
+
+alertcondition(sessionSweepAlert, "Session Sweep", "A session was swept.")
+alertcondition(sessionReclaimAlert, "Session Sweep Reclaim", "A swept session was reclaimed.")
+
+if sessionSweepAlert
+    alert(sessionSweepMessage, alert.freq_once_per_bar)
+
+if sessionReclaimAlert
+    alert(sessionReclaimMessage, alert.freq_once_per_bar_close)
+
+f_cleanupHiddenMitigatedLevels()
+f_updateActiveLiquidityObjects()

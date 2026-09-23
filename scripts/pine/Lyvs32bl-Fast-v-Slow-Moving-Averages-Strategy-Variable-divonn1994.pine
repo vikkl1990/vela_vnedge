@@ -1,0 +1,194 @@
+//@version=6
+// Author: @divonn1994
+
+//======================================================================
+// Strategy Initialization
+//======================================================================
+initial_balance = 100
+strategy("Fast v Slow Moving Averages Strategy v4", 
+         shorttitle="Fast v Slow v4 Strategy", 
+         overlay=true, 
+         pyramiding=0, 
+         default_qty_value=100, 
+         default_qty_type=strategy.percent_of_equity, 
+         precision=7, 
+         currency=currency.USD, 
+         commission_value=0.1, 
+         commission_type=strategy.commission.percent, 
+         initial_capital=initial_balance)
+
+//======================================================================
+// User Inputs
+//======================================================================
+// Trade Settings
+useShorts = input.bool(false, "Enable Shorts", group="Trading Options")
+
+// Moving Average Settings
+fastLength = input.int(24, "Fast MA Length", minval=1, group="Strategy")
+slowLength = input.int(65, "Slow MA Length", minval=1, group="Strategy")
+maType     = input.string("EMA", "MA Type", options=["EMA", "DEMA", "TEMA", "ZLEMA", "SMA", "RMA", "TMA", "WMA", "VWMA", "ALMA", "HMA", "LSMA"], group="Strategy")
+
+// Display Options
+redBG    = input.bool(true, "Red Background Color On", group="Display")
+greenBG  = input.bool(true, "Green Background Color On", group="Display")
+showMA   = input.bool(true, "Moving Average Plot On", group="Display")
+showTradeConnector = input.bool(true, "Show Trade Connector Lines", group="Trade Connector")
+showHistogram    = input.bool(true, "Show MA Difference Histogram", group="Display")
+histTransparency = input.int(50, "Histogram Transparency", minval=0, maxval=100, group="Display")
+
+// Date Range Settings
+startMonth = input.int(1, "Start Month (1-12, 0 for earliest)", minval=0, maxval=12, group="Beginning of Strategy")
+startDay   = input.int(1, "Start Day (1-31, 0 for earliest)", minval=0, maxval=31, group="Beginning of Strategy")
+startYear  = input.int(2011, "Start Year (2000-2100, 0 for earliest)", minval=0, maxval=2100, group="Beginning of Strategy")
+
+endMonth   = input.int(0, "End Month (1-12, 0 for latest)", minval=0, maxval=12, group="End of Strategy")
+endDay     = input.int(0, "End Day (1-31, 0 for latest)", minval=0, maxval=31, group="End of Strategy")
+endYear    = input.int(0, "End Year (2000-2100, 0 for latest)", minval=0, maxval=2100, group="End of Strategy")
+
+//======================================================================
+// Date Range Calculation
+//======================================================================
+startTs = (startYear != 0 and startMonth != 0 and startDay != 0) ? timestamp(syminfo.timezone, startYear, startMonth, startDay, 0, 0) : na
+endTs   = (endYear != 0 and endMonth != 0 and endDay != 0) ? timestamp(syminfo.timezone, endYear, endMonth, endDay, 0, 0) : na
+inDateRange = (na(startTs) or time >= startTs) and (na(endTs) or time < endTs)
+
+//======================================================================
+// Helper Functions
+//======================================================================
+
+// Custom TEMA function
+f_tema(src, len) =>
+    ema1 = ta.ema(src, len)
+    ema2 = ta.ema(ema1, len)
+    ema3 = ta.ema(ema2, len)
+    3 * ema1 - 3 * ema2 + ema3
+
+// Calculate moving average based on selected type.
+f_ma(src, len) =>
+    result = 0.0
+    if maType == "EMA"
+        result := ta.ema(src, len)
+    else if maType == "SMA"
+        result := ta.sma(src, len)
+    else if maType == "RMA"
+        result := ta.rma(src, len)
+    else if maType == "WMA"
+        result := ta.wma(src, len)
+    else if maType == "VWMA"
+        result := ta.vwma(src, len)
+    else if maType == "ALMA"
+        result := ta.alma(src, len, 0.85, 6)
+    else if maType == "HMA"
+        result := ta.hma(src, len)
+    else if maType == "TEMA"
+        result := f_tema(src, len)
+    else if maType == "DEMA"
+        result := 2 * ta.ema(src, len) - ta.ema(ta.ema(src, len), len)
+    else if maType == "TMA"
+        result := ta.sma(ta.sma(src, len), len)
+    else if maType == "LSMA"
+        result := ta.linreg(src, len, 0)
+    else if maType == "ZLEMA"
+        // Calculate lag length as half the period.
+        lag = math.floor((len - 1) / 2)
+        // Adjust the price by subtracting the lagged value.
+        priceAdjusted = src + (src - src[lag])
+        result := ta.ema(priceAdjusted, len)
+    else
+        result := na
+    result
+
+// Draw a trade connector line.
+f_drawTradeConnector(entryBar, entryPrice, exitBar, exitPrice, tradeType) =>
+    profitable = tradeType == "long" ? (exitPrice > entryPrice) : (exitPrice < entryPrice)
+    line.new(x1 = entryBar, y1 = entryPrice, x2 = exitBar, y2 = exitPrice, 
+             color = profitable ? color.green : color.red, width = 2)
+
+//======================================================================
+// Strategy Calculations
+//======================================================================
+fastMA = f_ma(close, fastLength)
+slowMA = f_ma(close, slowLength)
+maMomentum = fastMA >= slowMA ? 1 : -1
+
+//======================================================================
+// Enter or Exit Positions
+//======================================================================
+if ta.crossover(maMomentum, 0)
+    if inDateRange
+        strategy.close("short", comment="Close Short")
+        strategy.entry("long", strategy.long, comment="Long")
+
+if ta.crossunder(maMomentum, 0)
+    if inDateRange
+        strategy.close("long", comment="Close Long")
+        if useShorts
+            strategy.entry("short", strategy.short, comment="Short")
+
+//======================================================================
+// Trade Connector Lines Logic
+//======================================================================
+var float entryPrice = na
+var int   entryBar   = na
+var string entryTradeType = ""
+var float exitPrice = na
+
+tradeEvent = (strategy.position_size == 0 and strategy.position_size[1] != 0) or 
+             (strategy.position_size > 0 and strategy.position_size[1] < 0) or 
+             (strategy.position_size < 0 and strategy.position_size[1] > 0)
+
+if tradeEvent
+    if showTradeConnector and not na(entryBar)
+        exitPrice := open
+        f_drawTradeConnector(entryBar, entryPrice, bar_index, exitPrice, entryTradeType)
+    entryPrice := open
+    entryBar := bar_index
+    entryTradeType := strategy.position_size > 0 ? "long" : "short"
+else if (strategy.position_size != 0 and strategy.position_size[1] == 0)
+    entryPrice := open
+    entryBar := bar_index
+    entryTradeType := strategy.position_size > 0 ? "long" : "short"
+
+//======================================================================
+// Entry and Exit Markers
+//======================================================================
+longEntry  = (strategy.position_size > 0 and strategy.position_size[1] <= 0)
+longExit   = (strategy.position_size <= 0 and strategy.position_size[1] > 0)
+shortEntry = (strategy.position_size < 0 and strategy.position_size[1] >= 0)
+shortExit  = (strategy.position_size >= 0 and strategy.position_size[1] < 0)
+
+plotshape(longEntry, title="Long Entry",  location=location.belowbar, color=color.green, style=shape.arrowup, size=size.tiny, text="LE")
+plotshape(longExit, title="Long Exit", location=location.abovebar, color=color.red, style=shape.arrowdown, size=size.tiny, text="LX")
+plotshape(shortEntry, title="Short Entry", location=location.abovebar, color=color.red, style=shape.arrowdown, size=size.tiny, text="SE")
+plotshape(shortExit, title="Short Exit", location=location.belowbar, color=color.green, style=shape.arrowup, size=size.tiny, text="SX")
+
+//======================================================================
+// Plot Strategy Behavior
+//======================================================================
+plot(showMA ? fastMA : na, title="Fast MA", color=color.new(color.white, 0), linewidth=3, offset=1)
+plot(showMA ? slowMA : na, title="Slow MA", color=color.new(color.purple, 0), linewidth=2, offset=1)
+
+var color bgColorValue = na
+if inDateRange
+    if maMomentum > 0 and greenBG
+        bgColorValue := color.new(color.green, 75)
+    else if maMomentum <= 0 and redBG
+        bgColorValue := color.new(color.red, 75)
+    else
+        bgColorValue := na
+else
+    bgColorValue := na
+
+bgcolor(bgColorValue, offset=1)
+
+//======================================================================
+// Plot MA Difference Histogram
+//======================================================================
+diffFactor = input.float(5, "MA Difference Scale Factor", group="Display")
+maDiff = (fastMA - slowMA) * diffFactor
+plot(showHistogram ? math.abs(maDiff) : na, 
+     title="Scaled MA Difference", 
+     color = maDiff >= 0 ? color.new(color.green, histTransparency) : color.new(color.red, histTransparency), 
+     style=plot.style_histogram, 
+     linewidth=2)
+hline(0, "Zero Difference", color=color.gray)

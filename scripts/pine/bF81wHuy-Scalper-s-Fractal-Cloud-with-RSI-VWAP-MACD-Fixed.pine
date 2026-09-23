@@ -1,0 +1,61 @@
+//@version=5
+indicator("Scalper's Fractal Cloud with RSI + VWAP + MACD (Fixed)", overlay=true)
+
+// === EMA CLOUD ===
+ema50 = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+cloudColor = ema50 > ema200 ? color.green : color.red
+plot_ema50 = plot(ema50, color=color.new(cloudColor, 0), linewidth=2)
+plot_ema200 = plot(ema200, color=color.new(cloudColor, 50), linewidth=1)
+fill(plot_ema50, plot_ema200, color=color.new(cloudColor, 85))
+
+// === EMA DISTANCE LABEL ===
+ema_distance = math.abs(ema50 - ema200)
+label.new(bar_index, high, "EMA Δ: " + str.tostring(ema_distance, "#.##"), yloc=yloc.abovebar, style=label.style_label_left, textcolor=color.white, size=size.tiny, color=color.gray)
+
+// === GAP ZONE DETECTION ===
+gap_up = close[1] < open and open > high[1]
+gap_down = close[1] > open and open < low[1]
+bgcolor(gap_up ? color.new(color.green, 85) : na)
+bgcolor(gap_down ? color.new(color.red, 85) : na)
+
+// === SWING HIGH/LOW (ZIGZAG SIM) ===
+left = 3
+right = 3
+ph = ta.pivothigh(high, left, right)
+pl = ta.pivotlow(low, left, right)
+plotshape(ph, location=location.abovebar, style=shape.triangledown, color=color.red, size=size.small, title="Swing High")
+plotshape(pl, location=location.belowbar, style=shape.triangleup, color=color.lime, size=size.small, title="Swing Low")
+
+// === FRACTAL RANGE BOXES ===
+var float lastHigh = na
+var float lastLow = na
+
+if not na(ph)
+    lastHigh := ph
+if not na(pl)
+    lastLow := pl
+
+bgcolor(close > lastHigh ? color.new(color.green, 90) : close < lastLow ? color.new(color.red, 90) : na)
+
+// === VWAP ===
+vwap = ta.vwap
+plot(vwap, title="VWAP", color=color.orange, linewidth=1, style=plot.style_line)
+
+// === RSI SIGNAL ===
+rsi = ta.rsi(close, 14)
+plotshape(rsi > 70, location=location.abovebar, style=shape.circle, color=color.red, size=size.tiny, title="RSI Overbought")
+plotshape(rsi < 30, location=location.belowbar, style=shape.circle, color=color.green, size=size.tiny, title="RSI Oversold")
+
+// === MACD Histogram Zone ===
+[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
+bgcolor(macdHist > 0 ? color.new(color.green, 90) : macdHist < 0 ? color.new(color.red, 90) : na)
+
+// === FIXED ALERT CONDITIONS (manual logic) ===
+bullishCross = ema50[1] < ema200[1] and ema50 > ema200
+bearishCross = ema50[1] > ema200[1] and ema50 < ema200
+
+alertcondition(gap_up, title="Gap Up", message="Gap Up: Watch for fast move.")
+alertcondition(gap_down, title="Gap Down", message="Gap Down: Watch for fast move.")
+alertcondition(bullishCross, title="Bullish EMA Cross", message="50 EMA crossed ABOVE 200 EMA")
+alertcondition(bearishCross, title="Bearish EMA Cross", message="50 EMA crossed BELOW 200 EMA")

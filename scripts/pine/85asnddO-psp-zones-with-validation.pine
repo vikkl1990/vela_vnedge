@@ -1,0 +1,126 @@
+//@version=6
+indicator("PSP zones with validation", overlay=true, max_boxes_count=200)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+refSymbol   = input.symbol("BINANCE:ETHUSDT", "Reference Symbol")
+inverseMode = input.bool(false, "Inverse Correlation Mode")
+
+colorTheme = input.string("Green/Red", "Color Theme",
+     options = ["Green/Red", "Blue/Orange", "Purple/Yellow", "Teal/Pink", "Custom"],
+     group = "Colors")
+
+customBullColor = input.color(color.new(#00ff08, 40), "Custom Bull Color", group = "Colors")
+customBearColor = input.color(color.new(#fc0000, 40), "Custom Bear Color", group = "Colors")
+
+opacity = input.int(80, "Zone Transparency", minval=0, maxval=100, group="Colors")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+// COLORS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+getBullColor(theme) =>
+    switch theme
+        "Green/Red"     => color.new(#00ff08, opacity)
+        "Blue/Orange"   => color.new(#2196F3, opacity)
+        "Purple/Yellow" => color.new(#9C27B0, opacity)
+        "Teal/Pink"     => color.new(#009688, opacity)
+        "Custom"        => color.new(customBullColor, opacity)
+        => color.new(#00ff08, opacity)
+
+getBearColor(theme) =>
+    switch theme
+        "Green/Red"     => color.new(#fc0000, opacity)
+        "Blue/Orange"   => color.new(#FF9800, opacity)
+        "Purple/Yellow" => color.new(#FFEB3B, opacity)
+        "Teal/Pink"     => color.new(#E91E63, opacity)
+        "Custom"        => color.new(customBearColor, opacity)
+        => color.new(#fc0000, opacity)
+
+bullishColor = getBullColor(colorTheme)
+bearishColor = getBearColor(colorTheme)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PSP LOGIC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+isBull_curr = close > open
+isBear_curr = close < open
+
+[refOpen, refClose] = request.security(refSymbol, timeframe.period, [open, close])
+
+isBull_ref = refClose > refOpen
+isBear_ref = refClose < refOpen
+
+psp_direct  = (isBull_curr and isBear_ref) or (isBear_curr and isBull_ref)
+psp_inverse = (isBull_curr and isBull_ref) or (isBear_curr and isBear_ref)
+
+pspSignal = inverseMode ? psp_inverse : psp_direct
+
+pspBullish = pspSignal and isBull_curr
+pspBearish = pspSignal and isBear_curr
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ZONES STORAGE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+var box[] zones = array.new_box()
+var float[] zoneHigh = array.new_float()
+var float[] zoneLow  = array.new_float()
+var int[] zoneDir    = array.new_int()  // 1 bullish, -1 bearish
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CREATE ZONE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+createZone(_isBull) =>
+    top = high
+    bot = low
+
+    col = _isBull ? bullishColor : bearishColor
+
+    b = box.new(
+        left=bar_index,
+        right=bar_index + 10,
+        top=top,
+        bottom=bot,
+        bgcolor=col,
+        border_color=color.new(col, 40)
+    )
+
+    array.push(zones, b)
+    array.push(zoneHigh, top)
+    array.push(zoneLow, bot)
+    array.push(zoneDir, _isBull ? 1 : -1)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INVALIDATION CHECK
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+if array.size(zones) > 0
+    for i = array.size(zones) - 1 to 0
+        dir = array.get(zoneDir, i)
+        top = array.get(zoneHigh, i)
+        bot = array.get(zoneLow, i)
+        bx  = array.get(zones, i)
+
+        // bullish zone invalidation
+        if dir == 1 and close < bot
+            box.delete(bx)
+            array.remove(zones, i)
+            array.remove(zoneHigh, i)
+            array.remove(zoneLow, i)
+            array.remove(zoneDir, i)
+
+        // bearish zone invalidation
+        if dir == -1 and close > top
+            box.delete(bx)
+            array.remove(zones, i)
+            array.remove(zoneHigh, i)
+            array.remove(zoneLow, i)
+            array.remove(zoneDir, i)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRIGGER ZONES
+//━━━━━━━━━━━━━━━━━━━━━━━━━━
+if pspBullish
+    createZone(true)
+
+if pspBearish
+    createZone(false)

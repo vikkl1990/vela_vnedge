@@ -1,0 +1,51 @@
+//@version=4
+study("Sto2 Indicator BF", overlay=false)
+
+///////////// Stochastic calc /////////////
+smoothK = input(1, minval=1)
+smoothD = input(7, minval=1)
+lengthRSI = input(5, minval=1)
+lengthStoch = input(7, minval=1)
+src = input(close, title="RSI Source")
+
+up = sma(max(change(src), 0), lengthRSI) 
+down = sma(-min(change(src), 0), lengthRSI)
+rsi1 = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+
+k = sma(stoch(rsi1, rsi1, rsi1, lengthStoch), smoothK)
+d = sma(k, smoothD)
+
+///////////// Rate Of Change ///////////// 
+source = close
+roclength = input(14, minval=1)
+pcntChange = input(2, minval=1)
+roc = 100 * (source - source[roclength]) / source[roclength]
+emaroc = ema(roc, roclength / 2)
+isMoving() => emaroc > (pcntChange / 2) or emaroc < (0 - (pcntChange / 2))
+
+/////////////// Strategy ///////////////
+long = k > d and isMoving()
+short = k < d and isMoving()
+
+last_long = 0.0
+last_short = 0.0
+last_long := long ? time : nz(last_long[1])
+last_short := short ? time : nz(last_short[1])
+
+long_signal = crossover(last_long, last_short)
+short_signal = crossover(last_short, last_long)
+
+///////////// Plotting /////////////
+bgcolor(isMoving() ? na : color.white, transp=70)
+bgcolor(isMoving() ? long_signal ? color.lime : short_signal ? color.red : na : na, transp=30)
+p1 = plot(k, color=color.gray, linewidth=0)
+p2 = plot(d, color=color.gray, linewidth=0)
+h0 = hline(100)
+h1 = hline(50)
+h3 = hline(0)
+fill(p1, p2, color = k > d ? color.lime : color.red, transp=70)
+barcolor(isMoving() ? long_signal ? color.blue : short_signal ? color.yellow : na : color.gray)
+
+/////////////// Alerts /////////////// 
+alertcondition(long_signal, title='Long', message='Long Signal')
+alertcondition(short_signal, title='Short', message='Short Signal')

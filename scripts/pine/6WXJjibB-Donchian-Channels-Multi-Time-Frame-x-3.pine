@@ -1,0 +1,70 @@
+//@version=6
+indicator("Donchian Channels (Multi Time Frame) x 3)", shorttitle="Multi", overlay=true, timeframe="", timeframe_gaps=true)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+donchian_mtf(_tf, _len) =>
+    // Returns [upper, lower, basis] from the requested timeframe
+    _upper = request.security(syminfo.tickerid, _tf, ta.highest(high, _len), barmerge.gaps_on, barmerge.lookahead_off)
+    _lower = request.security(syminfo.tickerid, _tf, ta.lowest(low,  _len), barmerge.gaps_on, barmerge.lookahead_off)
+    _basis = (_upper + _lower) / 2.0
+    [_upper, _lower, _basis]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Channel 1 Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+group1 = "Channel 1"
+show1  = input.bool(true,  "Show", group=group1)
+tf1    = input.timeframe("1", "Timeframe", group=group1)
+len1   = input.int(20, "Lookback Length", minval=1, group=group1)
+off1   = input.int(0, "Plot Offset", group=group1)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Channel 2 Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+group2 = "Channel 2"
+show2  = input.bool(false, "Show", group=group2)
+tf2    = input.timeframe("5", "Timeframe", group=group2)
+len2   = input.int(20, "Lookback Length", minval=1, group=group2)
+off2   = input.int(0, "Plot Offset", group=group2)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Channel 3 Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+group3 = "Channel 3"
+show3  = input.bool(false, "Show", group=group3)
+tf3    = input.timeframe("60", "Timeframe", group=group3)
+len3   = input.int(20, "Lookback Length", minval=1, group=group3)
+off3   = input.int(0, "Plot Offset", group=group3)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Calculate channels
+// ─────────────────────────────────────────────────────────────────────────────
+[u1, l1, b1] = donchian_mtf(tf1, len1)
+[u2, l2, b2] = donchian_mtf(tf2, len2)
+[u3, l3, b3] = donchian_mtf(tf3, len3)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plot Channel 1
+// ─────────────────────────────────────────────────────────────────────────────
+p1u = plot(show1 ? u1 : na, "Ch1 Upper", offset=off1)
+p1l = plot(show1 ? l1 : na, "Ch1 Lower", offset=off1)
+p1b = plot(show1 ? b1 : na, "Ch1 Basis", offset=off1)
+fill(p1u, p1l, show1 ? color.new(color.blue, 85) : na, title="Ch1 Fill")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plot Channel 2
+// ─────────────────────────────────────────────────────────────────────────────
+p2u = plot(show2 ? u2 : na, "Ch2 Upper", offset=off2)
+p2l = plot(show2 ? l2 : na, "Ch2 Lower", offset=off2)
+p2b = plot(show2 ? b2 : na, "Ch2 Basis", offset=off2)
+fill(p2u, p2l, show2 ? color.new(color.orange, 85) : na, title="Ch2 Fill")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plot Channel 3
+// ─────────────────────────────────────────────────────────────────────────────
+p3u = plot(show3 ? u3 : na, "Ch3 Upper", offset=off3)
+p3l = plot(show3 ? l3 : na, "Ch3 Lower", offset=off3)
+p3b = plot(show3 ? b3 : na, "Ch3 Basis", offset=off3)
+fill(p3u, p3l, show3 ? color.new(color.purple, 85) : na, title="Ch3 Fill")

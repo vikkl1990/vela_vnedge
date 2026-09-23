@@ -1,0 +1,106 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blackcat1402
+//@version=4
+study("L2 Candle Pattern Scalper", overlay=true)
+//funtions
+btol(b) =>
+    b ? 1 : 0
+btos(b) =>
+    b ? -1 : 0
+//define candle combination directions
+candleup = highest(close,2)
+candledn = lowest(close,2)
+candletrend = sma(close,3)
+//define a typical price which is more stable than candle patterns
+typ = (3*close+low+open+high)/6
+//define candles' relationship nearby 1~19, a~f
+var1 = (close>close[1] and close>close[2])
+var2 = (var1[1] and close<=close[1] and close>close[2])
+var3 = (var2[1] and close>=close[1] and close<=close[2])
+var4 = (var3[1] and close<=close[1] and close>=close[2])
+var5 = (var4[1] and close>=close[1] and close<=close[2])
+var6 = (var5[1] and close<=close[1] and close>=close[2])
+var7 = (var6[1] and close>=close[1] and close<=close[2])
+var8 = (var7[1] and close<=close[1] and close>=close[2])
+var9 = (var8[1] and close>=close[1] and close<=close[2])
+vara = (var9[1] and close<=close[1] and close>=close[2])
+varb = (vara[1] and close>=close[1] and close<=close[2])
+varc = (varb[1] and close<=close[1] and close>=close[2])
+vard = (close<close[1] and close<close[2])
+vare = (vard[1] and close>=close[1] and close<=close[2])
+varf = (vare[1] and close<=close[1] and close>=close[2])
+var10 = (varf[1] and close>=close[1] and close<=close[2])
+var11 = (var10[1] and close<=close[1] and close>=close[2])
+var12 = (var11[1] and close>=close[1] and close<=close[2])
+var13 = (var12[1] and close<=close[1] and close>=close[2])
+var14 = (var13[1] and close>=close[1] and close<=close[2])
+var15 = (var14[1] and close<=close[1] and close>=close[2])
+var16 = (var15[1] and close>=close[1] and close<=close[2])
+var17 = (var16[1] and close<=close[1] and close>=close[2])
+var18 = (var17[1] and close>=close[1] and close<=close[2])
+var19 = ((vard or vare or varf or var10 or var11 or var12 or var13 or var14 or var15 or var16 or var17 or var18)[1] and var1)
+var1a = ((var1 or var2 or var3 or var4 or var5 or var6 or var7 or var8 or var9 or vara or varb or varc)[1] and vard)
+//use "hodl" indicates hold state
+hodl = var1 or var2 or var3 or var4 or var5 or var6 or var7 or var8 or var9 or vara or varb or varc
+//use candledn define exit signal
+exitsignal = iff(hodl,candledn,na)
+//exit on next candle
+exitomo = exitsignal
+//exit on current candle
+exittoda = exitsignal[1]
+// keep watching condition definition
+justwatch = vard or vare or varf or var10 or var11 or var12 or var13 or var14 or var15 or var16 or var17 or var18
+// define long entry signal
+longentry = iff(justwatch,candleup,na)
+//define entry on next candle
+entrytomo = longentry
+//define entry on current candle
+entrytoda = entrytomo[1]
+// define buy with small position
+buysmall = var19
+// immediate exit
+exitred = var1a
+// quick dump signal
+rapidoverfall = (close-sma(close,34))/sma(close,34)*100<-14
+
+//define fastline as morningstar
+morningstar = (20*typ+19*typ[1]+18*typ[2]+17*typ[3]+16*typ[4]+15*typ[5]+14*typ[6]+13*typ[7]+12*typ[8]+11*typ[9]+10*typ[10]+9*typ[11]+8*typ[12]+7*typ[13]+6*typ[14]+5*typ[15]+4*typ[16]+3*typ[17]+2*typ[18]+typ[20])/211
+//define slowline as morningglory
+morningglory = sma(close,26)
+//plot fast and slow lines
+plot(morningstar,color=color.lime, linewidth =2)
+plot(morningglory,color=color.red, linewidth =2)
+
+wait = iff(candletrend>morningstar,morningstar,candletrend)
+iff(wait>wait[1],wait,na)
+iff(morningstar>morningstar[1],morningstar,na)
+iff(morningstar<morningstar[1],morningstar,na)
+iff(morningglory>morningglory[1],morningglory,na)
+iff(morningglory<morningglory[1],morningglory,na)
+
+//decorate candles with signal
+plotcandle(exittoda,exittoda, exittoda, exittoda, color=barstate.islast and (hodl or hodl[1])?color.yellow:na )
+plotcandle(entrytoda,entrytoda, entrytoda, entrytoda, color=barstate.islast and (justwatch or justwatch[1])?color.purple:na )
+plotcandle(low,high, low,high, color=close>=open?color.lime:na )
+plotcandle(low,high, low,high, color=close<open?color.maroon:na )
+plotcandle(open,close, open,close, color=color.teal)
+plotcandle(open,close, open,close, color=close>=open?color.yellow:na)
+plotcandle(open,close, open,close, color=hodl?color.orange:na)
+plotcandle(open,close, open,close, color=justwatch?color.aqua:na)
+co = (close-open)
+plotcandle(open,close-co/2, open,close-co/2, color=rapidoverfall?color.white:na)
+plotcandle(open,open+co/3, open,open+co/3, color=buysmall?color.green:na)
+plotcandle(open,open+co/3, open,open+co/3, color=exitred?color.fuchsia:na)
+
+
+//plot buy and sell signal
+plotshape(buysmall ? morningstar : na, title="Buy", text="Buy", location= location.belowbar, style=shape.labelup, size=size.tiny, color=color.green, textcolor=color.white, transp=0)
+plotshape(exitred ? morningstar : na, title="Sell", text="Sell", location= location.abovebar, style=shape.labeldown, size=size.tiny, color=color.red, textcolor=color.white, transp=0)
+
+//define long and short entry signal that is compatible to @nilux strategy backtest framework for sandardized backtest scheme: [NLX-L3] Backtest
+long = buysmall
+short = exitred
+
+//produce nilux L2 output to nilux L3 backtest framework:  [NLX-L3] Backtest
+backtest = btol(long) + btos(short)
+plot(backtest, title="backtest", color=color.white)

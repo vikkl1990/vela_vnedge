@@ -1,0 +1,82 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © NoveltyTrade
+
+//@version=6
+indicator('Crypto OI Agregated', overlay = false, format = format.volume)
+
+const string gr1 = 'Exchanges'
+const string gr2 = 'Visual'
+ex1     = input.bool(true, 'Binance',   group = gr1)
+ex2     = input.bool(true, 'Bybit',     group = gr1)
+ex3     = input.bool(true, 'OKX',       group = gr1)
+ex5     = input.bool(true, 'Bitget',    group = gr1)
+ex6     = input.bool(true, 'Kraken',    group = gr1)
+ex7     = input.bool(true, 'HTX',       group = gr1)
+ex8     = input.bool(true, 'Deribit',       group = gr1)
+
+typ     = input.string( 'OI',  '', options = [ 'OI', 'OI delta'], inline = '01', group = gr2)
+typ2    = input.string('COIN', '', options = ['USD',     'COIN'], inline = '01', group = gr2)
+c_bull  = input.color(#2962ffa7, '', inline = '01', group = gr2)
+c_bear  = input.color(  #e91e62a6, '', inline = '01', group = gr2)
+is_tab  = input.bool(true, 'Show table', inline = 't',  group = gr2)
+tab_t   = input.string('Full', '', options = ['Full',   'Short'], inline = 't',  group = gr2)
+
+type OI
+    float       o
+    float       h
+    float       l
+    float       c
+    string[]    a
+    float       t1
+    float       t2 
+
+const string[] exchanges   = array.from(ex1 ? 'Binance' : na, ex2 ? 'Bybit' : na, ex3 ? 'OKX' : na, ex5 ? 'Bitget' : na, ex6 ? 'Kraken' : na, ex7 ? 'HTX' : na, ex8 ? 'Deribit' : na)
+const string[] appendixes  = array.from('USDT.P', 'USD.P', 'USDC.P', 'USD.PM')
+const int      bars        = 10000
+
+str(d, n, s) => 
+    str.substring(d, 0, str.length(d) - n) + '.' + str.substring(d, str.length(d) - n, str.length(d) - (n - 2)) + s
+
+format(_r) =>
+    d = str.tostring(math.round(_r))
+    str.length(d) > 9 ? str(d, 9, " B") : str.length(d) > 6 ? str(d, 6, " M") : str.length(d) > 3 ? str(d, 3, " K") : d
+    
+method sw(float _v ,_ex, _app) =>
+    _tmp = (_app == 'USD.P' and (_ex == 'Binance' or _ex == 'Bybit' or _ex == 'Kraken')) or _ex == 'OKX' or _ex == 'Deribit' ? _v * (_ex == 'Binance' ? (syminfo.basecurrency == 'BTC' ? 100 : 10) : 1) / close : _v
+    typ2 == 'USD' ? _tmp * close : _tmp
+
+method t_cell(table _t, _col, _row, _txt) =>
+    if is_tab and tab_t == 'Full' and barstate.islast and not na(_txt)
+        _t.cell( _col, _row, _txt, text_color = chart.fg_color)
+
+candle  = OI.new(0., 0., 0., 0., array.new<string>(appendixes.size()), 0., 0.)
+var tab = table.new(position.top_right, 12, 20, border_color = color.white, border_width = 1, bgcolor = color.new(chart.fg_color, 95))
+for [i, v] in exchanges
+    if not na(v)
+        for [j, a] in appendixes
+            oi = request.security(v + ':' + syminfo.basecurrency + a + '_OI', '', OI.new(open, high, low, close), ignore_invalid_symbol = true, calc_bars_count = bars)
+            if not na(oi)
+                oi := OI.new(oi.o.sw(v, a), oi.h.sw(v, a), oi.l.sw(v, a), oi.c.sw(v, a))
+                candle.o += oi.o, candle.h += oi.h
+                candle.c += oi.c, candle.l += oi.l
+                candle.a.set(j, not na(candle.c) ? a : na)
+                candle.t1 += typ2 == 'USD' ? oi.c / close : oi.c
+                candle.t2 += typ2 == 'USD' ? oi.c : oi.c * close
+                tab.t_cell(j + 1, i + 1, format(oi.c))
+            tab.t_cell(0, i + 1, v)
+
+if tab_t == 'Short' and barstate.islast
+    txt = 'Open interest \n' + format(candle.t1) + ' ' + syminfo.basecurrency + '\n' + format(candle.t2) + ' USD'
+    tab.cell(0, 0, txt, text_halign = text.align_right, text_color = chart.fg_color)
+
+for [i, v] in candle.a
+    tab.t_cell(i + 1, 0, v)
+tab.t_cell(0, 0, typ2 == 'USD' ? 'USD' : syminfo.basecurrency)
+
+delta   = candle.c - candle.o
+col     = candle.o > candle.c ? c_bear : c_bull
+col_d   = delta    <        0 ? c_bear : c_bull
+candle  := typ != 'OI' or (last_bar_index - bar_index) > bars - 1 ? OI.new() : candle
+
+plotcandle(candle.o, candle.h, candle.l, candle.c, '', col, col, false, bordercolor = col)
+plot(typ == 'OI delta' ? delta : na, 'delta', col_d, 1, plot.style_columns)

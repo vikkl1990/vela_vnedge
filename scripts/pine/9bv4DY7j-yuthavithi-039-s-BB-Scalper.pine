@@ -1,0 +1,33 @@
+study(title="yuthavithi's BB Scalper", shorttitle="YUTHAVITHI BB Scalper", overlay=true)
+len = input(20, minval=1, title="Length")
+multiplier = input(2, minval=1, title="multiplier")
+src = input(close, title="Source")
+out = sma(src, len)
+plot(out, title="SMA", color=blue)
+
+stdOut = stdev(close, len)
+bbUpper = out + stdOut * multiplier
+bbLower = out - stdOut * multiplier
+plot(bbUpper, color = orange)
+plot(bbLower, color = orange)
+
+closeLongTerm = security(tickerid, "D", close)
+smaLongTerm = security(tickerid, "D", sma(close,20))
+
+
+plot(smaLongTerm, color=red)
+
+trendUp = (closeLongTerm > smaLongTerm) 
+trendDown = (closeLongTerm < smaLongTerm) 
+
+bearish = (cross(close,out) == 1) and (close[1] > close) and trendDown
+bullish = (cross(close,out) == 1) and (close[1] < close) and trendUp
+
+plotshape(bearish, color=red, style=shape.arrowdown, text="Sell", location=location.abovebar)
+plotshape(bullish, color=green, style=shape.arrowup, text="Buy", location=location.belowbar)
+
+closeBuy = (high[1] > bbUpper) and (close < bbUpper) and (close < open)
+closeSell = (low[1] < bbLower) and (close > bbLower) and (close > open)
+
+plotshape(closeSell, color=red, style=shape.arrowup, text="Close", location=location.belowbar)
+plotshape(closeBuy, color=green, style=shape.arrowdown, text="Close", location=location.abovebar)

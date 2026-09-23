@@ -1,0 +1,6 @@
+strategy(title = "BitCoin Simple Buyer")
+
+strategy.entry("buy", true, 1, when = close < close[1] and close > sma(close,15))
+strategy.exit("exit", "buy", profit = atr(5)*300, loss = atr(5)*80)
+
+plot(strategy.equity)

@@ -1,0 +1,31 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © QuantVue
+
+//@version=5
+indicator("Swing Percentile Lines [QuantVue]", overlay=true)
+
+swing_lookback = input.int(9, "Swing Lookback")
+showSwingLines = input.bool(false, 'Show Swing High/Low Lines')
+
+swingHigh = ta.pivothigh(swing_lookback, swing_lookback)
+swingLow = ta.pivotlow(swing_lookback, swing_lookback)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+
+if not na(swingHigh)
+    lastSwingHigh := high[swing_lookback]
+if not na(swingLow)
+    lastSwingLow := low[swing_lookback]
+
+r = lastSwingHigh - lastSwingLow
+
+p25 = lastSwingLow + 0.25 * r
+p50 = lastSwingLow + 0.50 * r
+p75 = lastSwingLow + 0.75 * r
+
+plot(lastSwingHigh, "Swing High", color=color.green, linewidth=2, style=plot.style_line, display = showSwingLines ? display.all : display.none)
+plot(lastSwingLow, "Swing Low", color=color.red, linewidth=2, style=plot.style_line, display = showSwingLines ? display.all : display.none)
+plot(p25, "25% Line", color=color.orange, linewidth=1, style=plot.style_circles)
+plot(p50, "50% Line", color=color.blue, linewidth=2)
+plot(p75, "75% Line", color=color.orange, linewidth=1, style=plot.style_circles)

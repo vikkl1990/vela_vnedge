@@ -1,0 +1,454 @@
+// This Pine Script® code is subject to the Mozilla Public License 2.0
+// © ElarisGroup
+
+//@version=6
+indicator("Elaris Candle Liquidity POC Pro", "Elaris Candle POC Pro", overlay=true, max_lines_count=500, max_labels_count=300, max_boxes_count=200)
+
+//====================================================
+// INPUTS
+//====================================================
+groupProfile = "1. Candle Liquidity Engine"
+
+useLtf = input.bool(
+     true,
+     "Use Lower Timeframe Precision",
+     group=groupProfile,
+     tooltip="When enabled, the script looks inside each chart candle using lower-timeframe candles to estimate where volume was concentrated."
+)
+
+ltfTf = input.timeframe(
+     "1",
+     "Lower Timeframe Source",
+     group=groupProfile,
+     tooltip="Lower timeframe used to build the candle micro-profile. For 5m charts, 1m is usually good. For 15m charts, 1m or 3m can work."
+)
+
+bins = input.int(
+     18,
+     "Profile Detail / Price Levels",
+     minval=6,
+     maxval=50,
+     group=groupProfile,
+     tooltip="How many internal price levels are used inside each candle. Higher values are more detailed but heavier."
+)
+
+volSmaLen = input.int(
+     20,
+     "Volume Average Length",
+     minval=1,
+     group=groupProfile
+)
+
+minVolRatio = input.float(
+     1.1,
+     "Minimum Candle Volume Power",
+     minval=0.1,
+     step=0.1,
+     group=groupProfile,
+     tooltip="The candle volume must be at least this many times the average volume to show a liquidity line."
+)
+
+minConcentration = input.float(
+     18.0,
+     "Minimum Liquidity Concentration %",
+     minval=1,
+     maxval=100,
+     step=0.5,
+     group=groupProfile,
+     tooltip="Higher values show only candles where volume is strongly concentrated around one price level."
+)
+
+groupLogic = "2. User-Friendly Logic"
+
+showOnlyStrong = input.bool(
+     false,
+     "Show Only Strong Liquidity Lines",
+     group=groupLogic,
+     tooltip="When enabled, weak/medium liquidity levels are hidden."
+)
+
+showRetests = input.bool(
+     true,
+     "Show Retest Signals",
+     group=groupLogic,
+     tooltip="Shows a small signal when price returns to an untested liquidity POC level."
+)
+
+extendUntilTested = input.bool(
+     true,
+     "Extend Untested Liquidity",
+     group=groupLogic,
+     tooltip="Extends each liquidity line forward until price comes back and tests it."
+)
+
+maxUntestedPerSide = input.int(
+     12,
+     "Max Untested Levels Per Side",
+     minval=2,
+     maxval=50,
+     group=groupLogic
+)
+
+biasMode = input.string(
+     "Delta Estimate",
+     "Liquidity Bias Method",
+     options=["Delta Estimate", "Candle Direction"],
+     group=groupLogic,
+     tooltip="Delta Estimate uses the internal candle location of closes to estimate buy/sell pressure. Candle Direction simply uses green/red candle direction."
+)
+
+groupVisual = "3. Visual Style"
+
+theme = input.string(
+     "Dark",
+     "Theme",
+     options=["Dark", "Light"],
+     group=groupVisual
+)
+
+lineLength = input.int(
+     5,
+     "Fixed Line Length",
+     minval=1,
+     maxval=50,
+     group=groupVisual,
+     tooltip="Used when Extend Untested Liquidity is disabled."
+)
+
+maxObjects = input.int(
+     180,
+     "Maximum Visible Liquidity Lines",
+     minval=30,
+     maxval=450,
+     group=groupVisual
+)
+
+showZones = input.bool(
+     true,
+     "Show Small Liquidity Zones",
+     group=groupVisual
+)
+
+showLabels = input.bool(
+     false,
+     "Show Simple Labels",
+     group=groupVisual
+)
+
+labelMode = input.string(
+     "Important Only",
+     "Label Detail",
+     options=["Off", "Important Only", "All"],
+     group=groupVisual
+)
+
+showDashboard = input.bool(
+     true,
+     "Show Dashboard / Legend",
+     group=groupVisual
+)
+
+bullColor = input.color(color.new(#00C853, 0), "Bullish Liquidity Color", group=groupVisual)
+bearColor = input.color(color.new(#FF1744, 0), "Bearish Liquidity Color", group=groupVisual)
+neutralColor = input.color(color.new(color.gray, 35), "Weak / Neutral Color", group=groupVisual)
+
+groupAlerts = "4. Alerts"
+
+enableAlerts = input.bool(true, "Enable Alerts", group=groupAlerts)
+
+//====================================================
+// STATE
+//====================================================
+var array<line>  pocLines  = array.new_line()
+var array<box>   pocZones  = array.new_box()
+var array<label> pocLabels = array.new_label()
+
+var array<line>  activeLines = array.new_line()
+var array<float> activePrices = array.new_float()
+var array<bool>  activeBull = array.new_bool()
+var array<bool>  activeStrong = array.new_bool()
+
+//====================================================
+// LOWER TIMEFRAME DATA
+//====================================================
+[ltfH, ltfL, ltfC, ltfV] = request.security_lower_tf(syminfo.tickerid, ltfTf, [high, low, close, volume])
+
+//====================================================
+// HELPERS
+//====================================================
+f_bg() =>
+    theme == "Dark" ? color.new(color.black, 80) : color.new(color.white, 80)
+
+f_text() =>
+    theme == "Dark" ? color.white : color.black
+
+f_qualityText(float score) =>
+    score >= 80 ? "Very Strong" : score >= 60 ? "Strong" : score >= 40 ? "Medium" : "Weak"
+
+f_pushLine(line ln) =>
+    array.push(pocLines, ln)
+    if array.size(pocLines) > maxObjects
+        line old = array.shift(pocLines)
+        line.delete(old)
+
+f_pushZone(box bx) =>
+    array.push(pocZones, bx)
+    if array.size(pocZones) > maxObjects
+        box old = array.shift(pocZones)
+        box.delete(old)
+
+f_pushLabel(label lb) =>
+    array.push(pocLabels, lb)
+    if array.size(pocLabels) > maxObjects
+        label old = array.shift(pocLabels)
+        label.delete(old)
+
+f_addToBins(array<float> volBins, array<float> deltaBins, float h, float l, float c, float v, float candleLow, float binHeight) =>
+    float rng = math.max(h - l, syminfo.mintick)
+    float buyV = v * (c - l) / rng
+    float sellV = v * (h - c) / rng
+    float delta = buyV - sellV
+
+    for i = 0 to bins - 1
+        float binLow = candleLow + i * binHeight
+        float binHigh = binLow + binHeight
+        float overlap = math.max(0.0, math.min(binHigh, h) - math.max(binLow, l))
+
+        if overlap > 0
+            float weight = overlap / rng
+            array.set(volBins, i, array.get(volBins, i) + v * weight)
+            array.set(deltaBins, i, array.get(deltaBins, i) + delta * weight)
+
+f_maxIndex(array<float> arr) =>
+    int idx = 0
+    float maxVal = array.get(arr, 0)
+
+    for i = 1 to array.size(arr) - 1
+        float v = array.get(arr, i)
+        if v > maxVal
+            maxVal := v
+            idx := i
+
+    idx
+
+//====================================================
+// UPDATE ACTIVE UNTESTED LEVELS
+//====================================================
+bool retestBull = false
+bool retestBear = false
+float retestPrice = na
+
+if barstate.isconfirmed and array.size(activeLines) > 0
+    for i = array.size(activeLines) - 1 to 0
+        line ln = array.get(activeLines, i)
+        float price = array.get(activePrices, i)
+        bool isBull = array.get(activeBull, i)
+        bool isStrongLevel = array.get(activeStrong, i)
+
+        line.set_x2(ln, bar_index)
+
+        bool tested = high >= price and low <= price
+
+        if tested
+            line.set_style(ln, line.style_dotted)
+            line.set_color(ln, color.new(isBull ? bullColor : bearColor, 65))
+
+            if isStrongLevel
+                retestBull := isBull
+                retestBear := not isBull
+                retestPrice := price
+
+            array.remove(activeLines, i)
+            array.remove(activePrices, i)
+            array.remove(activeBull, i)
+            array.remove(activeStrong, i)
+
+//====================================================
+// BUILD CURRENT CANDLE MICRO PROFILE
+//====================================================
+float candleRange = math.max(high - low, syminfo.mintick)
+float binHeight = candleRange / bins
+
+array<float> volBins = array.new_float(bins, 0.0)
+array<float> deltaBins = array.new_float(bins, 0.0)
+
+bool hasLtf = useLtf and array.size(ltfH) > 0
+
+if hasLtf
+    for i = 0 to array.size(ltfH) - 1
+        f_addToBins(
+             volBins,
+             deltaBins,
+             array.get(ltfH, i),
+             array.get(ltfL, i),
+             array.get(ltfC, i),
+             array.get(ltfV, i),
+             low,
+             binHeight
+        )
+else
+    f_addToBins(volBins, deltaBins, high, low, close, volume, low, binHeight)
+
+int pocIndex = f_maxIndex(volBins)
+float pocVolume = array.get(volBins, pocIndex)
+float pocDelta = array.get(deltaBins, pocIndex)
+float totalProfileVolume = math.max(array.sum(volBins), 1.0)
+
+float pocPrice = low + pocIndex * binHeight + binHeight / 2.0
+float concentration = pocVolume / totalProfileVolume * 100.0
+
+float volSma = ta.sma(volume, volSmaLen)
+float volPower = volSma > 0 ? volume / volSma : 0.0
+
+float score = math.min(100.0, concentration * 2.2 + math.min(volPower, 3.0) * 12.0)
+
+bool bullBias = biasMode == "Delta Estimate" ? pocDelta >= 0 : close >= open
+bool strong = concentration >= minConcentration and volPower >= minVolRatio
+bool visible = volPower >= minVolRatio and (showOnlyStrong ? strong : true)
+
+color levelColor = strong ? bullBias ? bullColor : bearColor : neutralColor
+int lineWidth = score >= 80 ? 3 : score >= 55 ? 2 : 1
+
+//====================================================
+// DRAW NEW LIQUIDITY LEVEL
+//====================================================
+if barstate.isconfirmed and visible
+    int x2 = extendUntilTested ? bar_index + 1 : bar_index + lineLength
+
+    line ln = line.new(
+         bar_index,
+         pocPrice,
+         x2,
+         pocPrice,
+         xloc=xloc.bar_index,
+         extend=extend.none,
+         color=levelColor,
+         width=lineWidth,
+         style=strong ? line.style_solid : line.style_dotted
+    )
+
+    f_pushLine(ln)
+
+    if extendUntilTested
+        array.push(activeLines, ln)
+        array.push(activePrices, pocPrice)
+        array.push(activeBull, bullBias)
+        array.push(activeStrong, strong)
+
+    if showZones and strong
+        float zoneHalf = binHeight * 0.45
+        box bx = box.new(
+             left=bar_index,
+             top=pocPrice + zoneHalf,
+             right=x2,
+             bottom=pocPrice - zoneHalf,
+             xloc=xloc.bar_index,
+             bgcolor=color.new(levelColor, 88),
+             border_color=color.new(levelColor, 75)
+        )
+        f_pushZone(bx)
+
+    bool allowLabel = showLabels and labelMode != "Off" and (labelMode == "All" or strong)
+
+    if allowLabel
+        string txt = strong ? "Liquidity POC\n" + f_qualityText(score) : "Weak POC"
+        label lb = label.new(
+             bar_index,
+             pocPrice,
+             txt,
+             style=bullBias ? label.style_label_up : label.style_label_down,
+             color=color.new(levelColor, 10),
+             textcolor=color.white,
+             size=size.tiny,
+             tooltip=
+                 "Candle Liquidity POC\n" +
+                 "Meaning: Most active volume price inside this candle\n" +
+                 "POC Price: " + str.tostring(pocPrice, format.mintick) + "\n" +
+                 "Concentration: " + str.tostring(concentration, "#.#") + "%\n" +
+                 "Volume Power: " + str.tostring(volPower, "#.##") + "x\n" +
+                 "Strength Score: " + str.tostring(score, "#") + "/100"
+        )
+        f_pushLabel(lb)
+
+//====================================================
+// RETEST SIGNALS
+//====================================================
+plotshape(
+     showRetests and retestBull,
+     title="Bullish Liquidity Retest",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=bullColor,
+     size=size.tiny,
+     text="POC"
+)
+
+plotshape(
+     showRetests and retestBear,
+     title="Bearish Liquidity Retest",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=bearColor,
+     size=size.tiny,
+     text="POC"
+)
+
+//====================================================
+// LIMIT ACTIVE LEVELS PER SIDE
+//====================================================
+if array.size(activeLines) > 0
+    int bullCount = 0
+    int bearCount = 0
+
+    for i = array.size(activeLines) - 1 to 0
+        bool isBull = array.get(activeBull, i)
+
+        if isBull
+            bullCount += 1
+            if bullCount > maxUntestedPerSide
+                array.remove(activeLines, i)
+                array.remove(activePrices, i)
+                array.remove(activeBull, i)
+                array.remove(activeStrong, i)
+        else
+            bearCount += 1
+            if bearCount > maxUntestedPerSide
+                array.remove(activeLines, i)
+                array.remove(activePrices, i)
+                array.remove(activeBull, i)
+                array.remove(activeStrong, i)
+
+//====================================================
+// DASHBOARD
+//====================================================
+var table dash = table.new(position.top_right, 2, 7, border_width=1)
+
+if barstate.islast and showDashboard
+    table.cell(dash, 0, 0, "Elaris Candle POC", text_color=color.white, bgcolor=color.new(color.black, 0))
+    table.cell(dash, 1, 0, "User Guide", text_color=color.white, bgcolor=color.new(color.black, 0))
+
+    table.cell(dash, 0, 1, "Green Line", text_color=f_text(), bgcolor=f_bg())
+    table.cell(dash, 1, 1, "Bullish liquidity", text_color=bullColor, bgcolor=f_bg())
+
+    table.cell(dash, 0, 2, "Red Line", text_color=f_text(), bgcolor=f_bg())
+    table.cell(dash, 1, 2, "Bearish liquidity", text_color=bearColor, bgcolor=f_bg())
+
+    table.cell(dash, 0, 3, "Dotted Line", text_color=f_text(), bgcolor=f_bg())
+    table.cell(dash, 1, 3, "Weak / tested", text_color=neutralColor, bgcolor=f_bg())
+
+    table.cell(dash, 0, 4, "Current POC", text_color=f_text(), bgcolor=f_bg())
+    table.cell(dash, 1, 4, str.tostring(pocPrice, format.mintick), text_color=levelColor, bgcolor=f_bg())
+
+    table.cell(dash, 0, 5, "Strength", text_color=f_text(), bgcolor=f_bg())
+    table.cell(dash, 1, 5, f_qualityText(score) + " " + str.tostring(score, "#") + "/100", text_color=levelColor, bgcolor=f_bg())
+
+    table.cell(dash, 0, 6, "Source", text_color=f_text(), bgcolor=f_bg())
+    table.cell(dash, 1, 6, hasLtf ? "LTF " + ltfTf : "Chart candle", text_color=f_text(), bgcolor=f_bg())
+
+//====================================================
+// ALERTS
+//====================================================
+alertcondition(enableAlerts and barstate.isconfirmed and strong and bullBias, "Strong Bullish Candle Liquidity POC", "Strong bullish candle liquidity POC detected.")
+alertcondition(enableAlerts and barstate.isconfirmed and strong and not bullBias, "Strong Bearish Candle Liquidity POC", "Strong bearish candle liquidity POC detected.")
+alertcondition(enableAlerts and retestBull, "Bullish Liquidity Retest", "Price retested a bullish candle liquidity POC.")
+alertcondition(enableAlerts and retestBear, "Bearish Liquidity Retest", "Price retested a bearish candle liquidity POC.")

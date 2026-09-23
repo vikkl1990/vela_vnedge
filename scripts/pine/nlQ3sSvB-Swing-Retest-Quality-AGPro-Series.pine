@@ -1,0 +1,596 @@
+// -------------------------------------------------
+// Swing Retest Quality [AGPro Series]
+//
+// Author  : AGProLabs | AGPro Series
+// Version : 1.4
+//
+// Swing Retest Quality is a chart-first swing retest planner that evaluates
+// whether a pullback into the active swing leg is clean, defended, and readable.
+// It maps a concept-native retest pocket, defense line, target-room zone,
+// 0-100 quality score, and next-action state without becoming a break/retest,
+// BOS/CHOCH, supply/demand, or generic support/resistance script. Version 1.4
+// adds a selective event-label gate, richer zone badges, and a labeled defense rail.
+// -------------------------------------------------
+
+//@version=6
+indicator("Swing Retest Quality [AGPro Series]",
+     shorttitle = "AG Pro SRQ",
+     overlay = true,
+     max_boxes_count = 60,
+     max_labels_count = 240,
+     max_lines_count = 80)
+
+// -------------------------------------------------
+// AGPro Color Palette
+// -------------------------------------------------
+color headerBg = color.rgb(37, 99, 235)
+color headerText = color.rgb(245, 247, 250)
+color panelBg = color.rgb(15, 23, 42)
+color panelBorder = color.rgb(51, 65, 85)
+color panelLabelCol = color.rgb(148, 163, 184)
+color panelValueCol = color.rgb(226, 232, 240)
+color bullColor = color.rgb(34, 197, 166)
+color bearColor = color.rgb(244, 114, 182)
+color neutralColor = color.rgb(245, 189, 92)
+color accentColor = color.rgb(129, 140, 248)
+color targetRoomBadgeBg = color.rgb(59, 130, 246)
+color darkText = color.rgb(15, 23, 42)
+
+// -------------------------------------------------
+// Tooltips
+// -------------------------------------------------
+string ttPivot = "Defines the confirmed swing pivots used to build the active swing leg. Higher values create slower, cleaner swing references; lower values react faster."
+string ttLife = "Maximum number of bars after the confirmed swing terminal where the retest planner remains active. Older swing legs are ignored to keep the chart relevant."
+string ttAtr = "ATR period used for volatility normalization, label spacing, defense buffer, and target-room readability."
+string ttVolume = "Volume baseline used to evaluate whether the retest response has participation. Disable volume support on symbols where volume is unreliable."
+string ttSensitivity = "Controls how selective the retest pocket and score model are. Conservative requires a tighter pocket and stronger reaction; Aggressive allows broader retest behavior."
+string ttConfirm = "Controls whether labels and alerts wait for bar close. Close Confirmed is the most stable setting for public publication."
+string ttNear = "Defines the shallow side of the swing retest pocket as a percentage of the active swing leg. This is not a Fibonacci suite; it is a planning depth band."
+string ttFar = "Defines the deep side of the swing retest pocket as a percentage of the active swing leg. Deeper tests increase defense risk."
+string ttIdeal = "Preferred retest depth inside the swing leg. The quality score is strongest when the retest probes near this depth and responds cleanly."
+string ttResponse = "Number of bars after a pocket touch where the script still evaluates the retest response as active."
+string ttDefense = "ATR buffer beyond the swing origin used to draw the defense line. The defense line is a context reference, not a stop instruction."
+string ttTarget = "Small extension beyond the swing terminal used to estimate target-room context. It is a planning guide, not a forecast."
+string ttReady = "Minimum 0-100 quality score required for VALID RETEST state."
+string ttWatch = "Minimum 0-100 quality score required for WATCH state."
+string ttRoom = "Minimum ATR-normalized target room preferred before a retest is treated as clean enough for VALID state."
+string ttUseVolume = "When enabled, relative volume contributes to the 0-100 retest quality score. When disabled, the volume component becomes neutral."
+string ttProofWindow = "Number of bars a valid retest has to follow through within, for the Hold Rate proof. It only measures historical follow-through and is not a forecast."
+string ttPocket = "Shows the active swing retest pocket. Zone text is rendered as a separate centered badge for cleaner readability."
+string ttTargetRoom = "Shows the available target-room zone from the pocket toward the swing terminal or extension guide. Zone text is rendered as a separate centered badge."
+string ttDefenseLine = "Shows the active defense line behind the swing retest. It is used for planning context and defense-state alerts."
+string ttSwingLeg = "Shows the confirmed swing leg used by the model. This keeps the retest pocket visually connected to its source structure."
+string ttProjection = "Controls how far the retest pocket, target-room zone, badges, and planning lines extend to the right."
+string ttAdaptive = "Shortens zone projection on daily, weekly, and monthly charts so higher-timeframe screenshots stay balanced."
+string ttBadge = "Controls the horizontal placement of centered retest-pocket and target-room badges."
+string ttLabels = "Shows compact HOLD, WATCH, REVIEW, LOST, and context labels with controlled spacing."
+string ttContextLabels = "Adds sparse active-context labels so the chart does not look empty while avoiding clutter."
+string ttScoreLabels = "Adds the 0-100 quality score to chart labels."
+string ttMinLabelScore = "Minimum quality score required for historical WATCH, HOLD, ROOM, and TEST labels. Defense-loss labels remain visible regardless of score."
+string ttCooldown = "Minimum bars between event labels. Higher values reduce label density."
+string ttContextSpacing = "Minimum bars between sparse context labels during ongoing retest states."
+string ttMaxLabels = "Maximum number of recent labels retained on the chart. Older labels are removed first for performance."
+string ttOffset = "ATR-based label offset that keeps labels above or below candles."
+string ttLabelSize = "Controls all chart labels and centered zone badges. Normal is the recommended publication default."
+string ttShowPanel = "Shows or hides the AG Pro planning panel. It is visible by default for public-release readability."
+string ttPanelLocation = "Moves the AG Pro panel to the preferred chart location."
+string ttPanelTheme = "Switches the panel between premium AGPro surfaces and a clean light theme."
+string ttPanelFont = "Controls panel text size. Normal is the recommended publication default."
+
+// -------------------------------------------------
+// Inputs
+// -------------------------------------------------
+string groupEngine = "Swing Retest Engine"
+int pivotLength = input.int(6, "Swing Pivot Length", minval = 2, maxval = 30, group = groupEngine, tooltip = ttPivot)
+int maxSwingAge = input.int(140, "Max Swing Age", minval = 20, maxval = 500, group = groupEngine, tooltip = ttLife)
+int atrLength = input.int(14, "ATR Length", minval = 3, maxval = 100, group = groupEngine, tooltip = ttAtr)
+int volumeLength = input.int(30, "Volume Baseline Length", minval = 5, maxval = 200, group = groupEngine, tooltip = ttVolume)
+string sensitivity = input.string("Balanced", "Sensitivity", options = ["Conservative", "Balanced", "Aggressive"], group = groupEngine, tooltip = ttSensitivity)
+string confirmationMode = input.string("Close Confirmed", "Confirmation Mode", options = ["Close Confirmed", "Live Updating"], group = groupEngine, tooltip = ttConfirm)
+
+string groupScoring = "Quality Model"
+float shallowPocketDepth = input.float(0.28, "Shallow Pocket Depth", minval = 0.05, maxval = 0.80, step = 0.01, group = groupScoring, tooltip = ttNear)
+float deepPocketDepth = input.float(0.66, "Deep Pocket Depth", minval = 0.10, maxval = 0.95, step = 0.01, group = groupScoring, tooltip = ttFar)
+float idealPocketDepth = input.float(0.46, "Ideal Retest Depth", minval = 0.10, maxval = 0.85, step = 0.01, group = groupScoring, tooltip = ttIdeal)
+int responseWindow = input.int(5, "Response Window Bars", minval = 1, maxval = 30, group = groupScoring, tooltip = ttResponse)
+float defenseBufferAtr = input.float(0.18, "Defense Buffer ATR", minval = 0.00, maxval = 2.00, step = 0.01, group = groupScoring, tooltip = ttDefense)
+float targetExtension = input.float(0.12, "Target Room Extension", minval = 0.00, maxval = 0.75, step = 0.01, group = groupScoring, tooltip = ttTarget)
+int validThreshold = input.int(70, "VALID RETEST Threshold", minval = 40, maxval = 95, group = groupScoring, tooltip = ttReady)
+int watchThreshold = input.int(55, "WATCH Threshold", minval = 25, maxval = 90, group = groupScoring, tooltip = ttWatch)
+float minTargetRoomAtr = input.float(1.10, "Minimum Target Room ATR", minval = 0.10, maxval = 8.00, step = 0.05, group = groupScoring, tooltip = ttRoom)
+bool useVolumeSupport = input.bool(true, "Use Volume Support", group = groupScoring, tooltip = ttUseVolume)
+int retestProofWindow = input.int(20, "Retest Proof Window (bars)", minval = 4, maxval = 200, group = groupScoring, tooltip = ttProofWindow)
+
+string groupVisual = "Chart Visuals"
+bool showRetestPocket = input.bool(true, "Show Retest Pocket", group = groupVisual, tooltip = ttPocket)
+bool showTargetRoom = input.bool(true, "Show Target-Room Zone", group = groupVisual, tooltip = ttTargetRoom)
+bool showDefenseLine = input.bool(true, "Show Defense Line", group = groupVisual, tooltip = ttDefenseLine)
+bool showSwingLeg = input.bool(true, "Show Swing Leg", group = groupVisual, tooltip = ttSwingLeg)
+int projectionBars = input.int(42, "Forward Render Bars", minval = 8, maxval = 180, group = groupVisual, tooltip = ttProjection)
+bool adaptiveProjection = input.bool(true, "Adaptive HTF Projection", group = groupVisual, tooltip = ttAdaptive)
+float zoneBadgeAnchor = input.float(0.56, "Zone Badge Anchor", minval = 0.25, maxval = 0.75, step = 0.05, group = groupVisual, tooltip = ttBadge)
+int zoneTransparency = input.int(88, "Zone Transparency", minval = 75, maxval = 96, group = groupVisual, tooltip = "Controls the opacity of the retest pocket and target-room zone.")
+
+string groupLabels = "Labels"
+bool showEventLabels = input.bool(true, "Show Event Labels", group = groupLabels, tooltip = ttLabels)
+bool showContextLabels = input.bool(false, "Show Sparse Context Labels", group = groupLabels, tooltip = ttContextLabels)
+bool showLabelScore = input.bool(true, "Show Label Score", group = groupLabels, tooltip = ttScoreLabels)
+int minimumLabelScore = input.int(55, "Minimum Historical Label Score", minval = 0, maxval = 100, group = groupLabels, tooltip = ttMinLabelScore)
+int labelCooldownBars = input.int(28, "Label Cooldown Bars", minval = 1, maxval = 120, group = groupLabels, tooltip = ttCooldown)
+int contextSpacingBars = input.int(44, "Context Label Spacing", minval = 8, maxval = 240, group = groupLabels, tooltip = ttContextSpacing)
+int maxVisibleLabels = input.int(6, "Max Visible Labels", minval = 4, maxval = 20, group = groupLabels, tooltip = ttMaxLabels)
+float labelOffsetAtr = input.float(1.12, "Label Offset ATR", minval = 0.10, maxval = 4.00, step = 0.05, group = groupLabels, tooltip = ttOffset)
+string labelFontSize = input.string("Normal", "Label Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupLabels, tooltip = ttLabelSize)
+
+string groupPanel = "Panel"
+bool showPanel = input.bool(true, "Show Panel", group = groupPanel, tooltip = ttShowPanel)
+string panelLocation = input.string("Top Right", "Panel Location", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = groupPanel, tooltip = ttPanelLocation)
+string panelTheme = input.string("Elite Dark", "Panel Theme", options = ["Elite Dark", "Slate", "Clean Light"], group = groupPanel, tooltip = ttPanelTheme)
+string panelFontSize = input.string("Normal", "Panel Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupPanel, tooltip = ttPanelFont)
+
+// -------------------------------------------------
+// Helpers
+// -------------------------------------------------
+f_clamp(float value, float minValue, float maxValue) =>
+    math.min(math.max(value, minValue), maxValue)
+
+f_norm_high_good(float value, float weak, float strong) =>
+    float span = strong - weak
+    span == 0.0 ? 0.0 : f_clamp((value - weak) / span * 100.0, 0.0, 100.0)
+
+f_norm_low_good(float value, float good, float bad) =>
+    float span = bad - good
+    span == 0.0 ? 0.0 : f_clamp((bad - value) / span * 100.0, 0.0, 100.0)
+
+f_peak_score(float value, float lowValue, float idealValue, float highValue) =>
+    float result = 0.0
+    if value <= idealValue
+        result := f_norm_high_good(value, lowValue, idealValue)
+    else
+        result := f_norm_low_good(value, idealValue, highValue)
+    result
+
+f_label_size(string sizeText) =>
+    switch sizeText
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.normal
+
+f_badge_size(string sizeText) =>
+    f_label_size(sizeText)
+
+f_text_on(color bgColor) =>
+    float yiq = (color.r(bgColor) * 299.0 + color.g(bgColor) * 587.0 + color.b(bgColor) * 114.0) / 1000.0
+    yiq >= 150.0 ? darkText : headerText
+
+f_panel_position(string posText) =>
+    switch posText
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right" => position.bottom_right
+        => position.top_right
+
+f_panel_bg(string theme) =>
+    theme == "Clean Light" ? color.rgb(241, 245, 249) : theme == "Slate" ? color.rgb(30, 41, 59) : panelBg
+
+f_panel_border(string theme) =>
+    theme == "Clean Light" ? color.rgb(148, 163, 184) : panelBorder
+
+f_panel_label(string theme) =>
+    theme == "Clean Light" ? color.rgb(71, 85, 105) : panelLabelCol
+
+f_panel_value(string theme) =>
+    theme == "Clean Light" ? color.rgb(15, 23, 42) : panelValueCol
+
+f_row_bg(string theme, int row) =>
+    bool evenRow = row % 2 == 0
+    theme == "Clean Light" ? (evenRow ? color.rgb(226, 232, 240) : color.rgb(241, 245, 249)) : theme == "Slate" ? (evenRow ? color.rgb(37, 49, 70) : color.rgb(30, 41, 59)) : (evenRow ? color.rgb(20, 31, 52) : panelBg)
+
+f_grade(float score) =>
+    string result = "D"
+    if score >= 88.0
+        result := "A+"
+    else if score >= 78.0
+        result := "A"
+    else if score >= 68.0
+        result := "B"
+    else if score >= 55.0
+        result := "C"
+    result
+
+f_fmt(float value) =>
+    na(value) ? "-" : str.tostring(value, "#.##")
+
+f_price(float value) =>
+    na(value) ? "-" : str.tostring(value, format.mintick)
+
+f_set_row(table target, int row, string leftText, string rightText, color rightColor, string theme, string fontSize) =>
+    color rowBg = f_row_bg(theme, row)
+    table.cell(target, 0, row, leftText, text_color = f_panel_label(theme), bgcolor = rowBg, text_size = f_label_size(fontSize), text_halign = text.align_left)
+    table.cell(target, 1, row, rightText, text_color = rightColor, bgcolor = rowBg, text_size = f_label_size(fontSize), text_halign = text.align_right)
+
+f_trim_labels(array<label> labels, int maxCount) =>
+    while array.size(labels) > maxCount
+        label oldLabel = array.shift(labels)
+        label.delete(oldLabel)
+
+f_add_label(array<label> labels, int x, float y, string labelText, color bgColor, color textColor, bool upStyle, string sizeText, int maxCount) =>
+    label newLabel = label.new(x = x, y = y, text = labelText, xloc = xloc.bar_index, yloc = yloc.price, style = upStyle ? label.style_label_up : label.style_label_down, color = bgColor, textcolor = f_text_on(bgColor), size = f_label_size(sizeText))
+    array.push(labels, newLabel)
+    f_trim_labels(labels, maxCount)
+
+f_set_badge(label badge, int x, float y, string txt, color bg, string sizeText) =>
+    label.set_x(badge, x)
+    label.set_y(badge, y)
+    label.set_text(badge, txt)
+    label.set_color(badge, bg)
+    label.set_textcolor(badge, f_text_on(bg))
+    label.set_size(badge, f_badge_size(sizeText))
+
+// -------------------------------------------------
+// Core Swing References
+// -------------------------------------------------
+bool confirmReady = confirmationMode == "Live Updating" or barstate.isconfirmed
+float atrValue = ta.atr(atrLength)
+float safeAtr = math.max(nz(atrValue, ta.tr(true)), syminfo.mintick)
+int visualProjectionBars = adaptiveProjection ? timeframe.ismonthly ? math.min(projectionBars, 8) : timeframe.isweekly ? math.min(projectionBars, 16) : timeframe.isdaily ? math.min(projectionBars, 28) : projectionBars : projectionBars
+
+float pivotHigh = ta.pivothigh(high, pivotLength, pivotLength)
+float pivotLow = ta.pivotlow(low, pivotLength, pivotLength)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+
+if not na(pivotHigh)
+    lastSwingHigh := pivotHigh
+    lastSwingHighBar := bar_index - pivotLength
+
+if not na(pivotLow)
+    lastSwingLow := pivotLow
+    lastSwingLowBar := bar_index - pivotLength
+
+bool haveSwings = not na(lastSwingHigh) and not na(lastSwingLow) and not na(lastSwingHighBar) and not na(lastSwingLowBar)
+bool bullSwing = haveSwings and lastSwingHighBar > lastSwingLowBar
+bool bearSwing = haveSwings and lastSwingLowBar > lastSwingHighBar
+
+float originPrice = na
+float terminalPrice = na
+int originBar = na
+int terminalBar = na
+
+if bullSwing
+    originPrice := lastSwingLow
+    terminalPrice := lastSwingHigh
+    originBar := lastSwingLowBar
+    terminalBar := lastSwingHighBar
+else if bearSwing
+    originPrice := lastSwingHigh
+    terminalPrice := lastSwingLow
+    originBar := lastSwingHighBar
+    terminalBar := lastSwingLowBar
+
+float legHeight = math.abs(terminalPrice - originPrice)
+int legBars = not na(originBar) and not na(terminalBar) ? math.abs(terminalBar - originBar) : 0
+bool activeSwing = (bullSwing or bearSwing) and legHeight > safeAtr * 0.35 and legBars > 0 and not na(terminalBar) and bar_index - terminalBar <= maxSwingAge
+
+float sensitivityPocketAdd = sensitivity == "Conservative" ? -0.04 : sensitivity == "Aggressive" ? 0.05 : 0.0
+float sensitivityScorePenalty = sensitivity == "Conservative" ? 4.0 : sensitivity == "Aggressive" ? -3.0 : 0.0
+float nearDepth = f_clamp(shallowPocketDepth - sensitivityPocketAdd, 0.05, 0.85)
+float farDepth = f_clamp(deepPocketDepth + sensitivityPocketAdd, nearDepth + 0.05, 0.95)
+float idealDepth = f_clamp(idealPocketDepth, nearDepth + 0.02, farDepth - 0.02)
+
+float pocketTop = na
+float pocketBottom = na
+if activeSwing and bullSwing
+    pocketTop := terminalPrice - legHeight * nearDepth
+    pocketBottom := terminalPrice - legHeight * farDepth
+else if activeSwing and bearSwing
+    pocketTop := terminalPrice + legHeight * farDepth
+    pocketBottom := terminalPrice + legHeight * nearDepth
+
+float pocketMid = (pocketTop + pocketBottom) * 0.5
+float pocketHeight = math.max(math.abs(pocketTop - pocketBottom), syminfo.mintick)
+bool touchesPocket = activeSwing and low <= pocketTop and high >= pocketBottom
+int barsSincePocketTouch = nz(ta.barssince(touchesPocket), 100000)
+bool touchedRecently = activeSwing and barsSincePocketTouch <= responseWindow
+
+float defenseLevel = activeSwing and bullSwing ? originPrice - safeAtr * defenseBufferAtr : activeSwing and bearSwing ? originPrice + safeAtr * defenseBufferAtr : na
+float targetGuide = activeSwing and bullSwing ? terminalPrice + legHeight * targetExtension : activeSwing and bearSwing ? terminalPrice - legHeight * targetExtension : na
+
+// -------------------------------------------------
+// Quality Model
+// -------------------------------------------------
+float depthProbe = na
+if activeSwing and bullSwing
+    depthProbe := f_clamp((terminalPrice - low) / legHeight, 0.0, 1.25)
+else if activeSwing and bearSwing
+    depthProbe := f_clamp((high - terminalPrice) / legHeight, 0.0, 1.25)
+
+float legHeightAtr = activeSwing ? legHeight / safeAtr : 0.0
+float legHeightScore = f_peak_score(legHeightAtr, 0.65, 2.80, 9.00)
+float legBarsScore = f_peak_score(legBars, math.max(2.0, pivotLength * 1.0), math.max(8.0, pivotLength * 3.0), maxSwingAge * 1.0)
+float swingClarityScore = f_clamp(legHeightScore * 0.68 + legBarsScore * 0.32, 0.0, 100.0)
+float depthScore = activeSwing ? f_peak_score(depthProbe, nearDepth * 0.55, idealDepth, farDepth * 1.12) : 0.0
+
+float barRange = math.max(high - low, syminfo.mintick)
+float lowerWick = math.max(math.min(open, close) - low, 0.0)
+float upperWick = math.max(high - math.max(open, close), 0.0)
+float closeLocation = f_clamp((close - low) / barRange, 0.0, 1.0)
+float bullWickScore = f_clamp(lowerWick / barRange * 130.0 + closeLocation * 38.0, 0.0, 100.0)
+float bearWickScore = f_clamp(upperWick / barRange * 130.0 + (1.0 - closeLocation) * 38.0, 0.0, 100.0)
+float rejectionScore = bullSwing ? bullWickScore : bearSwing ? bearWickScore : 0.0
+float bullCloseResponse = f_clamp((close - pocketMid) / pocketHeight * 70.0 + closeLocation * 30.0, 0.0, 100.0)
+float bearCloseResponse = f_clamp((pocketMid - close) / pocketHeight * 70.0 + (1.0 - closeLocation) * 30.0, 0.0, 100.0)
+float closeResponseScore = bullSwing ? bullCloseResponse : bearSwing ? bearCloseResponse : 0.0
+
+float volumeBase = ta.sma(volume, volumeLength)
+bool volumeReady = not na(volume) and not na(volumeBase) and volumeBase > 0.0
+float relativeVolume = volumeReady ? volume / volumeBase : 1.0
+float volumeScoreRaw = f_norm_high_good(relativeVolume, 0.70, 1.35)
+float volumeScore = useVolumeSupport ? f_clamp(volumeScoreRaw, 0.0, 100.0) : 62.0
+float qualityScoreRaw = swingClarityScore * 0.22 + depthScore * 0.26 + rejectionScore * 0.20 + closeResponseScore * 0.20 + volumeScore * 0.12
+float qualityScore = f_clamp(qualityScoreRaw - sensitivityScorePenalty, 0.0, 100.0)
+
+bool defenseLost = activeSwing and ((bullSwing and close < defenseLevel) or (bearSwing and close > defenseLevel))
+bool pocketHolding = activeSwing and touchedRecently and not defenseLost and ((bullSwing and close >= pocketMid) or (bearSwing and close <= pocketMid))
+float targetDistance = activeSwing ? (bullSwing ? math.max(targetGuide - close, 0.0) : math.max(close - targetGuide, 0.0)) : na
+float riskDistance = activeSwing ? (bullSwing ? close - defenseLevel : defenseLevel - close) : na
+float targetRoomAtr = activeSwing ? targetDistance / safeAtr : na
+float roomToRisk = activeSwing and not defenseLost and riskDistance > syminfo.mintick ? targetDistance / riskDistance : na
+bool roomIsClean = activeSwing and targetRoomAtr >= minTargetRoomAtr
+
+bool validRetest = activeSwing and touchedRecently and pocketHolding and roomIsClean and qualityScore >= validThreshold
+bool watchRetest = activeSwing and touchedRecently and not defenseLost and not validRetest and qualityScore >= watchThreshold
+bool defenseReview = activeSwing and touchedRecently and not defenseLost and not validRetest and not watchRetest
+
+string stateText = validRetest ? "VALID RETEST" : watchRetest ? "WATCH" : defenseReview ? "DEFENSE REVIEW" : defenseLost ? "LOST" : "WAIT"
+string swingSideText = bullSwing ? "Bull Swing" : bearSwing ? "Bear Swing" : "No Swing"
+string defenseState = defenseLost ? "Lost" : pocketHolding and qualityScore >= watchThreshold ? "Holding" : touchedRecently ? "Testing" : "Waiting"
+string actionText = validRetest ? (bullSwing ? "Review Bull Retest" : "Review Bear Retest") : watchRetest ? "Watch Response" : defenseReview ? roomIsClean ? "Defense Review" : "Room Review" : defenseLost ? "Rebuild Context" : "Wait"
+color directionColor = bullSwing ? bullColor : bearSwing ? bearColor : neutralColor
+color stateColor = validRetest ? directionColor : watchRetest ? accentColor : defenseReview ? neutralColor : defenseLost ? bearColor : panelLabelCol
+
+// -------------------------------------------------
+// Retest hold-rate proof (Confirm Rate)
+// -------------------------------------------------
+// When a valid retest fires, does price follow through 0.75 ATR in the swing
+// direction before losing the defense line or the window expires? Counted once
+// per valid retest. A defense loss first, or a window expiry with no
+// follow-through, is treated as not-held (conservative).
+float rhMargin = math.max(nz(safeAtr), syminfo.mintick) * 0.75
+var int   rhTotal = 0
+var int   rhWon    = 0
+var bool  rhPend    = false
+var int   rhDir      = 0
+var float rhAnchor    = na
+var float rhDefense    = na
+var int   rhLeft        = 0
+bool rhFire = validRetest and not (bar_index > 0 ? validRetest[1] : false)
+
+if barstate.isconfirmed
+    if rhPend and not na(rhAnchor) and not na(rhDefense)
+        bool rhFailed = rhDir > 0 ? close < rhDefense : close > rhDefense
+        bool rhFollowed = rhDir > 0 ? close >= rhAnchor + rhMargin : close <= rhAnchor - rhMargin
+        if rhFailed
+            rhTotal += 1
+            rhPend := false
+        else if rhFollowed
+            rhTotal += 1
+            rhWon += 1
+            rhPend := false
+        else
+            rhLeft -= 1
+            if rhLeft <= 0
+                rhTotal += 1
+                rhPend := false
+    if rhFire and (bullSwing or bearSwing) and not na(defenseLevel) and not rhPend
+        rhDir := bullSwing ? 1 : -1
+        rhAnchor := close
+        rhDefense := defenseLevel
+        rhLeft := retestProofWindow
+        rhPend := true
+
+float rhRate = rhTotal > 0 ? rhWon / rhTotal * 100.0 : na
+string holdRateRead = rhTotal > 0 ? str.tostring(math.round(rhRate)) + "% (" + str.tostring(rhTotal) + ")" : "Building"
+
+// -------------------------------------------------
+// Visual Objects
+// -------------------------------------------------
+int leftEdge = activeSwing ? terminalBar : bar_index
+int rightEdge = bar_index + visualProjectionBars
+int pocketBadgeX = leftEdge + int(math.floor((rightEdge - leftEdge) * zoneBadgeAnchor))
+int targetBadgeX = pocketBadgeX
+
+var box retestPocketBox = na
+var box targetRoomBox = na
+var label retestPocketBadge = na
+var label targetRoomBadge = na
+var label defenseGuideBadge = na
+var line defenseGuideLine = na
+var line targetGuideLine = na
+var line swingLegLine = na
+
+string pocketSideText = bullSwing ? "BULL" : bearSwing ? "BEAR" : "SWING"
+string pocketStateText = validRetest ? "VALID" : watchRetest ? "WATCH" : defenseReview ? "REVIEW" : defenseLost ? "LOST" : "WAIT"
+string pocketBadgeText = pocketSideText + " RETEST | " + pocketStateText + " | Q " + str.tostring(math.round(qualityScore))
+if showRetestPocket and activeSwing
+    if na(retestPocketBox)
+        retestPocketBox := box.new(left = leftEdge, top = pocketTop, right = rightEdge, bottom = pocketBottom, border_color = directionColor, bgcolor = color.new(directionColor, zoneTransparency))
+    else
+        box.set_lefttop(retestPocketBox, leftEdge, pocketTop)
+        box.set_rightbottom(retestPocketBox, rightEdge, pocketBottom)
+        box.set_border_color(retestPocketBox, directionColor)
+        box.set_bgcolor(retestPocketBox, color.new(directionColor, zoneTransparency))
+    if na(retestPocketBadge)
+        retestPocketBadge := label.new(pocketBadgeX, pocketMid, pocketBadgeText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_center, color = color.new(directionColor, 10), textcolor = f_text_on(directionColor), size = f_badge_size(labelFontSize), textalign = text.align_center)
+    else
+        f_set_badge(retestPocketBadge, pocketBadgeX, pocketMid, pocketBadgeText, color.new(directionColor, 10), labelFontSize)
+else
+    if not na(retestPocketBox)
+        box.delete(retestPocketBox)
+        retestPocketBox := na
+    if not na(retestPocketBadge)
+        label.delete(retestPocketBadge)
+        retestPocketBadge := na
+
+float targetBoxTop = activeSwing and bullSwing ? targetGuide : activeSwing and bearSwing ? pocketBottom : na
+float targetBoxBottom = activeSwing and bullSwing ? pocketTop : activeSwing and bearSwing ? targetGuide : na
+string targetBadgeText = "TARGET ROOM | " + f_fmt(targetRoomAtr) + " ATR"
+if showTargetRoom and activeSwing
+    if na(targetRoomBox)
+        targetRoomBox := box.new(left = leftEdge, top = targetBoxTop, right = rightEdge, bottom = targetBoxBottom, border_color = accentColor, bgcolor = color.new(accentColor, zoneTransparency))
+    else
+        box.set_lefttop(targetRoomBox, leftEdge, targetBoxTop)
+        box.set_rightbottom(targetRoomBox, rightEdge, targetBoxBottom)
+        box.set_border_color(targetRoomBox, accentColor)
+        box.set_bgcolor(targetRoomBox, color.new(accentColor, zoneTransparency))
+    if na(targetRoomBadge)
+        targetRoomBadge := label.new(targetBadgeX, (targetBoxTop + targetBoxBottom) * 0.5, targetBadgeText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_center, color = color.new(targetRoomBadgeBg, 6), textcolor = f_text_on(targetRoomBadgeBg), size = f_badge_size(labelFontSize), textalign = text.align_center)
+    else
+        f_set_badge(targetRoomBadge, targetBadgeX, (targetBoxTop + targetBoxBottom) * 0.5, targetBadgeText, color.new(targetRoomBadgeBg, 6), labelFontSize)
+else
+    if not na(targetRoomBox)
+        box.delete(targetRoomBox)
+        targetRoomBox := na
+    if not na(targetRoomBadge)
+        label.delete(targetRoomBadge)
+        targetRoomBadge := na
+
+if showDefenseLine and activeSwing
+    color defenseVisualColor = defenseLost ? bearColor : neutralColor
+    string defenseBadgeText = (defenseLost ? "DEFENSE LOST | " : "DEFENSE | ") + f_price(defenseLevel)
+    if na(defenseGuideLine)
+        defenseGuideLine := line.new(x1 = leftEdge, y1 = defenseLevel, x2 = rightEdge, y2 = defenseLevel, xloc = xloc.bar_index, extend = extend.none, color = defenseVisualColor, style = line.style_dashed, width = 2)
+    else
+        line.set_xy1(defenseGuideLine, leftEdge, defenseLevel)
+        line.set_xy2(defenseGuideLine, rightEdge, defenseLevel)
+        line.set_color(defenseGuideLine, defenseVisualColor)
+    if na(defenseGuideBadge)
+        defenseGuideBadge := label.new(rightEdge, defenseLevel, defenseBadgeText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color.new(defenseVisualColor, 0), textcolor = f_text_on(defenseVisualColor), size = f_badge_size(labelFontSize), textalign = text.align_center)
+    else
+        f_set_badge(defenseGuideBadge, rightEdge, defenseLevel, defenseBadgeText, color.new(defenseVisualColor, 0), labelFontSize)
+else
+    if not na(defenseGuideLine)
+        line.delete(defenseGuideLine)
+        defenseGuideLine := na
+    if not na(defenseGuideBadge)
+        label.delete(defenseGuideBadge)
+        defenseGuideBadge := na
+
+if showTargetRoom and activeSwing
+    if na(targetGuideLine)
+        targetGuideLine := line.new(x1 = leftEdge, y1 = targetGuide, x2 = rightEdge, y2 = targetGuide, xloc = xloc.bar_index, extend = extend.none, color = accentColor, style = line.style_solid, width = 1)
+    else
+        line.set_xy1(targetGuideLine, leftEdge, targetGuide)
+        line.set_xy2(targetGuideLine, rightEdge, targetGuide)
+else if not na(targetGuideLine)
+    line.delete(targetGuideLine)
+    targetGuideLine := na
+
+if showSwingLeg and activeSwing
+    if na(swingLegLine)
+        swingLegLine := line.new(x1 = originBar, y1 = originPrice, x2 = terminalBar, y2 = terminalPrice, xloc = xloc.bar_index, extend = extend.none, color = color.new(directionColor, 10), style = line.style_solid, width = 2)
+    else
+        line.set_xy1(swingLegLine, originBar, originPrice)
+        line.set_xy2(swingLegLine, terminalBar, terminalPrice)
+        line.set_color(swingLegLine, color.new(directionColor, 10))
+else if not na(swingLegLine)
+    line.delete(swingLegLine)
+    swingLegLine := na
+
+// -------------------------------------------------
+// Labels
+// -------------------------------------------------
+var array<label> chartLabels = array.new_label()
+var int lastEventLabelBar = na
+var int lastContextLabelBar = na
+
+bool prevValidRetest = validRetest[1] == true
+bool prevWatchRetest = watchRetest[1] == true
+bool prevDefenseLost = defenseLost[1] == true
+bool prevTouchesPocket = touchesPocket[1] == true
+bool prevRoomWeak = (targetRoomAtr[1] < minTargetRoomAtr and touchedRecently[1] == true) == true
+bool pocketTouchEvent = confirmReady and touchesPocket and not prevTouchesPocket
+bool validRetestEvent = confirmReady and validRetest and not prevValidRetest
+bool watchRetestEvent = confirmReady and watchRetest and not prevWatchRetest
+bool defenseLostEvent = confirmReady and defenseLost and not prevDefenseLost
+bool roomReviewEvent = confirmReady and touchedRecently and targetRoomAtr < minTargetRoomAtr and not prevRoomWeak
+bool eventCooldownReady = na(lastEventLabelBar) or bar_index - lastEventLabelBar >= labelCooldownBars
+bool eventScoreEligible = qualityScore >= minimumLabelScore
+string scoreSuffix = showLabelScore ? " | Q " + str.tostring(math.round(qualityScore)) : ""
+
+if showEventLabels and eventCooldownReady
+    if defenseLostEvent
+        float lostY = bullSwing ? high + safeAtr * labelOffsetAtr : low - safeAtr * labelOffsetAtr
+        f_add_label(chartLabels, bar_index, lostY, "LOST" + scoreSuffix, bearColor, headerText, not bullSwing, labelFontSize, maxVisibleLabels)
+        lastEventLabelBar := bar_index
+    else if validRetestEvent and eventScoreEligible
+        float validY = bullSwing ? low - safeAtr * labelOffsetAtr : high + safeAtr * labelOffsetAtr
+        f_add_label(chartLabels, bar_index, validY, "HOLD" + scoreSuffix, directionColor, headerText, bullSwing, labelFontSize, maxVisibleLabels)
+        lastEventLabelBar := bar_index
+    else if watchRetestEvent and eventScoreEligible
+        float watchY = bullSwing ? low - safeAtr * labelOffsetAtr : high + safeAtr * labelOffsetAtr
+        f_add_label(chartLabels, bar_index, watchY, "WATCH" + scoreSuffix, accentColor, headerText, bullSwing, labelFontSize, maxVisibleLabels)
+        lastEventLabelBar := bar_index
+    else if roomReviewEvent and eventScoreEligible
+        float roomY = bullSwing ? high + safeAtr * labelOffsetAtr : low - safeAtr * labelOffsetAtr
+        f_add_label(chartLabels, bar_index, roomY, "ROOM" + scoreSuffix, neutralColor, darkText, not bullSwing, labelFontSize, maxVisibleLabels)
+        lastEventLabelBar := bar_index
+    else if pocketTouchEvent and eventScoreEligible
+        float touchY = bullSwing ? low - safeAtr * labelOffsetAtr : high + safeAtr * labelOffsetAtr
+        f_add_label(chartLabels, bar_index, touchY, "TEST" + scoreSuffix, color.new(directionColor, 6), headerText, bullSwing, labelFontSize, maxVisibleLabels)
+        lastEventLabelBar := bar_index
+
+bool contextReady = showContextLabels and confirmReady and activeSwing and touchedRecently and not defenseLost and (na(lastContextLabelBar) or bar_index - lastContextLabelBar >= contextSpacingBars)
+if contextReady
+    string contextText = stateText == "WAIT" ? "ACTIVE RETEST" : stateText
+    float contextY = bullSwing ? low - safeAtr * (labelOffsetAtr + 0.55) : high + safeAtr * (labelOffsetAtr + 0.55)
+    f_add_label(chartLabels, bar_index, contextY, contextText + scoreSuffix, color.new(stateColor, 4), headerText, bullSwing, labelFontSize, maxVisibleLabels)
+    lastContextLabelBar := bar_index
+
+plot(rhRate, title = "Retest Hold Rate", color = bullColor, display = display.data_window)
+
+// -------------------------------------------------
+// Panel
+// -------------------------------------------------
+color dashBg = f_panel_bg(panelTheme)
+color frameColor = f_panel_border(panelTheme)
+string qualityRead = activeSwing ? str.tostring(math.round(qualityScore)) + " / " + f_grade(qualityScore) + " / " + stateText : "-"
+string defenseRead = defenseState + (activeSwing ? " / " + f_fmt(math.abs(close - defenseLevel) / safeAtr) + " ATR" : "")
+string roomRead = activeSwing and not defenseLost ? f_fmt(roomToRisk) + "R / " + f_fmt(targetRoomAtr) + " ATR" : "-"
+string actionRead = actionText
+color holdRateCol = na(rhRate) ? f_panel_value(panelTheme) : rhRate >= 60.0 ? bullColor : rhRate >= 45.0 ? neutralColor : bearColor
+var table srqPanel = table.new(f_panel_position(panelLocation), 2, 7, bgcolor = dashBg, frame_color = frameColor, frame_width = 1, border_color = frameColor, border_width = 1)
+
+if barstate.islast
+    table.set_position(srqPanel, f_panel_position(panelLocation))
+    table.clear(srqPanel, 0, 0, 1, 6)
+    if showPanel
+        table.cell(srqPanel, 0, 0, "", text_color = headerText, bgcolor = headerBg, text_size = f_label_size(panelFontSize))
+        table.cell(srqPanel, 1, 0, "", text_color = headerText, bgcolor = headerBg, text_size = f_label_size(panelFontSize))
+        table.merge_cells(srqPanel, 0, 0, 1, 0)
+        table.cell(srqPanel, 0, 0, "AG Pro Swing Retest Quality", text_color = headerText, bgcolor = headerBg, text_size = f_label_size(panelFontSize), text_halign = text.align_center)
+        f_set_row(srqPanel, 1, "Retest Quality", qualityRead, stateColor, panelTheme, panelFontSize)
+        f_set_row(srqPanel, 2, "Hold Rate", holdRateRead, holdRateCol, panelTheme, panelFontSize)
+        f_set_row(srqPanel, 3, "Swing Side", swingSideText, directionColor, panelTheme, panelFontSize)
+        f_set_row(srqPanel, 4, "Defense State", defenseRead, defenseLost ? bearColor : pocketHolding ? directionColor : neutralColor, panelTheme, panelFontSize)
+        f_set_row(srqPanel, 5, "Risk Room", roomRead, roomIsClean ? accentColor : neutralColor, panelTheme, panelFontSize)
+        f_set_row(srqPanel, 6, "Action", actionRead, stateColor, panelTheme, panelFontSize)
+
+// -------------------------------------------------
+// Alerts
+// -------------------------------------------------
+alertcondition(barstate.isconfirmed and pocketTouchEvent, title = "Swing Retest Pocket Touch", message = "Swing Retest Quality: price has tested the active swing retest pocket.")
+alertcondition(barstate.isconfirmed and validRetestEvent, title = "Valid Swing Retest", message = "Swing Retest Quality: active swing retest is holding with sufficient quality.")
+alertcondition(barstate.isconfirmed and watchRetestEvent, title = "Swing Retest Watch", message = "Swing Retest Quality: swing retest context is improving but still requires review.")
+alertcondition(barstate.isconfirmed and roomReviewEvent, title = "Swing Retest Room Review", message = "Swing Retest Quality: target room is limited relative to the current retest context.")
+alertcondition(barstate.isconfirmed and defenseLostEvent, title = "Swing Retest Defense Lost", message = "Swing Retest Quality: the active swing defense line has been lost and context should be rebuilt.")

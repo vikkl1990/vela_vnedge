@@ -1,0 +1,167 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Jos-ProTrader
+
+//@version=6
+indicator("Swing Reversal Auto Targets [JPT] - Module 1", overlay=true, max_labels_count=500, max_lines_count=500)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+groupSwing = "Swing Detection"
+
+pivotLen      = input.int(5, "Pivot Length", minval=2, group=groupSwing)
+showLabels    = input.bool(true, "Show Swing Labels", group=groupSwing)
+showLevels    = input.bool(true, "Show Swing Levels", group=groupSwing)
+extendLevels  = input.bool(true, "Extend Levels", group=groupSwing)
+
+groupVisual = "Visual"
+
+bullColor = input.color(color.lime, "Bullish Color", group=groupVisual)
+bearColor = input.color(color.red, "Bearish Color", group=groupVisual)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PIVOTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// STORAGE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var float lastHigh = na
+var float lastLow  = na
+
+var line highLine = na
+var line lowLine  = na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SWING HIGH
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if not na(ph)
+
+    string txt = na(lastHigh) ? "SH" : ph > lastHigh ? "HH" : "LH"
+
+    if showLabels
+        label.new(
+             bar_index-pivotLen,
+             ph,
+             txt,
+             style=label.style_label_down,
+             color=bearColor,
+             textcolor=color.white)
+
+    if showLevels
+        line.delete(highLine)
+
+        highLine := line.new(
+             bar_index-pivotLen,
+             ph,
+             extendLevels ? bar_index : bar_index-pivotLen,
+             ph,
+             extend=extendLevels ? extend.right : extend.none,
+             color=bearColor,
+             width=2)
+
+    lastHigh := ph
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SWING LOW
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if not na(pl)
+
+    string txt = na(lastLow) ? "SL" : pl > lastLow ? "HL" : "LL"
+
+    if showLabels
+        label.new(
+             bar_index-pivotLen,
+             pl,
+             txt,
+             style=label.style_label_up,
+             color=bullColor,
+             textcolor=color.black)
+
+    if showLevels
+        line.delete(lowLine)
+
+        lowLine := line.new(
+             bar_index-pivotLen,
+             pl,
+             extendLevels ? bar_index : bar_index-pivotLen,
+             pl,
+             extend=extendLevels ? extend.right : extend.none,
+             color=bullColor,
+             width=2)
+
+    lastLow := pl
+
+if not na(ph)
+    label.new(
+         bar_index - pivotLen,
+         ph,
+         "",
+         style=label.style_triangledown,
+         color=bearColor,
+         textcolor=color.white,
+         size=size.tiny)
+
+if not na(pl)
+    label.new(
+         bar_index - pivotLen,
+         pl,
+         "",
+         style=label.style_triangleup,
+         color=bullColor,
+         textcolor=color.white,
+         size=size.tiny)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MODULE 2 - EMA TREND FILTER
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+useEMAFilter = input.bool(true, "Use EMA Filter", group="Signals")
+emaFastLen   = input.int(50, "EMA Fast", group="Signals")
+emaSlowLen   = input.int(200, "EMA Slow", group="Signals")
+
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+upTrend   = emaFast > emaSlow
+downTrend = emaFast < emaSlow
+
+plot(useEMAFilter ? emaFast : na, color=color.blue, title="EMA 50")
+plot(useEMAFilter ? emaSlow : na, color=color.orange, title="EMA 200")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BUY / SELL SIGNAL LOGIC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+buySignal = not na(lastHigh) and close > lastHigh and (not useEMAFilter or upTrend)
+
+sellSignal = not na(lastLow) and close < lastLow and (not useEMAFilter or downTrend)
+
+if buySignal
+    label.new(
+         bar_index,
+         low,
+         "BUY",
+         style=label.style_label_up,
+         color=color.lime,
+         textcolor=color.black)
+
+if sellSignal
+    label.new(
+         bar_index,
+         high,
+         "SELL",
+         style=label.style_label_down,
+         color=color.red,
+         textcolor=color.white)
+
+alertcondition(buySignal, "BUY Signal", "Swing Reversal BUY")
+
+alertcondition(sellSignal, "SELL Signal", "Swing Reversal SELL")

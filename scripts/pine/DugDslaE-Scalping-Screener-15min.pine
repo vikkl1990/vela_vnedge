@@ -1,0 +1,385 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Atma_Sakshatkar
+
+//@version=4
+study("Scalping Screener - 15min", overlay= true)
+
+
+//-----------------------------------------------------------------------------
+//--- Session Input ---
+
+sess_ = "0935-1415"
+t_ = time(timeframe.period, sess_)
+Tradesession = na(t_) ? false : true
+
+
+
+//------------------------------------------------------------------------------
+// PREVIOUS DAY ANCHORED VWAP
+nsd = iff(change(security(syminfo.tickerid, "D", time, lookahead=true)), 1, 0)
+getVWAP(newSession) =>
+    p = hlc3 * volume
+    p := newSession ? hlc3 * volume : p[1] + hlc3 * volume
+    vol = 0.0
+    vol := newSession ? volume : vol[1] + volume
+    v = p / vol
+    Sn = 0.0
+    Sn := newSession ? 0 : Sn[1] + volume * (hlc3 - v[1]) * (hlc3 - v)
+    std = sqrt(Sn / vol)
+    [v, std]
+[vD, stdevD] = getVWAP(nsd)
+PreVWAP = valuewhen(nsd, vD[1], 0)
+
+
+
+//------------------------------------------------------------------------------
+// RELATIVE STRENGTH
+
+res_length_1 = 13   
+res_length_2 = 50   
+
+comparativeTickerId = "NSE:NIFTY"
+
+baseSymbol = security(syminfo.tickerid, timeframe.period, close)
+comparativeSymbol = security(comparativeTickerId, timeframe.period, close)
+
+res = baseSymbol / baseSymbol[res_length_1] / 
+   (comparativeSymbol / comparativeSymbol[res_length_1]) - 1
+
+res2 = baseSymbol / baseSymbol[res_length_2] / 
+   (comparativeSymbol / comparativeSymbol[res_length_2]) - 1
+
+
+
+//------------------------------------------------------------------------------
+// ENTRY METHOD
+//------------------------------------------------------------------------------
+
+isbuy = 
+     high > high[1] 
+     and open[1] < close[1]
+     and open[2] < close[2]
+     and high[1] > high[2]
+     
+     and close[1] > vwap[1] 
+     and vwap[1] > PreVWAP
+     and res >= 0 and res2 >= 0
+     and high[1] > highest(high, 5)[2]
+     and Tradesession
+
+
+isshort = 
+     low < low[1]
+     and open[1] > close[1]
+     and open[2] > close[2]
+     and low[1] < low[2]
+     
+     and close[1] < vwap[1]
+     and vwap[1] < PreVWAP
+     and res <= 0 and res2 <= 0
+     and low[1] < lowest(low, 5)[2]
+     and Tradesession
+
+
+
+//------------------------------------------------------------------------------
+
+isEntry_Long = false
+isEntry_Long := nz(isEntry_Long[1], false )
+
+isExit_Long = false
+isExit_Long := nz(isExit_Long[1], false )
+
+
+//------------------------------------------------------------------------------
+isEntry_Short = false
+isEntry_Short := nz(isEntry_Short[1], false )
+
+isExit_Short = false
+isExit_Short := nz(isExit_Short[1], false )
+
+
+//------------------------------------------------------------------------------
+
+entry_long = not isEntry_Long and not isEntry_Short and isbuy
+entry_short = not isEntry_Short and not isEntry_Long and isshort
+
+
+//------------------------------------------------------------------------------
+//TAKE PROFT LEVELS
+
+buy_high = valuewhen(entry_long, high[1] , 0 )
+buy_low = valuewhen(entry_long, low[1] , 0)
+buy_take_profit = buy_high + abs(buy_high - buy_low)
+
+
+short_high = valuewhen(entry_short, high[1] , 0 )
+short_low = valuewhen(entry_short, low[1] , 0)
+short_take_profit = short_low - abs(short_high - short_low)
+
+
+
+//------------------------------------------------------------------------------
+// EXIT METHOD
+//------------------------------------------------------------------------------
+
+buy_close = 
+     high > buy_take_profit
+     or low < buy_low
+
+
+short_close = 
+     low < short_take_profit
+     or high > short_high
+
+
+//------------------------------------------------------------------------------
+
+exit_long = not isExit_Long and buy_close 
+exit_short = not isExit_Short and short_close 
+
+
+
+//------------------------------------------------------------------------------
+// ENTRY / EXIT SIGNAL
+//------------------------------------------------------------------------------
+
+if (entry_long)
+    isEntry_Long := true
+    isExit_Long := false
+
+if (exit_long)
+    isEntry_Long := false
+    isExit_Long := true
+
+plotshape(entry_long, text="BUY", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(exit_long, text="EXIT BUY", style=shape.triangledown, location=location.abovebar, color=color.purple, size=size.small)
+
+//------------------------------------------------------------------------------
+
+if (entry_short)
+    isEntry_Short := true
+    isExit_Short := false
+
+if (exit_short)
+    isEntry_Short := false
+    isExit_Short := true
+
+plotshape(entry_short, text="SHORT", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+plotshape(exit_short, text="EXIT SHORT", style=shape.triangleup, location=location.belowbar, color=color.purple, size=size.small)
+
+
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+
+//SCREENER FUNCTION
+screenerFunc() =>
+    longConditon = isbuy
+    shortConditon = isshort
+    [longConditon, shortConditon]
+
+
+//------------------------------------------------------------------------------
+// Symbols 
+s01 = input('NSE:ASIANPAINT', type=input.symbol, title ="Symbol 01")
+s02 = input('NSE:AXISBANK', type=input.symbol, title="Symbol 02")
+s03 = input('NSE:BAJAJ_AUTO', type=input.symbol, title="Symbol 03")
+s04 = input('NSE:BAJFINANCE', type=input.symbol, title="Symbol 04")
+s05 = input('NSE:BAJAJFINSV', type=input.symbol, title="Symbol 05")
+s06 = input('NSE:BPCL', type=input.symbol, title="Symbol 06")
+s07 = input('NSE:BHARTIARTL', type=input.symbol, title="Symbol 07")
+s08 = input('NSE:CIPLA', type=input.symbol, title="Symbol 08")
+s09 = input('NSE:COALINDIA', type=input.symbol, title="Symbol 09")
+s10 = input('NSE:DIVISLAB', type=input.symbol, title="Symbol 10")
+s11 = input('NSE:DRREDDY', type=input.symbol, title="Symbol 11")
+s12 = input('NSE:EICHERMOT', type=input.symbol, title="Symbol 12")
+s13 = input('NSE:GRASIM', type=input.symbol, title="Symbol 13")
+s14 = input('NSE:HCLTECH', type=input.symbol, title="Symbol 14")
+s15 = input('NSE:HDFCBANK', type=input.symbol, title="Symbol 15")
+s16 = input('NSE:HEROMOTOCO', type=input.symbol, title="Symbol 16")
+s17 = input('NSE:HINDALCO', type=input.symbol, title="Symbol 17")
+s18 = input('NSE:HINDUNILVR', type=input.symbol, title="Symbol 18")
+s19 = input('NSE:HDFC', type=input.symbol, title="Symbol 19")
+s20 = input('NSE:ICICIBANK', type=input.symbol, title="Symbol 20")
+s21 = input('NSE:IOC', type=input.symbol, title="Symbol 21")
+s22 = input('NSE:INDUSINDBK', type=input.symbol, title="Symbol 22")
+s23 = input('NSE:INFY', type=input.symbol, title="Symbol 23")
+s24 = input('NSE:JSWSTEEL', type=input.symbol, title="Symbol 24")
+s25 = input('NSE:KOTAKBANK', type=input.symbol, title="Symbol 25")
+s26 = input('NSE:ONGC', type=input.symbol, title="Symbol 26")
+s27 = input('NSE:RELIANCE', type=input.symbol, title="Symbol 27")
+s28 = input('NSE:SBILIFE', type=input.symbol, title="Symbol 28")
+s29 = input('NSE:SBIN', type=input.symbol, title="Symbol 29")
+s30 = input('NSE:SUNPHARMA', type=input.symbol, title="Symbol 30")
+s31 = input('NSE:TCS', type=input.symbol, title="Symbol 31")
+s32 = input('NSE:TATACONSUM', type=input.symbol, title="Symbol 32")
+s33 = input('NSE:TATAMOTORS', type=input.symbol, title="Symbol 33")
+s34 = input('NSE:TATASTEEL', type=input.symbol, title="Symbol 34")
+s35 = input('NSE:TECHM', type=input.symbol, title="Symbol 35")
+s36 = input('NSE:TITAN', type=input.symbol, title="Symbol 36")
+
+//s37 = input('', type=input.symbol, title="Symbol 37")
+//s38 = input('', type=input.symbol, title="Symbol 38")
+//s39 = input('', type=input.symbol, title="Symbol 39")
+//s40 = input('', type=input.symbol, title="Symbol 40")
+
+
+
+//------------------------------------------------------------------------------
+//Inputs
+timeFrame = timeframe.period
+textColor = input(defval = color.black, title = "Text Color")
+
+
+// Running Functions for all sybmols //
+[cI01, cII01] = security(s01, timeFrame, screenerFunc())
+[cI02, cII02] = security(s02, timeFrame, screenerFunc())
+[cI03, cII03] = security(s03, timeFrame, screenerFunc())
+[cI04, cII04] = security(s04, timeFrame, screenerFunc())
+[cI05, cII05] = security(s05, timeFrame, screenerFunc())
+[cI06, cII06] = security(s06, timeFrame, screenerFunc())
+[cI07, cII07] = security(s07, timeFrame, screenerFunc())
+[cI08, cII08] = security(s08, timeFrame, screenerFunc())
+[cI09, cII09] = security(s09, timeFrame, screenerFunc())
+[cI10, cII10] = security(s10, timeFrame, screenerFunc())
+[cI11, cII11] = security(s11, timeFrame, screenerFunc())
+[cI12, cII12] = security(s12, timeFrame, screenerFunc())
+[cI13, cII13] = security(s13, timeFrame, screenerFunc())
+[cI14, cII14] = security(s14, timeFrame, screenerFunc())
+[cI15, cII15] = security(s15, timeFrame, screenerFunc())
+[cI16, cII16] = security(s16, timeFrame, screenerFunc())
+[cI17, cII17] = security(s17, timeFrame, screenerFunc())
+[cI18, cII18] = security(s18, timeFrame, screenerFunc())
+[cI19, cII19] = security(s19, timeFrame, screenerFunc())
+[cI20, cII20] = security(s20, timeFrame, screenerFunc())
+[cI21, cII21] = security(s21, timeFrame, screenerFunc())
+[cI22, cII22] = security(s22, timeFrame, screenerFunc())
+[cI23, cII23] = security(s23, timeFrame, screenerFunc())
+[cI24, cII24] = security(s24, timeFrame, screenerFunc())
+[cI25, cII25] = security(s25, timeFrame, screenerFunc())
+[cI26, cII26] = security(s26, timeFrame, screenerFunc())
+[cI27, cII27] = security(s27, timeFrame, screenerFunc())
+[cI28, cII28] = security(s28, timeFrame, screenerFunc())
+[cI29, cII29] = security(s29, timeFrame, screenerFunc())
+[cI30, cII30] = security(s30, timeFrame, screenerFunc())
+[cI31, cII31] = security(s31, timeFrame, screenerFunc())
+[cI32, cII32] = security(s32, timeFrame, screenerFunc())
+[cI33, cII33] = security(s33, timeFrame, screenerFunc())
+[cI34, cII34] = security(s34, timeFrame, screenerFunc())
+[cI35, cII35] = security(s35, timeFrame, screenerFunc())
+[cI36, cII36] = security(s36, timeFrame, screenerFunc())
+
+//[cI37, cII37] = security(s37, timeFrame, screenerFunc())
+//[cI38, cII38] = security(s38, timeFrame, screenerFunc())
+//[cI39, cII39] = security(s39, timeFrame, screenerFunc())
+//[cI40, cII40] = security(s40, timeFrame, screenerFunc())
+
+
+
+//------------------------------------------------------------------------------
+// Screener label //
+scr_label_long = 'LONG TRADES:' + '\n'
+scr_label_long := cI01 ? scr_label_long + s01 + '\n' : scr_label_long
+scr_label_long := cI02 ? scr_label_long + s02 + '\n' : scr_label_long
+scr_label_long := cI03 ? scr_label_long + s03 + '\n' : scr_label_long
+scr_label_long := cI04 ? scr_label_long + s04 + '\n' : scr_label_long
+scr_label_long := cI05 ? scr_label_long + s05 + '\n' : scr_label_long
+scr_label_long := cI06 ? scr_label_long + s06 + '\n' : scr_label_long
+scr_label_long := cI07 ? scr_label_long + s07 + '\n' : scr_label_long
+scr_label_long := cI08 ? scr_label_long + s08 + '\n' : scr_label_long
+scr_label_long := cI09 ? scr_label_long + s09 + '\n' : scr_label_long
+scr_label_long := cI10 ? scr_label_long + s10 + '\n' : scr_label_long
+scr_label_long := cI11 ? scr_label_long + s11 + '\n' : scr_label_long
+scr_label_long := cI12 ? scr_label_long + s12 + '\n' : scr_label_long
+scr_label_long := cI13 ? scr_label_long + s13 + '\n' : scr_label_long
+scr_label_long := cI14 ? scr_label_long + s14 + '\n' : scr_label_long
+scr_label_long := cI15 ? scr_label_long + s15 + '\n' : scr_label_long
+scr_label_long := cI16 ? scr_label_long + s16 + '\n' : scr_label_long
+scr_label_long := cI17 ? scr_label_long + s17 + '\n' : scr_label_long
+scr_label_long := cI18 ? scr_label_long + s18 + '\n' : scr_label_long
+scr_label_long := cI19 ? scr_label_long + s19 + '\n' : scr_label_long
+scr_label_long := cI20 ? scr_label_long + s20 + '\n' : scr_label_long
+scr_label_long := cI21 ? scr_label_long + s21 + '\n' : scr_label_long
+scr_label_long := cI22 ? scr_label_long + s22 + '\n' : scr_label_long
+scr_label_long := cI23 ? scr_label_long + s23 + '\n' : scr_label_long
+scr_label_long := cI24 ? scr_label_long + s24 + '\n' : scr_label_long
+scr_label_long := cI25 ? scr_label_long + s25 + '\n' : scr_label_long
+scr_label_long := cI26 ? scr_label_long + s26 + '\n' : scr_label_long
+scr_label_long := cI27 ? scr_label_long + s27 + '\n' : scr_label_long
+scr_label_long := cI28 ? scr_label_long + s28 + '\n' : scr_label_long
+scr_label_long := cI29 ? scr_label_long + s29 + '\n' : scr_label_long
+scr_label_long := cI30 ? scr_label_long + s30 + '\n' : scr_label_long
+scr_label_long := cI31 ? scr_label_long + s31 + '\n' : scr_label_long
+scr_label_long := cI32 ? scr_label_long + s32 + '\n' : scr_label_long
+scr_label_long := cI33 ? scr_label_long + s33 + '\n' : scr_label_long
+scr_label_long := cI34 ? scr_label_long + s34 + '\n' : scr_label_long
+scr_label_long := cI35 ? scr_label_long + s35 + '\n' : scr_label_long
+scr_label_long := cI36 ? scr_label_long + s36 + '\n' : scr_label_long
+
+//scr_label_long := cI37 ? scr_label_long + tostring(v37, '#.## ') + s37 + '\n' : scr_label_long
+//scr_label_long := cI38 ? scr_label_long + tostring(v38, '#.## ') + s38 + '\n' : scr_label_long
+//scr_label_long := cI39 ? scr_label_long + tostring(v39, '#.## ') + s39 + '\n' : scr_label_long
+//scr_label_long := cI40 ? scr_label_long + tostring(v40, '#.## ') + s40 + '\n' : scr_label_long
+
+
+scr_label_short = '\n\nSHORT TRADES:' + '\n\n'
+scr_label_short := cII01 ? scr_label_short + s01 + '\n' : scr_label_short
+scr_label_short := cII02 ? scr_label_short + s02 + '\n' : scr_label_short
+scr_label_short := cII03 ? scr_label_short + s03 + '\n' : scr_label_short
+scr_label_short := cII04 ? scr_label_short + s04 + '\n' : scr_label_short
+scr_label_short := cII05 ? scr_label_short + s05 + '\n' : scr_label_short
+scr_label_short := cII06 ? scr_label_short + s06 + '\n' : scr_label_short
+scr_label_short := cII07 ? scr_label_short + s07 + '\n' : scr_label_short
+scr_label_short := cII08 ? scr_label_short + s08 + '\n' : scr_label_short
+scr_label_short := cII09 ? scr_label_short + s09 + '\n' : scr_label_short
+scr_label_short := cII10 ? scr_label_short + s10 + '\n' : scr_label_short
+scr_label_short := cII11 ? scr_label_short + s11 + '\n' : scr_label_short
+scr_label_short := cII12 ? scr_label_short + s12 + '\n' : scr_label_short
+scr_label_short := cII13 ? scr_label_short + s13 + '\n' : scr_label_short
+scr_label_short := cII14 ? scr_label_short + s14 + '\n' : scr_label_short
+scr_label_short := cII15 ? scr_label_short + s15 + '\n' : scr_label_short
+scr_label_short := cII16 ? scr_label_short + s16 + '\n' : scr_label_short
+scr_label_short := cII17 ? scr_label_short + s17 + '\n' : scr_label_short
+scr_label_short := cII18 ? scr_label_short + s18 + '\n' : scr_label_short
+scr_label_short := cII19 ? scr_label_short + s19 + '\n' : scr_label_short
+scr_label_short := cII20 ? scr_label_short + s20 + '\n' : scr_label_short
+scr_label_short := cII21 ? scr_label_short + s21 + '\n' : scr_label_short
+scr_label_short := cII22 ? scr_label_short + s22 + '\n' : scr_label_short
+scr_label_short := cII23 ? scr_label_short + s23 + '\n' : scr_label_short
+scr_label_short := cII24 ? scr_label_short + s24 + '\n' : scr_label_short
+scr_label_short := cII25 ? scr_label_short + s25 + '\n' : scr_label_short
+scr_label_short := cII26 ? scr_label_short + s26 + '\n' : scr_label_short
+scr_label_short := cII27 ? scr_label_short + s27 + '\n' : scr_label_short
+scr_label_short := cII28 ? scr_label_short + s28 + '\n' : scr_label_short
+scr_label_short := cII29 ? scr_label_short + s29 + '\n' : scr_label_short
+scr_label_short := cII30 ? scr_label_short + s30 + '\n' : scr_label_short
+scr_label_short := cII31 ? scr_label_short + s31 + '\n' : scr_label_short
+scr_label_short := cII32 ? scr_label_short + s32 + '\n' : scr_label_short
+scr_label_short := cII33 ? scr_label_short + s33 + '\n' : scr_label_short
+scr_label_short := cII34 ? scr_label_short + s34 + '\n' : scr_label_short
+scr_label_short := cII35 ? scr_label_short + s35 + '\n' : scr_label_short
+scr_label_short := cII36 ? scr_label_short + s36 + '\n' : scr_label_short
+
+//scr_label_short := cII37 ? scr_label_short + tostring(v37, '#.## ') + s37 + '\n' : scr_label_short
+//scr_label_short := cII38 ? scr_label_short + tostring(v38, '#.## ') + s38 + '\n' : scr_label_short
+//scr_label_short := cII39 ? scr_label_short + tostring(v39, '#.## ') + s39 + '\n' : scr_label_short
+//scr_label_short := cII40 ? scr_label_short + tostring(v40, '#.## ') + s40 + '\n' : scr_label_short
+
+
+
+scr_label = scr_label_long + scr_label_short
+
+// Plot Label
+xPosition = timenow + round(change(time)*1)
+yPosition = highest(24)
+labelColor = color.new(color.white, 100)
+
+lab_l = label.new(
+          xPosition, yPosition, scr_label, 
+          color=labelColor, 
+          textcolor=textColor, 
+          style =  label.style_label_left,
+          textalign=text.align_left,
+          xloc=xloc.bar_time, yloc = yloc.price)
+label.delete(lab_l[1])
+

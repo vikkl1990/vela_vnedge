@@ -1,0 +1,47 @@
+//@version=4
+study("Swing based support and resistance", shorttitle="Floating support and resistance by InvestYourAsset", overlay=true)
+
+// Input for swing length
+swingLength1 = input(50, title="Swing Length 1", minval=1)
+swingLength2 = input(50, title="Swing Length 2", minval=1)
+
+// Declare variables for the first level
+var supportLevel1 = close
+var bool uptrend1 = na
+var bool downtrend1 = na
+
+// Identify swings for the first level
+swingHigh1 = high > high[1] and high > high[2] ? high : na
+swingLow1 = low < low[1] and low < low[2] ? low : na
+
+// Determine trend direction for the first level
+uptrend1 := not na(swingHigh1)
+downtrend1 := not na(swingLow1)
+
+// Set support and resistance levels for the first level
+supportLevel1 := uptrend1 ? swingLow1 : downtrend1 ? swingHigh1 : supportLevel1
+
+// Plot support and resistance levels for the first level
+plot(supportLevel1, color=uptrend1 ? color.green : downtrend1 ? color.red : na, linewidth=2)
+
+// Plot buy and sell signals for the first level
+plotshape(series=close > supportLevel1 ? close : na, title="Buy Signal 1", color=color.green, style=shape.triangleup, location=location.belowbar)
+plotshape(series=close < supportLevel1 ? close : na, title="Sell Signal 1", color=color.red, style=shape.triangledown, location=location.abovebar)
+
+// Calculate support and resistance levels for the second level
+getLevels2(length) =>
+    var float level2 = na
+    swingHigh2 = high > high[1] and high > high[2] ? high : na
+    swingLow2 = low < low[1] and low < low[2] ? low : na
+    uptrend2 = not na(swingHigh2)
+    downtrend2 = not na(swingLow2)
+    level2 := uptrend2 ? swingLow2 : downtrend2 ? swingHigh2 : level2
+    level2
+
+// Plot support and resistance levels for the second level
+level2 = security(syminfo.tickerid, "D", getLevels2(swingLength2))
+plot(level2, color=color.purple, linewidth=2)
+
+// Plot buy and sell signals for the second level
+plotshape(series=close > level2 ? close : na, title="Buy Signal 2", color=color.green, style=shape.triangleup, location=location.belowbar)
+plotshape(series=close < level2 ? close : na, title="Sell Signal 2", color=color.red, style=shape.triangledown, location=location.abovebar)

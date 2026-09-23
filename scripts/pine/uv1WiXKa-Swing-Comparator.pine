@@ -1,0 +1,78 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Author: jarzido
+
+//@version=5
+indicator("Swing Comparator")
+
+cur = input.symbol(string("COINBASE:BTCUSD"), "Symbol 1")
+alt = input.symbol("COINBASE:ETHUSD", "Symbol 2")
+mal = input(title="Moving Average Length", defval=5)
+eMal = input(title = "Extended MA Length", defval = 42)
+stdMa = input(title="Stand Deviation MA Length", defval = 21)
+ccInput = input(title="Correlation Coefficient Input", defval =ohlc4)
+ccPeriod = input.int(title="Correlation Coefficient Period", defval =21, minval=2)
+ccmm = input.float(title="Correlation Coefficient Min/max +/-", defval = 1, minval = 0)
+clip = input(title="Clipping +/-", defval = 10)
+
+
+cSrc = request.security(cur, timeframe.period, ccInput)
+aSrc = request.security(alt, timeframe.period, ccInput)
+//get currency pair vals. Just a helper method because I'm not too familiar with pine script
+clophl(pair) => 
+    cl = request.security(pair, timeframe.period, close)
+    op = request.security(pair, timeframe.period, open)
+    h = request.security(pair, timeframe.period, high)
+    l = request.security(pair, timeframe.period, low)
+    [cl, op, h, l]
+
+
+//spread 
+sp(pair, lag=0) => 
+    [cl, op, h, l] = clophl(pair)
+    clop = 100 * math.abs(op - cl) / op
+    hl = 100 * h/l
+    [clop, hl]
+    
+//normalized standard deviation
+nStdBar(pair) =>
+    [cl, op, h, l] = clophl(pair)
+    float[] vals = array.from(cl[0], op[0], h[0], l[0])
+    array.stdev(vals)/array.avg(vals)
+
+fun(ser, len) => 
+    val = ta.ema(ser, len) * 0.15
+    if val < -clip
+        -clip
+    else if val > clip
+        clip
+    else
+        val
+
+
+[apCur, hlCur]= sp(cur)
+[apAlt, hlAlt] = sp(alt)
+stdev = nStdBar(cur) - nStdBar(alt)
+
+
+opcl = fun(apCur - apAlt, mal)
+rhl = fun(hlCur - hlAlt, mal) 
+ehlma = fun(hlCur - hlAlt, eMal)
+sdevMa = fun(stdev, stdMa) * 200
+
+
+c = ta.correlation(cSrc, aSrc, ccPeriod) * ccmm
+
+
+plot(opcl, title="Difference OP-CL", color=#9e9121, style=plot.style_area)
+plot(rhl, title="Ratio H/L", color=color.new(color.purple, 50), style=plot.style_area)
+
+
+plot(ehlma, title="Extended H-L MA", color=#1fff3b, linewidth=2, trackprice=true)
+plot(sdevMa, title="Standard Deviation", color=color.white, linewidth=2, trackprice=true)
+ 
+
+
+plot(c, title="Correlation Coefficient", color=c > 0.975 * ccmm ? #1dff00 : c < -0.975 * ccmm? color.red : color.blue, linewidth=2, trackprice=false)
+hline(0, title="Zero")
+hline(1 * ccmm, title="CC Max Line", color=color.gray, linestyle=hline.style_dashed)
+hline(-1 * ccmm, title="CC Min Line", color=color.gray, linestyle=hline.style_dashed)

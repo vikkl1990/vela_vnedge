@@ -1,0 +1,24 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AstrideUnicorn
+
+//@version=5
+indicator("Swing Oscillator [AstrideUnicorn]", overlay=false)
+
+LENGTH = input(7, title="Period")
+
+bar_range = close-open
+bar_range_ema = ta.ema(bar_range, LENGTH)
+
+treshold= ta.ema(math.abs(bar_range_ema),10*LENGTH)
+
+conditional_color = (bar_range_ema > treshold)?color.green:(bar_range_ema > 0.5*treshold)?
+   color.new(color.green,55):(bar_range_ema < -treshold)?color.red:(bar_range_ema < -0.5*treshold)?
+   color.new(color.red,55):color.blue
+average_return = plot(bar_range_ema,color=conditional_color) 
+zero_line = plot(0,color = conditional_color)
+fill(average_return,zero_line, color = conditional_color)
+plot(treshold, color=color.purple)
+plot(-treshold, color=color.purple)
+plot(0.5*treshold, color=color.purple)
+plot(-0.5*treshold, color=color.purple)
+

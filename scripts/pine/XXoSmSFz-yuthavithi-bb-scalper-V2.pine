@@ -1,0 +1,41 @@
+study(title="yuthavithi bb scalper V2", shorttitle="YUTHAVITHI BB Scalper V2", overlay=true)
+atrFast = input(20, minval = 1, title = "ATR Fast")
+atrSlow = input(50, minval = 1, title = "ATR Slow")
+bandSmooth = input(1, minval = 1, title = "BB Band Smooth")
+len = input(20, minval=1, title="Length")
+multiplier = input(2, minval=1, title="multiplier")
+src = input(close, title="Source")
+bbMid = sma(src, len)
+
+
+atrFastVal = atr(atrFast)
+atrSlowVal = atr(atrSlow)
+stdOut = stdev(close, len)
+bbUpper = bbMid + stdOut * multiplier
+bbLower = bbMid - stdOut * multiplier
+bbUpper2 = sma(bbUpper, bandSmooth)
+bbLower2 = sma(bbLower, bandSmooth)
+
+trending = atrFastVal > atrSlowVal
+
+buy = trending and (bbMid > bbMid[1]) and (bbUpper > bbUpper[1]) and (bbLower < bbLower[1])
+sell = trending and (bbMid < bbMid[1]) and (bbUpper > bbUpper[1]) and (bbLower < bbLower[1])
+
+closeBuy =   (bbMid > bbMid[1]) and (bbLower2 > bbLower2[1]) 
+closeSell =  (bbMid < bbMid[1]) and (bbUpper2 < bbUpper2[1]) 
+
+plot(bbMid, color=red)
+plot(bbUpper, color = (atrFastVal > atrSlowVal ? red : silver))
+plot(bbLower, color = (atrFastVal > atrSlowVal ? red : silver))
+
+plotshape((sell), color=red, style=shape.arrowdown, location=location.abovebar)
+plotshape((buy ), color=green, style=shape.arrowup, location=location.belowbar)
+
+plotshape(closeSell, color=purple, style=shape.arrowup, location=location.belowbar)
+plotshape(closeBuy, color=blue, style=shape.arrowdown, location=location.abovebar)
+
+plotshape((sell and sell[1] == false), color=red, style=shape.arrowdown, location=location.abovebar, text = "Sell")
+plotshape((buy and buy[1] == false ), color=green, style=shape.arrowup, location=location.belowbar, text = "Buy")
+
+plotshape(closeSell and closeSell[1] == false, color=purple, style=shape.arrowup, location=location.belowbar, text = "ClsSell")
+plotshape(closeBuy and closeBuy[1] == false, color=blue, style=shape.arrowdown, location=location.abovebar, text = "ClsBuy")

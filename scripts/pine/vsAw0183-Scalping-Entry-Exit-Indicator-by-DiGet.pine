@@ -1,0 +1,93 @@
+//@version=6
+indicator("Scalping Entry/Exit Indicator by DiGet", overlay=true, shorttitle="ScalpX")
+
+// ========= INPUT PARAMETERS =========
+rrRatio   = input.float(2.0, title="Risk-Reward Ratio", step=0.1)
+atrPeriod = input.int(14, title="ATR Period", minval=1)
+lookback  = input.int(20, title="Pattern Lookback (bars)", minval=5)
+
+// ========= ATR CALCULATION =========
+atrValue = ta.atr(atrPeriod)
+
+// ========= CANDLE PARAMETERS CALCULATION =========
+body      = math.abs(close - open)
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+
+// ========= BULLISH PATTERNS =========
+// Bullish Hammer: small body, long lower wick, small upper wick
+bullishHammer = body > 0 and (lowerWick >= 2 * body) and (upperWick <= 0.25 * body)
+// Bullish Engulfing: current candle bullish, previous candle bearish, and current candle’s body completely engulfs the previous candle’s body
+bullishEngulfing = (close > open) and (close[1] < open[1]) and (open < close[1]) and (close > open[1])
+// Bullish Morning Star (simplified): three candles – first bearish, second with a small body, third bullish,
+// with the third candle’s close above the midpoint of the first candle.
+smallBody = math.abs(close[1] - open[1]) < (high[1] - low[1]) * 0.5
+bullishMorningStar = (close[2] < open[2]) and smallBody and (close > open) and (close > (open[2] + close[2]) / 2)
+
+// ========= BEARISH PATTERNS =========
+// Bearish Shooting Star: small body, long upper wick, small lower wick
+bearishShootingStar = body > 0 and (upperWick >= 2 * body) and (lowerWick <= 0.25 * body)
+// Bearish Engulfing: current candle bearish, previous candle bullish, and current candle’s body completely engulfs the previous candle’s body
+bearishEngulfing = (close < open) and (close[1] > open[1]) and (open > close[1]) and (close < open[1])
+// Bearish Evening Star (simplified): three candles – first bullish, second with a small body, third bearish,
+// with the third candle’s close below the midpoint of the first candle.
+smallBodyEven = math.abs(close[1] - open[1]) < (high[1] - low[1]) * 0.5
+bearishEveningStar = (close[2] > open[2]) and smallBodyEven and (close < open) and (close < (open[2] + close[2]) / 2)
+
+// ========= "HEAD AND SHOULDERS" (simplified) =========
+lb   = lookback
+half = int(math.floor(lb / 2))
+leftPeak  = ta.highest(high, half)
+headPeak  = ta.highest(high, lb)
+rightPeak = ta.highest(high, half)[half]
+shouldersEqual = math.abs(leftPeak - rightPeak) / math.min(leftPeak, rightPeak) < 0.05
+isHeadAndShoulders = (headPeak > leftPeak * 1.02 and headPeak > rightPeak * 1.02 and shouldersEqual)
+
+// ========= COMBINED SIGNALS =========
+buySignal  = bullishHammer or bullishEngulfing or bullishMorningStar
+sellSignal = bearishShootingStar or bearishEngulfing or bearishEveningStar or isHeadAndShoulders
+
+// ========= SL AND TP LEVELS CALCULATION =========
+// For BUY: SL is below the price, TP is above
+buySL = close - atrValue
+buyTP = close + rrRatio * atrValue
+// For SELL: SL is above the price, TP is below
+sellSL = close + atrValue
+sellTP = close - rrRatio * atrValue
+
+// ========= PATTERN TEXT FORMATION =========
+buyPatternText = (bullishHammer ? "Bullish Hammer " : "") +
+                 (bullishEngulfing ? "Bullish Engulfing " : "") +
+                 (bullishMorningStar ? "Bullish Morning Star " : "")
+
+sellPatternText = (bearishShootingStar ? "Bearish Shooting Star " : "") +
+                  (bearishEngulfing ? "Bearish Engulfing " : "") +
+                  (bearishEveningStar ? "Bearish Evening Star " : "") +
+                  (isHeadAndShoulders ? "Head & Shoulders" : "")
+
+// ========= CHART BACKGROUND =========
+bgColor = buySignal ? color.new(color.green, 90) : sellSignal ? color.new(color.red, 90) : na
+bgcolor(bgColor)
+
+// ========= DISPLAYING LABELS AND LINES =========
+if buySignal
+    label.new(bar_index, low, 
+      text = "BUY\n" + buyPatternText + "\nSL: " + str.tostring(buySL, format.mintick) + "\nTP: " + str.tostring(buyTP, format.mintick), 
+      style = label.style_label_up, color = color.new(color.green, 0), textcolor = color.white, size = size.small)
+    line.new(bar_index, buySL, bar_index + 5, buySL, color = color.new(color.green, 0), style = line.style_dotted, width = 3)
+    line.new(bar_index, buyTP, bar_index + 5, buyTP, color = color.new(color.green, 0), style = line.style_dotted, width = 3)
+    
+if sellSignal
+    label.new(bar_index, high, 
+      text = "SELL\n" + sellPatternText + "\nSL: " + str.tostring(sellSL, format.mintick) + "\nTP: " + str.tostring(sellTP, format.mintick), 
+      style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.small)
+    line.new(bar_index, sellSL, bar_index + 5, sellSL, color = color.new(color.red, 0), style = line.style_dotted, width = 3)
+    line.new(bar_index, sellTP, bar_index + 5, sellTP, color = color.new(color.red, 0), style = line.style_dotted, width = 3)
+
+// ========= ALERT CONDITIONS =========
+alertcondition(buySignal,  title="Buy Signal",  message="Scalping Indicator: BUY signal")
+alertcondition(sellSignal, title="Sell Signal", message="Scalping Indicator: SELL signal")
+
+// ========= ADDITIONAL MARKERS =========
+plotshape(buySignal, title="Buy Marker",  location=location.belowbar, color=color.green, style=shape.arrowup, size=size.tiny)
+plotshape(sellSignal, title="Sell Marker", location=location.abovebar, color=color.red,   style=shape.arrowdown, size=size.tiny)

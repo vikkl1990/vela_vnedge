@@ -1,0 +1,610 @@
+//@version=6
+indicator("MTF PB EMA Strategy — NQ1! 30S Scalp", shorttitle="MTF PB EMA", overlay=true, max_lines_count=100, max_labels_count=100)
+
+// ============================================================
+// INPUTS
+// ============================================================
+
+// General
+i_period    = input.int(200,    "EMA Period",                  group="General")
+i_show_tbl  = input.bool(true,  "Show Dashboard",              group="General")
+i_show_sigs = input.bool(true,  "Show Signals on Chart",       group="General")
+i_show_tp   = input.bool(true,  "Show TP/SL Lines",            group="General")
+i_show_bg   = input.bool(false, "Color Background",            group="General")
+i_tbl_pos   = input.string("Bottom Right", "Table Position",   group="General", options=["Top Right","Top Left","Bottom Right","Bottom Left"])
+i_tbl_size  = input.string("Small",        "Table Size",       group="General", options=["Tiny","Small","Normal","Large"])
+i_line_len  = input.int(40, "TP/SL Line Length (bars)",        group="General", minval=5, maxval=200)
+
+// TP/SL — 30S Scalp
+sl_30s  = input.float(12.0,  "Stop Loss (pts)",  group="TP/SL Settings — 30S Scalp")
+tp1_30s = input.float(25.0,  "TP1 (pts)",        group="TP/SL Settings — 30S Scalp")
+tp2_30s = input.float(54.0,  "TP2 (pts)",        group="TP/SL Settings — 30S Scalp")
+tp3_30s = input.float(70.0,  "TP3 (pts)",        group="TP/SL Settings — 30S Scalp")
+
+// TP/SL — 1m Runner
+sl_1m   = input.float(15.0,  "Stop Loss (pts)",  group="TP/SL Settings — 1m Runner")
+tp1_1m  = input.float(50.0,  "TP1 (pts)",        group="TP/SL Settings — 1m Runner")
+tp2_1m  = input.float(100.0, "TP2 (pts)",        group="TP/SL Settings — 1m Runner")
+tp3_1m  = input.float(120.0, "TP3 (pts)",        group="TP/SL Settings — 1m Runner")
+
+// Above Band Thresholds (P75 | P90)
+t30s_75  = input.float(54.0,  "30S P75 Above",   group="Above Band Thresholds (P75|P90)")
+t30s_90  = input.float(70.0,  "30S P90 Above",   group="Above Band Thresholds (P75|P90)")
+t1m_75   = input.float(100.0, "1m  P75 Above",   group="Above Band Thresholds (P75|P90)")
+t1m_90   = input.float(120.0, "1m  P90 Above",   group="Above Band Thresholds (P75|P90)")
+t5m_75   = input.float(115.0, "5m  P75 Above",   group="Above Band Thresholds (P75|P90)")
+t5m_90   = input.float(206.0, "5m  P90 Above",   group="Above Band Thresholds (P75|P90)")
+t15m_75  = input.float(263.0, "15m P75 Above",   group="Above Band Thresholds (P75|P90)")
+t15m_90  = input.float(346.0, "15m P90 Above",   group="Above Band Thresholds (P75|P90)")
+
+// Below Band Thresholds (P75 | P90)
+b30s_75  = input.float(54.0,  "30S P75 Below",   group="Below Band Thresholds (P75|P90)")
+b30s_90  = input.float(70.0,  "30S P90 Below",   group="Below Band Thresholds (P75|P90)")
+b1m_75   = input.float(100.0, "1m  P75 Below",   group="Below Band Thresholds (P75|P90)")
+b1m_90   = input.float(120.0, "1m  P90 Below",   group="Below Band Thresholds (P75|P90)")
+b5m_75   = input.float(145.0, "5m  P75 Below",   group="Below Band Thresholds (P75|P90)")
+b5m_90   = input.float(218.0, "5m  P90 Below",   group="Below Band Thresholds (P75|P90)")
+b15m_75  = input.float(302.0, "15m P75 Below",   group="Below Band Thresholds (P75|P90)")
+b15m_90  = input.float(440.0, "15m P90 Below",   group="Below Band Thresholds (P75|P90)")
+
+// ============================================================
+// EMA BAND CALCULATIONS — ALL via request.security()
+// ============================================================
+
+[ema_30s_top, ema_30s_bot] = request.security(syminfo.tickerid, "30S",  [ta.ema(high, i_period), ta.ema(close, i_period)], lookahead=barmerge.lookahead_off)
+[ema_1m_top,  ema_1m_bot]  = request.security(syminfo.tickerid, "1",    [ta.ema(high, i_period), ta.ema(close, i_period)], lookahead=barmerge.lookahead_off)
+[ema_5m_top,  ema_5m_bot]  = request.security(syminfo.tickerid, "5",    [ta.ema(high, i_period), ta.ema(close, i_period)], lookahead=barmerge.lookahead_off)
+[ema_15m_top, ema_15m_bot] = request.security(syminfo.tickerid, "15",   [ta.ema(high, i_period), ta.ema(close, i_period)], lookahead=barmerge.lookahead_off)
+
+// ============================================================
+// DISTANCE FUNCTION
+// ============================================================
+
+f_dist(src, top, bot) =>
+    float d = 0.0
+    if src > top
+        d := src - top
+    else if src < bot
+        d := src - bot
+    d
+
+// Distance computations
+d30s = f_dist(close, ema_30s_top, ema_30s_bot)
+d1m  = f_dist(close, ema_1m_top,  ema_1m_bot)
+d5m  = f_dist(close, ema_5m_top,  ema_5m_bot)
+d15m = f_dist(close, ema_15m_top, ema_15m_bot)
+
+// ============================================================
+// ZONE FUNCTION
+// ============================================================
+
+f_zone(d, p75a, p90a, p75b, p90b) =>
+    int z = 0
+    if d > p90a
+        z := 3
+    else if d > p75a
+        z := 2
+    else if d > 0.0
+        z := 1
+    else if d < -p90b
+        z := -3
+    else if d < -p75b
+        z := -2
+    else if d < 0.0
+        z := -1
+    z
+
+// Zone computations
+z30s = f_zone(d30s, t30s_75, t30s_90, b30s_75, b30s_90)
+z1m  = f_zone(d1m,  t1m_75,  t1m_90,  b1m_75,  b1m_90)
+z5m  = f_zone(d5m,  t5m_75,  t5m_90,  b5m_75,  b5m_90)
+z15m = f_zone(d15m, t15m_75, t15m_90, b15m_75, b15m_90)
+
+// ============================================================
+// BIAS (5m and 15m only)
+// ============================================================
+
+int bias_int = 0
+if d5m > 0.0 and d15m > 0.0
+    if d5m < t5m_75 and d15m < t15m_75
+        bias_int := 2
+    else
+        bias_int := 1
+else if d5m < 0.0 and d15m < 0.0
+    if math.abs(d5m) < b5m_75 and math.abs(d15m) < b15m_75
+        bias_int := -2
+    else
+        bias_int := -1
+
+bool bias_too_long  = d5m > t5m_90 or d15m > t15m_90
+bool bias_too_short = d5m < -b5m_90 or d15m < -b15m_90
+
+string bias_str = ""
+color  bias_col = color.gray
+if bias_int == 2
+    bias_str := "BULL — Above 5m & 15m  |  OK to LONG"
+    bias_col := color.lime
+else if bias_int == 1
+    bias_str := "BULL CAUTION — Extended above 5m/15m  |  Reduce size"
+    bias_col := color.yellow
+else if bias_int == 0
+    bias_str := "NEUTRAL — Mixed TF alignment"
+    bias_col := color.gray
+else if bias_int == -1
+    bias_str := "BEAR CAUTION — Extended below 5m/15m  |  Reduce size"
+    bias_col := color.yellow
+else if bias_int == -2
+    bias_str := "BEAR — Below 5m & 15m  |  OK to SHORT"
+    bias_col := color.orange
+
+// ============================================================
+// SIGNAL STATE VARIABLES
+// ============================================================
+
+var bool st_30s_L = false
+var bool st_30s_S = false
+var bool st_1m_L  = false
+var bool st_1m_S  = false
+
+// ============================================================
+// BAR QUALITY VARIABLES
+// ============================================================
+
+bool  bar_bull   = close > open
+bool  bar_bear   = close < open
+float bar_range  = high - low
+float avg_range  = ta.ema(bar_range, 20)
+bool  strong_bar = bar_range > avg_range * 1.4
+
+// ============================================================
+// STATE MACHINE UPDATES
+// ============================================================
+
+// 30S Long state
+if d30s <= 0.0 and d30s[1] > 0.0
+    st_30s_L := true
+if d30s < -b30s_90
+    st_30s_L := false
+
+// 30S Short state
+if d30s >= 0.0 and d30s[1] < 0.0
+    st_30s_S := true
+if d30s > t30s_90
+    st_30s_S := false
+
+// 1m Long state
+if d1m <= 0.0 and d1m[1] > 0.0
+    st_1m_L := true
+if d1m < -b1m_90
+    st_1m_L := false
+
+// 1m Short state
+if d1m >= 0.0 and d1m[1] < 0.0
+    st_1m_S := true
+if d1m > t1m_90
+    st_1m_S := false
+
+// ============================================================
+// SIGNAL CONDITIONS
+// ============================================================
+
+// 30S Long
+bool retest_30s_L = st_30s_L and close > ema_30s_top and close[1] <= ema_30s_top and bar_bull
+bool push_30s_L   = close > ema_30s_top and close[1] <= ema_30s_top and bar_bull and strong_bar
+bool sig_30s_long = (retest_30s_L or push_30s_L) and not bias_too_long and d1m >= -b1m_75
+
+// 30S Short
+bool retest_30s_S  = st_30s_S and close < ema_30s_bot and close[1] >= ema_30s_bot and bar_bear
+bool push_30s_S    = close < ema_30s_bot and close[1] >= ema_30s_bot and bar_bear and strong_bar
+bool sig_30s_short = (retest_30s_S or push_30s_S) and not bias_too_short and d1m <= b1m_75
+
+// 1m Runner Long
+bool retest_1m_L = st_1m_L and close > ema_1m_top and close[1] <= ema_1m_top and bar_bull
+bool push_1m_L   = close > ema_1m_top and close[1] <= ema_1m_top and bar_bull and strong_bar
+bool sig_1m_long = (retest_1m_L or push_1m_L) and not bias_too_long
+
+// 1m Runner Short
+bool retest_1m_S   = st_1m_S and close < ema_1m_bot and close[1] >= ema_1m_bot and bar_bear
+bool push_1m_S     = close < ema_1m_bot and close[1] >= ema_1m_bot and bar_bear and strong_bar
+bool sig_1m_short  = (retest_1m_S or push_1m_S) and not bias_too_short
+
+// ============================================================
+// STATE RESETS AFTER SIGNALS FIRE
+// ============================================================
+
+if sig_30s_long
+    st_30s_L := false
+if sig_30s_short
+    st_30s_S := false
+if sig_1m_long
+    st_1m_L := false
+if sig_1m_short
+    st_1m_S := false
+
+// ============================================================
+// RUNNER EXIT SIGNALS
+// ============================================================
+
+bool sig_runner_L_exit = d1m < 0.0 and d1m[1] >= 0.0
+bool sig_runner_S_exit = d1m > 0.0 and d1m[1] <= 0.0
+
+// ============================================================
+// TP/SL LEVEL CALCULATIONS
+// ============================================================
+
+// 30S Long
+float entry_30s_L  = ema_30s_top
+float sl_30s_L     = ema_30s_top - sl_30s
+float tp1_30s_L    = ema_30s_top + tp1_30s
+float tp2_30s_L    = ema_30s_top + tp2_30s
+float tp3_30s_L    = ema_30s_top + tp3_30s
+float run_sl_30s_L = ema_1m_bot
+
+// 30S Short
+float entry_30s_S  = ema_30s_bot
+float sl_30s_S     = ema_30s_bot + sl_30s
+float tp1_30s_S    = ema_30s_bot - tp1_30s
+float tp2_30s_S    = ema_30s_bot - tp2_30s
+float tp3_30s_S    = ema_30s_bot - tp3_30s
+float run_sl_30s_S = ema_1m_top
+
+// 1m Runner Long
+float entry_1m_L = ema_1m_top
+float sl_1m_L    = ema_1m_top - sl_1m
+float tp1_1m_L   = ema_1m_top + tp1_1m
+float tp2_1m_L   = ema_1m_top + tp2_1m
+float tp3_1m_L   = ema_1m_top + tp3_1m
+
+// 1m Runner Short
+float entry_1m_S = ema_1m_bot
+float sl_1m_S    = ema_1m_bot + sl_1m
+float tp1_1m_S   = ema_1m_bot - tp1_1m
+float tp2_1m_S   = ema_1m_bot - tp2_1m
+float tp3_1m_S   = ema_1m_bot - tp3_1m
+
+// ============================================================
+// LINE/LABEL ARRAYS — declared before functions that use them
+// ============================================================
+
+var line[]  act_lines = array.new<line>()
+var label[] act_lbls  = array.new<label>()
+
+// ============================================================
+// TRADE DISPLAY FUNCTIONS
+// ============================================================
+
+f_clear_trade() =>
+    for ln in act_lines
+        line.delete(ln)
+    array.clear(act_lines)
+    for lb in act_lbls
+        label.delete(lb)
+    array.clear(act_lbls)
+
+f_level(price, clr, sty, txt) =>
+    ln = line.new(bar_index, price, bar_index + i_line_len, price, color=clr, style=sty, width=1)
+    lb = label.new(bar_index + i_line_len, price, txt, style=label.style_label_left, color=color.new(clr, 72), textcolor=clr, size=size.tiny)
+    array.push(act_lines, ln)
+    array.push(act_lbls, lb)
+
+// ============================================================
+// ATR FOR LABEL OFFSET
+// ============================================================
+
+atr14 = ta.atr(14)
+
+// ============================================================
+// SIGNAL LABELS AND LINE DRAWING
+// ============================================================
+
+if (i_show_sigs or i_show_tp) and barstate.isconfirmed
+
+    // --- 30S LONG ---
+    if sig_30s_long
+        if i_show_sigs
+            _e      = str.tostring(entry_30s_L,  "#,##0.0")
+            _sl     = str.tostring(sl_30s_L,     "#,##0.0")
+            _t1     = str.tostring(tp1_30s_L,    "#,##0.0")
+            _t2     = str.tostring(tp2_30s_L,    "#,##0.0")
+            _t3     = str.tostring(tp3_30s_L,    "#,##0.0")
+            _slp    = str.tostring(sl_30s,       "#,##0.0")
+            _t1p    = str.tostring(tp1_30s,      "#,##0.0")
+            _t2p    = str.tostring(tp2_30s,      "#,##0.0")
+            _t3p    = str.tostring(tp3_30s,      "#,##0.0")
+            _txt    = "▲  30S SCALP  LONG\nEntry ~" + _e + "\nSL:   " + _sl + "  (-" + _slp + ")\nTP1:  " + _t1 + "  (+" + _t1p + ")\nTP2:  " + _t2 + "  (+" + _t2p + ")\nTP3:  " + _t3 + "  (+" + _t3p + ")\nRunner SL → 1m bot close"
+            label.new(bar_index, low - atr14 * 1.2, _txt, style=label.style_label_up, color=color.green, textcolor=color.white, size=size.small)
+        if i_show_tp
+            f_clear_trade()
+            f_level(sl_30s_L,     color.red,                    line.style_dashed, "SL")
+            f_level(tp1_30s_L,    color.new(color.green, 20),   line.style_dashed, "TP1")
+            f_level(tp2_30s_L,    color.new(color.green, 10),   line.style_dashed, "TP2")
+            f_level(tp3_30s_L,    color.lime,                   line.style_dashed, "TP3")
+            f_level(run_sl_30s_L, color.yellow,                 line.style_dotted, "RUNNER SL")
+
+    // --- 30S SHORT ---
+    if sig_30s_short
+        if i_show_sigs
+            _e      = str.tostring(entry_30s_S,  "#,##0.0")
+            _sl     = str.tostring(sl_30s_S,     "#,##0.0")
+            _t1     = str.tostring(tp1_30s_S,    "#,##0.0")
+            _t2     = str.tostring(tp2_30s_S,    "#,##0.0")
+            _t3     = str.tostring(tp3_30s_S,    "#,##0.0")
+            _slp    = str.tostring(sl_30s,       "#,##0.0")
+            _t1p    = str.tostring(tp1_30s,      "#,##0.0")
+            _t2p    = str.tostring(tp2_30s,      "#,##0.0")
+            _t3p    = str.tostring(tp3_30s,      "#,##0.0")
+            _txt    = "▼  30S SCALP  SHORT\nEntry ~" + _e + "\nSL:   " + _sl + "  (+" + _slp + ")\nTP1:  " + _t1 + "  (-" + _t1p + ")\nTP2:  " + _t2 + "  (-" + _t2p + ")\nTP3:  " + _t3 + "  (-" + _t3p + ")\nRunner SL → 1m top close"
+            label.new(bar_index, high + atr14 * 1.2, _txt, style=label.style_label_down, color=color.red, textcolor=color.white, size=size.small)
+        if i_show_tp
+            f_clear_trade()
+            f_level(sl_30s_S,     color.red,                    line.style_dashed, "SL")
+            f_level(tp1_30s_S,    color.new(color.green, 20),   line.style_dashed, "TP1")
+            f_level(tp2_30s_S,    color.new(color.green, 10),   line.style_dashed, "TP2")
+            f_level(tp3_30s_S,    color.lime,                   line.style_dashed, "TP3")
+            f_level(run_sl_30s_S, color.yellow,                 line.style_dotted, "RUNNER SL")
+
+    // --- 1m RUNNER LONG ---
+    if sig_1m_long
+        if i_show_sigs
+            _e      = str.tostring(entry_1m_L,   "#,##0.0")
+            _sl     = str.tostring(sl_1m_L,      "#,##0.0")
+            _t1     = str.tostring(tp1_1m_L,     "#,##0.0")
+            _t2     = str.tostring(tp2_1m_L,     "#,##0.0")
+            _t3     = str.tostring(tp3_1m_L,     "#,##0.0")
+            _slp    = str.tostring(sl_1m,        "#,##0.0")
+            _t1p    = str.tostring(tp1_1m,       "#,##0.0")
+            _t2p    = str.tostring(tp2_1m,       "#,##0.0")
+            _t3p    = str.tostring(tp3_1m,       "#,##0.0")
+            _txt    = "▲  1m RUNNER  LONG\nEntry ~" + _e + "\nSL:   " + _sl + "  (-" + _slp + ")\nTP1:  " + _t1 + "  (+" + _t1p + ")\nTP2:  " + _t2 + "  (+" + _t2p + ")\nTP3:  " + _t3 + "  (+" + _t3p + ")\nRunner SL → 1m bot close"
+            label.new(bar_index, low - atr14 * 2.0, _txt, style=label.style_label_up, color=color.teal, textcolor=color.white, size=size.normal)
+        if i_show_tp
+            f_clear_trade()
+            f_level(sl_1m_L,  color.red,                  line.style_dashed, "SL")
+            f_level(tp1_1m_L, color.new(color.green, 20), line.style_dashed, "TP1")
+            f_level(tp2_1m_L, color.new(color.green, 10), line.style_dashed, "TP2")
+            f_level(tp3_1m_L, color.lime,                 line.style_dashed, "TP3")
+            f_level(ema_1m_bot, color.yellow,              line.style_dotted, "RUNNER SL")
+
+    // --- 1m RUNNER SHORT ---
+    if sig_1m_short
+        if i_show_sigs
+            _e      = str.tostring(entry_1m_S,   "#,##0.0")
+            _sl     = str.tostring(sl_1m_S,      "#,##0.0")
+            _t1     = str.tostring(tp1_1m_S,     "#,##0.0")
+            _t2     = str.tostring(tp2_1m_S,     "#,##0.0")
+            _t3     = str.tostring(tp3_1m_S,     "#,##0.0")
+            _slp    = str.tostring(sl_1m,        "#,##0.0")
+            _t1p    = str.tostring(tp1_1m,       "#,##0.0")
+            _t2p    = str.tostring(tp2_1m,       "#,##0.0")
+            _t3p    = str.tostring(tp3_1m,       "#,##0.0")
+            _txt    = "▼  1m RUNNER  SHORT\nEntry ~" + _e + "\nSL:   " + _sl + "  (+" + _slp + ")\nTP1:  " + _t1 + "  (-" + _t1p + ")\nTP2:  " + _t2 + "  (-" + _t2p + ")\nTP3:  " + _t3 + "  (-" + _t3p + ")\nRunner SL → 1m top close"
+            label.new(bar_index, high + atr14 * 2.0, _txt, style=label.style_label_down, color=color.new(#7B2FBE, 0), textcolor=color.white, size=size.normal)
+        if i_show_tp
+            f_clear_trade()
+            f_level(sl_1m_S,  color.red,                  line.style_dashed, "SL")
+            f_level(tp1_1m_S, color.new(color.green, 20), line.style_dashed, "TP1")
+            f_level(tp2_1m_S, color.new(color.green, 10), line.style_dashed, "TP2")
+            f_level(tp3_1m_S, color.lime,                 line.style_dashed, "TP3")
+            f_level(ema_1m_top, color.yellow,              line.style_dotted, "RUNNER SL")
+
+    // --- RUNNER EXIT LABELS ---
+    if i_show_sigs
+        if sig_runner_L_exit
+            label.new(bar_index, low - atr14 * 0.8, "RUNNER EXIT\n1m band lost", style=label.style_label_up, color=color.orange, textcolor=color.white, size=size.small)
+
+        if sig_runner_S_exit
+            label.new(bar_index, high + atr14 * 0.8, "RUNNER EXIT\n1m reclaimed", style=label.style_label_down, color=color.orange, textcolor=color.white, size=size.small)
+
+// ============================================================
+// BACKGROUND
+// ============================================================
+
+f_bg() =>
+    color c = na
+    if z30s == 3
+        c := color.new(color.red, 91)
+    else if z30s == 2
+        c := color.new(color.orange, 93)
+    else if z30s == 0
+        c := color.new(color.blue, 90)
+    else if z30s == -1
+        c := color.new(color.teal, 90)
+    else if z30s == -3
+        c := color.new(color.red, 91)
+    c
+
+bgcolor(i_show_bg ? f_bg() : na, title="30S Zone BG")
+
+// ============================================================
+// TABLE HELPER FUNCTIONS
+// ============================================================
+
+f_sz() =>
+    simple string s = i_tbl_size
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Large"  => size.large
+        => size.normal
+
+f_zcol(z) =>
+    color c = color.gray
+    if z == 3
+        c := color.red
+    else if z == 2
+        c := color.orange
+    else if z == 1
+        c := color.lime
+    else if z == 0
+        c := color.aqua
+    else if z == -1
+        c := color.teal
+    else if z == -2
+        c := color.aqua
+    else if z == -3
+        c := color.red
+    c
+
+f_zbg(z) =>
+    color c = color.new(color.gray, 86)
+    if z == 3
+        c := color.new(color.red, 82)
+    else if z == 2
+        c := color.new(color.orange, 82)
+    else if z == 1
+        c := color.new(color.lime, 84)
+    else if z == 0
+        c := color.new(color.blue, 84)
+    else if z == -1
+        c := color.new(color.teal, 84)
+    else if z == -2
+        c := color.new(color.aqua, 84)
+    else if z == -3
+        c := color.new(color.red, 82)
+    c
+
+f_zlbl(z) =>
+    string s = "     "
+    if z == 3
+        s := " SELL "
+    else if z == 2
+        s := " TRIM "
+    else if z == 1
+        s := " HOLD "
+    else if z == 0
+        s := "ENTRY "
+    else if z == -1
+        s := " BUY  "
+    else if z == -2
+        s := "COVER "
+    else if z == -3
+        s := "SHORT "
+    s
+
+f_meter(d_abs, p90) =>
+    float ratio  = p90 > 0.0 ? math.min(d_abs / p90, 1.0) : 0.0
+    int   filled = math.round(ratio * 5)
+    string m = ""
+    if filled >= 1
+        m := m + "█"
+    else
+        m := m + "░"
+    if filled >= 2
+        m := m + "█"
+    else
+        m := m + "░"
+    if filled >= 3
+        m := m + "█"
+    else
+        m := m + "░"
+    if filled >= 4
+        m := m + "█"
+    else
+        m := m + "░"
+    if filled >= 5
+        m := m + "█"
+    else
+        m := m + "░"
+    m
+
+// ============================================================
+// TABLE POSITION HELPER
+// ============================================================
+
+f_tpos() =>
+    simple string p = i_tbl_pos
+    switch p
+        "Top Right"   => position.top_right
+        "Top Left"    => position.top_left
+        "Bottom Left" => position.bottom_left
+        => position.bottom_right
+
+// ============================================================
+// TABLE DECLARATION
+// ============================================================
+
+var table tbl = table.new(f_tpos(), 9, 8, bgcolor=color.new(color.black, 60), border_color=color.new(color.gray, 60), border_width=1, frame_color=color.new(color.gray, 40), frame_width=1)
+
+// ============================================================
+// f_row FUNCTION
+// ============================================================
+
+f_row(row, tf_lbl, role_lbl, top, bot, d, z, p75a, p90a, p75b, p90b) =>
+    float d_abs    = math.abs(d)
+    float pct_away = close != 0.0 ? (d / close) * 100.0 : 0.0
+    string sign    = d >= 0.0 ? "+" : ""
+    string pts_str = sign + str.tostring(d, "#,##0.0")
+    string pct_str = sign + str.tostring(pct_away, "#,##0.00") + "%"
+    float  p90_ref = d >= 0.0 ? p90a : p90b
+    string meter   = f_meter(d_abs, p90_ref)
+    string p75_str = str.tostring(d >= 0.0 ? p75a : p75b, "#,##0.0")
+    string p90_str = str.tostring(d >= 0.0 ? p90a : p90b, "#,##0.0")
+    string thr_str = p75_str + "|" + p90_str
+    color  zc      = f_zcol(z)
+    color  zbg     = f_zbg(z)
+    color  grayish = color.new(color.gray, 70)
+
+    table.cell(tbl, 0, row, tf_lbl,                        bgcolor=grayish, text_color=color.white,  text_size=size.normal)
+    table.cell(tbl, 1, row, role_lbl,                      bgcolor=grayish, text_color=color.yellow, text_size=size.tiny)
+    table.cell(tbl, 2, row, str.tostring(top, "#,##0.00"), bgcolor=grayish, text_color=color.white,  text_size=f_sz())
+    table.cell(tbl, 3, row, str.tostring(bot, "#,##0.00"), bgcolor=grayish, text_color=color.white,  text_size=f_sz())
+    table.cell(tbl, 4, row, pts_str,                       bgcolor=zbg,     text_color=zc,           text_size=size.normal)
+    table.cell(tbl, 5, row, pct_str,                       bgcolor=zbg,     text_color=zc,           text_size=f_sz())
+    table.cell(tbl, 6, row, meter,                         bgcolor=zbg,     text_color=zc,           text_size=f_sz())
+    table.cell(tbl, 7, row, thr_str,                       bgcolor=grayish, text_color=color.white,  text_size=f_sz())
+    table.cell(tbl, 8, row, f_zlbl(z),                     bgcolor=zbg,     text_color=zc,           text_size=size.normal)
+
+// ============================================================
+// TABLE POPULATION
+// ============================================================
+
+if i_show_tbl and barstate.islast
+
+    // Row 0: BIAS
+    color gray70 = color.new(color.gray, 70)
+    table.cell(tbl, 0, 0, "BIAS",    bgcolor=gray70,                   text_color=color.white, text_size=size.small)
+    table.cell(tbl, 1, 0, bias_str,  bgcolor=color.new(bias_col, 72),  text_color=bias_col,    text_size=size.small)
+    table.merge_cells(tbl, 1, 0, 8, 0)
+
+    // Row 1: Headers
+    color hdr_bg  = color.new(#001F5C, 60)
+    color hdr_txt = color.new(color.white, 30)
+    table.cell(tbl, 0, 1, "TF",       bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 1, 1, "ROLE",     bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 2, 1, "EMA TOP",  bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 3, 1, "EMA BOT",  bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 4, 1, "PTS AWAY", bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 5, 1, "% AWAY",   bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 6, 1, "▓→P90",    bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 7, 1, "P75|P90",  bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+    table.cell(tbl, 8, 1, "SIGNAL",   bgcolor=hdr_bg, text_color=hdr_txt, text_size=size.tiny)
+
+    // Row 2: 30S PRIMARY SCALP
+    f_row(2, "30S", "PRIMARY\nSCALP",  ema_30s_top, ema_30s_bot, d30s, z30s, t30s_75, t30s_90, b30s_75, b30s_90)
+
+    // Row 3: 1m PRIMARY RUNNER
+    f_row(3, " 1m", "PRIMARY\nRUNNER", ema_1m_top,  ema_1m_bot,  d1m,  z1m,  t1m_75,  t1m_90,  b1m_75,  b1m_90)
+
+    // Row 4: Divider
+    color div_bg = color.new(color.gray, 80)
+    table.cell(tbl, 0, 4, "─── CONTEXT (bias/filter — not primary entry) ───", bgcolor=div_bg, text_color=color.new(color.white, 30), text_size=size.tiny)
+    table.merge_cells(tbl, 0, 4, 8, 4)
+
+    // Row 5: 5m CONTEXT FILTER
+    f_row(5, " 5m", "CONTEXT\nFILTER", ema_5m_top,  ema_5m_bot,  d5m,  z5m,  t5m_75,  t5m_90,  b5m_75,  b5m_90)
+
+    // Row 6: 15m CONTEXT TARGET
+    f_row(6, "15m", "CONTEXT\nTARGET", ema_15m_top, ema_15m_bot, d15m, z15m, t15m_75, t15m_90, b15m_75, b15m_90)
+
+    // Row 7: Legend
+    color leg_bg = color.new(color.gray, 78)
+    color leg_txt = color.new(color.white, 30)
+    table.cell(tbl, 0, 7, "KEY",           bgcolor=leg_bg, text_color=leg_txt,      text_size=size.tiny)
+    table.cell(tbl, 1, 7, "ENTRY=at band", bgcolor=leg_bg, text_color=color.aqua,   text_size=size.tiny)
+    table.cell(tbl, 2, 7, "BUY<P75",       bgcolor=leg_bg, text_color=color.teal,   text_size=size.tiny)
+    table.cell(tbl, 3, 7, "HOLD<P75",      bgcolor=leg_bg, text_color=color.lime,   text_size=size.tiny)
+    table.cell(tbl, 4, 7, "TRIM P75-P90",  bgcolor=leg_bg, text_color=color.orange, text_size=size.tiny)
+    table.cell(tbl, 5, 7, "SELL>P90",      bgcolor=leg_bg, text_color=color.red,    text_size=size.tiny)
+    table.cell(tbl, 6, 7, "Meter→P90",     bgcolor=leg_bg, text_color=leg_txt,      text_size=size.tiny)
+    table.cell(tbl, 7, 7, "30d NQ data",   bgcolor=leg_bg, text_color=leg_txt,      text_size=size.tiny)
+    table.cell(tbl, 8, 7, "Edit Settings", bgcolor=leg_bg, text_color=leg_txt,      text_size=size.tiny)

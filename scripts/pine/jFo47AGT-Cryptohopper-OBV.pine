@@ -1,0 +1,10 @@
+//@version=3
+study(title="Cryptohopper OBV", shorttitle="CH OBV")
+
+src= close
+MA= input(14, minval=1, title= "OBV MA")
+OBV = cum(change(src) > 0 ? volume : change(src) < 0 ? -volume : 0*volume)
+EMA = ema(OBV, MA)
+
+plot(OBV, title="OBV", color=orange)
+plot(EMA, title="EMA", color=blue)

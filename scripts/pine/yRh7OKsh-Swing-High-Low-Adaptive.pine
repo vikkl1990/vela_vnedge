@@ -1,0 +1,285 @@
+//=============================================================================
+// This source code is subject to the terms of the Mozilla Public License 2.0 at 
+// https://mozilla.org/MPL/2.0/
+// Author            : dchunt-stack
+// Developed for     : Open Source
+// Version           : 1.0
+// Original Date     : 28 October 2025
+// Copyright © 2025 dchunt-stack. All rights reserved
+//=============================================================================
+//@version=6
+indicator('Swing High/Low (Adaptive)', overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+//=============================================================================
+// Colors
+//=============================================================================
+LOW_PIVOT_COLOR       = color.new(color.lime, 50)
+HIGH_PIVOT_COLOR      = color.new(color.red, 50)
+INV_LOW_PIVOT_COLOR   = color.new(color.orange, 50)
+INV_HIGH_PIVOT_COLOR  = color.new(color.purple, 50)
+TEXT_COLOR            = color.new(color.white, 0)
+
+//=============================================================================
+// Tooltips
+//=============================================================================
+LEFT_BARS         = 'Left bars required for pivot confirmation.'
+RIGHT_BARS        = 'Right bars required for pivot confirmation.'
+SHOW_LOW          = 'Toggle visibility of detected low pivots.'
+SHOW_HIGH         = 'Toggle visibility of detected high pivots.'
+LOW_COLOR         = 'Color for low pivot markers.'
+HIGH_COLOR        = 'Color for high pivot markers.'
+SHOW_INV_LOW      = 'Show invalidated low pivot markers.'
+SHOW_INV_HIGH     = 'Show invalidated high pivot markers.'
+INV_LOW_COLOR     = 'Color for invalidated low pivot markers.'
+INV_HIGH_COLOR    = 'Color for invalidated high pivot markers.'
+SHOW_ZIGZAG       = 'Show lines between pivots.'
+ZIGZAG_DOWN_COLOR = 'Color for the ZigZag down lines.'
+ZIGZAG_UP_COLOR   = 'Color for the ZigZag up lines.'
+LINE_WIDTH        = 'Width of the pivot connector line.'
+
+//=============================================================================
+// Inputs
+//=============================================================================
+var string G0 = 'Pivot Settings'
+pivotLeftBarsInput     = input.int(5, 'Left Bars', minval = 1, group = G0, tooltip = LEFT_BARS)
+pivotRightBarsInput    = input.int(5, 'Right Bars', minval = 1, group = G0, tooltip = RIGHT_BARS)
+
+var string G1 = 'Pivot Display Settings'
+showLowPivotInput     = input.bool(true, 'Show Low Pivots', group = G1, tooltip = SHOW_LOW)
+showHighPivotInput    = input.bool(true, 'Show High Pivots', group = G1, tooltip = SHOW_HIGH)
+lowPivotColorInput    = input.color(LOW_PIVOT_COLOR, 'Low Pivot Color', group = G1, tooltip = LOW_COLOR)
+highPivotColorInput   = input.color(HIGH_PIVOT_COLOR, 'High Pivot Color', group = G1, tooltip = HIGH_COLOR)
+
+var string G2 = 'Invalid Pivot Settings'
+showInvLowPivotInput  = input.bool(false, 'Show Invalid Low Pivots', group = G2, tooltip = SHOW_INV_LOW)
+showInvHighPivotInput = input.bool(false, 'Show Invalid High Pivots', group = G2, tooltip = SHOW_INV_HIGH)
+invLowColorInput      = input.color(INV_LOW_PIVOT_COLOR, 'Invalid Low Color', group = G2, tooltip = INV_LOW_COLOR)
+invHighColorInput     = input.color(INV_HIGH_PIVOT_COLOR, 'Invalid High Color', group = G2, tooltip = INV_HIGH_COLOR)
+
+var string G3 = 'ZigZag Settings'
+showZigZagInput       = input.bool(true, 'Show ZigZag', group = G3, tooltip = SHOW_ZIGZAG)
+lineDownColorInput    = input.color(HIGH_PIVOT_COLOR, 'ZigZag Down Color', group = G3, tooltip = ZIGZAG_DOWN_COLOR)
+lineUpColorInput      = input.color(LOW_PIVOT_COLOR, 'ZigZag Up Color', group = G3, tooltip = ZIGZAG_UP_COLOR)
+lineWidthInput        = input.int(2, 'ZigZag Width', minval = 1, group = G3, tooltip = LINE_WIDTH)
+
+//=============================================================================
+// Variables 
+//=============================================================================
+// Number of bars to the left and right for pivot detection
+int leftBars              = math.max(pivotLeftBarsInput, 1)
+int rightBars             = math.max(pivotRightBarsInput, 1)
+// Total number of bars for pivot confirmation
+int maxOffset             = leftBars + rightBars
+
+// ----- Pivot variables ----- 
+// P1 = Most recent confirmed pivot
+// P2 = Second most recent confirmed pivot
+// P3 = Third most recent confirmed pivot
+// P4 = Fourth most recent confirmed pivot
+var float p1Low           = na 
+var float p2Low           = na
+var float p3Low           = na
+var float p4Low           = na
+var float p1High          = na
+var float p2High          = na
+var float p3High          = na
+var float p4High          = na
+// ----- Pivot Index variables -----
+// Stores the bar index of the respective pivots
+var int p1LowIndex        = na
+var int p2LowIndex        = na
+var int p3LowIndex        = na
+var int p4LowIndex        = na
+var int p1HighIndex       = na
+var int p2HighIndex       = na
+var int p3HighIndex       = na
+var int p4HighIndex       = na
+// Most recent confirmed pivot prices and their bar index
+var float latestLowPrice  = na 
+var float latestHighPrice = na
+var int   latestLowIndex  = na
+var int   latestHighIndex = na
+// Tracks the type of the last and next expected pivot
+// 1 = High, -1 = Low, 0 = None
+var int lastPivotType     = 0
+var int nextPivotType     = 0 
+
+//=============================================================================
+// Pivot Detection Logic 
+//=============================================================================
+// Flags for pivot invalidation
+bool lowPivotInv          = false
+bool highPivotInv         = false
+// Flags for new pivot detection
+bool  newLowPivot         = false
+bool  newHighPivot        = false
+// Detected pivot values
+float pivotLowVal         = ta.pivotlow(low, leftBars, rightBars)
+float pivotHighVal        = ta.pivothigh(high, leftBars, rightBars)
+
+// Low pivots
+if not na(pivotLowVal)
+    int pivotLowIndex = bar_index - leftBars
+    if na(latestLowIndex) or pivotLowIndex != latestLowIndex
+        float newLow          = pivotLowVal
+        bool nextLowPivot     = nextPivotType == 0 or nextPivotType == -1
+        bool lastLow          = lastPivotType == -1
+        bool hasLow           = not na(p1Low)
+        bool strongerLow      = not hasLow or newLow < p1Low
+        bool confLowPivot     = nextLowPivot or (lastLow and strongerLow)
+        bool markInvalidation = lastLow and hasLow and strongerLow and not nextLowPivot
+        if confLowPivot
+            if markInvalidation
+                lowPivotInv     := true
+                p1Low           := p2Low
+                p1LowIndex      := p2LowIndex
+                p2Low           := p3Low
+                p2LowIndex      := p3LowIndex
+                p3Low           := p4Low
+                p3LowIndex      := p4LowIndex
+                p4Low           := na
+                p4LowIndex      := na
+            p4Low            := p3Low
+            p4LowIndex       := p3LowIndex
+            p3Low            := p2Low
+            p3LowIndex       := p2LowIndex
+            p2Low            := p1Low
+            p2LowIndex       := p1LowIndex
+            p1Low            := newLow
+            p1LowIndex       := pivotLowIndex
+            latestLowPrice   := newLow
+            latestLowIndex   := pivotLowIndex
+            lastPivotType    := -1
+            nextPivotType    := 1
+            newLowPivot      := true
+        else
+            latestLowIndex      := pivotLowIndex
+
+// High pivots
+if not na(pivotHighVal)
+    int pivotHighIndex = bar_index - leftBars
+    if na(latestHighIndex) or pivotHighIndex != latestHighIndex
+        float newHigh = pivotHighVal
+        bool nextHighPivot = nextPivotType == 0 or nextPivotType == 1
+        bool lastHigh     = lastPivotType == 1
+        bool hasHigh      = not na(p1High)
+        bool strongerHigh = not hasHigh or newHigh > p1High
+        bool confHighPivot = nextHighPivot or (lastHigh and strongerHigh)
+        bool markInvalidation = lastHigh and hasHigh and strongerHigh and not nextHighPivot
+        if confHighPivot
+            if markInvalidation
+                highPivotInv    := true
+                p1High          := p2High
+                p1HighIndex     := p2HighIndex
+                p2High          := p3High
+                p2HighIndex     := p3HighIndex
+                p3High          := p4High
+                p3HighIndex     := p4HighIndex
+                p4High          := na
+                p4HighIndex     := na
+            p4High           := p3High
+            p4HighIndex      := p3HighIndex
+            p3High           := p2High
+            p3HighIndex      := p2HighIndex
+            p2High           := p1High
+            p2HighIndex      := p1HighIndex
+            p1High           := newHigh
+            p1HighIndex      := pivotHighIndex
+            latestHighPrice  := newHigh
+            latestHighIndex  := pivotHighIndex
+            lastPivotType    := 1
+            nextPivotType    := -1
+            newHighPivot     := true
+        else
+            latestHighIndex  := pivotHighIndex
+
+//=============================================================================
+// Drawing Management 
+//=============================================================================
+// Labels
+var label lowPivotLabel         = na
+var label highPivotLabel        = na
+// ZigZag Line
+var line  zigZag                = na
+// Latest Pivot Information Index and Price
+var int   latestPivotBarIndex   = na
+var float latestPivotPrice      = na
+var int   previousPivotBarIndex = na   
+var float previousPivotPrice    = na
+// Remove ZigZag if disabled 
+if not showZigZagInput and not na(zigZag)
+    line.delete(zigZag)
+    zigZag := na
+
+//=============================================================================
+// Invalidation Handling
+//=============================================================================
+// Low Pivot Invalidation
+if lowPivotInv
+    if showZigZagInput and not na(zigZag)
+        line.delete(zigZag)
+        zigZag := na
+    latestPivotBarIndex   := previousPivotBarIndex
+    latestPivotPrice      := previousPivotPrice
+    previousPivotBarIndex := na
+    previousPivotPrice    := na
+    if showInvLowPivotInput and not na(lowPivotLabel)
+        label.set_textcolor(lowPivotLabel, invLowColorInput)
+    else if not showInvLowPivotInput and not na(lowPivotLabel)
+        label.delete(lowPivotLabel)
+        lowPivotLabel := na
+
+// High Pivot Invalidation
+if highPivotInv
+    if showZigZagInput and not na(zigZag)
+        line.delete(zigZag)
+        zigZag := na
+    latestPivotBarIndex   := previousPivotBarIndex
+    latestPivotPrice      := previousPivotPrice
+    previousPivotBarIndex := na
+    previousPivotPrice    := na
+    if showInvHighPivotInput and not na(highPivotLabel)
+        label.set_textcolor(highPivotLabel, invHighColorInput)
+    else if not showInvHighPivotInput and not na(highPivotLabel)
+        label.delete(highPivotLabel)
+        highPivotLabel := na
+
+// Clean up labels if display is turned off or invalidated
+// Low Pivot
+if not showLowPivotInput and not newLowPivot and not na(lowPivotLabel)
+    label.delete(lowPivotLabel)
+    lowPivotLabel := na
+// High Pivot
+if not showHighPivotInput and not newHighPivot and not na(highPivotLabel)
+    label.delete(highPivotLabel)
+    highPivotLabel := na
+
+//=============================================================================
+// Pivot Plotting (using labels for persistent state)
+//=============================================================================
+// Low Pivot 
+if newLowPivot and not na(latestLowIndex)
+    if showZigZagInput and not na(latestPivotBarIndex)
+        zigZag := line.new(latestPivotBarIndex, latestPivotPrice, latestLowIndex, latestLowPrice, color = lineDownColorInput, width = lineWidthInput)
+    previousPivotBarIndex := latestPivotBarIndex
+    previousPivotPrice    := latestPivotPrice
+    latestPivotBarIndex   := latestLowIndex
+    latestPivotPrice      := latestLowPrice
+    if showLowPivotInput
+        lowPivotLabel := label.new(latestLowIndex, latestLowPrice, text = '▲', style = label.style_none, color = lowPivotColorInput, size = size.normal, yloc = yloc.belowbar, textcolor = lowPivotColorInput)
+    else if not showLowPivotInput and not na(lowPivotLabel)
+        label.delete(lowPivotLabel)
+        lowPivotLabel := na
+// High Pivot
+if newHighPivot and not na(latestHighIndex)
+    if showZigZagInput and not na(latestPivotBarIndex)
+        zigZag := line.new(latestPivotBarIndex, latestPivotPrice, latestHighIndex, latestHighPrice, color = lineUpColorInput, width = lineWidthInput)
+    previousPivotBarIndex := latestPivotBarIndex
+    previousPivotPrice    := latestPivotPrice
+    latestPivotBarIndex   := latestHighIndex
+    latestPivotPrice      := latestHighPrice
+    if showHighPivotInput
+        highPivotLabel := label.new(latestHighIndex, latestHighPrice, text = '▼', style = label.style_none, color = highPivotColorInput, size = size.normal, yloc = yloc.abovebar, textcolor = highPivotColorInput)
+    else if not showHighPivotInput and not na(highPivotLabel)
+        label.delete(highPivotLabel)
+        highPivotLabel := na

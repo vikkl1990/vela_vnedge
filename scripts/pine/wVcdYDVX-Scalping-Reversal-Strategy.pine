@@ -1,0 +1,33 @@
+// @version=5
+indicator("Scalping Reversal Strategy - ", overlay=true)
+
+// --- Inputs ---
+lookback = input.int(20, "Lookback Period for Support/Resistance")
+engulfPercent = input.float(30.0, "Minimum Reversal Percentage", minval=1.0, maxval=100.0)
+
+// --- Simple Support/Resistance Logic ---
+hi = ta.highest(high, lookback)
+lo = ta.lowest(low, lookback)
+
+// --- Reversal Logic (Trap Detection) ---
+// Buy Trap: Previous candle was Red (showing sell), Current candle is Green and closes > 30% into Red candle's body
+isRed = close[1] < open[1]
+isGreen = close > open
+reversalBuy = isRed and isGreen and close > (low[1] + (high[1] - low[1]) * (engulfPercent / 100)) and low <= lo[1]
+
+// Sell Trap: Previous candle was Green (showing buy), Current candle is Red and closes > 30% into Green candle's body
+isGreenPrev = close[1] > open[1]
+isRedCurr = close < open
+reversalSell = isGreenPrev and isRedCurr and close < (high[1] - (high[1] - low[1]) * (engulfPercent / 100)) and high >= hi[1]
+
+// --- Plotting Signals ---
+plotshape(series=reversalBuy, title="Buy Signal", location=location.belowbar, color=color.green, style=shape.labelup, text="BUY / TRAP", textcolor=color.white)
+plotshape(series=reversalSell, title="Sell Signal", location=location.abovebar, color=color.red, style=shape.labeldown, text="SELL / TRAP", textcolor=color.white)
+
+// Visualizing Support/Resistance
+plot(hi, color=color.new(color.red, 80), style=plot.style_linebr)
+plot(lo, color=color.new(color.green, 80), style=plot.style_linebr)
+
+// --- Alerts ---
+alertcondition(reversalBuy, title="Buy Alert", message="Potential Buy Trap Detected!")
+alertcondition(reversalSell, title="Sell Alert", message="Potential Sell Trap Detected!")

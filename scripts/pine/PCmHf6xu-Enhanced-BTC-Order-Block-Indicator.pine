@@ -1,0 +1,73 @@
+// @version=5
+indicator("Enhanced BTC Order Block Indicator", overlay=true)
+
+// --- Kasutaja seadistused ---
+var float minMovePercent = input.float(0.5, "Min Price Move %", minval=0.1, step=0.1)
+var float maxMovePercent = input.float(1.0, "Max Price Move %", minval=0.1, step=0.1)
+var float volumeThreshold = input.float(1.5, "Volume Threshold Multiplier", minval=1.0, step=0.1)
+var int lookback = input.int(10, "Lookback Candles", minval=1)
+var bool useWick = input.bool(false, "Use Wick for OB Zone")
+var color bullishOBColor = input.color(color.green, "Bullish OB Color")
+var color bearishOBColor = input.color(color.red, "Bearish OB Color")
+var int boxExtension = input.int(100, "Box Extension (Bars)", minval=10)
+var bool useRSI = input.bool(true, "Use RSI Filter")
+var int rsiLength = input.int(14, "RSI Length", minval=1)
+var float rsiBullishThreshold = input.float(50, "RSI Bullish Threshold", minval=0, maxval=100)
+var float rsiBearishThreshold = input.float(50, "RSI Bearish Threshold", minval=0, maxval=100)
+var bool useSR = input.bool(true, "Use M15 Support/Resistance")
+var int srLookback = input.int(20, "M15 S/R Lookback", minval=1)
+
+// --- Funktsioonid ---
+f_priceChangePercent(openPrice, closePrice) =>
+    ((closePrice - openPrice) / openPrice) * 100
+
+isBullish = close > open
+isBearish = close < open
+
+avgVolume = ta.sma(volume, lookback)
+
+rsi = ta.rsi(close, rsiLength)
+
+[swingHigh, swingLow] = request.security(syminfo.tickerid, "15", [ta.highest(high, srLookback), ta.lowest(low, srLookback)])
+
+isNearSR(price, swingHigh, swingLow, tolerance=0.002) =>
+    math.abs(price - swingHigh) / swingHigh <= tolerance or math.abs(price - swingLow) / swingLow <= tolerance
+
+// --- Tuvasta Bullish Order Block ---
+bullishMove = isBullish and f_priceChangePercent(open, close) >= minMovePercent and f_priceChangePercent(open, close) <= maxMovePercent and volume > avgVolume * volumeThreshold
+bullishMove := useRSI ? bullishMove and rsi > rsiBullishThreshold : bullishMove
+bullishMove := useSR ? bullishMove and isNearSR(close, swingHigh, swingLow) : bullishMove
+
+var float bullishOBHigh = 0.0
+var float bullishOBLow = 0.0
+if bullishMove
+    for i = 1 to lookback
+        if close[i] < open[i]
+            bullishOBHigh := useWick ? high[i] : math.max(open[i], close[i])
+            bullishOBLow := useWick ? low[i] : math.min(open[i], close[i])
+            break
+
+// --- Tuvasta Bearish Order Block ---
+bearishMove = isBearish and f_priceChangePercent(open, close) <= -minMovePercent and f_priceChangePercent(open, close) >= -maxMovePercent and volume > avgVolume * volumeThreshold
+bearishMove := useRSI ? bearishMove and rsi < rsiBearishThreshold : bearishMove
+bearishMove := useSR ? bearishMove and isNearSR(close, swingHigh, swingLow) : bearishMove
+
+var float bearishOBHigh = 0.0
+var float bearishOBLow = 0.0
+if bearishMove
+    for i = 1 to lookback
+        if close[i] > open[i]
+            bearishOBHigh := useWick ? high[i] : math.max(open[i], close[i])
+            bearishOBLow := useWick ? low[i] : math.min(open[i], close[i])
+            break
+
+// --- Joonista OB-d ---
+if bullishOBHigh != 0.0 and bullishOBLow != 0.0
+    box.new(left=bar_index[1], right=bar_index[1]+boxExtension, top=bullishOBHigh, bottom=bullishOBLow, border_color=bullishOBColor, bgcolor=color.new(bullishOBColor, 80), text="Bullish OB", text_color=color.white)
+
+if bearishOBHigh != 0.0 and bearishOBLow != 0.0
+    box.new(left=bar_index[1], right=bar_index[1]+boxExtension, top=bearishOBHigh, bottom=bearishOBLow, border_color=bearishOBColor, bgcolor=color.new(bearishOBColor, 80), text="Bearish OB", text_color=color.white)
+
+// --- Hoiatused (global scope) ---
+alertcondition(bullishMove, title="Bullish OB Detected", message="Bullish Order Block detected at {{close}}")
+alertcondition(bearishMove, title="Bearish OB Detected", message="Bearish Order Block detected at {{close}}")

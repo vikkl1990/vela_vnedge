@@ -1,0 +1,291 @@
+//@version=6
+indicator(shorttitle="Signal Pro 6.1", title="Signal Pro 6.1", overlay=true)
+
+//----------------------------------------------------
+// SESSION (CST)
+//----------------------------------------------------
+sessionInput = input.session("1700-1445", "Signal Time Interval")
+inSession    = not na(time(timeframe.period, sessionInput))
+
+resetSession = input.session("1700-1445", "Reset Session (Daily Reset)")
+resetActive  = not na(time(timeframe.period, resetSession))
+
+startOfDay = resetActive and not resetActive[1]
+endOfDay   = not resetActive and resetActive[1]
+
+//----------------------------------------------------
+// LABEL SETTINGS
+//----------------------------------------------------
+showBuyLabels  = input.bool(true, "Show BUY Labels")
+showSellLabels = input.bool(true, "Show SELL Labels")
+showExit       = input.bool(true, "Show EXIT Labels")
+
+
+BuyLabelColor   = input.color(color.new(color.green, 0),  "BUY Label Background Color")
+SellLabelColor  = input.color(color.new(color.red,   0),  "SELL Label Background Color")
+ExitLabelColor  = input.color(color.new(color.yellow,0),  "EXIT Label Background Color")
+
+BuyTextColor    = input.color(color.white,  "BUY Label Text Color")
+SellTextColor   = input.color(color.white,  "SELL Label Text Color")
+ExitTextColor   = input.color(color.black,  "EXIT Label Text Color")
+
+labelSizeOpt = input.string("tiny","Entry Label Size", options=["tiny","small","normal","large"])
+exitSizeOpt  = input.string("tiny","Exit Label Size",  options=["tiny","small","normal","large"])
+
+sizeFromInput(s) =>
+     s=="tiny"?size.tiny:
+     s=="small"?size.small:
+     s=="large"?size.large:
+     size.normal
+
+labSize  = sizeFromInput(labelSizeOpt)
+exitSize = sizeFromInput(exitSizeOpt)
+
+//----------------------------------------------------
+// ARSI SETTINGS (UPDATED DEFAULTS)
+//----------------------------------------------------
+arsiLen       = input.int(10, "ARSI Length")
+arsiMethod    = input.string("RMA", "ARSI Method", options=["EMA","SMA","RMA","TMA"])
+arsiSigLen    = input.int(3, "ARSI Signal Length")
+arsiSigMethod = input.string("RMA", "ARSI Signal Method", options=["EMA","SMA","RMA","TMA"])
+arsiOB        = input.int(60, "ARSI Overbought Level")
+arsiOS        = input.int(40, "ARSI Oversold Level")
+
+//----------------------------------------------------
+// BACKGROUND COLOR SETTINGS
+//----------------------------------------------------
+useArsiBackground = input.bool(true, "Use ARSI State Background Coloring")
+bgOB  = input.color(color.new(color.green, 85), "Background Overbought (ARSI > OB)")
+bgOS  = input.color(color.new(color.red,   85), "Background Oversold (ARSI < OS)")
+bgMid = input.color(color.new(color.gray, 85),  "Background Neutral")
+
+//----------------------------------------------------
+// TREND COLORS
+//----------------------------------------------------
+bullTrendColor    = input.color(color.new(color.green, 0),  "Bull Trend Color (Bands)")
+bearTrendColor    = input.color(color.new(color.red,   0),  "Bear Trend Color (Bands)")
+neutralTrendColor = input.color(color.new(color.gray,  0),  "Neutral Trend Color (Bands)")
+
+//----------------------------------------------------
+// CANDLE COLORS (8 EMA vs 20 SMA)
+//----------------------------------------------------
+bullMomColor    = input.color(color.green,  "Bullish Candle Color")
+bearMomColor    = input.color(color.red,    "Bearish Candle Color")
+neutralMomColor = input.color(color.yellow, "Neutral Candle Color")
+
+//----------------------------------------------------
+// BOLLINGER BAND SETTINGS
+//----------------------------------------------------
+length = input.int(20, "BB MA Length")
+src    = input.source(close, "BB Source")
+
+mult1 = input.float(1.0, "BB Inner Band Multiplier")
+mult2 = input.float(2.0, "BB Outer Band Multiplier")
+
+showBandInner  = input.bool(true,  "Show BB Inner Band")
+showBandOuter  = input.bool(true,  "Show BB Outer Band")
+fillInnerBand  = input.bool(true,  "Fill BB Inner Band Background")
+fillOuterBand  = input.bool(false, "Fill BB Outer Band Background")
+
+//----------------------------------------------------
+// BOLLINGER CALC
+//----------------------------------------------------
+basis = ta.sma(src, length)
+dev1  = mult1 * ta.stdev(src, length)
+dev2  = mult2 * ta.stdev(src, length)
+
+upper1 = basis + dev1
+lower1 = basis - dev1
+upper2 = basis + dev2
+lower2 = basis - dev2
+
+//----------------------------------------------------
+// ARSI + SIGNAL CALCULATION
+//----------------------------------------------------
+ma(x, len, type) =>
+    float out = na
+    if type == "EMA"
+        out := ta.ema(x, len)
+    else if type == "SMA"
+        out := ta.sma(x, len)
+    else if type == "RMA"
+        out := ta.rma(x, len)
+    else
+        out := ta.sma(ta.sma(x, len), len)
+    out
+
+arsiCalc(src, length, method) =>
+    upper = ta.highest(src, length)
+    lower = ta.lowest(src, length)
+    r = upper - lower
+    d = src - src[1]
+    diff = upper > upper[1] ? r : lower < lower[1] ? -r : d
+    num = ma(diff, length, method)
+    den = ma(math.abs(diff), length, method)
+    num / den * 50 + 50
+
+arsi       = arsiCalc(close, arsiLen, arsiMethod)
+arsiSignal = ma(arsi, arsiSigLen, arsiSigMethod)
+
+//----------------------------------------------------
+// ARSI STATES
+//----------------------------------------------------
+bullState    = arsi > arsiOB and arsi > arsiSignal
+bearState    = arsi < arsiOS and arsi < arsiSignal
+neutralState = not bullState and not bearState
+
+bgBull    = arsi > arsiOB
+bgBear    = arsi < arsiOS
+bgNeutral = not bgBull and not bgBear
+
+//----------------------------------------------------
+// BACKGROUND COLOR
+//----------------------------------------------------
+bgColorFinal =
+     bgBull    ? bgOB :
+     bgBear    ? bgOS :
+     bgMid
+
+bgcolor(useArsiBackground ? bgColorFinal : na)
+
+//----------------------------------------------------
+// BAND COLOR
+//----------------------------------------------------
+bandColor =
+     bgBull    ? bullTrendColor :
+     bgBear    ? bearTrendColor :
+     neutralTrendColor
+
+//----------------------------------------------------
+// BANDS
+//----------------------------------------------------
+p1u = plot(showBandInner ? upper1 : na, color=bandColor)
+p1l = plot(showBandInner ? lower1 : na, color=bandColor)
+fill(p1u, p1l, color = fillInnerBand ? bandColor : na)
+
+p2u = plot(showBandOuter ? upper2 : na, color=bandColor)
+p2l = plot(showBandOuter ? lower2 : na, color=bandColor)
+fill(p2u, p2l, color = fillOuterBand ? bandColor : na)
+
+//----------------------------------------------------
+// MOMENTUM CIRCLES
+//----------------------------------------------------
+plotshape(bullState ? basis : na, location=location.absolute, style=shape.circle, size=size.tiny, color=bullTrendColor)
+plotshape(bearState ? basis : na, location=location.absolute, style=shape.circle, size=size.tiny, color=bearTrendColor)
+plotshape(neutralState ? basis : na, location=location.absolute, style=shape.circle, size=size.tiny, color=neutralTrendColor)
+
+//----------------------------------------------------
+// MOVING AVERAGES (Inputs: Type + Length only)
+//----------------------------------------------------
+maType1 = input.string("EMA", "MA1 Type", options=["EMA","SMA"])
+maLen1  = input.int(8, "MA1 Length")
+
+maType2 = input.string("SMA", "MA2 Type", options=["EMA","SMA"])
+maLen2  = input.int(20, "MA2 Length")
+
+maType3 = input.string("EMA", "MA3 Type", options=["EMA","SMA"])
+maLen3  = input.int(50, "MA3 Length")
+
+maType4 = input.string("EMA", "MA4 Type", options=["EMA","SMA"])
+maLen4  = input.int(200, "MA4 Length")
+
+maType5 = input.string("EMA", "MA5 Type", options=["EMA","SMA"])
+maLen5  = input.int(500, "MA5 Length")
+
+//----------------------------------------------------
+// MA CALC
+//----------------------------------------------------
+ma1 = ma(close, maLen1, maType1)
+ma2 = ma(close, maLen2, maType2)
+ma3 = ma(close, maLen3, maType3)
+ma4 = ma(close, maLen4, maType4)
+ma5 = ma(close, maLen5, maType5)
+
+//----------------------------------------------------
+// MA PLOTS (colors/widths controlled in Style tab)
+//----------------------------------------------------
+plot(ma1, title="MA1")
+plot(ma2, title="MA2")
+plot(ma3, title="MA3")
+plot(ma4, title="MA4")
+plot(ma5, title="MA5")
+
+//----------------------------------------------------
+// CANDLE COLORING (8 EMA vs 20 SMA)
+//----------------------------------------------------
+bullCandle = ma1 > ma2
+bearCandle = ma1 < ma2
+neutralCandle = not bullCandle and not bearCandle
+
+candleColor =
+     bullCandle    ? bullMomColor :
+     bearCandle    ? bearMomColor :
+     neutralMomColor
+
+barcolor(candleColor)
+
+//----------------------------------------------------
+// SIGNAL ENGINE
+//----------------------------------------------------
+var bool inLong     = false
+var bool inShort    = false
+var bool longArmed  = false
+var bool shortArmed = false
+
+longArmed  := ma1 > ma2
+shortArmed := ma1 < ma2
+
+
+//----------------------------------------------------
+// ENTRY CONDITIONS
+//----------------------------------------------------
+longEntry  = showBuyLabels and inSession and not inLong and not inShort and ma1 > ma2 and close > upper2 and bgBull
+shortEntry = showSellLabels and inSession and not inLong and not inShort and ma1 < ma2 and close < lower2 and bgBear
+
+//----------------------------------------------------
+// EXIT CONDITIONS
+//----------------------------------------------------
+exitLongIntraday  = inLong  and close < ma1
+exitShortIntraday = inShort and close > ma1
+
+exitLongEOD  = endOfDay and inLong
+exitShortEOD = endOfDay and inShort
+
+exitLong  = exitLongIntraday or exitLongEOD
+exitShort = exitShortIntraday or exitShortEOD
+
+//----------------------------------------------------
+// POSITION STATE
+//----------------------------------------------------
+if longEntry
+    inLong  := true
+    inShort := false
+
+if shortEntry
+    inShort := true
+    inLong  := false
+
+if exitLong
+    inLong := false
+
+if exitShort
+    inShort := false
+
+//----------------------------------------------------
+// LABELS
+//----------------------------------------------------
+if longEntry
+    label.new(bar_index, na, "B", yloc=yloc.belowbar, style=label.style_label_up,
+        color=BuyLabelColor, textcolor=BuyTextColor, size=labSize)
+
+if shortEntry
+    label.new(bar_index, na, "S", yloc=yloc.abovebar, style=label.style_label_down,
+        color=SellLabelColor, textcolor=SellTextColor, size=labSize)
+
+if showExit and exitLong
+    label.new(bar_index, na, "E", yloc=yloc.abovebar, style=label.style_label_down,
+        color=ExitLabelColor, textcolor=ExitTextColor, size=exitSize)
+
+if showExit and exitShort
+    label.new(bar_index, na, "E", yloc=yloc.belowbar, style=label.style_label_up,
+        color=ExitLabelColor, textcolor=ExitTextColor, size=exitSize)

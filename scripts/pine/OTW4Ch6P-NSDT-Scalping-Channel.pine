@@ -1,0 +1,35 @@
+//@version=5
+
+indicator(title='NSDT Scalping Channel', shorttitle='NSDT Scalping Channel', overlay=true)
+
+length = 9
+upper = high
+lower = low
+
+upperspace = input.float(1.0005, options=[1.0005, 1.001, 1.0015, 1.002, 1.0025, 1.003], title='Upper Line Spacing')
+lowerspace = input.float(.9995, options=[.9995, .999, .9985, .998, .9975, .997], title='Lower Line Spacing')
+
+
+upperline = upper * upperspace
+lowerline = lower * lowerspace
+ma1 = ta.wma(upperline, length)
+ma2 = ta.wma(lowerline, length)
+
+GoLong = ta.rising(ma2, 2)
+GoShort = ta.falling(ma1, 2)
+
+UpPlot = plot(ma1, title='Upper Line', style=plot.style_line, linewidth=2, color=ta.falling(ma1, 2) ? color.new(color.red, 10) : color.new(color.gray, 10))
+DownPlot = plot(ma2, title='Lower Line', style=plot.style_line, linewidth=2, color=ta.rising(ma2, 2) ? color.new(color.green, 10) : color.new(color.gray, 10))
+HighPlot = plot(high, color=color.new(color.black, 100), editable=false)
+LowPlot = plot(low, color=color.new(color.black, 100), editable=false)
+
+fill(UpPlot, HighPlot, color.new(color.red, 95), title='Upper Shading')
+fill(DownPlot, LowPlot, color.new(color.green, 95), title='Lower Shading')
+
+alertcondition(ta.falling(ma1, 2), title='Upper Line Turns Red', message='Upper Line Turns Red, Possible Short')
+alertcondition(ta.rising(ma2, 2), title='Lower Line Turns Green', message='Lower Line Turns Green, Possible Long')
+alertcondition(high > ma1, title='High Greater Than Upper Line', message='High Greater Than Upper Line')
+alertcondition(low < ma2, title='Low Less Than Lower Line', message='Low Less Than Lower Line')
+
+
+

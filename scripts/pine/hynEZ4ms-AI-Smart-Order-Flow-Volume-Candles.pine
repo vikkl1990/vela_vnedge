@@ -1,0 +1,105 @@
+//@version=6
+indicator("AI Smart Order Flow Volume Candles", overlay=true, max_boxes_count=50)
+
+// ===== INPUTS =====
+volMultiplier = input.float(1.8, "Volume Spike Multiplier")
+rr = input.float(2.0, "Risk Reward")
+
+// ===== BUY / SELL VOLUME ESTIMATION =====
+buyVol = close > open ? volume : volume * 0.4
+sellVol = close < open ? volume : volume * 0.4
+
+delta = buyVol - sellVol
+
+// ===== VOLUME SPIKE =====
+volMA = ta.sma(volume,20)
+volSpike = volume > volMA * volMultiplier
+
+// ===== LIQUIDITY SWEEP =====
+liqBuy = low < ta.lowest(low,10)[1] and close > open
+liqSell = high > ta.highest(high,10)[1] and close < open
+
+// ===== SIGNAL CONDITIONS =====
+buySignal = liqBuy and delta > 0 and volSpike
+sellSignal = liqSell and delta < 0 and volSpike
+
+// ===== ATR =====
+atr = ta.atr(14)
+
+buySL = close - atr
+buyTP = close + atr * rr
+
+sellSL = close + atr
+sellTP = close - atr * rr
+
+// ===== TRADE BOX STORAGE =====
+var box tradeBox = na
+var float tradeSL = na
+var float tradeTP = na
+var bool tradeActive = false
+var bool isBuy = false
+
+// ===== CREATE BOX =====
+if buySignal
+    tradeBox := box.new(bar_index, buySL, bar_index+12, buyTP,
+    bgcolor=color.new(color.green,85), border_color=color.green)
+    tradeSL := buySL
+    tradeTP := buyTP
+    tradeActive := true
+    isBuy := true
+
+if sellSignal
+    tradeBox := box.new(bar_index, sellTP, bar_index+12, sellSL,
+    bgcolor=color.new(color.red,85), border_color=color.red)
+    tradeSL := sellSL
+    tradeTP := sellTP
+    tradeActive := true
+    isBuy := false
+
+// ===== TRADE MANAGEMENT =====
+if tradeActive
+    if isBuy
+        if low <= tradeSL
+            box.delete(tradeBox)
+            tradeActive := false
+        if high >= tradeTP
+            tradeActive := false
+    else
+        if high >= tradeSL
+            box.delete(tradeBox)
+            tradeActive := false
+        if low <= tradeTP
+            tradeActive := false
+
+// ===== VOLUME CANDLE COLOR =====
+var color candleColor = na
+
+if delta > 0 and volSpike
+    candleColor := color.lime
+else if delta < 0 and volSpike
+    candleColor := color.red
+else if close > open
+    candleColor := color.green
+else
+    candleColor := color.maroon
+
+barcolor(candleColor)
+
+
+
+// ===== BUY SELL NUMBERS =====
+if volSpike
+    label.new(bar_index, high,
+    "Buy:"+str.tostring(math.round(buyVol))+
+    "\nSell:"+str.tostring(math.round(sellVol)),
+    style=label.style_label_down,
+    textcolor=color.white,
+    color=color.new(color.black,100),
+    size=size.normal)
+
+// ===== SIGNAL LABELS =====
+plotshape(buySignal, location=location.belowbar,
+style=shape.labelup, color=color.green, text="BUY")
+
+plotshape(sellSignal, location=location.abovebar,
+style=shape.labeldown, color=color.red, text="SELL")

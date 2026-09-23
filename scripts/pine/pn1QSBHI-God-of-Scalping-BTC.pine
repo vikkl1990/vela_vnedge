@@ -1,0 +1,50 @@
+//@version=5
+indicator("God of Scalping BTC", shorttitle="GSBTC", overlay=true, timeframe="", timeframe_gaps=true)
+
+// Original Concept: The "God of Scalping" indicator is designed for ultra-short-term BTC trades (1-5 min charts).
+// It combines a dynamic momentum velocity (original calc: price acceleration over micro-trends) with volatility-normalized thresholds
+// and a volume surge filter. No reliance on standard oscillators like RSI/MACD. Pure price-action derived velocity for god-like precision
+// in spotting scalp entries/exits. Buy on green arrows (upward velocity surge), Sell on red arrows (downward surge). Use with tight stops.
+
+length_fast = input.int(3, title="Fast Velocity Length", minval=1)
+length_slow = input.int(8, title="Slow Velocity Length", minval=1)
+vol_length = input.int(10, title="Volume Filter Length", minval=1)
+atr_length = input.int(14, title="Volatility Normalize Length", minval=1)
+threshold_mult = input.float(1.5, title="Surge Threshold Multiplier", minval=0.1)
+
+// Core Original Mechanic: Price Velocity (acceleration proxy)
+// Velocity = (close - close[length_fast]) / length_fast  // Micro speed
+// Acceleration = Velocity - Velocity[1]  // Change in speed for surge detection
+// Normalize by ATR to adapt to BTC volatility
+atr_val = ta.atr(atr_length)
+velocity_fast = (close - close[length_fast]) / length_fast
+velocity_slow = (close - close[length_slow]) / length_slow
+acceleration = (velocity_fast - velocity_slow) / atr_val  // Normalized surge
+
+// Signal Line: Smoothed acceleration for confirmation
+signal = ta.ema(acceleration, 5)
+
+// Volume Surge Filter: Only trigger if current volume exceeds EMA(volume) by 20%
+vol_ema = ta.ema(volume, vol_length)
+vol_surge = volume > vol_ema * 1.2
+
+// Entry Conditions (Original Logic: Surge must cross signal + volume confirm + direction bias)
+// Bullish Surge: Acceleration crosses above signal, positive direction, volume surge
+bull_condition = ta.crossover(acceleration, signal) and acceleration > 0 and vol_surge
+// Bearish Surge: Acceleration crosses below signal, negative direction, volume surge
+bear_condition = ta.crossunder(acceleration, signal) and acceleration < 0 and vol_surge
+
+// Plots
+plot(ta.ema(close, length_fast), color=color.blue, title="Fast Velocity Line", linewidth=1)
+plot(ta.ema(close, length_slow), color=color.red, title="Slow Velocity Line", linewidth=1)
+
+// Surge Oscillator in Subplot? No, overlay for direct price context. Use bgcolor for momentum bias.
+bgcolor(acceleration > signal ? color.new(color.green, 95) : acceleration < signal ? color.new(color.red, 95) : na, title="Momentum Bias")
+
+// Arrows for God-Like Signals
+plotshape(series=bull_condition, title="Buy Surge", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(series=bear_condition, title="Sell Surge", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+// Alerts
+alertcondition(bull_condition, title="GSBTC Buy Alert", message="God Surge Buy: BTC Scalp Entry!")
+alertcondition(bear_condition, title="GSBTC Sell Alert", message="God Surge Sell: BTC Scalp Exit!")

@@ -1,0 +1,14 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © IntroToCryptos.ca 
+//@version=4
+
+study(title="Exponential Moving Averages 20 & 60", shorttitle="CryptoEMA20&60", overlay=true)
+len2 = input(20, minval=1, title="Length")
+src2 = input(close, title="Source")
+out2 = ema(src2, len2)
+len = input(60, minval=1, title="Length")
+src = input(close, title="Source")
+out = ema(src, len)
+plot(out, color=#f0162f, title="EMA60")
+plot(out2, color=#2ff016, title="EMA20")
+plot(close)

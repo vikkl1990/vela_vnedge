@@ -1,0 +1,559 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BOSWaves
+
+//@version=6
+indicator("Swing Gradient TPOs [BOSWaves]", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500,
+     calc_bars_count = 2000, max_bars_back = 5000)
+
+// ┌────────────────────────────── BOSWaves ─ Inputs ─────────────────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+const string gSwing = "Swing Detection"
+const string gTPO   = "TPO Profile"
+const string gStyle = "Style"
+const string gSP    = "Single Prints"
+const string gSig   = "Signals"
+const string gVis   = "Colors"
+
+int    swingLen  = input.int(12, "Swing Length", minval = 10, maxval = 200, group = gSwing,
+     tooltip = "Lookback for detecting swing highs and lows.")
+string tpoTF     = input.timeframe("30", "TPO Timeframe", group = gTPO,
+     tooltip = "Each period at this timeframe gets a letter.")
+int    boxWidth  = input.int(2, "Box Width", minval = 1, maxval = 5, group = gTPO,
+     tooltip = "Width of each TPO letter box in bars.")
+bool   showPOC   = input.bool(true, "Show POC", group = gTPO)
+bool   showVA    = input.bool(true, "Show Value Area", group = gTPO)
+float  vaPct     = input.float(70, "Value Area %", minval = 30, maxval = 90, group = gTPO) / 100
+string txtSize   = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = gTPO)
+
+string gradPreset = input.string("Sunset", "Gradient Preset",
+     options = ["None", "Sunset", "Ocean", "Neon", "Earth", "Monochrome", "Custom"], group = gStyle,
+     tooltip = "None uses flat swing colors. Choose a preset or Custom for your own.")
+color  gradCustS = input.color(#ff5252, "Custom Start", inline = "gr", group = gStyle)
+color  gradCustM = input.color(#74ffbc, "Custom Mid", inline = "gr", group = gStyle)
+color  gradCustE = input.color(#651fff, "Custom End", inline = "gr", group = gStyle)
+string boxBG     = input.string("Transparent", "Box Background", options = ["Transparent", "Custom"], group = gStyle)
+color  boxBGcol  = input.color(#000000, "Custom BG Color", group = gStyle)
+int    boxBGalp  = input.int(30, "Custom BG Transparency", minval = 0, maxval = 90, group = gStyle)
+
+bool   showSP    = input.bool(true, "Highlight Single Prints", group = gSP)
+bool   extendSP  = input.bool(true, "Extend Single Prints", group = gSP,
+     tooltip = "Projects single print zones forward until price revisits them.")
+
+bool   showSig   = input.bool(true, "Show Retest Signals", group = gSig,
+     tooltip = "Plots an arrow when price sweeps through a single print zone and reclaims it.")
+int    sigCD     = input.int(5, "Signal Cooldown", minval = 1, maxval = 30, group = gSig,
+     tooltip = "Minimum bars between consecutive signals.")
+
+color  upCol     = input.color(#00ff00, "Up Swing", inline = "c", group = gVis)
+color  dnCol     = input.color(#ff0000, "Down Swing", inline = "c", group = gVis)
+color  pocCol    = input.color(#FFEB3B, "POC", group = gVis)
+color  vaCol     = input.color(#74ffbc, "Value Area", group = gVis)
+color  spCol     = input.color(#ff7474, "Single Print", group = gVis)
+
+// ┌────────────────────────────── BOSWaves ─ Gradient Resolution ────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+bool useGrad = gradPreset != "None"
+
+[gradStart, gradMid, gradEnd] = switch gradPreset
+    "Sunset"     => [color.rgb(255, 82, 82),   color.rgb(255, 167, 38),  color.rgb(255, 235, 59)]
+    "Ocean"      => [color.rgb(0, 150, 136),    color.rgb(3, 169, 244),   color.rgb(101, 31, 255)]
+    "Neon"       => [color.rgb(255, 0, 110),    color.rgb(0, 255, 136),   color.rgb(0, 200, 255)]
+    "Earth"      => [color.rgb(141, 110, 99),   color.rgb(174, 159, 56),  color.rgb(56, 142, 60)]
+    "Monochrome" => [color.rgb(180, 180, 180),  color.rgb(255, 255, 255), color.rgb(120, 120, 120)]
+    "Custom"     => [gradCustS, gradCustM, gradCustE]
+    => [gradCustS, gradCustM, gradCustE]
+
+// ┌────────────────────────────── BOSWaves ─ Helpers ────────────────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+sz = switch txtSize
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+
+bool useCustomBG = boxBG == "Custom"
+
+var string[] alphabet = array.from(
+     "A","B","C","D","E","F","G","H","I","J","K","L","M",
+     "N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+     "a","b","c","d","e","f","g","h","i","j","k","l",
+     "m","n","o","p","q","r","s","t","u","v","w","x","y","z")
+
+int alphaSize = alphabet.size()
+
+f_grad3(float t, color c1, color c2, color c3) =>
+    t <= 0.5 ? color.from_gradient(t, 0, 0.5, c1, c2) : color.from_gradient(t, 0.5, 1, c2, c3)
+
+// ┌────────────────────────────── BOSWaves ─ Swing Detection ────────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+type SwingPt
+    float price
+    int   idx
+
+var SwingPt hiPt = SwingPt.new(na, na)
+var SwingPt loPt = SwingPt.new(na, na)
+var bool isDown  = false
+
+float hh = ta.highest(high, swingLen)
+float ll = ta.lowest(low, swingLen)
+
+if high == hh
+    isDown := true
+if low == ll
+    isDown := false
+
+if high[1] == hh[1] and high < hh
+    hiPt.idx   := bar_index - 1
+    hiPt.price := high[1]
+
+if low[1] == ll[1] and low > ll
+    loPt.idx   := bar_index - 1
+    loPt.price := low[1]
+
+// ┌────────────────────────────── BOSWaves ─ Tick Size ──────────────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+float rawTick = ta.atr(200) * 0.5
+float tickAmt = na(rawTick) or rawTick <= 0 ? syminfo.mintick * 100 : rawTick
+
+var histBoxes  = array.new<box>()
+var histLines  = array.new<line>()
+var histLabels = array.new<label>()
+var rtBoxes    = array.new<box>()
+var rtLines    = array.new<line>()
+
+// Single print zone tracking
+var spPrices = array.new<float>()
+var spTops   = array.new<float>()
+var spBots   = array.new<float>()
+var spBoxes  = array.new<box>()
+var spSwept  = array.new<bool>()
+var spSide   = array.new<int>()
+
+// Signal tracking
+var int lastSigBar = 0
+bool bullSig = false
+bool bearSig = false
+
+// ┌────────────────────────────── BOSWaves ─ SP Zone Management ─────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+if spBoxes.size() > 0
+    for i = spBoxes.size() - 1 to 0
+        box   bx    = spBoxes.get(i)
+        float mid   = spPrices.get(i)
+        float top   = spTops.get(i)
+        float bot   = spBots.get(i)
+        bool  swept = spSwept.get(i)
+        int   side  = spSide.get(i)
+
+        bool priceInZone = high >= bot and low <= top
+
+        if not swept and priceInZone
+            spSwept.set(i, true)
+
+        else if swept and not priceInZone
+            bool cdOk = (bar_index - lastSigBar) >= sigCD
+
+            if showSig and cdOk
+                if side == 1 and close > top
+                    bullSig    := true
+                    lastSigBar := bar_index
+
+                if side == -1 and close < bot
+                    bearSig    := true
+                    lastSigBar := bar_index
+
+            bx.delete()
+            spBoxes.remove(i)
+            spPrices.remove(i)
+            spTops.remove(i)
+            spBots.remove(i)
+            spSwept.remove(i)
+            spSide.remove(i)
+            continue
+
+        if extendSP
+            bx.set_right(bar_index)
+
+while spBoxes.size() > 50
+    spBoxes.shift().delete()
+    spPrices.shift()
+    spTops.shift()
+    spBots.shift()
+    spSwept.shift()
+    spSide.shift()
+
+// ┌────────────────────────────── BOSWaves ─ Build Historical TPO ───────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+buildSwingTPO(int startIdx, int endIdx, float swBot, float swTop, color swCol, bool isDn) =>
+    float range_ = swTop - swBot
+
+    if range_ > tickAmt and range_ > 0
+        int binCount = math.min(80, math.max(1, int(range_ / tickAmt)))
+        float step   = range_ / binCount
+        int prevIdx  = math.min(startIdx, endIdx)
+        int nextIdx  = math.max(startIdx, endIdx)
+        int barOff   = bar_index - nextIdx
+        int totalBars = nextIdx - prevIdx
+
+        if totalBars > 0 and binCount > 0
+            letters  = array.new<string>(binCount, "")
+            counts   = array.new<int>(binCount, 0)
+            buyCount = array.new<int>(binCount, 0)
+            selCount = array.new<int>(binCount, 0)
+
+            int desiredTF     = timeframe.in_seconds(tpoTF)
+            int chartTF       = timeframe.in_seconds()
+            int barsPerPeriod = math.max(1, desiredTF / chartTF)
+
+            int maxPeriods = int(math.ceil(float(totalBars) / barsPerPeriod))
+            if maxPeriods > alphaSize
+                barsPerPeriod := int(math.ceil(float(totalBars) / alphaSize))
+
+            int actualMaxPeriod = 0
+
+            for i = barOff to barOff + totalBars
+                if i < 0
+                    continue
+
+                int barNum    = i - barOff
+                int letterIdx = int(barNum / barsPerPeriod)
+
+                if letterIdx >= alphaSize
+                    continue
+
+                if letterIdx > actualMaxPeriod
+                    actualMaxPeriod := letterIdx
+
+                string letter = alphabet.get(letterIdx)
+                float h = high[i]
+                float l = low[i]
+
+                if na(h) or na(l)
+                    continue
+
+                bool isBuy = close[i] > open[i]
+
+                int kStart = int(math.max(0, math.floor((l - swBot) / step)))
+                int kEnd   = int(math.min(binCount - 1, math.floor((h - swBot) / step)))
+                kStart    := math.max(0, math.min(kStart, binCount - 1))
+                kEnd      := math.max(0, math.min(kEnd, binCount - 1))
+
+                if kStart <= kEnd
+                    for k = kStart to kEnd
+                        string existing = letters.get(k)
+                        if not str.contains(existing, letter)
+                            letters.set(k, existing + letter)
+                            counts.set(k, counts.get(k) + 1)
+                            if isBuy
+                                buyCount.set(k, buyCount.get(k) + 1)
+                            else
+                                selCount.set(k, selCount.get(k) + 1)
+
+            int maxTPO = counts.size() > 0 ? counts.max() : 0
+            float maxPeriodF = math.max(1., float(actualMaxPeriod))
+
+            if maxTPO > 0
+                int sumTPO = counts.sum()
+                int pocK   = counts.indexof(maxTPO)
+
+                if pocK >= 0 and pocK < binCount
+                    int vaBot = pocK
+                    int vaTop = pocK
+                    int vaSum = counts.get(pocK)
+                    float vaThresh = sumTPO * vaPct
+
+                    while vaSum < vaThresh
+                        float addBot = vaBot > 0 ? counts.get(vaBot - 1) : 0
+                        float addTop = vaTop < binCount - 1 ? counts.get(vaTop + 1) : 0
+                        if addBot >= addTop and vaBot > 0
+                            vaBot -= 1
+                            vaSum += counts.get(vaBot)
+                        else if vaTop < binCount - 1
+                            vaTop += 1
+                            vaSum += counts.get(vaTop)
+                        else
+                            break
+
+                    int spCount = 0
+
+                    for k = 0 to binCount - 1
+                        string ltrs = letters.get(k)
+                        int cnt     = counts.get(k)
+                        if cnt <= 0
+                            continue
+
+                        float bBot = swBot + k * step
+                        float bTop = bBot + step
+                        float bMid = math.avg(bBot, bTop)
+                        bool isPOC = k == pocK
+                        bool inVA  = k >= vaBot and k <= vaTop
+                        bool isSP  = cnt == 1
+
+                        if isSP
+                            spCount += 1
+
+                        int strLen = str.length(ltrs)
+                        if strLen > 0
+                            for c = 0 to strLen - 1
+                                string ch = str.substring(ltrs, c, c + 1)
+                                int left  = prevIdx + c * boxWidth
+                                int right = left + boxWidth
+
+                                int alpIdx  = alphabet.indexof(ch)
+                                float gradT = alpIdx >= 0 ? float(alpIdx) / maxPeriodF : 0.5
+
+                                color bgC = na
+                                color bdC = na
+                                color txC = na
+
+                                if isPOC
+                                    bgC := useCustomBG ? color.new(boxBGcol, boxBGalp) : color.new(pocCol, 10)
+                                    bdC := color.new(pocCol, 20)
+                                    txC := useCustomBG ? pocCol : color.black
+                                else if isSP and showSP
+                                    bgC := useCustomBG ? color.new(boxBGcol, boxBGalp) : color.new(spCol, 25)
+                                    bdC := color.new(spCol, 40)
+                                    txC := useCustomBG ? spCol : color.white
+                                else if useGrad
+                                    color gCol = f_grad3(gradT, gradStart, gradMid, gradEnd)
+                                    int trn = inVA ? 15 : 40
+                                    bgC := useCustomBG ? color.new(boxBGcol, boxBGalp) : color.new(gCol, trn)
+                                    bdC := color.new(gCol, inVA ? 40 : 65)
+                                    txC := useCustomBG ? gCol : color.white
+                                else if inVA
+                                    bgC := useCustomBG ? color.new(boxBGcol, boxBGalp) : color.new(swCol, 20)
+                                    bdC := color.new(swCol, 60)
+                                    txC := useCustomBG ? swCol : color.white
+                                else
+                                    bgC := useCustomBG ? color.new(boxBGcol, boxBGalp + 20) : color.new(swCol, 55)
+                                    bdC := color.new(swCol, 85)
+                                    txC := useCustomBG ? color.new(swCol, 30) : color.new(color.white, 40)
+
+                                histBoxes.push(box.new(left, bTop, right, bBot,
+                                     border_color = bdC,
+                                     bgcolor = bgC,
+                                     text = ch,
+                                     text_color = txC,
+                                     text_size = sz,
+                                     border_width = 1))
+
+                        if isSP and showSP and extendSP
+                            int spStart = prevIdx + strLen * boxWidth
+                            spPrices.push(bMid)
+                            spTops.push(bTop)
+                            spBots.push(bBot)
+                            spSwept.push(false)
+                            spSide.push(isDn ? -1 : 1)
+                            spBoxes.push(box.new(spStart, bTop, bar_index, bBot,
+                                 bgcolor = color.new(spCol, 88),
+                                 border_color = color.new(spCol, 70),
+                                 border_width = 1))
+
+                    if showPOC
+                        float pocPrice = swBot + pocK * step + step * 0.5
+                        histLines.push(line.new(prevIdx, pocPrice, nextIdx, pocPrice,
+                             color = color.new(pocCol, 60), width = 5))
+                        histLines.push(line.new(prevIdx, pocPrice, nextIdx, pocPrice,
+                             color = pocCol, width = 2))
+
+                    if showVA
+                        float vaTopP = swBot + (vaTop + 1) * step
+                        float vaBotP = swBot + vaBot * step
+
+                        histLines.push(line.new(prevIdx, vaTopP, prevIdx, vaBotP,
+                             color = color.new(vaCol, 70), width = 7))
+                        histLines.push(line.new(prevIdx, vaTopP, prevIdx, vaBotP,
+                             color = vaCol, width = 3))
+
+                        histLines.push(line.new(prevIdx, vaTopP, nextIdx, vaTopP,
+                             color = color.new(vaCol, 50), width = 1, style = line.style_dotted))
+                        histLines.push(line.new(prevIdx, vaBotP, nextIdx, vaBotP,
+                             color = color.new(vaCol, 50), width = 1, style = line.style_dotted))
+
+                    int totalBuys = buyCount.sum()
+                    int totalSels = selCount.sum()
+                    float deltaPct = (totalBuys + totalSels) > 0 ?
+                         (totalBuys - totalSels) / (totalBuys + totalSels) * 100 : 0.
+
+                    string tip = "TPO Count: " + str.tostring(sumTPO) +
+                         "\nPOC: " + str.tostring(swBot + pocK * step + step * 0.5, format.mintick) +
+                         "\nVA: " + str.tostring(vaPct * 100, "#") + "%" +
+                         "\nSingle Prints: " + str.tostring(spCount) +
+                         "\nDelta: " + str.tostring(deltaPct, "#.0") + "%"
+
+// ┌────────────────────────────── BOSWaves ─ Trigger Historical ─────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+if isDown != isDown[1]
+    float swBot = math.min(hiPt.price, loPt.price)
+    float swTop = math.max(hiPt.price, loPt.price)
+
+    if not na(swBot) and not na(swTop) and swTop > swBot
+        buildSwingTPO(hiPt.idx, loPt.idx, swBot, swTop,
+             isDown ? dnCol : upCol, isDown)
+
+// ┌────────────────────────────── BOSWaves ─ Real-Time Swing TPO ────────────────────┐
+// └──────────────────────────────────────────────────────────────────────────────────┘
+for b in rtBoxes
+    b.delete()
+rtBoxes.clear()
+for ln in rtLines
+    ln.delete()
+rtLines.clear()
+
+if barstate.islast
+    int   rtStart = isDown ? hiPt.idx : loPt.idx
+    float rtHi    = isDown ? hiPt.price : high
+    float rtLo    = isDown ? low : loPt.price
+
+    if not na(rtStart) and not na(rtHi) and not na(rtLo) and rtHi > rtLo
+        float range_ = rtHi - rtLo
+
+        if range_ > tickAmt
+            int binCount = math.min(80, math.max(1, int(range_ / tickAmt)))
+            float step   = range_ / binCount
+            int barSpan  = bar_index - rtStart
+
+            if barSpan > 0 and binCount > 0
+                int desiredTF     = timeframe.in_seconds(tpoTF)
+                int chartTF       = timeframe.in_seconds()
+                int barsPerPeriod = math.max(1, desiredTF / chartTF)
+
+                int maxPeriods = int(math.ceil(float(barSpan) / barsPerPeriod))
+                if maxPeriods > alphaSize
+                    barsPerPeriod := int(math.ceil(float(barSpan) / alphaSize))
+
+                letters = array.new<string>(binCount, "")
+                counts  = array.new<int>(binCount, 0)
+                int actualMaxPeriod = 0
+
+                for i = 0 to barSpan
+                    int barNum    = barSpan - i
+                    int letterIdx = int(barNum / barsPerPeriod)
+
+                    if letterIdx >= alphaSize
+                        continue
+
+                    if letterIdx > actualMaxPeriod
+                        actualMaxPeriod := letterIdx
+
+                    string letter = alphabet.get(letterIdx)
+                    float h = high[i]
+                    float l = low[i]
+
+                    if na(h) or na(l)
+                        continue
+
+                    int kStart = int(math.max(0, math.floor((l - rtLo) / step)))
+                    int kEnd   = int(math.min(binCount - 1, math.floor((h - rtLo) / step)))
+                    kStart    := math.max(0, math.min(kStart, binCount - 1))
+                    kEnd      := math.max(0, math.min(kEnd, binCount - 1))
+
+                    if kStart <= kEnd
+                        for k = kStart to kEnd
+                            string existing = letters.get(k)
+                            if not str.contains(existing, letter)
+                                letters.set(k, existing + letter)
+                                counts.set(k, counts.get(k) + 1)
+
+                int maxTPO = counts.size() > 0 ? counts.max() : 0
+                float maxPeriodF = math.max(1., float(actualMaxPeriod))
+
+                if maxTPO > 0
+                    int pocK = counts.indexof(maxTPO)
+
+                    if pocK >= 0 and pocK < binCount
+                        int vaBot = pocK
+                        int vaTop = pocK
+                        int vaSum = counts.get(pocK)
+                        float vaThresh = counts.sum() * vaPct
+
+                        while vaSum < vaThresh
+                            float addBot = vaBot > 0 ? counts.get(vaBot - 1) : 0
+                            float addTop = vaTop < binCount - 1 ? counts.get(vaTop + 1) : 0
+                            if addBot >= addTop and vaBot > 0
+                                vaBot -= 1
+                                vaSum += counts.get(vaBot)
+                            else if vaTop < binCount - 1
+                                vaTop += 1
+                                vaSum += counts.get(vaTop)
+                            else
+                                break
+
+                        color rtCol = chart.fg_color
+
+                        for k = 0 to binCount - 1
+                            string ltrs = letters.get(k)
+                            int cnt     = counts.get(k)
+                            if cnt <= 0
+                                continue
+
+                            float bBot = rtLo + k * step
+                            float bTop = bBot + step
+                            bool isPOC = k == pocK
+                            bool inVA  = k >= vaBot and k <= vaTop
+                            bool isSP  = cnt == 1
+
+                            int strLen = str.length(ltrs)
+                            if strLen > 0
+                                for c = 0 to strLen - 1
+                                    string ch = str.substring(ltrs, c, c + 1)
+                                    int left  = rtStart + c * boxWidth
+                                    int right = left + boxWidth
+
+                                    int alpIdx  = alphabet.indexof(ch)
+                                    float gradT = alpIdx >= 0 ? float(alpIdx) / maxPeriodF : 0.5
+
+                                    color bgC = na
+                                    color bdC = na
+                                    color txC = na
+
+                                    if isPOC
+                                        bgC := color.new(pocCol, 10)
+                                        bdC := color.new(pocCol, 20)
+                                        txC := color.black
+                                    else if isSP and showSP
+                                        bgC := color.new(spCol, 25)
+                                        bdC := color.new(spCol, 40)
+                                        txC := color.white
+                                    else if useGrad
+                                        color gCol = f_grad3(gradT, gradStart, gradMid, gradEnd)
+                                        int trn = inVA ? 15 : 40
+                                        bgC := color.new(gCol, trn)
+                                        bdC := color.new(gCol, inVA ? 40 : 65)
+                                        txC := color.white
+                                    else
+                                        bgC := inVA ? color.new(rtCol, 25) : color.new(rtCol, 55)
+                                        bdC := inVA ? color.new(rtCol, 60) : color.new(rtCol, 85)
+                                        txC := color.white
+
+                                    rtBoxes.push(box.new(left, bTop, right, bBot,
+                                         border_color = bdC,
+                                         bgcolor = bgC,
+                                         text = ch,
+                                         text_color = txC,
+                                         text_size = sz,
+                                         border_width = 1))
+
+                        if showPOC
+                            float pocPrice = rtLo + pocK * step + step * 0.5
+                            rtLines.push(line.new(rtStart, pocPrice, bar_index, pocPrice,
+                                 color = color.new(pocCol, 60), width = 5))
+                            rtLines.push(line.new(rtStart, pocPrice, bar_index, pocPrice,
+                                 color = pocCol, width = 2))
+
+                        if showVA
+                            float vaTopP = rtLo + (vaTop + 1) * step
+                            float vaBotP = rtLo + vaBot * step
+
+                            rtLines.push(line.new(rtStart, vaTopP, rtStart, vaBotP,
+                                 color = color.new(vaCol, 70), width = 7))
+                            rtLines.push(line.new(rtStart, vaTopP, rtStart, vaBotP,
+                                 color = vaCol, width = 3))
+
+
+// ┌────────────────────────────── BOSWaves ─- Alerts ─────────────────────────────────┐
+// └───────────────────────────────────────────────────────────────────────────────────┘
+alertcondition(isDown != isDown[1] and isDown, "Swing High", "Swing high completed on {{ticker}}")
+alertcondition(isDown != isDown[1] and not isDown, "Swing Low", "Swing low completed on {{ticker}}")
+alertcondition(bullSig, "SP Reclaim Bull", "Single print reclaimed bullish on {{ticker}}")
+alertcondition(bearSig, "SP Reclaim Bear", "Single print rejected bearish on {{ticker}}")

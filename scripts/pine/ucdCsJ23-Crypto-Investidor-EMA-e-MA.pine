@@ -1,0 +1,30 @@
+study(title="Crypto Investidor EMA e MA ", shorttitle="Crypto Investidor EMA e MA ", overlay = true )
+Length = input(21, minval=1)
+Length2 = input(50, minval=1)
+Length3 = input(100, minval=1)
+Length4 = input(200, minval=1)
+Length5 = input(21, minval=1)
+Length6 = input(50, minval=1)
+Length7 = input(100, minval=1)
+Length8 = input(200, minval=1)
+
+xPrice = close
+
+xEMA1 = ema(xPrice, Length)
+xEMA2 = ema(xPrice, Length2)
+xEMA3 = ema(xPrice, Length3)
+xEMA4 = ema(xPrice, Length4)
+xMA1 = sma(xPrice, Length5)
+xMA2 = sma(xPrice, Length6)
+xMA3 = sma(xPrice, Length7)
+xMA4 = sma(xPrice, Length8)
+
+
+plot(xEMA1, color=green, title="EMA 1")
+plot(xEMA2, color=orange, title="EMA 2")
+plot(xEMA3, color=red, title="EMA 3")
+plot(xEMA4, color=blue, title="EMA 4")
+plot(xMA1, color=green, title="MA 1")
+plot(xMA2, color=orange, title="MA 2")
+plot(xMA3, color=red, title="MA 3")
+plot(xMA4, color=blue, title="MA 4")

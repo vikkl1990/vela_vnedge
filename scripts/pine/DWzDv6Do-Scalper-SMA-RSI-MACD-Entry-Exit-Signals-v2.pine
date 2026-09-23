@@ -1,0 +1,152 @@
+//@version=5
+indicator("Scalper SMA-RSI-MACD – Entry/Exit Signals v2", overlay=true, timeframe="", timeframe_gaps=true)
+
+// ===== Inputs
+// MAs
+smaFastLen   = input.int(5,   "SMA Fast",   minval=1)
+smaMidLen    = input.int(8,   "SMA Mid",    minval=1)
+smaSlowLen   = input.int(13,  "SMA Slow",   minval=1)
+emaTrendLen  = input.int(200, "EMA Trend len", minval=1)
+useTrendFilt = input.bool(true, "Use Trend Filter (EMA200 + SMA ribbon)?")
+
+// Momentum
+rsiLen       = input.int(4,   "RSI length", minval=1)
+rsiBuyTh     = input.float(30,"RSI long pullback <", minval=1, maxval=99)
+rsiSellTh    = input.float(70,"RSI short pullback >", minval=1, maxval=99)
+macdFast     = input.int(12, "MACD fast",   minval=1)
+macdSlow     = input.int(26, "MACD slow",   minval=1)
+macdSig      = input.int(9,  "MACD signal", minval=1)
+lookbackBars = input.int(3,  "Signal lookback bars (RSI & MACD)", minval=1, tooltip="Ennyi báron belül érvényes a MACD-keresztezés és az RSI-feltétel.")
+
+// Risk/Targets
+atrLen       = input.int(14,   "ATR length", minval=1)
+atrMultSL    = input.float(1.5,"Initial Stop = ATR *", step=0.1)
+tp1_R        = input.float(1.0,"TP1 (R)", step=0.1)
+tp2_R        = input.float(2.0,"TP2 (R)", step=0.1)
+exitMode     = input.string("TP1 or SL", "Exit mode", options=["TP1 or SL","TP2 or SL","Opposite Signal"])
+
+// Session
+useSession   = input.bool(false, "Trade only in this session?")
+sessionInp   = input.session("0930-1600", "Session (exchange local)")
+
+// ===== Indicators
+smaFast = ta.sma(close, smaFastLen)
+smaMid  = ta.sma(close, smaMidLen)
+smaSlow = ta.sma(close, smaSlowLen)
+ema200  = ta.ema(close, emaTrendLen)
+rsiVal  = ta.rsi(close, rsiLen)
+[macdLine, signalLine, histLine] = ta.macd(close, macdFast, macdSlow, macdSig)
+atr     = ta.atr(atrLen)
+
+// ===== Helpers
+inSession = useSession ? not na(time(timeframe.period, sessionInp)) : true
+
+trendUP_raw   = close > ema200 and smaFast > smaMid and smaMid > smaSlow and close > smaSlow
+trendDOWN_raw = close < ema200 and smaFast < smaMid and smaMid < smaSlow and close < smaSlow
+trendUP   = useTrendFilt ? trendUP_raw   : true
+trendDOWN = useTrendFilt ? trendDOWN_raw : true
+
+// MACD trigger akkor is oké, ha az elmúlt N báron belül történt a keresztezés
+macdBullNow    = ta.crossover(macdLine, signalLine)
+macdBearNow    = ta.crossunder(macdLine, signalLine)
+macdBullRecent = macdBullNow or (ta.barssince(macdBullNow) <= lookbackBars - 1)
+macdBearRecent = macdBearNow or (ta.barssince(macdBearNow) <= lookbackBars - 1)
+
+// RSI pullback is érvényes, ha az elmúlt N báron belül teljesült
+rsiLongNow  = rsiVal < rsiBuyTh
+rsiShortNow = rsiVal > rsiSellTh
+rsiLongOk   = rsiLongNow  or (ta.barssince(rsiLongNow)  <= lookbackBars - 1)
+rsiShortOk  = rsiShortNow or (ta.barssince(rsiShortNow) <= lookbackBars - 1)
+
+// Setupok
+longSetup  = inSession and trendUP   and rsiLongOk  and macdBullRecent
+shortSetup = inSession and trendDOWN and rsiShortOk and macdBearRecent
+
+// ===== State (indicator only)
+var bool inLong  = false
+var bool inShort = false
+var float entryPrice = na
+var float stopPrice  = na
+var float tp1Price   = na
+var float tp2Price   = na
+
+// Új belépők (ha nincs aktív pozíció „állapotban”)
+longEntry  = not inLong and not inShort and longSetup
+shortEntry = not inLong and not inShort and shortSetup
+
+if longEntry
+    inLong     := true
+    inShort    := false
+    entryPrice := close
+    stopPrice  := close - atrMultSL * atr
+    rr         = entryPrice - stopPrice
+    tp1Price   := entryPrice + tp1_R * rr
+    tp2Price   := entryPrice + tp2_R * rr
+
+if shortEntry
+    inShort    := true
+    inLong     := false
+    entryPrice := close
+    stopPrice  := close + atrMultSL * atr
+    rr         = stopPrice - entryPrice
+    tp1Price   := entryPrice - tp1_R * rr
+    tp2Price   := entryPrice - tp2_R * rr
+
+// Exit logika
+wantTP = exitMode == "TP1 or SL" ? tp1Price : tp2Price
+
+longHitTP = inLong  and high >= wantTP
+longHitSL = inLong  and low  <= stopPrice
+longOpp   = inLong  and exitMode == "Opposite Signal" and shortSetup
+
+shortHitTP = inShort and low  <= wantTP
+shortHitSL = inShort and high >= stopPrice
+shortOpp   = inShort and exitMode == "Opposite Signal" and longSetup
+
+longExit  = longHitTP or longHitSL or longOpp
+shortExit = shortHitTP or shortHitSL or shortOpp
+
+if longExit
+    inLong     := false
+    entryPrice := na
+    stopPrice  := na
+    tp1Price   := na
+    tp2Price   := na
+
+if shortExit
+    inShort    := false
+    entryPrice := na
+    stopPrice  := na
+    tp1Price   := na
+    tp2Price   := na
+
+// ===== Plots
+plot(ema200, "EMA200")
+plot(smaFast, "SMA Fast")
+plot(smaMid,  "SMA Mid")
+plot(smaSlow, "SMA Slow")
+
+plot(inLong  ? stopPrice : na, "Long SL",  color=color.new(color.red, 55),  style=plot.style_linebr)
+plot(inLong  ? wantTP    : na, "Long TP",  color=color.new(color.teal,55),  style=plot.style_linebr)
+plot(inShort ? stopPrice : na, "Short SL", color=color.new(color.red, 55),  style=plot.style_linebr)
+plot(inShort ? wantTP    : na, "Short TP", color=color.new(color.orange,55),style=plot.style_linebr)
+
+plotshape(longEntry,  title="Long ENTRY",  style=shape.triangleup,   size=size.small, color=color.new(color.lime, 0), location=location.belowbar, text="LONG")
+plotshape(shortEntry, title="Short ENTRY", style=shape.triangledown, size=size.small, color=color.new(color.red, 0),  location=location.abovebar, text="SHORT")
+
+plotshape(longExit and longHitTP,  title="Long EXIT TP",  style=shape.flag,   size=size.tiny, color=color.new(color.teal,  0), location=location.abovebar, text="TP")
+plotshape(longExit and longHitSL,  title="Long EXIT SL",  style=shape.xcross, size=size.tiny, color=color.new(color.red,   0), location=location.abovebar, text="SL")
+plotshape(longExit and longOpp,    title="Long EXIT Opp", style=shape.circle, size=size.tiny, color=color.new(color.gray,  0), location=location.abovebar, text="OPP")
+plotshape(shortExit and shortHitTP, title="Short EXIT TP", style=shape.flag,   size=size.tiny, color=color.new(color.orange,0), location=location.belowbar, text="TP")
+plotshape(shortExit and shortHitSL, title="Short EXIT SL", style=shape.xcross, size=size.tiny, color=color.new(color.red,   0), location=location.belowbar, text="SL")
+plotshape(shortExit and shortOpp,   title="Short EXIT Opp",style=shape.circle, size=size.tiny, color=color.new(color.gray,  0), location=location.belowbar, text="OPP")
+
+// ===== Alerts
+alertcondition(longEntry,  "Long ENTRY",  "Long belépő jel")
+alertcondition(shortEntry, "Short ENTRY", "Short belépő jel")
+alertcondition(longExit and longHitTP,  "Long EXIT TP",  "Long zárás TP")
+alertcondition(longExit and longHitSL,  "Long EXIT SL",  "Long zárás Stop")
+alertcondition(longExit and longOpp,    "Long EXIT Opp", "Long zárás ellenjelre")
+alertcondition(shortExit and shortHitTP,"Short EXIT TP", "Short zárás TP")
+alertcondition(shortExit and shortHitSL,"Short EXIT SL", "Short zárás Stop")
+alertcondition(shortExit and shortOpp,  "Short EXIT Opp","Short zárás ellenjelre")

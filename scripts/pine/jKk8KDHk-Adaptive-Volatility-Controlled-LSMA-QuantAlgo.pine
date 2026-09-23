@@ -1,0 +1,138 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © QuantAlgo
+
+//@version=5
+indicator(title="Adaptive Volatility-Controlled LSMA [QuantAlgo]", overlay=true)
+
+//              ╔═══════════════════════════╗              //
+//              ║    USER-DEFINED INPUTS    ║              //
+//              ╚═══════════════════════════╝              //
+
+// Input Groups
+var string LSMA_Settings     = "════════ LSMA Settings ════════"
+var string Volatility_Filter = "════════ Volatility Filter ════════"
+var string LSMA_Visuals      = "════════ LSMA Visual Settings ════════"
+var string Band_Visuals      = "════════ Volatility Band Settings ════════"
+var string Bar_Coloring      = "════════ Bar Coloring Settings ════════"
+
+// Descriptions
+tooltipLSMALength            = "Length of the LSMA (Least Squares Moving Average).\n" +
+                               "Increase to make the LSMA smoother and slower to react.\n" +
+                               "Decrease to make it more responsive to price changes."
+tooltipSource                = "The price source to use for LSMA calculation (e.g., close, open, high, low)."
+tooltipATRLength             = "Length of the ATR (Average True Range) for the volatility filter.\n" +
+                               "Increase to make the ATR smoother and reduce sensitivity.\n" +
+                               "Decrease to make the ATR more responsive to short-term volatility."
+tooltipATRMultiplier         = "Multiplier applied to the ATR to determine the volatility bands.\n" +
+                               "Increase to widen the bands, making them less sensitive to price changes.\n" +
+                               "Decrease to tighten the bands, making them more sensitive."
+tooltipShowBands             = "Toggle the visibility of the volatility bands on the chart."
+tooltipBandUpColor           = "Color for the volatility band during an uptrend."
+tooltipBandDownColor         = "Color for the volatility band during a downtrend."
+tooltipLSMAUpColor           = "Color for the LSMA line during an uptrend."
+tooltipLSMADownColor         = "Color for the LSMA line during a downtrend."
+tooltipBarUpColor            = "Color for the bars during an uptrend."
+tooltipBarDownColor          = "Color for the bars during a downtrend."
+tooltipBarColorEnabled       = "Enable or disable bar coloring based on trend direction."
+
+// LSMA Settings
+len_lsma              = input.int   (50,     title="LSMA Length",              group=LSMA_Settings, tooltip=tooltipLSMALength)
+src                   = input.source(close,  title="LSMA Source",              group=LSMA_Settings, tooltip=tooltipSource)
+lsma                  = ta.linreg   (src, len_lsma, 0)
+
+// ATR Volatility Filter
+atr_len               = input.int   (14,     title="ATR Length",               group=Volatility_Filter, tooltip=tooltipATRLength)
+atr_mul               = input.float (1.5,    title="ATR Multiplier", step=0.1, group=Volatility_Filter, tooltip=tooltipATRMultiplier)
+atr                   = ta.atr      (atr_len)
+
+//              ╔════════════════════════════════╗              //
+//              ║      LSMA VISUAL SETTINGS      ║              //
+//              ╚════════════════════════════════╝              //
+
+// LSMA Visual Settings
+lsma_up_color         = input.color(#00ffaa, title="Uptrend LSMA Color",      group=LSMA_Visuals, tooltip=tooltipLSMAUpColor)
+lsma_down_color       = input.color(#ff0000, title="Downtrend LSMA Color",    group=LSMA_Visuals, tooltip=tooltipLSMADownColor)
+
+//              ╔════════════════════════════════╗              //
+//              ║    VOLATILITY BAND SETTINGS    ║              //
+//              ╚════════════════════════════════╝              //
+
+// Volatility Band Visual Settings
+band_up_color         = input.color(#00ffaa, title="Uptrend Band Color",      group=Band_Visuals, tooltip=tooltipBandUpColor)
+band_down_color       = input.color(#ff0000, title="Downtrend Band Color",    group=Band_Visuals, tooltip=tooltipBandDownColor)
+show_bands            = input.bool (true,     title="Show Volatility Bands?",  group=Band_Visuals, tooltip=tooltipShowBands)
+
+//              ╔══════════════════════════════╗              //
+//              ║     BAR COLORING SETTINGS    ║              //
+//              ╚══════════════════════════════╝              //
+
+// Bar Coloring Settings
+bar_up_color          = input.color(#00ffaa, title="Uptrend Bar Color",    group=Bar_Coloring, tooltip=tooltipBarUpColor)
+bar_down_color        = input.color(#ff0000, title="Downtrend Bar Color",  group=Bar_Coloring, tooltip=tooltipBarDownColor)
+bar_color_enabled     = input.bool (true,     title="Enable Bar Coloring?", group=Bar_Coloring, tooltip=tooltipBarColorEnabled)
+
+// Volatility Bands Calculation
+upper_volatility_band = lsma + atr * atr_mul
+lower_volatility_band = lsma - atr * atr_mul
+
+vol = ta.atr(14)
+upper_band_extended   = upper_volatility_band + vol
+lower_band_extended   = lower_volatility_band - vol
+
+// Plot the volatility bands and fill with separate color control
+mid_band_upper        = plot(show_bands ? upper_volatility_band + vol : na, "Upper Mid Band",      color=band_down_color, display=display.none)
+mid_band_lower        = plot(show_bands ? lower_volatility_band - vol : na, "Lower Mid Band",      color=band_up_color,   display=display.none)
+
+main_band_upper       = plot(show_bands ? upper_volatility_band : na,       "Upper Band",          color=band_up_color,   display=display.none)
+main_band_lower       = plot(show_bands ? lower_volatility_band : na,       "Lower Band",          color=band_down_color, display=display.none)
+
+extended_upper_band   = plot(show_bands ? upper_band_extended : na,         "Extended Upper Band", color=band_up_color,   display=display.none)
+extended_lower_band   = plot(show_bands ? lower_band_extended : na,         "Extended Lower Band", color=band_down_color, display=display.none)
+
+fill(extended_upper_band, main_band_upper, color.new(band_down_color, close > lsma ? 65 : 90), "Upper Cloud")
+fill(main_band_upper, mid_band_upper, color.new(color.red, 90), "Upper Cloud")
+fill(mid_band_lower, main_band_lower, color.new(color.green, 90), "Lower Cloud")
+fill(main_band_lower, extended_lower_band, color.new(band_up_color, close < lsma ? 65 : 90), "Lower Cloud")
+
+//              ╔══════════════════════════╗              //
+//              ║      TREND DETECTION     ║              //
+//              ╚══════════════════════════╝              //
+
+// Trend conditions based on LSMA and volatility bands
+long_condition        = close > upper_volatility_band and lsma > lsma[1]
+short_condition       = close < lower_volatility_band and lsma < lsma[1]
+
+// Signal variables to keep track of current trend
+var int trend_direction = 0
+if long_condition
+    trend_direction := 1
+if short_condition
+    trend_direction := -1
+
+//              ╔══════════════════════════╗              //
+//              ║       VISUALIZATION      ║              //
+//              ╚══════════════════════════╝              //
+
+// Plot LSMA line with color change for trend direction, separate from bands
+plot(lsma, "LSMA", color = trend_direction == 1 ? lsma_up_color : trend_direction == -1 ? lsma_down_color : color.gray, linewidth = 3)
+
+// Bar Coloring based on trend direction
+barcolor(trend_direction == 1 and bar_color_enabled ? bar_up_color : trend_direction == -1 and bar_color_enabled ? bar_down_color : na)
+
+//              ╔══════════════════════════╗              //
+//              ║          ALERTS          ║              //
+//              ╚══════════════════════════╝              //
+
+alertcondition(long_condition,  title="LSMA Long",  message="LSMA Long Signal on {{ticker}}")
+alertcondition(short_condition, title="LSMA Short", message="LSMA Short Signal on {{ticker}}")
+
+//              ╔══════════════════════════╗              //
+//              ║        CREATED BY        ║              //
+//              ╚══════════════════════════╝              //
+
+// ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗     █████╗ ██╗      ██████╗  ██████╗ 
+//██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝    ██╔══██╗██║     ██╔════╝ ██╔═══██╗
+//██║   ██║██║   ██║███████║██╔██╗ ██║   ██║       ███████║██║     ██║  ███╗██║   ██║
+//██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║       ██╔══██║██║     ██║   ██║██║   ██║
+//╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║       ██║  ██║███████╗╚██████╔╝╚██████╔╝
+// ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝

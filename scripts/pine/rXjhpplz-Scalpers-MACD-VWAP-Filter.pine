@@ -1,0 +1,154 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © james4392010
+
+//@version=6
+//@version=6
+indicator("Scalpers MACD + VWAP Filter", overlay=false)
+
+// =====================
+// BACKTEST DATE FILTER
+// =====================
+startDate = input.time(timestamp("2022-01-01"), "Backtest Start Date")
+endDate   = input.time(timestamp("2030-01-01"), "Backtest End Date")
+
+inDateRange = time >= startDate and time <= endDate
+
+// =====================
+// SESSION FILTER
+// =====================
+sessionInput = input.session("0930-1600", "Trading Session")
+inSession = not na(time(timeframe.period, sessionInput))
+
+// =====================
+// RISK MANAGEMENT
+// =====================
+takeProfitPts = input.float(50, "Take Profit (Points)")
+stopLossPts   = input.float(25, "Stop Loss (Points)")
+
+// =====================
+// VWAP SETTINGS
+// =====================
+vwapAnchor     = input.string("D", "VWAP Reset Period", options=["D","W","M","Y"])
+vwapStdevMult2 = input.float(2.0, "VWAP Stdev Multiplier 2")
+vwapStdevMult1 = input.float(1.0, "VWAP Stdev Multiplier 1")
+
+// =====================
+// VWAP CALCULATION
+// =====================
+var float sumPV  = 0.0
+var float sumV   = 0.0
+var float sumP2V = 0.0
+
+isNewPeriod = ta.change(time(vwapAnchor)) != 0
+
+if isNewPeriod
+    sumPV  := 0
+    sumV   := 0
+    sumP2V := 0
+
+sumPV  += hlc3 * volume
+sumV   += volume
+sumP2V += math.pow(hlc3,2) * volume
+
+myVwap   = sumPV / sumV
+variance = sumP2V / sumV - math.pow(myVwap,2)
+stDev    = math.sqrt(math.max(0,variance))
+
+upperBand1 = myVwap + vwapStdevMult1 * stDev
+lowerBand1 = myVwap - vwapStdevMult1 * stDev
+
+upperBand2 = myVwap + vwapStdevMult2 * stDev
+lowerBand2 = myVwap - vwapStdevMult2 * stDev
+
+// =====================
+// MACD
+// =====================
+fast_length = input.int(9)
+slow_length = input.int(50)
+signal_length = input.int(16)
+
+src = input(close)
+
+fastMA = ta.ema(src, fast_length)
+slowMA = ta.ema(src, slow_length)
+
+macd = fastMA - slowMA
+signal = ta.ema(macd, signal_length)
+
+hist = macd - signal
+
+// =====================
+// CROSSOVERS
+// =====================
+macdCrossUp   = ta.crossover(macd, signal)
+macdCrossDown = ta.crossunder(macd, signal)
+
+// =====================
+// ENTRY CONDITIONS
+// =====================
+longCondition =
+     macdCrossUp and
+     close > myVwap and
+     inSession and
+     inDateRange and
+     barstate.isconfirmed
+
+shortCondition =
+     macdCrossDown and
+     close < myVwap and
+     inSession and
+     inDateRange and
+     barstate.isconfirmed
+
+// =====================
+// ALERT CONDITIONS
+// =====================
+alertcondition(longCondition, title="BUY SIGNAL", message="MACD Cross Up + Price Above VWAP")
+
+alertcondition(shortCondition, title="SELL SIGNAL", message="MACD Cross Down + Price Below VWAP")
+
+// =====================
+// VISUALS ON MAIN CHART
+// =====================
+plotshape(macdCrossUp and close > myVwap,
+     title         = "Buy Signal",
+     location      = location.belowbar,
+     color         = color.green,
+     style         = shape.triangleup,
+     size          = size.small,
+     force_overlay = true)
+
+plotshape(macdCrossDown and close < myVwap,
+     title         = "Sell Signal",
+     location      = location.abovebar,
+     color         = color.red,
+     style         = shape.triangledown,
+     size          = size.small,
+     force_overlay = true)
+
+// =====================
+// VWAP + BANDS
+// =====================
+plot(myVwap, "VWAP", color=color.new(#5b9cf6, 30), force_overlay=true)
+
+u1 = plot(upperBand1, "Upper Band #1", color=color.new(color.green, 40), force_overlay=true)
+l1 = plot(lowerBand1, "Lower Band #1", color=color.new(color.green, 40), force_overlay=true)
+
+u2 = plot(upperBand2, "Upper Band #2", color=color.new(color.gray, 50), force_overlay=true)
+l2 = plot(lowerBand2, "Lower Band #2", color=color.new(color.gray, 50), force_overlay=true)
+
+fill(u1, l1, color=color.new(color.green, 92), title="Band 1 Fill")
+fill(u2, l2, color=color.new(#5b9cf6, 95), title="Band 2 Fill")
+
+// =====================
+// MACD VISUALIZATION
+// =====================
+hline(0, "Zero Line", color=color.gray)
+
+plot(macd, "MACD", color=color.red)
+plot(signal, "Signal", color=color.yellow)
+
+plot(hist, "Histogram", style=plot.style_columns,
+     color = hist >= 0 ?
+        (hist > hist[1] ? color.teal : color.new(color.teal,50)) :
+        (hist > hist[1] ? color.new(color.red,50) : color.red))

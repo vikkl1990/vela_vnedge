@@ -1,0 +1,116 @@
+// ══════════════════════════════════════════════════════════════════════════════
+// Scalper's Moving Average [DYNA]
+// Adaptive moving average that hugs price tightly in trends and flattens in
+// chop. Based on Kaufman Adaptive Moving Average (KAMA) with fast/slow
+// constants tuned for 1-5 minute scalping charts.
+// ══════════════════════════════════════════════════════════════════════════════
+
+//@version=6
+indicator("Scalper's Moving Average [DYNA]", shorttitle = "ScalpMA [DYNA]", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 1: COLOR PALETTE
+// ══════════════════════════════════════════════════════════════════════════════
+
+color BULL_COLOR    = #26a69a
+color BEAR_COLOR    = #ef5350
+color NEUTRAL_COLOR = #787b86
+color WARNING_COLOR = #ff9800
+color FILL_BULL     = color.new(#26a69a, 85)
+color FILL_BEAR     = color.new(#ef5350, 85)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 2: INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- Core Settings ---
+string GRP_CORE = "Core Settings"
+int    i_kamaLen   = input.int(10,   "KAMA Length",    minval = 2,  maxval = 100, group = GRP_CORE)
+int    i_fastConst = input.int(2,    "Fast Constant",  minval = 1,  maxval = 10,  group = GRP_CORE)
+int    i_slowConst = input.int(30,   "Slow Constant",  minval = 10, maxval = 100, group = GRP_CORE)
+
+// --- Flip Filter ---
+string GRP_FILTER = "Flip Filter"
+float  i_atrThresh  = input.float(0.15, "Min Slope (ATR %)", minval = 0.0, maxval = 1.0, step = 0.05, tooltip = "Slope must exceed this fraction of ATR to register a flip. Higher = fewer labels.", group = GRP_FILTER)
+int    i_cooldown   = input.int(5,      "Cooldown Bars",     minval = 0,   maxval = 20,  tooltip = "Minimum bars between flip labels.", group = GRP_FILTER)
+
+// --- Visual ---
+string GRP_VIS = "Visual"
+bool   i_showFill   = input.bool(true, "Show Distance Fill", group = GRP_VIS)
+int    i_lineWidth  = input.int(2,     "KAMA Line Width", minval = 1, maxval = 5, group = GRP_VIS)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 3: CORE LOGIC
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- Kaufman Adaptive Moving Average (manual implementation) ---
+// KAMA adapts its smoothing constant based on the efficiency ratio (ER).
+// In trending markets ER -> 1 and KAMA tracks price closely (fast).
+// In choppy markets ER -> 0 and KAMA barely moves (slow).
+
+float direction  = math.abs(close - close[i_kamaLen])
+float volatility = math.sum(math.abs(close - close[1]), i_kamaLen)
+float er         = bar_index < i_kamaLen or nz(volatility) == 0 ? 0.0 : nz(direction) / volatility
+
+float fastSC = 2.0 / (i_fastConst + 1)
+float slowSC = 2.0 / (i_slowConst + 1)
+float sc     = math.pow(er * (fastSC - slowSC) + slowSC, 2)
+
+// Seed KAMA with close on first bar; otherwise recursive update.
+// Previous version used nz(kama[1]) which erased the var seed on bar 1.
+var float kama = na
+kama := na(kama[1]) ? close : kama[1] + sc * (close - kama[1])
+
+// --- ATR for threshold scaling ---
+float atr = ta.atr(14)
+
+// --- Slope detection with neutral dead-zone (2-bar smoothed slope) ---
+float kamaSlope = (kama - nz(kama[2], kama)) / 2
+float deadZone  = atr * i_atrThresh
+
+color kamaColor = kamaSlope > deadZone ? BULL_COLOR : kamaSlope < -deadZone ? BEAR_COLOR : NEUTRAL_COLOR
+
+// --- Slope flip detection (confirmed-bar logic; 2-bar smoothed slope) ---
+float prevSlope  = (nz(kama[1], kama) - nz(kama[3], kama)) / 2
+float prev2Slope = (nz(kama[2], kama) - nz(kama[4], kama)) / 2
+
+// Raw flips: slope crossed the dead-zone threshold
+bool rawBull = prevSlope > deadZone and prev2Slope <= deadZone
+bool rawBear = prevSlope < -deadZone and prev2Slope >= -deadZone
+
+// --- Cooldown filter ---
+var int barsSinceFlip = 0
+barsSinceFlip := barsSinceFlip + 1
+
+bool slopeBull = rawBull and barsSinceFlip >= i_cooldown
+bool slopeBear = rawBear and barsSinceFlip >= i_cooldown
+
+if slopeBull or slopeBear
+    barsSinceFlip := 0
+
+// --- Distance fill color (neutral when price hugs KAMA) ---
+color fillColor = math.abs(close - kama) < deadZone ? color.new(NEUTRAL_COLOR, 90) : close >= kama ? FILL_BULL : FILL_BEAR
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 4: VISUAL LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+// --- KAMA line ---
+p_kama  = plot(kama,  "KAMA",  color = kamaColor, linewidth = i_lineWidth)
+
+// --- Price line (transparent, used for fill only) ---
+p_close = plot(close, "Close", color = na, display = display.none)
+
+// --- Distance fill between price and KAMA ---
+fill(p_close, p_kama, color = i_showFill ? fillColor : na, title = "Distance Fill")
+
+// --- Slope flip markers (offset from candles for visibility) ---
+plotshape(slopeBull, "Bullish Flip", style = shape.triangleup,   location = location.belowbar, color = BULL_COLOR, size = size.tiny, text = "UP", textcolor = BULL_COLOR)
+plotshape(slopeBear, "Bearish Flip", style = shape.triangledown, location = location.abovebar, color = BEAR_COLOR, size = size.tiny, text = "DN", textcolor = BEAR_COLOR)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SECTION 5: ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(slopeBull, title = "Slope Flip Bullish", message = "Scalper's Moving Average [DYNA]: KAMA slope flipped bullish. Trend may be turning up.")
+alertcondition(slopeBear, title = "Slope Flip Bearish", message = "Scalper's Moving Average [DYNA]: KAMA slope flipped bearish. Trend may be turning down.")

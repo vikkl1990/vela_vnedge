@@ -1,0 +1,186 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © itsjustAL
+
+//@version=6
+indicator("Market Direction Strength (MDS)", overlay=true)
+
+//================ INPUTS ================
+calcSource = input.string("Regular", "Calculation Source", options=["Regular", "Heikin Ashi"])
+
+fastLen = input.int(9, "Fast EMA", minval=1)
+slowLen = input.int(20, "Slow EMA", minval=1)
+
+slopeLookback   = input.int(3, "Slope Lookback", minval=1)
+spreadLookback  = input.int(3, "Spread Lookback", minval=1)
+strongSpreadPct = input.float(0.10, "Strong Spread %", minval=0.0, step=0.01)
+
+showStatusPanel = input.bool(true, "Show Status Panel")
+showSignals     = input.bool(true, "Show A+ Signals")
+
+//================ STATUS PANEL POSITION ================
+statusPanelPos = input.string("Top Right", "Status Panel Position", options=["Top Right", "Middle Right", "Bottom Right"])
+
+//================ TREND IDENTIFIER ================
+useTrendIdentifier = input.bool(true, "Use VWAP Trend Identifier")
+vwapAngleLookback  = input.int(5, "VWAP Angle Lookback", minval=1)
+sidewaysMaxDeg     = input.float(1.0, "Sideways Max Angle °", minval=0.1, step=0.1)
+trendStartDeg      = input.float(1.0, "Trend Start Angle °", minval=0.1, step=0.1)
+strongTrendDeg     = input.float(3.0, "Strong Trend Angle °", minval=0.1, step=0.1)
+useVWAPPersistence = input.bool(true, "Require Angle Persistence")
+vwapPersistenceBars = input.int(2, "VWAP Persistence Bars", minval=1, maxval=9)
+
+//================ SOURCE DATA ================
+haTicker = ticker.heikinashi(syminfo.tickerid)
+
+haOpen  = request.security(haTicker, timeframe.period, open)
+haHigh  = request.security(haTicker, timeframe.period, high)
+haLow   = request.security(haTicker, timeframe.period, low)
+haClose = request.security(haTicker, timeframe.period, close)
+
+srcOpen  = calcSource == "Heikin Ashi" ? haOpen  : open
+srcHigh  = calcSource == "Heikin Ashi" ? haHigh  : high
+srcLow   = calcSource == "Heikin Ashi" ? haLow   : low
+srcClose = calcSource == "Heikin Ashi" ? haClose : close
+srcHlc3  = (srcHigh + srcLow + srcClose) / 3.0
+
+//================ CORE CALCULATIONS ================
+vwapValue = ta.vwap(srcHlc3)
+emaFast   = ta.ema(srcClose, fastLen)
+emaSlow   = ta.ema(srcClose, slowLen)
+
+spread        = math.abs(emaFast - emaSlow)
+spreadPct     = spread / srcClose * 100.0
+spreadGrowing = spread > spread[spreadLookback]
+
+fastUp   = emaFast > emaFast[slopeLookback]
+fastDown = emaFast < emaFast[slopeLookback]
+
+slowUp   = emaSlow > emaSlow[slopeLookback]
+slowDown = emaSlow < emaSlow[slopeLookback]
+
+bullAligned = emaFast > emaSlow
+bearAligned = emaFast < emaSlow
+
+bullBias = srcClose > vwapValue
+bearBias = srcClose < vwapValue
+
+//================ VWAP TREND IDENTIFIER ================
+vwapSlopePctPerBar = ((vwapValue - vwapValue[vwapAngleLookback]) / vwapValue[vwapAngleLookback]) * 100.0 / vwapAngleLookback
+vwapAngleDeg       = math.atan(vwapSlopePctPerBar) * 180.0 / math.pi
+
+vwapSideways   = math.abs(vwapAngleDeg) <= sidewaysMaxDeg
+vwapWeakUp     = vwapAngleDeg > sidewaysMaxDeg and vwapAngleDeg < strongTrendDeg
+vwapStrongUp   = vwapAngleDeg >= strongTrendDeg
+vwapWeakDown   = vwapAngleDeg < -sidewaysMaxDeg and vwapAngleDeg > -strongTrendDeg
+vwapStrongDown = vwapAngleDeg <= -strongTrendDeg
+
+vwapUptrend   = vwapAngleDeg > trendStartDeg
+vwapDowntrend = vwapAngleDeg < -trendStartDeg
+
+var int vwapUpPersistCount = 0
+var int vwapDownPersistCount = 0
+
+vwapUpPersistCount := vwapUptrend ? vwapUpPersistCount[1] + 1 : 0
+vwapDownPersistCount := vwapDowntrend ? vwapDownPersistCount[1] + 1 : 0
+
+vwapUpPersistOK   = not useVWAPPersistence or (vwapUpPersistCount >= vwapPersistenceBars)
+vwapDownPersistOK = not useVWAPPersistence or (vwapDownPersistCount >= vwapPersistenceBars)
+
+vwapLongOK  = not useTrendIdentifier or vwapUpPersistOK
+vwapShortOK = not useTrendIdentifier or vwapDownPersistOK
+
+//================ TREND HEALTH ================
+strongBull = bullAligned and bullBias and fastUp and slowUp and spreadGrowing and spreadPct >= strongSpreadPct
+strongBear = bearAligned and bearBias and fastDown and slowDown and spreadGrowing and spreadPct >= strongSpreadPct
+
+weakBull = bullAligned and bullBias and not strongBull
+weakBear = bearAligned and bearBias and not strongBear
+
+//================ SIGNAL LOGIC ================
+pullbackLong  = ta.lowest(srcLow, 4) <= emaFast and srcClose > emaFast and srcClose > emaSlow
+pullbackShort = ta.highest(srcHigh, 4) >= emaFast and srcClose < emaFast and srcClose < emaSlow
+
+aPlusLong  = strongBull and pullbackLong and vwapLongOK
+aPlusShort = strongBear and pullbackShort and vwapShortOK
+
+//================ COLORS ================
+bullStrong = color.rgb(0, 255, 140)
+bullWeak   = color.rgb(0, 170, 90)
+bearStrong = color.rgb(255, 70, 70)
+bearWeak   = color.rgb(170, 50, 50)
+
+//================ PLOTS ================
+p1 = plot(emaFast, "EMA 9", color=color.green, linewidth=2, force_overlay=true)
+p2 = plot(emaSlow, "EMA 20", color=color.yellow, linewidth=2, force_overlay=true)
+plot(vwapValue, "VWAP", color=color.blue, linewidth=2, force_overlay=true)
+
+fill(
+    p1,
+    p2,
+    strongBull ? color.new(bullStrong, 70) :
+    strongBear ? color.new(bearStrong, 70) :
+    weakBull   ? color.new(bullWeak, 85) :
+    weakBear   ? color.new(bearWeak, 85) : na,
+    title="Trend Fill",
+    fillgaps=true
+)
+
+//================ SIGNAL MARKERS ================
+plotshape(showSignals and aPlusLong,  title="A+ Long",  location=location.belowbar, style=shape.triangleup,   color=color.lime, size=size.small, text="LONG", force_overlay=true)
+plotshape(showSignals and aPlusShort, title="A+ Short", location=location.abovebar, style=shape.triangledown, color=color.red,  size=size.small, text="SHORT", force_overlay=true)
+
+//================ STATUS PANEL ================
+stateText =
+     strongBull ? "STRONG BULL" :
+     weakBull   ? "WEAK BULL" :
+     strongBear ? "STRONG BEAR" :
+     weakBear   ? "WEAK BEAR" :
+     "NEUTRAL"
+
+sourceText = calcSource == "Heikin Ashi" ? "HA" : "REG"
+
+trendText =
+     not useTrendIdentifier ? "TREND OFF" :
+     vwapSideways ? "SIDEWAYS" :
+     vwapStrongUp ? "STRONG UP" :
+     vwapWeakUp ? "WEAK UP" :
+     vwapStrongDown ? "STRONG DOWN" :
+     vwapWeakDown ? "WEAK DOWN" :
+     "MID"
+
+persistText =
+     not useTrendIdentifier ? "" :
+     not useVWAPPersistence ? " | PERSIST OFF" :
+     " | P" + str.tostring(vwapPersistenceBars)
+
+bgColor =
+     strongBull ? color.new(bullStrong, 0) :
+     weakBull   ? color.new(bullWeak, 25) :
+     strongBear ? color.new(bearStrong, 0) :
+     weakBear   ? color.new(bearWeak, 25) :
+     color.new(color.gray, 60)
+
+panelPosition =
+     statusPanelPos == "Top Right" ? position.top_right :
+     statusPanelPos == "Middle Right" ? position.middle_right :
+     position.bottom_right
+
+var table statusTable = na
+
+if na(statusTable)
+    statusTable := table.new(panelPosition, 1, 1)
+
+if barstate.islast
+    if showStatusPanel
+        table.clear(statusTable, 0, 0, 0, 0)
+        table.cell(
+            statusTable,
+            0,
+            0,
+            stateText + " | " + sourceText + " | " + trendText + persistText + " | " + str.tostring(vwapAngleDeg, "#.0") + "°",
+            text_color=color.white,
+            bgcolor=bgColor,
+            text_size=size.large
+        )
+    else
+        table.clear(statusTable, 0, 0, 0, 0)

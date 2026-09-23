@@ -1,0 +1,38 @@
+//@version=5
+indicator("CRODL|Swing-Based Volatility Index", overlay=false)
+
+// === Inputs ===
+lookbackHours = input.int(8, title="Lookback Period (Hours)")
+threshold = input.float(1.0, title="Minimum Move % for Scalping", step=0.1)
+
+// === Timeframe to Minutes Mapping ===
+tf = timeframe.period
+minutesPerBar =
+     tf == "1"      ? 1
+   : tf == "3"      ? 3
+   : tf == "5"      ? 5
+   : tf == "15"     ? 15
+   : tf == "30"     ? 30
+   : tf == "60"     ? 60
+   : tf == "120"    ? 120
+   : tf == "240"    ? 240
+   : tf == "D"      ? 1440
+   : tf == "W"      ? 10080
+   : tf == "M"      ? 43200
+   : na
+
+// === Calculate bars based on timeframe and hours
+bars = math.round(lookbackHours * 60 / minutesPerBar)
+
+// === Swing High/Low and % Move
+swingHigh = ta.highest(high, bars)
+swingLow = ta.lowest(low, bars)
+percentMove = ((swingHigh - swingLow) / swingLow) * 100
+
+// === Scalping Condition
+isScalpable = percentMove >= threshold
+
+// === Plotting
+plot(percentMove, title="Swing % Move", color=color.blue, linewidth=2)
+hline(threshold, title="Scalping Threshold", color=color.red, linestyle=hline.style_dashed)
+bgcolor(isScalpable ? color.new(color.green, 85) : color.new(color.red, 85), title="Scalping Zone")

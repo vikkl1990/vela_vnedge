@@ -1,0 +1,39 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Kameka Management Solutions, Inc.
+
+//@version=4
+study("Swing Reversal", overlay=true)
+
+candleArea = input(title="Candle Area", minval=0.1, maxval=0.5, defval=0.25, step=0.01)
+showShorts = input(title="Show Shorts", defval=true)
+showLongs = input (title="Show Longs", defval=true)
+longChar = input(title="Long Icon", defval='C')
+shortChar = input(title="Short Icon", defval='P')
+//profitTarget =input(title="Profit Target", defval=0.05, minval=.01)
+//profitTarget2 = input(title="Profit Target 2", defval=0.1, minval=.01)
+
+// Did it take out yesterday's low/high?
+tookOutLow = low[1] > low
+tookOutHigh = high[1] < high
+
+//is today's range bigger?
+yesterdayRange = high[1]-low[1]
+todayRange = high-low
+
+biggerRange = todayRange >= yesterdayRange
+
+// is close in the upper/lower part of the candle defined by candleArea?
+highArea = high - ((high-low)*candleArea)
+lowArea = low + ((high-low)*candleArea)
+
+upperRange = (close >= highArea)
+lowerRange = (close <= lowArea)
+
+longSignal = upperRange and biggerRange and tookOutLow
+shortSignal = lowerRange and biggerRange and tookOutHigh
+
+plotchar(series=iff(showLongs, longSignal,na), char=longChar, color=color.yellow, location=location.belowbar, size=size.tiny)
+plotchar(series=iff(showShorts,shortSignal, na), char=shortChar, color=color.orange, location=location.abovebar, size=size.tiny)
+
+alertcondition(longSignal,title="Long Singal", message="{{ticker}} {{interval}}, Long position triggered")
+alertcondition(shortSignal,title="Short Singal", message="{{ticker}} {{interval}}, Short position triggered")

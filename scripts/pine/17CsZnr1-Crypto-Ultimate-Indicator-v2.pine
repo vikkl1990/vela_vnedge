@@ -1,0 +1,1485 @@
+//@version=6
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ CRYPTO ULTIMATE INDICATOR v2.0                                           ║
+// ║                                                                          ║
+// ║ MAJOR ADDITIONS FROM v1.1:                                               ║
+// ║   • Tiered exits: TP1/TP2/TP3 with per-target % allocation               ║
+// ║   • Break-even stop activation after TP1 hit                             ║
+// ║   • Chandelier ATR trailing stop on runner portion                       ║
+// ║   • Confidence score (0–100) gating + position-size recommendation       ║
+// ║   • Cumulative Volume Delta + CVD divergence detection                   ║
+// ║   • Fair Value Gaps (bullish/bearish) — drawn as boxes, used as filter   ║
+// ║   • Liquidity sweep detection                                            ║
+// ║   • BTC trend context filter (for alt trading)                           ║
+// ║   • Auto-tune presets (Aggressive / Balanced / Conservative)             ║
+// ║   • JSON webhook alerts (3Commas / AutoView / custom bot ready)          ║
+// ║   • Signal log table — last N signals with live outcome tracking         ║
+// ║   • Why-Not diagnostic table — shows which filter is currently blocking  ║
+// ║   • Regime stats table — win rate by trending vs ranging                 ║
+// ║   • Table size control (Tiny / Small / Normal / Large / Huge)            ║
+// ║   • Signal arrow markers on price (compact display)                      ║
+// ║                                                                          ║
+// ║ NOT INCLUDED (out of scope or data-limited):                             ║
+// ║   • Funding rate / open interest — requires symbol-specific tickers      ║
+// ║   • Full strategy() backtest — convert manually if needed                ║
+// ║   • Day-of-week heatmap — runs out of table real estate                  ║
+// ║                                                                          ║
+// ║ ALERT TYPES:                                                             ║
+// ║   • Classic alertcondition() for TradingView's standard alert UI         ║
+// ║   • alert() function calls for JSON webhook (create alert with type      ║
+// ║     "Any alert() function call" to enable)                               ║
+// ║                                                                          ║
+// ║ REPAINT DISCLOSURE: HTF values all use [1] offset. Divergence on         ║
+// ║   confirmed pivots only. Trade outcomes evaluated on bar close.          ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+indicator(title="Crypto Ultimate Indicator v2", shorttitle="CUI v2", overlay=true, max_bars_back=300, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ═══════════════════════════════════════════════════════════════════
+// TYPE DEFINITIONS
+// ═══════════════════════════════════════════════════════════════════
+
+type Trade
+    int    bar_open
+    int    open_time           // ms-epoch of the entry bar; stable trade.id component
+    int    direction        // 1 = long, -1 = short
+    float  entry
+    float  sl
+    float  tp1
+    float  tp2
+    float  tp3
+    float  trail_stop
+    float  confidence
+    float  qty                 // position size captured at entry (snapshot consistency)
+    float  htf                 // HTF confluence score captured at entry
+    bool   tp1_hit    = false
+    bool   tp2_hit    = false
+    bool   tp3_hit    = false
+    bool   sl_hit     = false
+    bool   be_active  = false
+    string regime_tag = "X"
+
+// ═══════════════════════════════════════════════════════════════════
+// INPUT GROUPS
+// ═══════════════════════════════════════════════════════════════════
+
+// ── PRESET & THEME ──────────────────────────────────────────
+const string G_PRESET = "Preset & Theme"
+i_preset = input.string("Custom", "Trading Preset", options=["Custom","Aggressive","Balanced","Conservative"], group=G_PRESET, tooltip="Aggressive: shorter HMA, lower confidence floor, more signals. Conservative: longer HMA, high confidence floor. Balanced: middle ground. Custom: use individual settings below.")
+i_theme  = input.string("Dark", "Color Theme", options=["Dark","Light","Neon"], group=G_PRESET)
+
+// ── TABLE / UI SIZE ─────────────────────────────────────────
+const string G_UI = "UI Sizing"
+i_table_size = input.string("Normal", "Table Text Size", options=["Tiny","Small","Normal","Large","Huge"], group=G_UI)
+i_label_size = input.string("Small", "Signal Label Size", options=["Tiny","Small","Normal","Large"], group=G_UI)
+i_label_detail = input.string("Compact", "Signal Label Detail", options=["Full","Compact","Off"], group=G_UI, tooltip="Full = entry/SL/TP breakdown box. Compact = small BUY/SELL + stars + confidence (declutters). Off = arrows only.")
+i_show_arrows = input.bool(true, "Show Signal Arrows on Price", group=G_UI)
+i_compact = input.bool(false, "Compact Dashboard (single row)", group=G_UI)
+
+// ── HMA ─────────────────────────────────────────────────────
+const string G_HMA = "Moving Averages"
+i_show_hma  = input.bool(true,   "Show Primary MA",   group=G_HMA)
+i_ma_type   = input.string("HMA","Primary MA Type",   options=["HMA","EMA","SMA","WMA","VWMA","RMA","DEMA","TEMA","ZLEMA"], group=G_HMA, tooltip="Drives the plotted trend MA AND the long/short trend-bias filter. Default HMA = original behavior.")
+i_hma_len   = input.int(55,      "Primary MA Length", minval=2, group=G_HMA)
+i_show_ma2  = input.bool(false,  "Show Second MA",    group=G_HMA, tooltip="Display-only second MA (e.g. a slow EMA for crossovers). Does not affect signals.")
+i_ma2_type  = input.string("EMA","Second MA Type",    options=["HMA","EMA","SMA","WMA","VWMA","RMA","DEMA","TEMA","ZLEMA"], group=G_HMA)
+i_ma2_len   = input.int(200,     "Second MA Length",  minval=2, group=G_HMA)
+
+// ── SUPERTREND ──────────────────────────────────────────────
+const string G_ST = "Supertrend"
+i_show_st   = input.bool(true,  "Show Supertrend", group=G_ST)
+i_st_factor = input.float(3.0,  "Factor",          step=0.1, group=G_ST)
+i_st_atr    = input.int(10,     "ATR Period",      group=G_ST)
+
+// ── EMA RIBBON ──────────────────────────────────────────────
+const string G_EMA = "EMA Ribbon"
+i_show_ribbon = input.bool(false, "Show EMA Ribbon", group=G_EMA)
+
+// ── RSI ─────────────────────────────────────────────────────
+const string G_RSI = "RSI & Divergence"
+i_show_rsi = input.bool(true, "Show RSI Divergence Labels", group=G_RSI)
+i_rsi_len  = input.int(14, "RSI Length",  group=G_RSI)
+i_rsi_ob   = input.int(70, "Overbought",  group=G_RSI)
+i_rsi_os   = input.int(30, "Oversold",    group=G_RSI)
+
+// ── MACD ────────────────────────────────────────────────────
+const string G_MACD = "MACD (Data Window)"
+i_show_macd = input.bool(true, "Show MACD", group=G_MACD, tooltip="Plotted to Data Window only (overlay script). Use companion overlay=false script for a real subpane.")
+i_macd_fast = input.int(12, "Fast",   group=G_MACD)
+i_macd_slow = input.int(26, "Slow",   group=G_MACD)
+i_macd_sig  = input.int(9,  "Signal", group=G_MACD)
+
+// ── STOCH RSI ───────────────────────────────────────────────
+const string G_SRSI = "Stochastic RSI (Data Window)"
+i_show_srsi    = input.bool(true, "Show StochRSI", group=G_SRSI)
+i_srsi_len     = input.int(14, "Stoch Length", group=G_SRSI)
+i_srsi_rsi_len = input.int(14, "RSI Length",   group=G_SRSI)
+i_srsi_k       = input.int(3,  "K Smooth",     group=G_SRSI)
+i_srsi_d       = input.int(3,  "D Smooth",     group=G_SRSI)
+
+// ── BB ──────────────────────────────────────────────────────
+const string G_BB = "Bollinger Bands"
+i_show_bb = input.bool(true, "Show BB",     group=G_BB)
+i_bb_len  = input.int(20,    "Length",      group=G_BB)
+i_bb_mult = input.float(2.0, "Multiplier",  group=G_BB)
+
+// ── VOLUME + CVD ────────────────────────────────────────────
+const string G_VOL = "Volume & CVD"
+i_show_vol     = input.bool(true,  "Show Volume Delta (data window)", group=G_VOL)
+i_show_cvd     = input.bool(true,  "Show CVD (data window)",          group=G_VOL)
+i_use_cvd_div  = input.bool(true,  "Use CVD divergence as confluence", group=G_VOL)
+i_show_cvd_lbl = input.bool(false, "Show CVD divergence labels",      group=G_VOL)
+
+// ── ATR ZONES ───────────────────────────────────────────────
+const string G_ATR = "ATR & S/R Zones"
+i_show_zones = input.bool(false, "Show ATR S/R Zones", group=G_ATR)
+i_atr_len    = input.int(14,    "ATR Length",          group=G_ATR)
+i_zone_mult  = input.float(1.5, "Zone Multiplier",     group=G_ATR)
+
+// ── SUPPORT / RESISTANCE (pivot clusters) ───────────────────
+const string G_SR = "Support / Resistance"
+i_show_sr      = input.bool(true,  "Show S/R Zones",            group=G_SR, tooltip="Auto pivot-cluster support/resistance. Strength = how many swings have reacted at each level.")
+i_sr_pivot     = input.int(10,     "Pivot Strength (bars L/R)", minval=2, group=G_SR, tooltip="Bars of lookback/lookforward to qualify a swing. Higher = only major swings become levels.")
+i_sr_merge     = input.float(0.5,  "Merge Distance (xATR)",     minval=0.05, step=0.05, group=G_SR, tooltip="Pivots within this ATR distance of an existing level merge into it and raise its strength.")
+i_sr_band      = input.float(0.25, "Zone Half-Width (xATR)",    minval=0.0, step=0.05, group=G_SR, tooltip="Visual thickness of each zone. Set 0 to draw thin lines instead of bands.")
+i_sr_max       = input.int(6,      "Max Zones Shown",           minval=1, maxval=20, group=G_SR)
+i_sr_min_touch = input.int(2,      "Min Touches to Show",       minval=1, maxval=10, group=G_SR, tooltip="Hide levels touched fewer than this many times. Default 2 = only levels price has actually respected.")
+i_sr_labels    = input.bool(true,  "Show Touch-Count Labels",   group=G_SR)
+i_sr_show_price= input.bool(false, "  Include Price on Labels",  group=G_SR)
+i_sr_extend    = input.int(10,     "Extend Right (bars)",       minval=0, group=G_SR)
+i_sr_max_dist  = input.float(0.0,  "Hide Levels Beyond (xATR, 0=all)", minval=0, step=0.5, group=G_SR, tooltip="De-clutter: only draw levels within this ATR distance of current price. 0 = show all.")
+i_sr_style     = input.string("Solid", "Line Style",            options=["Solid","Dashed","Dotted"], group=G_SR)
+i_sr_lwidth    = input.int(0,      "Line Width (0=auto by strength)", minval=0, maxval=4, group=G_SR)
+i_sr_col_res   = input.color(color.red,   "Resistance Color",   group=G_SR)
+i_sr_col_sup   = input.color(color.green, "Support Color",      group=G_SR)
+i_sr_filter      = input.bool(false, "Use S/R as Signal Filter",       group=G_SR, tooltip="OFF by default. When ON: blocks a long if a strong resistance sits just overhead, and a short if strong support sits just below.")
+i_sr_filter_str  = input.int(2,      "  Filter: Min Level Strength",   minval=1, maxval=10, group=G_SR, tooltip="Only levels with at least this many touches can block a signal.")
+i_sr_filter_dist = input.float(0.5,  "  Filter: Block Distance (xATR)", minval=0.05, step=0.05, group=G_SR, tooltip="How close (in ATR) price must be to a strong level for the entry into it to be blocked.")
+
+// ── VOLUME PROFILE (volume-based S/R) ───────────────────────
+const string G_VP = "Volume Profile S/R"
+i_show_vp     = input.bool(true,  "Show Volume Profile S/R", group=G_VP, tooltip="Point of Control (POC) + Value Area High/Low over a lookback window — support/resistance ranked by traded volume.")
+i_vp_lookback = input.int(250,    "Lookback (bars)",         minval=20, maxval=290, group=G_VP, tooltip="Capped at 290 to stay within the script's history buffer.")
+i_vp_bins     = input.int(24,     "Price Bins",              minval=6, maxval=100, group=G_VP, tooltip="Profile resolution. More bins = finer levels.")
+i_vp_va       = input.float(70,   "Value Area (%)",          minval=30, maxval=95, step=5, group=G_VP, tooltip="Percent of volume that defines the value area around the POC.")
+i_vp_hist     = input.bool(false, "Draw Profile Histogram",  group=G_VP, tooltip="Draw the full volume-by-price histogram on the right. Off = just POC + Value Area lines (cleaner).")
+i_vp_col_poc  = input.color(color.orange, "POC Color",        group=G_VP)
+i_vp_col_va   = input.color(color.blue,   "Value Area Color", group=G_VP)
+i_vp_filter      = input.bool(false, "Use Volume Profile as Signal Filter", group=G_VP, tooltip="OFF by default. When ON, blocks an entry about to run into the POC or a Value-Area edge. Note: this recomputes the profile every bar, which adds load.")
+i_vp_filter_dist = input.float(0.3,  "  VP Filter Block Distance (xATR)",   minval=0.05, step=0.05, group=G_VP)
+
+// ── VOLUME MA & OSCILLATOR ──────────────────────────────────
+const string G_VOSC = "Volume MA & Oscillator"
+i_show_volosc  = input.bool(true, "Plot Vol MA / Osc / RVOL (data window)", group=G_VOSC, tooltip="Overlay script, so these route to the Data Window. Vol Osc = (fastEMA - slowEMA) / slowEMA * 100. RVOL = volume / Volume MA.")
+i_vol_ma_len   = input.int(20,    "Volume MA Length",  minval=1, group=G_VOSC)
+i_vol_osc_fast = input.int(5,     "Vol Osc Fast EMA",  minval=1, group=G_VOSC)
+i_vol_osc_slow = input.int(10,    "Vol Osc Slow EMA",  minval=2, group=G_VOSC)
+
+// ── REGIME ──────────────────────────────────────────────────
+const string G_REG = "Market Regime"
+i_show_regime   = input.bool(true, "Show Regime Background", group=G_REG)
+i_strict_filter = input.bool(true, "Strict Range Filter",    group=G_REG)
+i_adx_len       = input.int(14, "ADX Length",  group=G_REG)
+i_chop_len      = input.int(14, "CHOP Length", group=G_REG)
+
+// ── SMC ─────────────────────────────────────────────────────
+const string G_SMC = "Smart Money Concepts"
+i_show_fvg       = input.bool(false, "Show Fair Value Gaps",         group=G_SMC)
+i_fvg_filter     = input.bool(false, "Use FVG as signal filter",     group=G_SMC, tooltip="Only effective when FVG display is enabled (zones are tracked together with the boxes). Suppresses longs inside bearish FVG, shorts inside bullish FVG.")
+i_max_fvg        = input.int(10,     "Max FVG boxes to keep",        minval=1, maxval=50, group=G_SMC)
+i_fvg_extend     = input.int(10,     "FVG Extend Right (bars)",      minval=0, group=G_SMC)
+i_fvg_mitigate   = input.bool(true,  "Remove Filled (mitigated) FVGs", group=G_SMC, tooltip="Delete a gap once price has fully traded back through it. Keeps the chart and the FVG filter clean.")
+i_fvg_col_bull   = input.color(color.green, "Bullish FVG Color",     group=G_SMC)
+i_fvg_col_bear   = input.color(color.red,   "Bearish FVG Color",     group=G_SMC)
+i_show_sweeps    = input.bool(false, "Show Liquidity Sweeps",        group=G_SMC)
+i_sweep_filter   = input.bool(true,  "Use Sweep as confluence",      group=G_SMC, tooltip="Adds confidence when current bar swept liquidity in same direction")
+i_sweep_lookback = input.int(20,     "Sweep Lookback",               group=G_SMC)
+
+// ── BTC CONTEXT (for alts) ──────────────────────────────────
+const string G_BTC = "BTC Context (for Alts)"
+i_use_btc      = input.bool(false, "Filter signals by BTC trend",  group=G_BTC, tooltip="Suppresses alt longs when BTC < EMA50, alt shorts when BTC > EMA50")
+i_btc_ticker   = input.symbol("BINANCE:BTCUSDT", "BTC Ticker",     group=G_BTC)
+i_show_btc_rs  = input.bool(false, "Show Relative Strength vs BTC", group=G_BTC)
+
+// ── SIGNAL ENGINE ───────────────────────────────────────────
+const string G_SIG = "Signal Engine"
+i_show_signals = input.bool(true, "Show Signals",                  group=G_SIG)
+i_min_spacing  = input.int(3, "Min Bars Between Signals",          minval=1, group=G_SIG)
+i_req_confirm  = input.bool(true, "Require Confirmation Bar",      group=G_SIG)
+i_body_filter  = input.bool(true, "Candle Body Filter (>50%)",     group=G_SIG)
+i_min_confidence = input.int(55, "Minimum Confidence Score",        minval=0, maxval=100, group=G_SIG, tooltip="Signals below this confidence are filtered out. 0 disables the filter.")
+
+// ── TIERED EXITS ────────────────────────────────────────────
+const string G_EXIT = "Tiered Exits & Trailing"
+i_adaptive_sltp = input.bool(true,  "Adaptive SL/TP by Regime", group=G_EXIT)
+i_tp1_mult = input.float(1.0,  "TP1 ATR Multiplier", step=0.1, group=G_EXIT)
+i_tp2_mult = input.float(2.0,  "TP2 ATR Multiplier", step=0.1, group=G_EXIT)
+i_tp3_mult = input.float(3.5,  "TP3 ATR Multiplier", step=0.1, group=G_EXIT)
+i_tp1_pct  = input.int(40, "TP1 % of Position", minval=0, maxval=100, group=G_EXIT)
+i_tp2_pct  = input.int(30, "TP2 % of Position", minval=0, maxval=100, group=G_EXIT)
+i_tp3_pct  = input.int(30, "TP3 % of Position", minval=0, maxval=100, group=G_EXIT)
+i_use_be   = input.bool(true,  "Move SL to BE after TP1",        group=G_EXIT)
+i_use_trail = input.bool(true, "Chandelier Trail after TP1",     group=G_EXIT)
+i_trail_mult = input.float(2.5, "Trail ATR Multiplier", step=0.1, group=G_EXIT)
+
+// ── POSITION SIZING ─────────────────────────────────────────
+const string G_POS = "Position Sizing"
+i_show_position = input.bool(true, "Show Position Size in Label", group=G_POS)
+i_account_size  = input.float(10000.0, "Account Size ($)", minval=0, group=G_POS)
+i_risk_pct      = input.float(1.0, "Risk per Trade (%)", minval=0.01, maxval=10.0, step=0.1, group=G_POS)
+i_scale_by_conf = input.bool(true, "Scale Size by Confidence", group=G_POS, tooltip="≥85: 100% / ≥70: 75% / ≥55: 50% / <55: 25%")
+
+// ── HTF ─────────────────────────────────────────────────────
+const string G_HTF = "HTF Confluence"
+i_show_htf = input.bool(true, "Show HTF Panel", group=G_HTF)
+i_htf_custom = input.timeframe("3D", "Custom HTF", group=G_HTF)
+i_htf_suppress = input.bool(true, "Suppress Conflicted Signals", group=G_HTF)
+i_show_htf_levels = input.bool(false, "Show HTF S/R Lines", group=G_HTF)
+
+// ── DASHBOARD ───────────────────────────────────────────────
+const string G_DASH = "Dashboard Tables"
+i_show_dash    = input.bool(true,  "Show Main Dashboard",         group=G_DASH)
+i_show_log     = input.bool(true,  "Show Signal Log",             group=G_DASH)
+i_log_size     = input.int(8,      "Signal Log Rows",             minval=3, maxval=20, group=G_DASH)
+i_show_whynot  = input.bool(false, "Show Why-Not Diagnostic",     group=G_DASH)
+i_show_stats   = input.bool(false, "Show Regime Stats",           group=G_DASH)
+i_dash_pos     = input.string("Bottom Right", "Main Dash Position", options=["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group=G_DASH)
+i_log_pos      = input.string("Top Right", "Signal Log Position", options=["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group=G_DASH)
+i_why_pos      = input.string("Middle Left", "Why-Not Position", options=["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group=G_DASH)
+i_stats_pos    = input.string("Middle Right", "Stats Position", options=["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group=G_DASH)
+
+// ── ALERTS ──────────────────────────────────────────────────
+const string G_ALERT = "Alerts & Webhooks"
+i_use_json = input.bool(false, "Fire JSON webhook alerts", group=G_ALERT, tooltip="When enabled, fires alert() with full JSON payload. Create a TradingView alert with type 'Any alert() function call' to route it to your bot/webhook.")
+i_webhook_id = input.string("CUI", "Alert ID Tag", group=G_ALERT, tooltip="Identifier injected into JSON, useful when running multiple instances.")
+i_webhook_secret = input.string("", "Webhook Secret", group=G_ALERT, tooltip="Shared secret the receiver verifies. Leave blank to send an empty secret.")
+i_emit_partials  = input.bool(true,  "Emit TP1/TP2 fills", group=G_ALERT, tooltip="Send tp1_fill / tp2_fill lifecycle events.")
+i_emit_stops     = input.bool(false, "Emit breakeven/trail updates", group=G_ALERT, tooltip="Send be_activated / trail_moved events. Off by default — the trailing stop ratchets nearly every bar in a trend.")
+
+// ═══════════════════════════════════════════════════════════════════
+// PRESET OVERRIDES
+// ═══════════════════════════════════════════════════════════════════
+
+eff_hma_len    = i_preset == "Aggressive" ? 21  : i_preset == "Balanced" ? 55  : i_preset == "Conservative" ? 89  : i_hma_len
+eff_st_factor  = i_preset == "Aggressive" ? 2.5 : i_preset == "Balanced" ? 3.0 : i_preset == "Conservative" ? 3.5 : i_st_factor
+eff_spacing    = i_preset == "Aggressive" ? 2   : i_preset == "Balanced" ? 4   : i_preset == "Conservative" ? 8   : i_min_spacing
+eff_min_conf   = i_preset == "Aggressive" ? 50  : i_preset == "Balanced" ? 65  : i_preset == "Conservative" ? 80  : i_min_confidence
+
+// ═══════════════════════════════════════════════════════════════════
+// SIZE CONSTANTS
+// ═══════════════════════════════════════════════════════════════════
+
+ts = i_table_size == "Tiny" ? size.tiny : i_table_size == "Small" ? size.small : i_table_size == "Normal" ? size.normal : i_table_size == "Large" ? size.large : size.huge
+ls = i_label_size == "Tiny" ? size.tiny : i_label_size == "Small" ? size.small : i_label_size == "Normal" ? size.normal : size.large
+
+f_pos(s) =>
+    s == "Top Right" ? position.top_right : s == "Top Left" ? position.top_left : s == "Bottom Right" ? position.bottom_right : s == "Bottom Left" ? position.bottom_left : s == "Middle Right" ? position.middle_right : position.middle_left
+
+// ═══════════════════════════════════════════════════════════════════
+// THEME COLORS
+// ═══════════════════════════════════════════════════════════════════
+
+c_bull    = i_theme == "Neon" ? color.new(#00FF88, 0)  : i_theme == "Dark" ? color.new(color.green, 20) : color.new(color.green, 30)
+c_bear    = i_theme == "Neon" ? color.new(#FF0055, 0)  : i_theme == "Dark" ? color.new(color.red, 20)   : color.new(color.red, 30)
+c_neutral = i_theme == "Neon" ? color.new(#8888FF, 0)  : color.new(color.gray, 30)
+c_text    = color.white
+c_dim     = color.silver
+c_bg      = color.new(color.black, 70)
+c_hdr     = color.new(color.navy, 20)
+c_border  = color.new(color.gray, 60)
+
+// ═══════════════════════════════════════════════════════════════════
+// CORE INDICATORS
+// ═══════════════════════════════════════════════════════════════════
+
+f_hma(src, len) =>
+    half_len = math.round(len / 2)
+    sqrt_len = math.round(math.sqrt(len))
+    wma_half = ta.wma(src, half_len)
+    wma_full = ta.wma(src, len)
+    hma_val  = ta.wma(2 * wma_half - wma_full, sqrt_len)
+    [hma_val, hma_val > hma_val[1]]
+
+// Value-only Hull MA (used by the MA-type dispatcher below).
+f_hma_val(src, len) =>
+    ta.wma(2 * ta.wma(src, math.round(len / 2)) - ta.wma(src, len), math.round(math.sqrt(len)))
+
+// Moving-average dispatcher: pick a style by name. (ta.* are computed every bar
+// regardless of which branch is taken, so switching type is state-safe.)
+f_ma(t, src, len) =>
+    t == "EMA" ? ta.ema(src, len) : t == "SMA" ? ta.sma(src, len) : t == "WMA" ? ta.wma(src, len) : t == "VWMA" ? ta.vwma(src, len) : t == "RMA" ? ta.rma(src, len) : t == "DEMA" ? 2 * ta.ema(src, len) - ta.ema(ta.ema(src, len), len) : t == "TEMA" ? 3 * (ta.ema(src, len) - ta.ema(ta.ema(src, len), len)) + ta.ema(ta.ema(ta.ema(src, len), len), len) : t == "ZLEMA" ? ta.ema(2 * src - src[int((len - 1) / 2)], len) : f_hma_val(src, len)
+
+f_ema_ribbon() =>
+    e8  = ta.ema(close, 8)
+    e13 = ta.ema(close, 13)
+    e21 = ta.ema(close, 21)
+    e34 = ta.ema(close, 34)
+    e55 = ta.ema(close, 55)
+    score = (e8 > e13 ? 1 : -1) + (e13 > e21 ? 1 : -1) + (e21 > e34 ? 1 : -1) + (e34 > e55 ? 1 : -1) + (close > e8 ? 1 : -1)
+    [e8, e13, e21, e34, e55, score]
+
+f_rsi_divergence(src) =>
+    rsi_val  = ta.rsi(src, i_rsi_len)
+    ph_price = ta.pivothigh(src,     5, 5)
+    pl_price = ta.pivotlow(src,      5, 5)
+    ph_rsi   = ta.pivothigh(rsi_val, 5, 5)
+    pl_rsi   = ta.pivotlow(rsi_val,  5, 5)
+    last_ph = ta.valuewhen(not na(ph_price), ph_price, 0)
+    prev_ph = ta.valuewhen(not na(ph_price), ph_price, 1)
+    last_pl = ta.valuewhen(not na(pl_price), pl_price, 0)
+    prev_pl = ta.valuewhen(not na(pl_price), pl_price, 1)
+    last_rh = ta.valuewhen(not na(ph_rsi),   ph_rsi,   0)
+    prev_rh = ta.valuewhen(not na(ph_rsi),   ph_rsi,   1)
+    last_rl = ta.valuewhen(not na(pl_rsi),   pl_rsi,   0)
+    prev_rl = ta.valuewhen(not na(pl_rsi),   pl_rsi,   1)
+    bear_div = not na(ph_price) and not na(prev_ph) and not na(prev_rh) and last_ph > prev_ph and last_rh < prev_rh
+    bull_div = not na(pl_price) and not na(prev_pl) and not na(prev_rl) and last_pl < prev_pl and last_rl > prev_rl
+    [rsi_val, bull_div, bear_div]
+
+f_macd_gradient() =>
+    [m, s, h] = ta.macd(close, i_macd_fast, i_macd_slow, i_macd_sig)
+    mom = h > 0 and h > h[1] ? 1 : h < 0 and h < h[1] ? -1 : 0
+    [m, s, h, mom]
+
+f_stoch_rsi() =>
+    rs = ta.rsi(close, i_srsi_rsi_len)
+    st = ta.stoch(rs, rs, rs, i_srsi_len)
+    k  = ta.sma(st, i_srsi_k)
+    d  = ta.sma(k,  i_srsi_d)
+    [k, d, k > 80 ? 1 : k < 20 ? -1 : 0]
+
+f_bb_squeeze() =>
+    [basis, upper, lower] = ta.bb(close, i_bb_len, i_bb_mult)
+    bw = upper - lower
+    pb = (close - lower) / (upper - lower)
+    lo20 = ta.lowest(bw, 20)
+    hi20 = ta.highest(bw, 20)
+    wpct = (bw - lo20) / math.max(hi20 - lo20, syminfo.mintick)
+    squeeze       = wpct < 0.2
+    squeeze_prior = wpct[1] < 0.2
+    squeeze_ending = squeeze_prior and not squeeze   // squeeze just released
+    [upper, lower, basis, pb, squeeze, squeeze_ending, bw]
+
+f_volume_delta() =>
+    cr = high - low
+    bf = cr > 0 ? math.abs(close - open) / cr : 0.0
+    dir = math.sign(close - open)
+    delta = volume * bf * dir
+    [math.max(delta, 0.0), math.abs(math.min(delta, 0.0)), delta]
+
+f_atr_zones() =>
+    a = ta.atr(i_atr_len)
+    rh = ta.highest(high, 20)
+    rl = ta.lowest(low, 20)
+    [a, rl - a * i_zone_mult, rh + a * i_zone_mult]
+
+f_market_regime(bb_width) =>
+    [dp, dm, adx] = ta.dmi(i_adx_len, i_adx_len)
+    adx_s = math.min(adx / 50.0 * 100, 100)
+    a1 = ta.atr(1)
+    sa = math.sum(a1, i_chop_len)
+    hn = ta.highest(high, i_chop_len)
+    ln = ta.lowest(low,  i_chop_len)
+    chop = 100.0 * math.log10(sa / math.max(hn - ln, syminfo.mintick)) / math.log10(i_chop_len)
+    chop_s = math.max(0, 100 - chop)
+    bb_lo = ta.lowest(bb_width, 20)
+    bb_hi = ta.highest(bb_width, 20)
+    bb_s  = (bb_width - bb_lo) / math.max(bb_hi - bb_lo, syminfo.mintick) * 100
+    rs = adx_s * 0.4 + chop_s * 0.4 + bb_s * 0.2
+    [rs, adx, chop, rs > 60, rs < 40]
+
+// ═══════════════════════════════════════════════════════════════════
+// CVD (Cumulative Volume Delta) + DIVERGENCE
+// ═══════════════════════════════════════════════════════════════════
+
+[buy_vol, sell_vol, vol_delta] = f_volume_delta()
+
+var float cvd = 0.0
+cvd := cvd + vol_delta
+
+f_cvd_divergence() =>
+    cvd_ph = ta.pivothigh(cvd, 5, 5)
+    cvd_pl = ta.pivotlow(cvd,  5, 5)
+    ph_pr  = ta.pivothigh(close, 5, 5)
+    pl_pr  = ta.pivotlow(close,  5, 5)
+    lph = ta.valuewhen(not na(cvd_ph), cvd_ph, 0)
+    pph = ta.valuewhen(not na(cvd_ph), cvd_ph, 1)
+    lpl = ta.valuewhen(not na(cvd_pl), cvd_pl, 0)
+    ppl = ta.valuewhen(not na(cvd_pl), cvd_pl, 1)
+    lpr_h = ta.valuewhen(not na(ph_pr), ph_pr, 0)
+    ppr_h = ta.valuewhen(not na(ph_pr), ph_pr, 1)
+    lpr_l = ta.valuewhen(not na(pl_pr), pl_pr, 0)
+    ppr_l = ta.valuewhen(not na(pl_pr), pl_pr, 1)
+    cvd_bear = not na(cvd_ph) and not na(pph) and not na(ppr_h) and lpr_h > ppr_h and lph < pph
+    cvd_bull = not na(cvd_pl) and not na(ppl) and not na(ppr_l) and lpr_l < ppr_l and lpl > ppl
+    [cvd_bull, cvd_bear]
+
+[cvd_bull_div, cvd_bear_div] = f_cvd_divergence()
+
+// Volume moving average, volume oscillator, and relative volume (RVOL).
+vol_ma     = ta.sma(volume, i_vol_ma_len)
+vol_fast_e = ta.ema(volume, i_vol_osc_fast)
+vol_slow_e = ta.ema(volume, i_vol_osc_slow)
+vol_osc    = vol_slow_e != 0 ? (vol_fast_e - vol_slow_e) / vol_slow_e * 100 : 0.0
+rvol       = vol_ma > 0 ? volume / vol_ma : 0.0
+
+// ═══════════════════════════════════════════════════════════════════
+// SMC: FAIR VALUE GAPS + LIQUIDITY SWEEPS
+// ═══════════════════════════════════════════════════════════════════
+
+// Bullish FVG: 3-bar pattern where bar 1's high < bar 3's low (gap up unfilled)
+bull_fvg_now = low > high[2]
+bear_fvg_now = high < low[2]
+
+// Track active FVG boxes
+var array<box>   bull_fvgs = array.new<box>()
+var array<box>   bear_fvgs = array.new<box>()
+var array<float> bull_fvg_tops = array.new<float>()
+var array<float> bull_fvg_bots = array.new<float>()
+var array<float> bear_fvg_tops = array.new<float>()
+var array<float> bear_fvg_bots = array.new<float>()
+
+if i_show_fvg and bull_fvg_now
+    top = low
+    bot = high[2]
+    b = box.new(bar_index - 1, top, bar_index + i_fvg_extend, bot, border_color=color.new(i_fvg_col_bull, 50), bgcolor=color.new(i_fvg_col_bull, 85))
+    array.push(bull_fvgs, b)
+    array.push(bull_fvg_tops, top)
+    array.push(bull_fvg_bots, bot)
+    if array.size(bull_fvgs) > i_max_fvg
+        old = array.shift(bull_fvgs)
+        box.delete(old)
+        array.shift(bull_fvg_tops)
+        array.shift(bull_fvg_bots)
+
+if i_show_fvg and bear_fvg_now
+    top = low[2]
+    bot = high
+    b = box.new(bar_index - 1, top, bar_index + i_fvg_extend, bot, border_color=color.new(i_fvg_col_bear, 50), bgcolor=color.new(i_fvg_col_bear, 85))
+    array.push(bear_fvgs, b)
+    array.push(bear_fvg_tops, top)
+    array.push(bear_fvg_bots, bot)
+    if array.size(bear_fvgs) > i_max_fvg
+        old = array.shift(bear_fvgs)
+        box.delete(old)
+        array.shift(bear_fvg_tops)
+        array.shift(bear_fvg_bots)
+
+// Mitigation: drop gaps once price has fully traded back through them
+// (keeps both the chart and the FVG filter clean). Iterate descending to remove safely.
+if i_show_fvg and i_fvg_mitigate
+    if array.size(bull_fvgs) > 0
+        for j = array.size(bull_fvgs) - 1 to 0
+            if low <= array.get(bull_fvg_bots, j)
+                box.delete(array.get(bull_fvgs, j))
+                array.remove(bull_fvgs, j)
+                array.remove(bull_fvg_tops, j)
+                array.remove(bull_fvg_bots, j)
+    if array.size(bear_fvgs) > 0
+        for j = array.size(bear_fvgs) - 1 to 0
+            if high >= array.get(bear_fvg_tops, j)
+                box.delete(array.get(bear_fvgs, j))
+                array.remove(bear_fvgs, j)
+                array.remove(bear_fvg_tops, j)
+                array.remove(bear_fvg_bots, j)
+
+// Extend right edge of recent FVGs each bar
+if barstate.islast and i_show_fvg
+    if array.size(bull_fvgs) > 0
+        for j = 0 to array.size(bull_fvgs) - 1
+            box.set_right(array.get(bull_fvgs, j), bar_index + i_fvg_extend)
+    if array.size(bear_fvgs) > 0
+        for j = 0 to array.size(bear_fvgs) - 1
+            box.set_right(array.get(bear_fvgs, j), bar_index + i_fvg_extend)
+
+// Is price currently inside any opposing FVG?
+inside_bear_fvg = false
+if array.size(bear_fvg_tops) > 0
+    for j = 0 to array.size(bear_fvg_tops) - 1
+        if close <= array.get(bear_fvg_tops, j) and close >= array.get(bear_fvg_bots, j)
+            inside_bear_fvg := true
+            break
+
+inside_bull_fvg = false
+if array.size(bull_fvg_tops) > 0
+    for j = 0 to array.size(bull_fvg_tops) - 1
+        if close <= array.get(bull_fvg_tops, j) and close >= array.get(bull_fvg_bots, j)
+            inside_bull_fvg := true
+            break
+
+// Liquidity sweeps: price breaks recent high/low but closes back inside.
+// Hoist ta.highest/ta.lowest out of the conditional so they always execute
+// (short-circuit `and` would otherwise skip them and create historical inconsistency).
+recent_hi_sweep = ta.highest(high[1], i_sweep_lookback)
+recent_lo_sweep = ta.lowest(low[1],   i_sweep_lookback)
+swept_high = high > recent_hi_sweep and close < recent_hi_sweep
+swept_low  = low  < recent_lo_sweep and close > recent_lo_sweep
+
+if i_show_sweeps and swept_high
+    label.new(bar_index, high, "✗ Sweep", style=label.style_label_down, color=color.new(color.fuchsia, 30), textcolor=c_text, size=size.tiny)
+if i_show_sweeps and swept_low
+    label.new(bar_index, low,  "✗ Sweep", style=label.style_label_up,   color=color.new(color.aqua,    30), textcolor=c_text, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════════
+// HTF CONFLUENCE
+// ═══════════════════════════════════════════════════════════════════
+
+f_htf_hma(ofs) =>
+    ta.wma(2 * ta.wma(close, math.round(eff_hma_len / 2)) - ta.wma(close, eff_hma_len), math.round(math.sqrt(eff_hma_len)))[ofs]
+
+f_htf_st_dir() =>
+    [_l, d] = ta.supertrend(eff_st_factor, i_st_atr)
+    d[1]
+
+f_htf_confluence() =>
+    d_hma_raw  = request.security(syminfo.tickerid, "D", f_htf_hma(1), barmerge.gaps_off, barmerge.lookahead_off)
+    d_hma_prev = request.security(syminfo.tickerid, "D", f_htf_hma(2), barmerge.gaps_off, barmerge.lookahead_off)
+    d_bull     = d_hma_raw > d_hma_prev
+    d_rsi      = request.security(syminfo.tickerid, "D", ta.rsi(close, i_rsi_len)[1], barmerge.gaps_off, barmerge.lookahead_off)
+    d_st_dir   = request.security(syminfo.tickerid, "D", f_htf_st_dir(), barmerge.gaps_off, barmerge.lookahead_off)
+    d_raw      = (d_bull ? 1 : -1) + (d_st_dir < 0 ? 1 : -1) + (d_rsi > 55 ? 1 : d_rsi < 45 ? -1 : 0)
+    d_score    = d_raw > 0 ? 1.0 : d_raw < 0 ? -1.0 : 0.0
+
+    w_hma_raw  = request.security(syminfo.tickerid, "W", f_htf_hma(1), barmerge.gaps_off, barmerge.lookahead_off)
+    w_hma_prev = request.security(syminfo.tickerid, "W", f_htf_hma(2), barmerge.gaps_off, barmerge.lookahead_off)
+    w_bull     = w_hma_raw > w_hma_prev
+    w_rsi      = request.security(syminfo.tickerid, "W", ta.rsi(close, i_rsi_len)[1], barmerge.gaps_off, barmerge.lookahead_off)
+    w_st_dir   = request.security(syminfo.tickerid, "W", f_htf_st_dir(), barmerge.gaps_off, barmerge.lookahead_off)
+    w_raw      = (w_bull ? 1 : -1) + (w_st_dir < 0 ? 1 : -1) + (w_rsi > 55 ? 1 : w_rsi < 45 ? -1 : 0)
+    w_score    = w_raw > 0 ? 1.0 : w_raw < 0 ? -1.0 : 0.0
+
+    c_hma_raw  = request.security(syminfo.tickerid, i_htf_custom, f_htf_hma(1), barmerge.gaps_off, barmerge.lookahead_off)
+    c_hma_prev = request.security(syminfo.tickerid, i_htf_custom, f_htf_hma(2), barmerge.gaps_off, barmerge.lookahead_off)
+    cu_bull    = c_hma_raw > c_hma_prev
+    c_rsi      = request.security(syminfo.tickerid, i_htf_custom, ta.rsi(close, i_rsi_len)[1], barmerge.gaps_off, barmerge.lookahead_off)
+    c_raw      = (cu_bull ? 1 : -1) + (c_rsi > 55 ? 1 : c_rsi < 45 ? -1 : 0)
+    c_score    = c_raw > 0 ? 1.0 : c_raw < 0 ? -1.0 : 0.0
+
+    [d_score * 1.0 + w_score * 1.5 + c_score * 0.75, d_score, w_score, c_score, d_score > 0 ? "↑" : d_score < 0 ? "↓" : "→", w_score > 0 ? "↑" : w_score < 0 ? "↓" : "→", c_score > 0 ? "↑" : c_score < 0 ? "↓" : "→"]
+
+// ═══════════════════════════════════════════════════════════════════
+// BTC CONTEXT
+// ═══════════════════════════════════════════════════════════════════
+
+btc_close = request.security(i_btc_ticker, timeframe.period, close, barmerge.gaps_off, barmerge.lookahead_off)
+btc_ema50 = request.security(i_btc_ticker, timeframe.period, ta.ema(close, 50), barmerge.gaps_off, barmerge.lookahead_off)
+btc_bull  = btc_close > btc_ema50
+
+is_btc_pair = str.contains(syminfo.ticker, "BTC")  // skip the filter if we ARE BTC
+btc_filter_long  = not i_use_btc or is_btc_pair or btc_bull
+btc_filter_short = not i_use_btc or is_btc_pair or not btc_bull
+
+// Relative strength vs BTC over a 20-bar window.
+// Guard against zero/na historical prices rather than ta.change (which is
+// stateful and shouldn't sit inside a short-circuit conditional).
+c20  = nz(close[20], close)
+bc20 = nz(btc_close[20], btc_close)
+btc_rs = c20 > 0 and bc20 > 0 ? (close / c20) / (btc_close / bc20) : 1.0
+
+// ═══════════════════════════════════════════════════════════════════
+// MAIN COMPUTATION
+// ═══════════════════════════════════════════════════════════════════
+
+hma_val                                   = f_ma(i_ma_type, close, eff_hma_len)
+hma_bull                                  = hma_val > hma_val[1]
+ma2_val                                   = f_ma(i_ma2_type, close, i_ma2_len)
+[st_line, st_dir_v]                       = ta.supertrend(eff_st_factor, i_st_atr)
+st_bull                                   = st_dir_v < 0
+[e8, e13, e21, e34, e55, ribbon_score]    = f_ema_ribbon()
+[rsi_val, bull_div, bear_div]             = f_rsi_divergence(close)
+[macd_line, macd_sig, macd_hist, mom_st]  = f_macd_gradient()
+[srsi_k, srsi_d, srsi_zone]               = f_stoch_rsi()
+[bb_upper, bb_lower, bb_basis, bb_pct, is_squeeze, squeeze_ending, bb_width] = f_bb_squeeze()
+[atr_val, sup_zone, res_zone]             = f_atr_zones()
+[regime_score, adx_val, chop_val, is_trending, is_ranging] = f_market_regime(bb_width)
+[htf_score, d_score, w_score, c_score, d_arrow, w_arrow, c_arrow] = f_htf_confluence()
+
+// ═══════════════════════════════════════════════════════════════════
+// CONFIDENCE SCORE
+// ═══════════════════════════════════════════════════════════════════
+
+f_confidence(direction) =>
+    htf_pts    = math.min(math.abs(htf_score) / 3.25 * 25, 25)
+    reg_pts    = is_trending ? 20 : regime_score > 40 ? 10 : 0
+    rib_pts    = math.abs(ribbon_score) >= 5 ? 15 : math.abs(ribbon_score) >= 3 ? 8 : 0
+    rsi_pts    = math.abs(rsi_val - 50) >= 15 ? 15 : math.abs(rsi_val - 50) >= 10 ? 8 : 0
+    vol_avg    = ta.sma(math.abs(vol_delta), 20)
+    vol_pts    = vol_avg > 0 and math.abs(vol_delta) / vol_avg > 1.5 ? 15 : 8
+    sq_pts     = squeeze_ending ? 10 : 0
+    cvd_pts    = (direction == 1 and cvd_bull_div) or (direction == -1 and cvd_bear_div) ? 8 : 0
+    sweep_pts  = i_sweep_filter and ((direction == 1 and swept_low) or (direction == -1 and swept_high)) ? 7 : 0
+    htf_pts + reg_pts + rib_pts + rsi_pts + vol_pts + sq_pts + cvd_pts + sweep_pts
+
+conf_long  = f_confidence(1)
+conf_short = f_confidence(-1)
+
+// Volume-profile levels (POC / Value-Area High / Low) for the optional signal filter.
+// No ta.* inside, so it only runs when actually called (i.e. when the VP filter is on).
+f_vp_levels() =>
+    hh = high
+    ll = low
+    for i = 0 to i_vp_lookback - 1
+        if not na(high[i])
+            hh := math.max(hh, high[i])
+            ll := math.min(ll, low[i])
+    rng = hh - ll
+    float poc = na
+    float vah = na
+    float val = na
+    if rng > 0
+        binsz = rng / i_vp_bins
+        vb = array.new<float>(i_vp_bins, 0.0)
+        for i = 0 to i_vp_lookback - 1
+            if not na(high[i]) and not na(volume[i])
+                lo_idx = math.max(0, int((low[i]  - ll) / binsz))
+                hi_idx = math.min(i_vp_bins - 1, int((high[i] - ll) / binsz))
+                span   = math.max(1, hi_idx - lo_idx + 1)
+                share  = volume[i] / span
+                for bx = lo_idx to hi_idx
+                    array.set(vb, bx, array.get(vb, bx) + share)
+        total = array.sum(vb)
+        if total > 0
+            pidx = 0
+            for bx = 1 to i_vp_bins - 1
+                if array.get(vb, bx) > array.get(vb, pidx)
+                    pidx := bx
+            tgt = total * i_vp_va / 100.0
+            lob = pidx
+            hib = pidx
+            acc = array.get(vb, pidx)
+            while acc < tgt and (lob > 0 or hib < i_vp_bins - 1)
+                bel = lob > 0             ? array.get(vb, lob - 1) : -1.0
+                abv = hib < i_vp_bins - 1 ? array.get(vb, hib + 1) : -1.0
+                if abv >= bel
+                    hib += 1
+                    acc += array.get(vb, hib)
+                else
+                    lob -= 1
+                    acc += array.get(vb, lob)
+            poc := ll + (pidx + 0.5) * binsz
+            vah := ll + (hib + 1) * binsz
+            val := ll + lob * binsz
+    [poc, vah, val]
+
+// ═══════════════════════════════════════════════════════════════════
+// SUPPORT / RESISTANCE — LEVEL TRACKING (pivot clusters)
+// ═══════════════════════════════════════════════════════════════════
+
+// Persistent level store: price, strength (cluster/touch count), last-updated bar.
+var array<float> sr_price = array.new<float>()
+var array<int>   sr_touch = array.new<int>()
+var array<int>   sr_bar   = array.new<int>()
+
+// Register a confirmed pivot: merge into the nearest level within (merge x ATR),
+// otherwise create a new one. Strength = how many swings have clustered at this
+// price. (Array mutation inside a function is permitted in Pine v6.)
+f_sr_register(float p) =>
+    merged = false
+    if array.size(sr_price) > 0
+        for k = 0 to array.size(sr_price) - 1
+            if not merged and math.abs(array.get(sr_price, k) - p) <= atr_val * i_sr_merge
+                cnt  = array.get(sr_touch, k)
+                newp = (array.get(sr_price, k) * cnt + p) / (cnt + 1)
+                array.set(sr_price, k, newp)
+                array.set(sr_touch, k, cnt + 1)
+                array.set(sr_bar,   k, bar_index)
+                merged := true
+    if not merged
+        array.push(sr_price, p)
+        array.push(sr_touch, 1)
+        array.push(sr_bar,   bar_index)
+        if array.size(sr_price) > 60
+            wi = 0
+            for k = 1 to array.size(sr_price) - 1
+                weaker = array.get(sr_touch, k) < array.get(sr_touch, wi)
+                older  = array.get(sr_touch, k) == array.get(sr_touch, wi) and array.get(sr_bar, k) < array.get(sr_bar, wi)
+                if weaker or older
+                    wi := k
+            array.remove(sr_price, wi)
+            array.remove(sr_touch, wi)
+            array.remove(sr_bar,   wi)
+
+// Detect swing pivots every bar (consistent history) and fold them into the store.
+sr_ph = ta.pivothigh(i_sr_pivot, i_sr_pivot)
+sr_pl = ta.pivotlow(i_sr_pivot, i_sr_pivot)
+if not na(sr_ph)
+    f_sr_register(sr_ph)
+if not na(sr_pl)
+    f_sr_register(sr_pl)
+
+// Proximity to a STRONG level — only evaluated when the S/R signal filter is on.
+// sr_block_long  : strong resistance sits just overhead (don't buy into it)
+// sr_block_short : strong support sits just below     (don't sell into it)
+sr_block_long  = false
+sr_block_short = false
+if i_sr_filter and array.size(sr_price) > 0
+    for k = 0 to array.size(sr_price) - 1
+        if array.get(sr_touch, k) >= i_sr_filter_str
+            lv = array.get(sr_price, k)
+            if lv >= close and lv - close <= atr_val * i_sr_filter_dist
+                sr_block_long := true
+            if lv <= close and close - lv <= atr_val * i_sr_filter_dist
+                sr_block_short := true
+
+// Volume-Profile proximity filter (optional). Recomputes the profile each bar only
+// when enabled; blocks entries about to run into the POC or a Value-Area edge.
+vp_block_long  = false
+vp_block_short = false
+if i_vp_filter
+    [fpoc, fvah, fval] = f_vp_levels()
+    vpd = atr_val * i_vp_filter_dist
+    if not na(fpoc)
+        vp_block_long  := (fpoc >= close and fpoc - close <= vpd) or (fvah >= close and fvah - close <= vpd) or (fval >= close and fval - close <= vpd)
+        vp_block_short := (fpoc <= close and close - fpoc <= vpd) or (fvah <= close and close - fvah <= vpd) or (fval <= close and close - fval <= vpd)
+
+// ═══════════════════════════════════════════════════════════════════
+// SIGNAL ENGINE
+// ═══════════════════════════════════════════════════════════════════
+
+// Filter state — all conditions checked individually for the why-not panel
+var int last_sig_bar = 0
+var int conf_long_count = 0
+var int conf_short_count = 0
+
+cond_hma_long      = hma_bull
+cond_rsi_long      = rsi_val > 50
+cond_vol_long      = vol_delta > 0
+cond_ribbon_long   = ribbon_score >= 3
+cond_st_long       = st_bull
+cond_htf_long      = not i_htf_suppress or htf_score >= 1.5
+cond_btc_long      = btc_filter_long
+cond_fvg_long      = not i_fvg_filter or not inside_bear_fvg
+cond_regime_long   = not (i_strict_filter and is_ranging and adx_val < 18 and chop_val > 61.8)
+cond_nearres_long  = math.abs(close - res_zone) > atr_val * 0.5
+cond_body          = not i_body_filter or (high > low and math.abs(close - open) / (high - low) > 0.5)
+cond_spacing       = bar_index - last_sig_bar >= eff_spacing
+cond_conf_long     = conf_long >= eff_min_conf
+
+cond_hma_short     = not hma_bull
+cond_rsi_short     = rsi_val < 50
+cond_vol_short     = vol_delta < 0
+cond_ribbon_short  = ribbon_score <= -3
+cond_st_short      = not st_bull
+cond_htf_short     = not i_htf_suppress or htf_score <= -1.5
+cond_btc_short     = btc_filter_short
+cond_fvg_short     = not i_fvg_filter or not inside_bull_fvg
+cond_regime_short  = cond_regime_long  // same regime gate
+cond_nearsup_short = math.abs(close - sup_zone) > atr_val * 0.5
+cond_conf_short    = conf_short >= eff_min_conf
+cond_sr_long       = not sr_block_long   // true unless a strong resistance is just overhead
+cond_sr_short      = not sr_block_short  // true unless strong support is just below
+cond_vp_long       = not vp_block_long   // true unless POC / value-area edge is just overhead
+cond_vp_short      = not vp_block_short  // true unless POC / value-area edge is just below
+
+raw_long  = cond_hma_long  and cond_rsi_long  and cond_vol_long  and cond_ribbon_long  and cond_st_long
+raw_short = cond_hma_short and cond_rsi_short and cond_vol_short and cond_ribbon_short and cond_st_short
+
+filt_long  = raw_long  and cond_htf_long  and cond_btc_long  and cond_fvg_long  and cond_regime_long  and cond_nearres_long  and cond_body and cond_spacing and cond_conf_long  and cond_sr_long  and cond_vp_long
+filt_short = raw_short and cond_htf_short and cond_btc_short and cond_fvg_short and cond_regime_short and cond_nearsup_short and cond_body and cond_spacing and cond_conf_short and cond_sr_short and cond_vp_short
+
+conf_long_count  := filt_long  ? conf_long_count  + 1 : 0
+conf_short_count := filt_short ? conf_short_count + 1 : 0
+
+confirmed_long  = i_req_confirm ? conf_long_count  >= 2 : filt_long
+confirmed_short = i_req_confirm ? conf_short_count >= 2 : filt_short
+
+if confirmed_long or confirmed_short
+    last_sig_bar     := bar_index
+    conf_long_count  := 0
+    conf_short_count := 0
+
+// Adaptive SL/TP base multiplier (multiplied with per-TP scale)
+sl_mult = i_adaptive_sltp ? (is_trending ? 1.5 : is_ranging ? 1.0 : 1.25) : 1.5
+regime_tag = is_trending ? "T" : is_ranging ? "R" : "X"
+
+// ═══════════════════════════════════════════════════════════════════
+// TRADE TRACKING
+// ═══════════════════════════════════════════════════════════════════
+
+var array<Trade> trades = array.new<Trade>()
+
+// position sizing helper
+f_position_size(dir) =>
+    conf = dir == 1 ? conf_long : conf_short
+    size_mult = i_scale_by_conf ? (conf >= 85 ? 1.0 : conf >= 70 ? 0.75 : conf >= 55 ? 0.5 : 0.25) : 1.0
+    risk_dollars  = i_account_size * i_risk_pct / 100 * size_mult
+    risk_per_unit = atr_val * sl_mult
+    risk_per_unit > 0 ? risk_dollars / risk_per_unit : 0.0
+
+f_open_trade(dir) =>
+    sl_dist = atr_val * sl_mult
+    entry   = close
+    sl      = dir == 1 ? entry - sl_dist : entry + sl_dist
+    tp1     = dir == 1 ? entry + atr_val * i_tp1_mult : entry - atr_val * i_tp1_mult
+    tp2     = dir == 1 ? entry + atr_val * i_tp2_mult : entry - atr_val * i_tp2_mult
+    tp3     = dir == 1 ? entry + atr_val * i_tp3_mult : entry - atr_val * i_tp3_mult
+    confi   = dir == 1 ? conf_long : conf_short
+    qty     = f_position_size(dir)
+    t = Trade.new(bar_index, time, dir, entry, sl, tp1, tp2, tp3, sl, confi, qty, htf_score, false, false, false, false, false, regime_tag)
+    array.push(trades, t)
+    if array.size(trades) > 50
+        array.shift(trades)
+    t
+
+// Counters for regime stats
+var int t_trend_total = 0
+var int t_trend_win   = 0   // hit TP2 or higher
+var int t_trend_loss  = 0   // stopped before TP1
+var int t_range_total = 0
+var int t_range_win   = 0
+var int t_range_loss  = 0
+
+// NOTE: trade classification is inlined into the for-loop below.
+// Pine v6 forbids modifying global var primitives inside functions
+// (array mutations are exempt, but counter increments are not).
+
+// Escape a string so it is safe to embed inside a JSON double-quoted value.
+// Order matters: backslash must be escaped first, then quotes and control chars.
+f_json_escape(string s) =>
+    out = str.replace_all(s,   "\\", "\\\\")   // \  -> \\
+    out := str.replace_all(out, "\"", "\\\"")  // "  -> \"
+    out := str.replace_all(out, "\n", "\\n")   // LF -> \n
+    out := str.replace_all(out, "\r", "\\r")   // CR -> \r
+    out := str.replace_all(out, "\t", "\\t")   // TAB-> \t
+    out
+
+// Build a full-snapshot cui.signal.v1 webhook payload for a trade + event.
+// Pure: reads globals, mutates nothing (seq is passed in and bumped by the caller in global scope).
+f_signal_json(string event_name, Trade t, int seq) =>
+    dir_str = t.direction == 1 ? "long" : "short"
+    reg_str = t.regime_tag == "T" ? "trend" : t.regime_tag == "R" ? "range" : "transit"
+    eff_stop = t.tp1_hit ? (i_use_trail ? (t.direction == 1 ? math.max(t.entry, t.trail_stop) : math.min(t.entry, t.trail_stop)) : t.entry) : t.sl
+    tid = f_json_escape(syminfo.prefix) + ":" + f_json_escape(syminfo.ticker) + ":" + f_json_escape(timeframe.period) + ":" + str.tostring(t.open_time, "#")
+    '{"schema":"cui.signal.v1","event":"' + f_json_escape(event_name) + '","meta":{"src":"' + f_json_escape(i_webhook_id) + '","secret":"' + f_json_escape(i_webhook_secret) + '","seq":' + str.tostring(seq) + ',"ts":' + str.tostring(timenow) + ',"bar_time":' + str.tostring(time) + '},"trade":{"id":"' + tid + '","symbol":"' + f_json_escape(syminfo.ticker) + '","exchange":"' + f_json_escape(syminfo.prefix) + '","tf":"' + f_json_escape(timeframe.period) + '","direction":"' + dir_str + '","entry":' + str.tostring(t.entry, format.mintick) + ',"sl":' + str.tostring(t.sl, format.mintick) + ',"eff_stop":' + str.tostring(eff_stop, format.mintick) + ',"tp1":' + str.tostring(t.tp1, format.mintick) + ',"tp2":' + str.tostring(t.tp2, format.mintick) + ',"tp3":' + str.tostring(t.tp3, format.mintick) + ',"tp1_pct":' + str.tostring(i_tp1_pct) + ',"tp2_pct":' + str.tostring(i_tp2_pct) + ',"tp3_pct":' + str.tostring(i_tp3_pct) + ',"tp1_hit":' + (t.tp1_hit ? "true" : "false") + ',"tp2_hit":' + (t.tp2_hit ? "true" : "false") + ',"tp3_hit":' + (t.tp3_hit ? "true" : "false") + ',"sl_hit":' + (t.sl_hit ? "true" : "false") + ',"be_active":' + (t.be_active ? "true" : "false") + ',"qty":' + str.tostring(t.qty, "#.######") + ',"confidence":' + str.tostring(math.round(t.confidence)) + ',"regime":"' + reg_str + '","htf":' + str.tostring(t.htf, "#.##") + '}}'
+
+// Open new trades on confirmed signals
+var int g_seq = 0
+new_trade_long  = confirmed_long  ? f_open_trade(1)  : na
+new_trade_short = confirmed_short ? f_open_trade(-1) : na
+if i_use_json and not na(new_trade_long)
+    g_seq += 1
+    alert(f_signal_json("entry", new_trade_long, g_seq), alert.freq_once_per_bar_close)
+if i_use_json and not na(new_trade_short)
+    g_seq += 1
+    alert(f_signal_json("entry", new_trade_short, g_seq), alert.freq_once_per_bar_close)
+
+// Update open trades each bar
+if array.size(trades) > 0
+    for i = 0 to array.size(trades) - 1
+        t = array.get(trades, i)
+        if not t.sl_hit and not t.tp3_hit
+            if t.direction == 1
+                if not t.tp1_hit and high >= t.tp1
+                    t.tp1_hit := true
+                    if i_use_be
+                        t.be_active := true
+                    if i_use_json and i_emit_partials
+                        g_seq += 1
+                        alert(f_signal_json("tp1_fill", t, g_seq), alert.freq_once_per_bar_close)
+                    if i_use_json and i_emit_stops and t.be_active
+                        g_seq += 1
+                        alert(f_signal_json("be_activated", t, g_seq), alert.freq_once_per_bar_close)
+                if not t.tp2_hit and high >= t.tp2
+                    t.tp2_hit := true
+                    if i_use_json and i_emit_partials
+                        g_seq += 1
+                        alert(f_signal_json("tp2_fill", t, g_seq), alert.freq_once_per_bar_close)
+                if not t.tp3_hit and high >= t.tp3
+                    t.tp3_hit := true
+                    if i_use_json
+                        g_seq += 1
+                        alert(f_signal_json("tp3_fill", t, g_seq), alert.freq_once_per_bar_close)
+                        g_seq += 1
+                        alert(f_signal_json("exit", t, g_seq), alert.freq_once_per_bar_close)
+                if t.tp1_hit and i_use_trail
+                    prev_trail = t.trail_stop
+                    new_trail = high - atr_val * i_trail_mult
+                    t.trail_stop := math.max(t.trail_stop, new_trail)
+                    if i_use_json and i_emit_stops and t.trail_stop != prev_trail
+                        g_seq += 1
+                        alert(f_signal_json("trail_moved", t, g_seq), alert.freq_once_per_bar_close)
+                eff_stop = t.tp1_hit ? (i_use_trail ? math.max(t.entry, t.trail_stop) : t.entry) : t.sl
+                if low <= eff_stop
+                    t.sl_hit := true
+                    if i_use_json
+                        g_seq += 1
+                        alert(f_signal_json("sl_hit", t, g_seq), alert.freq_once_per_bar_close)
+                        g_seq += 1
+                        alert(f_signal_json("exit", t, g_seq), alert.freq_once_per_bar_close)
+            else
+                if not t.tp1_hit and low <= t.tp1
+                    t.tp1_hit := true
+                    if i_use_be
+                        t.be_active := true
+                    if i_use_json and i_emit_partials
+                        g_seq += 1
+                        alert(f_signal_json("tp1_fill", t, g_seq), alert.freq_once_per_bar_close)
+                    if i_use_json and i_emit_stops and t.be_active
+                        g_seq += 1
+                        alert(f_signal_json("be_activated", t, g_seq), alert.freq_once_per_bar_close)
+                if not t.tp2_hit and low <= t.tp2
+                    t.tp2_hit := true
+                    if i_use_json and i_emit_partials
+                        g_seq += 1
+                        alert(f_signal_json("tp2_fill", t, g_seq), alert.freq_once_per_bar_close)
+                if not t.tp3_hit and low <= t.tp3
+                    t.tp3_hit := true
+                    if i_use_json
+                        g_seq += 1
+                        alert(f_signal_json("tp3_fill", t, g_seq), alert.freq_once_per_bar_close)
+                        g_seq += 1
+                        alert(f_signal_json("exit", t, g_seq), alert.freq_once_per_bar_close)
+                if t.tp1_hit and i_use_trail
+                    prev_trail = t.trail_stop
+                    new_trail = low + atr_val * i_trail_mult
+                    t.trail_stop := math.min(t.trail_stop, new_trail)
+                    if i_use_json and i_emit_stops and t.trail_stop != prev_trail
+                        g_seq += 1
+                        alert(f_signal_json("trail_moved", t, g_seq), alert.freq_once_per_bar_close)
+                eff_stop = t.tp1_hit ? (i_use_trail ? math.min(t.entry, t.trail_stop) : t.entry) : t.sl
+                if high >= eff_stop
+                    t.sl_hit := true
+                    if i_use_json
+                        g_seq += 1
+                        alert(f_signal_json("sl_hit", t, g_seq), alert.freq_once_per_bar_close)
+                        g_seq += 1
+                        alert(f_signal_json("exit", t, g_seq), alert.freq_once_per_bar_close)
+            // Just closed this bar — classify outcome by regime (inlined; can't modify globals from a function)
+            if t.sl_hit or t.tp3_hit
+                is_win  = t.tp2_hit
+                is_loss = t.sl_hit and not t.tp1_hit
+                if t.regime_tag == "T"
+                    t_trend_total := t_trend_total + 1
+                    if is_win
+                        t_trend_win := t_trend_win + 1
+                    if is_loss
+                        t_trend_loss := t_trend_loss + 1
+                if t.regime_tag == "R"
+                    t_range_total := t_range_total + 1
+                    if is_win
+                        t_range_win := t_range_win + 1
+                    if is_loss
+                        t_range_loss := t_range_loss + 1
+            array.set(trades, i, t)
+
+// ═══════════════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════════════
+
+plot(i_show_hma ? hma_val : na, "Primary MA", hma_bull ? c_bull : c_bear, 2)
+plot(i_show_ma2 ? ma2_val : na, "Second MA", color.new(color.orange, 0), 1)
+plot(i_show_st  ? st_line : na, "Supertrend", st_bull ? c_bull : c_bear, 1, plot.style_linebr)
+
+ribbon_c = ribbon_score >= 3 ? c_bull : ribbon_score <= -3 ? c_bear : c_neutral
+p_e8  = plot(i_show_ribbon ? e8  : na, "EMA 8",  ribbon_c, 1)
+p_e55 = plot(i_show_ribbon ? e55 : na, "EMA 55", ribbon_c, 2)
+plot(i_show_ribbon ? e13 : na, "EMA 13", ribbon_c, 1)
+plot(i_show_ribbon ? e21 : na, "EMA 21", ribbon_c, 1)
+plot(i_show_ribbon ? e34 : na, "EMA 34", ribbon_c, 1)
+fill(p_e8, p_e55, color.new(ribbon_score >= 3 ? c_bull : ribbon_score <= -3 ? c_bear : c_neutral, 88))
+
+plot(i_show_bb ? bb_upper : na, "BB Upper", color.new(color.blue, 60), 1)
+plot(i_show_bb ? bb_lower : na, "BB Lower", color.new(color.blue, 60), 1)
+plot(i_show_bb ? bb_basis : na, "BB Basis", color.new(color.blue, 80), 1)
+
+bgcolor(i_show_bb     and is_squeeze ? color.new(color.yellow, 90) : na, title="BB Squeeze")
+bgcolor(i_show_regime and is_ranging  ? color.new(color.red,   93) : na, title="Ranging")
+bgcolor(i_show_regime and is_trending ? color.new(color.green, 93) : na, title="Trending")
+
+plot(i_show_vol  ? vol_delta : na, "Vol Delta",  vol_delta > 0 ? color.new(color.teal, 40) : color.new(color.maroon, 40), style=plot.style_histogram, display=display.data_window)
+plot(i_show_cvd  ? cvd : na,       "CVD",        color.new(color.aqua, 0),  display=display.data_window)
+plot(i_show_volosc ? vol_ma  : na, "Volume MA",  color.new(color.gray, 0),    display=display.data_window)
+plot(i_show_volosc ? vol_osc : na, "Vol Osc %",  color.new(color.fuchsia, 0), display=display.data_window)
+plot(i_show_volosc ? rvol    : na, "RVOL",       color.new(color.lime, 0),    display=display.data_window)
+plot(i_show_macd ? macd_line : na, "MACD Line",  color.new(color.blue, 0),  display=display.data_window)
+plot(i_show_macd ? macd_sig  : na, "MACD Sig",   color.new(color.orange, 0), display=display.data_window)
+plot(i_show_macd ? macd_hist : na, "MACD Hist",  color.new(color.gray, 0),  display=display.data_window)
+plot(i_show_srsi ? srsi_k    : na, "StochRSI K", color.new(color.blue, 0),  display=display.data_window)
+plot(i_show_srsi ? srsi_d    : na, "StochRSI D", color.new(color.orange, 0), display=display.data_window)
+plot(regime_score, "Regime",  color.new(color.orange, 0), display=display.data_window)
+plot(adx_val,      "ADX",     color.new(color.blue, 0),   display=display.data_window)
+plot(chop_val,     "CHOP",    color.new(color.purple, 0), display=display.data_window)
+plot(i_show_btc_rs ? btc_rs : na, "RS vs BTC", color.new(color.yellow, 0), display=display.data_window)
+plot(conf_long,    "Conf L",  color.new(color.lime, 0),    display=display.data_window)
+plot(conf_short,   "Conf S",  color.new(color.fuchsia, 0), display=display.data_window)
+
+// ═══════════════════════════════════════════════════════════════════
+// DIVERGENCE LABELS
+// ═══════════════════════════════════════════════════════════════════
+
+if i_show_rsi and bull_div
+    label.new(bar_index[5], low[5],  "Bull Div", style=label.style_label_up,   color=color.new(color.green, 20), textcolor=c_text, size=size.small)
+if i_show_rsi and bear_div
+    label.new(bar_index[5], high[5], "Bear Div", style=label.style_label_down, color=color.new(color.red,   20), textcolor=c_text, size=size.small)
+if i_show_cvd_lbl and cvd_bull_div
+    label.new(bar_index[5], low[5],  "CVD Bull", style=label.style_label_up,   color=color.new(color.teal,  20), textcolor=c_text, size=size.tiny)
+if i_show_cvd_lbl and cvd_bear_div
+    label.new(bar_index[5], high[5], "CVD Bear", style=label.style_label_down, color=color.new(color.maroon, 20), textcolor=c_text, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════════
+// SIGNAL LABELS + ARROWS
+// ═══════════════════════════════════════════════════════════════════
+
+f_format_price(p) => str.tostring(p, format.mintick)
+
+if i_show_signals and confirmed_long and not na(new_trade_long) and i_label_detail != "Off"
+    t = new_trade_long
+    stars = conf_long >= 85 ? "★★★★★" : conf_long >= 75 ? "★★★★" : conf_long >= 65 ? "★★★" : conf_long >= 55 ? "★★" : "★"
+    txt = "BUY " + stars + "  " + str.tostring(math.round(conf_long))
+    if i_label_detail == "Full"
+        sl_r  = math.abs(t.entry - t.sl)
+        tp1_r = math.abs(t.tp1 - t.entry) / math.max(sl_r, syminfo.mintick)
+        tp2_r = math.abs(t.tp2 - t.entry) / math.max(sl_r, syminfo.mintick)
+        tp3_r = math.abs(t.tp3 - t.entry) / math.max(sl_r, syminfo.mintick)
+        qty   = f_position_size(1)
+        pos_line = i_show_position ? "\nSize: " + str.tostring(qty, "#.######") + " @ " + str.tostring(i_risk_pct, "#.#") + "%R" : ""
+        txt := "BUY [" + regime_tag + "] " + stars + "\nConf: " + str.tostring(conf_long, "#") + "/100  HTF: " + str.tostring(htf_score, "#.##") + "\nSL: " + f_format_price(t.sl) + "\nTP1: " + f_format_price(t.tp1) + " (" + str.tostring(tp1_r, "#.#") + "R, " + str.tostring(i_tp1_pct) + "%)\nTP2: " + f_format_price(t.tp2) + " (" + str.tostring(tp2_r, "#.#") + "R, " + str.tostring(i_tp2_pct) + "%)\nTP3: " + f_format_price(t.tp3) + " (" + str.tostring(tp3_r, "#.#") + "R, " + str.tostring(i_tp3_pct) + "%)" + pos_line
+    label.new(bar_index, low, txt, style=label.style_label_up, color=color.new(color.green, 10), textcolor=c_text, size=ls)
+
+if i_show_signals and confirmed_short and not na(new_trade_short) and i_label_detail != "Off"
+    t = new_trade_short
+    stars = conf_short >= 85 ? "★★★★★" : conf_short >= 75 ? "★★★★" : conf_short >= 65 ? "★★★" : conf_short >= 55 ? "★★" : "★"
+    txt = "SELL " + stars + "  " + str.tostring(math.round(conf_short))
+    if i_label_detail == "Full"
+        sl_r  = math.abs(t.entry - t.sl)
+        tp1_r = math.abs(t.tp1 - t.entry) / math.max(sl_r, syminfo.mintick)
+        tp2_r = math.abs(t.tp2 - t.entry) / math.max(sl_r, syminfo.mintick)
+        tp3_r = math.abs(t.tp3 - t.entry) / math.max(sl_r, syminfo.mintick)
+        qty   = f_position_size(-1)
+        pos_line = i_show_position ? "\nSize: " + str.tostring(qty, "#.######") + " @ " + str.tostring(i_risk_pct, "#.#") + "%R" : ""
+        txt := "SELL [" + regime_tag + "] " + stars + "\nConf: " + str.tostring(conf_short, "#") + "/100  HTF: " + str.tostring(htf_score, "#.##") + "\nSL: " + f_format_price(t.sl) + "\nTP1: " + f_format_price(t.tp1) + " (" + str.tostring(tp1_r, "#.#") + "R, " + str.tostring(i_tp1_pct) + "%)\nTP2: " + f_format_price(t.tp2) + " (" + str.tostring(tp2_r, "#.#") + "R, " + str.tostring(i_tp2_pct) + "%)\nTP3: " + f_format_price(t.tp3) + " (" + str.tostring(tp3_r, "#.#") + "R, " + str.tostring(i_tp3_pct) + "%)" + pos_line
+    label.new(bar_index, high, txt, style=label.style_label_down, color=color.new(color.red, 10), textcolor=c_text, size=ls)
+
+// Compact arrows
+plotshape(i_show_arrows and confirmed_long,  title="Buy Arrow",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+plotshape(i_show_arrows and confirmed_short, title="Sell Arrow", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.small)
+
+// ═══════════════════════════════════════════════════════════════════
+// ATR ZONES + HTF S/R
+// ═══════════════════════════════════════════════════════════════════
+
+var line res_line = na
+var line sup_line = na
+if barstate.islast and i_show_zones
+    line.delete(res_line)
+    line.delete(sup_line)
+    res_line := line.new(bar_index - 20, res_zone, bar_index + 5, res_zone, color=color.new(color.red,   60), style=line.style_dashed, width=1)
+    sup_line := line.new(bar_index - 20, sup_zone, bar_index + 5, sup_zone, color=color.new(color.green, 60), style=line.style_dashed, width=1)
+
+d_ph = request.security(syminfo.tickerid, "D", ta.pivothigh(high, 3, 3)[1], barmerge.gaps_off, barmerge.lookahead_off)
+d_pl = request.security(syminfo.tickerid, "D", ta.pivotlow(low,  3, 3)[1], barmerge.gaps_off, barmerge.lookahead_off)
+w_ph = request.security(syminfo.tickerid, "W", ta.pivothigh(high, 3, 3)[1], barmerge.gaps_off, barmerge.lookahead_off)
+w_pl = request.security(syminfo.tickerid, "W", ta.pivotlow(low,  3, 3)[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+var line d_res_line = na
+var line d_sup_line = na
+var line w_res_line = na
+var line w_sup_line = na
+
+if barstate.islast and i_show_htf_levels
+    line.delete(d_res_line)
+    line.delete(d_sup_line)
+    line.delete(w_res_line)
+    line.delete(w_sup_line)
+    if not na(d_ph)
+        d_res_line := line.new(bar_index - 50, d_ph, bar_index + 5, d_ph, color=color.new(color.orange, 30), style=line.style_dashed, width=1)
+    if not na(d_pl)
+        d_sup_line := line.new(bar_index - 50, d_pl, bar_index + 5, d_pl, color=color.new(color.orange, 30), style=line.style_dashed, width=1)
+    if not na(w_ph)
+        w_res_line := line.new(bar_index - 50, w_ph, bar_index + 5, w_ph, color=color.new(color.purple, 30), style=line.style_dashed, width=2)
+    if not na(w_pl)
+        w_sup_line := line.new(bar_index - 50, w_pl, bar_index + 5, w_pl, color=color.new(color.purple, 30), style=line.style_dashed, width=2)
+
+// ═══════════════════════════════════════════════════════════════════
+// SUPPORT / RESISTANCE — DRAWING
+// ═══════════════════════════════════════════════════════════════════
+// (Level tracking + clustering runs earlier, before the Signal Engine, so the
+//  levels can optionally feed the signal filter. This block only draws them.)
+
+// Draw the strongest levels, rebuilt on the last bar to keep the chart clean.
+var array<line>  sr_lines = array.new<line>()
+var array<box>   sr_boxes = array.new<box>()
+var array<label> sr_lbls  = array.new<label>()
+
+if barstate.islast and i_show_sr
+    if array.size(sr_lines) > 0
+        for k = 0 to array.size(sr_lines) - 1
+            line.delete(array.get(sr_lines, k))
+    if array.size(sr_boxes) > 0
+        for k = 0 to array.size(sr_boxes) - 1
+            box.delete(array.get(sr_boxes, k))
+    if array.size(sr_lbls) > 0
+        for k = 0 to array.size(sr_lbls) - 1
+            label.delete(array.get(sr_lbls, k))
+    array.clear(sr_lines)
+    array.clear(sr_boxes)
+    array.clear(sr_lbls)
+
+    n_lvl = array.size(sr_price)
+    if n_lvl > 0
+        used  = array.new<bool>(n_lvl, false)
+        left  = math.max(bar_index - 250, 0)
+        right = bar_index + i_sr_extend
+        half  = atr_val * i_sr_band
+        ls_sr = i_sr_style == "Dashed" ? line.style_dashed : i_sr_style == "Dotted" ? line.style_dotted : line.style_solid
+        shown = 0
+        while shown < i_sr_max
+            best = -1
+            for k = 0 to n_lvl - 1
+                within = i_sr_max_dist <= 0 or math.abs(array.get(sr_price, k) - close) <= atr_val * i_sr_max_dist
+                if not array.get(used, k) and array.get(sr_touch, k) >= i_sr_min_touch and within
+                    if best == -1 or array.get(sr_touch, k) > array.get(sr_touch, best)
+                        best := k
+            if best == -1
+                break
+            array.set(used, best, true)
+            shown += 1
+            p      = array.get(sr_price, best)
+            tch    = array.get(sr_touch, best)
+            is_res = p >= close
+            base_col = is_res ? i_sr_col_res : i_sr_col_sup
+            fill_tp  = math.max(0, 82 - (tch - 1) * 14)   // more touches -> more opaque
+            edge_tp  = math.max(0, fill_tp - 25)
+            lw       = i_sr_lwidth > 0 ? i_sr_lwidth : (tch >= 4 ? 3 : tch >= 2 ? 2 : 1)
+            if i_sr_band > 0
+                b = box.new(left, p + half, right, p - half, border_color=color.new(base_col, edge_tp), border_width=1, border_style=ls_sr, bgcolor=color.new(base_col, fill_tp))
+                array.push(sr_boxes, b)
+            else
+                ln = line.new(left, p, right, p, color=color.new(base_col, edge_tp), width=lw, style=ls_sr)
+                array.push(sr_lines, ln)
+            if i_sr_labels
+                lb = label.new(right, p, (is_res ? "R " : "S ") + str.tostring(tch) + "x" + (i_sr_show_price ? "  " + str.tostring(p, format.mintick) : ""), style=label.style_label_left, color=color.new(base_col, 25), textcolor=c_text, size=size.tiny)
+                array.push(sr_lbls, lb)
+
+// ═══════════════════════════════════════════════════════════════════
+// VOLUME PROFILE — POINT OF CONTROL + VALUE AREA (volume-based S/R)
+// ═══════════════════════════════════════════════════════════════════
+
+var line vp_poc_line = na
+var line vp_vah_line = na
+var line vp_val_line = na
+var array<box> vp_boxes = array.new<box>()
+
+if barstate.islast and i_show_vp
+    line.delete(vp_poc_line)
+    line.delete(vp_vah_line)
+    line.delete(vp_val_line)
+    if array.size(vp_boxes) > 0
+        for j = 0 to array.size(vp_boxes) - 1
+            box.delete(array.get(vp_boxes, j))
+        array.clear(vp_boxes)
+
+    // Pass 1 — price range over the lookback window (na-guarded for short charts).
+    hh = high
+    ll = low
+    for i = 0 to i_vp_lookback - 1
+        if not na(high[i])
+            hh := math.max(hh, high[i])
+            ll := math.min(ll, low[i])
+    rng = hh - ll
+    if rng > 0
+        binsz = rng / i_vp_bins
+        vol_bins = array.new<float>(i_vp_bins, 0.0)
+        // Pass 2 — distribute each bar's volume across the price bins its range spans.
+        for i = 0 to i_vp_lookback - 1
+            if not na(high[i]) and not na(volume[i])
+                lo_idx = math.max(0, int((low[i]  - ll) / binsz))
+                hi_idx = math.min(i_vp_bins - 1, int((high[i] - ll) / binsz))
+                span   = math.max(1, hi_idx - lo_idx + 1)
+                share  = volume[i] / span
+                for bx = lo_idx to hi_idx
+                    array.set(vol_bins, bx, array.get(vol_bins, bx) + share)
+        total = array.sum(vol_bins)
+        if total > 0
+            // Point of Control = highest-volume bin.
+            poc_idx = 0
+            for bx = 1 to i_vp_bins - 1
+                if array.get(vol_bins, bx) > array.get(vol_bins, poc_idx)
+                    poc_idx := bx
+            // Value area = expand from POC to the heavier neighbour until VA% reached.
+            va_target = total * i_vp_va / 100.0
+            lo_b = poc_idx
+            hi_b = poc_idx
+            acc  = array.get(vol_bins, poc_idx)
+            while acc < va_target and (lo_b > 0 or hi_b < i_vp_bins - 1)
+                below = lo_b > 0            ? array.get(vol_bins, lo_b - 1) : -1.0
+                above = hi_b < i_vp_bins - 1 ? array.get(vol_bins, hi_b + 1) : -1.0
+                if above >= below
+                    hi_b += 1
+                    acc  += array.get(vol_bins, hi_b)
+                else
+                    lo_b -= 1
+                    acc  += array.get(vol_bins, lo_b)
+            poc_price = ll + (poc_idx + 0.5) * binsz
+            vah_price = ll + (hi_b + 1) * binsz
+            val_price = ll + lo_b * binsz
+            vp_left  = math.max(bar_index - i_vp_lookback, 0)
+            vp_right = bar_index + 10
+            vp_poc_line := line.new(vp_left, poc_price, vp_right, poc_price, color=i_vp_col_poc, width=2)
+            vp_vah_line := line.new(vp_left, vah_price, vp_right, vah_price, color=color.new(i_vp_col_va, 20), width=1, style=line.style_dashed)
+            vp_val_line := line.new(vp_left, val_price, vp_right, val_price, color=color.new(i_vp_col_va, 20), width=1, style=line.style_dashed)
+            if i_vp_hist
+                maxv  = array.max(vol_bins)
+                histw = math.max(1, int(i_vp_lookback * 0.25))
+                for bx = 0 to i_vp_bins - 1
+                    vv = array.get(vol_bins, bx)
+                    if vv > 0 and maxv > 0
+                        w    = math.max(1, int(histw * vv / maxv))
+                        yb   = ll + bx * binsz
+                        yt   = yb + binsz
+                        bcol = bx == poc_idx ? i_vp_col_poc : (bx >= lo_b and bx <= hi_b ? i_vp_col_va : color.gray)
+                        bb   = box.new(vp_right - w, yt, vp_right, yb, border_color=color.new(bcol, 60), bgcolor=color.new(bcol, 75))
+                        array.push(vp_boxes, bb)
+
+// ═══════════════════════════════════════════════════════════════════
+// REGIME TRANSITION LABELS
+// ═══════════════════════════════════════════════════════════════════
+
+var bool prev_trending = false
+var bool prev_ranging  = false
+if barstate.isfirst
+    prev_trending := is_trending
+    prev_ranging  := is_ranging
+
+regime_to_trend = is_trending and not prev_trending
+regime_to_range = is_ranging  and not prev_ranging
+
+if regime_to_trend
+    label.new(bar_index, high, "▶ Trending", style=label.style_label_down, color=color.new(color.green, 20), textcolor=c_text, size=size.tiny)
+if regime_to_range
+    label.new(bar_index, high, "◼ Ranging", style=label.style_label_down, color=color.new(color.red, 20), textcolor=c_text, size=size.tiny)
+
+prev_trending := is_trending
+prev_ranging  := is_ranging
+
+// ═══════════════════════════════════════════════════════════════════
+// MAIN DASHBOARD
+// ═══════════════════════════════════════════════════════════════════
+
+var table dash_table = na
+if i_show_dash and barstate.islast
+    table.delete(dash_table)
+    if i_compact
+        dash_table := table.new(f_pos(i_dash_pos), 7, 2, bgcolor=c_bg, border_width=1, border_color=c_border)
+        table.cell(dash_table, 0, 0, "Trend",  text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 0, "RSI",    text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 2, 0, "Regime", text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 3, 0, "HTF",    text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 4, 0, "Conf L", text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 5, 0, "Conf S", text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 6, 0, "Signal", text_color=c_dim, text_size=ts)
+
+        trend_str = hma_bull and st_bull ? "BULL" : not hma_bull and not st_bull ? "BEAR" : "MIX"
+        trend_color = hma_bull and st_bull ? color.green : not hma_bull and not st_bull ? color.red : color.orange
+        rsi_color = rsi_val > i_rsi_ob ? color.red : rsi_val < i_rsi_os ? color.green : color.gray
+        sig_str = confirmed_long ? "BUY" : confirmed_short ? "SELL" : "—"
+        sig_color = confirmed_long ? color.green : confirmed_short ? color.red : color.gray
+        reg_str = is_trending ? "TREND" : is_ranging ? "RANGE" : "TRAN"
+        reg_color = is_trending ? color.green : is_ranging ? color.red : color.orange
+
+        table.cell(dash_table, 0, 1, trend_str,                          text_color=trend_color, text_size=ts)
+        table.cell(dash_table, 1, 1, str.tostring(math.round(rsi_val)),  text_color=rsi_color,   text_size=ts)
+        table.cell(dash_table, 2, 1, reg_str,                            text_color=reg_color,   text_size=ts)
+        table.cell(dash_table, 3, 1, str.tostring(htf_score, "#.#"),     text_color=htf_score >= 1.5 ? color.green : htf_score <= -1.5 ? color.red : color.orange, text_size=ts)
+        table.cell(dash_table, 4, 1, str.tostring(math.round(conf_long)),   text_color=conf_long  >= eff_min_conf ? color.green : color.gray, text_size=ts)
+        table.cell(dash_table, 5, 1, str.tostring(math.round(conf_short)),  text_color=conf_short >= eff_min_conf ? color.green : color.gray, text_size=ts)
+        table.cell(dash_table, 6, 1, sig_str,                            text_color=sig_color,   text_size=ts)
+    else
+        dash_table := table.new(f_pos(i_dash_pos), 2, 13, bgcolor=c_bg, border_width=1, border_color=c_border)
+        trend_str = hma_bull and st_bull ? "Bullish" : not hma_bull and not st_bull ? "Bearish" : "Mixed"
+        trend_color = hma_bull and st_bull ? color.green : not hma_bull and not st_bull ? color.red : color.orange
+        rsi_str = (rsi_val > i_rsi_ob ? "OB " : rsi_val < i_rsi_os ? "OS " : "Neutral ") + str.tostring(math.round(rsi_val, 1))
+        rsi_color = rsi_val > i_rsi_ob ? color.red : rsi_val < i_rsi_os ? color.green : color.gray
+        vol_str = is_squeeze ? "SQUEEZE" : squeeze_ending ? "Released" : "Normal"
+        vol_color = is_squeeze ? color.yellow : squeeze_ending ? color.lime : color.gray
+        sig_str = confirmed_long ? "BUY" : confirmed_short ? "SELL" : "None"
+        sig_color = confirmed_long ? color.green : confirmed_short ? color.red : color.gray
+        reg_str = (is_trending ? "Trending" : is_ranging ? "Ranging" : "Transit.") + " " + str.tostring(math.round(regime_score))
+        reg_color = is_trending ? color.green : is_ranging ? color.red : color.orange
+        conf_l_color = conf_long  >= eff_min_conf ? color.green : color.gray
+        conf_s_color = conf_short >= eff_min_conf ? color.green : color.gray
+
+        table.cell(dash_table, 0, 0, "METRIC", text_color=c_text, bgcolor=c_hdr, text_size=ts)
+        table.cell(dash_table, 1, 0, "VALUE",  text_color=c_text, bgcolor=c_hdr, text_size=ts)
+        table.cell(dash_table, 0, 1, "Trend Bias",   text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 1, trend_str,      text_color=trend_color, text_size=ts)
+        table.cell(dash_table, 0, 2, "RSI",          text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 2, rsi_str,        text_color=rsi_color, text_size=ts)
+        table.cell(dash_table, 0, 3, "Vol State",    text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 3, vol_str,        text_color=vol_color, text_size=ts)
+        table.cell(dash_table, 0, 4, "Signal",       text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 4, sig_str,        text_color=sig_color, text_size=ts)
+        table.cell(dash_table, 0, 5, "Regime",       text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 5, reg_str,        text_color=reg_color, text_size=ts)
+        table.cell(dash_table, 0, 6, "HTF Score",    text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 6, str.tostring(htf_score, "#.##"), text_color=htf_score >= 1.5 ? color.green : htf_score <= -1.5 ? color.red : color.orange, text_size=ts)
+        table.cell(dash_table, 0, 7, "Conf Long",    text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 7, str.tostring(math.round(conf_long)) + "/100", text_color=conf_l_color, text_size=ts)
+        table.cell(dash_table, 0, 8, "Conf Short",   text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 8, str.tostring(math.round(conf_short)) + "/100", text_color=conf_s_color, text_size=ts)
+        table.cell(dash_table, 0, 9, "  Daily",      text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 9, d_arrow + " " + str.tostring(d_score, "#.#"), text_color=d_score > 0 ? color.green : d_score < 0 ? color.red : color.gray, text_size=ts)
+        table.cell(dash_table, 0, 10, "  Weekly",    text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 10, w_arrow + " " + str.tostring(w_score, "#.#"), text_color=w_score > 0 ? color.green : w_score < 0 ? color.red : color.gray, text_size=ts)
+        table.cell(dash_table, 0, 11, "  " + i_htf_custom, text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 11, c_arrow + " " + str.tostring(c_score, "#.#"), text_color=c_score > 0 ? color.green : c_score < 0 ? color.red : color.gray, text_size=ts)
+        table.cell(dash_table, 0, 12, "RVOL", text_color=c_dim, text_size=ts)
+        table.cell(dash_table, 1, 12, str.tostring(rvol, "#.##") + "x", text_color=rvol >= 2 ? color.lime : rvol >= 1 ? color.green : color.gray, text_size=ts)
+
+// ═══════════════════════════════════════════════════════════════════
+// SIGNAL LOG TABLE
+// ═══════════════════════════════════════════════════════════════════
+
+var table log_table = na
+if i_show_log and barstate.islast
+    table.delete(log_table)
+    rows = math.min(array.size(trades), i_log_size) + 1
+    log_table := table.new(f_pos(i_log_pos), 6, rows, bgcolor=c_bg, border_width=1, border_color=c_border)
+    table.cell(log_table, 0, 0, "Bar",    text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(log_table, 1, 0, "Dir",    text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(log_table, 2, 0, "Entry",  text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(log_table, 3, 0, "Conf",   text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(log_table, 4, 0, "Reg",    text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(log_table, 5, 0, "Status", text_color=c_text, bgcolor=c_hdr, text_size=ts)
+
+    n = array.size(trades)
+    if n > 0
+        start_idx = math.max(0, n - i_log_size)
+        for k = start_idx to n - 1
+            t = array.get(trades, k)
+            row = k - start_idx + 1
+            bars_ago = bar_index - t.bar_open
+            dir_str = t.direction == 1 ? "B" : "S"
+            dir_color = t.direction == 1 ? color.green : color.red
+            status = t.sl_hit and not t.tp1_hit ? "SL"           : t.tp3_hit ? "TP3 ✓✓✓" : t.tp2_hit ? "TP2 ✓✓"   : t.tp1_hit and t.sl_hit ? "BE/Trail"  : t.tp1_hit ? "TP1 ✓"   : "OPEN"
+            status_color = t.tp3_hit ? color.lime : t.tp2_hit ? color.green : t.tp1_hit and not t.sl_hit ? color.teal : t.tp1_hit and t.sl_hit ? color.orange : t.sl_hit ? color.red : color.yellow
+            table.cell(log_table, 0, row, str.tostring(bars_ago) + "b",                              text_color=c_dim, text_size=ts)
+            table.cell(log_table, 1, row, dir_str,                                                  text_color=dir_color, text_size=ts)
+            table.cell(log_table, 2, row, str.tostring(t.entry, format.mintick),                    text_color=c_text, text_size=ts)
+            table.cell(log_table, 3, row, str.tostring(math.round(t.confidence)),                   text_color=t.confidence >= 75 ? color.green : t.confidence >= 60 ? color.yellow : color.gray, text_size=ts)
+            table.cell(log_table, 4, row, t.regime_tag,                                             text_color=t.regime_tag == "T" ? color.green : t.regime_tag == "R" ? color.red : color.orange, text_size=ts)
+            table.cell(log_table, 5, row, status,                                                   text_color=status_color, text_size=ts)
+
+// ═══════════════════════════════════════════════════════════════════
+// WHY-NOT DIAGNOSTIC
+// ═══════════════════════════════════════════════════════════════════
+
+f_check(b) => b ? "✓" : "✗"
+f_check_col(b) => b ? color.new(color.green, 0) : color.new(color.red, 0)
+
+var table why_table = na
+if i_show_whynot and barstate.islast
+    table.delete(why_table)
+    why_table := table.new(f_pos(i_why_pos), 3, 13, bgcolor=c_bg, border_width=1, border_color=c_border)
+    table.cell(why_table, 0, 0, "Filter",  text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(why_table, 1, 0, "Long",    text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(why_table, 2, 0, "Short",   text_color=c_text, bgcolor=c_hdr, text_size=ts)
+
+    table.cell(why_table, 0, 1, "HMA dir",      text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 1, f_check(cond_hma_long),    text_color=f_check_col(cond_hma_long),  text_size=ts)
+    table.cell(why_table, 2, 1, f_check(cond_hma_short),   text_color=f_check_col(cond_hma_short), text_size=ts)
+
+    table.cell(why_table, 0, 2, "RSI side",     text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 2, f_check(cond_rsi_long),    text_color=f_check_col(cond_rsi_long),  text_size=ts)
+    table.cell(why_table, 2, 2, f_check(cond_rsi_short),   text_color=f_check_col(cond_rsi_short), text_size=ts)
+
+    table.cell(why_table, 0, 3, "Vol Δ",        text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 3, f_check(cond_vol_long),    text_color=f_check_col(cond_vol_long),  text_size=ts)
+    table.cell(why_table, 2, 3, f_check(cond_vol_short),   text_color=f_check_col(cond_vol_short), text_size=ts)
+
+    table.cell(why_table, 0, 4, "Ribbon",       text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 4, f_check(cond_ribbon_long), text_color=f_check_col(cond_ribbon_long),  text_size=ts)
+    table.cell(why_table, 2, 4, f_check(cond_ribbon_short),text_color=f_check_col(cond_ribbon_short), text_size=ts)
+
+    table.cell(why_table, 0, 5, "Supertrend",   text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 5, f_check(cond_st_long),     text_color=f_check_col(cond_st_long),  text_size=ts)
+    table.cell(why_table, 2, 5, f_check(cond_st_short),    text_color=f_check_col(cond_st_short), text_size=ts)
+
+    table.cell(why_table, 0, 6, "HTF",          text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 6, f_check(cond_htf_long),    text_color=f_check_col(cond_htf_long),  text_size=ts)
+    table.cell(why_table, 2, 6, f_check(cond_htf_short),   text_color=f_check_col(cond_htf_short), text_size=ts)
+
+    table.cell(why_table, 0, 7, "BTC trend",    text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 7, f_check(cond_btc_long),    text_color=f_check_col(cond_btc_long),  text_size=ts)
+    table.cell(why_table, 2, 7, f_check(cond_btc_short),   text_color=f_check_col(cond_btc_short), text_size=ts)
+
+    table.cell(why_table, 0, 8, "FVG",          text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 8, f_check(cond_fvg_long),    text_color=f_check_col(cond_fvg_long),  text_size=ts)
+    table.cell(why_table, 2, 8, f_check(cond_fvg_short),   text_color=f_check_col(cond_fvg_short), text_size=ts)
+
+    table.cell(why_table, 0, 9, "Regime",       text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 9, f_check(cond_regime_long), text_color=f_check_col(cond_regime_long),  text_size=ts)
+    table.cell(why_table, 2, 9, f_check(cond_regime_short),text_color=f_check_col(cond_regime_short), text_size=ts)
+
+    table.cell(why_table, 0, 10, "Not S/R",     text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 10, f_check(cond_nearres_long), text_color=f_check_col(cond_nearres_long), text_size=ts)
+    table.cell(why_table, 2, 10, f_check(cond_nearsup_short), text_color=f_check_col(cond_nearsup_short), text_size=ts)
+
+    table.cell(why_table, 0, 11, "Body/Space",  text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 11, f_check(cond_body and cond_spacing), text_color=f_check_col(cond_body and cond_spacing), text_size=ts)
+    table.cell(why_table, 2, 11, f_check(cond_body and cond_spacing), text_color=f_check_col(cond_body and cond_spacing), text_size=ts)
+
+    table.cell(why_table, 0, 12, "Confidence",  text_color=c_dim, text_size=ts)
+    table.cell(why_table, 1, 12, f_check(cond_conf_long) + " " + str.tostring(math.round(conf_long)),   text_color=f_check_col(cond_conf_long),  text_size=ts)
+    table.cell(why_table, 2, 12, f_check(cond_conf_short) + " " + str.tostring(math.round(conf_short)), text_color=f_check_col(cond_conf_short), text_size=ts)
+
+// ═══════════════════════════════════════════════════════════════════
+// REGIME STATS TABLE
+// ═══════════════════════════════════════════════════════════════════
+
+var table stats_table = na
+if i_show_stats and barstate.islast
+    table.delete(stats_table)
+    stats_table := table.new(f_pos(i_stats_pos), 4, 4, bgcolor=c_bg, border_width=1, border_color=c_border)
+
+    t_total = t_trend_total + t_range_total
+    overall_wr = t_total > 0 ? (t_trend_win + t_range_win) * 100.0 / t_total : 0
+    trend_wr = t_trend_total > 0 ? t_trend_win * 100.0 / t_trend_total : 0
+    range_wr = t_range_total > 0 ? t_range_win * 100.0 / t_range_total : 0
+
+    table.cell(stats_table, 0, 0, "Regime",  text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(stats_table, 1, 0, "Total",   text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(stats_table, 2, 0, "W/L",     text_color=c_text, bgcolor=c_hdr, text_size=ts)
+    table.cell(stats_table, 3, 0, "Win%",    text_color=c_text, bgcolor=c_hdr, text_size=ts)
+
+    table.cell(stats_table, 0, 1, "Trend",                            text_color=color.green, text_size=ts)
+    table.cell(stats_table, 1, 1, str.tostring(t_trend_total),        text_color=c_text,      text_size=ts)
+    table.cell(stats_table, 2, 1, str.tostring(t_trend_win) + "/" + str.tostring(t_trend_loss), text_color=c_text, text_size=ts)
+    table.cell(stats_table, 3, 1, str.tostring(trend_wr, "#.#") + "%", text_color=trend_wr >= 50 ? color.green : color.red, text_size=ts)
+
+    table.cell(stats_table, 0, 2, "Range",                            text_color=color.red,   text_size=ts)
+    table.cell(stats_table, 1, 2, str.tostring(t_range_total),        text_color=c_text,      text_size=ts)
+    table.cell(stats_table, 2, 2, str.tostring(t_range_win) + "/" + str.tostring(t_range_loss), text_color=c_text, text_size=ts)
+    table.cell(stats_table, 3, 2, str.tostring(range_wr, "#.#") + "%", text_color=range_wr >= 50 ? color.green : color.red, text_size=ts)
+
+    table.cell(stats_table, 0, 3, "Overall",                          text_color=c_text,      text_size=ts)
+    table.cell(stats_table, 1, 3, str.tostring(t_total),              text_color=c_text,      text_size=ts)
+    table.cell(stats_table, 2, 3, str.tostring(t_trend_win + t_range_win) + "/" + str.tostring(t_trend_loss + t_range_loss), text_color=c_text, text_size=ts)
+    table.cell(stats_table, 3, 3, str.tostring(overall_wr, "#.#") + "%", text_color=overall_wr >= 50 ? color.green : color.red, text_size=ts)
+
+// ═══════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════
+
+// Classic alertconditions (visible in TradingView's create alert UI)
+alertcondition(confirmed_long,  "Buy Signal",    "CUI: Buy Signal fired")
+alertcondition(confirmed_short, "Sell Signal",   "CUI: Sell Signal fired")
+alertcondition(confirmed_long  and htf_score >= 1.5,  "Buy HTF Confirmed",   "CUI: HTF-Confirmed Buy")
+alertcondition(confirmed_short and htf_score <= -1.5, "Sell HTF Confirmed",  "CUI: HTF-Confirmed Sell")
+alertcondition(confirmed_long  and conf_long  >= 80,  "Buy High Conf",       "CUI: High-confidence Buy")
+alertcondition(confirmed_short and conf_short >= 80,  "Sell High Conf",      "CUI: High-confidence Sell")
+alertcondition(regime_to_trend, "Regime Trend",  "CUI: Now trending")
+alertcondition(regime_to_range, "Regime Range",  "CUI: Now ranging")
+alertcondition(is_squeeze,      "Squeeze",       "CUI: BB squeeze active")
+alertcondition(squeeze_ending,  "Squeeze Release", "CUI: BB squeeze released")
+alertcondition(bull_div,        "Bull Divergence", "CUI: Bullish RSI divergence")
+alertcondition(bear_div,        "Bear Divergence", "CUI: Bearish RSI divergence")
+alertcondition(cvd_bull_div,    "CVD Bull Div",   "CUI: CVD bullish divergence")
+alertcondition(cvd_bear_div,    "CVD Bear Div",   "CUI: CVD bearish divergence")
+alertcondition(swept_high,      "Sweep High",     "CUI: Liquidity sweep above")
+alertcondition(swept_low,       "Sweep Low",      "CUI: Liquidity sweep below")
+
+// JSON webhook alerts are now emitted inline at the point of each lifecycle event
+// (entry emission is at the new_trade_* assignment site above;
+//  tp1/tp2/tp3/sl/exit/be/trail emissions are inside the for-loop above)

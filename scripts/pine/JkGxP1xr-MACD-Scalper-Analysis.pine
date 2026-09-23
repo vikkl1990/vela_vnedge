@@ -1,0 +1,121 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © exlux99
+
+//@version=5
+indicator(title="MACD Scalper Analysis")
+
+heikinashi_close = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)
+
+// Getting inputs
+fast_length = input(title="Fast Length", defval=12)
+slow_length = input(title="Slow Length", defval=26)
+src = input(title="Source", defval=close)
+signal_length = input.int(title="Signal Smoothing",  minval = 1, maxval = 50, defval = 9)
+sma_source = input.string(title="Oscillator MA Type",  defval="EMA", options=["SMA", "EMA"])
+sma_signal = input.string(title="Signal Line MA Type", defval="EMA", options=["SMA", "EMA"])
+
+// Calculating
+fast_ma = sma_source == "SMA" ? ta.sma(src, fast_length) : ta.ema(src, fast_length)
+slow_ma = sma_source == "SMA" ? ta.sma(src, slow_length) : ta.ema(src, slow_length)
+macd = fast_ma - slow_ma
+signal = sma_signal == "SMA" ? ta.sma(macd, signal_length) : ta.ema(macd, signal_length)
+hist = macd - signal
+
+plot(macd, color=color.white)
+plot(signal)
+
+ema200 = ta.ema(close,200)
+
+// plot(ema200)
+
+long =  close > ema200 and ta.crossover(macd,signal) 
+short = close < ema200 and ta.crossover(macd,signal) 
+
+var int contador_positiv_long = 0
+var int  contador_negativ_long = 0
+var int  contador_positiv_short = 0
+var int  contador_negativ_short = 0
+var float average_bull_movement_long = 0
+var float average_bear_movement_long = 0
+var float average_bear_movement_short =0
+var float average_bull_movement_short=0
+
+
+if(long[1])
+    if(close >open)
+        contador_positiv_long := contador_positiv_long+1
+        //count_bull_long:=count_bull_long+1
+        average_bull_movement_long:=average_bull_movement_long+((close-open)/open)
+if(long[1])
+    if( close <open)
+        contador_negativ_long := contador_negativ_long+1
+        //count_bear_long:=count_bear_long+1
+        average_bear_movement_long:=average_bear_movement_long+((open-close)/close)
+
+if(short[1])
+    if(close<open)
+        contador_positiv_short := contador_positiv_short+1
+        //count_bear_short:=count_bear_short+1
+        average_bear_movement_short:=average_bear_movement_short+((open-close)/close)
+if(short[1])
+    if(close>open)
+        contador_negativ_short := contador_negativ_short+1
+        //count_bull_short:=count_bull_short+1
+        average_bull_movement_short:=average_bull_movement_short+((close-open)/open)
+        
+
+plotshape(long[1] and close>open? close : na, style=shape.xcross, color=color.green, location= location.bottom)
+plotshape(long[1] and close<open ? close : na, style=shape.square, color=color.white, location= location.bottom)
+
+plotshape(short[1] and close <open ? close : na, style=shape.xcross, color=color.red, location = location.top)
+plotshape(short[1] and close > open ? close : na, style=shape.square, color=color.blue, location=location.top)
+
+
+////////////////////////////////////////////////////////////////////////////
+posInput = input.string(title='Position', defval='Middle Right', options=['Bottom Left', 'Bottom Right', 'Top Left', 'Top Right', 'Middle Right'])
+var pos = posInput == 'Bottom Left' ? position.bottom_left : posInput == 'Bottom Right' ? position.bottom_right : posInput == 'Top Left' ? position.top_left : posInput == 'Top Right' ? position.top_right : posInput == 'Middle Right' ? position.middle_right: na
+
+
+var table table_macd = table.new(pos, 15, 15, border_width=1)
+
+
+table_fillCell(_table, _column, _row, _value, _timeframe, _c_color) =>
+    _transp = 70  
+    _cellText = str.tostring(_value, '#.###')
+    table.cell(_table, _column, _row, _cellText, bgcolor=color.new(_c_color, _transp), text_color=_c_color, width=5)
+    //table.cell_set_text_size(table_atr, 0, 2, text)
+
+
+if barstate.islast
+    table.cell(table_macd, 0, 0, 'MACD Scalper Analysis', text_color=color.white, text_size=size.normal, bgcolor=color.purple)
+    table.cell(table_macd, 0, 1, 'Long Positiv', text_color=color.white, text_size=size.normal, bgcolor=color.green)
+    table.cell(table_macd, 0, 2, 'Long Negativ', text_color=color.white, text_size=size.normal, bgcolor=color.red)
+    table.cell(table_macd, 0, 3, 'Short Positiv', text_color=color.white, text_size=size.normal, bgcolor=color.green)
+    table.cell(table_macd, 0, 4, 'Short Negativ', text_color=color.white, text_size=size.normal, bgcolor=color.red)
+ 
+    table_fillCell(table_macd, 1, 1, contador_positiv_long, 'Text', color.white)
+    table_fillCell(table_macd, 1, 2, contador_negativ_long, 'Text', color.white)
+    table_fillCell(table_macd, 1, 3, contador_positiv_short, 'Text', color.white)
+    table_fillCell(table_macd, 1, 4, contador_negativ_short, 'Text', color.white)
+
+    table.cell(table_macd, 2, 1, 'Average Movement Long Positiv', text_color=color.white, text_size=size.normal, bgcolor=color.green)
+    table.cell(table_macd, 2, 2, 'Average Movement Long Negativ', text_color=color.white, text_size=size.normal, bgcolor=color.red)
+    table.cell(table_macd, 2, 3, 'Average Movement Short Positiv', text_color=color.white, text_size=size.normal, bgcolor=color.green)
+    table.cell(table_macd, 2, 4, 'Average Movement Short Negativ', text_color=color.white, text_size=size.normal, bgcolor=color.red)
+    
+    table_fillCell(table_macd, 3, 1, average_bull_movement_long/contador_positiv_long*100, 'Text', color.white)
+    table_fillCell(table_macd, 3, 2, average_bear_movement_long/contador_negativ_long*100, 'Text', color.white)
+    table_fillCell(table_macd, 3, 3, average_bear_movement_short/contador_positiv_short*100, 'Text', color.white)
+    table_fillCell(table_macd, 3, 4, average_bull_movement_short/contador_negativ_short*100, 'Text', color.white)
+    
+    table.cell(table_macd, 4, 1, 'Total Long Positiv', text_color=color.white, text_size=size.normal, bgcolor=color.green)
+    table.cell(table_macd, 4, 2, 'Total Long Negativ', text_color=color.white, text_size=size.normal, bgcolor=color.red)
+    table.cell(table_macd, 4, 3, 'Total Short Positiv', text_color=color.white, text_size=size.normal, bgcolor=color.green)
+    table.cell(table_macd, 4, 4, 'Total Short Negativ', text_color=color.white, text_size=size.normal, bgcolor=color.red)
+ 
+     
+    table_fillCell(table_macd, 5, 1, (average_bull_movement_long/contador_positiv_long*100)*contador_positiv_long, 'Text', color.white)
+    table_fillCell(table_macd, 5, 2, (average_bear_movement_long/contador_negativ_long*100)*contador_negativ_long*(-1), 'Text', color.white)
+    table_fillCell(table_macd, 5, 3, (average_bear_movement_short/contador_positiv_short*100)*contador_positiv_short, 'Text', color.white)
+    table_fillCell(table_macd, 5, 4, (average_bull_movement_short/contador_negativ_short*100)*contador_negativ_short*(-1), 'Text', color.white)   
+    

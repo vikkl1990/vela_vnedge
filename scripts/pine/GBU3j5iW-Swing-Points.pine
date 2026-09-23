@@ -1,0 +1,91 @@
+// © bharatTrader
+
+//@version=4
+study("Swing Points", shorttitle="Swing Points", overlay=true)
+
+//Input
+showSTH = input(defval=true, type=input.bool, title="Show STH")
+showSTL = input(defval=true, type=input.bool, title="Show STL")
+showITH = input(defval=true, type=input.bool, title="Show ITH")
+showITL = input(defval=true, type=input.bool, title="Show ITL")
+showCrossLbl = input(defval=false, type=input.bool, title="Mark Invalid Swings")
+showInsideBars = input(defval=false, type=input.bool, title="Mark Inside Bars")
+
+
+//Functions
+isInsideBar(offset) =>
+    high[offset] < high[1] and low[offset] > low[1]
+
+isTermHigh(offset0, offset1, offset2) =>
+    high[offset0] < high[offset1] and high[offset1] > high[offset2]
+    
+isTermLow(offset0, offset1, offset2) =>
+    low[offset0] > low[offset1] and low[offset1] < low[offset2]
+
+
+//Setup
+//Counters
+var offset1 = 0
+var offset2 = 0
+
+//STH
+var laststhHigh = 0.0
+var laststhOffset = 0
+//ITH
+var ithOffset1 = 0
+var ithOffset2 = 0
+var lastithHigh = 0.0
+var lastithHighOffset = 0
+
+//STL
+var laststlLow = 0.0
+var laststlOffset = 0
+//ITL
+var itlOffset1 = 0
+var itlOffset2 = 0
+var lastitlLow = 0.0
+var lastitlLowOffset = 0
+
+//STH check
+isSTHFormed = not isInsideBar(0) ? isTermHigh(0, bar_index - offset1[1], bar_index - offset2[1]) : false
+isSTHFormed := isSTHFormed ? laststlOffset[1] < laststhOffset[1] ? high[bar_index - offset1[1]] > laststhHigh[1] : true : false 
+crosslabel1 = showCrossLbl and showSTH and isSTHFormed and laststlOffset[1] < laststhOffset[1] and high[bar_index - offset1[1]] > laststhHigh[1] ? label.new(laststhOffset[1], na, text="CROSS", color=color.red, style=label.style_xcross, textcolor=color.red, size=size.tiny, textalign=text.align_left, yloc=yloc.abovebar) : na
+laststhHigh := isSTHFormed ? high[bar_index - offset1[1]] : laststhHigh[1]
+laststhOffset := isSTHFormed ? offset1[1] : laststhOffset[1]
+//ITH check
+isITHFormed = isSTHFormed ? isTermHigh(bar_index - offset1[1], bar_index - ithOffset1[1], bar_index - ithOffset2[1]) : false
+isITHFormed := isITHFormed ? lastitlLowOffset[1] < lastithHighOffset[1] ? high[bar_index - offset1[1]] > lastithHigh[1] : true : false 
+crosslabel2 = showCrossLbl and showITH and isITHFormed and lastitlLowOffset[1] < lastithHighOffset[1] and high[bar_index - offset1[1]] > lastithHigh[1] ? label.new(lastithHighOffset[1], na, text="CROSS", color=color.red, style=label.style_xcross, textcolor=color.red, size=size.normal, textalign=text.align_left, yloc=yloc.abovebar) : na
+lastithHigh := isITHFormed ? high[bar_index - offset1[1]] : lastithHigh[1]
+lastithHighOffset := isITHFormed ? ithOffset1[1] : lastithHighOffset[1]
+
+
+//STL check
+isSTLFormed = not isInsideBar(0) ? isTermLow(0, bar_index - offset1[1], bar_index - offset2[1]) : false
+isSTLFormed := isSTLFormed ? laststhOffset[1] < laststlOffset[1] ? low[bar_index - offset1[1]] < laststlLow[1] : true : false
+crosslabel3 = showCrossLbl and showSTL and isSTLFormed and laststhOffset[1] < laststlOffset[1] and low[bar_index - offset1[1]] < laststlLow[1] ? label.new(laststlOffset[1], na, text="CROSS", color=color.red, style=label.style_xcross, textcolor=color.red, size=size.tiny, textalign=text.align_left, yloc=yloc.belowbar) : na
+laststlLow := isSTLFormed ? low[bar_index - offset1[1]] : laststlLow[1]
+laststlOffset := isSTLFormed ? offset1[1] : laststlOffset[1]
+//ITL check
+isITLFormed = isSTLFormed ? isTermLow(bar_index - offset1[1], bar_index - itlOffset1[1], bar_index - itlOffset2[1]) : false
+isITLFormed := isITLFormed ? lastithHighOffset[1] < lastitlLowOffset[1] ? low[bar_index - offset1[1]] < lastitlLow[1] : true : false 
+crosslabel4 = showCrossLbl and showITL and isITLFormed and lastithHighOffset[1] < lastitlLowOffset[1] and low[bar_index - offset1[1]] < lastitlLow[1] ? label.new(lastitlLowOffset[1], na, text="CROSS", color=color.red, style=label.style_xcross, textcolor=color.red, size=size.normal, textalign=text.align_left, yloc=yloc.belowbar) : na
+lastitlLow := isITLFormed ? low[bar_index - offset1[1]] : lastitlLow[1]
+lastitlLowOffset := isITLFormed ? itlOffset1[1] : lastitlLowOffset[1]
+
+offset2 := not isInsideBar(0) ? offset1[1] : offset2[1]
+offset1 := not isInsideBar(0) ? bar_index : offset1[1]
+ithOffset2 := isSTHFormed ? ithOffset1[1] : ithOffset2[1]
+ithOffset1 := isSTHFormed ? offset1[1] : ithOffset1[1]
+itlOffset2 := isSTLFormed ? itlOffset1[1] : itlOffset2[1]
+itlOffset1 := isSTLFormed ? offset1[1] : itlOffset1[1]
+
+
+//Plot
+barcolor(showInsideBars and isInsideBar(0) ? color.blue : na)
+sthlabel = showSTH and isSTHFormed ? label.new(offset1[1], na, text="STH", color=color.green, style=label.style_triangledown, textcolor=color.green, size=size.tiny, textalign=text.align_left, yloc=yloc.abovebar) : na
+lthlabel = showSTL and isSTLFormed ? label.new(offset1[1], na, text="STL", color=color.red, style=label.style_triangleup, textcolor=color.red, size=size.tiny, textalign=text.align_left, yloc=yloc.belowbar) : na
+ithlabel = showITH and isITHFormed ? label.new(ithOffset1[1], na, text="ITH", color=color.blue, style=label.style_triangledown, textcolor=color.blue, size=size.small, textalign=text.align_left, yloc=yloc.abovebar) : na
+itllabel = showITL and isITLFormed ? label.new(itlOffset1[1], na, text="ITL", color=color.orange, style=label.style_triangleup, textcolor=color.orange, size=size.small, textalign=text.align_left, yloc=yloc.belowbar) : na
+
+

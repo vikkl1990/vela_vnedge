@@ -1,0 +1,641 @@
+// -------------------------------------------------
+// Swing Failure Pattern (SFP) Engine [AGPro Series]
+//
+// Author  : AGProLabs | AGPro Series
+// Version : 2.0.1
+//
+// Swing Failure Pattern engine for TradingView that detects swept swing highs
+// and lows, scores wick rejection quality, maps SFP reaction zones, tracks
+// active invalidation context, resolves completed zones into compact outcome
+// badges, measures forward MFE behavior, and summarizes bull / bear SFP
+// performance through a compact AGPro decision panel.
+// -------------------------------------------------
+
+//@version=6
+indicator("Swing Failure Pattern (SFP) Engine [AGPro Series]",
+     shorttitle = "AG Pro SFP",
+     overlay = true,
+     max_lines_count = 160,
+     max_labels_count = 120,
+     max_boxes_count = 60,
+     max_bars_back = 1000)
+
+// -------------------------------------------------
+// AGPro Color Palette
+// -------------------------------------------------
+headerBg      = color.rgb(37, 99, 235)
+headerText    = color.rgb(245, 247, 250)
+panelBg       = color.rgb(15, 23, 42)
+panelBorder   = color.rgb(51, 65, 85)
+panelLabelCol = color.rgb(148, 163, 184)
+panelValueCol = color.rgb(226, 232, 240)
+bullColor     = color.rgb(34, 197, 166)
+bearColor     = color.rgb(244, 114, 182)
+neutralColor  = color.rgb(245, 189, 92)
+accentColor   = color.rgb(129, 140, 248)
+mutedColor     = color.rgb(120, 130, 145)
+
+// Luminance-based contrast: dark text on light fills, light text on dark fills
+f_text_on(color fill) =>
+    float r = color.r(fill)
+    float g = color.g(fill)
+    float b = color.b(fill)
+    (r * 299.0 + g * 587.0 + b * 114.0) / 1000.0 >= 145.0 ? color.rgb(17, 24, 39) : headerText
+
+// -------------------------------------------------
+// Inputs
+// -------------------------------------------------
+groupDetection = "Detection"
+pivotLength = input.int(5, "Swing Pivot Length", minval = 2, maxval = 30, group = groupDetection, tooltip = "Bars used on each side of a pivot. Higher values create fewer but more important swing references.")
+lookbackBars = input.int(120, "Swing Lookback Bars", minval = 20, maxval = 500, group = groupDetection, tooltip = "Maximum age of swing highs and lows that can be swept by a new SFP event.")
+minWickRatio = input.float(0.55, "Minimum Wick Ratio", minval = 0.30, maxval = 0.95, step = 0.05, group = groupDetection, tooltip = "Minimum sweep-side wick as a fraction of the candle range.")
+minReclaimAtr = input.float(0.25, "Minimum Reclaim ATR", minval = 0.00, maxval = 2.00, step = 0.05, group = groupDetection, tooltip = "Minimum close-back-inside distance measured in ATR units.")
+useVolumeConfirmation = input.bool(true, "Require Above-Average Volume", group = groupDetection, tooltip = "Requires sweep-bar volume to exceed its 20-bar average by the selected multiplier.")
+volumeMultiplier = input.float(1.15, "Volume Multiplier", minval = 1.00, maxval = 3.00, step = 0.05, group = groupDetection, tooltip = "Sweep-bar volume must exceed SMA20 volume multiplied by this value.")
+atrLength = input.int(14, "ATR Length", minval = 5, maxval = 50, group = groupDetection, tooltip = "ATR period used for reclaim distance, zone sizing, label offset, and statistics.")
+
+groupScoring = "Scoring"
+minimumScore = input.int(55, "Minimum SFP Score", minval = 0, maxval = 100, group = groupScoring, tooltip = "Minimum composite score required before a detected SFP is displayed.")
+statsTimeoutBars = input.int(30, "Stats Timeout Bars", minval = 5, maxval = 200, group = groupScoring, tooltip = "Bars after SFP formation used to close unresolved statistics if neither 1 ATR favorable excursion nor invalidation appears.")
+confluenceAtr = input.float(0.50, "Confluence Grouping ATR", minval = 0.00, maxval = 2.00, step = 0.10, group = groupScoring, tooltip = "Nearby same-side SFP events within this ATR distance are grouped into one label.")
+
+groupVisuals = "Visuals"
+showZones = input.bool(true, "Show SFP Zones", group = groupVisuals, tooltip = "Shows the SFP reaction footprint between the swept level and the reclaim close.")
+zoneOpacity = input.int(82, "Zone Transparency", minval = 50, maxval = 95, group = groupVisuals, tooltip = "Controls SFP zone transparency. Higher values are more transparent.")
+showZoneBadges = input.bool(true, "Show Zone Badges", group = groupVisuals, tooltip = "Shows a separate centered badge inside each SFP zone (side and quality score). This is the primary SFP label.")
+showZoneBadgeScore = input.bool(true, "Show Zone Badge Score", group = groupVisuals, tooltip = "Adds the SFP quality score to centered zone badges.")
+showLabels = input.bool(false, "Show SFP Candle Labels", group = groupVisuals, tooltip = "Shows candle-anchored bull or bear SFP labels with quality score. Off by default because the centered zone badge already labels each SFP; enable for an extra candle-anchored marker.")
+showSwingLine = input.bool(true, "Show Swept Swing Line", group = groupVisuals, tooltip = "Shows a dotted reference line at the swept swing level.")
+showProjection = input.bool(true, "Show Reversal Projection", group = groupVisuals, tooltip = "Shows a short dashed projection from the SFP close in the reaction direction.")
+showInvalidationFade = input.bool(true, "Fade Invalidated Zones", group = groupVisuals, tooltip = "Fades SFP zones after the swept level is closed through.")
+showResolutionBadges = input.bool(true, "Show Resolution Badges", group = groupVisuals, tooltip = "Converts an invalidated zone badge into a compact candle-adjacent outcome badge instead of leaving it stacked inside the frozen zone.")
+maxRetainedZones = input.int(7, "Max Retained Zones", minval = 2, maxval = 20, group = groupVisuals, tooltip = "Maximum number of active and recently resolved SFP zones retained. Old invalidated zones are removed before live zones.")
+maxVisibleLabels = input.int(7, "Max Visible Labels", minval = 2, maxval = 50, group = groupVisuals, tooltip = "Maximum number of SFP labels retained on the chart.")
+labelCooldownBars = input.int(6, "Label Cooldown Bars", minval = 0, maxval = 100, group = groupVisuals, tooltip = "Minimum spacing between new standalone SFP labels.")
+labelOffsetAtr = input.float(0.48, "Label Offset ATR", minval = 0.05, maxval = 3.00, step = 0.05, group = groupVisuals, tooltip = "ATR-based offset used to keep SFP labels away from candle bodies.")
+labelSizeInput = input.string("Normal", "Label Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupVisuals, tooltip = "Font size for chart labels.")
+
+groupPanel = "Panel"
+showPanel = input.bool(true, "Show Panel", group = groupPanel, tooltip = "Shows or hides the AG Pro information panel.")
+panelPositionInput = input.string("Top Right", "Panel Location", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = groupPanel, tooltip = "Controls where the panel appears on the chart.")
+panelThemeInput = input.string("Elite Dark", "Panel Theme", options = ["Elite Dark", "Slate", "Clean Light"], group = groupPanel, tooltip = "Controls the panel theme while preserving the AGPro blue header.")
+panelFontSizeInput = input.string("Normal", "Panel Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupPanel, tooltip = "Font size inside the information panel.")
+contextDistanceLimit = input.float(4.0, "Active Context Distance Limit", minval = 0.5, maxval = 20.0, step = 0.5, group = groupPanel, tooltip = "Maximum ATR distance for the nearest live zone to receive a track-support or track-resistance action. More distant zones remain visible but return a wait state.")
+
+groupAlerts = "Alerts"
+alertBull = input.bool(true, "Alert: Bullish SFP", group = groupAlerts, tooltip = "Enables alerts for bullish SFP events.")
+alertBear = input.bool(true, "Alert: Bearish SFP", group = groupAlerts, tooltip = "Enables alerts for bearish SFP events.")
+alertInvalidation = input.bool(false, "Alert: Zone Invalidation", group = groupAlerts, tooltip = "Enables alerts when an active SFP zone is invalidated.")
+
+// -------------------------------------------------
+// Helpers
+// -------------------------------------------------
+f_size(string sizeText) =>
+    switch sizeText
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.normal
+
+f_panel_position(string posText) =>
+    switch posText
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right" => position.bottom_right
+        => position.top_right
+
+f_panel_bg() =>
+    panelThemeInput == "Clean Light" ? color.rgb(248, 250, 252) : panelThemeInput == "Slate" ? color.rgb(30, 41, 59) : panelBg
+
+f_panel_border() =>
+    panelThemeInput == "Clean Light" ? color.rgb(203, 213, 225) : panelBorder
+
+f_panel_label() =>
+    panelThemeInput == "Clean Light" ? color.rgb(71, 85, 105) : panelLabelCol
+
+f_panel_value() =>
+    panelThemeInput == "Clean Light" ? color.rgb(15, 23, 42) : panelValueCol
+
+// Guarantees panel value text stays readable on the active theme background
+f_readable(color c) =>
+    float lum = (color.r(c) * 299.0 + color.g(c) * 587.0 + color.b(c) * 114.0) / 1000.0
+    panelThemeInput == "Clean Light" ? (lum > 140.0 ? color.rgb(15, 23, 42) : c) : (lum < 96.0 ? panelValueCol : c)
+
+f_row_bg(int row) =>
+    if panelThemeInput == "Clean Light"
+        row % 2 == 0 ? color.rgb(241, 245, 249) : color.rgb(226, 232, 240)
+    else
+        row % 2 == 0 ? color.rgb(20, 31, 52) : f_panel_bg()
+
+f_panel_cell(table panelRef, int col, int row, string txt, color txtColor, color bgColor, string alignInput) =>
+    table.cell(panelRef, col, row, txt, text_color = txtColor, bgcolor = bgColor, text_size = f_size(panelFontSizeInput), text_halign = alignInput == "left" ? text.align_left : alignInput == "right" ? text.align_right : text.align_center)
+
+f_score_sfp(float wickRatio, float reclaimAtrValue, bool volumeOk, int swingAgeBars) =>
+    wickPart = math.max(0.0, math.min(40.0, (wickRatio - 0.30) / 0.65 * 40.0))
+    reclaimPart = math.max(0.0, math.min(30.0, reclaimAtrValue * 30.0))
+    volumePart = volumeOk ? 15.0 : 0.0
+    agePart = math.min(15.0, swingAgeBars / 50.0 * 15.0)
+    int(math.round(math.min(100.0, wickPart + reclaimPart + volumePart + agePart)))
+
+f_trim_labels(array<label> labels, int maxKeep) =>
+    while array.size(labels) > maxKeep
+        label oldLabel = array.shift(labels)
+        if not na(oldLabel)
+            label.delete(oldLabel)
+
+f_delete_zone_objects(box bx, line ln, label lb, label badge, line proj) =>
+    if not na(bx)
+        box.delete(bx)
+    if not na(ln)
+        line.delete(ln)
+    if not na(lb)
+        label.delete(lb)
+    if not na(badge)
+        label.delete(badge)
+    if not na(proj)
+        line.delete(proj)
+
+// -------------------------------------------------
+// Core Data
+// -------------------------------------------------
+atrValue = ta.atr(atrLength)
+atrSafe = math.max(nz(atrValue, ta.tr(true)), syminfo.mintick)
+volumeAverage = ta.sma(volume, 20)
+barRange = math.max(high - low, syminfo.mintick)
+labelSize = f_size(labelSizeInput)
+labelOffset = math.max(atrSafe * labelOffsetAtr, syminfo.mintick * 20)
+
+// Event-label anti-collision (resolved at creation, candle-anchored)
+var array<int> evtLblBars = array.new<int>()
+var array<float> evtLblYs = array.new<float>()
+
+f_evt_lbl_register(int bx, float yy) =>
+    array.push(evtLblBars, bx)
+    array.push(evtLblYs, yy)
+    while array.size(evtLblBars) > 50
+        array.shift(evtLblBars)
+        array.shift(evtLblYs)
+
+f_evt_lbl_resolve(int bx, float baseY, int dirPush) =>
+    float y = baseY
+    float sep = atrSafe * 1.85
+    int barWin = 12
+    int guard = 0
+    bool clash = true
+    while clash and guard < 12
+        clash := false
+        int n = array.size(evtLblBars)
+        if n > 0
+            for i = 0 to n - 1
+                if math.abs(bx - array.get(evtLblBars, i)) <= barWin and math.abs(y - array.get(evtLblYs, i)) < sep
+                    y := y + dirPush * sep
+                    clash := true
+        guard += 1
+    y
+
+f_evt_lbl_x_resolve(int baseX) =>
+    int x = baseX
+    int guard = 0
+    bool clash = true
+    while clash and guard < 8
+        clash := false
+        int n = array.size(evtLblBars)
+        if n > 0
+            for i = 0 to n - 1
+                int priorX = array.get(evtLblBars, i)
+                if math.abs(x - priorX) <= 6
+                    x := priorX + 7
+                    clash := true
+        guard += 1
+    x
+
+pivotHigh = ta.pivothigh(high, pivotLength, pivotLength)
+pivotLow = ta.pivotlow(low, pivotLength, pivotLength)
+
+var array<float> swingHighPrices = array.new<float>()
+var array<int> swingHighBars = array.new<int>()
+var array<float> swingLowPrices = array.new<float>()
+var array<int> swingLowBars = array.new<int>()
+
+if not na(pivotHigh)
+    array.push(swingHighPrices, pivotHigh)
+    array.push(swingHighBars, bar_index - pivotLength)
+
+if not na(pivotLow)
+    array.push(swingLowPrices, pivotLow)
+    array.push(swingLowBars, bar_index - pivotLength)
+
+while array.size(swingHighBars) > 0 and bar_index - array.get(swingHighBars, 0) > lookbackBars
+    array.shift(swingHighPrices)
+    array.shift(swingHighBars)
+
+while array.size(swingLowBars) > 0 and bar_index - array.get(swingLowBars, 0) > lookbackBars
+    array.shift(swingLowPrices)
+    array.shift(swingLowBars)
+
+// -------------------------------------------------
+// SFP Detection
+// -------------------------------------------------
+float bearSweptLevel = na
+int bearSweptBar = na
+int bearSweptIndex = -1
+
+if array.size(swingHighPrices) > 0
+    for i = 0 to array.size(swingHighPrices) - 1
+        swingPrice = array.get(swingHighPrices, i)
+        if high >= swingPrice and close < swingPrice
+            if na(bearSweptLevel) or swingPrice < bearSweptLevel
+                bearSweptLevel := swingPrice
+                bearSweptBar := array.get(swingHighBars, i)
+                bearSweptIndex := i
+
+float bullSweptLevel = na
+int bullSweptBar = na
+int bullSweptIndex = -1
+
+if array.size(swingLowPrices) > 0
+    for i = 0 to array.size(swingLowPrices) - 1
+        swingPrice = array.get(swingLowPrices, i)
+        if low <= swingPrice and close > swingPrice
+            if na(bullSweptLevel) or swingPrice > bullSweptLevel
+                bullSweptLevel := swingPrice
+                bullSweptBar := array.get(swingLowBars, i)
+                bullSweptIndex := i
+
+bearWickRatio = (high - math.max(open, close)) / barRange
+bearReclaimAtr = atrSafe > 0.0 and not na(bearSweptLevel) ? (bearSweptLevel - close) / atrSafe : 0.0
+bearVolumeOk = useVolumeConfirmation ? volume > volumeAverage * volumeMultiplier : true
+bearSwingAge = na(bearSweptBar) ? 0 : bar_index - bearSweptBar
+bearScoreRaw = na(bearSweptLevel) ? 0 : f_score_sfp(bearWickRatio, bearReclaimAtr, bearVolumeOk, bearSwingAge)
+bearSfp = not na(bearSweptLevel) and bearWickRatio >= minWickRatio and bearReclaimAtr >= minReclaimAtr and (not useVolumeConfirmation or bearVolumeOk) and bearScoreRaw >= minimumScore and barstate.isconfirmed
+
+bullWickRatio = (math.min(open, close) - low) / barRange
+bullReclaimAtr = atrSafe > 0.0 and not na(bullSweptLevel) ? (close - bullSweptLevel) / atrSafe : 0.0
+bullVolumeOk = useVolumeConfirmation ? volume > volumeAverage * volumeMultiplier : true
+bullSwingAge = na(bullSweptBar) ? 0 : bar_index - bullSweptBar
+bullScoreRaw = na(bullSweptLevel) ? 0 : f_score_sfp(bullWickRatio, bullReclaimAtr, bullVolumeOk, bullSwingAge)
+bullSfp = not na(bullSweptLevel) and bullWickRatio >= minWickRatio and bullReclaimAtr >= minReclaimAtr and (not useVolumeConfirmation or bullVolumeOk) and bullScoreRaw >= minimumScore and barstate.isconfirmed
+
+if bearSfp and bearSweptIndex >= 0 and bearSweptIndex < array.size(swingHighPrices)
+    array.remove(swingHighPrices, bearSweptIndex)
+    array.remove(swingHighBars, bearSweptIndex)
+
+if bullSfp and bullSweptIndex >= 0 and bullSweptIndex < array.size(swingLowPrices)
+    array.remove(swingLowPrices, bullSweptIndex)
+    array.remove(swingLowBars, bullSweptIndex)
+
+// -------------------------------------------------
+// Zone Type and Storage
+// -------------------------------------------------
+type SfpZone
+    box zoneBox
+    line swingLine
+    label eventLabel
+    label zoneBadge
+    line projectionLine
+    bool isBull
+    float sweptLevel
+    float closeLevel
+    float zoneTop
+    float zoneBottom
+    int startBar
+    int scoreValue
+    bool invalidated
+    float mfe
+    float mae
+    bool resolved
+    bool winner
+    int mergeCount
+
+var array<SfpZone> zones = array.new<SfpZone>()
+var array<label> eventLabels = array.new<label>()
+
+var int bullCount = 0
+var int bearCount = 0
+var int winnerCount = 0
+var int resolvedCount = 0
+var float mfeSum = 0.0
+var float maeSum = 0.0
+var int lastLabelBar = na
+
+// -------------------------------------------------
+// Zone Helpers
+// -------------------------------------------------
+f_find_confluent(float levelValue, bool isBull) =>
+    int result = -1
+    if confluenceAtr > 0.0 and array.size(zones) > 0
+        threshold = confluenceAtr * atrSafe
+        startIndex = math.max(0, array.size(zones) - 10)
+        for i = startIndex to array.size(zones) - 1
+            z = array.get(zones, i)
+            if z.isBull == isBull and not z.invalidated and math.abs(z.sweptLevel - levelValue) <= threshold
+                result := i
+    result
+
+f_zone_badge_text(bool isBull, int scoreValue, int mergeCount) =>
+    baseText = isBull ? "BULL SFP" : "BEAR SFP"
+    scoreText = showZoneBadgeScore ? " Q " + str.tostring(scoreValue) : ""
+    mergeText = mergeCount > 1 ? " x" + str.tostring(mergeCount) : ""
+    baseText + "\nZONE" + scoreText + mergeText
+
+f_resolution_badge_text(bool isBull, int scoreValue) =>
+    (isBull ? "BULL INVALID" : "BEAR INVALID") + "\nQ " + str.tostring(scoreValue)
+
+f_create_zone(bool isBull, float sweptLevel, float closeLevel, int scoreValue, bool canPrintLabel) =>
+    color sideColor = isBull ? bullColor : bearColor
+    rawHeight = math.abs(sweptLevel - closeLevel)
+    minHeight = atrSafe * 0.40
+    halfHeight = math.max(rawHeight, minHeight) * 0.50
+    midLevel = (sweptLevel + closeLevel) * 0.50
+    buffer = atrSafe * 0.15
+    topZone = midLevel + halfHeight + buffer
+    bottomZone = midLevel - halfHeight - buffer
+
+    box zoneBox = showZones ? box.new(bar_index - 1, topZone, bar_index + 1, bottomZone, xloc = xloc.bar_index, border_color = color.new(sideColor, 30), border_width = 1, bgcolor = color.new(sideColor, zoneOpacity)) : na
+    line swingLine = showSwingLine ? line.new(bar_index - 1, sweptLevel, bar_index + 1, sweptLevel, xloc = xloc.bar_index, color = color.new(sideColor, 38), style = line.style_dotted, width = 1) : na
+    label eventLabel = na
+    label zoneBadge = na
+
+    if showLabels and canPrintLabel
+        labelText = (isBull ? "Bull SFP\n" : "Bear SFP\n") + str.tostring(scoreValue)
+        labelYbase = isBull ? sweptLevel - labelOffset : sweptLevel + labelOffset
+        labelY = f_evt_lbl_resolve(bar_index, labelYbase, isBull ? -1 : 1)
+        f_evt_lbl_register(bar_index, labelY)
+        labelStyle = isBull ? label.style_label_up : label.style_label_down
+        eventLabel := label.new(bar_index, labelY, labelText, xloc = xloc.bar_index, yloc = yloc.price, style = labelStyle, color = color.new(sideColor, 0), textcolor = f_text_on(sideColor), size = labelSize, textalign = text.align_center)
+
+    if showZones and showZoneBadges
+        zoneBadge := label.new(bar_index, midLevel, f_zone_badge_text(isBull, scoreValue, 1), xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_center, color = color.new(sideColor, 0), textcolor = f_text_on(sideColor), size = labelSize, textalign = text.align_center)
+
+    projectionTarget = isBull ? close + atrSafe : close - atrSafe
+    line projectionLine = showProjection ? line.new(bar_index, close, bar_index + 6, projectionTarget, xloc = xloc.bar_index, color = color.new(sideColor, 30), style = line.style_dashed, width = 2) : na
+
+    newZone = SfpZone.new(zoneBox, swingLine, eventLabel, zoneBadge, projectionLine, isBull, sweptLevel, closeLevel, topZone, bottomZone, bar_index, scoreValue, false, 0.0, 0.0, false, false, 1)
+    newZone
+
+// -------------------------------------------------
+// Trigger Handling
+// -------------------------------------------------
+if bearSfp
+    bearCount += 1
+    confluentIndex = f_find_confluent(bearSweptLevel, false)
+    if confluentIndex >= 0
+        z = array.get(zones, confluentIndex)
+        z.mergeCount += 1
+        z.scoreValue := math.max(z.scoreValue, bearScoreRaw)
+        if not na(z.eventLabel)
+            label.set_text(z.eventLabel, "Bear SFP\n" + str.tostring(z.scoreValue) + " x" + str.tostring(z.mergeCount))
+        if not na(z.zoneBadge)
+            label.set_text(z.zoneBadge, f_zone_badge_text(false, z.scoreValue, z.mergeCount))
+        array.set(zones, confluentIndex, z)
+    else
+        canPrintBear = na(lastLabelBar) or bar_index - lastLabelBar >= labelCooldownBars
+        newBearZone = f_create_zone(false, bearSweptLevel, close, bearScoreRaw, canPrintBear)
+        array.push(zones, newBearZone)
+        if not na(newBearZone.eventLabel)
+            array.push(eventLabels, newBearZone.eventLabel)
+            f_trim_labels(eventLabels, maxVisibleLabels)
+            lastLabelBar := bar_index
+
+if bullSfp
+    bullCount += 1
+    confluentIndex = f_find_confluent(bullSweptLevel, true)
+    if confluentIndex >= 0
+        z = array.get(zones, confluentIndex)
+        z.mergeCount += 1
+        z.scoreValue := math.max(z.scoreValue, bullScoreRaw)
+        if not na(z.eventLabel)
+            label.set_text(z.eventLabel, "Bull SFP\n" + str.tostring(z.scoreValue) + " x" + str.tostring(z.mergeCount))
+        if not na(z.zoneBadge)
+            label.set_text(z.zoneBadge, f_zone_badge_text(true, z.scoreValue, z.mergeCount))
+        array.set(zones, confluentIndex, z)
+    else
+        canPrintBull = na(lastLabelBar) or bar_index - lastLabelBar >= labelCooldownBars
+        newBullZone = f_create_zone(true, bullSweptLevel, close, bullScoreRaw, canPrintBull)
+        array.push(zones, newBullZone)
+        if not na(newBullZone.eventLabel)
+            array.push(eventLabels, newBullZone.eventLabel)
+            f_trim_labels(eventLabels, maxVisibleLabels)
+            lastLabelBar := bar_index
+
+// Preserve live context when the retained-object budget is full.
+// The oldest invalidated zone is pruned first; a live zone is removed only
+// when every retained zone is still active.
+while array.size(zones) > maxRetainedZones
+    int pruneIndex = -1
+    for i = 0 to array.size(zones) - 1
+        candidate = array.get(zones, i)
+        if candidate.invalidated
+            pruneIndex := i
+            break
+    pruneIndex := pruneIndex < 0 ? 0 : pruneIndex
+    prunedZone = array.remove(zones, pruneIndex)
+    f_delete_zone_objects(prunedZone.zoneBox, prunedZone.swingLine, prunedZone.eventLabel, prunedZone.zoneBadge, prunedZone.projectionLine)
+
+// -------------------------------------------------
+// Zone Updates and Stats
+// -------------------------------------------------
+zoneInvalidated = false
+
+if array.size(zones) > 0
+    for i = 0 to array.size(zones) - 1
+        z = array.get(zones, i)
+
+        if not z.invalidated
+            targetRight = bar_index + 1
+            if not na(z.zoneBox)
+                box.set_right(z.zoneBox, math.max(box.get_right(z.zoneBox), targetRight))
+            if not na(z.swingLine)
+                line.set_x2(z.swingLine, math.max(line.get_x2(z.swingLine), targetRight))
+
+            invalidNow = (z.isBull and close < z.sweptLevel) or ((not z.isBull) and close > z.sweptLevel)
+            if invalidNow
+                z.invalidated := true
+                zoneInvalidated := true
+                if not z.resolved
+                    z.resolved := true
+                    resolvedCount += 1
+                    mfeSum += z.mfe
+                    maeSum += z.mae
+                if showInvalidationFade
+                    if not na(z.zoneBox)
+                        box.set_bgcolor(z.zoneBox, color.new(mutedColor, 92))
+                        box.set_border_color(z.zoneBox, color.new(mutedColor, 62))
+                        box.set_right(z.zoneBox, bar_index)
+                    if not na(z.swingLine)
+                        line.set_color(z.swingLine, color.new(mutedColor, 62))
+                        line.set_x2(z.swingLine, bar_index)
+                if not na(z.zoneBadge)
+                    if showResolutionBadges
+                        resolutionBase = z.isBull ? low - labelOffset : high + labelOffset
+                        resolutionX = f_evt_lbl_x_resolve(bar_index)
+                        resolutionY = f_evt_lbl_resolve(resolutionX, resolutionBase, z.isBull ? -1 : 1)
+                        f_evt_lbl_register(resolutionX, resolutionY)
+                        label.set_x(z.zoneBadge, resolutionX)
+                        label.set_y(z.zoneBadge, resolutionY)
+                        label.set_style(z.zoneBadge, z.isBull ? label.style_label_up : label.style_label_down)
+                        label.set_text(z.zoneBadge, f_resolution_badge_text(z.isBull, z.scoreValue))
+                        label.set_color(z.zoneBadge, color.new(mutedColor, 0))
+                        label.set_textcolor(z.zoneBadge, f_text_on(mutedColor))
+                        label.set_size(z.zoneBadge, labelSize)
+                    else
+                        label.delete(z.zoneBadge)
+                        z.zoneBadge := na
+                if not na(z.projectionLine)
+                    line.delete(z.projectionLine)
+                    z.projectionLine := na
+
+        if not z.resolved
+            barsSince = bar_index - z.startBar
+            if z.isBull
+                mfeNow = (high - z.closeLevel) / atrSafe
+                maeNow = (z.closeLevel - low) / atrSafe
+                z.mfe := math.max(z.mfe, mfeNow)
+                z.mae := math.max(z.mae, maeNow)
+            else
+                mfeNow = (z.closeLevel - low) / atrSafe
+                maeNow = (high - z.closeLevel) / atrSafe
+                z.mfe := math.max(z.mfe, mfeNow)
+                z.mae := math.max(z.mae, maeNow)
+
+            if z.mfe >= 1.0
+                z.resolved := true
+                z.winner := true
+                winnerCount += 1
+                resolvedCount += 1
+                mfeSum += z.mfe
+                maeSum += z.mae
+                if not na(z.projectionLine)
+                    line.delete(z.projectionLine)
+                    z.projectionLine := na
+            else if barsSince > statsTimeoutBars
+                z.resolved := true
+                z.winner := z.mfe > z.mae
+                if z.winner
+                    winnerCount += 1
+                resolvedCount += 1
+                mfeSum += z.mfe
+                maeSum += z.mae
+                if not na(z.projectionLine)
+                    line.delete(z.projectionLine)
+                    z.projectionLine := na
+
+        array.set(zones, i, z)
+
+// -------------------------------------------------
+// Active Zone Badge Layout
+// -------------------------------------------------
+if array.size(zones) > 0
+    for i = 0 to array.size(zones) - 1
+        z = array.get(zones, i)
+        if not z.invalidated and not na(z.zoneBadge)
+            int bx = int(math.round((box.get_left(z.zoneBox) + box.get_right(z.zoneBox)) * 0.50))
+            float zoneMidY = (box.get_top(z.zoneBox) + box.get_bottom(z.zoneBox)) * 0.50
+            label.set_x(z.zoneBadge, bx)
+            label.set_y(z.zoneBadge, zoneMidY)
+            label.set_style(z.zoneBadge, label.style_label_center)
+            label.set_size(z.zoneBadge, labelSize)
+
+// -------------------------------------------------
+// Pending Read
+// -------------------------------------------------
+pendingBull = false
+pendingBear = false
+float pendingBullLevel = na
+float pendingBearLevel = na
+
+if barstate.islast
+    if array.size(swingHighPrices) > 0
+        for i = 0 to array.size(swingHighPrices) - 1
+            swingPrice = array.get(swingHighPrices, i)
+            if high >= swingPrice and close < swingPrice
+                wickRatio = (high - math.max(open, close)) / barRange
+                reclaim = (swingPrice - close) / atrSafe
+                if wickRatio >= minWickRatio and reclaim >= minReclaimAtr
+                    pendingBear := true
+                    pendingBearLevel := swingPrice
+                    break
+    if array.size(swingLowPrices) > 0
+        for i = 0 to array.size(swingLowPrices) - 1
+            swingPrice = array.get(swingLowPrices, i)
+            if low <= swingPrice and close > swingPrice
+                wickRatio = (math.min(open, close) - low) / barRange
+                reclaim = (close - swingPrice) / atrSafe
+                if wickRatio >= minWickRatio and reclaim >= minReclaimAtr
+                    pendingBull := true
+                    pendingBullLevel := swingPrice
+                    break
+
+// -------------------------------------------------
+// Panel
+// -------------------------------------------------
+var table panel = table.new(f_panel_position(panelPositionInput), 2, 9, bgcolor = f_panel_bg(), frame_color = f_panel_border(), frame_width = 1, border_color = f_panel_border(), border_width = 1)
+
+if barstate.islast
+    table.set_position(panel, f_panel_position(panelPositionInput))
+    table.clear(panel, 0, 0, 1, 8)
+    if showPanel
+        activeZones = 0
+        float nearestDistance = na
+        bool nearestBull = false
+        int nearestScore = na
+        bool nearestInside = false
+        if array.size(zones) > 0
+            for i = 0 to array.size(zones) - 1
+                z = array.get(zones, i)
+                if not z.invalidated
+                    activeZones += 1
+                    zoneDistance = close > z.zoneTop ? close - z.zoneTop : close < z.zoneBottom ? z.zoneBottom - close : 0.0
+                    if na(nearestDistance) or zoneDistance < nearestDistance
+                        nearestDistance := zoneDistance
+                        nearestBull := z.isBull
+                        nearestScore := z.scoreValue
+                        nearestInside := close >= z.zoneBottom and close <= z.zoneTop
+
+        hitRate = resolvedCount > 0 ? winnerCount / resolvedCount * 100.0 : na
+        hitRateText = na(hitRate) ? "-" : str.tostring(hitRate, "#.0") + "% (" + str.tostring(resolvedCount) + ")"
+        hitRateColor = na(hitRate) ? f_panel_label() : hitRate >= 55.0 ? bullColor : hitRate >= 45.0 ? neutralColor : bearColor
+        avgMfe = resolvedCount > 0 ? mfeSum / resolvedCount : na
+        avgMae = resolvedCount > 0 ? maeSum / resolvedCount : na
+        pendingText = pendingBull ? "Bull @ " + str.tostring(pendingBullLevel, format.mintick) : pendingBear ? "Bear @ " + str.tostring(pendingBearLevel, format.mintick) : "None"
+        pendingColor = pendingBull ? bullColor : pendingBear ? bearColor : f_panel_label()
+        float nearestDistanceAtr = activeZones == 0 ? na : nearestDistance / atrSafe
+        bool contextIsDistant = activeZones > 0 and nearestDistanceAtr > contextDistanceLimit
+        activeContextText = activeZones == 0 ? "None" : str.tostring(activeZones) + " | " + (nearestBull ? "Bull" : "Bear") + " Q" + str.tostring(nearestScore) + " | " + str.tostring(nearestDistanceAtr, "#.00") + " ATR"
+        activeContextColor = activeZones == 0 ? f_panel_label() : nearestBull ? bullColor : bearColor
+        actionText = activeZones == 0 ? "Wait for new sweep" : contextIsDistant ? "Wait - zone distant" : nearestInside ? (nearestBull ? "Review bull reaction" : "Review bear reaction") : nearestBull ? "Track bull support" : "Track bear resistance"
+        actionColor = activeZones == 0 ? f_panel_label() : contextIsDistant ? neutralColor : nearestInside ? neutralColor : nearestBull ? bullColor : bearColor
+
+        table.merge_cells(panel, 0, 0, 1, 0)
+        f_panel_cell(panel, 0, 0, "AG Pro Swing Failure Pattern Engine", headerText, headerBg, "center")
+        f_panel_cell(panel, 0, 1, "Bull SFP", f_panel_label(), f_row_bg(1), "left")
+        f_panel_cell(panel, 1, 1, str.tostring(bullCount), f_readable(bullColor), f_row_bg(1), "right")
+        f_panel_cell(panel, 0, 2, "Bear SFP", f_panel_label(), f_row_bg(2), "left")
+        f_panel_cell(panel, 1, 2, str.tostring(bearCount), f_readable(bearColor), f_row_bg(2), "right")
+        f_panel_cell(panel, 0, 3, "MFE Hit Rate", f_panel_label(), f_row_bg(3), "left")
+        f_panel_cell(panel, 1, 3, hitRateText, f_readable(hitRateColor), f_row_bg(3), "right")
+        f_panel_cell(panel, 0, 4, "Avg MFE", f_panel_label(), f_row_bg(4), "left")
+        f_panel_cell(panel, 1, 4, na(avgMfe) ? "-" : str.tostring(avgMfe, "#.00") + " ATR", f_readable(f_panel_value()), f_row_bg(4), "right")
+        f_panel_cell(panel, 0, 5, "Avg MAE", f_panel_label(), f_row_bg(5), "left")
+        f_panel_cell(panel, 1, 5, na(avgMae) ? "-" : str.tostring(avgMae, "#.00") + " ATR", f_readable(f_panel_value()), f_row_bg(5), "right")
+        f_panel_cell(panel, 0, 6, "Active Context", f_panel_label(), f_row_bg(6), "left")
+        f_panel_cell(panel, 1, 6, activeContextText, f_readable(activeContextColor), f_row_bg(6), "right")
+        f_panel_cell(panel, 0, 7, "Pending SFP", f_panel_label(), f_row_bg(7), "left")
+        f_panel_cell(panel, 1, 7, pendingText, f_readable(pendingColor), f_row_bg(7), "right")
+        f_panel_cell(panel, 0, 8, "Action", f_panel_label(), f_row_bg(8), "left")
+        f_panel_cell(panel, 1, 8, actionText, f_readable(actionColor), f_row_bg(8), "right")
+
+// -------------------------------------------------
+// Alerts
+// -------------------------------------------------
+alertcondition(alertBull and bullSfp, "AG Pro SFP | Bullish SFP", "AG Pro SFP: Bullish Swing Failure Pattern detected.")
+alertcondition(alertBear and bearSfp, "AG Pro SFP | Bearish SFP", "AG Pro SFP: Bearish Swing Failure Pattern detected.")
+alertcondition(alertInvalidation and zoneInvalidated, "AG Pro SFP | Zone Invalidated", "AG Pro SFP: An active SFP zone was invalidated.")
+
+plot(close, title = "Close Hidden", display = display.none)

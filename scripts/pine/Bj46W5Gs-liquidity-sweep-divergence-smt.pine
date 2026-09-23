@@ -1,0 +1,133 @@
+//@version=6
+indicator("SMT ICT indicator", overlay=true, max_lines_count=200, max_labels_count=200)
+
+//==================== INPUT ====================//
+secondSymbol = input.symbol("BINANCE:BTCUSDT", "Second Asset")
+len          = input.int(2, "Pivot Length", minval=1)
+maxOffset    = input.int(1, "Max Sync Offset", minval=0, maxval=3)
+
+useWickFilter = input.bool(true, "Require Wick Sweep (ICT)")
+minMoveATR    = input.float(0.2, "Min Sweep Size (ATR filter)", step=0.1)
+
+showLines = input.bool(true, "Show Lines")
+
+bullColor = color.lime
+bearColor = color.red
+
+//==================== DATA ====================//
+secHigh = request.security(secondSymbol, timeframe.period, high)
+secLow  = request.security(secondSymbol, timeframe.period, low)
+
+//==================== ATR ====================//
+atr = ta.atr(14)
+
+//==================== PIVOTS ====================//
+ph1 = ta.pivothigh(high, len, len)
+pl1 = ta.pivotlow(low, len, len)
+
+ph2 = ta.pivothigh(secHigh, len, len)
+pl2 = ta.pivotlow(secLow, len, len)
+
+//==================== STORAGE ====================//
+var float lastHigh1 = na
+var float prevHigh1 = na
+var int   lastHighBar1 = na
+
+var float lastLow1 = na
+var float prevLow1 = na
+var int   lastLowBar1 = na
+
+var float lastHigh2 = na
+var float prevHigh2 = na
+var int   lastHighBar2 = na
+
+var float lastLow2 = na
+var float prevLow2 = na
+var int   lastLowBar2 = na
+
+//==================== UPDATE SWINGS ====================//
+if not na(ph1)
+    prevHigh1 := lastHigh1
+    lastHigh1 := ph1
+    lastHighBar1 := bar_index - len
+
+if not na(pl1)
+    prevLow1 := lastLow1
+    lastLow1 := pl1
+    lastLowBar1 := bar_index - len
+
+if not na(ph2)
+    prevHigh2 := lastHigh2
+    lastHigh2 := ph2
+    lastHighBar2 := bar_index - len
+
+if not na(pl2)
+    prevLow2 := lastLow2
+    lastLow2 := pl2
+    lastLowBar2 := bar_index - len
+
+//==================== SYNC CHECK ====================//
+syncHigh = math.abs(lastHighBar1 - lastHighBar2) <= maxOffset
+syncLow  = math.abs(lastLowBar1 - lastLowBar2) <= maxOffset
+
+//==================== SWEEP CONDITIONS ====================//
+bearSweep =
+     not na(prevHigh1) and
+     high > prevHigh1 and
+     (not useWickFilter or close < prevHigh1) and
+     (high - prevHigh1) > atr * minMoveATR
+
+bullSweep =
+     not na(prevLow1) and
+     low < prevLow1 and
+     (not useWickFilter or close > prevLow1) and
+     (prevLow1 - low) > atr * minMoveATR
+
+//==================== SMT LOGIC ====================//
+bearSMT =
+     bearSweep and
+     syncHigh and
+     not (secHigh > prevHigh2)
+
+bullSMT =
+     bullSweep and
+     syncLow and
+     not (secLow < prevLow2)
+
+//==================== DRAW ====================//
+//==================== DRAW ====================//
+
+// прозрачность
+lineTransp = 60
+bgTransp   = 90
+
+// сила движения (для визуала)
+bearStrength = (high - prevHigh1) / ta.atr(14)
+bullStrength = (prevLow1 - low) / ta.atr(14)
+
+// === BEAR SMT ===
+if bearSMT
+
+
+    // компактный лейбл
+    label.new(bar_index, high, "SMT",
+         color=color.new(bearColor, 0),
+         textcolor=color.white,
+         style=label.style_label_down,
+         size=size.tiny)
+
+    if showLines
+        line.new(lastHighBar1, lastHigh1,bar_index, high,color=color.new(bearColor, lineTransp),width=1)
+
+// === BULL SMT ===
+if bullSMT
+
+    label.new(bar_index, low, "SMT",
+         color=color.new(bullColor, 0),
+         textcolor=color.white,
+         style=label.style_label_up,
+         size=size.tiny)
+
+    if showLines
+        line.new( lastLowBar1, lastLow1,bar_index, low,color=color.new(bullColor, lineTransp), width=1 )
+bgcolor(bearSMT ? color.new(bearColor, bgTransp) :bullSMT ? color.new(bullColor, bgTransp) : na)

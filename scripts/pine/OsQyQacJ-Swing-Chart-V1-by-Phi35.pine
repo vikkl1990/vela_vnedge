@@ -1,0 +1,57 @@
+//@version=2
+study("Swing Chart V1 by Phi35", overlay=true)
+//Swing Chart V1 by Phi35 - 3rd September 2016 (c)
+//Do not modify the code without permission!
+//If there is an issue or any suggestions, feel free to contact me on the link below
+//https://new.tradingview.com/u/phi35/
+
+//It seems to work well but still no guarantee on completeness!
+//RISK WARNING! PAST PERFORMANCE IS NOT NECESSARILY INDICATIVE OF FUTURE RESULTS. IN MAKING AN INVESTMENT DECISION, TRADERS MUST RELY ON THEIR OWN EXAMINATION OF THE ENTITY MAKING THE TRADING DECISIONS!
+
+//How it works:
+//Minor Degree (one bar) (gray)= If the current high is higher than the previous high or the current low is lower than the previous low.
+//Intermediate Degree (two bar) (baby blue)= If the current high is higher than previous and the penultimate high etc.
+//Main Degree (three bar) (red)= If the current high is higher than the previous, the penultimate and the high before penultimate high.
+//On crossover there will be an alert (popup with a message) and in addition you will see "diamonds" on the place where the crossover took place
+//In the preferences menu you can turn the specific degrees on and off
+
+//Body
+barcolor(#313B3F)
+bgcolor(#272F32, transp=0)
+
+//Minor Degree
+minorbull = if(high[0]>high[1])// and high[1] > high[2])
+    high
+minorbear = if(low[0]<low[1])// and low[1] < low[2])
+    low
+
+plot(high[0]>high[1]? minorbull : minorbear, color=#6F7A7E, linewidth=2, transp=0, title="Minor Swing")
+
+
+//Intermediate Degree
+intbull = if(high[0]>high[1] and high[1] > high[2])
+    high
+intbear = if(low[0]<low[1] and low[1] < low[2])
+    low
+
+plot(high[0]>high[1]? intbull : intbear, color=#9DBDC6, linewidth=2, transp=0, title="Intermediate Swing")
+
+
+//Main Degree
+mainbull = if(high[0]>high[1] and high[1] > high[2] and high[2] > high[3])
+    high
+mainbear = if(low[0]<low[1] and low[1] < low[2] and low[2] < low[3])
+    low
+
+plot(high[0]>high[1]? mainbull : mainbear, color=#FF3D2E, linewidth=2, transp=0, title="Main Swing")
+
+
+//CrossAlert
+bullcross = (high[0]>high[1] and high[1] > high[2]) and (high[0]>high[1] and high[1] > high[2] and high[2]>high[3])
+bearcross = (low[0]<low[1] and low[1] < low[2]) and (low[0]<low[1] and low[1] < low[2] and low[2]<low[3])
+plotshape(bullcross, style=shape.diamond,title="Bull Cross", color=#6F7A7E, location=location.abovebar)
+plotshape(bearcross, style=shape.diamond,title="Bear Cross", color=#6F7A7E, location=location.belowbar)
+
+
+alertcondition(bullcross, title='Cross', message='2nd and 3rd have crossed!')
+alertcondition(bearcross, title='Cross', message='2nd and 3rd have crossed!')

@@ -1,0 +1,271 @@
+//@version=6
+indicator("Swing High Low Detector by RV5", overlay=true, max_lines_count=500, max_labels_count=100)
+
+// === INPUTS ===
+swingStrengthHigh = input.int(5, minval=1, title="Swing high strength", display=display.all - display.status_line)
+swingStrengthLow  = input.int(5, minval=1, title="Swing low strength", display=display.all - display.status_line)
+swingSourceHigh   = input.source(high, title="Swing high source", display=display.all - display.status_line)
+swingSourceLow    = input.source(low, title="Swing low source", display=display.all - display.status_line)
+removeSweptLevels = input.bool(false, title="Delete past levels that get swept (liquidity taken)", tooltip="When enabled, past swing lines will be deleted if price breaks through them. Applies to chart-timeframe and higher-timeframe levels.")
+
+// === STYLE INPUTS ===
+// --- Current SH
+shExtColor     = input.color(color.red, "Color", group="Current SH", display=display.all - display.status_line)
+shExtStyleStr  = input.string("Solid", "Style", options=["Solid", "Dotted", "Dashed"], group="Current SH", display=display.all - display.status_line)
+shExtWidth     = input.int(3, "Thickness", minval=1, maxval=5, group="Current SH", display=display.all - display.status_line)
+// --- Past SH
+shColor        = input.color(color.red, "Color", group="Past SH", display=display.all - display.status_line)
+shStyleStr     = input.string("Dotted", "Style", options=["Solid", "Dotted", "Dashed"], group="Past SH", display=display.all - display.status_line)
+shWidth        = input.int(2, "Thickness", minval=1, maxval=5, group="Past SH", display=display.all - display.status_line)
+// --- Current SL
+slExtColor     = input.color(color.aqua, "Color", group="Current SL", display=display.all - display.status_line)
+slExtStyleStr  = input.string("Solid", "Style", options=["Solid", "Dotted", "Dashed"], group="Current SL", display=display.all - display.status_line)
+slExtWidth     = input.int(3, "Thickness", minval=1, maxval=5, group="Current SL", display=display.all - display.status_line)
+// --- Past SL
+slColor        = input.color(color.aqua, "Color", group="Past SL", display=display.all - display.status_line)
+slStyleStr     = input.string("Dotted", "Style", options=["Solid", "Dotted", "Dashed"], group="Past SL", display=display.all - display.status_line)
+slWidth        = input.int(2, "Thickness", minval=1, maxval=5, group="Past SL", display=display.all - display.status_line)
+
+// === HIGHER TIMEFRAME INPUTS ===
+gW = "Weekly swings"
+gM = "Monthly swings"
+
+showWeekly       = input.bool(true, "Show weekly swings", group=gW, display=display.all - display.status_line)
+weeklyTF         = input.timeframe("W", "Timeframe", group=gW, tooltip="Must be HIGHER than the chart timeframe, otherwise these levels stay hidden.", display=display.all - display.status_line)
+weeklyStrength   = input.int(2, "Swing strength", minval=1, group=gW, tooltip="Bars each side of the pivot, counted in bars of the timeframe above. 2 = the swing is confirmed 2 closed weeks after the pivot.", display=display.all - display.status_line)
+weeklyHighColor  = input.color(#FF6D00, "High color", group=gW, display=display.all - display.status_line)
+weeklyLowColor   = input.color(#00C853, "Low color", group=gW, display=display.all - display.status_line)
+weeklyWidth      = input.int(2, "Thickness", minval=1, maxval=5, group=gW, display=display.all - display.status_line)
+weeklyStyleStr   = input.string("Solid", "Style", options=["Solid", "Dotted", "Dashed"], group=gW, display=display.all - display.status_line)
+weeklyLabels     = input.bool(true, "Show labels", group=gW, display=display.all - display.status_line)
+
+showMonthly      = input.bool(true, "Show monthly swings", group=gM, display=display.all - display.status_line)
+monthlyTF        = input.timeframe("M", "Timeframe", group=gM, tooltip="Must be HIGHER than the chart timeframe, otherwise these levels stay hidden.", display=display.all - display.status_line)
+monthlyStrength  = input.int(2, "Swing strength", minval=1, group=gM, tooltip="Bars each side of the pivot, counted in bars of the timeframe above. 2 = the swing is confirmed 2 closed months after the pivot.", display=display.all - display.status_line)
+monthlyHighColor = input.color(#D500F9, "High color", group=gM, display=display.all - display.status_line)
+monthlyLowColor  = input.color(#2962FF, "Low color", group=gM, display=display.all - display.status_line)
+monthlyWidth     = input.int(3, "Thickness", minval=1, maxval=5, group=gM, display=display.all - display.status_line)
+monthlyStyleStr  = input.string("Solid", "Style", options=["Solid", "Dotted", "Dashed"], group=gM, display=display.all - display.status_line)
+monthlyLabels    = input.bool(true, "Show labels", group=gM, display=display.all - display.status_line)
+
+// === STYLE MAPPINGS ===
+shExtStyle = shExtStyleStr == "Dotted" ? line.style_dotted : shExtStyleStr == "Dashed" ? line.style_dashed : line.style_solid
+shStyle    = shStyleStr    == "Dotted" ? line.style_dotted : shStyleStr    == "Dashed" ? line.style_dashed : line.style_solid
+slExtStyle = slExtStyleStr == "Dotted" ? line.style_dotted : slExtStyleStr == "Dashed" ? line.style_dashed : line.style_solid
+slStyle    = slStyleStr    == "Dotted" ? line.style_dotted : slStyleStr    == "Dashed" ? line.style_dashed : line.style_solid
+weeklyStyle  = weeklyStyleStr  == "Dotted" ? line.style_dotted : weeklyStyleStr  == "Dashed" ? line.style_dashed : line.style_solid
+monthlyStyle = monthlyStyleStr == "Dotted" ? line.style_dotted : monthlyStyleStr == "Dashed" ? line.style_dashed : line.style_solid
+
+// === VARS ===
+var line currentHighLine = na
+var line currentLowLine = na
+var float currentHigh = na
+var float currentLow = na
+var int currentHighStart = na
+var int currentLowStart = na
+var line[] pastHighLines = array.new_line()
+var float[] pastHighPrices = array.new_float()
+var line[] pastLowLines = array.new_line()
+var float[] pastLowPrices = array.new_float()
+
+// === SWING LOGIC ===
+isSwingHigh = true
+for i = 1 to swingStrengthHigh
+    isSwingHigh := isSwingHigh and swingSourceHigh[swingStrengthHigh] > swingSourceHigh[swingStrengthHigh + i]
+    isSwingHigh := isSwingHigh and swingSourceHigh[swingStrengthHigh] > swingSourceHigh[swingStrengthHigh - i]
+swingHigh = isSwingHigh ? swingSourceHigh[swingStrengthHigh] : na
+
+isSwingLow = true
+for i = 1 to swingStrengthLow
+    isSwingLow := isSwingLow and swingSourceLow[swingStrengthLow] < swingSourceLow[swingStrengthLow + i]
+    isSwingLow := isSwingLow and swingSourceLow[swingStrengthLow] < swingSourceLow[swingStrengthLow - i]
+swingLow = isSwingLow ? swingSourceLow[swingStrengthLow] : na
+
+// === BREAK CONDITIONS ===
+// v6 note: the v5 bug (`currentHigh != na` always evaluating na -> alerts never firing)
+// is impossible here — v6 rejects na comparisons and bools are strictly true/false.
+highBroken = not na(currentHigh) and high > currentHigh
+lowBroken  = not na(currentLow) and low < currentLow
+
+// === HANDLE SWING HIGH ===
+if not na(swingHigh)
+    if not na(currentHighLine)
+        line.set_extend(currentHighLine, extend.none)
+        line.set_style(currentHighLine, shStyle)
+        array.push(pastHighLines, line.new(currentHighStart, currentHigh, bar_index, currentHigh, color=shColor, width=shWidth, style=shStyle, extend=extend.none))
+        array.push(pastHighPrices, currentHigh)
+        line.delete(currentHighLine)
+    currentHigh := swingHigh
+    currentHighStart := bar_index - swingStrengthHigh
+    currentHighLine := line.new(currentHighStart, swingHigh, bar_index, swingHigh, color=shExtColor, width=shExtWidth, style=shExtStyle, extend=extend.none)
+
+// === HANDLE SWING LOW ===
+if not na(swingLow)
+    if not na(currentLowLine)
+        line.set_extend(currentLowLine, extend.none)
+        line.set_style(currentLowLine, slStyle)
+        array.push(pastLowLines, line.new(currentLowStart, currentLow, bar_index, currentLow, color=slColor, width=slWidth, style=slStyle, extend=extend.none))
+        array.push(pastLowPrices, currentLow)
+        line.delete(currentLowLine)
+    currentLow := swingLow
+    currentLowStart := bar_index - swingStrengthLow
+    currentLowLine := line.new(currentLowStart, swingLow, bar_index, swingLow, color=slExtColor, width=slExtWidth, style=slExtStyle, extend=extend.none)
+
+// === EXTEND CURRENT LINES TO CURRENT BAR ===
+if not na(currentHighLine)
+    line.set_x2(currentHighLine, bar_index)
+    line.set_y2(currentHighLine, currentHigh)
+
+if not na(currentLowLine)
+    line.set_x2(currentLowLine, bar_index)
+    line.set_y2(currentLowLine, currentLow)
+
+// === HANDLE BREAKS ===
+if highBroken
+    line.set_extend(currentHighLine, extend.none)
+    line.set_style(currentHighLine, shStyle)
+    array.push(pastHighLines, line.new(currentHighStart, currentHigh, bar_index, currentHigh, color=shColor, width=shWidth, style=shStyle, extend=extend.none))
+    array.push(pastHighPrices, currentHigh)
+    line.delete(currentHighLine)
+    currentHighLine := na
+    currentHigh := na
+    currentHighStart := na
+
+if lowBroken
+    line.set_extend(currentLowLine, extend.none)
+    line.set_style(currentLowLine, slStyle)
+    array.push(pastLowLines, line.new(currentLowStart, currentLow, bar_index, currentLow, color=slColor, width=slWidth, style=slStyle, extend=extend.none))
+    array.push(pastLowPrices, currentLow)
+    line.delete(currentLowLine)
+    currentLowLine := na
+    currentLow := na
+    currentLowStart := na
+
+// === REMOVE SWEPT PAST LEVELS ===
+if removeSweptLevels
+    // Sweep Highs
+    i = array.size(pastHighPrices) - 1
+    while i >= 0
+        lvl = array.get(pastHighPrices, i)
+        if high > lvl
+            line.delete(array.get(pastHighLines, i))
+            array.remove(pastHighLines, i)
+            array.remove(pastHighPrices, i)
+        i := i - 1
+
+    // Sweep Lows
+    j = array.size(pastLowPrices) - 1
+    while j >= 0
+        lvl = array.get(pastLowPrices, j)
+        if low < lvl
+            line.delete(array.get(pastLowLines, j))
+            array.remove(pastLowLines, j)
+            array.remove(pastLowPrices, j)
+        j := j - 1
+
+// ══════════════════ HIGHER TIMEFRAME SWINGS ══════════════════
+
+// Same pivot rule as above, but executed inside the requested timeframe.
+// The last confirmed swing is latched so the value survives until the next one.
+htfSwings(int strength) =>
+    var float lastHighPrice = na
+    var int   lastHighTime  = na
+    var float lastLowPrice  = na
+    var int   lastLowTime   = na
+    foundHigh = true
+    foundLow  = true
+    for i = 1 to strength
+        foundHigh := foundHigh and high[strength] > high[strength + i]
+        foundHigh := foundHigh and high[strength] > high[strength - i]
+        foundLow  := foundLow  and low[strength]  < low[strength + i]
+        foundLow  := foundLow  and low[strength]  < low[strength - i]
+    if foundHigh
+        lastHighPrice := high[strength]
+        lastHighTime  := time[strength]
+    if foundLow
+        lastLowPrice := low[strength]
+        lastLowTime  := time[strength]
+    [lastHighPrice, lastHighTime, lastLowPrice, lastLowTime]
+
+// One HTF level stream (e.g. weekly highs): the live line plus the frozen ones.
+type HtfLevel
+    line        activeLine  = na
+    label       activeLabel = na
+    float       price       = na
+    int         pivotTime   = na
+    array<line> pastLines   = na
+
+method render(HtfLevel s, bool enabled, float pivotPrice, int pivotT, bool isHighSide, color col, int wid, string sty, bool wantLabel, string tag, bool keepPast, int minTime) =>
+    broken = false
+    if enabled
+        // --- a new swing was confirmed on the higher timeframe
+        if not na(pivotT) and (na(s.pivotTime) or pivotT != s.pivotTime)
+            if not na(s.activeLine)
+                if keepPast
+                    line.set_style(s.activeLine, line.style_dotted)
+                    line.set_width(s.activeLine, 1)
+                    array.push(s.pastLines, s.activeLine)
+                else
+                    line.delete(s.activeLine)
+            if not na(s.activeLabel)
+                label.delete(s.activeLabel)
+                s.activeLabel := na
+            s.pivotTime  := pivotT
+            s.price      := pivotPrice
+            startT       = pivotT > minTime ? pivotT : minTime
+            s.activeLine := line.new(startT, pivotPrice, time, pivotPrice, xloc=xloc.bar_time, color=col, width=wid, style=sty)
+            if wantLabel
+                s.activeLabel := label.new(time, pivotPrice, tag, xloc=xloc.bar_time, style=label.style_label_left, color=color.new(col, 100), textcolor=col, size=size.small)
+        // --- keep the live level glued to the current bar
+        if not na(s.activeLine)
+            line.set_x2(s.activeLine, time)
+            if not na(s.activeLabel)
+                label.set_x(s.activeLabel, time)
+        // --- broken by chart-timeframe price
+        if not na(s.price) and (isHighSide ? high > s.price : low < s.price)
+            broken := true
+            if keepPast
+                line.set_style(s.activeLine, line.style_dotted)
+                line.set_width(s.activeLine, 1)
+                array.push(s.pastLines, s.activeLine)
+            else
+                line.delete(s.activeLine)
+            if not na(s.activeLabel)
+                label.delete(s.activeLabel)
+                s.activeLabel := na
+            s.activeLine := na
+            s.price      := na
+    broken
+
+var HtfLevel weeklyHighLevel  = HtfLevel.new(pastLines = array.new<line>())
+var HtfLevel weeklyLowLevel   = HtfLevel.new(pastLines = array.new<line>())
+var HtfLevel monthlyHighLevel = HtfLevel.new(pastLines = array.new<line>())
+var HtfLevel monthlyLowLevel  = HtfLevel.new(pastLines = array.new<line>())
+var int firstBarTime = time
+
+[wHighPrice, wHighTime, wLowPrice, wLowTime] = request.security(syminfo.tickerid, weeklyTF, htfSwings(weeklyStrength), lookahead=barmerge.lookahead_off)
+[mHighPrice, mHighTime, mLowPrice, mLowTime] = request.security(syminfo.tickerid, monthlyTF, htfSwings(monthlyStrength), lookahead=barmerge.lookahead_off)
+
+chartSeconds = timeframe.in_seconds(timeframe.period)
+weeklyOn     = showWeekly  and timeframe.in_seconds(weeklyTF)  > chartSeconds
+monthlyOn    = showMonthly and timeframe.in_seconds(monthlyTF) > chartSeconds
+keepHtfPast  = not removeSweptLevels
+
+weeklyHighBroken  = weeklyHighLevel.render(weeklyOn, wHighPrice, wHighTime, true, weeklyHighColor, weeklyWidth, weeklyStyle, weeklyLabels, weeklyTF + " High", keepHtfPast, firstBarTime)
+weeklyLowBroken   = weeklyLowLevel.render(weeklyOn, wLowPrice, wLowTime, false, weeklyLowColor, weeklyWidth, weeklyStyle, weeklyLabels, weeklyTF + " Low", keepHtfPast, firstBarTime)
+monthlyHighBroken = monthlyHighLevel.render(monthlyOn, mHighPrice, mHighTime, true, monthlyHighColor, monthlyWidth, monthlyStyle, monthlyLabels, monthlyTF + " High", keepHtfPast, firstBarTime)
+monthlyLowBroken  = monthlyLowLevel.render(monthlyOn, mLowPrice, mLowTime, false, monthlyLowColor, monthlyWidth, monthlyStyle, monthlyLabels, monthlyTF + " Low", keepHtfPast, firstBarTime)
+
+// --- tell the user why nothing showed up instead of failing silently
+var label tfWarnLabel = na
+if barstate.islast and ((showWeekly and not weeklyOn) or (showMonthly and not monthlyOn))
+    label.delete(tfWarnLabel)
+    tfWarnLabel := label.new(bar_index, high, "HTF swings hidden — the chart timeframe must be lower than the selected HTF", style=label.style_label_lower_left, color=color.new(color.orange, 20), textcolor=color.white, size=size.small)
+
+// === ALERT CONDITIONS ===
+alertcondition(highBroken, title="Swing High Broken", message="🔔 Swing High Broken at {{close}}")
+alertcondition(lowBroken, title="Swing Low Broken", message="🔔 Swing Low Broken at {{close}}")
+alertcondition(weeklyHighBroken, title="Weekly Swing High Broken", message="🔔 Weekly swing high broken at {{close}}")
+alertcondition(weeklyLowBroken, title="Weekly Swing Low Broken", message="🔔 Weekly swing low broken at {{close}}")
+alertcondition(monthlyHighBroken, title="Monthly Swing High Broken", message="🔔 Monthly swing high broken at {{close}}")
+alertcondition(monthlyLowBroken, title="Monthly Swing Low Broken", message="🔔 Monthly swing low broken at {{close}}")
