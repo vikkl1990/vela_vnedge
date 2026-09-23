@@ -39,7 +39,9 @@ the service at a `MemoryMax`, because one runaway script froze the whole VM once
 scans jump the queue ahead of research jobs.
 
 Scripts written as `strategy()` are read from their own order ledger rather than from alert text
-(decision 23).
+(decision 23). A script that fails in a way that will repeat — a market Delta does not list, a
+transpile error, a loop that never finishes — is **quarantined** after it fails on two markets and is
+not scheduled again until released (decision 30, `npm run health`).
 
 ### 3. The signal is extracted
 
@@ -125,7 +127,7 @@ and even then only market orders with reduce-only exits.
 The incubator (decision 17) is the only route into the fleet:
 
 ```
-2,588 scripts ──daily screen (a slice each night)──► candidate
+2,588 scripts ──quarantine the unrunnable──► daily screen (a slice each night) ──► candidate
    candidate ──shadow book, 100 slots, paper-traded on bt=2──► proven?
    proven ──proposed to you──► you approve ──► live fleet
    live ──last 50 trades below PF 0.9──► demotion proposed

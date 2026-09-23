@@ -737,3 +737,24 @@ other markets pass a screen, and otherwise retire on their own clock.
 **Revisit if** the 100 shadow slots stop being the binding constraint, or if pooled cohorts start
 passing the gate and then failing live — which would mean the market, not the scanner, was the thing
 that mattered.
+
+## 30. Scripts that cannot run here are quarantined instead of retried every night
+
+The library is 2,588 TradingView scripts and a large minority cannot execute on this stack at all.
+Nothing recorded that, so every night's screen paid for them again: 1,516 worker crashes in one 24h
+window from scripts asking for SPY, VIX, NDX, AAPL or open-interest series that Delta does not list,
+and — the expensive half — 213 scripts that loop until the 120-second worker timeout, each one
+burning two minutes of a worker to produce nothing.
+
+A failure that will repeat now quarantines the script: it needs a market Delta does not list, it does
+not transpile, its Pine version is unsupported, its source was never published, it never finishes, or
+it hits a PineTS runtime gap. Two different markets have to fail before the script is quarantined,
+because one market can simply have bad data, and any successful run clears the record.
+
+Quarantine is not a judgement on the strategy, so the reason is stored: `npm run health -- release
+"runtime gap"` re-opens the 84 scripts blocked by missing PineTS features the day the runtime gains
+them. Seeding from the compatibility report already on disk quarantined 427 scripts — 213 that hang,
+109 that do not transpile or are missing their source, 84 runtime gaps and 21 unsupported versions.
+
+**Revisit if** PineTS is upgraded (release the runtime gaps), or if a quarantined script is wanted
+live anyway — nothing stops it being released by name.

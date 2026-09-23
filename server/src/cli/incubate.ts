@@ -22,6 +22,7 @@ import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
 import { runBacktest } from '../paper/backtest.ts';
+import { ScriptHealth, permanentReason } from '../scanners/health.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { IncubatorStore } from '../incubator/store.ts';
@@ -33,6 +34,7 @@ const cfg = new ConfigStore().get();
 const inc = cfg.incubator;
 const db = new Db();
 const store = new IncubatorStore(db);
+const health = new ScriptHealth(db);
 const rest = new DeltaRest();
 const TF = inc.tf, tfMs = TF_SECONDS[TF] * 1000;
 const DAY = 86400_000;
@@ -52,7 +54,7 @@ if (process.env.ADD) {
   out(`recorded ${added} screen results from ${process.env.ADD}`);
 }
 const sliceArg = process.env.SLICE ?? String(Math.floor(Date.now() / DAY) % inc.screen.slices);
-const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0 };
+const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0 };
 
 if (sliceArg !== 'none') {
   const slice = Number(sliceArg);
@@ -90,6 +92,7 @@ if (sliceArg !== 'none') {
   const skipStages = new Set(['live', 'demote_proposed', 'shadow', 'proposed']);
   const markets = [...data.keys()];
   for (const s of scripts) {
+    if (health.isQuarantined(s.id)) { summary.skippedSick++; continue; }
     let probed = 0, sawEntry = false;
     for (const symbol of markets) {
       // a script that produced no entry on its first three markets is not going to on the rest
@@ -103,7 +106,8 @@ if (sliceArg !== 'none') {
       try {
         const inputs = cfg.scanners[s.id]?.inputs;
         const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
-        if (!res.ok) { summary.failed++; continue; }
+        if (!res.ok) { summary.failed++; if (health.record(s.id, res.error)) { summary.quarantined++; out(`  ${s.id}: quarantined (${permanentReason(res.error)})`); break; } continue; }
+        health.clear(s.id);
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest' });
         const events = extractEvents(res.alerts, res.shapes, { derived });
         if (!events.some(e => e.kind === 'entry')) continue;

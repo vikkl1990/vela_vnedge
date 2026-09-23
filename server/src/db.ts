@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS backtests (
 
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 
+-- scripts that cannot run here: see scanners/health.ts
+CREATE TABLE IF NOT EXISTS script_health (
+  scanner_id TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL,
+  last_error TEXT, reason TEXT, quarantined INTEGER NOT NULL DEFAULT 0
+);
+
 -- incubator: one row per scanner/market/timeframe it has an opinion on, and every move it made
 CREATE TABLE IF NOT EXISTS incubator_pairs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,

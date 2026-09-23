@@ -21,6 +21,7 @@ import { applyRules, labelKey } from './rules.ts';
 import type { MlService } from '../ml/service.ts';
 import { resolveLevels } from '../paper/logic.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
+import { ScriptHealth } from './health.ts';
 
 const log = logger.scoped('scanner');
 
@@ -56,6 +57,7 @@ interface Overlay { at: number; plots: WorkerResult['plots']; shapes: WorkerResu
 
 export class ScannerEngine extends EventEmitter {
   private registry: ScannerRegistry;
+  readonly health: ScriptHealth;
   private cfgRef: () => AppConfig;
   private candles: CandleStore;
   private pool: PinePool;
@@ -87,7 +89,7 @@ export class ScannerEngine extends EventEmitter {
 
   constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[]; ml?: MlService; cfgStore?: { setScanner(id: string, patch: Partial<ScannerConfig>): ScannerConfig } }) {
     super();
-    this.registry = deps.registry; this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
+    this.registry = deps.registry; this.health = new ScriptHealth(deps.db); this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
     this.symbolsRef = deps.symbolsRef ?? (() => this.cfgRef().symbols);
     this.ml = deps.ml ?? null;
     this.cfgStore = deps.cfgStore ?? null;
@@ -127,7 +129,8 @@ export class ScannerEngine extends EventEmitter {
   }
   symbolsFor(id: string): string[] { return this.scannerConfig(id).symbols ?? this.symbolsRef(); }
   timeframesFor(id: string): string[] { return this.scannerConfig(id).timeframes ?? this.cfgRef().timeframes; }
-  isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return s.status === 'ok' && c.enabled && !c.hidden; }
+  /** Quarantined scripts are not scheduled: they failed in a way that repeats (see health.ts). */
+  isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return s.status === 'ok' && c.enabled && !c.hidden && !this.health.isQuarantined(s.id); }
 
   /** All (symbol, tf) pairs any active scanner needs. */
   requiredSeries(): Array<{ symbol: string; tf: string }> {
@@ -388,7 +391,13 @@ export class ScannerEngine extends EventEmitter {
       const info: RunInfo = { at, ms: res.ms + (liveRes === res ? 0 : liveRes.ms), symbol, tf, error: res.ok ? null : res.error ?? 'unknown', barTime: bars.at(-1)!.time };
       this.lastRun.set(key, info);
       this.db.run('INSERT INTO scanner_runs(scanner_id, symbol, tf, at, ms, error, bar_time) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, ms=excluded.ms, error=excluded.error, bar_time=excluded.bar_time', s.id, symbol, tf, at, res.ms, info.error, info.barTime);
-      if (!res.ok) { log.warn(`${key} error: ${res.error}`); this.emit('scanner', { id: s.id, lastRun: info }); return; }
+      if (!res.ok) {
+        log.warn(`${key} error: ${res.error}`);
+        if (this.health.record(s.id, res.error)) log.warn(`${s.id} quarantined: ${res.error} — it will not be scheduled again until released`);
+        this.emit('scanner', { id: s.id, lastRun: info });
+        return;
+      }
+      this.health.clear(s.id);
       const ov = liveRes.ok ? liveRes : res;
       this.overlays.set(key, { at, plots: ov.plots, shapes: ov.shapes, labels: ov.labels });
 
