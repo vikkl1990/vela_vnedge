@@ -665,3 +665,35 @@ checks on the 1m path, as decision 13 requires of every exit.
 The code stays in place, config-gated and disabled (`paper.trendExit.enabled: false`), so the rule
 can be re-tested on live trades later with one setting. Capturing a reversal is already covered: an
 opposite signal from the scanner closes the position, and those exits measure as neutral (decision 15).
+
+## 28. Honesty audit after the lab bug, and a fresh re-evaluation of the fleet
+
+**What the bug touched.** The exit lab's trend series (decision 27) aligned "15m closes" to each
+trade's fill instead of to exchange bars. It was used by exactly one study — the reversal exit — and
+that rule was rejected once corrected. Every other exit decision (13, 14, 15, 19, 24, 26) rests on
+the full engine (`exits.ts`, `deepdive.ts`, `portfolio.ts`), which replays real bars through the same
+code the bot trades with. An earlier lab flaw (a stop raised and hit inside one minute) was found and
+fixed the same way, and decision 14's rule was re-confirmed in the engine afterwards.
+
+**What that leaves weak, stated plainly:** fleet selection overlaps the data it was selected on, so
+absolute backtest returns are flattered; the live sample is 33 trades and was reset to zero on
+2026-09-23; and the exit rules were chosen from a menu of ~20 candidates, which favours whichever
+fitted this span best. The live review remains the only unbiased test.
+
+**Fresh re-evaluation** of the nine live pairs with the current code (1m exits, GST, Scalper Offer,
+10 bps stress, 8 windows):
+
+| verdict | pairs |
+|---|---|
+| KEEP | high-volume-breakout ZECUSD (PF 7.05), dynamic-trend-bands FILUSD (3.70), kinetic-momentum PIEVERSEUSD (2.18) |
+| WEAK but positive after the stress | kinetic-momentum UNIUSD, smart-swing-vwap AKEUSD, smart-money-breakout AKEUSD |
+| removed | smart-swing-vwap EVAAUSD (PF 1.06, 3/8 windows); supertrend-cluster BTCUSD (16 trades, −67 at 10 bps); liquidity-trail-matrix ETHUSD |
+
+`liquidity-trail-matrix` fails every run with `Index 30 is out of bounds, array size is 30` — on both
+symbols, at every history length, and on every code version bisected, so it is the script meeting
+PineTS, not a regression here. It has been producing nothing in the live fleet; it is disabled until
+someone reads the 1,300-line source properly.
+
+**Also found:** the VM had been changed to 336 scanners on a top-20 universe (~6,700 runs per bar
+close against 6 workers). Jobs were expiring after 2.7 hours in the queue, so almost nothing traded:
+4 trades in 12 hours. Restored to the tested fleet, now six pairs.
