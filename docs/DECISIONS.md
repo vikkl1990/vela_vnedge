@@ -635,3 +635,33 @@ overlaps fleet selection — but the comparison between policies is like for lik
 
 This also closes the audit's "shared-capital portfolio replay" gap (decision 18, finding 12). The
 UI now calls TP3 a ceiling rather than a target.
+
+## 27. Tested: exit when a profitable trade turns. The first result was a tooling bug; the rule loses.
+
+The idea: keep the far ceiling while a trade is working, and take what is there when it stops — a
+stall (no new high for N minutes), a fade (the trail keeps more of the peak with age), or a reversal
+(the trade's own timeframe turns against it).
+
+Stall and fade lost immediately (−2 to −22R against live's +110R). The reversal rule looked strong:
+`reverse above 1R` scored +119.9R, beat live in 7 of 8 windows and held across trend lengths 10/20/50
+and trigger levels 0.5R–2R. It was implemented in full (`paper.trendExit`, checked in the backtest,
+both books and the live engine, with tests) and then failed every faithful test:
+
+| test | live | trend exit above 1R |
+|---|---|---|
+| exit lab, trend aligned to each trade's fill (the original) | 110.0R | **+119.9R** |
+| exit lab, calendar-aligned 15m closes (corrected) | 110.0R | 102.7R |
+| per-pair backtest, 1m checks as live | +2084 | +1907 |
+| portfolio replay, one shared account | +7061 | +6054 |
+
+**The bug.** The lab built its "15m closes" by sampling every 15th minute *from each trade's fill*,
+so the trend was aligned to the entry rather than to the exchange's bars. That encodes entry timing
+into the signal, which the live engine cannot see. Corrected, the lab agrees with the engine.
+
+**A fidelity gap this surfaced and fixed:** the backtest checked the trend once per signal bar while
+the live engine checks every minute, so the two disagreed about the same rule. The backtest now
+checks on the 1m path, as decision 13 requires of every exit.
+
+The code stays in place, config-gated and disabled (`paper.trendExit.enabled: false`), so the rule
+can be re-tested on live trades later with one setting. Capturing a reversal is already covered: an
+opposite signal from the scanner closes the position, and those exits measure as neutral (decision 15).

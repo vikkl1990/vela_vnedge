@@ -1,4 +1,5 @@
 import { lastAtr } from './data/indicators.ts';
+import { trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { approve as incubatorApprove, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, livePairs } from './incubator/cycle.ts';
@@ -78,6 +79,14 @@ export class App {
     };
     this.shadow = new PaperEngine(this.db, shadowRef, { book: 2 });
     this.shadow.atrFor = this.paper.atrFor;
+    // the same trend both books and the backtest use: closes of the position's own timeframe
+    const trendFor = (symbol: string, tf: string) => {
+      const len = cfg().paper.trendExit?.emaLen ?? 20;
+      const closes = this.candles.get(symbol, tf, { closedOnly: true, limit: len * 4 }).map(b => b.close);
+      return closes.length >= len ? trendSide(closes, len) : undefined;
+    };
+    this.paper.trendFor = trendFor;
+    this.shadow.trendFor = trendFor;
     this.incubatorStore = new IncubatorStore(this.db);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });

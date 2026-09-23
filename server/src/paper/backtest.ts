@@ -12,7 +12,7 @@ import type { PaperConfig, ExitMode } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, type Position } from './logic.ts';
+import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, trendExit, type Position } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -53,6 +53,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
 
   const finish = (p: Position) => { closed.push(p); equity += p.realizedPnl - p.fees; curve.push({ at: p.exitAt!, equity }); open = null; };
 
+  // the trade's own timeframe trend, one value per bar, for the trend exit
+  const te = cfg.trendExit;
+  const trend: Array<1 | -1> = [];
+  if (te?.enabled) {
+    const k = 2 / (te.emaLen + 1);
+    let ema = bars[0]?.close ?? 0;
+    bars.forEach((b, i) => { ema = i ? b.close * k + ema * (1 - k) : b.close; trend.push(b.close >= ema ? 1 : -1); });
+  }
   const tfMs = (TF_SECONDS[inp.tf] ?? 0) * 1000;
   const sub = inp.subBars && inp.subBars.length && tfMs > 60_000 ? inp.subBars : null;
   let si = 0;   // cursor into `sub`, only ever moves forward
@@ -70,9 +78,19 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         // live only knows the ATR of the last closed signal bar, so the 1m path uses that too
         const atrKnown = atr[i - 1] ?? atr[i];
         if (si >= sub.length || sub[si].time >= bar.time + tfMs) applyBar(open, bar, cfg, atrKnown);
-        for (let j = start; open && open.status === 'open' && j < sub.length && sub[j].time < bar.time + tfMs; j++) applyBar(open, sub[j], cfg, atrKnown);
+        for (let j = start; open && open.status === 'open' && j < sub.length && sub[j].time < bar.time + tfMs; j++) {
+          applyBar(open, sub[j], cfg, atrKnown);
+          // live checks the trend on every 1m bar, so the 1m path must too, not once per signal bar
+          if (open.status === 'open' && te?.enabled) trendExit(open, trend[i - 1], sub[j].close, sub[j].time, cfg);
+        }
       } else applyBar(open, bar, cfg, atr[i]);
       if (open.status === 'closed') finish(open);
+      // a profitable trade whose timeframe turned against it is closed at this bar's close
+      if (open && (open as Position).status === 'open' && te?.enabled && !sub) {
+        const f = trendExit(open, trend[i], bar.close, bar.time, cfg);
+        if (f && (open as Position).status === 'closed') finish(open);
+      }
+      if (open && (open as Position).status === 'closed') finish(open);
     }
     // 2. script events on this bar (exits first, then entries)
     const evs = byBar.get(bar.time);

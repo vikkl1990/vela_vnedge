@@ -131,7 +131,16 @@ costPolicies.push(
   { name: 'BTC/ETH ≥ 6×, others 4×', cfg: (p: PaperConfig) => ({ ...p, minRiskFeeRatio: 4, minRiskFeeRatioBySymbol: { BTCUSD: 6, ETHUSD: 6 } }) },
 );
 if (process.env.POLICIES === 'costfilter' && process.env.ONLY_MAJORS_ROWS === '1') costPolicies.splice(1, 5);
-const policies: Policy[] = process.env.POLICIES === 'source' ? sourcePolicies : process.env.POLICIES === 'costfilter' ? costPolicies : standardPolicies;
+/** POLICIES=trend: the trend exit (decision 27 candidate) against the live rules, all else equal. */
+const trendPolicies: Policy[] = [
+  { name: 'live (no trend exit)', cfg: (p: PaperConfig) => ({ ...p, trendExit: { enabled: false, emaLen: 20, minR: 1 } }) },
+  { name: 'trend exit above 1R, EMA 20', cfg: (p: PaperConfig) => ({ ...p, trendExit: { enabled: true, emaLen: 20, minR: 1 } }) },
+  { name: 'trend exit above 1R, EMA 10', cfg: (p: PaperConfig) => ({ ...p, trendExit: { enabled: true, emaLen: 10, minR: 1 } }) },
+  { name: 'trend exit above 1.5R, EMA 20', cfg: (p: PaperConfig) => ({ ...p, trendExit: { enabled: true, emaLen: 20, minR: 1.5 } }) },
+  { name: 'trend exit, price rules only', cfg: (p: PaperConfig) => ({ ...p, allowReversal: false, trendExit: { enabled: true, emaLen: 20, minR: 1 } }), exitMode: 'levels' },
+  { name: 'live, price rules only', cfg: (p: PaperConfig) => ({ ...p, allowReversal: false, trendExit: { enabled: false, emaLen: 20, minR: 1 } }), exitMode: 'levels' },
+];
+const policies: Policy[] = process.env.POLICIES === 'trend' ? trendPolicies : process.env.POLICIES === 'source' ? sourcePolicies : process.env.POLICIES === 'costfilter' ? costPolicies : standardPolicies;
 
 interface Agg { trades: number; pnl: number; gp: number; gl: number; fees: number; wins: number; r: number; barsHeld: number; barsToFirstTp: number; firstTpCount: number }
 const blank = (): Agg => ({ trades: 0, pnl: 0, gp: 0, gl: 0, fees: 0, wins: 0, r: 0, barsHeld: 0, barsToFirstTp: 0, firstTpCount: 0 });

@@ -434,3 +434,76 @@ if (process.env.PAIRS === '1') {
   console.log(`  ${'ALL PAIRS'.padEnd(46)} ${String(cases.length).padStart(4)} ${totals.map(v => v.toFixed(1).padStart(12)).join('')}   ${rules[totals.indexOf(Math.max(...totals))].name}`);
   console.log('\n  a per-pair target only pays if the same pair keeps choosing it out of sample; the column to trust is ALL PAIRS.');
 }
+
+// ---------------------------------------------------------------------------------------------
+// SMART=1: keep the far ceiling while a trade is still working, and take what is there when it
+// stops working. Three readings of "stopped working", all measured on the same 1m paths with costs:
+//   stall     in profit, but no new high for N minutes
+//   fade      the trail keeps more of the peak as the trade ages
+//   reverse   the 15m trend (close vs EMA20 of 15m closes) flips against the position while in profit
+if (process.env.SMART === '1') {
+  type Opt = { stallMin?: number; stallR?: number; tighten?: Array<[number, number]>; reverse?: boolean; reverseR?: number };
+  /** 15m trend from the 1m path: +1 when the last 15m close is above its EMA20, −1 below. */
+  const trendAt = (path: Min[], startMs = 0) => {
+    // calendar-aligned 15m closes: a trade's own fill time is not a bar boundary, and aligning to it
+    // invents a trend the live engine never sees (the first version of this did, and flattered the rule)
+    const closes: number[] = [];
+    const firstBoundary = startMs ? (15 - Math.floor((startMs / 60_000) % 15)) % 15 : 14;
+    for (let i = firstBoundary; i < path.length; i += 15) closes.push(path[i].close);
+    const k = 2 / (Number(process.env.EMA ?? 20) + 1);
+    const out: number[] = []; let ema = closes[0] ?? 0;
+    closes.forEach((c, i) => { ema = i ? c * k + ema * (1 - k) : c; out.push(c >= ema ? 1 : -1); });
+    return (i: number) => out[Math.min(out.length - 1, Math.floor(i / 15))] ?? 1;
+  };
+  const run = (o: Opt) => (path: Min[], startMs = 0) => {
+    const trend = o.reverse ? trendAt(path, startMs) : null;
+    let stop = -1, peak = 0, peakAt = 0;
+    for (let i = 0; i < path.length; i++) {
+      const m = path[i];
+      if (m.lo <= stop) return stop;
+      if (m.hi >= 6) return 6;
+      // stall: in profit, no new high for N minutes → take the market price now
+      if (o.stallMin && peak >= (o.stallR ?? 0.75) && i - peakAt >= o.stallMin) return m.close;
+      // reversal: the 15m trend turned against a profitable trade
+      if (o.reverse && peak >= (o.reverseR ?? 0.5) && trend!(i) < 0 && m.close > 0) return m.close;
+      if (m.hi > peak) { peak = m.hi; peakAt = i; }
+      let keep = 0.6;
+      if (o.tighten) for (const [min, k] of o.tighten) if (i >= min) keep = k;
+      stop = Math.max(stop, peak >= 1.5 ? peak * keep : peak >= 1 ? 0.5 : -1);
+    }
+    return path.at(-1)?.close ?? 0;
+  };
+  const emaLen = Number(process.env.EMA ?? 20);
+  const rules: Array<{ name: string; run: (p: Min[], startMs?: number) => number }> = [
+    { name: 'LIVE (trail 60% from 1.5R)', run: run({}) },
+    ...(process.env.GRIDR === '1' ? [0.5, 0.75, 1, 1.25, 1.5, 2].map(r => ({ name: `reverse above ${r}R (EMA ${emaLen})`, run: run({ reverse: true, reverseR: r }) })) : []),
+    { name: 'stall: no new high 60m', run: run({ stallMin: 60, stallR: 0.75 }) },
+    { name: 'stall: no new high 120m', run: run({ stallMin: 120, stallR: 0.75 }) },
+    { name: 'stall: no new high 240m', run: run({ stallMin: 240, stallR: 0.75 }) },
+    { name: 'stall 120m, only above 1.5R', run: run({ stallMin: 120, stallR: 1.5 }) },
+    { name: 'fade: keep 75% after 2h', run: run({ tighten: [[120, 0.75]] }) },
+    { name: 'fade: 75% at 2h, 90% at 4h', run: run({ tighten: [[120, 0.75], [240, 0.9]] }) },
+    { name: 'reverse: 15m trend flips', run: run({ reverse: true, reverseR: 0.5 }) },
+    { name: 'reverse above 1R', run: run({ reverse: true, reverseR: 1 }) },
+    { name: 'stall 120m + reverse above 1R', run: run({ stallMin: 120, stallR: 0.75, reverse: true, reverseR: 1 }) },
+    { name: 'stall 120m + fade 75% at 2h', run: run({ stallMin: 120, stallR: 0.75, tighten: [[120, 0.75]] }) },
+  ];
+  const score = (r: { run: (p: Min[], startMs?: number) => number }) => {
+    const w = new Array(WINDOWS).fill(0); let tot = 0, win = 0, h1 = 0, h2 = 0, held = 0;
+    for (const c of cases) {
+      const x = r.run(c.path, c.e.fillAt) - c.cost;
+      tot += x; if (x > 0) win++;
+      if (c.e.fillAt < half) h1 += x; else h2 += x;
+      w[Math.min(WINDOWS - 1, Math.floor((c.e.fillAt - t0) / span))] += x;
+      held += c.path.length;
+    }
+    return { tot, win, h1, h2, w, held: held / cases.length };
+  };
+  const base = score(rules[0]);
+  console.log(`\nSMART EXITS · ${cases.length} entries · ceiling stays at 6R · costs included\n`);
+  console.log(`  ${'rule'.padEnd(32)} ${'total R'.padStart(8)} ${'win%'.padStart(5)} ${'1st half'.padStart(9)} ${'2nd half'.padStart(9)} ${'windows'.padStart(8)} ${'beats live'.padStart(11)} ${'w/o best'.padStart(9)}`);
+  for (const r of rules) {
+    const g = score(r); const d = g.w.map((x, i) => x - base.w[i]);
+    console.log(`  ${r.name.padEnd(32)} ${g.tot.toFixed(1).padStart(8)} ${(g.win / cases.length * 100).toFixed(0).padStart(4)}% ${g.h1.toFixed(1).padStart(9)} ${g.h2.toFixed(1).padStart(9)} ${(g.w.filter(x => x > 0).length + '/' + WINDOWS).padStart(8)} ${(r === rules[0] ? '-' : `${d.filter(x => x > 0).length}/${WINDOWS}`).padStart(11)} ${(r === rules[0] ? '-' : (d.reduce((a, b) => a + b, 0) - Math.max(...d)).toFixed(1)).padStart(9)}`);
+  }
+}

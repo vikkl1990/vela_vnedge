@@ -4,7 +4,7 @@ import { TF_SECONDS, type AppConfig, type ExitMode, type PaperConfig } from '../
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
+  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
 } from './logic.ts';
 
 const log = logger.scoped('paper');
@@ -79,6 +79,9 @@ export class PaperEngine extends EventEmitter {
    * trail falls back to a fixed R distance, which is not the rule the backtest measured.
    */
   atrFor?: (symbol: string, tf: string) => number | undefined;
+
+  /** The position timeframe's trend, +1 or −1, for the trend exit (set by the composition root). */
+  trendFor?: (symbol: string, tf: string) => 1 | -1 | undefined;
 
   constructor(db: Db, cfgRef: () => AppConfig, opts: { book?: number } = {}) {
     super();
@@ -432,6 +435,10 @@ export class PaperEngine extends EventEmitter {
       const previous = pos.lastPriceBar;
       const fills = applyLiveBar(pos, bar, this.paper, eventAt, (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       if (fills.length) this.applyFills(pos, fills);
+      if (pos.status === 'open' && this.paper.trendExit?.enabled && !historical) {
+        const f = trendExit(pos, this.trendFor?.(pos.symbol, pos.tf), bar.close, eventAt, this.paper);
+        if (f) this.applyFills(pos, [f]);
+      }
       else if (pos.lastPriceBar !== previous) this.persist(pos);
     }
     this.recordEquity(false);

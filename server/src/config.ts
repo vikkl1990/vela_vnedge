@@ -108,6 +108,13 @@ export interface PaperConfig {
    * reversal once the trade is actually ahead"; a losing position is left to its stop instead.
    */
   reversalMinR: number;
+  /**
+   * Take what is there when a profitable trade stops working: once it has been `minR` ahead, an
+   * opposite turn of its own timeframe's trend (close against an EMA of `emaLen` closes) closes it
+   * at market instead of waiting for the trail to give back 40% of the peak. The far ceiling is
+   * untouched — a trade that keeps trending still runs (decision 27).
+   */
+  trendExit?: { enabled: boolean; emaLen: number; minR: number };
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
@@ -332,6 +339,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     staleMinR: 0,
     allowReversal: true,
     reversalMinR: 0,
+    trendExit: { enabled: false, emaLen: 20, minR: 1 },
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
     maxOpenPositions: 20,
@@ -440,6 +448,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (p.feeTaxPct !== undefined && !(p.feeTaxPct >= 0 && p.feeTaxPct <= 100)) errs.push('paper.feeTaxPct must be 0..100');
+  if (p.trendExit && !(p.trendExit.emaLen >= 2 && p.trendExit.minR >= 0)) errs.push('paper.trendExit needs emaLen ≥ 2 and minR ≥ 0');
   if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
   if (!(Number.isFinite(p.trailGiveBackPct) && p.trailGiveBackPct >= 0 && p.trailGiveBackPct < 100)) errs.push('paper.trailGiveBackPct must be in [0, 100)');
   if (!(Number.isFinite(p.trailAtrMult) && p.trailAtrMult >= 0)) errs.push('paper.trailAtrMult must be ≥ 0 (0 = off)');

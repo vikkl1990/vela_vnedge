@@ -408,6 +408,31 @@ export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, a
  * Time stop: a position still below `staleMinR` after `staleBars` bars is closed at market.
  * Returns the fill, or null when the rule is off or the trade is doing well enough.
  */
+/**
+ * The trade's own timeframe trend, +1 (up) or −1 (down), from closes against an EMA of `len` of them.
+ * Cheap enough to recompute per bar and identical in the backtest and live, which is the point.
+ */
+export function trendSide(closes: number[], len: number): 1 | -1 {
+  if (!closes.length) return 1;
+  const k = 2 / (len + 1);
+  let ema = closes[0];
+  for (let i = 1; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
+  return closes.at(-1)! >= ema ? 1 : -1;
+}
+
+/**
+ * Close a profitable trade that has turned: once its peak reached `minR`, a trend flip against the
+ * position ends it at market. Nothing happens to trades that are still running, or not yet ahead.
+ */
+export function trendExit(pos: Position, trend: 1 | -1 | undefined, price: number, at: number, cfg: PaperConfig): Fill | null {
+  const t = cfg.trendExit;
+  if (!t?.enabled || pos.status !== 'open' || trend === undefined || !(price > 0)) return null;
+  if ((pos.peakR ?? 0) < t.minR) return null;
+  const against = pos.side === 'long' ? -1 : 1;
+  if (trend !== against) return null;
+  return fillExit(pos, price, pos.qtyOpen, 'trend', at, cfg, true);
+}
+
 export function staleExit(pos: Position, bar: { time: number; close: number }, cfg: PaperConfig, tfMs: number): Fill | null {
   const bars = cfg.staleBars ?? 0;
   if (!(bars > 0) || pos.status !== 'open' || !(tfMs > 0)) return null;

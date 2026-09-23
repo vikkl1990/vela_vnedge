@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -394,4 +394,48 @@ test('the fee filter can be stricter on chosen markets', () => {
   assert.equal(checkRiskVsFees(100, 99.4, c, 'SOLUSD'), null);
   assert.ok(checkRiskVsFees(100, 99.4, c, 'BTCUSD'));
   assert.equal(checkRiskVsFees(100, 99.4, c), null, 'no symbol: the global ratio');
+});
+
+test('the trend exit takes what is there when a profitable trade turns, and leaves the rest alone', () => {
+  const c = { ...cfg, trailAfterR: 1.5, trailGiveBackPct: 40, floorAtR: 1, floorKeepR: 0.5, trendExit: { enabled: true, emaLen: 20, minR: 1 }, tpSplit: [0, 0, 1] as [number, number, number] };
+  const mk = () => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [130], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: true });
+
+  // a trade that has been +1.4R and whose 15m trend turns down is closed at the market price
+  const turned = mk();
+  applyBar(turned, { time: 1, high: 107, low: 100, close: 106 }, c);   // peak 1.4R
+  const fill = trendExit(turned, -1, 104, 2, c);
+  assert.equal(fill?.reason, 'trend');
+  assert.equal(turned.status, 'closed');
+  assert.ok((turned.realizedPnl - turned.fees) > 0, 'it banks the profit that is there');
+
+  // still trending: nothing happens, the trade keeps running to the far ceiling
+  const running = mk();
+  applyBar(running, { time: 1, high: 107, low: 100, close: 106 }, c);
+  assert.equal(trendExit(running, 1, 106, 2, c), null);
+  assert.equal(running.status, 'open');
+
+  // not yet 1R ahead: a turn is ignored, the stop still does the work
+  const early = mk();
+  applyBar(early, { time: 1, high: 103, low: 100, close: 102 }, c);    // peak 0.6R
+  assert.equal(trendExit(early, -1, 101, 2, c), null);
+  assert.equal(early.status, 'open');
+
+  // a short is closed when the trend turns up
+  const short = openPosition({ id: 2, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'short', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 105, tp: [70], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: c, bt: true });
+  applyBar(short, { time: 1, high: 100, low: 93, close: 94 }, c);      // peak 1.4R
+  assert.equal(trendExit(short, 1, 96, 2, c)?.reason, 'trend');
+
+  // and it is off unless asked for
+  const off = mk();
+  applyBar(off, { time: 1, high: 107, low: 100, close: 106 }, c);
+  assert.equal(trendExit(off, -1, 104, 2, { ...c, trendExit: { enabled: false, emaLen: 20, minR: 1 } }), null);
+  assert.equal(DEFAULT_CONFIG.paper.trendExit?.enabled, false, 'ships disabled');
+});
+
+test('trendSide reads the close against an EMA of closes', () => {
+  const rising = Array.from({ length: 50 }, (_, i) => 100 + i);
+  const falling = [...rising].reverse();
+  assert.equal(trendSide(rising, 20), 1);
+  assert.equal(trendSide(falling, 20), -1);
+  assert.equal(trendSide([], 20), 1, 'no data: treated as up rather than triggering exits');
 });
