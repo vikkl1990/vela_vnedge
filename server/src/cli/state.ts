@@ -88,17 +88,20 @@ const rate = pairDays > 0 ? shadowTrades.length / pairDays : 0;
 console.log(`\n## Incubator\n`);
 console.log(`- stages: ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(' · ')}`);
 console.log(`- shadow book: ${shadow.length}/${cfg.incubator.maxShadow} slots, oldest ${r2(Math.max(0, ...shadow.map(s => days(s.since))))} days`);
-console.log(`- shadow trades: ${shadowTrades.length} closed at ${r2(rate)} per pair-day → a 30-trade sample takes about ${rate > 0 ? Math.round(30 / rate) : '∞'} days per pair`);
-console.log(`- gate: ≥${cfg.incubator.gate.minTrades} trades over ≥${cfg.incubator.gate.minDays} days, PF ≥ ${cfg.incubator.gate.minPfR}, ≥${cfg.incubator.gate.minPositiveWeeksPct}% of weeks positive, ≥${cfg.incubator.gate.minAvgR}R per trade; retired if unproven after ${cfg.incubator.gate.maxDays} days`);
+console.log(`- shadow trades: ${shadowTrades.length} closed at ${r2(rate)} per market-day`);
+const g = cfg.incubator.gate;
+console.log(`- gate (${g.pool === 'cohort' ? 'pooled per scanner × timeframe' : 'per market'}): ≥${g.minTrades} trades over ≥${g.minDays} days, PF ≥ ${g.minPfR}, ≥${g.minPositiveWeeksPct}% of weeks positive, ≥${g.minAvgR}R per trade, ≥${g.minPositiveMarketsPct}% of judgeable markets positive`);
+console.log(`- retired unproven after ${g.maxDays} days (${Object.entries(g.maxDaysByTf ?? {}).map(([k, v]) => `${k}: ${v}`).join(', ') || 'all timeframes'}); cohorts of ${Object.entries(cfg.incubator.admit.cohortMarkets).map(([k, v]) => `${k} ${v}`).join(', ')} markets`);
 console.log(`- promotion: at most ${cfg.incubator.promote.maxPerWeek} per week, fleet capped at ${cfg.incubator.promote.maxFleet} pairs, owner approves each one`);
-const byTf: Record<string, { n: number; d: number; t: number }> = {};
-for (const s of shadow) { const b = byTf[s.tf] ??= { n: 0, d: 0, t: 0 }; b.n++; b.d += days(s.since); }
+const byTf: Record<string, { n: number; d: number; t: number; c: Set<string> }> = {};
+for (const s of shadow) { const b = byTf[s.tf] ??= { n: 0, d: 0, t: 0, c: new Set() }; b.n++; b.d += days(s.since); b.c.add(s.scannerId); }
 for (const t of shadowTrades) { const b = byTf[t.tf]; if (b) b.t++; }
-console.log(`\n| timeframe | shadow pairs | trades | per pair-day | days to a 30-trade sample |`);
-console.log('|---|---:|---:|---:|---:|');
+console.log(`\n| timeframe | shadow pairs | cohorts | trades | per market-day | days to a pooled sample |`);
+console.log('|---|---:|---:|---:|---:|---:|');
 for (const [tf, b] of Object.entries(byTf)) {
   const rr = b.d > 0 ? b.t / b.d : 0;
-  console.log(`| ${tf} | ${b.n} | ${b.t} | ${r2(rr)} | ${rr > 0 ? Math.round(30 / rr) : 'no trades yet'} |`);
+  const size = cfg.incubator.admit.cohortMarkets[tf] ?? cfg.incubator.admit.cohortMarkets.default ?? 5;
+  console.log(`| ${tf} | ${b.n} | ${b.c.size} | ${b.t} | ${r2(rr)} | ${rr > 0 ? Math.round(g.minTrades / (rr * size)) : 'no trades yet'} |`);
 }
 const lastRun: any = db.kvGet('incubator.lastRun');
 if (lastRun) console.log(`\n- last screen: ${iso(lastRun.at)}, slice ${lastRun.slice}, ${lastRun.scripts} scripts × ${lastRun.symbols} markets, ${lastRun.runs} runs, ${lastRun.passed} passed, ${Math.round((lastRun.ms ?? 0) / 60000)} min`);

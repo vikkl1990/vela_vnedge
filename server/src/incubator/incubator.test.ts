@@ -216,7 +216,7 @@ test('cohort size and the retirement clock follow the timeframe', () => {
   assert.equal(evaluate(store, cfg, T0).admitted.length, 12, '4h trades rarely: twelve markets, not five');
 
   // at 4h a cohort gets 90 days, not 45, before it is retired unproven
-  const thin = cohortStats(cohort(markets.slice(0, 12), 1, 50), T0 + 50 * DAY, cfg.incubator.gate.minMarketTrades);
+  const thin = cohortStats(cohort(markets.slice(0, 12), 1, 50, 2), T0 + 50 * DAY, cfg.incubator.gate.minMarketTrades);
   assert.equal(cohortVerdict(thin, { ...cfg.incubator.gate, maxDays: cfg.incubator.gate.maxDaysByTf['4h'] }).decision, 'brewing');
   assert.equal(cohortVerdict(thin, cfg.incubator.gate).decision, 'retire', 'the 15m clock would have retired it');
 });
