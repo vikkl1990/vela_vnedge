@@ -1,11 +1,17 @@
+vnedge.err
+vnedge.log
+vnedge.out
 # State
 
-Generated 2026-09-23 16:10 UTC from `/opt/vnedge/data`. Do not edit: run `npm run state`.
+Generated 2026-09-23 18:13 UTC from `/opt/vnedge/data`. Do not edit: run `npm run state`.
 
-## Live fleet — 6 pairs
+## Live fleet — 9 pairs
 
 | scanner | market | tf | live trades | net $ | last trade |
 |---|---|---|---:|---:|---|
+| Structure-Anchored VWAP | BTCUSD | 15m | 0 | 0.00 | — |
+| Mirage Liquidity Sweep Pro | FILUSD | 15m | 0 | 0.00 | — |
+| Pulse Trend Radar | SOLUSD | 15m | 0 | 0.00 | — |
 | Dynamic Trend Bands & Anchored VWAP Signals | FILUSD | 15m | 0 | 0.00 | — |
 | Kinetic Momentum Vectors | UNIUSD | 15m | 0 | 0.00 | — |
 | Kinetic Momentum Vectors | PIEVERSEUSD | 15m | 0 | 0.00 | — |
@@ -41,16 +47,17 @@ Generated 2026-09-23 16:10 UTC from `/opt/vnedge/data`. Do not edit: run `npm ru
 ## Incubator
 
 - stages: candidate 54 · live 9 · retired 1 · shadow 100
-- shadow book: 100/100 slots, oldest 0.94 days
-- shadow trades: 26 closed at 0.35 per pair-day → a 30-trade sample takes about 86 days per pair
-- gate: ≥30 trades over ≥14 days, PF ≥ 1.2, ≥60% of weeks positive, ≥0.1R per trade; retired if unproven after 45 days
+- shadow book: 100/100 slots, oldest 1.03 days
+- shadow trades: 29 closed at 0.35 per market-day
+- gate (pooled per scanner × timeframe): ≥30 trades over ≥14 days, PF ≥ 1.2, ≥60% of weeks positive, ≥0.1R per trade, ≥50% of judgeable markets positive
+- retired unproven after 45 days (1h: 60, 4h: 90); cohorts of default 5, 1h 8, 4h 12 markets
 - promotion: at most 2 per week, fleet capped at 20 pairs, owner approves each one
 
-| timeframe | shadow pairs | trades | per pair-day | days to a 30-trade sample |
-|---|---:|---:|---:|---:|
-| 15m | 35 | 22 | 0.85 | 35 |
-| 1h | 31 | 4 | 0.17 | 175 |
-| 4h | 34 | 0 | 0.00 | no trades yet |
+| timeframe | shadow pairs | cohorts | trades | per market-day | days to a pooled sample |
+|---|---:|---:|---:|---:|---:|
+| 15m | 35 | 23 | 25 | 0.86 | 7 |
+| 1h | 31 | 7 | 4 | 0.15 | 24 |
+| 4h | 34 | 9 | 0 | 0.00 | no trades yet |
 
 - last screen: 2026-09-23 01:09 UTC, slice 6, 209 scripts × 35 markets, 3507 runs, 68 passed, 143 min
 
