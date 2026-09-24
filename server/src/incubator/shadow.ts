@@ -26,6 +26,8 @@ const log = logger.scoped('incubator');
 const SYNC_MS = 5 * 60_000;
 const DELAY_MS = 20_000;
 const MAX_QUEUE = 300;
+/** Time a scan is assumed to need once it starts, kept aside from the staleness budget. */
+const RUN_ALLOWANCE_MS = 5_000;
 
 export class ShadowRunner {
   private pairs: PairRow[] = [];
@@ -33,7 +35,7 @@ export class ShadowRunner {
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
   private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; subscribe?: (symbols: string[]) => void };
-  readonly stats = { runs: 0, skipped: 0, errors: 0, entries: 0, lastBarAt: 0 };
+  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, lastBarAt: 0 };
 
   constructor(deps: ShadowRunner['deps']) { this.deps = deps; }
 
@@ -73,13 +75,24 @@ export class ShadowRunner {
   private onBarClosed(symbol: string, tf: string) {
     const due = this.pairs.filter(r => r.symbol === symbol && r.tf === tf);
     if (!due.length) return;
+    const barAt = Date.now();
     setTimeout(() => {
       if (this.deps.pool.stats.queued > MAX_QUEUE) { this.stats.skipped += due.length; log.warn(`shadow: worker queue ${this.deps.pool.stats.queued} deep, skipping ${due.length} runs on ${symbol}`); return; }
-      for (const r of due) this.run(r).catch(e => { this.stats.errors++; log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
+      for (const r of due) this.run(r, barAt).catch(e => { this.stats.errors++; log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
     }, DELAY_MS).unref();
   }
 
-  private async run(r: PairRow): Promise<void> {
+  /**
+   * How long this run is still worth doing. A signal older than `maxSignalAgeSec` is rejected at the
+   * engine, so a scan that cannot finish inside what is left of that window should never occupy a
+   * worker — it would cost the CPU and still produce a rejected signal.
+   */
+  private budgetMs(cfg: AppConfig, barAt: number): number {
+    const age = cfg.paper.maxSignalAgeSec > 0 ? cfg.paper.maxSignalAgeSec * 1000 : 300_000;
+    return Math.max(0, age - (Date.now() - barAt) - RUN_ALLOWANCE_MS);
+  }
+
+  private async run(r: PairRow, barAt = Date.now()): Promise<void> {
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') return;
     const cfg = this.deps.cfgRef();
@@ -88,9 +101,13 @@ export class ShadowRunner {
     const market = await this.deps.marketInfo(r.symbol);
     // the scanner's configured input overrides, exactly as a live run of it would use
     const inputs = cfg.scanners[s.id]?.inputs;
-    const res = await this.deps.pool.run({ scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
+    const budget = this.budgetMs(cfg, barAt);
+    if (budget <= 0) { this.stats.expired++; return; }
+    const res = await this.deps.pool.run(
+      { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined },
+      { deadlineMs: budget });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
-    if (!res.ok) { this.stats.errors++; return; }
+    if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.stats.errors++; return; }
     const key = `${r.scannerId}:${r.symbol}:${r.tf}`;
     const prev = this.labels.get(key);
     const current = new Set(res.labels.map(labelKey));

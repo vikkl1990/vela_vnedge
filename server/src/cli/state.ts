@@ -79,6 +79,24 @@ if (closed.length) {
   console.log(`- exits: ${Object.entries(byReason).map(([k, v]) => `${k} ${v}`).join(', ')}`);
 }
 
+// ---- what happens to signals ----
+const sig = db.all<any>("SELECT action, COUNT(*) n FROM signals WHERE at > ? GROUP BY 1", now - 7 * 86_400_000);
+const total = sig.reduce((a, x) => a + x.n, 0);
+if (total) {
+  const bucket = (a: string) => a?.startsWith('rejected:stale') ? 'dropped as stale (the scan finished too late to trade)'
+    : a?.startsWith('rejected') ? `rejected: ${a.slice(9).split('(')[0].trim()}`
+    : a?.startsWith('ignored') ? 'exit signal with no position to close'
+    : a?.split(':')[0] ?? '?';
+  const by = new Map<string, number>();
+  for (const x of sig) by.set(bucket(x.action), (by.get(bucket(x.action)) ?? 0) + x.n);
+  console.log(`\n## Signals — last 7 days\n`);
+  console.log('| outcome | count | share |');
+  console.log('|---|---:|---:|');
+  for (const [k, v] of [...by].sort((a, b) => b[1] - a[1])) console.log(`| ${k} | ${v} | ${Math.round(v / total * 100)}% |`);
+  const stale = [...by].filter(([k]) => k.startsWith('dropped as stale')).reduce((a, [, v]) => a + v, 0);
+  if (stale / total > 0.1) console.log(`\n**${Math.round(stale / total * 100)}% of signals never became trades because the scan finished after the signal went stale.** This is a throughput problem, not a strategy one.`);
+}
+
 // ---- the incubator ----
 const counts = store.counts();
 const shadow = store.list(['shadow', 'proposed']);

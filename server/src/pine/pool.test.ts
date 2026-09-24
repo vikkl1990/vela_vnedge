@@ -97,3 +97,42 @@ test('a live job that waited past its deadline is dropped, not run late', async 
   assert.equal(workers[0].jobs.length, 0);
   assert.equal(pool.stats.expiredLive, 1);
 });
+
+test('background work never takes the reserved workers', async t => {
+  const workers: FakeWorker[] = [];
+  const pool = new PinePool(4, 100, () => { const w = new FakeWorker(); workers.push(w); return w; });
+  t.after(() => pool.stop());
+  assert.equal(pool.reserved, 1, 'a quarter of four workers, at least one');
+  for (const w of workers) w.ready();
+
+  const dispatched = () => workers.reduce((n, w) => n + w.jobs.length, 0);
+  for (let i = 0; i < 12; i++) void pool.run(job);
+  assert.equal(dispatched(), 3, 'three of four workers on background work; one stays free for a bar close');
+
+  // a live job takes the reserved worker immediately, without waiting for background work to finish
+  void pool.run(job, { priority: 'live' });
+  assert.equal(dispatched(), 4);
+
+  workers.find(w => w.jobs.length)!.finish();
+  await new Promise(r => setImmediate(r));
+  assert.equal(dispatched(), 5, 'the freed worker picks up the next background job');
+});
+
+test('a background job whose deadline passes while queued is dropped unrun', async t => {
+  const workers: FakeWorker[] = [];
+  const pool = new PinePool(2, 100, () => { const w = new FakeWorker(); workers.push(w); return w; });
+  t.after(() => pool.stop());
+  for (const w of workers) w.ready();
+
+  void pool.run(job); void pool.run(job);                // both workers busy, so the next job waits
+  const late = pool.run(job, { deadlineMs: 1 });
+  const before = workers.reduce((n, w) => n + w.jobs.length, 0);
+  await new Promise(r => setTimeout(r, 10));
+  workers.find(w => w.jobs.length)!.finish();            // pumps the queue after the deadline passed
+
+  const r = await late;
+  assert.equal(r.ok, false);
+  assert.match(String((r as any).error), /too late to be useful/);
+  assert.equal(workers.reduce((n, w) => n + w.jobs.length, 0), before, 'it never reached a worker');
+  assert.equal(pool.stats.expiredBackground, 1);
+});

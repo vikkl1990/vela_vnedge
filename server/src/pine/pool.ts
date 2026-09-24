@@ -15,7 +15,7 @@ interface PoolWorker {
   postMessage(job: WorkerJob): void;
   terminate(): Promise<number>;
 }
-interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number }
+interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number; live: boolean }
 /**
  * `live` is a current bar's evaluation, which can open or close a trade; `background` is
  * everything that can wait: backtests, warm-ups, the incubator's shadow runs and research.
@@ -36,6 +36,12 @@ export class PinePool {
   private queue: Pending[] = [];
   private nextId = 1;
   readonly size: number;
+  /**
+   * Workers background work may never occupy, so a bar close always finds one free. A pool of fewer
+   * than four workers reserves none: research tooling runs a pool of one or two and has no live work.
+   */
+  readonly reserved: number;
+  private expiredBackground = 0;
   readonly timeoutMs: number;
   private stopped = false;
   private timeoutTimer: ReturnType<typeof setInterval>;
@@ -54,13 +60,18 @@ export class PinePool {
       // size, the pool fails the job and replaces the worker.
       resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
     })) {
-    this.size = size; this.timeoutMs = timeoutMs; this.createWorker = createWorker;
+    this.size = size; this.reserved = size >= 4 ? Math.round(size / 4) : 0; this.timeoutMs = timeoutMs; this.createWorker = createWorker;
     for (let i = 0; i < size; i++) this.spawn(i);
     this.timeoutTimer = setInterval(() => this.reapTimeouts(), 5_000);
     this.timeoutTimer.unref();
   }
 
-  get stats() { return { size: this.size, queued: this.queue.length + this.live.length, queuedLive: this.live.length, busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive }; }
+  get stats() {
+    return {
+      size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length, queuedLive: this.live.length,
+      busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredBackground: this.expiredBackground,
+    };
+  }
   private expiredLive = 0;
 
   private fail(p: Pending, error: string) {
@@ -102,33 +113,52 @@ export class PinePool {
     });
   }
 
-  run(job: Omit<WorkerJob, 'id'>, opts: { priority?: JobPriority } = {}): Promise<WorkerResult> {
+  /**
+   * `deadlineMs` gives a background job the same protection live jobs have: if it is still queued
+   * when the deadline passes it is dropped rather than run. A shadow scan whose bar is already too
+   * old to trade costs a worker and produces a signal the engine will reject as stale — the worst of
+   * both, and the reason 48% of signals were being discarded on the VM.
+   */
+  run(job: Omit<WorkerJob, 'id'>, opts: { priority?: JobPriority; deadlineMs?: number } = {}): Promise<WorkerResult> {
     return new Promise(resolve => {
       const now = Date.now();
       const live = (opts.priority ?? 'background') === 'live';
-      const p: Pending = { job: { ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: live ? now + LIVE_QUEUE_DEADLINE_MS : undefined };
+      const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
+      const p: Pending = { job: { ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
       (live ? this.live : this.queue).push(p);
       this.pump();
     });
   }
 
-  /** Next job to dispatch: live first, dropping live jobs that waited past their deadline. */
-  private next(): Pending | undefined {
+  /**
+   * Next job to dispatch: live first, then background, dropping anything that waited past its
+   * deadline. Background work never takes the last `reserved` workers, so a warm-up sweep of
+   * 4,000-bar backtests cannot leave a bar close waiting for a free worker.
+   */
+  private next(canTakeReserved: boolean): Pending | undefined {
     const now = Date.now();
+    const expired = (p: Pending) => p.deadline !== undefined && now > p.deadline;
     while (this.live.length) {
       const p = this.live.shift()!;
-      if (p.deadline !== undefined && now > p.deadline) { this.expiredLive++; this.fail(p, `expired after ${Math.round((now - p.queuedAt) / 1000)}s in the queue`); continue; }
+      if (expired(p)) { this.expiredLive++; this.fail(p, `expired after ${Math.round((now - p.queuedAt) / 1000)}s in the queue`); continue; }
       return p;
     }
-    return this.queue.shift();
+    if (!canTakeReserved) return undefined;
+    while (this.queue.length) {
+      const p = this.queue.shift()!;
+      if (expired(p)) { this.expiredBackground++; this.fail(p, `dropped after ${Math.round((now - p.queuedAt) / 1000)}s queued: too late to be useful`); continue; }
+      return p;
+    }
+    return undefined;
   }
 
   private pump() {
     if (this.stopped) return;
     for (const slot of this.workers) {
       if (!slot.ready || slot.retiring || slot.busy || (this.queue.length === 0 && this.live.length === 0)) continue;
-      const p = this.next();
+      const busyOnBackground = this.workers.filter(w => w.busy && !w.busy.live).length;
+      const p = this.next(busyOnBackground < this.size - this.reserved);
       if (!p) continue;
       slot.busy = p; p.startedAt = Date.now();
       try { slot.w.postMessage(p.job); }
