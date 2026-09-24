@@ -23,6 +23,9 @@ import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
 import { runBacktest } from '../paper/backtest.ts';
 import { ScriptHealth, permanentReason } from '../scanners/health.ts';
+import { contractRiskShare } from '../paper/logic.ts';
+import { lastAtr } from '../data/indicators.ts';
+import { PaperEngine } from '../paper/engine.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { IncubatorStore } from '../incubator/store.ts';
@@ -54,7 +57,7 @@ if (process.env.ADD) {
   out(`recorded ${added} screen results from ${process.env.ADD}`);
 }
 const sliceArg = process.env.SLICE ?? String(Math.floor(Date.now() / DAY) % inc.screen.slices);
-const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0 };
+const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0, tooCoarse: 0 };
 
 if (sliceArg !== 'none') {
   const slice = Number(sliceArg);
@@ -86,6 +89,16 @@ if (sliceArg !== 'none') {
     } catch (e: any) { out(`  ${symbol}: no candles (${e?.message ?? e})`); }
   }
   out(`candles loaded for ${data.size} markets`);
+
+  // markets this account cannot size a position in, measured from contract size and volatility
+  const equity = new PaperEngine(db, () => cfg).equity();
+  const coarse = new Set<string>();
+  for (const [symbol, d] of data) {
+    const atr = lastAtr(d.bars, 14);
+    if (!atr) continue;
+    const share = contractRiskShare(atr * cfg.paper.fallbackAtrSl, d.market.contractValue, equity, cfg.paper);
+    if (share > (inc.maxContractRiskShare ?? 0.5)) { coarse.add(symbol); out(`  ${symbol}: one contract is ${(share * 100).toFixed(0)}% of the risk budget — too coarse to size, skipped`); }
+  }
 
   // ---- screen ----
   const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000);
@@ -127,6 +140,9 @@ if (sliceArg !== 'none') {
           avgR: trades.length ? trades.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / trades.length : 0, bars: d.bars.length, days: (d.bars.at(-1)!.time - d.bars[0].time) / DAY,
         };
         r.pass = r.trades >= inc.screen.minTrades && r.profitFactor >= inc.screen.minProfitFactor && r.windowsUp >= inc.screen.minWindowsUp && r.netAtStress > 0;
+        // a market whose one contract eats the risk budget cannot be sized: the stop cap, not the
+        // strategy, decides whether each signal becomes a trade (decision 31)
+        if (r.pass && coarse.has(symbol)) { r.pass = false; summary.tooCoarse++; }
         if (r.pass) summary.passed++;
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);
         if (k === 'new' || k === 'updated' || k === 'cooldown') summary[k]++;

@@ -758,3 +758,35 @@ them. Seeding from the compatibility report already on disk quarantined 427 scri
 
 **Revisit if** PineTS is upgraded (release the runtime gaps), or if a quarantined script is wanted
 live anyway — nothing stops it being released by name.
+
+## 31. The stop-loss cap moves to 3%, and markets too coarse to size are kept out
+
+Two of the nine live pairs are on AKEUSD, and in 36 hours every signal either one produced was
+rejected with "stop too wide for the 2% max stop-loss cap". The cap is a share of equity, not of
+price: one AKEUSD contract is 10,000 tokens, so at a 1.5×ATR stop it risks 10.89 against a budget of
+23.08 on a 1,154 account. Any stop wider than about twice the ATR stop — which a structure-based stop
+on a volatile alt often is — cannot be taken at all.
+
+Backtested over 125 days across the fleet's scanners and markets, 5,051 trades:
+
+| cap | trades | total R | net $ | at 10 bps |
+|---|---|---|---|---|
+| 2% | 5,051 | −41.0 | 489 | −8,149 |
+| **3%** | **5,069** | **−32.2** | 1,916 | −10,572 |
+| 4% | 5,075 | −32.5 | 2,709 | −12,190 |
+| 6% | 5,080 | −33.6 | 3,895 | −13,134 |
+
+3% is the best of them and the gain decays above it: +18 trades and +8.8R, every one of them on
+AKEUSD. The dollar column rises faster than R because a looser cap also lets existing trades size up,
+and the stress column worsens as it does — those extra dollars are slippage, not edge, so the R
+column is the one that counts. The cap is now 3%.
+
+That is the smaller half. The real problem is that contracts are indivisible: one AKEUSD contract is
+95% of the risk budget, so the account can take one contract or none and position sizing expresses
+nothing. A market like that is not a strategy question, it is an account-size question, and it should
+never have entered the fleet. The daily screen now measures `contractRiskShare` — one contract's risk
+at the ATR stop as a share of the risk budget — and skips any market above `maxContractRiskShare`
+(0.5). `npm run tradeable` shows the same figure for every market, with the equity each one needs.
+
+**Revisit if** the account grows: AKEUSD becomes sizeable again at roughly 20,000 of equity, and the
+check is against live equity, so it re-admits itself.

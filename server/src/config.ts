@@ -210,6 +210,12 @@ export interface IncubatorConfig {
   demote: { window: number; minTrades: number; maxPfR: number };
   /** A pair that failed shadow is not screened again for this long. */
   cooldownDays: number;
+  /**
+   * Largest share of the risk budget one contract may consume before a market is skipped: contracts
+   * are indivisible, so above this the bot can only take one contract or none and position sizing
+   * stops meaning anything (decision 31).
+   */
+  maxContractRiskShare: number;
 }
 
 export interface AutoTuneConfig {
@@ -325,6 +331,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     promote: { maxPerWeek: 2, maxFleet: 20 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9 },
     cooldownDays: 30,
+    maxContractRiskShare: 0.5,
   },
   autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },
   timeframes: ['15m'],

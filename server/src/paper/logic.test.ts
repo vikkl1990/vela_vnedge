@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -438,4 +438,15 @@ test('trendSide reads the close against an EMA of closes', () => {
   assert.equal(trendSide(rising, 20), 1);
   assert.equal(trendSide(falling, 20), -1);
   assert.equal(trendSide([], 20), 1, 'no data: treated as up rather than triggering exits');
+});
+
+test('contract risk share exposes markets too coarse for the account to size', () => {
+  const c = { ...cfg, riskPerTradePct: 1 };
+  // AKEUSD: one contract is 10,000 tokens, a 1.5xATR stop is 0.0011, on 1,154 of equity
+  assert.ok(Math.abs(contractRiskShare(0.0011, 10_000, 1154, c) - 0.953) < 0.01, 'one contract is most of the budget');
+  // BTCUSD: one contract is 0.001 BTC, the same stop in dollars is a rounding error of the budget
+  assert.ok(contractRiskShare(283, 0.001, 1154, c) < 0.03);
+  // a bigger account makes the same market sizeable again
+  assert.ok(contractRiskShare(0.0011, 10_000, 20_000, c) < 0.06);
+  assert.equal(contractRiskShare(1, 1, 0, c), Infinity, 'no equity, no budget');
 });

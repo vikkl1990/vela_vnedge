@@ -129,6 +129,20 @@ export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig, sym
   return null;
 }
 
+/**
+ * How much of the risk budget a single contract consumes on this market.
+ *
+ * Contracts are indivisible, so a market whose one contract already risks most of the budget cannot
+ * express position sizing at all: the bot gets one contract or nothing, and the stop-loss cap — not
+ * the strategy — decides which. AKEUSD is the live example: one contract is 10,000 tokens, risking
+ * 0.94% of a 1,154 account at a 1.5×ATR stop against a 1% budget.
+ */
+export function contractRiskShare(stopDistance: number, contractValue: number, equity: number, cfg: PaperConfig): number {
+  const budget = equity * (cfg.riskPerTradePct / 100);
+  if (!(budget > 0)) return Infinity;
+  return (stopDistance * contractValue) / budget;
+}
+
 /** Leverage for a signal quality score (0..100) in `quality` sizing mode: linear from minLeverage to maxLeverage. */
 export function leverageForScore(score: number | undefined, cfg: PaperConfig): number {
   const q = score === undefined || !Number.isFinite(score) ? 0 : Math.max(0, Math.min(1, score / 100));
