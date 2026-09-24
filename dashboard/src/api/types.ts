@@ -24,7 +24,10 @@ export interface Health {
   lastError: string | null
 }
 
+export interface PairTakeProfit { mode: 'fallback' | 'override'; rr: [number, number, number]; split: [number, number, number] }
+
 export interface PaperConfig {
+  takeProfitBySymbol?: Record<string, PairTakeProfit | null>
   initialEquity: number
   riskPerTradePct: number
   maxLeverage: number

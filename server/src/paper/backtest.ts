@@ -113,14 +113,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         finish(open);
       }
       const price = ev.price && ev.price > 0 ? ev.price : bar.close;
-      const lv = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr: atr[i] }, cfg, inp.tickSize);
+      const lv = resolveLevels({ symbol: inp.symbol, side: ev.side, price, sl: ev.sl, tp: ev.tp, atr: atr[i] }, cfg, inp.tickSize);
       if ('error' in lv) { rejected[lv.error] = (rejected[lv.error] ?? 0) + 1; continue; }
       const feeErr = checkRiskVsFees(price, lv.sl, cfg, inp.symbol);
       if (feeErr) { rejected['stop too tight for fees'] = (rejected['stop too tight for fees'] ?? 0) + 1; continue; }
       const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, cfg }, 0, ev.score);
       if (sz.qty < 1) { rejected[sz.reason ?? 'size'] = (rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
       const features = computeFeatures({ bars, i, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[i], levelsSource: lv.source });
-      open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: bar.time + tfMs, leverage: sz.leverage, marginLeverage: sz.marginLeverage, features });
+      open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, tpSplit: lv.tpSplit, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: bar.time + tfMs, leverage: sz.leverage, marginLeverage: sz.marginLeverage, features });
       entries++;
     }
   }

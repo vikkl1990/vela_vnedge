@@ -124,7 +124,7 @@ export class ShadowLedger extends EventEmitter {
         this.finish(v, existing);
       }
       if (v.open.size >= paper.maxOpenPositions) { v.rejected['max_open'] = (v.rejected['max_open'] ?? 0) + 1; continue; }
-      const lv = resolveLevels({ side, price, sl: sig.sl ?? undefined, tp: sig.tp, atr }, paper, market.tickSize);
+      const lv = resolveLevels({ symbol: sig.symbol, side, price, sl: sig.sl ?? undefined, tp: sig.tp, atr }, paper, market.tickSize);
       if ('error' in lv) { v.rejected[lv.error] = (v.rejected[lv.error] ?? 0) + 1; continue; }
       if (checkRiskVsFees(price, lv.sl, paper, sig.symbol)) { v.rejected['stop too tight for fees'] = (v.rejected['stop too tight for fees'] ?? 0) + 1; continue; }
       const openNotional = [...v.open.values()].reduce((a, p) => a + notionalOf(p), 0);
@@ -133,7 +133,7 @@ export class ShadowLedger extends EventEmitter {
       const score = sig.score ?? (cfg.ml.useAsScore && sig.mlProb !== null && sig.mlProb !== undefined ? sig.mlProb * 100 : undefined);
       const sz = sizeContracts(price, lv.sl, { equity: eq, availableMargin: this.initialEquity + this.realized(v) - reserved, contractValue: market.contractValue, tickSize: market.tickSize, cfg: paper }, openNotional, score);
       if (sz.qty < 1) { v.rejected[sz.reason ?? 'size'] = (v.rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
-      const pos = openPosition({ id: v.nextId++, scannerId: sig.scannerId, scannerName: sig.scannerName, symbol: sig.symbol, tf: sig.tf, side, qty: sz.qty, contractValue: market.contractValue, entryPrice: price, at, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: sig.id, cfg: paper, bt: false, leverage: sz.leverage, marginLeverage: sz.marginLeverage, mlProb: sig.mlProb ?? null, lastPriceBar: this.priceBars.get(sig.symbol) });
+      const pos = openPosition({ id: v.nextId++, scannerId: sig.scannerId, scannerName: sig.scannerName, symbol: sig.symbol, tf: sig.tf, side, qty: sz.qty, contractValue: market.contractValue, entryPrice: price, at, sl: lv.sl, tp: lv.tp, tpSplit: lv.tpSplit, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: sig.id, cfg: paper, bt: false, leverage: sz.leverage, marginLeverage: sz.marginLeverage, mlProb: sig.mlProb ?? null, lastPriceBar: this.priceBars.get(sig.symbol) });
       v.open.set(pos.id, pos);
       v.entries++;
       this.emit('position', { variant: v.id, type: 'opened', position: pos });

@@ -236,7 +236,7 @@ export class PaperEngine extends EventEmitter {
     if ('reject' in quoted) return { action: 'rejected', reason: `unpriceable: ${quoted.reject}`, closed };
     const price = quoted.price;
     this.fillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
-    const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
+    const levels = resolveLevels({ symbol: ctx.symbol, side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol);
     if (feeErr) return { action: 'rejected', reason: feeErr, closed };
@@ -262,7 +262,7 @@ export class PaperEngine extends EventEmitter {
       log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first print after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
       return { action: 'pending', reason: 'awaiting tape fill', pendingId: id, closed };
     }
-    const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg);
+    const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, tpSplit: levels.tpSplit, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg);
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
   }
 
@@ -301,7 +301,9 @@ export class PaperEngine extends EventEmitter {
     // deadline before the next housekeeping tick and would otherwise still be filled
     if (receivedAt > pe.dueAt + PENDING_EXPIRY_MS) return cancel(`no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
     // the signal's levels are absolute; the fill price must still sit on the right side of them
+    if (pe.levels.tpSplit && pe.levels.tp.some(tp => pe.side === 'long' ? price >= tp : price <= tp)) return cancel('price moved past a pair target before fill');
     const levels = resolveLevels({ side: pe.side, price, sl: pe.levels.sl, tp: pe.levels.tp }, cfg, pe.market.tickSize);
+    if (!('error' in levels)) levels.tpSplit = pe.levels.tpSplit;
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol);
     if (feeErr) return cancel(feeErr);
@@ -320,7 +322,7 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price });
       if (x) return cancel(`risk ${x}`);
     }
-    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg);
+    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, tpSplit: levels.tpSplit, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg);
     if (pe.signalId) this.db.updateSignalAction(pe.signalId, 'opened', pos.id);
     return pos;
   }

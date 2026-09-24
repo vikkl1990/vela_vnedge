@@ -1,3 +1,4 @@
+import { PairTakeProfits, pairTpError } from '../components/PairTakeProfits'
 import { useMemo, useState } from 'react'
 import { useConfig, useMarkets, useUpdateConfig } from '../api/queries'
 import type { Config, PaperConfig } from '../api/types'
@@ -37,6 +38,8 @@ function validate(f: Form): Record<string, string> {
   if (!f.timeframes.length) e.timeframes = 'Pick at least one timeframe'
   if (!(f.historyBars >= 100 && f.historyBars <= 20000)) e.historyBars = '100 – 20000'
   const p = f.paper
+  const pairError = pairTpError(p.takeProfitBySymbol ?? {})
+  if (pairError) e.takeProfitBySymbol = pairError
   if (!(p.initialEquity > 0)) e.initialEquity = 'Must be > 0'
   if (!(p.riskPerTradePct > 0 && p.riskPerTradePct <= 100)) e.riskPerTradePct = '0 < x ≤ 100'
   if (!(p.maxLeverage >= 1 && p.maxLeverage <= 200)) e.maxLeverage = '1 – 200'
@@ -292,6 +295,8 @@ export function Settings() {
           </div>
         </Panel>
       </div>
+
+      <PairTakeProfits value={form.paper.takeProfitBySymbol ?? {}} onChange={v => setPaper('takeProfitBySymbol', v)} defaultRR={form.paper.fallbackRR} defaultSplit={form.paper.tpSplit} />
 
       <Panel title="Per-scanner overrides" right={<span className="muted small">edited on the Scanners page</span>}>
         <div className="muted small">
