@@ -104,7 +104,9 @@ async function worker() {
     const t = tasks.shift(); if (!t) return;
     let entries = false;
     for (let i = 0; i < MARKETS.length; i++) {
-      if (i >= 2 && !entries) { silent += MARKETS.length - i; break; }
+      // With a gate on, silence on the first markets says nothing about the rest: the gate, not the
+      // script, is what suppressed them. Probing early-exit would have hidden the fade variant entirely.
+      if (i >= 2 && !entries && !process.env.GATE) { silent += MARKETS.length - i; break; }
       runs++;
       try { const r = await runOne({ ...t, symbol: MARKETS[i] }); if (r === 'entries') entries = true; else if (r === 'failed') { failed++; break; } }
       catch { failed++; break; }

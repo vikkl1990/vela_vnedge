@@ -812,3 +812,46 @@ there before the maintenance-margin guard does.
 
 **Revisit if** a venue is added whose margin model is not isolated, or if the buffer proves too thin
 on a gap-prone market — it is one number, `LIQ_STOP_BUFFER`.
+
+## 33. Tested: a trend filter on entries. Rejected as a default; one scanner is a real exception
+
+Nothing in the system asked whether a trade agreed with the trend, so the gate was built properly —
+one rule in `logic.ts`, called by the live engine, the shadow book and `runBacktest`, with a
+per-scanner mode and an optional higher timeframe that only ever reads a bucket that had already
+closed — and then measured over the fleet's eight scanners × 28 markets × 125 days of 15m.
+
+| gate | trades | avg R | at 10 bps |
+|---|---|---|---|
+| none | 20,633 | **−0.030** | −42,770 |
+| follow EMA50, own timeframe | 16,059 | −0.060 | −45,043 |
+| follow EMA200, own timeframe | 14,199 | −0.049 | −38,860 |
+| follow EMA50 on 1h | 10,827 | −0.059 | −31,564 |
+| follow EMA50 on 4h | 6,328 | −0.051 | −18,269 |
+| fade EMA50, own timeframe | 4,667 | +0.090 | — |
+
+**Following the trend is worse in every variant**, on the same timeframe and on higher ones, and it
+costs between a fifth and two thirds of all trades to achieve that. The higher-timeframe versions
+look better per trade only because they destroy the sample: `dynamic-trend-bands` keeps 32 trades on
+one market out of 2,756 on 28, so its apparent improvement is noise wearing a suit.
+
+The fade row is not what it appears either. Its +0.090R is one scanner: `structure-anchored-vwap`
+contributes +540R of the +420R total, and excluding it the rest is −0.031R, exactly the ungated
+number. That scanner takes 80% of its entries against the EMA, which is what a structure-and-VWAP
+pullback scanner is supposed to do.
+
+And even there the gain is not profit. Fading improves its average from +0.547R to +0.679R and its
+per-market result on **28 of 28 markets**, but total R is flat — 542R against 540R — because the 195
+entries it removes were worth +0.011R each. What it buys is the same result from 20% fewer trades:
+less fee exposure, fewer position slots, slightly better stress (+9,384 → +9,630). Worth having
+where capacity is the binding constraint, which on this account it is.
+
+So: `paper.trendGate.enabled` stays **false**. The mechanism stays, because it is now built and
+tested, and `scanners.structure-anchored-vwap.trendGate: 'fade'` is the one setting the evidence
+supports.
+
+One tooling fix came out of this: the survey skipped a script after two silent markets, which under
+a gate measures the gate rather than the script — the fade variant first returned 11 rows instead of
+224. The skip is now disabled whenever a gate is on.
+
+**Revisit if** a scanner is added whose entries are explicitly continuation-based, or if the fleet
+ever becomes profitable enough that filtering for quality beats filtering for count.
