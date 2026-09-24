@@ -21,7 +21,7 @@ export interface MonitorDeps {
   feed: { connected: boolean; lastTickAt: number };
   pool: { stats: { size: number; queued: number; busy: number } };
   paper: { stats(): any; trades(opts: { limit: number }): any[]; on(ev: 'trade', fn: (t: any) => void): unknown };
-  candles: { tracked(): Array<{ symbol: string; tf: string; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null }> };
+  candles: { tracked(): Array<{ symbol: string; tf: string; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant?: boolean }> };
   /** Optional overrides for tests. */
   now?: () => number;
   diskFree?: (dir: string) => number | null;
@@ -105,10 +105,11 @@ export class Monitor {
       else if (st.drawdownPct < cfg.alerts.drawdownPct * 0.8) await a.clear('paper.drawdown', undefined, now);
     }
 
-    // 5. no bar close for 2× the timeframe (per tracked series, once loaded and after a grace period)
+    // 5. no bar close for 2x the timeframe (per tracked series, once loaded and after a grace period).
+    // Dormant series are excluded: the exchange has no newer bar for them either.
     const stale: string[] = [];
     for (const s of this.d.candles.tracked()) {
-      if (!s.loaded || !(s.tf in TF_SECONDS)) continue;
+      if (!s.loaded || !(s.tf in TF_SECONDS) || s.dormant) continue;
       const tfMs = TF_SECONDS[s.tf] * 1000;
       const ref = Math.max(s.lastClosedAt ?? 0, s.loadedAt ?? 0, s.lastBarTime !== null ? s.lastBarTime + tfMs : 0);
       if (ref > 0 && now - ref > THRESHOLDS.staleTfMultiple * tfMs) stale.push(`${s.symbol} ${s.tf}`);

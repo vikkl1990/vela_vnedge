@@ -119,7 +119,15 @@ export class PaperEngine extends EventEmitter {
     return u;
   }
 
-  equity(): number { return this.initialEquity + this.realizedPnl() + this.unrealizedPnl(); }
+  /**
+   * The live account compounds; a shadow book does not.
+   *
+   * Book 2 is evidence, not money: every pair must be sized against the same purse for its R to mean
+   * the same thing on day one and day thirty. Left to compound, one lucky trade inflates the next
+   * hundred — on the VM a single +1.1M win carried the purse to roughly 20M and later trades were
+   * sized in hundreds of millions of contracts.
+   */
+  equity(): number { return this.book === 0 ? this.initialEquity + this.realizedPnl() + this.unrealizedPnl() : this.initialEquity; }
 
   openPositions(): Position[] { return [...this.open.values()]; }
   position(id: number): Position | undefined { return this.open.get(id) ?? (this.db.get<any>('SELECT * FROM positions WHERE id=?', id) ? rowToPosition(this.db.get<any>('SELECT * FROM positions WHERE id=?', id)) : undefined); }
@@ -270,7 +278,8 @@ export class PaperEngine extends EventEmitter {
     const cfg = this.scaledCfg(leverageMult);
     const openNotional = [...this.open.values()].reduce((a, p) => a + notionalOf(p), 0);
     const reservedMargin = [...this.open.values()].reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0);
-    return sizeContracts(price, sl, { equity: this.equity(), availableMargin: this.initialEquity + this.realizedPnl() - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, cfg }, openNotional, score);
+    const wallet = this.book === 0 ? this.initialEquity + this.realizedPnl() : this.initialEquity;
+    return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, cfg }, openNotional, score);
   }
 
   private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig): Position {

@@ -22,6 +22,8 @@ interface Series {
   loadedAt: number;
   /** Gap start times that REST could not fill (no trades on Delta → no candle); not retried or re-reported. */
   unfillable: Set<number>;
+  /** The exchange itself has no newer bar: a tokenised equity outside its session, not a broken feed. */
+  dormant: boolean;
   backfilling: Promise<number> | null;
 }
 
@@ -119,7 +121,7 @@ export class CandleStore extends EventEmitter {
     const key = CandleStore.key(symbol, tf);
     let s = this.series.get(key);
     if (!s) {
-      s = { symbol, tf, bars: [], loaded: false, loading: null, maxBars: bars, lastClosedEmitted: 0, lastClosedAt: 0, loadedAt: 0, unfillable: new Set(), backfilling: null };
+      s = { symbol, tf, bars: [], loaded: false, loading: null, maxBars: bars, lastClosedEmitted: 0, lastClosedAt: 0, loadedAt: 0, unfillable: new Set(), dormant: false, backfilling: null };
       this.series.set(key, s);
       this.feed.subscribe(`candlestick_${tf}`, [symbol]);
     }
@@ -136,8 +138,8 @@ export class CandleStore extends EventEmitter {
     if (this.series.delete(key)) this.feed.unsubscribe(`candlestick_${tf}`, [symbol]);
   }
 
-  tracked(): Array<{ symbol: string; tf: string; bars: number; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null }> {
-    return [...this.series.values()].map(s => ({ symbol: s.symbol, tf: s.tf, bars: s.bars.length, loaded: s.loaded, lastBarTime: s.bars.at(-1)?.time ?? null, lastClosedAt: s.lastClosedAt || null, loadedAt: s.loadedAt || null }));
+  tracked(): Array<{ symbol: string; tf: string; bars: number; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant: boolean }> {
+    return [...this.series.values()].map(s => ({ symbol: s.symbol, tf: s.tf, bars: s.bars.length, loaded: s.loaded, lastBarTime: s.bars.at(-1)?.time ?? null, lastClosedAt: s.lastClosedAt || null, loadedAt: s.loadedAt || null, dormant: s.dormant }));
   }
 
   /** Ascending bars (copy). `closedOnly` drops the forming bar. */
@@ -294,6 +296,17 @@ export class CandleStore extends EventEmitter {
     this.maintenance = setInterval(() => {
       ticks++;
       for (const s of this.series.values()) if (s.loaded) void this.checkGaps(s, 'periodic scan').catch(() => { /* reported inside */ });
+      // A series whose websocket has gone quiet stops announcing bar closes, and a bar close is the
+      // only thing that runs a scanner — so pull it from REST instead of waiting. If the exchange has
+      // nothing newer either, the market is dormant rather than broken and nothing is wrong.
+      for (const s of this.series.values()) {
+        if (!s.loaded || s.backfilling) continue;
+        const tfMs = TF_SECONDS[s.tf] * 1000;
+        const lastClose = (s.bars.at(-1)?.time ?? 0) + tfMs;
+        if (Date.now() - lastClose < 2 * tfMs) { s.dormant = false; continue; }
+        void this.resync(s.symbol, s.tf).then(n => { s.dormant = n === 0; })
+          .catch(e => log.warn(`quiet-series resync failed ${s.symbol} ${s.tf}: ${e?.message ?? e}`));
+      }
       if (ticks % 2 === 1 && (this.status.driftCheckedAt === null || Date.now() - this.status.driftCheckedAt > 120_000)) void this.checkClockDrift();
       if (ticks % 10 === 1) void this.checkSymbols();
     }, opts.intervalMs ?? 60_000);

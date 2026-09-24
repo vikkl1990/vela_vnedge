@@ -130,6 +130,20 @@ test('a losing live pair is proposed for demotion; approving it removes the mark
   assert.deepEqual(patches, [{ id: 'live1', patch: { enabled: false } }]);
 });
 
+test('the shadow book does not compound: one lucky trade cannot inflate the next hundred', () => {
+  const { db, cfg } = world();
+  const live = new PaperEngine(db, () => cfg);
+  const shadow = new PaperEngine(db, () => cfg, { book: 2 });
+  const before = { live: live.equity(), shadow: shadow.equity() };
+  const win = (bt: number) => db.run(
+    "INSERT INTO positions(status, scanner_id, scanner_name, symbol, tf, side, qty, qty_open, contract_value, entry_price, entry_at, exit_at, realized_pnl, fees, risk_amount, bt) VALUES ('closed','s','s','BTCUSD','15m','long',1,0,1,100,1,2,?,0,10,?)",
+    5_000, bt);
+  win(0); win(2);
+  const after = { live: new PaperEngine(db, () => cfg).equity(), shadow: new PaperEngine(db, () => cfg, { book: 2 }).equity() };
+  assert.equal(after.live, before.live + 5_000, 'the live account compounds');
+  assert.equal(after.shadow, before.shadow, 'the shadow purse is fixed, so R means the same thing on day thirty');
+});
+
 test('the shadow book never touches the live account', () => {
   const { db, cfg } = world();
   const live = new PaperEngine(db, () => cfg);
