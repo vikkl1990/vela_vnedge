@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -65,11 +65,12 @@ test('stats', () => {
 test('quality sizing scales leverage with score and models liquidation', () => {
   const q = { ...cfg, sizingMode: 'quality' as const, minLeverage: 5, maxLeverage: 50, liquidation: true, maintenanceMarginPct: 0.5, maxStopLossPct: 0 }; // stop cap tested separately
   assert.equal(leverageForScore(undefined, q), 5); assert.equal(leverageForScore(50, q), 27.5); assert.equal(leverageForScore(100, q), 50);
+  // a score of 100 asks for 50x, but a 2% stop only leaves room for 1/(2%×1.25 + 0.5%) = 33.3x:
+  // at 50x the liquidation price is 98.5, inside the stop, and the stop could never be reached
   const s = sizeContracts(100, 98, { equity: 1000, contractValue: 0.001, tickSize: 0.5, cfg: q }, 0, 100);
-  assert.equal(s.qty, 500_000); // 1000 × 50x = 50,000 notional / (100 × 0.001 per contract) — uncapped
-  assert.ok(Math.abs(s.leverage - 50) < 1e-9);
-  const liq = liquidationPrice('long', 100, 50, q)!;
-  assert.ok(Math.abs(liq - 98.5) < 1e-9); // 1/50 = 2% minus 0.5% maintenance
+  assert.ok(Math.abs(s.marginLeverage - 100 / 3) < 0.1, `capped to ${s.marginLeverage}`);
+  assert.ok(liquidationPrice('long', 100, s.marginLeverage, q)! < 98);
+  assert.ok(Math.abs(liquidationPrice('long', 100, 50, q)! - 98.5) < 1e-9); // 1/50 = 2% minus 0.5% maintenance
   const p = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 500, contractValue: 0.001, entryPrice: 100, at: 0, sl: 97, tp: [105], riskAmount: 1.5, levelsSource: 'script', signalId: null, cfg: q, bt: true, leverage: 50 });
   const f = applyBar(p, { time: 1, high: 100, low: 98, close: 99 }, q);
   assert.equal(f[0].reason, 'liquidation'); assert.equal(p.status, 'closed');
@@ -115,7 +116,10 @@ test('liquidation handles both sides, unreachable prices and invalid initial mar
   const c = { ...cfg, liquidation: true, maintenanceMarginPct: 0.5 };
   assert.equal(liquidationPrice('long', 100, 0.5, c), null);
   assert.ok(Math.abs(liquidationPrice('short', 100, 50, c)! - 101.5) < 1e-9);
-  assert.equal(sizeContracts(100, 95, { equity: 1000, contractValue: 1, tickSize: 0.1, cfg: { ...c, maxLeverage: 200 } }).qty, 0);
+  // 200x would post less margin than the maintenance requirement; the stop cap brings it to ~14.8x
+  const sized = sizeContracts(100, 95, { equity: 1000, contractValue: 1, tickSize: 0.1, cfg: { ...c, maxLeverage: 200 } });
+  assert.ok(sized.qty > 0 && sized.marginLeverage < 15);
+  assert.ok(liquidationPrice('long', 100, sized.marginLeverage, c)! < 95);
   for (const side of ['long', 'short'] as const) {
     const p = openPosition({ ...pos(side), entryPrice: 100, at: 0, sl: side === 'long' ? 90 : 110, cfg: c, leverage: 0.1, marginLeverage: 50 });
     const f = applyScriptExit(p, 'tp1', side === 'long' ? 98 : 102, 1, c, 'both', 100);
@@ -449,4 +453,22 @@ test('contract risk share exposes markets too coarse for the account to size', (
   // a bigger account makes the same market sizeable again
   assert.ok(contractRiskShare(0.0011, 10_000, 20_000, c) < 0.06);
   assert.equal(contractRiskShare(1, 1, 0, c), Infinity, 'no equity, no budget');
+});
+
+test('leverage is capped so the stop is always reached before liquidation', () => {
+  const c = { ...cfg, liquidation: true, maintenanceMarginPct: 0.5, sizingMode: 'quality' as const, minLeverage: 5, maxLeverage: 50 };
+  const entry = 0.05473, sl = 0.05292;                     // the MUBARAKUSD trade: a 3.31% stop
+  assert.equal(leverageForScore(54, c), 29.3, 'score alone would ask for 29x');
+  const lev = leverageForStop(entry, sl, 29.2, c);
+  assert.ok(lev < 29.2 && lev > 20, `capped to ${lev}`);
+  const liq = liquidationPrice('long', entry, lev, c);
+  assert.ok(liq < sl, `liquidation ${liq} must sit below the stop ${sl}`);
+
+  // shorts too, and a wide stop caps leverage harder than a tight one
+  assert.ok(liquidationPrice('short', entry, leverageForStop(entry, entry * 1.0331, 29.2, c), c) > entry * 1.0331);
+  assert.ok(leverageForStop(100, 90, 50, c) < leverageForStop(100, 99, 50, c));
+
+  // a request that already leaves room is left alone, and the cap is off when liquidation is not modelled
+  assert.equal(leverageForStop(100, 90, 5, c), 5);
+  assert.equal(leverageForStop(entry, sl, 29.2, { ...c, liquidation: false }), 29.2);
 });

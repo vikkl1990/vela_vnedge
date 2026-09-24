@@ -82,8 +82,10 @@ test('liquidation triggers on the mark price, not on the last trade', t => {
   signal('long', 60_000);
   engine.onTrade('BTCUSD', 100, 1, 61_600, 61_600);
   const p = engine.openPositions()[0];
-  assert.ok(p.liqPrice !== null && p.liqPrice > 95, `liq ${p.liqPrice} sits above the 95 stop at 50x`);
-  // print above the stop and liquidation, but mark below liquidation → liquidated on mark
+  // leverage is capped so liquidation sits beyond the stop; it is still reached when the mark gaps
+  // past everything without a trade printing at the stop
+  assert.ok(p.liqPrice !== null && p.liqPrice < p.sl!, `liq ${p.liqPrice} must sit below the ${p.sl} stop`);
+  // no print at the stop, but the mark gaps below liquidation → liquidated on the mark
   engine.onMarkPrice('BTCUSD', p.liqPrice! - 0.1, 62_000);
   assert.equal(p.status, 'closed');
   assert.equal(p.exitReason, 'liquidation');

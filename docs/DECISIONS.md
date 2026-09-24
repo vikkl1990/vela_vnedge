@@ -790,3 +790,25 @@ at the ATR stop as a share of the risk budget — and skips any market above `ma
 
 **Revisit if** the account grows: AKEUSD becomes sizeable again at roughly 20,000 of equity, and the
 check is against live equity, so it re-admits itself.
+
+## 32. The stop sets the ceiling on leverage, so liquidation can never arrive first
+
+A live MUBARAKUSD long closed at −0.88R with the exit reason `liquidation`, having never traded at
+its stop. Entry 0.05473, stop 0.05292 — 3.31% away. The signal scored 54, `leverageForScore` turned
+that into 29.2×, and under isolated margin the liquidation price sits `1/leverage − maintenance`
+from entry: 2.93%. The stop was behind the liquidation price and could never be reached.
+
+Leverage was being chosen from the signal's quality alone, as if the stop did not exist. It does:
+the stop is the whole risk model, and a position that dies at the exchange's price instead of ours
+has no R. Leverage is now capped at `1 / (stop% × 1.25 + maintenance%)` — the stop distance plus a
+quarter of it as headroom — so the stop is always reached first. On that trade, 29.2× becomes 21.6×
+and liquidation moves to 4.13%, comfortably behind the 3.31% stop. Posting more margin is what buys
+the room, so the cap costs margin, not edge.
+
+Two existing tests had encoded the old behaviour — one asserted that 50× against a 2% stop liquidates
+at 98.5, inside the stop, and another that 200× is rejected for posting less than maintenance margin.
+Both now assert the invariant instead: liquidation sits beyond the stop, and the sizing cap gets
+there before the maintenance-margin guard does.
+
+**Revisit if** a venue is added whose margin model is not isolated, or if the buffer proves too thin
+on a gap-prone market — it is one number, `LIQ_STOP_BUFFER`.

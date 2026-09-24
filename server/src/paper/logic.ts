@@ -149,13 +149,35 @@ export function leverageForScore(score: number | undefined, cfg: PaperConfig): n
   return Math.round((cfg.minLeverage + (cfg.maxLeverage - cfg.minLeverage) * q) * 10) / 10;
 }
 
+/** Headroom between the stop and the liquidation price, as a share of the stop distance. */
+export const LIQ_STOP_BUFFER = 0.25;
+
+/**
+ * Leverage low enough that the stop is reached before liquidation.
+ *
+ * Under isolated margin the liquidation price sits `1/leverage − maintenance` from entry, and that
+ * distance shrinks as leverage rises. Choosing leverage from a signal's score alone ignores the stop:
+ * a score of 54 gives 29×, whose liquidation is 2.9% away, and a 3.3% stop behind it can never be
+ * reached — the position dies at the exchange's price instead of ours, for a worse loss than the R
+ * it was sized for. That is exactly how MUBARAKUSD was lost at −0.88R with a stop that never traded.
+ *
+ * So the stop sets the ceiling on leverage. Posting more margin is what buys the room.
+ */
+export function leverageForStop(entry: number, sl: number, wanted: number, cfg: PaperConfig): number {
+  if (!cfg.liquidation) return wanted;
+  const stopPct = Math.abs(entry - sl) / entry;
+  if (!(stopPct > 0)) return wanted;
+  const room = stopPct * (1 + LIQ_STOP_BUFFER) + cfg.maintenanceMarginPct / 100;
+  return Math.max(0.1, Math.min(wanted, 1 / room));
+}
+
 /**
  * Position size in contracts.
  *  - `risk` mode: the stop loses riskPerTradePct of equity, capped by maxLeverage.
  *  - `quality` mode: notional = equity × leverage(score); the stop decides the R.
  */
 export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNotional = 0, score?: number): { qty: number; riskAmount: number; leverage: number; marginLeverage: number; reason?: string } {
-  const marginLeverage = s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : s.cfg.maxLeverage;
+  const marginLeverage = leverageForStop(entry, sl, s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : s.cfg.maxLeverage, s.cfg);
   const rejected = (reason: string) => ({ qty: 0, riskAmount: 0, leverage: 0, marginLeverage, reason });
   if (![entry, sl, s.equity, s.contractValue, marginLeverage].every(v => Number.isFinite(v) && v > 0) || entry === sl) return rejected('invalid sizing inputs');
   if (s.cfg.liquidation && 1 / marginLeverage <= s.cfg.maintenanceMarginPct / 100) return rejected('initial margin must exceed maintenance margin');
