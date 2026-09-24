@@ -4,8 +4,7 @@ import { TF_SECONDS, type AppConfig, type ExitMode, type PaperConfig } from '../
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
-} from './logic.ts';
+  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor } from './logic.ts';
 
 const log = logger.scoped('paper');
 
@@ -369,7 +368,7 @@ export class PaperEngine extends EventEmitter {
       if (pos.symbol !== symbol || filled.has(pos.id)) continue;
       const slBefore = pos.sl;
       const atr = (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined;
-      const fills = applyTrade(pos, { time, price, qty }, this.paper, mark, atr);
+      const fills = applyTrade(pos, { time, price, qty }, exitConfigFor(this.paper, pos.symbol), mark, atr);
       if (fills.length) this.applyFills(pos, fills);
       else if (pos.sl !== slBefore) { this.persist(pos); this.emit('position', { type: 'updated', position: pos }); }
     }
@@ -411,7 +410,7 @@ export class PaperEngine extends EventEmitter {
     if (!pos) return undefined;
     if (side && pos.side !== side) return undefined;
     const fallback = price ?? this.marks.get(symbol) ?? pos.entryPrice;
-    const fills = applyScriptExit(pos, exitType, price, at, this.paper, exitMode, fallback);
+    const fills = applyScriptExit(pos, exitType, price, at, exitConfigFor(this.paper, pos.symbol), exitMode, fallback);
     if (fills.length) this.applyFills(pos, fills);
     return pos;
   }
@@ -442,7 +441,8 @@ export class PaperEngine extends EventEmitter {
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
-      const fills = applyLiveBar(pos, bar, this.paper, eventAt, (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
+      const pcfg = exitConfigFor(this.paper, pos.symbol);
+      const fills = applyLiveBar(pos, bar, pcfg, eventAt, (pcfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       if (fills.length) this.applyFills(pos, fills);
       if (pos.status === 'open' && this.paper.trendExit?.enabled && !historical) {
         const f = trendExit(pos, this.trendFor?.(pos.symbol, pos.tf), bar.close, eventAt, this.paper);

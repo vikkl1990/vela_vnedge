@@ -855,3 +855,44 @@ a gate measures the gate rather than the script — the fade variant first retur
 
 **Revisit if** a scanner is added whose entries are explicitly continuation-based, or if the fleet
 ever becomes profitable enough that filtering for quality beats filtering for count.
+
+## 34. Per-market exits: the mechanism is built, the evidence says use it for exceptions only
+
+Reconstructing 96 shadow trades minute by minute confirmed what the trade rows suggested: **40 of the
+51 stopped trades (78%) had been in profit before they died.** Most were barely green — 31% peaked
+under 0.25R — but 16 of them had reached 0.5R or more and still lost a full R. Across all 96 trades,
+55% reached +0.5R and 30% of those ended at −1R, while of the 33 that reached +1R only two were
+stopped, because that is where the floor arms. The protection works; it starts too late. The total
+peak available was 81.8R against −18.9R realised, and winners kept a median 58% of their peak.
+
+Since how far a trade runs before it turns is a property of the market, `paper.exitBySymbol` now
+overrides `floorAtR`, `floorKeepR`, `trailAfterR`, `trailGiveBackPct`, `trailAtrMult`, `fallbackRR`
+and `tpSplit` per market, resolved once when the position opens so a configuration change cannot move
+a stop that is already protecting money.
+
+Then it was fitted honestly — eight policies per market, fitted on the first half of 12,000 bars and
+scored on the second:
+
+- **Seven of twelve markets produced a curve fit**: the best in-sample policy lost out of sample.
+- The four that "passed" are what eight candidates × twelve markets produces by chance.
+
+Pooled — one comparison per policy across every market, out of sample, 1,828 trades:
+
+| policy | out of sample | vs current |
+|---|---|---|
+| **trail from +1R** | **−11.4R** | **+13.8R** |
+| lock 0.5R at 0.75R | −24.2R | +1.0R |
+| current (trail from 1.5R) | −25.2R | — |
+| break even at +0.5R | −69.3R | −44.1R |
+
+**Every break-even-at-0.5R variant is far worse.** Arming break-even early kills more trades on noise
+than it saves from reversals — which is the same lesson as decision 8, arrived at from the other
+side. What works is not stopping earlier but *ratcheting* earlier: `trailAfterR` moves from 1.5 to
+**1.0**, better on 10 of 12 markets out of sample and pointing the same way in sample (+42.9R).
+
+The two markets it hurts are the two profitable ones — UNIUSD (−12.0R) and AKEUSD (−4.2R), where the
+earlier trail cuts winners short. They keep 1.5 through `exitBySymbol`. That is what the per-market
+mechanism is for: the exceptions the evidence identifies, not a policy fitted market by market.
+
+**Revisit if** a market's exemption stops paying, or if the fleet's peak-to-realised gap (81.8R
+against −18.9R) closes enough that giving back less matters more than staying in.

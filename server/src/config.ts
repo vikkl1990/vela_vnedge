@@ -125,6 +125,12 @@ export interface PaperConfig {
    * reads bars that had closed when the signal fired.
    */
   trendGate?: { enabled: boolean; emaLen: number; tf: string; mode: TrendGateMode };
+  /**
+   * Per-market exit overrides. A market's volatility decides how far a trade travels before it turns,
+   * so the point at which protection should arm is not the same on BTCUSD as on a small alt. Only the
+   * keys given are overridden; everything else falls back to the global policy.
+   */
+  exitBySymbol?: Record<string, Partial<Pick<PaperConfig, 'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'fallbackRR' | 'tpSplit'>>>;
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
@@ -385,6 +391,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     reversalMinR: 0,
     trendExit: { enabled: false, emaLen: 20, minR: 1 },
     trendGate: { enabled: false, emaLen: 50, tf: '', mode: 'follow' },
+    exitBySymbol: {},
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
     maxOpenPositions: 20,
@@ -494,6 +501,14 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (p.feeTaxPct !== undefined && !(p.feeTaxPct >= 0 && p.feeTaxPct <= 100)) errs.push('paper.feeTaxPct must be 0..100');
   if (p.trendExit && !(p.trendExit.emaLen >= 2 && p.trendExit.minR >= 0)) errs.push('paper.trendExit needs emaLen ≥ 2 and minR ≥ 0');
+  for (const [sym, o] of Object.entries(p.exitBySymbol ?? {})) {
+    if (o.floorAtR !== undefined && !(o.floorAtR >= 0)) errs.push(`paper.exitBySymbol.${sym}.floorAtR must be ≥ 0`);
+    if (o.floorKeepR !== undefined && !(o.floorKeepR >= 0)) errs.push(`paper.exitBySymbol.${sym}.floorKeepR must be ≥ 0`);
+    if (o.trailAfterR !== undefined && !(o.trailAfterR >= 0)) errs.push(`paper.exitBySymbol.${sym}.trailAfterR must be ≥ 0`);
+    if (o.trailGiveBackPct !== undefined && !(o.trailGiveBackPct >= 0 && o.trailGiveBackPct <= 100)) errs.push(`paper.exitBySymbol.${sym}.trailGiveBackPct must be 0..100`);
+    if (o.fallbackRR && !(o.fallbackRR.length === 3 && o.fallbackRR.every(v => v > 0))) errs.push(`paper.exitBySymbol.${sym}.fallbackRR needs three positive multiples`);
+    if (o.tpSplit && !(o.tpSplit.length === 3 && Math.abs(o.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push(`paper.exitBySymbol.${sym}.tpSplit must be three fractions summing to 1`);
+  }
   if (p.trendGate) {
     if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');
     if (!['follow', 'fade', 'off'].includes(p.trendGate.mode)) errs.push('paper.trendGate.mode must be follow|fade|off');

@@ -143,6 +143,18 @@ export function contractRiskShare(stopDistance: number, contractValue: number, e
   return (stopDistance * contractValue) / budget;
 }
 
+/**
+ * The exit policy for one market: the global rules with that market's overrides applied.
+ *
+ * Resolved once, when the position opens, and carried on the position — so a configuration change
+ * mid-trade cannot move a stop that is already protecting money, and every later decision about the
+ * trade uses the rules it was opened under.
+ */
+export function exitConfigFor(cfg: PaperConfig, symbol: string): PaperConfig {
+  const o = cfg.exitBySymbol?.[symbol];
+  return o && Object.keys(o).length ? { ...cfg, ...o } : cfg;
+}
+
 /** Leverage for a signal quality score (0..100) in `quality` sizing mode: linear from minLeverage to maxLeverage. */
 export function leverageForScore(score: number | undefined, cfg: PaperConfig): number {
   const q = score === undefined || !Number.isFinite(score) ? 0 : Math.max(0, Math.min(1, score / 100));

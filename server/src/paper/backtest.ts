@@ -12,7 +12,7 @@ import type { TrendGateMode, PaperConfig, ExitMode } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, trendExit, type Position, trendGateReason, higherTrend, trendPerBar } from './logic.ts';
+import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -39,7 +39,9 @@ export interface BacktestResult {
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
-  const { bars, cfg } = inp;
+  const { bars } = inp;
+  // a backtest is one market, so its exit rules are resolved once (decision 34)
+  const cfg = exitConfigFor(inp.cfg, inp.symbol);
   const atr = atrSeries(bars, 14);
   const idxByTime = new Map<number, number>();
   bars.forEach((b, i) => idxByTime.set(b.time, i));

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -500,4 +500,27 @@ test('a higher-timeframe trend never reads a bar that has not closed', () => {
   // a same-timeframe trend has no such lag
   const own = trendPerBar(bars, 4);
   assert.equal(own[25], 1);
+});
+
+test('a market can override the exit policy without touching the global one', () => {
+  const base = { ...cfg, floorAtR: 1, floorKeepR: 0.5, trailAfterR: 1.5, trailGiveBackPct: 40,
+    exitBySymbol: { AKEUSD: { floorAtR: 0.5, floorKeepR: 0 }, ZECUSD: { trailGiveBackPct: 20 } } };
+  assert.equal(exitConfigFor(base, 'BTCUSD').floorAtR, 1, 'unlisted markets keep the global policy');
+  const ake = exitConfigFor(base, 'AKEUSD');
+  assert.equal(ake.floorAtR, 0.5); assert.equal(ake.floorKeepR, 0);
+  assert.equal(ake.trailAfterR, 1.5, 'keys not overridden still come from the global policy');
+  assert.equal(exitConfigFor(base, 'ZECUSD').trailGiveBackPct, 20);
+  assert.equal(base.floorAtR, 1, 'the global policy is not mutated');
+
+  // and the override actually moves the stop: break even at +0.5R instead of +0.5R locked at +1R
+  const p = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'AKEUSD', tf: '15m', side: 'long',
+    qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [130], riskAmount: 100,
+    levelsSource: 'script', signalId: null, cfg: ake, bt: true });
+  trailStop(p, 105, ake);                                   // +0.5R
+  assert.equal(p.sl, 100, 'the stop is at break even');
+  const q = openPosition({ id: 2, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long',
+    qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [130], riskAmount: 100,
+    levelsSource: 'script', signalId: null, cfg: base, bt: true });
+  trailStop(q, 105, base);
+  assert.equal(q.sl, 90, 'the global policy has not armed at +0.5R');
 });
