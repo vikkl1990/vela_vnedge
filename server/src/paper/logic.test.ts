@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -461,14 +461,43 @@ test('leverage is capped so the stop is always reached before liquidation', () =
   assert.equal(leverageForScore(54, c), 29.3, 'score alone would ask for 29x');
   const lev = leverageForStop(entry, sl, 29.2, c);
   assert.ok(lev < 29.2 && lev > 20, `capped to ${lev}`);
-  const liq = liquidationPrice('long', entry, lev, c);
+  const liq = liquidationPrice('long', entry, lev, c)!;
   assert.ok(liq < sl, `liquidation ${liq} must sit below the stop ${sl}`);
 
   // shorts too, and a wide stop caps leverage harder than a tight one
-  assert.ok(liquidationPrice('short', entry, leverageForStop(entry, entry * 1.0331, 29.2, c), c) > entry * 1.0331);
+  assert.ok(liquidationPrice('short', entry, leverageForStop(entry, entry * 1.0331, 29.2, c), c)! > entry * 1.0331);
   assert.ok(leverageForStop(100, 90, 50, c) < leverageForStop(100, 99, 50, c));
 
   // a request that already leaves room is left alone, and the cap is off when liquidation is not modelled
   assert.equal(leverageForStop(100, 90, 5, c), 5);
   assert.equal(leverageForStop(entry, sl, 29.2, { ...c, liquidation: false }), 29.2);
+});
+
+test('the trend gate follows, fades, or stands aside', () => {
+  assert.equal(trendGateReason('long', 1, 'follow'), null);
+  assert.match(trendGateReason('long', -1, 'follow')!, /against the trend/);
+  assert.match(trendGateReason('short', 1, 'follow')!, /against the trend/);
+  assert.equal(trendGateReason('short', -1, 'follow'), null);
+  // a dip-buyer wants the opposite test
+  assert.equal(trendGateReason('long', -1, 'fade'), null);
+  assert.match(trendGateReason('long', 1, 'fade')!, /fades it/);
+  // no opinion without enough history, and none at all when off
+  assert.equal(trendGateReason('long', undefined, 'follow'), null);
+  assert.equal(trendGateReason('long', -1, 'off'), null);
+});
+
+test('a higher-timeframe trend never reads a bar that has not closed', () => {
+  // 15m bars inside 1h buckets: the first hour falls hard, the second rallies hard
+  const bars = Array.from({ length: 48 }, (_, i) => ({ time: i * 900_000, close: i < 24 ? 100 - i : 76 + (i - 24) * 4 }));
+  const htf = higherTrend(bars, 900_000, 3_600_000, 4);
+  // inside the very first bucket nothing has closed yet, so the gate has no opinion
+  assert.equal(htf[0], undefined);
+  assert.equal(htf[3], undefined);
+  // the rally starts at bar 24; the bars inside that first rallying hour can only see the falling
+  // hour before it, so they must still read "down" however far price has run within the bucket
+  assert.equal(htf[25], -1, 'reading the forming bucket would already call this up');
+  assert.ok(htf.slice(30).some(v => v === 1), 'once rallying hours have closed the trend turns up');
+  // a same-timeframe trend has no such lag
+  const own = trendPerBar(bars, 4);
+  assert.equal(own[25], 1);
 });

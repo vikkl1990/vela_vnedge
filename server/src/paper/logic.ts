@@ -8,7 +8,7 @@
  *  - Ambiguous OHLC bars resolve stop-loss BEFORE take-profit (conservative).
  */
 import { TF_SECONDS } from '../config.ts';
-import type { PaperConfig, ExitMode } from '../config.ts';
+import type { TrendGateMode, PaperConfig, ExitMode } from '../config.ts';
 import type { Side, ExitType } from '../scanners/extractor.ts';
 
 export interface Fill { at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
@@ -454,6 +454,61 @@ export function trendSide(closes: number[], len: number): 1 | -1 {
   let ema = closes[0];
   for (let i = 1; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
   return closes.at(-1)! >= ema ? 1 : -1;
+}
+
+/**
+ * Aggregate closes into a higher timeframe, returning for every input bar the EMA of the last
+ * higher-timeframe bar that had **closed** when it printed.
+ *
+ * The "had closed" part is the whole point: reading the forming higher-timeframe bar would let a
+ * 15m signal see where its own 1h candle ends up, which is a look into the future and would make any
+ * measurement of this filter worthless.
+ */
+export function higherTrend(bars: Array<{ time: number; close: number }>, tfMs: number, htfMs: number, len: number): Array<1 | -1 | undefined> {
+  const k = 2 / (len + 1);
+  const out: Array<1 | -1 | undefined> = [];
+  let ema: number | null = null, n = 0, bucket = -1, lastClose = 0, closedEma: number | null = null, closedN = 0;
+  for (const b of bars) {
+    const slot = Math.floor(b.time / htfMs);
+    if (slot !== bucket) {
+      // the previous bucket is now complete: it becomes the trend every bar in this bucket sees
+      if (bucket >= 0) { ema = ema === null ? lastClose : lastClose * k + ema * (1 - k); n++; closedEma = ema; closedN = n; }
+      bucket = slot;
+    }
+    lastClose = b.close;
+    out.push(closedEma === null || closedN < Math.min(len, 20) ? undefined : (b.close >= closedEma ? 1 : -1));
+  }
+  void tfMs;
+  return out;
+}
+
+/** The trend right now from a series of closes; undefined when there is not enough history to judge. */
+export function trendNow(closes: number[], len: number): 1 | -1 | undefined {
+  return closes.length < len ? undefined : trendSide(closes, len);
+}
+
+/** The trend under each bar on its own timeframe: EMA of closes up to and including that bar. */
+export function trendPerBar(bars: Array<{ close: number }>, len: number): Array<1 | -1 | undefined> {
+  const k = 2 / (len + 1);
+  let ema = bars[0]?.close ?? 0;
+  return bars.map((b, i) => {
+    ema = i ? b.close * k + ema * (1 - k) : b.close;
+    return i < len ? undefined : (b.close >= ema ? 1 : -1);
+  });
+}
+
+/**
+ * Whether the trend gate refuses this entry, and why.
+ *
+ * `follow` is for scanners that trade continuation; `fade` for the ones designed to buy dips, where
+ * agreeing with the trend is the wrong test. An unknown trend (not enough history) never blocks.
+ */
+export function trendGateReason(side: 'long' | 'short', trend: 1 | -1 | undefined, mode: TrendGateMode): string | null {
+  if (mode === 'off' || trend === undefined) return null;
+  const withTrend = (side === 'long' && trend === 1) || (side === 'short' && trend === -1);
+  if (mode === 'follow' && !withTrend) return `against the trend (${side} while the trend is ${trend === 1 ? 'up' : 'down'})`;
+  if (mode === 'fade' && withTrend) return `with the trend, and this scanner fades it (${side} while the trend is ${trend === 1 ? 'up' : 'down'})`;
+  return null;
 }
 
 /**

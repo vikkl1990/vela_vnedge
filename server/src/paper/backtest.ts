@@ -8,11 +8,11 @@
  * only move once per signal bar; on the 1m path both happen in the order they actually did.
  * Entries and script events still act on the signal bar, exactly as before.
  */
-import type { PaperConfig, ExitMode } from '../config.ts';
+import type { TrendGateMode, PaperConfig, ExitMode } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, trendExit, type Position } from './logic.ts';
+import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, trendExit, type Position, trendGateReason, higherTrend, trendPerBar } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -23,6 +23,8 @@ export interface BacktestInput {
   bars: Bar[];                // closed bars, ascending — the same bars the script ran on
   events: ScanEvent[];        // extracted from the script run (all bars)
   cfg: PaperConfig; exitMode: ExitMode; contractValue: number; tickSize: number;
+  /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
+  trendGate?: TrendGateMode;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
   subBars?: Bar[];
 }
@@ -43,6 +45,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   bars.forEach((b, i) => idxByTime.set(b.time, i));
   const byBar = new Map<number, ScanEvent[]>();
   for (const e of inp.events) { const l = byBar.get(e.barTime) ?? []; l.push(e); byBar.set(e.barTime, l); }
+
+  // the trend every bar sees, on its own timeframe or a higher one, never reading an unclosed bar
+  const gate = cfg.trendGate;
+  const gateMode: TrendGateMode = gate?.enabled ? (inp.trendGate ?? gate.mode) : 'off';
+  const gateTrend: Array<1 | -1 | undefined> = gateMode === 'off' ? []
+    : gate!.tf && gate!.tf !== inp.tf
+      ? higherTrend(bars, TF_SECONDS[inp.tf] * 1000, TF_SECONDS[gate!.tf] * 1000, gate!.emaLen)
+      : trendPerBar(bars, gate!.emaLen);
 
   let equity = cfg.initialEquity;
   let open: Position | null = null;
@@ -104,6 +114,8 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     }
     for (const ev of evs) {
       if (ev.kind !== 'entry' || !ev.side) continue;
+      const blocked = gateMode === 'off' ? null : trendGateReason(ev.side, gateTrend[i], gateMode);
+      if (blocked) { rejected['against the trend'] = (rejected['against the trend'] ?? 0) + 1; continue; }
       if (open) {
         if (open.side === ev.side) { rejected['already_open'] = (rejected['already_open'] ?? 0) + 1; continue; }
         if (!cfg.allowReversal) { rejected['reversal_disabled'] = (rejected['reversal_disabled'] ?? 0) + 1; continue; }

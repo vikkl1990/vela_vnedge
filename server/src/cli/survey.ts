@@ -38,6 +38,14 @@ for (const part of (process.env.DEEP ?? '').split(',').filter(Boolean)) {
  * far finer than the signal bar and costs one request per market instead of twenty for deep 5m.
  */
 const SUB: Record<string, string> = { '5m': '1m', '15m': '1m', '1h': '15m', '4h': '15m' };
+/**
+ * GATE=follow|fade|off with GATE_LEN and GATE_TF turns on the real trend gate (`paper.trendGate`),
+ * so what is measured here is the same code the bot runs — not a filter that only exists in the lab.
+ */
+if (process.env.GATE) {
+  cfg.paper.trendGate = { enabled: process.env.GATE !== 'off', emaLen: Number(process.env.GATE_LEN ?? 50), tf: process.env.GATE_TF ?? '', mode: process.env.GATE as any };
+}
+
 const out = fs.createWriteStream(process.env.OUT ?? '/tmp/survey.tsv', { flags: process.env.APPEND ? 'a' : 'w' });
 if (!process.env.APPEND) out.write(['scanner', 'tf', 'symbol', 'trades', 'wins', 'net', 'pf', 'avgR', 'netStress', 'windowsUp', 'days'].join('\t') + '\n');
 
@@ -76,7 +84,7 @@ async function runOne(j: Job): Promise<'entries' | 'silent' | 'failed'> {
   const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: b, mode: 'backtest' });
   const events = extractEvents(res.alerts, res.shapes, { derived });
   if (!events.some(e => e.kind === 'entry')) return 'silent';
-  const base = { scannerId: s.id, scannerName: s.id, symbol: j.symbol, tf: j.tf, bars: b, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: m.contractValue, tickSize: m.tickSize, subBars: sub } as const;
+  const base = { scannerId: s.id, scannerName: s.id, symbol: j.symbol, tf: j.tf, bars: b, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', trendGate: cfg.scanners[s.id]?.trendGate, contractValue: m.contractValue, tickSize: m.tickSize, subBars: sub } as const;
   const t = runBacktest(base).trades as any[];
   const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: STRESS } }).stats.pnl;
   const span = (b.at(-1)!.time - b[0].time) / 8; const w = new Array(8).fill(0);

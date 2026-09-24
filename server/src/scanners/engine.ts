@@ -20,7 +20,7 @@ import type { WorkerResult } from '../pine/worker.ts';
 import { extractEvents, describeEvent, type ScanEvent } from './extractor.ts';
 import { applyRules, labelKey } from './rules.ts';
 import type { MlService } from '../ml/service.ts';
-import { resolveLevels } from '../paper/logic.ts';
+import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 import { ScriptHealth } from './health.ts';
 
@@ -448,6 +448,21 @@ export class ScannerEngine extends EventEmitter {
     }
   }
 
+  /**
+   * Why the trend gate refuses this entry, or null. The scanner's own mode wins over the default, so
+   * a mean-reversion scanner can fade the trend while a breakout scanner follows it (decision 33).
+   */
+  trendGateBlock(scannerId: string, symbol: string, tf: string, side: 'long' | 'short'): string | null {
+    const cfg = this.cfgRef();
+    const g = cfg.paper.trendGate;
+    if (!g?.enabled) return null;
+    const mode = this.scannerConfig(scannerId).trendGate ?? g.mode;
+    if (mode === 'off') return null;
+    const trendTf = g.tf && g.tf !== tf ? g.tf : tf;
+    const closes = this.candles.get(symbol, trendTf, { closedOnly: true, limit: g.emaLen * 4 }).map(b => b.close);
+    return trendGateReason(side, trendNow(closes, g.emaLen), mode);
+  }
+
   private handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) {
     if (this.db.signalExists(s.id, symbol, tf, ev.barTime, ev.kind, ev.side ?? null, ev.label)) return;
     const refPrice = this.paper.mark(symbol) ?? lastBar.close;
@@ -471,8 +486,11 @@ export class ScannerEngine extends EventEmitter {
       }
       const mlCfg = this.cfgRef().ml;
       const scoreOverride = mlCfg.useAsScore && ev.score === undefined && mlProb !== null ? mlProb * 100 : undefined;
-      const gate = this.entryFilter ? this.entryFilter({ scannerId: s.id, scannerName: s.name, symbol, tf, side: ev.side, barTime: ev.barTime, price: ev.price && ev.price > 0 ? ev.price : refPrice, at: now }) : null;
-      if (gate && !gate.ok) {
+      const trendBlock = this.trendGateBlock(s.id, symbol, tf, ev.side);
+      const gate = trendBlock ? null : this.entryFilter ? this.entryFilter({ scannerId: s.id, scannerName: s.name, symbol, tf, side: ev.side, barTime: ev.barTime, price: ev.price && ev.price > 0 ? ev.price : refPrice, at: now }) : null;
+      if (trendBlock) {
+        action = `rejected:${trendBlock}`;
+      } else if (gate && !gate.ok) {
         action = `rejected:${gate.reason ?? 'filter'}`;
       } else if (mlCfg.minProb > 0 && mlProb !== null && mlProb < mlCfg.minProb) {
         action = `rejected:ml ${(mlProb * 100).toFixed(0)}% < ${(mlCfg.minProb * 100).toFixed(0)}%`;

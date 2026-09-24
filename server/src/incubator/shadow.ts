@@ -18,6 +18,7 @@ import type { MarketInfo, PaperEngine } from '../paper/engine.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules, labelKey } from '../scanners/rules.ts';
 import { lastAtr } from '../data/indicators.ts';
+import { trendGateReason, trendNow } from '../paper/logic.ts';
 import { logger } from '../log.ts';
 import { IncubatorStore, type PairRow } from './store.ts';
 import { ACTIVE_STAGES } from './cycle.ts';
@@ -126,6 +127,14 @@ export class ShadowRunner {
       if (this.seen.size > 20_000) this.seen = new Set([...this.seen].slice(-10_000));
       const now = Date.now();
       if (ev.kind === 'entry' && ev.side) {
+        // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is
+        const g = cfg.paper.trendGate;
+        if (g?.enabled) {
+          const mode = cfg.scanners[s.id]?.trendGate ?? g.mode;
+          const trendTf = g.tf && g.tf !== r.tf ? g.tf : r.tf;
+          const closes = this.deps.candles.get(r.symbol, trendTf, { closedOnly: true, limit: g.emaLen * 4 }).map(b => b.close);
+          if (trendGateReason(ev.side, trendNow(closes, g.emaLen), mode)) continue;
+        }
         const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, atr: lastAtr(bars, 14), refPrice: this.deps.paper.mark(r.symbol) ?? lastBar.close, at: now, signalId: null, exitMode });
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
       } else if (ev.kind === 'exit') {

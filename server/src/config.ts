@@ -115,6 +115,16 @@ export interface PaperConfig {
    * untouched — a trade that keeps trending still runs (decision 27).
    */
   trendExit?: { enabled: boolean; emaLen: number; minR: number };
+  /**
+   * Refuse entries that disagree with the trend.
+   *
+   * `mode` is the default for every scanner: `follow` takes longs only above the EMA and shorts only
+   * below, `fade` is the opposite (a mean-reversion scanner is meant to buy dips), `off` takes every
+   * signal. A scanner overrides it with its own `trendGate`. `tf` is the timeframe the trend is
+   * measured on — empty means the signal's own; a higher one is aggregated from it and only ever
+   * reads bars that had closed when the signal fired.
+   */
+  trendGate?: { enabled: boolean; emaLen: number; tf: string; mode: TrendGateMode };
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
@@ -133,6 +143,9 @@ export interface PaperConfig {
   fundingCharges: boolean;
 }
 
+/** How one scanner treats the trend: with it, against it, or ignoring it. */
+export type TrendGateMode = 'follow' | 'fade' | 'off';
+
 export interface ScannerConfig {
   enabled: boolean;
   /** Removed from the dashboard list (kept disabled); restorable. */
@@ -144,6 +157,9 @@ export interface ScannerConfig {
   rule?: GenericRule | null;
   /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
   inputs?: Record<string, number | string | boolean>;
+
+  /** Overrides `paper.trendGate.mode` for this scanner: a dip-buyer should not be forced to follow. */
+  trendGate?: TrendGateMode;
 }
 
 export interface ExecutionConfig {
@@ -368,6 +384,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     allowReversal: true,
     reversalMinR: 0,
     trendExit: { enabled: false, emaLen: 20, minR: 1 },
+    trendGate: { enabled: false, emaLen: 50, tf: '', mode: 'follow' },
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
     maxOpenPositions: 20,
@@ -477,6 +494,11 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (p.feeTaxPct !== undefined && !(p.feeTaxPct >= 0 && p.feeTaxPct <= 100)) errs.push('paper.feeTaxPct must be 0..100');
   if (p.trendExit && !(p.trendExit.emaLen >= 2 && p.trendExit.minR >= 0)) errs.push('paper.trendExit needs emaLen ≥ 2 and minR ≥ 0');
+  if (p.trendGate) {
+    if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');
+    if (!['follow', 'fade', 'off'].includes(p.trendGate.mode)) errs.push('paper.trendGate.mode must be follow|fade|off');
+    if (p.trendGate.tf && !(p.trendGate.tf in TF_SECONDS)) errs.push(`paper.trendGate.tf ${p.trendGate.tf} is not a known timeframe`);
+  }
   if (!(Number.isFinite(p.trailAfterR) && p.trailAfterR >= 0)) errs.push('paper.trailAfterR must be ≥ 0 (0 = off)');
   if (!(Number.isFinite(p.trailGiveBackPct) && p.trailGiveBackPct >= 0 && p.trailGiveBackPct < 100)) errs.push('paper.trailGiveBackPct must be in [0, 100)');
   if (!(Number.isFinite(p.trailAtrMult) && p.trailAtrMult >= 0)) errs.push('paper.trailAtrMult must be ≥ 0 (0 = off)');
