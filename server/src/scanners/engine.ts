@@ -11,7 +11,8 @@ import { lastAtr } from '../data/indicators.ts';
 import type { Db } from '../db.ts';
 import type { DeltaRest } from '../delta/rest.ts';
 import { logger } from '../log.ts';
-import type { PaperEngine, MarketInfo } from '../paper/engine.ts';
+import { PaperEngine } from '../paper/engine.ts';
+import type { MarketInfo } from '../paper/engine.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import { runBacktest, type BacktestResult } from '../paper/backtest.ts';
 import type { PinePool } from '../pine/pool.ts';
@@ -420,6 +421,17 @@ export class ScannerEngine extends EventEmitter {
           && this.symbolsFor(s.id).includes(symbol) && this.timeframesFor(s.id).includes(tf)) {
         const lastBar = bars.at(-1)!;
         if (!liveRes.ok) { log.warn(`${key} live run error: ${liveRes.error}`); return; }
+        // A run that was not triggered by this bar's close — a warm-up, a newly enabled scanner, a
+        // config change — looks at whatever bar closed last, which on 15m averages seven minutes old.
+        // Acting on it is impossible (the engine rejects it as stale), so emitting the signal only
+        // fills the feed with rows that can never become trades.
+        const maxAge = cfg.paper.maxSignalAgeSec ?? 0;
+        const barAge = PaperEngine.signalAgeSec({ barTime: lastBar.time }, tf, Date.now());
+        if (maxAge > 0 && barAge > maxAge) {
+          log.debug(`${key}: last closed bar is ${barAge.toFixed(0)}s old (max ${maxAge}s) — stats only, no live signals`);
+          this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });
+          return;
+        }
         const derived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
         const events = extractEvents(liveRes.alerts, liveRes.shapes, { sinceBarTime: lastBar.time, derived });
         for (const ev of events) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);

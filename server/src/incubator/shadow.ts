@@ -47,7 +47,7 @@ export class ShadowRunner {
   start() {
     // each pair runs on its own timeframe: the daily screen is 15m, but a survey can admit 1h or 4h pairs
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
-      if (!e.historical && this.pairs.some(r => r.tf === e.tf)) this.onBarClosed(e.symbol, e.tf);
+      if (!e.historical && this.pairs.some(r => r.tf === e.tf)) this.onBarClosed(e.symbol, e.tf, e.bar.time + TF_SECONDS[e.tf] * 1000);
     });
     void this.sync();
     this.timer = setInterval(() => void this.sync(), SYNC_MS);
@@ -72,10 +72,12 @@ export class ShadowRunner {
     }
   }
 
-  private onBarClosed(symbol: string, tf: string) {
+  private onBarClosed(symbol: string, tf: string, closedAt = Date.now()) {
     const due = this.pairs.filter(r => r.symbol === symbol && r.tf === tf);
     if (!due.length) return;
-    const barAt = Date.now();
+    // measured from when the bar actually closed, not from now: tracking a new market announces its
+    // newest closed bar mid-cycle, and a scan of a bar that old could never be traded
+    const barAt = closedAt;
     setTimeout(() => {
       if (this.deps.pool.stats.queued > MAX_QUEUE) { this.stats.skipped += due.length; log.warn(`shadow: worker queue ${this.deps.pool.stats.queued} deep, skipping ${due.length} runs on ${symbol}`); return; }
       for (const r of due) this.run(r, barAt).catch(e => { this.stats.errors++; log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
