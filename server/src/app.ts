@@ -79,6 +79,10 @@ export class App {
     };
     this.shadow = new PaperEngine(this.db, shadowRef, { book: 2 });
     this.shadow.atrFor = this.paper.atrFor;
+    // a scanner's own exit rules reach both books the same way (decision 38)
+    const scannerExit = (id: string) => cfg().scanners[id]?.exit;
+    this.paper.scannerExit = scannerExit;
+    this.shadow.scannerExit = scannerExit;
     // the same trend both books and the backtest use: closes of the position's own timeframe
     const trendFor = (symbol: string, tf: string) => {
       const len = cfg().paper.trendExit?.emaLen ?? 20;

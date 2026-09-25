@@ -8,7 +8,7 @@
  * only move once per signal bar; on the 1m path both happen in the order they actually did.
  * Entries and script events still act on the signal bar, exactly as before.
  */
-import type { TrendGateMode, PaperConfig, ExitMode } from '../config.ts';
+import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
@@ -25,6 +25,8 @@ export interface BacktestInput {
   cfg: PaperConfig; exitMode: ExitMode; contractValue: number; tickSize: number;
   /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
   trendGate?: TrendGateMode;
+  /** This scanner's own exit rules, applied over the market's and the fleet's. */
+  scannerExit?: ExitOverride;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
   subBars?: Bar[];
 }
@@ -41,7 +43,7 @@ export interface BacktestResult {
 export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
   // a backtest is one market, so its exit rules are resolved once (decision 34)
-  const cfg = exitConfigFor(inp.cfg, inp.symbol);
+  const cfg = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExit);
   const atr = atrSeries(bars, 14);
   const idxByTime = new Map<number, number>();
   bars.forEach((b, i) => idxByTime.set(b.time, i));

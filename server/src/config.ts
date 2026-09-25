@@ -130,7 +130,7 @@ export interface PaperConfig {
    * so the point at which protection should arm is not the same on BTCUSD as on a small alt. Only the
    * keys given are overridden; everything else falls back to the global policy.
    */
-  exitBySymbol?: Record<string, Partial<Pick<PaperConfig, 'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall'>>>;
+  exitBySymbol?: Record<string, ExitOverride>;
   /**
    * Give back less of the peak as a trade grows: `[[2, 30], [4, 20]]` keeps the flat
    * `trailGiveBackPct` until +2R, then gives back 30%, then 20% past +4R. A runner needs room early
@@ -161,6 +161,14 @@ export interface PaperConfig {
   fundingCharges: boolean;
 }
 
+/**
+ * The parts of the exit policy a market or a scanner may override. Everything not named here stays
+ * global, so an override is always a small, readable difference from the fleet's rules.
+ */
+export type ExitOverride = Partial<Pick<PaperConfig,
+  'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' |
+  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall'>>;
+
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
 export type TrendGateMode = 'follow' | 'fade' | 'off';
 
@@ -178,6 +186,13 @@ export interface ScannerConfig {
 
   /** Overrides `paper.trendGate.mode` for this scanner: a dip-buyer should not be forced to follow. */
   trendGate?: TrendGateMode;
+  /**
+   * This scanner's own exit rules. A breakout scanner that runs and a mean-reversion scanner that
+   * takes a quick 1R do not want the same trail or the same target ladder; where they differ, the
+   * scanner says so here and the rest still comes from the fleet's policy. Applied on top of
+   * `paper.exitBySymbol`, because the scanner knows its trades better than the market does.
+   */
+  exit?: ExitOverride;
 }
 
 export interface ExecutionConfig {

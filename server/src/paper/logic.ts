@@ -8,7 +8,7 @@
  *  - Ambiguous OHLC bars resolve stop-loss BEFORE take-profit (conservative).
  */
 import { TF_SECONDS } from '../config.ts';
-import type { TrendGateMode, PaperConfig, ExitMode } from '../config.ts';
+import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../config.ts';
 import type { Side, ExitType } from '../scanners/extractor.ts';
 
 export interface Fill { at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
@@ -153,10 +153,14 @@ export function contractRiskShare(stopDistance: number, contractValue: number, e
  * Resolved once, when the position opens, and carried on the position — so a configuration change
  * mid-trade cannot move a stop that is already protecting money, and every later decision about the
  * trade uses the rules it was opened under.
+ *
+ * Three layers, narrowest last: the fleet's policy, then the market's, then the scanner's. A scanner
+ * knows its own trades better than the market does, so where both have an opinion the scanner wins.
  */
-export function exitConfigFor(cfg: PaperConfig, symbol: string): PaperConfig {
-  const o = cfg.exitBySymbol?.[symbol];
-  return o && Object.keys(o).length ? { ...cfg, ...o } : cfg;
+export function exitConfigFor(cfg: PaperConfig, symbol: string, scannerOverride?: ExitOverride | null): PaperConfig {
+  const bySymbol = cfg.exitBySymbol?.[symbol];
+  const layers = [bySymbol, scannerOverride].filter((x): x is ExitOverride => !!x && Object.keys(x).length > 0);
+  return layers.length ? Object.assign({ ...cfg }, ...layers) : cfg;
 }
 
 /** Leverage for a signal quality score (0..100) in `quality` sizing mode: linear from minLeverage to maxLeverage. */

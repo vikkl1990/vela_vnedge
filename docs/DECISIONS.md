@@ -984,3 +984,45 @@ MUBARAKUSD before decision 32 capped it.
 
 **Revisit if** the surviving fleet runs long enough to train on its own live trades rather than on
 backtests of scripts it does not trade.
+
+## 38. Exits can now differ per scanner. Tested with target ladders: none of them beats riding to TP3
+
+Two things, one of which worked.
+
+**The mechanism.** Exit rules now resolve in three layers, narrowest last: the fleet's policy, then
+`paper.exitBySymbol` for the market, then `scanners.<id>.exit` for the scanner. A scanner names only
+what it wants to differ and everything else still comes from the fleet, resolved once when the
+position opens and carried on the position. A breakout scanner that runs and a mean-reversion scanner
+that stalls at 1R have no reason to share a trail, and now they need not.
+
+**The test.** The obvious first use was the target ladder, because today the whole position rides to
+TP3 — `tpSplit [0, 0, 1]` at 2/4/6R — so TP1 and TP2 are drawn on every chart and can never fill.
+Decision 9 tested partial profit at TP1 and decisions 24 and 26 tested closer targets, but never the
+two together, which is the combination that would actually capture something.
+
+Seven ladders, five scanners, twelve markets, fitted on the first half of 12,000 bars and scored on
+the second — 2,247 trades:
+
+| ladder | out of sample | vs current | target exits |
+|---|---|---|---|
+| **current: 2/4/6, all at TP3** | **+104.6R** | — | 57 / 2,247 |
+| split 2/4/6 at 40/30/30 | +50.0R | −54.7R | 57 |
+| runner 1/3/6 at 30/20/50 | +34.8R | −69.9R | 57 |
+| half at 1R, rest at 4R | +3.3R | −101.3R | 124 |
+| close 1/2/4 at 40/30/30 | −6.7R | −111.3R | 124 |
+| close 1/2/3 at 50/25/25 | −29.7R | −134.4R | 191 |
+
+Every ladder is worse, for **every one of the five scanners**, with no exception and a monotone
+ordering: the closer the targets and the more taken off early, the worse the result. Per-scanner
+ladders do not rescue the idea — the answer is the same everywhere, which is itself informative.
+
+The reason is in the last column. Targets fire on **57 of 2,247 trades**; the trail ends nearly
+everything. Moving the targets closer converts trail exits into target exits — 191 of them in the
+worst case — and each conversion costs more than it captures, because it caps a trade that the trail
+would have carried further.
+
+So: nothing is enabled. `tpSplit` stays `[0, 0, 1]`, and TP1 and TP2 remain markers rather than
+targets — the dashboard already greys them, which is honest.
+
+**Revisit if** a scanner joins the fleet whose trades reach 2R far more often than these do, since
+the whole result rests on how rarely targets are reached at all.

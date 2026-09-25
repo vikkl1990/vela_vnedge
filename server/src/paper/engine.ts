@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
-import { TF_SECONDS, type AppConfig, type ExitMode, type PaperConfig } from '../config.ts';
+import { TF_SECONDS, type AppConfig, type ExitMode, type ExitOverride, type PaperConfig } from '../config.ts';
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
@@ -78,6 +78,8 @@ export class PaperEngine extends EventEmitter {
    * trail falls back to a fixed R distance, which is not the rule the backtest measured.
    */
   atrFor?: (symbol: string, tf: string) => number | undefined;
+  /** A scanner's own exit override, supplied by the app so the engine needs no config knowledge. */
+  scannerExit?: (scannerId: string) => ExitOverride | undefined;
 
   /** The position timeframe's trend, +1 or −1, for the trend exit (set by the composition root). */
   trendFor?: (symbol: string, tf: string) => 1 | -1 | undefined;
@@ -368,7 +370,7 @@ export class PaperEngine extends EventEmitter {
       if (pos.symbol !== symbol || filled.has(pos.id)) continue;
       const slBefore = pos.sl;
       const atr = (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined;
-      const fills = applyTrade(pos, { time, price, qty }, exitConfigFor(this.paper, pos.symbol), mark, atr);
+      const fills = applyTrade(pos, { time, price, qty }, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId)), mark, atr);
       if (fills.length) this.applyFills(pos, fills);
       else if (pos.sl !== slBefore) { this.persist(pos); this.emit('position', { type: 'updated', position: pos }); }
     }
@@ -410,7 +412,7 @@ export class PaperEngine extends EventEmitter {
     if (!pos) return undefined;
     if (side && pos.side !== side) return undefined;
     const fallback = price ?? this.marks.get(symbol) ?? pos.entryPrice;
-    const fills = applyScriptExit(pos, exitType, price, at, exitConfigFor(this.paper, pos.symbol), exitMode, fallback);
+    const fills = applyScriptExit(pos, exitType, price, at, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId)), exitMode, fallback);
     if (fills.length) this.applyFills(pos, fills);
     return pos;
   }
@@ -441,7 +443,7 @@ export class PaperEngine extends EventEmitter {
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
-      const pcfg = exitConfigFor(this.paper, pos.symbol);
+      const pcfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId));
       const slBefore = pos.sl;
       const fills = applyLiveBar(pos, bar, pcfg, eventAt, (pcfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       if (fills.length) this.applyFills(pos, fills);

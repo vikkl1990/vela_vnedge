@@ -548,3 +548,23 @@ test('the trail gives back less as a trade grows, and tightens when it stalls', 
   assert.equal(Math.round(stepped.sl!), 121);
   assert.equal(Math.round(flat.sl!), 118);
 });
+
+test('exit rules layer: the fleet, then the market, then the scanner', () => {
+  const base = { ...cfg, floorAtR: 1, floorKeepR: 0.5, trailAfterR: 1.5, tpSplit: [0, 0, 1] as [number, number, number],
+    exitBySymbol: { AKEUSD: { trailAfterR: 1.5, floorAtR: 0.75 } } }
+  const scanner = { tpSplit: [0.5, 0.3, 0.2] as [number, number, number], trailAfterR: 1 }
+
+  // nothing set: the fleet's policy
+  assert.equal(exitConfigFor(base, 'BTCUSD').trailAfterR, 1.5)
+  // the market speaks
+  assert.equal(exitConfigFor(base, 'AKEUSD').floorAtR, 0.75)
+  // the scanner speaks louder, and only about what it names
+  const both = exitConfigFor(base, 'AKEUSD', scanner)
+  assert.equal(both.trailAfterR, 1, 'the scanner overrides the market')
+  assert.equal(both.floorAtR, 0.75, 'what the scanner is silent about still comes from the market')
+  assert.equal(both.floorKeepR, 0.5, 'and the rest from the fleet')
+  assert.deepEqual(both.tpSplit, [0.5, 0.3, 0.2])
+  // nothing is mutated
+  assert.equal(base.trailAfterR, 1.5)
+  assert.deepEqual(base.tpSplit, [0, 0, 1])
+})
