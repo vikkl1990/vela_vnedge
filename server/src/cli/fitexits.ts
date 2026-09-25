@@ -37,6 +37,13 @@ const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = [
   { name: 'be@0.5+trail1', over: { floorAtR: 0.5, floorKeepR: 0, trailAfterR: 1 } },
   { name: 'be@0.5+tight', over: { floorAtR: 0.5, floorKeepR: 0, trailGiveBackPct: 25 } },
   { name: 'trail@1', over: { trailAfterR: 1 } },
+  // smarter trailing: tighten as the trade grows, and when it stops making highs
+  { name: 'steps 2R/4R', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]] } },
+  { name: 'steps 1.5R/3R', over: { trailAfterR: 1, trailSteps: [[1.5, 30], [3, 15]] } },
+  { name: 'stall 30m', over: { trailAfterR: 1, trailStall: { minutes: 30, factor: 0.5 } } },
+  { name: 'stall 60m', over: { trailAfterR: 1, trailStall: { minutes: 60, factor: 0.5 } } },
+  { name: 'steps+stall', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 } } },
+  { name: 'atr trail 2.5', over: { trailAfterR: 1, trailAtrMult: 2.5 } },
 ];
 
 const fleet = Object.entries(cfg.scanners).filter(([, v]) => v.enabled && !v.hidden)

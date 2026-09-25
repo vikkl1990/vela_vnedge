@@ -42,7 +42,12 @@ export function TradePath({ id, title, onClose }: { id: number | null; title?: s
     const hi = Math.max(1.25, ...rs, ...targets.filter(t => t.r <= 8).map(t => t.r))
     const x = (t: number) => padL + ((t - t0) / Math.max(1, t1 - t0)) * (w - padL - padR)
     const y = (r: number) => h - padY - ((r - lo) / Math.max(0.01, hi - lo)) * (h - padY * 2)
-    const peak = path.reduce((a, p) => (p.r > a.r ? p : a), path[0])
+    // the peak the position itself recorded, which sees intra-bar highs the minute samples miss —
+    // otherwise the marker and the figure under the chart disagree
+    const sampled = path.reduce((a, p) => (p.r > a.r ? p : a), path[0])
+    const peak = lv.peakR != null && lv.peakR >= sampled.r
+      ? { at: lv.peakAt ?? sampled.at, r: lv.peakR, fromSamples: false }
+      : { at: sampled.at, r: sampled.r, fromSamples: true }
     // the stop as it actually stood, stepped: this is the floor and the trail ratcheting
     const stopLine = path.filter(p => p.sl != null).map(p => `${x(p.at)},${y(rOf(p.sl!))}`).join(' ')
     return { w, h, padL, padR, x, y, lo, hi, peak, targets, rOf, stopLine, line: path.map(p => `${x(p.at)},${y(p.r)}`).join(' ') }
@@ -112,7 +117,7 @@ export function TradePath({ id, title, onClose }: { id: number | null; title?: s
           {!path.some(p => p.event) && <p className="muted small">No level event yet — the violet line is the result, the dashed one the stop as it stands.</p>}
           <p className="muted small">
             {path.length} samples · one a minute plus every level event
-            {lv?.peakR != null && ` · peak ${lv.peakR.toFixed(2)}R`}
+            {lv?.peakR != null && ` · peak ${lv.peakR.toFixed(2)}R`}{chart.peak.fromSamples && lv?.peakR != null && ' (intra-bar)'}
             {lv?.worstR != null && ` · worst ${lv.worstR.toFixed(2)}R`}
             {lv?.exitReason && ` · exited ${lv.exitReason}`}
           </p>

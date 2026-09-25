@@ -751,7 +751,11 @@ select {
 .row-actions { display: inline-flex; gap: 6px; align-items: center; }
 
 /* ---------- tables ---------- */
-.table-wrap { width: 100%; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; max-width: 100%; }
+.table-wrap { width: 100%; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; max-width: 100%; }
+/* the horizontal scrollbar is a hint that a column is off-screen, not a fixture: keep it out of the way */
+.table-wrap::-webkit-scrollbar { height: 6px; width: 6px; }
+.table-wrap::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+.table-wrap::-webkit-scrollbar-track { background: transparent; }
 .panel .table-wrap { border-radius: 0 0 var(--radius) var(--radius); }
 .table {
   width: 100%;

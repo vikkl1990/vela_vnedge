@@ -130,7 +130,19 @@ export interface PaperConfig {
    * so the point at which protection should arm is not the same on BTCUSD as on a small alt. Only the
    * keys given are overridden; everything else falls back to the global policy.
    */
-  exitBySymbol?: Record<string, Partial<Pick<PaperConfig, 'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'fallbackRR' | 'tpSplit'>>>;
+  exitBySymbol?: Record<string, Partial<Pick<PaperConfig, 'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall'>>>;
+  /**
+   * Give back less of the peak as a trade grows: `[[2, 30], [4, 20]]` keeps the flat
+   * `trailGiveBackPct` until +2R, then gives back 30%, then 20% past +4R. A runner needs room early
+   * and deserves tighter protection once it is large. Empty means one flat percentage at every size.
+   */
+  trailSteps?: Array<[number, number]>;
+  /**
+   * Tighten when a trade stops making new highs. After `minutes` without a new peak the give-back is
+   * multiplied by `factor` (0.5 halves it). A trade that has stalled is usually over — the median
+   * stopped trade sat 44 minutes between its peak and its stop.
+   */
+  trailStall?: { minutes: number; factor: number };
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
@@ -392,6 +404,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     trendExit: { enabled: false, emaLen: 20, minR: 1 },
     trendGate: { enabled: false, emaLen: 50, tf: '', mode: 'follow' },
     exitBySymbol: {},
+    trailSteps: [],
+    trailStall: { minutes: 0, factor: 1 },
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
     maxOpenPositions: 20,
@@ -509,6 +523,8 @@ export function validateConfig(c: AppConfig): string[] {
     if (o.fallbackRR && !(o.fallbackRR.length === 3 && o.fallbackRR.every(v => v > 0))) errs.push(`paper.exitBySymbol.${sym}.fallbackRR needs three positive multiples`);
     if (o.tpSplit && !(o.tpSplit.length === 3 && Math.abs(o.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push(`paper.exitBySymbol.${sym}.tpSplit must be three fractions summing to 1`);
   }
+  if (p.trailSteps?.length && !p.trailSteps.every(x => Array.isArray(x) && x.length === 2 && x[0] > 0 && x[1] >= 0 && x[1] <= 100)) errs.push('paper.trailSteps must be [atR, giveBackPct] pairs');
+  if (p.trailStall && !(p.trailStall.minutes >= 0 && p.trailStall.factor > 0 && p.trailStall.factor <= 1)) errs.push('paper.trailStall needs minutes ≥ 0 and 0 < factor ≤ 1');
   if (p.trendGate) {
     if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');
     if (!['follow', 'fade', 'off'].includes(p.trendGate.mode)) errs.push('paper.trendGate.mode must be follow|fade|off');

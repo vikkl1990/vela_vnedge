@@ -408,7 +408,7 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   // 3. trail LAST: this bar's exits were checked against the stop as it stood when the bar
   // opened, so a stop raised here only applies from the next bar. Trailing earlier would let
   // the same bar's high both raise the stop and then trigger it.
-  trailStop(pos, long ? bar.high : bar.low, cfg, atrNow);
+  trailStop(pos, long ? bar.high : bar.low, cfg, atrNow, bar.time);
   const stale = staleExit(pos, bar, cfg, (TF_SECONDS[pos.tf] ?? 0) * 1000);
   if (stale) fills.push(stale);
   return fills;
@@ -418,7 +418,24 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
  * Advance the trailing stop from the best price seen. Never moves against the position and does
  * nothing until the trade has shown `trailAfterR` of favourable excursion.
  */
-export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, atrNow?: number): void {
+/**
+ * How much of the peak this trade gives back, given how large it is and how long it has stalled.
+ *
+ * A flat percentage treats a 1R trade and a 5R trade the same, which is backwards: the small one
+ * needs room to become the large one, and the large one is worth protecting. `trailSteps` tightens
+ * with size; `trailStall` tightens with time, because a trade that has stopped making highs is
+ * usually finished — across 96 reconstructed trades the median stopped one sat 44 minutes between
+ * its peak and its stop.
+ */
+export function giveBackPct(peakR: number, cfg: PaperConfig, minutesSincePeak = 0): number {
+  let give = cfg.trailGiveBackPct ?? 0;
+  for (const [atR, pct] of cfg.trailSteps ?? []) if (peakR >= atR) give = pct;
+  const stall = cfg.trailStall;
+  if (stall && stall.minutes > 0 && minutesSincePeak >= stall.minutes) give *= stall.factor;
+  return give;
+}
+
+export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, atrNow?: number, at?: number): void {
   if (pos.status !== 'open') return;
   const base = pos.slOriginal ?? pos.sl;
   if (base === null) return;
@@ -427,8 +444,9 @@ export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, a
   const long = pos.side === 'long';
   const dir = long ? 1 : -1;
   const r = ((favourable - pos.entryPrice) * dir) / risk;
-  pos.peakR = Math.max(pos.peakR ?? 0, r);
-  const peak = pos.peakR;
+  if (r > (pos.peakR ?? 0)) { pos.peakR = r; if (at) pos.peakAt = at; }
+  const peak = pos.peakR ?? 0;
+  const stalledMin = at && pos.peakAt ? (at - pos.peakAt) / 60_000 : 0;
 
   // Two independent protections, whichever is higher wins. The floor banks a small gain once
   // the trade clears `floorAtR` and then stops moving, so it does not cap a runner; the trail
@@ -443,7 +461,7 @@ export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, a
       // distance measured in today's volatility, converted into R so the rest of the maths is shared
       keptR = Math.max(keptR, peak - (atrMult * atrNow) / risk);
     } else {
-      const give = cfg.trailGiveBackPct ?? 0;
+      const give = giveBackPct(peak, cfg, stalledMin);
       keptR = Math.max(keptR, give > 0 ? peak * (1 - give / 100) : peak - (cfg.trailDistanceR > 0 ? cfg.trailDistanceR : 1));
     }
   }
@@ -627,7 +645,7 @@ export function applyTrade(pos: Position, t: TapePrint, cfg: PaperConfig, markPr
   // 3. trail and profit floor LAST, as on bars: this print was judged against the stop as it stood,
   // and a stop it raises applies from the next print. Without this, tape mode silently ran without
   // the exit rules the strategy was chosen with.
-  trailStop(pos, t.price, cfg, atrNow);
+  trailStop(pos, t.price, cfg, atrNow, t.time);
   return fills;
 }
 

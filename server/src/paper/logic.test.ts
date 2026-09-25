@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop, giveBackPct } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -523,4 +523,28 @@ test('a market can override the exit policy without touching the global one', ()
     levelsSource: 'script', signalId: null, cfg: base, bt: true });
   trailStop(q, 105, base);
   assert.equal(q.sl, 90, 'the global policy has not armed at +0.5R');
+});
+
+test('the trail gives back less as a trade grows, and tightens when it stalls', () => {
+  const c = { ...cfg, trailGiveBackPct: 40, trailSteps: [[2, 30], [4, 20]] as Array<[number, number]>, trailStall: { minutes: 30, factor: 0.5 } };
+  assert.equal(giveBackPct(1, c), 40, 'below the first step it is the flat percentage');
+  assert.equal(giveBackPct(2, c), 30);
+  assert.equal(giveBackPct(3.9, c), 30);
+  assert.equal(giveBackPct(4, c), 20, 'a large runner is protected harder');
+  // a trade that has stopped making highs is tightened by the stall factor
+  assert.equal(giveBackPct(1, c, 29), 40);
+  assert.equal(giveBackPct(1, c, 30), 20);
+  assert.equal(giveBackPct(4, c, 60), 10);
+  // both are off by default, so nothing changes for a configuration that does not set them
+  assert.equal(giveBackPct(5, { ...cfg, trailGiveBackPct: 40 }, 999), 40);
+
+  // and it moves a real stop: 3R peak, stepped give-back of 30% keeps 2.1R rather than 1.8R
+  const mk = (over: Partial<typeof c>) => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m',
+    side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [200], riskAmount: 100,
+    levelsSource: 'script', signalId: null, cfg: { ...c, ...over }, bt: true });
+  const stepped = mk({}); trailStop(stepped, 130, { ...c, trailAfterR: 1 }, undefined, 0);
+  const flat = mk({ trailSteps: [] }); trailStop(flat, 130, { ...c, trailAfterR: 1, trailSteps: [] }, undefined, 0);
+  assert.ok(stepped.sl! > flat.sl!, `stepped ${stepped.sl} should protect more than flat ${flat.sl}`);
+  assert.equal(Math.round(stepped.sl!), 121);
+  assert.equal(Math.round(flat.sl!), 118);
 });

@@ -82,9 +82,11 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
     mirrored,
     text: mirrored ? `— paper book and ${exec.data?.host ?? mode} account` : mode === 'paper' ? '(paper only)' : `(paper only; ${mode} is in dry-run)`,
   }
-  const narrow = useMediaQuery('(max-width: 1440px)')
+  const narrow = useMediaQuery('(max-width: 1680px)')
   const veryNarrow = useMediaQuery('(max-width: 1180px)')
   const dense = compact || veryNarrow
+  // with a 100%-at-TP3 split nothing is realised until the trade closes, so the column is dead weight
+  const anyRealized = positions.some((p) => p.realizedPnl !== 0)
   const { data: markets } = useMarkets()
   const close = useClosePosition()
   const toast = useToast()
@@ -189,10 +191,14 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
       { key: 'upnl', header: 'Unrealized', numeric: true, value: (p) => p.unrealizedPnl, render: (p) => <LiveUpnl p={p} /> },
-      ...(dense
+      ...(dense || !anyRealized
         ? []
         : ([
             { key: 'rpnl', header: 'Realized', numeric: true, value: (p) => p.realizedPnl, render: (p) => <Pnl value={p.realizedPnl} /> },
+          ] as Column<Position>[])),
+      ...(dense
+        ? []
+        : ([
             { key: 'r', header: 'R', numeric: true, value: (p) => p.rMultiple, render: (p) => <span className={`mono ${p.rMultiple >= 0 ? 'gain' : 'loss'}`}>{fmtR(p.rMultiple)}</span> },
             { key: 'risk', header: 'Risk', numeric: true, value: (p) => p.riskAmount, render: (p) => <span className="mono">{fmtMoney(p.riskAmount)}</span> },
           ] as Column<Position>[])),
@@ -214,7 +220,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         ),
       },
     ]
-  }, [markets, compact, dense, narrow, pending])
+  }, [markets, compact, dense, narrow, pending, anyRealized])
 
   return (
     <>
