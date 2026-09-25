@@ -233,3 +233,27 @@ test('market fills cross the live spread when a fresh quote exists (PR #3 idea)'
   assert.equal(engine.marketPrice('BTCUSD', 'buy', 100, { ...cfg, useSpread: false }, now).source, 'slippage');
   db.db.close();
 });
+
+test('a trade records its path and its peak, so a loss can be read back without replaying candles', t => {
+  const { engine, signal, db } = setup(t, { liquidation: false, maxSignalAgeSec: 0, fillSource: 'candles', latencyMs: 0 });
+  signal('long', 60_000);
+  const p = engine.openPositions()[0];
+  assert.ok(p, 'the entry filled');
+  const risk = p.entryPrice - p.sl!;
+
+  // up two R, then back through the stop
+  engine.onBar('BTCUSD', { time: 120_000, high: p.entryPrice + 2 * risk, low: p.entryPrice, close: p.entryPrice + 2 * risk }, 180_000);
+  assert.ok((p.peakR ?? 0) >= 1.5, `peak ${p.peakR}`);
+  const peakAt = p.peakAt;
+  engine.onBar('BTCUSD', { time: 180_000, high: p.entryPrice + 2 * risk, low: p.sl! - risk, close: p.sl! - risk }, 240_000);
+  assert.equal(p.status, 'closed');
+
+  const path = db.all<any>('SELECT * FROM position_path WHERE position_id=? ORDER BY at', p.id);
+  assert.ok(path.length >= 2, `path has ${path.length} rows`);
+  assert.ok(path.some(r => r.event), 'level events are recorded, not only samples');
+  assert.ok(Math.max(...path.map(r => r.r)) >= 1.5, 'the path shows the trade was in profit before it died');
+
+  const row = db.get<any>('SELECT peak_r, peak_at, worst_r FROM positions WHERE id=?', p.id);
+  assert.ok(row.peak_r >= 1.5 && row.peak_at === peakAt, 'the peak is on the position itself');
+  assert.ok(row.worst_r <= row.peak_r, 'the worst excursion observed is never above the peak');
+});

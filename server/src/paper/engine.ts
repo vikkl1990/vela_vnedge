@@ -442,8 +442,12 @@ export class PaperEngine extends EventEmitter {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
       const pcfg = exitConfigFor(this.paper, pos.symbol);
+      const slBefore = pos.sl;
       const fills = applyLiveBar(pos, bar, pcfg, eventAt, (pcfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       if (fills.length) this.applyFills(pos, fills);
+      for (const f of fills) this.recordPath(pos, f.price, eventAt, f.reason, `${f.qty} at ${f.price}`);
+      if (pos.sl !== slBefore && pos.status === 'open') this.recordPath(pos, bar.close, eventAt, 'stop moved', `${slBefore} → ${pos.sl}`);
+      if (pos.status === 'open') this.recordPath(pos, bar.close, eventAt);
       if (pos.status === 'open' && this.paper.trendExit?.enabled && !historical) {
         const f = trendExit(pos, this.trendFor?.(pos.symbol, pos.tf), bar.close, eventAt, this.paper);
         if (f) this.applyFills(pos, [f]);
@@ -563,6 +567,42 @@ export class PaperEngine extends EventEmitter {
     return Number(r.lastInsertRowid);
   }
 
+  /**
+   * The path a trade takes, from entry to exit.
+   *
+   * `worstR` is the worst result *observed while sampling*, so a trade that runs up immediately and
+   * never returns has a positive worst — it is the drawdown seen, not an assumption about the ticks
+   * between samples.
+   *
+   * A closed trade in the database says where it ended but nothing about how it got there: the row
+   * cannot answer "was it in profit before the stop", which is the first question anyone asks of a
+   * loss. One row per sample or level event fixes that, and the peak and worst excursion are kept on
+   * the position itself so the common question needs no replay at all.
+   */
+  private lastPathAt = new Map<number, number>();
+  private peakSeen = new Map<number, number>();
+  private readonly pathEveryMs = 60_000;
+
+  private recordPath(p: Position, price: number, at: number, event?: string, note?: string): void {
+    if (!(p.riskAmount > 0) || !Number.isFinite(price)) return;
+    const r = openR(p, price);
+    let moved = false;
+    // the trail raises peakR itself from intra-bar highs, so the timestamp is taken from whenever the
+    // magnitude last increased — the bar on which the peak was observed, not a separate estimate
+    p.peakR = Math.max(p.peakR ?? -Infinity, r);
+    if ((p.peakR ?? -Infinity) > (this.peakSeen.get(p.id) ?? -Infinity)) { this.peakSeen.set(p.id, p.peakR!); p.peakAt = at; moved = true; }
+    if (r < (p.worstR ?? Infinity)) { p.worstR = r; p.worstAt = at; moved = true; }
+    // written straight away: a fill persists the position before this runs, and a closed trade is
+    // never persisted again, so waiting for the next persist would lose the peak of the last bar
+    if (moved) this.db.run('UPDATE positions SET peak_r=?, peak_at=?, worst_r=?, worst_at=? WHERE id=?', p.peakR ?? null, p.peakAt ?? null, p.worstR ?? null, p.worstAt ?? null, p.id);
+    const last = this.lastPathAt.get(p.id) ?? 0;
+    if (!event && at - last < this.pathEveryMs) return;
+    this.lastPathAt.set(p.id, at);
+    this.db.run('INSERT INTO position_path(position_id, at, price, r, sl, event, note) VALUES (?,?,?,?,?,?,?)',
+      p.id, at, price, r, p.sl ?? null, event ?? null, note ?? null);
+    if (p.status !== 'open') { this.lastPathAt.delete(p.id); this.peakSeen.delete(p.id); }
+  }
+
   private persist(p: Position) {
     this.db.run(
       `UPDATE positions SET status=?, scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, qty=?, qty_open=?, contract_value=?, entry_price=?, entry_at=?, sl=?, sl_original=?, tp=?, tp_hit=?, break_even=?,
@@ -570,6 +610,7 @@ export class PaperEngine extends EventEmitter {
       p.status, p.scannerId, p.scannerName, p.symbol, p.tf, p.side, p.qty, p.qtyOpen, p.contractValue, p.entryPrice, p.entryAt, p.sl, p.slOriginal, JSON.stringify(p.tp), JSON.stringify(p.tpHit), p.breakEven ? 1 : 0,
       p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs, leverage: p.leverage, marginLeverage: p.marginLeverage, liqPrice: p.liqPrice, features: p.features, mlProb: p.mlProb, lastPriceBar: p.lastPriceBar, peakR: p.peakR }), this.book, p.id,
     );
+    this.db.run('UPDATE positions SET peak_r=?, peak_at=?, worst_r=?, worst_at=? WHERE id=?', p.peakR ?? null, p.peakAt ?? null, p.worstR ?? null, p.worstAt ?? null, p.id);
   }
 
   private persistFill(p: Position, f: Fill) {

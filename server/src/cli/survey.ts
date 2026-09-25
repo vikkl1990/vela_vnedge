@@ -47,7 +47,7 @@ if (process.env.GATE) {
 }
 
 const out = fs.createWriteStream(process.env.OUT ?? '/tmp/survey.tsv', { flags: process.env.APPEND ? 'a' : 'w' });
-if (!process.env.APPEND) out.write(['scanner', 'tf', 'symbol', 'trades', 'wins', 'net', 'pf', 'avgR', 'netStress', 'windowsUp', 'days'].join('\t') + '\n');
+if (!process.env.APPEND) out.write(['scanner', 'tf', 'symbol', 'trades', 'wins', 'net', 'pf', 'avgR', 'netStress', 'windowsUp', 'days', 'trades1', 'avgR1', 'trades2', 'avgR2'].join('\t') + '\n');
 
 const registry = new ScannerRegistry();
 const rest = new DeltaRest();
@@ -91,7 +91,15 @@ async function runOne(j: Job): Promise<'entries' | 'silent' | 'failed'> {
   for (const x of t) w[Math.min(7, Math.floor((x.entryAt - b[0].time) / span))] += x.pnl;
   const gp = t.filter(x => x.pnl > 0).reduce((a, x) => a + x.pnl, 0), gl = -t.filter(x => x.pnl <= 0).reduce((a, x) => a + x.pnl, 0);
   out.write([s.id, j.tf, j.symbol, t.length, t.filter(x => x.pnl > 0).length, (gp - gl).toFixed(2), (gl > 0 ? gp / gl : gp > 0 ? 99 : 0).toFixed(3),
-    (t.length ? t.reduce((a, x) => a + (x.rMultiple ?? 0), 0) / t.length : 0).toFixed(3), stressed.toFixed(2), w.filter(x => x > 0).length, ((b.at(-1)!.time - b[0].time) / 86400_000).toFixed(0)].join('\t') + '\n');
+    (t.length ? t.reduce((a, x) => a + (x.rMultiple ?? 0), 0) / t.length : 0).toFixed(3), stressed.toFixed(2), w.filter(x => x > 0).length, ((b.at(-1)!.time - b[0].time) / 86400_000).toFixed(0),
+    // the same result split in half by time: a scanner whose edge exists in both halves is a
+    // different proposition from one that had a good month
+    ...(() => {
+      const split = b[Math.floor(b.length / 2)].time;
+      const h = (first: boolean) => t.filter(x => (x.entryAt < split) === first);
+      const R = (xs: any[]) => (xs.length ? xs.reduce((a, x) => a + (x.rMultiple ?? 0), 0) / xs.length : 0).toFixed(3);
+      return [h(true).length, R(h(true)), h(false).length, R(h(false))];
+    })()].join('\t') + '\n');
   return 'entries';
 }
 

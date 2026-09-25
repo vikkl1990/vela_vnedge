@@ -13,6 +13,8 @@ export interface SignalRow {
 const ADDED_COLUMNS: Array<[string, string]> = [
   ['orders', 'ref_price REAL'], ['orders', 'bid REAL'], ['orders', 'ask REAL'],
   ['orders', 'quote_at INTEGER'], ['orders', 'price_source TEXT'],
+  // how far a trade actually travelled, so a closed trade can be judged without replaying candles
+  ['positions', 'peak_r REAL'], ['positions', 'peak_at INTEGER'], ['positions', 'worst_r REAL'], ['positions', 'worst_at INTEGER'],
 ];
 
 const SCHEMA = `
@@ -78,6 +80,14 @@ CREATE TABLE IF NOT EXISTS incubator_events (
 );
 CREATE INDEX IF NOT EXISTS idx_incubator_events_at ON incubator_events(at DESC);
 CREATE INDEX IF NOT EXISTS idx_positions_pair ON positions(bt, scanner_id, symbol, tf, status);
+
+-- The path a trade took from entry to exit: one row per sample or level event, so a trade can be
+-- read back minute by minute — where it peaked, when the stop moved, which targets it touched.
+CREATE TABLE IF NOT EXISTS position_path (
+  position_id INTEGER NOT NULL, at INTEGER NOT NULL, price REAL NOT NULL, r REAL NOT NULL,
+  sl REAL, event TEXT, note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_position_path ON position_path(position_id, at);
 `;
 
 export interface BackupResult { file: string; bytes: number; at: number; ms: number; pruned: string[] }

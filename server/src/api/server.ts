@@ -273,6 +273,13 @@ export class ApiServer {
     });
     this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => positionView(p, a.paper.mark(p.symbol), a.marks.mark(p.symbol) ?? null)));
     this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return positionView(pos); });
+    // the path a trade took, for the forensic view: samples plus level events (decision 35)
+    this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {
+      const id = Number(p.id);
+      const pos = a.paper.position(id) ?? a.db.get('SELECT * FROM positions WHERE id=?', id);
+      if (!pos) throw new HttpError(404, 'no such position');
+      return { position: id, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
+    });
     this.add('POST', '/api/paper/close-all', () => ({ closed: a.paper.closeAll() }));
     this.add('POST', '/api/paper/reset', () => { a.paper.reset(); return a.paper.stats(); });
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined }));

@@ -896,3 +896,26 @@ mechanism is for: the exceptions the evidence identifies, not a policy fitted ma
 
 **Revisit if** a market's exemption stops paying, or if the fleet's peak-to-realised gap (81.8R
 against −18.9R) closes enough that giving back less matters more than staying in.
+
+## 35. Trades record the path they took, not only where they ended
+
+A closed row says a trade lost 1R at 03:27 and nothing else. It cannot answer the first question
+anyone asks of a loss — *was it in profit before it died* — and answering it meant re-downloading
+candles and replaying them, which is how decision 34 was measured and is far too slow to do casually.
+When the live book was reset mid-review, that history went with it.
+
+The engine now writes `position_path` as a trade runs: a sample a minute plus a row for every level
+event — a target touched, the stop moved by the floor or the trail, the exit — each with the price,
+the result in R at that moment, and the stop as it then stood. The peak and worst excursion are also
+kept on the position itself (`peak_r`, `peak_at`, `worst_r`, `worst_at`), so the common question
+needs no replay at all.
+
+`worst_r` is the worst result *observed while sampling*, not an assumption about the ticks between
+samples: a trade that runs up immediately and never comes back has a positive worst, and that is what
+it should say.
+
+Read it with `npm run forensics` for the last trades, or `npm run forensics -- <id>` for one trade's
+whole path, and over the API at `/api/positions/:id/path`.
+
+**Revisit if** the sampling cost shows up on a busy book — it is one row a minute per open position,
+about 1,500 rows a day at the current fleet, and the interval is one constant.

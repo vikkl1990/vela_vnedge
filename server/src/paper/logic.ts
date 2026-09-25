@@ -54,6 +54,10 @@ export interface Position {
   mlProb?: number | null;
   /** Best favourable excursion seen so far, in R; drives the trailing stop. */
   peakR?: number;
+  /** When the peak was reached, and the worst excursion before it — the forensic view (decision 35). */
+  peakAt?: number;
+  worstR?: number;
+  worstAt?: number;
   /** When the position was actually filled; the backtest stamps `entryAt` with the signal bar's open. */
   openedAt?: number;
   /** Last cumulative live candle observed; retained across restarts. */
