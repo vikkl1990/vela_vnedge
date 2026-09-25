@@ -166,29 +166,38 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
       },
       {
         key: 'tp',
-        header: 'Targets',
+        header: 'Target',
         numeric: true,
         sortable: false,
-        render: (p) => (
-          <span className="mono small tp-list">
-            {[0, 1, 2].map((i) => {
-              // a leg with no contracts allocated can never fill; showing it as a live target misleads
-              const size = p.legs?.[i]
-              const funded = size === undefined ? true : size > 0
-              const share = funded && p.qty ? Math.round(((size ?? p.qty) / p.qty) * 100) : 0
-              return (
-                <span
-                  key={i}
-                  className={`${p.tpHit?.[i] ? 'tp-hit' : ''} ${funded ? '' : 'tp-unfunded'}`}
-                  title={!funded ? `TP${i + 1} carries no contracts under the current split, so it cannot fill` : p.tpHit?.[i] ? `TP${i + 1} hit` : `TP${i + 1}: ${share}% of the position`}
-                >
-                  {fmtPrice(p.tp?.[i], tick(p.symbol))}
-                  {funded && share > 0 && share < 100 ? <sup className="tp-share">{share}%</sup> : null}
+        render: (p) => {
+          // Only a target carrying contracts can fill. With the fleet's 100%-at-TP3 split that is
+          // one price, and showing three invites the question of why two of them never do anything
+          // (decision 38: every ladder tested was worse than riding to TP3). The unfunded levels stay
+          // in the tooltip, because they are still where the script drew them.
+          const dir = p.side === 'long' ? 1 : -1
+          const risk = Math.abs(p.entryPrice - (p.slOriginal ?? p.sl ?? p.entryPrice))
+          const rOf = (x: number) => (risk > 0 ? ((x - p.entryPrice) * dir) / risk : 0)
+          const all = [0, 1, 2].filter((i) => typeof p.tp?.[i] === 'number')
+          const funded = all.filter((i) => (p.legs?.[i] ?? 1) > 0)
+          const shown = funded.length ? funded : all
+          const dormant = all.filter((i) => !funded.includes(i))
+          const title = [
+            ...shown.map((i) => `TP${i + 1} ${fmtPrice(p.tp![i] as number, tick(p.symbol))} (+${rOf(p.tp![i] as number).toFixed(1)}R)${p.tpHit?.[i] ? ' — hit' : ''}`),
+            ...(dormant.length ? [`${dormant.map((i) => `TP${i + 1} ${fmtPrice(p.tp![i] as number, tick(p.symbol))}`).join(', ')} — no contracts allocated, cannot fill`] : []),
+            'The trail usually ends these trades before a target is reached.',
+          ].join('\n')
+          return (
+            <span className="mono small tp-list" title={title}>
+              {shown.map((i) => (
+                <span key={i} className={p.tpHit?.[i] ? 'tp-hit' : ''}>
+                  {fmtPrice(p.tp![i] as number, tick(p.symbol))}
+                  <sup className="tp-share">+{rOf(p.tp![i] as number).toFixed(1)}R</sup>
                 </span>
-              )
-            })}
-          </span>
-        ),
+              ))}
+              {dormant.length ? <span className="tp-dormant">+{dormant.length}</span> : null}
+            </span>
+          )
+        },
       },
       { key: 'upnl', header: 'Unrealized', numeric: true, value: (p) => p.unrealizedPnl, render: (p) => <LiveUpnl p={p} /> },
       ...(dense || !anyRealized
