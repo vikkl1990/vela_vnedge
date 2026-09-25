@@ -276,9 +276,16 @@ export class ApiServer {
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
     this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {
       const id = Number(p.id);
-      const pos = a.paper.position(id) ?? a.db.get('SELECT * FROM positions WHERE id=?', id);
-      if (!pos) throw new HttpError(404, 'no such position');
-      return { position: id, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
+      const row = a.db.get<any>('SELECT * FROM positions WHERE id=?', id);
+      if (!row) throw new HttpError(404, 'no such position');
+      // the levels the path is read against: break even, the stop it opened with, and the targets
+      const levels = {
+        id, symbol: row.symbol, side: row.side, entryPrice: row.entry_price, entryAt: row.entry_at,
+        slOriginal: row.sl_original ?? row.sl, sl: row.sl, tp: JSON.parse(row.tp || '[]') as number[],
+        tpHit: JSON.parse(row.tp_hit || '[]') as number[], peakR: row.peak_r ?? null, peakAt: row.peak_at ?? null,
+        worstR: row.worst_r ?? null, exitAt: row.exit_at ?? null, exitPrice: row.exit_price ?? null, exitReason: row.exit_reason ?? null,
+      };
+      return { position: levels, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
     });
     this.add('POST', '/api/paper/close-all', () => ({ closed: a.paper.closeAll() }));
     this.add('POST', '/api/paper/reset', () => { a.paper.reset(); return a.paper.stats(); });

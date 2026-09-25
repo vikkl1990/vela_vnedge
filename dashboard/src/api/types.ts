@@ -528,6 +528,25 @@ export interface ExecutionStatus {
   lastReconcile: { at: number; ok: boolean; drift: Array<{ kind?: string; symbol?: string; detail?: string } | string>; positions: number; orders: number; error?: string } | null
 }
 
+/** The levels a path is read against: break even, the stop it opened with, and the targets. */
+export interface PathLevels {
+  id: number
+  symbol: string
+  side: 'long' | 'short'
+  entryPrice: number
+  entryAt: number
+  slOriginal: number | null
+  sl: number | null
+  tp: number[]
+  tpHit: number[]
+  peakR: number | null
+  peakAt: number | null
+  worstR: number | null
+  exitAt: number | null
+  exitPrice: number | null
+  exitReason: string | null
+}
+
 /** One sample or level event on a trade's path from entry to exit (decision 35). */
 export interface PathPoint {
   at: number
