@@ -957,3 +957,30 @@ mechanism has earned its place by holding the exceptions rather than fitting eve
 
 **Revisit if** the exempt markets stop being exceptional, or if a forward sample disagrees with the
 +0.017R per trade this predicts.
+
+## 37. Tested: the learned model as an entry filter. It buys R per trade by throwing away total R
+
+The Learn page's per-scanner logistic regression has never been wired to anything (`ml.minProb: 0`),
+and its training data was mostly scripts the fleet does not trade — `structure-anchored-vwap` had two
+samples. So it was measured the way everything else here is: a model trained on the first half of
+each surviving scanner's history, applied as an entry filter to the second half.
+
+No threshold improves total R anywhere. Where it improves R per trade it does so by discarding
+trades, which is not the same thing:
+
+- `smart-money-breakout` 1h: +0.126R over 386 trades becomes +0.187R at a 0.6 threshold — but keeps
+  23% of them, so 49R becomes 16R.
+- `kinetic-momentum` 1h: +0.074R becomes +0.156R at 0.55, keeping 38%: 21R becomes 17R.
+- `high-volume-breakout` 1h: filtering at all destroys it, +0.078R to −0.008R.
+- `structure-anchored-vwap`, the one scanner with a decisive edge: every threshold keeps essentially
+  every trade and changes nothing. The model has no opinion about it.
+
+That is the trap the harness was built to catch, and it is the same shape as decision 33's fade
+result: a filter that doubles R per trade while dropping most of them has not made money.
+
+`ml.minProb` stays 0 and `useAsScore` stays false. The model is a readout, not a gate. Note that
+turning `useAsScore` on would put the model in charge of leverage — the path that liquidated
+MUBARAKUSD before decision 32 capped it.
+
+**Revisit if** the surviving fleet runs long enough to train on its own live trades rather than on
+backtests of scripts it does not trade.
