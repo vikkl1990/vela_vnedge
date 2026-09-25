@@ -143,6 +143,16 @@ export interface PaperConfig {
    * stopped trade sat 44 minutes between its peak and its stop.
    */
   trailStall?: { minutes: number; factor: number };
+  /**
+   * Close a trade that went a little way and then stopped, before the floor can protect it.
+   *
+   * The floor arms at `floorAtR`; below that a trade has no protection at all, so one that peaks at
+   * +0.5R and turns gives back the half and the full R behind it. On 25 September the owner closed
+   * thirteen such trades by hand for +0.43R each while the nine that ran to the stop cost −8.76R.
+   * This is that judgement as a rule: once the peak is between `minR` and `maxR` and the trade has
+   * gone `minutes` without a new high, take what is there.
+   */
+  earlyStall?: { minR: number; maxR: number; minutes: number };
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
@@ -167,7 +177,7 @@ export interface PaperConfig {
  */
 export type ExitOverride = Partial<Pick<PaperConfig,
   'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' |
-  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall'>>;
+  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall' | 'earlyStall'>>;
 
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
 export type TrendGateMode = 'follow' | 'fade' | 'off';
@@ -540,6 +550,7 @@ export function validateConfig(c: AppConfig): string[] {
   }
   if (p.trailSteps?.length && !p.trailSteps.every(x => Array.isArray(x) && x.length === 2 && x[0] > 0 && x[1] >= 0 && x[1] <= 100)) errs.push('paper.trailSteps must be [atR, giveBackPct] pairs');
   if (p.trailStall && !(p.trailStall.minutes >= 0 && p.trailStall.factor > 0 && p.trailStall.factor <= 1)) errs.push('paper.trailStall needs minutes ≥ 0 and 0 < factor ≤ 1');
+  if (p.earlyStall && !(p.earlyStall.minutes >= 0 && p.earlyStall.minR >= 0 && p.earlyStall.maxR >= p.earlyStall.minR)) errs.push('paper.earlyStall needs minutes ≥ 0 and 0 ≤ minR ≤ maxR');
   if (p.trendGate) {
     if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');
     if (!['follow', 'fade', 'off'].includes(p.trendGate.mode)) errs.push('paper.trendGate.mode must be follow|fade|off');

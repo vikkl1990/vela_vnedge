@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop, giveBackPct } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop, giveBackPct, earlyStallExit } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -567,4 +567,28 @@ test('exit rules layer: the fleet, then the market, then the scanner', () => {
   // nothing is mutated
   assert.equal(base.trailAfterR, 1.5)
   assert.deepEqual(base.tpSplit, [0, 0, 1])
+})
+
+test('the early stall takes what is there when a small winner stops moving', () => {
+  const c = { ...cfg, floorAtR: 1, earlyStall: { minR: 0.3, maxR: 1, minutes: 30 } }
+  const mk = () => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long',
+    qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [130], riskAmount: 100,
+    levelsSource: 'script', signalId: null, cfg: c, bt: true })
+
+  // peaked at +0.5R and stalled: closed at market
+  const p = mk(); p.peakR = 0.5; p.peakAt = 0
+  assert.equal(earlyStallExit(p, 104, 29 * 60_000, c), null, 'not yet stalled')
+  const f = earlyStallExit(p, 104, 30 * 60_000, c)
+  assert.ok(f && f.reason === 'stalled')
+  assert.equal(p.status, 'closed')
+
+  // too small to bother with, and large enough that the floor already protects it
+  const small = mk(); small.peakR = 0.2; small.peakAt = 0
+  assert.equal(earlyStallExit(small, 102, 60 * 60_000, c), null)
+  const big = mk(); big.peakR = 1.4; big.peakAt = 0
+  assert.equal(earlyStallExit(big, 112, 60 * 60_000, c), null, 'above maxR the trail has it')
+
+  // off unless configured
+  const off = mk(); off.peakR = 0.5; off.peakAt = 0
+  assert.equal(earlyStallExit(off, 104, 60 * 60_000, { ...cfg }), null)
 })

@@ -4,7 +4,7 @@ import { TF_SECONDS, type AppConfig, type ExitMode, type ExitOverride, type Pape
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor } from './logic.ts';
+  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit } from './logic.ts';
 
 const log = logger.scoped('paper');
 
@@ -450,6 +450,10 @@ export class PaperEngine extends EventEmitter {
       for (const f of fills) this.recordPath(pos, f.price, eventAt, f.reason, `${f.qty} at ${f.price}`);
       if (pos.sl !== slBefore && pos.status === 'open') this.recordPath(pos, bar.close, eventAt, 'stop moved', `${slBefore} → ${pos.sl}`);
       if (pos.status === 'open') this.recordPath(pos, bar.close, eventAt);
+      if (pos.status === 'open' && !historical) {
+        const sf = earlyStallExit(pos, bar.close, eventAt, pcfg);
+        if (sf) this.applyFills(pos, [sf]);
+      }
       if (pos.status === 'open' && this.paper.trendExit?.enabled && !historical) {
         const f = trendExit(pos, this.trendFor?.(pos.symbol, pos.tf), bar.close, eventAt, this.paper);
         if (f) this.applyFills(pos, [f]);

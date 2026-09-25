@@ -1026,3 +1026,44 @@ targets — the dashboard already greys them, which is honest.
 
 **Revisit if** a scanner joins the fleet whose trades reach 2R far more often than these do, since
 the whole result rests on how rarely targets are reached at all.
+
+## 39. Tested: closing a small winner that stalls below the floor. It loses, and the owner's hand does not generalise
+
+On 25 September thirteen trades were closed by hand for **+5.62R**, at +0.43R each and a median 54%
+of their peak, almost all in the 0.3R–1R band where nothing in the system acts: the floor arms at
++1R, so a trade that peaks at half an R and turns gives back the half and the full R behind it. Nine
+trades did exactly that and cost −8.76R. The obvious inference is that the owner was applying a rule
+the bot lacks, so it was written as one — `earlyStall`: once the peak sits between `minR` and `maxR`
+and no new high has come for `minutes`, close at market.
+
+Five settings, against the policy actually deployed, fitted on the first half of 12,000 bars per
+market and scored on the second — 1,813 trades:
+
+| policy | out of sample | vs deployed |
+|---|---|---|
+| **deployed, no early stall** | **+4.1R** | — |
+| stall 0.5R / 60m | −8.7R | −12.8R |
+| stall 0.3R / 45m | −23.4R | −27.5R |
+| stall 0.5R / 30m | −37.3R | −41.4R |
+| stall 0.3R / 30m | −41.2R | −45.3R |
+| stall 0.2R / 20m | −59.1R | −63.2R |
+
+Every variant is worse, monotonically: the earlier and more eagerly the band is touched, the more it
+costs. Per market the best variant helps 5 of 12 and hurts 7, which is a coin flip, and it changes
+only 8 trades in 1,813 — it is not even doing much, and what it does do is negative.
+
+This is the third time the sub-1R band has been tested and the third rejection: break even at +0.5R
+was the worst of fourteen policies in decision 36, the trend-flip exit lost in decision 27, and now
+the stall. The band is where trades are most likely to still be going somewhere, and acting there
+trades a small certain gain for the tail that pays for everything.
+
+Which leaves an honest gap. The thirteen manual closes were real and profitable, and a mechanical
+reading of them is not. Either the day was kind, or the judgement used something the rule cannot see
+— and thirteen samples on one day cannot distinguish those. The `position_path` recorder from
+decision 35 is now running, so the next attempt should characterise what those exits actually looked
+like rather than guessing parameters for them.
+
+`earlyStall` stays off. The mechanism remains, because it costs nothing and the question will come
+back.
+
+**Revisit if** a month of recorded paths shows manual exits clustering somewhere a rule could reach.

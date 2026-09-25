@@ -562,6 +562,23 @@ export function trendExit(pos: Position, trend: 1 | -1 | undefined, price: numbe
   return fillExit(pos, price, pos.qtyOpen, 'trend', at, cfg, true);
 }
 
+/**
+ * Take what is there when a small winner stops going anywhere.
+ *
+ * Below `floorAtR` nothing protects a trade: it can travel half an R, turn, and pay the full stop.
+ * This closes it at market once the peak sits between `minR` and `maxR` and no new high has come for
+ * `minutes` — deliberately narrow, because arming break-even in that band was the worst policy of the
+ * fourteen measured in decision 36, and doing nothing there is what decision 34 left in place.
+ */
+export function earlyStallExit(pos: Position, price: number, at: number, cfg: PaperConfig): Fill | null {
+  const s = cfg.earlyStall;
+  if (!s || !(s.minutes > 0) || pos.status !== 'open' || !(price > 0)) return null;
+  const peak = pos.peakR ?? 0;
+  if (!(peak >= s.minR && peak < s.maxR)) return null;
+  if (pos.peakAt === undefined || at - pos.peakAt < s.minutes * 60_000) return null;   // peakAt can legitimately be 0
+  return fillExit(pos, price, pos.qtyOpen, 'stalled', at, cfg, true);
+}
+
 export function staleExit(pos: Position, bar: { time: number; close: number }, cfg: PaperConfig, tfMs: number): Fill | null {
   const bars = cfg.staleBars ?? 0;
   if (!(bars > 0) || pos.status !== 'open' || !(tfMs > 0)) return null;

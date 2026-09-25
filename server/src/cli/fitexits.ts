@@ -44,6 +44,13 @@ const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = [
   { name: 'stall 60m', over: { trailAfterR: 1, trailStall: { minutes: 60, factor: 0.5 } } },
   { name: 'steps+stall', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 } } },
   { name: 'atr trail 2.5', over: { trailAfterR: 1, trailAtrMult: 2.5 } },
+  // the sub-1R band, where nothing protects a trade today and the owner has been acting by hand
+  { name: 'stall 0.3R/30m', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 }, earlyStall: { minR: 0.3, maxR: 1, minutes: 30 } } },
+  { name: 'stall 0.3R/45m', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 }, earlyStall: { minR: 0.3, maxR: 1, minutes: 45 } } },
+  { name: 'stall 0.5R/30m', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 }, earlyStall: { minR: 0.5, maxR: 1, minutes: 30 } } },
+  { name: 'stall 0.5R/60m', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 }, earlyStall: { minR: 0.5, maxR: 1, minutes: 60 } } },
+  { name: 'stall 0.2R/20m', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 }, earlyStall: { minR: 0.2, maxR: 1, minutes: 20 } } },
+  { name: 'deployed (no early stall)', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 } } },
 ];
 
 const fleet = Object.entries(cfg.scanners).filter(([, v]) => v.enabled && !v.hidden)
