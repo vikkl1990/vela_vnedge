@@ -153,6 +153,15 @@ export interface PaperConfig {
    * gone `minutes` without a new high, take what is there.
    */
   earlyStall?: { minR: number; maxR: number; minutes: number };
+  /**
+   * How a candle that touches both the stop and a target is resolved.
+   *
+   * A 1m bar records the extremes but not their order, so a minute that reaches both is ambiguous.
+   * `stop-first` books the stop, which is the pessimistic reading and the default. `target-first` is
+   * the optimistic one; the gap between them is the most that finer data than 1m could ever be
+   * worth, which is how decision 40 measured whether tick capture is needed at all.
+   */
+  barOrder?: 'stop-first' | 'target-first';
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;

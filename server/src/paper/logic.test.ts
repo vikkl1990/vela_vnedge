@@ -592,3 +592,21 @@ test('the early stall takes what is there when a small winner stops moving', () 
   const off = mk(); off.peakR = 0.5; off.peakAt = 0
   assert.equal(earlyStallExit(off, 104, 60 * 60_000, { ...cfg }), null)
 })
+
+test('a bar that reaches both the stop and a target is resolved pessimistically by default', () => {
+  const mk = (order?: 'stop-first' | 'target-first') => openPosition({ id: 1, scannerId: 's', scannerName: 's',
+    symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 95,
+    tp: [110, 120, 130], riskAmount: 50, levelsSource: 'script', signalId: null,
+    cfg: { ...cfg, tpSplit: [0.5, 0.3, 0.2] as [number, number, number], breakEvenAfterTp1: false, barOrder: order }, bt: true })
+  const bar = { time: 1, high: 112, low: 94, close: 96 }   // reaches TP1 and the stop in one minute
+
+  const pessimistic = mk()
+  const a = applyBar(pessimistic, bar, { ...cfg, tpSplit: [0.5, 0.3, 0.2] as [number, number, number], breakEvenAfterTp1: false })
+  assert.equal(a[0].reason, 'sl', 'the default books the stop and nothing else')
+  assert.equal(a.length, 1)
+
+  const optimistic = mk('target-first')
+  const b = applyBar(optimistic, bar, { ...cfg, tpSplit: [0.5, 0.3, 0.2] as [number, number, number], breakEvenAfterTp1: false, barOrder: 'target-first' })
+  assert.equal(b[0].reason, 'tp1', 'the optimistic reading takes the target first')
+  assert.equal(b[1].reason, 'sl', 'and the stop takes what is left')
+})

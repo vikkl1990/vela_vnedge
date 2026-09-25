@@ -1067,3 +1067,49 @@ like rather than guessing parameters for them.
 back.
 
 **Revisit if** a month of recorded paths shows manual exits clustering somewhere a rule could reach.
+
+## 40. 1m is enough: the most that finer data could be worth is 0.006R a trade
+
+Peaks were never the question — the trail already reads each bar's high, so an intra-minute spike to
++2R raises the peak and ratchets the stop exactly as a tick feed would, and levels crossed inside a
+minute fill at the level. The only thing a 1m bar cannot know is the **order** of what happened
+inside it, and `applyBar` resolves that pessimistically: a minute that reaches both the stop and a
+target books the stop.
+
+So the ceiling was measured directly, by resolving the same trades optimistically (`barOrder:
+'target-first'`) — the best that perfect intra-minute knowledge could ever do:
+
+| reading | out of sample | per trade |
+|---|---|---|
+| pessimistic (deployed) | +6.6R | — |
+| optimistic | +17.3R | — |
+| **gap** | **+10.7R over 1,857 trades** | **+0.0057R** |
+
+Six thousandths of an R, and only if every ambiguous minute fell our way; the true value is about
+half that. Fees are 0.066R a trade, eleven times larger. The fleet change is 0.24R, forty times
+larger. Nine of the twelve markets show a gap of exactly zero — no trade ever reached both levels in
+the same minute — and today's 33 live trades replay identically under both readings.
+
+Tape mode is therefore not worth building for accuracy. It would change how every fill is modelled,
+cannot be validated against history, and is chasing a rounding error. Fees cannot be helped by it
+either: the fee in R is 0.118% divided by the stop width, a function of size and stop distance, not
+of how closely the price is watched.
+
+**The tooling fix this exposed.** `replaytargets` hand-rolled its own copy of the exit policy and had
+gone two decisions stale — it still modelled the trail as 60% of the peak from 1.5R. It is replaced
+by `npm run replay`, which drives `applyBar` itself, so the rules it measures are the rules that
+trade. Its first honest run, on today's 33 real trades:
+
+| policy | total | per trade |
+|---|---|---|
+| before 24 September | −1.34R | −0.041R |
+| trail from 1R (decision 34) | −0.33R | −0.010R |
+| **deployed now (decision 36)** | **+1.58R** | **+0.048R** |
+| deployed, read optimistically | +1.58R | +0.048R |
+
+Thirteen of the 33 end better under the deployed policy and none end worse, all of them trades the
+trail carried further before stopping them out at break even. What the account actually made today —
+**+0.74R**, including thirteen closes made by hand — sits between the old policy and the new one.
+
+**Revisit if** a venue is added with materially different intra-minute behaviour, or if the ambiguous
+share of bars rises above a few percent on markets that matter.

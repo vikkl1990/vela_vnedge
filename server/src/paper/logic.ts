@@ -391,10 +391,14 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
     fills.push(fillExit(pos, pos.liqPrice, pos.qtyOpen, 'liquidation', at, cfg, true));
     return fills;
   }
-  // 1. stop-loss
-  if (pos.sl !== null && (long ? bar.low <= pos.sl : bar.high >= pos.sl)) {
+  // 1. stop-loss. A bar records its extremes but not their order, so one that reaches both the stop
+  // and a target is ambiguous: `stop-first` (the default) books the stop, which is the pessimistic
+  // reading. `target-first` inverts it, and the difference bounds what finer data could be worth.
+  const stopLevel = pos.sl;
+  const stopHit = stopLevel !== null && (long ? bar.low <= stopLevel : bar.high >= stopLevel);
+  if (stopHit && stopLevel !== null && (cfg.barOrder ?? 'stop-first') === 'stop-first') {
     const reason = pos.breakEven ? 'be' : 'sl';
-    fills.push(fillExit(pos, pos.sl, pos.qtyOpen, reason, at, cfg, true));
+    fills.push(fillExit(pos, stopLevel, pos.qtyOpen, reason, at, cfg, true));
     return fills;
   }
   // 2. take-profits in order
@@ -408,6 +412,13 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
     fills.push(fillExit(pos, pos.tp[i], q, `tp${i + 1}`, at, cfg, false));
     if (pos.qtyOpen <= 0) return fills;
     if (i === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven) { pos.sl = pos.entryPrice; pos.breakEven = true; }
+  }
+  // The optimistic reading takes the stop only after the targets this bar reached — and against the
+  // stop as those targets left it, since a filled TP1 may have moved it to break even.
+  if (stopHit && pos.status === 'open' && (cfg.barOrder ?? 'stop-first') === 'target-first' && pos.sl !== null
+      && (long ? bar.low <= pos.sl : bar.high >= pos.sl)) {
+    fills.push(fillExit(pos, pos.sl, pos.qtyOpen, pos.breakEven ? 'be' : 'sl', at, cfg, true));
+    return fills;
   }
   // 3. trail LAST: this bar's exits were checked against the stop as it stood when the bar
   // opened, so a stop raised here only applies from the next bar. Trailing earlier would let
