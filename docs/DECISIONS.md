@@ -919,3 +919,41 @@ whole path, and over the API at `/api/positions/:id/path`.
 
 **Revisit if** the sampling cost shows up on a busy book — it is one row a minute per open position,
 about 1,500 rows a day at the current fleet, and the interval is one constant.
+
+## 36. Smarter trailing: give back less as a trade grows, and tighten when it stalls
+
+The flat trail treats a 1R trade and a 5R trade identically, which is backwards — the small one needs
+room to become the large one, and the large one is worth protecting. And a trade that has stopped
+making new highs is usually finished: across the 96 reconstructed trades the median stopped one sat
+**44 minutes** between its peak and its stop.
+
+Two parameters, both off by default: `trailSteps` gives back less of the peak as the peak grows, and
+`trailStall` multiplies the give-back once a trade has gone `minutes` without a new high. Fourteen
+policies fitted on the first half of 12,000 bars per market and scored on the second, 1,839 trades:
+
+| policy | out of sample | vs current |
+|---|---|---|
+| **steps 2R/4R + stall 45m** | **+2.6R** | **+30.9R** |
+| steps 1.5R/3R | +1.5R | +29.8R |
+| steps 2R/4R | −2.2R | +26.1R |
+| stall 60m | −9.0R | +19.2R |
+| trail from +1R (decision 34) | −12.6R | +15.7R |
+| current | −28.3R | — |
+| **ATR trail ×2.5** | **−48.0R** | **−19.7R** |
+
+Stepping the give-back is worth twice what moving the arming point was, the two compose, and the
+combination is the first exit policy in this repo to come out **positive out of sample**. It is
+better on **9 of 12 markets** and points the same way in sample (+88.6R), so it is not a split
+artifact.
+
+The ATR trail is last again, which is decision 7 reproduced on a better measurement: distance
+measured in volatility rather than in the trade's own progress does not work here.
+
+Adopted: `trailSteps: [[2, 30], [4, 20]]` with `trailStall: { minutes: 45, factor: 0.6 }` — give back
+40% below 2R, 30% to 4R, 20% above, and 40% less than that once a trade has been flat for 45 minutes.
+The three markets it hurts are the three profitable ones — AKEUSD, UNIUSD, ZECUSD — where tightening
+cuts winners short; they keep the old policy through `exitBySymbol`, which is the second time that
+mechanism has earned its place by holding the exceptions rather than fitting every market.
+
+**Revisit if** the exempt markets stop being exceptional, or if a forward sample disagrees with the
++0.017R per trade this predicts.
