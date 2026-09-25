@@ -1,0 +1,12 @@
+
+/* A trade's path from entry to exit (decision 35). */
+.dialog-wide { max-width: min(760px, 92vw); }
+.path-chart { width: 100%; height: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.path-line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.path-peak { fill: none; stroke: var(--up, #3fb950); stroke-width: 2; }
+.axis-zero { stroke: var(--line); stroke-width: 1; }
+.axis-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 4; opacity: .6; }
+.axis-label { fill: var(--muted); font-size: 10px; font-family: var(--mono, monospace); }
+.mini-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+.mini-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.mini-table td { padding: 4px 8px; border-bottom: 1px solid var(--line); }

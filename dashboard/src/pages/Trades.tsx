@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useCloseAll, useExecution, useMarkets, useOrders, usePositions, useScannerIndex, useTrades } from '../api/queries'
 import type { Order, Trade } from '../api/types'
+import { TradePath } from '../components/TradePath'
 import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
 import { ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pnl, QueryState, SidePill, StatusDot, Time } from '../components/ui'
@@ -12,6 +13,7 @@ import { useToast } from '../lib/toast'
 const EXIT_REASONS: Record<string, string> = { tp1: 'Take profit 1', tp2: 'Take profit 2', tp3: 'Take profit 3', sl: 'Stop loss', be: 'Break-even', script_exit: 'Script exit', reversal: 'Reversal', manual: 'Manual close', tp_partial: 'Partial take profit', liquidation: 'Liquidation', removed: 'Scanner removed' }
 
 export function Trades() {
+  const [pathOf, setPathOf] = useState<{ id: number; title: string } | null>(null)
   const positions = usePositions()
   const scanners = useScannerIndex()
   const markets = useMarkets()
@@ -191,6 +193,7 @@ export function Trades() {
             columns={tradeCols}
             rows={rows}
             rowKey={(t) => t.id}
+            onRowClick={(t) => setPathOf({ id: t.positionId, title: `${t.symbol} ${t.side} · ${t.scannerName}` })}
             defaultSort={{ key: 'exitAt', dir: 'desc' }}
             emptyLabel={
               <span>
@@ -227,6 +230,7 @@ export function Trades() {
           })
         }
       />
+      <TradePath id={pathOf?.id ?? null} title={pathOf?.title} onClose={() => setPathOf(null)} />
     </div>
   )
 }

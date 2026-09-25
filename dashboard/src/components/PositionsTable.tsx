@@ -8,6 +8,7 @@ import { useLivePrice, useLiveTick } from '../sse/prices'
 import { DataTable, type Column } from './DataTable'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { ConfirmDialog, Pill, Pnl, SidePill, StatusDot, Time } from './ui'
+import { TradePath } from './TradePath'
 
 /** Live unrealized PnL from the latest tick (falls back to the server's number). */
 function livePnl(p: Position, price: number | undefined): number {
@@ -70,6 +71,7 @@ function stopState(p: Position): { badge: string | null; tone: 'muted' | 'ok'; t
 }
 
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
+  const [pathOf, setPathOf] = useState<{ id: number; title: string } | null>(null)
   // Eighteen columns need about 1500px. Below that, drop the derived values rather than making
   // the reader scroll sideways: notional, margin and liquidation can all be inferred from the
   // rest, so they are the first to go, and the per-trade result figures follow.
@@ -267,6 +269,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         columns={cols}
         rows={positions}
         rowKey={(p) => p.id}
+        onRowClick={(p) => setPathOf({ id: p.id, title: `${p.symbol} ${p.side} · ${p.scannerName}` })}
         emptyLabel={
           <span>
             No open positions
@@ -277,6 +280,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         caption="Open positions"
       />
       </div>
+      <TradePath id={pathOf?.id ?? null} title={pathOf?.title} onClose={() => setPathOf(null)} />
       <ConfirmDialog
         open={!!closing}
         title={closing ? `Close ${closing.side.toUpperCase()} ${closing.symbol}?` : ''}

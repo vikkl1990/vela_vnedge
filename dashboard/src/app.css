@@ -1304,3 +1304,15 @@ body { overflow-x: clip; }
 .risk-banner-item.risk-danger { border-color: color-mix(in srgb, var(--loss) 55%, transparent); background: color-mix(in srgb, var(--loss) 12%, transparent); }
 .risk-banner-item.risk-warn { border-color: color-mix(in srgb, var(--warn, #d98f00) 55%, transparent); background: color-mix(in srgb, var(--warn, #d98f00) 10%, transparent); }
 .price-stale { opacity: .6; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+
+/* A trade's path from entry to exit (decision 35): result in R over time, with every level event. */
+.dialog-wide { max-width: min(760px, 92vw); }
+.path-chart { width: 100%; height: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
+.path-line { fill: none; stroke: var(--accent-3); stroke-width: 1.5; }
+.path-peak { fill: none; stroke: var(--gain); stroke-width: 2; }
+.axis-zero { stroke: var(--border-strong); stroke-width: 1; }
+.axis-grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }
+.axis-label { fill: var(--muted); font-size: 10px; font-family: var(--font-mono, ui-monospace, monospace); }
+.mini-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 12px; }
+.mini-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.mini-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); }

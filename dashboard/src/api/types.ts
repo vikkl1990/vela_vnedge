@@ -527,3 +527,13 @@ export interface ExecutionStatus {
   brackets: Array<{ positionId: number; symbol: string; stop: BracketOrder | null; tps: BracketOrder[] }>
   lastReconcile: { at: number; ok: boolean; drift: Array<{ kind?: string; symbol?: string; detail?: string } | string>; positions: number; orders: number; error?: string } | null
 }
+
+/** One sample or level event on a trade's path from entry to exit (decision 35). */
+export interface PathPoint {
+  at: number
+  price: number
+  r: number
+  sl: number | null
+  event: string | null
+  note: string | null
+}

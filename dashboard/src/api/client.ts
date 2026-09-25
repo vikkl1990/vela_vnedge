@@ -25,7 +25,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption } from './types'
+  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption, PathPoint } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -136,6 +136,7 @@ export const api = {
   closePosition: (id: number) => post<unknown>(`/positions/${id}/close`),
   closeAll: () => post<unknown>('/paper/close-all'),
   trades: (q: TradeQuery = {}) => get<Trade[]>(`/trades${qs(q)}`),
+  positionPath: (id: number) => get<{ position: number; path: PathPoint[] }>(`/positions/${id}/path`),
   orders: (limit = 200) => get<Order[]>(`/orders${qs({ limit })}`),
   stats: () => get<Stats>('/stats'),
   equity: (scanner?: string, limit = 2000) => get<EquityPoint[]>(`/equity${qs({ scanner, limit })}`),

@@ -13,6 +13,7 @@ export const qk = {
   scannerOverlay: (id: string, symbol: string, tf: string) => ['scanners', 'overlay', id, symbol, tf] as const,
   signals: (q: SignalQuery = {}) => ['signals', q] as const,
   positions: ['positions'] as const,
+  positionPath: (id: number) => ['positionPath', id] as const,
   trades: (q: TradeQuery = {}) => ['trades', q] as const,
   orders: ['orders'] as const,
   stats: ['stats'] as const,
@@ -192,3 +193,8 @@ export const useMlScanner = (id: string) =>
   useQuery({ queryKey: qk.mlScanner(id), queryFn: () => api.mlScanner(id), enabled: !!id, staleTime: 60_000, retry: 1 })
 export const useAnalytics = () =>
   useQuery({ queryKey: qk.analytics, queryFn: api.analytics, staleTime: LIVE_STALE, retry: 1, refetchInterval: 60_000 })
+
+/** The path a trade took, loaded only while its panel is open. */
+export function usePositionPath(id: number | null) {
+  return useQuery({ queryKey: qk.positionPath(id ?? 0), queryFn: () => api.positionPath(id!), enabled: id != null, staleTime: 15_000 })
+}
