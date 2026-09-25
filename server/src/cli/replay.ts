@@ -84,4 +84,27 @@ if (moved.length) {
   console.log(`${'market'.padEnd(12)} ${'scanner'.padEnd(28)} ${'before'.padStart(8)} ${'after'.padStart(8)} ${'change'.padStart(8)}   ${'was'.padEnd(12)} now`);
   for (const m of moved) console.log(`${m.sym.padEnd(12)} ${m.scanner.slice(0, 28).padEnd(28)} ${(m.before.toFixed(2) + 'R').padStart(8)} ${(m.after.toFixed(2) + 'R').padStart(8)} ${((m.after - m.before >= 0 ? '+' : '') + (m.after - m.before).toFixed(2) + 'R').padStart(8)}   ${m.whyB.padEnd(12)} ${m.whyA}`);
 }
+// DETAIL=path writes every trade, as it happened and as each policy would have ended it
+if (process.env.DETAIL) {
+  const cols = POLICIES.map(p => p.name);
+  const lines: string[] = [];
+  lines.push(`# Trades reconstructed — ${new Date().toISOString().slice(0, 10)}`, '');
+  lines.push(`${rows.length} closed trades, replayed on 1m candles through the live exit engine. "actual" is what the`);
+  lines.push('account did, manual closes included; every other column replaces those with the rule.', '');
+  lines.push('| # | opened | market | scanner | side | entry | stop | peak | actual | why | ' + cols.map(c => c.split(' (')[0]).join(' | ') + ' |');
+  lines.push('|---|---|---|---|---|---:|---:|---:|---:|---|' + cols.map(() => '---:').join('|') + '|');
+  rows.forEach((t: any, i: number) => {
+    const actual = (t.realized_pnl - t.fees) / t.risk_amount;
+    const cells = cols.map(c => {
+      const x = per.get(c)![i];
+      return `${x.r >= 0 ? '+' : ''}${x.r.toFixed(2)}R`;
+    });
+    lines.push(`| ${i + 1} | ${new Date(t.entry_at).toISOString().slice(11, 16)} | ${t.symbol} | ${t.scanner_id} | ${t.side} | ${t.entry_price} | ${t.sl_original ?? t.sl} | ${t.peak_r == null ? '—' : (t.peak_r >= 0 ? '+' : '') + Number(t.peak_r).toFixed(2) + 'R'} | ${actual >= 0 ? '+' : ''}${actual.toFixed(2)}R | ${t.exit_reason} | ${cells.join(' | ')} |`);
+  });
+  const sum = (f: (x: any) => number) => rows.reduce((a: number, t: any, i: number) => a + f({ t, i }), 0);
+  lines.push('', `**Totals** — actual ${sum(({ t }) => (t.realized_pnl - t.fees) / t.risk_amount).toFixed(2)}R · ` +
+    cols.map(c => `${c.split(' (')[0]} ${per.get(c)!.reduce((a, x) => a + x.r, 0).toFixed(2)}R`).join(' · '));
+  fs.writeFileSync(process.env.DETAIL, lines.join('\n') + '\n');
+  console.log(`\nwrote ${rows.length} reconstructed trades to ${process.env.DETAIL}`);
+}
 process.exit(0);
