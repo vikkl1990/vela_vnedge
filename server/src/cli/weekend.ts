@@ -31,6 +31,7 @@ const pool = new PinePool(Number(process.env.CONCURRENCY ?? 7), 300_000);
 const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
 
 const byDay = new Map<number, { n: number; r: number; wins: number }>();
+const byDayStress = new Map<number, { n: number; r: number }>();
 const byScanner = new Map<string, { wknd: { n: number; r: number }; week: { n: number; r: number } }>();
 let bars = 0;
 
@@ -50,6 +51,14 @@ for (const tf of TFS) {
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: b, mode: 'backtest' });
         const events = extractEvents(res.alerts, res.shapes, { derived });
         const bt = runBacktest({ scannerId: s.id, scannerName: s.id, symbol, tf, bars: b, events, cfg: cfg.paper, exitMode: 'both', contractValue: market.contractValue, tickSize: market.tickSize });
+        // weekend books are thinner, and the backtest charges the same slippage every day: the same
+        // trades at 10 bps say whether a weekend edge survives a cost it has not been asked to pay
+        const stressed = runBacktest({ scannerId: s.id, scannerName: s.id, symbol, tf, bars: b, events, cfg: { ...cfg.paper, slippageBps: Number(process.env.STRESS_BPS ?? 10) }, exitMode: 'both', contractValue: market.contractValue, tickSize: market.tickSize });
+        for (const t of stressed.trades as any[]) {
+          const d = new Date(t.entryAt).getUTCDay();
+          const cur = byDayStress.get(d) ?? { n: 0, r: 0 };
+          cur.n++; cur.r += t.rMultiple ?? 0; byDayStress.set(d, cur);
+        }
         for (const t of bt.trades as any[]) {
           const d = new Date(t.entryAt).getUTCDay();
           const cur = byDay.get(d) ?? { n: 0, r: 0, wins: 0 };
@@ -74,6 +83,9 @@ for (let d = 0; d < 7; d++) {
 }
 const wknd = [0, 6].map(d => byDay.get(d) ?? { n: 0, r: 0, wins: 0 }).reduce((a, v) => ({ n: a.n + v.n, r: a.r + v.r, wins: a.wins + v.wins }), { n: 0, r: 0, wins: 0 });
 const week = [1, 2, 3, 4, 5].map(d => byDay.get(d) ?? { n: 0, r: 0, wins: 0 }).reduce((a, v) => ({ n: a.n + v.n, r: a.r + v.r, wins: a.wins + v.wins }), { n: 0, r: 0, wins: 0 });
+const sw = [0, 6].map(d => byDayStress.get(d) ?? { n: 0, r: 0 }).reduce((a, v) => ({ n: a.n + v.n, r: a.r + v.r }), { n: 0, r: 0 });
+const sk = [1, 2, 3, 4, 5].map(d => byDayStress.get(d) ?? { n: 0, r: 0 }).reduce((a, v) => ({ n: a.n + v.n, r: a.r + v.r }), { n: 0, r: 0 });
+console.log(`\nat ${process.env.STRESS_BPS ?? 10} bps of slippage: weekend ${(sw.r / Math.max(1, sw.n)).toFixed(3)}R (${sw.r.toFixed(1)}R) · weekday ${(sk.r / Math.max(1, sk.n)).toFixed(3)}R (${sk.r.toFixed(1)}R)`);
 console.log(`\nweekend  ${String(wknd.n).padStart(6)} trades  ${(wknd.r / Math.max(1, wknd.n)).toFixed(3)}R  total ${wknd.r.toFixed(1)}R`);
 console.log(`weekday  ${String(week.n).padStart(6)} trades  ${(week.r / Math.max(1, week.n)).toFixed(3)}R  total ${week.r.toFixed(1)}R`);
 console.log(`\nblocking weekends costs ${wknd.r >= 0 ? 'the ' + wknd.r.toFixed(1) + 'R those trades made' : 'nothing — it avoids ' + Math.abs(wknd.r).toFixed(1) + 'R of losses'}`);

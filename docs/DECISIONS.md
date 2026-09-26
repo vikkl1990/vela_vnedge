@@ -1113,3 +1113,37 @@ trail carried further before stopping them out at break even. What the account a
 
 **Revisit if** a venue is added with materially different intra-minute behaviour, or if the ambiguous
 share of bars rises above a few percent on markets that matter.
+
+## 41. The weekend block is removed: it refused 22% of opportunities for no measured reason
+
+`risk.regime.noWeekend` rejected every entry on Saturday and Sunday UTC, ahead of every other check.
+It fired 35 times on 26 September — the first weekend since the fleet grew to 35 pairs — across six
+scanners, and the live book sat empty all day while the shadow book, which does not pass the risk
+gate, kept trading the same signals.
+
+The rule was an equities-shaped assumption. Delta's perpetuals trade through the weekend, so the only
+real argument for it is thinner books. 18,824 backtested trades across 12 markets, 8 scanners and 3
+timeframes, split by the UTC day of entry:
+
+| day | trades | avg R | | day | trades | avg R |
+|---|---|---|---|---|---|---|
+| Sat | 1,864 | **+0.009** | | Wed | 3,042 | +0.039 |
+| Sun | 2,354 | **−0.010** | | Thu | 2,869 | +0.046 |
+| Mon | 3,131 | **−0.085** | | Fri | 2,753 | +0.024 |
+| Tue | 2,811 | −0.048 | | | | |
+
+**Weekend −0.001R against weekday −0.006R.** The weekend is marginally better, both are
+indistinguishable from zero, and the block refuses **4,218 trades — 22% of all opportunities** — to
+avoid 6.0R, which at a thousandth of an R per trade is noise. On the fleet's best scanner,
+`structure-anchored-vwap`, weekends are +0.574R against +0.598R on weekdays.
+
+The thin-book argument was tested separately, since the backtest charges the same 2 bps every day: at
+10 bps the weekend is **−0.106R against the weekday's −0.103R**. Weekend trades do not degrade faster
+under cost, so that defence fails too.
+
+`noWeekend` is now false. The one real pattern in that table is that **Monday is the worst day by a
+distance** (−0.085R, −265R) — which is not acted on, because choosing the worst of seven days after
+the fact is how curve fits are made. It would need its own halves test first.
+
+**Revisit if** a venue is added that genuinely closes, or if live weekend fills show slippage the
+backtest does not model.
