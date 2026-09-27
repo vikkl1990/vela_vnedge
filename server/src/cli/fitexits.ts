@@ -53,6 +53,8 @@ const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = process.env.ST
   { name: 'be@0.5+trail1', over: { floorAtR: 0.5, floorKeepR: 0, trailAfterR: 1 } },
   { name: 'be@0.5+tight', over: { floorAtR: 0.5, floorKeepR: 0, trailGiveBackPct: 25 } },
   { name: 'trail@1', over: { trailAfterR: 1 } },
+  // what UNIUSD / AKEUSD / ZECUSD run today under exitBySymbol (decision 36), so the override can be judged against the global policy
+  { name: 'old override 1.5R no steps', over: { trailAfterR: 1.5, trailSteps: [], trailStall: { minutes: 0, factor: 1 } } },
   // the owner's question after decision 50: arm the trail below +1R so a +0.9R peak keeps more than the lock
   { name: 'trail@0.75', over: { trailAfterR: 0.75 } },
   { name: 'trail@0.5', over: { trailAfterR: 0.5 } },

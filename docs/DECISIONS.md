@@ -1482,3 +1482,24 @@ question would now hold +0.53R instead of +0.25R. The size steps at 1.5R/3R look
 top of this and are not stacked unmeasured.
 
 **Revisit at** the 100-trade review, alongside decision 50.
+
+## 52. One exit policy for every pair: the per-symbol overrides come out
+
+The owner's goal: every pair armed with the same suitable lock and trail. UNIUSD, AKEUSD and
+ZECUSD still carried decision 36's override (`trailAfterR 1.5`, no steps, no stall), fitted on the
+old fleet. Judged on those three markets, the global policy of decisions 50–51 against the override
+(`data/reports/2026-09-28-fitexits-overrides.json`, 15m, 8,000 bars):
+
+| market | global: in / out / $ | old override: in / out / $ | trades |
+|---|---|---|---:|
+| UNIUSD | −5.2R / **+25.7R** / 577 | −28.6R / +18.1R / 215 | 433 |
+| AKEUSD | +44.4R / **+18.3R** / 855 | +28.3R / +12.8R / 635 | 153 |
+| ZECUSD | −12.1R / +17.2R / 590 | −16.2R / +20.9R / 708 | 127 |
+
+Two of three better in both halves under the global policy, the third split (better in sample,
+3.7R worse out). The overrides are removed; `exitBySymbol` is empty. Per-market winners the fit
+proposed (break-even + tighter trail on two of them) are not taken — decision 43.
+
+Every pair now runs: stop 1.0×ATR (4.0 for structure-anchored-vwap, decision 43), lock +0.25R at
++0.5R, trail from +0.5R keeping 60% of the peak (70% past 2R, 80% past 4R, ×0.6 after a 45-minute
+stall), targets 2/4/6R with everything on the last, reversal above 0R.
