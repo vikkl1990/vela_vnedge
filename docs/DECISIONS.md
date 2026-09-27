@@ -1269,3 +1269,27 @@ scanner stays in the fleet only because the fleet is frozen until the live sampl
 on this evidence it should be the first to go at the review.
 
 **Revisit if** the 4h shadow cohort returns a verdict.
+
+## 45. Scripts read as indicators; a family of five on 4h transfers across markets
+
+Asked to use the Pine library as indicators rather than signal sources, build families of them as a
+strategy, and backtest one by one on ETH across timeframes. `npm run familylab` reads every script
+four ways per bar — trail side, oscillator sign, plot colour, last call held — scores each reading on
+the first half of history, keeps the ones that behave like indicators (they flip, and sit on both
+sides), builds a greedy-diverse family, and backtests consensus entries and family-filtered trigger
+entries with the live exit rules. The families chosen on ETH are then applied unchanged to BTC and SOL.
+
+**Result.** On 5m and 15m the reading carries nothing on any market. On 1h it breaks even. On **4h**
+a family of five (four faded retail strategies and a MACD) chosen on ETH's first half is positive in
+both halves and on both sides on BTC (27 trades, +0.58R) and SOL (69 trades, +0.41R), and turns the
+whole trigger universe from −1,640R / −959R to +447R / +1,059R on those two markets, raising R per
+trade on 80–93% of triggers. It is the first entry filter in this repo to pass a test on a market it
+was not fitted on. ETH's own second half is weak, the window is one bear year on three correlated
+markets, and the consensus samples are small. Full tables in `docs/FAMILY-LAB-2026-09-27.md`.
+
+**What changes:** nothing in the fleet. The family goes to the shadow book through the cohort gate
+before anything else is said about it. Two measurement rules were needed to get here and are kept: a
+reading is only an indicator if it changes its mind (constants fit any rising half), and cross-market
+transfer with nothing refitted is a stronger test than halves on the fitted market.
+
+**Revisit when** the 4h shadow cohort returns a verdict, or a second, non-overlapping window exists.

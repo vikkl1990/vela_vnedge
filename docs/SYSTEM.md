@@ -184,6 +184,7 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 
 ## Open items, in priority order
 
+0. **Family scanner in the shadow book** — the 4h family of five from decision 45, through the cohort gate; nothing promoted on backtests.
 1. **Incubator page** should show cohort progress and the real time to a verdict (the gate itself is fixed — decision 29).
 2. **Alerting** — the Telegram token is still unset, so a halt or a crash is silent (decision 5).
 3. **Audit findings 2, 3, 11, 12** — the first two block exchange mirroring.
