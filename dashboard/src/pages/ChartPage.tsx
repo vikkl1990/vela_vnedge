@@ -1,8 +1,9 @@
 import { useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import { qk, useConfig, useMarkets, useScannerIndex, useSignals } from '../api/queries'
+import { qk, useConfig, useMarkets, usePositionPath, usePositions, useScannerIndex, useSignals } from '../api/queries'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
+import { positionOverlay } from '../chart/positionOverlay'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { ChipSelect, Panel, Pill, QueryState } from '../components/ui'
 import { fmtPct, fmtPrice, pnlClass } from '../lib/format'
@@ -31,6 +32,7 @@ export function ChartPage() {
     }
   })
   const [selected, setSelected] = useState<string[]>([])
+  const [showPosition, setShowPosition] = useState(true)
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
 
   const symbolOptions = useMemo(() => {
@@ -71,7 +73,33 @@ export function ChartPage() {
     return out
   }, [selectedIds, sources, enabledScanners])
 
+
+  // the open position on this market: its levels are drawn as an overlay, and the scanner that
+  // opened it is selected automatically, so the chart shows the indicator that made the decision
+  const positions = usePositions()
+  const position = useMemo(() => (positions.data ?? []).find((p) => p.symbol === symbol && p.tf === tf) ?? (positions.data ?? []).find((p) => p.symbol === symbol), [positions.data, symbol, tf])
+  const path = usePositionPath(showPosition && position ? position.id : null)
+  const peakR = useMemo(() => {
+    const rows = path.data?.path ?? []
+    return rows.length ? Math.max(...rows.map((r) => r.r)) : null
+  }, [path.data])
+  useEffect(() => {
+    if (!position) return
+    const sc = enabledScanners.find((s) => s.id === position.scannerId)
+    if (sc) setSelected((cur) => (cur.includes(sc.name) ? cur : [...cur, sc.name]))
+  }, [position?.id, enabledScanners])
+
+  const allScripts = useMemo<ChartScript[]>(
+    () => (showPosition && position ? [...scripts, positionOverlay(position, peakR)] : scripts),
+    [scripts, showPosition, position, peakR],
+  )
+
   const signals = useSignals({ symbol: symbol || undefined, limit: 30 })
+  // the model's score for the entry that opened this position, when the model had an opinion at all
+  const entrySignal = useMemo(
+    () => (position ? (signals.data ?? []).find((sg) => sg.positionId === position.id) : undefined),
+    [signals.data, position],
+  )
   const market = markets.data?.find((m) => m.symbol === symbol)
   const live = useLivePrice(symbol, market?.markPrice)
 
@@ -106,6 +134,20 @@ export function ChartPage() {
             <span className="muted small">{market.description}</span>
           </span>
         )}
+        {position && (
+          <label className="field-inline" title="Draw this position's entry, stop and targets on the chart">
+            <input type="checkbox" checked={showPosition} onChange={(e) => setShowPosition(e.target.checked)} />
+            <span className="chips-label">
+              Position #{position.id} · {position.side} · {position.scannerName}
+              {peakR != null && <span className="muted small"> · peak {peakR >= 0 ? '+' : ''}{peakR.toFixed(2)}R</span>}
+              {entrySignal?.mlProb != null && (
+                <span className="muted small" title="The learned model's win probability for this entry. It is off as a filter (decision 37) and trained mostly on scripts this fleet does not trade.">
+                  {' '}· model {(entrySignal.mlProb * 100).toFixed(0)}%
+                </span>
+              )}
+            </span>
+          </label>
+        )}
         <span className="grow" />
         <span className="muted small">
           {scripts.length} script{scripts.length === 1 ? '' : 's'} on chart
@@ -130,7 +172,7 @@ export function ChartPage() {
               symbol={symbol}
               tf={tf}
               height="100%"
-              scripts={scripts}
+              scripts={allScripts}
               tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
               onScriptReady={(id) =>
