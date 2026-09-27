@@ -153,7 +153,7 @@ numbers.
 
 ## What is actually established
 
-Honest separation, after the lab bug in decision 27 forced a re-audit (decision 28):
+Honest separation, after the lab bug in decision 27 forced a re-audit (decision 28) and the lookahead in decision 44 forced another (`docs/AUDIT-2026-09-27.md`):
 
 **Established by evidence I have re-verified:**
 - exits must be measured on 1m; bar-level results overstate the trail (13)
@@ -162,6 +162,12 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 - closer targets, partial profits, plot-derived stops, volatility trails and reversal-on-flat all
   lose money against the current policy (7, 9, 24, 25, 27)
 - costs are about 0.15R per trade, and GST is a material part of that (14)
+
+**Retracted (decision 44):**
+- that `structure-anchored-vwap` carries a decisive edge. Its measured +0.70R came from a label rule
+  that entered 50 bars before the pivot was confirmed; corrected, it is +0.10R. Its own Buy/Sell
+  signals have never fired in our runtime. Its 4.0×ATR stop override (43) stands on moderate evidence.
+  See `docs/AUDIT-2026-09-27.md`.
 
 **Believed, not established:**
 - that the current six-pair fleet is better than the ten it replaced. It was chosen on backtests after
@@ -194,3 +200,8 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 - Every rule change lands in the same commit as its decision entry, and updates this file.
 - Never real production keys; the bot binds to 127.0.0.1 only; the Telegram token lives in the
   systemd environment and never in `config.json`.
+- A rule built on a script's drawn objects uses the bar the object became knowable, not the bar it
+  points at: a label rule's `delayBars` equals the script's pivot right-bars, and the rules test asserts
+  it. The halves test cannot catch lookahead (decision 44).
+- A deploy is verified by `git rev-list --count HEAD..origin/main` on the VM returning 0, never by
+  the pull's own output (decision 44's audit, finding 9).

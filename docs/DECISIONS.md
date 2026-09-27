@@ -1226,3 +1226,41 @@ before choosing levels, and `structure-anchored-vwap` gets 4.0×ATR. Everything 
 
 **Revisit if** the scanner starts publishing stops the extractor can read, since the override only
 touches the fallback, or if another scanner's width holds up in both halves.
+
+## 44. The best scanner's backtest was reading fifty bars ahead
+
+`structure-anchored-vwap` does not trade on its own signals in our runtime — its Buy/Sell shapes and
+alerts have never fired in PineTS on any market or window tested. What trades under that name is a
+rule in `scanners/rules.ts` that reads its swing-structure labels: `HL` long, `LH` short.
+
+The worker records a label's **anchor** time — the pivot bar it points at — not the bar it was created
+on. The script confirms a pivot only after **55 further bars** (`pivRInput = 55`). The rule shifted the
+anchor by `delayBars: 5`. So the backtest entered fifty bars before the pivot could have been known,
+at a price that was, by construction, near the swing.
+
+Corrected on eight markets, 12,000 bars of 15m, 4×ATR stop:
+
+| delay | trades | avg R | second half |
+|---|---:|---:|---:|
+| 5 | 433 | **+0.697R** | +0.647R |
+| **55** | 435 | **+0.099R** | +0.211R |
+
+The halves discipline did not catch this and could not: both halves leaked equally, so the "same sign
+in both" test passed. Reading the script's confirmation parameters is the only check that finds it,
+and it is now rule 4 of the measurement discipline (audit of 27 Sep, §5).
+
+Live trading was **not** affected. The live path fires when a label first appears, which is when the
+script itself knows about it. `auto-s-r-channels` anchors labels at the creation bar and is correct at
+`delayBars: 0`. A second, smaller leak closed at the same time: a pivot whose confirming bars lay past
+the end of the window was traded at the window's last bar; `confirmedBarTime` now returns null and the
+trade is not taken.
+
+**What this retracts.** The scanner was "81% of the fleet's edge" (decision 33) and the one scanner
+whose stop width held up in both halves (decision 43). The corrected stop grid still prefers width —
+4.0×ATR +65.5R out of sample against +28.1R at 1.0 — but in sample the agreement is now weak (+2.4R
+against −10.9R), so the 4.0×ATR override stays on **moderate** evidence, not decisive. The fade
+variant in decision 33 was measured on the leaked rule and is void. The scanner has zero forward trades
+in either book, so nothing outside the backtest is known about it.
+
+**Revisit if** the corrected 28-market survey (appended to the audit) shows a timeframe where both
+halves are positive with breadth, or the shadow cohort returns a verdict.

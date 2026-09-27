@@ -45,8 +45,10 @@ function confirmedBarTime(ctx: RuleContext, time: number, delayBars: number): nu
   if (!bars.length) return null;
   let i = bars.findIndex(b => b.time >= time);
   if (i < 0) i = bars.length - 1;
-  const j = Math.min(bars.length - 1, i + delayBars);
-  return bars[j].time;
+  // a pivot whose confirming bars lie beyond the window was not knowable inside it: clamping to the
+  // last bar used to trade it anyway, which is a smaller cousin of the leak decision 44 closed
+  const j = i + delayBars;
+  return j < bars.length ? bars[j].time : null;
 }
 
 function closeAt(ctx: RuleContext, barTime: number): number | undefined {
@@ -85,7 +87,7 @@ function labelRule(opts: { match: RegExp; side: (text: string, l: WorkerLabel) =
         if (lastTime - l.time > tfMs * 40) continue;                 // ignore ancient labels on the first run
         barTime = lastTime;
       } else {
-        barTime = confirmedBarTime(ctx, l.time, opts.delayBars);
+        barTime = confirmedBarTime(ctx, l.time, Number(process.env.LABEL_DELAY_OVERRIDE ?? opts.delayBars));   // override is for measurement only
       }
       if (barTime === null) continue;
       const tp = opts.target ? opts.target(ctx, l, side) : [];
@@ -147,11 +149,14 @@ export const RULES: Record<string, Rule> = {
     },
   }),
 
-  // Confirmed structure: HL (higher low) → long, LH (lower high) → short. Pivots confirm ~5 bars late.
+  // Confirmed structure: HL (higher low) → long, LH (lower high) → short. The script's pivots use
+  // 55 bars each side (pivRInput = 55), so a label is only knowable 55 bars after the bar it is
+  // anchored to. The backtest used 5 here until 27 September and was reading fifty bars into the
+  // future: +0.70R per trade became +0.10R when corrected (decision 44).
   'structure-anchored-vwap': labelRule({
     match: /^(HL|LH)$/,
     side: (t) => (t === 'HL' ? 'long' : 'short'),
-    delayBars: 5,
+    delayBars: 55,
     label: (t) => (t === 'HL' ? 'Structure HL (higher low)' : 'Structure LH (lower high)'),
   }),
 

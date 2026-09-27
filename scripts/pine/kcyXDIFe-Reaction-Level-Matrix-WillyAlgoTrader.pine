@@ -1,0 +1,1192 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// 1. VERSION & DECLARATION & CHANGELOG
+// ══════════════════════════════════════════════════════════
+// REACTION LEVEL MATRIX [WillyAlgoTrader]
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.0.0
+// ══════════════════════════════════════════════════════════
+
+indicator(title = "Reaction Level Matrix [WillyAlgoTrader]", shorttitle = "RLM", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ══════════════════════════════════════════════════════════
+// 2. CONSTANTS
+// ══════════════════════════════════════════════════════════
+INDICATOR_VERSION = "v1.0.0"
+SHORT_NAME        = "RLM"
+
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_FILTER = "🔍 Filters"
+GRP_RISK   = "🛡️ Risk Management"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+// ── Level engine ──
+STRUCT_ATR_LEN     = 34     // ATR for level tolerance, band width and swing reactions
+MIN_HALF_WIDTH_ATR = 0.15   // narrowest level band: ±0.15 × ATR around its center
+REACTION_CAP       = 2.5    // a single swing adds at most 1 + 2.5 to a level's strength
+SCORE_SCALE        = 6.0    // strength that maps to a score of ~63 (score = 100 × (1 − e^(−s / scale)))
+POLARITY_BONUS     = 1.25   // levels touched by both swing highs and swing lows score higher
+CROSS_PENALTY      = 0.7    // strength kept when price closes through a level
+MIN_STRENGTH       = 0.25   // levels decayed below this strength are forgotten
+MAX_LEVELS         = 60     // memory cap; the weakest level is evicted first
+MERGE_PASSES       = 5      // passes to absorb levels that overlap after a touch
+LEVEL_RIGHT_EXT    = 5      // bars to extend levels to the right of the last bar
+
+// ── Trade engine ──
+WICK_BUFFER_ATR   = 0.25 // Wick-Anchored SL buffer beyond the wick, × ATR
+WICK_MIN_ATR      = 0.5  // Wick-Anchored minimum SL distance, × ATR
+LINE_FORWARD_BARS = 20   // length of trade lines when an entry is drawn
+LINE_UPDATE_BARS  = 8    // extension beyond the current bar while a trade is open
+LABEL_OFFSET_BARS = 1    // label offset from the end of trade lines
+BE_DIM_TRANSP     = 70   // SL dimming once the stop is at break-even
+FORM_LEN          = 10   // length of the Form strip
+GAUGE_WIDTH       = 8    // win-rate gauge cells
+MS_DAY            = 86400000
+STATS_PRUNE_DAYS  = 31   // rolling stats buffer horizon
+RSI_LEN           = 14   // context oscillator shown in entry tooltips
+HTF_EMA_LEN       = 50   // HTF bias: close vs EMA of this length
+
+// ══════════════════════════════════════════════════════════
+// 3. INPUTS
+// ══════════════════════════════════════════════════════════
+
+// ── Main ──
+swingLenInput      = input.int(6, "Swing Length", minval = 2, maxval = 30, group = GRP_MAIN, tooltip = "Bars on each side that define a swing high/low. A swing is confirmed this many bars after its extreme.\n• Higher = only major swings, later confirmation\n• Lower = more swings, faster levels\n• Recommended: 4–10")
+levelTolInput      = input.float(0.6, "Level Tolerance (×ATR)", minval = 0.2, maxval = 2.0, step = 0.05, group = GRP_MAIN, tooltip = "A new swing joins an existing level if it lies within this distance of the level's center.\nAlso the maximum half-width of a level band.\n• Higher = fewer, wider levels with more touches\n• Lower = more, tighter levels\n• Recommended: 0.4–1.0")
+minTouchesInput    = input.int(2, "Touches to Activate", minval = 2, maxval = 10, group = GRP_MAIN, tooltip = "Swings needed before a level is shown and can produce signals.\n• Higher = only well-tested levels\n• Recommended: 2–3")
+halfLifeInput      = input.int(500, "Level Half-Life (bars)", minval = 50, maxval = 5000, step = 50, group = GRP_MAIN, tooltip = "Level strength halves after this many bars without new touches.\n• Higher = old levels stay relevant longer\n• Lower = only recent structure")
+levelsPerSideInput = input.int(3, "Levels Above / Below Price", minval = 1, maxval = 8, group = GRP_MAIN, tooltip = "How many active levels nearest to price are shown above (resistance) and below (support).\nOnly shown levels can produce signals.\n• Recommended: 2–4")
+htfInput           = input.timeframe("", "HTF Bias Timeframe", group = GRP_MAIN, tooltip = "Higher timeframe for the dashboard bias: close vs EMA 50 of the previous closed HTF bar (no repaint).\nLeave empty to turn the HTF bias off.\nInformational only: it does not filter signals.")
+
+// ── Visual ──
+themeInput           = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+showLevelsInput      = input.bool(true, "Show Levels", group = GRP_VISUAL, tooltip = "Draw the active levels nearest to price.\nDrawing only: signals and trades are unaffected.")
+drawFromFirstInput   = input.bool(true, "Draw Levels From First Touch", group = GRP_VISUAL, tooltip = "• On: a level starts at its earliest swing (the level's full history)\n• Off: a level starts on the bar it became active\nDrawing only: signals are unaffected.")
+showLevelLabelsInput = input.bool(true, "Show Level Score", group = GRP_VISUAL, tooltip = "Label each level with its score (0–100), its touch count (T) and ⇅ if both swing highs and swing lows touched it.\nHover the label for details.")
+zoneTranspInput      = input.int(0, "Level Transparency", minval = 0, maxval = 95, group = GRP_VISUAL, tooltip = "Fill transparency of level bands.\n• 0 = Auto (theme-aware: 88 on dark, 82 on light)\n• 60–95 = manual, higher = more transparent")
+showSignalsInput     = input.bool(true, "Show Buy/Sell Labels", group = GRP_VISUAL, tooltip = "Mark every trade entry with a Long ▲ / Short ▼ label.\nAlerts work regardless of this setting.")
+signalFontSizeInput  = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL, tooltip = "Font size for the Long ▲ / Short ▼ entry labels.")
+labelFontSizeInput   = input.string("Small", "SL/TP Label Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL, tooltip = "Font size for the Entry / SL / TP labels.")
+levelFontSizeInput   = input.string("Small", "Level Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL, tooltip = "Font size for the level score labels.")
+showWatermarkInput   = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader' watermark on chart")
+
+// ── Filters ──
+minScoreInput  = input.int(50, "Min Level Score for Signals", minval = 0, maxval = 100, group = GRP_FILTER, tooltip = "A rejection counts only at levels scoring at least this much (absolute 0–100 scale).\n• Higher = fewer signals at stronger levels\n• 0 = every shown level\n• Recommended: 40–70")
+rejectClvInput = input.float(0.6, "Rejection Close Strength", minval = 0.5, maxval = 0.9, step = 0.05, group = GRP_FILTER, tooltip = "Where the signal bar must close inside its own range.\n• Buy: close in the top part, (close − low) / (high − low) ≥ value\n• Sell: close in the bottom part, mirrored\n• Higher = stronger rejection candles only")
+cooldownInput  = input.int(10, "Cooldown per Level (bars)", minval = 0, maxval = 100, group = GRP_FILTER, tooltip = "Minimum bars between two signals at the same level.\n• 0 = no cooldown")
+
+// ── Risk Management ──
+riskPresetInput      = input.string("Balanced", "Risk Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RISK, tooltip = "Quick risk presets:\n• Conservative: SL 2.5×ATR, TP 1R/2R/4R\n• Balanced: SL 1.5×ATR, TP 1R/2R/3R\n• Aggressive: SL 1.0×ATR, TP 1.5R/2.5R/4R\n• Scalping: SL 0.8×ATR, TP 0.8R/1.5R/2R\n• Custom: use the manual multipliers below\nThe SL part of a preset applies to ATR mode. Wick-Anchored places the stop beyond the signal bar's wick.")
+slModeInput          = input.string("Wick-Anchored", "SL Mode", options = ["Wick-Anchored", "ATR"], group = GRP_RISK, tooltip = "How the stop-loss is placed at entry:\n• Wick-Anchored: beyond the signal bar's wick + 0.25×ATR buffer\n  (min distance 0.5×ATR enforced). Structure-aware, recommended\n• ATR: fixed SL Multiplier × ATR distance from entry")
+atrLenRiskInput      = input.int(14, "ATR Length (Risk)", minval = 5, maxval = 50, group = GRP_RISK, tooltip = "ATR period for stop-loss calculation.\n• 14 = standard, works on most timeframes\n• Lower = tighter stops, more stops hit\n• Higher = wider stops, fewer stops hit")
+slMultInput          = input.float(1.5, "SL Multiplier (×ATR)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK, tooltip = "Custom preset only. Stop-loss distance as a multiple of ATR in ATR mode.\n• 1.0 = tight, aggressive\n• 1.5 = balanced\n• 2.0–3.0 = wide, conservative")
+tp1MultInput         = input.float(1.0, "TP1 Multiplier (×Risk)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK, tooltip = "Custom preset only. Take-profit 1 as a multiple of the actual SL distance.\n1.0 = 1:1 Risk:Reward")
+tp2MultInput         = input.float(2.0, "TP2 Multiplier (×Risk)", minval = 1.0, maxval = 10.0, step = 0.1, group = GRP_RISK, tooltip = "Custom preset only. Take-profit 2 as a multiple of the actual SL distance.\n2.0 = 1:2 Risk:Reward")
+tp3MultInput         = input.float(3.0, "TP3 Multiplier (×Risk)", minval = 1.5, maxval = 15.0, step = 0.1, group = GRP_RISK, tooltip = "Custom preset only. Take-profit 3 as a multiple of the actual SL distance.\n3.0 = 1:3 Risk:Reward")
+beInput              = input.bool(true, "Break-Even After TP1", group = GRP_RISK, tooltip = "Move stop-loss to entry price once TP1 is reached.\nPositions stopped at break-even after TP1 count as wins")
+beOffsetInput        = input.float(0.0, "BE Offset (×ATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_RISK, tooltip = "Break-even stop placed this far beyond entry, in ATR at entry.\n0 = exactly at entry (default)")
+showSlTpInput        = input.bool(true, "Show SL/TP Lines", group = GRP_RISK, tooltip = "Draw Entry / SL / TP lines for the current trade.\nLines stay on the chart after the trade closes and are replaced at the next entry.")
+showSlTpLabelsInput  = input.bool(true, "Show SL/TP Labels", group = GRP_RISK, tooltip = "Show price labels on the Entry / SL / TP lines.")
+showPctOnLabelsInput = input.bool(true, "Show % Distance on Labels", group = GRP_RISK, tooltip = "Append % distance from entry to SL/TP labels,\ne.g. 'SL 1.2300 (-0.36%)'")
+entryLineStyleInput  = input.string("Dotted", "Entry Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Entry is a reference, not an action level — keep it subtle")
+slLineStyleInput     = input.string("Solid", "SL Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Style of the stop-loss line (width 2, action level).")
+tpLineStyleInput     = input.string("Dashed", "TP Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Style for TP1/TP2/TP3. On hit, a TP line turns solid teal")
+
+// ── Dashboard ──
+showDashInput      = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Show the dashboard table.")
+dashPosInput       = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group = GRP_DASH, tooltip = "Where the dashboard is placed on the chart.")
+dashFontSizeInput  = input.string("Small", "Dashboard Font Size", options = ["Small", "Normal", "Large", "Huge"], group = GRP_DASH, tooltip = "Font size for the dashboard table. Section dividers and the\nversion footer render one step smaller to preserve hierarchy")
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DASH, tooltip = "Trend, trend age, HTF bias, position, last signal and timeframe.")
+showLevelSecInput  = input.bool(true, "  ├ Levels section", group = GRP_DASH, tooltip = "Nearest resistance and support, shown level count and the last level break.")
+showTradeSecInput  = input.bool(true, "  ├ Trade section", group = GRP_DASH, tooltip = "Entry, SL, TP1–TP3, R:R and SL distance of the open trade.")
+showStatsSecInput  = input.bool(true, "  └ Stats section", group = GRP_DASH, tooltip = "Closed trades, wins, losses, win rate and recent form.\nAll stats reset on chart reload.")
+statsPeriodInput   = input.string("All-Time", "Win Rate Period", options = ["24 Hours", "30 Days", "All-Time"], group = GRP_DASH, tooltip = "Time window for the Stats section (Trades / Wins / Losses / Win rate):\n• 24 Hours: trades closed in the last 24h (relative to the latest bar)\n• 30 Days: trades closed in the last 30 days\n• All-Time: all trades on the loaded chart history\nForm strip always shows the last trades regardless of period.\nAll stats reset on chart reload")
+
+// ── Alerts ──
+webhookInput         = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send entry alerts in JSON format for webhook integrations.\nCreate the alert with 'Any alert() function call'.")
+levelBreakAlertInput = input.bool(true, "Alert on Level Breaks", group = GRP_ALERT, tooltip = "Informational alert when a bar closes through a shown level\n(resistance → support or support → resistance).")
+slRevAlertInput      = input.bool(true, "Alert on SL Hit & Reversal", group = GRP_ALERT, tooltip = "Alerts when a trade is stopped out (SL or break-even stop) or reversed by an opposite signal.")
+tpBeAlertInput       = input.bool(true, "Alert on TP & Break-Even", group = GRP_ALERT, tooltip = "Alerts on TP1 / TP2 touches, the break-even move and the final TP3 exit.")
+
+// ── Colors ──
+bullColorInput    = input.color(#00E676, "Buy", inline = "sig", group = GRP_COLORS, tooltip = "Background of the Long ▲ / Short ▼ entry labels.")
+bearColorInput    = input.color(#FF5252, "Sell", inline = "sig", group = GRP_COLORS, tooltip = "Background of the Long ▲ / Short ▼ entry labels.")
+supLevelColorInput = input.color(#089981, "Support Level", inline = "lvl", group = GRP_COLORS, tooltip = "Band, center line and label color of the levels.")
+resLevelColorInput = input.color(#F23645, "Resistance Level", inline = "lvl", group = GRP_COLORS, tooltip = "Band, center line and label color of the levels.")
+
+// ── Effective risk multipliers (preset or Custom) ──
+[effSLMult, effTP1m, effTP2m, effTP3m] = switch riskPresetInput
+    "Conservative" => [2.5, 1.0, 2.0, 4.0]
+    "Aggressive"   => [1.0, 1.5, 2.5, 4.0]
+    "Scalping"     => [0.8, 0.8, 1.5, 2.0]
+    "Custom"       => [slMultInput, tp1MultInput, tp2MultInput, tp3MultInput]
+    => [1.5, 1.0, 2.0, 3.0]
+
+// ══════════════════════════════════════
+// INPUT VALIDATION
+// ══════════════════════════════════════
+if riskPresetInput == "Custom" and (tp1MultInput >= tp2MultInput or tp2MultInput >= tp3MultInput)
+    runtime.error("Invalid TP multipliers: required TP1 < TP2 < TP3")
+if effSLMult <= 0
+    runtime.error("SL Multiplier must be greater than 0")
+if htfInput != "" and timeframe.in_seconds(htfInput) < timeframe.in_seconds(timeframe.period)
+    runtime.error("HTF Bias Timeframe must be greater than or equal to the chart timeframe")
+// smallest possible SL distance: SL multiplier × ATR in ATR mode, WICK_MIN_ATR × ATR in Wick-Anchored mode
+if beInput and beOffsetInput >= effTP1m * (slModeInput == "ATR" ? effSLMult : WICK_MIN_ATR)
+    runtime.error("BE Offset too large: break-even level would be at or beyond TP1")
+if zoneTranspInput != 0 and zoneTranspInput < 60
+    runtime.error("Level Transparency must be 0 (Auto) or between 60 and 95")
+
+// ══════════════════════════════════════════════════════════
+// 4. THEME DETECTION & COLORS
+// ══════════════════════════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128
+
+// ── Texts ──
+TEXT_COLOR   = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED   = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TEXT_BRIGHT  = isDark ? #FFFFFF : #000000
+
+// ── Signal colors for text (on chart / table background) ──
+BULL_TEXT    = isDark ? #00E676 : #00A152
+BEAR_TEXT    = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B : #F57F17
+
+// ── Text on signal labels ──
+BULL_LABEL_TEXT = #004D25  // dark green on #00E676 (contrast 7.8:1)
+BEAR_LABEL_TEXT = #FFFFFF  // white on #FF5252 (contrast ~4.0:1)
+
+// ── Dashboard / tables ──
+TABLE_BG       = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER   = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT  = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG      = isDark ? color.new(#0D47A1, 0) : color.new(#1565C0, 0)
+HEADER_BG_BULL = color.new(#0F6E56, 0)
+HEADER_BG_BEAR = color.new(#A32D2D, 0)
+HEADER_TEXT    = #FFFFFF
+
+// ── Lines / auxiliary ──
+LINE_SUBTLE  = isDark ? color.new(#666666, 0) : color.new(#999999, 0)
+TRANSP_COLOR = color.new(#000000, 100)
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+// ── Risk palette (muted, theme-aware) ──
+SL_COLOR       = isDark ? color.new(#E57373, 0)  : color.new(#B71C1C, 0)
+TP1_COLOR      = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+TP2_COLOR      = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+TP3_COLOR      = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+ENTRY_COLOR    = isDark ? color.new(#5C8AAE, 0)  : color.new(#34495E, 0)
+TP_LABEL_COLOR = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+TP_HIT_COLOR   = isDark ? color.new(#4DB6AC, 0)  : color.new(#00695C, 0)
+BE_COLOR       = isDark ? color.new(#FFA726, 0)  : color.new(#E65100, 0)
+LABEL_TEXT     = isDark ? #1A1A1A                : #FFFFFF   // text on filled Entry / SL / TP labels
+
+// ── Level bands ──
+int FILL_TRANSP = isDark ? 88 : 82
+int ZONE_TRANSP = zoneTranspInput == 0 ? FILL_TRANSP : zoneTranspInput
+
+// ══════════════════════════════════════════════════════════
+// 5. FUNCTIONS
+// ══════════════════════════════════════════════════════════
+
+// ── Types ──
+// A level is a price band built online from confirmed swings. It keeps
+// weighted sums of its member swing prices (weight = reaction size), so
+// its center is the weighted mean and its half-width follows the
+// weighted standard deviation of the members, clamped to
+// [MIN_HALF_WIDTH_ATR, Level Tolerance] × ATR. The role is not stored as a
+// type: `side` is +1 while price last closed above the band (support)
+// and −1 while it last closed below it (resistance).
+type Level
+    float lo
+    float hi
+    float mid
+    float sumW           // Σ w
+    float sumWP          // Σ w · price
+    float sumWP2         // Σ w · price²
+    float strength       // decaying strength: + w per touch, × decay per bar, × CROSS_PENALTY per cross
+    int   touches
+    int   highTouches
+    int   lowTouches
+    int   firstTime      // time of the earliest member swing
+    int   firstBar
+    int   activeTime     // time the level reached the activation touch count (na before)
+    int   lastTouchBar
+    int   crosses        // closes through the band while active
+    int   side           // +1 = price above (support), −1 = price below (resistance)
+    int   sideBar        // bar on which `side` last changed
+    int   lastSignalBar
+    bool  shown          // among the displayed levels on the last evaluated bar
+
+// ── Formatting & utilities ──
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+fmtScore(float s) =>
+    na(s) ? "—" : str.tostring(math.round(s))
+
+signedPct(float pct) =>
+    na(pct) ? "—" : (pct >= 0 ? "+" : "") + str.tostring(pct, "#.##") + "%"
+
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct   = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+
+sizeFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : s == "Huge" ? size.huge : size.small
+
+// one step smaller: section dividers and the dashboard footer
+sizeDownFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.tiny : s == "Normal" ? size.small : s == "Large" ? size.normal : s == "Huge" ? size.large : size.tiny
+
+lineStyleFromString(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filled = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filled ? "▰" : "▱"
+    result
+
+// wins / losses among closes at or after `cutoff` (ms)
+periodStats(array<int> tms, array<bool> wns, int cutoff) =>
+    int w = 0
+    int l = 0
+    int n = array.size(tms)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(tms, i) >= cutoff
+                if array.get(wns, i)
+                    w += 1
+                else
+                    l += 1
+    [w, l]
+
+// ── Level scoring ──
+isPolar(Level lv) =>
+    lv.highTouches > 0 and lv.lowTouches > 0
+
+// absolute 0–100 score: saturating map of the (polarity-boosted) strength
+levelScore(Level lv) =>
+    float s = nz(lv.strength) * (isPolar(lv) ? POLARITY_BONUS : 1.0)
+    100.0 * (1.0 - math.exp(-s / SCORE_SCALE))
+
+levelLabel(Level lv) =>
+    str.tostring(math.round(levelScore(lv))) + " · " + str.tostring(lv.touches) + "T" + (isPolar(lv) ? " ⇅" : "")
+
+levelTooltip(Level lv) =>
+    "Score " + str.tostring(math.round(levelScore(lv))) + "/100\nTouches: " + str.tostring(lv.touches) + " (" + str.tostring(lv.highTouches) + " highs, " + str.tostring(lv.lowTouches) + " lows)\nCrossed: " + str.tostring(lv.crosses) + "×\nBand: " + fmtPrice(lv.lo) + " – " + fmtPrice(lv.hi) + "\nFirst touch: " + str.format_time(lv.firstTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+
+levelTag(Level lv) =>
+    levelLabel(lv) + " @ " + fmtPrice(lv.mid)
+
+levelDashStr(Level lv) =>
+    fmtPrice(lv.mid) + " (" + signedPct(safeDiv(lv.mid - close, close) * 100.0) + ") · " + str.tostring(math.round(levelScore(lv)))
+
+// ── Level geometry ──
+// center = weighted mean of member prices; half-width = weighted standard
+// deviation, clamped to [MIN_HALF_WIDTH_ATR, Level Tolerance] × ATR
+refitBand(Level lv, float a) =>
+    float m  = safeDiv(lv.sumWP, lv.sumW, lv.mid)
+    float vr = safeDiv(lv.sumWP2, lv.sumW) - m * m
+    float hw = math.min(math.max(math.sqrt(math.max(vr, 0.0)), a * MIN_HALF_WIDTH_ATR), a * levelTolInput)
+    lv.mid := m
+    lv.lo  := m - hw
+    lv.hi  := m + hw
+    hw
+
+addTouch(Level lv, float price, float w, bool isHigh, float a) =>
+    lv.sumW         := lv.sumW + w
+    lv.sumWP        := lv.sumWP + w * price
+    lv.sumWP2       := lv.sumWP2 + w * price * price
+    lv.strength     := lv.strength + w
+    lv.touches      := lv.touches + 1
+    lv.highTouches  := lv.highTouches + (isHigh ? 1 : 0)
+    lv.lowTouches   := lv.lowTouches + (isHigh ? 0 : 1)
+    lv.lastTouchBar := bar_index
+    if na(lv.activeTime) and lv.touches >= minTouchesInput
+        lv.activeTime := time
+    refitBand(lv, a)
+
+newLevel(float price, float w, bool isHigh, int pBar, int pTime, float a) =>
+    lv = Level.new()
+    lv.mid           := price
+    lv.lo            := price
+    lv.hi            := price
+    lv.sumW          := 0.0
+    lv.sumWP         := 0.0
+    lv.sumWP2        := 0.0
+    lv.strength      := 0.0
+    lv.touches       := 0
+    lv.highTouches   := 0
+    lv.lowTouches    := 0
+    lv.firstTime     := pTime
+    lv.firstBar      := pBar
+    lv.activeTime    := na
+    lv.lastTouchBar  := pBar
+    lv.crosses       := 0
+    lv.side          := close > price ? 1 : -1
+    lv.sideBar       := bar_index
+    lv.lastSignalBar := na
+    lv.shown         := false
+    addTouch(lv, price, w, isHigh, a)
+    lv
+
+// fold level `o` into level `t` (statistics add up, history keeps the earliest / latest marks)
+mergeLevels(Level t, Level o, float a) =>
+    t.sumW         := t.sumW + o.sumW
+    t.sumWP        := t.sumWP + o.sumWP
+    t.sumWP2       := t.sumWP2 + o.sumWP2
+    t.strength     := t.strength + o.strength
+    t.touches      := t.touches + o.touches
+    t.highTouches  := t.highTouches + o.highTouches
+    t.lowTouches   := t.lowTouches + o.lowTouches
+    t.firstTime    := math.min(t.firstTime, o.firstTime)
+    t.firstBar     := math.min(t.firstBar, o.firstBar)
+    t.lastTouchBar := math.max(t.lastTouchBar, o.lastTouchBar)
+    t.crosses      := math.max(t.crosses, o.crosses)
+    t.shown        := t.shown or o.shown
+    if not na(o.activeTime)
+        t.activeTime := na(t.activeTime) ? o.activeTime : math.min(t.activeTime, o.activeTime)
+    if not na(o.lastSignalBar)
+        t.lastSignalBar := na(t.lastSignalBar) ? o.lastSignalBar : math.max(t.lastSignalBar, o.lastSignalBar)
+    if na(t.activeTime) and t.touches >= minTouchesInput
+        t.activeTime := time
+    refitBand(t, a)
+
+// A confirmed swing joins the level with the nearest center within
+// Level Tolerance, or opens a new level. After a touch the level absorbs
+// every level its band now overlaps. The memory is capped at MAX_LEVELS
+// by evicting the weakest level. Returns the number of stored levels.
+registerSwing(array<Level> lvls, float price, float w, bool isHigh, int pBar, int pTime, float a) =>
+    float tol   = a * levelTolInput
+    int   tIdx  = -1
+    float bestD = tol
+    int   n     = lvls.size()
+    if n > 0
+        for i = 0 to n - 1
+            float d = math.abs(lvls.get(i).mid - price)
+            if d <= bestD
+                bestD := d
+                tIdx  := i
+    bool joined = tIdx >= 0
+    if joined
+        t = lvls.get(tIdx)
+        addTouch(t, price, w, isHigh, a)
+        bool again  = true
+        int  passes = 0
+        while again and passes < MERGE_PASSES
+            again  := false
+            passes += 1
+            int k = lvls.size() - 1
+            while k >= 0
+                if k != tIdx
+                    o = lvls.get(k)
+                    if o.lo <= t.hi and t.lo <= o.hi
+                        mergeLevels(t, o, a)
+                        lvls.remove(k)
+                        if k < tIdx
+                            tIdx -= 1
+                        again := true
+                k -= 1
+    if not joined
+        lvls.push(newLevel(price, w, isHigh, pBar, pTime, a))
+    while lvls.size() > MAX_LEVELS
+        int   weakIdx = 0
+        float weakStr = lvls.get(0).strength
+        for j = 1 to lvls.size() - 1
+            if lvls.get(j).strength < weakStr
+                weakStr := lvls.get(j).strength
+                weakIdx := j
+        lvls.remove(weakIdx)
+    lvls.size()
+
+// Once per confirmed bar: age every level, update its side from the close
+// and register crosses (a close beyond the far edge of the band). A cross
+// of an active level costs strength. Levels decayed below MIN_STRENGTH are
+// forgotten. Returns crosses of levels that were shown on the previous bar:
+// [upward count, last upward level, downward count, last downward level].
+ageAndCross(array<Level> lvls, float decay) =>
+    int   nUp   = 0
+    float lvlUp = na
+    int   nDn   = 0
+    float lvlDn = na
+    int k = lvls.size() - 1
+    while k >= 0
+        lv = lvls.get(k)
+        lv.strength := lv.strength * decay
+        int newSide = close > lv.hi ? 1 : close < lv.lo ? -1 : lv.side
+        if newSide != lv.side
+            if lv.touches >= minTouchesInput
+                lv.crosses  := lv.crosses + 1
+                lv.strength := lv.strength * CROSS_PENALTY
+                if lv.shown and newSide == 1
+                    nUp   += 1
+                    lvlUp := lv.mid
+                if lv.shown and newSide == -1
+                    nDn   += 1
+                    lvlDn := lv.mid
+            lv.side    := newSide
+            lv.sideBar := bar_index
+        if lv.strength < MIN_STRENGTH
+            lvls.remove(k)
+        k -= 1
+    [nUp, lvlUp, nDn, lvlDn]
+
+resetShown(array<Level> lvls) =>
+    if lvls.size() > 0
+        for i = 0 to lvls.size() - 1
+            lv = lvls.get(i)
+            lv.shown := false
+
+// The `n` active levels on side `sideWanted` whose centers are nearest to
+// the close, nearest first. Selected levels are marked shown.
+selectNearest(array<Level> lvls, int sideWanted, int n) =>
+    out = array.new<Level>()
+    int m = lvls.size()
+    if m > 0
+        used = array.new<bool>(m, false)
+        for k = 0 to n - 1
+            int   best  = -1
+            float bestD = na
+            for i = 0 to m - 1
+                lv = lvls.get(i)
+                if not used.get(i) and lv.touches >= minTouchesInput and lv.side == sideWanted
+                    float d = math.abs(close - lv.mid)
+                    if na(bestD) or d < bestD
+                        bestD := d
+                        best  := i
+            if best < 0
+                break
+            used.set(best, true)
+            pick = lvls.get(best)
+            pick.shown := true
+            out.push(pick)
+    out
+
+// ── Signals ──
+// Buy rejection at support: price was above the band before this bar
+// (side +1, unchanged this bar), the low reaches into the band, the bar
+// closes back above the band and closes in the top part of its range.
+// Returns [fired, level score, level description].
+checkBuyRejection(array<Level> sup, float clvMin, bool enabled) =>
+    bool   fired = false
+    float  score = na
+    string info  = ""
+    if enabled and sup.size() > 0
+        float rng = high - low
+        float clv = rng > 0 ? (close - low) / rng : 0.5
+        for i = 0 to sup.size() - 1
+            lv = sup.get(i)
+            bool approached = lv.side == 1 and lv.sideBar < bar_index
+            bool touched    = low <= lv.hi
+            bool heldAbove  = close > lv.hi
+            bool strongBar  = clv >= clvMin
+            bool scoreOk    = levelScore(lv) >= minScoreInput
+            bool rested     = na(lv.lastSignalBar) or bar_index - lv.lastSignalBar >= cooldownInput
+            if approached and touched and heldAbove and strongBar and scoreOk and rested
+                lv.lastSignalBar := bar_index
+                fired := true
+                score := levelScore(lv)
+                info  := levelTag(lv)
+                break
+    [fired, score, info]
+
+// Sell rejection at resistance: the mirror image.
+checkSellRejection(array<Level> res, float clvMin, bool enabled) =>
+    bool   fired = false
+    float  score = na
+    string info  = ""
+    if enabled and res.size() > 0
+        float rng = high - low
+        float clv = rng > 0 ? (high - close) / rng : 0.5
+        for i = 0 to res.size() - 1
+            lv = res.get(i)
+            bool approached = lv.side == -1 and lv.sideBar < bar_index
+            bool touched    = high >= lv.lo
+            bool heldBelow  = close < lv.lo
+            bool strongBar  = clv >= clvMin
+            bool scoreOk    = levelScore(lv) >= minScoreInput
+            bool rested     = na(lv.lastSignalBar) or bar_index - lv.lastSignalBar >= cooldownInput
+            if approached and touched and heldBelow and strongBar and scoreOk and rested
+                lv.lastSignalBar := bar_index
+                fired := true
+                score := levelScore(lv)
+                info  := levelTag(lv)
+                break
+    [fired, score, info]
+
+// ── Level drawing ──
+purgeDrawings(array<box> bx, array<line> ln, array<label> lb) =>
+    while bx.size() > 0
+        box.delete(bx.pop())
+    while ln.size() > 0
+        line.delete(ln.pop())
+    while lb.size() > 0
+        label.delete(lb.pop())
+    bx.size()
+
+// Time coordinates (xloc.bar_time) with the level's stored times: no
+// history-buffer lookups, however old the first touch is.
+drawLevels(array<Level> lvls, color baseCol, array<box> bx, array<line> ln, array<label> lb, string lblSize) =>
+    int tfMs   = timeframe.in_seconds() * 1000
+    int rightT = time + LEVEL_RIGHT_EXT * tfMs
+    if lvls.size() > 0
+        for i = 0 to lvls.size() - 1
+            lv = lvls.get(i)
+            int   leftT   = drawFromFirstInput ? lv.firstTime : nz(lv.activeTime, lv.firstTime)
+            color fillCol = color.new(baseCol, ZONE_TRANSP)
+            color midCol  = color.new(baseCol, 35)
+            bx.push(box.new(leftT, lv.hi, rightT, lv.lo, xloc = xloc.bar_time, border_color = na, bgcolor = fillCol))
+            ln.push(line.new(leftT, lv.mid, rightT, lv.mid, xloc = xloc.bar_time, color = midCol, style = line.style_dotted, width = 1))
+            if showLevelLabelsInput
+                lb.push(label.new(rightT, lv.mid, levelLabel(lv), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(baseCol, 75), textcolor = TEXT_COLOR, size = lblSize, tooltip = levelTooltip(lv)))
+
+// ── HTF bias (evaluated inside request.security) ──
+htfBiasCalc() =>
+    float e = ta.ema(close, HTF_EMA_LEN)
+    na(e) ? 0 : close > e ? 1 : -1
+
+// ── Dashboard helpers ──
+dashRow(table t, int row, string lbl, string val, color valCol, bool zebra, string sz, string tip) =>
+    color bg = zebra ? TABLE_ROW_ALT : TABLE_BG
+    table.cell(t, 0, row, lbl, text_color = TEXT_MUTED, text_size = sz, bgcolor = bg, text_halign = text.align_left, tooltip = tip)
+    table.cell(t, 1, row, val, text_color = valCol, text_size = sz, bgcolor = bg, text_halign = text.align_right)
+    row + 1
+
+dashDivider(table t, int row, string txt, string sz) =>
+    table.cell(t, 0, row, txt, text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = sz, text_halign = text.align_center)
+    table.merge_cells(t, 0, row, 1, row)
+    row + 1
+
+// ══════════════════════════════════════════════════════════
+// 6. CALCULATIONS
+// ══════════════════════════════════════════════════════════
+float structAtr    = nz(ta.atr(STRUCT_ATR_LEN), 0.0)
+float swHigh       = ta.pivothigh(high, swingLenInput, swingLenInput)
+float swLow        = ta.pivotlow(low, swingLenInput, swingLenInput)
+float lowestAfter  = ta.lowest(low, swingLenInput)    // the confirmation bars after a swing high
+float highestAfter = ta.highest(high, swingLenInput)  // the confirmation bars after a swing low
+float riskAtr      = nz(ta.atr(atrLenRiskInput), 0.0)
+float rsiValue     = nz(ta.rsi(close, RSI_LEN), 50.0)
+int   htfBias      = nz(request.security(syminfo.tickerid, htfInput, htfBiasCalc()[1], barmerge.gaps_off, barmerge.lookahead_on), 0)
+
+// All trading state (swings, levels, crosses, signals, trades) updates on confirmed bars only.
+bool  confirmed   = barstate.isconfirmed
+bool  atrOk       = structAtr > 0
+int   WARMUP_BARS = math.max(STRUCT_ATR_LEN, 2 * swingLenInput + 1)
+bool  isWarmedUp  = bar_index >= WARMUP_BARS
+float decayPerBar = math.pow(0.5, 1.0 / halfLifeInput)
+
+// Touch weight = 1 + reaction: how far price moved away from the swing
+// during its confirmation bars, in ATR at the swing bar (capped).
+float atrAtSwing = structAtr[swingLenInput] > 0 ? structAtr[swingLenInput] : structAtr
+float wHigh      = 1.0 + math.min(safeDiv(swHigh - lowestAfter, atrAtSwing), REACTION_CAP)
+float wLow       = 1.0 + math.min(safeDiv(highestAfter - swLow, atrAtSwing), REACTION_CAP)
+
+// ── State ──
+var array<Level> levels = array.new<Level>()
+
+// ── Level maintenance and new swings ──
+bool gotHigh = confirmed and not na(swHigh)
+bool gotLow  = confirmed and not na(swLow)
+
+int   upCrosses = 0
+float upLevel   = na
+int   dnCrosses = 0
+float dnLevel   = na
+
+if confirmed and atrOk
+    [nU, lU, nD, lD] = ageAndCross(levels, decayPerBar)
+    upCrosses := nU
+    upLevel   := lU
+    dnCrosses := nD
+    dnLevel   := lD
+    if gotHigh
+        registerSwing(levels, swHigh, wHigh, true, bar_index - swingLenInput, time[swingLenInput], structAtr)
+    if gotLow
+        registerSwing(levels, swLow, wLow, false, bar_index - swingLenInput, time[swingLenInput], structAtr)
+
+// ── Trend: direction of the last cross of a shown level ──
+var int   trendDir      = 0
+var int   trendStartBar = na
+var int   lastBreakDir  = 0
+var float lastBreakLvl  = na
+var int   lastBreakBar  = na
+
+int breakDir = upCrosses > 0 and dnCrosses == 0 ? 1 : dnCrosses > 0 and upCrosses == 0 ? -1 : 0
+if breakDir != 0
+    lastBreakDir := breakDir
+    lastBreakLvl := breakDir == 1 ? upLevel : dnLevel
+    lastBreakBar := bar_index
+    if breakDir != trendDir
+        trendDir      := breakDir
+        trendStartBar := bar_index
+
+// ── Selection: nearest active levels on each side ──
+resetShown(levels)
+selRes = selectNearest(levels, -1, levelsPerSideInput)
+selSup = selectNearest(levels, 1, levelsPerSideInput)
+
+// ══════════════════════════════════════════════════════════
+// 7. SIGNAL LOGIC
+// ══════════════════════════════════════════════════════════
+// Bar-close confirmed, after warmup. Buy and sell are mutually exclusive:
+// a bar cannot close in both the top and the bottom part of its range.
+bool signalGate = confirmed and isWarmedUp and atrOk
+
+[longHit, longScore, longInfo]    = checkBuyRejection(selSup, rejectClvInput, signalGate)
+[shortHit, shortScore, shortInfo] = checkSellRejection(selRes, rejectClvInput, signalGate)
+
+bool confirmedLongSignal  = longHit
+bool confirmedShortSignal = shortHit and not longHit
+
+var string lastSigType   = ""
+var float  lastSigScore  = na
+var int    lastSigBarIdx = na
+
+if confirmedLongSignal
+    lastSigType   := "Long"
+    lastSigScore  := longScore
+    lastSigBarIdx := bar_index
+if confirmedShortSignal
+    lastSigType   := "Short"
+    lastSigScore  := shortScore
+    lastSigBarIdx := bar_index
+
+// ══════════════════════════════════════════════════════════
+// 8. RISK MANAGEMENT (SL/TP) — TRADE ENGINE
+// ══════════════════════════════════════════════════════════
+// Order: state → bar-start captures → hit detection → TP events → BE →
+// snapshots → closure → reversal → entries.
+float slDistance = riskAtr * effSLMult
+
+var float activeEntry = na
+var float activeSL    = na
+var float activeTP1   = na
+var float activeTP2   = na
+var float activeTP3   = na
+var int   activeDir   = 0
+var int   entryBarIdx = na
+var float entryAtr    = na
+var bool  tp1Reached  = false
+var bool  tp2Reached  = false
+var bool  tp3Reached  = false
+var bool  beActive    = false
+
+// Session statistics (reset on chart reload — expected)
+var int    winCount  = 0
+var int    lossCount = 0
+var string formStr   = ""
+var array<int>  tradeTimes = array.new<int>()
+var array<bool> tradeWins  = array.new<bool>()
+
+// ── Bar-start captures: a stop moved to BE on THIS bar cannot stop out on this bar ──
+bool  beActiveAtBarStart = beActive
+float effectiveSL        = activeSL
+
+// ── Hit detection: entry-bar guard + confirmed only ──
+bool canCheckHit = activeDir != 0 and not na(entryBarIdx) and bar_index > entryBarIdx and barstate.isconfirmed
+
+bool slHitRaw  = canCheckHit and (activeDir == 1 ? low  <= effectiveSL : high >= effectiveSL)
+bool tp1HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP1   : low  <= activeTP1)
+bool tp2HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP2   : low  <= activeTP2)
+bool tp3HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP3   : low  <= activeTP3)
+
+// TP priority: a TP touch is registered regardless of a SL touch on the same bar
+bool tp1FirstTouch = tp1HitRaw and not tp1Reached
+bool tp2FirstTouch = tp2HitRaw and not tp2Reached
+bool tp3FirstTouch = tp3HitRaw and not tp3Reached
+
+if tp1FirstTouch
+    tp1Reached := true
+if tp2FirstTouch
+    tp2Reached := true
+if tp3FirstTouch
+    tp3Reached := true
+
+// ── Break-even after TP1 ──
+bool  beJustActivated = false
+float beLevel         = na
+if beInput and tp1FirstTouch and not beActive and activeDir != 0
+    activeSL        := activeEntry + activeDir * beOffsetInput * nz(entryAtr, 0.0)
+    beActive        := true
+    beJustActivated := true
+    beLevel         := activeSL
+
+// ── Snapshots BEFORE any reset ──
+var float hitSL    = na
+var float hitEntry = na
+if slHitRaw
+    hitSL    := effectiveSL
+    hitEntry := activeEntry
+
+float exitEntry         = activeEntry
+int   exitDir           = activeDir
+float exitTP1           = activeTP1
+float exitTP2           = activeTP2
+float exitTP3           = activeTP3
+bool  exitBeActive      = beActiveAtBarStart
+bool  displayTp1Reached = tp1Reached
+bool  displayTp2Reached = tp2Reached
+bool  displayTp3Reached = tp3Reached
+
+// ── Closure: SL is blocked by a first TP1/TP3 touch on this bar (TP priority) ──
+bool closeBySl = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
+bool evSlHit   = closeBySl
+bool evTp3Hit  = false
+
+if (tp3HitRaw or closeBySl) and activeDir != 0
+    evTp3Hit := tp3HitRaw
+    bool tradeWin = tp1Reached
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    entryAtr    := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+
+// ── Signal-Trade Parity ──
+int sigDir = confirmedLongSignal ? 1 : confirmedShortSignal ? -1 : 0
+
+// Reversal ⇔ the signal is strictly OPPOSITE to the open position.
+// A same-direction signal never closes or modifies the trade.
+bool reverseToShort = sigDir == -1 and activeDir == 1
+bool reverseToLong  = sigDir ==  1 and activeDir == -1
+
+bool evReversal = false
+bool revWin     = false
+if reverseToShort or reverseToLong
+    evReversal := true
+    bool tradeWin = tp1Reached
+    revWin := tradeWin
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    entryAtr    := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+
+// ── Entries (the engine is flat here: initially, or freed by a closure / reversal) ──
+bool evLongEntry  = false
+bool evShortEntry = false
+
+if confirmedLongSignal and activeDir == 0 and slDistance > 0
+    float slAtrLong  = close - slDistance
+    float slWickLong = math.min(low - riskAtr * WICK_BUFFER_ATR, close - riskAtr * WICK_MIN_ATR)
+    float slLong     = slModeInput == "ATR" ? slAtrLong : slWickLong
+    float riskLong   = close - slLong
+    if riskLong > 0
+        activeEntry := close
+        activeSL    := slLong
+        activeTP1   := close + riskLong * effTP1m
+        activeTP2   := close + riskLong * effTP2m
+        activeTP3   := close + riskLong * effTP3m
+        activeDir   := 1
+        entryBarIdx := bar_index
+        entryAtr    := riskAtr
+        tp1Reached  := false
+        tp2Reached  := false
+        tp3Reached  := false
+        beActive    := false
+        evLongEntry := true
+
+if confirmedShortSignal and activeDir == 0 and slDistance > 0
+    float slAtrShort  = close + slDistance
+    float slWickShort = math.max(high + riskAtr * WICK_BUFFER_ATR, close + riskAtr * WICK_MIN_ATR)
+    float slShort     = slModeInput == "ATR" ? slAtrShort : slWickShort
+    float riskShort   = slShort - close
+    if riskShort > 0
+        activeEntry  := close
+        activeSL     := slShort
+        activeTP1    := close - riskShort * effTP1m
+        activeTP2    := close - riskShort * effTP2m
+        activeTP3    := close - riskShort * effTP3m
+        activeDir    := -1
+        entryBarIdx  := bar_index
+        entryAtr     := riskAtr
+        tp1Reached   := false
+        tp2Reached   := false
+        tp3Reached   := false
+        beActive     := false
+        evShortEntry := true
+
+bool newEntry = evLongEntry or evShortEntry
+
+// ── Statistics ──
+int   closedTrades = winCount + lossCount
+float winRate      = closedTrades > 0 ? winCount * 100.0 / closedTrades : 0.0
+
+// ══════════════════════════════════════════════════════════
+// 9. PLOTS & VISUALS — LEVELS
+// ══════════════════════════════════════════════════════════
+var array<box>   levelBoxes  = array.new<box>()
+var array<line>  levelLines  = array.new<line>()
+var array<label> levelLabels = array.new<label>()
+
+if barstate.islast
+    purgeDrawings(levelBoxes, levelLines, levelLabels)
+    if showLevelsInput
+        string levelLblSize = sizeFromString(levelFontSizeInput)
+        drawLevels(selRes, resLevelColorInput, levelBoxes, levelLines, levelLabels, levelLblSize)
+        drawLevels(selSup, supLevelColorInput, levelBoxes, levelLines, levelLabels, levelLblSize)
+
+// ══════════════════════════════════════════════════════════
+// 10. LABELS & SHAPES — ENTRY LABELS
+// ══════════════════════════════════════════════════════════
+// Every entry is marked. Same-direction signals while a trade is open are
+// ignored by the engine (no pyramiding) and are not marked.
+string signalSize = sizeFromString(signalFontSizeInput)
+
+if showSignalsInput and evLongEntry
+    string buyKind = evReversal ? "Long entry (reversal from short)" : "Long entry · support rejection"
+    string buyTip  = buyKind + "\nScore: " + fmtScore(longScore) + "/100" + "\nLevel: " + longInfo + "\nRSI: " + str.tostring(rsiValue, "#.0") + "\nSL: " + fmtPrice(activeSL) + " | TP1: " + fmtPrice(activeTP1)
+    label.new(bar_index, low, "Long ▲", color = bullColorInput, textcolor = BULL_LABEL_TEXT, style = label.style_label_up, size = signalSize, tooltip = buyTip)
+
+if showSignalsInput and evShortEntry
+    string sellKind = evReversal ? "Short entry (reversal from long)" : "Short entry · resistance rejection"
+    string sellTip  = sellKind + "\nScore: " + fmtScore(shortScore) + "/100" + "\nLevel: " + shortInfo + "\nRSI: " + str.tostring(rsiValue, "#.0") + "\nSL: " + fmtPrice(activeSL) + " | TP1: " + fmtPrice(activeTP1)
+    label.new(bar_index, high, "Short ▼", color = bearColorInput, textcolor = BEAR_LABEL_TEXT, style = label.style_label_down, size = signalSize, tooltip = sellTip)
+
+// ══════════════════════════════════════════════════════════
+// 11. SL/TP LINES & LABELS
+// ══════════════════════════════════════════════════════════
+var line  entryLine  = na
+var line  slLine     = na
+var line  tp1Line    = na
+var line  tp2Line    = na
+var line  tp3Line    = na
+var label entryLabel = na
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+
+string entryStyle = lineStyleFromString(entryLineStyleInput)
+string slStyle    = lineStyleFromString(slLineStyleInput)
+string tpStyle    = lineStyleFromString(tpLineStyleInput)
+string labelSize  = sizeFromString(labelFontSizeInput)
+
+// New entry: replace the previous trade's lines (they persist until now as a record)
+if newEntry and showSlTpInput
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    int x1 = bar_index
+    int x2 = bar_index + LINE_FORWARD_BARS
+    entryLine := line.new(x1, activeEntry, x2, activeEntry, color = ENTRY_COLOR, style = entryStyle, width = 1)
+    slLine    := line.new(x1, activeSL, x2, activeSL, color = SL_COLOR, style = slStyle, width = 2)
+    tp1Line   := line.new(x1, activeTP1, x2, activeTP1, color = TP1_COLOR, style = tpStyle, width = 1)
+    tp2Line   := line.new(x1, activeTP2, x2, activeTP2, color = TP2_COLOR, style = tpStyle, width = 1)
+    tp3Line   := line.new(x1, activeTP3, x2, activeTP3, color = TP3_COLOR, style = tpStyle, width = 1)
+    if showSlTpLabelsInput
+        int lx = x2 + LABEL_OFFSET_BARS
+        entryLabel := label.new(lx, activeEntry, "ENTRY " + fmtPrice(activeEntry), color = ENTRY_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        slLabel    := label.new(lx, activeSL, "SL " + fmtPrice(activeSL) + formatPctFromEntry(activeSL, activeEntry), color = SL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp1Label   := label.new(lx, activeTP1, "TP1 " + fmtPrice(activeTP1) + formatPctFromEntry(activeTP1, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp2Label   := label.new(lx, activeTP2, "TP2 " + fmtPrice(activeTP2) + formatPctFromEntry(activeTP2, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp3Label   := label.new(lx, activeTP3, "TP3 " + fmtPrice(activeTP3) + formatPctFromEntry(activeTP3, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+
+// Open trade: lines end LINE_UPDATE_BARS after the current bar, labels right behind them
+if activeDir != 0 and showSlTpInput and not na(slLine)
+    int xe = bar_index + LINE_UPDATE_BARS
+    line.set_x2(entryLine, xe)
+    line.set_x2(slLine, xe)
+    line.set_x2(tp1Line, xe)
+    line.set_x2(tp2Line, xe)
+    line.set_x2(tp3Line, xe)
+    if showSlTpLabelsInput and not na(slLabel)
+        label.set_x(entryLabel, xe + LABEL_OFFSET_BARS)
+        label.set_x(slLabel, xe + LABEL_OFFSET_BARS)
+        label.set_x(tp1Label, xe + LABEL_OFFSET_BARS)
+        label.set_x(tp2Label, xe + LABEL_OFFSET_BARS)
+        label.set_x(tp3Label, xe + LABEL_OFFSET_BARS)
+
+// Break-even: dim the SL, annotate the entry (not on a bar where new lines were just drawn)
+if showSlTpInput and beJustActivated and not newEntry
+    if not na(slLine)
+        line.set_color(slLine, color.new(SL_COLOR, BE_DIM_TRANSP))
+    if showSlTpLabelsInput
+        if not na(slLabel)
+            label.set_color(slLabel, color.new(SL_COLOR, BE_DIM_TRANSP))
+            label.set_textcolor(slLabel, TEXT_COLOR)   // LABEL_TEXT is unreadable on the dimmed fill
+        if not na(entryLabel)
+            label.set_text(entryLabel, "ENTRY " + fmtPrice(exitEntry) + "  → SL (BE)")
+            label.set_color(entryLabel, BE_COLOR)
+
+// TP hit: the reached target turns solid teal with a check mark (from snapshots)
+if showSlTpInput and not newEntry
+    if displayTp1Reached and not na(tp1Line)
+        line.set_color(tp1Line, TP_HIT_COLOR)
+        line.set_style(tp1Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp1Label)
+            label.set_text(tp1Label, "TP1 ✓ " + fmtPrice(exitTP1) + formatPctFromEntry(exitTP1, exitEntry))
+            label.set_color(tp1Label, TP_HIT_COLOR)
+    if displayTp2Reached and not na(tp2Line)
+        line.set_color(tp2Line, TP_HIT_COLOR)
+        line.set_style(tp2Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp2Label)
+            label.set_text(tp2Label, "TP2 ✓ " + fmtPrice(exitTP2) + formatPctFromEntry(exitTP2, exitEntry))
+            label.set_color(tp2Label, TP_HIT_COLOR)
+    if displayTp3Reached and not na(tp3Line)
+        line.set_color(tp3Line, TP_HIT_COLOR)
+        line.set_style(tp3Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp3Label)
+            label.set_text(tp3Label, "TP3 ✓ " + fmtPrice(exitTP3) + formatPctFromEntry(exitTP3, exitEntry))
+            label.set_color(tp3Label, TP_HIT_COLOR)
+
+// ══════════════════════════════════════════════════════════
+// 12. DASHBOARD
+// ══════════════════════════════════════════════════════════
+dashPos = switch dashPosInput
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    "Middle Right" => position.middle_right
+    => position.top_right
+
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    string dashFs    = sizeFromString(dashFontSizeInput)
+    string dashFsSub = sizeDownFromString(dashFontSizeInput)
+
+    // Dynamic height: header + footer + enabled sections
+    int marketRows = showMarketSecInput ? 7 : 0
+    int levelRows  = showLevelSecInput ? 5 : 0
+    int tradeRows  = showTradeSecInput ? (activeDir != 0 ? 8 : 2) : 0
+    int statsRows  = showStatsSecInput ? 6 : 0
+    int totalRows  = 2 + marketRows + levelRows + tradeRows + statsRows
+
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(dashPos, 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    string trendWord = trendDir == 1 ? "Bullish" : trendDir == -1 ? "Bearish" : "Neutral"
+    color  trendCol  = trendDir == 1 ? BULL_TEXT : trendDir == -1 ? BEAR_TEXT : TEXT_MUTED
+    color  headerBg  = trendDir == 1 ? HEADER_BG_BULL : trendDir == -1 ? HEADER_BG_BEAR : HEADER_BG
+
+    // ── Header ──
+    int r = 0
+    table.cell(dashTable, 0, r, "◆ " + SHORT_NAME + " · " + trendWord, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = dashFs, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    // ── Market ──
+    if showMarketSecInput
+        string ageStr  = trendDir != 0 and not na(trendStartBar) ? str.tostring(bar_index - trendStartBar) + " bars" : "—"
+        string htfStr  = htfInput == "" ? "Off" : htfBias == 1 ? "Bullish · " + htfInput : htfBias == -1 ? "Bearish · " + htfInput : "—"
+        color  htfCol  = htfInput != "" and htfBias == 1 ? BULL_TEXT : htfInput != "" and htfBias == -1 ? BEAR_TEXT : TEXT_MUTED
+        string posStr  = activeDir == 1 ? "Long" : activeDir == -1 ? "Short" : "Flat"
+        color  posCol  = activeDir == 1 ? BULL_TEXT : activeDir == -1 ? BEAR_TEXT : TEXT_MUTED
+        string lastStr = na(lastSigBarIdx) ? "—" : lastSigType + " · " + fmtScore(lastSigScore) + " (" + str.tostring(bar_index - lastSigBarIdx) + ")"
+        color  lastCol = lastSigType == "Long" ? BULL_TEXT : lastSigType == "Short" ? BEAR_TEXT : TEXT_MUTED
+        r := dashDivider(dashTable, r, "— Market —", dashFsSub)
+        r := dashRow(dashTable, r, "Trend", trendWord, trendCol, false, dashFs, "Direction of the last close through a shown level:\nup through resistance = Bullish, down through support = Bearish.")
+        r := dashRow(dashTable, r, "Age", ageStr, TEXT_COLOR, true, dashFs, "Bars since the trend direction last changed.")
+        r := dashRow(dashTable, r, "HTF Bias", htfStr, htfCol, false, dashFs, "Close vs EMA 50 on the HTF, previous closed HTF bar (no repaint).\nInformational only.")
+        r := dashRow(dashTable, r, "Position", posStr, posCol, true, dashFs, "Current state of the trade engine. One position at a time, no pyramiding.")
+        r := dashRow(dashTable, r, "Last Signal", lastStr, lastCol, false, dashFs, "Last confirmed signal · level score (bars ago).\nScore is absolute, 0–100.")
+        r := dashRow(dashTable, r, "Timeframe", timeframe.period, TEXT_COLOR, true, dashFs, "Chart timeframe.")
+
+    // ── Levels ──
+    if showLevelSecInput
+        string resStr = "—"
+        color  resCol = TEXT_MUTED
+        string supStr = "—"
+        color  supCol = TEXT_MUTED
+        if selRes.size() > 0
+            resStr := levelDashStr(selRes.get(0))
+            resCol := BEAR_TEXT
+        if selSup.size() > 0
+            supStr := levelDashStr(selSup.get(0))
+            supCol := BULL_TEXT
+        string countStr = "R " + str.tostring(selRes.size()) + " · S " + str.tostring(selSup.size())
+        string brkStr   = lastBreakDir == 1 ? "Up ↑ " + fmtPrice(lastBreakLvl) + " (" + str.tostring(bar_index - lastBreakBar) + ")" : lastBreakDir == -1 ? "Down ↓ " + fmtPrice(lastBreakLvl) + " (" + str.tostring(bar_index - lastBreakBar) + ")" : "—"
+        color  brkCol   = lastBreakDir == 1 ? BULL_TEXT : lastBreakDir == -1 ? BEAR_TEXT : TEXT_MUTED
+        r := dashDivider(dashTable, r, "— Levels —", dashFsSub)
+        r := dashRow(dashTable, r, "Resistance", resStr, resCol, false, dashFs, "Nearest shown resistance: center, distance from price, score.")
+        r := dashRow(dashTable, r, "Support", supStr, supCol, true, dashFs, "Nearest shown support: center, distance from price, score.")
+        r := dashRow(dashTable, r, "Shown", countStr, TEXT_COLOR, false, dashFs, "Active levels shown above (R) and below (S) price.")
+        r := dashRow(dashTable, r, "Last Break", brkStr, brkCol, true, dashFs, "Last close through a shown level: level (bars ago).\nA crossed level changes role and loses part of its strength.")
+
+    // ── Trade ──
+    if showTradeSecInput
+        r := dashDivider(dashTable, r, "— Trade —", dashFsSub)
+        if activeDir != 0
+            string entryStr = (activeDir == 1 ? "Long @ " : "Short @ ") + fmtPrice(activeEntry)
+            string slStr    = beActive ? "BE @ " + fmtPrice(activeSL) : fmtPrice(activeSL) + formatPctFromEntry(activeSL, activeEntry)
+            color  slCol    = beActive ? BE_COLOR : SL_COLOR
+            string tp1Str   = (tp1Reached ? "✓ " : "") + fmtPrice(activeTP1)
+            string tp2Str   = (tp2Reached ? "✓ " : "") + fmtPrice(activeTP2)
+            string tp3Str   = (tp3Reached ? "✓ " : "") + fmtPrice(activeTP3)
+            color  tp1Col   = tp1Reached ? TP_HIT_COLOR : TP_LABEL_COLOR
+            color  tp2Col   = tp2Reached ? TP_HIT_COLOR : TP_LABEL_COLOR
+            color  tp3Col   = tp3Reached ? TP_HIT_COLOR : TP_LABEL_COLOR
+            string rrStr    = str.tostring(effTP1m, "#.#") + "R · " + str.tostring(effTP2m, "#.#") + "R · " + str.tostring(effTP3m, "#.#") + "R"
+            color  rrCol    = effTP1m >= 1.5 ? BULL_TEXT : effTP1m >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+            float  riskPct  = safeDiv(math.abs(activeEntry - activeSL), activeEntry) * 100.0
+            string riskStr  = str.tostring(riskPct, "#.##") + "%"
+            color  riskCol  = riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+            r := dashRow(dashTable, r, "Entry", entryStr, ENTRY_COLOR, false, dashFs, "Entry at the close of the signal bar.")
+            r := dashRow(dashTable, r, "SL", slStr, slCol, true, dashFs, "Stop-loss (" + slModeInput + " mode). 'BE @' = stop moved to break-even after TP1.")
+            r := dashRow(dashTable, r, "TP1", tp1Str, tp1Col, false, dashFs, "✓ = reached. Reaching TP1 makes the trade a win.")
+            r := dashRow(dashTable, r, "TP2", tp2Str, tp2Col, true, dashFs, "✓ = reached.")
+            r := dashRow(dashTable, r, "TP3", tp3Str, tp3Col, false, dashFs, "Final target: closes the trade.")
+            r := dashRow(dashTable, r, "R:R", rrStr, rrCol, true, dashFs, "Reward-to-risk of TP1 · TP2 · TP3, in multiples of the actual SL distance.")
+            r := dashRow(dashTable, r, "SL Dist", riskStr, riskCol, false, dashFs, "Current distance from entry to stop, % of entry price.")
+        else
+            table.cell(dashTable, 0, r, "Flat · waiting for signal", text_color = TEXT_MUTED, bgcolor = TABLE_BG, text_size = dashFs, text_halign = text.align_center)
+            table.merge_cells(dashTable, 0, r, 1, r)
+            r += 1
+
+    // ── Stats ──
+    if showStatsSecInput
+        string periodTag = statsPeriodInput == "24 Hours" ? "24H" : statsPeriodInput == "30 Days" ? "30D" : "All-Time"
+        int pWins   = winCount
+        int pLosses = lossCount
+        if statsPeriodInput != "All-Time"
+            int cutoff = statsPeriodInput == "24 Hours" ? time - MS_DAY : time - MS_DAY * 30
+            [pw, pl] = periodStats(tradeTimes, tradeWins, cutoff)
+            pWins   := pw
+            pLosses := pl
+        int    pTotal    = pWins + pLosses
+        float  pWr       = pTotal > 0 ? pWins * 100.0 / pTotal : 0.0
+        string tradesStr = pTotal > 0 ? str.tostring(pTotal) : "—"
+        string winsStr   = pTotal > 0 ? str.tostring(pWins) : "—"
+        string lossStr   = pTotal > 0 ? str.tostring(pLosses) : "—"
+        string wrStr     = pTotal > 0 ? str.tostring(pWr, "#.#") + "%  " + buildGauge(pWr, 100.0, GAUGE_WIDTH) : "—"
+        color  wrCol     = pTotal == 0 ? TEXT_MUTED : pWr >= 55.0 ? BULL_TEXT : pWr >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+        string formDisp  = str.length(formStr) > 0 ? formStr : "—"
+        r := dashDivider(dashTable, r, "— Stats · " + periodTag + " —", dashFsSub)
+        r := dashRow(dashTable, r, "Trades", tradesStr, pTotal > 0 ? TEXT_COLOR : TEXT_MUTED, false, dashFs, "Closed trades in the selected period (resets on chart reload).")
+        r := dashRow(dashTable, r, "Wins", winsStr, pTotal > 0 ? BULL_TEXT : TEXT_MUTED, true, dashFs, "A trade is a WIN once TP1 is touched (TP3, break-even stop or reversal after TP1).")
+        r := dashRow(dashTable, r, "Losses", lossStr, pTotal > 0 ? BEAR_TEXT : TEXT_MUTED, false, dashFs, "Closed before TP1: stop-loss or reversal before TP1.")
+        r := dashRow(dashTable, r, "Win Rate", wrStr, wrCol, true, dashFs, "A trade is a WIN once TP1 is touched.\nOptimistic intrabar fill model (TP priority). Not a backtest: no fees, slippage or sizing.")
+        r := dashRow(dashTable, r, "Form", formDisp, TEXT_COLOR, false, dashFs, "▰ = win · ▱ = loss (newest right). Last " + str.tostring(FORM_LEN) + " trades, not filtered by period.")
+
+    // ── Footer ──
+    table.cell(dashTable, 0, r, SHORT_NAME + " · " + INDICATOR_VERSION, text_color = TEXT_MUTED, bgcolor = TABLE_BG, text_size = dashFsSub, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+
+// ══════════════════════════════════════════════════════════
+// 13. WATERMARK
+// ══════════════════════════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = TRANSP_COLOR, border_color = TRANSP_COLOR, border_width = 0, frame_color = TRANSP_COLOR, frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = TRANSP_COLOR)
+
+// ══════════════════════════════════════════════════════════
+// 14. ALERTS
+// ══════════════════════════════════════════════════════════
+// Create the alert with "Any alert() function call". All alerts fire once per bar close.
+// Fixed intrabar order: management → closures → reversal → entries → info.
+string tick       = syminfo.tickerid
+string tfStr      = timeframe.period
+string aPrice     = str.tostring(close, format.mintick)
+string exitDirStr = exitDir == 1 ? "Long" : exitDir == -1 ? "Short" : "—"
+
+// ── 1. Trade management ──
+if beJustActivated and tpBeAlertInput
+    alert("🛡️ BREAK-EVEN | " + tick + " | TF: " + tfStr + " | " + exitDirStr + " | SL moved to " + fmtPrice(beLevel), alert.freq_once_per_bar_close)
+
+if tp1FirstTouch and tpBeAlertInput
+    alert("🎯 TP1 HIT | " + tick + " | TF: " + tfStr + " | " + exitDirStr + " | TP1: " + fmtPrice(exitTP1), alert.freq_once_per_bar_close)
+
+if tp2FirstTouch and tpBeAlertInput
+    alert("🎯🎯 TP2 HIT | " + tick + " | TF: " + tfStr + " | " + exitDirStr + " | TP2: " + fmtPrice(exitTP2), alert.freq_once_per_bar_close)
+
+// ── 2. Closures ──
+if evTp3Hit and tpBeAlertInput
+    alert("🏆 TP3 HIT | " + tick + " | TF: " + tfStr + " | " + exitDirStr + " | Entry: " + fmtPrice(exitEntry) + " | TP3: " + fmtPrice(exitTP3), alert.freq_once_per_bar_close)
+
+if evSlHit and slRevAlertInput
+    string textSlHit = (exitBeActive ? "🛡️ BE STOP-OUT | " : "🛑 SL HIT | ") + tick + " | TF: " + tfStr + " | " + exitDirStr + " | Entry: " + fmtPrice(hitEntry) + " | SL: " + fmtPrice(hitSL)
+    alert(textSlHit, alert.freq_once_per_bar_close)
+
+// ── 3. Reversal ──
+if evReversal and slRevAlertInput
+    string newDirStr = exitDir == 1 ? "Short" : "Long"
+    string revResult = revWin ? "Closed after TP1 (win)" : "Closed before TP1 (loss)"
+    string textRev   = "🔄 REVERSAL | " + tick + " | TF: " + tfStr + " | " + exitDirStr + " → " + newDirStr + " | " + revResult + " | Exit: " + aPrice
+    alert(textRev, alert.freq_once_per_bar_close)
+
+// ── 4. New entries ──
+if newEntry
+    string slS   = str.tostring(nz(activeSL), format.mintick)
+    string tp1S  = str.tostring(nz(activeTP1), format.mintick)
+    string tp2S  = str.tostring(nz(activeTP2), format.mintick)
+    string tp3S  = str.tostring(nz(activeTP3), format.mintick)
+    string rrS   = str.tostring(effTP1m, "#.#")
+    string scS   = fmtScore(evLongEntry ? longScore : shortScore)
+    string scNum = str.tostring(math.round(nz(evLongEntry ? longScore : shortScore)))
+    string act   = evLongEntry ? "buy" : "sell"
+    string head  = evLongEntry ? "🟢 LONG | " : "🔴 SHORT | "
+    string jsonEntry = '{"action":"' + act + '","ticker":"' + tick + '","tf":"' + tfStr + '","price":' + aPrice + ',"score":' + scNum + ',"sl":' + slS + ',"tp1":' + tp1S + ',"tp2":' + tp2S + ',"tp3":' + tp3S + ',"rr":' + rrS + '}'
+    string textEntry = head + tick + " | TF: " + tfStr + " | Price: " + aPrice + " | Score: " + scS + "/100 | SL: " + slS + " | TP1: " + tp1S + " | TP2: " + tp2S + " | TP3: " + tp3S + " | R:R: " + rrS
+    alert(webhookInput ? jsonEntry : textEntry, alert.freq_once_per_bar_close)
+
+// ── 5. Info: level breaks (suppressed when a same-direction entry already alerted this bar) ──
+if levelBreakAlertInput and upCrosses > 0 and not evLongEntry
+    alert("🔼 LEVEL BROKEN UP | " + tick + " | TF: " + tfStr + " | Level: " + fmtPrice(upLevel) + " | Price: " + aPrice + " | Now support", alert.freq_once_per_bar_close)
+
+if levelBreakAlertInput and dnCrosses > 0 and not evShortEntry
+    alert("🔽 LEVEL BROKEN DOWN | " + tick + " | TF: " + tfStr + " | Level: " + fmtPrice(dnLevel) + " | Price: " + aPrice + " | Now resistance", alert.freq_once_per_bar_close)

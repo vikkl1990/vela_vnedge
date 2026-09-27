@@ -24,9 +24,14 @@ test('pivot CHoCH, squeeze and 80% rule derive entries', () => {
 });
 
 test('label rules: backtest anchor shift and live new-label gating', () => {
-  const lbl = { time: bars[3].time, y: 99, text: 'HL', style: 'style_label_up' };
-  const bt = applyRules({ scannerId: 'structure-anchored-vwap', alerts: [], shapes: [], labels: [lbl], bars, mode: 'backtest' });
-  assert.equal(bt.length, 1); assert.equal(bt[0].side, 'long'); assert.equal(bt[0].barTime, bars[8].time);
+  // the script confirms a pivot 55 bars after the bar the label is anchored to, so a backtest may
+  // only act 55 bars later — and not at all if those bars are not in the window (decision 44)
+  const long = Array.from({ length: 70 }, (_, i) => ({ time: 1_000_000 + i * 900_000, open: 100, high: 101, low: 99, close: 100 + i, volume: 1 }));
+  const lbl = { time: long[3].time, y: 99, text: 'HL', style: 'style_label_up' };
+  const bt = applyRules({ scannerId: 'structure-anchored-vwap', alerts: [], shapes: [], labels: [lbl], bars: long, mode: 'backtest' });
+  assert.equal(bt.length, 1); assert.equal(bt[0].side, 'long'); assert.equal(bt[0].barTime, long[58].time);
+  const unconfirmed = applyRules({ scannerId: 'structure-anchored-vwap', alerts: [], shapes: [], labels: [lbl], bars, mode: 'backtest' });
+  assert.equal(unconfirmed.length, 0, 'a pivot whose confirmation lies beyond the window is not tradeable');
   const liveOld = applyRules({ scannerId: 'structure-anchored-vwap', alerts: [], shapes: [], labels: [lbl], bars, mode: 'live', newLabelKeys: new Set() });
   assert.equal(liveOld.length, 0);
   const liveNew = applyRules({ scannerId: 'structure-anchored-vwap', alerts: [], shapes: [], labels: [lbl], bars, mode: 'live', newLabelKeys: new Set([labelKey(lbl)]) });
