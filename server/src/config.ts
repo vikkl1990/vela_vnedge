@@ -162,6 +162,17 @@ export interface PaperConfig {
    * worth, which is how decision 40 measured whether tick capture is needed at all.
    */
   barOrder?: 'stop-first' | 'target-first';
+  /**
+   * Widen an ATR-fallback stop to the narrowest distance the fee filter accepts, rather than letting
+   * `minRiskFeeRatio` reject the trade.
+   *
+   * A stop is only worth having if the move it risks is large against the round trip, but the filter
+   * answers that by refusing the trade — and on a market whose ATR is small against the fee it
+   * refuses most of them: `structure-anchored-vwap` on SOLUSD lost 28 of 54 signals that way at a
+   * 1.0xATR fallback. Widening keeps the trade at an honest size instead, since R is measured from
+   * the stop actually used. Only the fallback is widened; a stop the script published is never moved.
+   */
+  widenStopToFee?: boolean;
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
@@ -186,7 +197,7 @@ export interface PaperConfig {
  */
 export type ExitOverride = Partial<Pick<PaperConfig,
   'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' |
-  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall' | 'earlyStall'>>;
+  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl'>>;
 
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
 export type TrendGateMode = 'follow' | 'fade' | 'off';

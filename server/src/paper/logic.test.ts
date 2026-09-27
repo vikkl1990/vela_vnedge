@@ -610,3 +610,22 @@ test('a bar that reaches both the stop and a target is resolved pessimistically 
   assert.equal(b[0].reason, 'tp1', 'the optimistic reading takes the target first')
   assert.equal(b[1].reason, 'sl', 'and the stop takes what is left')
 })
+
+test('a fallback stop too tight for fees is widened rather than refused', () => {
+  const c = { ...cfg, fallbackAtrSl: 1, minRiskFeeRatio: 4, feeRatePct: 0.05, feeTaxPct: 18, widenStopToFee: true }
+  const req = { side: 'long' as const, price: 100, sl: undefined, tp: [], atr: 0.05 }   // 1xATR = 0.05%, far too tight
+
+  const refused = resolveLevels(req, { ...c, widenStopToFee: false }, 0.01)
+  assert.ok(!('error' in refused))
+  assert.ok(checkRiskVsFees(100, (refused as any).sl, { ...c, widenStopToFee: false }), 'the narrow stop is refused by the fee filter')
+
+  const widened = resolveLevels(req, c, 0.01) as any
+  assert.equal(checkRiskVsFees(100, widened.sl, c), null, 'the widened stop passes')
+  assert.ok(widened.sl < 100 && widened.sl > 99.5, `stop ${widened.sl} sits just past the fee minimum`)
+  assert.equal(widened.source, 'atr-fallback')
+
+  // a stop the script published is never moved, however tight
+  const scripted = resolveLevels({ ...req, sl: 99.99 }, c, 0.01) as any
+  assert.equal(scripted.sl, 99.99)
+  assert.equal(scripted.source, 'mixed')
+})

@@ -1187,3 +1187,42 @@ it cannot repair the entry.
 
 **Revisit if** the fee filter changes, since the two interact directly, or if the four exception
 markets keep diverging once there is forward evidence.
+
+## 43. Per-scanner stop widths, for the one scanner the evidence supports
+
+Decision 42 set the fallback to 1.0×ATR for everything. Asking the same question per market and per
+scanner gave three answers, only one of which is worth acting on.
+
+**Per market: actively harmful.** Fitting the best width to each market in the first half and running
+it in the second gives **$137**, against **$850** for one width everywhere. In-sample fitting picks
+3.0 ATR on four markets and those choices collapse out of sample — ZECUSD falls from $698 to $243.
+It beats the flat choice on 1 of 12 markets, which is chance.
+
+**Per scanner: one real signal out of five.** Only `structure-anchored-vwap` holds its direction in
+both halves; the other four flip sign between them, which is noise wearing a result:
+
+| scanner | best stop | in sample | out of sample | |
+|---|---|---|---|---|
+| **structure-anchored-vwap** | **4.0 ATR** | **+235.8R** | **+221.0R** | consistent |
+| smart-swing-vwap | 3.0 ATR | −83.5R | +16.1R | sign flip |
+| kinetic-momentum | 2.0 ATR | −34.2R | +24.0R | sign flip |
+| high-volume-breakout | 1.5 ATR | −40.1R | +18.2R | sign flip |
+| smart-money-breakout | 1.25 ATR | −87.8R | +6.7R | sign flip |
+
+For that scanner the curve plateaus rather than running to the edge of the grid — 3.0 ATR +211R, 4.0
++221R, 5.0 +231R, 6.0 +223R — so 4.0 is taken as the middle of a plateau rather than a peak.
+
+**Why it helps is not what it looked like.** Its alerts carry no stop at all (0 of 54 entry signals
+on SOLUSD), so every trade uses the fallback, and at 1.0×ATR **28 of those 54 signals were refused as
+"stop too tight for fees"**. The wider stop is not exiting better; it is clearing the fee filter.
+
+That suggested a neater global fix — widen a too-tight fallback to the narrowest fee-viable distance
+instead of refusing the trade — and it is the worst policy measured: **−$657 against $887**, on 2,823
+trades against 1,397. The trades the filter rejects are bad trades, and taking them at an honest
+size loses money anyway. `widenStopToFee` is implemented, tested, and left off.
+
+So: `fallbackAtrSl` joins the exit overrides, `onEntry` resolves the market's and the scanner's rules
+before choosing levels, and `structure-anchored-vwap` gets 4.0×ATR. Everything else keeps 1.0.
+
+**Revisit if** the scanner starts publishing stops the extractor can read, since the override only
+touches the fallback, or if another scanner's width holds up in both halves.

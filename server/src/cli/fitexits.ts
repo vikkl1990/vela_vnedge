@@ -40,6 +40,10 @@ const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = process.env.ST
   // a wider stop with the targets held at the same absolute distance, so R shrinks but reach does not
   { name: 'stop 2.0 ATR, targets 1.5/3/4.5R', over: { fallbackAtrSl: 2.0, fallbackRR: [1.5, 3, 4.5] } },
   { name: 'stop 1.0 ATR, targets 3/6/9R', over: { fallbackAtrSl: 1.0, fallbackRR: [3, 6, 9] } },
+  // widen the fallback to the fee minimum instead of refusing the trade
+  { name: '1.0 ATR, widened to fee', over: { fallbackAtrSl: 1.0, widenStopToFee: true } },
+  { name: '1.5 ATR, widened to fee', over: { fallbackAtrSl: 1.5, widenStopToFee: true } },
+  { name: '2.0 ATR, widened to fee', over: { fallbackAtrSl: 2.0, widenStopToFee: true } },
 ] : [
   { name: 'current', over: {} },
   { name: 'be@0.5', over: { floorAtR: 0.5, floorKeepR: 0 } },

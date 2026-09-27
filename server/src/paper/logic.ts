@@ -104,6 +104,17 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
     if (!req.atr || !Number.isFinite(req.atr) || req.atr <= 0) return { error: 'no stop-loss and no ATR available for fallback' };
     sl = entry - dir * cfg.fallbackAtrSl * req.atr;
     source = 'atr-fallback';
+    // A fallback stop narrower than the fee filter accepts is refused downstream; widening it to that
+    // distance takes the trade at an honest size instead of losing it (decision 43).
+    if (cfg.widenStopToFee) {
+      const ratio = cfg.minRiskFeeRatio ?? 0;
+      if (ratio > 0) {
+        const feeRoundTrip = entry * (cfg.feeRatePct / 100) * (1 + (cfg.feeTaxPct ?? 0) / 100) * 2;
+        const need = feeRoundTrip * ratio;
+        // one tick of slack, so rounding to the tick cannot land a hair inside the minimum
+        if (Math.abs(entry - sl) < need) sl = entry - dir * (need + tick);
+      }
+    }
   }
   const risk = Math.abs(entry - sl!);
   if (risk <= 0) return { error: 'zero risk distance' };

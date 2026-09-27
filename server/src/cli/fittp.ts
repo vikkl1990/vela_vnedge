@@ -30,7 +30,19 @@ const MARKETS = (process.env.MARKETS ?? 'BTCUSD,ETHUSD,SOLUSD').split(',');
 const BARS = Number(process.env.BARS ?? 12000);
 
 /** Ladders: where the targets sit, and how much of the position each one takes. */
-const LADDERS: Array<{ name: string; over: ExitOverride }> = [
+type Variant = { name: string; over: ExitOverride & { fallbackAtrSl?: number } };
+/** STOPS=1 swaps the target ladders for stop widths, to ask the same question of the stop. */
+const LADDERS: Variant[] = process.env.STOPS ? [
+  { name: 'stop 1.0 ATR', over: { fallbackAtrSl: 1.0 } },
+  { name: 'stop 1.25 ATR', over: { fallbackAtrSl: 1.25 } },
+  { name: 'stop 1.5 ATR', over: { fallbackAtrSl: 1.5 } },
+  { name: 'stop 2.0 ATR', over: { fallbackAtrSl: 2.0 } },
+  { name: 'stop 2.5 ATR', over: { fallbackAtrSl: 2.5 } },
+  { name: 'stop 3.0 ATR', over: { fallbackAtrSl: 3.0 } },
+  { name: 'stop 4.0 ATR', over: { fallbackAtrSl: 4.0 } },
+  { name: 'stop 5.0 ATR', over: { fallbackAtrSl: 5.0 } },
+  { name: 'stop 6.0 ATR', over: { fallbackAtrSl: 6.0 } },
+] : [
   { name: 'current 2/4/6 all at TP3', over: {} },
   { name: 'split 2/4/6 40/30/30', over: { fallbackRR: [2, 4, 6], tpSplit: [0.4, 0.3, 0.3] } },
   { name: 'close 1/2/4 40/30/30', over: { fallbackRR: [1, 2, 4], tpSplit: [0.4, 0.3, 0.3] } },
@@ -39,6 +51,9 @@ const LADDERS: Array<{ name: string; over: ExitOverride }> = [
   { name: 'runner 1/3/6 30/20/50', over: { fallbackRR: [1, 3, 6], tpSplit: [0.3, 0.2, 0.5] } },
   { name: 'half at 1R, rest at 4R', over: { fallbackRR: [1, 2, 4], tpSplit: [0.5, 0, 0.5] } },
 ];
+
+/** What every variant is compared against in whichever grid is running. */
+const BASE = process.env.STOPS ? 'stop 1.0 ATR' : 'current 2/4/6 all at TP3';
 
 const registry = new ScannerRegistry();
 const rest = new DeltaRest();
@@ -85,16 +100,16 @@ for (const id of ids) {
 
 const pooled = new Map<string, Score>();
 for (const [scanner, m] of scores) {
-  const cur = m.get('current 2/4/6 all at TP3')!;
+  const cur = m.get(BASE)!;
   console.log(`\n${scanner}  (current: ${cur.test.toFixed(1)}R out of sample over ${cur.trades} trades, ${cur.tpHits} target exits)`);
   for (const [name, v] of [...m].sort((a, b) => b[1].test - a[1].test)) {
     const p = pooled.get(name) ?? { fit: 0, test: 0, trades: 0, tpHits: 0 };
     p.fit += v.fit; p.test += v.test; p.trades += v.trades; p.tpHits += v.tpHits; pooled.set(name, p);
-    const mark = name === 'current 2/4/6 all at TP3' ? '·' : v.test > cur.test ? '↑' : ' ';
+    const mark = name === BASE ? '·' : v.test > cur.test ? '↑' : ' ';
     console.log(`  ${mark} ${name.padEnd(26)} in ${v.fit.toFixed(1).padStart(7)}R   out ${v.test.toFixed(1).padStart(7)}R   ${(v.test - cur.test >= 0 ? '+' : '') + (v.test - cur.test).toFixed(1)}R   ${v.tpHits} target exits of ${v.trades}`);
   }
 }
-const cur = pooled.get('current 2/4/6 all at TP3')!;
+const cur = pooled.get(BASE)!;
 console.log(`\nevery scanner pooled — one comparison per ladder\n`);
 console.log(`${'ladder'.padEnd(28)} ${'in sample'.padStart(10)} ${'out of sample'.padStart(14)} ${'vs current'.padStart(11)} ${'target exits'.padStart(13)}`);
 for (const [name, v] of [...pooled].sort((a, b) => b[1].test - a[1].test))

@@ -214,7 +214,9 @@ export class PaperEngine extends EventEmitter {
   }
 
   onEntry(ev: ScanEvent, ctx: { scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number }): EntryDecision {
-    const cfg = this.paper;
+    // the market's and the scanner's own rules, so a stop width they ask for is used at entry and
+    // then carried on the position for the rest of the trade (decision 43)
+    const cfg = exitConfigFor(this.paper, ctx.symbol, this.scannerExit?.(ctx.scannerId));
     // A signal acted on long after its bar closed could not have been taken at these prices
     // (restarts and deep queues used to replay bar-old signals straight into the book).
     const maxAge = cfg.maxSignalAgeSec ?? 0;
