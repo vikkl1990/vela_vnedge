@@ -175,6 +175,12 @@ export interface PaperConfig {
   widenStopToFee?: boolean;
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
+  /**
+   * What a script's own targets are allowed to do. `use`: they replace the ladder (the default so
+   * far). `widen`: they may only push a ladder leg further out, never closer — a script cannot cap a
+   * trade below the fleet's targets. `ignore`: the ladder always, the script's targets are advisory.
+   */
+  scriptTargets?: 'use' | 'widen' | 'ignore';
   maxOpenPositions: number;
   // ---- execution realism (phase 2) ----
   /** `tape`: fill on Delta's trade stream (1m candles only when the tape is silent > tapeFallbackMs). `candles`: legacy 1-minute candle fills. */
@@ -589,6 +595,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Number.isFinite(p.staleBars) && p.staleBars >= 0)) errs.push('paper.staleBars must be ≥ 0 (0 = off)');
   if (p.trailAfterR > 0 && !(p.trailGiveBackPct > 0) && !(Number.isFinite(p.trailDistanceR) && p.trailDistanceR > 0)) errs.push('paper.trailDistanceR must be > 0 when trailing is on without trailGiveBackPct');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');
+  if (p.scriptTargets !== undefined && !['use', 'widen', 'ignore'].includes(p.scriptTargets)) errs.push('paper.scriptTargets must be use|widen|ignore');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
   if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');

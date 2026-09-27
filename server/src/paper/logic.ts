@@ -120,9 +120,16 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
   if (risk <= 0) return { error: 'zero risk distance' };
   let tp = (req.tp ?? []).filter(v => Number.isFinite(v) && v > 0 && (req.side === 'long' ? v > entry : v < entry));
   tp.sort((a, b) => (req.side === 'long' ? a - b : b - a));
-  if (tp.length === 0) {
-    tp = cfg.fallbackRR.map(rr => entry + dir * rr * risk);
-    source = source === 'script' ? 'mixed' : 'atr-fallback';
+  const ladder = cfg.fallbackRR.map(rr => entry + dir * rr * risk);
+  const mode = cfg.scriptTargets ?? 'use';
+  if (tp.length === 0 || mode === 'ignore') {
+    tp = ladder;
+    if (source === 'script') source = 'mixed';
+  } else if (mode === 'widen') {
+    // the script may push a leg further out, never closer; legs it does not name keep the ladder
+    const widened = ladder.map((v, i) => (tp[i] === undefined ? v : dir > 0 ? Math.max(v, tp[i]) : Math.min(v, tp[i])));
+    if (widened.some((v, i) => v !== tp[i])) source = source === 'script' ? 'mixed' : source;
+    tp = widened;
   }
   sl = roundTick(sl!, tick);
   tp = [...new Set(tp.slice(0, 3).map(v => roundTick(v, tick)))];

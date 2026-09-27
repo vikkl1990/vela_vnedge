@@ -5,6 +5,20 @@ import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit,
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
+test('resolveLevels: scriptTargets widen lets a script push a leg out but never in; ignore keeps the ladder', () => {
+  const c = { ...cfg, fallbackRR: [2, 4, 6] as [number, number, number] };
+  // risk 5 → ladder 110 / 120 / 130; the script asks for a closer first leg and a further second
+  const use = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [103, 125] }, { ...c, scriptTargets: 'use' }, 0.5);
+  const widen = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [103, 125] }, { ...c, scriptTargets: 'widen' }, 0.5);
+  const ignore = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [103, 125] }, { ...c, scriptTargets: 'ignore' }, 0.5);
+  assert.deepEqual('tp' in use && use.tp, [103, 125]);
+  assert.deepEqual('tp' in widen && widen.tp, [110, 125, 130]);
+  assert.deepEqual('tp' in ignore && ignore.tp, [110, 120, 130]);
+  assert.equal('source' in ignore && ignore.source, 'mixed', 'the stop is still the script\'s');
+  const short = resolveLevels({ side: 'short', price: 100, sl: 105, tp: [97, 70] }, { ...c, scriptTargets: 'widen' }, 0.5);
+  assert.deepEqual('tp' in short && short.tp, [90, 70], 'the script\'s far leg replaces both remaining legs');
+});
+
 test('resolveLevels uses script levels, else ATR fallback', () => {
   const r = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [110, 120, 130] }, cfg, 0.5);
   assert.deepEqual(r, { sl: 95, tp: [110, 120, 130], source: 'script' });

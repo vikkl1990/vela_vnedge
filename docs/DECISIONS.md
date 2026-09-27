@@ -1343,3 +1343,32 @@ tested against the demo host itself; that is the next step before any pair is mi
 **Revisit when** the first demo-host session has run a day: the confirmation window, the sweep
 interval and what Delta actually returns for `average_fill_price` and `paid_commission` on the
 demo account.
+
+## 47. A script's own targets are neither an edge nor a problem: 5% of trades ever reach one
+
+Asked whether the bot should stop trusting script-published targets because they are so often out
+of reach. `paper.scriptTargets` now exists — `use` (they replace the ladder, as before), `widen`
+(they may push a ladder leg further out, never closer) and `ignore` (the 2/4/6R ladder always) —
+and `npm run targetlab` backtests the three on the same events.
+
+First finding: only **6 of 667** runnable scripts publish a target at all on ETH (abcd-harmonic-
+projection, adaptive-dual-engine, breakout-pattern-setup, mirage-liquidity-sweep-pro,
+pulse-trend-radar, stealthtrail-supertrend). For everything else the ladder already is the policy.
+
+Those six, 8 markets × 15m/1h/4h, 139 cells, 10,797 trades, live exits on sub-candles:
+
+| policy | trades | total R | net $ | 1st half R | 2nd half R | exits at a target |
+|---|---:|---:|---:|---:|---:|---:|
+| use (today) | 10,797 | −761 | −13,422 | −403 | −357 | 534 (4.9%) |
+| widen | 10,743 | −779 | −13,612 | −405 | −373 | 155 |
+| ignore | 10,743 | −779 | −13,618 | −405 | −373 | 155 |
+
+Eighteen R over ten thousand trades — 0.002R a trade — is noise, though `use` is on the right side
+of it in both halves. **Only one trade in twenty ends at a target of any kind**; the trail and the
+stop end the rest, which is why the target policy cannot matter much. All six scripts lose money
+under every policy, so the honest reading is not "their targets are unreachable" but "their entries
+are not good", and no target rule repairs an entry.
+
+Nothing changes: `use` stays the default. The flag and the lab remain for the day a script with a
+real edge publishes targets. **Revisit if** the shadow book promotes such a script — then run
+targetlab on its cohort before trusting either its targets or the ladder.
