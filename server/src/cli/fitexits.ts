@@ -28,7 +28,19 @@ const BARS = Number(process.env.BARS ?? 12000);
 const CONC = Number(process.env.CONCURRENCY ?? 7);
 
 /** The candidates: where protection arms, what it keeps, and how much of the peak the trail gives back. */
-const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = [
+const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = process.env.STOPS ? [
+  // The stop is the unit everything else is measured in, and 1.5xATR has never been challenged:
+  // 97% of trades use it, because scripts rarely publish a stop of their own.
+  { name: 'stop 1.0 ATR', over: { fallbackAtrSl: 1.0 } },
+  { name: 'stop 1.25 ATR', over: { fallbackAtrSl: 1.25 } },
+  { name: 'stop 1.5 ATR (current)', over: {} },
+  { name: 'stop 2.0 ATR', over: { fallbackAtrSl: 2.0 } },
+  { name: 'stop 2.5 ATR', over: { fallbackAtrSl: 2.5 } },
+  { name: 'stop 3.0 ATR', over: { fallbackAtrSl: 3.0 } },
+  // a wider stop with the targets held at the same absolute distance, so R shrinks but reach does not
+  { name: 'stop 2.0 ATR, targets 1.5/3/4.5R', over: { fallbackAtrSl: 2.0, fallbackRR: [1.5, 3, 4.5] } },
+  { name: 'stop 1.0 ATR, targets 3/6/9R', over: { fallbackAtrSl: 1.0, fallbackRR: [3, 6, 9] } },
+] : [
   { name: 'current', over: {} },
   { name: 'be@0.5', over: { floorAtR: 0.5, floorKeepR: 0 } },
   { name: 'be@0.75', over: { floorAtR: 0.75, floorKeepR: 0 } },
@@ -55,6 +67,9 @@ const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = [
   { name: 'deployed, target-first', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 }, barOrder: 'target-first' } },
 ];
 
+/** The policy every other one is compared against, whichever grid is in play. */
+const BASE = process.env.STOPS ? 'stop 1.5 ATR (current)' : 'current';
+
 const fleet = Object.entries(cfg.scanners).filter(([, v]) => v.enabled && !v.hidden)
   .flatMap(([id, v]) => (v.symbols ?? cfg.symbols).map(symbol => ({ id, symbol })));
 const markets = (process.env.MARKETS ?? [...new Set(fleet.map(f => f.symbol))].join(',')).split(',');
@@ -64,11 +79,13 @@ const pool = new PinePool(CONC, 300_000);
 const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
 
 type Half = 'fit' | 'test';
-const scores = new Map<string, Map<string, { fit: number; test: number; trades: number }>>();
-const note = (symbol: string, policy: string, half: Half, r: number, n: number) => {
+// R is defined by the stop, so a wider stop redefines the unit: dollars on the same starting equity
+// are the only figure comparable across stop widths.
+const scores = new Map<string, Map<string, { fit: number; test: number; trades: number; usd: number }>>();
+const note = (symbol: string, policy: string, half: Half, r: number, n: number, usd = 0) => {
   const m = scores.get(symbol) ?? new Map();
-  const cur = m.get(policy) ?? { fit: 0, test: 0, trades: 0 };
-  cur[half] += r; if (half === 'test') cur.trades += n;
+  const cur = m.get(policy) ?? { fit: 0, test: 0, trades: 0, usd: 0 };
+  cur[half] += r; if (half === 'test') { cur.trades += n; cur.usd += usd; }
   m.set(policy, cur); scores.set(symbol, m);
 };
 
@@ -95,7 +112,7 @@ for (const f of jobs) {
       const half = (t: any): Half => (t.entryAt < split ? 'fit' : 'test');
       for (const h of ['fit', 'test'] as Half[]) {
         const ts = trades.filter(t => half(t) === h);
-        note(f.symbol, g.name, h, ts.reduce((a, t) => a + (t.rMultiple ?? 0), 0), ts.length);
+        note(f.symbol, g.name, h, ts.reduce((a, t) => a + (t.rMultiple ?? 0), 0), ts.length, ts.reduce((a, t) => a + (t.pnl ?? 0), 0));
       }
     }
     done++;
@@ -106,8 +123,8 @@ for (const f of jobs) {
 console.log(`\n${'market'.padEnd(12)} ${'best in sample'.padStart(16)} ${'its out-of-sample'.padStart(18)} ${'current out'.padStart(12)} ${'trades'.padStart(7)}   verdict`);
 let adopt: Record<string, any> = {};
 for (const [symbol, m] of [...scores].sort()) {
-  const cur = m.get('current')!;
-  const ranked = [...m].filter(([n]) => n !== 'current').sort((a, b) => b[1].fit - a[1].fit);
+  const cur = m.get(BASE)!;
+  const ranked = [...m].filter(([n]) => n !== BASE).sort((a, b) => b[1].fit - a[1].fit);
   const [name, v] = ranked[0];
   const better = v.test > cur.test + 0.5;
   console.log(`${symbol.padEnd(12)} ${(name + ' ' + v.fit.toFixed(1) + 'R').padStart(16)} ${v.test.toFixed(1).padStart(17)}R ${cur.test.toFixed(1).padStart(11)}R ${String(cur.trades).padStart(7)}   ${better ? 'ADOPT ' + name : v.test < cur.test ? 'curve fit — rejected' : 'no better'}`);
@@ -117,16 +134,16 @@ console.log(`\nexitBySymbol to adopt:\n${JSON.stringify(adopt, null, 2)}`);
 
 // The decisive test: one comparison per policy, across every market, out of sample. Per-market
 // winners are eight chances per market to beat noise; this is one.
-const pooled = new Map<string, { fit: number; test: number; trades: number }>();
+const pooled = new Map<string, { fit: number; test: number; trades: number; usd: number }>();
 for (const m of scores.values()) for (const [name, v] of m) {
-  const p = pooled.get(name) ?? { fit: 0, test: 0, trades: 0 };
-  p.fit += v.fit; p.test += v.test; p.trades += v.trades; pooled.set(name, p);
+  const p = pooled.get(name) ?? { fit: 0, test: 0, trades: 0, usd: 0 };
+  p.fit += v.fit; p.test += v.test; p.trades += v.trades; p.usd += v.usd; pooled.set(name, p);
 }
-const cur = pooled.get('current')!;
+const cur = pooled.get(BASE)!;
 console.log(`\nevery market pooled — the honest comparison\n`);
-console.log(`${'policy'.padEnd(16)} ${'in sample'.padStart(11)} ${'out of sample'.padStart(14)} ${'vs current'.padStart(11)} ${'trades'.padStart(7)}`);
-for (const [name, v] of [...pooled].sort((a, b) => b[1].test - a[1].test))
-  console.log(`${name.padEnd(16)} ${v.fit.toFixed(1).padStart(10)}R ${v.test.toFixed(1).padStart(13)}R ${(v.test - cur.test).toFixed(1).padStart(10)}R ${String(v.trades).padStart(7)}`);
+console.log(`${'policy'.padEnd(30)} ${'in sample'.padStart(11)} ${'out of sample'.padStart(14)} ${'vs current'.padStart(11)} ${'out $'.padStart(10)} ${'trades'.padStart(7)}`);
+for (const [name, v] of [...pooled].sort((a, b) => b[1].usd - a[1].usd))
+  console.log(`${name.padEnd(30)} ${v.fit.toFixed(1).padStart(10)}R ${v.test.toFixed(1).padStart(13)}R ${(v.test - cur.test).toFixed(1).padStart(10)}R ${v.usd.toFixed(0).padStart(10)} ${String(v.trades).padStart(7)}`);
 fs.writeFileSync(process.env.OUT ?? '/tmp/fitexits.json', JSON.stringify([...scores].map(([sym, m]) => ({ symbol: sym, policies: Object.fromEntries(m) })), null, 1));
 await pool.stop();
 process.exit(0);

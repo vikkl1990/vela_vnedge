@@ -1147,3 +1147,43 @@ the fact is how curve fits are made. It would need its own halves test first.
 
 **Revisit if** a venue is added that genuinely closes, or if live weekend fills show slippage the
 backtest does not model.
+
+## 42. The stop fallback moves to 1.0×ATR — the same money from a quarter fewer trades
+
+96% of trades take their stop from the ATR fallback, because scripts rarely publish one, and the 4%
+that do are worse on both counts: −0.349R against −0.157R, stopped out 64% of the time against 49%.
+That is decision 25 confirmed on 320 live trades rather than on backtests. The fallback is not a
+stopgap, it is the stop policy, and its multiplier had never been tested.
+
+Eight widths, fitted on the first half of 12,000 bars per market and scored on the second:
+
+| stop | out of sample R | out $ | trades |
+|---|---|---|---|
+| **1.0 ATR** | **+9.8R** | **$850** | **1,396** |
+| 1.5 ATR (previous) | −6.5R | $853 | 1,893 |
+| 1.25 ATR | −17.4R | $612 | 1,680 |
+| 2.0 ATR | −85.4R | $194 | 2,163 |
+| 2.5 ATR | −100.6R | −$469 | 2,210 |
+| 3.0 ATR | −87.2R | −$448 | 2,148 |
+
+Wider is decisively worse, monotonically, and past 2.5 ATR it loses money outright. Tighter is a
+**tie in money — $850 against $853** — and the R column flatters it: a tighter stop is more often
+refused by the fee filter, so it takes 26% fewer trades and the survivors are the better ones.
+
+It is adopted anyway, as an efficiency change rather than an edge one. The same money from **26%
+fewer trades** ($0.61 each against $0.45) matters because capacity, not signal supply, is what binds
+this account: 65% of signals on the 33-pair fleet were rejected for margin or the position cap.
+Better in dollars on 8 of the 12 markets.
+
+Four markets prefer the old width — AKEUSD, FILUSD, DOGEUSD and UNIUSD, three of which are the
+profitable ones again. They are **not** given exceptions: `exitBySymbol` does not carry
+`fallbackAtrSl`, and per-market fitting produced curve fits in seven of twelve markets last time it
+was tried (decision 34). They are a watch item, not a setting.
+
+What this does not do is fix stop-outs. Half of all trades still hit the stop and 71% of those were
+in profit first, with a median peak of +0.25R. Every attempt to act on that band — break even at
++0.5R, the trend flip, the stall rule — has lost money. The stop is where entry quality shows up;
+it cannot repair the entry.
+
+**Revisit if** the fee filter changes, since the two interact directly, or if the four exception
+markets keep diverging once there is forward evidence.
