@@ -16,13 +16,13 @@ own `alert()` trade call; everything else it draws is information.
 |---|---|---|
 | abcd-harmonic-projection | 52 · 42 · 29 | clean |
 | adaptive-fibonacci-trailing-system | 34 · 30 · 18 | clean, grades A+/A/B |
-| amd-po3-with-live-edge-stats | 39 · 27 · 20 | session-based → timezone fix first |
+| amd-po3-with-live-edge-stats | 39 · 27 · 20 | sessions in UTC by the author's default |
 | breakout-pattern-setup | 29 · 23 · 8 | clean |
 | fibonacci-structure-engine | 104 · 81 · 55 | clean |
 | liquidity-pools-pro | 105 · 80 · 64 | clean |
 | liquidity-trail-matrix | 56 · 41 · 27 | runs now (manifest said broken) |
 | meridian-flow | 80 · 56 · 39 | 120 extra shape entries on 15m → lock to alert |
-| precision-sniper | 149 · 111 · 42 | session-based → timezone fix first |
+| precision-sniper | 149 · 111 · 42 | clean |
 | pulse-trend-radar | 63 · 53 · 35 | in the fleet (SOLUSD) |
 | reactive-trail-system | 133 · 100 · 62 | clean |
 | smart-breakout-targets | 11 · 9 · 5 | few signals |
@@ -50,12 +50,12 @@ own `alert()` trade call; everything else it draws is information.
 | structure-anchored-vwap | 16 · 13 · 10 | derived HL/LH label rule | its own Buy/Sell never fires here (decision 44) |
 | auto-s-r-channels | 1 · 0 · 2 | derived label rule | almost silent |
 | swing-volume-profile-pro | 106 · 75 · 55 | labels ▲/▼ via rule | |
-| ict-session-zones-sweep-signals | 76 · 214 · 260 | shapes | session-based → timezone fix first; 260 on 4h is suspicious |
+| ict-session-zones-sweep-signals | 76 · 214 · 260 | shapes | 260 on 4h is suspicious |
 | **over-read, must be locked** | | | |
 | adaptive-momentum-fusion | 450 · 312 · 224 | 1,148 alertconditions | every divergence/cross becomes an entry |
 | nexus-fusion-engine-ml | 347 · 255 · 180 | 347 shapes + 1,260 info | H▲/D▲ markers read as entries |
 | smart-money-engine | 209 · 142 · 83 | 479 alertconditions | CHoCH/BOS titles read as entries |
-| self-aware-trend-system | 307 · 212 · 145 | 1,351 alertconditions | **it draws ENTRY/SL/TP labels, so its trade `alert()` exists and never fires here — a runtime gap to fix, then it moves to A** |
+| self-aware-trend-system | 307 · 212 · 145 | its `alert()` packet | **moved to A**: with `webhookInput: true` its alert carries entry, stop and three targets, now parsed |
 
 ## C. Information only — levels, cycles, calculators (5)
 
@@ -73,9 +73,11 @@ trader-assistant-pro (invite-only), adaptive-trend-pro (protected). Plus the dup
 
 - The manifest's `incompatible` flag is stale: 10 scripts it calls broken run today. `npm run compat`
   needs a refresh and the flag should come from the last real run, not a report file.
-- Four scripts are session-based (AMD Po3, Precision Sniper, ICT Session Zones, Strat Trap) and
-  compute their windows against `Etc/UTC`; their authors' sessions are New York time. Every number
-  for them is of a different strategy until the timezone is an input.
+- Timezone, checked: the session scripts carry their own timezone input (ICT Session Zones defaults
+  to an American zone, AMD Po3 defaults to UTC by the author's choice; Precision Sniper and Strat
+  Trap use no session windows at all). Running them under `America/New_York` changes nothing, so
+  the earlier worry that their sessions were hours off was wrong. `scanners.<id>.timezone` exists
+  now for the scripts that do read `syminfo.timezone`.
 - Two scripts have a trade engine we never see: self-aware-trend-system and reaction-level-matrix.
 
 ## The rebuild, one script at a time
@@ -85,7 +87,7 @@ trader-assistant-pro (invite-only), adaptive-trend-pro (protected). Plus the dup
 2. **Lock extraction** — `sources: ['alert']` for A; the one true channel for B; nothing for C.
 3. **Runtime = TradingView** — one chart, one week: the same signals on the same bars, or the
    difference is understood. (The harness is the next thing to build.)
-4. **Timezone** for the session scripts, then re-profile them.
+4. **Timezone** only where a script reads `syminfo.timezone` (none of the four session scripts do).
 5. **Measure** — survey across markets and timeframes, halves, dollars; then the family lab's
    reading of it; then the shadow cohort. Nothing is promoted on a backtest.
 

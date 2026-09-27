@@ -1,0 +1,30 @@
+{
+  "_comment": "How each script is read (decision 48): which channel may open a trade, the timezone its sessions run in, input overrides. Defaults only — data/config.json wins per field.",
+
+  "abcd-harmonic-projection": { "sources": ["alert"] },
+  "adaptive-fibonacci-trailing-system": { "sources": ["alert"] },
+  "amd-po3-with-live-edge-stats": { "sources": ["alert"], "timezone": "America/New_York" },
+  "breakout-pattern-setup": { "sources": ["alert"] },
+  "fibonacci-structure-engine": { "sources": ["alert"] },
+  "liquidity-pools-pro": { "sources": ["alert"] },
+  "liquidity-trail-matrix": { "sources": ["alert"] },
+  "meridian-flow": { "sources": ["alert"] },
+  "precision-sniper": { "sources": ["alert"], "timezone": "America/New_York" },
+  "pulse-trend-radar": { "sources": ["alert"] },
+  "reactive-trail-system": { "sources": ["alert"] },
+  "smart-breakout-targets": { "sources": ["alert"] },
+  "squeeze-breakout-pro": { "sources": ["alert"] },
+  "stealthtrail-supertrend": { "sources": ["alert"] },
+  "stealthtrail-supertrend-ml-pro": { "sources": ["alert"] },
+  "synapse-trail-pro": { "sources": ["alert"] },
+  "volume-weighted-s-r-zones": { "sources": ["alert"] },
+  "adaptive-ichimoku-nexus": { "sources": ["alert"] },
+  "mirage-liquidity-sweep-pro": { "sources": ["alert"] },
+  "strat-trap-vwap-engine": { "sources": ["alert"], "timezone": "America/New_York" },
+  "daily-volume-profile-pro": { "sources": ["alert"] },
+
+  "self-aware-trend-system": { "sources": ["alert"], "inputs": { "webhookInput": true } },
+  "ict-session-zones-sweep-signals": { "timezone": "America/New_York" },
+
+  "amd-po3-with-live-edge-stats-willyalgotrader-version-orga": { "hidden": true }
+}

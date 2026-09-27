@@ -384,7 +384,7 @@ export class ScannerEngine extends EventEmitter {
       }
       const rule = sc.rule ?? null;
       const inputs = sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined;
-      const runJob = (b: Bar[], tailBars: number | 'all') => this.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars: b, tailBars, plotTail: rule ? b.length : 400, inputs },
+      const runJob = (b: Bar[], tailBars: number | 'all') => this.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars: b, tailBars, plotTail: rule ? b.length : 400, inputs, timezone: sc.timezone },
         { priority: mode.live && tailBars !== 'all' ? 'live' : 'background' });
       const res = await runJob(mode.backtest ? btBars : bars, mode.backtest ? 'all' : 3);
       // a deep backtest run does not see the last bars the way the live run does → separate live run

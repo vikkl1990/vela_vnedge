@@ -45,6 +45,33 @@ const SHORT_WORDS = /\b(SHORT|SELL|BEAR(?:ISH)?(?:\s+(?:BREAKOUT|ABCD|SWEEP|ENTR
 const EXIT_RE = /\b(TP\s?\d?[ _]?HIT|SL[ _]?HIT|BE[ _]?STOP(?:-OUT)?|BE[ _]?EXIT|BREAK-?EVEN|REVERSAL|FLIP[ _]?EXIT|TRADE[ _]?CLOSED|SL[ _]HIT|TP\d[ _]HIT|TRADE CLOSED|STOP(?:PED)? OUT|STOP HIT|TARGET REACHED|CLOSED)\b/i;
 const INFO_ONLY = /\b(PATTERN DETECTED|ENTRY ZONE|SQUEEZE STARTED|RANGE LOCKED|VOLUME INFLOW|VOLUME OUTFLOW|FATIGUE|DIVERGENCE|ZERO (?:BULL|BEAR) CROSS|NAKED POC|VA BREAKOUT|80% RULE|CYCLE TURN|CHoCH|BOS\b|FVG|OTE Zone|Retest \||hypothesis|dismissed|EXIT OVERBOUGHT|EXIT OVERSOLD|Bull Cross|Bear Cross)\b/i;
 
+/**
+ * `{"schema":"sats.events.v2","events":[{"event":"buy","side":"long","fill_price":…,"sl":…,"tp1":…,"tp2":…,"tp3":…},…]}`
+ * One alert can carry several events for the bar (a stop and a new entry); the first entry wins,
+ * exits are all kept. Returns null when nothing in it is actionable.
+ */
+function parseSatsPacket(msg: string, base: Pick<ScanEvent, 'message' | 'source' | 'barTime' | 'barIndex' | 'tp' | 'label'>): ScanEvent | null {
+  let pkt: any;
+  try { pkt = JSON.parse(msg); } catch { return null; }
+  const events: any[] = Array.isArray(pkt?.events) ? pkt.events : [];
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  for (const e of events) {
+    const side: Side | undefined = e.side === 'long' ? 'long' : e.side === 'short' ? 'short' : undefined;
+    if (e.event === 'buy' || e.event === 'sell') {
+      const tp = [n(e.tp1), n(e.tp2), n(e.tp3)].filter((v): v is number => v !== undefined);
+      return { ...base, kind: 'entry', side: side ?? (e.event === 'buy' ? 'long' : 'short'), price: n(e.fill_price) ?? n(e.close_price), sl: n(e.sl), tp, label: `${(side ?? (e.event === 'buy' ? 'long' : 'short')).toUpperCase()} (SATS)`, message: `SATS ${e.event} ${e.reason ?? ''}`.trim().slice(0, 500) };
+    }
+  }
+  for (const e of events) {
+    const m = String(e.event ?? '').match(/^(tp[123])_hit$|^(sl)_hit$|^(flip)_exit$|^(timeout)_exit$|^trade_(closed)$/);
+    if (!m) continue;
+    const exitType: ExitType = (m[1] as ExitType) ?? (m[2] === 'sl' ? 'sl' : m[3] === 'flip' ? 'flip' : 'close');
+    const side: Side | undefined = e.side === 'long' ? 'long' : e.side === 'short' ? 'short' : undefined;
+    return { ...base, kind: 'exit', side, exitType, price: n(e.fill_price), label: `${exitType.toUpperCase()} (SATS)`, message: `SATS ${e.event} ${e.reason ?? ''}`.trim().slice(0, 500) };
+  }
+  return null;
+}
+
 /** Leading direction cue: 🟢 = long, 🔴 = short. */
 function emojiSide(msg: string): Side | undefined {
   const head = msg.slice(0, 6);
@@ -60,6 +87,8 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
   const upper = msg.toUpperCase();
   const base: ScanEvent = { kind: 'info', tp: [], label: head.slice(0, 60), message: msg.slice(0, 500), source: 'alert', barTime: a.time, barIndex: a.barIndex };
 
+  // ----- Self-Aware Trend System webhook packet: every event with the trade's own entry, stop and targets -----
+  if (msg.startsWith('{') && msg.includes('"schema":"sats.events.v2"')) return parseSatsPacket(msg, base);
   // ----- JSON webhook payloads (STRAT Trap & VWAP Engine: {"ind":"STRAT","action":"trigger_bull",...}) -----
   if (msg.startsWith('{') && msg.endsWith('}')) {
     let j: any = null;

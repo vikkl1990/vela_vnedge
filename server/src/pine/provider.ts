@@ -16,6 +16,8 @@ export interface DeltaPineProviderOptions {
   bars: ProviderBar[];
   tickSize: number;
   description?: string;
+  /** IANA timezone PineTS runs sessions and clock functions in (default Etc/UTC). */
+  timezone?: string;
   /** Fetch bars for another timeframe (used by `request.security`). Returns ascending bars. */
   fetchOther?: (symbol: string, deltaTf: string, bars: number, endMs: number) => Promise<ProviderBar[]>;
 }
@@ -136,7 +138,7 @@ export class DeltaPineProvider {
     return {
       current_contract: '', description: this.opts.description ?? `${base} Perpetual`, isin: '',
       main_tickerid: `DELTA:${sym}`, prefix: 'DELTA', root: sym, ticker: sym, tickerid: `DELTA:${sym}`, type: 'crypto',
-      basecurrency: base, country: '', currency: 'USD', timezone: 'Etc/UTC', employees: 0, industry: '', sector: '',
+      basecurrency: base, country: '', currency: 'USD', timezone: this.opts.timezone || 'Etc/UTC', employees: 0, industry: '', sector: '',
       shareholders: 0, shares_outstanding_float: 0, shares_outstanding_total: 0, expiration_date: 0, session: '24x7', volumetype: 'base',
       mincontract: 1, minmove: 1, mintick: tick, pointvalue: 1, pricescale,
       recommendations_buy: 0, recommendations_buy_strong: 0, recommendations_date: 0, recommendations_hold: 0, recommendations_sell: 0,

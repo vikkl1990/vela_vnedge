@@ -42,7 +42,7 @@ await Promise.all(Array.from({ length: 8 }, async () => {
     const bars = series.get(t.tf)!;
     if (s.status !== 'ok') { rows.push({ id: t.id, tf: t.tf, kind: 'broken', ms: 0, entries: 0, withSl: 0, withTp: 0, exits: 0, info: 0, alertconds: 0, shapes: 0, labels: 0, labelTexts: '', plots: 0, error: s.reason ?? s.status }); continue; }
     const inputs = cfg.scanners[t.id]?.inputs;
-    const res = await pool.run({ scannerId: t.id, source: s.patched, symbol: MARKET, tf: t.tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
+    const res = await pool.run({ scannerId: t.id, source: s.patched, symbol: MARKET, tf: t.tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[t.id]?.timezone });
     if (!res.ok) { rows.push({ id: t.id, tf: t.tf, kind: 'broken', ms: res.ms, entries: 0, withSl: 0, withTp: 0, exits: 0, info: 0, alertconds: 0, shapes: 0, labels: 0, labelTexts: '', plots: 0, error: (res.error ?? '').slice(0, 80) }); continue; }
     const derived = applyRules({ scannerId: t.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[t.id]?.rule ?? null, bars, mode: 'backtest' });
     const ev = extractEvents(res.alerts, res.shapes, { derived, sources: cfg.scanners[t.id]?.sources });

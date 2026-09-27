@@ -79,7 +79,7 @@ async function runOne(j: Job): Promise<'entries' | 'silent' | 'failed'> {
   const sub = [...series.entries()].find(([k]) => k.startsWith(`${j.symbol}:${SUB[j.tf]}:`))?.[1];
   const m = market.get(j.symbol)!;
   const inputs = cfg.scanners[s.id]?.inputs;
-  const res = await pool.run({ scannerId: s.id, source: s.patched, symbol: j.symbol, tf: j.tf, tickSize: m.tickSize, bars: b, tailBars: 'all', plotTail: b.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
+  const res = await pool.run({ scannerId: s.id, source: s.patched, symbol: j.symbol, tf: j.tf, tickSize: m.tickSize, bars: b, tailBars: 'all', plotTail: b.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone });
   if (!res.ok) return 'failed';
   const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: b, mode: 'backtest' });
   const events = extractEvents(res.alerts, res.shapes, { derived, sources: cfg.scanners[s.id]?.sources });

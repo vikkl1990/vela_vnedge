@@ -223,6 +223,8 @@ export interface ScannerConfig {
    * that draw a marker on every bar of a trend as well as calling a trade (decision 48).
    */
   sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
+  /** IANA timezone the script's sessions and clock functions run in (default Etc/UTC; session scripts usually mean America/New_York). */
+  timezone?: string;
   /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
   inputs?: Record<string, number | string | boolean>;
 
@@ -704,6 +706,14 @@ export class ConfigStore {
       this.seenMtimeMs = fs.statSync(this.file).mtimeMs;
     }
     const cfg = deepMerge(structuredClone(DEFAULT_CONFIG), stored);
+    // per-script specs (scripts/specs.json, tracked): how each script is read — its entry channel,
+    // timezone, rule, inputs. They are defaults: anything set in config.json for the scanner wins.
+    if (process.env.SPECS !== '0') {
+      for (const [id, spec] of Object.entries(loadSpecs())) {
+        const cur = cfg.scanners[id];
+        cfg.scanners[id] = { enabled: false, symbols: null, timeframes: null, exitMode: 'both', ...spec, ...((cur ?? {}) as Partial<ScannerConfig>) } as ScannerConfig;
+      }
+    }
     if (process.env.VNEDGE_SYMBOLS) cfg.symbols = process.env.VNEDGE_SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
     if (process.env.VNEDGE_TIMEFRAMES) cfg.timeframes = process.env.VNEDGE_TIMEFRAMES.split(',').map(s => s.trim()).filter(Boolean);
     return cfg;
@@ -757,6 +767,12 @@ export class ConfigStore {
 // ---------------------------------------------------------------------------------------------
 // Phase 1 / 6 additions (validation, shadow, consensus, generic rules, script inputs)
 // ---------------------------------------------------------------------------------------------
+
+export const SPECS_FILE = path.join(ROOT_DIR, 'scripts', 'specs.json');
+/** Tracked per-script reading specs; empty when the file is missing or malformed. */
+export function loadSpecs(): Record<string, Partial<ScannerConfig>> {
+  try { return JSON.parse(fs.readFileSync(SPECS_FILE, 'utf8')); } catch { return {}; }
+}
 
 /** Generic derivation rules selectable per scanner (`scanners.<id>.rule`). */
 export type GenericRule = 'trailing' | 'oscillator';
@@ -831,6 +847,8 @@ export function validateExtendedConfig(c: AppConfig): string[] {
   }
   for (const [id, sc] of Object.entries(c.scanners ?? {})) {
     if (sc?.rule != null && !GENERIC_RULES.includes(sc.rule)) errs.push(`scanners.${id}.rule must be ${GENERIC_RULES.join('|')}`);
+    if (sc?.sources != null && (!Array.isArray(sc.sources) || sc.sources.some(x => !['alert', 'alertcondition', 'shape', 'derived'].includes(x)))) errs.push(`scanners.${id}.sources must list alert|alertcondition|shape|derived`);
+    if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
   }
   return errs;

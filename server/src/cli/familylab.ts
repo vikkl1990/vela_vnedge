@@ -132,7 +132,7 @@ async function stageStates() {
         const s = registry.get(id)!;
         const inputs = cfg.scanners[id]?.inputs;
         try {
-          const res = await pool.run({ scannerId: id, source: s.patched, symbol: MARKET, tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
+          const res = await pool.run({ scannerId: id, source: s.patched, symbol: MARKET, tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[id]?.timezone });
           if (!res.ok) { failed++; }
           else {
             const r = readings(res, bars);

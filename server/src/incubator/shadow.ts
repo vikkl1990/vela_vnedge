@@ -107,7 +107,7 @@ export class ShadowRunner {
     const budget = this.budgetMs(cfg, barAt);
     if (budget <= 0) { this.stats.expired++; return; }
     const res = await this.deps.pool.run(
-      { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined },
+      { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
       { deadlineMs: budget });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.stats.errors++; return; }

@@ -23,6 +23,8 @@ export interface WorkerJob {
   plotTail: number;
   /** Per-script `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
   inputs?: Record<string, number | string | boolean>;
+  /** IANA timezone for the script's sessions (default Etc/UTC). */
+  timezone?: string;
 }
 
 export interface WorkerAlert { barIndex: number; time: number; type: 'alert' | 'alertcondition'; title?: string; message: string }
@@ -71,7 +73,7 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
   const t0 = Date.now();
   const base: WorkerResult = { id: job.id, ok: false, ms: 0, bars: job.bars.length, lastBarTime: job.bars.at(-1)?.time ?? 0, warnings: 0, alerts: [], shapes: [], labels: [], plots: [] };
   try {
-    const provider = new DeltaPineProvider({ symbol: job.symbol, tf: job.tf, bars: job.bars, tickSize: job.tickSize, fetchOther });
+    const provider = new DeltaPineProvider({ symbol: job.symbol, tf: job.tf, bars: job.bars, tickSize: job.tickSize, timezone: job.timezone, fetchOther });
     const pine = new PineTS(provider as any, job.symbol, TF_TO_PINE[job.tf] ?? '15', job.bars.length);
     pine.setAlertMode('all');
     pine.setMaxLoops(200_000);

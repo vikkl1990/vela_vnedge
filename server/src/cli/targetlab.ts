@@ -62,7 +62,7 @@ async function worker() {
       const bars = series.get(`${t.symbol}:${t.tf}`)!;
       const m = market.get(t.symbol)!;
       const inputs = cfg.scanners[t.id]?.inputs;
-      const res = await pool.run({ scannerId: t.id, source: s.patched, symbol: t.symbol, tf: t.tf, tickSize: m.tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
+      const res = await pool.run({ scannerId: t.id, source: s.patched, symbol: t.symbol, tf: t.tf, tickSize: m.tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[t.id]?.timezone });
       if (!res.ok) continue;
       const derived = applyRules({ scannerId: t.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[t.id]?.rule ?? null, bars, mode: 'backtest' });
       const events = extractEvents(res.alerts, res.shapes, { derived });

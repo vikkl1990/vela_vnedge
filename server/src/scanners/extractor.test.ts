@@ -142,3 +142,14 @@ test('sources limits which channels may open a trade; exits and info from alert(
   assert.deepEqual(only.map(e => [e.kind, e.source]), [['entry', 'alert'], ['exit', 'alert']]);
   assert.deepEqual(extractEvents(alerts, shapes, { sources: ['shape'] }).filter(e => e.kind === 'entry').map(e => e.source), ['shape']);
 });
+
+test('Self-Aware Trend System webhook packet: the entry carries its own stop and targets; hits become exits', () => {
+  const pkt = (events: any[]) => ({ barIndex: 5, time: 5000, type: 'alert' as const, message: JSON.stringify({ schema: 'sats.events.v2', version: '2', ticker: 'DELTA:BTCUSD', tf: '15', bar_time: 5000, events }) });
+  const entry = parseAlert(pkt([{ event: 'buy', side: 'long', fill_price: 100.5, close_price: 100.4, sl: 95, tp1: 105, tp2: 110, tp3: 115, reason: 'Price band break' }]))!;
+  assert.equal(entry.kind, 'entry'); assert.equal(entry.side, 'long'); assert.equal(entry.price, 100.5); assert.equal(entry.sl, 95); assert.deepEqual(entry.tp, [105, 110, 115]);
+  const stopThenEntry = parseAlert(pkt([{ event: 'sl_hit', side: 'short', fill_price: 99 }, { event: 'buy', side: 'long', fill_price: 99.2, sl: 94, tp1: 104 }]))!;
+  assert.equal(stopThenEntry.kind, 'entry', 'a bar with a stop and a new entry reads as the entry');
+  const tp = parseAlert(pkt([{ event: 'tp2_hit', side: 'long', fill_price: 110 }]))!;
+  assert.equal(tp.kind, 'exit'); assert.equal(tp.exitType, 'tp2'); assert.equal(tp.price, 110);
+  assert.equal(parseAlert(pkt([{ event: 'char_flip', side: 'long' }])), null);
+});
