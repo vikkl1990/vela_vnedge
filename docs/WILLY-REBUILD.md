@@ -94,3 +94,10 @@ trader-assistant-pro (invite-only), adaptive-trend-pro (protected). Plus the dup
 Order: the clean A scripts first (they are what the bot was built for), the over-read ones after
 locking, then the runtime gaps (self-aware-trend-system, reaction-level-matrix), then session
 scripts after the timezone fix.
+
+## Result of the rebuild (decision 49)
+
+Before/after/author's-exits on 8 markets × 3 timeframes: −5,444R → −3,443R → −3,484R. Reading the
+authors' trade calls only removed 24,000 phantom trades; it did not create an edge — all 22 plan
+scripts lose under our exits and under their own. One sign flip (Mirage Liquidity Sweep Pro, 37
+trades, +9.2R) goes to the watch list. Next: group B one by one, then the runtime gaps.

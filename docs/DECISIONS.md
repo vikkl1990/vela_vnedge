@@ -1391,3 +1391,37 @@ Also found: the manifest's compatibility flag is stale (10 "incompatible" script
 session-based scripts compute their sessions in UTC against authors who mean New York, and two
 scripts (self-aware-trend-system, reaction-level-matrix) have a trade engine our runtime never
 surfaces. Those are the next items in the rebuild.
+
+## 49. The WillyAlgoTrader rebuild: honest readings, no edge; their own exits do not rescue them
+
+The 22 trade-plan scripts (decision 48's group A plus Self-Aware Trend System) re-surveyed on
+8 markets × 15m/1h/4h, before and after the rebuild, then once more under their authors' own exit
+model (three targets, break-even after TP1, no trail). Rows in `data/reports/2026-09-28-willy-*.tsv`.
+
+| reading | trades | total R | net $ | R/trade | 1st half | 2nd half |
+|---|---:|---:|---:|---:|---:|---:|
+| before: every channel an entry | 54,409 | −5,444 | −68,142 | −0.100 | −2,783 | −2,659 |
+| rebuilt: the author's trade calls only, our exits | 30,453 | −3,443 | −56,631 | −0.113 | −1,923 | −1,520 |
+| rebuilt, the author's exits | 30,048 | −3,484 | −58,698 | −0.116 | −1,905 | −1,578 |
+
+Sixteen scripts were already read from their `alert()` alone; the over-read lived in a few. Strat
+Trap fell from 24,852 to 1,525 trades and its R per trade went from −0.10 to −0.46: the author's
+real trade calls are worse than the trend markers we had been trading by mistake. Self-Aware
+Trend System, now with its packet's own stop and targets, improved from −671R to −584R. Mirage
+Liquidity Sweep Pro is the one sign flip: 319 → 37 trades, +9.2R, both halves positive, too few to
+act on. Daily Volume Profile Pro correctly fell silent — it never had a trade call.
+
+Under their authors' exits the total is the same to within 1%: four scripts do better (abcd,
+Fibonacci Structure Engine, StealthTrail ML Pro, Strat Trap), most do worse, and only two
+scanner × timeframe cells are positive in both halves (abcd 15m +29R on 305 trades, Liquidity
+Trail Matrix 4h +8R). **The exits are not what is wrong with these scripts.** Every one of the 22
+loses money over these windows whichever way it is read and whichever way it exits.
+
+Also in this commit: a paper reset archives the record instead of deleting it. The reset the owner
+ran at 18:12 UTC erased the forty trades that prompted the question it was meant to answer; only
+the path recorder's rows survived. Archived positions move to book `-(book+1)`, where live queries
+ignore them and the forensics keep them.
+
+**What changes:** nothing in the fleet. The rebuild stays (the readings are now the authors'),
+`scripts/specs.json` is the place a script's reading lives, and Mirage 4h/1h goes on the watch list
+for the shadow book rather than the fleet.

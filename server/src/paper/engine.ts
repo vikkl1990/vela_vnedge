@@ -573,10 +573,16 @@ export class PaperEngine extends EventEmitter {
     return n;
   }
 
+  /**
+   * Start the book again at its initial equity. The record is archived, not deleted: positions and
+   * orders move to book `-(book + 1)` where every live query ignores them and the forensics keep
+   * them (a reset used to erase the trades that prompted it).
+   */
   reset(): void {
+    const archive = -(this.book + 1);
     this.db.transaction(() => {
-      this.db.run(`DELETE FROM positions WHERE bt=${this.book}`);
-      this.db.run(`DELETE FROM orders WHERE bt=${this.book}`);
+      this.db.run(`UPDATE positions SET bt=? WHERE bt=${this.book}`, archive);
+      this.db.run(`UPDATE orders SET bt=? WHERE bt=${this.book}`, archive);
       if (this.book === 0) {
         this.db.run('DELETE FROM equity');
         this.db.run("UPDATE signals SET action='reset', position_id=NULL WHERE position_id IS NOT NULL");
