@@ -171,6 +171,23 @@ export function useCloseAll() {
   })
 }
 
+export function useKill() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: (v: { reason: string; closeAll?: boolean }) => api.riskKill(v.reason, v.closeAll), onSuccess: () => void qc.invalidateQueries({ queryKey: ['risk'] }) })
+}
+export function useResume() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: () => api.riskResume(), onSuccess: () => void qc.invalidateQueries({ queryKey: ['risk'] }) })
+}
+export function useReconcile() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: () => api.executionReconcile(), onSuccess: () => void qc.invalidateQueries({ queryKey: ['execution'] }) })
+}
+export function useExchangeCloseAll() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: () => api.executionCloseAll(), onSuccess: () => void qc.invalidateQueries() })
+}
+
 export function useResetPaper() {
   const qc = useQueryClient()
   return useMutation({

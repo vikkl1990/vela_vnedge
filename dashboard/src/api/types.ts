@@ -522,10 +522,21 @@ export interface RiskState {
   [k: string]: unknown
 }
 export interface BracketOrder { id: number | string; price: number; size: number; leg?: number }
+export interface LedgerRow {
+  id: number; positionId: number; purpose: string; reason: string | null; leg: number | null; clientOrderId: string
+  productId: number; symbol: string; side: 'buy' | 'sell'; size: number; orderType: string; stopPrice: number | null; limitPrice: number | null
+  state: 'intent' | 'submitted' | 'acknowledged' | 'filled' | 'cancelled' | 'rejected' | 'unknown'; exchangeId: string | null
+  filledSize: number; avgPrice: number | null; fee: number | null; error: string | null; createdAt: number; updatedAt: number
+}
+export interface RecoveryReport { at: number; settled: number; restored: number; replacedStops: number; adoptedFills: number; cancelledStray: number; unmirrored: number[]; notes: string[] }
 export interface ExecutionStatus {
   mode: string; host: string | null; hasKeys: boolean; dryRun: boolean; bracket: boolean
-  brackets: Array<{ positionId: number; symbol: string; stop: BracketOrder | null; tps: BracketOrder[] }>
-  lastReconcile: { at: number; ok: boolean; drift: Array<{ kind?: string; symbol?: string; detail?: string } | string>; positions: number; orders: number; error?: string } | null
+  brackets: Array<{ positionId: number; symbol: string; stop: (BracketOrder & { exchangeId?: string }) | null; tps: Array<BracketOrder & { exchangeId?: string }> }>
+  lastReconcile: { at: number; ok: boolean; drift: Array<{ kind?: string; symbol?: string; detail?: string; paper?: unknown; exchange?: unknown } | string>; positions: number; orders: number; error?: string } | null
+  unconfirmed?: number[]
+  lastRecovery?: RecoveryReport | null
+  ledger?: LedgerRow[]
+  products?: number
 }
 
 /** The levels a path is read against: break even, the stop it opened with, and the targets. */

@@ -109,6 +109,11 @@ export const api = {
   updateProfile: (body: { displayName: string }) => post<{ user: Me }>('/auth/profile', body),
   // risk and exchange state
   risk: () => get<RiskState>('/risk'),
+  /** Manual halt: no new entries until resumed; optionally flatten the paper book. */
+  riskKill: (reason: string, closeAll = false) => post<RiskState>('/risk/kill', { reason, closeAll }),
+  riskResume: () => post<RiskState>('/risk/reset'),
+  executionReconcile: () => post<unknown>('/execution/reconcile'),
+  executionCloseAll: () => post<unknown>('/execution/close-all', { confirm: true }),
   execution: () => get<ExecutionStatus>('/execution'),
 
   // incubator

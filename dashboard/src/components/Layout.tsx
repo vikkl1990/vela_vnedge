@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { useBackendOnline, useHealth, usePositions, useResetPaper, useScannerIndex, useStats } from '../api/queries'
+import { useBackendOnline, useHealth, useKill, usePositions, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
 import { RiskBanner } from './RiskBanner'
 import { useAuth } from '../auth/AuthGate'
 import { useDensity } from '../lib/density'
@@ -37,6 +37,7 @@ const NAV = [
   { to: '/analytics', label: 'Analytics', icon: IconChart, key: 'a' },
   { to: '/incubator', label: 'Incubator', icon: IconScan, key: 'n' },
   { to: '/learn', label: 'Learn', icon: IconChart, key: 'l' },
+  { to: '/exchange', label: 'Exchange', icon: IconTrades, key: 'x' },
   { to: '/logs', label: 'Logs', icon: IconLogs, key: 'g' },
   { to: '/profile', label: 'Profile', icon: IconSettings, key: 'p' },
   { to: '/users', label: 'Users', icon: IconSettings, key: 'u', adminOnly: true },
@@ -90,6 +91,11 @@ export function Layout() {
   const reset = useResetPaper()
   const navigate = useNavigate()
   const [confirmReset, setConfirmReset] = useState(false)
+  const [confirmPause, setConfirmPause] = useState(false)
+  const risk = useRisk()
+  const kill = useKill()
+  const resume = useResume()
+  const paused = Boolean(risk.data?.manualHalt)
   const [showKeys, setShowKeys] = useState(false)
   const loc = useLocation()
   const auth = useAuth()
@@ -183,6 +189,15 @@ export function Layout() {
             <span className="hide-narrow">feed {feedConnected ? 'on' : 'off'}</span>
             <TickAge lastTick={lastTick} />
           </span>
+          {auth.canTrade && (paused ? (
+            <button className="btn btn-sm" title={`Entries paused: ${risk.data?.manualHalt?.reason ?? ''}. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
+              {resume.isPending ? 'Resuming…' : '▶ Resume entries'}
+            </button>
+          ) : (
+            <button className="btn btn-sm btn-danger-outline" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || kill.isPending}>
+              Pause entries
+            </button>
+          ))}
           {auth.canTrade && (
             <button className="btn btn-sm btn-danger-outline" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
               Reset paper
@@ -264,12 +279,22 @@ export function Layout() {
       </div>
 
       <ConfirmDialog
+        open={confirmPause}
+        title="Pause all new entries?"
+        body={<p>The kill switch. No scanner opens a position until you resume; open positions keep running their stops, trails and targets. Nothing is closed.</p>}
+        confirmLabel="Pause entries"
+        danger
+        busy={kill.isPending}
+        onCancel={() => setConfirmPause(false)}
+        onConfirm={() => { kill.mutate({ reason: `paused by ${auth.user.username}` }, { onSettled: () => setConfirmPause(false) }) }}
+      />
+      <ConfirmDialog
         open={confirmReset}
         title="Reset paper account?"
         body={
           <p>
-            This wipes all open positions, closed trades and the equity curve, and restarts at the configured initial equity. Signals
-            are kept.
+            Open positions are closed at market, the record is archived (kept for forensics, hidden from every live view) and the
+            account restarts at the configured initial equity. Signals are kept.
           </p>
         }
         confirmLabel="Reset account"

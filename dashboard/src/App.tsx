@@ -15,6 +15,7 @@ import { Scanners } from './pages/Scanners'
 import { Settings } from './pages/Settings'
 import { Signals } from './pages/Signals'
 import { Trades } from './pages/Trades'
+import { Exchange } from './pages/Exchange'
 
 export default function App() {
   return (
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="incubator" element={<Incubator />} />
           <Route path="learn" element={<Learn />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="exchange" element={<Exchange />} />
           <Route path="logs" element={<Logs />} />
           <Route path="profile" element={<Profile />} />
           <Route path="users" element={<AdminOnly><Users /></AdminOnly>} />
