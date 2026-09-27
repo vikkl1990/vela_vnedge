@@ -1425,3 +1425,36 @@ ignore them and the forensics keep them.
 **What changes:** nothing in the fleet. The rebuild stays (the readings are now the authors'),
 `scripts/specs.json` is the place a script's reading lives, and Mirage 4h/1h goes on the watch list
 for the shadow book rather than the fleet.
+
+## 50. The profit lock moves earlier: +0.25R once a trade shows +0.5R
+
+The owner watched trades go green and end at −1R. From the path recorder, of the last forty live
+trades thirty were green at some point; every one that reached +1R was captured (ten of ten,
++0.53R to +1.46R banked); eight peaked between +0.28R and +0.74R and ended at the stop — the band
+below +1R, where decisions 36 and 39 found every protective rule lost money on the old fleet.
+
+Re-fitted on the current 35-pair fleet (`npm run fitexits`, 15m, 8,000 bars, 21 policies, first half
+fits, second half judges, `data/reports/2026-09-28-fitexits-fleet.json`):
+
+| policy | in sample | out of sample | vs current | out $ | markets better / worse |
+|---|---:|---:|---:|---:|---:|
+| current (floor +0.5R at +1R, trail from +1R) | −64.6R | +57.9R | — | 1,653 | — |
+| **lock +0.25R at +0.5R** | −32.8R | +81.4R | **+23.5R** | 2,439 | **10 / 7** of 18 |
+| lock +0.5R at +0.75R | −28.0R | +88.2R | +30.3R | 3,028 | 7 / 6 — the pool comes from UNIUSD and MUBARAKUSD |
+| break-even at +0.5R, trail 25% | −34.7R | +80.3R | +22.4R | 2,564 | 10 / 6 |
+| break-even at +0.5R | −61.9R | +65.5R | +7.6R | 2,174 | |
+| every stall variant | | | −0.2R to −27.5R | | |
+
+Three early locks beat the current policy in both halves; the one with the widest breadth is
+adopted: **`floorAtR 0.5, floorKeepR 0.25`** — once a trade has shown +0.5R its stop never sits below
++0.25R; the trail from +1R is unchanged and takes over above it. Of the eight trades that prompted
+this, three (peaks +0.74, +0.68, +0.54) would have banked +0.25R instead of −1R; five peaked below
++0.5R and nothing measured protects them without costing more elsewhere.
+
+This contradicts decision 36 (break-even at +0.5R cost 44R on the old ten-pair fleet). Both are
+true of their fleets; the current fleet's trades are shorter and reverse sooner, and a lock that
+was too early for the old one is right for this one. The per-market fits (AKEUSD, AVAXUSD…) are
+noted and not adopted — decision 43.
+
+**Revisit when** the fleet changes materially, or the 100-trade review shows the lock firing on
+trades that then ran.

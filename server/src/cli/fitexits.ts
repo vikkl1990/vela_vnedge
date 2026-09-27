@@ -145,9 +145,11 @@ for (const m of scores.values()) for (const [name, v] of m) {
 }
 const cur = pooled.get(BASE)!;
 console.log(`\nevery market pooled — the honest comparison\n`);
-console.log(`${'policy'.padEnd(30)} ${'in sample'.padStart(11)} ${'out of sample'.padStart(14)} ${'vs current'.padStart(11)} ${'out $'.padStart(10)} ${'trades'.padStart(7)}`);
+// breadth: a policy that wins the pool from one market is a curve fit wearing a total (decision 43)
+const breadth = (name: string) => { let b = 0, w = 0; for (const [, m] of scores) { const v = m.get(name), c = m.get(BASE); if (!v || !c) continue; if (v.test > c.test + 0.5) b++; else if (v.test < c.test - 0.5) w++; } return `${b}/${w}`; };
+console.log(`${'policy'.padEnd(30)} ${'in sample'.padStart(11)} ${'out of sample'.padStart(14)} ${'vs current'.padStart(11)} ${'out $'.padStart(10)} ${'trades'.padStart(7)}   markets better/worse`);
 for (const [name, v] of [...pooled].sort((a, b) => b[1].usd - a[1].usd))
-  console.log(`${name.padEnd(30)} ${v.fit.toFixed(1).padStart(10)}R ${v.test.toFixed(1).padStart(13)}R ${(v.test - cur.test).toFixed(1).padStart(10)}R ${v.usd.toFixed(0).padStart(10)} ${String(v.trades).padStart(7)}`);
+  console.log(`${name.padEnd(30)} ${v.fit.toFixed(1).padStart(10)}R ${v.test.toFixed(1).padStart(13)}R ${(v.test - cur.test).toFixed(1).padStart(10)}R ${v.usd.toFixed(0).padStart(10)} ${String(v.trades).padStart(7)}   ${breadth(name)}`);
 fs.writeFileSync(process.env.OUT ?? '/tmp/fitexits.json', JSON.stringify([...scores].map(([sym, m]) => ({ symbol: sym, policies: Object.fromEntries(m) })), null, 1));
 await pool.stop();
 process.exit(0);
