@@ -53,6 +53,12 @@ const GRID: Array<{ name: string; over: Partial<PaperConfig> }> = process.env.ST
   { name: 'be@0.5+trail1', over: { floorAtR: 0.5, floorKeepR: 0, trailAfterR: 1 } },
   { name: 'be@0.5+tight', over: { floorAtR: 0.5, floorKeepR: 0, trailGiveBackPct: 25 } },
   { name: 'trail@1', over: { trailAfterR: 1 } },
+  // the owner's question after decision 50: arm the trail below +1R so a +0.9R peak keeps more than the lock
+  { name: 'trail@0.75', over: { trailAfterR: 0.75 } },
+  { name: 'trail@0.5', over: { trailAfterR: 0.5 } },
+  { name: 'trail@0.75 keep50', over: { trailAfterR: 0.75, trailGiveBackPct: 50 } },
+  { name: 'trail@0.5 keep50', over: { trailAfterR: 0.5, trailGiveBackPct: 50 } },
+  { name: 'trail@0.75 no steps', over: { trailAfterR: 0.75, trailSteps: [] } },
   // smarter trailing: tighten as the trade grows, and when it stops making highs
   { name: 'steps 2R/4R', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]] } },
   { name: 'steps 1.5R/3R', over: { trailAfterR: 1, trailSteps: [[1.5, 30], [3, 15]] } },

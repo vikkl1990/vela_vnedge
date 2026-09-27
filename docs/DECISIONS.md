@@ -1458,3 +1458,27 @@ noted and not adopted — decision 43.
 
 **Revisit when** the fleet changes materially, or the 100-trade review shows the lock firing on
 trades that then ran.
+
+## 51. The trail arms at +0.5R
+
+Asked, after decision 50, whether the trail could arm below +1R: a trade that peaks at +0.9R and
+turns keeps only the +0.25R lock. Six early-trail variants fitted on the current fleet against the
+deployed policy (`data/reports/2026-09-28-fitexits-trail.json`, 15m, 8,000 bars, halves, breadth):
+
+| policy | in sample | out of sample | vs deployed | out $ | markets better / worse |
+|---|---:|---:|---:|---:|---:|
+| deployed (lock +0.25R at +0.5R, trail from +1R) | −25.8R | +81.2R | — | 2,490 | — |
+| **trail from +0.5R** | −16.9R | +89.4R | **+8.2R** | 2,799 | **8 / 3** |
+| trail from +0.75R | −19.3R | +79.6R | −1.6R | 2,538 | 6 / 4 |
+| trail from +0.5R, 50% give-back | −26.4R | +71.9R | −9.3R | 2,215 | 3 / 9 |
+| trail from +0.75R, no size steps | −27.6R | +68.7R | −12.5R | 2,098 | 4 / 6 |
+| steps 1.5R/3R (unchanged trail) | −23.6R | +87.6R | +6.4R | 2,750 | 8 / 2 |
+
+Arming at +0.5R with the normal 40% give-back is better in both halves and on 12 of the 15 markets
+it touches (UNIUSD, AKEUSD and ZECUSD keep their own `trailAfterR 1.5` from decision 36 and are
+unaffected). A wider give-back at that level is worse; +0.75R is a wash. Adopted: **`trailAfterR
+0.5`**. From +0.5R the stop keeps 60% of the peak, so the +0.88R NEARUSD peak that prompted the
+question would now hold +0.53R instead of +0.25R. The size steps at 1.5R/3R look worth a fit on
+top of this and are not stacked unmeasured.
+
+**Revisit at** the 100-trade review, alongside decision 50.

@@ -89,7 +89,7 @@ In order:
 |---|---|
 | **stop** | −1R, or the level the script drew |
 | **floor** | at **+0.5R** the stop moves to **+0.25R** and never comes back down (decision 50; the trail from +1R takes over above it) |
-| **trail** | from **+1.5R**, keep **60%** of the best price reached |
+| **trail** | from **+0.5R** the stop keeps 60% of the peak (70% past 2R, 80% past 4R; ×0.6 after a 45-min stall) and never comes back down (decisions 34, 36, 51) |
 | **ceiling** | +6R closes what is left |
 | **reversal** | an opposite signal on the same market closes the position |
 
