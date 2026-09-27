@@ -88,7 +88,7 @@ In order:
 | | rule |
 |---|---|
 | **stop** | −1R, or the level the script drew |
-| **floor** | at **+1R** the stop moves to **+0.5R** and never comes back down |
+| **floor** | at **+0.5R** the stop moves to **+0.25R** and never comes back down (decision 50; the trail from +1R takes over above it) |
 | **trail** | from **+1.5R**, keep **60%** of the best price reached |
 | **ceiling** | +6R closes what is left |
 | **reversal** | an opposite signal on the same market closes the position |
