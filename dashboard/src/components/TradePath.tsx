@@ -49,8 +49,16 @@ export function TradePath({ id, title, onClose }: { id: number | null; title?: s
       ? { at: lv.peakAt ?? sampled.at, r: lv.peakR, fromSamples: false }
       : { at: sampled.at, r: sampled.r, fromSamples: true }
     // the stop as it actually stood, stepped: this is the floor and the trail ratcheting
-    const stopLine = path.filter(p => p.sl != null).map(p => `${x(p.at)},${y(rOf(p.sl!))}`).join(' ')
-    return { w, h, padL, padR, x, y, lo, hi, peak, targets, rOf, stopLine, line: path.map(p => `${x(p.at)},${y(p.r)}`).join(' ') }
+    const withStop = path.filter(p => p.sl != null)
+    const stopLine = withStop.map(p => `${x(p.at)},${y(rOf(p.sl!))}`).join(' ')
+    // where the stop stands now — the number that matters, not the one it opened with
+    const stopNow = lv.sl ?? (withStop.length ? withStop[withStop.length - 1].sl! : null)
+    const lastStop = stopNow != null ? { price: stopNow, r: rOf(stopNow) } : null
+    // keep its label clear of the fixed level labels sharing the right margin
+    const taken = [0, -1, ...targets.filter(t => t.r >= lo && t.r <= hi).map(t => t.r)].map(y)
+    let stopLabelY = lastStop ? y(lastStop.r) : 0
+    for (const ty of taken) if (Math.abs(stopLabelY - ty) < 12) stopLabelY = ty + 12
+    return { w, h, padL, padR, x, y, lo, hi, peak, targets, rOf, stopLine, lastStop, stopLabelY, line: path.map(p => `${x(p.at)},${y(p.r)}`).join(' ') }
   }, [path, lv])
 
   return (
@@ -70,12 +78,12 @@ export function TradePath({ id, title, onClose }: { id: number | null; title?: s
             <g>
               <line x1={chart.padL} x2={chart.w - chart.padR} y1={chart.y(0)} y2={chart.y(0)} className="axis-zero" />
               <text x={4} y={chart.y(0) + 4} className="axis-label">0R</text>
-              <text x={chart.w - chart.padR + 6} y={chart.y(0) + 4} className="axis-label level-be">break even</text>
+              <text x={chart.w - chart.padR + 6} y={chart.y(0) + 4} className="axis-label level-be">entry · 0R</text>
             </g>
             <g>
               <line x1={chart.padL} x2={chart.w - chart.padR} y1={chart.y(-1)} y2={chart.y(-1)} className="level-stop" />
               <text x={4} y={chart.y(-1) + 4} className="axis-label">−1R</text>
-              <text x={chart.w - chart.padR + 6} y={chart.y(-1) + 4} className="axis-label level-stop-label">stop {lv?.slOriginal != null ? fmtPrice(lv.slOriginal) : ''}</text>
+              <text x={chart.w - chart.padR + 6} y={chart.y(-1) + 4} className="axis-label level-stop-label">initial stop {lv?.slOriginal != null ? fmtPrice(lv.slOriginal) : ''}</text>
             </g>
             {/* the targets, in R, marked when they filled */}
             {chart.targets.filter(t => t.r >= chart.lo && t.r <= chart.hi).map(t => (
@@ -87,6 +95,11 @@ export function TradePath({ id, title, onClose }: { id: number | null; title?: s
               </g>
             ))}
             {chart.stopLine && <polyline points={chart.stopLine} className="path-stop" />}
+            {chart.lastStop && chart.lastStop.r > -1 && (
+              <text x={chart.w - chart.padR + 6} y={chart.stopLabelY + 4} className="axis-label level-stop-label">
+                stop {fmtPrice(chart.lastStop.price)} · {chart.lastStop.r >= 0 ? '+' : ''}{chart.lastStop.r.toFixed(2)}R{chart.lastStop.r > 0 && lv?.exitAt == null ? ' locked' : ''}
+              </text>
+            )}
             <polyline points={chart.line} className="path-line" />
             {path.filter(p => p.event).map((p, i) => (
               <g key={i}>
