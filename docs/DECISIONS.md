@@ -1262,5 +1262,10 @@ against −10.9R), so the 4.0×ATR override stays on **moderate** evidence, not 
 variant in decision 33 was measured on the leaked rule and is void. The scanner has zero forward trades
 in either book, so nothing outside the backtest is known about it.
 
-**Revisit if** the corrected 28-market survey (appended to the audit) shows a timeframe where both
-halves are positive with breadth, or the shadow cohort returns a verdict.
+The corrected 28-market survey (audit appendix): 15m +0.007R a trade over 854 trades with a negative
+second half; 1h +0.068R with a second half of exactly zero; 4h +0.186R with a second half of +0.046R
+and 12 of 28 markets positive in both. Its fleet slot, BTCUSD 15m, is −0.33R then +0.13R. The
+scanner stays in the fleet only because the fleet is frozen until the live sample exists (decision 4);
+on this evidence it should be the first to go at the review.
+
+**Revisit if** the 4h shadow cohort returns a verdict.
