@@ -56,7 +56,7 @@ export function ActionPill({ action }: { action: string | null | undefined }) {
 export function ExitReasonPill({ reason }: { reason: string | null | undefined }) {
   if (!reason) return <span className="muted">–</span>
   const tone =
-    reason.startsWith('tp') ? 'ok' : reason === 'sl' ? 'danger' : reason === 'be' ? 'muted' : reason === 'manual' ? 'warn' : 'accent'
+    reason.startsWith('tp') || reason === 'trail' ? 'ok' : reason === 'sl' ? 'danger' : reason === 'be' ? 'muted' : reason === 'manual' ? 'warn' : 'accent'
   return <Pill tone={tone}>{reason}</Pill>
 }
 

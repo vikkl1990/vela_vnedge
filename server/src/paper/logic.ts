@@ -415,7 +415,7 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   const stopLevel = pos.sl;
   const stopHit = stopLevel !== null && (long ? bar.low <= stopLevel : bar.high >= stopLevel);
   if (stopHit && stopLevel !== null && (cfg.barOrder ?? 'stop-first') === 'stop-first') {
-    const reason = pos.breakEven ? 'be' : 'sl';
+    const reason = stopReason(pos);
     fills.push(fillExit(pos, stopLevel, pos.qtyOpen, reason, at, cfg, true));
     return fills;
   }
@@ -435,7 +435,7 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   // stop as those targets left it, since a filled TP1 may have moved it to break even.
   if (stopHit && pos.status === 'open' && (cfg.barOrder ?? 'stop-first') === 'target-first' && pos.sl !== null
       && (long ? bar.low <= pos.sl : bar.high >= pos.sl)) {
-    fills.push(fillExit(pos, pos.sl, pos.qtyOpen, pos.breakEven ? 'be' : 'sl', at, cfg, true));
+    fills.push(fillExit(pos, pos.sl, pos.qtyOpen, stopReason(pos), at, cfg, true));
     return fills;
   }
   // 3. trail LAST: this bar's exits were checked against the stop as it stood when the bar
@@ -466,6 +466,20 @@ export function giveBackPct(peakR: number, cfg: PaperConfig, minutesSincePeak = 
   const stall = cfg.trailStall;
   if (stall && stall.minutes > 0 && minutesSincePeak >= stall.minutes) give *= stall.factor;
   return give;
+}
+
+/**
+ * What a stop hit means: `trail` when the stop sat in profit (the trail or the lock banked a gain),
+ * `be` when it sat at the entry, `sl` when the trade paid its risk. The label a reader sees on a
+ * closed trade should say which of the three happened.
+ */
+export function stopReason(pos: Pick<Position, 'side' | 'entryPrice' | 'sl' | 'breakEven'>): 'sl' | 'be' | 'trail' {
+  if (pos.sl === null) return 'sl';
+  const gain = pos.side === 'long' ? pos.sl - pos.entryPrice : pos.entryPrice - pos.sl;
+  const tol = Math.abs(pos.entryPrice) * 1e-6;
+  if (gain > tol) return 'trail';
+  if (pos.breakEven || Math.abs(gain) <= tol) return 'be';
+  return 'sl';
 }
 
 export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, atrNow?: number, at?: number): void {
@@ -674,7 +688,7 @@ export function applyTrade(pos: Position, t: TapePrint, cfg: PaperConfig, markPr
   }
   // 1. stop-loss: triggered by the print, filled at the print (never better than the stop)
   if (pos.sl !== null && (long ? t.price <= pos.sl : t.price >= pos.sl)) {
-    const reason = pos.breakEven ? 'be' : 'sl';
+    const reason = stopReason(pos);
     const px = long ? Math.min(t.price, pos.sl) : Math.max(t.price, pos.sl);
     fills.push(fillExit(pos, px, pos.qtyOpen, reason, at, cfg, true));
     return fills;

@@ -373,7 +373,7 @@ test('tape prints advance the profit floor and the trail, from the next print on
   applyTrade(p, { time: 3000, price: 110, qty: 1 }, c);                 // +2R: keep 60% of the peak
   assert.equal(p.sl, 106);
   const out = applyTrade(p, { time: 4000, price: 105.9, qty: 1 }, c);   // falls through the raised stop
-  assert.equal(out[0]?.reason, 'be');
+  assert.equal(out[0]?.reason, 'trail', 'a stop that sat in profit is a trail exit, not a break-even');
   assert.equal(p.status, 'closed');
 });
 

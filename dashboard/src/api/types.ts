@@ -279,7 +279,7 @@ export interface Fill {
   reason: string
 }
 
-export type ExitReason = 'tp3' | 'sl' | 'be' | 'script_exit' | 'reversal' | 'manual' | 'tp_partial' | string
+export type ExitReason = 'tp3' | 'sl' | 'be' | 'trail' | 'script_exit' | 'reversal' | 'manual' | 'tp_partial' | string
 
 export interface Trade {
   id: number

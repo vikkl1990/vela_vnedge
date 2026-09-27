@@ -26,14 +26,14 @@ import type { AppConfig } from '../config.ts';
 import type { DeltaProduct } from '../delta/rest.ts';
 import { logger } from '../log.ts';
 import type { PaperEngine } from '../paper/engine.ts';
-import type { Position } from '../paper/logic.ts';
+import { stopReason, type Position } from '../paper/logic.ts';
 import { DryRunTransport, RestTransport, resolveHost, type ExchangeOrder, type ExchangeTransport, type OrderPayload } from './client.ts';
 import { OrderLedger, type LedgerRow } from './ledger.ts';
 
 const log = logger.scoped('execution');
 
 /** Exit reasons handled by exchange-side bracket orders when brackets are enabled. */
-const LEVEL_EXITS = new Set(['sl', 'be', 'tp1', 'tp2', 'tp3', 'liquidation']);
+const LEVEL_EXITS = new Set(['sl', 'be', 'trail', 'tp1', 'tp2', 'tp3', 'liquidation']);
 const CID_PREFIX = 'vnedge-';
 
 interface Leg { ledgerId: number; exchangeId: string; price: number; size: number; leg: number }
@@ -218,7 +218,7 @@ export class ExchangeExecutor {
   private async settleLevel(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, product_id: number) {
     const b = this.brackets.get(o.positionId)!;
     const legNo = Number(o.reason.match(/^tp(\d)$/)?.[1] ?? 0);
-    const leg = o.reason === 'sl' || o.reason === 'be' || o.reason === 'liquidation' ? b.stop : b.tps.find(t => t.leg === legNo) ?? null;
+    const leg = o.reason === 'sl' || o.reason === 'be' || o.reason === 'trail' || o.reason === 'liquidation' ? b.stop : b.tps.find(t => t.leg === legNo) ?? null;
     if (!leg) { log.warn(`${o.symbol} ${o.reason}: no acknowledged exchange order covers it; sending a market exit`); return this.marketExit(o, product_id); }
     const row = this.ledger.get(leg.ledgerId)!;
     const c = await this.confirm(row);
@@ -355,7 +355,7 @@ export class ExchangeExecutor {
       this.ledger.filled(leg.ledgerId, { filledSize: filled, avgPrice: o!.average_fill_price ?? null, fee: o!.paid_commission ?? null });
       this.dropLeg(b, leg);
       if (pos && pos.status === 'open') {
-        const reason = isStop ? (pos.breakEven ? 'be' : 'sl') : `tp${leg.leg}`;
+        const reason = isStop ? stopReason(pos) : `tp${leg.leg}`;
         log.warn(`${b.symbol} ${reason}: the exchange filled ${filled} @ ${o!.average_fill_price ?? leg.price} before the paper book saw it; booking it`);
         this.adopt(b.positionId, () => this.paper.adoptExitFill(b.positionId, { price: o!.average_fill_price ?? leg.price, qty: filled, fee: o!.paid_commission ?? null, reason, at: this.now() }));
         onAdopt?.();
@@ -382,7 +382,7 @@ export class ExchangeExecutor {
       rep.settled++;
       if (c.status === 'filled' && pos && pos.status === 'open') {
         if (row.purpose === 'entry' && pos.qtyOpen === pos.qty && (pos.qty !== c.filledSize || (c.avgPrice !== null && c.avgPrice !== pos.entryPrice))) { this.adopt(pos.id, () => this.paper.adoptEntryFill(pos.id, { price: c.avgPrice, qty: c.filledSize, fee: c.fee, at: row.updatedAt })); rep.adoptedFills++; }
-        if (row.purpose === 'stop' || row.purpose === 'tp') { const reason = row.purpose === 'stop' ? (pos.breakEven ? 'be' : 'sl') : `tp${row.leg ?? 1}`; this.adopt(pos.id, () => this.paper.adoptExitFill(pos.id, { price: c.avgPrice ?? row.stopPrice ?? row.limitPrice ?? pos.entryPrice, qty: c.filledSize, fee: c.fee, reason, at: row.updatedAt })); rep.adoptedFills++; }
+        if (row.purpose === 'stop' || row.purpose === 'tp') { const reason = row.purpose === 'stop' ? stopReason(pos) : `tp${row.leg ?? 1}`; this.adopt(pos.id, () => this.paper.adoptExitFill(pos.id, { price: c.avgPrice ?? row.stopPrice ?? row.limitPrice ?? pos.entryPrice, qty: c.filledSize, fee: c.fee, reason, at: row.updatedAt })); rep.adoptedFills++; }
         if (row.purpose === 'exit' && row.reason) this.adopt(pos.id, () => this.paper.restateFill(pos.id, row.reason!, { price: c.avgPrice, fee: c.fee }));
       }
       if (c.status === 'unfilled' && row.purpose === 'entry' && pos && pos.status === 'open' && pos.qtyOpen === pos.qty && pos.fills.length === 1) { this.adopt(pos.id, () => this.paper.voidPosition(pos.id, 'exchange-unfilled (recovered)')); rep.notes.push(`#${pos.id} voided: entry never filled`); }
