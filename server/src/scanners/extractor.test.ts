@@ -128,3 +128,17 @@ test('strategy() fills reported by the worker become entries and exits', () => {
   assert.deepEqual(ev.map(e => [e.kind, e.side, e.price]), [['entry', 'long', 101.5], ['exit', 'long', 104], ['entry', 'short', 99]]);
   assert.equal(ev[1].exitType, 'close');
 });
+
+test('sources limits which channels may open a trade; exits and info from alert() always pass', () => {
+  const alerts = [
+    { barIndex: 1, time: 1000, type: 'alert' as const, message: '🟢 LONG | BTCUSD | 15m | Price: 100 | SL: 95 | TP1: 110' },
+    { barIndex: 2, time: 2000, type: 'alertcondition' as const, title: 'Bullish Breakout', message: '' },
+    { barIndex: 3, time: 3000, type: 'alert' as const, message: '🛑 SL HIT | BTCUSD' },
+  ];
+  const shapes = [{ title: 'Buy', times: [4000] }];
+  const all = extractEvents(alerts, shapes);
+  assert.deepEqual(all.filter(e => e.kind === 'entry').map(e => e.source), ['alert', 'alertcondition', 'shape']);
+  const only = extractEvents(alerts, shapes, { sources: ['alert'] });
+  assert.deepEqual(only.map(e => [e.kind, e.source]), [['entry', 'alert'], ['exit', 'alert']]);
+  assert.deepEqual(extractEvents(alerts, shapes, { sources: ['shape'] }).filter(e => e.kind === 'entry').map(e => e.source), ['shape']);
+});

@@ -82,7 +82,7 @@ async function runOne(j: Job): Promise<'entries' | 'silent' | 'failed'> {
   const res = await pool.run({ scannerId: s.id, source: s.patched, symbol: j.symbol, tf: j.tf, tickSize: m.tickSize, bars: b, tailBars: 'all', plotTail: b.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
   if (!res.ok) return 'failed';
   const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: b, mode: 'backtest' });
-  const events = extractEvents(res.alerts, res.shapes, { derived });
+  const events = extractEvents(res.alerts, res.shapes, { derived, sources: cfg.scanners[s.id]?.sources });
   if (!events.some(e => e.kind === 'entry')) return 'silent';
   const base = { scannerId: s.id, scannerName: s.id, symbol: j.symbol, tf: j.tf, bars: b, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', trendGate: cfg.scanners[s.id]?.trendGate, contractValue: m.contractValue, tickSize: m.tickSize, subBars: sub } as const;
   const t = runBacktest(base).trades as any[];

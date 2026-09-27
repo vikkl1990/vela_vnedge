@@ -1372,3 +1372,22 @@ are not good", and no target rule repairs an entry.
 Nothing changes: `use` stays the default. The flag and the lab remain for the day a script with a
 real edge publishes targets. **Revisit if** the shadow book promotes such a script — then run
 targetlab on its cohort before trusting either its targets or the ladder.
+
+## 48. Scanners are profiled by what they emit, and a scanner's entry channel is now chosen
+
+Asked to rebuild the scanners one by one, starting with WillyAlgoTrader's. All 43 published scripts
+are in the library; `npm run profile` classifies each by what it actually produces in our runtime:
+a trade plan (21), a direction only (14), information (5), nothing (3). Full table and the rebuild
+order in `docs/WILLY-REBUILD.md`.
+
+The profile exposed a structural over-read: `extractEvents` turned every channel into entries —
+`alert()` trade calls, `alertcondition()` titles and plotted shapes alike. A script that draws a
+marker on every bar of a trend was producing hundreds of "entries" beside its handful of real trade
+calls (strat-trap-vwap-engine: 3,012 on 15m, of which 130 were trade calls). `ScannerConfig.sources`
+now names which channels may open a trade for a scanner; unset keeps the old behaviour so nothing
+running changes until each scanner is set deliberately.
+
+Also found: the manifest's compatibility flag is stale (10 "incompatible" scripts run today), four
+session-based scripts compute their sessions in UTC against authors who mean New York, and two
+scripts (self-aware-trend-system, reaction-level-matrix) have a trade engine our runtime never
+surfaces. Those are the next items in the rebuild.

@@ -182,10 +182,13 @@ export interface ExtractOptions {
   sinceBarTime?: number;
   /** Extra events produced by per-scanner rules (see rules.ts); merged with alert/shape events. */
   derived?: ScanEvent[];
+  /** Which channels may produce entries (unset: all). Exits and info from `alert()` always pass. */
+  sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
 }
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
+  const allow = (src: 'alert' | 'alertcondition' | 'shape' | 'derived') => !opts.sources || opts.sources.includes(src);
   const events: ScanEvent[] = [];
   const seenEntry = new Set<string>();
   const alertBars = new Set<number>();
@@ -195,6 +198,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     if (a.type === 'alert') alertBars.add(a.time);
     const ev = parseAlert(a);
     if (!ev) continue;
+    if (ev.kind === 'entry' && !allow('alert')) continue;
     const key = `${ev.kind}:${ev.side ?? ''}:${ev.barTime}:${ev.exitType ?? ''}`;
     if (ev.kind !== 'info' && seenEntry.has(key)) continue;
     seenEntry.add(key);
@@ -202,6 +206,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   }
   // alertcondition() titles (LuxAlgo style: "Bullish Internal OB Breakout", "Upward Breakout") — only when no alert() fired that bar
   for (const a of alerts) {
+    if (!allow('alertcondition')) break;
     if (a.type !== 'alertcondition' || alertBars.has(a.time)) continue;
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     // PineTS can hand back a non-string title (e.g. a Series or number) — coerce before parsing
@@ -214,6 +219,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     events.push({ kind: 'entry', side, tp: [], label: title.slice(0, 60), message: `alertcondition "${title}"${a.message && a.message !== title ? `: ${a.message}` : ''}`.slice(0, 500), source: 'alertcondition', barTime: a.time, barIndex: a.barIndex });
   }
   for (const d of opts.derived ?? []) {
+    if (!allow('derived')) break;
     if (opts.sinceBarTime !== undefined && d.barTime < opts.sinceBarTime) continue;
     const key = `${d.kind}:${d.side ?? ''}:${d.barTime}:`;
     if (seenEntry.has(key)) continue;
@@ -221,6 +227,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     events.push(d);
   }
   for (const s of shapes) {
+    if (!allow('shape')) break;
     const side = shapeSide(s.title);
     if (!side) continue;
     for (const t of s.times) {

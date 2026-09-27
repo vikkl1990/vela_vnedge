@@ -1,0 +1,160 @@
+scanner	tf	kind	ms	entries	withSl	withTp	exits	info	alertconds	shapes	labels	labelTexts	plots	error
+abcd-harmonic-projection	15m	plan	894	52	52	52	0	0	0	52	13	A | B | C | D | # | BC/AB# #	0	
+abcd-harmonic-projection	1h	plan	579	42	42	42	0	0	0	42	13	A | B | C | D | # | BC/AB# #	0	
+abcd-harmonic-projection	4h	plan	714	29	29	29	0	0	0	29	13	A | B | C | D | # | BC/AB# #	0	
+adaptive-fibonacci-trailing-system	15m	plan	1634	34	34	34	27	0	0	0	39	▼ Short A | ▲ Long B | ▲ Long A | ▼ Short B | ▲ Long A+ | ▼ Short A+	4	
+adaptive-fibonacci-trailing-system	1h	plan	2376	30	30	30	24	0	0	0	35	▲ Long B | ▼ Short A | ▲ Long A | ▼ Short A+ | ▲ Long A+ | ENTRY #  → SL (BE)	4	
+adaptive-fibonacci-trailing-system	4h	plan	1329	18	18	18	17	0	0	0	23	▲ Long A | ▼ Short A | ▲ Long A+ | ▼ Short A+ | ENTRY # | SL ✗ # (-#)	4	
+adaptive-ichimoku-nexus	15m	plan	4298	336	67	67	150	84	0	304	156	Short # | Long # | Div ▼ | Div ▲ | ENTRY # | SL # (+#)	5	
+adaptive-ichimoku-nexus	1h	plan	8056	241	34	34	97	56	0	229	95	Short # | Div ▲ | Div ▼ | Long # | ENTRY # | SL ✗ # (-#)	5	
+adaptive-ichimoku-nexus	4h	plan	9692	161	23	23	57	39	0	156	67	Div ▲ | Div ▼ | Short # | Long # | ENTRY # | SL # (-#)	5	
+adaptive-momentum-classifier	15m	signal	1044	92	0	0	0	0	0	92	0		2	
+adaptive-momentum-classifier	1h	signal	1349	84	0	0	0	0	0	84	0		2	
+adaptive-momentum-classifier	4h	signal	701	41	0	0	0	0	0	41	0		2	
+adaptive-momentum-fusion	15m	signal	1186	450	0	0	0	162	1148	0	62	Bear
+Div | Bull
+Div	4	
+adaptive-momentum-fusion	1h	signal	982	312	0	0	0	140	827	0	44	Bear
+Div | Bull
+Div	4	
+adaptive-momentum-fusion	4h	signal	871	224	0	0	0	81	570	0	29	Bull
+Div | Bear
+Div	4	
+adaptive-pivot-structure	15m	signal	2422	52	0	0	52	78	0	0	300	▼ | ▲ | BOS ↑ | CHoCH ↓ | BOS ↓ | CHoCH ↑	0	
+adaptive-pivot-structure	1h	signal	1719	31	0	0	31	74	0	0	266	▽ | ▲ | ▼ | CHoCH ↑ | ◇ | CHoCH ↓	0	
+adaptive-pivot-structure	4h	signal	498	19	0	0	19	43	0	0	173	▽ | ▲ | ◇ | ▼ | CHoCH ↑ | BOS ↑	0	
+adaptive-spectral-forecast	15m	silent	291	0	0	0	0	0	0	0	0		0	
+adaptive-spectral-forecast	1h	levels	255	0	0	0	0	0	0	0	2	●	0	
+adaptive-spectral-forecast	4h	levels	225	0	0	0	0	0	0	0	2	●	0	
+adaptive-squeeze-momentum-pro	15m	signal	3630	108	0	0	0	175	0	0	67	Div	2	
+adaptive-squeeze-momentum-pro	1h	signal	457	74	0	0	0	121	0	0	47	Div	2	
+adaptive-squeeze-momentum-pro	4h	signal	1143	68	0	0	0	97	0	0	29	Div	2	
+adaptive-trend-pro	15m	broken	0	0	0	0	0	0	0	0	0		0	Protected script on TradingView: source not published
+adaptive-trend-pro	1h	broken	0	0	0	0	0	0	0	0	0		0	Protected script on TradingView: source not published
+adaptive-trend-pro	4h	broken	0	0	0	0	0	0	0	0	0		0	Protected script on TradingView: source not published
+adaptive-volatility-trend	15m	signal	673	24	0	0	0	0	0	24	0		4	
+adaptive-volatility-trend	1h	signal	344	29	0	0	0	0	0	29	0		4	
+adaptive-volatility-trend	4h	signal	242	12	0	0	0	0	0	12	0		4	
+amd-po3-with-live-edge-stats	15m	plan	2377	39	39	39	38	53	0	0	39	M | D ▼ | Entry # | Stop ✗ # | Target # (-#) | ✗ -#R	0	
+amd-po3-with-live-edge-stats	1h	plan	1649	27	27	27	25	46	0	0	39	M | D ▲ | Entry # | Stop ✗ # | Target # (+#) | ✗ -#R	0	
+amd-po3-with-live-edge-stats	4h	plan	878	20	20	20	17	33	0	0	38	M | D ▼ | Entry # | Stop ✗ # | Target # (-#) | ✗ -#R	0	
+amd-po3-with-live-edge-stats-willyalgotrader-version-orga	15m	broken	0	0	0	0	0	0	0	0	0		0	PineTS runtime: HTF bias timeframe must be greater than or equal to the chart timeframe
+amd-po3-with-live-edge-stats-willyalgotrader-version-orga	1h	broken	0	0	0	0	0	0	0	0	0		0	PineTS runtime: HTF bias timeframe must be greater than or equal to the chart timeframe
+amd-po3-with-live-edge-stats-willyalgotrader-version-orga	4h	broken	0	0	0	0	0	0	0	0	0		0	PineTS runtime: HTF bias timeframe must be greater than or equal to the chart timeframe
+auto-s-r-channels	15m	signal	5837	1	0	0	0	0	0	0	2	Breakout ▲ | 🎯 #	0	
+auto-s-r-channels	1h	silent	2372	0	0	0	0	0	0	0	0		0	
+auto-s-r-channels	4h	signal	1440	2	0	0	0	0	0	0	4	Breakout ▲ | 🎯 #	0	
+automatic-fibonacci-levels	15m	levels	685	0	0	0	0	1	0	0	4	TP#	0	
+automatic-fibonacci-levels	1h	levels	254	0	0	0	0	17	0	0	4	TP#	0	
+automatic-fibonacci-levels	4h	levels	183	0	0	0	0	2	0	0	4	TP#	0	
+bitcoin-almanac	15m	levels	1697	0	0	0	0	1	0	0	50	▲ CYCLE BOTTOM
+{#date#dd MMM yyyy} | ▼ CYCLE TOP
+{#date#dd MMM yyyy} | ◎ cycle × curve
+{#d	0	
+bitcoin-almanac	1h	levels	1683	0	0	0	0	1	0	0	50	▲ CYCLE BOTTOM
+{#date#dd MMM yyyy} | ▼ CYCLE TOP
+{#date#dd MMM yyyy} | ◎ cycle × curve
+{#d	0	
+bitcoin-almanac	4h	levels	1286	0	0	0	0	1	0	0	50	▲ CYCLE BOTTOM
+{#date#dd MMM yyyy} | ▼ CYCLE TOP
+{#date#dd MMM yyyy} | ◎ cycle × curve
+{#d	0	
+breakout-pattern-setup	15m	plan	1435	29	29	29	54	29	0	0	6	ENTRY # | SL ✗ # (−#) | TP# # (+#) | Long	0	
+breakout-pattern-setup	1h	plan	974	23	23	23	45	24	0	0	0		0	
+breakout-pattern-setup	4h	plan	809	8	8	8	16	8	0	0	6	ENTRY # — BE EXIT | SL orig # (−#) | TP# ✓ # (+#) | TP# # (+#) | Short	0	
+daily-volume-profile-pro	15m	plan	3047	11	0	11	0	46	46	0	23	HVN | IB H | IB L | IB×# | Sun | Neutral	0	
+daily-volume-profile-pro	1h	plan	1240	24	0	24	0	137	137	0	23	HVN | IB H | IB L | IB×# | Sun | Neutral	0	
+daily-volume-profile-pro	4h	plan	671	51	0	51	0	339	339	0	15	Sun | Neutral | Sat | Normal | Fri | Thu	0	
+elliott-impulse-engine	15m	levels	1668	0	0	0	0	14	76	0	38	CHoCH | INVALID # | # | # (#) | -# (#) | #~	0	
+elliott-impulse-engine	1h	levels	1368	0	0	0	2	23	125	0	48	CHoCH | INVALID # | # | # (#) | -# (#) | #?	0	
+elliott-impulse-engine	4h	levels	739	0	0	0	1	10	68	0	34	CHoCH | INVALID # | # | # (#) | -# (#) | #~	0	
+fibonacci-structure-engine	15m	plan	1101	104	104	104	0	207	0	0	300	✗ | CHoCH | HH | HL | BOS | ▼	0	
+fibonacci-structure-engine	1h	plan	1814	81	81	81	0	187	0	0	300	✗ | CHoCH | HH | ▼ | LL | BOS	0	
+fibonacci-structure-engine	4h	plan	589	55	55	55	0	109	0	0	290	HL | LH | ✗ | CHoCH | ▼ | LL	0	
+ict-session-zones-sweep-signals	15m	signal	1286	76	0	0	0	0	0	29	106	▲ | ▼ | AS#H | AS#L | LO#H | LO#L	0	
+ict-session-zones-sweep-signals	1h	signal	2197	214	0	0	0	0	0	89	244	▲ | ▼ | AS#H | AS#L | LO#H | LO#L	0	
+ict-session-zones-sweep-signals	4h	signal	879	260	0	0	0	0	0	237	278	▲ | ▼ | AS#H | AS#L | LO#H | LO#L	0	
+liquidity-pools-pro	15m	plan	2207	105	105	105	105	0	0	0	182	Short | Long | BSL [#] #K | BSL ×# [#] #K | BSL [#] #M | BSL ×# [#] #M	0	
+liquidity-pools-pro	1h	plan	3946	80	80	80	79	0	0	0	172	Long | Short | BSL [#] #M | BSL ×# [#] #M | BSL [#] #K | Mit# SSL [#] #M	0	
+liquidity-pools-pro	4h	plan	1251	64	64	64	63	0	0	0	126	Long | SSL [#] #M | Short | BSL ×# [#] #M | BSL [#] #M | Swept SSL [#] #M	0	
+liquidity-trail-matrix	15m	plan	2097	56	56	56	45	0	0	0	102	◆ # | ▲ FLIP | Long ▲ | ▼ FLIP | Short ▼ | ENTRY #  → SL (BE)	4	
+liquidity-trail-matrix	1h	plan	2410	41	41	41	37	0	0	0	77	▲ FLIP | Long ▲ | ◆ # | ▼ FLIP | Short ▼ | ENTRY #	4	
+liquidity-trail-matrix	4h	plan	1608	27	27	27	21	0	0	0	51	◆ # | ▲ FLIP | Long ▲ | ▼ FLIP | Short ▼ | ENTRY #  → SL (BE)	4	
+meridian-flow	15m	plan	3725	80	79	79	67	0	0	120	245	LH | HL | BOS ▲ | HH | LL | CHoCH ▼	2	
+meridian-flow	1h	plan	1223	56	56	56	49	0	0	88	217	HH | LL | BOS ▼ | LH | CHoCH ▲ | HL	2	
+meridian-flow	4h	plan	1602	39	38	38	35	0	0	58	147	HH | LL | HL | LH | BOS ▼ | CHoCH ▲	2	
+mirage-liquidity-sweep-pro	15m	plan	1880	29	3	3	2	0	0	30	25	EQH | EQL | ENTRY #  → SL (BE) | SL # (-#) | TP# ✓ # (+#) | TP# # (+#)	0	
+mirage-liquidity-sweep-pro	1h	plan	3059	16	1	1	1	0	0	16	19	EQH | ENTRY # | SL # (+#) | TP# # (-#) | EQL | BSL	0	
+mirage-liquidity-sweep-pro	4h	signal	1916	13	0	0	0	0	0	13	12	BSL | SSL	0	
+nexus-fusion-engine-ml	15m	signal	4205	347	0	0	0	1260	0	347	201	H▲ | D▼ | ✦ OS | H▼ | D▲ | ✦ OB	11	
+nexus-fusion-engine-ml	1h	signal	2429	255	0	0	0	968	0	255	150	✦ OS | H▼ | D▼ | D▲ | ✦ OB | H▲	11	
+nexus-fusion-engine-ml	4h	signal	2838	180	0	0	0	591	0	180	103	✦ OB | ✦ OS | D▲ | H▼ | D▼ | H▲	11	
+phantom-trend-cloud	15m	signal	783	243	0	0	0	466	0	0	243	◆	4	
+phantom-trend-cloud	1h	signal	752	177	0	0	0	358	0	0	177	◆	4	
+phantom-trend-cloud	4h	signal	466	130	0	0	0	220	0	0	130	◆	4	
+precision-sniper	15m	plan	1031	149	149	149	147	0	720	0	155	Long A+ | Short A+ | Long A | Short A | Long B | Short B	3	
+precision-sniper	1h	plan	858	111	111	111	126	0	557	0	117	Long B | Short A | Long A+ | Short B | Long A | Short A+	3	
+precision-sniper	4h	plan	638	42	42	42	39	0	210	0	48	Long A | Short A | Short A+ | Long A+ | TRAIL # | ENTRY #	3	
+pulse-trend-radar	15m	plan	1269	63	63	63	0	0	0	0	130	Short C | ● | Long C | Long B | Short B | Long A+	2	
+pulse-trend-radar	1h	plan	958	53	53	53	0	0	0	0	110	Long B | ● | Short B | Long C | Short C | Short A	2	
+pulse-trend-radar	4h	plan	851	35	35	35	0	0	0	0	74	Short B | ● | Long C | Short C | Long B | Short A	2	
+reaction-level-matrix	15m	silent	1573	0	0	0	0	0	0	0	0		0	
+reaction-level-matrix	1h	silent	1621	0	0	0	0	0	0	0	0		0	
+reaction-level-matrix	4h	silent	697	0	0	0	0	0	0	0	0		0	
+reactive-trail-system	15m	plan	1486	133	133	133	228	64	0	0	138	▼ SELL | ▲ BUY | ENTRY # | SL # (+#) | TP# # (-#)	1	
+reactive-trail-system	1h	plan	1834	100	100	100	175	48	0	0	105	▲ BUY | ▼ SELL | ENTRY # | SL # (+#) | TP# # (-#)	1	
+reactive-trail-system	4h	plan	478	62	62	62	103	32	0	0	67	▲ BUY | ▼ SELL | ENTRY # | SL # (+#) | TP# # (-#)	1	
+self-aware-trend-system	15m	signal	6661	307	0	0	167	0	1351	0	300	▼ SELL  # | ▲ BUY  # | ENTRY # | SL # | TP# #	1	
+self-aware-trend-system	1h	signal	6313	212	0	0	116	0	938	0	217	▲ BUY  # | ▼ SELL  # | ENTRY # | SL # | TP# #	1	
+self-aware-trend-system	4h	signal	4418	145	0	0	78	0	645	0	150	▲ BUY  # | ▼ SELL  # | ENTRY # | SL # | TP# #	1	
+smart-breakout-targets	15m	plan	1144	11	11	11	19	1	0	0	22	Long | ✘ SL | ✔ TP# | Short | ◼ Exit	0	
+smart-breakout-targets	1h	plan	1101	9	9	9	18	0	0	0	18	Long | ✘ SL | ✔ TP# | Short	0	
+smart-breakout-targets	4h	plan	605	5	5	5	11	2	0	0	10	Long | ◼ Exit | Short | ✔ TP# | ✘ SL	0	
+smart-money-engine	15m	signal	1774	209	0	0	0	267	479	0	300	CHoCH | BOS | HH | HL | LL | LH	0	
+smart-money-engine	1h	signal	1201	142	0	0	0	191	342	0	300	EQL | CHoCH | BOS | HL | HH | LL	0	
+smart-money-engine	4h	signal	1067	83	0	0	0	146	232	0	257	HL | BOS | LH | CHoCH | LL | HH	0	
+smarttrend-pro	15m	signal	3879	147	0	0	119	0	0	218	0		8	
+smarttrend-pro	1h	signal	7097	121	0	0	84	0	0	165	0		8	
+smarttrend-pro	4h	signal	5537	90	0	0	60	0	0	120	0		8	
+squeeze-breakout-pro	15m	plan	762	40	40	40	74	20	271	0	45	Long ▲ ⚡# | Short ▼ ⚡# | ENTRY # | SL # (-#) | TP# # (+#)	0	
+squeeze-breakout-pro	1h	plan	954	23	23	23	41	13	155	0	28	Long ▲ ⚡# | Short ▼ ⚡# | ENTRY # | SL # (-#) | TP# # (+#)	0	
+squeeze-breakout-pro	4h	plan	1181	19	19	19	43	14	131	0	24	Short ▼ ⚡# | Long ▲ ⚡# | ENTRY # | SL # (+#) | TP# # (-#)	0	
+stealthtrail-supertrend	15m	plan	828	111	111	111	46	0	211	111	5	ENTRY # | SL # (+#) | TP# # (-#)	3	
+stealthtrail-supertrend	1h	plan	535	84	84	84	34	0	160	84	5	ENTRY # | SL # (+#) | TP# # (-#)	3	
+stealthtrail-supertrend	4h	plan	614	60	60	60	16	0	111	60	5	ENTRY # | SL # (+#) | TP# # (-#)	3	
+stealthtrail-supertrend-ml-pro	15m	plan	9115	114	114	0	138	0	0	114	142	SL ✗ | TP# ✓ | Entry # | TR SL # | TP# #	4	
+stealthtrail-supertrend-ml-pro	1h	plan	4638	75	75	0	111	0	0	75	116	TP# ✓ | SL ✗ | Entry # | TR SL # | TP# #	4	
+stealthtrail-supertrend-ml-pro	4h	plan	2132	21	21	0	39	0	0	21	42	TP# ✓ | SL ✗ | Entry # | TR SL # | TP# #	4	
+strat-trap-vwap-engine	15m	plan	6475	3012	130	130	228	3058	9170	4182	67	SHORT · Trap #U | LONG · Trap #D | ENTRY # | SL # (-#) | TP# # (+#) | PDH #	4	
+strat-trap-vwap-engine	1h	plan	8194	2159	72	72	115	2236	6421	3107	67	SHORT · Trap #U | LONG · Trap #D | ENTRY #  → SL (BE) | SL # (+#) | TP# ✓ # (-#) | TP# # (	4	
+strat-trap-vwap-engine	4h	plan	7919	1391	57	57	105	1411	4098	2063	67	LONG · Trap #D | SHORT · Trap #U | ENTRY #  → SL (BE) | SL # (-#) | TP# ✓ # (+#) | TP# # (	4	
+structure-anchored-vwap	15m	signal	1550	16	0	0	0	0	0	0	32	H | L | HH | HL | LH | LL	1	
+structure-anchored-vwap	1h	signal	1356	13	0	0	0	0	0	0	27	L | H | HL | HH | LH | LL	1	
+structure-anchored-vwap	4h	signal	783	10	0	0	0	0	0	0	17	L | H | HL | LH | LL | HH	1	
+swing-volume-profile-pro	15m	signal	1250	106	0	0	0	178	0	0	131	▲ | ▼ | ✕ | T# #
+B# #
+S# #
+D# #
+A# # | C-POC #	0	
+swing-volume-profile-pro	1h	signal	1078	75	0	0	0	120	0	0	97	▼ | ✕ | ▲ | T# #
+B# #
+S# #
+D# #
+A# # | C-POC #	0	
+swing-volume-profile-pro	4h	signal	579	55	0	0	0	91	0	0	70	▼ | ▲ | ✕ | T# #
+B# #
+S# #
+D# #
+A# # | C-POC #	0	
+synapse-trail-pro	15m	plan	3090	84	84	84	30	52	0	0	95	Short ▼ C | Long ▲ C | Short ▼ C ⚠ | Long ▲ B ⚠ | Short ▼ B | Short ▼ B ⚠	1	
+synapse-trail-pro	1h	plan	5482	65	65	65	22	38	0	0	71	Long ▲ C | Short ▼ A | Short ▼ B | Short ▼ C | Short ▼ C ⚠ | Long ▲ B	1	
+synapse-trail-pro	4h	broken	209	0	0	0	0	0	0	0	0		0	Invalid timeframe
+trade-strategy-calculator	15m	silent	847	0	0	0	0	0	0	0	0		0	
+trade-strategy-calculator	1h	silent	630	0	0	0	0	0	0	0	0		0	
+trade-strategy-calculator	4h	silent	582	0	0	0	0	0	0	0	0		0	
+trader-assistant-pro	15m	broken	0	0	0	0	0	0	0	0	0		0	Invite-only script on TradingView: source not published
+trader-assistant-pro	1h	broken	0	0	0	0	0	0	0	0	0		0	Invite-only script on TradingView: source not published
+trader-assistant-pro	4h	broken	0	0	0	0	0	0	0	0	0		0	Invite-only script on TradingView: source not published
+volume-weighted-s-r-zones	15m	plan	1835	144	125	125	0	0	0	0	152	BRK | RT | ★★★ # ×# | ★★ # | ★★★ # | 🔥 # ✕ ×#	0	
+volume-weighted-s-r-zones	1h	plan	2057	83	72	72	0	0	0	0	88	BRK | RT | ★★ # | ★★★ #	0	
+volume-weighted-s-r-zones	4h	plan	657	65	61	61	0	0	0	0	68	BRK | RT | ★★★ # ×# | ★★★ # ✕ | ★★ #	0	

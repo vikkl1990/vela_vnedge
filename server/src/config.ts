@@ -217,6 +217,12 @@ export interface ScannerConfig {
   exitMode: ExitMode;
   /** Generic derivation rule for scripts that never phrase a trade call (see scanners/rules.ts). */
   rule?: GenericRule | null;
+  /**
+   * Which of a script's outputs may become entries: its `alert()` messages, its `alertcondition()`
+   * titles, its plotted shapes, or a derived rule. Unset means all of them, which over-reads scripts
+   * that draw a marker on every bar of a trend as well as calling a trade (decision 48).
+   */
+  sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
   /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
   inputs?: Record<string, number | string | boolean>;
 
