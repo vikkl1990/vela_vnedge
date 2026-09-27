@@ -4,7 +4,7 @@ import { TF_SECONDS, type AppConfig, type ExitMode, type ExitOverride, type Pape
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit } from './logic.ts';
+  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf } from './logic.ts';
 
 const log = logger.scoped('paper');
 
@@ -105,6 +105,8 @@ export class PaperEngine extends EventEmitter {
 
   // ---- account state ----
 
+  /** The database this book writes to (the executor's order ledger lives beside it). */
+  get store(): Db { return this.db; }
   get initialEquity(): number { return this.db.kvGet<number>(`${this.kvPrefix}.initialEquity`) ?? this.paper.initialEquity; }
 
   closedPositions(): Position[] {
@@ -149,7 +151,7 @@ export class PaperEngine extends EventEmitter {
    * basis points decide it. Recording the live book alongside every fill lets the assumption be
    * audited against the market actually traded, rather than assumed correct for months.
    */
-  private fillContext: { ref?: number; source?: 'quote' | 'slippage' } = {};
+  private fillContext: { ref?: number; source?: 'quote' | 'slippage' | 'exchange' } = {};
 
   /**
    * Price a market-style fill. With a fresh quote we cross the real spread (buy at ask,
@@ -463,6 +465,90 @@ export class PaperEngine extends EventEmitter {
       else if (pos.lastPriceBar !== previous) this.persist(pos);
     }
     this.recordEquity(false);
+  }
+
+  // ---- exchange-authoritative fills (execution, decision 46) ----
+  // The paper book decides intent; when an executor mirrors it, what the exchange actually filled is
+  // what the book records. These restate fills the simulator already booked, or book fills the
+  // exchange made on its own (a resting stop that triggered on mark price).
+
+  /** Restate the entry from the exchange fill. A fill of zero contracts voids the position: the exchange never held it. */
+  adoptEntryFill(id: number, f: { price: number | null; qty: number; fee: number | null; at?: number }): Position | undefined {
+    const pos = this.open.get(id);
+    if (!pos) return undefined;
+    if (!(f.qty > 0)) { this.voidPosition(id, 'exchange-unfilled'); return undefined; }
+    const entry = pos.fills[0];
+    if (pos.qtyOpen !== pos.qty) { log.error(`adoptEntryFill #${id}: position already partly exited; entry not restated`); return pos; }
+    const price = f.price ?? entry.price;
+    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId));
+    const fee = f.fee ?? (f.qty === pos.qty ? entry.fee : entry.fee * f.qty / pos.qty);
+    pos.entryPrice = price; pos.qty = f.qty; pos.qtyOpen = f.qty;
+    pos.legs = splitLegs(f.qty, cfg.tpSplit, pos.tp.length);
+    pos.fees += fee - entry.fee;
+    Object.assign(entry, { price, qty: f.qty, fee, ...(f.at ? { at: f.at } : {}) });
+    if (pos.sl !== null) pos.riskAmount = Math.abs(price - pos.sl) * f.qty * pos.contractValue;
+    pos.liqPrice = liquidationPrice(pos.side, price, pos.marginLeverage ?? pos.leverage ?? 0, cfg);
+    this.db.run("UPDATE orders SET price=?, qty=?, fee=?, price_source='exchange' WHERE id=(SELECT id FROM orders WHERE position_id=? AND reason='entry' ORDER BY id ASC LIMIT 1)", price, f.qty, fee, pos.id);
+    this.persist(pos);
+    this.emit('position', { type: 'updated', position: pos });
+    this.recordEquity(true);
+    log.info(`ENTRY RESTATED #${pos.id} ${pos.symbol}: ${f.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
+    return pos;
+  }
+
+  /** Remove a position the exchange never opened: nothing was risked, so nothing is recorded as a trade. */
+  voidPosition(id: number, reason: string): boolean {
+    const pos = this.open.get(id);
+    if (!pos) return false;
+    this.open.delete(id);
+    this.db.transaction(() => {
+      this.db.run('DELETE FROM position_path WHERE position_id=?', id);
+      this.db.run('DELETE FROM orders WHERE position_id=?', id);
+      this.db.run('DELETE FROM positions WHERE id=?', id);
+      if (pos.signalId) this.db.updateSignalAction(pos.signalId, `rejected:${reason}`, null);
+    });
+    this.lastPathAt.delete(id); this.peakSeen.delete(id);
+    this.emit('position', { type: 'voided', position: pos, reason });
+    this.recordEquity(true);
+    log.warn(`VOID #${id} ${pos.symbol} ${pos.side} x${pos.qty}: ${reason}`);
+    return true;
+  }
+
+  /** Book an exit the exchange made that the simulator has not seen (its resting stop or target filled). */
+  adoptExitFill(id: number, f: { price: number; qty: number; fee: number | null; reason: string; at: number }): Position | undefined {
+    const pos = this.open.get(id);
+    if (!pos || !(f.qty > 0)) return undefined;
+    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId));
+    const leg = Number(f.reason.match(/^tp(\d)$/)?.[1] ?? 0);
+    if (leg > 0 && pos.tpHit[leg - 1] !== undefined) pos.tpHit[leg - 1] = true;
+    const fill = fillExit(pos, f.price, f.qty, f.reason, f.at, cfg, false);
+    if (f.fee !== null) { pos.fees += f.fee - fill.fee; fill.fee = f.fee; }
+    this.fillContext = { source: 'exchange' };
+    this.applyFills(pos, [fill]);
+    this.recordPath(pos, f.price, f.at, f.reason, `${f.qty} at ${f.price} (exchange)`);
+    log.info(`EXIT ADOPTED #${pos.id} ${pos.symbol} ${f.reason} ${f.qty} @ ${f.price} (exchange)`);
+    return pos;
+  }
+
+  /** Restate the price and fee of a fill the simulator already booked (its last fill with this reason) from the exchange's. */
+  restateFill(id: number, reason: string, f: { price: number | null; fee: number | null }): Position | undefined {
+    const pos = this.open.get(id) ?? this.position(id);
+    if (!pos) return undefined;
+    const fill = [...pos.fills].reverse().find(x => x.reason === reason);
+    if (!fill) return pos;
+    const price = f.price ?? fill.price, fee = f.fee ?? fill.fee;
+    if (price === fill.price && fee === fill.fee) return pos;
+    const pnl = reason === 'entry' ? 0 : pnlOf(pos, price, fill.qty);
+    pos.realizedPnl += pnl - fill.pnl; pos.fees += fee - fill.fee;
+    Object.assign(fill, { price, fee, pnl });
+    if (pos.status === 'closed' && pos.fills.at(-1) === fill) pos.exitPrice = price;
+    this.db.run("UPDATE orders SET price=?, fee=?, price_source='exchange' WHERE id=(SELECT id FROM orders WHERE position_id=? AND reason=? ORDER BY id DESC LIMIT 1)", price, fee, pos.id, reason);
+    this.persist(pos);
+    if (pos.status === 'closed') { this.closedCache = null; this.emit('stats', this.stats()); }
+    else this.emit('position', { type: 'updated', position: pos });
+    this.recordEquity(true);
+    log.info(`FILL RESTATED #${pos.id} ${pos.symbol} ${reason}: ${fill.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
+    return pos;
   }
 
   closeManual(id: number, reason = 'manual', at = Date.now()): Position | undefined {

@@ -234,6 +234,10 @@ export interface ExecutionConfig {
   reconcileSec: number;
   /** Production host is only selectable when this is true AND env DELTA_LIVE=1; even then only market orders with reduce-only exits are sent. */
   allowProduction: boolean;
+  /** How long to wait for the exchange to confirm a market order before treating its fill as unknown (seconds). */
+  confirmSec?: number;
+  /** How often resting bracket orders are checked for fills the paper book has not seen (seconds; 0 = off). */
+  sweepSec?: number;
 }
 
 export interface SymbolUniverse {
@@ -461,7 +465,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     tapeFallbackMs: 5000,
     fundingCharges: true,
   },
-  execution: { mode: 'paper', bracket: true, reconcileSec: 60, allowProduction: false },
+  execution: { mode: 'paper', bracket: true, reconcileSec: 60, allowProduction: false, confirmSec: 15, sweepSec: 10 },
   risk: {
     enabled: true,
     maxDailyLossPct: 15,
@@ -619,6 +623,8 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   if (!(Number.isFinite(p.tapeFallbackMs) && p.tapeFallbackMs >= 1000 && p.tapeFallbackMs <= 300_000)) errs.push('paper.tapeFallbackMs must be 1000..300000');
   const x = c.execution;
   if (!(Number.isFinite(x.reconcileSec) && x.reconcileSec >= 0)) errs.push('execution.reconcileSec must be ≥ 0');
+  if (x.confirmSec !== undefined && !(Number.isFinite(x.confirmSec) && x.confirmSec >= 1 && x.confirmSec <= 120)) errs.push('execution.confirmSec must be 1..120');
+  if (x.sweepSec !== undefined && !(Number.isFinite(x.sweepSec) && x.sweepSec >= 0)) errs.push('execution.sweepSec must be ≥ 0');
   const r = c.risk;
   if (!r) return errs.concat('risk section missing');
   const pct = (v: number, k: string, max = 100) => { if (!(Number.isFinite(v) && v >= 0 && v <= max)) errs.push(`risk.${k} must be 0..${max}`); };

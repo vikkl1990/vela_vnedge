@@ -1293,3 +1293,53 @@ reading is only an indicator if it changes its mind (constants fit any rising ha
 transfer with nothing refitted is a stronger test than halves on the fitted market.
 
 **Revisit when** the 4h shadow cohort returns a verdict, or a second, non-overlapping window exists.
+
+## 46. Audit findings 2 and 3: the exchange decides what filled; brackets survive a restart
+
+The two findings that blocked any exchange mirroring since decision 18 are implemented.
+
+**A durable order ledger** (`exchange_orders`). Every order is written as `intent` before it is
+sent and moves through `submitted → acknowledged → filled | cancelled | rejected`, with `unknown`
+for an order the exchange could not be asked about. A network failure on send does not lose the
+order: it is looked up by its client order id until it is found or the confirmation window passes.
+
+**Exchange fills are authoritative** (finding 2). An entry goes out as a market order and is
+confirmed by polling the exchange for up to `execution.confirmSec` (15 s). The paper position is
+restated to the size, price and fee the exchange reports — a partial fill shrinks it, an unfilled
+one voids it (no trade is recorded, the signal is marked rejected). A level exit the paper book
+detects is settled against the resting order: if the exchange filled it, the paper fill is restated
+to the exchange price; if it did not within the window, that order is cancelled and the exit goes
+out at market, and that fill's price is what the book keeps. A sweep every `execution.sweepSec`
+(10 s) catches fills the exchange made on its own — a stop triggered on mark price the candles did
+not show — and books them at the exchange price, then cancels the sibling orders. Fills restated
+from the exchange carry `price_source = 'exchange'` in the orders table.
+
+**Brackets built from confirmed exposure and kept across restarts** (finding 3). The bracket is
+placed only after the entry is confirmed, sized to what filled. When the paper stop moves, the
+resting stop is edited in place (`PUT /v2/orders`); if the exchange refuses the edit, a new stop is
+placed before the old one is cancelled. There is never a moment with a position and no stop. On
+start the ledger is settled, brackets are rebuilt from it and verified against the exchange's open
+orders, a missing stop is re-placed, a target the exchange filled meanwhile is booked, and stray
+orders carrying this bot's client-id prefix are cancelled. A paper position with no exchange
+history is reported as **unmirrored** and left alone: this process never opens exposure it did not
+itself ask for.
+
+**What is unchanged.** Production remains double-locked (`execution.allowProduction` and
+`DELTA_LIVE=1`), and `assertProductionSafe` still refuses every order on the production host that is
+not a plain market order — which means that on production, today, the bracket cannot be placed and
+a stop would be sent at market when it hits. That rule is the owner's to relax, not this decision's:
+the proposal is "a non-entry order must be reduce-only; only an entry may be a plain market order",
+which lets reduce-only stop-market and take-profit orders rest on production while still making it
+impossible for the bot to add exposure except by an entry it asked for.
+
+**Tested** against a stateful fake exchange (19 cases): confirmed and partial entries, rejected
+and unfilled entries voided, TP settled at the exchange price with the stop edited in place, the
+edit refused, the paper stop firing before the exchange stop, the exchange stop firing first, a
+vanished stop re-placed, an unanswered entry found by client id, a pending entry confirmed by the
+sweep, restart with a missing stop and stray orders, restart with a target filled meanwhile, an
+unmirrored paper position, bracket off, reconciliation, close-all, dry-run, host guard. Not yet
+tested against the demo host itself; that is the next step before any pair is mirrored.
+
+**Revisit when** the first demo-host session has run a day: the confirmation window, the sweep
+interval and what Delta actually returns for `average_fill_price` and `paid_commission` on the
+demo account.

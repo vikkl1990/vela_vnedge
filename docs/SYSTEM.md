@@ -187,7 +187,7 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 0. **Family scanner in the shadow book** — the 4h family of five from decision 45, through the cohort gate; nothing promoted on backtests.
 1. **Incubator page** should show cohort progress and the real time to a verdict (the gate itself is fixed — decision 29).
 2. **Alerting** — the Telegram token is still unset, so a halt or a crash is silent (decision 5).
-3. **Audit findings 2, 3, 11, 12** — the first two block exchange mirroring.
+3. **Audit findings 11, 12** (2 and 3 are done — decision 46; a demo-host session is the next gate before any pair is mirrored).
 4. **The Mac bot** runs a different 33-pair fleet than the VM's 6. Two records, one of them noise: mirror it or stop it.
 5. **`liquidity-trail-matrix`** fails every run with an array-bounds error and sat in the live fleet doing nothing.
 6. **The 100-trade review**, when the trades exist.
@@ -201,6 +201,9 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 - Every rule change lands in the same commit as its decision entry, and updates this file.
 - Never real production keys; the bot binds to 127.0.0.1 only; the Telegram token lives in the
   systemd environment and never in `config.json`.
+- When an executor mirrors the book, the exchange is the authority on what filled: every order goes
+  through the ledger, an entry is confirmed before it is protected, and a restart rebuilds the
+  brackets from the ledger and verifies them on the exchange (decision 46).
 - A rule built on a script's drawn objects uses the bar the object became knowable, not the bar it
   points at: a label rule's `delayBars` equals the script's pivot right-bars, and the rules test asserts
   it. The halves test cannot catch lookahead (decision 44).

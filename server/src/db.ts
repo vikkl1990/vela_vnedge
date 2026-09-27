@@ -61,6 +61,18 @@ CREATE TABLE IF NOT EXISTS backtests (
 
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 
+-- every order the executor ever intended to send, and what became of it: the durable order state
+-- machine (decision 46). intent → submitted → acknowledged → filled | cancelled | rejected; unknown when
+-- the exchange could not be asked. Recovery after a restart starts from these rows, never from memory.
+CREATE TABLE IF NOT EXISTS exchange_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, position_id INTEGER NOT NULL, purpose TEXT NOT NULL, reason TEXT, leg INTEGER, client_order_id TEXT NOT NULL UNIQUE,
+  product_id INTEGER NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, size INTEGER NOT NULL, order_type TEXT NOT NULL, stop_price REAL, limit_price REAL,
+  state TEXT NOT NULL, exchange_id TEXT, filled_size INTEGER NOT NULL DEFAULT 0, avg_price REAL, fee REAL, error TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_exchange_orders_position ON exchange_orders(position_id);
+CREATE INDEX IF NOT EXISTS idx_exchange_orders_state ON exchange_orders(state);
+
 -- scripts that cannot run here: see scanners/health.ts
 CREATE TABLE IF NOT EXISTS script_health (
   scanner_id TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL,

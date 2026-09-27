@@ -168,6 +168,12 @@ export class DeltaRest {
   /** Open (resting / untriggered) orders, optionally for one product. */
   async openOrders(product_id?: number): Promise<any> { return this.request('GET', '/v2/orders', { auth: true, query: { states: 'open,pending', product_ids: product_id, page_size: 200 } }); }
   async cancelOrder(id: number | string, product_id: number): Promise<any> { return this.request('DELETE', '/v2/orders', { auth: true, body: { id, product_id }, retries: 0 }); }
+  /** One order by exchange id — its state, unfilled size, average fill price and paid commission. */
+  async order(id: number | string): Promise<any> { return this.request('GET', `/v2/orders/${id}`, { auth: true }); }
+  /** One order by the client order id this bot stamped on it: how an order sent before a crash is found again. */
+  async orderByClientId(clientOrderId: string): Promise<any> { return this.request('GET', `/v2/orders/client_order_id/${encodeURIComponent(clientOrderId)}`, { auth: true }); }
+  /** Edit a resting order in place (stop price, limit price, size) — no unprotected window between a cancel and a new order. */
+  async editOrder(body: { id: number | string; product_id: number; stop_price?: string; limit_price?: string; size?: number }): Promise<any> { return this.request('PUT', '/v2/orders', { auth: true, body, retries: 0 }); }
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }

@@ -33,7 +33,8 @@ export interface OrderPayload {
 }
 
 export interface ExchangePosition { symbol: string; product_id: number; size: number; entry_price: number; raw?: any }
-export interface ExchangeOrder { id: number | string; product_id: number; symbol?: string; side: 'buy' | 'sell'; size: number; unfilled_size?: number; order_type: string; stop_order_type?: string | null; limit_price?: string | null; stop_price?: string | null; reduce_only?: boolean; client_order_id?: string | null; state?: string; raw?: any }
+export interface ExchangeOrder { id: number | string; product_id: number; symbol?: string; side: 'buy' | 'sell'; size: number; unfilled_size?: number; order_type: string; stop_order_type?: string | null; limit_price?: string | null; stop_price?: string | null; reduce_only?: boolean; client_order_id?: string | null; state?: string; average_fill_price?: number | null; paid_commission?: number | null; raw?: any }
+export interface EditOrder { id: number | string; product_id: number; stop_price?: string; limit_price?: string; size?: number }
 
 export interface ExchangeTransport {
   readonly host: ExchangeHost;
@@ -47,6 +48,12 @@ export interface ExchangeTransport {
   cancelOrder(id: number | string, product_id: number): Promise<unknown>;
   cancelAll(product_id: number): Promise<unknown>;
   wallet(): Promise<unknown>;
+  /** One order by exchange id; null when the exchange does not know it. */
+  order(id: number | string): Promise<ExchangeOrder | null>;
+  /** One order by the client id this bot stamped on it; null when the exchange never received it. */
+  orderByClientId(clientOrderId: string): Promise<ExchangeOrder | null>;
+  /** Edit a resting order in place. */
+  editOrder(e: EditOrder): Promise<{ id: number | string; state?: string }>;
 }
 
 /** Demo host unless production is explicitly double-opted-in (config flag AND env var). */
@@ -59,6 +66,10 @@ export function hostUrl(host: ExchangeHost): string { return host === 'productio
 export function assertProductionSafe(o: OrderPayload): void {
   if (o.order_type !== 'market_order' || o.stop_order_type || o.limit_price !== undefined || o.stop_price !== undefined) throw new Error(`production refuses ${o.stop_order_type ?? o.order_type}: only market orders are allowed`);
   if (o.purpose !== 'entry' && o.reduce_only !== true) throw new Error('production refuses a non-entry order that is not reduce-only');
+}
+
+export function parseOrder(o: any): ExchangeOrder {
+  return { id: o.id, product_id: Number(o.product_id), symbol: o.product_symbol ?? o.symbol, side: o.side, size: Number(o.size ?? 0), unfilled_size: Number(o.unfilled_size ?? o.size ?? 0), order_type: o.order_type, stop_order_type: o.stop_order_type ?? null, limit_price: o.limit_price ?? null, stop_price: o.stop_price ?? null, reduce_only: Boolean(o.reduce_only), client_order_id: o.client_order_id ?? null, state: o.state, average_fill_price: o.average_fill_price != null ? Number(o.average_fill_price) : null, paid_commission: o.paid_commission != null ? Number(o.paid_commission) : null, raw: o };
 }
 
 export function wirePayload(o: OrderPayload): Record<string, unknown> {
@@ -88,8 +99,17 @@ export class RestTransport implements ExchangeTransport {
   async openOrders(product_id?: number): Promise<ExchangeOrder[]> {
     const res = await this.rest.openOrders(product_id);
     const list: any[] = Array.isArray(res) ? res : res?.result ?? [];
-    return list.map(o => ({ id: o.id, product_id: Number(o.product_id), symbol: o.product_symbol ?? o.symbol, side: o.side, size: Number(o.size ?? 0), unfilled_size: Number(o.unfilled_size ?? o.size ?? 0), order_type: o.order_type, stop_order_type: o.stop_order_type ?? null, limit_price: o.limit_price ?? null, stop_price: o.stop_price ?? null, reduce_only: Boolean(o.reduce_only), client_order_id: o.client_order_id ?? null, state: o.state, raw: o }));
+    return list.map(parseOrder);
   }
+  async order(id: number | string): Promise<ExchangeOrder | null> {
+    try { const res = await this.rest.order(id); return res && res.id !== undefined ? parseOrder(res) : null; }
+    catch (e: any) { if (/404|not found|invalid_order/i.test(String(e?.message))) return null; throw e; }
+  }
+  async orderByClientId(clientOrderId: string): Promise<ExchangeOrder | null> {
+    try { const res = await this.rest.orderByClientId(clientOrderId); return res && res.id !== undefined ? parseOrder(res) : null; }
+    catch (e: any) { if (/404|not found|invalid_order/i.test(String(e?.message))) return null; throw e; }
+  }
+  async editOrder(e: EditOrder) { const res = await this.rest.editOrder(e); return { id: res?.id ?? e.id, state: res?.state }; }
   async placeOrder(o: OrderPayload) {
     if (this.host === 'production') assertProductionSafe(o);
     const res = await this.rest.placeOrder(wirePayload(o) as any);
@@ -103,14 +123,14 @@ export class RestTransport implements ExchangeTransport {
 /** Records every write instead of sending it; reads go to `reader` when one with keys is available. */
 export class DryRunTransport implements ExchangeTransport {
   readonly dryRun = true;
-  readonly log: Array<{ at: number; action: 'place' | 'cancel' | 'cancelAll'; payload: Record<string, unknown> }> = [];
+  readonly log: Array<{ at: number; action: 'place' | 'cancel' | 'cancelAll' | 'edit'; payload: Record<string, unknown>; id?: string }> = [];
   private seq = 1;
   private reader: ExchangeTransport | null;
   readonly host: ExchangeHost;
   constructor(reader: ExchangeTransport | null = null, host: ExchangeHost = 'testnet') { this.reader = reader; this.host = host; }
   get baseUrl(): string { return this.reader?.baseUrl ?? hostUrl(this.host); }
   get hasAuth(): boolean { return Boolean(this.reader?.hasAuth); }
-  private record(action: 'place' | 'cancel' | 'cancelAll', payload: Record<string, unknown>) {
+  private record(action: 'place' | 'cancel' | 'cancelAll' | 'edit', payload: Record<string, unknown>) {
     this.log.push({ at: Date.now(), action, payload });
     if (this.log.length > 200) this.log.splice(0, this.log.length - 200);
     log.info(`dry-run ${action} ${JSON.stringify(payload)}`);
@@ -118,8 +138,21 @@ export class DryRunTransport implements ExchangeTransport {
   products() { return this.reader?.products() ?? Promise.resolve(new Map<string, DeltaProduct>()); }
   positions() { return this.reader?.hasAuth ? this.reader.positions() : Promise.resolve([]); }
   openOrders(product_id?: number) { return this.reader?.hasAuth ? this.reader.openOrders(product_id) : Promise.resolve([]); }
-  async placeOrder(o: OrderPayload) { if (this.host === 'production') assertProductionSafe(o); this.record('place', wirePayload(o)); return { id: `dry-${this.seq++}`, state: 'dry-run', dryRun: true }; }
+  async placeOrder(o: OrderPayload) { if (this.host === 'production') assertProductionSafe(o); const id = `dry-${this.seq++}`; this.record('place', wirePayload(o)); this.log.at(-1)!.id = id; return { id, state: 'dry-run', dryRun: true }; }
   async cancelOrder(id: number | string, product_id: number) { this.record('cancel', { id, product_id }); return { dryRun: true }; }
   async cancelAll(product_id: number) { this.record('cancelAll', { product_id }); return { dryRun: true }; }
   wallet() { return this.reader?.hasAuth ? this.reader.wallet() : Promise.resolve(null); }
+  /** A dry-run market order is reported as filled in full at no known price, so the paper price stands; a resting order stays open. */
+  async order(id: number | string): Promise<ExchangeOrder | null> {
+    const mine = this.log.find(l => l.action === 'place' && l.id === String(id));
+    if (!mine) return this.reader?.hasAuth ? this.reader.order(id) : null;
+    const p = mine.payload;
+    const market = p.order_type === 'market_order' && !p.stop_order_type;
+    return { id, product_id: Number(p.product_id), side: p.side as 'buy' | 'sell', size: Number(p.size), unfilled_size: market ? 0 : Number(p.size), order_type: String(p.order_type), state: market ? 'closed' : 'open', average_fill_price: null, paid_commission: null, reduce_only: Boolean(p.reduce_only), client_order_id: String(p.client_order_id ?? '') };
+  }
+  async orderByClientId(clientOrderId: string): Promise<ExchangeOrder | null> {
+    const mine = this.log.find(l => l.action === 'place' && l.payload.client_order_id === clientOrderId);
+    return mine?.id ? this.order(mine.id) : null;
+  }
+  async editOrder(e: EditOrder) { this.record('edit', { ...e }); return { id: e.id, state: 'dry-run' }; }
 }
