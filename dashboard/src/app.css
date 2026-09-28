@@ -273,6 +273,14 @@ select {
   row-gap: 4px;
 }
 .topright .iconbtn { width: 26px; height: 26px; }
+/* Two rigid groups: the strip wraps only at the seam between status and actions, never inside one, so a
+   changing number cannot push a button onto another row. Varying texts get a reserved width for the same reason. */
+.topgroup { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; white-space: nowrap; }
+.topstat-eq .mono { min-width: 5.5ch; text-align: right; }
+.topstat-day .mono { min-width: 7ch; text-align: right; }
+.tick-age { display: inline-block; min-width: 5ch; }
+.btn-entries { min-width: 128px; }
+.conn .hide-narrow { display: inline-block; min-width: 56px; }
 .topstat {
   display: inline-flex;
   align-items: baseline;

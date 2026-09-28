@@ -61,7 +61,8 @@ function routeMeta(pathname: string, scannerName?: string): { title: string; cru
 /** Header tick age. Owns the 1 s clock so only this text re-renders. */
 function TickAge({ lastTick }: { lastTick: number | null }) {
   const now = useNow(1000)
-  return <span className="mono muted small hide-mid"> · tick {fmtAge(lastTick ? now - lastTick : null)}</span>
+  // the 1 s clock can lag a tick that has just arrived: clamp so the age never reads as missing
+  return <span className="mono muted small hide-mid"> · tick <span className="tick-age">{fmtAge(lastTick ? Math.max(0, now - lastTick) : null)}</span></span>
 }
 
 /** Stale-stream banner. Owns its own clock for the same reason as TickAge. */
@@ -164,12 +165,13 @@ export function Layout() {
         </nav>
 
         <div className="topright">
+          <span className="topgroup topgroup-status">
           <span className="pill pill-accent">{!h ? 'Execution: loading' : h.mode === 'paper' ? 'Paper · simulated fills' : `Execution: ${h.mode}`}</span>
-          <span className="topstat" title="Equity (USD)">
+          <span className="topstat topstat-eq" title="Equity (USD)">
             <span className="topstat-label">EQ USD</span>
             <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
           </span>
-          <span className="topstat" title="Today's PnL">
+          <span className="topstat topstat-day" title="Today's PnL">
             <span className="topstat-label">DAY USD</span>
             <span className={`mono ${pnlClass(s?.todayPnl)}`}>{s ? fmtPnl(s.todayPnl) : '–'}</span>
           </span>
@@ -189,12 +191,14 @@ export function Layout() {
             <span className="hide-narrow">feed {feedConnected ? 'on' : 'off'}</span>
             <TickAge lastTick={lastTick} />
           </span>
+          </span>
+          <span className="topgroup topgroup-actions">
           {auth.canTrade && (paused ? (
-            <button className="btn btn-sm" title={`Entries paused: ${risk.data?.manualHalt?.reason ?? ''}. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
+            <button className="btn btn-sm btn-entries" title={`Entries paused: ${risk.data?.manualHalt?.reason ?? ''}. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
               {resume.isPending ? 'Resuming…' : '▶ Resume entries'}
             </button>
           ) : (
-            <button className="btn btn-sm btn-danger-outline" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || kill.isPending}>
+            <button className="btn btn-sm btn-danger-outline btn-entries" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || kill.isPending}>
               Pause entries
             </button>
           ))}
@@ -219,6 +223,7 @@ export function Layout() {
           <button className="iconbtn" onClick={() => setShowKeys(true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
             <span aria-hidden>?</span>
           </button>
+          </span>
         </div>
       </header>
 
