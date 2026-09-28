@@ -387,7 +387,7 @@ export interface CandleEvent {
   closed: boolean
 }
 export interface PositionEvent {
-  type: 'opened' | 'updated' | 'closed'
+  type: 'opened' | 'updated' | 'closed' | 'voided'
   position: Position
 }
 export interface ScannerEvent {
@@ -553,6 +553,9 @@ export interface ExecutionStatus {
   brackets: Array<{ positionId: number; symbol: string; stop: (BracketOrder & { exchangeId?: string }) | null; tps: Array<BracketOrder & { exchangeId?: string }> }>
   lastReconcile: { at: number; ok: boolean; drift: Array<{ kind?: string; symbol?: string; detail?: string; paper?: unknown; exchange?: unknown } | string>; positions: number; orders: number; error?: string } | null
   unconfirmed?: number[]
+  /** Positions the book has closed while the exchange still holds contracts; their protection stays until the sweep closes them. */
+  stranded?: Array<{ positionId: number; symbol: string; qty: number; since: number; attempts: number }>
+  exposure?: Record<string, number>
   lastRecovery?: RecoveryReport | null
   ledger?: LedgerRow[]
   products?: number

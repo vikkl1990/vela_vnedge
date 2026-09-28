@@ -1596,3 +1596,31 @@ profitability on a market predicts the next fortnight is being tested on the fle
 (halves per market) and will be reported. Until then the rule stands because the owner asked for
 it, and because a market where the book has lost five trades in two weeks is at worst a market
 the bot sits out.
+
+## 58. Containment after the architecture review: exposure is what the exchange confirms
+
+An external architecture review (28 Sep, baseline `c9a2f49`) reproduced five defects with the fake
+exchange. The four that would cost money first are closed here; the larger ones (a transactional
+outbox, one strategy spec across live/replay/walk-forward, deployment tuples, research off the
+trading thread) are queued behind it.
+
+1. **Protection outlives the paper book.** The executor now keeps a confirmed-exposure count per
+   position (entries filled minus exits, stops and targets filled). When the book closes a position
+   that the exchange still holds — an exit rejected, or filled in part — the bracket is **not**
+   cancelled: the stop is resized to what is left, the position is recorded as *stranded* and shown
+   in red on the Exchange page, and the executor sends a reduce-only market order for the rest at
+   once and on every sweep until the exchange confirms zero. Only then does the bracket go. Recovery
+   rebuilds exposure from the ledger, so a restart cannot forget a stranded position.
+2. **Execution settings do not change at runtime.** The executor reports the mode it was built with;
+   a config change to `execution.mode`, `allowProduction` or `bracket` is refused with 409 and the
+   reason; a restart applies it.
+3. **One order for the emergency.** Exchange close-all now pauses entries, lets queued execution work
+   settle, flattens, then reconciles, and leaves entries paused. A paper reset is refused while the
+   exchange holds anything for the book.
+4. **The voided entry reaches the dashboard** (the SSE reducer drops it), and the paper `closeAll`
+   takes the caller's clock — which was the flaky weekly kill-switch test: the kill-triggered closes
+   were stamped with wall time and, on a Monday, rolled the test's risk week.
+
+Tested against the fake exchange: rejected exit keeps every bracket order and strands the full
+size; partial exit strands the residual with the stop resized to it; the sweep closes the rest and
+only then cancels; a config edit cannot relabel the running executor. 214 tests pass.

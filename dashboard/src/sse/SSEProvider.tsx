@@ -133,7 +133,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       sseBus.on('position', (e: PositionEvent) => {
         qc.setQueryData<Position[]>(qk.positions, (prev) => {
           const list = prev ?? []
-          if (e.type === 'closed') return list.filter((p) => p.id !== e.position.id)
+          if (e.type === 'closed' || e.type === 'voided') return list.filter((p) => p.id !== e.position.id)
           const idx = list.findIndex((p) => p.id === e.position.id)
           if (idx === -1) return [e.position, ...list]
           // Replace only the changed row so memoized rows keep their identity.

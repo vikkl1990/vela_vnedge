@@ -26,6 +26,8 @@ class FakeTransport implements ExchangeTransport {
   orders = new Map<string, ExchangeOrder>();
   /** What the next market order fills at, and how much of it (defaults: the paper price is unknown → 100.5, all of it). */
   nextFill: { price?: number | null; size?: number; fee?: number; reject?: string; unanswered?: boolean; pending?: boolean } = {};
+  /** Outcomes for the next orders in turn; used before `nextFill` while non-empty. */
+  queue: Array<typeof this.nextFill> = [];
   /** Failures to throw on the next edit, cancel or lookup. */
   failEdit = false;
   /** How many client-id lookups answer null before the order is found (exchange lag). */
@@ -35,7 +37,7 @@ class FakeTransport implements ExchangeTransport {
   async positions() { return this.positionsList; }
   async openOrders() { return [...this.orders.values()].filter(o => o.state === 'open'); }
   async placeOrder(o: OrderPayload) {
-    const n = this.nextFill; this.nextFill = {};
+    const n = this.queue.length ? this.queue.shift()! : this.nextFill; if (!this.queue.length) this.nextFill = {};
     if (n.reject) throw new Error(`Delta POST /v2/orders → 400 {"code":"${n.reject}"}`);
     this.placed.push(o);
     if (n.unanswered) { const id = this.seq++; this.orders.set(String(id), { id, product_id: o.product_id, side: o.side, size: o.size, unfilled_size: 0, order_type: o.order_type, state: 'closed', average_fill_price: n.price ?? 101, paid_commission: 0, client_order_id: o.client_order_id ?? null }); throw new Error('fetch failed: timeout'); }
@@ -388,4 +390,52 @@ test('production host needs both the config flag and DELTA_LIVE=1, and then only
   assert.doesNotThrow(() => assertProductionSafe({ product_id: 1, size: 1, side: 'buy', order_type: 'market_order', reduce_only: false, purpose: 'entry' }));
   assert.doesNotThrow(() => assertProductionSafe({ product_id: 1, size: 1, side: 'sell', order_type: 'market_order', reduce_only: true, purpose: 'close-all' }));
   return assert.rejects(() => prod.placeOrder({ product_id: 1, size: 1, side: 'sell', order_type: 'limit_order', limit_price: '1', reduce_only: true, purpose: 'tp' }), /only market orders/);
+});
+
+test('a rejected exit keeps the protection: the book closes, the position is stranded, the stop stays, the sweep closes the rest', async t => {
+  const { fake, ex, open, paper } = await setup(t);
+  const p = open();
+  await ex.flush();
+  // the exit is rejected, and so is the immediate retry: the exchange keeps the whole position
+  fake.queue = [{ reject: 'insufficient_margin' }, { reject: 'insufficient_margin' }];
+  paper.closeManual(p.id, 'manual');
+  await ex.flush();
+  assert.equal(paper.openPositions().length, 0, 'the paper book is closed');
+  assert.equal(fake.cancelled.length, 0, 'NO bracket order was cancelled');
+  const st = ex.status();
+  assert.equal(st.brackets.length, 1); assert.equal(st.brackets[0].stop?.price, 95);
+  assert.deepEqual(st.stranded.map(s => [s.positionId, s.qty]), [[p.id, 200]]);
+  assert.equal(ex.hasExposure(), true);
+  // the next sweep closes the rest at market and only then releases the bracket
+  fake.nextFill = { price: 99.5 };
+  await ex.sweepNow();
+  assert.equal(ex.status().stranded.length, 0);
+  assert.equal(ex.status().brackets.length, 0);
+  assert.equal(fake.cancelled.length, 4, 'bracket cancelled after the exchange confirmed zero');
+  assert.equal(ex.hasExposure(), false);
+});
+
+test('a partial exit leaves the residual on the exchange: stop resized to it, closed by the sweep, then the bracket goes', async t => {
+  const { fake, ex, open, paper } = await setup(t);
+  const p = open();
+  await ex.flush();
+  // 120 of 200 fill; the immediate retry for the rest is rejected, so 80 stay on the exchange
+  fake.queue = [{ price: 99.2, size: 120 }, { reject: 'insufficient_margin' }];
+  paper.closeManual(p.id, 'manual');
+  await ex.flush();
+  const st = ex.status();
+  assert.deepEqual(st.stranded.map(s => [s.positionId, s.qty]), [[p.id, 80]]);
+  assert.ok(fake.edited.some(e => e.size === 80), 'the resting stop was resized to what the exchange still holds');
+  assert.equal(fake.cancelled.length, 0);
+  fake.nextFill = { price: 99.0 };
+  await ex.sweepNow();
+  assert.equal(ex.status().stranded.length, 0); assert.equal(ex.status().brackets.length, 0);
+  assert.ok(ex.ledger.forPosition(p.id).some(r => r.reason === 'stranded' && r.state === 'filled'));
+});
+
+test('the executor reports the mode it was built with, not the config of the moment', async t => {
+  const { cfg, ex } = await setup(t);
+  assert.equal(ex.mode, 'testnet');
+  cfg.execution.mode = 'paper';
+  assert.equal(ex.mode, 'testnet', 'a config edit cannot relabel a running transport');
 });

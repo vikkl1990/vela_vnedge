@@ -73,10 +73,25 @@ export class ExchangeExecutor {
     this.now = opts.now ?? (() => Date.now());
     this.sleep = opts.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
     this.ledger = new OrderLedger(paper.store, this.now);
+    this.mode = cfgRef().execution.mode;
+    this.bracketEnabled = cfgRef().execution.bracket !== false;
   }
 
-  get mode(): AppConfig['execution']['mode'] { return this.cfgRef().execution.mode; }
-  private get bracketEnabled(): boolean { return this.cfgRef().execution.bracket !== false; }
+  /** Contracts the exchange still holds for positions the book considers closed. */
+  strandedExposure(): Array<{ positionId: number; symbol: string; qty: number; since: number; attempts: number }> {
+    return [...this.stranded].map(([id, s]) => ({ positionId: id, symbol: s.symbol, qty: this.exposure.get(id) ?? 0, since: s.since, attempts: s.attempts }));
+  }
+  /** True while any confirmed exposure or resting protection exists on the exchange. */
+  hasExposure(): boolean { return this.brackets.size > 0 || this.stranded.size > 0 || [...this.exposure.values()].some(q => q > 0); }
+  private addExposure(id: number, delta: number) { const q = Math.max(0, (this.exposure.get(id) ?? 0) + delta); if (q > 0) this.exposure.set(id, q); else this.exposure.delete(id); return q; }
+
+  /** Frozen at construction: the transport cannot change at runtime, so neither may what the executor says it is (review finding 2). */
+  readonly mode: AppConfig['execution']['mode'];
+  private readonly bracketEnabled: boolean;
+  /** Contracts the exchange is confirmed to hold per position: entries filled minus exits filled. The paper book's opinion is not exposure. */
+  private exposure = new Map<number, number>();
+  /** Positions the paper book has closed while the exchange still holds contracts: protection stays, the sweep keeps closing the rest. */
+  private stranded = new Map<number, { symbol: string; product_id: number; exitSide: 'buy' | 'sell'; since: number; attempts: number }>();
   private get confirmMs(): number { return (this.opts.confirmSec ?? this.cfgRef().execution.confirmSec ?? 15) * 1000; }
   private get pollMs(): number { return this.opts.pollMs ?? 500; }
 
@@ -200,6 +215,7 @@ export class ExchangeExecutor {
     }
     this.unconfirmed.delete(positionId);
     if (c.status === 'unfilled') { this.adopt(positionId, () => this.paper.voidPosition(positionId, 'exchange-unfilled')); return; }
+    this.exposure.set(positionId, c.filledSize);
     const pos = this.adopt(positionId, () => this.paper.adoptEntryFill(positionId, { price: c.avgPrice, qty: c.filledSize, fee: c.fee, at: this.now() }));
     if (pos && pos.status === 'open' && this.bracketEnabled) { this.lastSeen.set(pos.id, { sl: pos.sl, qtyOpen: pos.qtyOpen }); await this.placeBracket(pos); }
   }
@@ -210,8 +226,11 @@ export class ExchangeExecutor {
     const sent = await this.send(payload, o.positionId, o.symbol, null, o.reason);
     if (!sent.ok && sent.row.state === 'rejected') { log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}) rejected by the exchange; the paper book is closed but the exchange may still hold it — reconcile will report the drift`); return; }
     const c = await this.confirm(sent.row);
-    if (c.status === 'filled') this.adopt(o.positionId, () => this.paper.restateFill(o.positionId, o.reason, { price: c.avgPrice, fee: c.fee }));
-    else log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}) ${c.status}: the paper book is closed but the exchange may still hold it`);
+    if (c.status === 'filled') {
+      this.addExposure(o.positionId, -c.filledSize);
+      this.adopt(o.positionId, () => this.paper.restateFill(o.positionId, o.reason, { price: c.avgPrice, fee: c.fee }));
+      if (c.filledSize < payload.size) log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}): exchange filled ${c.filledSize} of ${payload.size}; ${payload.size - c.filledSize} still held — protection stays until it is closed`);
+    } else log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}) ${c.status}: the exchange still holds the position — protection stays until it is closed`);
   }
 
   /** The paper book saw a level hit. Did the exchange? If so its price stands; if not within confirmSec, take it at market. */
@@ -223,6 +242,7 @@ export class ExchangeExecutor {
     const row = this.ledger.get(leg.ledgerId)!;
     const c = await this.confirm(row);
     if (c.status === 'filled') {
+      this.addExposure(o.positionId, -c.filledSize);
       this.adopt(o.positionId, () => this.paper.restateFill(o.positionId, o.reason, { price: c.avgPrice, fee: c.fee }));
       this.dropLeg(b, leg);
       if (c.filledSize < Math.round(o.qty)) { log.warn(`${o.symbol} ${o.reason}: exchange filled ${c.filledSize} of ${Math.round(o.qty)}; closing the rest at market`); await this.marketExit({ ...o, qty: Math.round(o.qty) - c.filledSize, reason: `${o.reason}-rest` }, product_id); }
@@ -240,7 +260,13 @@ export class ExchangeExecutor {
   private async onPosition(e: { type: string; position: Position; reason?: string }) {
     const p = e.position;
     if (!this.bracketEnabled) return;
-    if (e.type === 'closed' || e.type === 'voided') { await this.cancelBracket(p.id, e.type === 'voided' ? `position voided (${e.reason ?? ''})` : 'position closed'); this.lastSeen.delete(p.id); this.unconfirmed.delete(p.id); return; }
+    if (e.type === 'closed' || e.type === 'voided') {
+      this.lastSeen.delete(p.id); this.unconfirmed.delete(p.id);
+      const left = this.exposure.get(p.id) ?? 0;
+      if (left > 0 && e.type === 'closed') { await this.strand(p, left); return; }
+      await this.cancelBracket(p.id, e.type === 'voided' ? `position voided (${e.reason ?? ''})` : 'position closed');
+      return;
+    }
     if (e.type === 'opened') return;   // the bracket follows the CONFIRMED entry, not the paper one
     const b = this.brackets.get(p.id);
     if (!b) return;
@@ -249,6 +275,43 @@ export class ExchangeExecutor {
     this.lastSeen.set(p.id, { sl: p.sl, qtyOpen: p.qtyOpen });
     b.tps = b.tps.filter(t => !p.tpHit[t.leg - 1]);
     await this.moveStop(p, b);
+  }
+
+  /**
+   * The paper book has closed a position the exchange still holds (a rejected or partial exit).
+   * The protection is NOT cancelled: the stop is resized to what is left, the position is recorded
+   * as stranded, an alert is raised, and every sweep sends a reduce-only market order for the rest
+   * until the exchange confirms zero (review finding 1).
+   */
+  private async strand(p: Position, left: number) {
+    const product_id = this.productId(p.symbol);
+    if (!product_id) return;
+    const exitSide = p.side === 'long' ? 'sell' : 'buy';
+    if (!this.stranded.has(p.id)) this.stranded.set(p.id, { symbol: p.symbol, product_id, exitSide, since: this.now(), attempts: 0 });
+    const b = this.brackets.get(p.id);
+    if (b?.stop && b.stop.size !== left) {
+      try { await this.transport.editOrder({ id: b.stop.exchangeId, product_id, size: left }); this.ledger.edited(b.stop.ledgerId, { size: left }); b.stop.size = left; }
+      catch (e: any) { log.warn(`resize stop #${p.id} to ${left} failed: ${e?.message ?? e}`); }
+    }
+    log.error(`STRANDED #${p.id} ${p.symbol}: the book is closed but the exchange still holds ${left}; ${b?.stop ? `stop ${b.stop.price} stays` : 'NO STOP on the exchange'}; closing the rest at market on the next sweep`);
+    await this.closeStranded(p.id);
+  }
+
+  private async closeStranded(id: number) {
+    const s = this.stranded.get(id);
+    const left = this.exposure.get(id) ?? 0;
+    if (!s) return;
+    if (left <= 0) { this.stranded.delete(id); await this.cancelBracket(id, 'stranded exposure closed'); log.info(`stranded #${id} ${s.symbol} resolved`); return; }
+    s.attempts++;
+    const payload: OrderPayload = { product_id: s.product_id, size: left, side: s.exitSide, order_type: 'market_order', reduce_only: true, client_order_id: cid(id, 'stranded'), purpose: 'exit' };
+    const sent = await this.send(payload, id, s.symbol, null, 'stranded');
+    if (!sent.ok) return;
+    const c = await this.confirm(sent.row);
+    if (c.status === 'filled') {
+      const rest = this.addExposure(id, -c.filledSize);
+      this.adopt(id, () => this.paper.restateFill(id, 'stranded', { price: c.avgPrice, fee: c.fee }));
+      if (rest <= 0) { this.stranded.delete(id); await this.cancelBracket(id, 'stranded exposure closed'); log.info(`stranded #${id} ${s.symbol} resolved after ${s.attempts} attempt(s)`); }
+    }
   }
 
   /** Bracket payloads for a position: one reduce-only stop-market for the open size and one reduce-only TP limit per leg. */
@@ -325,8 +388,9 @@ export class ExchangeExecutor {
 
   /** Check every resting order and unconfirmed entry against the exchange; book what filled. */
   private async sweep(): Promise<void> {
-    if (!this.brackets.size && !this.unconfirmed.size) return;
+    if (!this.brackets.size && !this.unconfirmed.size && !this.stranded.size) return;
     if (!this.transport.hasAuth && !this.transport.dryRun) return;
+    for (const id of [...this.stranded.keys()]) await this.closeStranded(id);
     for (const [positionId, ledgerId] of [...this.unconfirmed]) {
       const row = this.ledger.get(ledgerId);
       if (!row) { this.unconfirmed.delete(positionId); continue; }
@@ -354,6 +418,8 @@ export class ExchangeExecutor {
     if (filled > 0) {
       this.ledger.filled(leg.ledgerId, { filledSize: filled, avgPrice: o!.average_fill_price ?? null, fee: o!.paid_commission ?? null });
       this.dropLeg(b, leg);
+      const rest = this.addExposure(b.positionId, -filled);
+      if (this.stranded.has(b.positionId) && rest <= 0) { this.stranded.delete(b.positionId); await this.cancelBracket(b.positionId, 'stranded exposure closed by the resting order'); return; }
       if (pos && pos.status === 'open') {
         const reason = isStop ? stopReason(pos) : `tp${leg.leg}`;
         log.warn(`${b.symbol} ${reason}: the exchange filled ${filled} @ ${o!.average_fill_price ?? leg.price} before the paper book saw it; booking it`);
@@ -388,6 +454,14 @@ export class ExchangeExecutor {
       if (c.status === 'unfilled' && row.purpose === 'entry' && pos && pos.status === 'open' && pos.qtyOpen === pos.qty && pos.fills.length === 1) { this.adopt(pos.id, () => this.paper.voidPosition(pos.id, 'exchange-unfilled (recovered)')); rep.notes.push(`#${pos.id} voided: entry never filled`); }
       if (c.status === 'unknown' && row.purpose === 'entry' && pos && pos.status === 'open') this.unconfirmed.set(pos.id, row.id);
     }
+    // 1b. exposure from the ledger: entries filled minus exits, stops and targets filled, per position
+    const bySize = new Map<number, number>();
+    for (const r of this.ledger.recent(5000)) {
+      if (r.state !== 'filled' || !r.positionId) continue;
+      bySize.set(r.positionId, (bySize.get(r.positionId) ?? 0) + (r.purpose === 'entry' ? r.filledSize : -r.filledSize));
+    }
+    this.exposure.clear();
+    for (const [id, q] of bySize) if (q > 0) this.exposure.set(id, q);
     // 2. brackets from the ledger, verified against the exchange
     let openOrders: ExchangeOrder[] = [];
     try { openOrders = await this.transport.openOrders(); } catch (e: any) { rep.notes.push(`open orders unavailable: ${e?.message ?? e}`); }
@@ -425,6 +499,20 @@ export class ExchangeExecutor {
       if (known) continue;
       try { await this.transport.cancelOrder(o.id, o.product_id); rep.cancelledStray++; const r = this.ledger.byClientId(o.client_order_id); if (r) this.ledger.cancelled(r.id, 'stray at start'); log.warn(`cancelled stray order ${o.id} (${o.client_order_id}) on ${this.symbolOf(o.product_id)}`); }
       catch (e: any) { rep.notes.push(`stray ${o.id} not cancelled: ${e?.message ?? e}`); }
+    }
+    // 4. a closed paper position the exchange still holds: its bracket stays, the sweep closes the rest
+    for (const [id, q] of this.exposure) {
+      const pos = this.paper.position(id);
+      if (!pos || pos.status === 'open' || q <= 0) continue;
+      const product_id = this.productId(pos.symbol);
+      if (!product_id) continue;
+      if (!this.brackets.has(id)) {
+        const b: Bracket = { positionId: id, symbol: pos.symbol, product_id, stop: null, tps: [] };
+        for (const r of this.ledger.restingFor(id)) { const leg: Leg = { ledgerId: r.id, exchangeId: String(r.exchangeId), price: r.stopPrice ?? r.limitPrice ?? 0, size: r.size, leg: r.purpose === 'stop' ? 0 : (r.leg ?? 0) }; if (r.purpose === 'stop') b.stop = leg; else b.tps.push(leg); }
+        this.brackets.set(id, b);
+      }
+      this.stranded.set(id, { symbol: pos.symbol, product_id, exitSide: pos.side === 'long' ? 'sell' : 'buy', since: this.now(), attempts: 0 });
+      rep.notes.push(`#${id} ${pos.symbol}: closed on paper, ${q} still held on the exchange — protection kept, closing at market`);
     }
     this.lastRecovery = rep;
     log.info(`recovery: ${rep.settled} settled, ${rep.restored} bracket(s) restored, ${rep.replacedStops} stop(s) re-placed, ${rep.adoptedFills} fill(s) adopted, ${rep.cancelledStray} stray cancelled${rep.unmirrored.length ? `, UNMIRRORED ${rep.unmirrored.join(',')}` : ''}`);
@@ -507,7 +595,7 @@ export class ExchangeExecutor {
     return {
       mode: this.mode, host: this.transport.host, baseUrl: this.transport.baseUrl, hasKeys: this.transport.hasAuth, dryRun: this.transport.dryRun,
       bracket: this.bracketEnabled, products: this.products.size, brackets: [...this.brackets.values()].map(b => ({ positionId: b.positionId, symbol: b.symbol, stop: b.stop, tps: b.tps })),
-      unconfirmed: [...this.unconfirmed.keys()], lastReconcile: this.lastReconcile, lastRecovery: this.lastRecovery, ledger: this.ledger.recent(50),
+      unconfirmed: [...this.unconfirmed.keys()], stranded: this.strandedExposure(), exposure: Object.fromEntries(this.exposure), lastReconcile: this.lastReconcile, lastRecovery: this.lastRecovery, ledger: this.ledger.recent(50),
       dryRunLog: this.transport instanceof DryRunTransport ? this.transport.log.slice(-50) : undefined,
     };
   }

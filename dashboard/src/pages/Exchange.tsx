@@ -95,6 +95,9 @@ export function Exchange() {
       </Panel>
 
       <Panel title="Protection on the exchange" right={<span className="muted small">one resting stop and the target legs per open position</span>}>
+        {(e.stranded?.length ?? 0) > 0 && (
+          <p className="text-danger small"><b>Stranded exposure</b> — the book is closed but the exchange still holds: {e.stranded!.map((s) => `#${s.positionId} ${s.symbol} ×${s.qty} (${s.attempts} attempt${s.attempts === 1 ? '' : 's'})`).join(', ')}. The stop stays; every sweep sends a reduce-only market order for the rest.</p>
+        )}
         {(e.unconfirmed?.length ?? 0) > 0 && (
           <p className="text-danger small">Entries the exchange has not confirmed yet — no bracket until it does: #{e.unconfirmed!.join(', #')}</p>
         )}
@@ -156,7 +159,7 @@ export function Exchange() {
       <ConfirmDialog
         open={confirmFlatten}
         title="Flatten the exchange account?"
-        body={<p>Cancels every open order on the exchange and sends a reduce-only market order against every exchange position — including any the paper book does not know about. The paper book is not touched; reconcile afterwards.</p>}
+        body={<p>Pauses new entries, lets queued execution work settle, cancels every open order on the exchange and sends a reduce-only market order against every exchange position — including any the paper book does not know about — then reconciles. Entries stay paused until you resume them.</p>}
         confirmLabel="Flatten exchange"
         danger
         busy={closeAll.isPending}

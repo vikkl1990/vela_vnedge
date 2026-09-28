@@ -186,6 +186,37 @@ export class App {
     this.incubator.start();
   }
 
+  /**
+   * The executor and its transport are built once (review finding 2): a change to the execution
+   * mode, host opt-in or bracket setting while running would change the label and not the wires.
+   * The change is refused with the reason; a restart applies it.
+   */
+  assertExecutionUnchanged(next: Partial<AppConfig['execution']> | undefined): void {
+    if (!next) return;
+    const cur = this.config.get().execution;
+    const running = this.executor ? { mode: this.executor.mode, allowProduction: cur.allowProduction, bracket: cur.bracket } : { mode: 'paper', allowProduction: cur.allowProduction, bracket: cur.bracket };
+    const changes: string[] = [];
+    if (next.mode !== undefined && next.mode !== running.mode) changes.push(`mode ${running.mode} → ${next.mode}`);
+    if (next.allowProduction !== undefined && next.allowProduction !== running.allowProduction) changes.push(`allowProduction ${running.allowProduction} → ${next.allowProduction}`);
+    if (next.bracket !== undefined && next.bracket !== running.bracket) changes.push(`bracket ${running.bracket} → ${next.bracket}`);
+    if (changes.length) throw new Error(`execution settings cannot change while running (${changes.join(', ')}): restart the service to apply them`);
+  }
+
+  /**
+   * Flatten the exchange account in order: no new entries, let queued execution work settle, cancel
+   * everything and close every exchange position, then reconcile (review finding 3).
+   */
+  async flattenExchange(actor: string) {
+    if (!this.executor) throw new Error('execution.mode is paper: no exchange account attached');
+    this.risk.kill(`flatten by ${actor}`, false);
+    await this.executor.flush();
+    const result = await this.executor.closeAll({ confirm: true });
+    await this.executor.flush();
+    const reconcile = await this.executor.reconcile();
+    log.error(`FLATTEN by ${actor}: ${result.closed.length} position(s) closed, ${result.cancelled.length} product(s) cancelled; reconcile ${reconcile.ok ? 'in step' : `${reconcile.drift.length} drift(s)`}; entries stay paused until resumed`);
+    return { ...result, reconcile };
+  }
+
   async onConfigChanged(): Promise<void> {
     const cfg = this.config.get();
     this.candles.setMaxBars(cfg.historyBars + 50);

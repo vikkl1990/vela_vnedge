@@ -115,7 +115,7 @@ export const api = {
   riskKill: (reason: string, closeAll = false) => post<RiskState>('/risk/kill', { reason, closeAll }),
   riskResume: () => post<RiskState>('/risk/reset'),
   executionReconcile: () => post<unknown>('/execution/reconcile'),
-  executionCloseAll: () => post<unknown>('/execution/close-all', { confirm: true }),
+  executionCloseAll: () => post<unknown>('/execution/close-all', { confirm: true, actor: 'dashboard' }),
   execution: () => get<ExecutionStatus>('/execution'),
 
   // incubator

@@ -185,6 +185,7 @@ export class ApiServer {
     this.add('GET', '/api/config', () => ({ ...a.config.get(), resolvedSymbols: a.resolvedSymbols }));
     this.add('PUT', '/api/config', async (_r, _s, _p, _u, body) => {
       let next;
+      try { a.assertExecutionUnchanged(body?.execution); } catch (e: any) { throw new HttpError(409, String(e?.message ?? e)); }
       try { next = a.config.update(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); }
       await a.onConfigChanged();
       return { ...next, resolvedSymbols: a.resolvedSymbols };
@@ -301,7 +302,11 @@ export class ApiServer {
       return { position: levels, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
     });
     this.add('POST', '/api/paper/close-all', () => ({ closed: a.paper.closeAll() }));
-    this.add('POST', '/api/paper/reset', () => { a.paper.reset(); return a.paper.stats(); });
+    this.add('POST', '/api/paper/reset', () => {
+      // an exchange-backed book is not reset while the exchange holds anything for it (review finding 3)
+      if (a.executor && !a.executor.transport.dryRun && a.executor.hasExposure()) throw new HttpError(409, 'the exchange still holds positions or resting orders for this book: flatten the exchange account first (Exchange page), then reset');
+      a.paper.reset(); return a.paper.stats();
+    });
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined }));
     this.add('GET', '/api/orders', (_r, _s, _p, url) => a.paper.orders(Number(url.searchParams.get('limit') ?? 200)));
     this.add('GET', '/api/stats', () => a.paper.stats());

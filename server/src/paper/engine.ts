@@ -566,10 +566,10 @@ export class PaperEngine extends EventEmitter {
     return n;
   }
 
-  closeAll(reason = 'manual'): number {
+  closeAll(reason = 'manual', at = Date.now()): number {
     let n = 0;
     for (const id of [...this.pending.keys()]) this.cancelPending(id, reason);
-    for (const id of [...this.open.keys()]) if (this.closeManual(id, reason)) n++;
+    for (const id of [...this.open.keys()]) if (this.closeManual(id, reason, at)) n++;
     return n;
   }
 

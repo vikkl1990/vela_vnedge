@@ -119,7 +119,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     p.tripped = true; p.trippedAt = now; p.trippedPnlPct = pnlPct;
     log.error(`KILL SWITCH: ${which} loss ${pnlPct.toFixed(2)}% reached the limit — no new entries until the ${which === 'daily' ? 'UTC day' : 'week'} rolls`);
     this.emit('kill', { which, pnlPct, at: now });
-    if (this.cfg.closeAllOnKill) { const n = this.paper.closeAll('risk-kill'); log.warn(`closed ${n} position(s) on ${which} kill switch`); }
+    if (this.cfg.closeAllOnKill) { const n = this.paper.closeAll('risk-kill', now); log.warn(`closed ${n} position(s) on ${which} kill switch`); }
   }
 
   private onTradeClosed(t: { scannerId: string; pnl: number; exitAt: number }) {
@@ -256,7 +256,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     this.save();
     log.error(`MANUAL HALT: ${reason}`);
     this.emit('kill', { which: 'manual', reason, at: this.st.manualHalt.at });
-    if (closeAll) { const n = this.paper.closeAll('risk-kill'); log.warn(`closed ${n} position(s) on manual halt`); }
+    if (closeAll) { const n = this.paper.closeAll('risk-kill', this.now()); log.warn(`closed ${n} position(s) on manual halt`); }
   }
 
   /** Clear the manual halt, tripped kill switches and cooldowns; restart the period windows from the current equity. */
