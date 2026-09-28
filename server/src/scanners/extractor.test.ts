@@ -153,3 +153,11 @@ test('Self-Aware Trend System webhook packet: the entry carries its own stop and
   assert.equal(tp.kind, 'exit'); assert.equal(tp.exitType, 'tp2'); assert.equal(tp.price, 110);
   assert.equal(parseAlert(pkt([{ event: 'char_flip', side: 'long' }])), null);
 });
+
+test('edge: a condition or shape true on consecutive bars is one entry on the first bar of the run', () => {
+  const alerts = [1, 2, 3, 7, 8].map(i => ({ barIndex: i, time: i * 60_000, type: 'alertcondition' as const, title: 'Bullish', message: '' }));
+  const shapes = [{ title: 'Buy', times: [10, 11, 12, 20].map(i => i * 60_000) }];
+  assert.equal(extractEvents(alerts, shapes).filter(e => e.kind === 'entry').length, 9, 'every bar without edge');
+  const e = extractEvents(alerts, shapes, { edge: true }).filter(x => x.kind === 'entry');
+  assert.deepEqual(e.map(x => [x.source, x.barTime / 60_000]), [['alertcondition', 1], ['alertcondition', 7], ['shape', 10], ['shape', 20]]);
+});

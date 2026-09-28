@@ -409,7 +409,7 @@ export class ScannerEngine extends EventEmitter {
       this.seenLabels.set(key, currentLabels);
       if (mode.backtest) {
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: btBars, mode: 'backtest' });
-        const events = extractEvents(res.alerts, res.shapes, { derived, sources: cfg.scanners[s.id]?.sources });
+        const events = extractEvents(res.alerts, res.shapes, { derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge });
         const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, events, cfg: this.cfgRef().paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
         this.backtests.set(key, bt);
         if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? '') })));
@@ -433,7 +433,7 @@ export class ScannerEngine extends EventEmitter {
           return;
         }
         const derived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
-        const events = extractEvents(liveRes.alerts, liveRes.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources });
+        const events = extractEvents(liveRes.alerts, liveRes.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge });
         for (const ev of events) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
       }
       this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });

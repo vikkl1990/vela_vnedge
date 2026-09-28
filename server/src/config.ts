@@ -229,6 +229,8 @@ export interface ScannerConfig {
    * that draw a marker on every bar of a trend as well as calling a trade (decision 48).
    */
   sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
+  /** Rising edge only: a condition or shape true on consecutive bars is one entry, on its first bar (decision 57). */
+  edge?: boolean;
   /** IANA timezone the script's sessions and clock functions run in (default Etc/UTC; session scripts usually mean America/New_York). */
   timezone?: string;
   /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */

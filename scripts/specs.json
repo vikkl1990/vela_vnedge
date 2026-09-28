@@ -1,30 +1,320 @@
 {
-  "_comment": "How each script is read (decision 48): which channel may open a trade, the timezone its sessions run in, input overrides. Defaults only — data/config.json wins per field.",
-
-  "abcd-harmonic-projection": { "sources": ["alert"] },
-  "adaptive-fibonacci-trailing-system": { "sources": ["alert"] },
-  "amd-po3-with-live-edge-stats": { "sources": ["alert"], "timezone": "America/New_York" },
-  "breakout-pattern-setup": { "sources": ["alert"] },
-  "fibonacci-structure-engine": { "sources": ["alert"] },
-  "liquidity-pools-pro": { "sources": ["alert"] },
-  "liquidity-trail-matrix": { "sources": ["alert"] },
-  "meridian-flow": { "sources": ["alert"] },
-  "precision-sniper": { "sources": ["alert"], "timezone": "America/New_York" },
-  "pulse-trend-radar": { "sources": ["alert"] },
-  "reactive-trail-system": { "sources": ["alert"] },
-  "smart-breakout-targets": { "sources": ["alert"] },
-  "squeeze-breakout-pro": { "sources": ["alert"] },
-  "stealthtrail-supertrend": { "sources": ["alert"] },
-  "stealthtrail-supertrend-ml-pro": { "sources": ["alert"] },
-  "synapse-trail-pro": { "sources": ["alert"] },
-  "volume-weighted-s-r-zones": { "sources": ["alert"] },
-  "adaptive-ichimoku-nexus": { "sources": ["alert"] },
-  "mirage-liquidity-sweep-pro": { "sources": ["alert"] },
-  "strat-trap-vwap-engine": { "sources": ["alert"], "timezone": "America/New_York" },
-  "daily-volume-profile-pro": { "sources": ["alert"] },
-
-  "self-aware-trend-system": { "sources": ["alert"], "inputs": { "webhookInput": true } },
-  "ict-session-zones-sweep-signals": { "timezone": "America/New_York" },
-
-  "amd-po3-with-live-edge-stats-willyalgotrader-version-orga": { "hidden": true }
+ "_comment": "How each script is read (decision 48): which channel may open a trade, the timezone its sessions run in, input overrides, rising-edge signals (decision 57). Defaults only \u2014 data/config.json wins per field. Fleet scanners keep their measured reading until edge is measured for them.",
+ "abcd-harmonic-projection": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "adaptive-fibonacci-trailing-system": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "amd-po3-with-live-edge-stats": {
+  "sources": [
+   "alert"
+  ],
+  "timezone": "America/New_York"
+ },
+ "breakout-pattern-setup": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "fibonacci-structure-engine": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "liquidity-pools-pro": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "liquidity-trail-matrix": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "meridian-flow": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "precision-sniper": {
+  "sources": [
+   "alert"
+  ],
+  "timezone": "America/New_York"
+ },
+ "pulse-trend-radar": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "reactive-trail-system": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "smart-breakout-targets": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "squeeze-breakout-pro": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "stealthtrail-supertrend": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "stealthtrail-supertrend-ml-pro": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "synapse-trail-pro": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "volume-weighted-s-r-zones": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "adaptive-ichimoku-nexus": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "mirage-liquidity-sweep-pro": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "strat-trap-vwap-engine": {
+  "sources": [
+   "alert"
+  ],
+  "timezone": "America/New_York"
+ },
+ "daily-volume-profile-pro": {
+  "sources": [
+   "alert"
+  ]
+ },
+ "self-aware-trend-system": {
+  "sources": [
+   "alert"
+  ],
+  "inputs": {
+   "webhookInput": true
+  }
+ },
+ "ict-session-zones-sweep-signals": {
+  "timezone": "America/New_York"
+ },
+ "amd-po3-with-live-edge-stats-willyalgotrader-version-orga": {
+  "hidden": true
+ },
+ "adaptive-schaff-trend-cycle-stc": {
+  "edge": true
+ },
+ "adaptive-smart-money-liquidity-sweep-levels": {
+  "edge": true
+ },
+ "ai-adaptive-money-flow-index-clustering": {
+  "edge": true
+ },
+ "amazing-oscillator-ao": {
+  "edge": true
+ },
+ "breakout-targets": {
+  "edge": true
+ },
+ "candlestick-reversal-and-trend-signals": {
+  "edge": true
+ },
+ "change-in-state-of-delivery-cisd-algoalpha": {
+  "edge": true
+ },
+ "donchian-trend-ranges": {
+  "edge": true
+ },
+ "dynamic-median-momentum-oscillator": {
+  "edge": true
+ },
+ "exponential-trend": {
+  "edge": true
+ },
+ "fibonacci-entry-bands": {
+  "edge": true
+ },
+ "half-trend-heikinashi": {
+  "edge": true
+ },
+ "high-probability-order-blocks": {
+  "edge": true
+ },
+ "high-volume-pivot-support-resistance-zones": {
+  "edge": true
+ },
+ "hullinger-bands": {
+  "edge": true
+ },
+ "institutional-displacement-volume-delta": {
+  "edge": true
+ },
+ "kalman-step-signals": {
+  "edge": true
+ },
+ "keltner-channel-trend-smc-liquidity-sweep": {
+  "edge": true
+ },
+ "liquidation-levels-with-liquidity-sweeps-breakouts": {
+  "edge": true
+ },
+ "liquidity-sweep-filter": {
+  "edge": true
+ },
+ "liquidity-sweep-hunter-algo": {
+  "edge": true
+ },
+ "liquidity-weighted-moving-averages": {
+  "edge": true
+ },
+ "machine-learning-adaptive-dmi-signals": {
+  "edge": true
+ },
+ "machine-learning-price-target-prediction-signals": {
+  "edge": true
+ },
+ "market-structure-confluence": {
+  "edge": true
+ },
+ "median-proximity-percentile": {
+  "edge": true
+ },
+ "money-flow-divergence-zones": {
+  "edge": true
+ },
+ "multi-spectral-rsi-deviations": {
+  "edge": true
+ },
+ "nadaraya-watson-regression-liquidity-sweeps": {
+  "edge": true
+ },
+ "premium-and-discount-pivot-matrix": {
+  "edge": true
+ },
+ "price-action-fractal-forecasts": {
+  "edge": true
+ },
+ "regression-trend-reversal-signals-forecasts": {
+  "edge": true
+ },
+ "reversal-and-breakout-signals": {
+  "edge": true
+ },
+ "reversal-signals-algoalpha": {
+  "edge": true
+ },
+ "reversal-signals-trailing-stop": {
+  "edge": true
+ },
+ "reverse-rsi-signals": {
+  "edge": true
+ },
+ "rolling-point-of-control-poc": {
+  "edge": true
+ },
+ "self-adaptive-trend-signals": {
+  "edge": true
+ },
+ "smart-money-liquidation-exploits": {
+  "edge": true
+ },
+ "smart-money-volume-activity": {
+  "edge": true
+ },
+ "smart-money-volume-index": {
+  "edge": true
+ },
+ "squeeze-momentum-oscillator": {
+  "edge": true
+ },
+ "standardized-median-proximity": {
+  "edge": true
+ },
+ "standardized-psar-oscillator": {
+  "edge": true
+ },
+ "supertrended-rsi": {
+  "edge": true
+ },
+ "support-and-resistance-non-repainting": {
+  "edge": true
+ },
+ "swing-failure-signals": {
+  "edge": true
+ },
+ "swing-failure-zones-and-signals": {
+  "edge": true
+ },
+ "swing-traces": {
+  "edge": true
+ },
+ "trend-continuation-signals": {
+  "edge": true
+ },
+ "trend-pulse": {
+  "edge": true
+ },
+ "trend-strength-signals": {
+  "edge": true
+ },
+ "trend-targets": {
+  "edge": true
+ },
+ "trend-tracer": {
+  "edge": true
+ },
+ "triangular-hull-moving-average-volatility": {
+  "edge": true
+ },
+ "trinity-reversal-pattern": {
+  "edge": true
+ },
+ "volumatic-support-resistance-levels": {
+  "edge": true
+ },
+ "volumatic-variable-index-dynamic-average": {
+  "edge": true
+ },
+ "volume-heatmap-divergence": {
+  "edge": true
+ },
+ "volume-trend-order-block-engine": {
+  "edge": true
+ },
+ "volume-weighted-median-oscillator": {
+  "edge": true
+ },
+ "volumetric-fair-value-gaps": {
+  "edge": true
+ },
+ "wavetrend-ribbon": {
+  "edge": true
+ },
+ "zero-lag-liquidity": {
+  "edge": true
+ },
+ "zero-lag-trend-signals-mtf": {
+  "edge": true
+ }
 }

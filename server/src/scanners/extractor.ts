@@ -213,6 +213,11 @@ export interface ExtractOptions {
   derived?: ScanEvent[];
   /** Which channels may produce entries (unset: all). Exits and info from `alert()` always pass. */
   sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
+  /**
+   * Rising edge only: an `alertcondition()` or shape that is true on every bar of a state ("bullish")
+   * becomes one entry on the first bar of the run, not one per bar (decision 57).
+   */
+  edge?: boolean;
 }
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
@@ -234,14 +239,21 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     events.push(ev);
   }
   // alertcondition() titles (LuxAlgo style: "Bullish Internal OB Breakout", "Upward Breakout") — only when no alert() fired that bar
+  const lastCondBar = new Map<string, number>();
   for (const a of alerts) {
     if (!allow('alertcondition')) break;
     if (a.type !== 'alertcondition' || alertBars.has(a.time)) continue;
-    if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     // PineTS can hand back a non-string title (e.g. a Series or number) — coerce before parsing
     const title = String(a.title ?? a.message ?? '').trim();
     const side = directionalTitle(title);
     if (!side) continue;
+    if (opts.edge) {
+      // consecutive bars of the same condition are one signal: keep the first bar of the run
+      const k = `${title}|${side}`, prev = lastCondBar.get(k);
+      lastCondBar.set(k, a.barIndex);
+      if (prev !== undefined && a.barIndex - prev <= 1) continue;
+    }
+    if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     const key = `entry:${side}:${a.time}:`;
     if (seenEntry.has(key)) continue;
     seenEntry.add(key);
@@ -259,7 +271,16 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     if (!allow('shape')) break;
     const side = shapeSide(s.title);
     if (!side) continue;
-    for (const t of s.times) {
+    // a shape drawn on every bar of a state is one signal per run: the bar spacing is the smallest
+    // gap between its own prints, and a print one spacing after the previous one continues the run
+    const times = [...s.times].sort((a, b) => a - b);
+    let step = Infinity;
+    for (let i = 1; i < times.length; i++) { const g = times[i] - times[i - 1]; if (g > 0 && g < step) step = g; }
+    let prevT = -Infinity;
+    for (const t of times) {
+      const continues = opts.edge && Number.isFinite(step) && t - prevT <= step * 1.5;
+      prevT = t;
+      if (continues) continue;
       if (opts.sinceBarTime !== undefined && t < opts.sinceBarTime) continue;
       const key = `entry:${side}:${t}:`;
       if (seenEntry.has(key)) continue;

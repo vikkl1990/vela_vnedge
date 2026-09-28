@@ -47,11 +47,11 @@ await Promise.all(Array.from({ length: 8 }, async () => {
     const res = await pool.run({ scannerId: t.id, source: s.patched, symbol: MARKET, tf: t.tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[t.id]?.timezone });
     if (!res.ok) { rows.push({ id: t.id, tf: t.tf, kind: 'broken', ms: res.ms, entries: 0, withSl: 0, withTp: 0, exits: 0, info: 0, alertEntries: 0, alertconds: 0, shapes: 0, labels: 0, labelTexts: '', plots: 0, error: (res.error ?? '').slice(0, 80) }); continue; }
     const derived = applyRules({ scannerId: t.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[t.id]?.rule ?? null, bars, mode: 'backtest' });
-    const ev = extractEvents(res.alerts, res.shapes, { derived, sources: cfg.scanners[t.id]?.sources });
+    const ev = extractEvents(res.alerts, res.shapes, { derived, sources: cfg.scanners[t.id]?.sources, edge: cfg.scanners[t.id]?.edge });
     const entries = ev.filter(e => e.kind === 'entry');
     const withSl = entries.filter(e => e.sl).length, withTp = entries.filter(e => e.tp.length).length;
     const shapes = res.shapes.reduce((a, s) => a + s.times.length, 0);
-    const texts = [...new Set(res.labels.map(l => l.text.replace(/[\d.,%:]+/g, '#').trim()).filter(Boolean))];
+    const texts = [...new Set(res.labels.map(l => l.text.replace(/[\d.,%:]+/g, '#').replace(/\s+/g, ' ').trim()).filter(Boolean))];
     const kind = entries.length ? (withSl || withTp ? 'plan' : 'signal') : (res.labels.length || res.plots.length ? 'levels' : 'silent');
     rows.push({ id: t.id, tf: t.tf, kind, ms: res.ms, entries: entries.length, withSl, withTp, exits: ev.filter(e => e.kind === 'exit').length, info: ev.filter(e => e.kind === 'info').length, alertEntries: entries.filter(e => e.source === 'alert').length, alertconds: res.alerts.filter(a => a.type === 'alertcondition').length, shapes, labels: res.labels.length, labelTexts: texts.slice(0, 6).join(' | ').slice(0, 90), plots: res.plots.length, error: '' });
   }

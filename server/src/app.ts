@@ -279,7 +279,7 @@ export class App {
       const res = await this.pool.run({ scannerId: id, source: s.patched, symbol: market, tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs, timezone: c?.timezone }, { priority: 'background' });
       if (!res.ok) { out.push({ scannerId: id, market, tf, at, ...brokenRun(res.error ?? 'failed', res.ms) }); continue; }
       const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: c?.rule ?? null, bars, mode: 'backtest' });
-      const events = extractEvents(res.alerts, res.shapes, { derived, sources: c?.sources });
+      const events = extractEvents(res.alerts, res.shapes, { derived, sources: c?.sources, edge: c?.edge });
       out.push({ scannerId: id, market, tf, at, ...classifyRun(res, events) });
     }
     for (const r of out) this.profiles.save(r);
