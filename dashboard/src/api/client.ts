@@ -25,7 +25,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels } from './types'
+  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -131,6 +131,8 @@ export const api = {
   scannerIndex: () => get<ScannerIndexEntry[]>('/scanners?view=lite'),
   updateScanner: (id: string, body: ScannerUpdate) => post<Scanner>(`/scanners/${encodeURIComponent(id)}`, body),
   runScanner: (id: string) => post<{ queued: number }>(`/scanners/${encodeURIComponent(id)}/run`),
+  profileScanner: (id: string, body: { market?: string; tfs?: string[] } = {}) => post<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`, body),
+  scannerProfile: (id: string) => get<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`),
   scannerSource: (id: string) => get<ScannerSource>(`/scanners/${encodeURIComponent(id)}/source`),
   scannerOverlay: (id: string, symbol: string, tf: string) =>
     get<ScannerOverlay>(`/scanners/${encodeURIComponent(id)}/overlay${qs({ symbol, tf })}`),

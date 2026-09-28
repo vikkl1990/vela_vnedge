@@ -16,6 +16,10 @@ import { ScannerEngine } from './scanners/engine.ts';
 import { ScannerRegistry } from './scanners/registry.ts';
 import { createExecutor, type ExchangeExecutor } from './execution/testnet.ts';
 import { subscribeRealtime, wireRealtime } from './execution/wiring.ts';
+import { TF_SECONDS } from './config.ts';
+import { ProfileStore, brokenRun, classifyRun, summarizeKind, type ProfileRow } from './scanners/profile.ts';
+import { extractEvents } from './scanners/extractor.ts';
+import { applyRules } from './scanners/rules.ts';
 import { MarkStore } from './data/marks.ts';
 import { RiskManager } from './risk/manager.ts';
 import { MlService } from './ml/service.ts';
@@ -50,6 +54,7 @@ export class App {
   readonly incubator: ShadowRunner;
   readonly ml: MlService;
   readonly scanners: ScannerEngine;
+  readonly profiles: ProfileStore;
   readonly marks = new MarkStore();
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
@@ -64,6 +69,7 @@ export class App {
     this.rest = deps.rest ?? new DeltaRest();
     this.feed = deps.feed ?? new DeltaFeed();
     this.registry = deps.registry ?? new ScannerRegistry();
+    this.profiles = new ProfileStore(this.db);
     this.candles = new CandleStore(this.rest, this.feed, cfg().historyBars + 50);
     const workers = new WorkerTracker();
     this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined, undefined, workers.factory);
@@ -202,6 +208,7 @@ export class App {
       signals: this.db.countSignalsByScanner(),
       backtests: this.scanners.backtestsByScanner(),
       lastRun: this.scanners.lastRunByScanner(),
+      profiles: this.profiles.summaries(),
     };
   }
 
@@ -212,15 +219,52 @@ export class App {
     const stats = idx ? this.paper.scannerStats(id, { closed: idx.closed, open: idx.open }) : this.paper.scannerStats(id);
     stats.signals = idx ? (idx.signals.get(id) ?? 0) : this.db.countSignals(id);
     stats.backtest = idx ? this.scanners.backtestSummary(id, idx.backtests) : this.scanners.backtestSummary(id);
+    const prof = idx ? (idx.profiles.get(id) ?? null) : (() => { const rows = this.profiles.forScanner(id); return rows.length ? { kind: summarizeKind(rows)!, at: Math.max(...rows.map(r => r.at)), tfs: new Set(rows.map(r => r.tf)).size } : null; })();
+    const health = this.scanners.health.row(id);
     return {
       id: s.id, name: s.name, author: s.author, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: this.scanners.isActive(s), hidden: Boolean(c.hidden),
       overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, updated: s.updated, patches: s.patches,
       symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), exitMode: c.exitMode,
+      // how the script is read (decision 48): its entry channel, timezone, derivation rule, input overrides and exit overrides
+      reads: { sources: c.sources ?? null, timezone: c.timezone ?? null, rule: c.rule ?? null, inputs: c.inputs ?? null, exit: c.exit ?? null },
+      // what it produced when last profiled, and whether the runtime has given up on it
+      kind: prof?.kind ?? null, profiledAt: prof?.at ?? null, health: health ? { fails: health.fails, lastAt: health.lastAt, lastError: health.lastError, reason: health.reason, quarantined: health.quarantined } : null,
       lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,
     };
   }
 
   scannerViews() { const idx = this.scannerViewIndex(); return this.registry.all().map(s => this.scannerView(s.id, idx)); }
+
+  /**
+   * Run one script on a market across timeframes and record what it produced. Background priority:
+   * the live scan is never delayed by a profile. Returns the rows it stored.
+   */
+  async profileScanner(id: string, opts: { market?: string; tfs?: string[] } = {}): Promise<ProfileRow[]> {
+    const s = this.registry.get(id);
+    if (!s) throw new Error('unknown scanner');
+    const market = opts.market ?? 'ETHUSD';
+    const tfs = opts.tfs ?? ['15m', '1h', '4h'];
+    const BARS: Record<string, number> = { '5m': 4000, '15m': 4000, '1h': 3000, '4h': 2000 };
+    const product = await this.rest.product(market);
+    const tickSize = Number(product?.tick_size ?? 0.5);
+    const cfg = this.config.get();
+    const out: ProfileRow[] = [];
+    for (const tf of tfs) {
+      const at = Date.now();
+      if (s.status !== 'ok') { out.push({ scannerId: id, market, tf, at, ...brokenRun(s.reason ?? s.status) }); continue; }
+      const candles = await this.rest.recentCandles(market, tf, BARS[tf] ?? 3000, TF_SECONDS[tf]);
+      const bars = candles.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
+      const c = cfg.scanners[id];
+      const inputs = c?.inputs && Object.keys(c.inputs).length ? c.inputs : undefined;
+      const res = await this.pool.run({ scannerId: id, source: s.patched, symbol: market, tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs, timezone: c?.timezone }, { priority: 'background' });
+      if (!res.ok) { out.push({ scannerId: id, market, tf, at, ...brokenRun(res.error ?? 'failed', res.ms) }); continue; }
+      const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: c?.rule ?? null, bars, mode: 'backtest' });
+      const events = extractEvents(res.alerts, res.shapes, { derived, sources: c?.sources });
+      out.push({ scannerId: id, market, tf, at, ...classifyRun(res, events) });
+    }
+    for (const r of out) this.profiles.save(r);
+    return out;
+  }
 
   /**
    * The fields the header, dropdowns and pickers actually read. The full view carries per-scanner

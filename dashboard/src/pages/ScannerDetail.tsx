@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useBacktest, useConfig, useEquity, useMarkets, useRunBacktest, useRunScanner, useScannerSource, useScanners, useSignals, useTrades } from '../api/queries'
-import type { Trade } from '../api/types'
+import { useBacktest, useConfig, useEquity, useMarkets, useProfileScanner, useRunBacktest, useRunScanner, useScannerProfile, useScannerSource, useScanners, useSignals, useTrades, useUpdateScanner } from '../api/queries'
+import { useAuth } from '../auth/AuthGate'
+import type { EntrySource, Trade } from '../api/types'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
 import { EquityChart } from '../components/charts'
 import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconPlay } from '../components/Icons'
-import { Collapsible, Empty, ErrorState, ExitReasonPill, KpiTile, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
+import { ChipSelect, Collapsible, Empty, ErrorState, ExitReasonPill, KpiTile, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
 import { SignalsTable } from './Signals'
 import { fmtInt, fmtMs, fmtProfitFactor, fmtPct, fmtPrice, fmtR } from '../lib/format'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
@@ -127,6 +128,8 @@ export function ScannerDetail() {
         <KpiTile label="Max DD" value={`−${fmtPct(Math.abs(st?.maxDrawdownPct ?? 0))}`} tone="loss" />
         <KpiTile label="Backtest PF" value={bt ? fmtProfitFactor(bt.profitFactor) : '–'} sub={bt ? <span className="muted">{bt.trades} trades · {fmtPct(bt.winRatePct)} · <Pnl value={bt.pnl} /></span> : <span className="muted">no warm backtest</span>} hint="Backtest profit factor" />
       </div>
+
+      <ReadingPanel s={s} />
 
       <Panel
         title="Chart"
@@ -282,5 +285,86 @@ function SourceViewer({ id }: { id: string }) {
       </div>
       <pre className="source">{tab === 'patched' ? d.patched : d.source}</pre>
     </div>
+  )
+}
+
+
+const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', levels: 'muted', silent: 'warn', broken: 'danger' }
+const SOURCES: EntrySource[] = ['alert', 'alertcondition', 'shape', 'derived']
+
+/**
+ * How this script is read, and what it produced when last profiled (decision 48). The entry
+ * channel, timezone and derivation rule are editable here; a profile run shows the counts the
+ * classification rests on so an over-read script is visible as such.
+ */
+function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['data']>[number] }) {
+  const auth = useAuth()
+  const update = useUpdateScanner()
+  const profile = useProfileScanner()
+  const rows = useScannerProfile(s.id)
+  const toast = useToast()
+  const [sources, setSources] = useState<EntrySource[]>(s.reads?.sources ?? [])
+  const [timezone, setTimezone] = useState(s.reads?.timezone ?? '')
+  const [rule, setRule] = useState<string>(s.reads?.rule ?? '')
+  const dirty = JSON.stringify(sources) !== JSON.stringify(s.reads?.sources ?? []) || timezone !== (s.reads?.timezone ?? '') || rule !== (s.reads?.rule ?? '')
+  const save = () =>
+    update.mutate(
+      { id: s.id, body: { sources: sources.length ? sources : null, timezone: timezone || null, rule: (rule || null) as 'trailing' | 'oscillator' | null } },
+      { onSuccess: () => toast.success('Saved how this script is read'), onError: (e) => toast.error(String((e as Error).message ?? e)) },
+    )
+  const h = s.health
+  return (
+    <Panel
+      title="How it is read"
+      right={
+        <div className="row gap">
+          {s.kind ? <Pill tone={KIND_TONE[s.kind]} title={s.profiledAt ? `profiled ${new Date(s.profiledAt).toUTCString()}` : ''}>{s.kind}</Pill> : <span className="muted small">not profiled yet</span>}
+          {h?.quarantined && <Pill tone="danger" title={h.lastError}>quarantined: {h.reason ?? 'repeated failure'}</Pill>}
+          <button className="btn btn-sm" onClick={() => profile.mutate({ id: s.id }, { onError: (e) => toast.error(String((e as Error).message ?? e)) })} disabled={profile.isPending || s.status !== 'ok'} title="Run the script on ETHUSD 15m/1h/4h and classify what it produces">
+            {profile.isPending ? 'Profiling…' : 'Profile now'}
+          </button>
+        </div>
+      }
+    >
+      <div className="grid-2">
+        <div>
+          <ChipSelect label="Entry channel" options={SOURCES} value={sources} onChange={(v) => setSources(v as EntrySource[])} emptyLabel="all channels" disabled={!auth.canTrade} />
+          <p className="muted small">Which of the script's outputs may open a trade. A plan script should read <b>alert</b> only; shapes and alertconditions on the same bars are markers, not trade calls.</p>
+          <div className="row gap wrap">
+            <label className="field"><span className="field-label">Timezone</span><input className="input mono" value={timezone} placeholder="Etc/UTC" onChange={(e) => setTimezone(e.target.value)} disabled={!auth.canTrade} /></label>
+            <label className="field"><span className="field-label">Derived rule</span>
+              <select className="select" value={rule} onChange={(e) => setRule(e.target.value)} disabled={!auth.canTrade}>
+                <option value="">none</option><option value="trailing">trailing (close crosses the trail)</option><option value="oscillator">oscillator (zero / OB-OS cross)</option>
+              </select>
+            </label>
+            {auth.canTrade && <button className="btn btn-cta btn-sm" onClick={save} disabled={!dirty || update.isPending}>{update.isPending ? 'Saving…' : 'Save'}</button>}
+          </div>
+          {s.reads?.inputs && Object.keys(s.reads.inputs).length > 0 && <p className="muted small mono">inputs: {JSON.stringify(s.reads.inputs)}</p>}
+          {s.reads?.exit && Object.keys(s.reads.exit).length > 0 && <p className="muted small mono">exit overrides: {JSON.stringify(s.reads.exit)}</p>}
+          {h && !h.quarantined && h.fails > 0 && <p className="muted small">{h.fails} permanent-looking failure(s), last: {h.lastError}</p>}
+        </div>
+        <div>
+          {rows.data?.rows?.length ? (
+            <table className="table">
+              <thead><tr><th>tf</th><th>kind</th><th className="num">entries</th><th className="num">with plan</th><th className="num">from alert</th><th className="num">alertconds</th><th className="num">shapes</th><th className="num">labels</th><th className="num">plots</th><th className="num">ms</th></tr></thead>
+              <tbody>
+                {rows.data.rows.map((r) => (
+                  <tr key={`${r.market}-${r.tf}`} title={r.error ?? r.labelTexts.join(' | ')}>
+                    <td className="mono">{r.tf}</td><td><Pill tone={KIND_TONE[r.kind]}>{r.kind}</Pill></td>
+                    <td className="num mono">{r.entries}</td><td className="num mono">{Math.max(r.withSl, r.withTp)}</td><td className="num mono">{r.alertEntries}</td>
+                    <td className="num mono">{r.alertconds}</td><td className="num mono">{r.shapes}</td><td className="num mono">{r.labels}</td><td className="num mono">{r.plots}</td><td className="num mono muted">{r.ms}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="muted small">No profile yet. "Profile now" runs the script on ETHUSD across 15m, 1h and 4h and reports what it emits — the numbers the kind badge rests on.</p>
+          )}
+          {rows.data?.rows?.some((r) => r.entries > r.alertEntries && !s.reads?.sources?.length) && (
+            <p className="text-danger small">More entries than trade calls: shapes or alertconditions are being read as entries. Lock the entry channel to <b>alert</b> unless that is intended.</p>
+          )}
+        </div>
+      </div>
+    </Panel>
   )
 }

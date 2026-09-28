@@ -67,6 +67,9 @@ export function Learn() {
 
   return (
     <div className="page">
+      <div className="banner banner-warn small" role="note">
+        Advisory only. The model is not wired to any decision (<span className="mono">ml.minProb 0</span>, <span className="mono">ml.useAsScore off</span>): measured as an entry filter it improved R per trade only by discarding trades and never improved total R (decision 37). Its features are price-shape at entry — nothing a script does not already see. Read the weights as description, not prescription.
+      </div>
       <PageTitle pre="Every trade," accent="learned" post="from." sub="Entry-time features of every backtest and paper trade train a win-probability model per scanner; bucket analysis turns the data into concrete rules." />
       {ml.isLoading && !d && (
         <>

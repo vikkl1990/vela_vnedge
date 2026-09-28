@@ -1532,3 +1532,13 @@ Two rules, both about capacity rather than edge:
 Neither is measured for edge; both remove trades that cannot pay their fees or double-count an
 idea. They will show up as more "margin" rejections on the Signals page, which is the honest
 picture of a $1,000 account carrying this fleet (audit finding 6).
+
+## 54. Scanners carry their profile and their reading; the Learn page says it is advisory
+
+Audit in `docs/ML-SCANNERS-AUDIT-2026-09-28.md`. The learned model steers nothing (decision 37) and
+its page now says so. Scanners are handled as what they are: each carries a stored profile of what
+it produced when run (plan / signal / levels / silent / broken, with the counts), how it is read
+(entry channel, timezone, derived rule, overrides — editable on the detail page), and its health
+row. `POST /api/scanners/:id/profile` and `npm run profile` both write `script_profile`. Nothing in
+the fleet changes; the next step is evidence on the page (halves, breadth, cohort verdicts) and an
+enable switch that refuses to skip the lifecycle.

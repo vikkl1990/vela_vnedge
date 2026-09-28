@@ -127,6 +127,16 @@ export function useUpdateScanner() {
   })
 }
 
+export function useProfileScanner() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, market, tfs }: { id: string; market?: string; tfs?: string[] }) => api.profileScanner(id, { market, tfs }),
+    onSuccess: (_d, v) => { void qc.invalidateQueries({ queryKey: qk.scanners }); void qc.invalidateQueries({ queryKey: ['scanner-profile', v.id] }) },
+  })
+}
+export const useScannerProfile = (id: string | undefined) =>
+  useQuery({ queryKey: ['scanner-profile', id], queryFn: () => api.scannerProfile(id!), enabled: Boolean(id), staleTime: 60_000, retry: 1 })
+
 export function useRunScanner() {
   const qc = useQueryClient()
   return useMutation({

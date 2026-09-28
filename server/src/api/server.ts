@@ -243,12 +243,22 @@ export class ApiServer {
       if (body?.timeframes === null) patch.timeframes = null;
       if (body?.exitMode) { if (!['levels', 'script', 'both'].includes(body.exitMode)) throw new HttpError(400, 'bad exitMode'); patch.exitMode = body.exitMode; }
       if (typeof body?.hidden === 'boolean') { patch.hidden = body.hidden; if (body.hidden) patch.enabled = false; }
+      // how the script is read (decision 48)
+      if (body?.sources === null) patch.sources = undefined;
+      if (Array.isArray(body?.sources)) { const ok = ['alert', 'alertcondition', 'shape', 'derived']; for (const x of body.sources) if (!ok.includes(x)) throw new HttpError(400, `bad source ${x}`); patch.sources = body.sources.length ? body.sources : undefined; }
+      if (body?.timezone === null || body?.timezone === '') patch.timezone = undefined;
+      else if (typeof body?.timezone === 'string') { try { new Intl.DateTimeFormat('en-US', { timeZone: body.timezone }); } catch { throw new HttpError(400, 'not an IANA timezone'); } patch.timezone = body.timezone; }
+      if (body?.rule === null) patch.rule = null;
+      else if (typeof body?.rule === 'string') { if (!['trailing', 'oscillator'].includes(body.rule)) throw new HttpError(400, 'bad rule'); patch.rule = body.rule; }
       a.config.setScanner(p.id, patch);
       // removal stops new entries; positions already open keep running to their stop/targets (closing them at market gave back profits)
       await a.onConfigChanged();
       return a.scannerView(p.id);
     });
     this.add('POST', '/api/scanners/:id/run', (_r, _s, p) => ({ queued: a.scanners.runNow(p.id) }));
+    // what the script produces in our runtime, on one market across timeframes (decision 48)
+    this.add('POST', '/api/scanners/:id/profile', async (_r, _s, p, _u, body) => ({ rows: await a.profileScanner(p.id, { market: body?.market ? String(body.market) : undefined, tfs: Array.isArray(body?.tfs) ? body.tfs.map(String) : undefined }) }));
+    this.add('GET', '/api/scanners/:id/profile', (_r, _s, p) => ({ rows: a.profiles.forScanner(p.id) }));
     this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches }; });
     this.add('GET', '/api/scanners/:id/overlay', (_r, _s, p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.scanners.symbolsFor(p.id)[0];

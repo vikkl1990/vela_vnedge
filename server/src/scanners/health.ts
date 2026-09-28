@@ -61,6 +61,11 @@ export class ScriptHealth {
     return this.cache ??= new Set(this.db.all<{ scanner_id: string }>('SELECT scanner_id FROM script_health WHERE quarantined=1').map(r => r.scanner_id));
   }
   isQuarantined(scannerId: string): boolean { return this.quarantined().has(scannerId); }
+  /** This script's failure record, or null when it has never failed permanently. */
+  row(scannerId: string): HealthRow | null {
+    const r = this.db.get<any>('SELECT * FROM script_health WHERE scanner_id=?', scannerId);
+    return r ? { scannerId: r.scanner_id, fails: r.fails, lastAt: r.last_at, lastError: r.last_error, reason: r.reason ?? null, quarantined: Boolean(r.quarantined) } : null;
+  }
 
   list(): HealthRow[] {
     return this.db.all<any>('SELECT * FROM script_health ORDER BY quarantined DESC, fails DESC')

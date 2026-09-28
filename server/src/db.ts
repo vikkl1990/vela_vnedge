@@ -61,6 +61,14 @@ CREATE TABLE IF NOT EXISTS backtests (
 
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 
+-- what each script produced when last profiled on a market × timeframe (decision 48 / 54)
+CREATE TABLE IF NOT EXISTS script_profile (
+  scanner_id TEXT NOT NULL, market TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, ms INTEGER NOT NULL DEFAULT 0,
+  entries INTEGER NOT NULL DEFAULT 0, with_sl INTEGER NOT NULL DEFAULT 0, with_tp INTEGER NOT NULL DEFAULT 0, exits INTEGER NOT NULL DEFAULT 0, info INTEGER NOT NULL DEFAULT 0,
+  alert_entries INTEGER NOT NULL DEFAULT 0, alertconds INTEGER NOT NULL DEFAULT 0, shapes INTEGER NOT NULL DEFAULT 0, labels INTEGER NOT NULL DEFAULT 0, label_texts TEXT NOT NULL DEFAULT '[]', plots INTEGER NOT NULL DEFAULT 0, error TEXT,
+  PRIMARY KEY (scanner_id, market, tf)
+);
+
 -- every order the executor ever intended to send, and what became of it: the durable order state
 -- machine (decision 46). intent → submitted → acknowledged → filled | cancelled | rejected; unknown when
 -- the exchange could not be asked. Recovery after a restart starts from these rows, never from memory.

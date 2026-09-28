@@ -9,6 +9,8 @@ import { IconExternal, IconGrid, IconPlay, IconRows } from '../components/Icons'
 import { ChipSelect, ConfirmDialog, Empty, ErrorState, Loading, PageTitle, Pill, Pnl, ScannerStatusPill, Segmented, Time } from '../components/ui'
 import { CATEGORIES, categorize, type Category } from '../lib/categories'
 import { fmtMs, fmtProfitFactor, fmtPct } from '../lib/format'
+
+const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', levels: 'muted', silent: 'warn', broken: 'danger' }
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
 
@@ -154,6 +156,14 @@ export function Scanners() {
         ),
       },
       { key: 'status', header: 'Status', value: (s) => s.status, render: (s) => <ScannerStatusPill status={s.status} reason={s.reason} /> },
+      {
+        key: 'kind', header: 'Kind', value: (s) => s.kind ?? '', title: 'What the script produced when last profiled: plan (its own stop and targets), signal (a direction), levels (information), silent, broken',
+        render: (s) => (s.health?.quarantined ? <Pill tone="danger" title={`Quarantined: ${s.health.reason ?? s.health.lastError}`}>quarantined</Pill> : s.kind ? <Pill tone={KIND_TONE[s.kind]}>{s.kind}</Pill> : <span className="muted">–</span>),
+      },
+      {
+        key: 'reads', header: 'Reads', value: (s) => (s.reads?.sources ?? []).join(','), title: 'Which of the script\'s channels may open a trade (decision 48); "all" is the old behaviour',
+        render: (s) => <span className="mono small muted">{s.reads?.sources?.length ? s.reads.sources.join('+') : 'all'}{s.reads?.rule ? ` · ${s.reads.rule}` : ''}</span>,
+      },
       {
         key: 'enabled',
         header: 'On',

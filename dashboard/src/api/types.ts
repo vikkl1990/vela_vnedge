@@ -158,6 +158,20 @@ export interface Scanner {
   exitMode: ExitMode
   lastRun: LastRun | null
   stats: ScannerStats
+  /** How the script is read (decision 48): entry channels, timezone, derivation rule, overrides. */
+  reads?: { sources: EntrySource[] | null; timezone: string | null; rule: 'trailing' | 'oscillator' | null; inputs: Record<string, number | string | boolean> | null; exit: Record<string, unknown> | null }
+  /** What it produced when last profiled: the author's plan, a direction, information, nothing. */
+  kind?: ProfileKind | null
+  profiledAt?: number | null
+  health?: { fails: number; lastAt: number; lastError: string; reason: string | null; quarantined: boolean } | null
+}
+
+export type EntrySource = 'alert' | 'alertcondition' | 'shape' | 'derived'
+export type ProfileKind = 'plan' | 'signal' | 'levels' | 'silent' | 'broken'
+export interface ProfileRow {
+  scannerId: string; market: string; tf: string; at: number; kind: ProfileKind; ms: number
+  entries: number; withSl: number; withTp: number; exits: number; info: number
+  alertEntries: number; alertconds: number; shapes: number; labels: number; labelTexts: string[]; plots: number; error: string | null
 }
 
 export interface ScannerUpdate {
@@ -166,6 +180,9 @@ export interface ScannerUpdate {
   symbols?: string[]
   timeframes?: string[]
   exitMode?: ExitMode
+  sources?: EntrySource[] | null
+  timezone?: string | null
+  rule?: 'trailing' | 'oscillator' | null
 }
 
 export interface ScannerSource {
