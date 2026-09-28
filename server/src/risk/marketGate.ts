@@ -7,7 +7,7 @@
  *     `minAtrFeeMult` × the round-trip fee — the same arithmetic as the fee filter, applied to the
  *     market before any signal is spent on it);
  *   - the book's own recent record on it is losing (`minTrades` or more closed trades in the last
- *     `lookbackDays` across the live and shadow books with a profit factor under `minPf`).
+ *     `lookbackDays` across the live, archived-live and shadow books with a profit factor under `minPf`).
  *
  * The verdicts refresh every `refreshMinutes` and are kept in `kv` for the dashboard. A market the
  * bot has no candles for gets no volatility opinion rather than a block.
@@ -74,7 +74,7 @@ export class MarketGate {
         if (Number.isFinite(last) && px > 0) atrPct = last / px * 100;
       }
       if (atrPct !== null && c.minAtrFeeMult > 0 && atrPct < feeRoundTripPct * c.minAtrFeeMult) reasons.push(`too quiet: ${c.tf ?? '15m'} ATR ${atrPct.toFixed(2)}% < ${(feeRoundTripPct * c.minAtrFeeMult).toFixed(2)}% (${c.minAtrFeeMult}× the round-trip fee)`);
-      const rows = this.deps.db.all<{ pnl: number }>('SELECT realized_pnl - fees AS pnl FROM positions WHERE status=\'closed\' AND bt IN (0, 2) AND symbol=? AND exit_at>=?', symbol, since);
+      const rows = this.deps.db.all<{ pnl: number }>('SELECT realized_pnl - fees AS pnl FROM positions WHERE status=\'closed\' AND bt IN (0, 2, -1) AND symbol=? AND exit_at>=?', symbol, since);
       const gp = rows.filter(r => r.pnl > 0).reduce((a, r) => a + r.pnl, 0), gl = -rows.filter(r => r.pnl <= 0).reduce((a, r) => a + r.pnl, 0);
       const pf = rows.length ? (gl > 0 ? gp / gl : gp > 0 ? 99 : 0) : null;
       if (rows.length >= c.minTrades && pf !== null && pf < c.minPf) reasons.push(`not paying: PF ${pf.toFixed(2)} over ${rows.length} trades in ${c.lookbackDays}d`);

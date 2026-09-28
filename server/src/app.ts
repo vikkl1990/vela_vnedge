@@ -168,6 +168,8 @@ export class App {
     if (this.executor) await this.executor.start();
     // markets today: judged now and every refreshMinutes, over the fleet's and the incubator's markets
     const refreshMarkets = () => this.marketGate.refresh([...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])]).catch(e => log.warn(`markets today failed: ${e?.message ?? e}`));
+    // once the candle store has warmed up (the ATR test needs bars), then hourly
+    setTimeout(refreshMarkets, 3 * 60_000).unref?.();
     void refreshMarkets();
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
