@@ -181,6 +181,12 @@ export interface PaperConfig {
    * trade below the fleet's targets. `ignore`: the ladder always, the script's targets are advisory.
    */
   scriptTargets?: 'use' | 'widen' | 'ignore';
+  /**
+   * A trade the margin can only fund at less than this share of its intended size is refused
+   * instead of taken as a scrap: a $30-risk idea funded at $0.30 cannot earn back its fees
+   * (decision 53). 0 = off (the default); the VM runs 0.5.
+   */
+  minSizeShare?: number;
   maxOpenPositions: number;
   // ---- execution realism (phase 2) ----
   /** `tape`: fill on Delta's trade stream (1m candles only when the tape is silent > tapeFallbackMs). `candles`: legacy 1-minute candle fills. */
@@ -471,6 +477,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     trailStall: { minutes: 0, factor: 1 },
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
+    minSizeShare: 0,
     maxOpenPositions: 20,
     fillSource: 'candles',
     limitFill: 'through',
@@ -604,6 +611,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.trailAfterR > 0 && !(p.trailGiveBackPct > 0) && !(Number.isFinite(p.trailDistanceR) && p.trailDistanceR > 0)) errs.push('paper.trailDistanceR must be > 0 when trailing is on without trailGiveBackPct');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');
   if (p.scriptTargets !== undefined && !['use', 'widen', 'ignore'].includes(p.scriptTargets)) errs.push('paper.scriptTargets must be use|widen|ignore');
+  if (p.minSizeShare !== undefined && !(Number.isFinite(p.minSizeShare) && p.minSizeShare >= 0 && p.minSizeShare <= 1)) errs.push('paper.minSizeShare must be 0..1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
   if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');

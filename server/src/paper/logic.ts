@@ -241,6 +241,12 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
     if (stopCapQty < 1) return rejected(`stop too wide for the ${stopCapPct}% max stop-loss cap`);
     return rejected(maxQty < 1 ? 'margin or leverage cap exhausted' : 'risk budget too small for one contract');
   }
+  // The margin left after the open positions can fund only a fraction of what the strategy asked
+  // for. Below `minSizeShare` that fraction is a scrap: it pays the same fees and cannot earn the
+  // trade's R in dollars, so it is refused rather than taken (decision 53).
+  const intended = Math.min(desired, stopCapQty);
+  const minShare = s.cfg.minSizeShare ?? 0;
+  if (minShare > 0 && Number.isFinite(intended) && intended >= 1 && qty < intended * minShare) return rejected(`margin funds only ${Math.round(qty / intended * 100)}% of the intended size (min ${Math.round(minShare * 100)}%)`);
   // With depth impact the cost of a fill grows with its size, so the per-contract figure above
   // understates the loss of a large order. Price the stop-out exactly as the fills will (entry and
   // exit impact on the order's own notional) and shrink the order until it fits the budget.

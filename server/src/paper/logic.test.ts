@@ -5,6 +5,20 @@ import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit,
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
+test('sizeContracts refuses a scrap: margin that funds under minSizeShare of the intended size is a rejection, not a tiny trade', () => {
+  const c = { ...cfg, sizingMode: 'risk' as const, riskPerTradePct: 2, maxLeverage: 5, minSizeShare: 0.5, depthUsdPerBp: 0 };
+  // $1,000 equity, 2% risk on a 5-point stop with contract 1 → wants 3 contracts; margin for 3 at 5x is $60
+  const full = sizeContracts(100, 95, { equity: 1000, contractValue: 1, tickSize: 0.5, cfg: c, availableMargin: 200 });
+  assert.ok(full.qty >= 3, `wants a few contracts, got ${full.qty}`);
+  // margin for one contract only: a fraction of the intended size
+  const scrap = sizeContracts(100, 95, { equity: 1000, contractValue: 1, tickSize: 0.5, cfg: c, availableMargin: 25 });
+  assert.equal(scrap.qty, 0); assert.match(scrap.reason ?? '', new RegExp(`funds only ${Math.round(100 / full.qty)}%`));
+  const lenient = sizeContracts(100, 95, { equity: 1000, contractValue: 1, tickSize: 0.5, cfg: { ...c, minSizeShare: 1 / full.qty - 0.01 }, availableMargin: 25 });
+  assert.equal(lenient.qty, 1, 'a minimum just under the funded share still takes the trade');
+  const off = sizeContracts(100, 95, { equity: 1000, contractValue: 1, tickSize: 0.5, cfg: { ...c, minSizeShare: 0 }, availableMargin: 25 });
+  assert.equal(off.qty, 1);
+});
+
 test('resolveLevels: scriptTargets widen lets a script push a leg out but never in; ignore keeps the ladder', () => {
   const c = { ...cfg, fallbackRR: [2, 4, 6] as [number, number, number] };
   // risk 5 → ladder 110 / 120 / 130; the script asks for a closer first leg and a further second

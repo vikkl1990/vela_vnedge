@@ -1503,3 +1503,32 @@ proposed (break-even + tighter trail on two of them) are not taken — decision 
 Every pair now runs: stop 1.0×ATR (4.0 for structure-anchored-vwap, decision 43), lock +0.25R at
 +0.5R, trail from +0.5R keeping 60% of the peak (70% past 2R, 80% past 4R, ×0.6 after a 45-minute
 stall), targets 2/4/6R with everything on the last, reversal above 0R.
+
+## 53. No scraps, and one position per symbol
+
+Review of the twelve hours after decisions 50–52 went live (15 closed trades on the VM):
+
+- Every trade that showed +0.5R banked a gain — eight of eight, from +0.33R to +1.59R (six `trail`
+  exits, two locks). Not one "green then red" in the band the new rules cover.
+- The seven losses were all −1R, five of them **within three to six minutes of entry** and never
+  green. Entries, not exits.
+- Net −$14.61 on fees of $26.63: the trades earned +$12 gross and paid twice that to the exchange.
+- **Six of the fifteen were scraps.** After two full-size positions (about $2,400 notional at 5×,
+  $480 margin each) the wallet is spent, and the next signals were funded at what was left:
+  $43, $10 and $33 of notional with $0.35, $0.08 and $0.28 at risk against an intended $30. They
+  cannot earn their R in dollars and they pay fees; the six of them lost $13.80 — the whole net loss
+  of the window.
+- **Two scanners opened the same AKEUSD short on the same bar** (#489, #490: identical entry, peak
+  and exit), doubling one idea to 5.4% of equity at risk; `maxPositionsPerSymbol` was 2.
+
+Two rules, both about capacity rather than edge:
+
+1. **`paper.minSizeShare 0.5`** — a trade the margin can fund at less than half its intended size is
+   refused ("margin funds only 23% of the intended size") instead of taken as a scrap. Code default
+   0 (off) so nothing else changes; the VM runs 0.5.
+2. **`risk.maxPositionsPerSymbol 1`** — a second scanner agreeing on a symbol does not add a second
+   position. The reversal logic already handles the opposite side.
+
+Neither is measured for edge; both remove trades that cannot pay their fees or double-count an
+idea. They will show up as more "margin" rejections on the Signals page, which is the honest
+picture of a $1,000 account carrying this fleet (audit finding 6).
