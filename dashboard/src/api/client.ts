@@ -25,7 +25,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow } from './types'
+  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -109,6 +109,8 @@ export const api = {
   updateProfile: (body: { displayName: string }) => post<{ user: Me }>('/auth/profile', body),
   // risk and exchange state
   risk: () => get<RiskState>('/risk'),
+  marketsToday: () => get<MarketsToday>('/markets/today'),
+  refreshMarketsToday: () => post<MarketsToday>('/markets/today/refresh'),
   /** Manual halt: no new entries until resumed; optionally flatten the paper book. */
   riskKill: (reason: string, closeAll = false) => post<RiskState>('/risk/kill', { reason, closeAll }),
   riskResume: () => post<RiskState>('/risk/reset'),

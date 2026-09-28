@@ -17,6 +17,7 @@ import { ScannerRegistry } from './scanners/registry.ts';
 import { createExecutor, type ExchangeExecutor } from './execution/testnet.ts';
 import { subscribeRealtime, wireRealtime } from './execution/wiring.ts';
 import { TF_SECONDS } from './config.ts';
+import { MarketGate } from './risk/marketGate.ts';
 import { ProfileStore, brokenRun, classifyRun, summarizeKind, type ProfileRow } from './scanners/profile.ts';
 import { extractEvents } from './scanners/extractor.ts';
 import { applyRules } from './scanners/rules.ts';
@@ -55,6 +56,8 @@ export class App {
   readonly ml: MlService;
   readonly scanners: ScannerEngine;
   readonly profiles: ProfileStore;
+  readonly marketGate: MarketGate;
+  private marketTimer: ReturnType<typeof setInterval> | null = null;
   private huntSeenAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
@@ -121,7 +124,8 @@ export class App {
     this.feed.on('status', async (s: { connected: boolean }) => {
       if (s.connected) for (const t of this.candles.tracked()) { try { const n = await this.candles.resync(t.symbol, t.tf); if (n) log.info(`resynced ${t.symbol} ${t.tf}: ${n} bars`); } catch (e: any) { log.warn(`resync failed ${t.symbol} ${t.tf}: ${e?.message}`); } }
     });
-    this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg });
+    this.marketGate = new MarketGate({ db: this.db, candles: this.candles, markets: () => this.markets(), cfgRef: cfg });
+    this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     wireRealtime(this);
@@ -162,6 +166,11 @@ export class App {
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
     subscribeRealtime(this);
     if (this.executor) await this.executor.start();
+    // markets today: judged now and every refreshMinutes, over the fleet's and the incubator's markets
+    const refreshMarkets = () => this.marketGate.refresh([...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])]).catch(e => log.warn(`markets today failed: ${e?.message ?? e}`));
+    void refreshMarkets();
+    this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
+    this.marketTimer.unref?.();
     // the daily screen runs in its own process; when it finishes, the hunt runs here so promotions land in the live config
     this.huntSeenAt = this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
     this.huntTimer = setInterval(() => {
@@ -465,6 +474,7 @@ export class App {
   async stop() {
     this.incubator.stop();
     this.executor?.stop();
+    if (this.marketTimer) clearInterval(this.marketTimer);
     if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();

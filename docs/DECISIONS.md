@@ -1567,3 +1567,32 @@ Changed:
 This reverses decision 17's propose-and-approve, at the owner's request. What protects the fleet
 is now the gate and the limits, not the click; the review of promoted pairs is the demotion rule
 (`incubator.demote`) and the 100-trade review.
+
+## 56. Markets today: a pair is only traded when the market itself is suitable
+
+The owner's rule, after the hunter: it is not enough for a scanner to be good — the pair (PUMP, SUI,
+SEI, ONDO, any of them) must be worth trading *that day*, and a market that is not paying is ignored.
+The fee study made half of this measurable already: on 15m the majors cannot pay a round trip, and
+the fee filter was refusing them one signal at a time.
+
+`risk.marketGate`, judged for every fleet and incubator market at start and every hour, with the
+verdicts on the Overview page and on every rejection. A market is out today when any of:
+
+- **illiquid** — 24 h turnover under `minTurnoverUsd` ($1M);
+- **too quiet** — 15m ATR as a share of price under `minAtrFeeMult` (4) round-trip fees, i.e. a
+  1×ATR stop that cannot pay 0.118% — the fee filter's arithmetic applied to the market before a
+  signal is spent on it;
+- **not paying** — at least `minTrades` (5) closed trades on it in the last `lookbackDays` (14),
+  live and shadow books together, with profit factor under `minPf` (1.0).
+
+A market the bot has no candles for gets no volatility opinion, not a block. Exempt list for
+markets the owner wants regardless. The gate rejects at entry (`market: …`), so open positions are
+never touched, and nothing here changes what the scanners compute — it changes where their
+signals are allowed to become trades.
+
+What is measured and what is not: the turnover and the fee floor follow from arithmetic that has
+been checked against the exchange. The "not paying" rule is the owner's; whether recent
+profitability on a market predicts the next fortnight is being tested on the fleet-wide survey
+(halves per market) and will be reported. Until then the rule stands because the owner asked for
+it, and because a market where the book has lost five trades in two weeks is at worst a market
+the bot sits out.

@@ -181,6 +181,12 @@ export function useCloseAll() {
   })
 }
 
+export const useMarketsToday = () => useQuery({ queryKey: ['markets-today'], queryFn: api.marketsToday, refetchInterval: 60_000, retry: 1 })
+export function useRefreshMarketsToday() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: () => api.refreshMarketsToday(), onSuccess: () => void qc.invalidateQueries({ queryKey: ['markets-today'] }) })
+}
+
 export function useKill() {
   const qc = useQueryClient()
   return useMutation({ mutationFn: (v: { reason: string; closeAll?: boolean }) => api.riskKill(v.reason, v.closeAll), onSuccess: () => void qc.invalidateQueries({ queryKey: ['risk'] }) })

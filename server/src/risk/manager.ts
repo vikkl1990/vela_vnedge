@@ -44,6 +44,8 @@ export interface RiskDeps {
   candles: { get(symbol: string, tf: string, opts?: { limit?: number; closedOnly?: boolean }): Bar[] } | null;
   cfgRef: () => AppConfig;
   now?: () => number;
+  /** Markets-today verdicts (decision 56); null means no market opinion is applied. */
+  marketGate?: { verdict(symbol: string): { allowed: boolean; reasons: string[] } | null } | null;
 }
 
 export function utcDayStart(t: number): number { return Math.floor(t / DAY_MS) * DAY_MS; }
@@ -57,6 +59,7 @@ export function utcWeekStart(t: number): number {
 export function isWeekend(t: number): boolean { const d = new Date(t).getUTCDay(); return d === 0 || d === 6; }
 
 export class RiskManager extends EventEmitter implements RiskGate {
+  private deps: RiskDeps;
   private db: Db;
   private paper: PaperEngine;
   private candles: RiskDeps['candles'];
@@ -67,6 +70,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
 
   constructor(deps: RiskDeps) {
     super();
+    this.deps = deps;
     this.db = deps.db; this.paper = deps.paper; this.candles = deps.candles; this.cfgRef = deps.cfgRef; this.now = deps.now ?? (() => Date.now());
     const stored = this.db.kvGet<RiskState>(KV_KEY);
     this.st = stored ?? this.freshState(this.now());
@@ -157,6 +161,8 @@ export class RiskManager extends EventEmitter implements RiskGate {
     }
     const s = this.st.scanners[req.scannerId];
     if (s?.cooldownUntil && now < s.cooldownUntil) return reject(`cooldown after ${s.consecutive} losses until ${new Date(s.cooldownUntil).toISOString().slice(11, 16)}Z`);
+    const mv = this.deps.marketGate?.verdict(req.symbol);
+    if (mv && !mv.allowed) return reject(`market: ${mv.reasons.join('; ')}`);
     const r = c.regime;
     if (r?.enabled && !(r.exempt ?? []).includes(req.scannerId)) {
       if (r.noWeekend && isWeekend(req.at)) return reject('regime: weekend');

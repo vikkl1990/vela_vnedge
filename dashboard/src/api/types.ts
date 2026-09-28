@@ -586,3 +586,6 @@ export interface PathPoint {
   event: string | null
   note: string | null
 }
+
+export interface MarketVerdict { symbol: string; allowed: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; trades: number; pf: number | null; netUsd: number }
+export interface MarketsToday { at: number; enabled: boolean; markets: MarketVerdict[] }

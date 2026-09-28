@@ -410,6 +410,20 @@ export interface RiskConfig {
   perScannerMaxPositions: number;
   /** A scanner stops entering for the day when its realized loss today reaches this % of day-start equity (0 = off). */
   perScannerDailyLossPct: number;
+  /** Markets today (decision 56): a market must be liquid, volatile enough to pay the round trip, and not losing recently. */
+  marketGate?: {
+    enabled: boolean;
+    /** Timeframe the ATR test reads (default 15m). */
+    tf?: string;
+    /** 24 h turnover floor in USD (0 = off). */
+    minTurnoverUsd: number;
+    /** ATR as a share of price must be at least this many round-trip fees (0 = off). */
+    minAtrFeeMult: number;
+    /** The book's recent record on the market: at least `minTrades` closed trades in `lookbackDays` with PF below `minPf` blocks it. */
+    lookbackDays: number; minTrades: number; minPf: number;
+    refreshMinutes: number;
+    exempt?: string[];
+  };
   regime: {
     enabled: boolean;
     /** Skip entries when ATR(14) / price × 100 is below this. */
@@ -506,6 +520,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     perScannerMaxPositions: 4,
     perScannerDailyLossPct: 0,
     regime: { enabled: true, minAtrPct: 0.30, noWeekend: true, exempt: [] },
+    marketGate: { enabled: false, tf: '15m', minTurnoverUsd: 1_000_000, minAtrFeeMult: 4, lookbackDays: 14, minTrades: 5, minPf: 1.0, refreshMinutes: 60, exempt: [] },
   },
   scanners: {},
   validation: {
@@ -663,6 +678,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
   if (!(r.cooldownAfterLosses >= 0 && r.cooldownMinutes >= 0)) errs.push('risk.cooldownAfterLosses and cooldownMinutes must be ≥ 0');
   if (!Array.isArray(r.ddScale) || r.ddScale.some(d => !(d.ddPct >= 0 && d.ddPct <= 100 && d.leverageMult >= 0 && d.leverageMult <= 1))) errs.push('risk.ddScale must be [{ddPct 0..100, leverageMult 0..1}]');
+  if (r.marketGate) { const g = r.marketGate; if (![g.minTurnoverUsd, g.minAtrFeeMult, g.lookbackDays, g.minTrades, g.minPf, g.refreshMinutes].every(v => Number.isFinite(v) && v >= 0) || g.refreshMinutes < 1 || g.lookbackDays < 1) errs.push('risk.marketGate values must be ≥ 0 (refreshMinutes, lookbackDays ≥ 1)'); }
   if (!(r.regime && Number.isFinite(r.regime.minAtrPct) && r.regime.minAtrPct >= 0 && Array.isArray(r.regime.exempt))) errs.push('risk.regime.minAtrPct must be ≥ 0 and exempt an array');
   return errs;
 }

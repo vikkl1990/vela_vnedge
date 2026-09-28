@@ -1,11 +1,11 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, usePositions, useScannerIndex, useSignals, useStats } from '../api/queries'
+import { useEquity, useMarketsToday, usePositions, useRefreshMarketsToday, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { EquityChart, PnlByScannerChart, type PnlBar } from '../components/charts'
 import { PositionsTable } from '../components/PositionsTable'
 import { TickerTape } from '../components/TickerTape'
-import { ErrorState, KpiTile, Loading, PageTitle, Panel, QueryState } from '../components/ui'
+import { ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, QueryState } from '../components/ui'
 import { fmtInt, fmtMoney, fmtProfitFactor, fmtPct, fmtPnl, fmtR, pnlClass } from '../lib/format'
 
 export function Overview() {
@@ -86,6 +86,7 @@ export function Overview() {
         <Panel title="PnL by scanner">
           {stats.isLoading && !s ? <Loading kind="chart" height={240} /> : <PnlByScannerChart data={pnlBars} height={240} />}
         </Panel>
+        <MarketsTodayPanel />
         <Panel title="Scanner fleet">
           <QueryState {...scanners} data={scanners.data} empty="No scanners loaded." hint="Drop .pine files into the scanners folder and restart the server." onRetry={() => scanners.refetch()}>
             {(d) => {
@@ -146,5 +147,36 @@ export function Overview() {
         )}
       </Panel>
     </div>
+  )
+}
+
+
+/** Which pairs the fleet may trade now, and why the others are out — the market-level gate of decision 56. */
+function MarketsTodayPanel() {
+  const q = useMarketsToday()
+  const refresh = useRefreshMarketsToday()
+  const d = q.data
+  if (!d) return null
+  if (!d.enabled) return (
+    <Panel title="Markets today" right={<span className="muted small">gate off — every fleet market is allowed</span>}>
+      <p className="muted small">Turn on <span className="mono">risk.marketGate</span> to trade only markets that are liquid, volatile enough to pay the round trip, and not losing recently.</p>
+    </Panel>
+  )
+  const allowed = d.markets.filter((m) => m.allowed), blocked = d.markets.filter((m) => !m.allowed)
+  return (
+    <Panel title={`Markets today · ${allowed.length} allowed, ${blocked.length} out`} right={<div className="row gap"><span className="muted small">{d.at ? `judged ${new Date(d.at).toISOString().slice(11, 16)} UTC` : ''}</span><button className="btn btn-xs" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? 'Judging…' : 'Re-judge'}</button></div>}>
+      <div className="chips">
+        {allowed.map((m) => <Pill key={m.symbol} tone="ok" title={`${m.atrPct != null ? `15m ATR ${m.atrPct.toFixed(2)}%` : 'no candles'} · ${m.turnoverUsd != null ? `$${(m.turnoverUsd / 1e6).toFixed(1)}M 24h` : ''} · ${m.trades} trades ${m.pf != null ? `PF ${m.pf.toFixed(2)}` : ''} in 14d`}>{m.symbol.replace(/USD$/, '')}</Pill>)}
+      </div>
+      {blocked.length > 0 && (
+        <table className="table small" style={{ marginTop: 8 }}>
+          <tbody>
+            {blocked.map((m) => (
+              <tr key={m.symbol}><td className="mono">{m.symbol}</td><td className="muted">{m.reasons.join(' · ')}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Panel>
   )
 }

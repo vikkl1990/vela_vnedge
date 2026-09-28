@@ -201,6 +201,7 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 - Every rule change lands in the same commit as its decision entry, and updates this file.
 - Never real production keys; the bot binds to 127.0.0.1 only; the Telegram token lives in the
   systemd environment and never in `config.json`.
+- A market is traded only when it is suitable today — liquid, volatile enough to pay the round trip, not losing recently (`risk.marketGate`, decision 56). Open positions are never touched by it.
 - When an executor mirrors the book, the exchange is the authority on what filled: every order goes
   through the ledger, an entry is confirmed before it is protected, and a restart rebuilds the
   brackets from the ledger and verifies them on the exchange (decision 46).
