@@ -229,7 +229,7 @@ export class ApiServer {
     // `?view=lite` returns id/name/status/category/enabled/hidden only; the default shape is unchanged
     // markets today: which pairs the fleet may trade now, and why not (decision 56)
     this.add('GET', '/api/markets/today', () => a.marketGate.today);
-    this.add('POST', '/api/markets/today/refresh', async () => a.marketGate.refresh([...new Set([...a.resolvedSymbols, ...a.incubator.symbols()])]));
+    this.add('POST', '/api/markets/today/refresh', async () => { const own = [...new Set([...a.resolvedSymbols, ...a.incubator.symbols()])]; return a.marketGate.refresh(await a.marketGate.universe(own), undefined, own); });
     this.add('GET', '/api/scanners', (_r, _s, _p, url) => (url.searchParams.get('view') === 'lite' ? a.scannerIndex() : a.scannerViews()));
     this.add('POST', '/api/scanners/auto-tune', async (_r, _s, _p, _u, body) => {
       const report = a.scanners.autoTune({ minTrades: Number(body?.minTrades ?? 3), minProfitFactor: Number(body?.minProfitFactor ?? 1) });

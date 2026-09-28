@@ -1,3 +1,4 @@
+import type { MarketVerdict } from '../api/types'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useEquity, useMarketsToday, useOps, usePositions, useRefreshMarketsToday, useScannerIndex, useSignals, useStats } from '../api/queries'
@@ -163,17 +164,26 @@ function MarketsTodayPanel() {
       <p className="muted small">Turn on <span className="mono">risk.marketGate</span> to trade only markets that are liquid, volatile enough to pay the round trip, and not losing recently.</p>
     </Panel>
   )
-  const allowed = d.markets.filter((m) => m.allowed), blocked = d.markets.filter((m) => !m.allowed)
+  const tracked = d.markets.filter((m) => m.tracked !== false), elsewhere = d.markets.filter((m) => m.tracked === false)
+  const allowed = tracked.filter((m) => m.allowed), blocked = tracked.filter((m) => !m.allowed)
+  const liquidElsewhere = elsewhere.filter((m) => m.allowed), outElsewhere = elsewhere.filter((m) => !m.allowed)
+  const tip = (m: MarketVerdict) => `${m.atrPct != null ? `15m ATR ${m.atrPct.toFixed(2)}%` : 'no candles — not scanned'} · ${m.turnoverUsd != null ? `$${(m.turnoverUsd / 1e6).toFixed(2)}M 24h` : ''} · ${m.trades} trades ${m.pf != null ? `PF ${m.pf.toFixed(2)}` : ''} in 14d`
   return (
-    <Panel title={`Markets today · ${allowed.length} allowed, ${blocked.length} out`} right={<div className="row gap"><span className="muted small">{d.at ? `judged ${new Date(d.at).toISOString().slice(11, 16)} UTC` : ''}</span><button className="btn btn-xs" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? 'Judging…' : 'Re-judge'}</button></div>}>
+    <Panel title={`Markets today · ${allowed.length} of ${tracked.length} scanned allowed, ${blocked.length} out`} right={<div className="row gap"><span className="muted small">{d.at ? `judged ${new Date(d.at).toISOString().slice(11, 16)} UTC` : ''}</span><button className="btn btn-xs" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? 'Judging…' : 'Re-judge'}</button></div>}>
       <div className="chips">
-        {allowed.map((m) => <Pill key={m.symbol} tone="ok" title={`${m.atrPct != null ? `15m ATR ${m.atrPct.toFixed(2)}%` : 'no candles'} · ${m.turnoverUsd != null ? `$${(m.turnoverUsd / 1e6).toFixed(1)}M 24h` : ''} · ${m.trades} trades ${m.pf != null ? `PF ${m.pf.toFixed(2)}` : ''} in 14d`}>{m.symbol.replace(/USD$/, '')}</Pill>)}
+        {allowed.map((m) => <Pill key={m.symbol} tone="ok" title={tip(m)}>{m.symbol.replace(/USD$/, '')}</Pill>)}
       </div>
+      {elsewhere.length > 0 && (
+        <p className="muted small" style={{ marginTop: 8 }}>
+          <b>Liquid on Delta but not scanned</b> ({liquidElsewhere.length}{outElsewhere.length ? `, ${outElsewhere.length} more out` : ''}) — the daily hunt picks from these:{' '}
+          {liquidElsewhere.map((m) => <span key={m.symbol} className="mono" title={tip(m)}>{m.symbol.replace(/USD$/, '')} </span>)}
+        </p>
+      )}
       {blocked.length > 0 && (
         <table className="table small" style={{ marginTop: 8 }}>
           <tbody>
-            {blocked.map((m) => (
-              <tr key={m.symbol}><td className="mono">{m.symbol}</td><td className="muted">{m.reasons.join(' · ')}</td></tr>
+            {[...blocked, ...outElsewhere].map((m) => (
+              <tr key={m.symbol} className={m.tracked === false ? 'muted' : ''}><td className="mono">{m.symbol}</td><td className="muted">{m.reasons.join(' · ')}</td></tr>
             ))}
           </tbody>
         </table>

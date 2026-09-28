@@ -167,7 +167,7 @@ export class App {
     subscribeRealtime(this);
     if (this.executor) await this.executor.start();
     // markets today: judged now and every refreshMinutes, over the fleet's and the incubator's markets
-    const refreshMarkets = () => this.marketGate.refresh([...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])]).catch(e => log.warn(`markets today failed: ${e?.message ?? e}`));
+    const refreshMarkets = () => { const own = [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])]; return this.marketGate.universe(own).then(list => this.marketGate.refresh(list, undefined, own)).catch(e => log.warn(`markets today failed: ${e?.message ?? e}`)); };
     // once the candle store has warmed up (the ATR test needs bars), then hourly
     setTimeout(refreshMarkets, 3 * 60_000).unref?.();
     void refreshMarkets();

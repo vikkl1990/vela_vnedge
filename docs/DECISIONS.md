@@ -1635,3 +1635,15 @@ breadth, four of them convincingly. The 50 pairs that pass the screen in halves 
 candidates and admitted to the shadow book (44 at 4h, 6 at 1h); the gate decides. The 162 older
 candidates screened on a single run were set aside for the daily screen to re-judge under decision
 55, and `incubator.maxShadow` rose to 150.
+
+### 56a. The gate judges the whole liquid universe, and "not paying" counts live trades only
+
+The Markets-today panel showed 13 allowed and 18 out because the gate only ever judged the 31
+markets the fleet and incubator scan; Delta India lists 220 USD perpetuals, 40 of them above the
+$1M/24h floor. The gate now judges the scanned markets plus every perpetual above the turnover
+floor, and each verdict carries `tracked` so the panel keeps the scanned ones as pills and lists the
+liquid-but-unscanned ones (PUMP, SEI, ONDO, SUI and the like) on one line — the pool the daily hunt
+draws from. The "not paying" rule now counts the live book and its archive only (`bt IN (0, -1)`):
+shadow trades belong to unproven scripts and say nothing about the market. Turnover is shown to two
+decimals so a market just under the floor (HYPE at $0.96M) reads as such. The floor itself stays at
+$1M; with ~$2.4k notionals $0.5M would be enough and would admit 55 markets — the operator's call.

@@ -7,7 +7,7 @@
  *     `minAtrFeeMult` × the round-trip fee — the same arithmetic as the fee filter, applied to the
  *     market before any signal is spent on it);
  *   - the book's own recent record on it is losing (`minTrades` or more closed trades in the last
- *     `lookbackDays` across the live, archived-live and shadow books with a profit factor under `minPf`).
+ *     `lookbackDays` in the live book and its archive with a profit factor under `minPf`).
  *
  * The verdicts refresh every `refreshMinutes` and are kept in `kv` for the dashboard. A market the
  * bot has no candles for gets no volatility opinion rather than a block.
@@ -21,7 +21,7 @@ import { logger } from '../log.ts';
 const log = logger.scoped('markets');
 const KV_KEY = 'risk.marketsToday';
 
-export interface MarketVerdict { symbol: string; allowed: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; trades: number; pf: number | null; netUsd: number }
+export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; trades: number; pf: number | null; netUsd: number }
 export interface MarketsToday { at: number; enabled: boolean; markets: MarketVerdict[] }
 
 export interface MarketGateDeps {
@@ -50,8 +50,17 @@ export class MarketGate {
     return this.state.markets.find(m => m.symbol === symbol) ?? null;
   }
 
-  /** Recompute every verdict for the given symbols (the fleet's and the incubator's markets). */
-  async refresh(symbols: string[], now = this.now()): Promise<MarketsToday> {
+  /** The symbols worth a verdict: the ones given plus every perpetual above the turnover floor (so a market the bot is not yet on is judged too). */
+  async universe(symbols: string[]): Promise<string[]> {
+    const c = this.cfg;
+    const out = new Set(symbols);
+    try { for (const m of await this.deps.markets()) if (m.volume24h >= (c?.minTurnoverUsd ?? 0) && /USD$/.test(m.symbol)) out.add(m.symbol); } catch { /* the given symbols still get judged */ }
+    return [...out];
+  }
+
+  /** Recompute every verdict for the given symbols; `tracked` names the ones the bot actually scans (the fleet's and the incubator's), the rest are the liquid universe around them. */
+  async refresh(symbols: string[], now = this.now(), tracked: Iterable<string> = symbols): Promise<MarketsToday> {
+    const own = new Set(tracked);
     const c = this.cfg;
     const paper = this.deps.cfgRef().paper;
     if (!c?.enabled) { this.state = { at: now, enabled: false, markets: [] }; this.deps.db.kvSet(KV_KEY, this.state); return this.state; }
@@ -62,11 +71,11 @@ export class MarketGate {
     const since = now - c.lookbackDays * 86_400_000;
     const markets: MarketVerdict[] = [];
     for (const symbol of [...new Set(symbols)].sort()) {
-      if ((c.exempt ?? []).includes(symbol)) { markets.push({ symbol, allowed: true, reasons: ['exempt'], atrPct: null, turnoverUsd: null, trades: 0, pf: null, netUsd: 0 }); continue; }
+      if ((c.exempt ?? []).includes(symbol)) { markets.push({ symbol, allowed: true, tracked: own.has(symbol), reasons: ['exempt'], atrPct: null, turnoverUsd: null, trades: 0, pf: null, netUsd: 0 }); continue; }
       const reasons: string[] = [];
       const t = tickers.get(symbol);
       const turnoverUsd = t ? t.volume24h : null;
-      if (turnoverUsd !== null && c.minTurnoverUsd > 0 && turnoverUsd < c.minTurnoverUsd) reasons.push(`illiquid: $${(turnoverUsd / 1e6).toFixed(1)}M 24h turnover < $${(c.minTurnoverUsd / 1e6).toFixed(1)}M`);
+      if (turnoverUsd !== null && c.minTurnoverUsd > 0 && turnoverUsd < c.minTurnoverUsd) reasons.push(`illiquid: $${(turnoverUsd / 1e6).toFixed(2)}M 24h turnover < $${(c.minTurnoverUsd / 1e6).toFixed(2)}M`);
       let atrPct: number | null = null;
       const bars = this.deps.candles?.get(symbol, c.tf ?? '15m', { limit: 120, closedOnly: true }) ?? [];
       if (bars.length >= 30) {
@@ -74,11 +83,12 @@ export class MarketGate {
         if (Number.isFinite(last) && px > 0) atrPct = last / px * 100;
       }
       if (atrPct !== null && c.minAtrFeeMult > 0 && atrPct < feeRoundTripPct * c.minAtrFeeMult) reasons.push(`too quiet: ${c.tf ?? '15m'} ATR ${atrPct.toFixed(2)}% < ${(feeRoundTripPct * c.minAtrFeeMult).toFixed(2)}% (${c.minAtrFeeMult}× the round-trip fee)`);
-      const rows = this.deps.db.all<{ pnl: number }>('SELECT realized_pnl - fees AS pnl FROM positions WHERE status=\'closed\' AND bt IN (0, 2, -1) AND symbol=? AND exit_at>=?', symbol, since);
+      // the live book and its archive only: shadow trades belong to unproven scripts and say nothing about the market
+      const rows = this.deps.db.all<{ pnl: number }>('SELECT realized_pnl - fees AS pnl FROM positions WHERE status=\'closed\' AND bt IN (0, -1) AND symbol=? AND exit_at>=?', symbol, since);
       const gp = rows.filter(r => r.pnl > 0).reduce((a, r) => a + r.pnl, 0), gl = -rows.filter(r => r.pnl <= 0).reduce((a, r) => a + r.pnl, 0);
       const pf = rows.length ? (gl > 0 ? gp / gl : gp > 0 ? 99 : 0) : null;
       if (rows.length >= c.minTrades && pf !== null && pf < c.minPf) reasons.push(`not paying: PF ${pf.toFixed(2)} over ${rows.length} trades in ${c.lookbackDays}d`);
-      markets.push({ symbol, allowed: reasons.length === 0, reasons, atrPct, turnoverUsd, trades: rows.length, pf, netUsd: gp - gl });
+      markets.push({ symbol, allowed: reasons.length === 0, tracked: own.has(symbol), reasons, atrPct, turnoverUsd, trades: rows.length, pf, netUsd: gp - gl });
     }
     this.state = { at: now, enabled: true, markets };
     this.deps.db.kvSet(KV_KEY, this.state);
