@@ -2,10 +2,13 @@
  * Markets today: which pairs the fleet may trade right now, decided from the market itself rather
  * than from any scanner (decision 56). A market is allowed unless one of three things is true:
  *
- *   - it is illiquid today (24 h turnover below `minTurnoverUsd`);
- *   - its volatility cannot pay the round trip (15m ATR as a share of price below
- *     `minAtrFeeMult` × the round-trip fee — the same arithmetic as the fee filter, applied to the
- *     market before any signal is spent on it);
+ *   - it is dead today (24 h turnover below `minTurnoverUsd`, a low sanity floor);
+ *   - its book is too expensive to cross (decision 56b): walking the level-2 book for
+ *     `probeNotionalUsd` in and back out — half the spread each way, the slippage of the walk, and
+ *     the taker fee — costs more than `maxBookCostPct` of the notional. Turnover is a poor proxy for
+ *     this: a $1M/day market can quote a tighter book than a $13M one;
+ *   - its volatility cannot pay that round trip (15m ATR as a share of price below
+ *     `minAtrFeeMult` × the market's own round-trip cost, or × the fee when the book is unknown);
  *   - the book's own recent record on it is losing (`minTrades` or more closed trades in the last
  *     `lookbackDays` in the live book and its archive with a profit factor under `minPf`).
  *
@@ -21,13 +24,15 @@ import { logger } from '../log.ts';
 const log = logger.scoped('markets');
 const KV_KEY = 'risk.marketsToday';
 
-export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; trades: number; pf: number | null; netUsd: number }
+export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; spreadPct: number | null; bookCostPct: number | null; trades: number; pf: number | null; netUsd: number }
 export interface MarketsToday { at: number; enabled: boolean; markets: MarketVerdict[] }
 
 export interface MarketGateDeps {
   db: Db;
   candles: { get(symbol: string, tf: string, opts?: { limit?: number; closedOnly?: boolean }): Bar[] } | null;
   markets: () => Promise<Array<{ symbol: string; volume24h: number; price: number }>>;
+  /** Level-2 book as [price, quantity in base units] per level, best first; absent or throwing → no book opinion. */
+  book?: (symbol: string) => Promise<{ bids: Array<[number, number]>; asks: Array<[number, number]> }>;
   cfgRef: () => AppConfig;
   now?: () => number;
 }
@@ -69,26 +74,35 @@ export class MarketGate {
     catch (e: any) { log.warn(`tickers unavailable: ${e?.message ?? e}; turnover not judged`); }
     const feeRoundTripPct = paper.feeRatePct * (1 + (paper.feeTaxPct ?? 0) / 100) * 2;
     const since = now - c.lookbackDays * 86_400_000;
+    const list = [...new Set(symbols)].sort();
+    const books = await this.readBooks(list.filter(s => !(c.exempt ?? []).includes(s)));
     const markets: MarketVerdict[] = [];
-    for (const symbol of [...new Set(symbols)].sort()) {
-      if ((c.exempt ?? []).includes(symbol)) { markets.push({ symbol, allowed: true, tracked: own.has(symbol), reasons: ['exempt'], atrPct: null, turnoverUsd: null, trades: 0, pf: null, netUsd: 0 }); continue; }
+    for (const symbol of list) {
+      if ((c.exempt ?? []).includes(symbol)) { markets.push({ symbol, allowed: true, tracked: own.has(symbol), reasons: ['exempt'], atrPct: null, turnoverUsd: null, spreadPct: null, bookCostPct: null, trades: 0, pf: null, netUsd: 0 }); continue; }
       const reasons: string[] = [];
       const t = tickers.get(symbol);
       const turnoverUsd = t ? t.volume24h : null;
-      if (turnoverUsd !== null && c.minTurnoverUsd > 0 && turnoverUsd < c.minTurnoverUsd) reasons.push(`illiquid: $${(turnoverUsd / 1e6).toFixed(2)}M 24h turnover < $${(c.minTurnoverUsd / 1e6).toFixed(2)}M`);
+      if (turnoverUsd !== null && c.minTurnoverUsd > 0 && turnoverUsd < c.minTurnoverUsd) reasons.push(`dead: $${(turnoverUsd / 1e6).toFixed(2)}M 24h turnover < $${(c.minTurnoverUsd / 1e6).toFixed(2)}M`);
+      const book = books.get(symbol) ?? null;
+      const spreadPct = book?.spreadPct ?? null;
+      const bookCostPct = book ? book.crossPct + feeRoundTripPct : null;
+      const maxCost = c.maxBookCostPct ?? 0;
+      if (book && !book.deep) reasons.push(`thin book: fewer than $${((c.probeNotionalUsd ?? 0) / 1000).toFixed(1)}k resting within ${book.levels} levels`);
+      else if (bookCostPct !== null && maxCost > 0 && bookCostPct > maxCost) reasons.push(`costly book: ${bookCostPct.toFixed(3)}% round trip for $${((c.probeNotionalUsd ?? 0) / 1000).toFixed(1)}k (spread ${spreadPct!.toFixed(3)}%) > ${maxCost.toFixed(2)}%`);
+      const roundTripPct = bookCostPct ?? feeRoundTripPct;
       let atrPct: number | null = null;
       const bars = this.deps.candles?.get(symbol, c.tf ?? '15m', { limit: 120, closedOnly: true }) ?? [];
       if (bars.length >= 30) {
         const a = atrSeries(bars, 14); const last = a[a.length - 1]; const px = bars[bars.length - 1].close;
         if (Number.isFinite(last) && px > 0) atrPct = last / px * 100;
       }
-      if (atrPct !== null && c.minAtrFeeMult > 0 && atrPct < feeRoundTripPct * c.minAtrFeeMult) reasons.push(`too quiet: ${c.tf ?? '15m'} ATR ${atrPct.toFixed(2)}% < ${(feeRoundTripPct * c.minAtrFeeMult).toFixed(2)}% (${c.minAtrFeeMult}× the round-trip fee)`);
+      if (atrPct !== null && c.minAtrFeeMult > 0 && atrPct < roundTripPct * c.minAtrFeeMult) reasons.push(`too quiet: ${c.tf ?? '15m'} ATR ${atrPct.toFixed(2)}% < ${(roundTripPct * c.minAtrFeeMult).toFixed(2)}% (${c.minAtrFeeMult}× the round trip${bookCostPct !== null ? ' on this book' : ' fee'})`);
       // the live book and its archive only: shadow trades belong to unproven scripts and say nothing about the market
       const rows = this.deps.db.all<{ pnl: number }>('SELECT realized_pnl - fees AS pnl FROM positions WHERE status=\'closed\' AND bt IN (0, -1) AND symbol=? AND exit_at>=?', symbol, since);
       const gp = rows.filter(r => r.pnl > 0).reduce((a, r) => a + r.pnl, 0), gl = -rows.filter(r => r.pnl <= 0).reduce((a, r) => a + r.pnl, 0);
       const pf = rows.length ? (gl > 0 ? gp / gl : gp > 0 ? 99 : 0) : null;
       if (rows.length >= c.minTrades && pf !== null && pf < c.minPf) reasons.push(`not paying: PF ${pf.toFixed(2)} over ${rows.length} trades in ${c.lookbackDays}d`);
-      markets.push({ symbol, allowed: reasons.length === 0, tracked: own.has(symbol), reasons, atrPct, turnoverUsd, trades: rows.length, pf, netUsd: gp - gl });
+      markets.push({ symbol, allowed: reasons.length === 0, tracked: own.has(symbol), reasons, atrPct, turnoverUsd, spreadPct, bookCostPct, trades: rows.length, pf, netUsd: gp - gl });
     }
     this.state = { at: now, enabled: true, markets };
     this.deps.db.kvSet(KV_KEY, this.state);
@@ -96,4 +110,46 @@ export class MarketGate {
     log.info(`markets today: ${markets.length - blocked.length} allowed, ${blocked.length} blocked${blocked.length ? ` (${blocked.map(m => m.symbol).join(', ')})` : ''}`);
     return this.state;
   }
+
+  /** Read every book a few at a time; a market whose book cannot be read simply gets no book opinion. */
+  private async readBooks(symbols: string[]): Promise<Map<string, BookCost>> {
+    const out = new Map<string, BookCost>();
+    const c = this.cfg; const notional = c?.probeNotionalUsd ?? 0;
+    if (!this.deps.book || notional <= 0) return out;
+    const queue = [...symbols]; let failed = 0;
+    const worker = async () => {
+      for (let s = queue.shift(); s !== undefined; s = queue.shift()) {
+        try { const b = await this.deps.book!(s); const cost = walkBook(b, notional); if (cost) out.set(s, cost); }
+        catch { failed++; }
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, worker));
+    if (failed) log.warn(`${failed} order book(s) unreadable; those markets get no book opinion`);
+    return out;
+  }
+}
+
+interface BookCost { spreadPct: number; crossPct: number; deep: boolean; levels: number }
+
+/**
+ * What crossing the book costs for `notional` USD: buy up the asks, sell down the bids, and compare
+ * the two average fills — that is the spread plus the slippage of both walks, as a share of the mid.
+ * `deep` is false when either side runs out before the notional is filled.
+ */
+export function walkBook(book: { bids: Array<[number, number]>; asks: Array<[number, number]> }, notional: number): BookCost | null {
+  const bids = book.bids.filter(l => l[0] > 0 && l[1] > 0).sort((a, b) => b[0] - a[0]);
+  const asks = book.asks.filter(l => l[0] > 0 && l[1] > 0).sort((a, b) => a[0] - b[0]);
+  if (!bids.length || !asks.length) return null;
+  const mid = (bids[0][0] + asks[0][0]) / 2;
+  if (!(mid > 0)) return null;
+  const qty = notional / mid;
+  const walk = (side: Array<[number, number]>) => {
+    let got = 0, cost = 0;
+    for (const [p, q] of side) { const take = Math.min(q, qty - got); cost += take * p; got += take; if (got >= qty) break; }
+    return { avg: got > 0 ? cost / got : NaN, full: got >= qty * 0.999 };
+  };
+  const buy = walk(asks), sell = walk(bids);
+  const crossPct = Number.isFinite(buy.avg) && Number.isFinite(sell.avg) ? (buy.avg - sell.avg) / mid * 100 : NaN;
+  if (!Number.isFinite(crossPct)) return null;
+  return { spreadPct: (asks[0][0] - bids[0][0]) / mid * 100, crossPct, deep: buy.full && sell.full, levels: Math.max(bids.length, asks.length) };
 }

@@ -1647,3 +1647,19 @@ draws from. The "not paying" rule now counts the live book and its archive only 
 shadow trades belong to unproven scripts and say nothing about the market. Turnover is shown to two
 decimals so a market just under the floor (HYPE at $0.96M) reads as such. The floor itself stays at
 $1M; with ~$2.4k notionals $0.5M would be enough and would admit 55 markets — the operator's call.
+
+### 56b. The book rule: a market is tradable when crossing its book is cheap, not when yesterday was busy
+
+Measured on Delta's live books for a $2.4k market order in and out: HYPE ($0.96M/day) and TAO
+($0.57M) cost 0.13–0.16% round trip, the same as SOL; PUMP ($13M/day) costs 0.35%, three times
+ETH; AIN, WIF, PEPE and COOKIE cost 0.30–0.34%. The $1M turnover floor blocked the first two and
+admitted the rest, so turnover is dropped as the tradability test. The gate now reads each
+market's level-2 book on every refresh, walks it for `probeNotionalUsd` ($2.5k, the live book's
+average notional) both ways, and blocks when spread + slippage + fee exceeds `maxBookCostPct`
+(0.25%), or when either side cannot fill the notional within 25 levels ("thin book"). The
+"too quiet" test now compares ATR with the market's own round-trip cost instead of the flat fee,
+so a wide book needs more movement to qualify. Turnover stays only as a dead-market guard at
+$0.25M. An unreadable book gives no opinion rather than a block. The book cost and spread show
+in the Markets-today tooltip. Not a scalper's rule: for holds of hours on 15m–4h the cost only
+has to be paid a few times over by the normal move; a scalper would need spreads under 0.02%,
+which on this exchange means the majors plus HYPE and TAO.

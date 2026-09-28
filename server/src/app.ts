@@ -124,7 +124,15 @@ export class App {
     this.feed.on('status', async (s: { connected: boolean }) => {
       if (s.connected) for (const t of this.candles.tracked()) { try { const n = await this.candles.resync(t.symbol, t.tf); if (n) log.info(`resynced ${t.symbol} ${t.tf}: ${n} bars`); } catch (e: any) { log.warn(`resync failed ${t.symbol} ${t.tf}: ${e?.message}`); } }
     });
-    this.marketGate = new MarketGate({ db: this.db, candles: this.candles, markets: () => this.markets(), cfgRef: cfg });
+    this.marketGate = new MarketGate({
+      db: this.db, candles: this.candles, markets: () => this.markets(), cfgRef: cfg,
+      book: async symbol => {
+        const cv = (await this.markets()).find(m => m.symbol === symbol)?.contractValue || 1;
+        const ob = await this.rest.orderbook(symbol, 25);
+        const side = (l: Array<{ price: string; size: string | number }>) => (l ?? []).map(x => [Number(x.price), Number(x.size) * cv] as [number, number]);
+        return { bids: side(ob.buy), asks: side(ob.sell) };
+      },
+    });
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);

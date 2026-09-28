@@ -201,7 +201,7 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 - Every rule change lands in the same commit as its decision entry, and updates this file.
 - Never real production keys; the bot binds to 127.0.0.1 only; the Telegram token lives in the
   systemd environment and never in `config.json`.
-- A market is traded only when it is suitable today — liquid, volatile enough to pay the round trip, not losing recently in the live book (`risk.marketGate`, decision 56/56a). The whole liquid universe is judged, not only the scanned markets. Open positions are never touched by it.
+- A market is traded only when it is suitable today — its book cheap enough to cross for one position (≤ 0.25% round trip incl. fee, decision 56b), volatile enough to pay that round trip, not dead, not losing recently in the live book (`risk.marketGate`, decisions 56/56a/56b). The whole liquid universe is judged, not only the scanned markets. Open positions are never touched by it.
 - Exposure is what the exchange has confirmed, not what the book believes: protection stays on the exchange until confirmed exposure is zero, execution settings change only with a restart, and the emergency flatten pauses entries first (decision 58).
 - When an executor mirrors the book, the exchange is the authority on what filled: every order goes
   through the ledger, an entry is confirmed before it is protected, and a restart rebuilds the

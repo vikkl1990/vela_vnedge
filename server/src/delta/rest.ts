@@ -121,6 +121,11 @@ export class DeltaRest {
     return this.request<DeltaTicker[]>('GET', '/v2/tickers', { query: { contract_types: contractTypes } });
   }
 
+  /** Level-2 order book, `depth` levels a side; prices and sizes (in contracts) come back as strings. */
+  async orderbook(symbol: string, depth = 25): Promise<{ buy: Array<{ price: string; size: string | number }>; sell: Array<{ price: string; size: string | number }> }> {
+    return this.request<any>('GET', `/v2/l2orderbook/${symbol}`, { query: { depth } });
+  }
+
   async ticker(symbol: string): Promise<DeltaTicker> {
     return this.request<DeltaTicker>('GET', `/v2/tickers/${symbol}`);
   }
