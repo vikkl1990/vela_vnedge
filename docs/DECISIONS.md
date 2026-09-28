@@ -1624,3 +1624,14 @@ trading thread) are queued behind it.
 Tested against the fake exchange: rejected exit keeps every bracket order and strands the full
 size; partial exit strands the residual with the stop resized to it; the sweep closes the rest and
 only then cancels; a config edit cannot relabel the running executor. 214 tests pass.
+
+## 59. AlgoAlpha and BigBeluga researched; fifty pairs enter the shadow book; single-run candidates set aside
+
+Full report in `docs/ALGOALPHA-BIGBELUGA-2026-09-28.md`. Neither author publishes a trade plan;
+half their catalogue does not run here (library imports, syntax, hangs); their signals are states
+and are now read at the rising edge (decision 57). Surveyed in halves on 8 markets, everything
+loses on 15m and 1h and 4h has pockets — 10 scanner × timeframe cells positive in both halves with
+breadth, four of them convincingly. The 50 pairs that pass the screen in halves were recorded as
+candidates and admitted to the shadow book (44 at 4h, 6 at 1h); the gate decides. The 162 older
+candidates screened on a single run were set aside for the daily screen to re-judge under decision
+55, and `incubator.maxShadow` rose to 150.
