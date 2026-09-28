@@ -290,7 +290,9 @@ export interface IncubatorConfig {
   minTurnoverUsd: number;
   /** Shadow pairs running at once (each is one script run per bar close). */
   maxShadow: number;
-  screen: { bars: number; slices: number; minTrades: number; minProfitFactor: number; minWindowsUp: number; stressBps: number };
+  screen: { bars: number; slices: number; minTrades: number; minProfitFactor: number; minWindowsUp: number; stressBps: number;
+    /** A candidate must be positive in BOTH halves of its screen history (the halves discipline, decision 55). */
+    requireBothHalves?: boolean };
   /**
    * The promotion gate. `pool: 'cohort'` judges a scanner on every shadow market it runs at once
    * (see `cohortStats`); `'pair'` judges each market on its own, which takes months per market.
@@ -309,7 +311,9 @@ export interface IncubatorConfig {
    * with 5 markets, 14 on 1h with 8, and 39 on 4h with 12. `default` covers anything unlisted.
    */
   admit: { cohortMarkets: Record<string, number>; minCohortMarkets: number };
-  promote: { maxPerWeek: number; maxFleet: number };
+  promote: { maxPerWeek: number; maxFleet: number;
+    /** Promote gate proposals into the fleet without the owner's click, within maxPerWeek and maxFleet (decision 55). */
+    auto?: boolean };
   demote: { window: number; minTrades: number; maxPfR: number };
   /** A pair that failed shadow is not screened again for this long. */
   cooldownDays: number;
@@ -425,13 +429,13 @@ export const DEFAULT_CONFIG: AppConfig = {
   ml: { minProb: 0, useAsScore: false },
   incubator: {
     enabled: true, tf: '15m', universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
-    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10 },
+    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true },
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 },
     },
     admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3 },
-    promote: { maxPerWeek: 2, maxFleet: 20 },
+    promote: { maxPerWeek: 2, maxFleet: 20, auto: false },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9 },
     cooldownDays: 30,
     maxContractRiskShare: 0.5,

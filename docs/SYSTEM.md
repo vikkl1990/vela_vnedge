@@ -197,7 +197,7 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 - The VM is the record; when the two disagree, the VM is right (decision 1).
 - Configuration is frozen until the live sample exists; the review is pre-committed so a bad week
   cannot rewrite it (decisions 3, 4).
-- Nothing enters the fleet except through the incubator, and nothing is promoted without approval.
+- Nothing enters the fleet except through the incubator. With `incubator.promote.auto` on (decision 55) the cohort gate promotes on its own within the weekly and fleet limits; off, the owner clicks.
 - Every rule change lands in the same commit as its decision entry, and updates this file.
 - Never real production keys; the bot binds to 127.0.0.1 only; the Telegram token lives in the
   systemd environment and never in `config.json`.

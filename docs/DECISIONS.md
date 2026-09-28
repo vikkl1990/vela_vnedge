@@ -1542,3 +1542,28 @@ it produced when run (plan / signal / levels / silent / broken, with the counts)
 row. `POST /api/scanners/:id/profile` and `npm run profile` both write `script_profile`. Nothing in
 the fleet changes; the next step is evidence on the page (halves, breadth, cohort verdicts) and an
 enable switch that refuses to skip the lifecycle.
+
+## 55. The daily pair hunter: screen in halves, promote without a click
+
+The owner asked for a daily hunter: any pair doing well in the market is tested and added for
+trade. The incubator already was that machine — a daily screen of the library on the forty most
+liquid perpetuals, a shadow book, a cohort gate — but two things kept it from ever adding a pair:
+the screen judged on one run (profit factor, windows up, a stress test) and had never asked whether
+both halves held, and promotion waited for a click that in 157 candidates and 100 shadow pairs was
+never made.
+
+Changed:
+- **Screen in halves.** A candidate now needs a positive R per trade in each half of its screen
+  history on its own (`incubator.screen.requireBothHalves`, on). Fewer candidates, honest ones.
+- **Automatic promotion.** `incubator.promote.auto` (on for the VM): every pair the cohort gate
+  proposes is promoted immediately, in gate order, until the weekly (2) or fleet (40) limit stops
+  it. The gate itself is unchanged — thirty shadow trades over fourteen days, PF ≥ 1.2, most weeks
+  positive, half the cohort's markets positive — so nothing reaches the fleet on a backtest alone.
+- **The hunt runs in the bot.** The screen still runs in its own process; when it finishes, the bot
+  judges the shadow book, promotes, writes the digest (`incubator.lastHunt`) and sends it as an
+  alert (Telegram once the token is set). The Incubator page shows the digest and whether
+  auto-promotion is on. A click on "Re-judge now" runs the same hunt.
+
+This reverses decision 17's propose-and-approve, at the owner's request. What protects the fleet
+is now the gate and the limits, not the click; the review of promoted pairs is the demotion rule
+(`incubator.demote`) and the 100-trade review.

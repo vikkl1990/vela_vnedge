@@ -139,7 +139,13 @@ if (sliceArg !== 'none') {
           windowsUp: w.filter(x => x > 0).length, winRatePct: trades.length ? trades.filter(t => t.pnl > 0).length / trades.length * 100 : 0,
           avgR: trades.length ? trades.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / trades.length : 0, bars: d.bars.length, days: (d.bars.at(-1)!.time - d.bars[0].time) / DAY,
         };
-        r.pass = r.trades >= inc.screen.minTrades && r.profitFactor >= inc.screen.minProfitFactor && r.windowsUp >= inc.screen.minWindowsUp && r.netAtStress > 0;
+        // both halves of the screen history must be positive on their own: a good month is not an edge (decisions 33, 55)
+        const split = d.bars[Math.floor(d.bars.length / 2)].time;
+        const h1 = trades.filter(t => t.entryAt < split), h2 = trades.filter(t => t.entryAt >= split);
+        r.avgR1 = h1.length ? h1.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / h1.length : 0;
+        r.avgR2 = h2.length ? h2.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / h2.length : 0;
+        const halvesOk = inc.screen.requireBothHalves === false || (h1.length > 0 && h2.length > 0 && r.avgR1 > 0 && r.avgR2 > 0);
+        r.pass = r.trades >= inc.screen.minTrades && r.profitFactor >= inc.screen.minProfitFactor && r.windowsUp >= inc.screen.minWindowsUp && r.netAtStress > 0 && halvesOk;
         // a market whose one contract eats the risk budget cannot be sized: the stop cap, not the
         // strategy, decides whether each signal becomes a trade (decision 31)
         if (r.pass && coarse.has(symbol)) { r.pass = false; summary.tooCoarse++; }

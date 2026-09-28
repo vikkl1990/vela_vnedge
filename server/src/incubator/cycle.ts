@@ -8,6 +8,8 @@ import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pai
 export interface ScreenResult {
   pass: boolean; at: number; trades: number; profitFactor: number; netPnl: number; netAtStress: number;
   windowsUp: number; winRatePct: number; avgR: number; bars: number; days: number;
+  /** R per trade in the first and second half of the screen history (decision 55). */
+  avgR1?: number; avgR2?: number;
 }
 
 type PairKey = { scannerId: string; symbol: string; tf: string };
@@ -207,6 +209,19 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
 }
 
 /** Reject a proposal: a promotion is retired (cooldown applies); a demotion is dismissed and the pair stays live. */
+/**
+ * The hunter's last step: every pair the gate proposed is promoted without a click, in gate order,
+ * until the weekly or fleet limit says stop. Everything the gate did not propose stays where it is.
+ */
+export function autoPromote(store: IncubatorStore, cfg: AppConfig, setScanner: (id: string, patch: Partial<ScannerConfig>) => void, now = Date.now()): { promoted: string[]; blocked: string[] } {
+  const promoted: string[] = [], blocked: string[] = [];
+  for (const r of store.list(['proposed'])) {
+    try { approve(store, cfg, r.id, 'auto', setScanner, now); promoted.push(name(r)); }
+    catch (e: any) { blocked.push(`${name(r)}: ${e?.message ?? e}`); }
+  }
+  return { promoted, blocked };
+}
+
 export function reject(store: IncubatorStore, id: number, actor: string, note: string | null = null, now = Date.now()): PairRow {
   const r = store.get(id);
   if (!r) throw Object.assign(new IncubatorError('unknown incubator pair'), { status: 404 });

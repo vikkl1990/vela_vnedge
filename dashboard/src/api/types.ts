@@ -524,6 +524,8 @@ export interface IncubatorView {
   counts: Partial<Record<IncubatorStage, number>>
   fleet: number; promotionsThisWeek: number
   lastRun: { at: number; slice: string; scripts: number; symbols: number; runs: number; passed: number; new: number; ms: number; report?: { admitted: string[]; proposed: string[]; retired: string[]; demoteProposed: string[] } } | null
+  /** The last hunt: judge + auto-promotion + digest, run when the daily screen finished or on a click. */
+  lastHunt?: { at: number; actor: string; screen: { at: number; slice: string; runs: number; passed: number; newCandidates: number; quarantined: number; minutes: number } | null; admitted: string[]; proposed: string[]; promoted: string[]; blocked: string[]; retired: string[]; demoteProposed: string[]; brewing: number; free: number; auto: boolean } | null
   runner: { runs: number; skipped: number; errors: number; entries: number; lastBarAt: number; active: number }
   pairs: IncubatorPair[]; events: IncubatorEvent[]
 }

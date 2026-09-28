@@ -2,7 +2,7 @@ import { lastAtr } from './data/indicators.ts';
 import { trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
-import { approve as incubatorApprove, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, livePairs } from './incubator/cycle.ts';
+import { approve as incubatorApprove, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, DATA_DIR, type AppConfig } from './config.ts';
 import { CandleStore } from './data/candleStore.ts';
@@ -55,6 +55,8 @@ export class App {
   readonly ml: MlService;
   readonly scanners: ScannerEngine;
   readonly profiles: ProfileStore;
+  private huntSeenAt = 0;
+  private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
@@ -160,6 +162,13 @@ export class App {
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
     subscribeRealtime(this);
     if (this.executor) await this.executor.start();
+    // the daily screen runs in its own process; when it finishes, the hunt runs here so promotions land in the live config
+    this.huntSeenAt = this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
+    this.huntTimer = setInterval(() => {
+      const at = this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
+      if (at > this.huntSeenAt) { this.huntSeenAt = at; this.incubatorEvaluate('hunter').catch(e => log.warn(`hunt failed: ${e?.message ?? e}`)); }
+    }, 10 * 60_000);
+    this.huntTimer.unref?.();
     this.ops.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
@@ -410,7 +419,7 @@ export class App {
     return {
       enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),
       fleet: livePairs(cfg).length, promotionsThisWeek: this.incubatorStore.promotionsSince(now - 7 * 86400_000),
-      lastRun: this.db.kvGet('incubator.lastRun') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length },
+      lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length },
       pairs, events: this.incubatorStore.events(100),
     };
   }
@@ -426,18 +435,37 @@ export class App {
   }
 
   /** Re-judge shadow and live pairs now (the daily job does this too, after screening). */
+  /**
+   * The hunt: judge the shadow book, promote what the gate proposed when `promote.auto` is on, and
+   * say what happened. Runs on the owner's click and every time the daily screen finishes.
+   */
   async incubatorEvaluate(actor: string) {
     const cfg = this.config.get();
     const synced = incubatorSyncLive(this.incubatorStore, cfg);
     const report = incubatorEvaluate(this.incubatorStore, cfg);
+    let promoted: string[] = [], blocked: string[] = [];
+    if (cfg.incubator.promote.auto && report.proposed.length) {
+      ({ promoted, blocked } = incubatorAutoPromote(this.incubatorStore, cfg, (sid, patch) => { this.config.setScanner(sid, patch); }));
+      if (promoted.length) await this.onConfigChanged();
+    }
     await this.incubator.sync();
-    log.info(`incubator: evaluated by ${actor}: ${report.proposed.length} proposed, ${report.retired.length} retired, ${report.admitted.length} admitted, ${report.demoteProposed.length} proposed for demotion`);
-    return { synced, report };
+    const screen = this.db.kvGet<any>('incubator.lastRun');
+    const hunt = { at: Date.now(), actor, screen: screen ? { at: screen.at, slice: screen.slice, runs: screen.runs, passed: screen.passed, newCandidates: screen.new, quarantined: screen.quarantined, minutes: Math.round((screen.ms ?? 0) / 60000) } : null,
+      admitted: report.admitted, proposed: report.proposed, promoted, blocked, retired: report.retired, demoteProposed: report.demoteProposed, brewing: report.brewing, free: report.free, auto: Boolean(cfg.incubator.promote.auto) };
+    this.db.kvSet('incubator.lastHunt', hunt);
+    if (promoted.length || report.proposed.length || report.retired.length || report.demoteProposed.length) {
+      const lines = [`Pair hunt (${actor})`, screen ? `screen: ${screen.runs} runs, ${screen.passed} passed, ${screen.new} new` : '', `admitted ${report.admitted.length} · proposed ${report.proposed.length} · promoted ${promoted.length} · retired ${report.retired.length}`,
+        ...promoted.map(p => `+ LIVE ${p}`), ...report.proposed.filter(p => !promoted.includes(p)).map(p => `? proposed ${p}`), ...blocked.map(b => `! ${b}`), ...report.demoteProposed.map(p => `- demotion proposed ${p}`)].filter(Boolean);
+      void this.ops.alerts.raise('incubator.hunt', lines.join('\n')).catch(() => undefined);
+    }
+    log.info(`incubator: evaluated by ${actor}: ${report.proposed.length} proposed, ${promoted.length} promoted, ${report.retired.length} retired, ${report.admitted.length} admitted, ${report.demoteProposed.length} proposed for demotion`);
+    return { synced, report, promoted, blocked };
   }
 
   async stop() {
     this.incubator.stop();
     this.executor?.stop();
+    if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();
   }
