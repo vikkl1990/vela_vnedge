@@ -181,6 +181,7 @@ export function useCloseAll() {
   })
 }
 
+export const useOps = () => useQuery({ queryKey: ['ops'], queryFn: api.ops, refetchInterval: 60_000, retry: 1 })
 export const useMarketsToday = () => useQuery({ queryKey: ['markets-today'], queryFn: api.marketsToday, refetchInterval: 60_000, retry: 1 })
 export function useRefreshMarketsToday() {
   const qc = useQueryClient()

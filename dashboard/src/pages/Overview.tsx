@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, useMarketsToday, usePositions, useRefreshMarketsToday, useScannerIndex, useSignals, useStats } from '../api/queries'
+import { useEquity, useMarketsToday, useOps, usePositions, useRefreshMarketsToday, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { EquityChart, PnlByScannerChart, type PnlBar } from '../components/charts'
 import { PositionsTable } from '../components/PositionsTable'
@@ -86,6 +86,7 @@ export function Overview() {
         <Panel title="PnL by scanner">
           {stats.isLoading && !s ? <Loading kind="chart" height={240} /> : <PnlByScannerChart data={pnlBars} height={240} />}
         </Panel>
+        <AlertsStatusLine />
         <MarketsTodayPanel />
         <Panel title="Scanner fleet">
           <QueryState {...scanners} data={scanners.data} empty="No scanners loaded." hint="Drop .pine files into the scanners folder and restart the server." onRetry={() => scanners.refetch()}>
@@ -178,5 +179,21 @@ function MarketsTodayPanel() {
         </table>
       )}
     </Panel>
+  )
+}
+
+
+/** Whether anyone would hear a halt: the alert channel, what it last sent, and what last failed. */
+function AlertsStatusLine() {
+  const ops = useOps()
+  const a = ops.data?.alerts
+  if (!a) return null
+  const ok = Boolean(a.configured)
+  return (
+    <div className={`banner ${ok ? '' : 'banner-warn'} small`} role="note">
+      <b>Alerts:</b> {ok ? `${a.channel ?? 'channel'} configured · ${a.sent ?? 0} sent` : 'not configured — a halt, a stranded position or a hunt result reaches nobody until TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in the service environment'}
+      {a.lastError ? <span className="text-danger"> · last error: {a.lastError}</span> : null}
+      {a.recent?.length ? <span className="muted"> · last: {a.recent[a.recent.length - 1].text.slice(0, 80)}</span> : null}
+    </div>
   )
 }

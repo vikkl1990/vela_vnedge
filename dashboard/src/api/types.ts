@@ -320,6 +320,8 @@ export interface Trade {
 }
 
 export interface Order {
+  /** Where the fill price came from: 'exchange' (restated from the exchange's fill), 'quote' (crossed the live spread), 'slippage' (modelled), or null. */
+  priceSource?: 'exchange' | 'quote' | 'slippage' | null
   id: number
   at: number
   positionId: number

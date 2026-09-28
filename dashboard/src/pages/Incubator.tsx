@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import { useAuth } from '../auth/AuthGate'
 import type { IncubatorPair, IncubatorStats, IncubatorView } from '../api/types'
 import { ConfirmDialog, Empty, KpiTile, PageTitle, Panel, Pill, QueryState } from '../components/ui'
-import { fmtNum, timeAgo } from '../lib/format'
+import { fmtNum, timeAgo, fmtR } from '../lib/format'
 
 const pf = (v: number | null | undefined) => (v === null ? '∞' : v === undefined ? '—' : v.toFixed(2))
 const r = (v: number | undefined) => (v === undefined ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`)
@@ -107,6 +107,44 @@ export default function Incubator() {
                   </div>
                 )}
                 {decide.isError && <div className="auth-error mt" role="alert">{(decide.error as Error).message}</div>}
+              </Panel>
+
+              <Panel title="Cohorts — what the gate is judging" right={<span className="muted small">pooled per scanner × timeframe; a verdict needs ≥{g.minTrades} trades over ≥{g.minDays} days and half the markets positive</span>}>
+                {(() => {
+                  const groups = new Map<string, IncubatorPair[]>()
+                  for (const p of [...shadow, ...by('proposed')]) { const k = `${p.scannerId}|${p.tf}`; groups.set(k, [...(groups.get(k) ?? []), p]) }
+                  const rows = [...groups.entries()].map(([k, ps]) => {
+                    const trades = ps.reduce((a, p) => a + (p.stats?.trades ?? 0), 0)
+                    const netR = ps.reduce((a, p) => a + (p.stats?.netR ?? 0), 0)
+                    const days = Math.max(0, ...ps.map((p) => p.stats?.days ?? 0))
+                    const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
+                    const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
+                    const decision = ps.find((p) => p.gate)?.gate?.decision ?? 'brewing'
+                    const rate = days > 0 ? trades / days : 0
+                    const need = Math.max(0, g.minTrades - trades)
+                    const eta = need === 0 ? Math.max(0, g.minDays - days) : rate > 0 ? Math.max(need / rate, g.minDays - days) : Infinity
+                    return { k, scanner: ps[0].scannerName, tf: ps[0].tf, markets: ps.length, trades, avgR: trades ? netR / trades : 0, days, pos, judged, decision, eta }
+                  }).sort((a, b) => a.eta - b.eta || b.trades - a.trades)
+                  if (!rows.length) return <p className="muted small">Nothing in the shadow book.</p>
+                  return (
+                    <div className="table-wrap">
+                      <table className="table small">
+                        <thead><tr><th>scanner</th><th>tf</th><th className="num">markets</th><th className="num">trades</th><th className="num">avg R</th><th className="num">days</th><th className="num">markets +</th><th>gate</th><th className="num">to a verdict</th></tr></thead>
+                        <tbody>
+                          {rows.slice(0, 60).map((r) => (
+                            <tr key={r.k}>
+                              <td>{r.scanner}</td><td className="mono">{r.tf}</td><td className="num mono">{r.markets}</td><td className="num mono">{r.trades}</td>
+                              <td className={`num mono ${r.trades ? (r.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{r.trades ? fmtR(r.avgR) : '–'}</td>
+                              <td className="num mono">{r.days.toFixed(0)}</td><td className="num mono">{r.judged ? `${r.pos}/${r.judged}` : '–'}</td>
+                              <td><Pill tone={r.decision === 'propose' ? 'ok' : r.decision === 'retire' ? 'danger' : 'muted'}>{r.decision}</Pill></td>
+                              <td className="num mono muted">{r.eta === Infinity ? 'no trades yet' : r.eta <= 0 ? 'now' : `~${Math.ceil(r.eta)}d`}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                })()}
               </Panel>
 
               <Panel title={`Brewing in the shadow book (${shadow.length})`}>

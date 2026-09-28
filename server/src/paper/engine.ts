@@ -752,7 +752,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   orders(limit = 200) {
-    return this.db.all<any>(`SELECT id, at, position_id positionId, scanner_id scannerId, symbol, side, qty, price, fee, reason FROM orders WHERE bt=${this.book} ORDER BY at DESC, id DESC LIMIT ?`, limit);
+    return this.db.all<any>(`SELECT id, at, position_id positionId, scanner_id scannerId, symbol, side, qty, price, fee, reason, price_source priceSource FROM orders WHERE bt=${this.book} ORDER BY at DESC, id DESC LIMIT ?`, limit);
   }
 
   trades(opts: { limit?: number; scanner?: string; symbol?: string } = {}) {

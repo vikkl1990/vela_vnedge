@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMarkets, useScannerIndex, useSignals } from '../api/queries'
 import type { Signal, SignalKind, Side } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
-import { ActionPill, ErrorState, Loading, PageTitle, Panel, ScoreBadge, SidePill, StatusDot, Time } from '../components/ui'
+import { ActionPill, ErrorState, Loading, PageTitle, Panel, Pill, ScoreBadge, SidePill, StatusDot, Time } from '../components/ui'
 import { fmtPrice, truncate } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { useSSEEvent } from '../sse/SSEProvider'
@@ -154,9 +154,20 @@ export function Signals() {
     return Array.from(set)
   }, [markets.data, signals.data])
 
+  const outcomes = useMemo(() => summarizeOutcomes(rows), [rows])
+
   return (
     <div className="page">
       <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Live feed of entries, exits and infos from all enabled scanners." />
+      {outcomes.total > 0 && (
+        <Panel title={`What became of the last ${outcomes.total} signals`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
+          <div className="chips">
+            {outcomes.buckets.map((b) => (
+              <Pill key={b.key} tone={b.tone} title={b.hint}>{b.label} <span className="mono">{b.n}</span></Pill>
+            ))}
+          </div>
+        </Panel>
+      )}
       <Panel
         title={
           <span>
@@ -202,4 +213,35 @@ export function Signals() {
       </Panel>
     </div>
   )
+}
+
+
+/** The fate of a batch of signals, in the operator's words: how many became trades, and what refused the rest. */
+function summarizeOutcomes(rows: Signal[]) {
+  const defs: Array<{ key: string; label: string; tone: 'ok' | 'danger' | 'warn' | 'muted' | 'accent'; hint: string; test: (a: string, s: Signal) => boolean }> = [
+    { key: 'opened', label: 'opened', tone: 'ok', hint: 'became a position', test: (a) => a === 'opened' },
+    { key: 'market', label: 'market not suitable', tone: 'warn', hint: 'the markets-today gate: illiquid, too quiet to pay the round trip, or not paying recently (decision 56)', test: (a) => a.startsWith('rejected:market') },
+    { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'the stop is closer than 4× the round-trip fee; taking the trade loses money', test: (a) => /stop too tight/.test(a) },
+    { key: 'capacity', label: 'margin / position cap', tone: 'warn', hint: 'no room in the account: margin, position limits, or a scrap-sized fill refused (decision 53)', test: (a) => /margin|max positions|position cap|intended size|budget/.test(a) },
+    { key: 'stale', label: 'stale (scan too late)', tone: 'danger', hint: 'the scan finished after the signal aged out', test: (a) => /stale/.test(a) },
+    { key: 'halted', label: 'halted / loss limit', tone: 'danger', hint: 'kill switch, daily or weekly loss limit, cooldown', test: (a) => /halt|loss limit|cooldown/.test(a) },
+    { key: 'regime', label: 'regime', tone: 'muted', hint: 'weekend or ATR floor', test: (a) => /regime/.test(a) },
+    { key: 'exitnopos', label: 'exit, no position', tone: 'muted', hint: 'an exit signal with nothing open to close', test: (a) => /no position/.test(a) },
+    { key: 'inpos', label: 'already in position', tone: 'muted', hint: 'the scanner already holds this market', test: (a) => /already in position/.test(a) },
+    { key: 'reset', label: 'reset', tone: 'muted', hint: 'the book was reset after the signal', test: (a) => a === 'reset' },
+    { key: 'info', label: 'info', tone: 'muted', hint: 'informational signal, nothing to act on', test: (a, s) => a === 'info' || s.kind === 'info' },
+  ]
+  const counts = new Map<string, number>()
+  let entries = 0
+  for (const s of rows) {
+    const a = String(s.action ?? '')
+    if (s.kind === 'entry') entries++
+    const d = defs.find((x) => x.test(a, s))
+    const k = d ? d.key : a.startsWith('rejected') ? 'other-rejected' : 'other'
+    counts.set(k, (counts.get(k) ?? 0) + 1)
+  }
+  const buckets = defs.filter((d) => counts.get(d.key)).map((d) => ({ ...d, n: counts.get(d.key)! }))
+  if (counts.get('other-rejected')) buckets.push({ key: 'other-rejected', label: 'rejected (other)', tone: 'warn', hint: 'see the Action column', n: counts.get('other-rejected')!, test: () => false })
+  if (counts.get('other')) buckets.push({ key: 'other', label: 'other', tone: 'muted', hint: '', n: counts.get('other')!, test: () => false })
+  return { total: rows.length, entries, opened: counts.get('opened') ?? 0, buckets }
 }

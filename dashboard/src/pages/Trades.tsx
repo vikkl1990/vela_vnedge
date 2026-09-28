@@ -5,7 +5,7 @@ import type { Order, Trade } from '../api/types'
 import { TradePath } from '../components/TradePath'
 import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
-import { ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pnl, QueryState, SidePill, StatusDot, Time } from '../components/ui'
+import { ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pill, Pnl, QueryState, SidePill, StatusDot, Time } from '../components/ui'
 import { fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtR, fmtTime } from '../lib/format'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { useToast } from '../lib/toast'
@@ -102,7 +102,10 @@ export function Trades() {
       { key: 'symbol', header: 'Symbol', value: (o) => o.symbol, render: (o) => <b>{o.symbol}</b> },
       { key: 'side', header: 'Side', value: (o) => o.side, render: (o) => <span className={`side ${o.side === 'buy' ? 'side-long' : 'side-short'}`}>{o.side.toUpperCase()}</span> },
       { key: 'qty', header: 'Qty', numeric: true, value: (o) => o.qty, render: (o) => <span className="mono">{fmtInt(o.qty)}</span> },
-      { key: 'price', header: 'Price', numeric: true, value: (o) => o.price, render: (o) => <span className="mono">{fmtPrice(o.price, tick(o.symbol))}</span> },
+      {
+        key: 'price', header: 'Price', numeric: true, value: (o) => o.price, title: 'exch = restated from the exchange\'s own fill; quote = crossed the live spread; otherwise modelled slippage',
+        render: (o) => <span className="mono">{fmtPrice(o.price, tick(o.symbol))}{o.priceSource === 'exchange' ? <Pill tone="ok" className="ml">exch</Pill> : o.priceSource === 'quote' ? <span className="muted small"> q</span> : null}</span>,
+      },
       { key: 'fee', header: 'Fee (USD)', numeric: true, value: (o) => o.fee, render: (o) => <span className="mono muted">{fmtMoney(o.fee)}</span> },
       { key: 'reason', header: 'Reason', value: (o) => o.reason, render: (o) => <ExitReasonPill reason={o.reason} /> },
       { key: 'pos', header: 'Pos', numeric: true, value: (o) => o.positionId, render: (o) => <span className="mono muted">#{o.positionId}</span> },

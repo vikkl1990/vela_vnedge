@@ -110,6 +110,7 @@ export const api = {
   // risk and exchange state
   risk: () => get<RiskState>('/risk'),
   marketsToday: () => get<MarketsToday>('/markets/today'),
+  ops: () => get<{ alerts?: { channel?: string; configured?: boolean; sent?: number; lastAt?: number | null; lastError?: string | null; recent?: Array<{ at: number; text: string; delivered: boolean }> } }>('/ops'),
   refreshMarketsToday: () => post<MarketsToday>('/markets/today/refresh'),
   /** Manual halt: no new entries until resumed; optionally flatten the paper book. */
   riskKill: (reason: string, closeAll = false) => post<RiskState>('/risk/kill', { reason, closeAll }),
