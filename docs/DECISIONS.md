@@ -1686,3 +1686,15 @@ now the gate's allowed set (decision 56b), most liquid first, capped by `incubat
 (raised to 100 on the VM); the turnover top-N remains only as the fallback before the gate has
 judged. Tokenized stocks and metals that Delta lists as perpetuals pass the book rule and are
 therefore screened too; excluding them is a one-line `exempt`-style list if the operator wants it.
+
+### 60a. Crypto only
+
+Delta lists 34 tokenized stocks, ETFs, indices and metals as USD perpetuals (xStock, bStocks,
+PAXG, XAUT, SLVON). They pass the book rule, so the widened screen and gate would have admitted
+them. They trade around US market hours, gap at the open and carry none of the behaviour the
+scripts were profiled on, so they are out: `risk.marketGate.cryptoOnly` (default true) blocks
+them in the gate ("not crypto") and keeps them out of the universe the screen draws from. The
+marker is the product description (xStock / bStocks / Gold Token / Silver / ETF); Venice Token
+(VVV) is crypto and does not match. The six shadow and candidate rows the incubator held on
+SNDKB, SOXLB and SLVON were retired with that note; no fleet scanner and no open position was on
+a tokenized market.

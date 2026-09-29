@@ -198,7 +198,7 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
 - Configuration is frozen until the live sample exists; the review is pre-committed so a bad week
   cannot rewrite it (decisions 3, 4).
 - Nothing enters the fleet except through the incubator. With `incubator.promote.auto` on (decision 55) the cohort gate promotes on its own within the weekly and fleet limits; off, the owner clicks. The owner may send a live pair back to the shadow book at any time (decision 60); it must pass the gate again to return.
-- The daily screen covers every market the gate allows today (decisions 56b, 60), capped by `incubator.universeTop`; a market the gate blocks is not screened.
+- The daily screen covers every market the gate allows today (decisions 56b, 60), capped by `incubator.universeTop`; a market the gate blocks is not screened. Crypto only: Delta's tokenized stocks, ETFs and metals are neither traded nor screened (decision 60a).
 - Every rule change lands in the same commit as its decision entry, and updates this file.
 - Never real production keys; the bot binds to 127.0.0.1 only; the Telegram token lives in the
   systemd environment and never in `config.json`.

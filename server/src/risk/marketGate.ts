@@ -2,6 +2,7 @@
  * Markets today: which pairs the fleet may trade right now, decided from the market itself rather
  * than from any scanner (decision 56). A market is allowed unless one of three things is true:
  *
+ *   - it is not a crypto market (Delta's tokenized stocks, ETFs and metals; `cryptoOnly`, on by default);
  *   - it is dead today (24 h turnover below `minTurnoverUsd`, a low sanity floor);
  *   - its book is too expensive to cross (decision 56b): walking the level-2 book for
  *     `probeNotionalUsd` in and back out — half the spread each way, the slippage of the walk, and
@@ -23,6 +24,9 @@ import { logger } from '../log.ts';
 
 const log = logger.scoped('markets');
 const KV_KEY = 'risk.marketsToday';
+/** Delta lists tokenized stocks, ETFs, indices and metals as USD perpetuals; their descriptions say so. Venice Token (VVV) is crypto and does not match. */
+export const NOT_CRYPTO = /xStock|bStocks?|Gold Token|Silver|\bETF\b/i;
+export const isCrypto = (description: string | undefined) => !NOT_CRYPTO.test(description ?? '');
 
 export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; spreadPct: number | null; bookCostPct: number | null; trades: number; pf: number | null; netUsd: number }
 export interface MarketsToday { at: number; enabled: boolean; markets: MarketVerdict[] }
@@ -30,7 +34,7 @@ export interface MarketsToday { at: number; enabled: boolean; markets: MarketVer
 export interface MarketGateDeps {
   db: Db;
   candles: { get(symbol: string, tf: string, opts?: { limit?: number; closedOnly?: boolean }): Bar[] } | null;
-  markets: () => Promise<Array<{ symbol: string; volume24h: number; price: number }>>;
+  markets: () => Promise<Array<{ symbol: string; volume24h: number; price: number; description?: string }>>;
   /** Level-2 book as [price, quantity in base units] per level, best first; absent or throwing → no book opinion. */
   book?: (symbol: string) => Promise<{ bids: Array<[number, number]>; asks: Array<[number, number]> }>;
   cfgRef: () => AppConfig;
@@ -59,7 +63,7 @@ export class MarketGate {
   async universe(symbols: string[]): Promise<string[]> {
     const c = this.cfg;
     const out = new Set(symbols);
-    try { for (const m of await this.deps.markets()) if (m.volume24h >= (c?.minTurnoverUsd ?? 0) && /USD$/.test(m.symbol)) out.add(m.symbol); } catch { /* the given symbols still get judged */ }
+    try { for (const m of await this.deps.markets()) if (m.volume24h >= (c?.minTurnoverUsd ?? 0) && /USD$/.test(m.symbol) && (c?.cryptoOnly === false || isCrypto(m.description))) out.add(m.symbol); } catch { /* the given symbols still get judged */ }
     return [...out];
   }
 
@@ -69,8 +73,8 @@ export class MarketGate {
     const c = this.cfg;
     const paper = this.deps.cfgRef().paper;
     if (!c?.enabled) { this.state = { at: now, enabled: false, markets: [] }; this.deps.db.kvSet(KV_KEY, this.state); return this.state; }
-    let tickers = new Map<string, { volume24h: number; price: number }>();
-    try { tickers = new Map((await this.deps.markets()).map(m => [m.symbol, { volume24h: m.volume24h, price: m.price }])); }
+    let tickers = new Map<string, { volume24h: number; price: number; description?: string }>();
+    try { tickers = new Map((await this.deps.markets()).map(m => [m.symbol, { volume24h: m.volume24h, price: m.price, description: m.description }])); }
     catch (e: any) { log.warn(`tickers unavailable: ${e?.message ?? e}; turnover not judged`); }
     const feeRoundTripPct = paper.feeRatePct * (1 + (paper.feeTaxPct ?? 0) / 100) * 2;
     const since = now - c.lookbackDays * 86_400_000;
@@ -82,6 +86,7 @@ export class MarketGate {
       const reasons: string[] = [];
       const t = tickers.get(symbol);
       const turnoverUsd = t ? t.volume24h : null;
+      if (c.cryptoOnly !== false && t && !isCrypto(t.description)) reasons.push('not crypto: a tokenized stock, ETF or metal (crypto only, decision 60a)');
       if (turnoverUsd !== null && c.minTurnoverUsd > 0 && turnoverUsd < c.minTurnoverUsd) reasons.push(`dead: $${(turnoverUsd / 1e6).toFixed(2)}M 24h turnover < $${(c.minTurnoverUsd / 1e6).toFixed(2)}M`);
       const book = books.get(symbol) ?? null;
       const spreadPct = book?.spreadPct ?? null;

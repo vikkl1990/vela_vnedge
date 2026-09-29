@@ -418,6 +418,8 @@ export interface RiskConfig {
     enabled: boolean;
     /** Timeframe the ATR test reads (default 15m). */
     tf?: string;
+    /** Crypto markets only: Delta's tokenized stocks, ETFs, indices and metals are neither traded nor screened (default true). */
+    cryptoOnly?: boolean;
     /** 24 h turnover floor in USD (0 = off) — a dead-market guard; the book rule below judges tradability. */
     minTurnoverUsd: number;
     /** Book rule (decision 56b): walk the level-2 book for this notional both ways; the round-trip cost (spread + slippage + fee) must stay under `maxBookCostPct` (either 0 = off). */
@@ -525,7 +527,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     perScannerMaxPositions: 4,
     perScannerDailyLossPct: 0,
     regime: { enabled: true, minAtrPct: 0.30, noWeekend: true, exempt: [] },
-    marketGate: { enabled: false, tf: '15m', minTurnoverUsd: 250_000, probeNotionalUsd: 2_500, maxBookCostPct: 0.25, minAtrFeeMult: 4, lookbackDays: 14, minTrades: 5, minPf: 1.0, refreshMinutes: 60, exempt: [] },
+    marketGate: { enabled: false, tf: '15m', cryptoOnly: true, minTurnoverUsd: 250_000, probeNotionalUsd: 2_500, maxBookCostPct: 0.25, minAtrFeeMult: 4, lookbackDays: 14, minTrades: 5, minPf: 1.0, refreshMinutes: 60, exempt: [] },
   },
   scanners: {},
   validation: {

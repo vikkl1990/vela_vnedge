@@ -24,10 +24,13 @@ test('markets today: dead, costly-book, thin-book, too quiet and losing markets 
   const shallow = { bids: [[99.99, 5]] as Array<[number, number]>, asks: [[100.01, 5]] as Array<[number, number]> };
   const book = async (symbol: string) => symbol === 'WIDEUSD' ? wide : symbol === 'SHALLOWUSD' ? shallow : symbol === 'NOBOOKUSD' ? Promise.reject(new Error('503')) : tight;
   const tick = (symbol: string, volume24h = 5e6, price = 100) => ({ symbol, volume24h, price });
-  const gate = new MarketGate({ db, candles, book, markets: async () => [tick('THINUSD', 200_000), tick('QUIETUSD'), tick('LOSERUSD', 5e6, 1), tick('GOODUSD'), tick('NOCANDLESUSD'), tick('WIDEUSD'), tick('SHALLOWUSD'), tick('NOBOOKUSD')], cfgRef: () => cfg, now: () => now });
-  const r = await gate.refresh(['THINUSD', 'QUIETUSD', 'LOSERUSD', 'GOODUSD', 'NOCANDLESUSD', 'EXEMPTUSD', 'WIDEUSD', 'SHALLOWUSD', 'NOBOOKUSD']);
+  const gate = new MarketGate({ db, candles, book, markets: async () => [{ ...tick('NVDAXUSD'), description: 'NVIDIA xStock Token perpetual future quoted in USD' }, { ...tick('VVVUSD'), description: 'Venice Token Perpetual future quoted in USD' }, tick('THINUSD', 200_000), tick('QUIETUSD'), tick('LOSERUSD', 5e6, 1), tick('GOODUSD'), tick('NOCANDLESUSD'), tick('WIDEUSD'), tick('SHALLOWUSD'), tick('NOBOOKUSD')], cfgRef: () => cfg, now: () => now });
+  const r = await gate.refresh(['THINUSD', 'QUIETUSD', 'LOSERUSD', 'GOODUSD', 'NOCANDLESUSD', 'EXEMPTUSD', 'WIDEUSD', 'SHALLOWUSD', 'NOBOOKUSD', 'NVDAXUSD', 'VVVUSD']);
   const by = Object.fromEntries(r.markets.map(m => [m.symbol, m]));
   assert.equal(by.THINUSD.allowed, false); assert.match(by.THINUSD.reasons[0], /dead/);
+  assert.equal(by.NVDAXUSD.allowed, false); assert.match(by.NVDAXUSD.reasons[0], /not crypto/);
+  assert.equal(by.VVVUSD.allowed, true, 'Venice Token is crypto');
+  assert.ok(!(await gate.universe([])).includes('NVDAXUSD'), 'tokenized stocks are not in the universe');
   assert.equal(by.WIDEUSD.allowed, false); assert.match(by.WIDEUSD.reasons[0], /costly book: 0.418% round trip/);
   assert.equal(by.SHALLOWUSD.allowed, false); assert.match(by.SHALLOWUSD.reasons[0], /thin book/);
   assert.equal(by.NOBOOKUSD.allowed, true, 'unreadable book → no book opinion, not a block');
