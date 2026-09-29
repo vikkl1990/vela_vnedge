@@ -1,0 +1,42 @@
+
+=== ETHUSD: 15m 7999 bars (2026-07-07 → 2026-09-29), 1h 2999 bars (2026-05-27 →)
+  components: zero-lag trend ±1 on 2781 bars · dynamic breaks up 125 dn 111 · PSI>80 on 1589 bars · HV breakouts 6 · ER<0.35 on 2286 bars · osc |≥100| on 998 · sweeps 176/195
+S1 trend continuation (15m, 1h gate)           n=152 E[R]=-0.289 win  32% stops  81 ΣR= -43.9 | halves 69/-0.318 83/-0.264 | longs 75
+   S1 ungated: every Dynamic break             n=197 E[R]=-0.299 win  32% stops 104 ΣR= -58.9 | halves 100/-0.391 97/-0.204 | longs 107
+S2 compression-release breakout (1h)           n=  4 E[R]=+1.158 win  75% stops   1 ΣR=   4.6 | halves 2/+1.916 2/+0.400 | longs 3
+   S2 ungated: every HV breakout               n=  6 E[R]=+0.556 win  50% stops   2 ΣR=   3.3 | halves 2/+1.916 4/-0.123 | longs 3
+S3 liquidity sweep and reclaim (1h)            n=  6 E[R]=+0.205 win  50% stops   3 ΣR=   1.2 | halves 0/NaN 6/+0.205 | longs 3
+   S3 ungated: every sweep, next open          n=323 E[R]=-0.542 win  30% stops 222 ΣR=-175.2 | halves 156/-0.615 167/-0.474 | longs 152
+S4 range return to value (1h)                  n= 83 E[R]=-0.170 win  49% stops  33 ΣR= -14.1 | halves 43/-0.165 40/-0.176 | longs 45
+   S1 under the fleet's exit model (ATR stop, lock, trail) n= 23 E[R]=-0.128 win  65% stops   8 ΣR=  -2.9 | halves 5/-0.146 18/-0.123 | longs 13
+   S2 under the fleet's exit model (ATR stop, lock, trail) n=  4 E[R]=+0.812 win  50% stops   2 ΣR=   3.2 | halves 2/-0.215 2/+1.839 | longs 3
+   S3 under the fleet's exit model (ATR stop, lock, trail) n=  5 E[R]=-0.008 win  60% stops   2 ΣR=  -0.0 | halves 0/NaN 5/-0.008 | longs 2
+   S4 under the fleet's exit model (ATR stop, lock, trail) n= 81 E[R]=-0.079 win  64% stops  29 ΣR=  -6.4 | halves 43/-0.042 38/-0.121 | longs 43
+
+=== BTCUSD: 15m 7999 bars (2026-07-07 → 2026-09-29), 1h 2999 bars (2026-05-27 →)
+  components: zero-lag trend ±1 on 2788 bars · dynamic breaks up 108 dn 132 · PSI>80 on 1512 bars · HV breakouts 2 · ER<0.35 on 2352 bars · osc |≥100| on 1036 · sweeps 152/196
+S1 trend continuation (15m, 1h gate)           n=179 E[R]=-0.457 win  31% stops 100 ΣR= -81.8 | halves 91/-0.490 88/-0.424 | longs 83
+   S1 ungated: every Dynamic break             n=208 E[R]=-0.506 win  29% stops 121 ΣR=-105.3 | halves 102/-0.518 106/-0.495 | longs 98
+S2 compression-release breakout (1h)           n=  2 E[R]=+1.850 win 100% stops   0 ΣR=   3.7 | halves 0/NaN 2/+1.850 | longs 2
+   S2 ungated: every HV breakout               n=  2 E[R]=+1.850 win 100% stops   0 ΣR=   3.7 | halves 0/NaN 2/+1.850 | longs 2
+S3 liquidity sweep and reclaim (1h)            n= 10 E[R]=-0.616 win  30% stops   7 ΣR=  -6.2 | halves 7/-0.225 3/-1.529 | longs 5
+   S3 ungated: every sweep, next open          n=311 E[R]=-0.797 win  28% stops 216 ΣR=-248.0 | halves 146/-0.761 165/-0.830 | longs 137
+S4 range return to value (1h)                  n= 96 E[R]=-0.236 win  41% stops  38 ΣR= -22.7 | halves 48/-0.297 48/-0.176 | longs 51
+   S1 under the fleet's exit model (ATR stop, lock, trail) n=  7 E[R]=-0.254 win  57% stops   3 ΣR=  -1.8 | halves 0/NaN 7/-0.254 | longs 7
+   S2 under the fleet's exit model (ATR stop, lock, trail) n=  1 E[R]=+0.547 win 100% stops   0 ΣR=   0.5 | halves 0/NaN 1/+0.547 | longs 1
+   S3 under the fleet's exit model (ATR stop, lock, trail) n=  8 E[R]=-0.572 win  25% stops   6 ΣR=  -4.6 | halves 5/-0.349 3/-0.943 | longs 4
+   S4 under the fleet's exit model (ATR stop, lock, trail) n= 79 E[R]=-0.272 win  56% stops  35 ΣR= -21.5 | halves 48/-0.298 31/-0.231 | longs 41
+
+=== SOLUSD: 15m 7999 bars (2026-07-07 → 2026-09-29), 1h 2999 bars (2026-05-27 →)
+  components: zero-lag trend ±1 on 2780 bars · dynamic breaks up 132 dn 123 · PSI>80 on 1446 bars · HV breakouts 6 · ER<0.35 on 2272 bars · osc |≥100| on 1195 · sweeps 179/192
+S1 trend continuation (15m, 1h gate)           n=186 E[R]=-0.307 win  32% stops 109 ΣR= -57.2 | halves 97/-0.279 89/-0.339 | longs 91
+   S1 ungated: every Dynamic break             n=220 E[R]=-0.315 win  31% stops 130 ΣR= -69.2 | halves 110/-0.346 110/-0.283 | longs 115
+S2 compression-release breakout (1h)           n=  2 E[R]=+0.372 win  50% stops   1 ΣR=   0.7 | halves 1/-1.114 1/+1.859 | longs 1
+   S2 ungated: every HV breakout               n=  6 E[R]=+0.412 win  50% stops   3 ΣR=   2.5 | halves 2/-1.081 4/+1.158 | longs 4
+S3 liquidity sweep and reclaim (1h)            n= 13 E[R]=-0.625 win  31% stops   9 ΣR=  -8.1 | halves 3/-0.792 10/-0.574 | longs 8
+   S3 ungated: every sweep, next open          n=341 E[R]=-0.526 win  30% stops 237 ΣR=-179.3 | halves 154/-0.573 187/-0.488 | longs 164
+S4 range return to value (1h)                  n= 97 E[R]=-0.194 win  40% stops  43 ΣR= -18.9 | halves 42/-0.196 55/-0.193 | longs 53
+   S1 under the fleet's exit model (ATR stop, lock, trail) n= 45 E[R]=-0.209 win  60% stops  18 ΣR=  -9.4 | halves 2/+0.563 43/-0.245 | longs 27
+   S2 under the fleet's exit model (ATR stop, lock, trail) n=  2 E[R]=-0.413 win  50% stops   1 ΣR=  -0.8 | halves 1/-0.929 1/+0.103 | longs 1
+   S3 under the fleet's exit model (ATR stop, lock, trail) n=  9 E[R]=+0.322 win 100% stops   0 ΣR=   2.9 | halves 3/+0.270 6/+0.348 | longs 5
+   S4 under the fleet's exit model (ATR stop, lock, trail) n=100 E[R]=-0.130 win  58% stops  42 ΣR= -13.0 | halves 46/-0.149 54/-0.115 | longs 54
