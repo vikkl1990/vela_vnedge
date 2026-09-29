@@ -2,9 +2,9 @@ import { lastAtr } from './data/indicators.ts';
 import { trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
-import { approve as incubatorApprove, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
+import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
-import { ConfigStore, DATA_DIR, type AppConfig } from './config.ts';
+import { ConfigStore, type ScannerConfig, DATA_DIR, type AppConfig } from './config.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
@@ -474,11 +474,12 @@ export class App {
     };
   }
 
-  async incubatorDecide(id: number, action: 'approve' | 'reject', actor: string, note: string | null = null) {
-    const r = action === 'approve'
-      ? incubatorApprove(this.incubatorStore, this.config.get(), id, actor, (sid, patch) => { this.config.setScanner(sid, patch); })
+  async incubatorDecide(id: number, action: 'approve' | 'reject' | 'demote', actor: string, note: string | null = null) {
+    const setScanner = (sid: string, patch: Partial<ScannerConfig>) => { this.config.setScanner(sid, patch); };
+    const r = action === 'approve' ? incubatorApprove(this.incubatorStore, this.config.get(), id, actor, setScanner)
+      : action === 'demote' ? incubatorDemote(this.incubatorStore, this.config.get(), id, actor, setScanner, note)
       : incubatorReject(this.incubatorStore, id, actor, note);
-    if (action === 'approve') await this.onConfigChanged();
+    if (action !== 'reject') await this.onConfigChanged();
     await this.incubator.sync();
     log.info(`incubator: ${actor} ${action}d ${r.scannerId} ${r.symbol} ${r.tf} → ${r.stage}`);
     return r;

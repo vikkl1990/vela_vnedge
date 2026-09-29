@@ -121,7 +121,7 @@ export const api = {
 
   // incubator
   incubator: () => get<IncubatorView>('/incubator'),
-  incubatorDecide: (v: { id: number; action: 'approve' | 'reject'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
+  incubatorDecide: (v: { id: number; action: 'approve' | 'reject' | 'demote'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
   incubatorEvaluate: () => post<{ report: unknown }>('/incubator/evaluate'),
   users: () => get<{ users: Me[]; roles: RoleOption[] }>('/users'),
   createUser: (body: { username: string; password: string; role: Role; displayName?: string }) => post<{ user: Me }>('/users', body),

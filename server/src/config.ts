@@ -288,6 +288,7 @@ export interface IncubatorConfig {
   enabled: boolean;
   tf: string;
   /** Most liquid USD perpetuals screened, by 24h turnover, and the turnover floor. */
+  /** Cap on the markets one screen covers; the universe is what the market gate allows today (or the turnover top-N when the gate has no verdicts). */
   universeTop: number;
   minTurnoverUsd: number;
   /** Shadow pairs running at once (each is one script run per bar close). */

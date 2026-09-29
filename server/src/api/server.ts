@@ -341,7 +341,7 @@ export class ApiServer {
     this.add('GET', '/api/incubator', () => a.incubatorView());
     this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));
     this.add('POST', '/api/incubator/:id/:action', async (r, _s, p, _u, body) => {
-      if (p.action !== 'approve' && p.action !== 'reject') throw new HttpError(404, 'unknown action');
+      if (p.action !== 'approve' && p.action !== 'reject' && p.action !== 'demote') throw new HttpError(404, 'unknown action');
       const id = Number(p.id);
       if (!Number.isInteger(id)) throw new HttpError(400, 'bad id');
       const note = typeof body?.note === 'string' ? body.note.slice(0, 500) : null;

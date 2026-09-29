@@ -208,6 +208,22 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
   throw new IncubatorError(`nothing to approve: the pair is ${r.stage}`);
 }
 
+/**
+ * The operator's own demotion: a live pair goes back to the shadow book without waiting for the gate
+ * to propose it. The market leaves the scanner's live list (the scanner is disabled when it was its
+ * last), open positions keep running their exits, and the pair keeps being measured in shadow.
+ */
+export function demote(store: IncubatorStore, cfg: AppConfig, id: number, actor: string, setScanner: (id: string, patch: Partial<ScannerConfig>) => void, note: string | null = null, now = Date.now()): PairRow {
+  const r = store.get(id);
+  if (!r) throw Object.assign(new IncubatorError('unknown incubator pair'), { status: 404 });
+  if (r.stage !== 'live' && r.stage !== 'demote_proposed') throw new IncubatorError(`nothing to demote: the pair is ${r.stage}`);
+  const sc = cfg.scanners[r.scannerId];
+  const current = sc?.enabled && !sc.hidden ? (sc.symbols ?? cfg.symbols) : [];
+  const rest = current.filter(s => s !== r.symbol);
+  setScanner(r.scannerId, rest.length ? { symbols: rest } : { enabled: false });
+  return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null }, note ?? 'demoted by the operator: back to the shadow book', now);
+}
+
 /** Reject a proposal: a promotion is retired (cooldown applies); a demotion is dismissed and the pair stays live. */
 /**
  * The hunter's last step: every pair the gate proposed is promoted without a click, in gate order,

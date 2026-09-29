@@ -36,7 +36,7 @@ export default function Incubator() {
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['incubator'] }); void qc.invalidateQueries({ queryKey: ['scanners'] }) }
   const decide = useMutation({ mutationFn: api.incubatorDecide, onSuccess: invalidate })
   const evaluate = useMutation({ mutationFn: api.incubatorEvaluate, onSuccess: invalidate })
-  const [confirm, setConfirm] = useState<{ pair: IncubatorPair; action: 'approve' | 'reject' } | null>(null)
+  const [confirm, setConfirm] = useState<{ pair: IncubatorPair; action: 'approve' | 'reject' | 'demote' } | null>(null)
 
   return (
     <>
@@ -198,7 +198,7 @@ export default function Incubator() {
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Live pairs and their recent record</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Live record</th><th scope="col">Health</th></tr></thead>
+                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Live record</th><th scope="col">Health</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
                       <tbody>
                         {live.map((p) => (
                           <tr key={p.id}>
@@ -206,6 +206,7 @@ export default function Incubator() {
                             <td className="mono">{p.symbol}</td>
                             <td className="small">{p.stats ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%` : '—'}</td>
                             <td className="small">{(p.stats?.trades ?? 0) < d.config.demote.minTrades ? <span className="muted">collecting ({p.stats?.trades ?? 0}/{d.config.demote.minTrades})</span> : <Pill tone="ok">healthy</Pill>}</td>
+                            <td className="num">{auth.isAdmin && <button className="btn btn-xs" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow</button>}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -228,16 +229,16 @@ export default function Incubator() {
 
               <ConfirmDialog
                 open={confirm !== null}
-                title={confirm ? (confirm.action === 'approve' ? (confirm.pair.stage === 'proposed' ? `Promote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Demote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?`) : confirm.pair.stage === 'proposed' ? `Reject ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Keep ${confirm.pair.scannerName} on ${confirm.pair.symbol} live?`) : ''}
-                body={confirm && (confirm.action === 'approve'
+                title={confirm ? (confirm.action === 'demote' ? `Move ${confirm.pair.scannerName} on ${confirm.pair.symbol} to the shadow book?` : confirm.action === 'approve' ? (confirm.pair.stage === 'proposed' ? `Promote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Demote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?`) : confirm.pair.stage === 'proposed' ? `Reject ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Keep ${confirm.pair.scannerName} on ${confirm.pair.symbol} live?`) : ''}
+                body={confirm && (confirm.action === 'demote' ? <p>The market leaves this scanner's live list now (the scanner is switched off when it was its last market). Open positions keep running their exits. The pair keeps trading in the shadow book and must pass the gate again to come back.</p> : confirm.action === 'approve'
                   ? confirm.pair.stage === 'proposed'
                     ? 'It starts trading in the live paper account from the next signal. Open shadow positions finish in the shadow book.'
                     : 'It stops taking new live trades and goes back to the shadow book to prove itself again. Open live positions run to their exits.'
                   : confirm.pair.stage === 'proposed'
                     ? `It is retired and not screened again for ${d.config.cooldownDays} days.`
                     : 'It stays live; the demotion check runs again tomorrow.')}
-                confirmLabel={confirm?.action === 'approve' ? (confirm.pair.stage === 'proposed' ? 'Promote' : 'Demote') : confirm?.pair.stage === 'proposed' ? 'Reject' : 'Keep live'}
-                danger={confirm?.action === 'approve' && confirm.pair.stage === 'demote_proposed'}
+                confirmLabel={confirm?.action === 'demote' ? 'Move to shadow' : confirm?.action === 'approve' ? (confirm.pair.stage === 'proposed' ? 'Promote' : 'Demote') : confirm?.pair.stage === 'proposed' ? 'Reject' : 'Keep live'}
+                danger={confirm?.action === 'demote' || (confirm?.action === 'approve' && confirm.pair.stage === 'demote_proposed')}
                 busy={decide.isPending}
                 onConfirm={() => { if (confirm) decide.mutate({ id: confirm.pair.id, action: confirm.action }, { onSettled: () => setConfirm(null) }) }}
                 onCancel={() => setConfirm(null)}

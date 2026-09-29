@@ -1663,3 +1663,26 @@ $0.25M. An unreadable book gives no opinion rather than a block. The book cost a
 in the Markets-today tooltip. Not a scalper's rule: for holds of hours on 15m–4h the cost only
 has to be paid a few times over by the normal move; a scalper would need spreads under 0.02%,
 which on this exchange means the majors plus HYPE and TAO.
+
+## 60. Operator demotion, and the incubator screens every market the gate allows
+
+Two findings from the stop review and the combinations check (docs `DEAD-ON-ARRIVAL-2026-09-28.md`,
+`COMPOSITE-CLAIM-CHECK-2026-09-29.md`) needed a lever the system did not have.
+
+**Operator demotion.** A live pair could only leave the fleet after the gate proposed it. Three
+scanners were shown to be misread rather than losing on a fair sample — Adaptive ATR% Extension's
+"Up Warn" is an over-extension warning traded as a long, Machine Learning RSI AI's "ST Flip" is an
+ungated visual, Volume SuperTrend AI's "Trend Signal" is a per-bar state — and re-surveyed under
+corrected readings they still have no edge at 15m. Waiting for the gate would have cost more
+trades. `POST /api/incubator/:id/demote` (admin, "To shadow" on the Incubator page's live rows)
+moves a live pair to the shadow book at once: the market leaves the scanner's live list, the
+scanner is switched off when that was its last market, open positions keep their exits, and the
+pair must pass the gate again to return. Twelve pairs were demoted this way on 2026-09-29.
+
+**Every allowed market is screened.** The daily screen covered the turnover top-40 above $1M, so
+markets the gate now admits on their books (HYPE, TAO, and the rest of the 57 allowed today) were
+never screened and could never enter, while the fleet traded 18 markets. The screen's universe is
+now the gate's allowed set (decision 56b), most liquid first, capped by `incubator.universeTop`
+(raised to 100 on the VM); the turnover top-N remains only as the fallback before the gate has
+judged. Tokenized stocks and metals that Delta lists as perpetuals pass the book rule and are
+therefore screened too; excluding them is a one-line `exempt`-style list if the operator wants it.

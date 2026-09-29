@@ -5,7 +5,7 @@ import { DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR } from './gate.ts';
-import { approve, evaluate, recordScreen, reject, syncLive, type ScreenResult } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -128,6 +128,16 @@ test('a losing live pair is proposed for demotion; approving it removes the mark
   const r = approve(store, cfg, store.find('live1', 'BTCUSD', '15m')!.id, 'admin', (id, patch) => patches.push({ id, patch }), T0 + 21 * DAY);
   assert.equal(r.stage, 'shadow');
   assert.deepEqual(patches, [{ id: 'live1', patch: { enabled: false } }]);
+});
+
+test('the operator can demote a live pair without a gate proposal; the market leaves the scanner and the pair returns to shadow', () => {
+  const { store, cfg } = world();
+  syncLive(store, cfg, T0);
+  const patches: any[] = [];
+  const r = demote(store, cfg, store.find('live1', 'BTCUSD', '15m')!.id, 'admin', (id, patch) => patches.push({ id, patch }), 'misread script', T0 + DAY);
+  assert.equal(r.stage, 'shadow');
+  assert.deepEqual(patches, [{ id: 'live1', patch: { enabled: false } }]);
+  assert.throws(() => demote(store, cfg, r.id, 'admin', () => {}, null, T0 + DAY), /nothing to demote/);
 });
 
 test('the shadow book does not compound: one lucky trade cannot inflate the next hundred', () => {

@@ -61,14 +61,19 @@ const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0
 
 if (sliceArg !== 'none') {
   const slice = Number(sliceArg);
-  // ---- universe: the most liquid USD perpetuals ----
+  // ---- universe: every market the gate allows today (decision 56b: a book cheap enough to cross,
+  //      not dead, not too quiet), most liquid first; the turnover top-N only when the gate has no verdicts ----
   const tickers = await rest.tickers();
-  const universe = tickers
-    .filter((t: any) => t.contract_type === 'perpetual_futures' && /USD$/.test(t.symbol) && Number(t.turnover_usd ?? 0) >= inc.minTurnoverUsd)
-    .sort((a: any, b: any) => Number(b.turnover_usd) - Number(a.turnover_usd))
-    .slice(0, inc.universeTop).map((t: any) => String(t.symbol));
+  const turnover = new Map(tickers.map((t: any) => [String(t.symbol), Number(t.turnover_usd ?? 0)]));
+  const today = db.kvGet<{ enabled: boolean; markets: Array<{ symbol: string; allowed: boolean }> }>('risk.marketsToday');
+  const allowed = today?.enabled ? today.markets.filter(m => m.allowed && /USD$/.test(m.symbol)).map(m => m.symbol) : [];
+  const universe = (allowed.length
+    ? allowed
+    : tickers.filter((t: any) => t.contract_type === 'perpetual_futures' && /USD$/.test(t.symbol) && Number(t.turnover_usd ?? 0) >= inc.minTurnoverUsd).map((t: any) => String(t.symbol)))
+    .sort((a, b) => (turnover.get(b) ?? 0) - (turnover.get(a) ?? 0))
+    .slice(0, inc.universeTop);
   summary.symbols = universe.length;
-  out(`universe: ${universe.length} perpetuals over $${(inc.minTurnoverUsd / 1e6).toFixed(1)}M 24h turnover`);
+  out(allowed.length ? `universe: ${universe.length} of the ${allowed.length} markets the gate allows today (cap ${inc.universeTop})` : `universe: ${universe.length} perpetuals over $${(inc.minTurnoverUsd / 1e6).toFixed(1)}M 24h turnover (no gate verdicts yet)`);
 
   const registry = new ScannerRegistry();
   let scripts = registry.all().filter(s => s.status === 'ok' && sliceOf(s.id, inc.screen.slices) === slice);
