@@ -89,3 +89,39 @@ Recommended, awaiting the operator:
    a stop (`risk.cooldownAfterLosses` exists but is off; a per-symbol variant is the one wanted).
 4. **Chase band as a soft filter** (C2) only after it has been measured on more live trades; do
    not ship it on 32.
+
+## Addendum 2026-09-29: every live stop reviewed (16 of 45 closed trades)
+
+Mechanics are clean on all sixteen: stop distance exactly 1.00 × ATR(14) Wilder on 15m
+(`fallbackAtrSl: 1`), stop fills 2 bp past the stop, fees about $1.60 a trade, net −0.88 to −0.98R
+(fees and slippage take 0.05–0.10R). Every stop was the original stop; none had been moved.
+
+| # | IST | scanner | market | side | stop % | life | peak | after 2 h | 4 h drift |
+|---|---|---|---|---|---|---|---|---|---|
+| 488 | 28 01:00 | Smart Swing VWAP | EVAA | L | 1.29 | 6 m | −0.07 | continued, −2R | −3.0R |
+| 494 | 28 01:45 | ML RSI AI | AVAX | L | 0.52 | 6 m | −0.11 | continued, −2R | −2.4R |
+| 499 | 28 04:15 | Volume SuperTrend AI | XRP | S | 0.51 | 17 m | +0.21 | continued, −2R | +0.6R |
+| 500 | 28 04:16 | Volume SuperTrend AI | ZEC | S | 0.62 | 46 m | −0.05 | came back, +1R | +2.4R |
+| 506 | 28 06:00 | Adaptive ATR Extension | SOL | L | 0.49 | 3 m | −0.08 | came back, −2R | −4.6R |
+| 507 | 28 06:00 | ML RSI AI | DOGE | L | 0.64 | 3 m | +0.08 | came back, −2R | −5.8R |
+| 509 | 28 06:01 | ML RSI AI | AVAX | L | 0.71 | 3 m | −0.07 | came back, −2R | −3.1R |
+| 514 | 28 06:45 | ML RSI AI | MUBARAK | S | 1.13 | 7 m | +0.24 | came back, −2R | −3.0R |
+| 523 | 28 09:45 | Volume SuperTrend AI | LINK | S | 0.80 | 46 m | +0.32 | came back, +1R | +2.3R |
+| 557 | 28 22:00 | Adaptive ATR Extension | SOL | L | 0.66 | 12 m | +0.26 | came back | −1.6R |
+| 560 | 28 22:45 | Adaptive ATR Extension | SOL | L | 0.73 | 12 m | +0.29 | continued | −2.5R |
+| 562 | 28 23:15 | Session Killzones | AKE | L | 2.16 | 4 m | +0.05 | continued, −2R | −2.1R |
+| 570 | 29 03:00 | AI Predictive Flow | UNI | L | 0.85 | 31 m | −0.05 | came back, +1R | −1.8R |
+| 573 | 29 03:45 | Volume SuperTrend AI | DOGE | S | 0.61 | 22 m | +0.04 | continued, −2R | +0.4R |
+| 576 | 29 05:30 | Pivot Channel Breaks | ZEC | L | 0.74 | 52 m | +0.48 | continued, −2R | −8.0R |
+| 583 | 29 06:17 | Volume SuperTrend AI | AAVE | L | 0.58 | 11 m | −0.06 | came back, −2R | −2.3R |
+
+Reading: 10 of 16 were stopped inside the first bar; none lived past an hour. 11 of 16 went on to
+−2R within two hours and only 4 drifted with the trade over four hours — the stop was right about
+the direction in three cases out of four. Three were true whipsaws that would have paid (ZEC #500,
+LINK #523, UNI #570): 19% of stops, the normal cost of a 1 ATR stop. The signal bar had a body of
+at least +0.5 ATR in the trade's direction in 13 of 16, median prior three-bar move +1.5 ATR.
+Three fired in the same minute at 06:00 IST. Machine Learning RSI AI (4 of 4) and Adaptive ATR
+Extension (3 of 3) have not produced a stop that was not a first-bar stop; Volume SuperTrend AI's
+five stops came later (11–46 min) with some excursion first, the normal shape of a losing trade.
+Live book to date: 45 trades, net −$28.67, −4.57R; 26 trail exits average +0.36R against 16 stops
+at −0.94R.
