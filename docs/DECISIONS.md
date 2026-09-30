@@ -1698,3 +1698,34 @@ marker is the product description (xStock / bStocks / Gold Token / Silver / ETF)
 (VVV) is crypto and does not match. The six shadow and candidate rows the incubator held on
 SNDKB, SOXLB and SLVON were retired with that note; no fleet scanner and no open position was on
 a tokenized market.
+
+## 61. The LuxAlgo Library imported; PineTS 0.10.0 assessed, not yet adopted
+
+**Library.** luxalgo.com/library publishes 806 indicators with their Pine source embedded in each
+page (MPL-2.0 for the library's own implementations, CC BY-NC-SA 4.0 for the TradingView-published
+ones; non-commercial use is what the bot does). 355 were already in the script library under their
+TradingView ids; the other 442 were imported from the pages (`source: luxalgo-library` in the
+manifest, with `family`, `license` and `tradingviewUuid`). Under the current runtime 407 of them
+run on the first try (359 emit alerts, 122 draw shapes); 35 fail, 16 of them on the `Index -1`
+lazy-evaluation bug that PineTS 0.10.0 fixes and 8 on `request.security` of non-Delta symbols
+(SPX, VIX). Nothing was profiled or admitted by hand: the daily screen (decision 60) covers them
+slice by slice and the gate decides, as for every other script. The strategy-style newcomers worth
+watching in the screen are AMD POC Trade Setup, No-Wick Retest Levels, Asia Sweep Reversals,
+Session Sweep & iFVG RR, Value Area Reversion Signals, MSS Sweeps, EQH/EQL FVG Breakouts and
+PDH/L FVG (CRT). The library also runs an MCP server (mcp.luxalgo.com/mcp, keyless) whose
+`library_get_source_code` tool fetches the same sources on demand; Quant (app.luxalgo.com/quant)
+is a chat coding agent inside their chart with no API — a strategy written there is Pine that can
+be pasted into `scripts/pine` and screened like any other, and their strategy alerts can reach a
+webhook, which this bot does not expose.
+
+**PineTS 0.10.0** (2026-09-25; installed 0.9.34) fixes bugs that touch signal logic: `?:` and v6
+`and`/`or` are now lazy (what the `ltm-short-circuit` patch works around), `ta.crossover`/
+`crossunder` inside a ternary test passed as a call argument never returned true, pivot ties and
+`na` windows now follow TradingView, `input.timeframe` overrides were ignored, plus indentation and
+`switch` parsing fixes. Measured in an isolated worktree: the fleet's 16 scanners produce identical
+alert and shape counts on BTCUSD 15m × 1500 bars under both versions; 151 of the 620 scripts the
+registry marks incompatible run under 0.10.0 (55 with alerts), 469 still do not (library `import`,
+Pine v4 and older, `request.security` to non-Delta symbols, hangs). Not adopted yet: the upgrade
+changes the engine every scanner runs on and the fleet parity was measured on one market and one
+timeframe. Adoption is the operator's call ("upgrade pinets"); the worktree with the comparison
+stays under the session scratchpad until then.
