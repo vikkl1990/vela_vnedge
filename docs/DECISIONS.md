@@ -1743,3 +1743,14 @@ now parsed by the extractor. Survey on the VM's exit settings, 15m/1h/4h × 8 ma
 over 152 with the first half +0.267 and the second −0.075, two markets (AVAX, DOGE) positive in
 both halves. The same shape as 1.5.2: a 4h pocket, nothing that carries a book. It stays in the
 library for the daily screen; not a fleet candidate on this evidence.
+
+### 61a. PineTS 0.10.0 adopted
+
+Parity of the fleet's 16 scanners between 0.9.34 and 0.10.0 was measured on four pairs — BTCUSD
+15m (1,500 bars), ETHUSD 1h (1,500), SOLUSD 15m (1,500), XRPUSD 4h (1,200) — with identical
+alert, shape and label counts on every scanner. The server now depends on `pinets ^0.10.0`
+(its own `server/node_modules` copy; the dashboard's chart keeps the runtime it was built with).
+216 tests pass. The compatibility report carries the 0.10.0 rows for the 620 scripts that were
+marked incompatible: 151 run now. The six source patches stay; the lazy-evaluation one is
+harmless under the new runtime. Deployed with `npm ci` on the VM, since a pull alone does not
+change installed packages.

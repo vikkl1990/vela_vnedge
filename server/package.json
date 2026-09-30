@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "VNEdge bot server: Delta India feed \u2192 PineTS scanners \u2192 paper trading \u2192 REST/SSE API",
+  "description": "VNEdge bot server: Delta India feed → PineTS scanners → paper trading → REST/SSE API",
   "scripts": {
     "dev": "node --watch --no-warnings=ExperimentalWarning src/index.ts",
     "start": "node --no-warnings=ExperimentalWarning src/index.ts",
@@ -42,11 +42,10 @@
     "forensics": "node --no-warnings=ExperimentalWarning src/cli/forensics.ts",
     "tapecheck": "node --no-warnings=ExperimentalWarning src/cli/tapecheck.ts",
     "sweep": "node --no-warnings=ExperimentalWarning src/cli/sweep.ts",
-    "replay": "node --no-warnings=ExperimentalWarning src/cli/replay.ts",
     "tune": "node --no-warnings=ExperimentalWarning src/cli/tune.ts"
   },
   "dependencies": {
-    "pinets": "^0.9.34"
+    "pinets": "^0.10.0"
   },
   "engines": {
     "node": ">=22.18"
