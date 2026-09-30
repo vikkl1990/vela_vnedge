@@ -5,6 +5,7 @@ import { ShadowRunner } from './incubator/shadow.ts';
 import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, type AppConfig } from './config.ts';
+import { learnBook } from './analytics/learning.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
@@ -400,6 +401,19 @@ export class App {
   }
 
   /** Cross-sectional analytics: pairs, scanners, scanner×pair matrix, exits and time-of-day, for backtest and live. */
+  /** What the journal teaches, in R, for the live book and the shadow book (decision 63). */
+  learning() {
+    const toLearn = (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount });
+    const since = Date.now() - 30 * 86_400_000;
+    const live = learnBook(this.paper.trades({ limit: 5000 }).map(toLearn));
+    const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => (t.exitAt ?? 0) >= since).map(toLearn));
+    const counts = this.incubatorStore.counts();
+    const hunt = this.db.kvGet<any>('incubator.lastHunt') ?? null;
+    const ages = this.incubatorStore.list(['shadow']).map(r => (Date.now() - r.since) / 86_400_000).sort((a, b) => a - b);
+    const funnel = { stages: counts, lastHunt: hunt, shadowAgeDays: { median: ages.length ? ages[ages.length >> 1] : null, over30: ages.filter(a => a > 30).length }, gate: this.config.get().incubator.gate ?? null };
+    return { at: Date.now(), live, shadow: { ...shadow, windowDays: 30 }, funnel };
+  }
+
   analytics() {
     type Agg = { trades: number; wins: number; pnl: number; gp: number; gl: number; fees: number };
     const mk = (): Agg => ({ trades: 0, wins: 0, pnl: 0, gp: 0, gl: 0, fees: 0 });

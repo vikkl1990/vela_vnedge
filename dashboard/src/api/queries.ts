@@ -22,6 +22,7 @@ export const qk = {
   logs: (level?: LogLevel) => ['logs', level ?? 'all'] as const,
   ml: ['ml'] as const,
   analytics: ['analytics'] as const,
+  learning: ['learning'] as const,
   mlScanner: (id: string) => ['ml', id] as const,
   candles: (symbol: string, tf: string) => ['candles', symbol, tf] as const,
 }
@@ -225,6 +226,9 @@ export function useRunBacktest() {
 export const useMl = () => useQuery({ queryKey: qk.ml, queryFn: api.ml, staleTime: 60_000, retry: 1, refetchInterval: 60_000 })
 export const useMlScanner = (id: string) =>
   useQuery({ queryKey: qk.mlScanner(id), queryFn: () => api.mlScanner(id), enabled: !!id, staleTime: 60_000, retry: 1 })
+export const useLearning = () =>
+  useQuery({ queryKey: qk.learning, queryFn: api.learning, staleTime: LIVE_STALE, retry: 1, refetchInterval: 60_000 })
+
 export const useAnalytics = () =>
   useQuery({ queryKey: qk.analytics, queryFn: api.analytics, staleTime: LIVE_STALE, retry: 1, refetchInterval: 60_000 })
 

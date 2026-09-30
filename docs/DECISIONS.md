@@ -1754,3 +1754,27 @@ alert, shape and label counts on every scanner. The server now depends on `pinet
 marked incompatible: 151 run now. The six source patches stay; the lazy-evaluation one is
 harmless under the new runtime. Deployed with `npm ci` on the VM, since a pull alone does not
 change installed packages.
+
+## 63. Analytics learns in R: expectancy with a band, breakeven, costs, stop anatomy, give-back
+
+The first week of paper trading was read by hand: every question the operator asked (are the
+stops draining the book, is the expectancy real, what do fees take, how much does the trail give
+back) needed a script. The Analytics page now answers them first, from the journal, in R so the
+live and shadow books read the same way (`GET /api/learning`, `server/src/analytics/learning.ts`,
+pure and tested):
+
+- expectancy with a 90% band on the mean, and a verdict that only says "paying" when the whole
+  band is above zero and "failing" when it is all below — everything else is "undecided", which
+  is a call for trades, not a decision;
+- the win rate the exit policy needs to break even (from the average win and loss in R) next to
+  the win rate achieved;
+- the share of gross winnings that costs consumed;
+- stop anatomy: how many stops never moved (peak under +0.3R), how many died inside the first
+  bar, median life;
+- where the R goes by exit reason, with the median peak and the give-back (peak R − realised R);
+- cumulative R with distance from the peak, hold time versus R, hour of entry in IST versus R;
+- the incubator pipeline: stage counts, shadow age, the last hunt.
+
+Grouped by scanner, pair or timeframe, sorted by the lower band. The dollar tables stay below.
+The shadow book is shown over the last 30 days and in R only: its $10M purse makes its dollars
+meaningless (decision 60 note).

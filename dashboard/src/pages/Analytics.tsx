@@ -6,6 +6,7 @@ import type { Agg, Analytics as AnalyticsData } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { Empty, ErrorState, KpiTile, Loading, PageTitle, Panel, Segmented, Time } from '../components/ui'
 import { fmtMoney, fmtPct, fmtPnl, fmtProfitFactor } from '../lib/format'
+import { LearningSection } from '../components/Learning'
 
 type Mode = 'backtest' | 'live'
 const EMPTY_AGG: Agg = { trades: 0, wins: 0, winRatePct: 0, pnl: 0, fees: 0, profitFactor: null }
@@ -128,7 +129,9 @@ export function Analytics() {
 
   return (
     <div className="page">
-      <PageTitle pre="Where the edge," accent="lives." sub="Which pairs pay, which scanners earn, and where the two meet. Backtest = enabled scanners on their tuned symbols over the loaded history; Paper trades = simulated fills and P&L." />
+      <PageTitle pre="Where the edge," accent="lives." sub="What the journal teaches first, in R with confidence bands; then which pairs pay, which scanners earn, and where the two meet in dollars. Backtest = enabled scanners on their tuned symbols over the loaded history; Paper trades = simulated fills and P&L." />
+      <LearningSection />
+      <h2 className="h2" style={{ marginTop: 20 }}>Dollars by pair and scanner</h2>
       <div className="row gap mb">
         <Segmented
           ariaLabel="Data source"

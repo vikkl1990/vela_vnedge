@@ -25,7 +25,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday } from './types'
+  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -162,6 +162,7 @@ export const api = {
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
   autoTune: () => post<{ tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
   analytics: () => get<Analytics>('/analytics'),
+  learning: () => get<Learning>('/learning'),
   ml: () => get<MlSnapshot>('/ml'),
   mlTrain: () => post<MlSnapshot>('/ml/train'),
   mlScanner: (id: string) => get<MlScannerInsight>(`/ml/scanner/${id}`),
