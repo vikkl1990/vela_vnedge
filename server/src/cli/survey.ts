@@ -86,21 +86,27 @@ async function runOne(j: Job): Promise<'entries' | 'silent' | 'failed'> {
   if (!events.some(e => e.kind === 'entry')) return 'silent';
   const base = { scannerId: s.id, scannerName: s.id, symbol: j.symbol, tf: j.tf, bars: b, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', trendGate: cfg.scanners[s.id]?.trendGate, contractValue: m.contractValue, tickSize: m.tickSize, subBars: sub } as const;
   const t = runBacktest(base).trades as any[];
-  const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: STRESS } }).stats.pnl;
+  // whipsaw-gate variants (decision 66): the same script run and events, re-judged with the gate on, one row per variant
+  for (const v of (process.env.CHOP_VARIANTS ?? '').split(',').map(x => x.trim()).filter(Boolean)) {
+    const gate = v.startsWith('er') ? { minEr: Number(v.slice(2)) } : v.startsWith('chop') ? { maxChop: Number(v.slice(4)) } : null;
+    if (!gate) continue;
+    const tv = runBacktest({ ...base, chopGate: gate }).trades as any[];
+    writeRow(`${s.id}#${v}`, j, b, tv, runBacktest({ ...base, chopGate: gate, cfg: { ...cfg.paper, slippageBps: STRESS } }).stats.pnl);
+  }
+  writeRow(s.id, j, b, t, runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: STRESS } }).stats.pnl);
+  return 'entries';
+}
+
+function writeRow(id: string, j: Job, b: Bar[], t: any[], stressed: number) {
   const span = (b.at(-1)!.time - b[0].time) / 8; const w = new Array(8).fill(0);
   for (const x of t) w[Math.min(7, Math.floor((x.entryAt - b[0].time) / span))] += x.pnl;
   const gp = t.filter(x => x.pnl > 0).reduce((a, x) => a + x.pnl, 0), gl = -t.filter(x => x.pnl <= 0).reduce((a, x) => a + x.pnl, 0);
-  out.write([s.id, j.tf, j.symbol, t.length, t.filter(x => x.pnl > 0).length, (gp - gl).toFixed(2), (gl > 0 ? gp / gl : gp > 0 ? 99 : 0).toFixed(3),
+  const split = b[Math.floor(b.length / 2)].time;
+  const h = (first: boolean) => t.filter(x => (x.entryAt < split) === first);
+  const R = (xs: any[]) => (xs.length ? xs.reduce((a, x) => a + (x.rMultiple ?? 0), 0) / xs.length : 0).toFixed(3);
+  out.write([id, j.tf, j.symbol, t.length, t.filter(x => x.pnl > 0).length, (gp - gl).toFixed(2), (gl > 0 ? gp / gl : gp > 0 ? 99 : 0).toFixed(3),
     (t.length ? t.reduce((a, x) => a + (x.rMultiple ?? 0), 0) / t.length : 0).toFixed(3), stressed.toFixed(2), w.filter(x => x > 0).length, ((b.at(-1)!.time - b[0].time) / 86400_000).toFixed(0),
-    // the same result split in half by time: a scanner whose edge exists in both halves is a
-    // different proposition from one that had a good month
-    ...(() => {
-      const split = b[Math.floor(b.length / 2)].time;
-      const h = (first: boolean) => t.filter(x => (x.entryAt < split) === first);
-      const R = (xs: any[]) => (xs.length ? xs.reduce((a, x) => a + (x.rMultiple ?? 0), 0) / xs.length : 0).toFixed(3);
-      return [h(true).length, R(h(true)), h(false).length, R(h(false))];
-    })()].join('\t') + '\n');
-  return 'entries';
+    h(true).length, R(h(true)), h(false).length, R(h(false))].join('\t') + '\n');
 }
 
 // one task per (script, tf): its markets in order, stopping early if the first two are silent

@@ -25,6 +25,8 @@ export interface BacktestInput {
   cfg: PaperConfig; exitMode: ExitMode; contractValue: number; tickSize: number;
   /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
   trendGate?: TrendGateMode;
+  /** Whipsaw gate under measurement (decision 66): refuse an entry when the entry timeframe's Kaufman efficiency ratio over `len` bars is under `minEr`, or its choppiness index over 14 bars is over `maxChop`. */
+  chopGate?: { minEr?: number; maxChop?: number; len?: number };
   /** This scanner's own exit rules, applied over the market's and the fleet's. */
   scannerExit?: ExitOverride;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
@@ -122,6 +124,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       if (ev.kind !== 'entry' || !ev.side) continue;
       const blocked = gateMode === 'off' ? null : trendGateReason(ev.side, gateTrend[i], gateMode);
       if (blocked) { rejected['against the trend'] = (rejected['against the trend'] ?? 0) + 1; continue; }
+      if (inp.chopGate && chopBlocked(bars, i, inp.chopGate)) { rejected['choppy'] = (rejected['choppy'] ?? 0) + 1; continue; }
       if (open) {
         if (open.side === ev.side) { rejected['already_open'] = (rejected['already_open'] ?? 0) + 1; continue; }
         if (!cfg.allowReversal) { rejected['reversal_disabled'] = (rejected['reversal_disabled'] ?? 0) + 1; continue; }
@@ -150,4 +153,23 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     version: SIMULATION_VERSION, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
     stats, trades: closed.map(tradeOf).reverse(), equity: curve, rejected,
   };
+}
+
+/** Kaufman efficiency ratio over `len` closed bars ending at `i`: net change over the sum of bar-to-bar changes (1 = a straight line, 0 = pure noise). */
+export function efficiencyRatio(bars: Bar[], i: number, len = 20): number | null {
+  if (i < len) return null;
+  let vol = 0; for (let j = i - len + 1; j <= i; j++) vol += Math.abs(bars[j].close - bars[j - 1].close);
+  return vol > 0 ? Math.abs(bars[i].close - bars[i - len].close) / vol : 0;
+}
+/** Choppiness index over 14 bars ending at `i` (100 × log10(ΣTR / range) / log10(14)); above ~61.8 is consolidation, below ~38.2 is a trend. */
+export function choppiness(bars: Bar[], i: number, len = 14): number | null {
+  if (i < len) return null;
+  let tr = 0, hh = -Infinity, ll = Infinity;
+  for (let j = i - len + 1; j <= i; j++) { const pc = bars[j - 1].close; tr += Math.max(bars[j].high - bars[j].low, Math.abs(bars[j].high - pc), Math.abs(bars[j].low - pc)); hh = Math.max(hh, bars[j].high); ll = Math.min(ll, bars[j].low); }
+  return hh > ll && tr > 0 ? 100 * Math.log10(tr / (hh - ll)) / Math.log10(len) : null;
+}
+function chopBlocked(bars: Bar[], i: number, g: { minEr?: number; maxChop?: number; len?: number }): boolean {
+  if (g.minEr !== undefined) { const er = efficiencyRatio(bars, i, g.len ?? 20); if (er !== null && er < g.minEr) return true; }
+  if (g.maxChop !== undefined) { const c = choppiness(bars, i, 14); if (c !== null && c > g.maxChop) return true; }
+  return false;
 }
