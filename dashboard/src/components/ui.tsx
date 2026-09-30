@@ -404,6 +404,27 @@ export function Collapsible({ title, children, defaultOpen = false, right }: { t
 }
 
 /** Hero-style page title with one italic serif accent word. */
+/**
+ * The three books, named the same way everywhere (decision 64):
+ *   account  — the money book; paper (simulated fills), dry run (orders logged, not sent) or live (exchange)
+ *   shadow   — the incubator's evidence book on live data; never money, read in R
+ *   backtest — history
+ */
+export type Book = 'account' | 'shadow' | 'backtest'
+export type AccountMode = 'paper' | 'dry-run' | 'testnet' | 'live' | string
+export const ACCOUNT_MODE_LABEL: Record<string, { label: string; hint: string; tone: 'accent' | 'warn' | 'danger' }> = {
+  paper: { label: 'Paper account', hint: 'Simulated fills on Delta India market data. No exchange order is ever sent.', tone: 'accent' },
+  'dry-run': { label: 'Dry run', hint: 'Orders are built and logged for the exchange but not sent.', tone: 'warn' },
+  testnet: { label: 'Live · demo exchange', hint: 'Real orders on the exchange demo host, mirrored from the account.', tone: 'warn' },
+  live: { label: 'Live account', hint: 'Real orders on Delta India.', tone: 'danger' },
+}
+export function BookBadge({ book, mode = 'paper', short = false, className = '' }: { book: Book; mode?: AccountMode; short?: boolean; className?: string }) {
+  if (book === 'shadow') return <span className={`pill pill-shadow ${className}`} title="Shadow book: the incubator's evidence on live data. Never money; read it in R.">{short ? 'Shadow' : 'Shadow book'}</span>
+  if (book === 'backtest') return <span className={`pill pill-muted ${className}`} title="Backtest: the scanner replayed over loaded history.">Backtest</span>
+  const m = ACCOUNT_MODE_LABEL[mode] ?? { label: `Account · ${mode}`, hint: '', tone: 'warn' as const }
+  return <span className={`pill pill-${m.tone} ${className}`} title={m.hint}>{short ? m.label.replace(' account', '') : m.label}</span>
+}
+
 export function PageTitle({ pre, accent, post, sub }: { pre: string; accent: string; post?: string; sub?: ReactNode }) {
   return (
     <div className="page-title">

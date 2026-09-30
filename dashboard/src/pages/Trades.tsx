@@ -5,7 +5,7 @@ import type { Order, Trade } from '../api/types'
 import { TradePath } from '../components/TradePath'
 import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
-import { ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pill, Pnl, QueryState, SidePill, StatusDot, Time } from '../components/ui'
+import { BookBadge, ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pill, Pnl, QueryState, SidePill, StatusDot, Time } from '../components/ui'
 import { fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtR, fmtTime } from '../lib/format'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import { useToast } from '../lib/toast'
@@ -126,7 +126,7 @@ export function Trades() {
 
   return (
     <div className="page">
-      <PageTitle pre="Positions," accent="managed" post="to the last fill." sub="Open exposure, closed trades and the execution log of the paper engine." />
+      <PageTitle pre="Positions," accent="managed" post="to the last fill." sub={<>The account's open exposure, closed trades and fills. <BookBadge book="account" mode={mode} short /> Shadow-book trades live in the Incubator; backtests in each scanner.</>} />
 
       <Panel
         title={

@@ -1778,3 +1778,16 @@ pure and tested):
 Grouped by scanner, pair or timeframe, sorted by the lower band. The dollar tables stay below.
 The shadow book is shown over the last 30 days and in R only: its $10M purse makes its dollars
 meaningless (decision 60 note).
+
+
+## 64. Three books, one vocabulary
+
+The UI said "paper", "simulated fills", "live", "shadow" and "backtest" in ways that overlapped:
+the header called the money book "Paper · simulated fills", the Incubator called it the "live
+fleet", Analytics called its trades "Paper trades" next to "Backtest", and the shadow book's
+dollars appeared beside the account's. The vocabulary is now fixed (SYSTEM.md, "The three books"):
+**Account** (paper / dry run / live), **Shadow book** (evidence, R only) and **Backtest**. One
+`BookBadge` component renders them everywhere — the header shows the account's mode with its
+meaning on hover, page subtitles say which book they show and where the others live, Analytics
+and the learning section label their toggles Account (paper) / Shadow book / Backtest, and the
+Incubator's fleet panel is "In the account". Nothing in the data changed.

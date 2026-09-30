@@ -309,7 +309,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         emptyLabel={
           <span>
             No open positions
-            <span className="empty-hint">The paper engine opens one when an entry signal is actioned.</span>
+            <span className="empty-hint">The account opens one when an entry signal is actioned.</span>
           </span>
         }
         defaultSort={{ key: 'age', dir: 'desc' }}

@@ -115,6 +115,16 @@ All P&L shown anywhere in this system is **net** of all of the above.
 SQLite (`node:sqlite`, WAL). `positions.bt` says which book a trade belongs to: **0 = live paper**,
 **2 = the incubator's shadow book**. They never mix.
 
+**The three books, named the same way on every page (decision 64):**
+
+| book | what it is | how it is read | badge |
+|---|---|---|---|
+| **Account** | the money book (`bt = 0`, archive `bt = -1`): paper (simulated fills), dry run (orders logged, not sent) or live (exchange) | dollars and R; equity, day P&L, positions, fills | solid pill: Paper account / Dry run / Live account |
+| **Shadow book** | the incubator's evidence (`bt = 2`) on live data; its purse is $10M so no trade is skipped for margin | R only, never dollars | dashed pill: Shadow book |
+| **Backtest** | a scanner replayed over loaded history | dollars and R on the scanner's page and in Analytics | grey pill: Backtest |
+
+The header badge names the account's mode. "Paper" always means the account, never the shadow book.
+
 ### 11. Nothing is sent to an exchange
 
 `execution.mode` is `paper`. Mirroring to the demo host stays off until two audit findings are

@@ -125,26 +125,26 @@ export function Analytics() {
     [],
   )
 
-  const emptyHint = mode === 'live' ? 'Closed paper trades appear here as scanners exit positions.' : 'Backtests run during warm-up; enable a scanner to populate this.'
+  const emptyHint = mode === 'live' ? 'Closed account trades appear here as scanners exit positions.' : 'Backtests run during warm-up; enable a scanner to populate this.'
 
   return (
     <div className="page">
       <PageTitle pre="Where the edge," accent="lives." sub="What the journal teaches first, in R with confidence bands; then which pairs pay, which scanners earn, and where the two meet in dollars. Backtest = enabled scanners on their tuned symbols over the loaded history; Paper trades = simulated fills and P&L." />
       <LearningSection />
-      <h2 className="h2" style={{ marginTop: 20 }}>Dollars by pair and scanner</h2>
+      <h2 className="h2" style={{ marginTop: 20 }}>Dollars by pair and scanner <span className="muted small">· account and backtest only; the shadow book is read in R above</span></h2>
       <div className="row gap mb">
         <Segmented
           ariaLabel="Data source"
           value={mode}
           onChange={(v) => setMode(v as Mode)}
           options={[
+            { value: 'live', label: 'Account (paper)' },
             { value: 'backtest', label: 'Backtest' },
-            { value: 'live', label: 'Paper trades' },
           ]}
         />
         {d && (
           <span className="muted small">
-            {mode === 'live' ? `${d.totals.live.trades} closed trades` : `${d.totals.backtest.trades} backtest trades`} · updated <Time t={d.at} />
+            {mode === 'live' ? `${d.totals.live.trades} closed account trades` : `${d.totals.backtest.trades} backtest trades`} · updated <Time t={d.at} />
           </span>
         )}
       </div>
@@ -165,7 +165,7 @@ export function Analytics() {
       {d && tot && (
         <>
           <div className="kpi-grid">
-            <KpiTile label={`${mode === 'live' ? 'Paper' : 'Backtest'} net PnL (USD)`} value={fmtPnl(tot.pnl)} tone={tot.pnl >= 0 ? 'gain' : 'loss'} sub={<span className="muted">fees {fmtMoney(tot.fees)} · {tot.trades} trades</span>} />
+            <KpiTile label={`${mode === 'live' ? 'Account' : 'Backtest'} net PnL (USD)`} value={fmtPnl(tot.pnl)} tone={tot.pnl >= 0 ? 'gain' : 'loss'} sub={<span className="muted">fees {fmtMoney(tot.fees)} · {tot.trades} trades</span>} />
             <KpiTile label="Win rate" value={fmtPct(tot.winRatePct)} sub={<span className="muted">PF {pf(tot.profitFactor)}</span>} />
             <KpiTile label="Best pair" value={best ? best.symbol : '–'} tone="gain" sub={best ? <span className="gain">{fmtPnl(best.agg.pnl)} · {best.agg.trades} trades · {fmtPct(best.agg.winRatePct)}</span> : undefined} />
             <KpiTile label="Worst pair" value={worst && worst.agg.pnl < 0 ? worst.symbol : '–'} tone="loss" sub={worst && worst.agg.pnl < 0 ? <span className="loss">{fmtPnl(worst.agg.pnl)} · {worst.agg.trades} trades</span> : <span className="muted">no losing pair</span>} />
@@ -266,7 +266,7 @@ export function Analytics() {
             </Panel>
           </div>
 
-          <Panel title="Paper exits" pad={false}>
+          <Panel title="Account exits" pad={false}>
             <DataTable
               columns={exitCols}
               rows={d.exits}
@@ -275,7 +275,7 @@ export function Analytics() {
               caption="Paper exits by reason"
               emptyLabel={
                 <span>
-                  No closed paper trades yet<span className="empty-hint">Exit reasons are tallied from closed paper trades.</span>
+                  No closed account trades yet<span className="empty-hint">Exit reasons are tallied from the account's closed trades.</span>
                 </span>
               }
             />

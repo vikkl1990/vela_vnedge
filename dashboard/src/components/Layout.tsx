@@ -25,7 +25,7 @@ import {
   IconSun,
   IconTrades,
 } from './Icons'
-import { ConfirmDialog, StatusDot } from './ui'
+import { BookBadge, ConfirmDialog, StatusDot } from './ui'
 
 const NAV = [
   { to: '/', label: 'Overview', icon: IconActivity, end: true, key: 'o' },
@@ -117,7 +117,7 @@ export function Layout() {
   useEffect(() => {
     document.title = `VNEdge · ${meta.title}`
   }, [meta.title])
-  const crumb = `vnedge · delta india · ${h?.mode ?? 'paper'} · ${meta.crumb}`
+  const crumb = `vnedge · delta india · ${h?.mode === 'paper' || !h ? 'paper account' : h.mode} · ${meta.crumb}`
 
   // ---- connection state ----
   const sseTone = sse.status === 'connected' ? 'ok' : sse.status === 'offline' ? 'danger' : 'warn'
@@ -166,7 +166,7 @@ export function Layout() {
 
         <div className="topright">
           <span className="topgroup topgroup-status">
-          <span className="pill pill-accent">{!h ? 'Execution: loading' : h.mode === 'paper' ? 'Paper · simulated fills' : `Execution: ${h.mode}`}</span>
+          {!h ? <span className="pill pill-muted">Account: loading</span> : <BookBadge book="account" mode={h.mode} />}
           <span className="topstat topstat-eq" title="Equity (USD)">
             <span className="topstat-label">EQ USD</span>
             <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
@@ -204,7 +204,7 @@ export function Layout() {
           ))}
           {auth.canTrade && (
             <button className="btn btn-sm btn-danger-outline" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
-              Reset paper
+              Reset paper account
             </button>
           )}
           <span className="account-chip">

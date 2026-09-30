@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useExchangeCloseAll, useExecution, usePositions, useReconcile } from '../api/queries'
 import type { LedgerRow } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
-import { ConfirmDialog, Empty, Loading, Panel, Pill, StatusDot } from '../components/ui'
+import { BookBadge, ConfirmDialog, Empty, Loading, Panel, Pill, StatusDot } from '../components/ui'
 import { fmtAge, fmtMoney, fmtPrice, fmtUtc } from '../lib/format'
 
 /**
@@ -45,7 +45,7 @@ export function Exchange() {
       <div className="grid-2">
         <Panel title="Connection">
           <dl className="kv-list">
-            <div><dt>Mode</dt><dd><Pill tone={e.mode === 'paper' ? 'muted' : live ? 'danger' : 'warn'}>{e.mode}{e.dryRun ? ' · dry-run (nothing is sent)' : ''}</Pill></dd></div>
+            <div><dt>Account</dt><dd><BookBadge book="account" mode={e.dryRun ? 'dry-run' : e.mode} /></dd></div>
             <div><dt>Host</dt><dd className="mono">{e.host ?? '— (paper: no exchange attached)'}</dd></div>
             <div><dt>API keys</dt><dd><StatusDot tone={e.hasKeys ? 'ok' : 'neutral'} /> {e.hasKeys ? 'present (environment)' : 'none'}</dd></div>
             <div><dt>Brackets</dt><dd>{e.bracket ? 'stop-market + take-profit limits rest on the exchange' : 'off — every exit is sent at market when it happens'}</dd></div>

@@ -44,7 +44,7 @@ export function Overview() {
   return (
     <div className="page">
       <TickerTape />
-      <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper-trading ${visibleScanners} Pine scanners using Delta India market data. Fills and P&L are simulated.` : 'Paper-trading Pine scanners using Delta India market data. Fills and P&L are simulated.'} />
+      <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account: ${visibleScanners} Pine scanners on Delta India data, fills and P&L simulated. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
 
       {stats.isLoading && !s && <Loading kind="kpi" rows={9} />}
       {stats.isError && !s && <ErrorState error={stats.error} onRetry={() => stats.refetch()} />}

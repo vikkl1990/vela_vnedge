@@ -3,7 +3,7 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContaine
 import { useLearning } from '../api/queries'
 import type { BookLearning, EdgeRow, LearnBucket } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
-import { Empty, KpiTile, Loading, Panel, Pill, Segmented } from '../components/ui'
+import { BookBadge, Empty, KpiTile, Loading, Panel, Pill, Segmented } from '../components/ui'
 import { fmtMoney, fmtPct } from '../lib/format'
 
 /**
@@ -41,8 +41,8 @@ export function LearningSection() {
     <>
       <div className="row gap mb" style={{ marginTop: 16 }}>
         <h2 className="h2" style={{ margin: 0 }}>What the journal teaches</h2>
-        <Segmented ariaLabel="Book" value={book} onChange={(v) => setBook(v as 'live' | 'shadow')} options={[{ value: 'live', label: 'Live paper' }, { value: 'shadow', label: `Shadow (${d.shadow.windowDays ?? 30}d)` }]} />
-        <span className="muted small">{L.trades} closed trades · in R, so both books read the same way</span>
+        <Segmented ariaLabel="Book" value={book} onChange={(v) => setBook(v as 'live' | 'shadow')} options={[{ value: 'live', label: 'Account (paper)' }, { value: 'shadow', label: `Shadow book · ${d.shadow.windowDays ?? 30}d` }]} />
+        <BookBadge book={book === 'live' ? 'account' : 'shadow'} short /><span className="muted small">{L.trades} closed trades · in R, so both books read the same way</span>
       </div>
       {L.trades === 0 ? (
         <Empty label="No closed trades in this book yet." />

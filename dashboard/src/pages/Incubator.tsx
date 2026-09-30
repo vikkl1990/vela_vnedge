@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthGate'
 import type { IncubatorPair, IncubatorStats, IncubatorView } from '../api/types'
-import { ConfirmDialog, Empty, KpiTile, PageTitle, Panel, Pill, QueryState } from '../components/ui'
+import { BookBadge, ConfirmDialog, Empty, KpiTile, PageTitle, Panel, Pill, QueryState } from '../components/ui'
 import { fmtNum, timeAgo, fmtR } from '../lib/format'
 
 const pf = (v: number | null | undefined) => (v === null ? '∞' : v === undefined ? '—' : v.toFixed(2))
@@ -55,7 +55,7 @@ export default function Incubator() {
                 <KpiTile label="Waiting for you" value={decisions.length} tone={decisions.length ? 'accent' : 'neutral'} sub="proposals to approve or reject" />
                 <KpiTile label="Shadow book" value={`${shadow.length + by('proposed').length}/${d.config.maxShadow}`} sub={`${d.runner.entries} shadow entries since restart`} />
                 <KpiTile label="Candidates" value={candidates.length} sub="passed the screen, waiting for a slot" />
-                <KpiTile label="Live fleet" value={`${d.fleet}/${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} />
+                <KpiTile label="In the account" value={`${d.fleet}/${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} />
                 <KpiTile label="Last screen" value={d.lastRun ? timeAgo(d.lastRun.at) : 'never'} sub={d.lastRun ? `slice ${d.lastRun.slice} · ${d.lastRun.runs} runs · ${d.lastRun.passed} passed` : 'the daily job has not run yet'} />
               </div>
 
@@ -147,7 +147,7 @@ export default function Incubator() {
                 })()}
               </Panel>
 
-              <Panel title={`Brewing in the shadow book (${shadow.length})`}>
+              <Panel title={<span>Brewing in the shadow book ({shadow.length}) <BookBadge book="shadow" short /></span>}>
                 {shadow.length === 0 ? <Empty label="No shadow pairs yet." hint="The daily screen admits its best candidates here." /> : (
                   <div className="table-wrap">
                     <table className="table">
@@ -193,7 +193,7 @@ export default function Incubator() {
                 )}
               </Panel>
 
-              <Panel title={`Live fleet (${live.length})`}>
+              <Panel title={<span>In the account ({live.length}) <BookBadge book="account" short /></span>}>
                 {live.length === 0 ? <Empty label="The incubator has not synced the fleet yet." /> : (
                   <div className="table-wrap">
                     <table className="table">
@@ -232,7 +232,7 @@ export default function Incubator() {
                 title={confirm ? (confirm.action === 'demote' ? `Move ${confirm.pair.scannerName} on ${confirm.pair.symbol} to the shadow book?` : confirm.action === 'approve' ? (confirm.pair.stage === 'proposed' ? `Promote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Demote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?`) : confirm.pair.stage === 'proposed' ? `Reject ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Keep ${confirm.pair.scannerName} on ${confirm.pair.symbol} live?`) : ''}
                 body={confirm && (confirm.action === 'demote' ? <p>The market leaves this scanner's live list now (the scanner is switched off when it was its last market). Open positions keep running their exits. The pair keeps trading in the shadow book and must pass the gate again to come back.</p> : confirm.action === 'approve'
                   ? confirm.pair.stage === 'proposed'
-                    ? 'It starts trading in the live paper account from the next signal. Open shadow positions finish in the shadow book.'
+                    ? 'It starts trading in the account from the next signal. Open shadow positions finish in the shadow book.'
                     : 'It stops taking new live trades and goes back to the shadow book to prove itself again. Open live positions run to their exits.'
                   : confirm.pair.stage === 'proposed'
                     ? `It is retired and not screened again for ${d.config.cooldownDays} days.`

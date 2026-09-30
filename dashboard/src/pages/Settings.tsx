@@ -106,7 +106,7 @@ export function Settings() {
           <Panel title="Market data">
             <Loading rows={6} />
           </Panel>
-          <Panel title="Paper engine">
+          <Panel title="Paper account · simulated fills">
             <Loading rows={8} />
           </Panel>
         </div>
@@ -220,7 +220,7 @@ export function Settings() {
           </div>
         </Panel>
 
-        <Panel title="Paper engine">
+        <Panel title="Paper account · simulated fills">
           <div className="form form-2">
             {numField('initialEquity', 'Initial equity', '100')}
             <label className="field">

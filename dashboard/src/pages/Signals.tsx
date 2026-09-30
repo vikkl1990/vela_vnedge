@@ -158,7 +158,7 @@ export function Signals() {
 
   return (
     <div className="page">
-      <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Live feed of entries, exits and infos from all enabled scanners." />
+      <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Every alert the account's scanners raised and what the account did with it. Shadow-book runs are judged in the Incubator, not here." />
       {outcomes.total > 0 && (
         <Panel title={`What became of the last ${outcomes.total} signals`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
           <div className="chips">
