@@ -13,7 +13,6 @@ import { fmtMoney, fmtPct } from '../lib/format'
  * how many stops never moved, how much of the peak the trail gives back, and where the R comes from.
  */
 const r = (v: number | null | undefined, d = 2) => (v == null || !Number.isFinite(v) ? '–' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}R`)
-const tone = (v: number | null | undefined) => (v == null ? 'muted' : v > 0 ? 'ok' : v < 0 ? 'danger' : 'muted')
 const verdictTone = { paying: 'ok', undecided: 'warn', failing: 'danger' } as const
 
 export function LearningSection() {
