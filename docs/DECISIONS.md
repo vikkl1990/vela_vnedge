@@ -1837,3 +1837,32 @@ under ten sessions — the discipline the incubator wants. Delta's history endpo
 manifest lacks; `OUT=data` writes into `data/library/` (manifest and Pine files), which the
 registry now reads as an overlay after the repo's own library, repo entries winning. A weekly
 timer on the VM runs it; nothing it imports is enabled, the daily screen finds the newcomers.
+
+## 66. The whipsaw gate, measured: an efficiency-ratio floor turns the 1h fleet positive in both halves
+
+The four stops of 30 September were one hourly-reversing session read from both sides. The
+backtest engine gained a gate that refuses an entry when the entry timeframe's Kaufman efficiency
+ratio over 20 bars is under a floor (or its 14-bar choppiness index over a ceiling), and the
+survey judges every cell under several floors from the same script run. Fleet of 16 scanners ×
+12 account markets, ~80 days of 15m and ~160 days of 1h, the VM's exit settings, in halves
+(`data/reports/2026-10-01-whipsaw-gate-survey.tsv`):
+
+| timeframe | gate | trades | E[R] | first half | second half | cells positive in both halves | ΣR |
+|---|---|---|---|---|---|---|---|
+| 15m | off | 13,583 | −0.031 | +0.021 | −0.060 | 20 | −420 |
+| 15m | ER ≥ 0.35 | 3,814 | −0.001 | +0.078 | −0.044 | 12 | −4 |
+| 15m | ER ≥ 0.45 | 1,986 | +0.005 | +0.064 | −0.026 | 11 | +11 |
+| 1h | off | 14,357 | −0.002 | +0.012 | −0.016 | 33 | −29 |
+| 1h | ER ≥ 0.25 | 6,620 | +0.031 | +0.046 | +0.017 | 31 | +207 |
+| 1h | ER ≥ 0.35 | 4,135 | +0.029 | +0.008 | +0.047 | 18 | +120 |
+| either | choppiness ≤ 62 | — | no effect | | | | |
+
+On 15m the gate removes most of the losses (Pulse Trend Radar −157R → −18R, Liquidity Trail
+Matrix −115R → −42R) but the second half stays negative: a 15m stop does not survive the noise
+whatever the filter. On 1h with ER ≥ 0.25 the fleet is positive in both halves, over half the
+cells improve in the second half, and 25 scanner-market cells are positive in both halves with
+at least eight trades each — including AI Predictive Flow on PIEVERSE and ZEC, Kinetic Momentum
+on FIL, PIEVERSE and UNI, Session Killzones on ETH, PIEVERSE and ZEC, Supertrend Cluster on ZEC.
+The choppiness index adds nothing. The gate is in the engine and the survey only; nothing gates
+live yet. Measured, not adopted: turning it on cuts entries by about half and belongs with the
+re-timing, which is the operator's call.
