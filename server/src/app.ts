@@ -6,6 +6,7 @@ import { approve as incubatorApprove, demote as incubatorDemote, reject as incub
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, type AppConfig } from './config.ts';
 import { learnBook } from './analytics/learning.ts';
+import { goLive } from './analytics/golive.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
@@ -424,7 +425,18 @@ export class App {
     const hunt = this.db.kvGet<any>('incubator.lastHunt') ?? null;
     const ages = this.incubatorStore.list(['shadow']).map(r => (Date.now() - r.since) / 86_400_000).sort((a, b) => a - b);
     const funnel = { stages: counts, lastHunt: hunt, shadowAgeDays: { median: ages.length ? ages[ages.length >> 1] : null, over30: ages.filter(a => a > 30).length }, gate: this.config.get().incubator.gate ?? null };
-    return { at: Date.now(), live, shadow: { ...shadow, windowDays: 30 }, funnel };
+    // the go-live rule (decision 65): the journal's R series through the fleet's own halts, plus the checks a rule can state
+    const cfg = this.config.get();
+    const liveTrades = this.paper.trades({ limit: 5000 }).filter(t => Number.isFinite(t.exitAt));
+    const span = liveTrades.length > 1 ? (Math.max(...liveTrades.map(t => t.exitAt!)) - Math.min(...liveTrades.map(t => t.entryAt))) / 86_400_000 : 1;
+    const halts = this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM positions WHERE bt=0 AND status='closed' AND exit_reason='risk-kill' AND exit_at > ?", since)?.n ?? 0;
+    const riskState = this.risk.state();
+    const golive = goLive({
+      rs: [...liveTrades].sort((a, b) => a.exitAt! - b.exitAt!).map(t => (typeof t.rMultiple === 'number' && Number.isFinite(t.rMultiple) ? t.rMultiple : 0)),
+      tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,
+      drawdownAlertPct: cfg.risk.ddScale?.[0]?.ddPct ?? 10, lb90: live.lb90, haltsInWindow: halts + (riskState.day.tripped ? 1 : 0) + (riskState.week.tripped ? 1 : 0), alertsConfigured: this.ops.alerts.configured,
+    });
+    return { at: Date.now(), live, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
   }
 
   analytics() {

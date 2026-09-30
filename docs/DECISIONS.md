@@ -1799,3 +1799,41 @@ of markets it trades in the account, a Shadow badge with the number it is provin
 book (proposed pairs counted there, named on hover), or a dash when it trades nowhere. A "Book"
 filter (all / in the account / in the shadow book / not trading) sits beside the author filter.
 The server's scanner view carries `books` from the incubator's pairs.
+
+## 65. The LuxAlgo family adopted: verdict engine, survival rule, exit lab, regime features, library sync
+
+Five things from `docs/LUXALGO-TOOL-FAMILY-2026-09-30.md`, each measured before it was kept.
+
+**Go-live rule with a survival Monte Carlo.** LuxAlgo's Prop Firm Sim, run over the 66 live
+trades with the fleet's own halts as the ruleset (15% daily, 30% max loss, 30 days, 22.5
+trades/day, 1% risk): halt in 88.5% of paths, max drawdown median 38%, 95th percentile 43%. The
+same idea now runs inside the bot (`server/src/analytics/golive.ts`: stationary block bootstrap of
+the journal's R series through the halts, deterministic under a seed, tested) and the Learning
+section shows the rule as six checks with their numbers: closed trades ≥ 200, lower 90% bound of
+E[R] after costs > 0, P(halt in 30 days) ≤ 10%, simulated 95th-percentile drawdown inside the
+alert line, no halt in the window, alerts configured. Keys stay unset until all six are green.
+
+**Exit lab with the LuxAlgo trails.** The 66 live entries reconstructed on 1-minute paths and
+replayed under chandelier (peak − k), sigmoid-transition, Elder SafeZone and statistical trailing
+stops beside the current policy. Nothing wins the second half; the current policy (lock +0.25 at
++0.5, keep 60/70/80%) is the worst on these paths at −12.3R, the balanced candidate is
+"chandelier 0.75R from 1R" at −1.4R (first half +2.0, second −3.4, beats the old live rule in
+5 of 8 windows). Too few entries to change anything; the rule stays in the lab as the one to
+keep measuring.
+
+**Regime and chase recorded at entry.** Four features join the entry-time set: the move over the
+three bars before entry in the trade's direction (ATR), the signal bar's range (ATR), Kaufman's
+efficiency ratio over 20 bars, and the 14-bar choppiness index. The stop study found first-bar
+stops follow a burst; the composites check wanted a trend/range reading. Both are now on every
+trade so the journal can split by them; nothing gates on them yet.
+
+**Edge Stats on Delta bars.** LuxAlgo's open-source statistics engine runs on Delta 1-minute
+bars through its CSV adapter (`_research` notes; not deployed). On 54 UTC sessions of BTC, ETH
+and SOL it answers session questions with N, a 95% CI and a halves check, and refuses anything
+under ten sessions — the discipline the incubator wants. Delta's history endpoint caps a pull at
+80,000 one-minute bars (55 days), so the sessions are few; its verdicts today are "undecided".
+
+**Library sync.** `npm run library:sync` reads the LuxAlgo Library sitemap and imports what the
+manifest lacks; `OUT=data` writes into `data/library/` (manifest and Pine files), which the
+registry now reads as an overlay after the repo's own library, repo entries winning. A weekly
+timer on the VM runs it; nothing it imports is enabled, the daily screen finds the newcomers.

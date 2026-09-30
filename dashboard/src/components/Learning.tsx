@@ -90,6 +90,23 @@ export function LearningSection() {
             </Panel>
           </div>
 
+          {d.golive && book === 'live' && (
+            <Panel title={<span>The go-live rule <Pill tone={d.golive.ok ? 'ok' : 'danger'}>{d.golive.ok ? 'green' : 'not yet'}</Pill></span>} right={<span className="muted small">every check with its number; keys stay unset until all are green</span>} pad={false}>
+              <table className="table small">
+                <thead><tr><th>check</th><th className="num">now</th><th className="num">needs</th><th></th></tr></thead>
+                <tbody>
+                  {d.golive.checks.map((c) => (
+                    <tr key={c.key}><td>{c.label}</td><td className="num mono">{c.value}</td><td className="num mono muted">{c.need}</td><td><Pill tone={c.ok ? 'ok' : 'danger'}>{c.ok ? 'ok' : 'no'}</Pill></td></tr>
+                  ))}
+                </tbody>
+              </table>
+              {d.golive.sim && (
+                <p className="muted small" style={{ padding: '8px 12px' }}>
+                  Block bootstrap of the account's R series through the fleet's halts, {d.golive.sim.paths} paths × {d.golive.sim.days} days: halt in {d.golive.sim.breachPct.toFixed(1)}% of paths (daily {d.golive.sim.dailyBreachPct.toFixed(1)}%, max loss {d.golive.sim.maxLossBreachPct.toFixed(1)}%) · drawdown median {d.golive.sim.dd50Pct.toFixed(1)}%, 95th {d.golive.sim.dd95Pct.toFixed(1)}% · median end {d.golive.sim.medianEndPct >= 0 ? '+' : ''}{d.golive.sim.medianEndPct.toFixed(1)}%. Same idea as LuxAlgo's Prop Firm Sim, run inside the bot.
+                </p>
+              )}
+            </Panel>
+          )}
           <Panel title="The pipeline" right={<span className="muted small">how scanners earn their way in</span>}>
             <dl className="kv-list kv-row">
               {['candidate', 'shadow', 'proposed', 'live', 'demote_proposed', 'retired'].map((s) => (

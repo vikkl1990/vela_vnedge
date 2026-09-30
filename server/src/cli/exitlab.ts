@@ -56,8 +56,53 @@ function engine(o: { tp?: number; lock?: (peak: number) => number; staleMin?: nu
 }
 const trail = (armAt: number, keep: number) => (pk: number) => (pk >= armAt ? pk * keep : -1);
 
+/** The fleet's current policy (decisions 50–52): lock +0.25R at +0.5R, then keep 60% of the peak, 70% from 2R, 80% from 4R. */
+const current = (pk: number) => (pk >= 4 ? pk * 0.8 : pk >= 2 ? pk * 0.7 : pk >= 0.5 ? Math.max(0.25, pk * 0.6) : -1);
+/** Chandelier in R: the stop hangs a fixed distance below the peak once the trade is up `armAt`. */
+const chandelier = (armAt: number, k: number) => (pk: number) => (pk >= armAt ? pk - k : -1);
+/** Sigmoid transition (LuxAlgo family): the share kept rises smoothly with the peak, from `lo` to `hi` around `mid`. */
+const sigmoid = (lo: number, hi: number, mid: number, width: number) => (pk: number) => (pk >= 0.5 ? pk * (lo + (hi - lo) / (1 + Math.exp(-(pk - mid) / width))) : -1);
+/** Path-based rules: the stop is a function of the recent minutes, not only of the peak. */
+function pathRule(o: { armAt: number; stop: (path: Min[], i: number, peak: number) => number }) {
+  return (path: Min[]) => {
+    let stop = -1, peak = 0;
+    for (let i = 0; i < path.length; i++) {
+      const m = path[i];
+      if (m.lo <= stop) return stop;
+      peak = Math.max(peak, m.hi);
+      if (peak >= o.armAt) stop = Math.max(stop, o.stop(path, i, peak));
+    }
+    return path.at(-1)?.close ?? 0;
+  };
+}
+/** Elder SafeZone in R: the average adverse penetration of the last `n` minutes times `k`, hung below the recent extreme. */
+const safezone = (armAt: number, n: number, k: number) => pathRule({ armAt, stop: (path, i) => {
+  let sum = 0, cnt = 0, hi = -Infinity;
+  for (let j = Math.max(1, i - n + 1); j <= i; j++) { const pen = path[j - 1].lo - path[j].lo; if (pen > 0) { sum += pen; cnt++; } hi = Math.max(hi, path[j].hi); }
+  return cnt ? hi - k * (sum / cnt) : -1;
+} });
+/** Statistical trailing stop in R: an EMA of the minute closes minus `k` standard deviations of the minute moves. */
+const statistical = (armAt: number, n: number, k: number) => pathRule({ armAt, stop: (path, i) => {
+  const from = Math.max(0, i - n + 1); const closes = path.slice(from, i + 1).map(m => m.close);
+  const mean = closes.reduce((a, b) => a + b, 0) / closes.length;
+  const moves = closes.slice(1).map((c, j) => c - closes[j]); const sd = moves.length > 1 ? Math.sqrt(moves.reduce((a, x) => a + x * x, 0) / moves.length) : 0;
+  return mean - k * sd;
+} });
+
 const rules: Rule[] = [
   { name: 'LIVE: keep 75% from 1R, TP 6R', run: engine({ tp: 6, lock: trail(1, 0.75) }) },
+  { name: 'CURRENT: lock .25@.5, keep 60/70/80%', run: engine({ tp: 6, lock: current }) },
+  { name: 'chandelier 0.75R from 1R', run: engine({ tp: 6, lock: chandelier(1, 0.75) }) },
+  { name: 'chandelier 1R from 1.5R', run: engine({ tp: 6, lock: chandelier(1.5, 1) }) },
+  { name: 'chandelier 1.5R from 2R', run: engine({ tp: 6, lock: chandelier(2, 1.5) }) },
+  { name: 'sigmoid keep 40→80% around 2R', run: engine({ tp: 6, lock: sigmoid(0.4, 0.8, 2, 0.6) }) },
+  { name: 'sigmoid keep 50→90% around 1.5R', run: engine({ tp: 6, lock: sigmoid(0.5, 0.9, 1.5, 0.5) }) },
+  { name: 'SafeZone 20m ×2.5 from 0.5R', run: safezone(0.5, 20, 2.5) },
+  { name: 'SafeZone 20m ×2.5 from 1R', run: safezone(1, 20, 2.5) },
+  { name: 'SafeZone 30m ×3 from 1R', run: safezone(1, 30, 3) },
+  { name: 'statistical 30m −2σ from 1R', run: statistical(1, 30, 2) },
+  { name: 'statistical 60m −2σ from 1R', run: statistical(1, 60, 2) },
+  { name: 'statistical 30m −3σ from 0.5R', run: statistical(0.5, 30, 3) },
   { name: 'hold: stop or 6R only', run: engine({ tp: 6 }) },
   { name: 'TP 0.75R', run: engine({ tp: 0.75 }) },
   { name: 'TP 1R', run: engine({ tp: 1 }) },

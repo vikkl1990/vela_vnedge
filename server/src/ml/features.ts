@@ -8,6 +8,7 @@ import type { ScanEvent } from '../scanners/extractor.ts';
 export const FEATURE_NAMES = [
   'side_long', 'score', 'has_score', 'hour', 'dow', 'atr_pct', 'sl_atr', 'tp1_rr', 'ret5', 'ret20',
   'trend50', 'trend200', 'vol_ratio', 'range_pos', 'lvl_script', 'src_alert', 'src_shape', 'src_derived', 'src_cond',
+  'burst3', 'bar_range_atr', 'er20', 'chop14',
 ] as const;
 export type FeatureName = (typeof FEATURE_NAMES)[number];
 export type Features = Record<FeatureName, number>;
@@ -18,6 +19,7 @@ export const FEATURE_LABELS: Record<FeatureName, string> = {
   atr_pct: 'ATR % of price', sl_atr: 'stop distance (ATR)', tp1_rr: 'TP1 reward:risk', ret5: '5-bar return %', ret20: '20-bar return %',
   trend50: 'price vs EMA50 (ATR)', trend200: 'price vs EMA200 (ATR)', vol_ratio: 'volume / 20-bar avg', range_pos: 'position in 20-bar range',
   lvl_script: 'levels from script', src_alert: 'signal via alert()', src_shape: 'signal via plotshape', src_derived: 'signal via rule', src_cond: 'signal via alertcondition',
+  burst3: 'move over the 3 bars before entry, with the trade (ATR)', bar_range_atr: 'signal bar range (ATR)', er20: 'Kaufman efficiency ratio, 20 bars (1 = straight line)', chop14: 'choppiness index, 14 bars (0–100)',
 };
 
 function ema(bars: Bar[], i: number, len: number): number | undefined {
@@ -47,6 +49,19 @@ export function computeFeatures(inp: FeatureInputs): Features {
   let hi = -Infinity, lo = Infinity, volSum = 0, volN = 0;
   for (let j = Math.max(0, i - 19); j <= i; j++) { hi = Math.max(hi, bars[j].high); lo = Math.min(lo, bars[j].low); volSum += bars[j].volume; volN++; }
   const volAvg = volN ? volSum / volN : 0;
+  // regime and chase (decision 65): the stop study found first-bar stops follow a burst into the entry,
+  // and the composites check wanted a trend/range reading — both recorded at entry so the journal can split by them
+  const dir = inp.ev.side === 'short' ? -1 : 1;
+  const burst3 = i >= 3 ? ((c - bars[i - 3].close) * dir) / atr : 0;
+  const barRangeAtr = b ? (b.high - b.low) / atr : 0;
+  let er20 = 0;
+  if (i >= 20) { let vol = 0; for (let j = i - 19; j <= i; j++) vol += Math.abs(bars[j].close - bars[j - 1].close); const chg = Math.abs(c - bars[i - 20].close); er20 = vol > 0 ? chg / vol : 0; }
+  let chop14 = 50;
+  if (i >= 14) {
+    let trSum = 0, hh = -Infinity, ll = Infinity;
+    for (let j = i - 13; j <= i; j++) { const pc = bars[j - 1].close; trSum += Math.max(bars[j].high - bars[j].low, Math.abs(bars[j].high - pc), Math.abs(bars[j].low - pc)); hh = Math.max(hh, bars[j].high); ll = Math.min(ll, bars[j].low); }
+    if (hh > ll && trSum > 0) chop14 = 100 * Math.log10(trSum / (hh - ll)) / Math.log10(14);
+  }
   return {
     side_long: inp.ev.side === 'long' ? 1 : 0,
     score: inp.ev.score !== undefined && Number.isFinite(inp.ev.score) ? Math.max(0, Math.min(100, inp.ev.score)) : 0,
@@ -67,6 +82,7 @@ export function computeFeatures(inp: FeatureInputs): Features {
     src_shape: inp.ev.source === 'shape' ? 1 : 0,
     src_derived: inp.ev.source === 'derived' ? 1 : 0,
     src_cond: inp.ev.source === 'alertcondition' ? 1 : 0,
+    burst3, bar_range_atr: barRangeAtr, er20, chop14,
   };
 }
 

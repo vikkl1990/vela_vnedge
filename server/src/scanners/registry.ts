@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { PINE_DIR, SCRIPTS_DIR } from '../config.ts';
+import { DATA_DIR, PINE_DIR, SCRIPTS_DIR } from '../config.ts';
 import { applyPatches } from '../pine/patches.ts';
 
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable';
@@ -56,8 +56,14 @@ export class ScannerRegistry {
       try { for (const r of JSON.parse(fs.readFileSync(reportFile, 'utf8')).rows ?? []) report[r.id] = r; } catch { report = {}; }
     }
     this.map.clear();
-    for (const m of manifest) {
-      const file = path.join(PINE_DIR, m.file);
+    // a second library root under the data directory: what the library sync imports on the machine
+    // itself (decision 65), so a running bot picks up new scripts without a commit; repo entries win
+    const extraRoot = path.join(DATA_DIR, 'library');
+    const extra: any[] = fs.existsSync(path.join(extraRoot, 'manifest.json')) ? (() => { try { return JSON.parse(fs.readFileSync(path.join(extraRoot, 'manifest.json'), 'utf8')); } catch { return []; } })() : [];
+    const seen = new Set(manifest.map(m => m.id));
+    const all = [...manifest.map(m => ({ ...m, __dir: PINE_DIR })), ...extra.filter(m => !seen.has(m.id)).map(m => ({ ...m, __dir: path.join(extraRoot, 'pine') }))];
+    for (const m of all) {
+      const file = path.join(m.__dir, m.file);
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       const { source: patched, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
       let status: ScannerStatus = m.status;
