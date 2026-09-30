@@ -154,6 +154,19 @@ test('Self-Aware Trend System webhook packet: the entry carries its own stop and
   assert.equal(parseAlert(pkt([{ event: 'char_flip', side: 'long' }])), null);
 });
 
+test('Fibonacci Structure Engine 2.1 packet: buy/sell carry entry, stop and target; target/invalidated/expired are exits; replaced is nothing', () => {
+  const pkt = (events: any[]) => ({ barIndex: 9, time: 9000, type: 'alert' as const, message: JSON.stringify({ schema_version: 2, indicator_version: '2.1.0', ticker: 'DELTA:ETHUSD', tf: '15', bar_time: 9000, price: 2457.65, events }) });
+  const entry = parseAlert(pkt([{ type: 'buy', direction: 1, level: 2457.65, state: 3, trigger: 'choch_retest', entry: 2457.65, invalidation: 2436, stop: 2435.25, target: 2476.3 }]))!;
+  assert.equal(entry.kind, 'entry'); assert.equal(entry.side, 'long'); assert.equal(entry.price, 2457.65); assert.equal(entry.sl, 2435.25); assert.deepEqual(entry.tp, [2476.3]); assert.match(entry.label!, /LONG choch_retest/);
+  const sell = parseAlert(pkt([{ type: 'replaced', direction: -1, state: 8 }, { type: 'sell', direction: -1, entry: 100, stop: 103, target: 94, trigger: 'bos_retest' }]))!;
+  assert.equal(sell.kind, 'entry'); assert.equal(sell.side, 'short'); assert.equal(sell.sl, 103);
+  const tgt = parseAlert(pkt([{ type: 'target', direction: 1, level: 2476.3, state: 6 }]))!;
+  assert.equal(tgt.kind, 'exit'); assert.equal(tgt.exitType, 'tp1'); assert.equal(tgt.side, 'long'); assert.equal(tgt.price, 2476.3);
+  assert.equal(parseAlert(pkt([{ type: 'invalidated', direction: -1, state: 4 }]))!.exitType, 'sl');
+  assert.equal(parseAlert(pkt([{ type: 'expired', direction: 1, state: 5 }]))!.exitType, 'close');
+  assert.equal(parseAlert(pkt([{ type: 'replaced', direction: 1, state: 8 }])), null);
+});
+
 test('edge: a condition or shape true on consecutive bars is one entry on the first bar of the run', () => {
   const alerts = [1, 2, 3, 7, 8].map(i => ({ barIndex: i, time: i * 60_000, type: 'alertcondition' as const, title: 'Bullish', message: '' }));
   const shapes = [{ title: 'Buy', times: [10, 11, 12, 20].map(i => i * 60_000) }];

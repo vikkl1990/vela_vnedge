@@ -72,6 +72,32 @@ function parseSatsPacket(msg: string, base: Pick<ScanEvent, 'message' | 'source'
   return null;
 }
 
+/**
+ * Fibonacci Structure Engine 2.1 (WillyAlgoTrader) structured alert: `{"schema_version":2,…,"events":[{type, direction,
+ * entry, stop, target, trigger, state}, …]}`. `buy`/`sell` open a plan (stop and target from the script); `target`
+ * and `invalidated` close it; `expired` closes it flat; `replaced` and anything else are information.
+ */
+function parseFsePacket(msg: string, base: Pick<ScanEvent, 'message' | 'source' | 'barTime' | 'barIndex' | 'tp' | 'label'>): ScanEvent | null {
+  let pkt: any;
+  try { pkt = JSON.parse(msg); } catch { return null; }
+  const events: any[] = Array.isArray(pkt?.events) ? pkt.events : [];
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const sideOf = (e: any): Side | undefined => (e.direction === 1 ? 'long' : e.direction === -1 ? 'short' : undefined);
+  for (const e of events) {
+    if (e.type === 'buy' || e.type === 'sell') {
+      const side = sideOf(e) ?? (e.type === 'buy' ? 'long' : 'short');
+      const tp = [n(e.target)].filter((v): v is number => v !== undefined);
+      return { ...base, kind: 'entry', side, price: n(e.entry) ?? n(e.level), sl: n(e.stop) ?? n(e.invalidation), tp, label: `${side.toUpperCase()} ${String(e.trigger ?? 'FSE')}`.slice(0, 60), message: `FSE ${e.type} ${e.trigger ?? ''} E ${e.entry ?? ''} SL ${e.stop ?? ''} TP ${e.target ?? ''}`.trim().slice(0, 500) };
+    }
+  }
+  for (const e of events) {
+    const exitType: ExitType | null = e.type === 'target' ? 'tp1' : e.type === 'invalidated' ? 'sl' : e.type === 'expired' ? 'close' : null;
+    if (!exitType) continue;
+    return { ...base, kind: 'exit', side: sideOf(e), exitType, price: n(e.level), label: `${exitType.toUpperCase()} (FSE)`, message: `FSE ${e.type} ${e.trigger ?? ''}`.trim().slice(0, 500) };
+  }
+  return null;
+}
+
 /** Leading direction cue: 🟢 = long, 🔴 = short. */
 function emojiSide(msg: string): Side | undefined {
   const head = msg.slice(0, 6);
@@ -89,6 +115,7 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
 
   // ----- Self-Aware Trend System webhook packet: every event with the trade's own entry, stop and targets -----
   if (msg.startsWith('{') && msg.includes('"schema":"sats.events.v2"')) return parseSatsPacket(msg, base);
+  if (msg.startsWith('{') && msg.includes('"schema_version":2') && msg.includes('"events":[')) return parseFsePacket(msg, base);
   // ----- JSON webhook payloads (STRAT Trap & VWAP Engine: {"ind":"STRAT","action":"trigger_bull",...}) -----
   if (msg.startsWith('{') && msg.endsWith('}')) {
     let j: any = null;

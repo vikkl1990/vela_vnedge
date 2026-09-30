@@ -34,6 +34,14 @@ export const PATCH_RULES: PatchRule[] = [
       .replace(/array\.get\(vols, i - 1\)/g, 'array.get(vols, math.max(i - 1, 0))'),
   },
   {
+    id: 'if-array-get-field',
+    description: 'PineTS loses the binding of a global array when a field is read straight off `array.get(arr, i).field` in an `if` test ("arr is not defined"); the element is read into a local first (same value, same order).',
+    apply: (src) => src.replace(/^([ \t]*)(if|else if)([ \t]+)(.*?)array\.get\((\w+),[ \t]*([^()\n]+)\)\.(\w+)/gm, (_m, ind, kw, sp, pre, arr, idx, field, offset: number, whole: string) => {
+      const n = (whole.slice(0, offset).match(/__vnedge_el_/g) ?? []).length;
+      return `${ind}__vnedge_el_${n} = array.get(${arr}, ${idx})\n${ind}${kw}${sp}${pre}__vnedge_el_${n}.${field}`;
+    }),
+  },
+  {
     id: 'synapse-htf-string',
     description: 'PineTS `timeframe.in_seconds()` / `request.security()` need a string timeframe; the auto-HTF helper can yield a non-string, so coerce it.',
     only: ['RjkDXQnZ-Synapse-Trail-Pro'],

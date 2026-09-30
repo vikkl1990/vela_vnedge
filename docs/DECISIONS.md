@@ -1729,3 +1729,17 @@ Pine v4 and older, `request.security` to non-Delta symbols, hangs). Not adopted 
 changes the engine every scanner runs on and the fleet parity was measured on one market and one
 timeframe. Adoption is the operator's call ("upgrade pinets"); the worktree with the comparison
 stays under the session scratchpad until then.
+
+## 62. Fibonacci Structure Engine 2.1 tested; a runtime patch for `array.get(...).field` in an `if`
+
+The author republished the script on 2026-09-28 as a rewrite (2.1.0; the library held 1.5.2). The
+new version failed under PineTS with "liquidity is not defined": a field read straight off
+`array.get(arr, i).field` in an `if` test loses the array's binding (both 0.9.34 and 0.10.0;
+reproduced minimally). A general patch rule (`if-array-get-field`) reads the element into a
+local first, same value and order. The script's structured alerts (`schema_version: 2`,
+`events[].type` buy/sell with entry, stop and target; target/invalidated/expired as exits) are
+now parsed by the extractor. Survey on the VM's exit settings, 15m/1h/4h × 8 markets, in halves:
+15m −0.088R over 464 trades (no market positive in both halves), 1h −0.130R over 300, 4h +0.074R
+over 152 with the first half +0.267 and the second −0.075, two markets (AVAX, DOGE) positive in
+both halves. The same shape as 1.5.2: a 4h pocket, nothing that carries a book. It stays in the
+library for the daily screen; not a fleet candidate on this evidence.
