@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import type { ExitMode, Scanner } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconGrid, IconPlay, IconRows } from '../components/Icons'
-import { ChipSelect, ConfirmDialog, Empty, ErrorState, Loading, PageTitle, Pill, Pnl, ScannerStatusPill, Segmented, Time } from '../components/ui'
+import { BookBadge, ChipSelect, ConfirmDialog, Empty, ErrorState, Loading, PageTitle, Pill, Pnl, ScannerStatusPill, Segmented, Time } from '../components/ui'
 import { CATEGORIES, categorize, type Category } from '../lib/categories'
 import { fmtMs, fmtProfitFactor, fmtPct } from '../lib/format'
 
@@ -32,6 +32,7 @@ export function Scanners() {
   const qc = useQueryClient()
   const [showHidden, setShowHidden] = useState(false)
   const [author, setAuthor] = useState<string>('All')
+  const [bookFilter, setBookFilter] = useState<'all' | 'account' | 'shadow' | 'none'>('all')
   const busy = update.isPending || bulkBusy
 
   // Inline chips offer the globally configured symbols plus anything a scanner already uses
@@ -48,8 +49,9 @@ export function Scanners() {
     return (scanners.data ?? []).filter((s) =>
       (showHidden || !s.hidden) &&
       (author === 'All' || (s.author ?? 'WillyAlgoTrader') === author) &&
+      (bookFilter === 'all' || (bookFilter === 'account' ? (s.books?.account.length ?? 0) > 0 : bookFilter === 'shadow' ? (s.books?.shadow.length ?? 0) + (s.books?.proposed.length ?? 0) > 0 : !(s.books?.account.length || s.books?.shadow.length || s.books?.proposed.length))) &&
       (!f || s.name.toLowerCase().includes(f) || s.id.toLowerCase().includes(f)))
-  }, [scanners.data, filter, showHidden, author])
+  }, [scanners.data, filter, showHidden, author, bookFilter])
   const rows = useMemo(() => filteredScanners.filter((s) => cat === 'All' || categorize(s.name) === cat), [filteredScanners, cat])
   // Render the grid in pages. Every scanner stays reachable, but a category with hundreds of
   // scripts no longer builds 20+ screens of cards before the page is usable.
@@ -156,6 +158,10 @@ export function Scanners() {
         ),
       },
       { key: 'status', header: 'Status', value: (s) => s.status, render: (s) => <ScannerStatusPill status={s.status} reason={s.reason} /> },
+      {
+        key: 'books', header: 'Books', value: (s) => (s.books?.account.length ?? 0) * 1000 + (s.books?.shadow.length ?? 0) + (s.books?.proposed.length ?? 0), title: 'Where this scanner trades: the account (money) and/or the shadow book (evidence in R). Hover a badge for the markets.',
+        render: (s) => <BookCells s={s} />,
+      },
       {
         key: 'kind', header: 'Kind', value: (s) => s.kind ?? '', title: 'What the script produced when last profiled: plan (its own stop and targets), signal (a direction), levels (information), silent, broken',
         render: (s) => (s.health?.quarantined ? <Pill tone="danger" title={`Quarantined: ${s.health.reason ?? s.health.lastError}`}>quarantined</Pill> : s.kind ? <Pill tone={KIND_TONE[s.kind]}>{s.kind}</Pill> : <span className="muted">–</span>),
@@ -278,6 +284,17 @@ export function Scanners() {
             </button>
           ))}
         </div>
+        <Segmented
+          ariaLabel="Book"
+          value={bookFilter}
+          onChange={(v) => setBookFilter(v as typeof bookFilter)}
+          options={[
+            { value: 'all', label: 'All books' },
+            { value: 'account', label: 'In the account' },
+            { value: 'shadow', label: 'In the shadow book' },
+            { value: 'none', label: 'Not trading' },
+          ]}
+        />
         <select className="input" value={author} onChange={(e) => setAuthor(e.target.value)} aria-label="Author" style={{ width: 'auto' }}>
           {authors.map((a) => (
             <option key={a} value={a}>
@@ -389,6 +406,7 @@ function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide }: { s: Scanner
           {s.name}
         </Link>
         <span className="card-pills">
+          <BookCells s={s} />
           <Pill tone="accent">{tfs.toUpperCase()}</Pill>
           <ScannerStatusPill status={s.status} reason={s.reason} />
         </span>
@@ -448,5 +466,17 @@ function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide }: { s: Scanner
         </span>
       </div>
     </div>
+  )
+}
+
+/** The scanner's books as badges: the account with its market count, the shadow book with its; nothing when it trades nowhere. */
+function BookCells({ s }: { s: Scanner }) {
+  const b = s.books ?? { account: [], shadow: [], proposed: [] }
+  if (!b.account.length && !b.shadow.length && !b.proposed.length) return <span className="muted small">–</span>
+  return (
+    <span className="row gap-xs" style={{ display: 'inline-flex', gap: 4 }}>
+      {b.account.length > 0 && <span title={`In the account on: ${b.account.join(', ')}`}><BookBadge book="account" generic /> <span className="mono small">{b.account.length}</span></span>}
+      {(b.shadow.length > 0 || b.proposed.length > 0) && <span title={`In the shadow book on: ${[...b.shadow, ...b.proposed].join(', ')}${b.proposed.length ? ` · proposed for promotion: ${b.proposed.join(', ')}` : ''}`}><BookBadge book="shadow" short /> <span className="mono small">{b.shadow.length + b.proposed.length}</span></span>}
+    </span>
   )
 }

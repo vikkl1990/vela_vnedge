@@ -164,6 +164,8 @@ export interface Scanner {
   kind?: ProfileKind | null
   profiledAt?: number | null
   health?: { fails: number; lastAt: number; lastError: string; reason: string | null; quarantined: boolean } | null
+  /** Which books the scanner is in (decision 64): markets it trades in the account, markets it is proving in the shadow book, markets proposed for promotion. */
+  books?: { account: string[]; shadow: string[]; proposed: string[] }
 }
 
 export type EntrySource = 'alert' | 'alertcondition' | 'shape' | 'derived'

@@ -1791,3 +1791,11 @@ dollars appeared beside the account's. The vocabulary is now fixed (SYSTEM.md, "
 meaning on hover, page subtitles say which book they show and where the others live, Analytics
 and the learning section label their toggles Account (paper) / Shadow book / Backtest, and the
 Incubator's fleet panel is "In the account". Nothing in the data changed.
+
+### 64a. Scanners list shows each scanner's books
+
+Each scanner row and card now carries its books (decision 64): an Account badge with the number
+of markets it trades in the account, a Shadow badge with the number it is proving in the shadow
+book (proposed pairs counted there, named on hover), or a dash when it trades nowhere. A "Book"
+filter (all / in the account / in the shadow book / not trading) sits beside the author filter.
+The server's scanner view carries `books` from the incubator's pairs.

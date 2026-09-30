@@ -193,7 +193,7 @@ export default function Incubator() {
                 )}
               </Panel>
 
-              <Panel title={<span>In the account ({live.length}) <BookBadge book="account" short /></span>}>
+              <Panel title={<span>In the account ({live.length}) <BookBadge book="account" generic /></span>}>
                 {live.length === 0 ? <Empty label="The incubator has not synced the fleet yet." /> : (
                   <div className="table-wrap">
                     <table className="table">

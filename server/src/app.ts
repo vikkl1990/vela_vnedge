@@ -269,7 +269,19 @@ export class App {
       backtests: this.scanners.backtestsByScanner(),
       lastRun: this.scanners.lastRunByScanner(),
       profiles: this.profiles.summaries(),
+      books: this.scannerBooks(),
     };
+  }
+
+  /** Which books each scanner is in (decision 64): markets it trades in the account, markets it is proving in the shadow book. */
+  private scannerBooks() {
+    const out = new Map<string, { account: string[]; shadow: string[]; proposed: string[] }>();
+    for (const r of this.incubatorStore.list(['live', 'demote_proposed', 'shadow', 'proposed'])) {
+      const b = out.get(r.scannerId) ?? { account: [], shadow: [], proposed: [] };
+      (r.stage === 'live' || r.stage === 'demote_proposed' ? b.account : r.stage === 'proposed' ? b.proposed : b.shadow).push(`${r.symbol} ${r.tf}`);
+      out.set(r.scannerId, b);
+    }
+    return out;
   }
 
   scannerView(id: string, idx?: ReturnType<App['scannerViewIndex']>) {
@@ -290,6 +302,7 @@ export class App {
       // what it produced when last profiled, and whether the runtime has given up on it
       kind: prof?.kind ?? null, profiledAt: prof?.at ?? null, health: health ? { fails: health.fails, lastAt: health.lastAt, lastError: health.lastError, reason: health.reason, quarantined: health.quarantined } : null,
       lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,
+      books: (idx ? idx.books : this.scannerBooks()).get(id) ?? { account: [], shadow: [], proposed: [] },
     };
   }
 

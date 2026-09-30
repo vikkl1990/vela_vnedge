@@ -418,10 +418,11 @@ export const ACCOUNT_MODE_LABEL: Record<string, { label: string; hint: string; t
   testnet: { label: 'Live · demo exchange', hint: 'Real orders on the exchange demo host, mirrored from the account.', tone: 'warn' },
   live: { label: 'Live account', hint: 'Real orders on Delta India.', tone: 'danger' },
 }
-export function BookBadge({ book, mode = 'paper', short = false, className = '' }: { book: Book; mode?: AccountMode; short?: boolean; className?: string }) {
+export function BookBadge({ book, mode = 'paper', short = false, generic = false, className = '' }: { book: Book; mode?: AccountMode; short?: boolean; generic?: boolean; className?: string }) {
   if (book === 'shadow') return <span className={`pill pill-shadow ${className}`} title="Shadow book: the incubator's evidence on live data. Never money; read it in R.">{short ? 'Shadow' : 'Shadow book'}</span>
   if (book === 'backtest') return <span className={`pill pill-muted ${className}`} title="Backtest: the scanner replayed over loaded history.">Backtest</span>
   const m = ACCOUNT_MODE_LABEL[mode] ?? { label: `Account · ${mode}`, hint: '', tone: 'warn' as const }
+  if (generic) return <span className={`pill pill-accent ${className}`} title="The account: the money book, whatever its mode.">Account</span>
   return <span className={`pill pill-${m.tone} ${className}`} title={m.hint}>{short ? m.label.replace(' account', '') : m.label}</span>
 }
 
