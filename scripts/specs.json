@@ -1,5 +1,5 @@
 {
- "_comment": "How each script is read (decision 48): which channel may open a trade, the timezone its sessions run in, input overrides, rising-edge signals (decision 57). Defaults only \u2014 data/config.json wins per field. Fleet scanners keep their measured reading until edge is measured for them.",
+ "_comment": "How each script is read (decision 48): which channel may open a trade, the timezone its sessions run in, input overrides, rising-edge signals (decision 57). Defaults only — data/config.json wins per field. Fleet scanners keep their measured reading until edge is measured for them. labels (decision 67): only entries whose label starts with one of these may open a trade — from the scanner test, the channel of a script that pays while its siblings lose.",
  "abcd-harmonic-projection": {
   "sources": [
    "alert"
@@ -39,6 +39,9 @@
  "meridian-flow": {
   "sources": [
    "alert"
+  ],
+  "labels": [
+   "🟢 LONG"
   ]
  },
  "precision-sniper": {
@@ -85,6 +88,9 @@
  "volume-weighted-s-r-zones": {
   "sources": [
    "alert"
+  ],
+  "labels": [
+   "🟢 BREAK UP"
   ]
  },
  "adaptive-ichimoku-nexus": {
@@ -316,5 +322,25 @@
  },
  "zero-lag-trend-signals-mtf": {
   "edge": true
+ },
+ "kinetic-momentum-vectors": {
+  "labels": [
+   "Bull Spike"
+  ]
+ },
+ "ai-predictive-flow-zeiierman": {
+  "labels": [
+   "Background Turned Bullish"
+  ]
+ },
+ "session-killzones-breakouts": {
+  "labels": [
+   "Asia Bull Breakout"
+  ]
+ },
+ "smart-money-breakout-signals": {
+  "labels": [
+   "Bullish Breakout Detected"
+  ]
  }
 }

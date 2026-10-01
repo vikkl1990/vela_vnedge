@@ -306,10 +306,12 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
   const [sources, setSources] = useState<EntrySource[]>(s.reads?.sources ?? [])
   const [timezone, setTimezone] = useState(s.reads?.timezone ?? '')
   const [rule, setRule] = useState<string>(s.reads?.rule ?? '')
-  const dirty = JSON.stringify(sources) !== JSON.stringify(s.reads?.sources ?? []) || timezone !== (s.reads?.timezone ?? '') || rule !== (s.reads?.rule ?? '')
+  const [labels, setLabels] = useState<string>((s.reads?.labels ?? []).join(', '))
+  const labelList = labels.split(',').map((x) => x.trim()).filter(Boolean)
+  const dirty = JSON.stringify(sources) !== JSON.stringify(s.reads?.sources ?? []) || timezone !== (s.reads?.timezone ?? '') || rule !== (s.reads?.rule ?? '') || JSON.stringify(labelList) !== JSON.stringify(s.reads?.labels ?? [])
   const save = () =>
     update.mutate(
-      { id: s.id, body: { sources: sources.length ? sources : null, timezone: timezone || null, rule: (rule || null) as 'trailing' | 'oscillator' | null } },
+      { id: s.id, body: { sources: sources.length ? sources : null, timezone: timezone || null, rule: (rule || null) as 'trailing' | 'oscillator' | null, labels: labelList.length ? labelList : null } },
       { onSuccess: () => toast.success('Saved how this script is read'), onError: (e) => toast.error(String((e as Error).message ?? e)) },
     )
   const h = s.health
@@ -330,6 +332,8 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
         <div>
           <ChipSelect label="Entry channel" options={SOURCES} value={sources} onChange={(v) => setSources(v as EntrySource[])} emptyLabel="all channels" disabled={!auth.canTrade} />
           <p className="muted small">Which of the script's outputs may open a trade. A plan script should read <b>alert</b> only; shapes and alertconditions on the same bars are markers, not trade calls.</p>
+          <label className="field"><span className="field-label">Signal labels allowed</span><input className="input mono" value={labels} placeholder="every label · e.g. Bull Spike, 🟢 BREAK UP" onChange={(e) => setLabels(e.target.value)} disabled={!auth.canTrade} /></label>
+          <p className="muted small">Comma-separated prefixes. Only entries whose label starts with one of them open a trade; the scanner test (decision 67) found one channel of a script paying while its siblings lose. Empty = every label.</p>
           <div className="row gap wrap">
             <label className="field"><span className="field-label">Timezone</span><input className="input mono" value={timezone} placeholder="Etc/UTC" onChange={(e) => setTimezone(e.target.value)} disabled={!auth.canTrade} /></label>
             <label className="field"><span className="field-label">Derived rule</span>

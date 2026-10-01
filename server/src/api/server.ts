@@ -249,6 +249,8 @@ export class ApiServer {
       if (typeof body?.hidden === 'boolean') { patch.hidden = body.hidden; if (body.hidden) patch.enabled = false; }
       // how the script is read (decision 48)
       if (body?.sources === null) patch.sources = undefined;
+      if (body?.labels === null) patch.labels = undefined;
+      if (Array.isArray(body?.labels)) { const ls = body.labels.map((x: unknown) => String(x).trim().slice(0, 60)).filter(Boolean); if (ls.length > 40) throw new HttpError(400, 'too many labels'); patch.labels = ls.length ? ls : undefined; }
       if (Array.isArray(body?.sources)) { const ok = ['alert', 'alertcondition', 'shape', 'derived']; for (const x of body.sources) if (!ok.includes(x)) throw new HttpError(400, `bad source ${x}`); patch.sources = body.sources.length ? body.sources : undefined; }
       if (body?.timezone === null || body?.timezone === '') patch.timezone = undefined;
       else if (typeof body?.timezone === 'string') { try { new Intl.DateTimeFormat('en-US', { timeZone: body.timezone }); } catch { throw new HttpError(400, 'not an IANA timezone'); } patch.timezone = body.timezone; }

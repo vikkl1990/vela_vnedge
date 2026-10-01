@@ -245,6 +245,12 @@ export interface ExtractOptions {
    * becomes one entry on the first bar of the run, not one per bar (decision 57).
    */
   edge?: boolean;
+  /**
+   * Only entries whose label starts with one of these (case-insensitive) may open a trade (decision 67):
+   * the scanner test showed one channel of a script paying while its siblings lose. Exits and info
+   * always pass. Unset or empty: every label.
+   */
+  labels?: string[];
 }
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
@@ -315,8 +321,10 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       events.push({ kind: 'entry', side, tp: [], label: s.title, message: `plotshape ${s.title}`, source: 'shape', barTime: t, barIndex: -1 });
     }
   }
-  events.sort((a, b) => a.barTime - b.barTime || (a.kind === 'exit' ? -1 : 1));
-  return events;
+  const allowLabels = (opts.labels ?? []).map(l => l.trim().toLowerCase()).filter(Boolean);
+  const kept = allowLabels.length ? events.filter(e => e.kind !== 'entry' || allowLabels.some(a => String(e.label ?? '').toLowerCase().startsWith(a))) : events;
+  kept.sort((a, b) => a.barTime - b.barTime || (a.kind === 'exit' ? -1 : 1));
+  return kept;
 }
 
 const fmtN = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? undefined : v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 2 }) : String(Number(v.toFixed(4))));

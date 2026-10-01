@@ -1866,3 +1866,33 @@ on FIL, PIEVERSE and UNI, Session Killzones on ETH, PIEVERSE and ZEC, Supertrend
 The choppiness index adds nothing. The gate is in the engine and the survey only; nothing gates
 live yet. Measured, not adopted: turning it on cuts entries by about half and belongs with the
 re-timing, which is the operator's call.
+
+## 67. The scanner test, and signal labels as an allow-list
+
+`npm run diagnose` (`server/src/cli/diagnose.ts`) is the scanner test the operator asked for: for
+every script × market × timeframe, one script run, eleven judgements of the same events — the
+fleet's settings, no costs, wider stops, a 1R target, our levels only, the script's own exits, the
+efficiency gate, every signal inverted, longs only, shorts only — plus the excursion profile and
+the record per signal label, and a verdict that names the cause the numbers support with the fix
+to try. First batch: the fleet's 16 scanners and all 26 WillyAlgo scripts on 12 account markets at
+15m, 1h and 4h (`data/reports/2026-10-01-scanner-test-batch1.tsv`).
+
+What it found on the first 880 cells: 120 pay as read; 93 are positive before costs and negative
+after (the cost-in-R rule, decision 66); 90 pay when every signal is read the other way — and
+those sit on four markets (PIEVERSE, SAGA, FIL, EVAA) across twelve unrelated scripts, so they
+are a market property (thin alts that reverse after a breakout), not sign errors; 15 are a label
+mix, one channel of a script paying while its siblings lose; 14 pay only when the market moves
+efficiently. Two scripts have no paying variant anywhere (FIA Trend Momentum, Dynamic RSI
+Regression Bands); one never fires enough to judge (Mirage).
+
+The label mix is fixable in the reading, so a scanner now carries `labels`: only entries whose
+label starts with one of the listed prefixes open a trade; exits and info pass. Set from the
+test's per-label record across all cells (n ≥ 500 each, the paying label positive in both halves
+on the most cells): Kinetic Momentum Vectors → Bull Spike (+0.20R vs Bear Spike −0.09R); AI
+Predictive Flow → Background Turned Bullish (+0.10R; its other eleven conditions ≤ 0); Session
+Killzones → Asia Bull Breakout (+0.07R; the bear breakouts lose); Volume-Weighted S/R Zones →
+BREAK UP (+0.10R vs BREAK DOWN −0.08R); Smart Money Breakout → Bullish Breakout Detected
+(+0.08R vs −0.08R); Meridian Flow → LONG (+0.02R vs SHORT −0.09R). All six lists are long-side,
+over a window (July–September 2026) that rose; the journal will say whether that holds. The lists
+live in `scripts/specs.json` and on the scanner's reading panel. Fees are deliberately left for
+later: this decision is about which signals fire.

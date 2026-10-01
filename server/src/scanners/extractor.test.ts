@@ -167,6 +167,21 @@ test('Fibonacci Structure Engine 2.1 packet: buy/sell carry entry, stop and targ
   assert.equal(parseAlert(pkt([{ type: 'replaced', direction: 1, state: 8 }])), null);
 });
 
+test('labels: an allow-list keeps only the entries whose label starts with one of its items; exits and info pass', () => {
+  const alerts = [
+    { barIndex: 1, time: 60_000, type: 'alert' as const, message: '🟢 BREAK UP | X (15) break above zone' },
+    { barIndex: 2, time: 120_000, type: 'alert' as const, message: '🔴 BREAK DOWN | X (15) break below zone' },
+    { barIndex: 3, time: 180_000, type: 'alert' as const, message: 'TP1 HIT | X (15)' },
+  ];
+  const shapes = [{ title: 'Bull Spike', times: [240_000] }, { title: 'Bear Spike', times: [300_000] }];
+  const all = extractEvents(alerts, shapes);
+  assert.equal(all.filter(e => e.kind === 'entry').length, 4);
+  const kept = extractEvents(alerts, shapes, { labels: ['🟢 break up', 'bull spike'] });
+  assert.deepEqual(kept.filter(e => e.kind === 'entry').map(e => e.label), all.filter(e => e.kind === 'entry' && /BREAK UP|Bull Spike/.test(String(e.label))).map(e => e.label));
+  assert.ok(kept.some(e => e.kind === 'exit'), 'exits still pass');
+  assert.equal(extractEvents(alerts, shapes, { labels: [] }).filter(e => e.kind === 'entry').length, 4, 'empty list = every label');
+});
+
 test('edge: a condition or shape true on consecutive bars is one entry on the first bar of the run', () => {
   const alerts = [1, 2, 3, 7, 8].map(i => ({ barIndex: i, time: i * 60_000, type: 'alertcondition' as const, title: 'Bullish', message: '' }));
   const shapes = [{ title: 'Buy', times: [10, 11, 12, 20].map(i => i * 60_000) }];
