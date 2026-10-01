@@ -231,6 +231,8 @@ export interface ScannerConfig {
   sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
   /** Only entries whose label starts with one of these may open a trade (decision 67); unset: every label. */
   labels?: string[];
+  /** Read every entry the other way (decision 67). */
+  invert?: boolean;
   /** Rising edge only: a condition or shape true on consecutive bars is one entry, on its first bar (decision 57). */
   edge?: boolean;
   /** IANA timezone the script's sessions and clock functions run in (default Etc/UTC; session scripts usually mean America/New_York). */

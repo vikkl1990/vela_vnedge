@@ -180,6 +180,8 @@ test('labels: an allow-list keeps only the entries whose label starts with one o
   assert.deepEqual(kept.filter(e => e.kind === 'entry').map(e => e.label), all.filter(e => e.kind === 'entry' && /BREAK UP|Bull Spike/.test(String(e.label))).map(e => e.label));
   assert.ok(kept.some(e => e.kind === 'exit'), 'exits still pass');
   assert.equal(extractEvents(alerts, shapes, { labels: [] }).filter(e => e.kind === 'entry').length, 4, 'empty list = every label');
+  const inv = extractEvents(alerts, shapes, { labels: ['bull spike'], invert: true }).filter(e => e.kind === 'entry');
+  assert.deepEqual(inv.map(e => [e.side, e.label]), [['short', 'Bull Spike (inverted)']], 'inverted: the kept entry trades the other way and says so');
 });
 
 test('edge: a condition or shape true on consecutive bars is one entry on the first bar of the run', () => {

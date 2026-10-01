@@ -307,11 +307,12 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
   const [timezone, setTimezone] = useState(s.reads?.timezone ?? '')
   const [rule, setRule] = useState<string>(s.reads?.rule ?? '')
   const [labels, setLabels] = useState<string>((s.reads?.labels ?? []).join(', '))
+  const [invert, setInvert] = useState<boolean>(Boolean(s.reads?.invert))
   const labelList = labels.split(',').map((x) => x.trim()).filter(Boolean)
-  const dirty = JSON.stringify(sources) !== JSON.stringify(s.reads?.sources ?? []) || timezone !== (s.reads?.timezone ?? '') || rule !== (s.reads?.rule ?? '') || JSON.stringify(labelList) !== JSON.stringify(s.reads?.labels ?? [])
+  const dirty = JSON.stringify(sources) !== JSON.stringify(s.reads?.sources ?? []) || timezone !== (s.reads?.timezone ?? '') || rule !== (s.reads?.rule ?? '') || JSON.stringify(labelList) !== JSON.stringify(s.reads?.labels ?? []) || invert !== Boolean(s.reads?.invert)
   const save = () =>
     update.mutate(
-      { id: s.id, body: { sources: sources.length ? sources : null, timezone: timezone || null, rule: (rule || null) as 'trailing' | 'oscillator' | null, labels: labelList.length ? labelList : null } },
+      { id: s.id, body: { sources: sources.length ? sources : null, timezone: timezone || null, rule: (rule || null) as 'trailing' | 'oscillator' | null, labels: labelList.length ? labelList : null, invert } },
       { onSuccess: () => toast.success('Saved how this script is read'), onError: (e) => toast.error(String((e as Error).message ?? e)) },
     )
   const h = s.health
@@ -334,6 +335,7 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
           <p className="muted small">Which of the script's outputs may open a trade. A plan script should read <b>alert</b> only; shapes and alertconditions on the same bars are markers, not trade calls.</p>
           <label className="field"><span className="field-label">Signal labels allowed</span><input className="input mono" value={labels} placeholder="every label · e.g. Bull Spike, 🟢 BREAK UP" onChange={(e) => setLabels(e.target.value)} disabled={!auth.canTrade} /></label>
           <p className="muted small">Comma-separated prefixes. Only entries whose label starts with one of them open a trade; the scanner test (decision 67) found one channel of a script paying while its siblings lose. Empty = every label.</p>
+          <label className="row gap small"><input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} disabled={!auth.canTrade} /> Read every entry the other way <span className="muted">(for scripts whose signal names describe what just happened — a rejection, an exhaustion — not the trade to take)</span></label>
           <div className="row gap wrap">
             <label className="field"><span className="field-label">Timezone</span><input className="input mono" value={timezone} placeholder="Etc/UTC" onChange={(e) => setTimezone(e.target.value)} disabled={!auth.canTrade} /></label>
             <label className="field"><span className="field-label">Derived rule</span>

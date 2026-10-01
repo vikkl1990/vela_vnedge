@@ -159,7 +159,7 @@ export interface Scanner {
   lastRun: LastRun | null
   stats: ScannerStats
   /** How the script is read (decision 48): entry channels, timezone, derivation rule, overrides. */
-  reads?: { sources: EntrySource[] | null; timezone: string | null; rule: 'trailing' | 'oscillator' | null; inputs: Record<string, number | string | boolean> | null; exit: Record<string, unknown> | null; labels?: string[] | null; edge?: boolean | null }
+  reads?: { sources: EntrySource[] | null; timezone: string | null; rule: 'trailing' | 'oscillator' | null; inputs: Record<string, number | string | boolean> | null; exit: Record<string, unknown> | null; labels?: string[] | null; edge?: boolean | null; invert?: boolean }
   /** What it produced when last profiled: the author's plan, a direction, information, nothing. */
   kind?: ProfileKind | null
   profiledAt?: number | null
@@ -186,6 +186,7 @@ export interface ScannerUpdate {
   timezone?: string | null
   rule?: 'trailing' | 'oscillator' | null
   labels?: string[] | null
+  invert?: boolean
 }
 
 export interface ScannerSource {

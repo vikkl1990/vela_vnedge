@@ -251,6 +251,8 @@ export interface ExtractOptions {
    * always pass. Unset or empty: every label.
    */
   labels?: string[];
+  /** Read every entry the other way (decision 67): for scripts whose signal names describe the move that just happened — a rejection at the upper band, an exhaustion — rather than the trade to take. */
+  invert?: boolean;
 }
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
@@ -323,8 +325,9 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   }
   const allowLabels = (opts.labels ?? []).map(l => l.trim().toLowerCase()).filter(Boolean);
   const kept = allowLabels.length ? events.filter(e => e.kind !== 'entry' || allowLabels.some(a => String(e.label ?? '').toLowerCase().startsWith(a))) : events;
-  kept.sort((a, b) => a.barTime - b.barTime || (a.kind === 'exit' ? -1 : 1));
-  return kept;
+  const read = opts.invert ? kept.map(e => (e.kind === 'entry' && e.side ? { ...e, side: e.side === 'long' ? 'short' as const : 'long' as const, sl: undefined, tp: [], label: `${e.label ?? ''} (inverted)`.trim() } : e)) : kept;
+  read.sort((a, b) => a.barTime - b.barTime || (a.kind === 'exit' ? -1 : 1));
+  return read;
 }
 
 const fmtN = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? undefined : v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 2 }) : String(Number(v.toFixed(4))));
