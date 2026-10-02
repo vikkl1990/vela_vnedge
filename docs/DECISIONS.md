@@ -1896,3 +1896,16 @@ BREAK UP (+0.10R vs BREAK DOWN −0.08R); Smart Money Breakout → Bullish Break
 over a window (July–September 2026) that rose; the journal will say whether that holds. The lists
 live in `scripts/specs.json` and on the scanner's reading panel. Fees are deliberately left for
 later: this decision is about which signals fire.
+
+## 68. Why there were no signals: PineTS 0.10.0 leaks per run; workers are now recycled
+
+From the 0.10.0 deploy on 30 September the VM logged 35–39 worker crash-loop alerts a day (3–4 a
+day before). On 2 October scans were running 15–20 minutes late, 13 of 23 fleet runs timed out at
+90 s, and the few signals that arrived met a quiet market's fee filter. Measured locally with six
+fleet scripts run eight times each in one worker on 1,000 bars: under 0.10.0 every run gets slower
+(310 → 907 ms, 648 → 2,913 ms) and the process grows from 300 MB to 1.5 GB in 48 runs; under
+0.9.34 both are flat. A long-lived worker therefore reaches its 1.5 GB cap, crashes mid-job, is
+replaced, and the backlog times out. The pool now recycles a worker after `WORKER_MAX_RUNS` jobs
+(24, `VNEDGE_WORKER_MAX_RUNS`), which bounds the leak at a few hundred MB; a fresh worker costs
+under a second. The status page shows the recycle count. The runtime stays at 0.10.0 for its
+fixes; the leak goes upstream.

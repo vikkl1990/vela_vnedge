@@ -9,6 +9,13 @@ const log = logger.scoped('pool');
 const WORKER_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker.ts');
 /** Heap ceiling per worker thread (MB); override with VNEDGE_WORKER_HEAP_MB. */
 export const WORKER_HEAP_MB = Number(process.env.VNEDGE_WORKER_HEAP_MB) || 1536;
+/**
+ * A worker is replaced after this many jobs (decision 68). PineTS 0.10.0 keeps about 25 MB per run
+ * inside a long-lived worker and every run gets slower (measured: 310 → 907 ms and 300 → 1,500 MB
+ * over 48 runs; 0.9.34 is flat). Left alone a worker reaches the heap cap, crashes mid-job, and the
+ * fleet's runs time out — no signals. Recycling bounds the leak; a fresh worker costs under a second.
+ */
+export const WORKER_MAX_RUNS = Number(process.env.VNEDGE_WORKER_MAX_RUNS) || 24;
 
 interface PoolWorker {
   on(event: string, listener: (...args: any[]) => void): unknown;
@@ -23,7 +30,9 @@ interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedA
 export type JobPriority = 'live' | 'background';
 /** A live job still waiting after this long would act on a signal too old to trade: drop it. */
 export const LIVE_QUEUE_DEADLINE_MS = 240_000;
-interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: boolean; retiring: boolean }
+interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: boolean; retiring: boolean   /** Jobs completed by this worker; it is recycled after `WORKER_MAX_RUNS` (decision 68). */
+  runs: number;
+}
 
 /**
  * Fixed-size worker pool. Only the exit handler owns worker replacement. Two queues: live
@@ -52,6 +61,7 @@ export class PinePool {
    * 4 workers 4.4 runs/s, 6 → 6.5, 8 → 7.5, 12 → 8.2, 16 → 7.6. Past the core count the gain turns
    * into queueing (p95 latency doubles from 8 to 16 workers), so oversubscribing is not free.
    */
+  readonly maxRuns: number;
   constructor(size = Math.max(2, Math.min(12, os.cpus()?.length ?? 4)), timeoutMs = 90_000,
     createWorker: (index: number) => PoolWorker = index => new Worker(WORKER_FILE, {
       workerData: { index }, execArgv: ['--no-warnings=ExperimentalWarning'],
@@ -59,7 +69,8 @@ export class PinePool {
       // one did, filling 22 GB until the VM stopped answering. V8 ends the worker at this heap
       // size, the pool fails the job and replaces the worker.
       resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
-    })) {
+    }), maxRuns = WORKER_MAX_RUNS) {
+    this.maxRuns = maxRuns;
     this.size = size; this.reserved = size >= 4 ? Math.round(size / 4) : 0; this.timeoutMs = timeoutMs; this.createWorker = createWorker;
     for (let i = 0; i < size; i++) this.spawn(i);
     this.timeoutTimer = setInterval(() => this.reapTimeouts(), 5_000);
@@ -69,10 +80,12 @@ export class PinePool {
   get stats() {
     return {
       size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length, queuedLive: this.live.length,
-      busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredBackground: this.expiredBackground,
+      busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredBackground: this.expiredBackground, recycled: this.recycled, maxRuns: this.maxRuns,
     };
   }
   private expiredLive = 0;
+  /** Workers replaced after `WORKER_MAX_RUNS` jobs, for the status page. */
+  recycled = 0;
 
   private fail(p: Pending, error: string) {
     p.resolve({ id: p.job.id, ok: false, error, ms: p.startedAt === undefined ? 0 : Date.now() - p.startedAt,
@@ -91,13 +104,17 @@ export class PinePool {
   private spawn(index: number) {
     if (this.stopped) return;
     const w = this.createWorker(index);
-    const slot: Slot = { w, busy: null, index, ready: false, retiring: false };
+    const slot: Slot = { w, busy: null, index, ready: false, retiring: false, runs: 0 };
     this.workers[index] = slot;
     w.on('message', (msg: WorkerResult & { ready?: boolean }) => {
       if (this.stopped || slot.retiring || this.workers[index] !== slot) return;
       if (msg.ready) { slot.ready = true; this.pump(); return; }
       const p = slot.busy;
-      if (p && p.job.id === msg.id) { slot.busy = null; p.resolve(msg); this.pump(); }
+      if (p && p.job.id === msg.id) {
+        slot.busy = null; slot.runs++; p.resolve(msg);
+        if (slot.runs >= this.maxRuns) { this.recycled++; this.retire(slot, 'recycled'); }
+        this.pump();
+      }
     });
     w.on('error', (err: Error & { code?: string }) => {
       // name the job that exhausted its heap, so a runaway script identifies itself in the log

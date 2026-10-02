@@ -136,3 +136,19 @@ test('a background job whose deadline passes while queued is dropped unrun', asy
   assert.equal(workers.reduce((n, w) => n + w.jobs.length, 0), before, 'it never reached a worker');
   assert.equal(pool.stats.expiredBackground, 1);
 });
+
+test('a worker is recycled after maxRuns jobs: terminated once, replaced on exit, the next job runs on the replacement', async () => {
+  const workers: FakeWorker[] = [];
+  const pool = new PinePool(1, 100, () => { const w = new FakeWorker(); workers.push(w); return w; }, 3);
+  workers[0].ready();
+  for (let i = 0; i < 3; i++) { const p = pool.run({ ...job }); await Promise.resolve(); workers[0].finish(); await p; }
+  assert.equal(workers[0].terminated, 1, 'retired after the third job');
+  assert.equal(pool.stats.recycled, 1);
+  workers[0].emit('exit', 0);
+  assert.equal(workers.length, 2, 'the exit spawned a replacement');
+  workers[1].ready();
+  const p4 = pool.run({ ...job }); await Promise.resolve();
+  assert.equal(workers[1].jobs.length, 1, 'the fourth job went to the new worker');
+  workers[1].finish(); await p4;
+  await pool.stop();
+});
