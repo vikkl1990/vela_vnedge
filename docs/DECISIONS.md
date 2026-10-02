@@ -1909,3 +1909,27 @@ replaced, and the backlog times out. The pool now recycles a worker after `WORKE
 (24, `VNEDGE_WORKER_MAX_RUNS`), which bounds the leak at a few hundred MB; a fresh worker costs
 under a second. The status page shows the recycle count. The runtime stays at 0.10.0 for its
 fixes; the leak goes upstream.
+
+### 67a. The re-read scanners, before and after
+
+The eight scanners whose reading changed (six label allow-lists, Dynamic RSI inverted, FIA with a
+4h higher timeframe instead of its 5-minute default) re-run through the scanner test on the same
+12 markets and three timeframes (`data/reports/2026-10-02-scanner-test-reread.tsv`). Expectancy
+improved in 22 of 24 scanner × timeframe rows:
+
+| scanner | tf | before n / E[R] / cells both halves + | after |
+|---|---|---|---|
+| AI Predictive Flow | 1h | 4,038 / −0.012 / 2 | 413 / +0.128 / 4 |
+| Session Killzones | 4h | 4,986 / +0.034 / 3 | 1,310 / +0.137 / 9 |
+| Volume-Weighted S/R Zones | 1h | 1,210 / +0.028 / 2 | 335 / +0.168 / 7 |
+| Smart Money Breakout | 4h | 228 / +0.066 / 3 | 118 / +0.274 / 3 |
+| Kinetic Momentum Vectors | 1h | 426 / +0.193 / 4 | 302 / +0.282 / 3 |
+| Meridian Flow | 4h | 387 / +0.042 / 5 | 194 / +0.150 / 5 |
+| Dynamic RSI Regression Bands | 1h | 163 / −0.032 / 0 | 150 / +0.164 / 2 |
+| FIA Trend Momentum | 4h | 39 / +0.199 / 0 | 1,314 / +0.086 / 5 |
+
+FIA had been nearly silent because its "higher timeframe" input defaults to 5 minutes, below any
+chart we run it on; with 4h it fires, and pays on 4h in 5 of 12 cells. Dynamic RSI's rejections
+were being read as the move they describe; inverted, its 1h cells turn positive. The allow-lists
+were chosen on this same history, so the halves check is the only guard; the journal decides.
+All eight readings are live on the VM.
