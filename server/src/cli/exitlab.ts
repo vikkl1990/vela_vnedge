@@ -37,7 +37,7 @@ type Rule = { name: string; run: (path: Min[]) => number };
  * ratchets up with the peak (`lock(peak)` returns the R to protect, or −1), and an optional time
  * stop (after `staleMin` minutes, leave at market unless the peak reached `staleR`).
  */
-function engine(o: { tp?: number; lock?: (peak: number) => number; staleMin?: number; staleR?: number; partial?: { at: number; share: number } }) {
+function engine(o: { tp?: number; lock?: (peak: number) => number; staleMin?: number; staleR?: number; partial?: { at: number; share: number }; peakFromClose?: boolean }) {
   return (path: Min[]) => {
     let stop = -1, peak = 0, banked = 0, left = 1;
     for (let i = 0; i < path.length; i++) {
@@ -47,7 +47,8 @@ function engine(o: { tp?: number; lock?: (peak: number) => number; staleMin?: nu
       if (o.tp && m.hi >= o.tp) return banked + left * o.tp;
       // raise the stop last: like the live engine, a stop raised from this minute's high only
       // applies from the next minute, since the order of high and low inside a minute is unknown
-      peak = Math.max(peak, m.hi);
+      // the live engine takes the peak from the minute's high; `peakFromClose` tests a peak that has to hold to the close
+      peak = Math.max(peak, o.peakFromClose ? m.close : m.hi);
       if (o.lock) stop = Math.max(stop, o.lock(peak));
       if (o.staleMin && i + 1 >= o.staleMin && peak < (o.staleR ?? 0)) return banked + left * m.close;
     }
@@ -92,6 +93,9 @@ const statistical = (armAt: number, n: number, k: number) => pathRule({ armAt, s
 const rules: Rule[] = [
   { name: 'LIVE: keep 75% from 1R, TP 6R', run: engine({ tp: 6, lock: trail(1, 0.75) }) },
   { name: 'CURRENT: lock .25@.5, keep 60/70/80%', run: engine({ tp: 6, lock: current }) },
+  { name: 'CURRENT, peak from closes not wicks', run: engine({ tp: 6, lock: current, peakFromClose: true }) },
+  { name: 'chandelier 0.75R from 1R, peak from closes', run: engine({ tp: 6, lock: chandelier(1, 0.75), peakFromClose: true }) },
+  { name: 'keep 50% from 1R, peak from closes', run: engine({ tp: 6, lock: trail(1, 0.5), peakFromClose: true }) },
   { name: 'chandelier 0.75R from 1R', run: engine({ tp: 6, lock: chandelier(1, 0.75) }) },
   { name: 'chandelier 1R from 1.5R', run: engine({ tp: 6, lock: chandelier(1.5, 1) }) },
   { name: 'chandelier 1.5R from 2R', run: engine({ tp: 6, lock: chandelier(2, 1.5) }) },
