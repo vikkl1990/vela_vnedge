@@ -95,6 +95,14 @@ export function Analytics() {
               {s.name}
             </Link>{' '}
             <span className="muted small">{s.author}</span>
+            {!s.active && (
+              <>
+                {' '}
+                <span className="pill pill-muted small" title="Disabled now; its closed account trades still count in the totals">
+                  off
+                </span>
+              </>
+            )}
           </>
         ),
       },

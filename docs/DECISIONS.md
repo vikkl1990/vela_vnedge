@@ -1976,3 +1976,35 @@ Caveats stated plainly: the 1h cells were measured under the old reading of the 
 scanners (decision 67), and the label lists and the gate have not been measured together; the
 cells were selected on the same history the gate was chosen on. The journal decides; the go-live
 rule stays red until it does.
+
+## 71. One truth per number: the UI audit
+
+The operator asked whether the tabs tell different stories. Every page endpoint was pulled under
+one session and cross-checked: equity, net, fees and trade counts agree across Overview, Trades,
+Analytics, Learning and the equity curve (78 trades, −131.62 net, 177.50 fees). Three real
+conflicts and three unlabeled bases were found.
+
+**Fixed.**
+1. *Two drawdowns.* The ops monitor kept its equity peak in its own key and never learned about
+   the paper reset, so it alerted on a 25.3% drawdown from a peak the account no longer had while
+   the Risk page said 19.0%. The monitor now restarts its peak when `paper.resetAt` changes, the
+   same bookkeeping the risk manager uses.
+2. *Analytics scanner table did not sum to its own total.* The table listed enabled scanners
+   only; the total counted every closed trade. Disabled scanners carried −151.63 of the account's
+   losses, so the table showed +20.01 against a −131.62 total. Every scanner with account trades
+   now has a row, flagged "off" when disabled.
+3. *"Today" meant two things.* The header and Overview count trades closed since 00:00 UTC; the
+   Risk page's day figure is equity now against equity at 00:00 UTC, so it includes open
+   positions and can differ by the unrealised amount. Both stay (one is the journal, one is the
+   kill switch) and both are labeled.
+
+**Labeled, not changed.** Overview "Max drawdown" is the deepest trough of the closed-trade path;
+the Risk page's drawdown is right now from the peak including open positions. Overview "Realized"
+includes the closed legs and fees of open positions, which is why it sits a few cents off the
+Trades total. The Learn page's "account" sample count is all time, trades before resets included,
+so it exceeds the Trades page's count since the reset.
+
+**Not a conflict.** The 18 global symbols are the feed subscription list; the account trades the
+nine markets in the live pairs; the market gate tracks 29. Different questions, not different
+answers. The go-live rule's realised-risk check reads 2.98% because it is the median over the
+journal, which is still mostly quality-sized trades; it will move as risk-sized trades close.

@@ -52,12 +52,12 @@ export function Overview() {
         <div className="kpi-grid">
           <KpiTile label="Equity (USD)" value={fmtMoney(s.equity, 2)} sub={<span className="muted">initial {fmtMoney(s.initialEquity, 0)}</span>} />
           <KpiTile label="Net PnL (USD)" value={fmtPnl(net)} tone={pnlClass(net) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">{s.initialEquity ? `${fmtPct((net / s.initialEquity) * 100, 1, true)} of purse` : ''} · after fees</span>} />
-          <KpiTile label="Realized PnL (USD)" value={fmtPnl(s.realizedPnl)} tone={pnlClass(s.realizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">fees {fmtMoney(s.fees)}</span>} />
-          <KpiTile label="Unrealized PnL (USD)" value={fmtPnl(s.unrealizedPnl)} tone={pnlClass(s.unrealizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className={pnlClass(s.todayPnl)}>today {fmtPnl(s.todayPnl)}</span>} />
+          <KpiTile label="Realized PnL (USD)" value={fmtPnl(s.realizedPnl)} tone={pnlClass(s.realizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">fees {fmtMoney(s.fees)} · closed trades plus the closed legs of open positions</span>} />
+          <KpiTile label="Unrealized PnL (USD)" value={fmtPnl(s.unrealizedPnl)} tone={pnlClass(s.unrealizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className={pnlClass(s.todayPnl)} title="Net of trades closed since 00:00 UTC. The Risk page's day figure is equity now versus equity at 00:00 UTC, so it includes open positions.">today {fmtPnl(s.todayPnl)} (closed, UTC day)</span>} />
           <KpiTile label="Win rate" value={fmtPct(s.winRatePct)} sub={<span className="muted">{s.wins}W / {s.losses}L</span>} />
           <KpiTile label="Profit factor" value={fmtProfitFactor(s.profitFactor)} tone={s.profitFactor >= 1 ? 'gain' : 'loss'} />
           <KpiTile label="Expectancy" value={fmtR(expectancy)} tone={expectancy == null ? 'neutral' : expectancy >= 0 ? 'gain' : 'loss'} hint="Average R per trade, weighted by trade count" />
-          <KpiTile label="Max drawdown" value={`−${fmtPct(Math.abs(s.maxDrawdownPct))}`} tone="loss" />
+          <KpiTile label="Max drawdown" value={`−${fmtPct(Math.abs(s.maxDrawdownPct))}`} tone="loss" hint="Deepest peak-to-trough of the closed-trade equity path. The Risk page shows the drawdown right now, from the peak of equity including open positions." />
           <KpiTile label="Trades" value={fmtInt(s.trades)} sub={<span className="muted">{s.openPositions} open</span>} />
         </div>
       )}

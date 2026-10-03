@@ -484,8 +484,9 @@ export class App {
       openPositions: open.filter(p => p.symbol === symbol).length,
       unrealized: open.filter(p => p.symbol === symbol).reduce((a, p) => a + (this.paper.mark(p.symbol) ?? p.entryPrice) * 0 + ((this.paper.mark(p.symbol) ?? p.entryPrice) - p.entryPrice) * (p.side === 'long' ? 1 : -1) * p.contractValue * p.qtyOpen, 0),
     })).sort((a, b) => (b.live.pnl + b.backtest.pnl) - (a.live.pnl + a.backtest.pnl));
-    const scanners = [...active].map(id => ({
-      id, name: names[id]?.name ?? id, author: names[id]?.author ?? '', symbols: this.scanners.symbolsFor(id).length,
+    // every scanner that traded the account gets a row (disabled ones too) so the table sums to the total
+    const scanners = [...new Set([...active, ...Object.keys(lvSc)])].map(id => ({
+      id, name: names[id]?.name ?? id, author: names[id]?.author ?? '', symbols: this.scanners.symbolsFor(id).length, active: active.has(id),
       backtest: fin(btSc[id] ?? mk()), live: fin(lvSc[id] ?? mk()), openPositions: open.filter(p => p.scannerId === id).length,
     })).sort((a, b) => (b.live.pnl + b.backtest.pnl) - (a.live.pnl + a.backtest.pnl));
     const matrix = Object.entries(btCell).map(([k, v]) => { const [id, symbol] = k.split('|'); const lv = lvCell[k]; return { scannerId: id, scannerName: names[id]?.name ?? id, symbol, backtest: fin(v), live: lv ? fin(lv) : null }; });
