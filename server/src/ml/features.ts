@@ -9,6 +9,7 @@ export const FEATURE_NAMES = [
   'side_long', 'score', 'has_score', 'hour', 'dow', 'atr_pct', 'sl_atr', 'tp1_rr', 'ret5', 'ret20',
   'trend50', 'trend200', 'vol_ratio', 'range_pos', 'lvl_script', 'src_alert', 'src_shape', 'src_derived', 'src_cond',
   'burst3', 'bar_range_atr', 'er20', 'chop14',
+  'adx14', 'day_range_used',
 ] as const;
 export type FeatureName = (typeof FEATURE_NAMES)[number];
 export type Features = Record<FeatureName, number>;
@@ -20,6 +21,7 @@ export const FEATURE_LABELS: Record<FeatureName, string> = {
   trend50: 'price vs EMA50 (ATR)', trend200: 'price vs EMA200 (ATR)', vol_ratio: 'volume / 20-bar avg', range_pos: 'position in 20-bar range',
   lvl_script: 'levels from script', src_alert: 'signal via alert()', src_shape: 'signal via plotshape', src_derived: 'signal via rule', src_cond: 'signal via alertcondition',
   burst3: 'move over the 3 bars before entry, with the trade (ATR)', bar_range_atr: 'signal bar range (ATR)', er20: 'Kaufman efficiency ratio, 20 bars (1 = straight line)', chop14: 'choppiness index, 14 bars (0–100)',
+  adx14: 'ADX(14) trend strength (0–100)', day_range_used: "today's range so far over the average of the last UTC days' ranges",
 };
 
 function ema(bars: Bar[], i: number, len: number): number | undefined {
@@ -28,6 +30,54 @@ function ema(bars: Bar[], i: number, len: number): number | undefined {
   let e = bars[i - len + 1].close;
   for (let j = i - len + 2; j <= i; j++) e = bars[j].close * k + e * (1 - k);
   return e;
+}
+
+/** Wilder's ADX over `len` bars at bar i, seeded the way TradingView does; undefined until there is a double warm-up. */
+export function adx(bars: Bar[], i: number, len = 14): number | undefined {
+  const start = Math.max(1, i - len * 8);
+  if (i - start < len * 2) return undefined;
+  const a = 1 / len;
+  let trS = 0, pS = 0, mS = 0, k = 0, dxS = 0, dxN = 0, out: number | undefined;
+  for (let j = start; j <= i; j++) {
+    const b = bars[j], p = bars[j - 1];
+    const tr = Math.max(b.high - b.low, Math.abs(b.high - p.close), Math.abs(b.low - p.close));
+    const up = b.high - p.high, dn = p.low - b.low;
+    const pdm = up > dn && up > 0 ? up : 0, mdm = dn > up && dn > 0 ? dn : 0;
+    k++;
+    if (k <= len) { trS += tr; pS += pdm; mS += mdm; if (k < len) continue; }
+    else { trS += tr - trS * a; pS += pdm - pS * a; mS += mdm - mS * a; }
+    const pdi = trS > 0 ? 100 * pS / trS : 0, mdi = trS > 0 ? 100 * mS / trS : 0;
+    const dx = pdi + mdi > 0 ? 100 * Math.abs(pdi - mdi) / (pdi + mdi) : 0;
+    if (out === undefined) { dxS += dx; dxN++; if (dxN === len) out = dxS / len; }
+    else out += (dx - out) * a;
+  }
+  return out;
+}
+
+/**
+ * How much of a normal day's range today has already used at bar i: the UTC day's high–low so far
+ * over the mean range of the last complete UTC days (up to 20, at least 5). Built from the closed
+ * bars themselves, so it never sees the day's later extremes (the ADR script's lookahead leak).
+ */
+export function dayRangeUsed(bars: Bar[], i: number, days = 20): number | undefined {
+  if (!bars[i]) return undefined;
+  const dayOf = (t: number) => Math.floor(t / 86_400_000);
+  const today = dayOf(bars[i].time);
+  const ranges: number[] = [];
+  let cur = today, hi = -Infinity, lo = Infinity, todayRange = 0;
+  for (let j = i; j >= 0; j--) {
+    const d = dayOf(bars[j].time);
+    if (d !== cur) {
+      if (cur === today) todayRange = hi - lo; else ranges.push(hi - lo);
+      if (ranges.length >= days) break;
+      cur = d; hi = -Infinity; lo = Infinity;
+    }
+    hi = Math.max(hi, bars[j].high); lo = Math.min(lo, bars[j].low);
+  }
+  if (cur === today) return undefined; // the history does not even reach yesterday
+  if (ranges.length < 5) return undefined;
+  const adr = ranges.reduce((s, r) => s + r, 0) / ranges.length;
+  return adr > 0 ? todayRange / adr : undefined;
 }
 
 export interface FeatureInputs {
@@ -83,6 +133,7 @@ export function computeFeatures(inp: FeatureInputs): Features {
     src_derived: inp.ev.source === 'derived' ? 1 : 0,
     src_cond: inp.ev.source === 'alertcondition' ? 1 : 0,
     burst3, bar_range_atr: barRangeAtr, er20, chop14,
+    adx14: adx(bars, i) ?? 0, day_range_used: dayRangeUsed(bars, i) ?? 0,
   };
 }
 

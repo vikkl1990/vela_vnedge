@@ -59,6 +59,8 @@ export class MlService {
     const saved = db.kvGet<{ global: LogRegModel | null; models: Record<string, LogRegModel>; snapshot: MlSnapshot }>('ml.model');
     if (saved) { this.globalModel = saved.global; for (const [k, v] of Object.entries(saved.models ?? {})) this.models.set(k, v); this.snapshot = saved.snapshot; log.info(`loaded ML models: global ${saved.global ? 'yes' : 'no'}, ${this.models.size} scanner models`); }
     this.liveFeatures = db.kvGet<Array<{ at: number; f: Features }>>('ml.liveFeatures') ?? [];
+    // a model trained before the feature set grew predicts without the new columns until it is retrained
+    if (this.globalModel && this.globalModel.weights.length !== FEATURE_NAMES.length) { log.info(`feature set moved (${this.globalModel.weights.length} → ${FEATURE_NAMES.length}); retraining`); this.scheduleTrain(); }
   }
 
   features(inp: FeatureInputs): Features { return computeFeatures(inp); }

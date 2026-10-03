@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { trainLogReg, predict, deriveRules, type Sample } from './model.ts';
-import { computeFeatures, FEATURE_NAMES } from './features.ts';
+import { computeFeatures, FEATURE_NAMES, adx, dayRangeUsed } from './features.ts';
 
 function mk(i: number, win: number, score: number, hour: number): Sample {
   const f = computeFeatures({ bars: [{ time: Date.UTC(2026, 0, 1, hour), open: 100, high: 101, low: 99, close: 100, volume: 10 }], i: 0, ev: { side: 'long', score, source: 'alert' }, entry: 100, sl: 99, tp1: 102, atr: 1, levelsSource: 'script' });
@@ -34,4 +34,17 @@ test('rules survive samples recorded before a feature existed', () => {
   const { baseline, rules } = deriveRules([...old, ...fresh]);
   assert.equal(baseline.n, 80);
   assert.ok(Array.isArray(rules));
+});
+
+test('ADX and day-range-used are built from closed bars only', () => {
+  // 30 UTC days of hourly bars: a steady uptrend, 1 point an hour, range 2 a bar
+  const bars = Array.from({ length: 30 * 24 }, (_, i) => ({ time: Date.UTC(2026, 0, 1) + i * 3_600_000, open: 100 + i, high: 101 + i, low: 99 + i, close: 100 + i, volume: 1 }));
+  const a = adx(bars, bars.length - 1);
+  assert.ok(a !== undefined && a > 50, `a steady trend reads as strong (${a})`);
+  assert.equal(adx(bars, 10), undefined, 'no reading before the warm-up');
+  // at 06:00 UTC on the last day six bars have printed: range so far 1+6 = 7 points vs a full day's 25
+  const i = 29 * 24 + 5;
+  const used = dayRangeUsed(bars, i);
+  assert.ok(used !== undefined && Math.abs(used - 7 / 25) < 1e-9, `used ${used}`);
+  assert.equal(dayRangeUsed(bars, 12), undefined, 'no reading without complete earlier days');
 });

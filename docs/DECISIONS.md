@@ -2016,3 +2016,24 @@ trades, −131.62 net, 177.50 fees). Six numbers had more than one source. Each 
 **Not a conflict.** The 18 global symbols are the feed subscription list; the account trades the
 nine markets in the live pairs; the market gate tracks 29. Different questions, not different
 answers.
+
+## 72. ADX and daily-range progress at entry; three LuxAlgo scanners to the test
+
+An outside review proposed six LuxAlgo components, SafeZone first. Checked against the record:
+SafeZone was already replayed in the exit lab (decision 67, three settings, nothing beat the second
+half), the regime question is answerable from the journal, and three of the proposed entry systems
+had never been through the scanner test. The reviewer accepted the revised order. Two of their
+qualifications stand and are recorded here: the lab's SafeZone is an approximation of Elder's rule,
+not source parity; and the worker does convert `strategy()` ledgers into events, so PineTS strategy
+semantics matter for strategy scripts, though none of the ten live scanners is one.
+
+**Two entry features join the journal.** `adx14` (Wilder's ADX, TradingView seeding) and
+`day_range_used`, today's UTC-day range so far over the mean range of the last complete UTC days
+(up to 20, at least 5). The second is built from the closed bars alone, which is the point: the
+Average Daily Range script requests the day's high and low with lookahead on, so its historical
+range-progress value knows the day's later extremes. A model trained before a feature existed now
+predicts without the missing column and is retrained on load.
+
+**Scanner test queued** for Value Area Reversion Signals, MSS Sweeps and Market Structure Volume
+Distribution on the nine live markets plus BTC, SOL and XRP at 15m and 1h. Verdicts go to
+`data/reports/2026-10-03-scanner-test-step2.{tsv,md}` when the run finishes.

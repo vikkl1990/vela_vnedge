@@ -111,7 +111,7 @@ export function trainLogReg(samples: Sample[], opts: { epochs?: number; lr?: num
 export function predict(model: LogRegModel, f: Features, calibrated = true): number {
   const x = featureVector(f);
   let z = model.bias;
-  for (let j = 0; j < x.length; j++) z += model.weights[j] * ((x[j] - model.mean[j]) / model.std[j]);
+  for (let j = 0; j < x.length; j++) { const w = model.weights[j]; if (w === undefined) continue; z += w * ((x[j] - model.mean[j]) / (model.std[j] || 1)); }
   if (calibrated && model.calibration) return sigmoid(model.calibration.a * z + model.calibration.b);
   return sigmoid(z);
 }
