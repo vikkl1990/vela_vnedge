@@ -43,7 +43,7 @@ export interface MonitorState {
   evaluations: number;
 }
 
-export const THRESHOLDS = { feedDownMs: 60_000, crashLoopRespawns: 3, crashLoopWindowMs: 300_000, queueDeepMs: 300_000, staleTfMultiple: 2 } as const;
+export const THRESHOLDS = { feedDownMs: 60_000, crashLoopRespawns: 3, crashLoopWindowMs: 300_000, queueDeepMs: 300_000, staleTfMultiple: 2, staleMinuteMultiple: 10 } as const;
 
 export function diskFreeBytes(dir: string): number | null {
   try { const st = fs.statfsSync(dir); return Number(st.bavail) * Number(st.bsize); } catch { return null; }
@@ -126,7 +126,9 @@ export class Monitor {
       if (!s.loaded || !(s.tf in TF_SECONDS) || s.dormant) continue;
       const tfMs = TF_SECONDS[s.tf] * 1000;
       const ref = Math.max(s.lastClosedAt ?? 0, s.loadedAt ?? 0, s.lastBarTime !== null ? s.lastBarTime + tfMs : 0);
-      if (ref > 0 && now - ref > THRESHOLDS.staleTfMultiple * tfMs) stale.push(`${s.symbol} ${s.tf}`);
+      // a thin market prints no 1m bar for minutes at a time; that is quiet, not stale (the alert flapped 45× an hour)
+      const mult = s.tf === '1m' ? THRESHOLDS.staleMinuteMultiple : THRESHOLDS.staleTfMultiple;
+      if (ref > 0 && now - ref > mult * tfMs) stale.push(`${s.symbol} ${s.tf}`);
     }
     if (stale.length && feedUp) await a.raise('candles.stale', `🟠 No bar close for 2× the timeframe on ${stale.length} series: ${stale.slice(0, 8).join(', ')}${stale.length > 8 ? '…' : ''}`, now);
     else if (!stale.length) await a.clear('candles.stale', undefined, now);

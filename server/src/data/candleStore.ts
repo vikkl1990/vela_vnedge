@@ -8,6 +8,9 @@ const log = logger.scoped('candles');
 
 export interface Bar { time: number; open: number; high: number; low: number; close: number; volume: number }
 
+/** How long after a period ends its bar is announced closed when no later trade has announced it. */
+const CLOSE_GRACE_MS = 2500;
+
 interface Series {
   symbol: string;
   tf: string;
@@ -100,6 +103,8 @@ export class CandleStore extends EventEmitter {
   private products = new Map<string, { tickSize: string; contractValue: string }>();
   private delisted = new Set<string>();
   private maintenance: ReturnType<typeof setInterval> | null = null;
+  /** Announces a bar closed by the clock, not by the next trade (decision 74). */
+  private closeTicker: ReturnType<typeof setInterval> | null = null;
   private lastDriftWarnAt = 0;
   driftWarnMs = 2000;
 
@@ -292,6 +297,8 @@ export class CandleStore extends EventEmitter {
   startMaintenance(opts: { intervalMs?: number; driftWarnMs?: number } = {}) {
     this.stopMaintenance();
     if (opts.driftWarnMs) this.driftWarnMs = opts.driftWarnMs;
+    this.closeTicker = setInterval(() => this.announceDueCloses(), 1000);
+    this.closeTicker.unref();
     let ticks = 0;
     this.maintenance = setInterval(() => {
       ticks++;
@@ -313,7 +320,31 @@ export class CandleStore extends EventEmitter {
     this.maintenance.unref();
   }
 
-  stopMaintenance() { if (this.maintenance) { clearInterval(this.maintenance); this.maintenance = null; } }
+  stopMaintenance() {
+    if (this.maintenance) { clearInterval(this.maintenance); this.maintenance = null; }
+    if (this.closeTicker) { clearInterval(this.closeTicker); this.closeTicker = null; }
+  }
+
+  /**
+   * A bar is closed when its period has ended, not when the next trade arrives. The websocket only
+   * reports a close through the first candle of the following period, which on a thin market can be
+   * twenty minutes or more after the hour (PIEVERSE 1h: up to 53 minutes measured, decision 74), and a
+   * scanner that runs that late reads a price that has already moved. Announce every bar whose period
+   * ended `CLOSE_GRACE_MS` ago; the grace lets the period's last prints land. Exactly-once is kept by
+   * `lastClosedEmitted`, so the websocket path and this one never announce the same bar twice.
+   */
+  announceDueCloses(now = Date.now()): number {
+    let n = 0;
+    for (const s of this.series.values()) {
+      if (!s.loaded || s.backfilling) continue;
+      const last = s.bars.at(-1);
+      if (!last || last.time <= s.lastClosedEmitted) continue;
+      if (now - (last.time + TF_SECONDS[s.tf] * 1000) < CLOSE_GRACE_MS) continue;
+      this.emitClosed(s, last, now);
+      n++;
+    }
+    return n;
+  }
 
   private report(ev: IntegrityEvent) {
     this.status.lastEvent = ev;
@@ -330,11 +361,11 @@ export class CandleStore extends EventEmitter {
     }
   }
 
-  private emitClosed(s: Series, bar: Bar) {
+  private emitClosed(s: Series, bar: Bar, now = Date.now()) {
     if (bar.time <= s.lastClosedEmitted) return;
-    s.lastClosedEmitted = bar.time; s.lastClosedAt = Date.now();
+    s.lastClosedEmitted = bar.time; s.lastClosedAt = now;
     // announced more than one timeframe after the period ended → we are catching up, not live
-    const historical = Date.now() - (bar.time + TF_SECONDS[s.tf] * 1000) > TF_SECONDS[s.tf] * 1000;
+    const historical = now - (bar.time + TF_SECONDS[s.tf] * 1000) > TF_SECONDS[s.tf] * 1000;
     this.emit('closed', { symbol: s.symbol, tf: s.tf, bar: { ...bar }, historical });
   }
 

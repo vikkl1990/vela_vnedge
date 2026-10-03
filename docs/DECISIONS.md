@@ -2096,3 +2096,35 @@ The reviewer's recovery order is accepted as written: attributable status, role 
 repairs with tests, prefix-honesty replay, measurement by role, shadow only on evidence. Steps 1
 and 3 are this decision; step 4 (adding future candles must not change earlier signals) is the next
 test to write; step 6 remains the family-lab holdout fix.
+
+## 74. Bar closes are announced by the clock: the entry lag on thin markets
+
+The operator asked whether entries and exits lag. Measured on the VM over eight hours of logs:
+
+| step | liquid market (ETH) | thin market (PIEVERSE 1h) |
+|---|---|---|
+| bar close → scanner run | 0–5 s | 12 s to 53 min, median ~20 min |
+| scanner run → signal | ~1 s (script 0.6–0.9 s) | same |
+| signal → paper fill | 0 s, at the current mark | same |
+| exit check | every websocket candle update, intrabar | on each trade |
+
+The one real lag was the first row. The candle store only learned that a bar had closed when the
+websocket delivered the first candle of the *next* period, which on a thin market is the next
+trade; the scanner then read the bar's close long after the price had moved on. FIL reached 5
+minutes, LINK 4, SAGA 1.4, PIEVERSE regularly 15–30 minutes. Two of the 26 live cells are on
+PIEVERSE 1h.
+
+**Fix.** The candle store announces a bar closed when its period has ended plus a 2.5-second grace
+(`announceDueCloses`, ticked every second), exactly once, whichever of the clock or the websocket
+comes first. Scanners on every market now run within about three seconds of the close.
+
+**Not a lag, stated so the reading is right.** The paper account fills an entry at the current
+mark the instant the signal exists; the few seconds a real market order would take are not
+modelled (decisions 42 and 55 chose candle fills over tape fills and the reason stands). Exits are
+evaluated on every websocket candle update of the forming 1-minute bar, so a stop is recognised
+within websocket latency, not at the minute's end.
+
+**Also fixed.** The "no bar close" alert flapped 45 times an hour on 1-minute series of thin
+universe markets, which print nothing for minutes at a time. A 1-minute series is now stale after
+ten minutes, not two. Had Telegram been configured, that storm would have been the operator's
+whole inbox.
