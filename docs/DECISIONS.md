@@ -2034,6 +2034,24 @@ Average Daily Range script requests the day's high and low with lookahead on, so
 range-progress value knows the day's later extremes. A model trained before a feature existed now
 predicts without the missing column and is retrained on load.
 
-**Scanner test queued** for Value Area Reversion Signals, MSS Sweeps and Market Structure Volume
-Distribution on the nine live markets plus BTC, SOL and XRP at 15m and 1h. Verdicts go to
-`data/reports/2026-10-03-scanner-test-step2.{tsv,md}` when the run finishes.
+**Scanner test run** for Value Area Reversion Signals, MSS Sweeps and Market Structure Volume
+Distribution on the nine live markets plus BTC, SOL and XRP at 15m and 1h
+(`data/reports/2026-10-03-scanner-test-step2*.{tsv,md}`). None earns a place:
+
+- *Market Structure Volume Distribution* has no signal channel at all (no alert, alert condition
+  or shape; boxes and lines only). The reviewer's "Structure Volume Profile Setups" does not exist
+  in the library. A scanner from it would need a rule of our own.
+- *Value Area Reversion Signals* fires only its previous-day reclaims in practice (the current-day
+  conditions never produced an entry). 93 trades over 22 cells: −0.09R, gross −0.04R, inverted
+  −0.01R, one direction no better than the other. Too rare and no edge either way.
+- *MSS Sweeps* was first measured on its ordinary Break-of-Structure alerts, which swamp the
+  sweeps (2,110 trades, −0.06R, the bearish BOS channel −0.13R). The sweep channel itself is rare,
+  about three a month per market on 1h: 95 trades over 23 cells, −0.04R, gross +0.01R, inverted
+  +0.03R, first half +3.7R and second −7.4R. One cell stands out (AKE 15m, 13 trades, +0.60R) and
+  one BTC trade carries +4.3R. Not evidence. Its spec now reads the sweep channel only
+  (`labels: MSS Sweeps:, Higher Low MSS Sweep, Lower High MSS Sweep`), so any later look measures
+  the right thing.
+
+Found on the way: when a script fires `alert()` and an `alertcondition()` on the same bar, the
+extractor keeps the alert() and drops the condition. Restricting `sources` to alertcondition for
+such a script therefore yields nothing; the label list must name the alert() message head.
