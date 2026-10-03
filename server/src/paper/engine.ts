@@ -31,6 +31,8 @@ export interface RiskGate {
 
 /** A pending entry is abandoned this long after its latency window closes. */
 export const PENDING_EXPIRY_MS = 60_000;
+/** Candles mode: a due entry with no price update since the window closed fills at the mark after this long (the order is on the book; a quiet tape is not a reason not to fill). */
+export const QUIET_FILL_MS = 1000;
 
 /** Tape-mode entry waiting for its first print after signal time + latency. */
 export interface PendingEntry {
@@ -304,14 +306,15 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price });
       if (x) return { action: 'rejected', reason: `risk ${x}`, closed };
     }
-    if (this.tapeMode) {
-      // latency model: the order reaches the book latencyMs after the signal and fills at the first print after that
+    if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
+      // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
+      // first price after that — a tape print, or in candles mode the next 1m candle update, or the mark once the feed is quiet
       const id = this.nextId();
       const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult };
       this.pending.set(id, pe);
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, price, pe.at, pe.signalId, JSON.stringify({ pending: { dueAt: pe.dueAt, levels } }), id);
-      log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first print after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
-      return { action: 'pending', reason: 'awaiting tape fill', pendingId: id, closed };
+      log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
+      return { action: 'pending', reason: this.tapeMode ? 'awaiting tape fill' : 'awaiting fill after the latency window', pendingId: id, closed };
     }
     const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg);
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
@@ -339,7 +342,8 @@ export class PaperEngine extends EventEmitter {
   }
 
   /** Fill a pending entry at `price` (first print after the latency window, or the 1m close when the tape is silent). */
-  private fillPending(pe: PendingEntry, price: number, at: number, source: 'tape' | 'candle', receivedAt = Date.now()): Position | null {
+  private fillPending(pe: PendingEntry, priceIn: number, at: number, source: 'tape' | 'candle', receivedAt = Date.now()): Position | null {
+    let price = priceIn;
     this.pending.delete(pe.id);
     const cfg = this.paper;
     const cancel = (reason: string) => {
@@ -352,6 +356,15 @@ export class PaperEngine extends EventEmitter {
     // expiry belongs in the fill path, not only in housekeeping: a print can arrive past the
     // deadline before the next housekeeping tick and would otherwise still be filled
     if (receivedAt > pe.dueAt + PENDING_EXPIRY_MS) return cancel(`no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
+    // a candle-sourced fill is a market order against the book at that moment: it pays the spread through the
+    // live quote when one is fresh, otherwise the slippage assumption (the same pricing the immediate fill used)
+    let quoted = false;
+    if (source === 'candle') {
+      const q = this.entryPrice(pe.symbol, pe.side === 'long' ? 'buy' : 'sell', price, cfg, receivedAt);
+      if ('reject' in q) return cancel(`unpriceable: ${q.reject}`);
+      this.fillContext = { ref: price, source: q.quoted ? 'quote' : 'slippage' };
+      price = q.price; quoted = q.quoted;
+    }
     // the signal's levels are absolute; the fill price must still sit on the right side of them
     const levels = resolveLevels({ side: pe.side, price, sl: pe.levels.sl, tp: pe.levels.tp }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
@@ -372,7 +385,7 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price });
       if (x) return cancel(`risk ${x}`);
     }
-    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg);
+    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg);
     if (pe.signalId) this.db.updateSignalAction(pe.signalId, 'opened', pos.id);
     return pos;
   }
@@ -390,7 +403,11 @@ export class PaperEngine extends EventEmitter {
 
   /** Expire pending entries that neither the tape nor a candle could fill within a minute past their due time. */
   housekeeping(now = Date.now()): void {
-    for (const pe of [...this.pending.values()]) if (now > pe.dueAt + PENDING_EXPIRY_MS) this.cancelPending(pe.id, `no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
+    for (const pe of [...this.pending.values()]) {
+      if (now > pe.dueAt + PENDING_EXPIRY_MS) { this.cancelPending(pe.id, `no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`); continue; }
+      // candles mode: the window has closed and no candle update has come for the symbol — fill at the mark
+      if (!this.tapeMode && now >= pe.dueAt + QUIET_FILL_MS) { const m = this.marks.get(pe.symbol); if (m && m > 0) this.fillPending(pe, m, now, 'candle', now); }
+    }
   }
 
   // ---- phase 2: tape, mark price, funding ----
@@ -467,7 +484,6 @@ export class PaperEngine extends EventEmitter {
   onBar(symbol: string, bar: PriceBar, observedAt = Date.now(), opts: { historical?: boolean } = {}): void {
     if (bar.time < (this.priceBars.get(symbol)?.time ?? -Infinity)) return;
     this.priceBars.set(symbol, { ...bar });
-    this.housekeeping(observedAt);
     // A bar a resync pulled from REST describes a period that has already ended. Its prices are
     // real, so open positions may still exit on them, but they are stamped at the bar's own close
     // instead of now, they never fill a new entry, and they never become the live mark.
@@ -479,9 +495,11 @@ export class PaperEngine extends EventEmitter {
       return;
     }
     if (!historical) this.marks.set(symbol, bar.close);
-    if (this.tapeMode && !historical) {
+    if (!historical) {
+      // tape mode: the candle is the fallback while the tape is silent; candles mode: the candle update is the price
       for (const pe of [...this.pending.values()]) if (pe.symbol === symbol && observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle', observedAt);
     }
+    this.housekeeping(observedAt);
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;

@@ -2120,7 +2120,7 @@ comes first. Scanners on every market now run within about three seconds of the 
 
 **Not a lag, stated so the reading is right.** The paper account fills an entry at the current
 mark the instant the signal exists; the few seconds a real market order would take are not
-modelled (decisions 42 and 55 chose candle fills over tape fills and the reason stands). Exits are
+modelled (decisions 3, 13 and 40 chose candle fills over tape fills; decision 75 closes that gap). Exits are
 evaluated on every websocket candle update of the forming 1-minute bar, so a stop is recognised
 within websocket latency, not at the minute's end.
 
@@ -2128,3 +2128,26 @@ within websocket latency, not at the minute's end.
 universe markets, which print nothing for minutes at a time. A 1-minute series is now stale after
 ten minutes, not two. Had Telegram been configured, that storm would have been the operator's
 whole inbox.
+
+## 75. The latency window applies in candles mode too: no more fills at the signal instant
+
+Decision 74 found the entry lag; this closes the part it had declared "not modelled". In candles
+mode the paper account opened a position the instant a signal passed admission, at that moment's
+mark. A real market order reaches the book `latencyMs` later and fills against whatever price is
+there. The configured 1,500 ms never applied, because the pending-entry branch was tape-mode only
+(an outside flow review of the deployed source said the same).
+
+**Now, in every fill mode:** an admitted entry becomes *pending* and fills at the first price after
+the window. In candles mode that price is the next 1-minute candle update for the symbol; when no
+update arrives within a second of the window closing, the mark (the order is on the book; a quiet
+tape is not a reason not to fill). The fill pays the spread the same way the immediate fill did:
+through the live quote when one is fresh, otherwise the slippage assumption. Admission is re-run
+at fill time, as in tape mode. A pending entry still expires after 60 s without any price.
+
+The legacy test that asserted the immediate fill is replaced by two that assert the window. Tests
+about other things pin `latencyMs: 0` and say so. Housekeeping now runs after a bar's own fills, so
+the quiet-feed fill can never pre-empt the symbol's fresh price.
+
+**What changes in the journal.** Entry prices will sit a tick or two worse on average than before
+and signals will show `pending` for a second or two before `opened`. Nothing is re-written: trades
+before this decision carry the old, slightly optimistic fill.

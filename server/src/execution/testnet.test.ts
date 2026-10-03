@@ -64,7 +64,7 @@ async function setup(t: { after: (fn: () => void) => void }, exec: Partial<AppCo
   const db = dbIn ?? new Db(':memory:');
   if (!dbIn) t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', tpSplit: [0.4, 0.3, 0.3] });
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', latencyMs: 0, tpSplit: [0.4, 0.3, 0.3] });
   Object.assign(cfg.execution, { mode: 'testnet', bracket: true, reconcileSec: 0, sweepSec: 0, confirmSec: 2 }, exec);
   const paper = new PaperEngine(db, () => cfg);
   const fake = fakeIn ?? new FakeTransport();
@@ -288,7 +288,7 @@ test('restart: a target the exchange filled while the process was down is booked
 test('a paper position with no exchange history is reported as unmirrored and left alone', async t => {
   const db = new Db(':memory:'); t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, liquidation: false, fillSource: 'candles' });
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, liquidation: false, fillSource: 'candles', latencyMs: 0 });
   Object.assign(cfg.execution, { mode: 'testnet', bracket: true, reconcileSec: 0, sweepSec: 0 });
   const paper = new PaperEngine(db, () => cfg);
   const p = paper.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' }).position!;
@@ -344,7 +344,7 @@ test('close-all cancels every order and sends reduce-only market orders against 
 test('dry-run: the entry is confirmed at no known price (paper price stands), the bracket is placed, nothing is sent', async t => {
   const db = new Db(':memory:'); t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, liquidation: false, fillSource: 'candles' });
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, liquidation: false, fillSource: 'candles', latencyMs: 0 });
   Object.assign(cfg.execution, { mode: 'dry-run', reconcileSec: 0, sweepSec: 0 });
   const paper = new PaperEngine(db, () => cfg);
   const reader = new RestTransport('testnet', {}, new DeltaRest({ baseUrl: 'http://127.0.0.1:9' }));

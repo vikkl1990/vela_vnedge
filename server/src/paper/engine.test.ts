@@ -8,7 +8,7 @@ function setup(t: { after: (fn: () => void) => void }) {
   const db = new Db(':memory:');
   t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false });
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, latencyMs: 0 });
   const engine = new PaperEngine(db, () => cfg);
   const open = (side: 'long' | 'short' = 'long') => engine.onEntry({ kind: 'entry', side, price: 100, sl: side === 'long' ? 95 : 105, tp: side === 'long' ? [105, 110, 115] : [95, 90, 85], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' }).position!;
   return { db, cfg, engine, open };
@@ -174,7 +174,7 @@ test('audit 2b: a quoted entry pays the spread once, not the spread plus assumed
   const db = new Db(':memory:');
   t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper, { feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', maxStopLossPct: 0, maxSignalAgeSec: 0, slippageBps: 100, depthUsdPerBp: 0, useSpread: true, quoteMaxAgeMs: 10_000, requireQuote: false });
+  Object.assign(cfg.paper, { feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', latencyMs: 0, maxStopLossPct: 0, maxSignalAgeSec: 0, slippageBps: 100, depthUsdPerBp: 0, useSpread: true, quoteMaxAgeMs: 10_000, requireQuote: false });
   const engine = new PaperEngine(db, () => cfg);
   const enter = (id: string) => engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105, 110, 115], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 },
     { scannerId: id, scannerName: id, symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at: 1_000, signalId: null, exitMode: 'both' }).position!;
@@ -188,7 +188,7 @@ test('the trailing peak survives a restart, so the trail keeps advancing', t => 
   const db = new Db(':memory:');
   t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles',
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', latencyMs: 0,
     maxStopLossPct: 0, maxSignalAgeSec: 0, useSpread: false, breakEvenAfterTp1: false, tpSplit: [0, 0, 1],
     trailAfterR: 1, trailDistanceR: 0, trailGiveBackPct: 25 });
   const engine = new PaperEngine(db, () => cfg);

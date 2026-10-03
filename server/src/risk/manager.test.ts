@@ -22,7 +22,7 @@ function setup(t: { after: (fn: () => void) => void }, risk: Partial<RiskConfig>
   const db = new Db(':memory:');
   t.after(() => db.db.close());
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', minRiskFeeRatio: 0 });
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', latencyMs: 0, minRiskFeeRatio: 0 });
   Object.assign(cfg.risk, { regime: { enabled: false, minAtrPct: 0.3, noWeekend: true, exempt: [] } }, risk);
   const clock = { now: T0 };
   const paper = new PaperEngine(db, () => cfg);

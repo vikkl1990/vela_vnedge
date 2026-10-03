@@ -15,6 +15,7 @@ for (const change of ['none', 'disabled', 'removed', 'reenabled', 'timeframe'] a
     const cfg = structuredClone(DEFAULT_CONFIG);
     cfg.symbols = ['BTCUSD']; cfg.timeframes = ['1m'];
     cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+    cfg.paper.latencyMs = 0; // this test is about configuration changes between dispatch and result, not the fill model
     // anchor to real time: the entry path rejects signals whose bar closed more than
     // paper.maxSignalAgeSec ago, and epoch-0 fixtures would read as decades stale
     const lastClose = Math.floor(Date.now() / 60_000) * 60_000;

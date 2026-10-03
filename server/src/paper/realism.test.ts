@@ -183,15 +183,35 @@ test('tape mode: pending entry fills on the candle close when the tape is silent
   assert.equal(e2.openPositions().length, 0);
 });
 
-test('candles mode reproduces the legacy immediate fill regardless of latency and tape settings', t => {
-  const { engine, signal } = setup(t, { fillSource: 'candles', latencyMs: 5000 });
+test('decision 75: candles mode honours the latency window — fills at the first candle update after it, never on a print', t => {
+  const { engine, signal } = setup(t, { fillSource: 'candles', latencyMs: 5000, useSpread: false });
+  engine.onBar('BTCUSD', { time: 0, high: 100, low: 100, close: 100 }, 60_000);           // the mark
   const d = signal('long', 60_000);
-  assert.equal(d.action, 'opened');
-  assert.equal(d.position!.entryPrice, 100);
-  engine.onTrade('BTCUSD', 90, 1, 60_100, 60_100);
-  assert.equal(d.position!.status, 'open', 'prints do not fill in candles mode');
-  engine.onBar('BTCUSD', { time: 120_000, high: 101, low: 94, close: 99 }, 120_010);
-  assert.equal(d.position!.exitReason, 'sl');
+  assert.equal(d.action, 'pending');
+  assert.equal(engine.pendingEntries().length, 1);
+  engine.onTrade('BTCUSD', 90, 1, 66_000, 66_000);                                           // prints never fill in candles mode
+  assert.equal(engine.openPositions().length, 0);
+  engine.onBar('BTCUSD', { time: 60_000, high: 101, low: 98, close: 98 }, 64_000);           // inside the window
+  assert.equal(engine.openPositions().length, 0, 'nothing fills inside the latency window');
+  engine.onBar('BTCUSD', { time: 60_000, high: 101, low: 97, close: 97 }, 66_000);           // first update after it
+  const p = engine.openPositions()[0];
+  assert.ok(p, 'filled at the first candle update after the window');
+  assert.equal(p.entryPrice, 97, 'at that update\'s price, not the signal price');
+  assert.equal(engine.pendingEntries().length, 0);
+  engine.onBar('BTCUSD', { time: 120_000, high: 101, low: 94, close: 94 }, 120_010);
+  assert.equal(p.exitReason, 'sl');
+});
+
+test('decision 75: candles mode fills a due entry at the mark when the feed is quiet', t => {
+  const { engine, signal } = setup(t, { fillSource: 'candles', latencyMs: 1500, useSpread: false });
+  engine.onBar('BTCUSD', { time: 0, high: 100, low: 100, close: 100.5 }, 60_000);
+  const d = signal('long', 60_000);
+  assert.equal(d.action, 'pending');
+  engine.housekeeping(62_000);                                     // due at 61_500, quiet for 500 ms: not yet
+  assert.equal(engine.openPositions().length, 0);
+  engine.housekeeping(62_600);                                     // quiet for more than a second past the window
+  const p = engine.openPositions()[0];
+  assert.ok(p, 'filled at the mark'); assert.equal(p.entryPrice, 100.5);
 });
 
 test('slippage scales with notional against the depth assumption', () => {
