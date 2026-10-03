@@ -297,7 +297,7 @@ export class App {
     return {
       id: s.id, name: s.name, author: s.author, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: this.scanners.isActive(s), hidden: Boolean(c.hidden),
       overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, updated: s.updated, patches: s.patches,
-      symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), exitMode: c.exitMode,
+      symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), pairs: c.pairs ?? null, exitMode: c.exitMode,
       // how the script is read (decision 48): its entry channel, timezone, derivation rule, input overrides and exit overrides
       reads: { sources: c.sources ?? null, timezone: c.timezone ?? null, rule: c.rule ?? null, inputs: c.inputs ?? null, exit: c.exit ?? null, labels: c.labels ?? null, edge: c.edge ?? null, invert: Boolean(c.invert) },
       // what it produced when last profiled, and whether the runtime has given up on it

@@ -145,6 +145,15 @@ test('regime filter: ATR floor and weekend, with per-scanner exemption', t => {
   assert.equal(entry({ scannerId: 'd', at: sat, atr: 0.1 }).action, 'opened');
 });
 
+test('regime filter: the efficiency gate refuses a choppy entry timeframe and lets an efficient one through', t => {
+  const saw = Array.from({ length: 40 }, (_, i) => ({ time: i * 900_000, open: 100, high: 101, low: 99, close: i % 2 ? 100.8 : 99.2, volume: 1 }));
+  const trend = Array.from({ length: 40 }, (_, i) => ({ time: i * 900_000, open: 100 + i, high: 101 + i, low: 99.5 + i, close: 100.8 + i, volume: 1 }));
+  const { entry } = setup(t, { maxPositionsPerSymbol: 10, regime: { enabled: true, minAtrPct: 0, noWeekend: false, exempt: [], minEr: 0.25 } }, { CHOPUSD: saw, TRENDUSD: trend });
+  assert.match(entry({ symbol: 'CHOPUSD', atr: 1 }).reason!, /regime: choppy \(efficiency 0\.0\d < 0\.25\)/);
+  assert.equal(entry({ symbol: 'TRENDUSD', atr: 1 }).action, 'opened');
+  assert.equal(entry({ symbol: 'NOBARSUSD', atr: 1 }).action, 'opened', 'no candles → no opinion');
+});
+
 test('per-scanner daily loss budget', t => {
   const { entry, closeAt } = setup(t, { perScannerDailyLossPct: 5, maxDailyLossPct: 0, maxWeeklyLossPct: 0 });
   closeAt(entry().position!.id, 70); // -6 %

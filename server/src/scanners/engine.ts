@@ -128,8 +128,17 @@ export class ScannerEngine extends EventEmitter {
     const cfg = this.cfgRef();
     return cfg.scanners[id] ?? { enabled: false, symbols: null, timeframes: null, exitMode: 'both' };
   }
-  symbolsFor(id: string): string[] { return this.scannerConfig(id).symbols ?? this.symbolsRef(); }
-  timeframesFor(id: string): string[] { return this.scannerConfig(id).timeframes ?? this.cfgRef().timeframes; }
+  symbolsFor(id: string): string[] { const c = this.scannerConfig(id); return c.pairs?.length ? [...new Set(c.pairs.map(p => p.symbol))] : (c.symbols ?? this.symbolsRef()); }
+  timeframesFor(id: string): string[] { const c = this.scannerConfig(id); return c.pairs?.length ? [...new Set(c.pairs.map(p => p.tf))] : (c.timeframes ?? this.cfgRef().timeframes); }
+  /** The (market, timeframe) pairs this scanner runs on: its explicit pairs (decision 70), else symbols × timeframes. */
+  pairsFor(id: string): Array<{ symbol: string; tf: string }> {
+    const c = this.scannerConfig(id);
+    if (c.pairs?.length) return c.pairs.map(p => ({ symbol: p.symbol, tf: p.tf }));
+    const out: Array<{ symbol: string; tf: string }> = [];
+    for (const symbol of this.symbolsFor(id)) for (const tf of this.timeframesFor(id)) out.push({ symbol, tf });
+    return out;
+  }
+  runsOn(id: string, symbol: string, tf: string): boolean { return this.pairsFor(id).some(p => p.symbol === symbol && p.tf === tf); }
   /** Quarantined scripts are not scheduled: they failed in a way that repeats (see health.ts). */
   isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return s.status === 'ok' && c.enabled && !c.hidden && !this.health.isQuarantined(s.id); }
 
@@ -138,7 +147,7 @@ export class ScannerEngine extends EventEmitter {
     const set = new Map<string, { symbol: string; tf: string }>();
     for (const s of this.registry.all()) {
       if (!this.isActive(s)) continue;
-      for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) set.set(`${symbol}:${tf}`, { symbol, tf });
+      for (const { symbol, tf } of this.pairsFor(s.id)) set.set(`${symbol}:${tf}`, { symbol, tf });
     }
     return [...set.values()];
   }
@@ -265,7 +274,7 @@ export class ScannerEngine extends EventEmitter {
     await Promise.all(required.map(r => this.candles.track(r.symbol, r.tf, cfg.historyBars)));
     for (const s of new Set([...this.symbolsRef(), ...required.map(r => r.symbol)])) await this.candles.track(s, '1m', 300); // fill engine price feed
     const jobs: Promise<void>[] = [];
-    for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) jobs.push(this.warm(s, symbol, tf));
+    for (const s of this.registry.all()) if (this.isActive(s)) for (const { symbol, tf } of this.pairsFor(s.id)) jobs.push(this.warm(s, symbol, tf));
     log.info(`warming ${jobs.length} scanner runs`);
     await Promise.allSettled(jobs);
     log.info('warm-up complete');
@@ -295,7 +304,7 @@ export class ScannerEngine extends EventEmitter {
       this.retuneTimer = null;
       try {
         const jobs: Promise<void>[] = [];
-        for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) jobs.push(this.runOnce(s, symbol, tf, { backtest: true, live: false }));
+        for (const s of this.registry.all()) if (this.isActive(s)) for (const { symbol, tf } of this.pairsFor(s.id)) jobs.push(this.runOnce(s, symbol, tf, { backtest: true, live: false }));
         log.info(`scheduled re-backtest: ${jobs.length} runs`);
         await Promise.allSettled(jobs);
         this.maybeAutoTune('scheduled');
@@ -347,7 +356,7 @@ export class ScannerEngine extends EventEmitter {
   }
 
   private onBarClosed(symbol: string, tf: string, bar: Bar) {
-    const active = this.registry.all().filter(s => this.isActive(s) && this.symbolsFor(s.id).includes(symbol) && this.timeframesFor(s.id).includes(tf));
+    const active = this.registry.all().filter(s => this.isActive(s) && this.runsOn(s.id, symbol, tf));
     if (!active.length) return;
     // backpressure: if the worker queue is already deep (warm-up or an earlier bar still running), skip this bar for this symbol
     // only live work counts here: background jobs queue behind live ones and cannot delay them
@@ -418,7 +427,7 @@ export class ScannerEngine extends EventEmitter {
       }
       // A pending job cannot trade after disable/removal or a configuration change.
       if (mode.live && this.isActive(s) && this.cfgRef().scanners[s.id] === scannerConfigAtStart
-          && this.symbolsFor(s.id).includes(symbol) && this.timeframesFor(s.id).includes(tf)) {
+          && this.runsOn(s.id, symbol, tf)) {
         const lastBar = bars.at(-1)!;
         if (!liveRes.ok) { log.warn(`${key} live run error: ${liveRes.error}`); return; }
         // A run that was not triggered by this bar's close — a warm-up, a newly enabled scanner, a

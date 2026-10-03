@@ -231,6 +231,8 @@ export interface ScannerConfig {
   sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
   /** Only entries whose label starts with one of these may open a trade (decision 67); unset: every label. */
   labels?: string[];
+  /** Explicit (market, timeframe) pairs this scanner trades (decision 70). When set, replaces the symbols × timeframes product. */
+  pairs?: Array<{ symbol: string; tf: string }>;
   /** Read every entry the other way (decision 67). */
   invert?: boolean;
   /** Rising edge only: a condition or shape true on consecutive bars is one entry, on its first bar (decision 57). */
@@ -441,6 +443,8 @@ export interface RiskConfig {
     minAtrPct: number;
     /** Skip entries on Saturday/Sunday (UTC). */
     noWeekend: boolean;
+    /** Whipsaw gate (decision 66/70): skip entries when the entry timeframe's Kaufman efficiency ratio over 20 closed bars is below this (0 = off). */
+    minEr?: number;
     /** Scanner ids exempt from the regime filter. */
     exempt: string[];
   };

@@ -101,3 +101,19 @@ test('a scanner the configuration has never seen is off, not on', async t => {
   assert.deepEqual(engine.requiredSeries().map(r => r.symbol), ['BTCUSD']);
   assert.equal(engine.scannerConfig('freshly-imported').enabled, false);
 });
+
+test('explicit pairs replace the symbols × timeframes product (decision 70)', () => {
+  const db = new Db(':memory:');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.symbols = ['BTCUSD', 'ETHUSD']; cfg.timeframes = ['15m'];
+  cfg.scanners.p = { enabled: true, symbols: null, timeframes: null, exitMode: 'both', pairs: [{ symbol: 'UNIUSD', tf: '1h' }, { symbol: 'ZECUSD', tf: '4h' }] } as any;
+  cfg.scanners.q = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' } as any;
+  const scanner = (id: string) => ({ id, name: id, status: 'ok', patched: 'x', source: 'x' } as any);
+  const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper: new PaperEngine(db, () => cfg), candles: { on() {}, get: () => [], track: async () => {}, has: () => true } as any, pool: {} as any, registry: { all: () => [scanner('p'), scanner('q')], get: (id: string) => scanner(id) } as any, rest: { product: async () => ({}) } as any });
+  assert.deepEqual(engine.pairsFor('p'), [{ symbol: 'UNIUSD', tf: '1h' }, { symbol: 'ZECUSD', tf: '4h' }]);
+  assert.deepEqual(engine.symbolsFor('p'), ['UNIUSD', 'ZECUSD']); assert.deepEqual(engine.timeframesFor('p'), ['1h', '4h']);
+  assert.equal(engine.runsOn('p', 'UNIUSD', '1h'), true); assert.equal(engine.runsOn('p', 'UNIUSD', '4h'), false, 'a pair is a market AND a timeframe');
+  assert.deepEqual(engine.pairsFor('q'), [{ symbol: 'BTCUSD', tf: '15m' }, { symbol: 'ETHUSD', tf: '15m' }], 'no pairs → the product, as before');
+  assert.deepEqual(engine.requiredSeries().map(r => `${r.symbol}:${r.tf}`).sort(), ['BTCUSD:15m', 'ETHUSD:15m', 'UNIUSD:1h', 'ZECUSD:4h']);
+  db.db.close();
+});

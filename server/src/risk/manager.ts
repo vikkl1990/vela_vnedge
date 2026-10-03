@@ -15,6 +15,7 @@ import type { AppConfig, RiskConfig } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import type { Db } from '../db.ts';
 import { logger } from '../log.ts';
+import { efficiencyRatio } from '../paper/backtest.ts';
 import type { PaperEngine, RiskEntryRequest, RiskGate } from '../paper/engine.ts';
 import { notionalOf } from '../paper/logic.ts';
 import type { Side } from '../scanners/extractor.ts';
@@ -169,6 +170,12 @@ export class RiskManager extends EventEmitter implements RiskGate {
       if (r.minAtrPct > 0 && req.atr !== undefined && req.atr > 0 && req.price > 0) {
         const atrPct = req.atr / req.price * 100;
         if (atrPct < r.minAtrPct) return reject(`regime: ATR ${atrPct.toFixed(2)}% < ${r.minAtrPct}%`);
+      }
+      // the whipsaw gate (decision 70): a market that travelled far but went nowhere over the last 20 bars of the entry timeframe
+      if ((r.minEr ?? 0) > 0 && this.candles) {
+        const bars = this.candles.get(req.symbol, req.tf, { limit: 40, closedOnly: true });
+        const er = efficiencyRatio(bars, bars.length - 1, 20);
+        if (er !== null && er < r.minEr!) return reject(`regime: choppy (efficiency ${er.toFixed(2)} < ${r.minEr})`);
       }
     }
     return { leverageMult: this.leverageMult() };

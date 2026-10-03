@@ -1951,3 +1951,28 @@ the journal's R statistics had not shown it. The go-live rule now carries a seve
 actually taken per trade, median of `risk_amount` over the equity at entry, must be ≤ 1.5% — and its
 survival Monte Carlo runs on that measured figure instead of the configured one, which had been
 flattering it by a factor of three.
+
+## 70. The fleet re-timed to its measured cells, with the whipsaw gate live
+
+The operator asked for whatever makes the bot function. The evidence of the week says: a trade
+must cost under 0.10R (decision 66's cost table), the 15m stop sits inside hourly noise, and on 1h
+with an efficiency-ratio floor the fleet is positive in both halves (decision 66). Three pieces:
+
+1. **A scanner trades explicit (market, timeframe) pairs.** `scanners.<id>.pairs` replaces the
+   symbols × timeframes product in the engine (required series, warm-up, backtests, which scanners
+   run on a bar close), the incubator (live rows carry each pair's own timeframe; promotion adds a
+   pair, demotion removes one, the last switches the scanner off), the API and the Scanners page.
+2. **The whipsaw gate is live.** `risk.regime.minEr` (0.25) refuses an entry when the entry
+   timeframe's Kaufman efficiency ratio over 20 closed bars is below the floor; the Signals page
+   shows "regime: choppy (efficiency 0.18 < 0.25)".
+3. **The account trades 26 cells across 10 scanners** (`data/reports/2026-10-03-fleet-pairs.json`):
+   the 24 one-hour cells positive in both halves with at least eight trades each under the gate,
+   plus two 15m cells with a positive live journal (AI Predictive Flow on UNI, Smart Swing VWAP on
+   AKE). Markets: AKE, ETH, EVAA, FIL, LINK, PIEVERSE, SAGA, UNI, ZEC. Every other live pair went
+   to the shadow book, not retired, so its evidence keeps accruing; the scanners with no remaining
+   pair are off. Expected trade rate falls from about 24 a day to about 4.
+
+Caveats stated plainly: the 1h cells were measured under the old reading of the six re-read
+scanners (decision 67), and the label lists and the gate have not been measured together; the
+cells were selected on the same history the gate was chosen on. The journal decides; the go-live
+rule stays red until it does.

@@ -251,6 +251,13 @@ export class ApiServer {
       if (body?.sources === null) patch.sources = undefined;
       if (body?.labels === null) patch.labels = undefined;
       if (typeof body?.invert === 'boolean') patch.invert = body.invert || undefined;
+      if (body?.pairs === null) patch.pairs = undefined;
+      if (Array.isArray(body?.pairs)) {
+        const ps = body.pairs.map((x: any) => ({ symbol: String(x?.symbol ?? '').toUpperCase(), tf: String(x?.tf ?? '') })).filter((x: any) => x.symbol && x.tf);
+        if (ps.length > 60) throw new HttpError(400, 'too many pairs');
+        for (const x of ps) if (!/^[A-Z0-9]+USD$/.test(x.symbol) || !['1m', '5m', '15m', '1h', '4h', '1d'].includes(x.tf)) throw new HttpError(400, `bad pair ${x.symbol} ${x.tf}`);
+        patch.pairs = ps.length ? ps : undefined;
+      }
       if (Array.isArray(body?.labels)) { const ls = body.labels.map((x: unknown) => String(x).trim().slice(0, 60)).filter(Boolean); if (ls.length > 40) throw new HttpError(400, 'too many labels'); patch.labels = ls.length ? ls : undefined; }
       if (Array.isArray(body?.sources)) { const ok = ['alert', 'alertcondition', 'shape', 'derived']; for (const x of body.sources) if (!ok.includes(x)) throw new HttpError(400, `bad source ${x}`); patch.sources = body.sources.length ? body.sources : undefined; }
       if (body?.timezone === null || body?.timezone === '') patch.timezone = undefined;

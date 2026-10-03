@@ -244,3 +244,18 @@ test('cohort size and the retirement clock follow the timeframe', () => {
   assert.equal(cohortVerdict(thin, { ...cfg.incubator.gate, maxDays: cfg.incubator.gate.maxDaysByTf['4h'] }).decision, 'brewing');
   assert.equal(cohortVerdict(thin, cfg.incubator.gate).decision, 'retire', 'the 15m clock would have retired it');
 });
+
+test('pairs-aware fleet: a scanner with explicit pairs is promoted and demoted per (market, timeframe)', () => {
+  const { store, cfg } = world();
+  cfg.scanners.live1 = { enabled: true, symbols: null, timeframes: null, exitMode: 'both', pairs: [{ symbol: 'BTCUSD', tf: '1h' }, { symbol: 'ETHUSD', tf: '4h' }] } as any;
+  const s = syncLive(store, cfg, T0);
+  assert.equal(s.added, 2);
+  assert.deepEqual(store.list(['live']).map(r => `${r.symbol} ${r.tf}`).sort(), ['BTCUSD 1h', 'ETHUSD 4h'], 'live rows carry each pair\'s own timeframe');
+  const patches: any[] = [];
+  const r = demote(store, cfg, store.find('live1', 'BTCUSD', '1h')!.id, 'admin', (id, patch) => patches.push({ id, patch }), null, T0 + DAY);
+  assert.equal(r.stage, 'shadow');
+  assert.deepEqual(patches as unknown[], [{ id: 'live1', patch: { pairs: [{ symbol: 'ETHUSD', tf: '4h' }] } }], 'only that pair leaves; the other stays');
+  cfg.scanners.live1.pairs = [{ symbol: 'ETHUSD', tf: '4h' }];
+  const last = demote(store, cfg, store.find('live1', 'ETHUSD', '4h')!.id, 'admin', (id, patch) => patches.push({ id, patch }), null, T0 + DAY);
+  assert.equal(last.stage, 'shadow'); assert.deepEqual(patches.at(-1) as unknown, { id: 'live1', patch: { enabled: false } }, 'the last pair switches the scanner off');
+});

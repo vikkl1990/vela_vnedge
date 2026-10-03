@@ -185,13 +185,13 @@ export function Scanners() {
         key: 'symbols',
         header: 'Symbols',
         sortable: false,
-        render: (s) => <ChipSelect compact options={symbolOptions} value={s.symbols ?? []} onChange={(v) => patch(s, { symbols: v })} emptyLabel="global" disabled={busy} />,
+        render: (s) => (s.pairs?.length ? <span className="mono small" title="Explicit (market, timeframe) pairs (decision 70); edit on the scanner page">{s.pairs.map((p) => `${p.symbol.replace(/USD$/, '')} ${p.tf}`).join(' · ')}</span> : <ChipSelect compact options={symbolOptions} value={s.symbols ?? []} onChange={(v) => patch(s, { symbols: v })} emptyLabel="global" disabled={busy} />),
       },
       {
         key: 'tfs',
         header: 'Timeframes',
         sortable: false,
-        render: (s) => <ChipSelect compact options={[...DELTA_TIMEFRAMES]} value={s.timeframes ?? []} onChange={(v) => patch(s, { timeframes: v })} emptyLabel="global" disabled={busy} />,
+        render: (s) => (s.pairs?.length ? <span className="muted small">per pair</span> : <ChipSelect compact options={[...DELTA_TIMEFRAMES]} value={s.timeframes ?? []} onChange={(v) => patch(s, { timeframes: v })} emptyLabel="global" disabled={busy} />),
       },
       {
         key: 'exit',
