@@ -2007,7 +2007,10 @@ trades, −131.62 net, 177.50 fees). Six numbers had more than one source. Each 
    when disabled.
 5. **ML "account" samples.** The count was all time, trades before resets included (198 against
    78 on the Trades page). The Learn page now splits since-the-reset, earlier accounts, backtest.
-6. **Go-live realised risk** was the median over the whole journal, so the switch to risk sizing
+6. **The Learn page was stale.** Training had failed silently since 30 September: rule derivation
+   read the four regime features (decision 66) off samples recorded before they existed and got
+   `undefined`. Missing values now read as 0, as the model already did, and the page trains again.
+7. **Go-live realised risk** was the median over the whole journal, so the switch to risk sizing
    (decision 69) would have taken months to show. It is the median of the last 30 closed trades.
 
 **Not a conflict.** The 18 global symbols are the feed subscription list; the account trades the

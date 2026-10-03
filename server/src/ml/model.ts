@@ -164,10 +164,12 @@ export function deriveRules(samples: Sample[], opts: { minN?: number; minCoverag
   const baseline = { n, winRate: wr(samples), avgR: avg(samples) };
   const rules: Rule[] = [];
   if (n < minN) return { baseline, rules };
+  // samples recorded before a feature existed carry no value for it; read them as 0, as the model does
+  const val = (s: Sample, f: FeatureName) => { const v = s.features[f]; return Number.isFinite(v) ? v : 0; };
   for (const f of FEATURE_NAMES) {
-    const vals = samples.map(s => s.features[f]);
+    const vals = samples.map(s => val(s, f));
     for (const bk of bucketsFor(f, vals)) {
-      const inB = samples.filter(s => bk.test(s.features[f]));
+      const inB = samples.filter(s => bk.test(val(s, f)));
       if (inB.length < minN || inB.length === n) continue;
       const cov = inB.length / n; const a = avg(inB); const lift = a - baseline.avgR;
       if (lift >= minLift && cov >= minCov) rules.push({ feature: f, label: FEATURE_LABELS[f], kind: 'prefer', condition: bk.name, n: inB.length, coverage: cov, winRate: wr(inB), avgR: a, baselineAvgR: baseline.avgR, lift, text: `Prefer ${FEATURE_LABELS[f]} ${bk.name}: avg ${a.toFixed(2)}R vs ${baseline.avgR.toFixed(2)}R baseline (${inB.length} trades, ${(cov * 100).toFixed(0)}% of entries)` });

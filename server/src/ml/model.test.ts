@@ -26,3 +26,12 @@ test('logistic regression learns a score→win relationship and rules surface it
   assert.ok(baseline.n === 300);
   assert.ok(rules.some(r => r.feature === 'score' && r.kind === 'prefer'), JSON.stringify(rules.slice(0, 3)));
 });
+
+test('rules survive samples recorded before a feature existed', () => {
+  const mk = (i: number, extra: Record<string, number>) => ({ scannerId: 's', symbol: 'X', tf: '1h', at: i, features: { side_long: i % 2, hour: i % 24, ...extra } as any, win: i % 3 === 0 ? 1 : 0, r: i % 3 === 0 ? 1.5 : -1, pnl: 0, exitReason: 'sl', bt: true });
+  const old = Array.from({ length: 40 }, (_, i) => mk(i, {}));
+  const fresh = Array.from({ length: 40 }, (_, i) => mk(100 + i, { er20: i / 40, chop14: 30 + i }));
+  const { baseline, rules } = deriveRules([...old, ...fresh]);
+  assert.equal(baseline.n, 80);
+  assert.ok(Array.isArray(rules));
+});
