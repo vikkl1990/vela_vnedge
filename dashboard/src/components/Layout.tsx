@@ -171,9 +171,9 @@ export function Layout() {
             <span className="topstat-label">EQ USD</span>
             <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
           </span>
-          <span className="topstat topstat-day" title="Net of account trades closed since 00:00 UTC (fees included)">
+          <span className="topstat topstat-day" title="Equity change since 00:00 UTC, open positions included: the figure the daily kill switch watches">
             <span className="topstat-label">DAY USD</span>
-            <span className={`mono ${pnlClass(s?.todayPnl)}`}>{s ? fmtPnl(s.todayPnl) : '–'}</span>
+            <span className={`mono ${pnlClass(risk.data?.day?.pnl)}`}>{risk.data?.day ? fmtPnl(risk.data.day.pnl) : '–'}</span>
           </span>
           <span className="topstat" title="Open positions">
             <span className="topstat-label">POS</span>

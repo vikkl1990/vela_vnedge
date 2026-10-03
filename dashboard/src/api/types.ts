@@ -344,9 +344,14 @@ export interface Order {
 export interface Stats {
   equity: number
   initialEquity: number
-  realizedPnl: number
-  unrealizedPnl: number
-  fees: number
+  /** Net of closed trades: the same number the Trades page sums. */
+  closedPnl: number
+  closedFees: number
+  /** Open positions: banked legs, fees and mark. equity = initial + closedPnl + openPnl. */
+  openPnl: number
+  openFees: number
+  peakEquity: number
+  drawdownPct: number
   openPositions: number
   trades: number
   wins: number
@@ -354,7 +359,6 @@ export interface Stats {
   winRatePct: number
   profitFactor: number
   maxDrawdownPct: number
-  todayPnl: number
   byScanner: Record<string, ScannerStats>
   bySymbol: Record<string, { trades: number; pnl: number }>
 }
@@ -452,7 +456,7 @@ export interface MlMetrics { holdout: number; accuracy: number; auc: number; log
 export interface MlImportance { feature: string; label: string; weight: number }
 export interface MlScannerInsight { scannerId: string; scannerName: string; samples: number; liveSamples: number; baseline: { n: number; winRate: number; avgR: number }; model: MlMetrics | null; importance: MlImportance[]; rules: MlRule[] }
 export interface MlSnapshot {
-  trainedAt: number | null; samples: number; liveSamples: number; scannersWithModel: number
+  trainedAt: number | null; samples: number; liveSamples: number; liveSinceReset: number; scannersWithModel: number
   global: { model: MlMetrics | null; importance: MlImportance[]; rules: MlRule[]; baseline: { n: number; winRate: number; avgR: number } } | null
   scanners: MlScannerInsight[]
   counts?: { total: number; live: number }

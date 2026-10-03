@@ -30,7 +30,6 @@ interface ScannerLossState { consecutive: number; lastLossAt: number | null; coo
 interface RiskState {
   day: Period;
   week: Period;
-  peakEquity: number;
   manualHalt: { at: number; reason: string } | null;
   scanners: Record<string, ScannerLossState>;
   /** paper.resetAt seen when the state was built; a paper reset restarts the bookkeeping. */
@@ -87,7 +86,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     return {
       day: { start: utcDayStart(now), startEquity: eq, tripped: false, trippedAt: null, trippedPnlPct: null },
       week: { start: utcWeekStart(now), startEquity: eq, tripped: false, trippedAt: null, trippedPnlPct: null },
-      peakEquity: eq, manualHalt: null, scanners: {}, paperResetAt: this.db.kvGet<number>('paper.resetAt') ?? null,
+      manualHalt: null, scanners: {}, paperResetAt: this.db.kvGet<number>('paper.resetAt') ?? null,
     };
   }
 
@@ -104,7 +103,6 @@ export class RiskManager extends EventEmitter implements RiskGate {
     const dayStart = utcDayStart(now), weekStart = utcWeekStart(now);
     if (dayStart !== this.st.day.start) { if (this.st.day.tripped) log.info('daily kill switch reset (new UTC day)'); this.st.day = { start: dayStart, startEquity: eq, tripped: false, trippedAt: null, trippedPnlPct: null }; changed = true; }
     if (weekStart !== this.st.week.start) { if (this.st.week.tripped) log.info('weekly kill switch reset (new week)'); this.st.week = { start: weekStart, startEquity: eq, tripped: false, trippedAt: null, trippedPnlPct: null }; changed = true; }
-    if (eq > this.st.peakEquity) { this.st.peakEquity = eq; changed = true; }
     const c = this.cfg;
     if (c?.enabled) {
       const dayPnl = this.periodPnlPct(this.st.day, eq), weekPnl = this.periodPnlPct(this.st.week, eq);
@@ -191,13 +189,10 @@ export class RiskManager extends EventEmitter implements RiskGate {
     return mult;
   }
 
-  /** Highest equity seen since the last paper reset. */
-  peakEquity(): number { return this.st.peakEquity; }
+  /** Highest equity since the last paper reset; the paper engine keeps it, so the Overview, this page and the ops monitor read one number. */
+  peakEquity(): number { return this.paper.peakEquity(); }
 
-  drawdownPct(): number {
-    const eq = this.paper.equity();
-    return this.st.peakEquity > 0 ? Math.max(0, (this.st.peakEquity - eq) / this.st.peakEquity * 100) : 0;
-  }
+  drawdownPct(): number { return this.paper.drawdownPct(); }
 
   exposureCheck(req: { symbol: string; side: Side; tf: string; notional: number }): string | null {
     const c = this.cfg;
@@ -290,7 +285,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     return {
       at: now, enabled: Boolean(c?.enabled), halted,
       haltReason: this.st.manualHalt ? `manual: ${this.st.manualHalt.reason}` : this.st.day.tripped ? 'daily loss limit' : this.st.week.tripped ? 'weekly loss limit' : null,
-      manualHalt: this.st.manualHalt, equity: eq, peakEquity: this.st.peakEquity, drawdownPct: this.drawdownPct(), leverageMult: this.leverageMult(),
+      manualHalt: this.st.manualHalt, equity: eq, peakEquity: this.peakEquity(), drawdownPct: this.drawdownPct(), leverageMult: this.leverageMult(),
       day: period(this.st.day, c?.maxDailyLossPct ?? 0), week: period(this.st.week, c?.maxWeeklyLossPct ?? 0),
       positions: { open: open.length, pending: pending.length, max: c?.maxPositionsTotal ?? null, bySymbol: count('symbol'), byScanner: count('scannerId'), maxPerSymbol: c?.maxPositionsPerSymbol ?? null, maxPerScanner: c?.perScannerMaxPositions ?? null },
       scanners: Object.fromEntries(Object.entries(this.st.scanners).map(([id, s]) => [id, { ...s, dayPnl: this.scannerDayPnl(id), inCooldown: Boolean(s.cooldownUntil && now < s.cooldownUntil) }])),

@@ -118,7 +118,7 @@ function run(name: string, paper: PaperConfig, perPair = false, from = 0) {
   const stats = engine.stats();
   let peak = -Infinity, dd = 0;
   for (const e of equity) { peak = Math.max(peak, e); dd = Math.max(dd, (peak - e) / peak * 100); }
-  const out = { name, opened, rejected, trades: stats.trades, winRate: stats.winRatePct, pnl: stats.realizedPnl, pf: stats.profitFactor, maxDd: dd, equity: engine.equity() };
+  const out = { name, opened, rejected, trades: stats.trades, winRate: stats.winRatePct, pnl: stats.closedPnl, pf: stats.profitFactor, maxDd: dd, equity: engine.equity() };
   (db as any).db?.close?.();
   return out;
 }

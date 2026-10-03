@@ -154,8 +154,8 @@ export class OpsService {
     m.gauge('entries_rejected_no_quote_total', 'Entries refused because no fresh quote was available', () => d.paper.priceSource.rejectedNoQuote);
     m.gauge('symbols_quoted', 'Symbols holding a top of book no older than paper.quoteMaxAgeMs', () => d.marks ? d.marks.quotedSymbols(d.cfg().paper.quoteMaxAgeMs ?? 0).length : null);
     m.gauge('paper_equity', 'Paper account equity', () => safeNum(() => d.paper.stats().equity));
-    m.gauge('paper_realized_pnl', 'Realised pnl net of fees', () => safeNum(() => d.paper.stats().realizedPnl));
-    m.gauge('paper_unrealized_pnl', 'Unrealised pnl of open positions', () => safeNum(() => d.paper.stats().unrealizedPnl));
+    m.gauge('paper_closed_pnl', 'Net pnl of closed trades (the journal)', () => safeNum(() => d.paper.stats().closedPnl));
+    m.gauge('paper_open_pnl', 'Pnl of open positions: banked legs, fees and mark', () => safeNum(() => d.paper.stats().openPnl));
     m.gauge('paper_drawdown_from_peak_pct', 'Equity drawdown from its peak (%)', () => this.monitor.state.drawdownPct);
     m.gauge('backtests_total', 'Backtest results held in memory', () => d.scanners.allBacktests().length);
     m.gauge('candle_gaps_found_total', 'Missing bars detected', () => d.candles.integrity().gapsFound);

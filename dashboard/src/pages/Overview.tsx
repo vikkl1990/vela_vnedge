@@ -1,7 +1,7 @@
 import type { MarketVerdict } from '../api/types'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, useMarketsToday, useOps, usePositions, useRefreshMarketsToday, useScannerIndex, useSignals, useStats } from '../api/queries'
+import { useEquity, useMarketsToday, useOps, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { EquityChart, PnlByScannerChart, type PnlBar } from '../components/charts'
 import { PositionsTable } from '../components/PositionsTable'
@@ -15,6 +15,7 @@ export function Overview() {
   const scanners = useScannerIndex()
   const signals = useSignals({ limit: 15 })
   const positions = usePositions()
+  const risk = useRisk()
 
   const s = stats.data
   const pnlBars = useMemo<PnlBar[]>(() => {
@@ -39,7 +40,8 @@ export function Overview() {
   }, [s])
 
   const visibleScanners = (scanners.data ?? []).filter((x) => !x.hidden).length
-  const net = s ? s.realizedPnl + s.unrealizedPnl : 0
+  const net = s ? s.closedPnl + s.openPnl : 0
+  const day = risk.data?.day
 
   return (
     <div className="page">
@@ -52,12 +54,12 @@ export function Overview() {
         <div className="kpi-grid">
           <KpiTile label="Equity (USD)" value={fmtMoney(s.equity, 2)} sub={<span className="muted">initial {fmtMoney(s.initialEquity, 0)}</span>} />
           <KpiTile label="Net PnL (USD)" value={fmtPnl(net)} tone={pnlClass(net) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">{s.initialEquity ? `${fmtPct((net / s.initialEquity) * 100, 1, true)} of purse` : ''} · after fees</span>} />
-          <KpiTile label="Realized PnL (USD)" value={fmtPnl(s.realizedPnl)} tone={pnlClass(s.realizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">fees {fmtMoney(s.fees)} · closed trades plus the closed legs of open positions</span>} />
-          <KpiTile label="Unrealized PnL (USD)" value={fmtPnl(s.unrealizedPnl)} tone={pnlClass(s.unrealizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className={pnlClass(s.todayPnl)} title="Net of trades closed since 00:00 UTC. The Risk page's day figure is equity now versus equity at 00:00 UTC, so it includes open positions.">today {fmtPnl(s.todayPnl)} (closed, UTC day)</span>} />
+          <KpiTile label="Closed PnL (USD)" value={fmtPnl(s.closedPnl)} tone={pnlClass(s.closedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">fees {fmtMoney(s.closedFees)} · {fmtInt(s.trades)} trades, the journal</span>} />
+          <KpiTile label="Open PnL (USD)" value={fmtPnl(s.openPnl)} tone={pnlClass(s.openPnl) as 'gain' | 'loss' | 'neutral'} hint="Open positions: banked legs, fees and mark" sub={day ? <span className={pnlClass(day.pnl)}>today {fmtPnl(day.pnl)} since 00:00 UTC</span> : <span className="muted">{s.openPositions} open</span>} />
           <KpiTile label="Win rate" value={fmtPct(s.winRatePct)} sub={<span className="muted">{s.wins}W / {s.losses}L</span>} />
           <KpiTile label="Profit factor" value={fmtProfitFactor(s.profitFactor)} tone={s.profitFactor >= 1 ? 'gain' : 'loss'} />
           <KpiTile label="Expectancy" value={fmtR(expectancy)} tone={expectancy == null ? 'neutral' : expectancy >= 0 ? 'gain' : 'loss'} hint="Average R per trade, weighted by trade count" />
-          <KpiTile label="Max drawdown" value={`−${fmtPct(Math.abs(s.maxDrawdownPct))}`} tone="loss" hint="Deepest peak-to-trough of the closed-trade equity path. The Risk page shows the drawdown right now, from the peak of equity including open positions." />
+          <KpiTile label="Drawdown" value={`−${fmtPct(s.drawdownPct)}`} tone={s.drawdownPct > 0 ? 'loss' : 'neutral'} hint="From the equity peak since the reset, open positions included; the Risk page and the alerts use this same number" sub={<span className="muted">worst −{fmtPct(s.maxDrawdownPct)} · peak {fmtMoney(s.peakEquity, 0)}</span>} />
           <KpiTile label="Trades" value={fmtInt(s.trades)} sub={<span className="muted">{s.openPositions} open</span>} />
         </div>
       )}

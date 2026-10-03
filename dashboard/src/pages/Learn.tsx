@@ -43,7 +43,7 @@ export function Learn() {
         ),
       },
       { key: 'samples', header: 'Samples', numeric: true, value: (s) => s.samples },
-      { key: 'live', header: 'Live', numeric: true, value: (s) => s.liveSamples },
+      { key: 'live', header: 'Account (all time)', numeric: true, value: (s) => s.liveSamples },
       { key: 'win', header: 'Win %', numeric: true, value: (s) => s.baseline.winRate, render: (s) => pct(s.baseline.winRate) },
       { key: 'avgR', header: 'Avg R', numeric: true, value: (s) => s.baseline.avgR, render: (s) => <span className={s.baseline.avgR >= 0 ? 'gain' : 'loss'}>{r(s.baseline.avgR)}</span> },
       { key: 'auc', header: 'Model AUC', numeric: true, value: (s) => s.model?.auc ?? null, render: (s) => (s.model ? s.model.auc.toFixed(2) : '–'), title: '0.5 = coin flip' },
@@ -88,7 +88,7 @@ export function Learn() {
       {d && (
         <>
           <div className="kpi-grid">
-            <KpiTile label="Samples" value={String(d.samples)} sub={`${d.liveSamples} account (all time, resets included) · ${d.samples - d.liveSamples} backtest`} />
+            <KpiTile label="Samples" value={String(d.samples)} sub={`${d.liveSinceReset} account since the reset · ${d.liveSamples - d.liveSinceReset} from earlier accounts · ${d.samples - d.liveSamples} backtest`} />
             <KpiTile label="Scanner models" value={String(d.scannersWithModel)} sub="≥ 40 trades each" />
             <KpiTile label="Global accuracy" value={pct(d.global?.model?.accuracy)} sub={`holdout ${d.global?.model?.holdout ?? 0} · base ${pct(d.global?.model?.baseWinRate)}`} tone={(d.global?.model?.accuracy ?? 0) > (d.global?.model?.baseWinRate ?? 0) ? 'gain' : undefined} />
             <KpiTile label="Global AUC" value={d.global?.model ? d.global.model.auc.toFixed(2) : '–'} sub="0.5 = coin flip" tone={(d.global?.model?.auc ?? 0) > 0.58 ? 'gain' : (d.global?.model?.auc ?? 1) < 0.52 ? 'loss' : undefined} />

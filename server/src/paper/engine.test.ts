@@ -204,3 +204,20 @@ test('the trailing peak survives a restart, so the trail keeps advancing', t => 
   resumed.onBar('BTCUSD', { time: 180_000, high: 124, low: 116, close: 123 }, 240_000); // peak 4.8R → stop 3.6R = 118
   assert.ok(Math.abs(r.sl! - 118) < 1e-9, `trail advanced to ${r.sl}, expected 118`);
 });
+
+test('the engine owns one equity peak: drawdown now, the worst drawdown, and a reset starts both again', t => {
+  const { db, cfg } = setup(t);
+  cfg.paper.initialEquity = 1000;
+  // a path 1000 → 1100 → 990 recorded before this process started is rebuilt on construction
+  db.run('DELETE FROM kv WHERE k IN (?, ?)', 'paper.peakEquity', 'paper.maxDrawdownPct');
+  db.run('INSERT INTO equity(at, scanner_id, equity, realized, unrealized) VALUES (1,NULL,1000,0,0),(2,NULL,1100,100,0),(3,NULL,990,-10,0)');
+  const resumed = new PaperEngine(db, () => cfg);
+  assert.equal(resumed.peakEquity(), 1100);
+  assert.ok(Math.abs(resumed.maxDrawdownPct() - 10) < 1e-9, `worst ${resumed.maxDrawdownPct()}`);
+  const s = resumed.stats();
+  assert.equal(s.peakEquity, 1100);
+  assert.ok(Math.abs(s.equity - (s.initialEquity + s.closedPnl + s.openPnl)) < 1e-9, 'equity = initial + closed + open');
+  resumed.reset();
+  assert.equal(resumed.peakEquity(), cfg.paper.initialEquity);
+  assert.equal(resumed.maxDrawdownPct(), 0);
+});

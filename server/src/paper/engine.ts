@@ -58,6 +58,9 @@ export class PaperEngine extends EventEmitter {
   private priceBars = new Map<string, PriceBar>();
   private lastEquityPoint = 0;
   private lastEquityValue = NaN;
+  /** Highest equity since the last reset and the deepest drawdown from it, persisted; the one source for every drawdown the UI shows. */
+  private peak = 0;
+  private maxDd = 0;
   // ---- phase 2: tape / mark / funding state ----
   /** Exchange mark price per symbol (from the `mark_price` channel); liquidation reference in tape mode. */
   private markPrices = new Map<string, { price: number; at: number }>();
@@ -89,6 +92,7 @@ export class PaperEngine extends EventEmitter {
     this.db = db; this.cfgRef = cfgRef;
     this.book = opts.book ?? 0;
     this.kvPrefix = this.book === 0 ? 'paper' : `book${this.book}`;
+    this.loadPeak();
     for (const row of db.all<any>(`SELECT * FROM positions WHERE status='open' AND bt=${this.book}`)) {
       const p = rowToPosition(row); this.open.set(p.id, p);
     }
@@ -130,7 +134,41 @@ export class PaperEngine extends EventEmitter {
    * hundred — on the VM a single +1.1M win carried the purse to roughly 20M and later trades were
    * sized in hundreds of millions of contracts.
    */
-  equity(): number { return this.book === 0 ? this.initialEquity + this.realizedPnl() + this.unrealizedPnl() : this.initialEquity; }
+  equity(): number {
+    if (this.book !== 0) return this.initialEquity;
+    const eq = this.initialEquity + this.realizedPnl() + this.unrealizedPnl();
+    this.observeEquity(eq);
+    return eq;
+  }
+
+  // ---- peak and drawdown (live account only) ----
+
+  private loadPeak() {
+    if (this.book !== 0) return;
+    const p = this.db.kvGet<number>('paper.peakEquity');
+    if (p && p > 0) { this.peak = p; this.maxDd = this.db.kvGet<number>('paper.maxDrawdownPct') ?? 0; return; }
+    // first run on an existing account: rebuild both from the equity path recorded since the reset
+    let peak = this.initialEquity, dd = 0;
+    for (const r of this.db.all<{ equity: number }>('SELECT equity FROM equity WHERE scanner_id IS NULL ORDER BY at')) {
+      if (r.equity > peak) peak = r.equity; else if (peak > 0) dd = Math.max(dd, (peak - r.equity) / peak * 100);
+    }
+    this.peak = peak; this.maxDd = dd;
+    this.db.kvSet('paper.peakEquity', peak); this.db.kvSet('paper.maxDrawdownPct', dd);
+  }
+
+  private observeEquity(eq: number) {
+    if (!Number.isFinite(eq)) return;
+    if (eq > this.peak) { this.peak = eq; this.db.kvSet('paper.peakEquity', eq); return; }
+    const dd = this.peak > 0 ? (this.peak - eq) / this.peak * 100 : 0;
+    if (dd > this.maxDd + 0.01) { this.maxDd = dd; this.db.kvSet('paper.maxDrawdownPct', dd); }
+  }
+
+  /** Highest equity since the last reset (a shadow book never moves). */
+  peakEquity(): number { return this.book === 0 ? this.peak : this.initialEquity; }
+  /** Drawdown right now from that peak, open positions included. */
+  drawdownPct(): number { if (this.book !== 0) return 0; const eq = this.equity(); return this.peak > 0 ? Math.max(0, (this.peak - eq) / this.peak * 100) : 0; }
+  /** Deepest drawdown since the reset, on the same path. */
+  maxDrawdownPct(): number { return Math.max(this.maxDd, this.drawdownPct()); }
 
   openPositions(): Position[] { return [...this.open.values()]; }
   position(id: number): Position | undefined { return this.open.get(id) ?? (this.db.get<any>('SELECT * FROM positions WHERE id=?', id) ? rowToPosition(this.db.get<any>('SELECT * FROM positions WHERE id=?', id)) : undefined); }
@@ -591,6 +629,8 @@ export class PaperEngine extends EventEmitter {
     this.open.clear(); this.pending.clear(); this.closedCache = null;
     this.db.kvSet(`${this.kvPrefix}.initialEquity`, this.paper.initialEquity);
     this.db.kvSet(`${this.kvPrefix}.resetAt`, Date.now());
+    this.peak = this.paper.initialEquity; this.maxDd = 0;
+    this.db.kvSet('paper.peakEquity', this.peak); this.db.kvSet('paper.maxDrawdownPct', 0);
     this.recordEquity(true);
     this.emit('stats', this.stats());
     log.warn('paper account reset');
@@ -612,12 +652,16 @@ export class PaperEngine extends EventEmitter {
       byScanner[id] = s;
     }
     for (const p of closed) { const b = bySymbol[p.symbol] ?? (bySymbol[p.symbol] = { trades: 0, pnl: 0 }); b.trades++; b.pnl += p.realizedPnl - p.fees; }
-    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
-    const todayPnl = closed.filter(p => (p.exitAt ?? 0) >= dayStart.getTime()).reduce((a, p) => a + p.realizedPnl - p.fees, 0);
+    // closed = the journal (what the Trades page sums); open = every open position's banked legs, fees and mark.
+    // equity = initial + closedPnl + openPnl, so no figure on the Overview can disagree with another.
+    const open = [...this.open.values()];
+    const closedPnl = closed.reduce((a, p) => a + p.realizedPnl - p.fees, 0);
+    const openPnl = open.reduce((a, p) => a + p.realizedPnl - p.fees + unrealized(p, this.marks.get(p.symbol) ?? p.entryPrice), 0);
     return {
-      equity: this.equity(), initialEquity: initial, realizedPnl: this.realizedPnl(), unrealizedPnl: this.unrealizedPnl(), fees: g.fees + [...this.open.values()].reduce((a, p) => a + p.fees, 0),
+      equity: this.equity(), initialEquity: initial, closedPnl, closedFees: g.fees, openPnl, openFees: open.reduce((a, p) => a + p.fees, 0),
+      peakEquity: this.peakEquity(), drawdownPct: this.drawdownPct(), maxDrawdownPct: this.maxDrawdownPct(),
       openPositions: this.open.size, pendingEntries: this.pending.size, trades: g.trades, wins: g.wins, losses: g.losses, winRatePct: g.winRatePct, profitFactor: fin(g.profitFactor),
-      maxDrawdownPct: g.maxDrawdownPct, avgR: g.avgR, expectancy: g.expectancy, todayPnl, byScanner: mapFin(byScanner), bySymbol,
+      avgR: g.avgR, expectancy: g.expectancy, byScanner: mapFin(byScanner), bySymbol,
     };
   }
 

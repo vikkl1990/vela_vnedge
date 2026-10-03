@@ -415,9 +415,9 @@ export class App {
   }
 
   /** Cross-sectional analytics: pairs, scanners, scanner×pair matrix, exits and time-of-day, for backtest and live. */
-  /** Median risk per closed account trade as a share of the equity at entry, from the journal; null before five trades. */
+  /** Median risk per closed account trade as a share of the equity at entry, over the last 30 closed trades so a sizing change shows within weeks; null before five trades. */
   realisedRiskPct(): number | null {
-    const rows = this.db.all<{ risk: number; at: number }>("SELECT risk_amount AS risk, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND risk_amount > 0 ORDER BY entry_at");
+    const rows = this.db.all<{ risk: number; at: number }>("SELECT risk_amount AS risk, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND risk_amount > 0 ORDER BY entry_at DESC LIMIT 30").reverse();
     if (rows.length < 5) return null;
     const eq = this.db.all<{ at: number; equity: number }>('SELECT at, equity FROM equity WHERE scanner_id IS NULL ORDER BY at');
     let j = 0; const pcts: number[] = [];

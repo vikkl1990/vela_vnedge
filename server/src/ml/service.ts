@@ -26,7 +26,7 @@ export interface ScannerInsight {
 }
 
 export interface MlSnapshot {
-  trainedAt: number | null; samples: number; liveSamples: number; scannersWithModel: number;
+  trainedAt: number | null; samples: number; liveSamples: number; liveSinceReset: number; scannersWithModel: number;
   global: { model: LogRegModel['metrics'] | null; calibration: LogRegModel['calibration']; importance: LogRegModel['importance']; rules: Rule[]; baseline: { n: number; winRate: number; avgR: number } } | null;
   scanners: ScannerInsight[];
 }
@@ -115,8 +115,9 @@ export class MlService {
       scanners.push({ scannerId: id, scannerName: names[id] ?? id, samples: list.length, liveSamples: list.filter(s => !s.bt).length, baseline, model: m?.metrics ?? null, calibration: m?.calibration ?? null, importance: m?.importance.slice(0, 8) ?? [], rules });
     }
     scanners.sort((a, b) => b.samples - a.samples);
+    const resetAt = this.db.kvGet<number>('paper.resetAt') ?? 0;
     this.snapshot = {
-      trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, scannersWithModel: this.models.size,
+      trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, liveSinceReset: all.filter(s => !s.bt && s.at >= resetAt).length, scannersWithModel: this.models.size,
       global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
       scanners,
     };
@@ -158,6 +159,6 @@ export class MlService {
   }
 
   /** Snapshot plus the live drift report (`drift`) — this is what `GET /api/ml` returns (drift is reported even before the first training). */
-  insights(): MlSnapshot & { drift: DriftReport } { return { ...(this.snapshot ?? { trainedAt: null, samples: 0, liveSamples: 0, scannersWithModel: 0, global: null, scanners: [] }), drift: this.drift() }; }
+  insights(): MlSnapshot & { drift: DriftReport } { return { ...(this.snapshot ?? { trainedAt: null, samples: 0, liveSamples: 0, liveSinceReset: 0, scannersWithModel: 0, global: null, scanners: [] }), drift: this.drift() }; }
   insightFor(scannerId: string): ScannerInsight | null { return this.snapshot?.scanners.find(s => s.scannerId === scannerId) ?? null; }
 }

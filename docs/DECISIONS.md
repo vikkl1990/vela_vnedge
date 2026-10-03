@@ -1979,32 +1979,37 @@ rule stays red until it does.
 
 ## 71. One truth per number: the UI audit
 
-The operator asked whether the tabs tell different stories. Every page endpoint was pulled under
-one session and cross-checked: equity, net, fees and trade counts agree across Overview, Trades,
-Analytics, Learning and the equity curve (78 trades, −131.62 net, 177.50 fees). Three real
-conflicts and three unlabeled bases were found.
+The operator asked whether the tabs tell different stories, then asked for every difference to
+be fixed. Every page endpoint was pulled under one session and cross-checked: equity, net, fees
+and trade counts agreed across Overview, Trades, Analytics, Learning and the equity curve (78
+trades, −131.62 net, 177.50 fees). Six numbers had more than one source. Each now has one.
 
-**Fixed.**
-1. *Two drawdowns.* The ops monitor kept its equity peak in its own key and never learned about
-   the paper reset, so it alerted on a 25.3% drawdown from a peak the account no longer had while
-   the Risk page said 19.0%. The monitor now reads the risk manager's peak, so there is one
-   peak and one drawdown; its own key is only a fallback when no risk manager is wired.
-2. *Analytics scanner table did not sum to its own total.* The table listed enabled scanners
-   only; the total counted every closed trade. Disabled scanners carried −151.63 of the account's
-   losses, so the table showed +20.01 against a −131.62 total. Every scanner with account trades
-   now has a row, flagged "off" when disabled.
-3. *"Today" meant two things.* The header and Overview count trades closed since 00:00 UTC; the
-   Risk page's day figure is equity now against equity at 00:00 UTC, so it includes open
-   positions and can differ by the unrealised amount. Both stay (one is the journal, one is the
-   kill switch) and both are labeled.
-
-**Labeled, not changed.** Overview "Max drawdown" is the deepest trough of the closed-trade path;
-the Risk page's drawdown is right now from the peak including open positions. Overview "Realized"
-includes the closed legs and fees of open positions, which is why it sits a few cents off the
-Trades total. The Learn page's "account" sample count is all time, trades before resets included,
-so it exceeds the Trades page's count since the reset.
+1. **Peak and drawdown belong to the paper engine.** The ops monitor kept its own peak and never
+   learned about the paper reset (it alerted on 25.3% from a peak the account no longer had while
+   the Risk page said 19.0%); the risk manager kept a second peak; the Overview's "max drawdown"
+   was the deepest trough of the closed-trade path, which could sit *below* the drawdown right
+   now. The engine now tracks the peak since the reset and the worst drawdown from it on every
+   equity observation (`paper.peakEquity`, `paper.maxDrawdownPct`, rebuilt from the equity table
+   on first run, restarted by a reset). The Risk page, the ops monitor's alert, the Overview tile
+   and the leverage scaling all read it.
+2. **Closed versus open, not realised versus unrealised.** "Realized" included the banked legs
+   and fees of open positions, so it never matched the Trades total. Stats now carry `closedPnl`
+   and `closedFees` (the journal, what Trades sums) and `openPnl` (open positions' banked legs,
+   fees and mark), with equity = initial + closed + open. The Prometheus gauges follow
+   (`paper_closed_pnl`, `paper_open_pnl`).
+3. **One "today".** The header and Overview counted trades closed since 00:00 UTC; the Risk
+   page's day figure is equity now against equity at 00:00 UTC, open positions included, which is
+   what the daily kill switch watches. The journal version is gone; the header and the Overview
+   show the kill-switch figure.
+4. **Analytics scanner table sums to its total.** It listed enabled scanners only while the
+   total counted every closed trade; disabled scanners carried −151.63 of the losses, so the
+   table showed +20.01 against −131.62. Every scanner with account trades has a row, tagged "off"
+   when disabled.
+5. **ML "account" samples.** The count was all time, trades before resets included (198 against
+   78 on the Trades page). The Learn page now splits since-the-reset, earlier accounts, backtest.
+6. **Go-live realised risk** was the median over the whole journal, so the switch to risk sizing
+   (decision 69) would have taken months to show. It is the median of the last 30 closed trades.
 
 **Not a conflict.** The 18 global symbols are the feed subscription list; the account trades the
 nine markets in the live pairs; the market gate tracks 29. Different questions, not different
-answers. The go-live rule's realised-risk check reads 2.98% because it is the median over the
-journal, which is still mostly quality-sized trades; it will move as risk-sized trades close.
+answers.
