@@ -191,6 +191,9 @@ export class RiskManager extends EventEmitter implements RiskGate {
     return mult;
   }
 
+  /** Highest equity seen since the last paper reset. */
+  peakEquity(): number { return this.st.peakEquity; }
+
   drawdownPct(): number {
     const eq = this.paper.equity();
     return this.st.peakEquity > 0 ? Math.max(0, (this.st.peakEquity - eq) / this.st.peakEquity * 100) : 0;

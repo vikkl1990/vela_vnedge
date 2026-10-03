@@ -29,6 +29,8 @@ export interface OpsDeps {
   candles: CandleStore;
   scanners: { allBacktests(): unknown[]; on(ev: string, fn: (...a: any[]) => void): unknown };
   workers: WorkerTracker;
+  /** Risk manager's equity peak; makes the monitor's drawdown the same number the Risk page shows. */
+  peakEquity?: () => number;
   /** Test hook: replaces the Telegram transport. */
   transport?: (text: string) => Promise<void>;
 }
@@ -53,7 +55,7 @@ export class OpsService {
     this.workers = d.workers;
     this.pool = d.pool;
     this.alerts = new AlertManager({ repeatMinutes: cfg.alerts.repeatMinutes, maxPerHour: cfg.alerts.maxPerHour, transport: d.transport ?? null, telegram: telegramFromEnv(cfg.alerts.telegram) });
-    this.monitor = new Monitor({ cfg: d.cfg, db: d.db, alerts: this.alerts, workers: d.workers, dataDir: d.dataDir, feed: d.feed, pool: d.pool, paper: d.paper, candles: d.candles });
+    this.monitor = new Monitor({ cfg: d.cfg, db: d.db, alerts: this.alerts, workers: d.workers, dataDir: d.dataDir, feed: d.feed, pool: d.pool, paper: d.paper, candles: d.candles, peakEquity: d.peakEquity });
     this.backups = new BackupService(d.db, path.join(d.dataDir, 'backups'), () => ({ hourUtc: d.cfg().ops.backupHourUtc, keepDays: d.cfg().ops.backupKeepDays }));
     d.onConfigChange(next => {
       this.alerts.configure({ repeatMinutes: next.alerts.repeatMinutes, maxPerHour: next.alerts.maxPerHour, ...(d.transport ? {} : { telegram: telegramFromEnv(next.alerts.telegram) }) });

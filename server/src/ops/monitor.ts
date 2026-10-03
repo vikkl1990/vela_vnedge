@@ -22,6 +22,8 @@ export interface MonitorDeps {
   pool: { stats: { size: number; queued: number; busy: number; recycled?: number }; recyclesWithin?(windowMs: number, now?: number): number };
   paper: { stats(): any; trades(opts: { limit: number }): any[]; on(ev: 'trade', fn: (t: any) => void): unknown };
   candles: { tracked(): Array<{ symbol: string; tf: string; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant?: boolean }> };
+  /** The risk manager's equity peak (since the last paper reset). When present it is the only peak the monitor uses. */
+  peakEquity?: () => number;
   /** Optional overrides for tests. */
   now?: () => number;
   diskFree?: (dir: string) => number | null;
@@ -105,8 +107,12 @@ export class Monitor {
     if (stats && Number.isFinite(stats.equity)) {
       // A paper reset starts the peak again (the risk manager does the same); without this the
       // monitor kept the pre-reset peak and reported a drawdown the Risk page did not.
-      const resetAt = this.d.db.kvGet<number>('paper.resetAt') ?? null;
-      if (resetAt !== st.equityPeakResetAt) { st.equityPeak = stats.equity; st.equityPeakResetAt = resetAt; try { this.d.db.kvSet('ops.equityPeak', st.equityPeak); this.d.db.kvSet('ops.equityPeakResetAt', resetAt); } catch { /* ignore */ } }
+      const external = this.d.peakEquity?.();
+      if (external !== undefined && Number.isFinite(external) && external > 0) st.equityPeak = external;
+      else {
+        const resetAt = this.d.db.kvGet<number>('paper.resetAt') ?? null;
+        if (resetAt !== st.equityPeakResetAt) { st.equityPeak = stats.equity; st.equityPeakResetAt = resetAt; try { this.d.db.kvSet('ops.equityPeak', st.equityPeak); this.d.db.kvSet('ops.equityPeakResetAt', resetAt); } catch { /* ignore */ } }
+      }
       if (stats.equity > st.equityPeak) { st.equityPeak = stats.equity; try { this.d.db.kvSet('ops.equityPeak', st.equityPeak); } catch { /* ignore */ } }
       st.drawdownPct = st.equityPeak > 0 ? (st.equityPeak - stats.equity) / st.equityPeak * 100 : 0;
       if (st.drawdownPct >= cfg.alerts.drawdownPct) await a.raise('paper.drawdown', `🔴 Equity drawdown ${st.drawdownPct.toFixed(1)}% from peak ${fmtMoney(st.equityPeak)} → ${fmtMoney(stats.equity)} (limit ${cfg.alerts.drawdownPct}%)`, now);

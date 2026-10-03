@@ -1987,8 +1987,8 @@ conflicts and three unlabeled bases were found.
 **Fixed.**
 1. *Two drawdowns.* The ops monitor kept its equity peak in its own key and never learned about
    the paper reset, so it alerted on a 25.3% drawdown from a peak the account no longer had while
-   the Risk page said 19.0%. The monitor now restarts its peak when `paper.resetAt` changes, the
-   same bookkeeping the risk manager uses.
+   the Risk page said 19.0%. The monitor now reads the risk manager's peak, so there is one
+   peak and one drawdown; its own key is only a fallback when no risk manager is wired.
 2. *Analytics scanner table did not sum to its own total.* The table listed enabled scanners
    only; the total counted every closed trade. Disabled scanners carried −151.63 of the account's
    losses, so the table showed +20.01 against a −131.62 total. Every scanner with account trades

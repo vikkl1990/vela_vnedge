@@ -139,7 +139,7 @@ export class App {
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     wireRealtime(this);
-    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport });
+    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity() });
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
     process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
   }
