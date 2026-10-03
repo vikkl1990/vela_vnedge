@@ -320,7 +320,7 @@ export class ScannerEngine extends EventEmitter {
     for (const r of this.requiredSeries()) if (!this.candles.has(r.symbol, r.tf)) await this.candles.track(r.symbol, r.tf, cfg.historyBars);
     for (const s of new Set([...this.symbolsRef(), ...this.requiredSeries().map(r => r.symbol)])) if (!this.candles.has(s, '1m')) await this.candles.track(s, '1m', 300);
     const jobs: Promise<void>[] = [];
-    for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) {
+    for (const s of this.registry.all()) if (this.isActive(s)) for (const { symbol, tf } of this.pairsFor(s.id)) {
       if (!this.warmed.has(`${s.id}:${symbol}:${tf}`)) jobs.push(this.warm(s, symbol, tf));
     }
     if (jobs.length) { log.info(`warming ${jobs.length} scanner runs in the background`); void Promise.allSettled(jobs).then(() => { log.info('warm-up complete'); this.maybeAutoTune('refresh'); }); }
@@ -343,7 +343,7 @@ export class ScannerEngine extends EventEmitter {
     const s = this.registry.get(id);
     if (!s || s.status !== 'ok') return 0;
     let n = 0;
-    for (const symbol of this.symbolsFor(id)) for (const tf of this.timeframesFor(id)) { n++; this.runOnce(s, symbol, tf, { backtest: true, live: true }).catch(e => log.error(`run ${id} failed: ${e?.message ?? e}`)); }
+    for (const { symbol, tf } of this.pairsFor(id)) { n++; this.runOnce(s, symbol, tf, { backtest: true, live: true }).catch(e => log.error(`run ${id} failed: ${e?.message ?? e}`)); }
     return n;
   }
 

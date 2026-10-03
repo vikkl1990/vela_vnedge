@@ -211,6 +211,9 @@ test('decision 73: one contract across channels', () => {
   // an informational alert() does not silence an independent condition on the same bar
   const info = A('🟡 PATTERN DETECTED | DELTA:BTCUSD | TF: 15 | Price: 100', 10);
   assert.deepEqual(extractEvents([info, ac('Bullish Internal OB Breakout', 10)], []).map(e => [e.kind, e.source]), [['info', 'alert'], ['entry', 'alertcondition']]);
+  // an excluded or filtered alert() entry does not claim the bar either (the reviewer's residual case)
+  assert.deepEqual(extractEvents([A('🟢 LONG | DELTA:BTCUSD | TF: 15 | Price: 100 | SL: 90', 10), ac('Bullish Internal OB Breakout', 10)], [], { sources: ['alertcondition'] }).map(e => [e.kind, e.source]), [['entry', 'alertcondition']]);
+  assert.deepEqual(extractEvents([A('🟢 LONG | DELTA:BTCUSD | TF: 15 | Price: 100 | SL: 90', 10), ac('Bullish Internal OB Breakout', 10)], [], { labels: ['Bullish Internal'] }).map(e => [e.kind, e.source]), [['entry', 'alertcondition']]);
   // the allow-list decides before same-bar deduplication: the generic label never consumes the specific one
   const both = [ac('Bullish BOS', 10), ac('Higher Low MSS Sweep', 10)];
   assert.deepEqual(extractEvents(both, [], { labels: ['Higher Low MSS Sweep'] }).map(e => [e.kind, e.label]), [['entry', 'Higher Low MSS Sweep']]);

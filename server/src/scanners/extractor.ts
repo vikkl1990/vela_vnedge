@@ -284,11 +284,11 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     if (a.type === 'alertcondition') continue; // handled below, at lower priority than alert()
     const ev = parseAlert(a);
     if (!ev) continue;
-    // an alert() that carries a trade event owns its bar (its alertcondition twin would be a duplicate);
-    // an informational alert() does not silence an independent condition on the same bar
-    if (a.type === 'alert' && ev.kind !== 'info') alertBars.add(a.time);
     if (ev.kind === 'entry' && !allow('alert')) continue;
     if (ev.kind === 'entry' && !labelOk(ev.label)) continue;
+    // an alert() entry that is actually kept owns its bar (its alertcondition twin would be a duplicate);
+    // an informational, excluded or filtered alert() does not silence an independent condition on the same bar
+    if (a.type === 'alert' && ev.kind === 'entry') alertBars.add(a.time);
     const key = `${ev.kind}:${ev.side ?? ''}:${ev.barTime}:${ev.exitType ?? ''}`;
     if (ev.kind !== 'info' && seenEntry.has(key)) continue;
     seenEntry.add(key);

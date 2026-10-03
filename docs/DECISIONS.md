@@ -2151,3 +2151,31 @@ the quiet-feed fill can never pre-empt the symbol's fresh price.
 **What changes in the journal.** Entry prices will sit a tick or two worse on average than before
 and signals will show `pending` for a second or two before `opened`. Nothing is re-written: trades
 before this decision carry the old, slightly optimistic fill.
+
+## 76. One reading for every book, pairs everywhere, and a check that could not run is a refusal
+
+An outside flow review of the deployed source (commit 0176e01) listed six corrections. Four are
+done here, one was done by decision 75 the same evening, one is recorded as open.
+
+1. **The shadow book reads a scanner exactly as the account does.** The incubator's shadow runner
+   passed `sources` and `edge` to the extractor but not `labels` or `invert`, so a scanner whose
+   reading had been corrected (decision 67) was still measured the old way in the shadow book: its
+   evidence described a different strategy from the deployed one. Both options now flow through.
+   The shadow's deliberate differences stay: a $10M purse, relaxed caps, no account risk manager.
+2. **The residual same-bar suppression.** An `alert()` entry that the operator's `sources` or
+   `labels` excluded still claimed its bar and silenced an allowed `alertcondition()` on the same
+   bar. Only an alert() entry that is actually kept claims the bar now. Tested both ways.
+3. **Explicit pairs on every path.** Warm-up on refresh, the manual run-now button and the
+   walk-forward validation jobs enumerated symbols × timeframes; validation could therefore
+   describe cells the fleet never trades. All three use `pairsFor` (decision 70).
+4. **A check that could not run is a refusal.** With the market gate on, a market it had not
+   judged, or a verdict set older than three refresh periods, passed the risk gate as if judged
+   allowed. Both are refusals now, with the reason in the signal row. Off still means no opinion.
+5. **The latency window in candles mode** was the review's second qualification; decision 75.
+
+**Open.** Position creation is not transactional (position row, fill row, signal action and the
+emitted events are separate writes), and a reversal closes the existing position before the
+replacement has passed quote, fee, risk and sizing checks. With decision 75 the replacement is
+also pending, so a cancelled fill leaves the book flat where it was positioned. That is the
+honest outcome of a market order that could not be placed, but it should be a deliberate policy,
+and the writes should commit together. Next on the list, with the live funnel record.

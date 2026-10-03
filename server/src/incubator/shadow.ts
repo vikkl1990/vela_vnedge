@@ -118,7 +118,7 @@ export class ShadowRunner {
     this.labels.set(key, current);
     const lastBar = bars.at(-1)!;
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars, mode: 'live', newLabelKeys });
-    const events = extractEvents(res.alerts, res.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge });
+    const events = extractEvents(res.alerts, res.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert });
     const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';
     for (const ev of events) {
       const id = `${key}:${ev.barTime}:${ev.kind}:${ev.side ?? ''}:${ev.label}`;

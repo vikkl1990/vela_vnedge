@@ -42,6 +42,13 @@ test('markets today: dead, costly-book, thin-book, too quiet and losing markets 
   assert.equal(by.NOCANDLESUSD.allowed, true, 'no candles → no volatility opinion, not a block');
   assert.equal(by.EXEMPTUSD.allowed, true);
   assert.equal(gate.verdict('THINUSD')?.allowed, false);
+  // decision 76: while the gate is on, a market it never judged and a verdict set gone stale are refusals, not passes
+  const unknown = gate.verdict('NEVERJUDGEDUSD', now);
+  assert.equal(unknown?.allowed, false); assert.match(unknown!.reasons[0], /not judged/);
+  const later = now + (cfg.risk.marketGate.refreshMinutes * 3 + 1) * 60_000;
+  const stale = gate.verdict('GOODUSD', later);
+  assert.equal(stale?.allowed, false); assert.match(stale!.reasons[0], /min old/);
+  assert.equal(gate.verdict('GOODUSD', now)?.allowed, true, 'fresh and judged: the real verdict');
   cfg.risk.marketGate.enabled = false;
   assert.equal(gate.verdict('THINUSD'), null, 'off → no opinion');
 });

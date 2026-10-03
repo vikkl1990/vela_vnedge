@@ -54,9 +54,19 @@ export class MarketGate {
   private get cfg() { return this.deps.cfgRef().risk.marketGate; }
 
   /** The verdict for one market, or null when the gate is off or has no opinion yet. */
-  verdict(symbol: string): MarketVerdict | null {
+  /**
+   * The gate's opinion of a market. Null only when the gate is off (no opinion). When it is on, a market
+   * it has not judged, or a verdict set older than three refresh periods, is a refusal, not a pass: a
+   * check that could not run must not read as a check that passed (decision 76).
+   */
+  verdict(symbol: string, now = Date.now()): MarketVerdict | null {
     if (!this.cfg?.enabled) return null;
-    return this.state.markets.find(m => m.symbol === symbol) ?? null;
+    const refuse = (reason: string): MarketVerdict => ({ symbol, allowed: false, tracked: false, reasons: [reason], atrPct: null, turnoverUsd: null, spreadPct: null, bookCostPct: null, trades: 0, pf: null, netUsd: 0 });
+    const maxAgeMs = Math.max(1, this.cfg.refreshMinutes) * 3 * 60_000;
+    if (this.state.at > 0 && now - this.state.at > maxAgeMs) return refuse(`market verdicts are ${Math.round((now - this.state.at) / 60_000)} min old (refresh every ${this.cfg.refreshMinutes} min)`);
+    const m = this.state.markets.find(m => m.symbol === symbol);
+    if (!m) return refuse(this.state.at > 0 ? 'market not judged (outside the universe or below the turnover floor)' : 'markets not judged yet');
+    return m;
   }
 
   /** The symbols worth a verdict: the ones given plus every perpetual above the turnover floor (so a market the bot is not yet on is judged too). */
