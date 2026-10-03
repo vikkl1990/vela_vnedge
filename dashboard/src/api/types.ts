@@ -125,7 +125,10 @@ export interface LastRun {
   symbol: string
   tf: string
   error: string | null
+  funnel?: RunFunnel
 }
+/** What one run produced and where it emptied (decision 77). */
+export interface RunFunnel { raw: { alerts: number; conditions: number; shapes: number; labels: number; plots: number }; events: { entries: number; exits: number; info: number }; drops: Record<string, number>; actions: Record<string, number>; note?: string }
 
 /** The `?view=lite` shape: enough to resolve a name, a status and visibility, nothing more. */
 export interface ScannerIndexEntry {

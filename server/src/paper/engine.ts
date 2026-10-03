@@ -20,13 +20,15 @@ export interface EntryDecision {
 }
 
 /** Entry request passed to the portfolio risk layer (phase 3) before sizing. */
-export interface RiskEntryRequest { scannerId: string; symbol: string; tf: string; side: Side; price: number; sl: number; atr?: number; at: number }
+export interface RiskEntryRequest { scannerId: string; symbol: string; tf: string; side: Side; price: number; sl: number; atr?: number; at: number;
+  /** A reversal: the open position this entry replaces; it does not count against caps or exposure (decision 77). */
+  replacing?: number }
 /** Portfolio risk layer hook (implemented by risk/manager.ts; optional so the engine and tests work without it). */
 export interface RiskGate {
   /** Veto (`reject`) or scale (`leverageMult` ≤ 1 from drawdown scaling) an entry before sizing. */
   gate(req: RiskEntryRequest): { reject?: string; leverageMult: number };
   /** Correlation / exposure cap once the candidate's notional is known; returns a rejection reason or null. */
-  exposureCheck(req: { symbol: string; side: Side; tf: string; notional: number }): string | null;
+  exposureCheck(req: { symbol: string; side: Side; tf: string; notional: number; replacing?: number }): string | null;
 }
 
 /** A pending entry is abandoned this long after its latency window closes. */
@@ -267,7 +269,10 @@ export class PaperEngine extends EventEmitter {
       if (age > maxAge) return { action: 'rejected', reason: `stale signal: bar closed ${age.toFixed(0)}s ago (max ${maxAge}s)` };
     }
     const existing = this.findOpen(ctx.scannerId, ctx.symbol, ctx.tf);
-    let closed: Position | undefined;
+    // Reversal policy (decision 77): the replacement must pass every admission check — price, levels, fees,
+    // risk gate, size, exposure — with the existing position counted as gone; only then is the existing
+    // position closed. A replacement that cannot be admitted leaves the position as it was.
+    let replacing: Position | undefined;
     if (existing) {
       if (existing.side === ev.side) return { action: 'ignored', reason: 'already in position' };
       if (!cfg.allowReversal) return { action: 'ignored', reason: 'opposite signal while in position (reversal disabled)' };
@@ -275,36 +280,41 @@ export class PaperEngine extends EventEmitter {
       if (!reversalAllowed(existing, markNow, cfg)) {
         return { action: 'ignored', reason: `reversal held: position at ${openR(existing, markNow).toFixed(2)}R, below the ${cfg.reversalMinR}R needed to bank it` };
       }
-      const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
-      const exitQuote = this.marketPrice(existing.symbol, existing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
-      this.applyFills(existing, [fillExit(existing, exitQuote.price, existing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)]);
-      closed = existing;
+      replacing = existing;
     }
-    if (this.findPending(ctx.scannerId, ctx.symbol, ctx.tf)) return { action: 'ignored', reason: 'entry already pending', closed };
-    if (this.open.size + this.pending.size >= cfg.maxOpenPositions) return { action: 'rejected', reason: `max open positions (${cfg.maxOpenPositions})`, closed };
+    const refused = (reason: string): EntryDecision => ({ action: 'rejected', reason: replacing ? `reversal refused, position kept: ${reason}` : reason });
+    let closed: Position | undefined;
+    if (this.findPending(ctx.scannerId, ctx.symbol, ctx.tf)) return { action: 'ignored', reason: 'entry already pending' };
+    if (this.open.size + this.pending.size - (replacing ? 1 : 0) >= cfg.maxOpenPositions) return refused(`max open positions (${cfg.maxOpenPositions})`);
     // A market entry pays the spread: buy at the ask, sell at the bid when a fresh quote exists.
     // The script's own price is only a reference and is often minutes old by the time we act.
     const reference = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
     const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
-    if ('reject' in quoted) return { action: 'rejected', reason: `unpriceable: ${quoted.reject}`, closed };
+    if ('reject' in quoted) return refused(`unpriceable: ${quoted.reject}`);
     const price = quoted.price;
     this.fillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
-    if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
+    if ('error' in levels) return refused(levels.error);
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol);
-    if (feeErr) return { action: 'rejected', reason: feeErr, closed };
+    if (feeErr) return refused(feeErr);
     // portfolio risk layer: kill switches, position caps, cooldowns, regime filter, drawdown scaling
     let leverageMult = 1;
     if (this.risk) {
-      const g = this.risk.gate({ scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, price, sl: levels.sl, atr: ctx.atr, at: ctx.at });
-      if (g.reject) return { action: 'rejected', reason: `risk ${g.reject}`, closed };
+      const g = this.risk.gate({ scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, price, sl: levels.sl, atr: ctx.atr, at: ctx.at, replacing: replacing?.id });
+      if (g.reject) return refused(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult);
-    if (size.qty < 1) return { action: 'rejected', reason: size.reason ?? 'size', closed };
+    const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id);
+    if (size.qty < 1) return refused(size.reason ?? 'size');
     if (this.risk) {
-      const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price });
-      if (x) return { action: 'rejected', reason: `risk ${x}`, closed };
+      const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price, replacing: replacing?.id });
+      if (x) return refused(`risk ${x}`);
+    }
+    if (replacing) {
+      const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
+      const exitQuote = this.marketPrice(replacing.symbol, replacing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
+      this.applyFills(replacing, [fillExit(replacing, exitQuote.price, replacing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)]);
+      closed = replacing;
     }
     if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
@@ -320,10 +330,11 @@ export class PaperEngine extends EventEmitter {
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
   }
 
-  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number) {
+  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number) {
     const cfg = this.scaledCfg(leverageMult);
-    const openNotional = [...this.open.values()].reduce((a, p) => a + notionalOf(p), 0);
-    const reservedMargin = [...this.open.values()].reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0);
+    const others = [...this.open.values()].filter(p => p.id !== replacing);
+    const openNotional = others.reduce((a, p) => a + notionalOf(p), 0);
+    const reservedMargin = others.reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0);
     const wallet = this.book === 0 ? this.initialEquity + this.realizedPnl() : this.initialEquity;
     return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, cfg }, openNotional, score);
   }
@@ -331,9 +342,14 @@ export class PaperEngine extends EventEmitter {
   private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig): Position {
     // `quoted` entries already crossed the real spread; openPosition adds depth impact only
     const pos = openPosition({ ...p, id, cfg, bt: false, lastPriceBar: this.priceBars.get(p.symbol) });
+    // the position, its entry fill and the signal's outcome commit together; events go out only after the commit
+    // (decision 77: a crash between the writes used to leave a position without its order, or a signal pointing nowhere)
+    this.db.transaction(() => {
+      this.persist(pos);
+      this.persistFill(pos, pos.fills[0]);
+      if (pos.signalId) this.db.updateSignalAction(pos.signalId, 'opened', pos.id);
+    });
     this.open.set(id, pos);
-    this.persist(pos);
-    this.persistFill(pos, pos.fills[0]);
     this.emit('order', orderOf(pos, pos.fills[0]));   // the fill precedes the open position (executor: entry before bracket)
     this.emit('position', { type: 'opened', position: pos });
     this.recordEquity(true);
@@ -386,7 +402,6 @@ export class PaperEngine extends EventEmitter {
       if (x) return cancel(`risk ${x}`);
     }
     const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg);
-    if (pe.signalId) this.db.updateSignalAction(pe.signalId, 'opened', pos.id);
     return pos;
   }
 
@@ -788,8 +803,9 @@ export class PaperEngine extends EventEmitter {
   }
 
   private applyFills(pos: Position, fills: Fill[]) {
-    for (const f of fills) { this.persistFill(pos, f); this.emit('order', orderOf(pos, f)); }
-    this.persist(pos);
+    // every fill and the position's new state commit together; the order events follow the commit
+    this.db.transaction(() => { for (const f of fills) this.persistFill(pos, f); this.persist(pos); });
+    for (const f of fills) this.emit('order', orderOf(pos, f));
     if (pos.status === 'closed') {
       this.open.delete(pos.id);
       this.closedCache = null;

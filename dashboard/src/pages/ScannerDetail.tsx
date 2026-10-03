@@ -101,6 +101,15 @@ export function ScannerDetail() {
               {s.lastRun.error && <span className="loss"> · {s.lastRun.error}</span>}
             </div>
           )}
+          {s.lastRun?.funnel && (
+            <div className="small muted mt" title="What the last live run produced and where it emptied: raw script outputs → events the reader kept → outputs dropped, with the reason → what became of this bar's signals">
+              funnel: {s.lastRun.funnel.raw.alerts} alert() · {s.lastRun.funnel.raw.conditions} conditions · {s.lastRun.funnel.raw.shapes} shapes · {s.lastRun.funnel.raw.labels} labels
+              {' → '}{s.lastRun.funnel.events.entries} entries, {s.lastRun.funnel.events.exits} exits, {s.lastRun.funnel.events.info} info
+              {Object.keys(s.lastRun.funnel.drops).length > 0 && <> · dropped: {Object.entries(s.lastRun.funnel.drops).map(([k, n]) => `${k} ×${n}`).join(', ')}</>}
+              {Object.keys(s.lastRun.funnel.actions).length > 0 && <> → {Object.entries(s.lastRun.funnel.actions).map(([k, n]) => `${k} ×${n}`).join(', ')}</>}
+              {s.lastRun.funnel.note && <> · {s.lastRun.funnel.note}</>}
+            </div>
+          )}
         </div>
         <div className="page-actions">
           <button

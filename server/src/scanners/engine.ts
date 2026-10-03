@@ -26,7 +26,16 @@ import { ScriptHealth } from './health.ts';
 
 const log = logger.scoped('scanner');
 
-export interface RunInfo { at: number; ms: number; symbol: string; tf: string; error: string | null; barTime: number | null }
+export interface RunInfo { at: number; ms: number; symbol: string; tf: string; error: string | null; barTime: number | null; funnel?: RunFunnel }
+/** What one run produced and where it emptied: raw outputs → events → dropped-with-reason → signal outcomes (decision 77). */
+export interface RunFunnel {
+  raw: { alerts: number; conditions: number; shapes: number; labels: number; plots: number };
+  events: { entries: number; exits: number; info: number };
+  drops: Record<string, number>;
+  /** Outcomes of this bar's signals: opened, pending, reversed, info, and rejected/ignored by reason. */
+  actions: Record<string, number>;
+  note?: string;
+}
 
 /** Deeper candle source used for warm backtests only (see data/candleCache.ts). */
 export interface HistorySource { getHistory(symbol: string, tf: string, bars: number): Promise<Bar[]> }
@@ -365,6 +374,20 @@ export class ScannerEngine extends EventEmitter {
     for (const s of active) this.runOnce(s, symbol, tf, { backtest: false, live: true }).catch(e => log.error(`run ${s.id} ${symbol} ${tf} failed: ${e?.message ?? e}`));
   }
 
+  /** Store what this run produced and where it emptied, on the run record and in the row the Scanners page reads. */
+  private recordFunnel(id: string, symbol: string, tf: string, info: RunInfo, res: WorkerResult, events: RunFunnel['events'], drops: Record<string, number>, actions: string[], note?: string) {
+    const tally: Record<string, number> = {};
+    for (const a of actions) {
+      const k = a === 'opened' || a === 'reversed' || a === 'info' || a === 'none' ? a : a.startsWith('pending') ? 'pending' : `${a.split(':')[0]}: ${(a.split(':')[1] ?? '').trim().slice(0, 60)}`;
+      tally[k] = (tally[k] ?? 0) + 1;
+    }
+    info.funnel = {
+      raw: { alerts: res.alerts.filter(a => a.type === 'alert').length, conditions: res.alerts.filter(a => a.type === 'alertcondition').length, shapes: res.shapes.reduce((n, sh) => n + sh.times.length, 0), labels: res.labels.length, plots: res.plots.length },
+      events, drops, actions: tally, ...(note ? { note } : {}),
+    };
+    try { this.db.run('UPDATE scanner_runs SET funnel=? WHERE scanner_id=? AND symbol=? AND tf=?', JSON.stringify(info.funnel), id, symbol, tf); } catch { /* the record is advisory */ }
+  }
+
   // ---- the core run ----
 
   private async runOnce(s: LoadedScanner, symbol: string, tf: string, mode: { backtest: boolean; live: boolean }): Promise<void> {
@@ -437,13 +460,17 @@ export class ScannerEngine extends EventEmitter {
         const maxAge = cfg.paper.maxSignalAgeSec ?? 0;
         const barAge = PaperEngine.signalAgeSec({ barTime: lastBar.time }, tf, Date.now());
         if (maxAge > 0 && barAge > maxAge) {
+          this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: 0, exits: 0, info: 0 }, {}, [], `bar ${barAge.toFixed(0)}s old (max ${maxAge}s): stats only, no live signals`);
           log.debug(`${key}: last closed bar is ${barAge.toFixed(0)}s old (max ${maxAge}s) — stats only, no live signals`);
           this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });
           return;
         }
         const derived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
-        const events = extractEvents(liveRes.alerts, liveRes.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert });
+        const drops: Record<string, number> = {};
+        const events = extractEvents(liveRes.alerts, liveRes.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert, drops });
         for (const ev of events) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
+        const acts = this.db.all<{ action: string }>('SELECT action FROM signals WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time=?', s.id, symbol, tf, lastBar.time).map(r => r.action);
+        this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: events.filter(e => e.kind === 'entry').length, exits: events.filter(e => e.kind === 'exit').length, info: events.filter(e => e.kind === 'info').length }, drops, acts);
       }
       this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });
     } finally {

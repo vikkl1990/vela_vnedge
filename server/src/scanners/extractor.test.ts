@@ -218,3 +218,11 @@ test('decision 73: one contract across channels', () => {
   const both = [ac('Bullish BOS', 10), ac('Higher Low MSS Sweep', 10)];
   assert.deepEqual(extractEvents(both, [], { labels: ['Higher Low MSS Sweep'] }).map(e => [e.kind, e.label]), [['entry', 'Higher Low MSS Sweep']]);
 });
+
+test('decision 77: every dropped output is counted with its reason', () => {
+  const ac = (title: string, time: number) => ({ barIndex: 1, time, type: 'alertcondition' as const, title, message: title });
+  const drops: Record<string, number> = {};
+  const evs = extractEvents([A('🟢 LONG | DELTA:BTCUSD | TF: 15 | Price: 100 | SL: 90', 10), ac('Bullish Internal OB Breakout', 10), ac('Internal Bearish BOS', 20), ac('Equal Highs', 30)], [{ title: 'plot', times: [40] } as any], { drops });
+  assert.deepEqual(evs.map(e => [e.kind, e.source, e.barTime]), [['entry', 'alert', 10]]);
+  assert.deepEqual(drops, { 'condition: an alert() entry owned the bar': 1, 'condition: context title (BOS, CHoCH, divergence…)': 1, 'condition: no direction in title': 1, 'shape: no direction in title': 1 });
+});

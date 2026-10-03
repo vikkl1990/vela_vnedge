@@ -2179,3 +2179,34 @@ replacement has passed quote, fee, risk and sizing checks. With decision 75 the 
 also pending, so a cancelled fill leaves the book flat where it was positioned. That is the
 honest outcome of a market order that could not be placed, but it should be a deliberate policy,
 and the writes should commit together. Next on the list, with the live funnel record.
+
+## 77. Atomic position writes, an explicit reversal policy, and the live funnel
+
+The last two corrections from the flow review of 0176e01, plus the recording the "dead scanner"
+work needed.
+
+**Position, fill and signal outcome commit together.** Opening a position wrote the position row,
+the order row and the signal's action as three statements with events emitted between them; a crash
+mid-sequence left a position without its order or a signal pointing nowhere, and a subscriber could
+see an event for a row that never committed. `openAt` and `applyFills` now write inside one
+transaction and emit only after it. The signal's `opened` action is part of that transaction.
+
+**Reversal policy, stated.** An opposite signal while in position used to close the existing
+position first and only then run the replacement through pricing, levels, fees, the risk gate,
+sizing and exposure; a replacement that failed any of them left the book flat where it had been
+positioned. The policy is now: *the replacement must be admissible, judged with the existing
+position counted as gone, before the existing position is closed.* If it is not, nothing changes
+and the signal reads `rejected: reversal refused, position kept: <reason>`. The risk gate and the
+exposure check take the replaced position's id and leave it out of caps and beta exposure; sizing
+leaves its margin out. With decision 75 the replacement is then pending, so a fill-time refusal
+can still leave the book flat; that is the correct outcome of a market order the book would not
+take, and it is now the only way it happens.
+
+**The live funnel.** Every live run records, on its run row and on the Scanners page: raw outputs
+(alert(), conditions, shapes, labels, plots) → events kept (entries, exits, info) → every dropped
+output with its reason (channel excluded, label not in allow-list, an alert() entry owned the bar,
+context title, no direction in title, same state as the previous bar, same-bar duplicate,
+continuing shape state) → what became of the bar's signals (opened, pending, reversed, info, and
+rejected or ignored by reason), or the note that the bar was too old to act on. A quiet scanner now
+says which stage emptied. The per-family output contract remains the long-term item; this is the
+instrument that will show where it is needed first.

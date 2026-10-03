@@ -267,6 +267,8 @@ export interface ExtractOptions {
   labels?: string[];
   /** Read every entry the other way (decision 67): for scripts whose signal names describe the move that just happened — a rejection at the upper band, an exhaustion — rather than the trade to take. */
   invert?: boolean;
+  /** Filled with a count per reason for every output that did not become an event (the funnel, decision 77). */
+  drops?: Record<string, number>;
 }
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
@@ -279,26 +281,28 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   // ("Bullish BOS") must never consume the specific one the operator asked for ("MSS Sweeps:") on the same bar
   const allowLabels = (opts.labels ?? []).map(l => l.trim().toLowerCase()).filter(Boolean);
   const labelOk = (label: string | undefined) => !allowLabels.length || allowLabels.some(a => String(label ?? '').toLowerCase().startsWith(a));
+  const drop = (why: string) => { if (opts.drops) opts.drops[why] = (opts.drops[why] ?? 0) + 1; };
   for (const a of alerts) {
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     if (a.type === 'alertcondition') continue; // handled below, at lower priority than alert()
     const ev = parseAlert(a);
     if (!ev) continue;
-    if (ev.kind === 'entry' && !allow('alert')) continue;
-    if (ev.kind === 'entry' && !labelOk(ev.label)) continue;
+    if (ev.kind === 'entry' && !allow('alert')) { drop('alert(): channel excluded'); continue; }
+    if (ev.kind === 'entry' && !labelOk(ev.label)) { drop('alert(): label not in allow-list'); continue; }
     // an alert() entry that is actually kept owns its bar (its alertcondition twin would be a duplicate);
     // an informational, excluded or filtered alert() does not silence an independent condition on the same bar
     if (a.type === 'alert' && ev.kind === 'entry') alertBars.add(a.time);
     const key = `${ev.kind}:${ev.side ?? ''}:${ev.barTime}:${ev.exitType ?? ''}`;
-    if (ev.kind !== 'info' && seenEntry.has(key)) continue;
+    if (ev.kind !== 'info' && seenEntry.has(key)) { drop('alert(): same-bar duplicate'); continue; }
     seenEntry.add(key);
     events.push(ev);
   }
   // alertcondition() titles (LuxAlgo style: "Bullish Internal OB Breakout", "Upward Breakout") — only when no alert() fired that bar
   const lastCondBar = new Map<string, number>();
   for (const a of alerts) {
-    if (!allow('alertcondition')) break;
-    if (a.type !== 'alertcondition' || alertBars.has(a.time)) continue;
+    if (!allow('alertcondition')) { drop('condition: channel excluded'); break; }
+    if (a.type !== 'alertcondition') continue;
+    if (alertBars.has(a.time)) { drop('condition: an alert() entry owned the bar'); continue; }
     // PineTS can hand back a non-string title (e.g. a Series or number) — coerce before parsing
     const title = String(a.title ?? a.message ?? '').trim();
     const exit = conditionExit(title);
@@ -311,36 +315,36 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       continue;
     }
     const side = directionalTitle(title);
-    if (!side) continue;
+    if (!side) { drop('condition: no direction in title'); continue; }
     // the same word means the same thing on every channel: a BOS or CHoCH condition is context, like a BOS alert() —
     // unless the operator's allow-list names it, which is the explicit opt-in
-    if (INFO_ONLY.test(title) && !(allowLabels.length && labelOk(title))) continue;
-    if (!labelOk(title)) continue;
+    if (INFO_ONLY.test(title) && !(allowLabels.length && labelOk(title))) { drop('condition: context title (BOS, CHoCH, divergence…)'); continue; }
+    if (!labelOk(title)) { drop('condition: label not in allow-list'); continue; }
     if (opts.edge) {
       // consecutive bars of the same condition are one signal: keep the first bar of the run
       const k = `${title}|${side}`, prev = lastCondBar.get(k);
       lastCondBar.set(k, a.barIndex);
-      if (prev !== undefined && a.barIndex - prev <= 1) continue;
+      if (prev !== undefined && a.barIndex - prev <= 1) { drop('condition: same state as the previous bar'); continue; }
     }
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     const key = `entry:${side}:${a.time}:`;
-    if (seenEntry.has(key)) continue;
+    if (seenEntry.has(key)) { drop('condition: same-bar duplicate'); continue; }
     seenEntry.add(key);
     events.push({ kind: 'entry', side, tp: [], label: title.slice(0, 60), message: `alertcondition "${title}"${a.message && a.message !== title ? `: ${a.message}` : ''}`.slice(0, 500), source: 'alertcondition', barTime: a.time, barIndex: a.barIndex });
   }
   for (const d of opts.derived ?? []) {
     if (!allow('derived')) break;
     if (opts.sinceBarTime !== undefined && d.barTime < opts.sinceBarTime) continue;
-    if (d.kind === 'entry' && !labelOk(d.label)) continue;
+    if (d.kind === 'entry' && !labelOk(d.label)) { drop('rule: label not in allow-list'); continue; }
     const key = `${d.kind}:${d.side ?? ''}:${d.barTime}:`;
-    if (seenEntry.has(key)) continue;
+    if (seenEntry.has(key)) { drop('rule: same-bar duplicate'); continue; }
     seenEntry.add(key);
     events.push(d);
   }
   for (const s of shapes) {
     if (!allow('shape')) break;
     const side = shapeSide(s.title);
-    if (!side) continue;
+    if (!side) { drop('shape: no direction in title'); continue; }
     // a shape drawn on every bar of a state is one signal per run: the bar spacing is the smallest
     // gap between its own prints, and a print one spacing after the previous one continues the run
     const times = [...s.times].sort((a, b) => a - b);
@@ -350,11 +354,11 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     for (const t of times) {
       const continues = opts.edge && Number.isFinite(step) && t - prevT <= step * 1.5;
       prevT = t;
-      if (continues) continue;
+      if (continues) { drop('shape: continuing state'); continue; }
       if (opts.sinceBarTime !== undefined && t < opts.sinceBarTime) continue;
-      if (!labelOk(s.title)) continue;
+      if (!labelOk(s.title)) { drop('shape: label not in allow-list'); continue; }
       const key = `entry:${side}:${t}:`;
-      if (seenEntry.has(key)) continue;
+      if (seenEntry.has(key)) { drop('shape: same-bar duplicate'); continue; }
       seenEntry.add(key);
       events.push({ kind: 'entry', side, tp: [], label: s.title, message: `plotshape ${s.title}`, source: 'shape', barTime: t, barIndex: -1 });
     }

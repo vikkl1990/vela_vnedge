@@ -221,3 +221,23 @@ test('the engine owns one equity peak: drawdown now, the worst drawdown, and a r
   assert.equal(resumed.peakEquity(), cfg.paper.initialEquity);
   assert.equal(resumed.maxDrawdownPct(), 0);
 });
+
+test('decision 77: a reversal keeps the position unless the replacement passes admission', t => {
+  const { engine, open, cfg } = setup(t);
+  Object.assign(cfg.paper, { allowReversal: true, reversalMinR: 0 });
+  engine.onBar('BTCUSD', { time: 60_000, high: 110, low: 90, close: 100 }, 60_000);
+  const p = open('long');
+  assert.equal(p.status, 'open');
+  // an opposite signal whose stop is on the wrong side cannot be admitted: the long stays, the signal says why
+  const bad = engine.onEntry({ kind: 'entry', side: 'short', price: 100, sl: 95, tp: [], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_020, signalId: null, exitMode: 'both' });
+  assert.equal(bad.action, 'rejected');
+  assert.match(bad.reason ?? '', /^reversal refused, position kept: /);
+  assert.equal(p.status, 'open', 'the existing position was not closed for a replacement that could not be placed');
+  assert.equal(engine.openPositions().length, 1);
+  // an admissible opposite signal closes it and opens the other way in one decision
+  const good = engine.onEntry({ kind: 'entry', side: 'short', price: 100, sl: 105, tp: [95, 90, 85], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_030, signalId: null, exitMode: 'both' });
+  assert.equal(good.action, 'reversed');
+  assert.equal(p.status, 'closed'); assert.equal(p.exitReason, 'reversal');
+  assert.equal(good.closed?.id, p.id);
+  assert.equal(engine.openPositions()[0]?.side, 'short');
+});

@@ -147,7 +147,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     if (!c?.enabled) return { leverageMult: 1 };
     if (this.st.day.tripped) return reject(`daily loss limit ${c.maxDailyLossPct}% hit (${this.st.day.trippedPnlPct?.toFixed(2)}%)`);
     if (this.st.week.tripped) return reject(`weekly loss limit ${c.maxWeeklyLossPct}% hit (${this.st.week.trippedPnlPct?.toFixed(2)}%)`);
-    const open = this.paper.openPositions(), pending = this.paper.pendingEntries();
+    const open = this.paper.openPositions().filter(p => p.id !== req.replacing), pending = this.paper.pendingEntries();
     const total = open.length + pending.length;
     if (total >= c.maxPositionsTotal) return reject(`max positions ${c.maxPositionsTotal} reached`);
     const bySymbol = open.filter(p => p.symbol === req.symbol).length + pending.filter(p => p.symbol === req.symbol).length;
@@ -194,10 +194,10 @@ export class RiskManager extends EventEmitter implements RiskGate {
 
   drawdownPct(): number { return this.paper.drawdownPct(); }
 
-  exposureCheck(req: { symbol: string; side: Side; tf: string; notional: number }): string | null {
+  exposureCheck(req: { symbol: string; side: Side; tf: string; notional: number; replacing?: number }): string | null {
     const c = this.cfg;
     if (!c?.enabled || !(c.maxBetaExposurePct > 0)) return null;
-    const x = this.exposure(req.tf, { symbol: req.symbol, side: req.side, notional: req.notional });
+    const x = this.exposure(req.tf, { symbol: req.symbol, side: req.side, notional: req.notional }, req.replacing);
     const cap = c.maxBetaExposurePct;
     if (Math.abs(x.netBetaPct) > cap) {
       const reason = `beta exposure ${x.netBetaPct.toFixed(0)}% of equity would exceed ±${cap}% (corr ${req.symbol}/BTCUSD ${x.candidateCorr?.toFixed(2) ?? 'n/a'})`;
@@ -208,7 +208,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
   }
 
   /** BTC-beta exposure: Σ side × notional × corr(symbol, BTCUSD) over open positions (+ an optional candidate), as % of equity. */
-  exposure(tf: string, candidate?: { symbol: string; side: Side; notional: number }) {
+  exposure(tf: string, candidate?: { symbol: string; side: Side; notional: number }, exclude?: number) {
     const eq = this.paper.equity() || 1;
     const corrCache = new Map<string, number | null>();
     const corrOf = (symbol: string): number | null => {
@@ -233,7 +233,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
       rows.push({ symbol, side, notional, corr, beta });
       net += sign * notional; netBeta += beta;
     };
-    for (const p of this.paper.openPositions()) add(p.symbol, p.side, notionalOf(p));
+    for (const p of this.paper.openPositions()) if (p.id !== exclude) add(p.symbol, p.side, notionalOf(p));
     if (candidate) add(candidate.symbol, candidate.side, candidate.notional);
     return { netNotional: net, netBetaNotional: netBeta, netPct: net / eq * 100, netBetaPct: netBeta / eq * 100, rows, candidateCorr: candidate ? corrOf(candidate.symbol) : null };
   }
