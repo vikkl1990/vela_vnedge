@@ -8,6 +8,9 @@ import {
 
 const log = logger.scoped('paper');
 
+/** Pricing provenance belongs to one fill, never to an engine-wide pending context. */
+interface FillContext { ref?: number; source?: 'quote' | 'slippage' | 'exchange' }
+
 export interface MarketInfo { contractValue: number; tickSize: number }
 
 export interface EntryDecision {
@@ -187,15 +190,6 @@ export class PaperEngine extends EventEmitter {
   } | null = null;
 
   /**
-   * What each fill was priced against, captured at the moment it happened.
-   *
-   * The simulated cost is only as good as `slippageBps`, and the edge is thin enough that a few
-   * basis points decide it. Recording the live book alongside every fill lets the assumption be
-   * audited against the market actually traded, rather than assumed correct for months.
-   */
-  private fillContext: { ref?: number; source?: 'quote' | 'slippage' | 'exchange' } = {};
-
-  /**
    * Price a market-style fill. With a fresh quote we cross the real spread (buy at ask,
    * sell at bid); otherwise we fall back to the configured slippage around `reference`.
    */
@@ -292,7 +286,7 @@ export class PaperEngine extends EventEmitter {
     const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
     if ('reject' in quoted) return refused(`unpriceable: ${quoted.reject}`);
     const price = quoted.price;
-    this.fillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
+    const entryContext: FillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return refused(levels.error);
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol);
@@ -313,7 +307,7 @@ export class PaperEngine extends EventEmitter {
     if (replacing) {
       const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
       const exitQuote = this.marketPrice(replacing.symbol, replacing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
-      this.applyFills(replacing, [fillExit(replacing, exitQuote.price, replacing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)]);
+      this.applyFills(replacing, [fillExit(replacing, exitQuote.price, replacing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref, source: exitQuote.source });
       closed = replacing;
     }
     if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
@@ -326,7 +320,7 @@ export class PaperEngine extends EventEmitter {
       log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
       return { action: 'pending', reason: this.tapeMode ? 'awaiting tape fill' : 'awaiting fill after the latency window', pendingId: id, closed };
     }
-    const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg);
+    const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg, entryContext);
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
   }
 
@@ -339,14 +333,14 @@ export class PaperEngine extends EventEmitter {
     return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, cfg }, openNotional, score);
   }
 
-  private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig): Position {
+  private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig, context: FillContext): Position {
     // `quoted` entries already crossed the real spread; openPosition adds depth impact only
     const pos = openPosition({ ...p, id, cfg, bt: false, lastPriceBar: this.priceBars.get(p.symbol) });
     // the position, its entry fill and the signal's outcome commit together; events go out only after the commit
     // (decision 77: a crash between the writes used to leave a position without its order, or a signal pointing nowhere)
     this.db.transaction(() => {
       this.persist(pos);
-      this.persistFill(pos, pos.fills[0]);
+      this.persistFill(pos, pos.fills[0], context);
       if (pos.signalId) this.db.updateSignalAction(pos.signalId, 'opened', pos.id);
     });
     this.open.set(id, pos);
@@ -375,10 +369,11 @@ export class PaperEngine extends EventEmitter {
     // a candle-sourced fill is a market order against the book at that moment: it pays the spread through the
     // live quote when one is fresh, otherwise the slippage assumption (the same pricing the immediate fill used)
     let quoted = false;
+    const context: FillContext = { ref: priceIn, source: 'slippage' };
     if (source === 'candle') {
       const q = this.entryPrice(pe.symbol, pe.side === 'long' ? 'buy' : 'sell', price, cfg, receivedAt);
       if ('reject' in q) return cancel(`unpriceable: ${q.reject}`);
-      this.fillContext = { ref: price, source: q.quoted ? 'quote' : 'slippage' };
+      context.source = q.quoted ? 'quote' : 'slippage';
       price = q.price; quoted = q.quoted;
     }
     // the signal's levels are absolute; the fill price must still sit on the right side of them
@@ -401,7 +396,7 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price });
       if (x) return cancel(`risk ${x}`);
     }
-    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg);
+    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg, context);
     return pos;
   }
 
@@ -594,8 +589,7 @@ export class PaperEngine extends EventEmitter {
     if (leg > 0 && pos.tpHit[leg - 1] !== undefined) pos.tpHit[leg - 1] = true;
     const fill = fillExit(pos, f.price, f.qty, f.reason, f.at, cfg, false);
     if (f.fee !== null) { pos.fees += f.fee - fill.fee; fill.fee = f.fee; }
-    this.fillContext = { source: 'exchange' };
-    this.applyFills(pos, [fill]);
+    this.applyFills(pos, [fill], { source: 'exchange' });
     this.recordPath(pos, f.price, f.at, f.reason, `${f.qty} at ${f.price} (exchange)`);
     log.info(`EXIT ADOPTED #${pos.id} ${pos.symbol} ${f.reason} ${f.qty} @ ${f.price} (exchange)`);
     return pos;
@@ -790,21 +784,20 @@ export class PaperEngine extends EventEmitter {
     this.db.run('UPDATE positions SET peak_r=?, peak_at=?, worst_r=?, worst_at=? WHERE id=?', p.peakR ?? null, p.peakAt ?? null, p.worstR ?? null, p.worstAt ?? null, p.id);
   }
 
-  private persistFill(p: Position, f: Fill) {
+  private persistFill(p: Position, f: Fill, ctx: FillContext = {}) {
     const side = fillSide(p, f);
-    const q = this.quotes?.markState?.(p.symbol);
-    const ctx = this.fillContext;
+    // Funding is a cash adjustment, not a market execution with a quote/spread.
+    const q = f.reason === 'funding' ? undefined : this.quotes?.markState?.(p.symbol);
     this.db.run(
       'INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt, ref_price, bid, ask, quote_at, price_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason, this.book,
       ctx.ref ?? null, q?.bestBid ?? null, q?.bestAsk ?? null, q?.quoteAt ?? null, ctx.source ?? null,
     );
-    this.fillContext = {};
   }
 
-  private applyFills(pos: Position, fills: Fill[]) {
+  private applyFills(pos: Position, fills: Fill[], context: FillContext = {}) {
     // every fill and the position's new state commit together; the order events follow the commit
-    this.db.transaction(() => { for (const f of fills) this.persistFill(pos, f); this.persist(pos); });
+    this.db.transaction(() => { for (const f of fills) this.persistFill(pos, f, context); this.persist(pos); });
     for (const f of fills) this.emit('order', orderOf(pos, f));
     if (pos.status === 'closed') {
       this.open.delete(pos.id);

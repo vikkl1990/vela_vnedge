@@ -241,3 +241,90 @@ test('decision 77: a reversal keeps the position unless the replacement passes a
   assert.equal(good.closed?.id, p.id);
   assert.equal(engine.openPositions()[0]?.side, 'short');
 });
+
+function otherEntry(engine: PaperEngine, at = 60_020) {
+  return engine.onEntry({ kind: 'entry', side: 'long', price: 10, sl: 9, tp: [11, 12, 13], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 'other', scannerName: 'other', symbol: 'ETHUSD', tf: '15m', market: { tickSize: 0.01, contractValue: 1 }, refPrice: 10, at, signalId: null, exitMode: 'both' });
+}
+
+test('fill provenance: a rejected entry cannot contaminate another symbol stop', t => {
+  const { engine, db, open } = setup(t);
+  const p = open();
+  engine.risk = { gate: () => ({ reject: 'test halt', leverageMult: 1 }), exposureCheck: () => null };
+  assert.equal(otherEntry(engine).action, 'rejected');
+  engine.onBar('BTCUSD', { time: 120_000, high: 100, low: 94, close: 94 }, 120_010);
+  const exit = db.get<any>('SELECT * FROM orders WHERE position_id=? AND reason=?', p.id, 'sl');
+  assert.ok(exit);
+  assert.equal(exit.ref_price, null);
+  assert.equal(exit.price_source, null);
+  const entry = db.get<any>('SELECT * FROM orders WHERE position_id=? AND reason=?', p.id, 'entry');
+  assert.equal(entry.ref_price, 100);
+  assert.equal(entry.price_source, 'slippage');
+});
+
+test('fill provenance: funding has no execution quote or rejected-entry context', t => {
+  const { engine, db, open, cfg } = setup(t);
+  cfg.paper.fundingCharges = true;
+  const p = open();
+  engine.quotes = { executable: () => null, markState: () => ({ bestBid: 99, bestAsk: 101, at: 60_030, quoteAt: 60_030 }) };
+  engine.risk = { gate: () => ({ reject: 'test halt', leverageMult: 1 }), exposureCheck: () => null };
+  // Let this reach admission after pricing rather than the missing-quote check.
+  cfg.paper.requireQuote = false;
+  assert.equal(otherEntry(engine).action, 'rejected');
+  assert.equal(engine.chargeFunding('BTCUSD', 0.01, 60_040), 1);
+  const row = db.get<any>('SELECT * FROM orders WHERE position_id=? AND reason=?', p.id, 'funding');
+  for (const key of ['ref_price', 'price_source', 'bid', 'ask', 'quote_at']) assert.equal(row[key], null, key);
+});
+
+test('fill provenance: pending tape entry uses its fill-time reference after an unrelated rejection', t => {
+  const { engine, db, queue } = tapeSetup(t);
+  assert.equal(queue().action, 'pending');
+  engine.risk = { gate: () => ({ reject: 'test halt', leverageMult: 1 }), exposureCheck: () => null };
+  assert.equal(otherEntry(engine, 1_100).action, 'rejected');
+  engine.risk = null;
+  engine.onTrade('BTCUSD', 101, 1, 2_000, 2_000);
+  const row = db.get<any>("SELECT * FROM orders WHERE symbol='BTCUSD' AND reason='entry'");
+  assert.ok(row);
+  assert.equal(row.ref_price, 101);
+  assert.equal(row.price_source, 'slippage');
+});
+
+test('fill provenance: reversal close and replacement entry both retain their provenance', t => {
+  const { engine, db, open, cfg } = setup(t);
+  Object.assign(cfg.paper, { allowReversal: true, reversalMinR: 0, useSpread: false });
+  const p = open();
+  engine.setMark('BTCUSD', 102);
+  const result = engine.onEntry({ kind: 'entry', side: 'short', price: 101, sl: 106, tp: [96, 91, 86], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 102, at: 60_030, signalId: null, exitMode: 'both' });
+  assert.equal(result.action, 'reversed');
+  const exit = db.get<any>("SELECT * FROM orders WHERE position_id=? AND reason='reversal'", p.id);
+  const entry = db.get<any>("SELECT * FROM orders WHERE position_id=? AND reason='entry'", result.position!.id);
+  assert.equal(exit.ref_price, 101);
+  assert.equal(exit.price_source, 'slippage');
+  assert.equal(entry.ref_price, 101);
+  assert.equal(entry.price_source, 'slippage');
+});
+
+test('fill provenance: delayed candle entry records its execution quote reference', t => {
+  const { engine, db, cfg } = setup(t);
+  Object.assign(cfg.paper, { latencyMs: 100, useSpread: true, requireQuote: true });
+  engine.quotes = { executable: () => 10.1, markState: () => ({ bestBid: 10, bestAsk: 10.1, at: 60_200, quoteAt: 60_200 }) };
+  assert.equal(otherEntry(engine).action, 'pending');
+  engine.onBar('ETHUSD', { time: 60_000, high: 10.2, low: 10, close: 10.05 }, 60_200);
+  const row = db.get<any>("SELECT * FROM orders WHERE symbol='ETHUSD' AND reason='entry'");
+  assert.ok(row);
+  assert.equal(row.ref_price, 10.05);
+  assert.equal(row.price_source, 'quote');
+  assert.equal(row.ask, 10.1);
+});
+
+test('fill provenance: adopted exchange exit retains exchange source without a foreign reference', t => {
+  const { engine, db, open } = setup(t);
+  const p = open();
+  engine.risk = { gate: () => ({ reject: 'test halt', leverageMult: 1 }), exposureCheck: () => null };
+  assert.equal(otherEntry(engine).action, 'rejected');
+  engine.adoptExitFill(p.id, { price: 96, qty: p.qtyOpen, fee: 0.1, reason: 'sl', at: 60_040 });
+  const row = db.get<any>("SELECT * FROM orders WHERE position_id=? AND reason='sl'", p.id);
+  assert.equal(row.ref_price, null);
+  assert.equal(row.price_source, 'exchange');
+});
