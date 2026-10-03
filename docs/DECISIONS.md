@@ -1933,3 +1933,21 @@ chart we run it on; with 4h it fires, and pays on 4h in 5 of 12 cells. Dynamic R
 were being read as the move they describe; inverted, its 1h cells turn positive. The allow-lists
 were chosen on this same history, so the halves check is the only guard; the journal decides.
 All eight readings are live on the VM.
+
+## 69. The sudden stop losses: every stop was costing 3% of equity, not 1%
+
+The account's sizing mode on the VM was `quality`: notional = equity × a leverage chosen from the
+signal's score, 5× when the script publishes no score (nearly all do not), halved to 2.5× by the
+drawdown scaler once equity sat 10% under its peak. The stop then decides the loss: 2.5× equity ×
+a 0.65–1.0% stop = 1.6–2.6% of equity, held under the 3% `maxStopLossPct` cap. The configured
+`riskPerTradePct` of 1% is not consulted in that mode. Measured over the 78 closed account trades:
+risk per trade at entry median 2.98% of equity (the cap), loss at the stop median 2.69%, 28 stops,
+equity 1,000 → 1,071 → 868. Each stop was a third of the intended size's worth of account, which is
+what "sudden" meant: one losing session took 10%.
+
+The account now sizes in `risk` mode: one contract more than the stop allows for 1% of equity, the
+3% cap still above it. Winners shrink in dollars by the same factor; R is unchanged, which is why
+the journal's R statistics had not shown it. The go-live rule now carries a seventh check — risk
+actually taken per trade, median of `risk_amount` over the equity at entry, must be ≤ 1.5% — and its
+survival Monte Carlo runs on that measured figure instead of the configured one, which had been
+flattering it by a factor of three.

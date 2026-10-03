@@ -415,6 +415,17 @@ export class App {
   }
 
   /** Cross-sectional analytics: pairs, scanners, scanner×pair matrix, exits and time-of-day, for backtest and live. */
+  /** Median risk per closed account trade as a share of the equity at entry, from the journal; null before five trades. */
+  realisedRiskPct(): number | null {
+    const rows = this.db.all<{ risk: number; at: number }>("SELECT risk_amount AS risk, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND risk_amount > 0 ORDER BY entry_at");
+    if (rows.length < 5) return null;
+    const eq = this.db.all<{ at: number; equity: number }>('SELECT at, equity FROM equity WHERE scanner_id IS NULL ORDER BY at');
+    let j = 0; const pcts: number[] = [];
+    for (const r of rows) { while (j + 1 < eq.length && eq[j + 1].at <= r.at) j++; const e = eq[j]?.equity; if (e && e > 0) pcts.push(r.risk / e * 100); }
+    if (pcts.length < 5) return null;
+    pcts.sort((a, b) => a - b); return pcts[pcts.length >> 1];
+  }
+
   /** What the journal teaches, in R, for the live book and the shadow book (decision 63). */
   learning() {
     const toLearn = (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount });
@@ -433,7 +444,8 @@ export class App {
     const riskState = this.risk.state();
     const golive = goLive({
       rs: [...liveTrades].sort((a, b) => a.exitAt! - b.exitAt!).map(t => (typeof t.rMultiple === 'number' && Number.isFinite(t.rMultiple) ? t.rMultiple : 0)),
-      tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,
+      // the risk actually taken, not the configured intention: quality sizing and the stop cap set the size, so measure risk_amount against equity at entry (decision 69)
+      tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: this.realisedRiskPct() ?? cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,
       drawdownAlertPct: cfg.risk.ddScale?.[0]?.ddPct ?? 10, lb90: live.lb90, haltsInWindow: halts + (riskState.day.tripped ? 1 : 0) + (riskState.week.tripped ? 1 : 0), alertsConfigured: this.ops.alerts.configured,
     });
     return { at: Date.now(), live, shadow: { ...shadow, windowDays: 30 }, funnel, golive };

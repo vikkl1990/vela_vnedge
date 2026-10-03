@@ -18,4 +18,6 @@ test('goLive: every check carries its number and the rule; all must pass', () =>
   assert.equal(v.ok, true, JSON.stringify(v.checks.filter(c => !c.ok)));
   const w = goLive({ rs: rs.slice(0, 50), tradesPerDay: 10, riskPct: 1, dailyLossPct: 15, maxLossPct: 30, drawdownAlertPct: 10, lb90: -0.1, haltsInWindow: 1, alertsConfigured: false, paths: 500 });
   assert.equal(w.ok, false); assert.deepEqual(w.checks.filter(c => !c.ok).map(c => c.key).sort(), ['alerts', 'expectancy', 'halts', 'trades']);
+  const r3 = goLive({ rs, tradesPerDay: 10, riskPct: 3, dailyLossPct: 15, maxLossPct: 30, drawdownAlertPct: 10, lb90: 0.05, haltsInWindow: 0, alertsConfigured: true, paths: 500 });
+  assert.ok(r3.checks.find(c => c.key === 'risk')!.ok === false, '3% per trade fails the risk check');
 });
