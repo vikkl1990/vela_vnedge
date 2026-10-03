@@ -10,7 +10,7 @@
     "backtest": "node --no-warnings=ExperimentalWarning src/cli/backtest.ts",
     "compat": "node --no-warnings=ExperimentalWarning src/cli/compat.ts",
     "verdict": "node --no-warnings=ExperimentalWarning src/cli/verdict.ts",
-    "test": "node --no-warnings=ExperimentalWarning --test src/**/*.test.ts",
+    "test": "node --no-warnings=ExperimentalWarning --test --test-concurrency=2 'src/**/*.test.ts' 'test/**/*.test.ts'",
     "exits": "node --no-warnings=ExperimentalWarning src/cli/exits.ts",
     "losses": "node --no-warnings=ExperimentalWarning src/cli/losses.ts",
     "timeframes": "node --no-warnings=ExperimentalWarning src/cli/timeframes.ts",

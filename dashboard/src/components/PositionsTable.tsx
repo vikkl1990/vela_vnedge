@@ -1,8 +1,8 @@
 import { memo, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useClosePosition, useConfig, useExecution, useMarkets } from '../api/queries'
-import type { Position } from '../api/types'
-import { fmtInt, fmtMoney, fmtPrice, fmtR, timeAgo } from '../lib/format'
+import type { Config, Position } from '../api/types'
+import { fmtAge, fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
 import { useToast } from '../lib/toast'
 import { useLivePrice, useLiveTick } from '../sse/prices'
 import { DataTable, type Column } from './DataTable'
@@ -25,7 +25,7 @@ function livePnl(p: Position, price: number | undefined): number {
 const LiveMark = memo(function LiveMark({ p, tick }: { p: Position; tick?: number }) {
   const { price, ageMs, stale } = useLiveTick(p.symbol, p.markPrice)
   return (
-    <span className={`mono ${stale ? 'price-stale' : ''}`} title={stale ? `no tick for ${ageMs === null ? 'this symbol yet' : timeAgo(Date.now() - ageMs)} — this is the server's last value, so the P&L beside it may be out of date` : undefined}>
+    <span className={`mono ${stale ? 'price-stale' : ''}`} title={stale ? `no tick for ${ageMs === null ? 'this symbol yet' : fmtAge(ageMs)} — this is the server's last value, so the P&L beside it may be out of date` : undefined}>
       {fmtPrice(price ?? p.markPrice, tick)}
     </span>
   )
@@ -50,8 +50,8 @@ const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
  */
 /** The exit rules in force, from the live config (decisions 34, 36, 50); the defaults are today's. */
 type ExitRules = { floorAtR: number; floorKeepR: number; trailAfterR: number; keepPct: number }
-function exitRules(cfg: any): ExitRules {
-  const paper = cfg?.paper ?? {}
+function exitRules(cfg: Config | null | undefined): ExitRules {
+  const paper = (cfg?.paper ?? {}) as unknown as Partial<Record<'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct', number>>
   return { floorAtR: paper.floorAtR ?? 0.5, floorKeepR: paper.floorKeepR ?? 0.25, trailAfterR: paper.trailAfterR ?? 1, keepPct: 100 - (paper.trailGiveBackPct ?? 40) }
 }
 

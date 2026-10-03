@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { qk, useConfig, useMarkets, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
 import { useQueryClient } from '@tanstack/react-query'
@@ -56,8 +56,10 @@ export function Scanners() {
   // Render the grid in pages. Every scanner stays reachable, but a category with hundreds of
   // scripts no longer builds 20+ screens of cards before the page is usable.
   const PAGE = 60
-  const [shown, setShown] = useState(PAGE)
-  useEffect(() => setShown(PAGE), [cat, filteredScanners])
+  // the page count is keyed on what is being paged, so a new category or filter starts again at one page without an effect
+  const pageKey = `${cat}|${filteredScanners.map((x) => x.id).join(',')}`
+  const [page, setPage] = useState<{ key: string; n: number }>({ key: pageKey, n: PAGE })
+  const shown = page.key === pageKey ? page.n : PAGE
   const visibleRows = useMemo(() => rows.slice(0, shown), [rows, shown])
   const authors = useMemo(() => ['All', ...Array.from(new Set((scanners.data ?? []).map((s) => s.author ?? 'WillyAlgoTrader')))], [scanners.data])
   const hiddenCount = (scanners.data ?? []).filter((s) => s.hidden).length
@@ -344,10 +346,10 @@ export function Scanners() {
       )}
       {scanners.data && view === 'cards' && rows.length > visibleRows.length && (
         <div className="more-row">
-          <button type="button" className="btn" onClick={() => setShown((n) => n + PAGE)}>
+          <button type="button" className="btn" onClick={() => setPage({ key: pageKey, n: shown + PAGE })}>
             Show {Math.min(PAGE, rows.length - visibleRows.length)} more
           </button>
-          <button type="button" className="btn btn-quiet" onClick={() => setShown(rows.length)}>
+          <button type="button" className="btn btn-quiet" onClick={() => setPage({ key: pageKey, n: rows.length })}>
             Show all {rows.length}
           </button>
           <span className="muted small mono">

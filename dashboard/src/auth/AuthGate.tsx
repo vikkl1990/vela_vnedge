@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- this file deliberately exports hooks and constants beside its components */
 /**
  * Decides whether to show the application, the sign-in form, or first-run setup.
  *

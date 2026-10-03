@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- this file deliberately exports hooks and constants beside its components */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { ApiError } from '../api/client'
 import type { ScannerStatus, Side } from '../api/types'

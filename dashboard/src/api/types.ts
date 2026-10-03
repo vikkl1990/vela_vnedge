@@ -486,7 +486,7 @@ export interface GoLiveCheck { key: string; label: string; ok: boolean; value: s
 export interface GoLiveVerdict { ok: boolean; checks: GoLiveCheck[]; sim: { paths: number; days: number; breachPct: number; dailyBreachPct: number; maxLossBreachPct: number; dd50Pct: number; dd95Pct: number; medianEndPct: number } | null }
 export interface Learning {
   at: number; live: BookLearning; shadow: BookLearning
-  funnel: { stages: Record<string, number>; lastHunt: any; shadowAgeDays: { median: number | null; over30: number }; gate: any }
+  funnel: { stages: Record<string, number>; lastHunt: { at?: number; [k: string]: unknown } | null; shadowAgeDays: { median: number | null; over30: number }; gate: Record<string, unknown> }
   golive?: GoLiveVerdict
 }
 export interface Analytics {

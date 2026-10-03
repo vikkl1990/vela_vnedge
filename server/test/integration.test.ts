@@ -153,7 +153,11 @@ test('bar close → scanner run → signal → paper position (exactly one close
   assert.equal(closedCounts.get(`5m:${T0}`), 1);
   const [sig] = await signal;
   assert.equal(sig.kind, 'entry'); assert.equal(sig.side, 'long'); assert.equal(sig.barTime, T0);
-  assert.equal(sig.action, 'opened', `signal action ${sig.action}`);
+  // decision 75: the entry waits out the latency window and fills at the first price after it
+  assert.match(sig.action, /^pending/, `signal action ${sig.action}`);
+  assert.equal(app.paper.openPositions().length, 0, 'nothing is open inside the latency window');
+  setNow(T0 + TF + 8_000);
+  feed.push('1m', bar(T0 + TF, 50_520, 50_521));
   const open = app.paper.openPositions();
   assert.equal(open.length, 1);
   assert.equal(open[0].side, 'long'); assert.equal(open[0].sl, 50_420); assert.deepEqual(open[0].tp, [50_570, 50_620, 50_670]);
@@ -213,8 +217,9 @@ test('a gap on bar close is detected and backfilled from REST; closes stay exact
   assert.equal(closedCounts.get(`5m:${T0 + 4 * TF}`), 1);
   assert.equal([...closedCounts.values()].every(n => n === 1), true, 'every bar closed exactly once');
   const h = await getJson('/api/health');
-  // 2 five-minute bars filled; the 5 one-minute bars skipped by the 1m replay above are unfillable (REST has none)
-  assert.equal(h.body.integrity.gapsFound, 7); assert.equal(h.body.integrity.gapsFilled, 2); assert.equal(h.body.integrity.gapsUnfillable, 5);
+  // 2 five-minute bars filled; the one-minute bars skipped by the 1m replay above (which now opens with the
+  // fill bar at T0+TF, decision 75) are unfillable: REST has none
+  assert.equal(h.body.integrity.gapsFound, 6, JSON.stringify(h.body.integrity)); assert.equal(h.body.integrity.gapsFilled, 2); assert.equal(h.body.integrity.gapsUnfillable, 4);
   const integ = await getJson('/api/ops/integrity');
   assert.equal(integ.body.series.find((s: any) => s.tf === '5m').gaps.length, 0);
 });

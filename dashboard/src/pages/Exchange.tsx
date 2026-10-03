@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useExchangeCloseAll, useExecution, usePositions, useReconcile } from '../api/queries'
 import type { LedgerRow } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
-import { BookBadge, ConfirmDialog, Empty, Loading, Panel, Pill, StatusDot } from '../components/ui'
-import { fmtAge, fmtMoney, fmtPrice, fmtUtc } from '../lib/format'
+import { BookBadge, ConfirmDialog, Empty, Loading, Panel, Pill, StatusDot, Time } from '../components/ui'
+import { fmtMoney, fmtPrice, fmtUtc } from '../lib/format'
 
 /**
  * The exchange side of the book: what the executor believes the exchange holds, the last time it
@@ -58,7 +58,7 @@ export function Exchange() {
             <p className="muted small">Not run yet{e.hasKeys ? '' : ' — needs API keys'}.</p>
           ) : (
             <dl className="kv-list">
-              <div><dt>When</dt><dd title={fmtUtc(e.lastReconcile.at)}>{fmtAge(Date.now() - e.lastReconcile.at)} ago</dd></div>
+              <div><dt>When</dt><dd title={fmtUtc(e.lastReconcile.at)}><Time t={e.lastReconcile.at} mode="ago" /></dd></div>
               <div><dt>Result</dt><dd><Pill tone={e.lastReconcile.ok ? 'ok' : 'danger'}>{e.lastReconcile.ok ? 'in step' : `${drift.length} drift(s)`}</Pill>{e.lastReconcile.error ? <span className="muted small"> {e.lastReconcile.error}</span> : null}</dd></div>
               <div><dt>Exchange</dt><dd className="mono">{e.lastReconcile.positions} position(s) · {e.lastReconcile.orders} open order(s)</dd></div>
             </dl>
@@ -84,7 +84,7 @@ export function Exchange() {
               <div><dt>Stops re-placed</dt><dd className="mono">{e.lastRecovery.replacedStops}</dd></div>
               <div><dt>Fills adopted</dt><dd className="mono">{e.lastRecovery.adoptedFills}</dd></div>
               <div><dt>Stray orders cancelled</dt><dd className="mono">{e.lastRecovery.cancelledStray}</dd></div>
-              <div><dt>When</dt><dd title={fmtUtc(e.lastRecovery.at)}>{fmtAge(Date.now() - e.lastRecovery.at)} ago</dd></div>
+              <div><dt>When</dt><dd title={fmtUtc(e.lastRecovery.at)}><Time t={e.lastRecovery.at} mode="ago" /></dd></div>
             </dl>
             {e.lastRecovery.unmirrored.length > 0 && (
               <p className="text-danger small">Unmirrored paper positions (open on paper, no exchange history — not protected on the exchange): #{e.lastRecovery.unmirrored.join(', #')}</p>
@@ -134,7 +134,7 @@ export function Exchange() {
               <tbody>
                 {e.ledger.map((r) => (
                   <tr key={r.id}>
-                    <td className="mono" title={fmtUtc(r.updatedAt)}>{fmtAge(Date.now() - r.updatedAt)}</td>
+                    <td className="mono" title={fmtUtc(r.updatedAt)}><Time t={r.updatedAt} mode="ago" /></td>
                     <td className="mono">{r.positionId ? `#${r.positionId}` : '–'}</td>
                     <td>{r.purpose}{r.reason ? <span className="muted"> · {r.reason}</span> : null}{r.leg ? <span className="muted"> · leg {r.leg}</span> : null}</td>
                     <td>{r.symbol}</td>

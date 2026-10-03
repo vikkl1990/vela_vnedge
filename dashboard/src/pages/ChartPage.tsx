@@ -52,7 +52,16 @@ export function ChartPage() {
 
   const enabledScanners = useMemo(() => (scanners.data ?? []).filter((s) => s.enabled && s.status === 'ok' && !s.hidden), [scanners.data])
   const scannerNames = useMemo(() => enabledScanners.map((s) => s.name), [enabledScanners])
-  const selectedIds = useMemo(() => enabledScanners.filter((s) => selected.includes(s.name)).map((s) => s.id), [enabledScanners, selected])
+
+  // the open position on this market: its levels are drawn as an overlay, and the scanner that
+  // opened it is selected automatically, so the chart shows the indicator that made the decision
+  const positions = usePositions()
+  const position = useMemo(() => (positions.data ?? []).find((p) => p.symbol === symbol && p.tf === tf) ?? (positions.data ?? []).find((p) => p.symbol === symbol), [positions.data, symbol, tf])
+  // the scanner that opened the position is always overlaid while that position is on screen
+  const autoScannerId = position?.scannerId ?? null
+  const autoName = useMemo(() => (autoScannerId ? enabledScanners.find((s) => s.id === autoScannerId)?.name ?? null : null), [autoScannerId, enabledScanners])
+  const shownSelection = useMemo(() => (autoName && !selected.includes(autoName) ? [...selected, autoName] : selected), [selected, autoName])
+  const selectedIds = useMemo(() => enabledScanners.filter((s) => shownSelection.includes(s.name)).map((s) => s.id), [enabledScanners, shownSelection])
 
   const sources = useQueries({
     queries: selectedIds.map((id) => ({
@@ -74,20 +83,11 @@ export function ChartPage() {
   }, [selectedIds, sources, enabledScanners])
 
 
-  // the open position on this market: its levels are drawn as an overlay, and the scanner that
-  // opened it is selected automatically, so the chart shows the indicator that made the decision
-  const positions = usePositions()
-  const position = useMemo(() => (positions.data ?? []).find((p) => p.symbol === symbol && p.tf === tf) ?? (positions.data ?? []).find((p) => p.symbol === symbol), [positions.data, symbol, tf])
   const path = usePositionPath(showPosition && position ? position.id : null)
   const peakR = useMemo(() => {
     const rows = path.data?.path ?? []
     return rows.length ? Math.max(...rows.map((r) => r.r)) : null
   }, [path.data])
-  useEffect(() => {
-    if (!position) return
-    const sc = enabledScanners.find((s) => s.id === position.scannerId)
-    if (sc) setSelected((cur) => (cur.includes(sc.name) ? cur : [...cur, sc.name]))
-  }, [position?.id, enabledScanners])
 
   const allScripts = useMemo<ChartScript[]>(
     () => (showPosition && position ? [...scripts, positionOverlay(position, peakR)] : scripts),
@@ -156,7 +156,7 @@ export function ChartPage() {
       </div>
 
       <div className="chips-row">
-        <ChipSelect label="Overlay scripts" options={scannerNames} value={selected} onChange={setSelected} emptyLabel={enabledScanners.length ? 'none selected' : 'no enabled scanners'} />
+        <ChipSelect label="Overlay scripts" options={scannerNames} value={shownSelection} onChange={setSelected} emptyLabel={enabledScanners.length ? 'none selected' : 'no enabled scanners'} />
         {sources.some((s) => s.isLoading) && <span className="muted small">loading sources…</span>}
         {Object.entries(scriptErrors).map(([id, msg]) => (
           <Pill key={id} tone="danger" title={msg}>
