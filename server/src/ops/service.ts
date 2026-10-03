@@ -39,6 +39,8 @@ export class OpsService {
   readonly monitor: Monitor;
   readonly backups: BackupService;
   readonly workers: WorkerTracker;
+
+  private pool: { stats: { size: number; queued: number; busy: number; recycled?: number }; recyclesWithin?(windowMs: number, now?: number): number };
   private runRate = new RateWindow();
   private errRate = new RateWindow();
   private started = false;
@@ -49,6 +51,7 @@ export class OpsService {
     this.d = d;
     const cfg = d.cfg();
     this.workers = d.workers;
+    this.pool = d.pool;
     this.alerts = new AlertManager({ repeatMinutes: cfg.alerts.repeatMinutes, maxPerHour: cfg.alerts.maxPerHour, transport: d.transport ?? null, telegram: telegramFromEnv(cfg.alerts.telegram) });
     this.monitor = new Monitor({ cfg: d.cfg, db: d.db, alerts: this.alerts, workers: d.workers, dataDir: d.dataDir, feed: d.feed, pool: d.pool, paper: d.paper, candles: d.candles });
     this.backups = new BackupService(d.db, path.join(d.dataDir, 'backups'), () => ({ hourUtc: d.cfg().ops.backupHourUtc, keepDays: d.cfg().ops.backupKeepDays }));
@@ -90,7 +93,7 @@ export class OpsService {
         backup: this.backups.status(),
         log: { file: fileStats.file, bytes: fileStats.bytes, rotations: fileStats.rotations, writeErrors: fileStats.writeErrors, format: logger.format },
         db: { bytes: this.d.db.sizeBytes(), errors: this.d.db.errors, lastError: this.d.db.lastError },
-        workers: { spawns: this.workers.spawns, respawns: this.workers.respawns, respawnsLast5m: this.workers.respawnsWithin(300_000) },
+        workers: { spawns: this.workers.spawns, respawns: this.workers.respawns, respawnsLast5m: this.workers.respawnsWithin(300_000), recycled: this.pool.stats.recycled ?? 0, recyclesLast5m: this.pool.recyclesWithin?.(300_000) ?? 0 },
         monitor: { ...this.monitor.state },
         shuttingDown: this.shuttingDown,
       },

@@ -5,6 +5,7 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WORKER_HEAP_MB } from '../pine/pool.ts';
 
 const WORKER_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'pine', 'worker.ts');
 
@@ -18,7 +19,8 @@ export class WorkerTracker {
   /** `createWorker` for `PinePool`. */
   factory = (index: number): Worker => {
     this.note(index);
-    return new Worker(WORKER_FILE, { workerData: { index }, execArgv: ['--no-warnings=ExperimentalWarning'] });
+    // the same heap cap the pool's own factory applies: a runaway script fails its job, not the machine
+    return new Worker(WORKER_FILE, { workerData: { index }, execArgv: ['--no-warnings=ExperimentalWarning'], resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } });
   };
 
   /** Record a spawn for `index` (exposed so tests can drive it without real threads). */

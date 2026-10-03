@@ -19,7 +19,7 @@ export interface MonitorDeps {
   workers: WorkerTracker;
   dataDir: string;
   feed: { connected: boolean; lastTickAt: number };
-  pool: { stats: { size: number; queued: number; busy: number } };
+  pool: { stats: { size: number; queued: number; busy: number; recycled?: number }; recyclesWithin?(windowMs: number, now?: number): number };
   paper: { stats(): any; trades(opts: { limit: number }): any[]; on(ev: 'trade', fn: (t: any) => void): unknown };
   candles: { tracked(): Array<{ symbol: string; tf: string; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant?: boolean }> };
   /** Optional overrides for tests. */
@@ -85,7 +85,8 @@ export class Monitor {
     else if (feedUp) await a.clear('feed.disconnected', undefined, now);
 
     // 2. worker crash loop: ≥ 3 respawns in 5 min
-    const respawns = this.d.workers.respawnsWithin(THRESHOLDS.crashLoopWindowMs, now);
+    // planned recycles (decision 68) replace a worker on purpose; only unplanned replacements count
+    const respawns = Math.max(0, this.d.workers.respawnsWithin(THRESHOLDS.crashLoopWindowMs, now) - (this.d.pool.recyclesWithin?.(THRESHOLDS.crashLoopWindowMs, now) ?? 0));
     if (respawns >= THRESHOLDS.crashLoopRespawns) await a.raise('workers.crashloop', `🔴 Pine worker crash loop: ${respawns} respawns in the last 5 min (queue ${this.d.pool.stats.queued}, busy ${this.d.pool.stats.busy}/${this.d.pool.stats.size})`, now);
     else await a.clear('workers.crashloop', undefined, now);
 

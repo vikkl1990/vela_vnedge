@@ -86,6 +86,13 @@ export class PinePool {
   private expiredLive = 0;
   /** Workers replaced after `WORKER_MAX_RUNS` jobs, for the status page. */
   recycled = 0;
+  private recycleTimes: number[] = [];
+  /** Planned recycles within the trailing window, so a crash-loop monitor can leave them out of its respawn count. */
+  recyclesWithin(windowMs: number, now = Date.now()): number {
+    const cut = now - windowMs; let i = this.recycleTimes.length - 1, n = 0;
+    while (i >= 0 && this.recycleTimes[i] >= cut) { n++; i--; }
+    return n;
+  }
 
   private fail(p: Pending, error: string) {
     p.resolve({ id: p.job.id, ok: false, error, ms: p.startedAt === undefined ? 0 : Date.now() - p.startedAt,
@@ -112,7 +119,7 @@ export class PinePool {
       const p = slot.busy;
       if (p && p.job.id === msg.id) {
         slot.busy = null; slot.runs++; p.resolve(msg);
-        if (slot.runs >= this.maxRuns) { this.recycled++; this.retire(slot, 'recycled'); }
+        if (slot.runs >= this.maxRuns) { this.recycled++; this.recycleTimes.push(Date.now()); if (this.recycleTimes.length > 1000) this.recycleTimes.splice(0, this.recycleTimes.length - 1000); this.retire(slot, 'recycled'); }
         this.pump();
       }
     });
