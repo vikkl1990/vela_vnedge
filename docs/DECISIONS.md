@@ -2055,3 +2055,44 @@ Distribution on the nine live markets plus BTC, SOL and XRP at 15m and 1h
 Found on the way: when a script fires `alert()` and an `alertcondition()` on the same bar, the
 extractor keeps the alert() and drops the condition. Restricting `sources` to alertcondition for
 such a script therefore yields nothing; the label list must name the alert() message head.
+
+## 73. One reading contract across channels: the "dead scanner" diagnosis made attributable
+
+An outside family-semantics review (research artifacts under `_research/family-semantics-20261003/`,
+not tracked) reproduced eight reading defects against the extractor, the generic oscillator rule and
+the profile classifier. Six were real and are fixed; two are declined with reasons.
+
+**Fixed.**
+1. *Same word, same meaning on every channel.* A "Bullish BOS" `alert()` was information (the
+   INFO_ONLY class) while a "Bullish BOS" `alertcondition()` was an entry. Conditions now pass
+   through the same class: BOS, CHoCH, divergence and the rest are context on both channels. The
+   operator's label allow-list is the explicit opt-in: naming "Internal Bearish BOS" makes it an
+   entry again. No live scanner traded such a label in the last 30 days.
+2. *An informational alert() no longer silences the bar.* Only an alert() that carries a trade
+   event owns its bar against its alertcondition twin.
+3. *The allow-list decides before same-bar deduplication.* "Bullish BOS" could consume "Higher
+   Low MSS Sweep" on the same bar before the label filter ran. Labels are checked as entries are
+   read, on every channel.
+4. *Stop-hit and close conditions are exits.* "Long Stop Hit", "Short Stop-Out", "Exit Long" become
+   exit events for their side (`conditionExit`), never entries and never dropped. SafeZone's exits
+   now reach the exit lab through the ordinary channel.
+5. *State and diagnostic words carry no direction.* "Upward Fine-Interval Bias", "Bullish Regime":
+   bias, regime, interval, sampling and noise are excluded from directional titles.
+6. *Strength measures are not oscillators with a side.* ADX, DMI, ATR, choppiness, volatility,
+   efficiency, Hurst and VIX panes are excluded from the generic oscillator rule, which had read
+   ADX rising through 30 as "left oversold".
+
+**Attributable zero results.** The scanner test no longer drops a cell that produced no entry. It
+writes the row with the funnel and a cause: NO SIGNAL CHANNEL (plots only: a feature source), SILENT,
+OUTPUT NOT MAPPED (drawn labels only), EXITS ONLY (an exit tool), or NO ENTRY READ with the raw
+counts. The profile classifier has an `exits` kind for the same case. The batch incubator screen
+counts only markets it actually ran before concluding a script is quiet.
+
+**Declined.** Wyckoff "Markup Started" / "Markdown Started" stay unmapped: mapping a phase word to
+an entry is the habit the review itself argues against; a Wyckoff entry needs a rule. Market
+Structure Volume Distribution stays a feature adapter candidate, not a scanner.
+
+The reviewer's recovery order is accepted as written: attributable status, role contracts, adapter
+repairs with tests, prefix-honesty replay, measurement by role, shadow only on evidence. Steps 1
+and 3 are this decision; step 4 (adding future candles must not change earlier signals) is the next
+test to write; step 6 remains the family-lab holdout fix.

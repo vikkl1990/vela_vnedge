@@ -115,10 +115,10 @@ if (sliceArg !== 'none') {
     for (const symbol of markets) {
       // a script that produced no entry on its first three markets is not going to on the rest
       if (probed >= 3 && !sawEntry) { summary.silentSkipped += markets.length - probed; break; }
-      probed++;
       const cur = store.find(s.id, symbol, TF);
       if (cur && skipStages.has(cur.stage)) continue;
       if (cur?.stage === 'retired' && Date.now() - cur.since < inc.cooldownDays * DAY) { summary.cooldown++; continue; }
+      probed++; // counts markets actually run, not ones skipped above
       const d = data.get(symbol)!;
       summary.runs++;
       try {

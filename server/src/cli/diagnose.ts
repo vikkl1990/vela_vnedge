@@ -78,8 +78,20 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (!res.ok) { md.push(`- ${id} · ${sym} ${tf}: **did not run** — ${res.error}`); return null; }
   const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest' });
   const events = extractEvents(res.alerts, res.shapes, { derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
-  if (!events.some(e => e.kind === 'entry')) return null;
   const tfMs = TF_SECONDS[tf] * 1000;
+  if (!events.some(e => e.kind === 'entry')) {
+    // a zero-entry cell is a result, not a hole: say what came out of the run and where the funnel emptied
+    const nAlert = res.alerts.filter(a => a.type === 'alert').length, nCond = res.alerts.filter(a => a.type === 'alertcondition').length;
+    const nShape = res.shapes.reduce((a, s) => a + s.times.length, 0);
+    const exits = events.filter(e => e.kind === 'exit').length, info = events.filter(e => e.kind === 'info').length;
+    const why = !nAlert && !nCond && !nShape && !res.labels.length ? (res.plots.length ? 'NO SIGNAL CHANNEL: plots only (a feature source, not an entry system)' : 'SILENT: no alert, condition, shape, label or plot')
+      : !nAlert && !nCond && !nShape ? `OUTPUT NOT MAPPED: ${res.labels.length} drawn labels, no alert/condition/shape`
+      : exits && !info ? `EXITS ONLY: ${exits} exit events, no entry` : `NO ENTRY READ: ${nAlert} alert(), ${nCond} conditions, ${nShape} shape hits → ${info} info, ${exits} exits, 0 entries`;
+    const empty = stat([], b, tfMs);
+    row(id, tf, sym, 'base', empty, why);
+    md.push(`- ${id} · ${sym} ${tf}: **no entries** — ${why}`);
+    return { id, tf, sym, variants: { base: empty }, labels: [], verdict: why, fix: why.startsWith('NO ENTRY READ') ? 'name the entry channel/labels in the scanner config, or add a rule' : why.startsWith('EXITS') ? 'an exit tool: pair it with an entry system in the exit lab' : 'a feature adapter, not a scanner' };
+  }
   const base: BacktestInput = { scannerId: id, scannerName: id, symbol: sym, tf, bars: b, events, cfg: cfg.paper, exitMode: sc.exitMode ?? 'both', trendGate: sc.trendGate, contractValue: m.contractValue, tickSize: m.tickSize, subBars: sub } as any;
   const run = (patch: Partial<BacktestInput>, paper: Partial<PaperConfig> = {}) => runBacktest({ ...base, ...patch, cfg: { ...cfg.paper, ...paper } }).trades as any[];
   const variants: Record<string, Stat> = {};

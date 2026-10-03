@@ -265,8 +265,9 @@ export const trailingRule: Rule = (ctx) => {
   return out;
 };
 
-const OSC_TITLE = /rsi|stoch|cci|macd|osc|moment|\bmom\b|hist|wave|signal|\broc\b|cmf|mfi|williams|%r|rvi|tsi|\bao\b|\bdmi\b|adx|trix|fisher|squeeze|value|main|\bline\b/i;
-const OSC_EXCLUDE = /zero|level|band|overbought|oversold|\bob\b|\bos\b|upper|lower|mid|threshold|limit|\bfill\b/i;
+const OSC_TITLE = /rsi|stoch|cci|macd|osc|moment|\bmom\b|hist|wave|signal|\broc\b|cmf|mfi|williams|%r|rvi|tsi|\bao\b|trix|fisher|squeeze|value|main|\bline\b/i;
+// strength and volatility measures have no side: ADX rising through 30 is not "leaving oversold"
+const OSC_EXCLUDE = /zero|level|band|overbought|oversold|\bob\b|\bos\b|upper|lower|mid|threshold|limit|\bfill\b|adx|\bdmi\b|\batr\b|chop|volat|efficien|hurst|\bvix\b/i;
 
 export type OscMode = 'zero' | 'obos';
 export interface OscSelection { title: string; values: Array<number | null>; mode: OscMode; ob: number; os: number; crosses: number }

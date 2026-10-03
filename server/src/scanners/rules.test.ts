@@ -51,3 +51,10 @@ test('historical fib entries cannot use final or future TP labels', () => {
   const ev = applyRules({ scannerId: 'automatic-fibonacci-levels', alerts: [A('ENTRY ZONE | Price: 106', bars[6].time)], shapes: [], labels: [{ time: bars[19].time, y: 110, text: 'TP1' }, { time: bars[19].time, y: 120, text: 'TP2' }], bars, mode: 'backtest' });
   assert.deepEqual(ev, []);
 });
+
+test('decision 73: strength measures are never read as oscillators with a side', () => {
+  const bars = Array.from({ length: 60 }, (_, i) => ({ time: i * 60_000, open: 100, high: 101, low: 99, close: 100 + Math.sin(i / 5), volume: 1 }));
+  const adx = { title: 'ADX', values: bars.map((_, i) => (i < 30 ? 20 : 40)) };
+  const out = applyRules({ scannerId: 'x', alerts: [], shapes: [], labels: [], plots: [adx as any], rule: 'oscillator', bars: bars as any, mode: 'backtest' });
+  assert.deepEqual(out.filter(e => e.kind === 'entry'), []);
+});

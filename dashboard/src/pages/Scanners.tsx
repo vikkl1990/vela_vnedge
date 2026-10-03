@@ -10,7 +10,7 @@ import { BookBadge, ChipSelect, ConfirmDialog, Empty, ErrorState, Loading, PageT
 import { CATEGORIES, categorize, type Category } from '../lib/categories'
 import { fmtMs, fmtProfitFactor, fmtPct } from '../lib/format'
 
-const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', levels: 'muted', silent: 'warn', broken: 'danger' }
+const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', exits: 'muted', levels: 'muted', silent: 'warn', broken: 'danger' }
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
 

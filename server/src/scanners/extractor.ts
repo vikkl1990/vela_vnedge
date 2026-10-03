@@ -211,6 +211,20 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
   return { ...base, kind: 'info', side: eSide, price, sl, tp: cleanTp, score };
 }
 
+/**
+ * An `alertcondition()` whose title says a stop was hit or a side was closed is an exit for that side:
+ * "Long Stop Hit", "Short Stop-Out", "Exit Long", "Close Short". Never an entry.
+ */
+export function conditionExit(title: string): { side: Side; exitType: ExitType } | undefined {
+  const t = title.trim();
+  const long = /\blong\b|\bbuy\b/i.test(t), short = /\bshort\b|\bsell\b/i.test(t);
+  if (long === short) return undefined;
+  const side: Side = long ? 'long' : 'short';
+  if (/\bstop(?:[- ]?loss)?[\s-]*(?:hit|out|triggered|reached)\b|\bstopped[\s-]*out\b/i.test(t)) return { side, exitType: 'sl' };
+  if (/^(?:exit|close)\s+(?:long|short|buy|sell)\b|\b(?:long|short)\s+(?:exit|close|closed)\b/i.test(t)) return { side, exitType: 'close' };
+  return undefined;
+}
+
 /** Plotshape titles that clearly denote an entry. */
 export function shapeSide(title: string): Side | undefined {
   const t = title.trim();
@@ -225,7 +239,7 @@ export function shapeSide(title: string): Side | undefined {
  */
 export function directionalTitle(title: string): Side | undefined {
   const t = title.trim();
-  if (!t || /\b(exit|close|stop|target|tp\d?|take profit|equal|divergence|alert|any)\b/i.test(t)) return undefined;
+  if (!t || /\b(exit|close|stop|target|tp\d?|take profit|equal|divergence|alert|any|bias|regime|interval|sampling|noise)\b/i.test(t)) return undefined;
   const up = /\b(bull(ish)?|upward|upper|up|long|buy|higher|rising|crossover|cross up|breakout up|break up|support)\b/i.test(t);
   const dn = /\b(bear(ish)?|downward|lower|down|short|sell|falling|crossunder|cross down|breakout down|break down|resistance)\b/i.test(t);
   if (up && !dn) return 'long';
@@ -261,13 +275,20 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   const events: ScanEvent[] = [];
   const seenEntry = new Set<string>();
   const alertBars = new Set<number>();
+  // the allow-list is applied as entries are read, before same-bar deduplication: a generic label
+  // ("Bullish BOS") must never consume the specific one the operator asked for ("MSS Sweeps:") on the same bar
+  const allowLabels = (opts.labels ?? []).map(l => l.trim().toLowerCase()).filter(Boolean);
+  const labelOk = (label: string | undefined) => !allowLabels.length || allowLabels.some(a => String(label ?? '').toLowerCase().startsWith(a));
   for (const a of alerts) {
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     if (a.type === 'alertcondition') continue; // handled below, at lower priority than alert()
-    if (a.type === 'alert') alertBars.add(a.time);
     const ev = parseAlert(a);
     if (!ev) continue;
+    // an alert() that carries a trade event owns its bar (its alertcondition twin would be a duplicate);
+    // an informational alert() does not silence an independent condition on the same bar
+    if (a.type === 'alert' && ev.kind !== 'info') alertBars.add(a.time);
     if (ev.kind === 'entry' && !allow('alert')) continue;
+    if (ev.kind === 'entry' && !labelOk(ev.label)) continue;
     const key = `${ev.kind}:${ev.side ?? ''}:${ev.barTime}:${ev.exitType ?? ''}`;
     if (ev.kind !== 'info' && seenEntry.has(key)) continue;
     seenEntry.add(key);
@@ -280,8 +301,21 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     if (a.type !== 'alertcondition' || alertBars.has(a.time)) continue;
     // PineTS can hand back a non-string title (e.g. a Series or number) — coerce before parsing
     const title = String(a.title ?? a.message ?? '').trim();
+    const exit = conditionExit(title);
+    if (exit) {
+      if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
+      const key = `exit:${exit.side}:${a.time}:${exit.exitType}`;
+      if (seenEntry.has(key)) continue;
+      seenEntry.add(key);
+      events.push({ kind: 'exit', side: exit.side, exitType: exit.exitType, tp: [], label: title.slice(0, 60), message: `alertcondition "${title}"`.slice(0, 500), source: 'alertcondition', barTime: a.time, barIndex: a.barIndex });
+      continue;
+    }
     const side = directionalTitle(title);
     if (!side) continue;
+    // the same word means the same thing on every channel: a BOS or CHoCH condition is context, like a BOS alert() —
+    // unless the operator's allow-list names it, which is the explicit opt-in
+    if (INFO_ONLY.test(title) && !(allowLabels.length && labelOk(title))) continue;
+    if (!labelOk(title)) continue;
     if (opts.edge) {
       // consecutive bars of the same condition are one signal: keep the first bar of the run
       const k = `${title}|${side}`, prev = lastCondBar.get(k);
@@ -297,6 +331,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   for (const d of opts.derived ?? []) {
     if (!allow('derived')) break;
     if (opts.sinceBarTime !== undefined && d.barTime < opts.sinceBarTime) continue;
+    if (d.kind === 'entry' && !labelOk(d.label)) continue;
     const key = `${d.kind}:${d.side ?? ''}:${d.barTime}:`;
     if (seenEntry.has(key)) continue;
     seenEntry.add(key);
@@ -317,14 +352,14 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       prevT = t;
       if (continues) continue;
       if (opts.sinceBarTime !== undefined && t < opts.sinceBarTime) continue;
+      if (!labelOk(s.title)) continue;
       const key = `entry:${side}:${t}:`;
       if (seenEntry.has(key)) continue;
       seenEntry.add(key);
       events.push({ kind: 'entry', side, tp: [], label: s.title, message: `plotshape ${s.title}`, source: 'shape', barTime: t, barIndex: -1 });
     }
   }
-  const allowLabels = (opts.labels ?? []).map(l => l.trim().toLowerCase()).filter(Boolean);
-  const kept = allowLabels.length ? events.filter(e => e.kind !== 'entry' || allowLabels.some(a => String(e.label ?? '').toLowerCase().startsWith(a))) : events;
+  const kept = events;
   const read = opts.invert ? kept.map(e => (e.kind === 'entry' && e.side ? { ...e, side: e.side === 'long' ? 'short' as const : 'long' as const, sl: undefined, tp: [], label: `${e.label ?? ''} (inverted)`.trim() } : e)) : kept;
   read.sort((a, b) => a.barTime - b.barTime || (a.kind === 'exit' ? -1 : 1));
   return read;

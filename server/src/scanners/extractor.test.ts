@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAlert, extractEvents, shapeSide, describeEvent, directionalTitle } from './extractor.ts';
+import { parseAlert, extractEvents, shapeSide, describeEvent, directionalTitle, conditionExit } from './extractor.ts';
 
 const A = (message: string, time = 1_000) => ({ barIndex: 10, time, type: 'alert' as const, message });
 
@@ -96,9 +96,12 @@ test('alertcondition titles and directional shapes become entries (LuxAlgo style
   assert.equal(directionalTitle('Bullish Divergence'), undefined);
   assert.equal(shapeSide('Upper Break'), 'long'); assert.equal(shapeSide('Lower Break'), 'short'); assert.equal(shapeSide('plot'), undefined);
   const ac = (title: string, time: number) => ({ barIndex: 1, time, type: 'alertcondition' as const, title, message: title });
-  const evs = extractEvents([ac('Internal Bullish CHoCH', 10), ac('Equal Lows', 10), ac('Internal Bearish BOS', 20), A('🟢 LONG | DELTA:BTCUSD | TF: 15 | Price: 100 | SL: 90', 30), ac('Bullish OB', 30)], []);
+  const evs = extractEvents([ac('Bullish Internal OB Breakout', 10), ac('Equal Lows', 10), ac('Downward Breakout', 20), A('🟢 LONG | DELTA:BTCUSD | TF: 15 | Price: 100 | SL: 90', 30), ac('Bullish OB', 30)], []);
   assert.deepEqual(evs.map(e => [e.source, e.side, e.barTime]), [['alertcondition', 'long', 10], ['alertcondition', 'short', 20], ['alert', 'long', 30]]);
   assert.match(describeEvent(evs[0]), /script condition/);
+  // a BOS or CHoCH condition is context, the same as a BOS alert() (decision 73) — unless the allow-list names it
+  assert.deepEqual(extractEvents([ac('Internal Bullish CHoCH', 10), ac('Internal Bearish BOS', 20)], []).filter(e => e.kind === 'entry'), []);
+  assert.deepEqual(extractEvents([ac('Internal Bullish CHoCH', 10), ac('Internal Bearish BOS', 20)], [], { labels: ['Internal Bearish BOS'] }).map(e => [e.kind, e.side]), [['entry', 'short']]);
 });
 
 test('exit prices use the hit level, never the contextual entry price', () => {
@@ -190,4 +193,25 @@ test('edge: a condition or shape true on consecutive bars is one entry on the fi
   assert.equal(extractEvents(alerts, shapes).filter(e => e.kind === 'entry').length, 9, 'every bar without edge');
   const e = extractEvents(alerts, shapes, { edge: true }).filter(x => x.kind === 'entry');
   assert.deepEqual(e.map(x => [x.source, x.barTime / 60_000]), [['alertcondition', 1], ['alertcondition', 7], ['shape', 10], ['shape', 20]]);
+});
+
+test('decision 73: one contract across channels', () => {
+  const ac = (title: string, time: number) => ({ barIndex: 1, time, type: 'alertcondition' as const, title, message: title });
+  // a stop-hit or close condition is an exit for its side, never an entry
+  assert.deepEqual(conditionExit('Long Stop Hit'), { side: 'long', exitType: 'sl' });
+  assert.deepEqual(conditionExit('Short Stop-Out'), { side: 'short', exitType: 'sl' });
+  assert.deepEqual(conditionExit('Exit Long'), { side: 'long', exitType: 'close' });
+  assert.equal(conditionExit('Long Entry'), undefined);
+  const ex = extractEvents([ac('Long Stop Hit', 10)], []);
+  assert.deepEqual(ex.map(e => [e.kind, e.side, e.exitType]), [['exit', 'long', 'sl']]);
+  // a state or diagnostic word carries no direction
+  assert.equal(directionalTitle('Upward Fine-Interval Bias'), undefined);
+  assert.equal(directionalTitle('Bullish Regime'), undefined);
+  assert.equal(directionalTitle('Bullish Internal OB Breakout'), 'long');
+  // an informational alert() does not silence an independent condition on the same bar
+  const info = A('🟡 PATTERN DETECTED | DELTA:BTCUSD | TF: 15 | Price: 100', 10);
+  assert.deepEqual(extractEvents([info, ac('Bullish Internal OB Breakout', 10)], []).map(e => [e.kind, e.source]), [['info', 'alert'], ['entry', 'alertcondition']]);
+  // the allow-list decides before same-bar deduplication: the generic label never consumes the specific one
+  const both = [ac('Bullish BOS', 10), ac('Higher Low MSS Sweep', 10)];
+  assert.deepEqual(extractEvents(both, [], { labels: ['Higher Low MSS Sweep'] }).map(e => [e.kind, e.label]), [['entry', 'Higher Low MSS Sweep']]);
 });

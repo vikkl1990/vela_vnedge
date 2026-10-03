@@ -171,7 +171,7 @@ export interface Scanner {
 }
 
 export type EntrySource = 'alert' | 'alertcondition' | 'shape' | 'derived'
-export type ProfileKind = 'plan' | 'signal' | 'levels' | 'silent' | 'broken'
+export type ProfileKind = 'plan' | 'signal' | 'exits' | 'levels' | 'silent' | 'broken'
 export interface ProfileRow {
   scannerId: string; market: string; tf: string; at: number; kind: ProfileKind; ms: number
   entries: number; withSl: number; withTp: number; exits: number; info: number

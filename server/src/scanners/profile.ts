@@ -15,14 +15,14 @@ import type { Db } from '../db.ts';
 import type { WorkerResult } from '../pine/worker.ts';
 import type { ScanEvent } from './extractor.ts';
 
-export type ProfileKind = 'plan' | 'signal' | 'levels' | 'silent' | 'broken';
+export type ProfileKind = 'plan' | 'signal' | 'exits' | 'levels' | 'silent' | 'broken';
 export interface ProfileRow {
   scannerId: string; market: string; tf: string; at: number; kind: ProfileKind; ms: number;
   entries: number; withSl: number; withTp: number; exits: number; info: number;
   alertEntries: number; alertconds: number; shapes: number; labels: number; labelTexts: string[]; plots: number; error: string | null;
 }
 
-const RANK: Record<ProfileKind, number> = { plan: 4, signal: 3, levels: 2, silent: 1, broken: 0 };
+const RANK: Record<ProfileKind, number> = { plan: 4, signal: 3, exits: 2, levels: 2, silent: 1, broken: 0 };
 
 /** Classify one run by what came out of it. */
 export function classifyRun(res: WorkerResult, events: ScanEvent[]): Omit<ProfileRow, 'scannerId' | 'market' | 'tf' | 'at'> {
@@ -30,7 +30,8 @@ export function classifyRun(res: WorkerResult, events: ScanEvent[]): Omit<Profil
   const withSl = entries.filter(e => e.sl).length, withTp = entries.filter(e => e.tp.length).length;
   const shapes = res.shapes.reduce((a, s) => a + s.times.length, 0);
   const labelTexts = [...new Set(res.labels.map(l => l.text.replace(/[\d.,%:]+/g, '#').trim()).filter(Boolean))].slice(0, 8);
-  const kind: ProfileKind = entries.length ? (withSl || withTp ? 'plan' : 'signal') : (res.labels.length || res.plots.length ? 'levels' : 'silent');
+  const exits = events.filter(e => e.kind === 'exit').length;
+  const kind: ProfileKind = entries.length ? (withSl || withTp ? 'plan' : 'signal') : exits ? 'exits' : (res.labels.length || res.plots.length ? 'levels' : 'silent');
   return {
     kind, ms: res.ms, entries: entries.length, withSl, withTp, exits: events.filter(e => e.kind === 'exit').length, info: events.filter(e => e.kind === 'info').length,
     alertEntries: entries.filter(e => e.source === 'alert').length, alertconds: res.alerts.filter(a => a.type === 'alertcondition').length,
