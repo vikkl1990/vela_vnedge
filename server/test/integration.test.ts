@@ -31,7 +31,7 @@ fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
   // this replay drives a flat synthetic series; the portfolio risk layer (regime floor, kill
   // switches) has its own unit tests and would reject the entry this test is here to observe
   risk: { enabled: false },
-  scanners: { tiny: { enabled: true, symbols: null, timeframes: null, exitMode: 'both' } },
+  scanners: { tiny: { enabled: true, symbols: ['BTCUSD'], timeframes: ['5m'], exitMode: 'both' } },   // decision 79: a scanner runs only where its own config puts it
 }));
 
 const { App } = await import('../src/app.ts');

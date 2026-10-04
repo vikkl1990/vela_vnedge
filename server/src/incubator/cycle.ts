@@ -22,9 +22,11 @@ const marketsFor = (inc: IncubatorConfig, tf: string) => inc.admit.cohortMarkets
 
 /** The live fleet as the config describes it: enabled, not hidden, one row per scanner × market. */
 export function livePairs(cfg: AppConfig): PairKey[] {
+  // decision 79: a scanner is in the fleet only where it was explicitly put — its pairs, or its own symbol
+  // list at the incubator timeframe. The global symbol list never puts a scanner anywhere.
   const tf = cfg.incubator.tf;
   return Object.entries(cfg.scanners).filter(([, v]) => v.enabled && !v.hidden)
-    .flatMap(([id, v]) => v.pairs?.length ? v.pairs.map(p => ({ scannerId: id, symbol: p.symbol, tf: p.tf })) : (v.symbols ?? cfg.symbols).map(symbol => ({ scannerId: id, symbol, tf })));
+    .flatMap(([id, v]) => v.pairs?.length ? v.pairs.map(p => ({ scannerId: id, symbol: p.symbol, tf: p.tf })) : (v.symbols ?? []).map(symbol => ({ scannerId: id, symbol, tf })));
 }
 
 /** Make the incubator's `live` rows match the config: the config is the record of what trades. */
@@ -182,13 +184,14 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
 export class IncubatorError extends Error { status = 409; }
 
 /** Take one (market, timeframe) off a scanner: from its explicit pairs when it has them, else from its symbol list; the scanner is switched off when it was the last. */
-function removePair(sc: ScannerConfig | undefined, r: { scannerId: string; symbol: string; tf: string }, setScanner: (id: string, patch: Partial<ScannerConfig>) => void, current: string[]) {
+function removePair(sc: ScannerConfig | undefined, r: { scannerId: string; symbol: string; tf: string }, setScanner: (id: string, patch: Partial<ScannerConfig>) => void) {
   if (sc?.pairs?.length) {
     const rest = sc.pairs.filter(p => !(p.symbol === r.symbol && p.tf === r.tf));
     setScanner(r.scannerId, rest.length ? { pairs: rest } : { enabled: false });
     return;
   }
-  const rest = current.filter(s => s !== r.symbol);
+  // a legacy scanner listed by symbols: take the market off its own list (never the global one)
+  const rest = (sc?.symbols ?? []).filter(s => s !== r.symbol);
   setScanner(r.scannerId, rest.length ? { symbols: rest } : { enabled: false });
 }
 
@@ -201,19 +204,17 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
   if (!r) throw Object.assign(new IncubatorError('unknown incubator pair'), { status: 404 });
   const inc = cfg.incubator;
   const sc = cfg.scanners[r.scannerId];
-  const current = sc?.enabled && !sc.hidden ? (sc.symbols ?? cfg.symbols) : [];
   if (r.stage === 'proposed') {
     const week = store.promotionsSince(now - 7 * DAY);
     if (week >= inc.promote.maxPerWeek) throw new IncubatorError(`weekly promotion limit reached (${week}/${inc.promote.maxPerWeek}); try again later or raise incubator.promote.maxPerWeek`);
     const fleet = livePairs(cfg).length;
     if (fleet >= inc.promote.maxFleet) throw new IncubatorError(`the live fleet is full (${fleet}/${inc.promote.maxFleet} pairs); demote one first or raise incubator.promote.maxFleet`);
     const stats = pairStats(store.trades(r.scannerId, r.symbol, r.tf, 2), r.since, now);
-    if (sc?.pairs?.length) setScanner(r.scannerId, { enabled: true, hidden: false, pairs: [...sc.pairs.filter(p => !(p.symbol === r.symbol && p.tf === r.tf)), { symbol: r.symbol, tf: r.tf }] });
-    else setScanner(r.scannerId, { enabled: true, hidden: false, symbols: [...new Set([...current, r.symbol])], timeframes: [r.tf] });
+    setScanner(r.scannerId, { enabled: true, hidden: false, pairs: [...(sc?.pairs ?? []).filter(p => !(p.symbol === r.symbol && p.tf === r.tf)), { symbol: r.symbol, tf: r.tf }] });
     return store.move(r, 'live', actor, { shadow: stats, gate: r.gate }, 'promoted from the shadow book', now);
   }
   if (r.stage === 'demote_proposed') {
-    removePair(sc, r, setScanner, current);
+    removePair(sc, r, setScanner);
     return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null }, 'demoted: back to the shadow book', now);
   }
   throw new IncubatorError(`nothing to approve: the pair is ${r.stage}`);
@@ -229,8 +230,7 @@ export function demote(store: IncubatorStore, cfg: AppConfig, id: number, actor:
   if (!r) throw Object.assign(new IncubatorError('unknown incubator pair'), { status: 404 });
   if (r.stage !== 'live' && r.stage !== 'demote_proposed') throw new IncubatorError(`nothing to demote: the pair is ${r.stage}`);
   const sc = cfg.scanners[r.scannerId];
-  const current = sc?.enabled && !sc.hidden ? (sc.symbols ?? cfg.symbols) : [];
-  removePair(sc, r, setScanner, current);
+  removePair(sc, r, setScanner);
   return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null }, note ?? 'demoted by the operator: back to the shadow book', now);
 }
 

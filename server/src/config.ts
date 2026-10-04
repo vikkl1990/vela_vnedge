@@ -791,6 +791,11 @@ export class ConfigStore {
     const next = { ...cur, ...patch };
     if (next.symbols && next.symbols.length === 0) next.symbols = null;
     if (next.timeframes && next.timeframes.length === 0) next.timeframes = null;
+    // the fleet cap (decision 79): no single save may put more live cells on the box than incubator.promote.maxFleet allows
+    const cellsOf = (v: ScannerConfig) => v.pairs?.length ? v.pairs.length : (v.symbols?.length ?? 0) * (v.timeframes?.length ?? this.cfg.timeframes.length);
+    const cells = Object.entries({ ...this.cfg.scanners, [id]: next }).filter(([, v]) => v.enabled && !v.hidden).reduce((n, [, v]) => n + cellsOf(v), 0);
+    const cap = this.cfg.incubator?.promote?.maxFleet ?? 20;
+    if (cells > cap) throw Object.assign(new Error(`refused: the live fleet would have ${cells} cells, above incubator.promote.maxFleet (${cap}); raise the limit deliberately or add fewer pairs`), { status: 400 });
     this.cfg = { ...this.cfg, scanners: { ...this.cfg.scanners, [id]: next } };
     this.save();
     return next;

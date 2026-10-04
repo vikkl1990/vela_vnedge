@@ -11,7 +11,6 @@ import { CATEGORIES, categorize, type Category } from '../lib/categories'
 import { fmtMs, fmtProfitFactor, fmtPct } from '../lib/format'
 
 const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', exits: 'muted', levels: 'muted', silent: 'warn', broken: 'danger' }
-import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
 
 const EXIT_MODES: ExitMode[] = ['levels', 'script', 'both']
@@ -108,6 +107,7 @@ export function Scanners() {
 
   const bulk = async (enabled: boolean) => {
     const list = (scanners.data ?? []).filter((s) => (enabled ? s.status === 'ok' && !s.enabled && !s.hidden : s.enabled))
+    if (list.length && !window.confirm(`${enabled ? 'Enable' : 'Disable'} ${list.length} scanner(s)? ${enabled ? 'Scanners without pairs run nothing until a pair is promoted or added; the fleet cap still applies.' : 'Their pairs leave the live fleet.'}`)) return
     if (!list.length) {
       const all = scanners.data ?? []
       const runnable = all.filter((s) => s.status === 'ok').length
@@ -193,7 +193,7 @@ export function Scanners() {
         key: 'tfs',
         header: 'Timeframes',
         sortable: false,
-        render: (s) => (s.pairs?.length ? <span className="muted small">per pair</span> : <ChipSelect compact options={[...DELTA_TIMEFRAMES]} value={s.timeframes ?? []} onChange={(v) => patch(s, { timeframes: v })} emptyLabel="global" disabled={busy} />),
+        render: (s) => (s.pairs?.length ? <span className="muted small">per pair</span> : <span className="muted small" title="Explicit pairs are the whole schedule (decision 79). Pairs are added by promoting a shadow pair or through the API.">{s.enabled ? 'no pairs: runs nothing' : 'no pairs'}</span>),
       },
       {
         key: 'exit',

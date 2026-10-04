@@ -14,7 +14,7 @@ for (const change of ['none', 'disabled', 'removed', 'reenabled', 'timeframe'] a
     t.after(() => db.db.close());
     const cfg = structuredClone(DEFAULT_CONFIG);
     cfg.symbols = ['BTCUSD']; cfg.timeframes = ['1m'];
-    cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+    cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both', pairs: [{ symbol: 'BTCUSD', tf: '1m' }] };
     cfg.paper.latencyMs = 0; // this test is about configuration changes between dispatch and result, not the fill model
     // anchor to real time: the entry path rejects signals whose bar closed more than
     // paper.maxSignalAgeSec ago, and epoch-0 fixtures would read as decades stale
@@ -36,7 +36,7 @@ for (const change of ['none', 'disabled', 'removed', 'reenabled', 'timeframe'] a
     if (change === 'disabled') cfg.scanners.s = { ...cfg.scanners.s, enabled: false };
     if (change === 'removed') cfg.scanners.s = { ...cfg.scanners.s, enabled: false, hidden: true };
     if (change === 'reenabled') cfg.scanners.s = { ...cfg.scanners.s, enabled: true };
-    if (change === 'timeframe') cfg.timeframes = ['5m'];
+    if (change === 'timeframe') cfg.scanners.s = { ...cfg.scanners.s, pairs: [{ symbol: 'BTCUSD', tf: '5m' }] };
     finish({ id: 1, ok: true, ms: 1, bars: bars.length, lastBarTime: bars.at(-1)!.time, warnings: 0,
       plots: [], shapes: [], labels: [], alerts: [{ type: 'alert', barIndex: 59, time: bars.at(-1)!.time,
         message: 'LONG | Entry: 100 | SL: 95 | TP1: 105 | TP2: 110 | TP3: 115' }] });
@@ -51,7 +51,7 @@ test('audit 4: a bar that closes during a running job is not dropped, it runs ne
   t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.symbols = ['BTCUSD']; cfg.timeframes = ['1m'];
-  cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+  cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both', pairs: [{ symbol: 'BTCUSD', tf: '1m' }] };
   const lastClose = Math.floor(Date.now() / 60_000) * 60_000;
   const bars = Array.from({ length: 60 }, (_, i) => ({ time: lastClose - (60 - i) * 60_000, open: 100, high: 101, low: 99, close: 100, volume: 100 }));
   const candles = Object.assign(new EventEmitter(), { get: () => bars });
@@ -86,7 +86,7 @@ test('a scanner the configuration has never seen is off, not on', async t => {
   t.after(() => db.db.close());
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.symbols = ['BTCUSD']; cfg.timeframes = ['15m'];
-  cfg.scanners.known = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+  cfg.scanners.known = { enabled: true, symbols: ['BTCUSD'], timeframes: null, exitMode: 'both' };   // decision 79: its own symbols, never the global list
   const scanners = [
     { id: 'known', name: 'Configured and on', status: 'ok', patched: '' },
     { id: 'freshly-imported', name: 'Never configured', status: 'ok', patched: '' },
@@ -108,13 +108,15 @@ test('explicit pairs replace the symbols × timeframes product (decision 70)', (
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.symbols = ['BTCUSD', 'ETHUSD']; cfg.timeframes = ['15m'];
   cfg.scanners.p = { enabled: true, symbols: null, timeframes: null, exitMode: 'both', pairs: [{ symbol: 'UNIUSD', tf: '1h' }, { symbol: 'ZECUSD', tf: '4h' }] } as any;
-  cfg.scanners.q = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' } as any;
+  cfg.scanners.q = { enabled: true, symbols: ['BTCUSD', 'ETHUSD'], timeframes: null, exitMode: 'both' } as any;
+  cfg.scanners.bare = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' } as any;
   const scanner = (id: string) => ({ id, name: id, status: 'ok', patched: 'x', source: 'x' } as any);
   const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper: new PaperEngine(db, () => cfg), candles: { on() {}, get: () => [], track: async () => {}, has: () => true } as any, pool: {} as any, registry: { all: () => [scanner('p'), scanner('q')], get: (id: string) => scanner(id) } as any, rest: { product: async () => ({}) } as any });
   assert.deepEqual(engine.pairsFor('p'), [{ symbol: 'UNIUSD', tf: '1h' }, { symbol: 'ZECUSD', tf: '4h' }]);
   assert.deepEqual(engine.symbolsFor('p'), ['UNIUSD', 'ZECUSD']); assert.deepEqual(engine.timeframesFor('p'), ['1h', '4h']);
   assert.equal(engine.runsOn('p', 'UNIUSD', '1h'), true); assert.equal(engine.runsOn('p', 'UNIUSD', '4h'), false, 'a pair is a market AND a timeframe');
-  assert.deepEqual(engine.pairsFor('q'), [{ symbol: 'BTCUSD', tf: '15m' }, { symbol: 'ETHUSD', tf: '15m' }], 'no pairs → the product, as before');
+  assert.deepEqual(engine.pairsFor('q'), [{ symbol: 'BTCUSD', tf: '15m' }, { symbol: 'ETHUSD', tf: '15m' }], 'no pairs → its own symbols × timeframes');
+  assert.deepEqual(engine.pairsFor('bare'), [], 'decision 79: no symbols of its own → it runs nowhere, the global list never feeds a scanner');
   assert.deepEqual(engine.requiredSeries().map(r => `${r.symbol}:${r.tf}`).sort(), ['BTCUSD:15m', 'ETHUSD:15m', 'UNIUSD:1h', 'ZECUSD:4h']);
   db.db.close();
 });

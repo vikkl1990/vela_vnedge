@@ -1,11 +1,14 @@
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Db } from '../db.ts';
-import { DEFAULT_CONFIG, type AppConfig } from '../config.ts';
+import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR } from './gate.ts';
-import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -92,7 +95,7 @@ test('lifecycle: screen → shadow → proposed → approved into the config', (
   const patches: any[] = [];
   const out = approve(store, cfg, p.id, 'admin', (id, patch) => patches.push({ id, patch }), T0 + 21 * DAY);
   assert.equal(out.stage, 'live');
-  assert.deepEqual(patches, [{ id: 'cand', patch: { enabled: true, hidden: false, symbols: ['ETHUSD'], timeframes: ['15m'] } }]);
+  assert.deepEqual(patches, [{ id: 'cand', patch: { enabled: true, hidden: false, pairs: [{ symbol: 'ETHUSD', tf: '15m' }] } }]);
   assert.ok(store.events(10).some(e => e.to === 'live' && e.actor === 'admin'));
 });
 
@@ -258,4 +261,17 @@ test('pairs-aware fleet: a scanner with explicit pairs is promoted and demoted p
   cfg.scanners.live1.pairs = [{ symbol: 'ETHUSD', tf: '4h' }];
   const last = demote(store, cfg, store.find('live1', 'ETHUSD', '4h')!.id, 'admin', (id, patch) => patches.push({ id, patch }), null, T0 + DAY);
   assert.equal(last.stage, 'shadow'); assert.deepEqual(patches.at(-1) as unknown, { id: 'live1', patch: { enabled: false } }, 'the last pair switches the scanner off');
+});
+
+test('decision 79: an enabled scanner without pairs is not in the fleet, and a save above the fleet cap is refused', () => {
+  const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
+  cfg.scanners = { bare: { enabled: true, symbols: null, timeframes: null, exitMode: 'both' } as any, paired: { enabled: true, symbols: null, timeframes: null, exitMode: 'both', pairs: [{ symbol: 'BTCUSD', tf: '1h' }] } as any };
+  assert.deepEqual(livePairs(cfg).map(p => p.scannerId), ['paired'], 'no fallback to the global symbol list');
+  const store = new ConfigStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'vnedge-cap-')), 'config.json'));
+  store.update({ incubator: { ...store.get().incubator, promote: { ...store.get().incubator.promote, maxFleet: 3 } } } as any);
+  store.setScanner('a', { enabled: true, pairs: [{ symbol: 'BTCUSD', tf: '1h' }, { symbol: 'ETHUSD', tf: '1h' }] });
+  assert.throws(() => store.setScanner('b', { enabled: true, pairs: [{ symbol: 'SOLUSD', tf: '1h' }, { symbol: 'XRPUSD', tf: '1h' }] }), /above incubator.promote.maxFleet \(3\)/);
+  assert.equal(store.get().scanners.b, undefined, 'the refused save changed nothing');
+  store.setScanner('b', { enabled: true, pairs: [{ symbol: 'SOLUSD', tf: '1h' }] });
+  assert.equal(livePairs(store.get()).length, 3);
 });

@@ -12,7 +12,7 @@ function build(opts: { tfs?: string[] } = {}) {
   const db = new Db(':memory:');
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.symbols = ['BTCUSD', 'ETHUSD', 'SOLUSD']; cfg.timeframes = opts.tfs ?? ['15m'];
-  cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+  cfg.scanners.s = { enabled: true, symbols: [...cfg.symbols], timeframes: null, exitMode: 'both' };
   const bt = (trades: number, pnl: number) => ({ version: SIMULATION_VERSION, at: Date.now(), trades: [], stats: { trades, pnl, grossProfit: pnl > 0 ? pnl : 0, grossLoss: pnl < 0 ? -pnl : 0 } });
   // in-sample: BTC good, ETH good, SOL bad (all tfs)
   for (const tf of cfg.timeframes) {
@@ -55,7 +55,7 @@ test('OOS rule: walk-forward result decides; pairs without walk-forward data fal
   assert.equal(by.ETHUSD.rule, 'oos'); assert.equal(by.ETHUSD.keep, false); assert.match(by.ETHUSD.reason, /PF ≥ 1.1/);
   assert.equal(by.SOLUSD.rule, 'provisional'); assert.equal(by.SOLUSD.keep, false);
   assert.deepEqual(cfg.scanners.s.symbols, ['BTCUSD']);
-  const reset = () => { cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' }; };
+  const reset = () => { cfg.scanners.s = { enabled: true, symbols: [...cfg.symbols], timeframes: null, exitMode: 'both' }; };
   // too few positive weeks or too few trades also fail
   reset(); wf.BTCUSD = oos(30, 900, 1.6, 1);
   assert.equal(engine.autoTune({ oos: gate })[0].decisions.find(d => d.symbol === 'BTCUSD')!.keep, false);
@@ -83,7 +83,7 @@ test('multi-timeframe: every (symbol, tf) pair is evaluated and both lists are t
   assert.equal(r.decisions.find(d => d.symbol === 'BTCUSD' && d.tf === '5m')!.keep, false);
   assert.deepEqual(cfg.scanners.s.timeframes!.sort(), ['15m', '1h', '5m']);
   // strict OOS (no provisional pairs qualify) when every pair has walk-forward data
-  cfg.scanners.s = { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
+  cfg.scanners.s = { enabled: true, symbols: [...cfg.symbols], timeframes: null, exitMode: 'both' };
   engine.setWalkForwardSource((_id, symbol, tf) => wf[`${symbol}:${tf}`] ?? oos(0, 0, null, 0));
   const [r2] = engine.autoTune({ minTrades: 3, minProfitFactor: 1, oos: gate, tuneTimeframes: true });
   assert.equal(r2.provisional, false);

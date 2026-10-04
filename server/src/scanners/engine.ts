@@ -137,14 +137,18 @@ export class ScannerEngine extends EventEmitter {
     const cfg = this.cfgRef();
     return cfg.scanners[id] ?? { enabled: false, symbols: null, timeframes: null, exitMode: 'both' };
   }
-  symbolsFor(id: string): string[] { const c = this.scannerConfig(id); return c.pairs?.length ? [...new Set(c.pairs.map(p => p.symbol))] : (c.symbols ?? this.symbolsRef()); }
-  timeframesFor(id: string): string[] { const c = this.scannerConfig(id); return c.pairs?.length ? [...new Set(c.pairs.map(p => p.tf))] : (c.timeframes ?? this.cfgRef().timeframes); }
+  symbolsFor(id: string): string[] { return [...new Set(this.pairsFor(id).map(p => p.symbol))]; }
+  timeframesFor(id: string): string[] { return [...new Set(this.pairsFor(id).map(p => p.tf))]; }
   /** The (market, timeframe) pairs this scanner runs on: its explicit pairs (decision 70), else symbols × timeframes. */
   pairsFor(id: string): Array<{ symbol: string; tf: string }> {
+    // A scanner runs only where it was explicitly put (decision 79): its pairs, or the symbols listed in
+    // its own config × its timeframes. The global symbol list never feeds a scanner: seventy scanners
+    // bulk-enabled with no symbols of their own once became 1,260 live cells overnight.
     const c = this.scannerConfig(id);
     if (c.pairs?.length) return c.pairs.map(p => ({ symbol: p.symbol, tf: p.tf }));
+    if (!c.symbols?.length) return [];
     const out: Array<{ symbol: string; tf: string }> = [];
-    for (const symbol of this.symbolsFor(id)) for (const tf of this.timeframesFor(id)) out.push({ symbol, tf });
+    for (const symbol of c.symbols) for (const tf of c.timeframes ?? this.cfgRef().timeframes) out.push({ symbol, tf });
     return out;
   }
   runsOn(id: string, symbol: string, tf: string): boolean { return this.pairsFor(id).some(p => p.symbol === symbol && p.tf === tf); }

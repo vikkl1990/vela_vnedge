@@ -2240,3 +2240,31 @@ a timeout was not a quarantinable failure.
    the same way as any quarantine.
 
 Measured after the budget: 2.8 GB one minute after restart, where it had been 6.9 GB.
+
+## 79. The global symbol list never feeds a scanner; the fleet has a cap
+
+Why the bot was not stable, with the record in hand: 54 service starts in seven days, 8 kernel
+kills, 4,859 queued runs expired in one day. Most of the starts were deploys (sixteen on 3
+October alone); the kills and the expiries had one cause. At 20:46 UTC on 3 October the Scanners
+page's bulk "enable" was applied to a filtered list and 70 scanners were switched on one request
+at a time. None had pairs or a symbol list of its own, so each fell back to the global list: 18
+symbols × 15m, 1,260 live cells on a fleet decision 70 had sized to 26. The incubator's sync
+dutifully marked 860 of them live. Six workers could not keep up, the queue grew until jobs expired
+unrun, worker heaps summed past the cgroup, and the kernel killed the process four times.
+
+**Restored.** The 76 scanners without pairs are off again, the 860 config-created live rows are
+removed, the nine shadow pairs that had been swept into the fleet are back in the shadow book.
+The fleet is 10 scanners on 26 cells, warm-up 26, resident memory 1.3 GB after restart.
+
+**Guards, so a click cannot do it again.**
+1. A scanner runs only where it was explicitly put: its pairs, or the symbols listed in its own
+   config. The global symbol list never schedules a scanner. An enabled scanner with neither runs
+   nothing and the Scanners page says so.
+2. Promotion from the shadow book always writes a pair, never a symbol list.
+3. The config store refuses any save that would put more live cells on the box than
+   `incubator.promote.maxFleet` (40 on the VM). Raising the cap is a deliberate edit.
+4. Bulk enable asks for confirmation and states the rule.
+
+The other half of the instability is the deploy cadence: every restart re-warms 184 pairs and
+costs the fleet two to three minutes of closes. That is a practice, not a bug: batch deploys, and
+deploy at a quiet hour.
