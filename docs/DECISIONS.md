@@ -2210,3 +2210,33 @@ continuing shape state) → what became of the bar's signals (opened, pending, r
 rejected or ignored by reason), or the note that the bar was too old to act on. A quiet scanner now
 says which stage emptied. The per-family output contract remains the long-term item; this is the
 instrument that will show where it is needed first.
+
+## 78. Why the bot was crashing: the worker heaps summed past the cgroup
+
+The dashboard went dark on 4 October. The service was "active" but its event loop was choked:
+scanner jobs timing out, the feed reconnecting, nginx timing out upstream. The kernel had killed
+the whole process three times overnight (22:52, 00:14, 02:12 UTC) at 10.4 GB resident, the
+cgroup's `MemoryMax`, and a fourth kill was on its way. One minute after a restart the process was
+already at 6.9 GB.
+
+**Cause.** The pool ran one worker per core, eight, each with a 1,536 MB heap cap (decision 68).
+Eight × 1,536 is 12 GB, more than the 10 GB the unit may use, and the warm-up of 184 pairs
+(26 live, 158 shadow) drives every worker toward its cap at once. The per-worker cap protected the
+machine from one runaway script; nothing bounded the sum. Recycling after 24 runs returned the
+leak too slowly at 250 runs an hour. Two shadow scripts (Liquidity Shift Detection, EMD
+Oscillator) timed out 15 and 16 times in a day, each holding a worker for 90 s at full heap, and
+a timeout was not a quarantinable failure.
+
+**Fix, three parts.**
+1. *The budget is derived from the limit.* The pool reads its cgroup's `memory.max` (RAM when
+   there is none) and sizes itself to 60% of it at 1,024 MB a worker, never fewer than two nor
+   more than the cores: six workers on this VM, 6 GB for workers against 10 GB. Workers recycle
+   after 12 runs. `VNEDGE_WORKERS`, `VNEDGE_WORKER_HEAP_MB`, `VNEDGE_WORKER_MAX_RUNS` still override.
+   The startup log states the budget.
+2. *The monitor watches resident memory.* At 75% of the limit it recycles every worker (idle ones
+   now, busy ones as their job finishes) and raises `process.memory`; metrics gain
+   `process_rss_bytes` and `process_memory_limit_bytes`.
+3. *Three timeouts in a day quarantine a script*, with the reason on the Scanners page, released
+   the same way as any quarantine.
+
+Measured after the budget: 2.8 GB one minute after restart, where it had been 6.9 GB.

@@ -19,7 +19,10 @@ export interface MonitorDeps {
   workers: WorkerTracker;
   dataDir: string;
   feed: { connected: boolean; lastTickAt: number };
-  pool: { stats: { size: number; queued: number; busy: number; recycled?: number }; recyclesWithin?(windowMs: number, now?: number): number };
+  pool: { stats: { size: number; queued: number; busy: number; recycled?: number }; recyclesWithin?(windowMs: number, now?: number): number; recycleAll?(): number };
+  /** Resident memory of the process and the limit it must stay under (overridable for tests). */
+  rss?: () => number;
+  memoryLimit?: () => number;
   paper: { stats(): any; trades(opts: { limit: number }): any[]; on(ev: 'trade', fn: (t: any) => void): unknown };
   candles: { tracked(): Array<{ symbol: string; tf: string; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant?: boolean }> };
   /** The risk manager's equity peak (since the last paper reset). When present it is the only peak the monitor uses. */
@@ -35,6 +38,8 @@ export interface MonitorState {
   equityPeak: number;
   /** `paper.resetAt` the peak belongs to; a reset starts the peak again at the new equity. */
   equityPeakResetAt: number | null;
+  /** Resident memory as a share of the limit at the last evaluation. */
+  rssPct: number;
   drawdownPct: number;
   dbErrorsSeen: number;
   diskFreeMb: number | null;
@@ -43,7 +48,7 @@ export interface MonitorState {
   evaluations: number;
 }
 
-export const THRESHOLDS = { feedDownMs: 60_000, crashLoopRespawns: 3, crashLoopWindowMs: 300_000, queueDeepMs: 300_000, staleTfMultiple: 2, staleMinuteMultiple: 10 } as const;
+export const THRESHOLDS = { feedDownMs: 60_000, crashLoopRespawns: 3, crashLoopWindowMs: 300_000, queueDeepMs: 300_000, staleTfMultiple: 2, staleMinuteMultiple: 10, memoryRecyclePct: 75 } as const;
 
 export function diskFreeBytes(dir: string): number | null {
   try { const st = fs.statfsSync(dir); return Number(st.bavail) * Number(st.bsize); } catch { return null; }
@@ -64,7 +69,7 @@ export class Monitor {
     this.startedAt = this.now();
     const peak = Number(d.db.kvGet<number>('ops.equityPeak') ?? 0);
     const peakResetAt = d.db.kvGet<number>('ops.equityPeakResetAt') ?? null;
-    this.state = { feedDownSince: null, queueDeepSince: null, equityPeak: Number.isFinite(peak) ? peak : 0, equityPeakResetAt: peakResetAt, drawdownPct: 0, dbErrorsSeen: d.db.errors, diskFreeMb: null, lastEvalAt: null, lastSummaryDay: null, evaluations: 0 };
+    this.state = { feedDownSince: null, queueDeepSince: null, equityPeak: Number.isFinite(peak) ? peak : 0, equityPeakResetAt: peakResetAt, rssPct: 0, drawdownPct: 0, dbErrorsSeen: d.db.errors, diskFreeMb: null, lastEvalAt: null, lastSummaryDay: null, evaluations: 0 };
     d.paper.on('trade', (t: any) => { if (this.d.cfg().alerts.onTrade) void this.onTrade(t); });
   }
 
@@ -132,6 +137,19 @@ export class Monitor {
     }
     if (stale.length && feedUp) await a.raise('candles.stale', `🟠 No bar close for 2× the timeframe on ${stale.length} series: ${stale.slice(0, 8).join(', ')}${stale.length > 8 ? '…' : ''}`, now);
     else if (!stale.length) await a.clear('candles.stale', undefined, now);
+
+    // 9. resident memory against the limit: recycle the workers before the kernel kills the process.
+    // Worker heaps leak per run (decision 68) and eight of them summed past a 10 GB cgroup three times in one night.
+    const limit = this.d.memoryLimit?.() ?? 0;
+    const rss = this.d.rss ? this.d.rss() : process.memoryUsage().rss;
+    if (limit > 0) {
+      st.rssPct = rss / limit * 100;
+      const mb = (b: number) => `${Math.round(b / 1_048_576)} MB`;
+      if (st.rssPct >= THRESHOLDS.memoryRecyclePct) {
+        const n = this.d.pool.recycleAll?.() ?? 0;
+        await a.raise('process.memory', `🔴 Resident memory ${mb(rss)} is ${st.rssPct.toFixed(0)}% of the ${mb(limit)} limit — recycling workers (${n} idle now, the rest as their jobs finish)`, now);
+      } else if (st.rssPct < THRESHOLDS.memoryRecyclePct * 0.8) await a.clear('process.memory', undefined, now);
+    }
 
     // 6. disk space
     const free = this.diskFree(this.d.dataDir);

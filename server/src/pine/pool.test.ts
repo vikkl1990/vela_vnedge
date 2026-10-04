@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PinePool } from './pool.ts';
+import { workerBudget } from './pool.ts';
 import type { WorkerJob, WorkerResult } from './worker.ts';
 
 class FakeWorker extends EventEmitter {
@@ -151,4 +152,13 @@ test('a worker is recycled after maxRuns jobs: terminated once, replaced on exit
   assert.equal(workers[1].jobs.length, 1, 'the fourth job went to the new worker');
   workers[1].finish(); await p4;
   await pool.stop();
+});
+
+test('decision 78: the worker count fits 60% of the memory limit at the heap cap', () => {
+  const G = 1_073_741_824;
+  assert.deepEqual(workerBudget(10 * G, 1024, 8), { workers: 6, heapMb: 1024, limitMb: 10240 });   // the VM: 10 GB cgroup, 8 cores
+  assert.equal(workerBudget(4 * G, 1024, 8).workers, 2, 'never fewer than two');
+  assert.equal(workerBudget(64 * G, 1024, 4).workers, 4, 'never more than the cores');
+  assert.equal(workerBudget(64 * G, 1024, 32).workers, 12, 'capped at twelve');
+  assert.equal(workerBudget(10 * G, 1536, 8).workers, 4, 'a bigger heap means fewer workers, not a bigger sum');
 });

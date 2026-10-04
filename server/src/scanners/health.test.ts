@@ -37,3 +37,20 @@ test('transient failures never quarantine, and release re-opens by reason', () =
   assert.equal(h.release('runtime gap'), 1);
   assert.deepEqual([...h.quarantined()], ['external']);
 });
+
+test('decision 78: three timeouts in a day quarantine a script; a success in between does not reset the count', () => {
+  const db = new Db(':memory:');
+  const h = new ScriptHealth(db);
+  const t0 = Date.UTC(2026, 9, 4);
+  assert.equal(h.record('slow', 'timeout after 90000ms', t0), false);
+  h.clear('slow');                                                        // a run that worked in between
+  assert.equal(h.record('slow', 'timeout after 90000ms', t0 + 3_600_000), false);
+  assert.equal(h.isQuarantined('slow'), false);
+  assert.equal(h.record('slow', 'timeout after 90000ms', t0 + 7_200_000), true, 'the third strike quarantines');
+  assert.equal(h.isQuarantined('slow'), true);
+  assert.match(h.row('slow')?.reason ?? '', /timed out 3×/);
+  // strikes older than a day fall out of the window
+  const h2 = new ScriptHealth(new Db(':memory:'));
+  h2.record('x', 'timeout after 90000ms', t0); h2.record('x', 'timeout after 90000ms', t0 + 1000);
+  assert.equal(h2.record('x', 'timeout after 90000ms', t0 + 2 * 86_400_000), false);
+});

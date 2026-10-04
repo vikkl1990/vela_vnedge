@@ -12,6 +12,7 @@ import { AlertManager, telegramFromEnv } from './alerts.ts';
 import { BackupService } from './backup.ts';
 import { MetricsRegistry, RateWindow } from './metrics.ts';
 import { Monitor } from './monitor.ts';
+import { memoryLimitBytes } from '../pine/pool.ts';
 import { WorkerTracker } from './workers.ts';
 
 const log = logger.scoped('ops');
@@ -22,7 +23,7 @@ export interface OpsDeps {
   db: Db;
   dataDir: string;
   feed: { connected: boolean; lastTickAt: number; on(ev: string, fn: (...a: any[]) => void): unknown };
-  pool: { stats: { size: number; queued: number; busy: number }; stop(): Promise<void> };
+  pool: { stats: { size: number; queued: number; busy: number }; stop(): Promise<void>; recycleAll?(): number };
   paper: { stats(): any; trades(opts: { limit: number }): any[]; openPositions(): any[]; priceSource: { quote: number; slippage: number; rejectedNoQuote: number }; on(ev: any, fn: (...a: any[]) => void): unknown };
   /** Top-of-book store; used only to report how many symbols are actually quoted. */
   marks?: { quotedSymbols(maxAgeMs?: number, now?: number): string[] };
@@ -55,7 +56,7 @@ export class OpsService {
     this.workers = d.workers;
     this.pool = d.pool;
     this.alerts = new AlertManager({ repeatMinutes: cfg.alerts.repeatMinutes, maxPerHour: cfg.alerts.maxPerHour, transport: d.transport ?? null, telegram: telegramFromEnv(cfg.alerts.telegram) });
-    this.monitor = new Monitor({ cfg: d.cfg, db: d.db, alerts: this.alerts, workers: d.workers, dataDir: d.dataDir, feed: d.feed, pool: d.pool, paper: d.paper, candles: d.candles, peakEquity: d.peakEquity });
+    this.monitor = new Monitor({ cfg: d.cfg, db: d.db, alerts: this.alerts, workers: d.workers, dataDir: d.dataDir, feed: d.feed, pool: d.pool, paper: d.paper, candles: d.candles, peakEquity: d.peakEquity, memoryLimit: memoryLimitBytes });
     this.backups = new BackupService(d.db, path.join(d.dataDir, 'backups'), () => ({ hourUtc: d.cfg().ops.backupHourUtc, keepDays: d.cfg().ops.backupKeepDays }));
     d.onConfigChange(next => {
       this.alerts.configure({ repeatMinutes: next.alerts.repeatMinutes, maxPerHour: next.alerts.maxPerHour, ...(d.transport ? {} : { telegram: telegramFromEnv(next.alerts.telegram) }) });
@@ -157,6 +158,8 @@ export class OpsService {
     m.gauge('paper_closed_pnl', 'Net pnl of closed trades (the journal)', () => safeNum(() => d.paper.stats().closedPnl));
     m.gauge('paper_open_pnl', 'Pnl of open positions: banked legs, fees and mark', () => safeNum(() => d.paper.stats().openPnl));
     m.gauge('paper_drawdown_from_peak_pct', 'Equity drawdown from its peak (%)', () => this.monitor.state.drawdownPct);
+    m.gauge('process_rss_bytes', 'Resident memory of the bot process, worker heaps included (bytes)', () => process.memoryUsage().rss);
+    m.gauge('process_memory_limit_bytes', 'Memory limit the process must stay under (cgroup or RAM)', () => memoryLimitBytes());
     m.gauge('backtests_total', 'Backtest results held in memory', () => d.scanners.allBacktests().length);
     m.gauge('candle_gaps_found_total', 'Missing bars detected', () => d.candles.integrity().gapsFound);
     m.gauge('candle_gaps_filled_total', 'Missing bars backfilled from REST', () => d.candles.integrity().gapsFilled);

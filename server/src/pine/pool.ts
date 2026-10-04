@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,14 +9,37 @@ import type { WorkerJob, WorkerResult } from './worker.ts';
 const log = logger.scoped('pool');
 const WORKER_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker.ts');
 /** Heap ceiling per worker thread (MB); override with VNEDGE_WORKER_HEAP_MB. */
-export const WORKER_HEAP_MB = Number(process.env.VNEDGE_WORKER_HEAP_MB) || 1536;
+export const WORKER_HEAP_MB = Number(process.env.VNEDGE_WORKER_HEAP_MB) || 1024;
 /**
  * A worker is replaced after this many jobs (decision 68). PineTS 0.10.0 keeps about 25 MB per run
  * inside a long-lived worker and every run gets slower (measured: 310 → 907 ms and 300 → 1,500 MB
  * over 48 runs; 0.9.34 is flat). Left alone a worker reaches the heap cap, crashes mid-job, and the
  * fleet's runs time out — no signals. Recycling bounds the leak; a fresh worker costs under a second.
  */
-export const WORKER_MAX_RUNS = Number(process.env.VNEDGE_WORKER_MAX_RUNS) || 24;
+export const WORKER_MAX_RUNS = Number(process.env.VNEDGE_WORKER_MAX_RUNS) || 12;
+
+/** The memory this process may use: its cgroup limit when one is set (systemd MemoryMax), else the machine's RAM. */
+export function memoryLimitBytes(): number {
+  try {
+    const own = fs.readFileSync('/proc/self/cgroup', 'utf8').split('\n').find(l => l.startsWith('0::'))?.slice(3).trim();
+    for (const f of [own ? `/sys/fs/cgroup${own}/memory.max` : null, '/sys/fs/cgroup/memory.max']) {
+      if (!f) continue;
+      try { const v = fs.readFileSync(f, 'utf8').trim(); if (v !== 'max' && Number(v) > 0) return Number(v); } catch { /* next */ }
+    }
+  } catch { /* no cgroup */ }
+  return os.totalmem();
+}
+
+/**
+ * How many workers fit: 60% of the memory limit at `heapMb` each, never fewer than 2 nor more than the
+ * cores (capped at 12). Decision 78: eight workers at 1,536 MB summed to 12 GB against a 10 GB cgroup, and
+ * the kernel killed the whole process three times in one night.
+ */
+export function workerBudget(limitBytes = memoryLimitBytes(), heapMb = WORKER_HEAP_MB, cpus = os.cpus()?.length ?? 4): { workers: number; heapMb: number; limitMb: number } {
+  const limitMb = Math.floor(limitBytes / 1_048_576);
+  const fit = Math.floor((limitMb * 0.6) / heapMb);
+  return { workers: Math.max(2, Math.min(12, cpus, fit)), heapMb, limitMb };
+}
 
 interface PoolWorker {
   on(event: string, listener: (...args: any[]) => void): unknown;
@@ -62,7 +86,7 @@ export class PinePool {
    * into queueing (p95 latency doubles from 8 to 16 workers), so oversubscribing is not free.
    */
   readonly maxRuns: number;
-  constructor(size = Math.max(2, Math.min(12, os.cpus()?.length ?? 4)), timeoutMs = 90_000,
+  constructor(size = workerBudget().workers, timeoutMs = 90_000,
     createWorker: (index: number) => PoolWorker = index => new Worker(WORKER_FILE, {
       workerData: { index }, execArgv: ['--no-warnings=ExperimentalWarning'],
       // A script that runs away with memory must fail its own job, not take the machine down:
@@ -72,6 +96,8 @@ export class PinePool {
     }), maxRuns = WORKER_MAX_RUNS) {
     this.maxRuns = maxRuns;
     this.size = size; this.reserved = size >= 4 ? Math.round(size / 4) : 0; this.timeoutMs = timeoutMs; this.createWorker = createWorker;
+    const b = workerBudget();
+    log.info(`worker pool: ${size} workers × ${WORKER_HEAP_MB} MB heap, recycled after ${maxRuns} runs (memory limit ${b.limitMb} MB fits ${b.workers})`);
     for (let i = 0; i < size; i++) this.spawn(i);
     this.timeoutTimer = setInterval(() => this.reapTimeouts(), 5_000);
     this.timeoutTimer.unref();
@@ -97,6 +123,22 @@ export class PinePool {
   private fail(p: Pending, error: string) {
     p.resolve({ id: p.job.id, ok: false, error, ms: p.startedAt === undefined ? 0 : Date.now() - p.startedAt,
       bars: p.job.bars.length, lastBarTime: p.job.bars.at(-1)?.time ?? 0, warnings: 0, alerts: [], shapes: [], labels: [], plots: [] });
+  }
+
+  /**
+   * Replace every worker: idle ones now, busy ones as soon as their job completes. The ops monitor
+   * calls this when resident memory nears the cgroup limit, so the leak (decision 68) is returned
+   * before the kernel takes the whole process.
+   */
+  recycleAll(): number {
+    let n = 0;
+    for (const slot of this.workers) {
+      if (!slot || slot.retiring) continue;
+      if (slot.busy) { slot.runs = Math.max(slot.runs, this.maxRuns - 1); continue; }
+      this.recycled++; this.recycleTimes.push(Date.now());
+      this.retire(slot, 'recycled'); n++;
+    }
+    return n;
   }
 
   private retire(slot: Slot, error: string) {

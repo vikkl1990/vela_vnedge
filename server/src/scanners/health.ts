@@ -37,8 +37,31 @@ export class ScriptHealth {
   private cache: Set<string> | null = null;
   constructor(db: Db, threshold = 2) { this.db = db; this.threshold = threshold; }
 
+  /** Timeouts per script in the trailing day; three quarantine it (decision 78). */
+  private timeouts = new Map<string, number[]>();
+  static readonly TIMEOUT_STRIKES = 3;
+  static readonly TIMEOUT_WINDOW_MS = 86_400_000;
+
+  /**
+   * A timeout is not a permanent error, but a script that times out three times in a day costs a
+   * worker for 90 s each time and never produces a signal in time. Quarantined like a permanent failure.
+   */
+  recordTimeout(scannerId: string, error: string, at = Date.now()): boolean {
+    const l = (this.timeouts.get(scannerId) ?? []).filter(t => at - t < ScriptHealth.TIMEOUT_WINDOW_MS);
+    l.push(at); this.timeouts.set(scannerId, l);
+    if (l.length < ScriptHealth.TIMEOUT_STRIKES) return false;
+    const cur = this.db.get<any>('SELECT quarantined FROM script_health WHERE scanner_id=?', scannerId);
+    this.db.run(
+      `INSERT INTO script_health(scanner_id, fails, last_at, last_error, reason, quarantined) VALUES (?,?,?,?,?,1)
+       ON CONFLICT(scanner_id) DO UPDATE SET fails=excluded.fails, last_at=excluded.last_at, last_error=excluded.last_error, reason=excluded.reason, quarantined=1`,
+      scannerId, l.length, at, String(error).slice(0, 300), `timed out ${l.length}× in 24 h`);
+    this.cache = null;
+    return !cur?.quarantined;
+  }
+
   /** Record one failed run. Returns true when this call quarantined the script. */
   record(scannerId: string, error: string | null | undefined, at = Date.now()): boolean {
+    if (error && /timeout after \d+ms/i.test(error)) return this.recordTimeout(scannerId, error, at);
     const reason = permanentReason(error);
     if (!reason) return false;
     const cur = this.db.get<any>('SELECT fails, quarantined FROM script_health WHERE scanner_id=?', scannerId);
