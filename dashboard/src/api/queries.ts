@@ -5,6 +5,7 @@ import type { ConfigPatch, LogLevel, ScannerUpdate, SignalQuery, TradeQuery } fr
 /** Query keys — SSE handlers invalidate by these prefixes. */
 export const qk = {
   health: ['health'] as const,
+  opsMetricsHistory: (hours: number) => ['ops', 'metrics', hours] as const,
   config: ['config'] as const,
   markets: ['markets'] as const,
   scanners: ['scanners'] as const,
@@ -235,4 +236,9 @@ export const useAnalytics = () =>
 /** The path a trade took, loaded only while its panel is open. */
 export function usePositionPath(id: number | null) {
   return useQuery({ queryKey: qk.positionPath(id ?? 0), queryFn: () => api.positionPath(id!), enabled: id != null, staleTime: 15_000 })
+}
+
+/** The process minute by minute for the Overview's system panel (decision 80). */
+export function useOpsMetricsHistory(hours = 24) {
+  return useQuery({ queryKey: qk.opsMetricsHistory(hours), queryFn: () => api.opsMetricsHistory(hours), refetchInterval: 60_000 })
 }

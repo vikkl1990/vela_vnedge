@@ -31,7 +31,8 @@ console.log(`Generated ${iso(now)} from \`${DATA_DIR}\`. Do not edit: run \`npm 
 // ---- what it trades ----
 const fleet = Object.entries(cfg.scanners)
   .filter(([, v]) => v.enabled && !v.hidden)
-  .flatMap(([id, v]) => (v.symbols ?? cfg.symbols).map(s => ({ id, symbol: s, tf: (v.timeframes ?? cfg.timeframes)[0] })));
+  // decision 79: explicit pairs, else the scanner's own symbols × timeframes; the global list never counts
+  .flatMap(([id, v]) => v.pairs?.length ? v.pairs.map(p => ({ id, symbol: p.symbol, tf: p.tf })) : (v.symbols ?? []).flatMap(s => (v.timeframes ?? cfg.timeframes).map(tf => ({ id, symbol: s, tf }))));
 const registry = new ScannerRegistry();
 console.log(`## Live fleet — ${fleet.length} pairs\n`);
 console.log('| scanner | market | tf | live trades | net $ | last trade |');

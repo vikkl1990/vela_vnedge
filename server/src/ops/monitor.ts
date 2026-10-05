@@ -40,6 +40,9 @@ export interface MonitorState {
   equityPeakResetAt: number | null;
   /** Resident memory as a share of the limit at the last evaluation. */
   rssPct: number;
+  /** Last ops_metrics sample and last prune (decision 80). */
+  sampledAt: number;
+  prunedAt: number;
   drawdownPct: number;
   dbErrorsSeen: number;
   diskFreeMb: number | null;
@@ -69,7 +72,7 @@ export class Monitor {
     this.startedAt = this.now();
     const peak = Number(d.db.kvGet<number>('ops.equityPeak') ?? 0);
     const peakResetAt = d.db.kvGet<number>('ops.equityPeakResetAt') ?? null;
-    this.state = { feedDownSince: null, queueDeepSince: null, equityPeak: Number.isFinite(peak) ? peak : 0, equityPeakResetAt: peakResetAt, rssPct: 0, drawdownPct: 0, dbErrorsSeen: d.db.errors, diskFreeMb: null, lastEvalAt: null, lastSummaryDay: null, evaluations: 0 };
+    this.state = { feedDownSince: null, queueDeepSince: null, equityPeak: Number.isFinite(peak) ? peak : 0, equityPeakResetAt: peakResetAt, rssPct: 0, sampledAt: 0, prunedAt: 0, drawdownPct: 0, dbErrorsSeen: d.db.errors, diskFreeMb: null, lastEvalAt: null, lastSummaryDay: null, evaluations: 0 };
     d.paper.on('trade', (t: any) => { if (this.d.cfg().alerts.onTrade) void this.onTrade(t); });
   }
 
@@ -149,6 +152,24 @@ export class Monitor {
         const n = this.d.pool.recycleAll?.() ?? 0;
         await a.raise('process.memory', `🔴 Resident memory ${mb(rss)} is ${st.rssPct.toFixed(0)}% of the ${mb(limit)} limit — recycling workers (${n} idle now, the rest as their jobs finish)`, now);
       } else if (st.rssPct < THRESHOLDS.memoryRecyclePct * 0.8) await a.clear('process.memory', undefined, now);
+    }
+
+    // 10. a minute-by-minute record of the process (decision 80): what the graphs on the Overview read
+    if (now - st.sampledAt >= 60_000) {
+      st.sampledAt = now;
+      try {
+        const mu = process.memoryUsage();
+        const ps = this.d.pool.stats;
+        const runsH = this.d.db.get<{ n: number }>('SELECT COUNT(*) n FROM scanner_runs WHERE at > ?', now - 3_600_000)?.n ?? 0;
+        const sigH = this.d.db.get<{ n: number }>('SELECT COUNT(*) n FROM signals WHERE at > ?', now - 3_600_000)?.n ?? 0;
+        const openN = this.d.paper.stats()?.openPositions ?? 0;
+        const lags: number[] = [];
+        for (const s of this.d.candles.tracked()) if (s.loaded && s.lastClosedAt && s.lastBarTime !== null && (s.tf in TF_SECONDS) && now - s.lastClosedAt < 3_600_000) lags.push((s.lastClosedAt - (s.lastBarTime + TF_SECONDS[s.tf] * 1000)) / 1000);
+        lags.sort((a, b) => a - b);
+        this.d.db.run('INSERT OR REPLACE INTO ops_metrics(at, rss, heap, rss_pct, queued, busy, recycled, runs_h, signals_h, feed_up, open_positions, close_lag_s) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+          now, mu.rss, mu.heapUsed, st.rssPct, ps.queued, ps.busy, ps.recycled ?? 0, runsH, sigH, feedUp ? 1 : 0, openN, lags.length ? lags[lags.length >> 1] : null);
+        if (now - st.prunedAt >= 3_600_000) { st.prunedAt = now; this.d.db.run('DELETE FROM ops_metrics WHERE at < ?', now - 14 * 86_400_000); }
+      } catch (e: any) { log.debug(`ops_metrics sample failed: ${e?.message ?? e}`); }
     }
 
     // 6. disk space

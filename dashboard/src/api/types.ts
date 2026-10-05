@@ -629,3 +629,6 @@ export interface PathPoint {
 
 export interface MarketVerdict { symbol: string; allowed: boolean; tracked?: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; spreadPct?: number | null; bookCostPct?: number | null; trades: number; pf: number | null; netUsd: number }
 export interface MarketsToday { at: number; enabled: boolean; markets: MarketVerdict[] }
+
+/** One minute of the process (decision 80). */
+export interface OpsMetricRow { at: number; rss: number; heap: number; rssPct: number; queued: number; busy: number; recycled: number; runsH: number; signalsH: number; feedUp: number; openPositions: number; closeLagS: number | null }

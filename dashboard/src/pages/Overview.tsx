@@ -1,9 +1,9 @@
 import type { MarketVerdict } from '../api/types'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, useMarketsToday, useOps, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
+import { useEquity, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
-import { EquityChart, PnlByScannerChart, type PnlBar } from '../components/charts'
+import { EquityChart, PnlByScannerChart, Sparkline, type PnlBar } from '../components/charts'
 import { PositionsTable } from '../components/PositionsTable'
 import { TickerTape } from '../components/TickerTape'
 import { ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, QueryState } from '../components/ui'
@@ -90,6 +90,7 @@ export function Overview() {
           {stats.isLoading && !s ? <Loading kind="chart" height={240} /> : <PnlByScannerChart data={pnlBars} height={240} />}
         </Panel>
         <AlertsStatusLine />
+        <SystemPanel />
         <MarketsTodayPanel />
         <Panel title="Scanner fleet">
           <QueryState {...scanners} data={scanners.data} empty="No scanners loaded." hint="Drop .pine files into the scanners folder and restart the server." onRetry={() => scanners.refetch()}>
@@ -207,5 +208,35 @@ function AlertsStatusLine() {
       {a.lastError ? <span className="text-danger"> · last error: {a.lastError}</span> : null}
       {a.recent?.length ? <span className="muted"> · last: {a.recent[a.recent.length - 1].text.slice(0, 80)}</span> : null}
     </div>
+  )
+}
+
+/** The process over the last day, minute by minute: the graphs that would have shown the overnight kills coming (decision 80). */
+function SystemPanel() {
+  const h = useOpsMetricsHistory(24)
+  const rows = h.data?.rows ?? []
+  const mb = (v: number) => `${Math.round(v / 1048576)} MB`
+  const row = (label: string, values: Array<number | null>, format?: (v: number) => string, hint?: string) => (
+    <div className="kv-row" title={hint}>
+      <span className="muted small" style={{ minWidth: 120, display: 'inline-block' }}>{label}</span>
+      <Sparkline values={values} format={format} />
+    </div>
+  )
+  return (
+    <Panel title="System, last 24 h" right={<span className="muted small">{rows.length ? `${rows.length} samples` : ''}</span>}>
+      {h.isLoading && !rows.length ? <Loading kind="kpi" rows={4} /> : null}
+      {!h.isLoading && !rows.length ? <p className="muted small">No samples yet: the monitor writes one a minute.</p> : null}
+      {rows.length > 0 && (
+        <div className="kv-list">
+          {row('Resident memory', rows.map((r) => r.rss), mb, 'The whole process, worker heaps included; the kernel kills it at the cgroup limit')}
+          {row('Memory of limit', rows.map((r) => r.rssPct), (v) => `${v.toFixed(0)}%`, 'The monitor recycles workers at 75%')}
+          {row('Queue depth', rows.map((r) => r.queued), undefined, 'Scanner jobs waiting for a worker')}
+          {row('Runs per hour', rows.map((r) => r.runsH), undefined, 'Scanner cells run in the trailing hour (one row per cell, so a lower bound)')}
+          {row('Signals per hour', rows.map((r) => r.signalsH))}
+          {row('Close lag (s)', rows.map((r) => r.closeLagS), (v) => v.toFixed(1), 'Median seconds between a bar ending and its close being announced')}
+          {row('Open positions', rows.map((r) => r.openPositions))}
+        </div>
+      )}
+    </Panel>
   )
 }

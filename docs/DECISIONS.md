@@ -2268,3 +2268,27 @@ The fleet is 10 scanners on 26 cells, warm-up 26, resident memory 1.3 GB after r
 The other half of the instability is the deploy cadence: every restart re-warms 184 pairs and
 costs the fleet two to three minutes of closes. That is a practice, not a bug: batch deploys, and
 deploy at a quiet hour.
+
+## 80. Running the bot like a service: cheaper restarts, a graph, a deploy rule, a tested backup
+
+The operator asked what the bot as a whole is missing. The answers were operational, not
+strategic, and four of them are code.
+
+1. **Restarts cost less.** A backtest from the last six hours is fresh (it was one hour): a restart
+   no longer re-runs the fleet's history, only the live check on the last bar.
+2. **The process keeps its own record.** The ops monitor writes one row a minute to `ops_metrics`:
+   resident memory and its share of the limit, heap, queue depth, busy and recycled workers, runs
+   and signals per hour, feed state, open positions, median close lag; fourteen days kept.
+   `GET /api/ops/metrics/history?hours=` serves it and the Overview's "System, last 24 h" panel
+   graphs it. The overnight kills of 4 October would have been a visibly rising line for hours.
+3. **One way to deploy.** `ops/deploy.sh` runs the checks, pushes, pulls, builds, restarts, and
+   refuses within six hours of the last restart unless forced. Sixteen restarts in one day was the
+   other half of the instability.
+4. **The backup restores.** The 02:00 UTC snapshot opened read-only: integrity ok, 748 positions,
+   928 signals, equity 865.48. First time anyone checked.
+5. **The State document counts the fleet the way the engine schedules it** (it reported 180 pairs
+   for a 26-cell fleet, from the symbols × timeframes product decision 79 retired).
+
+Not code, and still open: the Telegram token (the Overview says so on every load), a deploy
+window agreed with the operator, and a research process separate from the trading one. The
+family-lab holdout and an exchange demo session remain the next strategic items.

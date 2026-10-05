@@ -222,3 +222,12 @@ Honest separation, after the lab bug in decision 27 forced a re-audit (decision 
   it. The halves test cannot catch lookahead (decision 44).
 - A deploy is verified by `git rev-list --count HEAD..origin/main` on the VM returning 0, never by
   the pull's own output (decision 44's audit, finding 9).
+
+
+## Deploying (decision 80)
+
+`ops/deploy.sh` is the one way: it runs the server suite and the dashboard lint and build locally, pushes
+main, pulls on the VM, builds the dashboard and restarts the service. It refuses when the service
+restarted within the last six hours, because every restart re-warms the fleet and costs minutes of
+closes; batch changes, or pass `--force` for an incident. The Overview's "System, last 24 h" panel
+shows what a restart did to memory, queue and close lag.

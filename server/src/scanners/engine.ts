@@ -346,7 +346,8 @@ export class ScannerEngine extends EventEmitter {
     this.warmed.add(key);
     // resume: a backtest from the last hour that already carries ML features does not need re-running
     const prev = this.backtests.get(key);
-    if (prev && Date.now() - prev.at < 3600_000 && (prev.trades.length === 0 || (prev.trades[0] as any).features)) { log.debug(`warm ${key}: fresh backtest, skipping`); return; }
+    // a backtest from the last six hours is fresh enough (decision 80): a restart must not re-run the fleet's history
+    if (prev && Date.now() - prev.at < 6 * 3600_000 && (prev.trades.length === 0 || (prev.trades[0] as any).features)) { log.debug(`warm ${key}: fresh backtest, skipping`); return; }
     try {
       await this.runOnce(s, symbol, tf, { backtest: true, live: true });
     } catch (e: any) { log.error(`warm ${key} failed: ${e?.message ?? e}`); }

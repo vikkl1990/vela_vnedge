@@ -115,3 +115,23 @@ export function PnlByScannerChart({ data, height = 220 }: { data: PnlBar[]; heig
     </ResponsiveContainer>
   )
 }
+
+/** A small inline line chart: one series, last value on the right, no axes (decision 80 system panel). */
+export function Sparkline({ values, height = 44, width = 240, className = '', format = (v: number) => String(Math.round(v)) }: { values: Array<number | null>; height?: number; width?: number; className?: string; format?: (v: number) => string }) {
+  const pts = values.map((v, i) => (v === null || !Number.isFinite(v) ? null : { i, v })).filter((p): p is { i: number; v: number } => p !== null)
+  if (pts.length < 2) return <span className="muted small">no data yet</span>
+  const min = Math.min(...pts.map((p) => p.v)), max = Math.max(...pts.map((p) => p.v))
+  const span = max - min || 1
+  const x = (i: number) => (i / Math.max(1, values.length - 1)) * (width - 2) + 1
+  const y = (v: number) => height - 3 - ((v - min) / span) * (height - 6)
+  const d = pts.map((p, k) => `${k === 0 ? 'M' : 'L'}${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ')
+  const last = pts[pts.length - 1].v
+  return (
+    <span className={`sparkline ${className}`} title={`min ${format(min)} · max ${format(max)} · now ${format(last)}`}>
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`now ${format(last)}`}>
+        <path d={d} fill="none" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+      <span className="mono small">{format(last)}</span>
+    </span>
+  )
+}
