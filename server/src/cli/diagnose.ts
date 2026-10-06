@@ -68,6 +68,24 @@ function stat(trades: any[], b: Bar[], tfMs: number): Stat {
 const row = (id: string, tf: string, sym: string, v: string, s: Stat, note = '') => out.write([id, tf, sym, v, s.trades, s.avgR.toFixed(3), s.sumR.toFixed(1), s.win.toFixed(2), s.t1, s.r1.toFixed(3), s.t2, s.r2.toFixed(3), s.both ? 1 : 0, s.mfe05.toFixed(2), s.mfe1.toFixed(2), s.mfe2.toFixed(2), s.firstBar.toFixed(2), note].join('\t') + '\n');
 
 const flip = (evs: ScanEvent[]): ScanEvent[] => evs.map(e => (e.side ? { ...e, side: e.side === 'long' ? 'short' : 'long', sl: undefined, tp: [] } : e));
+/**
+ * One-bar confirmation (decision 81): an entry is taken at the close of the bar AFTER the signal bar, and
+ * only if that bar closed in the trade's direction. The journal's stop exits were hit within the first bar
+ * with no favourable excursion — late entries into a move that reversed — and this is the cheapest test of it.
+ */
+const confirm = (evs: ScanEvent[], bars: Bar[]): ScanEvent[] => {
+  const at = new Map<number, number>(); bars.forEach((b, i) => at.set(b.time, i));
+  const out: ScanEvent[] = [];
+  for (const e of evs) {
+    if (e.kind !== 'entry' || !e.side) { out.push(e); continue; }
+    const i = at.get(e.barTime); const next = i !== undefined ? bars[i + 1] : undefined;
+    if (i === undefined || !next) continue;
+    const held = e.side === 'long' ? next.close > bars[i].close : next.close < bars[i].close;
+    if (!held) continue;
+    out.push({ ...e, barTime: next.time, barIndex: i + 1, price: undefined, label: `${e.label} (confirmed)` });
+  }
+  return out;
+};
 
 interface CellResult { id: string; tf: string; sym: string; variants: Record<string, Stat>; labels: Array<[string, Stat]>; verdict: string; fix: string }
 async function cell(id: string, tf: string, sym: string): Promise<CellResult | null> {
@@ -103,6 +121,8 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants.levels = stat(run({ exitMode: 'levels' }), b, tfMs);
   if (events.some(e => e.kind === 'exit') || events.some(e => e.kind === 'entry' && (e.sl || e.tp?.length))) variants.script = stat(run({ exitMode: 'script' }), b, tfMs);
   variants['er0.25'] = stat(run({ chopGate: { minEr: 0.25 } }), b, tfMs);
+  variants.confirm1 = stat(run({ events: confirm(events, b) }), b, tfMs);
+  variants['confirm1+er'] = stat(run({ events: confirm(events, b), chopGate: { minEr: 0.25 } }), b, tfMs);
   variants.inverted = stat(run({ events: flip(events) }), b, tfMs);
   variants.long = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'long') }), b, tfMs);
   variants.short = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'short') }), b, tfMs);
