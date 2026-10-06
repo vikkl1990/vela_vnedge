@@ -2292,3 +2292,39 @@ strategic, and four of them are code.
 Not code, and still open: the Telegram token (the Overview says so on every load), a deploy
 window agreed with the operator, and a research process separate from the trading one. The
 family-lab holdout and an exchange demo session remain the next strategic items.
+
+## 81. The stop widens to 1.5×ATR; the market gate stops locking markets on five trades
+
+The operator reported stops too wide in quiet markets or on the wrong side, then that the bot was
+dead, and asked for anything that reduces stop exits. The journal and a fresh scanner test answer
+both (`data/reports/2026-10-06-fleet-stop-variants.tsv`, the fleet's 26 cells, 1,617 trades).
+
+**What the journal said.** No stop in 81 closed trades sat on the wrong side of its entry. 20 of
+30 stop exits never saw +0.25R and the median stop hit 15 minutes in: the entry was on the wrong
+side of the move, not the stop. Every stop was 1.0×ATR (76 of 81 used the ATR fallback). Quiet
+markets lost (−0.28R a trade, net −208) where active ones broke even (+0.04R, net +64); the stop
+was narrower in price there, not wider, and the move simply stalled at half an R.
+
+**What the test said, with the efficiency gate on as it is live.** One-bar confirmation, the
+obvious cure for late entries, halves the trades and halves the expectancy (+0.144R to +0.072R)
+while leaving the first-bar stop share where it was: rejected. A wider stop does what was asked:
+
+| variant | trades | avg R | first-bar stops | second half | cells positive |
+|---|---|---|---|---|---|
+| gate only | 764 | +0.220 | 19% | +90.6 | 23/26 |
+| gate + 1.5×ATR | 779 | +0.221 | 11% | +93.3 | 25/26 |
+| gate + 2×ATR | 768 | +0.231 | 7% | +82.1 | 22/26 |
+
+1.5×ATR is taken: same expectancy, the best second half, positive on the most cells. Under risk
+sizing the dollar risk per trade is unchanged; the position is smaller.
+
+**Why the bot looked dead.** It ran every close and raised 16 entry signals in a day; 15 were
+refused by the market gate. The "not paying" rule locked AKE, ZEC, ETH and LINK for 14 days on
+samples of 5 to 9 trades, and a locked market gets no trades to unlock itself. Its minimum sample
+is now 20. The quiet-market floor drops from 4× to 3× the round-trip cost: with a 1.5×ATR stop
+that is the same cost share per unit of risk the 4× floor meant under 1×ATR. Five of nine live
+markets are open again; EVAA and PIEVERSE are dead by turnover, SAGA's book is too costly, ETH is
+still too quiet even at 3×. Those four verdicts stand.
+
+VM config: `paper.fallbackAtrSl` 1 → 1.5, `risk.marketGate.minTrades` 5 → 20,
+`risk.marketGate.minAtrFeeMult` 4 → 3. Backup `config.json.bak-d81-*` on the VM.
