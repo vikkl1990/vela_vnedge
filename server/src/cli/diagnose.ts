@@ -122,6 +122,8 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (events.some(e => e.kind === 'exit') || events.some(e => e.kind === 'entry' && (e.sl || e.tp?.length))) variants.script = stat(run({ exitMode: 'script' }), b, tfMs);
   variants['er0.25'] = stat(run({ chopGate: { minEr: 0.25 } }), b, tfMs);
   variants.confirm1 = stat(run({ events: confirm(events, b) }), b, tfMs);
+  variants['er+stop1.5'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 1.5 }), b, tfMs);
+  variants['er+stop2'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 2 }), b, tfMs);
   variants['confirm1+er'] = stat(run({ events: confirm(events, b), chopGate: { minEr: 0.25 } }), b, tfMs);
   variants.inverted = stat(run({ events: flip(events) }), b, tfMs);
   variants.long = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'long') }), b, tfMs);
