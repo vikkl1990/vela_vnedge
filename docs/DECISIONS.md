@@ -2378,3 +2378,29 @@ did not pick them on: 30 trades, 14 days, PF ≥ 1.2, 60% of weeks positive, ≥
 live on the test alone. If the operator wants the strictest 14 live now (n ≥ 25, both halves
 ≥ +0.20R, first-bar stops ≤ 20%, listed in the selected file), that is a one-line change within
 the fleet cap, taken knowing it repeats decision 70's method.
+
+## 83. The signal path unblocked: judgement rules off, executability rules kept, fleet at its cap
+
+The operator asked for the flow of signals fixed and anything blocking it unblocked. The blocks
+in the path on 8 October were the market gate's "too quiet" floor (ETH, FIL, LINK), its "not
+paying" lock (AKE, ZEC, ETH, LINK on samples of five to nine trades), the fee ratio on script
+stops (0.42–0.47% stops against a 0.48% floor), and four of the 26 live cells parked on
+PIEVERSE, whose daily turnover is $0.03M.
+
+**Off:** the quiet-market floor (`minAtrFeeMult` 3 → 0) and the not-paying lock (`minTrades` →
+effectively never). The journal, not a floor, now decides whether quiet markets pay; the
+evidence that they lost (decision 81) stands and will be re-read on the trades this allows.
+**Lowered:** `paper.minRiskFeeRatio` 4 → 2: a script's stop must still clear twice the round
+trip. **Kept:** the dead-market floor and the costly-book limit, because a market with no
+turnover or a book that costs 0.35% to cross cannot be filled even on paper, and the stale or
+missing-input refusals of decisions 76 and 82. **Kept:** the efficiency gate (+0.22R against
++0.14R without it) and the two entry guards of decision 82.
+
+**Fleet at the cap.** The 14 strongest cells from the 8 October expansion test (n ≥ 25, both
+halves ≥ +0.20R, first-bar stops ≤ 20%, listed in
+`data/reports/2026-10-08-fleet-expansion-selected.json`) join the 26: 40 cells on 19 markets,
+16 of them allowed by the gate as it now stands. They were chosen on the same history they
+were scored on, as decision 70's cells were; the operator takes them knowing that. The other
+64 measured cells stay in the shadow book.
+
+VM config backup `config.json.bak-d83-*`.
