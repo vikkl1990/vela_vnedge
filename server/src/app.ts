@@ -193,6 +193,9 @@ export class App {
     this.ops.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
+    // the incubator's live rows follow the config from the first second (decision 83): a fleet edited on disk and restarted used to
+    // keep its new cells in the shadow stage until the next hunt
+    { const synced = incubatorSyncLive(this.incubatorStore, this.config.get()); if (synced.added || synced.removed) log.info(`incubator live rows synced to the config: +${synced.added} −${synced.removed}`); }
     this.incubator.start();
   }
 
