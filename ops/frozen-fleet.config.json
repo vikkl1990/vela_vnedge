@@ -1,0 +1,34 @@
+{
+  "symbols": ["BTCUSD", "ETHUSD"],
+  "timeframes": ["1h"],
+  "scanners": {},
+  "autoTune": { "enabled": false },
+  "paper": {
+    "sizingMode": "risk",
+    "riskPerTradePct": 0.5,
+    "maxLeverage": 3,
+    "minLeverage": 1,
+    "fallbackAtrSl": 1,
+    "minRiskFeeRatio": 4,
+    "widenStopToFee": false,
+    "scalperOffer": {
+      "enabled": true,
+      "majors": ["BTCUSD", "ETHUSD"],
+      "majorsMinutes": 30,
+      "othersMinutes": 15,
+      "excluded": ["PAXGUSD", "SLVONUSD", "XAUTUSD"]
+    }
+  },
+  "execution": { "mode": "paper", "allowProduction": false },
+  "incubator": { "tf": "1h", "promote": { "auto": false, "maxPerWeek": 0 } },
+  "risk": {
+    "enabled": true,
+    "maxPositionsTotal": 1,
+    "maxPositionsPerSymbol": 1,
+    "perScannerMaxPositions": 1,
+    "cooldownAfterLosses": 1,
+    "cooldownMinutes": 60,
+    "closeAllOnKill": true,
+    "maxDailyLossPct": 3
+  }
+}
