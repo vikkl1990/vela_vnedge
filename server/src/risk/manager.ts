@@ -160,6 +160,19 @@ export class RiskManager extends EventEmitter implements RiskGate {
     }
     const s = this.st.scanners[req.scannerId];
     if (s?.cooldownUntil && now < s.cooldownUntil) return reject(`cooldown after ${s.consecutive} losses until ${new Date(s.cooldownUntil).toISOString().slice(11, 16)}Z`);
+    // decision 82: the two guards the 28 Sep stop study asked for
+    const stopCd = c.reentryCooldownMinutes ?? 0;
+    if (stopCd > 0) {
+      const cut = now - stopCd * 60_000;
+      const last = this.paper.closedPositions().find(p => p.scannerId === req.scannerId && p.symbol === req.symbol && p.exitReason === 'sl' && (p.exitAt ?? 0) >= cut);
+      if (last) return reject(`re-entry cooldown: this scanner was stopped on ${req.symbol} ${Math.round((now - (last.exitAt ?? now)) / 60_000)} min ago (wait ${stopCd})`);
+    }
+    const burst = c.burstWindowSec ?? 0;
+    if (burst > 0) {
+      const cut = now - burst * 1000;
+      const recent = [...this.paper.openPositions().filter(p => p.side === req.side).map(p => p.openedAt ?? p.entryAt), ...this.paper.pendingEntries().filter(p => p.side === req.side).map(p => p.at)].filter(t => t >= cut);
+      if (recent.length) return reject(`burst: a ${req.side} entry was already taken in the last ${burst}s; one at a time`);
+    }
     const mv = this.deps.marketGate?.verdict(req.symbol);
     if (mv && !mv.allowed) return reject(`market: ${mv.reasons.join('; ')}`);
     const r = c.regime;

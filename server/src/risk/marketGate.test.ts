@@ -33,13 +33,13 @@ test('markets today: dead, costly-book, thin-book, too quiet and losing markets 
   assert.ok(!(await gate.universe([])).includes('NVDAXUSD'), 'tokenized stocks are not in the universe');
   assert.equal(by.WIDEUSD.allowed, false); assert.match(by.WIDEUSD.reasons[0], /costly book: 0.418% round trip/);
   assert.equal(by.SHALLOWUSD.allowed, false); assert.match(by.SHALLOWUSD.reasons[0], /thin book/);
-  assert.equal(by.NOBOOKUSD.allowed, true, 'unreadable book → no book opinion, not a block');
+  assert.equal(by.NOBOOKUSD.allowed, false, 'decision 82: an unread book is a refusal, not a pass'); assert.match(by.NOBOOKUSD.reasons.join(' '), /unavailable: order book/);
   assert.equal(by.NOBOOKUSD.bookCostPct, null);
   assert.ok(Math.abs(by.GOODUSD.bookCostPct! - (0.02 + 0.118)) < 1e-9, `tight book costs spread + fee, got ${by.GOODUSD.bookCostPct}`);
   assert.equal(by.QUIETUSD.allowed, false); assert.match(by.QUIETUSD.reasons[0], /too quiet/);
   assert.equal(by.LOSERUSD.allowed, false); assert.match(by.LOSERUSD.reasons[0], /not paying: PF 0.28 over 3 trades/);
   assert.equal(by.GOODUSD.allowed, true);
-  assert.equal(by.NOCANDLESUSD.allowed, true, 'no candles → no volatility opinion, not a block');
+  assert.equal(by.NOCANDLESUSD.allowed, false, 'decision 82: a tracked market with no candles cannot pass the volatility test'); assert.match(by.NOCANDLESUSD.reasons.join(' '), /unavailable: no 15m candles/);
   assert.equal(by.EXEMPTUSD.allowed, true);
   assert.equal(gate.verdict('THINUSD')?.allowed, false);
   // decision 76: while the gate is on, a market it never judged and a verdict set gone stale are refusals, not passes

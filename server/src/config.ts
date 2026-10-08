@@ -414,6 +414,10 @@ export interface RiskConfig {
   /** After this many consecutive losing trades a scanner pauses for cooldownMinutes (0 = off). */
   cooldownAfterLosses: number;
   cooldownMinutes: number;
+  /** After a stop on (scanner, market), no re-entry there for this long (0 = off). The 28 Sep stop study: the same scanner re-entered an hour after its stop and was stopped again. */
+  reentryCooldownMinutes: number;
+  /** One entry per side per window across the account (0 = off): the 06:00 IST triples were three same-side entries inside two minutes. */
+  burstWindowSec: number;
   /** Drawdown-scaled sizing: when the equity drawdown from its peak is ≥ ddPct, multiply leverage/risk by leverageMult (largest matching ddPct wins). */
   ddScale: Array<{ ddPct: number; leverageMult: number }>;
   perScannerMaxPositions: number;
@@ -531,6 +535,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     corrBars: 20,
     cooldownAfterLosses: 0,
     cooldownMinutes: 120,
+    reentryCooldownMinutes: 60,
+    burstWindowSec: 120,
     ddScale: [{ ddPct: 10, leverageMult: 0.5 }],
     perScannerMaxPositions: 4,
     perScannerDailyLossPct: 0,
@@ -692,6 +698,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   if (!(r.perScannerMaxPositions >= 1)) errs.push('risk.perScannerMaxPositions must be ≥ 1');
   if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
   if (!(r.cooldownAfterLosses >= 0 && r.cooldownMinutes >= 0)) errs.push('risk.cooldownAfterLosses and cooldownMinutes must be ≥ 0');
+  if (!((r.reentryCooldownMinutes ?? 0) >= 0 && (r.burstWindowSec ?? 0) >= 0)) errs.push('risk.reentryCooldownMinutes and burstWindowSec must be ≥ 0');
   if (!Array.isArray(r.ddScale) || r.ddScale.some(d => !(d.ddPct >= 0 && d.ddPct <= 100 && d.leverageMult >= 0 && d.leverageMult <= 1))) errs.push('risk.ddScale must be [{ddPct 0..100, leverageMult 0..1}]');
   if (r.marketGate) { const g = r.marketGate; if (![g.minTurnoverUsd, g.minAtrFeeMult, g.lookbackDays, g.minTrades, g.minPf, g.refreshMinutes, g.probeNotionalUsd ?? 0, g.maxBookCostPct ?? 0].every(v => Number.isFinite(v) && v >= 0) || g.refreshMinutes < 1 || g.lookbackDays < 1) errs.push('risk.marketGate values must be ≥ 0 (refreshMinutes, lookbackDays ≥ 1)'); }
   if (!(r.regime && Number.isFinite(r.regime.minAtrPct) && r.regime.minAtrPct >= 0 && Array.isArray(r.regime.exempt))) errs.push('risk.regime.minAtrPct must be ≥ 0 and exempt an array');

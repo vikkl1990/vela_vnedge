@@ -111,6 +111,11 @@ export class MarketGate {
         const a = atrSeries(bars, 14); const last = a[a.length - 1]; const px = bars[bars.length - 1].close;
         if (Number.isFinite(last) && px > 0) atrPct = last / px * 100;
       }
+      // a check that could not run is a refusal, not a pass (decision 82): a failed ticker feed, an unread book or
+      // a missing candle series must not turn an unknown market into permission to enter
+      if (turnoverUsd === null && c.minTurnoverUsd > 0) reasons.push('unavailable: turnover not judged (ticker feed did not answer)');
+      if (book === null && maxCost > 0) reasons.push('unavailable: order book not read');
+      if (atrPct === null && c.minAtrFeeMult > 0 && own.has(symbol)) reasons.push(`unavailable: no ${c.tf ?? '15m'} candles for the volatility test`);
       if (atrPct !== null && c.minAtrFeeMult > 0 && atrPct < roundTripPct * c.minAtrFeeMult) reasons.push(`too quiet: ${c.tf ?? '15m'} ATR ${atrPct.toFixed(2)}% < ${(roundTripPct * c.minAtrFeeMult).toFixed(2)}% (${c.minAtrFeeMult}× the round trip${bookCostPct !== null ? ' on this book' : ' fee'})`);
       // the live book and its archive only: shadow trades belong to unproven scripts and say nothing about the market
       const rows = this.deps.db.all<{ pnl: number }>('SELECT realized_pnl - fees AS pnl FROM positions WHERE status=\'closed\' AND bt IN (0, -1) AND symbol=? AND exit_at>=?', symbol, since);

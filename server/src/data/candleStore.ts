@@ -143,8 +143,8 @@ export class CandleStore extends EventEmitter {
     if (this.series.delete(key)) this.feed.unsubscribe(`candlestick_${tf}`, [symbol]);
   }
 
-  tracked(): Array<{ symbol: string; tf: string; bars: number; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant: boolean }> {
-    return [...this.series.values()].map(s => ({ symbol: s.symbol, tf: s.tf, bars: s.bars.length, loaded: s.loaded, lastBarTime: s.bars.at(-1)?.time ?? null, lastClosedAt: s.lastClosedAt || null, loadedAt: s.loadedAt || null, dormant: s.dormant }));
+  tracked(): Array<{ symbol: string; tf: string; bars: number; loaded: boolean; lastBarTime: number | null; lastClosedBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant: boolean }> {
+    return [...this.series.values()].map(s => ({ symbol: s.symbol, tf: s.tf, bars: s.bars.length, loaded: s.loaded, lastBarTime: s.bars.at(-1)?.time ?? null, lastClosedBarTime: s.lastClosedEmitted || null, lastClosedAt: s.lastClosedAt || null, loadedAt: s.loadedAt || null, dormant: s.dormant }));
   }
 
   /** Ascending bars (copy). `closedOnly` drops the forming bar. */

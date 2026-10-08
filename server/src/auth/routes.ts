@@ -36,7 +36,8 @@ export function parseCookies(header: string | undefined): Record<string, string>
     const i = part.indexOf('=');
     if (i < 0) continue;
     const k = part.slice(0, i).trim();
-    if (k) out[k] = decodeURIComponent(part.slice(i + 1).trim());
+    // a malformed percent-encoding is a bad cookie, not a reason to take the process down (audit of 8 Oct, P1)
+    if (k) { const raw = part.slice(i + 1).trim(); try { out[k] = decodeURIComponent(raw); } catch { out[k] = raw; } }
   }
   return out;
 }

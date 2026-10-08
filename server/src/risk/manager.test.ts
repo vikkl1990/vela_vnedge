@@ -23,7 +23,8 @@ function setup(t: { after: (fn: () => void) => void }, risk: Partial<RiskConfig>
   t.after(() => db.db.close());
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
   Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, fillSource: 'candles', latencyMs: 0, minRiskFeeRatio: 0 });
-  Object.assign(cfg.risk, { regime: { enabled: false, minAtrPct: 0.3, noWeekend: true, exempt: [] } }, risk);
+  // the entry guards of decision 82 are off here unless a test asks for them: these tests drive many entries in quick succession
+  Object.assign(cfg.risk, { regime: { enabled: false, minAtrPct: 0.3, noWeekend: true, exempt: [] }, reentryCooldownMinutes: 0, burstWindowSec: 0 }, risk);
   const clock = { now: T0 };
   const paper = new PaperEngine(db, () => cfg);
   const mgr = new RiskManager({ db, paper, candles: { get: (symbol) => candles[symbol] ?? [] }, cfgRef: () => cfg, now: () => clock.now });
@@ -199,4 +200,23 @@ test('risk state endpoint shape and rejection log', t => {
   assert.equal(st.day.limitPct, 15); assert.equal(st.week.limitPct, 30);
   assert.equal(typeof st.drawdownPct, 'number');
   assert.equal(st.exposure.limitPct, 0);
+});
+
+test('decision 82: no re-entry for an hour after a stop on the same scanner and market; one entry per side per two minutes', t => {
+  const { mgr, paper, clock } = setup(t, { reentryCooldownMinutes: 60, burstWindowSec: 120, regime: { enabled: false, minAtrPct: 0.3, noWeekend: false, exempt: [] } } as any);
+  const req = (symbol: string, side: 'long' | 'short', scannerId = 's') => ({ scannerId, symbol, tf: '15m', side, price: 100, sl: side === 'long' ? 95 : 105, atr: 1, at: clock.now });
+  const entry = (symbol: string, side: 'long' | 'short') => paper.onEntry({ kind: 'entry', side, price: 100, sl: side === 'long' ? 95 : 105, tp: side === 'long' ? [105, 110, 115] : [95, 90, 85], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol, tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: clock.now, signalId: null, exitMode: 'both' });
+  assert.equal(mgr.gate(req('BTCUSD', 'long')).reject, undefined, 'a clean book admits');
+  const a = entry('BTCUSD', 'long'); assert.equal(a.action, 'opened');
+  assert.match(mgr.gate(req('ETHUSD', 'long')).reject ?? '', /^burst: a long entry/, 'a second long inside two minutes is refused');
+  assert.equal(mgr.gate(req('ETHUSD', 'short')).reject, undefined, 'the other side is not a burst');
+  clock.now += 3 * 60_000;
+  assert.equal(mgr.gate(req('ETHUSD', 'long')).reject, undefined, 'after the window a long may enter again');
+  // stop the BTC position, then the same scanner asks to re-enter BTC
+  paper.onBar('BTCUSD', { time: clock.now, high: 100, low: 90, close: 92 }, clock.now);
+  assert.equal(a.position!.exitReason, 'sl');
+  assert.match(mgr.gate(req('BTCUSD', 'long')).reject ?? '', /^re-entry cooldown: this scanner was stopped on BTCUSD/, 'no re-entry after a stop');
+  assert.equal(mgr.gate(req('BTCUSD', 'long', 'other')).reject, undefined, 'another scanner is not held by this one\'s stop');
+  clock.now += 61 * 60_000;
+  assert.equal(mgr.gate(req('BTCUSD', 'long')).reject, undefined, 'an hour later it may');
 });

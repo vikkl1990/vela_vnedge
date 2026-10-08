@@ -38,7 +38,7 @@ console.log(`## Live fleet — ${fleet.length} pairs\n`);
 console.log('| scanner | market | tf | live trades | net $ | last trade |');
 console.log('|---|---|---|---:|---:|---|');
 for (const f of fleet) {
-  const t = db.all<any>("SELECT realized_pnl, fees, exit_at FROM positions WHERE bt=0 AND status='closed' AND scanner_id=? AND symbol=?", f.id, f.symbol);
+  const t = db.all<any>("SELECT realized_pnl, fees, exit_at FROM positions WHERE bt=0 AND status='closed' AND scanner_id=? AND symbol=? AND tf=?", f.id, f.symbol, f.tf);
   const net = t.reduce((a, x) => a + x.realized_pnl - x.fees, 0);
   console.log(`| ${registry.get(f.id)?.name ?? f.id} | ${f.symbol} | ${f.tf} | ${t.length} | ${r2(net)} | ${iso(Math.max(0, ...t.map(x => x.exit_at ?? 0)))} |`);
 }

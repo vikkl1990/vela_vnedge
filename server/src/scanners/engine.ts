@@ -269,7 +269,12 @@ export class ScannerEngine extends EventEmitter {
       const dropped = before.filter(sym => !keepSymbols.includes(sym)).map(sym => { const ds = decisions.filter(d => d.symbol === sym); return { symbol: sym, trades: ds.reduce((a, d) => a + d.trades, 0), pnl: ds.reduce((a, d) => a + d.pnl, 0) }; });
       const disabled = keepSymbols.length === 0 || keepTfs.length === 0;
       // store explicit lists (null would mean "follow the universe" and re-widen on the next universe change)
-      this.cfgStore?.setScanner(s.id, disabled ? { enabled: false } : byTf ? { symbols: keepSymbols, timeframes: keepTfs } : { symbols: keepSymbols });
+      // decision 82: a scanner scheduled by explicit pairs keeps the pairs that passed, never a rebuilt symbols × timeframes product
+      const scPairs = this.scannerConfig(s.id).pairs;
+      if (scPairs?.length) {
+        const kept = scPairs.filter(p => keepSymbols.includes(p.symbol) && (!byTf || keepTfs.includes(p.tf)));
+        this.cfgStore?.setScanner(s.id, kept.length ? { pairs: kept } : { enabled: false });
+      } else this.cfgStore?.setScanner(s.id, disabled ? { enabled: false } : byTf ? { symbols: keepSymbols, timeframes: keepTfs } : { symbols: keepSymbols });
       const provisional = decisions.some(d => d.rule === 'provisional');
       report.push({ id: s.id, name: s.name, before, after: keepSymbols, beforeTimeframes: tfs, afterTimeframes: disabled ? tfs : keepTfs, disabled, rule: oos ? 'oos' : 'in-sample', provisional, dropped, decisions });
       log.info(`auto-tune ${s.id} [${oos ? 'oos' : 'in-sample'}${provisional ? ', provisional' : ''}]: ${before.length} → ${keepSymbols.length} symbols${byTf ? `, ${tfs.length} → ${keepTfs.length} tfs` : ''}${disabled ? ' (disabled: no profitable pair)' : ''}`);

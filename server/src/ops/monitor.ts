@@ -19,12 +19,12 @@ export interface MonitorDeps {
   workers: WorkerTracker;
   dataDir: string;
   feed: { connected: boolean; lastTickAt: number };
-  pool: { stats: { size: number; queued: number; busy: number; recycled?: number }; recyclesWithin?(windowMs: number, now?: number): number; recycleAll?(): number };
+  pool: { stats: { size: number; queued: number; busy: number; recycled?: number; completed?: number }; recyclesWithin?(windowMs: number, now?: number): number; recycleAll?(): number };
   /** Resident memory of the process and the limit it must stay under (overridable for tests). */
   rss?: () => number;
   memoryLimit?: () => number;
   paper: { stats(): any; trades(opts: { limit: number }): any[]; on(ev: 'trade', fn: (t: any) => void): unknown };
-  candles: { tracked(): Array<{ symbol: string; tf: string; loaded: boolean; lastBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant?: boolean }> };
+  candles: { tracked(): Array<{ symbol: string; tf: string; loaded: boolean; lastBarTime: number | null; lastClosedBarTime?: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant?: boolean }> };
   /** The risk manager's equity peak (since the last paper reset). When present it is the only peak the monitor uses. */
   peakEquity?: () => number;
   /** Optional overrides for tests. */
@@ -43,6 +43,8 @@ export interface MonitorState {
   /** Last ops_metrics sample and last prune (decision 80). */
   sampledAt: number;
   prunedAt: number;
+  /** (time, pool.completed) over the trailing hour, so runs per hour counts completions, not distinct cells. */
+  completions: Array<[number, number]>;
   drawdownPct: number;
   dbErrorsSeen: number;
   diskFreeMb: number | null;
@@ -72,7 +74,7 @@ export class Monitor {
     this.startedAt = this.now();
     const peak = Number(d.db.kvGet<number>('ops.equityPeak') ?? 0);
     const peakResetAt = d.db.kvGet<number>('ops.equityPeakResetAt') ?? null;
-    this.state = { feedDownSince: null, queueDeepSince: null, equityPeak: Number.isFinite(peak) ? peak : 0, equityPeakResetAt: peakResetAt, rssPct: 0, sampledAt: 0, prunedAt: 0, drawdownPct: 0, dbErrorsSeen: d.db.errors, diskFreeMb: null, lastEvalAt: null, lastSummaryDay: null, evaluations: 0 };
+    this.state = { feedDownSince: null, queueDeepSince: null, equityPeak: Number.isFinite(peak) ? peak : 0, equityPeakResetAt: peakResetAt, rssPct: 0, sampledAt: 0, prunedAt: 0, completions: [], drawdownPct: 0, dbErrorsSeen: d.db.errors, diskFreeMb: null, lastEvalAt: null, lastSummaryDay: null, evaluations: 0 };
     d.paper.on('trade', (t: any) => { if (this.d.cfg().alerts.onTrade) void this.onTrade(t); });
   }
 
@@ -160,11 +162,12 @@ export class Monitor {
       try {
         const mu = process.memoryUsage();
         const ps = this.d.pool.stats;
-        const runsH = this.d.db.get<{ n: number }>('SELECT COUNT(*) n FROM scanner_runs WHERE at > ?', now - 3_600_000)?.n ?? 0;
+        const done = ps.completed ?? 0; st.completions.push([now, done]); while (st.completions.length && st.completions[0][0] < now - 3_600_000) st.completions.shift();
+        const runsH = done - st.completions[0][1];
         const sigH = this.d.db.get<{ n: number }>('SELECT COUNT(*) n FROM signals WHERE at > ?', now - 3_600_000)?.n ?? 0;
         const openN = this.d.paper.stats()?.openPositions ?? 0;
         const lags: number[] = [];
-        for (const s of this.d.candles.tracked()) if (s.loaded && s.lastClosedAt && s.lastBarTime !== null && (s.tf in TF_SECONDS) && now - s.lastClosedAt < 3_600_000) lags.push((s.lastClosedAt - (s.lastBarTime + TF_SECONDS[s.tf] * 1000)) / 1000);
+        for (const s of this.d.candles.tracked()) if (s.loaded && s.lastClosedAt && s.lastClosedBarTime && (s.tf in TF_SECONDS) && now - s.lastClosedAt < 3_600_000) lags.push((s.lastClosedAt - (s.lastClosedBarTime + TF_SECONDS[s.tf] * 1000)) / 1000);
         lags.sort((a, b) => a - b);
         this.d.db.run('INSERT OR REPLACE INTO ops_metrics(at, rss, heap, rss_pct, queued, busy, recycled, runs_h, signals_h, feed_up, open_positions, close_lag_s) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
           now, mu.rss, mu.heapUsed, st.rssPct, ps.queued, ps.busy, ps.recycled ?? 0, runsH, sigH, feedUp ? 1 : 0, openN, lags.length ? lags[lags.length >> 1] : null);

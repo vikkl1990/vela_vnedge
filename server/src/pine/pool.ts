@@ -103,9 +103,11 @@ export class PinePool {
     this.timeoutTimer.unref();
   }
 
+  /** Jobs completed since start (the ops monitor turns the delta into runs per hour). */
+  completed = 0;
   get stats() {
     return {
-      size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length, queuedLive: this.live.length,
+      size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length, queuedLive: this.live.length, completed: this.completed,
       busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredBackground: this.expiredBackground, recycled: this.recycled, maxRuns: this.maxRuns,
     };
   }
@@ -160,7 +162,7 @@ export class PinePool {
       if (msg.ready) { slot.ready = true; this.pump(); return; }
       const p = slot.busy;
       if (p && p.job.id === msg.id) {
-        slot.busy = null; slot.runs++; p.resolve(msg);
+        slot.busy = null; slot.runs++; this.completed++; p.resolve(msg);
         if (slot.runs >= this.maxRuns) { this.recycled++; this.recycleTimes.push(Date.now()); if (this.recycleTimes.length > 1000) this.recycleTimes.splice(0, this.recycleTimes.length - 1000); this.retire(slot, 'recycled'); }
         this.pump();
       }

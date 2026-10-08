@@ -32,7 +32,8 @@ export class ApiServer {
 
   constructor(app: App) {
     this.app = app;
-    this.server = http.createServer((req, res) => this.dispatch(req, res));
+    // nothing a request does may take the process down: a rejected dispatch answers 500 and is logged
+    this.server = http.createServer((req, res) => { void this.dispatch(req, res).catch((e: any) => { log.error(`${req.method} ${req.url}: ${e?.stack ?? e}`); try { if (!res.headersSent) json(res, 500, { error: 'internal error' }, req); else res.end(); } catch { /* socket gone */ } }); });
     this.auth = new AuthStore(app.db);
     this.authCtx = createAuth(this.auth);
     authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
@@ -98,7 +99,7 @@ export class ApiServer {
       const m = url.pathname.match(r.pattern);
       if (!m) continue;
       const params: Record<string, string> = {};
-      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+      r.keys.forEach((k, i) => { try { params[k] = decodeURIComponent(m[i + 1]); } catch { params[k] = m[i + 1]; } });
       try {
         const body = await readBody(req);
         const out = await r.handler(req, res, params, url, body);

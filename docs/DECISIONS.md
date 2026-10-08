@@ -2328,3 +2328,53 @@ still too quiet even at 3×. Those four verdicts stand.
 
 VM config: `paper.fallbackAtrSl` 1 → 1.5, `risk.marketGate.minTrades` 5 → 20,
 `risk.marketGate.minAtrFeeMult` 4 → 3. Backup `config.json.bak-d81-*` on the VM.
+
+## 82. The audit's P1s, the two entry guards, and 78 cells to the shadow book
+
+Three documents arrived on 8 October: a full repository and VM audit with reproductions, and two
+proposals to freeze the live fleet. This decision takes what they proved and records what they
+proposed.
+
+**Fixed from the audit (each reproduced before the fix, regression tests added).**
+1. *A malformed cookie could kill the process.* Cookie values and path parameters are decoded
+   tolerantly, and a rejected request dispatch answers 500 instead of exiting the process.
+2. *A refresh with missing inputs could allow a market.* A failed ticker feed, an unread order
+   book, or a missing candle series on a tracked market now refuses the market with the reason
+   "unavailable: …", the rule decision 76 already applied to unjudged verdicts.
+3. *Deploy could restart after a failed remote build.* `ops/deploy.sh` now checks out the exact
+   tested commit, runs with pipefail on the VM, installs dependencies when the lockfile changed,
+   builds before switching, and requires the API to answer after the restart.
+4. *Metrics mislabelled.* Runs per hour now counts pool completions, not distinct cells; close
+   lag is measured against the bar that closed, not the forming one (1,411 of 1,440 samples had
+   been negative). The State document groups fleet trades by timeframe as well as market.
+5. *Tuning could report a dropped pair and leave it scheduled.* A scanner scheduled by pairs now
+   keeps exactly the pairs that passed.
+
+**The two guards the 28 September stop study asked for** are in the risk gate:
+`risk.reentryCooldownMinutes` (60): no re-entry by the same scanner on the same market within an
+hour of a stop there; `risk.burstWindowSec` (120): one entry per side across the account per two
+minutes. Both refuse with a reason on the signal row. Both are off in the risk tests except the
+one that exercises them.
+
+**Deferred, named.** Exit-write rollback leaves the in-memory position mutated (the database stays
+right; memory diverges only if an order insert fails); exchange partial-fill accounting (latent on
+a paper-only VM); the family-lab holdout; a single strategy specification shared by live, shadow,
+screening and validation. In that order, next.
+
+**The Scalper note is right and changes nothing.** The admission check charges a full round trip
+while the offer waives only the closing fee, and only when a BTC or ETH position closes inside
+30 minutes. Whether a trade will close inside 30 minutes is not known at entry, so the full
+round trip is the honest admission cost. BTC and ETH stay on 1h.
+
+**The freeze proposals are not taken, and the expansion is not taken live either.** Two reviewers
+proposed emptying the live list until a pair passes the incubator gate on a window it was not
+picked on. The operator's standing instruction is the opposite, and the fleet is trading at the
+rate it was sized for. What the reviewers are right about is the method: the 26 live cells were
+chosen on the same history they were scored on, and that is the method that produced a −0.1R
+book. The expansion test (ten fleet scanners × the 29 markets the gate allowed, 571 cells,
+`data/reports/2026-10-08-fleet-expansion-*`) found 78 cells positive in both halves under the
+live settings. All 78 go to the shadow book, where the incubator gate judges them on trades it
+did not pick them on: 30 trades, 14 days, PF ≥ 1.2, 60% of weeks positive, ≥ 0.1R. None goes
+live on the test alone. If the operator wants the strictest 14 live now (n ≥ 25, both halves
+≥ +0.20R, first-bar stops ≤ 20%, listed in the selected file), that is a one-line change within
+the fleet cap, taken knowing it repeats decision 70's method.
