@@ -307,7 +307,7 @@ export class PaperEngine extends EventEmitter {
     if (replacing) {
       const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
       const exitQuote = this.marketPrice(replacing.symbol, replacing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
-      this.applyFills(replacing, [fillExit(replacing, exitQuote.price, replacing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref, source: exitQuote.source });
+      if (!this.applyFills(replacing, [fillExit(replacing, exitQuote.price, replacing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref, source: exitQuote.source })) return refused('the position to be replaced could not be closed (write failed)');
       closed = replacing;
     }
     if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
@@ -795,9 +795,24 @@ export class PaperEngine extends EventEmitter {
     );
   }
 
-  private applyFills(pos: Position, fills: Fill[], context: FillContext = {}) {
+  private applyFills(pos: Position, fills: Fill[], context: FillContext = {}): boolean {
     // every fill and the position's new state commit together; the order events follow the commit
-    this.db.transaction(() => { for (const f of fills) this.persistFill(pos, f, context); this.persist(pos); });
+    try {
+      this.db.transaction(() => { for (const f of fills) this.persistFill(pos, f, context); this.persist(pos); });
+    } catch (e: any) {
+      // The write rolled back, so the database still holds the position as it was. The object the callers
+      // mutated must agree with it (decision 85): restore every field from the row, keep the object identity,
+      // and let the next price re-trigger the exit. Nothing is emitted for a fill that did not commit.
+      const row = this.db.get<any>(`SELECT * FROM positions WHERE id=? AND bt=${this.book}`, pos.id);
+      if (row) {
+        const fresh = rowToPosition(row);
+        for (const k of Object.keys(pos)) delete (pos as any)[k];
+        Object.assign(pos, fresh);
+        if (pos.status === 'open') this.open.set(pos.id, pos); else this.open.delete(pos.id);
+      }
+      log.error(`fills for #${pos.id} ${pos.symbol} were not persisted and were undone in memory: ${e?.message ?? e}`);
+      return false;
+    }
     for (const f of fills) this.emit('order', orderOf(pos, f));
     if (pos.status === 'closed') {
       this.open.delete(pos.id);
@@ -810,6 +825,7 @@ export class PaperEngine extends EventEmitter {
     } else {
       this.emit('position', { type: 'updated', position: pos });
     }
+    return true;
   }
 
   private recordEquity(force: boolean) {

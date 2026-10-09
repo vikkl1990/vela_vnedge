@@ -328,3 +328,23 @@ test('fill provenance: adopted exchange exit retains exchange source without a f
   assert.equal(row.ref_price, null);
   assert.equal(row.price_source, 'exchange');
 });
+
+test('decision 85: a failed exit write leaves memory as the database has it, and the next price retries the exit', t => {
+  const { engine, db, open } = setup(t);
+  engine.onBar('BTCUSD', { time: 60_000, high: 110, low: 90, close: 100 }, 60_000);
+  const p = open('long');
+  assert.equal(p.status, 'open');
+  const original = db.run.bind(db);
+  (db as any).run = (sql: string, ...args: unknown[]) => { if (sql.includes('INSERT INTO orders')) throw new Error('injected exit write failure'); return original(sql, ...args); };
+  engine.onBar('BTCUSD', { time: 120_000, high: 100, low: 90, close: 92 }, 120_010);   // through the stop, write fails
+  assert.equal(p.status, 'open', 'memory still open, as the database is');
+  assert.equal(p.qtyOpen, p.qty); assert.equal(p.realizedPnl, 0); assert.equal(p.exitReason, null);
+  assert.equal(db.get<any>('SELECT status FROM positions WHERE id=?', p.id).status, 'open');
+  assert.equal(engine.openPositions().length, 1);
+  assert.equal(db.all('SELECT * FROM orders WHERE position_id=? AND reason=?', p.id, 'sl').length, 0, 'no stop order row exists');
+  (db as any).run = original;
+  engine.onBar('BTCUSD', { time: 180_000, high: 100, low: 90, close: 91 }, 180_010);   // the next price retries
+  assert.equal(p.status, 'closed'); assert.equal(p.exitReason, 'sl');
+  assert.equal(db.get<any>('SELECT status FROM positions WHERE id=?', p.id).status, 'closed');
+  assert.equal(engine.openPositions().length, 0);
+});
