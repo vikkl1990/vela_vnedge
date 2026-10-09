@@ -2434,3 +2434,27 @@ NEAR and STRK; SAGA stays out). Each is one edit in `data/config.json` on the VM
 restart, and each costs R: a 0.30% round trip is 15–30% of a 1.5×ATR stop on these markets.
 The efficiency gate and the two entry guards stay; the "budget too small" case is the account
 size, not a gate.
+
+## 85. Reliability and parity before frequency: rollback, one reading everywhere, a repaint test
+
+The operator's priority list of 9 October (reliability, then parity, then shadow-first
+timeframes, then an explained funnel, then the family holdout, then configuration history) is
+taken as the order of work. This decision covers the first two.
+
+1. **A failed exit write no longer leaves memory and database apart.** The fill helpers mutate
+   the position before the transaction; on rollback the object is now rebuilt from the row the
+   database kept, identity preserved, and the next price retries the exit. A reversal whose exit
+   did not persist does not open its replacement. Fault-injected test: the stop fails to write,
+   memory stays open with zero realised P&L, the next bar closes it.
+2. **Validation reads the scanner the way the live path does**: timezone, channels, edge,
+   labels and inversion go to the worker and the extractor, and the walk-forward replay and the
+   warm backtest carry the live efficiency gate, the trend gate and the scanner's exit overrides.
+   A validation result now describes the deployed strategy.
+3. **The scanner test checks prefix honesty.** Every cell is run a second time with the last 60
+   bars hidden; entries before the cut must be the same. More than 10% moved or missing is the
+   verdict REPAINTS, do not screen or trade. The BTC 15m script that screened at +1.03R over 276
+   trades and traded −0.21R with a 5% win rate in the shadow book is what this catches.
+
+Still open from the list: exchange partial-fill accounting (latent, paper-only VM), the family
+holdout, per-pair funnel on the Scanners page beyond the last run, and configuration history on
+every trade.
