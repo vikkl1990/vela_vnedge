@@ -2458,3 +2458,32 @@ taken as the order of work. This decision covers the first two.
 Still open from the list: exchange partial-fill accounting (latent, paper-only VM), the family
 holdout, per-pair funnel on the Scanners page beyond the last run, and configuration history on
 every trade.
+
+## 86. Scanners for BTC, ETH and the top coins: measured, repaint-checked, shadow first
+
+The operator asked for scanners built for BTC, ETH and the top coins. Two sources were read
+before anything was built.
+
+**The library screen's candidates on the majors are mostly fiction.** 95 shadow pairs on the
+majors came from the daily screen. The ones that screened best are the worst live: the BTC 15m
+script at +1.03R over 276 screened trades runs −0.21R with a 5% win rate in the shadow book; a
+4h structure script screened well and runs −0.17R on ETH over 50 shadow trades. Of 15 majors
+pairs with eight or more shadow trades, three are positive and none has thirty. These are
+repainting scripts: their history is not what a live run would have seen. The scanner test now
+checks this (decision 85) and the screen will be made to use it next.
+
+**The fleet's own ten scanners are honest and have cells on the majors.** 420 cells across 14
+majors at 15m, 1h and 4h (`data/reports/2026-10-09-fleet-majors-*`), under the live settings
+and the repaint check; not one repainted. 29 cells are positive in both halves with eight or
+more trades: BTC 2 (AI Predictive Flow 1h +0.18R, Structure-Anchored VWAP 1h +0.15R), ETH 2
+(Liquidity Trail Matrix 4h +0.30R, Smart Money Breakout 4h +0.12R), and 25 more on LINK, NEAR,
+SUI, HYPE, DOGE, AVAX, BNB, XRP and BCH.
+
+**Disposition, per the operator's priority list of 9 October (shadow first).** All 29 go to the
+shadow book. The four BTC and ETH cells also go live now, because that was the ask, replacing
+four cells on markets the dead-market floor keeps refusing (LAB, ZRO, STX ×2). The fleet stays
+at its cap of 40. The other 25 wait for the incubator gate on their shadow trades.
+
+What "built" will mean next: the screen must run the repaint check before admitting a script,
+the 95 screened majors pairs get re-judged by it, and BTC and ETH on 15m stay out until a cell
+earns it under the fee rule.
