@@ -163,7 +163,7 @@ export class ValidationService {
       // decision 85: validation reads the scanner exactly as the live path does — the same channels, edge, labels and inversion
       const events = extractEvents(res.alerts, res.shapes, { derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
       const wf = cfg.validation.walkForward;
-      const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
+      const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize, trendGate: sc.trendGate, scannerExit: sc.exit, chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr } : undefined,
         opts: { trainDays: wf.trainDays, testDays: wf.testDays, stepDays: wf.stepDays, minTrades: cfg.autoTune.minTrades, minProfitFactor: cfg.autoTune.minProfitFactor } });
       this.results.set(key, r);
       this.deps.db.run('INSERT INTO walk_forward(scanner_id, symbol, tf, at, bars, from_ms, to_ms, result) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, from_ms=excluded.from_ms, to_ms=excluded.to_ms, result=excluded.result', s.id, symbol, tf, r.at, r.bars, r.from, r.to, JSON.stringify(r));
