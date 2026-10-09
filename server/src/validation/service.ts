@@ -157,10 +157,11 @@ export class ValidationService {
       const sc = this.deps.scanners.scannerConfig(s.id);
       const market = await this.deps.scanners.marketInfo(symbol);
       const rule = sc.rule ?? null;
-      const res = await this.deps.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: rule ? bars.length : 10, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined });
+      const res = await this.deps.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: rule ? bars.length : 10, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
       if (!res.ok) { this.fail(key, res.error ?? 'script error'); return; }
       const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars, mode: 'backtest' });
-      const events = extractEvents(res.alerts, res.shapes, { derived });
+      // decision 85: validation reads the scanner exactly as the live path does — the same channels, edge, labels and inversion
+      const events = extractEvents(res.alerts, res.shapes, { derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
       const wf = cfg.validation.walkForward;
       const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
         opts: { trainDays: wf.trainDays, testDays: wf.testDays, stepDays: wf.stepDays, minTrades: cfg.autoTune.minTrades, minProfitFactor: cfg.autoTune.minProfitFactor } });
