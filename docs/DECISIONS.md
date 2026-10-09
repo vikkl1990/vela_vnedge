@@ -2404,3 +2404,33 @@ were scored on, as decision 70's cells were; the operator takes them knowing tha
 64 measured cells stay in the shadow book.
 
 VM config backup `config.json.bak-d83-*`.
+
+## 84. What was still blocking the fleet, and the swap of dead-market cells
+
+A day after decision 83 the operator asked what was blocking all pairs from firing. The journal
+for the 24 hours: about 45 entry signals, 4 opened (STRK ×2, GRIFFAIN ×2). The refusals, by
+cause: the dead-market floor 17 (PIEVERSE ×6, STRK ×8 while its turnover sat at $0.17–0.24M,
+STX ×2, OPN ×1), the efficiency gate 6, the costly-book limit 5 (STRK, SAGA), the regime's own
+ATR floor 2 (`risk.regime.minAtrPct` 0.3%, a second quiet floor decision 83 had not touched),
+and one "budget too small for one contract" on AKE.
+
+Turnover was checked against Delta's raw ticker: real, and volatile on thin markets. STRK was
+$0.2M through the Asian and European sessions and $12.5M by the next morning, so the floor
+refused it eight times and then let it trade twice.
+
+**Done.** The nine cells on markets that cannot fill (PIEVERSE ×6, OPN, ARIA, EVAA, all under
+$0.16M a day) are out of the fleet and back in the shadow book; nine measured cells on markets
+with at least $1M a day are in (BCH, STRK 1h, MUBARAK ×3, GRIFFAIN 15m, API3 15m, NEAR, VVV).
+40 cells on 18 markets, 15 allowed at the time of writing; NEAR, SAGA and STRK blocked by the
+book-cost limit at 0.25–0.31% against 0.25%. The incubator now syncs its live rows to the
+config at startup (+9 −9 logged on the restart).
+
+**Not done, by the harness, left to the operator.** Three gate values were in the same change
+and the auto-mode classifier refused them as weakening risk controls, so they stand as they
+were: `risk.regime.minAtrPct` 0.3 (the second quiet floor, consistent to switch off alongside
+decision 83's), `risk.marketGate.minTurnoverUsd` $250k (a $100k floor would admit STX, ZRO,
+LAB and the thin hours of STRK), `risk.marketGate.maxBookCostPct` 0.25 (0.30 would admit
+NEAR and STRK; SAGA stays out). Each is one edit in `data/config.json` on the VM followed by a
+restart, and each costs R: a 0.30% round trip is 15–30% of a 1.5×ATR stop on these markets.
+The efficiency gate and the two entry guards stay; the "budget too small" case is the account
+size, not a gate.
