@@ -87,13 +87,32 @@ const confirm = (evs: ScanEvent[], bars: Bar[]): ScanEvent[] => {
   return out;
 };
 
-interface CellResult { id: string; tf: string; sym: string; variants: Record<string, Stat>; labels: Array<[string, Stat]>; verdict: string; fix: string }
+/**
+ * Prefix honesty (decision 85): a script run on bars[0..n-CUT] must raise the same entries, on the same bars, as the
+ * run on all n bars, for every bar before the cut. A script whose earlier entries move or vanish when later bars are
+ * hidden is reading the future — the BTC 15m script that screened at +1.03R and traded −0.21R in the shadow book.
+ */
+const REPAINT_CUT = Number(process.env.REPAINT_CUT ?? 60);
+interface CellResult { id: string; tf: string; sym: string; variants: Record<string, Stat>; labels: Array<[string, Stat]>; verdict: string; fix: string; repaint?: { prefix: number; changed: number } }
 async function cell(id: string, tf: string, sym: string): Promise<CellResult | null> {
   const s = registry.get(id); if (!s || s.status !== 'ok') return null;
   const b = await bars(sym, tf, BARS[tf]); const sub = series.get(`${sym}:${SUB[tf]}`); const m = market.get(sym)!;
   const sc = cfg.scanners[id] ?? {};
   const res = await pool.run({ scannerId: id, source: s.patched, symbol: sym, tf, tickSize: m.tickSize, bars: b, tailBars: 'all', plotTail: b.length, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
   if (!res.ok) { md.push(`- ${id} · ${sym} ${tf}: **did not run** — ${res.error}`); return null; }
+  // the same script with the last REPAINT_CUT bars hidden: its view of the earlier bars must not change
+  let repaint: { prefix: number; changed: number } | undefined;
+  if (REPAINT_CUT > 0 && b.length > REPAINT_CUT + 200) {
+    const bt = b.slice(0, b.length - REPAINT_CUT); const cutAt = bt[bt.length - 1].time;
+    const r2 = await pool.run({ scannerId: id, source: s.patched, symbol: sym, tf, tickSize: m.tickSize, bars: bt, tailBars: 'all', plotTail: bt.length, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
+    if (r2.ok) {
+      const key = (e: ScanEvent) => `${e.barTime}:${e.side}`;
+      const full = new Set(extractEvents(res.alerts, res.shapes, { derived: applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest' }), sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert }).filter(e => e.kind === 'entry' && e.barTime <= cutAt).map(key));
+      const part = new Set(extractEvents(r2.alerts, r2.shapes, { derived: applyRules({ scannerId: id, alerts: r2.alerts, shapes: r2.shapes, labels: r2.labels, plots: r2.plots, rule: sc.rule ?? null, bars: bt, mode: 'backtest' }), sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert }).filter(e => e.kind === 'entry').map(key));
+      let changed = 0; for (const k of full) if (!part.has(k)) changed++; for (const k of part) if (!full.has(k)) changed++;
+      repaint = { prefix: Math.max(full.size, part.size), changed };
+    }
+  }
   const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest' });
   const events = extractEvents(res.alerts, res.shapes, { derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
   const tfMs = TF_SECONDS[tf] * 1000;
@@ -135,9 +154,14 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   const labels: Array<[string, Stat]> = [...byLabel].filter(([, ts]) => ts.length >= 10).map(([k, ts]) => [k, stat(ts, b, tfMs)] as [string, Stat]).sort((a, c) => c[1].sumR - a[1].sumR);
   for (const [v, st] of Object.entries(variants)) row(id, tf, sym, v, st);
   for (const [k, st] of labels) row(id, tf, sym, `label:${k}`, st);
-  const { verdict, fix } = diagnose(variants, labels);
+  let { verdict, fix } = diagnose(variants, labels);
+  if (repaint) {
+    const share = repaint.prefix ? repaint.changed / repaint.prefix : 0;
+    row(id, tf, sym, 'repaint', { ...variants.base, trades: repaint.prefix }, `${repaint.changed} of ${repaint.prefix} earlier entries changed when the last ${REPAINT_CUT} bars were hidden (${(share * 100).toFixed(0)}%)`);
+    if (share > 0.10 && repaint.prefix >= 5) { verdict = `REPAINTS: ${(share * 100).toFixed(0)}% of earlier entries move or vanish when later bars are hidden`; fix = 'do not screen or trade it: its history is not what a live run would have seen'; }
+  }
   row(id, tf, sym, 'verdict', variants.base, `${verdict} → ${fix}`);
-  return { id, tf, sym, variants, labels, verdict, fix };
+  return { id, tf, sym, variants, labels, verdict, fix, repaint };
 }
 
 /** The cause the numbers support, in order of what would be the cheapest real fix. */
