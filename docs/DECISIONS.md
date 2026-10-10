@@ -2532,3 +2532,27 @@ not a better scanner, but an admission that cannot be fooled by the thing it mea
 two are the honesty certificate per script (decision 87's repaint check, now running over every
 shadow and candidate pair) and a measured test of agreement between honest scanners on the same
 cell, which is the one use of 1,200 scripts that 1,200 separate traders cannot make.
+
+## 89. Agreement between scanners is not a signal: measured and declined
+
+The operator asked for unique things built from a 1,200-script library. The one use of a large
+library that 1,200 separate traders cannot make is agreement: enter only when several honest
+scanners say the same thing on the same bar. `npm run agree` builds that series — an entry when at
+least K distinct scanners of the fleet raised the same side within two bars, dated at the K-th —
+and replays it beside each scanner alone under the live settings, on the fleet's 16 markets
+(`data/reports/2026-10-10-agreement-fleet-16-markets.tsv`).
+
+| 1h | trades | avg R | first half | second half | first-bar stops |
+|---|---|---|---|---|---|
+| each scanner alone (160 cells) | 4,081 | +0.077 | +120.5 | +192.6 | 28% |
+| any scanner firing | 2,587 | +0.047 | +39.5 | +82.0 | 24% |
+| two agreeing | 1,242 | +0.098 | +64.2 | +57.2 | 37% |
+| three agreeing | 579 | +0.069 | +15.4 | +24.7 | 40% |
+
+Two-scanner agreement adds two hundredths of an R, loses it in the second half, halves the
+trades and raises the first-bar stops: when several trend scanners agree, the move has already
+happened. At 15m nothing is above +0.07R. The result is the same per market, with MUBARAK and
+ZEC the only cells where three agreeing scanners beat one. Not built into the pipeline.
+
+What the library is good for, then, is breadth of honest, single-scanner cells chosen on a
+holdout (decision 88), not depth of agreement on one bar.
