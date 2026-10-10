@@ -2513,3 +2513,22 @@ retired, so the shadow book stops holding fiction.
 
 Not buildable, still true: the purse is small for the venue, policy still has no owner, and the
 exchange path waits for keys.
+
+## 88. The screen admits on a holdout, not on the history it picked from
+
+The admission rule that fed the shadow book was "positive in both halves of the screen history".
+Both halves were also what the screen looked at to decide the pass, so the number that passed a
+cell was never independent of the number that chose it. Decisions 70, 83, 84 and 86 all drew
+from this well and the live book stayed flat.
+
+`screenVerdict` (pure, tested) now judges the pass — trades, profit factor, windows up, net at
+stress, both halves — on the first 70% of the history only, and then asks one question of the
+last 30%, which it never consulted: positive R per trade, profit factor at least 1, at least
+eight trades. A cell that fails that question does not pass, whatever the training part said.
+`incubator.screen.holdoutShare` (0.3), `minHoldoutTrades` (8), `requireHoldout` (true).
+
+This is the first of the "unique things" the operator asked for against a 1,200-script library:
+not a better scanner, but an admission that cannot be fooled by the thing it measures. The next
+two are the honesty certificate per script (decision 87's repaint check, now running over every
+shadow and candidate pair) and a measured test of agreement between honest scanners on the same
+cell, which is the one use of 1,200 scripts that 1,200 separate traders cannot make.

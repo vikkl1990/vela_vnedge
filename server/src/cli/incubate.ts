@@ -29,7 +29,7 @@ import { PaperEngine } from '../paper/engine.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { IncubatorStore } from '../incubator/store.ts';
-import { evaluate, recordScreen, syncLive, type ScreenResult } from '../incubator/cycle.ts';
+import { evaluate, recordScreen, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
 import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
 
@@ -134,24 +134,7 @@ if (sliceArg !== 'none') {
         const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, subBars: d.m1 } as const;
         const bt = runBacktest(base);
         const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps } });
-        const trades = bt.trades as any[];
-        const span = (d.bars.at(-1)!.time - d.bars[0].time) / 8;
-        const w = new Array(8).fill(0);
-        for (const t of trades) w[Math.min(7, Math.floor((t.entryAt - d.bars[0].time) / span))] += t.pnl;
-        const gp = trades.filter(t => t.pnl > 0).reduce((a, t) => a + t.pnl, 0), gl = -trades.filter(t => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0);
-        const pf = gl > 0 ? gp / gl : gp > 0 ? 99 : 0;
-        const r: ScreenResult = {
-          pass: false, at: Date.now(), trades: trades.length, profitFactor: pf, netPnl: gp - gl, netAtStress: stressed.stats.pnl,
-          windowsUp: w.filter(x => x > 0).length, winRatePct: trades.length ? trades.filter(t => t.pnl > 0).length / trades.length * 100 : 0,
-          avgR: trades.length ? trades.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / trades.length : 0, bars: d.bars.length, days: (d.bars.at(-1)!.time - d.bars[0].time) / DAY,
-        };
-        // both halves of the screen history must be positive on their own: a good month is not an edge (decisions 33, 55)
-        const split = d.bars[Math.floor(d.bars.length / 2)].time;
-        const h1 = trades.filter(t => t.entryAt < split), h2 = trades.filter(t => t.entryAt >= split);
-        r.avgR1 = h1.length ? h1.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / h1.length : 0;
-        r.avgR2 = h2.length ? h2.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / h2.length : 0;
-        const halvesOk = inc.screen.requireBothHalves === false || (h1.length > 0 && h2.length > 0 && r.avgR1 > 0 && r.avgR2 > 0);
-        r.pass = r.trades >= inc.screen.minTrades && r.profitFactor >= inc.screen.minProfitFactor && r.windowsUp >= inc.screen.minWindowsUp && r.netAtStress > 0 && halvesOk;
+        const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc);
         // a market whose one contract eats the risk budget cannot be sized: the stop cap, not the
         // strategy, decides whether each signal becomes a trade (decision 31)
         if (r.pass && coarse.has(symbol)) { r.pass = false; summary.tooCoarse++; }

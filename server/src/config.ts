@@ -301,7 +301,9 @@ export interface IncubatorConfig {
   maxShadow: number;
   screen: { bars: number; slices: number; minTrades: number; minProfitFactor: number; minWindowsUp: number; stressBps: number;
     /** A candidate must be positive in BOTH halves of its screen history (the halves discipline, decision 55). */
-    requireBothHalves?: boolean };
+    requireBothHalves?: boolean;
+    /** Holdout admission (decision 88): the pass is judged on the first (1 − holdoutShare) of the history; the last holdoutShare, never looked at for the pass, must be positive on its own with at least minHoldoutTrades trades. */
+    holdoutShare?: number; minHoldoutTrades?: number; requireHoldout?: boolean };
   /**
    * The promotion gate. `pool: 'cohort'` judges a scanner on every shadow market it runs at once
    * (see `cohortStats`); `'pair'` judges each market on its own, which takes months per market.
@@ -462,7 +464,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   ml: { minProb: 0, useAsScore: false },
   incubator: {
     enabled: true, tf: '15m', universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
-    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true },
+    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true },
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 },

@@ -8,7 +8,7 @@ import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR } from './gate.ts';
-import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -274,4 +274,21 @@ test('decision 79: an enabled scanner without pairs is not in the fleet, and a s
   assert.equal(store.get().scanners.b, undefined, 'the refused save changed nothing');
   store.setScanner('b', { enabled: true, pairs: [{ symbol: 'SOLUSD', tf: '1h' }] });
   assert.equal(livePairs(store.get()).length, 3);
+});
+
+test('decision 88: the screen judges the pass on the training part and demands a positive holdout it never looked at', () => {
+  const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
+  const inc = { ...cfg.incubator, screen: { ...cfg.incubator.screen, minTrades: 10, minWindowsUp: 3, holdoutShare: 0.3, minHoldoutTrades: 5 } };
+  const bars = Array.from({ length: 1000 }, (_, i) => ({ time: T0 + i * 900_000 }));
+  const mk = (i: number, pnl: number) => ({ entryAt: T0 + i * 900_000, pnl, rMultiple: pnl / 10 });
+  // 40 trades evenly spread, winners outnumber losers everywhere: passes, and the holdout agrees
+  const good = Array.from({ length: 40 }, (_, k) => mk(k * 24 + 5, k % 3 === 2 ? -10 : 15));
+  const a = screenVerdict(good, good.map(t => ({ ...t, pnl: t.pnl - 1 })), bars, inc, T0);
+  assert.equal(a.pass, true); assert.ok(a.holdoutTrades! >= 5 && a.holdoutPass === true, JSON.stringify(a));
+  assert.ok(a.trades < 40, 'the pass statistics count the training trades only');
+  // the same training record with a losing holdout: the pass is withdrawn
+  const bad = good.map(t => (t.entryAt >= bars[700].time ? { ...t, pnl: -12, rMultiple: -1.2 } : t));
+  const b = screenVerdict(bad, bad.map(t => ({ ...t, pnl: t.pnl - 1 })), bars, inc, T0);
+  assert.equal(b.holdoutPass, false); assert.equal(b.pass, false, 'a cell cannot pass on the part of history it was picked on');
+  assert.equal(b.trades, a.trades, 'the training statistics are identical: only the holdout differs');
 });

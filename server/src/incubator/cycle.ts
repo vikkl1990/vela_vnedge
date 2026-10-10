@@ -10,6 +10,49 @@ export interface ScreenResult {
   windowsUp: number; winRatePct: number; avgR: number; bars: number; days: number;
   /** R per trade in the first and second half of the screen history (decision 55). */
   avgR1?: number; avgR2?: number;
+  /** The holdout (decision 88): the last share of the history, judged only after the pass was decided on the rest. */
+  holdoutTrades?: number; holdoutAvgR?: number; holdoutPf?: number; holdoutPass?: boolean;
+}
+
+export interface ScreenTrade { entryAt: number; pnl: number; rMultiple?: number }
+
+/**
+ * The screen's verdict on one cell (decision 88). The pass thresholds — trades, profit factor, windows up,
+ * net at stress, both halves — are judged on the TRAINING part of the history (the first 1 − holdoutShare).
+ * The holdout, never consulted for that judgement, must then be positive on its own: that is the only part
+ * of the number that was not used to pick the cell.
+ */
+export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], bars: Array<{ time: number }>, inc: IncubatorConfig, now = Date.now()): ScreenResult {
+  const t0 = bars[0].time, t1 = bars[bars.length - 1].time;
+  const share = inc.screen.requireHoldout === false ? 0 : (inc.screen.holdoutShare ?? 0.3);
+  const cut = share > 0 ? bars[Math.max(1, Math.floor(bars.length * (1 - share)))].time : t1 + 1;
+  const train = trades.filter(t => t.entryAt < cut), hold = trades.filter(t => t.entryAt >= cut);
+  const trainStressed = stressed.filter(t => t.entryAt < cut);
+  const stats = (ts: ScreenTrade[]) => {
+    const gp = ts.filter(t => t.pnl > 0).reduce((a, t) => a + t.pnl, 0), gl = -ts.filter(t => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0);
+    return { gp, gl, pf: gl > 0 ? gp / gl : gp > 0 ? 99 : 0, avgR: ts.length ? ts.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / ts.length : 0 };
+  };
+  const tr = stats(train);
+  const span = (cut - t0) / 8; const w = new Array(8).fill(0);
+  for (const t of train) w[Math.min(7, Math.max(0, Math.floor((t.entryAt - t0) / span)))] += t.pnl;
+  const split = bars[Math.floor((bars.length * (1 - share)) / 2)].time;
+  const h1 = train.filter(t => t.entryAt < split), h2 = train.filter(t => t.entryAt >= split);
+  const r: ScreenResult = {
+    pass: false, at: now, trades: train.length, profitFactor: tr.pf, netPnl: tr.gp - tr.gl, netAtStress: trainStressed.reduce((a, t) => a + t.pnl, 0),
+    windowsUp: w.filter(x => x > 0).length, winRatePct: train.length ? train.filter(t => t.pnl > 0).length / train.length * 100 : 0,
+    avgR: tr.avgR, bars: bars.length, days: (t1 - t0) / 86_400_000,
+    avgR1: h1.length ? h1.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / h1.length : 0,
+    avgR2: h2.length ? h2.reduce((a, t) => a + (t.rMultiple ?? 0), 0) / h2.length : 0,
+  };
+  const halvesOk = inc.screen.requireBothHalves === false || (h1.length > 0 && h2.length > 0 && r.avgR1! > 0 && r.avgR2! > 0);
+  r.pass = r.trades >= inc.screen.minTrades && r.profitFactor >= inc.screen.minProfitFactor && r.windowsUp >= inc.screen.minWindowsUp && r.netAtStress > 0 && halvesOk;
+  if (share > 0) {
+    const ho = stats(hold);
+    r.holdoutTrades = hold.length; r.holdoutAvgR = ho.avgR; r.holdoutPf = ho.pf;
+    r.holdoutPass = hold.length >= (inc.screen.minHoldoutTrades ?? 8) && ho.avgR > 0 && ho.pf >= 1;
+    if (r.pass && !r.holdoutPass) r.pass = false;
+  }
+  return r;
 }
 
 type PairKey = { scannerId: string; symbol: string; tf: string };
