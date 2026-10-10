@@ -88,8 +88,8 @@ export class ScriptHealth {
 
   /** A run that worked clears the record: the script is healthy whatever happened before. */
   clear(scannerId: string): void {
-    // a verdict the runtime established (repaints, repeated timeouts) survives a run that happened to work
-    if (this.db.run("DELETE FROM script_health WHERE scanner_id=? AND quarantined=0", scannerId).changes) this.cache = null;
+    // a failure record clears; a verdict the runtime established (repaints, repeated timeouts) survives a run that happened to work
+    if (this.db.run("DELETE FROM script_health WHERE scanner_id=? AND NOT (reason LIKE 'repaints%' OR reason LIKE 'timed out%')", scannerId).changes) this.cache = null;
   }
 
   quarantined(): Set<string> {

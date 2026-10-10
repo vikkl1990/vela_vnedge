@@ -54,3 +54,13 @@ test('decision 78: three timeouts in a day quarantine a script; a success in bet
   h2.record('x', 'timeout after 90000ms', t0); h2.record('x', 'timeout after 90000ms', t0 + 1000);
   assert.equal(h2.record('x', 'timeout after 90000ms', t0 + 2 * 86_400_000), false);
 });
+
+test('decision 87: a repaint verdict survives a run that happened to work; a failure record does not', () => {
+  const h = new ScriptHealth(new Db(':memory:'));
+  assert.equal(h.quarantine('cheat', 'repaints: 9 of 20 earlier entries changed when the last 60 bars were hidden (45%)'), true);
+  h.clear('cheat');
+  assert.equal(h.isQuarantined('cheat'), true, 'a good run does not unquarantine a repainter');
+  assert.match(h.row('cheat')?.reason ?? '', /^repaints/);
+  assert.equal(h.release('repaints'), 1, 'only an explicit release does');
+  assert.equal(h.isQuarantined('cheat'), false);
+});
