@@ -2556,3 +2556,12 @@ ZEC the only cells where three agreeing scanners beat one. Not built into the pi
 
 What the library is good for, then, is breadth of honest, single-scanner cells chosen on a
 holdout (decision 88), not depth of agreement on one bar.
+
+**Addendum, 10 October.** The honesty re-judge ran over every shadow, candidate and proposed pair:
+466 cells, 154 scripts; 462 cells changed nothing when the last 60 bars were hidden, four changed
+under 10%, none repaints. The BTC 15m script that screened at +1.03R and runs at −0.21R does not
+read the future: it raises an entry roughly every six bars, 1,277 in its history, and the shadow
+book closes most of them on the script's own exits for a loss. A state was being read as a signal.
+The screen now refuses any script whose entries exceed a tenth of all bars (`entryDensity`), with
+the reason on the screen log. The gap between a screen's promise and the shadow book's delivery
+remains the next honesty instrument to build.

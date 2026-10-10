@@ -292,3 +292,15 @@ test('decision 88: the screen judges the pass on the training part and demands a
   assert.equal(b.holdoutPass, false); assert.equal(b.pass, false, 'a cell cannot pass on the part of history it was picked on');
   assert.equal(b.trades, a.trades, 'the training statistics are identical: only the holdout differs');
 });
+
+test('decision 88: a script that fires on more than a tenth of all bars cannot pass the screen', () => {
+  const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
+  const inc = { ...cfg.incubator, screen: { ...cfg.incubator.screen, minTrades: 10, minWindowsUp: 3, holdoutShare: 0.3, minHoldoutTrades: 5 } };
+  const bars = Array.from({ length: 1000 }, (_, i) => ({ time: T0 + i * 900_000 }));
+  const good = Array.from({ length: 40 }, (_, k) => ({ entryAt: T0 + (k * 24 + 5) * 900_000, pnl: k % 3 === 2 ? -10 : 15, rMultiple: (k % 3 === 2 ? -10 : 15) / 10 }));
+  const stressed = good.map(t => ({ ...t, pnl: t.pnl - 1 }));
+  assert.equal(screenVerdict(good, stressed, bars, inc, T0, 60).pass, true, 'sixty entries on a thousand bars is a signal');
+  const dense = screenVerdict(good, stressed, bars, inc, T0, 300);
+  assert.equal(dense.pass, false, 'three hundred entries on a thousand bars is a state');
+  assert.ok((dense.entryDensity ?? 0) > 0.10);
+});

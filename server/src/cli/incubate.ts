@@ -134,7 +134,8 @@ if (sliceArg !== 'none') {
         const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, subBars: d.m1 } as const;
         const bt = runBacktest(base);
         const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps } });
-        const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc);
+        const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);
+        if ((r.entryDensity ?? 0) > 0.10) out(`  ${s.id} ${symbol}: fires on ${((r.entryDensity ?? 0) * 100).toFixed(0)}% of bars — a state read as entries, not screened`);
         // a market whose one contract eats the risk budget cannot be sized: the stop cap, not the
         // strategy, decides whether each signal becomes a trade (decision 31)
         if (r.pass && coarse.has(symbol)) { r.pass = false; summary.tooCoarse++; }
