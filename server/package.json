@@ -44,7 +44,8 @@
     "sweep": "node --no-warnings=ExperimentalWarning src/cli/sweep.ts",
     "tune": "node --no-warnings=ExperimentalWarning src/cli/tune.ts",
     "library:sync": "node --no-warnings=ExperimentalWarning src/cli/library-sync.ts",
-    "diagnose": "node --no-warnings=ExperimentalWarning src/cli/diagnose.ts"
+    "diagnose": "node --no-warnings=ExperimentalWarning src/cli/diagnose.ts",
+    "agree": "node --no-warnings=ExperimentalWarning src/cli/agree.ts"
   },
   "dependencies": {
     "pinets": "^0.10.0"
