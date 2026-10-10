@@ -136,3 +136,16 @@ export function sliceOf(id: string, slices: number): number {
 }
 
 export function fmtPf(pf: number | null): string { return pf === null ? '∞' : pf.toFixed(2); }
+
+/**
+ * Promise versus delivery (decision 90). The screen promised an R per trade on history; the shadow book
+ * delivers one on trades it did not pick. A pair whose delivery, on at least `minTrades` shadow trades, is at
+ * or below zero while the promise was half an R or more above it is retired by its own record, whatever the
+ * honesty tests saw: the BTC 15m script that screened at +1.03R and delivered −0.21R.
+ */
+export function deliveryVerdict(screen: { avgR?: number } | null | undefined, s: PairStats, minTrades = 20, minGap = 0.5): { retire: boolean; reason: string | null } {
+  const promised = screen && typeof screen.avgR === 'number' ? screen.avgR : null;
+  if (promised === null || s.trades < minTrades) return { retire: false, reason: null };
+  if (s.avgR <= 0 && promised - s.avgR >= minGap) return { retire: true, reason: `delivery: ${s.avgR >= 0 ? '+' : ''}${s.avgR.toFixed(2)}R over ${s.trades} shadow trades against a screen of +${promised.toFixed(2)}R` };
+  return { retire: false, reason: null };
+}

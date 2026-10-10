@@ -7,7 +7,7 @@ import { Db } from '../db.ts';
 import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
-import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR } from './gate.ts';
+import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR, deliveryVerdict, type PairStats } from './gate.ts';
 import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict } from './cycle.ts';
 
 const DAY = 86400_000;
@@ -303,4 +303,14 @@ test('decision 88: a script that fires on more than a tenth of all bars cannot p
   const dense = screenVerdict(good, stressed, bars, inc, T0, 300);
   assert.equal(dense.pass, false, 'three hundred entries on a thousand bars is a state');
   assert.ok((dense.entryDensity ?? 0) > 0.10);
+});
+
+test('decision 90: a pair whose shadow delivery is flat or worse against a screen promise half an R higher is retired by its record', () => {
+  const s = (trades: number, avgR: number): PairStats => ({ trades, days: 20, wins: 0, winRatePct: 0, netR: avgR * trades, avgR, pfR: 1, weeks: 3, positiveWeeks: 1, positiveWeeksPct: 33 });
+  assert.equal(deliveryVerdict({ avgR: 1.03 }, s(22, -0.21)).retire, true, 'the BTC 15m case');
+  assert.match(deliveryVerdict({ avgR: 1.03 }, s(22, -0.21)).reason ?? '', /delivery: -0.21R over 22 shadow trades against a screen of \+1.03R/);
+  assert.equal(deliveryVerdict({ avgR: 1.03 }, s(12, -0.21)).retire, false, 'not before twenty trades');
+  assert.equal(deliveryVerdict({ avgR: 0.30 }, s(30, 0.05)).retire, false, 'delivering something is not a lie');
+  assert.equal(deliveryVerdict({ avgR: 0.30 }, s(30, -0.05)).retire, false, 'a small gap is noise');
+  assert.equal(deliveryVerdict(null, s(40, -0.5)).retire, false, 'no promise, nothing to hold it to');
 });

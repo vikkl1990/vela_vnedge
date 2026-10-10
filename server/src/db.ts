@@ -11,6 +11,7 @@ export interface SignalRow {
 
 /** Columns added after the first release; SQLite has no IF NOT EXISTS for these. */
 const ADDED_COLUMNS: Array<[string, string]> = [
+  ['positions', 'config_fp TEXT'],
   ['scanner_runs', 'funnel TEXT'],
   ['orders', 'ref_price REAL'], ['orders', 'bid REAL'], ['orders', 'ask REAL'],
   ['orders', 'quote_at INTEGER'], ['orders', 'price_source TEXT'],

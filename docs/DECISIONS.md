@@ -2565,3 +2565,25 @@ book closes most of them on the script's own exits for a loss. A state was being
 The screen now refuses any script whose entries exceed a tenth of all bars (`entryDensity`), with
 the reason on the screen log. The gap between a screen's promise and the shadow book's delivery
 remains the next honesty instrument to build.
+
+## 90. Every trade carries its settings; a pair is retired by its own record
+
+Two more of the operator's list, both buildable.
+
+**Configuration history on every trade.** A position is stamped at open with a fingerprint of
+what decided it: the running commit, how its scanner is read (channels, labels, inversion, edge,
+rule, inputs, timezone, exit mode and overrides, trend gate), the stop and exit policy, the fill
+and sizing assumptions, and the gates. The fingerprint is a short hash with its parts kept, so it
+can be explained; it is on the trade view and in the journal. The learning API gains `current`:
+the account's trades made under the settings that are live now, and the Overview's verdict line
+shows it beside the whole book. A change today is judged on the trades it produced, not blended
+with the trades before it.
+
+**Promise versus delivery.** The screen promised an R per trade; the shadow book delivers one on
+trades it did not pick. A pair whose delivery over at least twenty shadow trades is flat or worse
+while the promise was half an R or more above it is retired by that record, in both gate pools,
+whatever the honesty tests saw. The BTC 15m script is the case: +1.03R promised, −0.21R over 22
+delivered.
+
+Left on the list: exchange partial-fill accounting, which waits for the exchange path to be
+exercised at all, and the family-lab holdout.

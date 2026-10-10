@@ -11,6 +11,8 @@ export interface LearnTrade {
   scannerId: string; scannerName: string; symbol: string; tf: string; side: string;
   entryAt: number; exitAt: number; pnl: number; fees: number; rMultiple: number;
   exitReason: string | null; peakR?: number | null; riskAmount?: number;
+  /** Fingerprint of the settings that produced the trade (decision 90). */
+  configFp?: string | null;
 }
 
 export interface EdgeRow {

@@ -258,7 +258,7 @@ function EdgeVerdictLine() {
   )
   return (
     <div className={`banner small ${word(d.live) === 'failing' ? 'banner-warn' : ''}`} role="note" title="Paying: the 90% confidence band of R per trade is above zero. Failing: it is below zero. Undecided: it straddles zero, which is what a small sample looks like.">
-      Edge: {book('Account', d.live)} · {book('Shadow', d.shadow)}
+      Edge: {book('Account', d.live)}{d.current ? <> · {book('Under current settings', d.current)}</> : null} · {book('Shadow', d.shadow)}
     </div>
   )
 }

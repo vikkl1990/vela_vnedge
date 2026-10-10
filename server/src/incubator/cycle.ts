@@ -3,7 +3,7 @@
  */
 import type { AppConfig, IncubatorConfig, ScannerConfig } from '../config.ts';
 import { IncubatorStore, type PairRow, type Stage } from './store.ts';
-import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, screenScore, type CohortStats } from './gate.ts';
+import { cohortStats, cohortVerdict, deliveryVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, screenScore, type CohortStats } from './gate.ts';
 
 export interface ScreenResult {
   pass: boolean; at: number; trades: number; profitFactor: number; netPnl: number; netAtStress: number;
@@ -137,6 +137,8 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
 function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: CycleReport, now: number): void {
   const trades = store.trades(r.scannerId, r.symbol, r.tf, 2);
   const stats = pairStats(trades, r.since, now);
+  const dv = deliveryVerdict(r.screen, stats);
+  if (dv.retire && r.stage === 'shadow') { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
   const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
   const v = gateVerdict(stats, gateFor(cfg.incubator, r.tf), overlap);
   store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v }, now);
@@ -158,7 +160,15 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
   const groups = new Map<string, PairRow[]>();
   for (const r of active) { const k = `${r.scannerId}|${r.tf}`; const g = groups.get(k); g ? g.push(r) : groups.set(k, [r]); }
 
-  for (const rows of groups.values()) {
+  for (const rowsAll of groups.values()) {
+    // promise versus delivery per market first (decision 90): a member retired by its own record leaves the cohort
+    const rows = rowsAll.filter(r => {
+      if (r.stage !== 'shadow') return true;
+      const dv = deliveryVerdict(r.screen, pairStats(store.trades(r.scannerId, r.symbol, r.tf, 2), r.since, now));
+      if (!dv.retire) return true;
+      store.move(r, 'retired', 'gate', { reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return false;
+    });
+    if (!rows.length) continue;
     const members = rows.map(r => ({ row: r, symbol: r.symbol, since: r.since, trades: store.trades(r.scannerId, r.symbol, r.tf, 2) }));
     const stats = cohortStats(members, now, inc.gate.minMarketTrades);
     let hit = 0, n = 0;

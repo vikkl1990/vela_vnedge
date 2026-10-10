@@ -12,6 +12,7 @@ import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
 import { DeltaFeed, type WsTicker } from './delta/ws.ts';
 import { logger } from './log.ts';
+import { configFingerprint } from './paper/fingerprint.ts';
 import { PaperEngine } from './paper/engine.ts';
 import { PinePool } from './pine/pool.ts';
 import { ScannerEngine } from './scanners/engine.ts';
@@ -442,9 +443,14 @@ export class App {
 
   /** What the journal teaches, in R, for the live book and the shadow book (decision 63). */
   learning() {
-    const toLearn = (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount });
+    const toLearn = (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount , configFp: t.configFp ?? null });
     const since = Date.now() - 30 * 86_400_000;
-    const live = learnBook(this.paper.trades({ limit: 5000 }).map(toLearn));
+    const liveAll = this.paper.trades({ limit: 5000 }).map(toLearn);
+    const live = learnBook(liveAll);
+    // the book under the settings that are live now (decision 90): the only part of the journal a change today can be judged on
+    const fpCache = new Map<string, string>();
+    const fpFor = (sid: string, tf: string) => { const k = `${sid}|${tf}`; let v = fpCache.get(k); if (!v) { v = configFingerprint(this.config.get(), sid, tf).fp; fpCache.set(k, v); } return v; };
+    const current = learnBook(liveAll.filter(t => t.configFp && t.configFp === fpFor(t.scannerId, t.tf)));
     const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => (t.exitAt ?? 0) >= since).map(toLearn));
     const counts = this.incubatorStore.counts();
     const hunt = this.db.kvGet<any>('incubator.lastHunt') ?? null;
@@ -462,7 +468,7 @@ export class App {
       tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: this.realisedRiskPct() ?? cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,
       drawdownAlertPct: cfg.risk.ddScale?.[0]?.ddPct ?? 10, lb90: live.lb90, haltsInWindow: halts + (riskState.day.tripped ? 1 : 0) + (riskState.week.tripped ? 1 : 0), alertsConfigured: this.ops.alerts.configured,
     });
-    return { at: Date.now(), live, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
+    return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
   }
 
   analytics() {

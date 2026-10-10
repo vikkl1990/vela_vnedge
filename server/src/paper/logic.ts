@@ -60,6 +60,8 @@ export interface Position {
   worstAt?: number;
   /** When the position was actually filled; the backtest stamps `entryAt` with the signal bar's open. */
   openedAt?: number;
+  /** Fingerprint of the settings that produced this trade (decision 90). */
+  configFp?: string;
   /** Last cumulative live candle observed; retained across restarts. */
   lastPriceBar?: PriceBar;
 }
