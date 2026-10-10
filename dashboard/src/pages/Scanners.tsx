@@ -165,6 +165,12 @@ export function Scanners() {
         render: (s) => <BookCells s={s} />,
       },
       {
+        key: 'week', header: '7 days', title: 'This scanner\'s entry signals in the last seven days: how many, how many opened, and what refused the rest (market gate, fee rule, regime, entry guards)',
+        value: (s) => s.week?.entries ?? 0,
+        numeric: true,
+        render: (s) => (s.week && s.week.entries ? <span className="mono small" title={`opened ${s.week.opened} · gate ${s.week.gate} · fee ${s.week.fee} · regime ${s.week.regime} · guards ${s.week.guard} · other ${s.week.other}`}>{s.week.entries} → <b className={s.week.opened ? 'gain' : ''}>{s.week.opened}</b>{s.week.gate ? ` · gate ${s.week.gate}` : ''}{s.week.fee ? ` · fee ${s.week.fee}` : ''}{s.week.regime ? ` · regime ${s.week.regime}` : ''}{s.week.guard ? ` · guard ${s.week.guard}` : ''}</span> : <span className="muted">–</span>),
+      },
+      {
         key: 'kind', header: 'Kind', value: (s) => s.kind ?? '', title: 'What the script produced when last profiled: plan (its own stop and targets), signal (a direction), levels (information), silent, broken',
         render: (s) => (s.health?.quarantined ? <Pill tone="danger" title={`Quarantined: ${s.health.reason ?? s.health.lastError}`}>quarantined</Pill> : s.kind ? <Pill tone={KIND_TONE[s.kind]}>{s.kind}</Pill> : <span className="muted">–</span>),
       },

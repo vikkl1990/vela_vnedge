@@ -75,9 +75,21 @@ export class ScriptHealth {
     return !cur?.quarantined && quarantined === 1;
   }
 
+  /** Quarantine a script outright for a reason the runtime established (e.g. it repaints), independent of the failure count. */
+  quarantine(scannerId: string, reason: string, at = Date.now()): boolean {
+    const cur = this.db.get<any>('SELECT quarantined FROM script_health WHERE scanner_id=?', scannerId);
+    this.db.run(
+      `INSERT INTO script_health(scanner_id, fails, last_at, last_error, reason, quarantined) VALUES (?,?,?,?,?,1)
+       ON CONFLICT(scanner_id) DO UPDATE SET last_at=excluded.last_at, last_error=excluded.last_error, reason=excluded.reason, quarantined=1`,
+      scannerId, cur?.fails ?? 0, at, reason.slice(0, 300), reason.slice(0, 120));
+    this.cache = null;
+    return !cur?.quarantined;
+  }
+
   /** A run that worked clears the record: the script is healthy whatever happened before. */
   clear(scannerId: string): void {
-    if (this.db.run('DELETE FROM script_health WHERE scanner_id=?', scannerId).changes) this.cache = null;
+    // a verdict the runtime established (repaints, repeated timeouts) survives a run that happened to work
+    if (this.db.run("DELETE FROM script_health WHERE scanner_id=? AND quarantined=0", scannerId).changes) this.cache = null;
   }
 
   quarantined(): Set<string> {

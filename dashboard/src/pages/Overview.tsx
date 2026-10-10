@@ -1,7 +1,7 @@
 import type { MarketVerdict } from '../api/types'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
+import { useEquity, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { EquityChart, PnlByScannerChart, Sparkline, type PnlBar } from '../components/charts'
 import { PositionsTable } from '../components/PositionsTable'
@@ -46,6 +46,7 @@ export function Overview() {
   return (
     <div className="page">
       <TickerTape />
+      <EdgeVerdictLine />
       <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account: ${visibleScanners} Pine scanners on Delta India data, fills and P&L simulated. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
 
       {stats.isLoading && !s && <Loading kind="kpi" rows={9} />}
@@ -238,5 +239,26 @@ function SystemPanel() {
         </div>
       )}
     </Panel>
+  )
+}
+
+/** The one sentence the product owes its operator (decision 87): is there an edge yet, on which book, with what confidence. */
+function EdgeVerdictLine() {
+  const l = useLearning()
+  const d = l.data
+  if (!d) return null
+  const word = (b: { lb90: number | null; ub90: number | null }) => (b.lb90 !== null && b.lb90 > 0 ? 'paying' : b.ub90 !== null && b.ub90 < 0 ? 'failing' : 'undecided')
+  const tone = (w: string) => (w === 'paying' ? 'gain' : w === 'failing' ? 'loss' : 'muted')
+  const book = (name: string, b: typeof d.live) => (
+    <span>
+      <b>{name}</b>: <b className={tone(word(b))}>{word(b)}</b> · {b.trades} trades · {b.avgR >= 0 ? '+' : ''}{b.avgR.toFixed(2)}R a trade
+      {b.lb90 !== null && b.ub90 !== null ? <span className="muted"> (90% band {b.lb90 >= 0 ? '+' : ''}{b.lb90.toFixed(2)} to {b.ub90 >= 0 ? '+' : ''}{b.ub90.toFixed(2)})</span> : null}
+      {b.costShare !== null ? <span className="muted"> · costs {Math.round(b.costShare * 100)}% of risk</span> : null}
+    </span>
+  )
+  return (
+    <div className={`banner small ${word(d.live) === 'failing' ? 'banner-warn' : ''}`} role="note" title="Paying: the 90% confidence band of R per trade is above zero. Failing: it is below zero. Undecided: it straddles zero, which is what a small sample looks like.">
+      Edge: {book('Account', d.live)} · {book('Shadow', d.shadow)}
+    </div>
   )
 }

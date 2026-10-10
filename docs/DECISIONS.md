@@ -2487,3 +2487,29 @@ at its cap of 40. The other 25 wait for the incubator gate on their shadow trade
 What "built" will mean next: the screen must run the repaint check before admitting a script,
 the 95 screened majors pairs get re-judged by it, and BTC and ETH on 15m stay out until a cell
 earns it under the fee rule.
+
+## 87. The product audit's buildable gaps, built
+
+The operator asked for a product audit and then, rather than a freeze, for the gaps to be fixed.
+Five were buildable without waiting.
+
+1. **The daily screen checks prefix honesty before it admits a script.** A passing cell is run
+   again with the last 60 bars hidden; if more than 10% of its earlier entries moved or vanished,
+   the script is quarantined with the reason "repaints" and the pass is withdrawn. A quarantine
+   the runtime established now survives a later run that happened to work.
+2. **The learning model never trains on a quarantined script.** 41,681 backtest samples from 153
+   scanners included repainting scripts; their rows are left out of training from now on.
+3. **The Overview opens with the verdict.** One line: Account paying/failing/undecided with
+   trades, R per trade, the 90% band and the cost share, and the same for the shadow book.
+4. **The Scanners page explains the week, not the last run.** A "7 days" column per scanner:
+   entry signals → opened, and what refused the rest (market gate, fee rule, regime, the entry
+   guards, other).
+5. **The research screen no longer collides with the trading process.** Its workers go from four
+   to two, within its 6 GB cgroup, beside the trading service's budget.
+
+And the one-off that follows from the first: every script in the shadow and candidate stages is
+re-judged by the repaint test on its own market; repainters are quarantined and their rows
+retired, so the shadow book stops holding fiction.
+
+Not buildable, still true: the purse is small for the venue, policy still has no owner, and the
+exchange path waits for keys.

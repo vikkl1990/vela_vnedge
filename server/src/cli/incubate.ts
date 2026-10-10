@@ -30,6 +30,7 @@ import { ConfigStore, TF_SECONDS } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { IncubatorStore } from '../incubator/store.ts';
 import { evaluate, recordScreen, syncLive, type ScreenResult } from '../incubator/cycle.ts';
+import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
 
 const started = Date.now();
@@ -154,6 +155,15 @@ if (sliceArg !== 'none') {
         // a market whose one contract eats the risk budget cannot be sized: the stop cap, not the
         // strategy, decides whether each signal becomes a trade (decision 31)
         if (r.pass && coarse.has(symbol)) { r.pass = false; summary.tooCoarse++; }
+        // decision 87: a screen pass is only as good as the script's honesty — run it again with the last bars hidden
+        if (r.pass && REPAINT_CUT > 0 && d.bars.length > REPAINT_CUT + 200) {
+          const cutBars = d.bars.slice(0, d.bars.length - REPAINT_CUT);
+          const r2 = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: cutBars, tailBars: 'all', plotTail: cutBars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone });
+          if (r2.ok) {
+            const rc = compareRepaint(res, d.bars, r2, cutBars, s.id, cfg.scanners[s.id] ?? {});
+            if (rc.repaints) { r.pass = false; summary.repaint = (summary.repaint ?? 0) + 1; health.quarantine(s.id, repaintReason(rc)); out(`  ${s.id}: quarantined — ${repaintReason(rc)}`); recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc); break; }
+          }
+        }
         if (r.pass) summary.passed++;
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);
         if (k === 'new' || k === 'updated' || k === 'cooldown') summary[k]++;

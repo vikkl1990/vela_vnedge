@@ -106,6 +106,7 @@ export class App {
     this.shadow.trendFor = trendFor;
     this.incubatorStore = new IncubatorStore(this.db);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
+    this.ml.excluded = () => this.scanners.health.quarantined();
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.resolvedSymbols = cfg().symbols;
     this.incubator = new ShadowRunner({
@@ -274,7 +275,16 @@ export class App {
       lastRun: this.scanners.lastRunByScanner(),
       profiles: this.profiles.summaries(),
       books: this.scannerBooks(),
+      week: this.weekFunnelByScanner(),
     };
+  }
+
+  /** The last seven days of entry signals per scanner, by what became of them (decision 87): the week explained, not just the last run. */
+  private weekFunnelByScanner() {
+    const out = new Map<string, { entries: number; opened: number; gate: number; fee: number; regime: number; guard: number; other: number }>();
+    const rows = this.db.all<{ scanner_id: string; k: string; n: number }>(`SELECT scanner_id, CASE WHEN action IN ('opened','reversed') OR action LIKE 'pending%' THEN 'opened' WHEN action LIKE 'rejected:risk market%' THEN 'gate' WHEN action LIKE 'rejected:stop too tight%' THEN 'fee' WHEN action LIKE 'rejected:risk regime%' THEN 'regime' WHEN action LIKE 'rejected:risk re-entry%' OR action LIKE 'rejected:risk burst%' THEN 'guard' ELSE 'other' END k, COUNT(*) n FROM signals WHERE kind='entry' AND at > ? GROUP BY 1, 2`, Date.now() - 7 * 86_400_000);
+    for (const r of rows) { const w = out.get(r.scanner_id) ?? { entries: 0, opened: 0, gate: 0, fee: 0, regime: 0, guard: 0, other: 0 }; w.entries += r.n; (w as any)[r.k] += r.n; out.set(r.scanner_id, w); }
+    return out;
   }
 
   /** Which books each scanner is in (decision 64): markets it trades in the account, markets it is proving in the shadow book. */
@@ -307,6 +317,7 @@ export class App {
       kind: prof?.kind ?? null, profiledAt: prof?.at ?? null, health: health ? { fails: health.fails, lastAt: health.lastAt, lastError: health.lastError, reason: health.reason, quarantined: health.quarantined } : null,
       lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,
       books: (idx ? idx.books : this.scannerBooks()).get(id) ?? { account: [], shadow: [], proposed: [] },
+      week: (idx ? idx.week : this.weekFunnelByScanner()).get(id) ?? null,
     };
   }
 

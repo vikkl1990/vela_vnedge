@@ -100,9 +100,13 @@ export class MlService {
   }
 
   /** Train global + per-scanner models and derive rules. */
+  /** Scripts the runtime has given up on (they repaint, they time out): their samples are fiction and are left out of training (decision 87). */
+  excluded: () => Set<string> = () => new Set();
+
   train(): MlSnapshot {
     const t0 = Date.now();
-    const all = this.samples(undefined, 100_000);
+    const ex = this.excluded();
+    const all = this.samples(undefined, 100_000).filter(s => !ex.has(s.scannerId));
     const names = this.names();
     const byScanner = new Map<string, Sample[]>();
     for (const s of all) { const l = byScanner.get(s.scannerId) ?? []; l.push(s); byScanner.set(s.scannerId, l); }

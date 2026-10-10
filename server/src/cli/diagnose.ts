@@ -26,6 +26,7 @@ import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents, type ScanEvent } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
 import { runBacktest, type BacktestInput } from '../paper/backtest.ts';
+import { compareRepaint, REPAINT_CUT } from '../scanners/repaint.ts';
 import { ConfigStore, TF_SECONDS, type PaperConfig } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 
@@ -92,7 +93,7 @@ const confirm = (evs: ScanEvent[], bars: Bar[]): ScanEvent[] => {
  * run on all n bars, for every bar before the cut. A script whose earlier entries move or vanish when later bars are
  * hidden is reading the future — the BTC 15m script that screened at +1.03R and traded −0.21R in the shadow book.
  */
-const REPAINT_CUT = Number(process.env.REPAINT_CUT ?? 60);
+const REPAINT_ONLY = process.env.REPAINT_ONLY === '1';
 interface CellResult { id: string; tf: string; sym: string; variants: Record<string, Stat>; labels: Array<[string, Stat]>; verdict: string; fix: string; repaint?: { prefix: number; changed: number } }
 async function cell(id: string, tf: string, sym: string): Promise<CellResult | null> {
   const s = registry.get(id); if (!s || s.status !== 'ok') return null;
@@ -105,13 +106,12 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (REPAINT_CUT > 0 && b.length > REPAINT_CUT + 200) {
     const bt = b.slice(0, b.length - REPAINT_CUT); const cutAt = bt[bt.length - 1].time;
     const r2 = await pool.run({ scannerId: id, source: s.patched, symbol: sym, tf, tickSize: m.tickSize, bars: bt, tailBars: 'all', plotTail: bt.length, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
-    if (r2.ok) {
-      const key = (e: ScanEvent) => `${e.barTime}:${e.side}`;
-      const full = new Set(extractEvents(res.alerts, res.shapes, { derived: applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest' }), sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert }).filter(e => e.kind === 'entry' && e.barTime <= cutAt).map(key));
-      const part = new Set(extractEvents(r2.alerts, r2.shapes, { derived: applyRules({ scannerId: id, alerts: r2.alerts, shapes: r2.shapes, labels: r2.labels, plots: r2.plots, rule: sc.rule ?? null, bars: bt, mode: 'backtest' }), sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert }).filter(e => e.kind === 'entry').map(key));
-      let changed = 0; for (const k of full) if (!part.has(k)) changed++; for (const k of part) if (!full.has(k)) changed++;
-      repaint = { prefix: Math.max(full.size, part.size), changed };
-    }
+    if (r2.ok) { const rc = compareRepaint(res, b, r2, bt, id, sc); repaint = { prefix: rc.prefix, changed: rc.changed }; }
+  }
+  if (REPAINT_ONLY) {
+    const empty = stat([], b, TF_SECONDS[tf] * 1000);
+    if (repaint) { const share = repaint.prefix ? repaint.changed / repaint.prefix : 0; row(id, tf, sym, 'repaint', { ...empty, trades: repaint.prefix }, `${repaint.changed} of ${repaint.prefix} earlier entries changed when the last ${REPAINT_CUT} bars were hidden (${(share * 100).toFixed(0)}%)`); }
+    return { id, tf, sym, variants: { base: empty }, labels: [], verdict: repaint ? 'repaint checked' : 'repaint not checked', fix: '', repaint };
   }
   const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest' });
   const events = extractEvents(res.alerts, res.shapes, { derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });

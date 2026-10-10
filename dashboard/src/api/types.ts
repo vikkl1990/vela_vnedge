@@ -146,6 +146,8 @@ export interface ScannerIndexEntry {
 export interface Scanner {
   id: string
   name: string
+  /** The last seven days of this scanner's entry signals by outcome (decision 87). */
+  week?: { entries: number; opened: number; gate: number; fee: number; regime: number; guard: number; other: number } | null
   author?: string
   file: string
   url: string
