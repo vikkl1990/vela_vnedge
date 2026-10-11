@@ -1,0 +1,487 @@
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+indicator("Curved Trendlines (Zeiierman)",overlay=true,max_lines_count=500,max_boxes_count=500,max_polylines_count=50,max_bars_back=5000)
+//}
+
+// ~~ Tooltips {
+var string tt1="Left/right pivot confirmation length. A pivot is confirmed this many bars after its actual swing bar."
+var string tt2="Number of recent same-side pivot points used to fit each independent quadratic curve. At least three points are required."
+var string tt3="Number of bars the fitted curves and channel are projected into the future, subject to stopping before the upper and lower curves cross."
+var string tt4="Show the upper fitted curve. This uses confirmed pivot highs and their maximum positive regression residual."
+var string tt5="Shared upper curve and upper gradient color. Both always use this same color."
+var string tt6="Show the lower fitted curve. This uses confirmed pivot lows and their maximum negative regression residual."
+var string tt7="Shared lower curve and lower gradient color. Both always use this same color."
+var string tt8="Width of both outer fitted curve lines."
+var string tt9="Show the center line halfway between the independently fitted upper and lower curves."
+var string tt10="Color and width of the center line."
+var string tt11="Fill the channel with layered upper and lower gradients. The gradient colors are inherited from the curve colors."
+var string tt12="Number of nested gradient layers per side. More layers create a smoother-looking gradient but use more drawings."
+var string tt13="Transparency at the channel's outer edges. Zero is opaque and 100 is invisible."
+var string tt14="Transparency near the center of the channel. Higher values make the gradient fade toward the mid line."
+var string tt15="Keep the strongest qualifying historical channel candidate from each completed best-fit window."
+var string tt16="Maximum number of completed historical channel pairs retained on the chart."
+var string tt17="Number of bars per historical best-fit selection window."
+var string tt18="Minimum R-squared fit percentage for historical candidates only. Live curves have no minimum-fit threshold."
+var string tt19="Color and line width used for historical dotted channel boundaries."
+var string tt20="Show the current buy/sell volume-at-price profile, measured from the oldest fitted structure pivot to the current bar."
+var string tt21="Target number of price rows in the live profile. Memory profiles use the same price height per row. Very large combined ranges automatically use coarser shared rows to stay within drawing limits."
+var string tt22="Maximum horizontal width, in chart bars, for the most active profile row."
+var string tt23="Horizontal gap after the projected curve endpoint before the live and memory profiles begin."
+var string tt24="Volume assigned to buying or selling is estimated from each candle's close position within its high-low range."
+var string tt25="Highlight the highest-volume row with an orange outline and short POC guide line."
+var string tt26="Draw dotted high and low bounds of the live profile's sampled price range."
+var string tt27="Show historical volume beyond the live structure range, using older bars and the projected curve boundaries. Row height and spacing match the live profile, with partial rows clipped at the outer boundaries."
+var string tt28="Maximum horizontal width of each memory profile."
+var string tt29="Estimated buying and selling colors for the memory profiles."
+var string tt30="Highlight the highest-volume price row separately in each memory profile."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+gDET="Structure"
+gCUR="Curves & Gradient"
+gHIS="Historical Curves"
+gPRO="Live Profile"
+gMEM="Memory Profile"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+pLen=input.int(10,"Pivot Length",minval=1,group=gDET,inline="d1")
+fitPts=input.int(6,"Structure Points",minval=3,maxval=15,group=gDET,inline="d1",tooltip=tt1+"\n\n"+tt2)
+extendBars=input.int(20,"Extend Bars",minval=0,maxval=300,group=gDET,tooltip=tt3)
+showUpper=input.bool(true,"Upper Curve",group=gCUR,inline="c1")
+upperCol=input.color(color.red,"",group=gCUR,inline="c1",tooltip=tt4+"\n\n"+tt5)
+showLower=input.bool(true,"Lower Curve",group=gCUR,inline="c2")
+lowerCol=input.color(color.lime,"",group=gCUR,inline="c2",tooltip=tt6+"\n\n"+tt7)
+lineWidth=input.int(2,"Curve Width",minval=1,maxval=5,group=gCUR,tooltip=tt8)
+showMid=input.bool(true,"Mid Line",group=gCUR,inline="c3")
+midCol=input.color(color.new(color.white,15),"",group=gCUR,inline="c3",active=showMid)
+midWidth=input.int(1,"Width",minval=1,maxval=4,group=gCUR,inline="c3",active=showMid,tooltip=tt9+"\n\n"+tt10)
+showFill=input.bool(true,"Gradient Fill",group=gCUR,inline="c4")
+gradientSteps=input.int(5,"Layers",minval=3,maxval=9,group=gCUR,inline="c4",active=showFill,tooltip=tt11+"\n\n"+tt12)
+gradientEdgeAlpha=input.int(65,"Outer Transparency",minval=0,maxval=100,group=gCUR,inline="c5",active=showFill)
+gradientMidAlpha=input.int(97,"Center Transparency",minval=0,maxval=100,group=gCUR,inline="c5",active=showFill,tooltip=tt13+"\n\n"+tt14)
+showHistory=input.bool(false,"Historical Curves",group=gHIS,inline="h1")
+histKeep=input.int(10,"Keep",minval=1,maxval=10,group=gHIS,inline="h1",active=showHistory,tooltip=tt15+"\n\n"+tt16)
+histWindowBars=input.int(80,"Best Fit Window",minval=25,maxval=500,group=gHIS,inline="h2",active=showHistory)
+histMinFit=input.float(50.0,"Minimum Historical Fit %",minval=0,maxval=100,group=gHIS,inline="h2",active=showHistory,tooltip=tt17+"\n\n"+tt18)
+histCol=input.color(color.new(color.blue,0),"Historical Color",group=gHIS,inline="h3",active=showHistory)
+histWidth=input.int(1,"Width",minval=1,maxval=3,group=gHIS,inline="h3",active=showHistory,tooltip=tt19)
+showProfile=input.bool(true,"Show Live Profile",group=gPRO,tooltip=tt20)
+profileBins=input.int(48,"Rows",minval=10,maxval=100,group=gPRO,inline="p1")
+profileWidth=input.int(60,"Width",minval=10,maxval=120,group=gPRO,inline="p1",tooltip=tt21+"\n\n"+tt22)
+profileGap=input.int(5,"Profile Gap",minval=0,maxval=100,group=gPRO,tooltip=tt23)
+upVolCol=input.color(color.rgb(43,158,143),"Up Volume",group=gPRO,inline="p2")
+downVolCol=input.color(color.rgb(74,88,182),"Down Volume",group=gPRO,inline="p2",tooltip=tt24)
+showPOC=input.bool(true,"Show POC",group=gPRO,inline="p3")
+pocCol=input.color(color.rgb(255,145,32),"",group=gPRO,inline="p3",active=showPOC,tooltip=tt25)
+showBounds=input.bool(false,"Show Profile Bounds",group=gPRO,tooltip=tt26)
+showMemory=input.bool(true,"Historical Memory Profile",group=gMEM,inline="m1")
+memoryWidth=input.int(50,"Width",minval=10,maxval=100,group=gMEM,inline="m1",tooltip=tt27+"\n\n"+tt28)
+memoryUpCol=input.color(color.rgb(43,158,143),"Up Volume",group=gMEM,inline="m2")
+memoryDownCol=input.color(color.rgb(74,88,182),"Down Volume",group=gMEM,inline="m2",tooltip=tt29)
+showMemoryPOC=input.bool(true,"Show Memory POC",group=gMEM,inline="m3",active=showMemory)
+memoryPocCol=input.color(color.rgb(32, 158, 255),"",group=gMEM,inline="m3",active=showMemory and showMemoryPOC,tooltip=tt30)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Constants {
+MAX_LOOKBACK=4999
+CURVE_SEGS=60
+HISTORY_SEGS=10
+PROFILE_RIGHT_LIMIT=490
+MAX_PROFILE_ROWS=248
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type Fit
+    float a
+    float b
+    float c
+    float base
+    float r2
+    float off
+
+type HistPick
+    Fit up
+    Fit dn
+    float score
+    int first
+    int last
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+det(float a,float b,float c,float d,float e,float f,float g,float h,float i)=>a*(e*i-f*h)-b*(d*i-f*g)+c*(d*h-e*g)
+
+valid_fit(Fit q)=>not na(q) and not na(q.r2)
+
+curve_at(Fit q,int x)=>
+    rx=float(x)-q.base
+    q.a+q.b*rx+q.c*rx*rx+q.off
+
+save_pivot(array<int> xs,array<float> ys,int x,float y)=>
+    xs.push(x)
+    ys.push(y)
+    if xs.size()>fitPts
+        xs.shift()
+        ys.shift()
+    0
+
+fit_curve(array<int> xs,array<float> ys,bool upper)=>
+    Fit q=Fit.new(na,na,na,na,na,na)
+    sz=xs.size()
+    if sz>=3
+        base=float(xs.get(0))
+        n=float(sz)
+        sx=0.0
+        sx2=0.0
+        sx3=0.0
+        sx4=0.0
+        sy=0.0
+        sxy=0.0
+        sx2y=0.0
+        for i=0 to sz-1
+            x=float(xs.get(i))-base
+            y=ys.get(i)
+            x2=x*x
+            sx+=x
+            sx2+=x2
+            sx3+=x2*x
+            sx4+=x2*x2
+            sy+=y
+            sxy+=x*y
+            sx2y+=x2*y
+        determinant=det(n,sx,sx2,sx,sx2,sx3,sx2,sx3,sx4)
+        if math.abs(determinant)>0.0000001
+            a=det(sy,sx,sx2,sxy,sx2,sx3,sx2y,sx3,sx4)/determinant
+            b=det(n,sy,sx2,sx,sxy,sx3,sx2,sx2y,sx4)/determinant
+            c=det(n,sx,sy,sx,sx2,sxy,sx2,sx3,sx2y)/determinant
+            mean=sy/n
+            sse=0.0
+            sst=0.0
+            offset=upper?-1e10:1e10
+            for i=0 to sz-1
+                x=float(xs.get(i))-base
+                y=ys.get(i)
+                yh=a+b*x+c*x*x
+                res=y-yh
+                sse+=res*res
+                sst+=math.pow(y-mean,2)
+                offset:=upper?math.max(offset,res):math.min(offset,res)
+            r2=sst>0?1.0-sse/sst:1.0
+            q:=Fit.new(a,b,c,base,r2,offset)
+    q
+
+safe_end(Fit up,Fit dn,int startX,int endX)=>
+    safeEnd=endX
+    if endX>startX
+        firstGap=curve_at(up,startX)-curve_at(dn,startX)
+        if firstGap<=0
+            safeEnd:=startX
+        else
+            for x=startX+1 to endX
+                if curve_at(up,x)-curve_at(dn,x)<=0
+                    safeEnd:=x-1
+                    break
+    safeEnd
+
+clear_lines(array<line> a)=>
+    while a.size()>0
+        line.delete(a.pop())
+    0
+
+clear_boxes(array<box> a)=>
+    while a.size()>0
+        box.delete(a.pop())
+    0
+
+clear_polys(array<polyline> a)=>
+    while a.size()>0
+        polyline.delete(a.pop())
+    0
+
+clear_profile(array<box> bx,array<line> ln)=>
+    clear_boxes(bx)
+    clear_lines(ln)
+    0
+
+draw_curve(array<line> a,Fit q,int endX,color col)=>
+    clear_lines(a)
+    startX=int(q.base)
+    if valid_fit(q) and endX>startX
+        span=endX-startX
+        segments=math.min(CURVE_SEGS,span)
+        for i=0 to segments-1
+            x1=startX+int(math.round(float(span)*float(i)/float(segments)))
+            x2=startX+int(math.round(float(span)*float(i+1)/float(segments)))
+            a.push(line.new(x1,curve_at(q,x1),x2,curve_at(q,x2),xloc=xloc.bar_index,extend=extend.none,color=col,width=lineWidth))
+    0
+
+draw_history(array<line> lines,HistPick pick)=>
+    endX=safe_end(pick.up,pick.dn,pick.first,pick.last)
+    count=0
+    if endX>pick.first
+        span=endX-pick.first
+        segments=math.min(HISTORY_SEGS,span)
+        for i=0 to segments-1
+            x1=pick.first+int(math.round(float(span)*float(i)/float(segments)))
+            x2=pick.first+int(math.round(float(span)*float(i+1)/float(segments)))
+            lines.push(line.new(x1,curve_at(pick.up,x1),x2,curve_at(pick.up,x2),xloc=xloc.bar_index,extend=extend.none,color=histCol,width=histWidth,style=line.style_dotted))
+            lines.push(line.new(x1,curve_at(pick.dn,x1),x2,curve_at(pick.dn,x2),xloc=xloc.bar_index,extend=extend.none,color=histCol,width=histWidth,style=line.style_dotted))
+            count+=2
+    count
+
+delete_oldest_history(array<line> lines,array<int> sizes)=>
+    if sizes.size()>0
+        count=sizes.shift()
+        for i=0 to count-1
+            if lines.size()>0
+                line.delete(lines.shift())
+    0
+
+draw_channel(array<polyline> polys,Fit up,Fit dn,int startX,int endX)=>
+    polyline mid=na
+    if endX>startX
+        span=endX-startX
+        segments=math.min(CURVE_SEGS,span)
+        array<chart.point> midPts=array.new<chart.point>()
+        for i=0 to segments
+            x=startX+int(math.round(float(span)*float(i)/float(segments)))
+            uy=curve_at(up,x)
+            ly=curve_at(dn,x)
+            midPts.push(chart.point.from_index(x,(uy+ly)*0.5))
+        if showMid
+            mid:=polyline.new(midPts,curved=false,closed=false,xloc=xloc.bar_index,line_color=midCol,line_width=midWidth)
+        if showFill
+            for g=0 to gradientSteps-1
+                t1=float(g)/float(gradientSteps)
+                t2=float(g+1)/float(gradientSteps)
+                tm=(t1+t2)*0.5
+                alpha=int(math.round(gradientMidAlpha+(gradientEdgeAlpha-gradientMidAlpha)*tm))
+                array<chart.point> topPts=array.new<chart.point>()
+                array<chart.point> botPts=array.new<chart.point>()
+                for i=0 to segments
+                    x=startX+int(math.round(float(span)*float(i)/float(segments)))
+                    uy=curve_at(up,x)
+                    ly=curve_at(dn,x)
+                    my=(uy+ly)*0.5
+                    topPts.push(chart.point.from_index(x,my+(uy-my)*t2))
+                    botPts.push(chart.point.from_index(x,my+(ly-my)*t1))
+                for i=0 to segments
+                    j=segments-i
+                    x=startX+int(math.round(float(span)*float(j)/float(segments)))
+                    uy=curve_at(up,x)
+                    ly=curve_at(dn,x)
+                    my=(uy+ly)*0.5
+                    topPts.push(chart.point.from_index(x,my+(uy-my)*t1))
+                    botPts.push(chart.point.from_index(x,my+(ly-my)*t2))
+                polys.push(polyline.new(topPts,curved=false,closed=true,xloc=xloc.bar_index,line_color=color.new(upperCol,100),fill_color=color.new(upperCol,alpha)))
+                polys.push(polyline.new(botPts,curved=false,closed=true,xloc=xloc.bar_index,line_color=color.new(lowerCol,100),fill_color=color.new(lowerCol,alpha)))
+    mid
+
+profile_rows(float span,float step)=>math.max(1,int(math.ceil(span/step-0.000000001)))
+
+build_profile(array<box> bx,array<line> ln,int fromOff,int toOff,float priceLow,float priceHigh,int xBase,float rowSize,bool alignTop,int widthN,color upC,color downC,bool drawPOC,color pocC)=>
+    clear_profile(bx,ln)
+    priceSpan=priceHigh-priceLow
+    if fromOff>=0 and toOff>=fromOff and toOff<=MAX_LOOKBACK and priceSpan>syminfo.mintick and rowSize>0
+        rows=profile_rows(priceSpan,rowSize)
+        gridLow=alignTop?priceHigh-rowSize*rows:priceLow
+        array<float> buyBins=array.new_float(rows,0.0)
+        array<float> sellBins=array.new_float(rows,0.0)
+        for off=fromOff to toOff
+            bh=math.min(high[off],priceHigh)
+            bl=math.max(low[off],priceLow)
+            candleRange=high[off]-low[off]
+            vol=nz(volume[off],0.0)
+            if bh>=bl and vol>0
+                buyFrac=candleRange>0?math.max(0.0,math.min(1.0,(close[off]-low[off])/candleRange)):0.5
+                upVol=vol*buyFrac
+                downVol=vol-upVol
+                if candleRange<=syminfo.mintick
+                    b=int(math.floor((close[off]-gridLow)/rowSize))
+                    b:=math.max(0,math.min(rows-1,b))
+                    buyBins.set(b,buyBins.get(b)+upVol)
+                    sellBins.set(b,sellBins.get(b)+downVol)
+                else
+                    firstBin=int(math.floor((bl-gridLow)/rowSize))
+                    lastBin=int(math.floor((bh-gridLow)/rowSize))
+                    firstBin:=math.max(0,math.min(rows-1,firstBin))
+                    lastBin:=math.max(0,math.min(rows-1,lastBin))
+                    for b=firstBin to lastBin
+                        binLow=gridLow+rowSize*b
+                        binHigh=binLow+rowSize
+                        overlap=math.max(0.0,math.min(bh,binHigh)-math.max(bl,binLow))
+                        weight=overlap/candleRange
+                        buyBins.set(b,buyBins.get(b)+upVol*weight)
+                        sellBins.set(b,sellBins.get(b)+downVol*weight)
+        maxVol=0.0
+        pocBin=0
+        for b=0 to rows-1
+            total=buyBins.get(b)+sellBins.get(b)
+            if total>maxVol
+                maxVol:=total
+                pocBin:=b
+        if maxVol>0
+            for b=0 to rows-1
+                uv=buyBins.get(b)
+                dv=sellBins.get(b)
+                total=uv+dv
+                if total>0
+                    totalWidth=math.max(1,int(math.round(widthN*total/maxVol)))
+                    downWidth=int(math.round(totalWidth*dv/total))
+                    upWidth=totalWidth-downWidth
+                    binLow=math.max(priceLow,gridLow+rowSize*b)
+                    binHigh=math.min(priceHigh,gridLow+rowSize*(b+1))
+                    rowLow=binLow+(binHigh-binLow)*0.08
+                    rowHigh=binHigh-(binHigh-binLow)*0.08
+                    fade=int(math.round(76.0-46.0*total/maxVol))
+                    if downWidth>0
+                        bx.push(box.new(xBase,rowHigh,xBase+downWidth,rowLow,xloc=xloc.bar_index,bgcolor=color.new(downC,fade),border_color=color.new(downC,100)))
+                    if upWidth>0
+                        bx.push(box.new(xBase+downWidth,rowHigh,xBase+totalWidth,rowLow,xloc=xloc.bar_index,bgcolor=color.new(upC,fade),border_color=color.new(upC,100)))
+                    if b==pocBin and drawPOC
+                        bx.push(box.new(xBase,rowHigh,xBase+totalWidth,rowLow,xloc=xloc.bar_index,bgcolor=color.new(pocC,88),border_color=pocC,border_width=2))
+            if drawPOC
+                pocLow=math.max(priceLow,gridLow+rowSize*pocBin)
+                pocHigh=math.min(priceHigh,gridLow+rowSize*(pocBin+1))
+                pocPrice=(pocLow+pocHigh)*0.5
+                ln.push(line.new(math.max(0,bar_index-18),pocPrice,xBase,pocPrice,xloc=xloc.bar_index,extend=extend.none,color=color.new(pocC,25),width=2))
+    0
+
+render_curves(array<line> upperLines,array<line> lowerLines,array<polyline> gradientPolys,polyline oldMid,Fit up,Fit dn,int endX)=>
+    upperOK=valid_fit(up)
+    lowerOK=valid_fit(dn)
+    if showUpper and upperOK and endX>int(up.base)
+        draw_curve(upperLines,up,endX,upperCol)
+    else
+        clear_lines(upperLines)
+    if showLower and lowerOK and endX>int(dn.base)
+        draw_curve(lowerLines,dn,endX,lowerCol)
+    else
+        clear_lines(lowerLines)
+    if not na(oldMid)
+        polyline.delete(oldMid)
+    clear_polys(gradientPolys)
+    polyline mid=na
+    if upperOK and lowerOK
+        startX=math.max(int(up.base),int(dn.base))
+        if endX>startX
+            mid:=draw_channel(gradientPolys,up,dn,startX,endX)
+    mid
+
+clear_all_profiles(array<box> profileBoxes,array<line> profileLines,array<box> upperMemoryBoxes,array<line> upperMemoryLines,array<box> lowerMemoryBoxes,array<line> lowerMemoryLines)=>
+    clear_profile(profileBoxes,profileLines)
+    clear_profile(upperMemoryBoxes,upperMemoryLines)
+    clear_profile(lowerMemoryBoxes,lowerMemoryLines)
+    0
+
+render_profiles(Fit up,Fit dn,int endX,array<int> hx,array<int> lx,array<box> profileBoxes,array<line> profileLines,array<box> upperMemoryBoxes,array<line> upperMemoryLines,array<box> lowerMemoryBoxes,array<line> lowerMemoryLines)=>
+    clear_all_profiles(profileBoxes,profileLines,upperMemoryBoxes,upperMemoryLines,lowerMemoryBoxes,lowerMemoryLines)
+    structureStartX=math.min(hx.get(0),lx.get(0))
+    structureStartOff=bar_index-structureStartX
+    if structureStartOff>=0 and structureStartOff<=MAX_LOOKBACK
+        liveHigh=high
+        liveLow=low
+        for i=0 to structureStartOff
+            liveHigh:=math.max(liveHigh,high[i])
+            liveLow:=math.min(liveLow,low[i])
+        liveSpan=liveHigh-liveLow
+        projectedUpper=curve_at(up,endX)
+        projectedLower=curve_at(dn,endX)
+        memoryFromOff=structureStartOff+1
+        memoryToOff=math.min(bar_index,MAX_LOOKBACK)
+        memoryReady=showMemory and memoryToOff>=memoryFromOff
+        upperSpan=memoryReady?math.max(0.0,projectedUpper-liveHigh):0.0
+        lowerSpan=memoryReady?math.max(0.0,liveLow-projectedLower):0.0
+        combinedSpan=(showProfile?liveSpan:0.0)+upperSpan+lowerSpan
+        rowSize=math.max(math.max(liveSpan,syminfo.mintick)/profileBins,combinedSpan/(MAX_PROFILE_ROWS-3))
+        maxWidth=profileWidth>memoryWidth?profileWidth:memoryWidth
+        profileOffset=math.min(extendBars+profileGap,math.max(0,PROFILE_RIGHT_LIMIT-maxWidth))
+        profileX=bar_index+profileOffset
+        if showProfile
+            build_profile(profileBoxes,profileLines,0,structureStartOff,liveLow,liveHigh,profileX,rowSize,false,profileWidth,upVolCol,downVolCol,showPOC,pocCol)
+            if showBounds
+                profileLines.push(line.new(structureStartX,liveHigh,profileX+profileWidth,liveHigh,xloc=xloc.bar_index,extend=extend.none,color=color.new(upperCol,60),style=line.style_dotted))
+                profileLines.push(line.new(structureStartX,liveLow,profileX+profileWidth,liveLow,xloc=xloc.bar_index,extend=extend.none,color=color.new(lowerCol,60),style=line.style_dotted))
+        if upperSpan>syminfo.mintick
+            build_profile(upperMemoryBoxes,upperMemoryLines,memoryFromOff,memoryToOff,liveHigh,projectedUpper,profileX,rowSize,false,memoryWidth,memoryUpCol,memoryDownCol,showMemoryPOC,memoryPocCol)
+        if lowerSpan>syminfo.mintick
+            build_profile(lowerMemoryBoxes,lowerMemoryLines,memoryFromOff,memoryToOff,projectedLower,liveLow,profileX,rowSize,true,memoryWidth,memoryUpCol,memoryDownCol,showMemoryPOC,memoryPocCol)
+    0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Core Series {
+ph=ta.pivothigh(high,pLen,pLen)
+pl=ta.pivotlow(low,pLen,pLen)
+newStruct=not na(ph) or not na(pl)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Objects & State {
+var array<int> hx=array.new_int()
+var array<float> hy=array.new_float()
+var array<int> lx=array.new_int()
+var array<float> ly=array.new_float()
+var array<line> upperLines=array.new_line()
+var array<line> lowerLines=array.new_line()
+var array<polyline> gradientPolys=array.new<polyline>()
+var polyline midPoly=na
+var array<line> histLines=array.new_line()
+var array<int> histSizes=array.new_int()
+var int histBucketId=na
+var HistPick bestPick=na
+var array<line> profileLines=array.new_line()
+var array<box> profileBoxes=array.new_box()
+var array<line> upperMemoryLines=array.new_line()
+var array<box> upperMemoryBoxes=array.new_box()
+var array<line> lowerMemoryLines=array.new_line()
+var array<box> lowerMemoryBoxes=array.new_box()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Structure Update {
+if not na(ph)
+    save_pivot(hx,hy,bar_index-pLen,ph)
+if not na(pl)
+    save_pivot(lx,ly,bar_index-pLen,pl)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Historical Curve Evaluation {
+if showHistory and newStruct and hx.size()>=3 and lx.size()>=3
+    Fit up=fit_curve(hx,hy,true)
+    Fit dn=fit_curve(lx,ly,false)
+    if valid_fit(up) and valid_fit(dn)
+        score=math.min(up.r2,dn.r2)*100.0
+        bucket=int(math.floor(float(bar_index)/histWindowBars))
+        if na(histBucketId)
+            histBucketId:=bucket
+        if bucket!=histBucketId
+            if not na(bestPick)
+                while histSizes.size()>=histKeep
+                    delete_oldest_history(histLines,histSizes)
+                count=draw_history(histLines,bestPick)
+                if count>0
+                    histSizes.push(count)
+            histBucketId:=bucket
+            bestPick:=na
+        if score>=histMinFit and (na(bestPick) or score>bestPick.score)
+            first=math.max(int(up.base),int(dn.base))
+            last=math.max(hx.get(hx.size()-1),lx.get(lx.size()-1))
+            bestPick:=HistPick.new(up,dn,score,first,last)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing {
+if barstate.islast
+    Fit up=fit_curve(hx,hy,true)
+    Fit dn=fit_curve(lx,ly,false)
+    upperOK=valid_fit(up)
+    lowerOK=valid_fit(dn)
+    endX=bar_index+extendBars
+    if upperOK and lowerOK
+        startX=math.max(int(up.base),int(dn.base))
+        endX:=safe_end(up,dn,startX,endX)
+    midPoly:=render_curves(upperLines,lowerLines,gradientPolys,midPoly,up,dn,endX)
+    if upperOK and lowerOK
+        render_profiles(up,dn,endX,hx,lx,profileBoxes,profileLines,upperMemoryBoxes,upperMemoryLines,lowerMemoryBoxes,lowerMemoryLines)
+    else
+        clear_all_profiles(profileBoxes,profileLines,upperMemoryBoxes,upperMemoryLines,lowerMemoryBoxes,lowerMemoryLines)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

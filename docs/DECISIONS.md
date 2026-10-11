@@ -2639,3 +2639,22 @@ capped at 3 GB; something native or retained grows over a four-hour run, and the
 turns a kill into a clean stop. The Overview once showed 18 enabled scanners while the Scanners
 page showed 10; it could not be reproduced and both read 10 since. The full audit is in
 `docs/UI-AUDIT-2026-10-11.md`.
+
+## 92. Library refresh, 11 October: ten new scripts from the four TradingView authors
+
+TradingView's own listing (`/api/v1/scripts/?by=<author>`) is the complete record of what an author
+has published; diffed by script id against the manifest it found ten open-source newcomers since
+the last import: two from WillyAlgoTrader, one from AlgoAlpha, four from BigBeluga, three from
+Zeiierman. LuxAlgo's TradingView page had nothing new; the LuxAlgo Library site had 47, and the VM's
+weekly sync had already placed all 47 in its own overlay (`data/library`), where the design keeps
+them. The ten are in `scripts/` with their lists in `data/imports/*-new-20261011.json`.
+
+Profiled on ETHUSD at 15m, 1h and 4h before anything else touched them: Wyckoff Range Engine is a
+full plan (entries with stop and targets, four per thousand 15m bars); ATR Trend Channel Signals
+and Levels Likely to Break are directional signals the ATR fallback can trade; Buyers & Sellers
+Profile raises an entry on two bars in three, a state the screen refuses by density (decision 88);
+HalfTrend Fractal Breakout and Step Range Breakout draw levels and labels only; Curved Trendlines
+and Manual Wedge Setup are drawing tools and stay silent; EQH/EQL Liquidity Zones (MTF) refuses to
+run because the runtime reports the chart timeframe as 60 on every chart (a PineTS gap, the same
+one that stops the other MTF scripts) and Supertrend Error-Adaptive Cloud indexes an empty array
+(another). Nothing is enabled; the nightly screen takes the runnable ones in their slice.

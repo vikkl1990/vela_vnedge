@@ -1,0 +1,601 @@
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+indicator("Levels Likely to Break (Zeiierman)",overlay=true,max_lines_count=500,max_boxes_count=500,max_labels_count=500,max_bars_back=5000)
+//}
+
+// ~~ Tooltips {
+var string tt1="Left/right pivot confirmation length. A value of 20 means a structural pivot is confirmed 20 bars after the actual swing bar."
+var string tt2="Maximum percentage distance between two same-side pivots for them to qualify as the same structural level."
+var string tt3="Minimum number of bars required between the two pivot confirmations that initially create a level."
+var string tt4="Maximum number of bars an active level may remain unbroken before it is automatically removed."
+var string tt5="ATR-based depth of each active level zone. Larger values create wider support/resistance areas around the anchor price."
+var string tt6="Controls how quickly live breakout pressure responds to approach, directional pressure, absorption, compression and fresh touches."
+var string tt7="Colors used for upper resistance-type levels and lower support-type levels."
+var string tt8="Accent color used for the inner score core and the center of layered touch markers."
+var string tt9="Show the layered pressure marker at the historical pivot price that created each active level."
+var string tt11="Show layered markers whenever price freshly re-enters an existing level zone or another matching pivot reconfirms the level."
+var string tt12="Show the line connecting the original pair of matching pivots that created the level."
+var string tt13="Keep broken levels on the chart as faded historical structures instead of deleting them immediately."
+var string tt14="Mark the first valid retest of a broken historical level."
+var string tt15="Line style used by active horizontal levels."
+var string tt16="Level width may remain pressure-based with Dynamic, or be forced to a fixed width from 1 to 5."
+var string tt17="Shape and overall size of the layered historical pressure marker."
+var string tt18="Shape and overall size of the layered touch and reconfirmation markers."
+var string tt19="Color, style and width of the pivot-pair trace joining the two pivots that originally formed a level."
+var string tt20="Wick breaks trigger when price trades through the buffered level. Close breaks require the candle close to pass through it."
+var string tt21="ATR buffer added beyond the level before a wick or close is considered a confirmed break."
+var string tt22="Show fixed breakout triangles when an upper or lower level breaks."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+gDET="Detection"
+gENG="Pressure Engine"
+gVIS="Visuals"
+gSTY="Main Style"
+gBRK="Breakouts"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+piv=input.int(20,"Pivot Length",minval=1,maxval=100,group=gDET,inline="d1")
+matchPct=input.float(0.90,"Match %",minval=0.01,step=0.05,group=gDET,inline="d1",tooltip=tt1+"\n\n"+tt2)
+gapMin=input.int(2,"Min Confirm Gap",minval=1,group=gDET,inline="d2")
+maxUnbrokenBars=input.int(600,"Delete After",minval=1,group=gDET,inline="d2",tooltip=tt3+"\n\n"+tt4)
+zoneAtr=input.float(1.12,"Zone ATR",minval=0.01,step=0.01,group=gENG,inline="e1")
+pressureSpeed=input.float(1.00,"Pressure Sensitivity",minval=0.25,maxval=2.00,step=0.05,group=gENG,inline="e1",tooltip=tt5+"\n\n"+tt6)
+topCol=input.color(color.rgb(24,206,92),"Upper",group=gVIS,inline="c1")
+botCol=input.color(color.rgb(255,61,70),"Lower",group=gVIS,inline="c1",tooltip=tt7)
+coreCol=input.color(color.rgb(255,205,64),"Score Core",group=gVIS,inline="c2",tooltip=tt8)
+showRings=input.bool(true,"Score Rings",group=gVIS,inline="v1",tooltip=tt9)
+showTouchBubbles=input.bool(true,"Touch Bubbles",group=gVIS,inline="v2")
+showPairTrace=input.bool(true,"Pivot Pair Trace",group=gVIS,inline="v2",tooltip=tt11+"\n\n"+tt12)
+keepHistory=input.bool(true,"Broken History",group=gVIS,inline="v3")
+showRetests=input.bool(true,"Retests",group=gVIS,inline="v3",active=keepHistory,tooltip=tt13+"\n\n"+tt14)
+mainLineStyleOpt=input.string("Solid","Level Line",options=["Solid","Dashed","Dotted"],group=gSTY,inline="s1")
+mainLineWidthOpt=input.string("Dynamic","Width",options=["Dynamic","1","2","3","4","5"],group=gSTY,inline="s1",tooltip=tt15+"\n\n"+tt16)
+scoreMarkerStyleOpt=input.string("Circle","Score Marker",options=["Circle","Diamond","Square"],group=gSTY,inline="s2")
+scoreMarkerSizeOpt=input.string("Normal","Size",options=["Small","Normal","Large"],group=gSTY,inline="s2",tooltip=tt17)
+touchMarkerStyleOpt=input.string("Diamond","Touch Marker",options=["Circle","Diamond","Square"],group=gSTY,inline="s3")
+touchMarkerSizeOpt=input.string("Normal","Size",options=["Small","Normal","Large"],group=gSTY,inline="s3",tooltip=tt18)
+pairTraceColor=input.color(color.rgb(255,205,64),"Pair Trace",group=gSTY,inline="s4")
+pairTraceStyleOpt=input.string("Dotted","Style",options=["Solid","Dashed","Dotted"],group=gSTY,inline="s4")
+pairTraceWidth=input.int(1,"Width",minval=1,maxval=5,group=gSTY,inline="s4",tooltip=tt19)
+breakMode=input.string("Wick","Break Trigger",options=["Wick","Close"],group=gBRK,inline="b1")
+breakAtr=input.float(0.05,"Break ATR",minval=0.00,step=0.01,group=gBRK,inline="b1",tooltip=tt20+"\n\n"+tt21)
+showTriangles=input.bool(true,"Breakout Triangles",group=gBRK,tooltip=tt22)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Constants {
+SEED_MAX=120
+LIVE_MAX=40
+DEAD_MAX=50
+MARK_MAX=80
+VOL_LEN=20
+ABS_RAD=2
+REMOVE_TOUCH_AFTER_BREAK_BARS=20
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type Seed
+    float p
+    int t
+    int b
+    float vq
+    float dq
+    float aq
+    float dl
+
+type Lvl
+    float p
+    float depth
+    float quality
+    float pressure
+    float attackRv
+    float attackDelta
+    int confirms
+    int touches
+    int bornBar
+    bool upper
+    bool inZone
+    bool retested
+    int breakBar
+    int lastTouchBar
+    box outerBx
+    box innerBx
+    line anchorLn
+    line pairLn
+    label ring4
+    label ring3
+    label ring2
+    label ring1
+    label ringText
+    label lastTouch4
+    label lastTouch3
+    label lastTouch2
+    label lastTouch1
+    label retestMark
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+clip(float x)=>math.max(0.0,math.min(1.0,x))
+lvl_col(bool upper)=>upper?topCol:botCol
+base_width(float p)=>p>=0.82?4:p>=0.62?3:p>=0.42?2:1
+main_width(float p)=>mainLineWidthOpt=="1"?1:mainLineWidthOpt=="2"?2:mainLineWidthOpt=="3"?3:mainLineWidthOpt=="4"?4:mainLineWidthOpt=="5"?5:base_width(p)
+lstyle(string s)=>s=="Dashed"?line.style_dashed:s=="Dotted"?line.style_dotted:line.style_solid
+mstyle(string s)=>s=="Diamond"?label.style_diamond:s=="Square"?label.style_square:label.style_circle
+score_r4_size()=>scoreMarkerSizeOpt=="Small"?size.normal:scoreMarkerSizeOpt=="Large"?size.huge:size.large
+score_r3_size()=>scoreMarkerSizeOpt=="Small"?size.small:scoreMarkerSizeOpt=="Large"?size.large:size.normal
+score_r2_size()=>scoreMarkerSizeOpt=="Small"?size.tiny:scoreMarkerSizeOpt=="Large"?size.normal:size.small
+score_r1_size()=>scoreMarkerSizeOpt=="Large"?size.small:size.tiny
+touch_r4_size()=>touchMarkerSizeOpt=="Small"?size.normal:touchMarkerSizeOpt=="Large"?size.huge:size.large
+touch_r3_size()=>touchMarkerSizeOpt=="Small"?size.small:touchMarkerSizeOpt=="Large"?size.large:size.normal
+touch_r2_size()=>touchMarkerSizeOpt=="Small"?size.tiny:touchMarkerSizeOpt=="Large"?size.normal:size.small
+touch_r1_size()=>touchMarkerSizeOpt=="Large"?size.small:size.tiny
+touch_rings(float rv)=>rv>=2.20?4:rv>=1.45?3:rv>=1.00?2:1
+line_alpha(float p)=>p>=0.82?0:p>=0.62?12:p>=0.42?28:46
+outer_alpha(float p)=>int(math.round(96.0-12.0*p))
+inner_alpha(float p)=>int(math.round(91.0-18.0*p))
+zone_bounds(bool upper,float p,float d)=>[upper?p:p+d,upper?p-d:p]
+inner_bounds(bool upper,float p,float d)=>[upper?p:p+d*0.45,upper?p-d*0.45:p]
+rings(float score)=>score>=82?4:score>=66?3:score>=50?2:1
+ralpha(int r)=>r>=4?68:r==3?52:r==2?30:4
+future_time(int bars)=>time+int(math.max(nz(time_close-time,1),1))*bars
+sync_visuals()=>barstate.islast or barstate.islastconfirmedhistory
+full_visual_sync()=>barstate.islastconfirmedhistory or (barstate.islast and barstate.ishistory)
+
+lvl_tip(Lvl lv)=>"Break Pressure: "+str.tostring(lv.pressure*100.0,"#")+"%\nFormation Quality: "+str.tostring(lv.quality*100.0,"#")+"%\nPivot Confirmations: "+str.tostring(lv.confirms)+"\nZone Touches: "+str.tostring(lv.touches)+"\nAttack Relative Volume: "+str.tostring(lv.attackRv,"#.##")+"x\nDirectional Delta Proxy: "+str.tostring(lv.attackDelta*100.0,"#")+"%"
+
+push_mark(array<label> a,label lb)=>
+    a.push(lb)
+    while a.size()>MARK_MAX
+        label.delete(a.shift())
+    0
+
+make_touch_rings(array<label> a,int x,float p,color base,float rv,string loc)=>
+    rc=touch_rings(rv)
+    r4=label.new(x,p,"",xloc=loc,yloc=yloc.price,style=mstyle(touchMarkerStyleOpt),color=rc>=4?color.new(base,ralpha(4)):color.new(base,100),size=touch_r4_size())
+    r3=label.new(x,p,"",xloc=loc,yloc=yloc.price,style=mstyle(touchMarkerStyleOpt),color=rc>=3?color.new(base,ralpha(3)):color.new(base,100),size=touch_r3_size())
+    r2=label.new(x,p,"",xloc=loc,yloc=yloc.price,style=mstyle(touchMarkerStyleOpt),color=rc>=2?color.new(base,ralpha(2)):color.new(base,100),size=touch_r2_size())
+    r1=label.new(x,p,"",xloc=loc,yloc=yloc.price,style=mstyle(touchMarkerStyleOpt),color=color.new(coreCol,rv>=1.45?0:22),size=touch_r1_size())
+    push_mark(a,r4)
+    push_mark(a,r3)
+    push_mark(a,r2)
+    push_mark(a,r1)
+    [r4,r3,r2,r1]
+
+delete_lvl(Lvl lv)=>
+    if not na(lv.outerBx)
+        box.delete(lv.outerBx)
+    if not na(lv.innerBx)
+        box.delete(lv.innerBx)
+    if not na(lv.anchorLn)
+        line.delete(lv.anchorLn)
+    if not na(lv.pairLn)
+        line.delete(lv.pairLn)
+    if not na(lv.ring4)
+        label.delete(lv.ring4)
+    if not na(lv.ring3)
+        label.delete(lv.ring3)
+    if not na(lv.ring2)
+        label.delete(lv.ring2)
+    if not na(lv.ring1)
+        label.delete(lv.ring1)
+    if not na(lv.ringText)
+        label.delete(lv.ringText)
+    if not na(lv.lastTouch4)
+        label.delete(lv.lastTouch4)
+    if not na(lv.lastTouch3)
+        label.delete(lv.lastTouch3)
+    if not na(lv.lastTouch2)
+        label.delete(lv.lastTouch2)
+    if not na(lv.lastTouch1)
+        label.delete(lv.lastTouch1)
+    if not na(lv.retestMark)
+        label.delete(lv.retestMark)
+    0
+
+trim_seeds(array<Seed> a)=>
+    while a.size()>SEED_MAX
+        a.shift()
+    0
+
+trim_live(array<Lvl> a)=>
+    while a.size()>LIVE_MAX
+        lv=a.shift()
+        delete_lvl(lv)
+    0
+
+trim_dead(array<Lvl> a)=>
+    while a.size()>DEAD_MAX
+        lv=a.shift()
+        delete_lvl(lv)
+    0
+
+prune_seeds(bool upper,array<Seed> a)=>
+    i=a.size()-1
+    while i>=0
+        s=a.get(i)
+        tol=s.p*matchPct*0.01
+        invalid=upper?high>s.p+tol:low<s.p-tol
+        if invalid
+            a.remove(i)
+        i-=1
+    0
+
+find_live(array<Lvl> a,bool upper,float p)=>
+    id=-1
+    best=1e20
+    if a.size()>0
+        for i=0 to a.size()-1
+            lv=a.get(i)
+            if lv.upper==upper
+                d=math.abs(p-lv.p)
+                tol=lv.p*matchPct*0.01
+                if d<=tol and d<best
+                    best:=d
+                    id:=i
+                    if d==0.0
+                        break
+    id
+
+pivot_features(int off,float avgVol)=>
+    pv=math.max(nz(volume[off],0.0),0.0)
+    vb=math.max(nz(avgVol[off],pv),1.0)
+    vq=clip((pv/vb-0.8)/1.7)
+    rad=math.min(ABS_RAD,off)
+    dNum=0.0
+    dDen=0.0
+    aq=0.0
+    for n=0 to rad*2
+        o=off-rad+n
+        barRange=math.max(high[o]-low[o],syminfo.mintick)
+        v=math.max(nz(volume[o],0.0),0.0)
+        pos=clip((close[o]-low[o])/barRange)
+        dNum+=v*(pos*2.0-1.0)
+        dDen+=v
+        base=math.max(nz(avgVol[o],v),1.0)
+        rv=v/base
+        body=math.abs(close[o]-open[o])/barRange
+        absQ=clip((rv-1.0)/1.0)*clip((0.45-body)/0.45)
+        aq:=math.max(aq,absQ)
+    dl=dDen>0?dNum/dDen:0.0
+    [vq,math.abs(dl),aq,dl]
+
+make_rings(int t,float p,color base)=>
+    label r4=na
+    label r3=na
+    label r2=na
+    label r1=na
+    label txt=na
+    if showRings
+        r4:=label.new(t,p,"",xloc=xloc.bar_time,yloc=yloc.price,style=mstyle(scoreMarkerStyleOpt),color=color.new(base,100),size=score_r4_size())
+        r3:=label.new(t,p,"",xloc=xloc.bar_time,yloc=yloc.price,style=mstyle(scoreMarkerStyleOpt),color=color.new(base,100),size=score_r3_size())
+        r2:=label.new(t,p,"",xloc=xloc.bar_time,yloc=yloc.price,style=mstyle(scoreMarkerStyleOpt),color=color.new(base,100),size=score_r2_size())
+        r1:=label.new(t,p,"",xloc=xloc.bar_time,yloc=yloc.price,style=mstyle(scoreMarkerStyleOpt),color=color.new(coreCol,22),size=score_r1_size())
+        txt:=label.new(t,p,"",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_none,color=color.new(color.black,100),textcolor=color.new(color.white,100),size=size.tiny)
+    [r4,r3,r2,r1,txt]
+
+update_rings(Lvl lv)=>
+    if showRings and not na(lv.ringText)
+        score=lv.pressure*100.0
+        rc=rings(score)
+        base=lvl_col(lv.upper)
+        label.set_color(lv.ring4,rc>=4?color.new(base,ralpha(4)):color.new(base,100))
+        label.set_color(lv.ring3,rc>=3?color.new(base,ralpha(3)):color.new(base,100))
+        label.set_color(lv.ring2,rc>=2?color.new(base,ralpha(2)):color.new(base,100))
+        label.set_color(lv.ring1,color.new(coreCol,score>=66?0:22))
+        label.set_text(lv.ringText,"")
+        label.set_tooltip(lv.ringText,lvl_tip(lv))
+    0
+
+update_visual_style(Lvl lv)=>
+    c=lvl_col(lv.upper)
+    box.set_border_color(lv.outerBx,color.new(c,math.min(82,line_alpha(lv.pressure)+30)))
+    box.set_bgcolor(lv.outerBx,color.new(c,outer_alpha(lv.pressure)))
+    box.set_bgcolor(lv.innerBx,color.new(c,inner_alpha(lv.pressure)))
+    line.set_color(lv.anchorLn,color.new(c,line_alpha(lv.pressure)))
+    line.set_style(lv.anchorLn,lstyle(mainLineStyleOpt))
+    line.set_width(lv.anchorLn,main_width(lv.pressure))
+    update_rings(lv)
+    0
+
+move_edge(Lvl lv)=>
+    rightTime=future_time(2)
+    box.set_right(lv.outerBx,rightTime)
+    box.set_right(lv.innerBx,rightTime)
+    line.set_x2(lv.anchorLn,rightTime)
+    0
+
+update_visual(Lvl lv)=>
+    update_visual_style(lv)
+    move_edge(lv)
+    0
+
+visual_changed(float oldPressure,float oldAttackRv,float oldAttackDelta,int oldTouches,Lvl lv)=>
+    styleChanged=line_alpha(oldPressure)!=line_alpha(lv.pressure) or main_width(oldPressure)!=main_width(lv.pressure) or outer_alpha(oldPressure)!=outer_alpha(lv.pressure) or inner_alpha(oldPressure)!=inner_alpha(lv.pressure) or rings(oldPressure*100.0)!=rings(lv.pressure*100.0)
+    tipChanged=int(math.round(oldPressure*100.0))!=int(math.round(lv.pressure*100.0)) or int(math.round(oldAttackRv*100.0))!=int(math.round(lv.attackRv*100.0)) or int(math.round(oldAttackDelta*100.0))!=int(math.round(lv.attackDelta*100.0)) or oldTouches!=lv.touches
+    styleChanged or tipChanged
+
+make_lvl(array<Lvl> a,bool upper,float anchor,int anchorTime,int confirmTime,int seedTime,float seedPx,float pivPx,float atrP,float matchQ,float vq,float dq,float aq,float formDelta)=>
+    c=lvl_col(upper)
+    quality=clip(0.42*matchQ+0.20*vq+0.18*dq+0.20*aq)
+    pressure=clip(0.28+0.58*quality)
+    depth=math.max(atrP*zoneAtr,syminfo.mintick*2.0)
+    [zTop,zBot]=zone_bounds(upper,anchor,depth)
+    [iTop,iBot]=inner_bounds(upper,anchor,depth)
+    rightTime=future_time(2)
+    outerBx=box.new(anchorTime,zTop,rightTime,zBot,xloc=xloc.bar_time,extend=extend.none,border_color=color.new(c,math.min(82,line_alpha(pressure)+30)),bgcolor=color.new(c,outer_alpha(pressure)))
+    innerBx=box.new(anchorTime,iTop,rightTime,iBot,xloc=xloc.bar_time,extend=extend.none,border_color=color.new(c,100),bgcolor=color.new(c,inner_alpha(pressure)))
+    anchorLn=line.new(anchorTime,anchor,rightTime,anchor,xloc=xloc.bar_time,extend=extend.none,color=color.new(c,line_alpha(pressure)),style=lstyle(mainLineStyleOpt),width=main_width(pressure))
+    line pairLn=showPairTrace?line.new(seedTime,seedPx,confirmTime,pivPx,xloc=xloc.bar_time,color=pairTraceColor,width=pairTraceWidth,style=lstyle(pairTraceStyleOpt)):na
+    [r4,r3,r2,r1,rtxt]=make_rings(anchorTime,anchor,c)
+    initDelta=upper?formDelta:-formDelta
+    lv=Lvl.new(anchor,depth,quality,pressure,1.0,initDelta,2,0,bar_index,upper,false,false,na,na,outerBx,innerBx,anchorLn,pairLn,r4,r3,r2,r1,rtxt,na,na,na,na,na)
+    a.push(lv)
+    if sync_visuals()
+        update_visual(lv)
+    trim_live(a)
+    true
+
+reconfirm(array<Lvl> a,array<label> marks,int id,float p,int pivTime,int pivBar,float vq,float dq,float aq,float dl)=>
+    lv=a.get(id)
+    tol=math.max(lv.p*matchPct*0.01,syminfo.mintick)
+    closeQ=clip(1.0-math.abs(p-lv.p)/tol)
+    featureQ=clip(0.40*closeQ+0.20*vq+0.18*dq+0.22*aq)
+    lv.quality:=clip(lv.quality*0.76+featureQ*0.24)
+    lv.pressure:=clip(lv.pressure+0.05+0.07*closeQ)
+    lv.attackDelta:=lv.attackDelta*0.75+(lv.upper?dl:-dl)*0.25
+    lv.confirms+=1
+    if showTouchBubbles
+        [t4,t3,t2,t1]=make_touch_rings(marks,pivTime,lv.p,lvl_col(lv.upper),1.45,xloc.bar_time)
+        lv.lastTouchBar:=pivBar
+        lv.lastTouch4:=t4
+        lv.lastTouch3:=t3
+        lv.lastTouch2:=t2
+        lv.lastTouch1:=t1
+    a.set(id,lv)
+    if sync_visuals()
+        update_visual(lv)
+    true
+
+register_lvl(array<Lvl> a,array<Seed> seeds,array<label> marks,bool upper,float p,int pivTime,int pivBar,float atrP,float vq,float dq,float aq,float dl)=>
+    created=false
+    reinforced=false
+    liveId=find_live(a,upper,p)
+    if liveId>=0
+        reinforced:=reconfirm(a,marks,liveId,p,pivTime,pivBar,vq,dq,aq,dl)
+    else
+        pick=-1
+        best=1e20
+        if seeds.size()>0
+            for i=0 to seeds.size()-1
+                s=seeds.get(i)
+                tol=s.p*matchPct*0.01
+                dist=math.abs(p-s.p)
+                if dist<=tol and pivBar-s.b>=gapMin and dist<best
+                    best:=dist
+                    pick:=i
+                    if dist==0.0
+                        break
+        if pick==-1
+            seeds.push(Seed.new(p,pivTime,pivBar,vq,dq,aq,dl))
+            trim_seeds(seeds)
+        else
+            s=seeds.get(pick)
+            tol=math.max(s.p*matchPct*0.01,syminfo.mintick)
+            matchQ=clip(1.0-math.abs(p-s.p)/tol)
+            anchor=upper?math.max(s.p,p):math.min(s.p,p)
+            anchorTime=upper?(p>s.p?pivTime:s.t):(p<s.p?pivTime:s.t)
+            cvq=(s.vq+vq)*0.5
+            cdq=(s.dq+dq)*0.5
+            caq=math.max(s.aq,aq)
+            cdl=(s.dl+dl)*0.5
+            created:=make_lvl(a,upper,anchor,anchorTime,pivTime,s.t,s.p,p,atrP,matchQ,cvq,cdq,caq,cdl)
+            seeds.remove(pick)
+    [created,reinforced]
+
+is_break(Lvl lv,float atrNow)=>
+    pad=math.max(atrNow*breakAtr,0.0)
+    breakMode=="Close"?(lv.upper?close>lv.p+pad:close<lv.p-pad):(lv.upper?high>lv.p+pad:low<lv.p-pad)
+
+update_pressure(array<label> marks,Lvl lv,float atrSafe,float relVol,float barDelta,float absorption,float compression,float upApproach,float dnApproach,float upDeltaPressure,float dnDeltaPressure)=>
+    [zTop,zBot]=zone_bounds(lv.upper,lv.p,lv.depth)
+    inside=high>=zBot and low<=zTop
+    freshTouch=inside and not lv.inZone and bar_index>lv.bornBar
+    proximity=clip(1.0-math.abs(close-lv.p)/(atrSafe*1.50))
+    approach=lv.upper?upApproach:dnApproach
+    deltaPressure=lv.upper?upDeltaPressure:dnDeltaPressure
+    load=proximity*(0.30*approach+0.26*deltaPressure+0.22*absorption+0.10*compression)+(freshTouch?0.12:0.0)
+    decay=proximity<0.15?0.990:0.997
+    lv.pressure:=clip(lv.pressure*decay+load*0.10*pressureSpeed)
+    lv.inZone:=inside
+    if proximity>0.35
+        lv.attackRv:=lv.attackRv*0.85+relVol*0.15
+        signedDirDelta=lv.upper?barDelta:-barDelta
+        lv.attackDelta:=lv.attackDelta*0.85+signedDirDelta*0.15
+    if freshTouch
+        lv.touches+=1
+        if showTouchBubbles
+            [t4,t3,t2,t1]=make_touch_rings(marks,bar_index,lv.p,lvl_col(lv.upper),relVol,xloc.bar_index)
+            lv.lastTouchBar:=bar_index
+            lv.lastTouch4:=t4
+            lv.lastTouch3:=t3
+            lv.lastTouch2:=t2
+            lv.lastTouch1:=t1
+    lv
+
+break_lvl(array<Lvl> live,array<Lvl> dead,int id)=>
+    lv=live.get(id)
+    c=lvl_col(lv.upper)
+    box.set_extend(lv.outerBx,extend.none)
+    box.set_right(lv.outerBx,time_close)
+    box.set_extend(lv.innerBx,extend.none)
+    box.set_right(lv.innerBx,time_close)
+    box.set_border_color(lv.outerBx,color.new(c,78))
+    box.set_bgcolor(lv.outerBx,color.new(c,95))
+    box.set_bgcolor(lv.innerBx,color.new(c,92))
+    line.set_extend(lv.anchorLn,extend.none)
+    line.set_x2(lv.anchorLn,time_close)
+    line.set_color(lv.anchorLn,color.new(c,55))
+    line.set_width(lv.anchorLn,2)
+    line.set_style(lv.anchorLn,line.style_dotted)
+    if not na(lv.pairLn)
+        line.set_color(lv.pairLn,color.new(pairTraceColor,75))
+    recentTouch=not na(lv.lastTouchBar) and bar_index-lv.lastTouchBar<=REMOVE_TOUCH_AFTER_BREAK_BARS
+    if recentTouch
+        if not na(lv.lastTouch4)
+            label.delete(lv.lastTouch4)
+            lv.lastTouch4:=na
+        if not na(lv.lastTouch3)
+            label.delete(lv.lastTouch3)
+            lv.lastTouch3:=na
+        if not na(lv.lastTouch2)
+            label.delete(lv.lastTouch2)
+            lv.lastTouch2:=na
+        if not na(lv.lastTouch1)
+            label.delete(lv.lastTouch1)
+            lv.lastTouch1:=na
+    if not na(lv.ring4)
+        label.set_color(lv.ring4,color.new(c,88))
+    if not na(lv.ring3)
+        label.set_color(lv.ring3,color.new(c,82))
+    if not na(lv.ring2)
+        label.set_color(lv.ring2,color.new(c,72))
+    if not na(lv.ring1)
+        label.set_color(lv.ring1,color.new(coreCol,52))
+    if not na(lv.ringText)
+        label.set_text(lv.ringText,"")
+        label.set_tooltip(lv.ringText,lvl_tip(lv))
+    lv.breakBar:=bar_index
+    live.remove(id)
+    if keepHistory
+        dead.push(lv)
+        trim_dead(dead)
+    else
+        delete_lvl(lv)
+    lv.upper
+
+manage_live(array<Lvl> live,array<Lvl> dead,array<label> marks,float atrNow,float avgVol)=>
+    upBreak=false
+    dnBreak=false
+    if live.size()>0
+        atrSafe=math.max(atrNow,syminfo.mintick)
+        volBase=math.max(nz(avgVol,nz(volume,0.0)),1.0)
+        relVol=math.max(nz(volume,0.0),0.0)/volBase
+        barRange=math.max(high-low,syminfo.mintick)
+        closePos=clip((close-low)/barRange)
+        barDelta=closePos*2.0-1.0
+        bodyFrac=math.abs(close-open)/barRange
+        absorption=clip((relVol-0.9)/1.2)*clip((0.55-bodyFrac)/0.55)
+        compression=clip(1.0-barRange/atrSafe)
+        upApproach=clip(math.max(close-close[1],0.0)/atrSafe)
+        dnApproach=clip(math.max(close[1]-close,0.0)/atrSafe)
+        upDeltaPressure=clip(math.max(barDelta,0.0)*relVol/2.0)
+        dnDeltaPressure=clip(math.max(-barDelta,0.0)*relVol/2.0)
+        i=live.size()-1
+        syncVisuals=sync_visuals()
+        fullVisualSync=full_visual_sync()
+        while i>=0
+            lv=live.get(i)
+            if is_break(lv,atrNow)
+                wasUpper=break_lvl(live,dead,i)
+                upBreak:=upBreak or wasUpper
+                dnBreak:=dnBreak or not wasUpper
+            else if bar_index-lv.bornBar>=maxUnbrokenBars
+                live.remove(i)
+                delete_lvl(lv)
+            else
+                oldPressure=lv.pressure
+                oldAttackRv=lv.attackRv
+                oldAttackDelta=lv.attackDelta
+                oldTouches=lv.touches
+                lv:=update_pressure(marks,lv,atrSafe,relVol,barDelta,absorption,compression,upApproach,dnApproach,upDeltaPressure,dnDeltaPressure)
+                live.set(i,lv)
+                if syncVisuals
+                    move_edge(lv)
+                    if fullVisualSync or visual_changed(oldPressure,oldAttackRv,oldAttackDelta,oldTouches,lv)
+                        update_visual_style(lv)
+            i-=1
+    [upBreak,dnBreak]
+
+manage_retests(array<Lvl> dead)=>
+    if keepHistory and showRetests and dead.size()>0
+        for i=0 to dead.size()-1
+            lv=dead.get(i)
+            if not lv.retested and bar_index>lv.breakBar
+                retest=lv.upper?(low<=lv.p and close>lv.p):(high>=lv.p and close<lv.p)
+                if retest
+                    c=lvl_col(lv.upper)
+                    lv.retested:=true
+                    lv.retestMark:=label.new(bar_index,lv.p,"◆",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_none,color=color.new(c,100),textcolor=c,size=size.small)
+                    dead.set(i,lv)
+    0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Core Series {
+atr=ta.atr(14)
+avgVol=ta.sma(volume,VOL_LEN)
+ph=ta.pivothigh(high,piv,piv)
+pl=ta.pivotlow(low,piv,piv)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Objects & State {
+var array<Seed> upSeeds=array.new<Seed>()
+var array<Seed> dnSeeds=array.new<Seed>()
+var array<Lvl> live=array.new<Lvl>()
+var array<Lvl> dead=array.new<Lvl>()
+var array<label> marks=array.new_label()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivot Evaluation {
+evalUp=barstate.isconfirmed and not na(ph)
+evalDn=barstate.isconfirmed and not na(pl)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Level Lifecycle {
+upBreak=false
+dnBreak=false
+newUp=false
+newDn=false
+reUp=false
+reDn=false
+
+if barstate.isconfirmed
+    prune_seeds(true,upSeeds)
+    prune_seeds(false,dnSeeds)
+    [ub,db]=manage_live(live,dead,marks,atr,avgVol)
+    upBreak:=ub
+    dnBreak:=db
+    manage_retests(dead)
+    if evalUp
+        [vq,dq,aq,dl]=pivot_features(piv,avgVol)
+        [created,reinforced]=register_lvl(live,upSeeds,marks,true,ph,time[piv],bar_index-piv,math.max(nz(atr[piv],atr),syminfo.mintick),vq,dq,aq,dl)
+        newUp:=created
+        reUp:=reinforced
+    if evalDn
+        [vq,dq,aq,dl]=pivot_features(piv,avgVol)
+        [created,reinforced]=register_lvl(live,dnSeeds,marks,false,pl,time[piv],bar_index-piv,math.max(nz(atr[piv],atr),syminfo.mintick),vq,dq,aq,dl)
+        newDn:=created
+        reDn:=reinforced
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing {
+ub=showTriangles and upBreak
+db=showTriangles and dnBreak
+placeup=ta.lowest(low,5)
+placedn=ta.highest(high,5)
+plotshape(ub?placeup:na,title="Upper Breakout",style=shape.triangleup,location=location.absolute,color=topCol,size=size.tiny)
+plotshape(db?placedn:na,title="Lower Breakout",style=shape.triangledown,location=location.absolute,color=botCol,size=size.tiny)
+plotshape(ub?placeup:na,title="Upper Breakout Glow",style=shape.triangleup,location=location.absolute,color=color.new(topCol,70),size=size.small)
+plotshape(db?placedn:na,title="Lower Breakout Glow",style=shape.triangledown,location=location.absolute,color=color.new(botCol,70),size=size.small)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(newUp,"New Upper Level","A new upper Levels Meant To Break zone was confirmed.")
+alertcondition(newDn,"New Lower Level","A new lower Levels Meant To Break zone was confirmed.")
+alertcondition(reUp or reDn,"Level Reinforced","An active Levels Meant To Break zone received another matching pivot confirmation.")
+alertcondition(upBreak,"Upper Zone Broken","An upper Levels Meant To Break zone was broken.")
+alertcondition(dnBreak,"Lower Zone Broken","A lower Levels Meant To Break zone was broken.")
+alertcondition(upBreak or dnBreak,"Any Zone Broken","A Levels Meant To Break zone was broken.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
