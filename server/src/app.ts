@@ -335,7 +335,7 @@ export class App {
     const prof = idx ? (idx.profiles.get(id) ?? null) : (() => { const rows = this.profiles.forScanner(id); return rows.length ? { kind: summarizeKind(rows)!, at: Math.max(...rows.map(r => r.at)), tfs: new Set(rows.map(r => r.tf)).size } : null; })();
     const health = this.scanners.health.row(id);
     return {
-      id: s.id, name: s.name, author: s.author, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: this.scanners.isActive(s), hidden: Boolean(c.hidden),
+      id: s.id, name: s.name, author: s.author, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: Boolean(c.enabled && !c.hidden), active: this.scanners.isActive(s), hidden: Boolean(c.hidden),
       overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, updated: s.updated, patches: s.patches,
       symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), pairs: c.pairs ?? null, exitMode: c.exitMode,
       // how the script is read (decision 48): its entry channel, timezone, derivation rule, input overrides and exit overrides
@@ -392,7 +392,9 @@ export class App {
       const c = this.scanners.scannerConfig(s.id);
       // `overlay` drives the chart picker and `lastRunError` the fleet error count; both are needed
       // by pages that otherwise only resolve names, and both are a few bytes rather than a stats block
-      return { id: s.id, name: s.name, status: s.status, category: s.category, enabled: this.scanners.isActive(s), hidden: Boolean(c.hidden), overlay: s.overlay, lastRunError: lastRun.get(s.id)?.error ?? null };
+      // `enabled` is the setting as the operator left it; `active` is whether the scheduler runs it (status ok, not quarantined).
+      // Showing a quarantined scanner as disabled hid the quarantine behind a switch that would not have changed anything.
+      return { id: s.id, name: s.name, status: s.status, category: s.category, enabled: Boolean(c.enabled && !c.hidden), active: this.scanners.isActive(s), hidden: Boolean(c.hidden), overlay: s.overlay, lastRunError: lastRun.get(s.id)?.error ?? null };
     });
   }
 

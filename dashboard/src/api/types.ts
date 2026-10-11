@@ -139,6 +139,8 @@ export interface ScannerIndexEntry {
   status: ScannerStatus
   category?: string
   enabled: boolean
+  /** Scheduled right now: enabled, runnable and not quarantined. */
+  active?: boolean
   hidden?: boolean
   overlay: boolean
   /** Error from the newest run of this scanner, or null; the full view carries the whole run record. */
@@ -156,6 +158,8 @@ export interface Scanner {
   status: ScannerStatus
   reason: string | null
   enabled: boolean
+  /** Scheduled right now: enabled, runnable and not quarantined. */
+  active?: boolean
   hidden?: boolean
   overlay: boolean
   pineVersion: string

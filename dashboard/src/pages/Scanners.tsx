@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -33,7 +33,9 @@ export function Scanners() {
   const qc = useQueryClient()
   const [showHidden, setShowHidden] = useState(false)
   const [author, setAuthor] = useState<string>('All')
-  const [bookFilter, setBookFilter] = useState<'all' | 'account' | 'shadow' | 'none'>('all')
+  // `?book=account` from the Overview's attention line lands on the right tab
+  const [params] = useSearchParams()
+  const [bookFilter, setBookFilter] = useState<'all' | 'account' | 'shadow' | 'none'>(() => { const b = params.get('book'); return b === 'account' || b === 'shadow' || b === 'none' ? b : 'all' })
   const busy = update.isPending || bulkBusy
 
   // Inline chips offer the globally configured symbols plus anything a scanner already uses
