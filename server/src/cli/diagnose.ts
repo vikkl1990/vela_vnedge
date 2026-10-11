@@ -4,7 +4,7 @@
  * the same events, so the differences are the reading, the exit or the costs — never a different
  * signal set.
  *
- *   IDS=ids.txt TFS=15m,1h,4h MARKETS=BTCUSD,… PAPER=vm-paper.json OUT=diag.tsv MD=diag.md npm run diagnose
+ *   IDS=ids.txt TFS=15m,1h,4h MARKETS=BTCUSD,… PAPER=vm-paper.json OUT=diag.tsv MD=diag.md [BARS=15m=4000] npm run diagnose
  *
  * Variants per cell:
  *   base        the fleet's settings (the VM's paper config)
@@ -37,6 +37,9 @@ const TFS = (process.env.TFS ?? '15m,1h,4h').split(',');
 const MARKETS = (process.env.MARKETS ?? 'BTCUSD,ETHUSD,SOLUSD').split(',');
 const CONC = Number(process.env.CONCURRENCY ?? 4);
 const BARS: Record<string, number> = { '5m': 4000, '15m': 8000, '1h': 4000, '4h': 2000 };
+// BARS=15m=4000,1h=2000 shortens a history: a script whose drawings grow with the bar count can blow a
+// memory cap at 8,000 bars that it never reaches in the nightly screen's 4,000 (Wyckoff Range Engine, 11 Oct)
+for (const kv of (process.env.BARS ?? '').split(',').filter(Boolean)) { const [tf, n] = kv.split('='); if (tf && Number(n) > 0) BARS[tf] = Number(n); }
 const SUB: Record<string, string> = { '5m': '1m', '15m': '1m', '1h': '15m', '4h': '15m' };
 const rest = new DeltaRest();
 const registry = new ScannerRegistry();
