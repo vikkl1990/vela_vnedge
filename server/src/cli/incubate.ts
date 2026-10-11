@@ -6,6 +6,7 @@
  *   SLICE=3 npm run incubate         # a given slice
  *   SLICE=none npm run incubate      # judge only, no screen
  *   WORKERS=4 LIMIT=20 …             # worker threads; LIMIT caps scripts (for a quick trial)
+ *   IDS=ids.txt npm run incubate     # only these scripts, every slice (a fresh import judged tonight)
  *
  * Runs as its own process (a systemd timer on the VM) so screening never competes with the live
  * bot for its worker pool; it shares only the database, which the bot re-reads every few minutes.
@@ -86,10 +87,12 @@ if (sliceArg !== 'none') {
   out(allowed.length ? `universe: ${universe.length} of the ${allowed.length} markets the gate allows today (cap ${inc.universeTop})` : `universe: ${universe.length} perpetuals over $${(inc.minTurnoverUsd / 1e6).toFixed(1)}M 24h turnover (no gate verdicts yet)`);
 
   const registry = new ScannerRegistry();
-  let scripts = registry.all().filter(s => s.status === 'ok' && sliceOf(s.id, inc.screen.slices) === slice);
+  // IDS=file: screen just these scripts, whatever slice they fall in (a fresh import, judged on every market tonight)
+  const only = process.env.IDS ? new Set(fs.readFileSync(process.env.IDS, 'utf8').split(/\s+/).filter(Boolean)) : null;
+  let scripts = registry.all().filter(s => s.status === 'ok' && (only ? only.has(s.id) : sliceOf(s.id, inc.screen.slices) === slice));
   if (Number(process.env.LIMIT) > 0) scripts = scripts.slice(0, Number(process.env.LIMIT));
   summary.scripts = scripts.length;
-  out(`slice ${slice}/${inc.screen.slices}: ${scripts.length} scripts × ${universe.length} markets`);
+  out(only ? `IDS: ${scripts.length} of ${only.size} listed scripts × ${universe.length} markets` : `slice ${slice}/${inc.screen.slices}: ${scripts.length} scripts × ${universe.length} markets`);
 
   // ---- candles, fetched once per market ----
   const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
