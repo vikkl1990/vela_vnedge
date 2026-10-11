@@ -271,6 +271,8 @@ export class ApiServer {
       return a.scannerView(p.id);
     });
     this.add('POST', '/api/scanners/:id/run', (_r, _s, p) => ({ queued: a.scanners.runNow(p.id) }));
+    // quarantine is the runtime's verdict; releasing it is the operator's, and the next run re-judges (a repeat failure quarantines again)
+    this.add('POST', '/api/scanners/:id/release', (_r, _s, p) => { if (!a.registry.get(p.id)) throw new HttpError(404, 'unknown scanner'); return { released: a.scanners.health.releaseOne(p.id) }; });
     // what the script produces in our runtime, on one market across timeframes (decision 48)
     this.add('POST', '/api/scanners/:id/profile', async (_r, _s, p, _u, body) => ({ rows: await a.profileScanner(p.id, { market: body?.market ? String(body.market) : undefined, tfs: Array.isArray(body?.tfs) ? body.tfs.map(String) : undefined }) }));
     this.add('GET', '/api/scanners/:id/profile', (_r, _s, p) => ({ rows: a.profiles.forScanner(p.id) }));

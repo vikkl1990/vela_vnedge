@@ -1,7 +1,7 @@
 import type { MarketVerdict } from '../api/types'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
+import { useEquity, useHealth, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { EquityChart, PnlByScannerChart, Sparkline, type PnlBar } from '../components/charts'
 import { PositionsTable } from '../components/PositionsTable'
@@ -46,6 +46,7 @@ export function Overview() {
   return (
     <div className="page">
       <TickerTape />
+      <AttentionBanner />
       <EdgeVerdictLine />
       <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account: ${visibleScanners} Pine scanners on Delta India data, fills and P&L simulated. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
 
@@ -54,9 +55,9 @@ export function Overview() {
       {s && (
         <div className="kpi-grid">
           <KpiTile label="Equity (USD)" value={fmtMoney(s.equity, 2)} sub={<span className="muted">initial {fmtMoney(s.initialEquity, 0)}</span>} />
-          <KpiTile label="Net PnL (USD)" value={fmtPnl(net)} tone={pnlClass(net) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">{s.initialEquity ? `${fmtPct((net / s.initialEquity) * 100, 1, true)} of purse` : ''} · after fees</span>} />
+          <KpiTile label="Net PnL (USD)" value={fmtPnl(net)} tone={pnlClass(net) as 'gain' | 'loss' | 'neutral'} hint="Closed plus open, after fees" sub={day ? <span className={pnlClass(day.pnl)}>today {fmtPnl(day.pnl)} since 00:00 UTC</span> : <span className="muted">{s.initialEquity ? `${fmtPct((net / s.initialEquity) * 100, 1, true)} of purse` : ''} · after fees</span>} />
           <KpiTile label="Closed PnL (USD)" value={fmtPnl(s.closedPnl)} tone={pnlClass(s.closedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">fees {fmtMoney(s.closedFees)} · {fmtInt(s.trades)} trades, the journal</span>} />
-          <KpiTile label="Open PnL (USD)" value={fmtPnl(s.openPnl)} tone={pnlClass(s.openPnl) as 'gain' | 'loss' | 'neutral'} hint="Open positions: banked legs, fees and mark" sub={day ? <span className={pnlClass(day.pnl)}>today {fmtPnl(day.pnl)} since 00:00 UTC</span> : <span className="muted">{s.openPositions} open</span>} />
+          <KpiTile label="Open PnL (USD)" value={fmtPnl(s.openPnl)} tone={pnlClass(s.openPnl) as 'gain' | 'loss' | 'neutral'} hint="Open positions: banked legs, fees and mark" sub={<span className="muted">{s.openPositions} open{s.openFees ? ` · fees so far ${fmtMoney(s.openFees)}` : ''}</span>} />
           <KpiTile label="Win rate" value={fmtPct(s.winRatePct)} sub={<span className="muted">{s.wins}W / {s.losses}L</span>} />
           <KpiTile label="Profit factor" value={fmtProfitFactor(s.profitFactor)} tone={s.profitFactor >= 1 ? 'gain' : 'loss'} />
           <KpiTile label="Expectancy" value={fmtR(expectancy)} tone={expectancy == null ? 'neutral' : expectancy >= 0 ? 'gain' : 'loss'} hint="Average R per trade, weighted by trade count" />
@@ -99,11 +100,16 @@ export function Overview() {
               const ok = d.filter((x) => x.status === 'ok').length
               const en = d.filter((x) => x.enabled).length
               const err = d.filter((x) => x.lastRunError).length
+              const removed = d.filter((x) => x.hidden).length
               return (
                 <div className="fleet">
+                  <div className="fleet-row" title="The same count as the Scanners page: loaded scripts minus the removed ones">
+                    <span>In the list</span>
+                    <span className="mono">{d.length - removed}</span>
+                  </div>
                   <div className="fleet-row">
-                    <span>Total</span>
-                    <span className="mono">{d.length}</span>
+                    <span>Removed</span>
+                    <span className="mono muted">{removed}</span>
                   </div>
                   <div className="fleet-row">
                     <span>Runnable</span>
@@ -183,19 +189,40 @@ function MarketsTodayPanel() {
           {liquidElsewhere.map((m) => <span key={m.symbol} className="mono" title={tip(m)}>{m.symbol.replace(/USD$/, '')} </span>)}
         </p>
       )}
-      {blocked.length > 0 && (
-        <table className="table small" style={{ marginTop: 8 }}>
-          <tbody>
-            {[...blocked, ...outElsewhere].map((m) => (
-              <tr key={m.symbol} className={m.tracked === false ? 'muted' : ''}><td className="mono">{m.symbol}</td><td className="muted">{m.reasons.join(' · ')}</td></tr>
-            ))}
-          </tbody>
-        </table>
+      {blocked.length + outElsewhere.length > 0 && (
+        <div className="markets-out" style={{ marginTop: 8 }}>
+          <table className="table small">
+            <tbody>
+              {[...blocked, ...outElsewhere].map((m) => (
+                <tr key={m.symbol} className={m.tracked === false ? 'muted' : ''}><td className="mono">{m.symbol}</td><td className="muted">{m.reasons.join(' · ')}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Panel>
   )
 }
 
+
+/** Faults that outrank every number on the page: a dead daily job, a scanner in the account that is not running. Nothing renders when there are none. */
+function AttentionBanner() {
+  const h = useHealth()
+  const items = h.data?.attention ?? []
+  if (!items.length) return null
+  return (
+    <div className="banner banner-warn attention small" role="alert">
+      <b>Needs attention</b>
+      <ul>
+        {items.map((it) => (
+          <li key={it.key}>
+            {it.text} · <Link to={it.href}>open</Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 /** Whether anyone would hear a halt: the alert channel, what it last sent, and what last failed. */
 function AlertsStatusLine() {
@@ -251,7 +278,7 @@ function EdgeVerdictLine() {
   const tone = (w: string) => (w === 'paying' ? 'gain' : w === 'failing' ? 'loss' : 'muted')
   const book = (name: string, b: typeof d.live) => (
     <span>
-      <b>{name}</b>: <b className={tone(word(b))}>{word(b)}</b> · {b.trades} trades · {b.avgR >= 0 ? '+' : ''}{b.avgR.toFixed(2)}R a trade
+      <b>{name}</b>: <b className={tone(word(b))}>{word(b)}</b> · {b.trades} trades · {fmtR(b.avgR)} a trade
       {b.lb90 !== null && b.ub90 !== null ? <span className="muted"> (90% band {b.lb90 >= 0 ? '+' : ''}{b.lb90.toFixed(2)} to {b.ub90 >= 0 ? '+' : ''}{b.ub90.toFixed(2)})</span> : null}
       {b.costShare !== null ? <span className="muted"> · costs {Math.round(b.costShare * 100)}% of risk</span> : null}
     </span>

@@ -251,8 +251,34 @@ export class App {
       scanners: { total: all.length, runnable: all.filter(s => s.status === 'ok').length, enabled: all.filter(s => this.scanners.isActive(s)).length },
       universe: { mode: cfg.universe?.mode ?? 'list', symbols: this.resolvedSymbols.length, list: this.resolvedSymbols.slice(0, 50) },
       worker: this.pool.stats, lastError: this.lastError,
+      attention: this.attention(),
       ...this.ops.status(),
     };
+  }
+
+  /**
+   * What the operator must know before anything else: a daily job that died, a scanner in the
+   * account that is not running. Each item names the fault and the page that acts on it. The
+   * dashboard shows the list on the Overview; an empty list is the normal state.
+   */
+  attention(): Array<{ key: string; text: string; href: string }> {
+    const cfg = this.config.get();
+    const now = Date.now();
+    const items: Array<{ key: string; text: string; href: string }> = [];
+    const names = new Map(this.registry.all().map(s => [s.id, s.name]));
+    const sick = Object.entries(cfg.scanners).filter(([id, c]) => c.enabled && !c.hidden && this.scanners.health.isQuarantined(id));
+    if (sick.length) {
+      const list = sick.slice(0, 3).map(([id]) => `${names.get(id) ?? id} (${this.scanners.health.row(id)?.reason ?? 'quarantined'})`).join(', ');
+      items.push({ key: 'quarantined-live', text: `${sick.length} scanner${sick.length > 1 ? 's' : ''} in the account ${sick.length > 1 ? 'are' : 'is'} quarantined and not running: ${list}${sick.length > 3 ? ', …' : ''}`, href: '/scanners?book=account' });
+    }
+    const start = this.db.kvGet<{ at: number; slice: string }>('incubator.lastStart');
+    const run = this.db.kvGet<{ at: number }>('incubator.lastRun');
+    if (start && (!run || run.at < start.at) && now - start.at > 7 * 3600_000) {
+      items.push({ key: 'incubate-died', text: `the daily screen started ${Math.round((now - start.at) / 3600_000)} h ago and never finished: the shadow book has not been judged since ${run ? new Date(run.at).toISOString().slice(0, 10) : 'ever'}`, href: '/incubator' });
+    } else if (cfg.incubator.enabled && run && now - run.at > 2 * 86400_000) {
+      items.push({ key: 'incubate-stale', text: `the daily screen last finished ${Math.round((now - run.at) / 86400_000)} days ago`, href: '/incubator' });
+    }
+    return items;
   }
 
   async markets() {
@@ -541,7 +567,7 @@ export class App {
     return {
       enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),
       fleet: livePairs(cfg).length, promotionsThisWeek: this.incubatorStore.promotionsSince(now - 7 * 86400_000),
-      lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length },
+      lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastStart: this.db.kvGet('incubator.lastStart') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length },
       pairs, events: this.incubatorStore.events(100),
     };
   }

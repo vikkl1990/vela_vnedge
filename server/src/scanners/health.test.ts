@@ -64,3 +64,16 @@ test('decision 87: a repaint verdict survives a run that happened to work; a fai
   assert.equal(h.release('repaints'), 1, 'only an explicit release does');
   assert.equal(h.isQuarantined('cheat'), false);
 });
+
+test('a timeout verdict survives a good run, and releasing one script lifts it without touching the others', () => {
+  const h = new ScriptHealth(new Db(':memory:'));
+  // the daily screen's verdict (decision 91): one timeout over the full history
+  assert.equal(h.quarantine('slow', 'timed out in the daily screen (120 s over 3000 bars)'), true);
+  h.quarantine('other', 'repaints 40% of its entries');
+  h.clear('slow');
+  assert.equal(h.isQuarantined('slow'), true, 'a run that happened to work does not clear a timeout verdict');
+  assert.equal(h.releaseOne('slow'), true);
+  assert.equal(h.isQuarantined('slow'), false);
+  assert.equal(h.isQuarantined('other'), true);
+  assert.equal(h.releaseOne('slow'), false, 'nothing left to release');
+});

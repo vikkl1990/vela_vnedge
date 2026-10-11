@@ -106,6 +106,12 @@ export class ScriptHealth {
     return this.db.all<any>('SELECT * FROM script_health ORDER BY quarantined DESC, fails DESC')
       .map(r => ({ scannerId: r.scanner_id, fails: r.fails, lastAt: r.last_at, lastError: r.last_error, reason: r.reason, quarantined: !!r.quarantined }));
   }
+  /** Release one script whatever the verdict was: the operator has looked and decided. */
+  releaseOne(scannerId: string): boolean {
+    const r = this.db.run('DELETE FROM script_health WHERE scanner_id=?', scannerId);
+    this.cache = null;
+    return Number(r.changes ?? 0) > 0;
+  }
   /** Let every quarantined script be screened again, e.g. after a PineTS upgrade. */
   release(reasonLike?: string): number {
     const r = reasonLike

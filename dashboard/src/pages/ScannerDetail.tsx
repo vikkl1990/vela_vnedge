@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useBacktest, useConfig, useEquity, useMarkets, useProfileScanner, useRunBacktest, useRunScanner, useScannerProfile, useScannerSource, useScanners, useSignals, useTrades, useUpdateScanner } from '../api/queries'
+import { useBacktest, useConfig, useEquity, useMarkets, useProfileScanner, useReleaseScanner, useRunBacktest, useRunScanner, useScannerProfile, useScannerSource, useScanners, useSignals, useTrades, useUpdateScanner } from '../api/queries'
 import { useAuth } from '../auth/AuthGate'
 import type { EntrySource, Trade } from '../api/types'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
@@ -155,7 +155,12 @@ export function ScannerDetail() {
         }
         pad={false}
       >
-        {symbol && tf ? <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} tickSize={tick} /> : <Loading kind="chart" height={520} />}
+        {symbol && tf ? (
+          // The chart swallows the wheel to zoom, which traps the page under the mouse. Here the page scrolls; hold Shift to zoom.
+          <div onWheelCapture={(e) => { if (!e.shiftKey) e.stopPropagation() }} title="Scroll moves the page; hold Shift to zoom the chart">
+            <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} tickSize={tick} />
+          </div>
+        ) : <Loading kind="chart" height={520} />}
       </Panel>
 
       <div className="grid-2-1">
@@ -310,6 +315,7 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
   const auth = useAuth()
   const update = useUpdateScanner()
   const profile = useProfileScanner()
+  const release = useReleaseScanner()
   const rows = useScannerProfile(s.id)
   const toast = useToast()
   const [sources, setSources] = useState<EntrySource[]>(s.reads?.sources ?? [])
@@ -332,6 +338,11 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
         <div className="row gap">
           {s.kind ? <Pill tone={KIND_TONE[s.kind]} title={s.profiledAt ? `profiled ${new Date(s.profiledAt).toUTCString()}` : ''}>{s.kind}</Pill> : <span className="muted small">not profiled yet</span>}
           {h?.quarantined && <Pill tone="danger" title={h.lastError}>quarantined: {h.reason ?? 'repeated failure'}</Pill>}
+          {h?.quarantined && (
+            <button className="btn btn-sm btn-danger-outline" onClick={() => release.mutate(s.id, { onSuccess: () => toast.success('Released: it runs again from its next bar'), onError: (e) => toast.error(String((e as Error).message ?? e)) })} disabled={release.isPending} title="Lift the quarantine; a repeat failure quarantines it again">
+              {release.isPending ? 'Releasing…' : 'Release'}
+            </button>
+          )}
           <button className="btn btn-sm" onClick={() => profile.mutate({ id: s.id }, { onError: (e) => toast.error(String((e as Error).message ?? e)) })} disabled={profile.isPending || s.status !== 'ok'} title="Run the script on ETHUSD 15m/1h/4h and classify what it produces">
             {profile.isPending ? 'Profiling…' : 'Profile now'}
           </button>

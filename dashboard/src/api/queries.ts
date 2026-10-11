@@ -147,6 +147,15 @@ export function useRunScanner() {
   })
 }
 
+/** Lift a quarantine: the scanner is scheduled again from its next bar; a repeat failure quarantines it again. */
+export function useReleaseScanner() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.releaseScanner(id),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: qk.scanners }); void qc.invalidateQueries({ queryKey: qk.health }) },
+  })
+}
+
 export function useUpdateConfig() {
   const qc = useQueryClient()
   return useMutation({

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { qk, useConfig, useMarkets, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
+import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { ExitMode, Scanner } from '../api/types'
@@ -21,6 +21,8 @@ export function Scanners() {
   const markets = useMarkets()
   const update = useUpdateScanner()
   const run = useRunScanner()
+  const release = useReleaseScanner()
+  const releaseNow = (s: Scanner) => release.mutate(s.id, { onSuccess: () => toast.success(`${s.name} released: it runs again from its next bar`), onError: (e) => toast.error(String((e as Error).message ?? e)) })
   const toast = useToast()
   const [view, setView] = useState<'cards' | 'table'>('cards')
   const [cat, setCat] = useState<Category>('All')
@@ -250,6 +252,11 @@ export function Scanners() {
             <button className="btn btn-xs" onClick={() => onHide(s)} disabled={busy} title={s.hidden ? 'Restore to the list' : 'Remove from the list (disables it)'}>
               {s.hidden ? 'Restore' : 'Remove'}
             </button>
+            {s.health?.quarantined && (
+              <button className="btn btn-xs btn-danger-outline" onClick={() => releaseNow(s)} disabled={release.isPending} title={`Quarantined: ${s.health.reason ?? s.health.lastError}. Release it to schedule it again; a repeat failure quarantines it again.`}>
+                Release
+              </button>
+            )}
             <button className="btn btn-xs" onClick={() => runNow(s)} disabled={s.status !== 'ok' || run.isPending} title="Run now">
               <IconPlay /> Run
             </button>
@@ -269,7 +276,7 @@ export function Scanners() {
       <div className="page-head">
         <PageTitle pre="Every scanner," accent="one" post="terminal." sub={scanners.data ? `${scanners.data.filter((s) => !s.hidden).length} in list · ${enabledCount} enabled · ${hiddenCount} removed` : undefined} />
         <div className="page-actions">
-          <button className="btn btn-cta" onClick={() => bulk(true)} disabled={busy || !scanners.data}>
+          <button className="btn" onClick={() => bulk(true)} disabled={busy || !scanners.data} title="Every runnable scanner on its own symbols: a fleet far above the cap, which the server refuses. Enable scanners one at a time or through the Incubator instead.">
             {bulkBusy ? 'Working…' : 'Enable all runnable'}
           </button>
           <button className="btn" onClick={() => autoTune()} disabled={busy || !scanners.data} title="Keep each scanner only on symbols where its backtest is profitable (≥ 3 trades, PF ≥ 1); disable scanners with none">
@@ -346,7 +353,7 @@ export function Scanners() {
         <div className="cards-2">
           {rows.length === 0 && <Empty label="No scanners match." hint="Try another category, author or filter." />}
           {visibleRows.map((s) => (
-            <ScannerCard key={s.id} s={s} onToggle={(v) => patch(s, { enabled: v })} onRun={() => runNow(s)} onHide={() => onHide(s)} busy={busy} runBusy={run.isPending} />
+            <ScannerCard key={s.id} s={s} onToggle={(v) => patch(s, { enabled: v })} onRun={() => runNow(s)} onHide={() => onHide(s)} onRelease={() => releaseNow(s)} busy={busy} runBusy={run.isPending} />
           ))}
         </div>
       )}
@@ -403,7 +410,7 @@ export function Scanners() {
   )
 }
 
-function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide }: { s: Scanner; onToggle: (v: boolean) => void; onRun: () => void; busy: boolean; runBusy: boolean; onHide: () => void }) {
+function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide, onRelease }: { s: Scanner; onToggle: (v: boolean) => void; onRun: () => void; busy: boolean; runBusy: boolean; onHide: () => void; onRelease: () => void }) {
   const st = s.stats
   const tfs = (s.timeframes ?? []).join('/') || 'global'
   return (
@@ -416,7 +423,7 @@ function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide }: { s: Scanner
         <span className="card-pills">
           <BookCells s={s} />
           <Pill tone="accent">{tfs.toUpperCase()}</Pill>
-          <ScannerStatusPill status={s.status} reason={s.reason} />
+          {s.health?.quarantined ? <Pill tone="danger" title={`Quarantined: ${s.health.reason ?? s.health.lastError}. Not scheduled until released.`}>quarantined</Pill> : <ScannerStatusPill status={s.status} reason={s.reason} />}
         </span>
       </div>
       <div className="card-summary mono">
@@ -464,6 +471,11 @@ function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide }: { s: Scanner
           <button className="btn btn-xs" onClick={onHide} disabled={busy} title={s.hidden ? 'Restore to the list' : 'Remove from the list (disables it)'}>
             {s.hidden ? 'Restore' : 'Remove'}
           </button>
+          {s.health?.quarantined && (
+            <button className="btn btn-xs btn-danger-outline" onClick={onRelease} disabled={busy} title={`Quarantined: ${s.health.reason ?? s.health.lastError}. Release it to schedule it again; a repeat failure quarantines it again.`}>
+              Release
+            </button>
+          )}
           <button className="btn btn-xs" onClick={onRun} disabled={s.status !== 'ok' || runBusy} title="Run now">
             <IconPlay /> Run
           </button>

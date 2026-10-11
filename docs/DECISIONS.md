@@ -2587,3 +2587,55 @@ delivered.
 
 Left on the list: exchange partial-fill accounting, which waits for the exchange path to be
 exercised at all, and the family-lab holdout.
+
+## 91. The dashboard audit: a dead nightly job and a live scanner it had silenced
+
+A walk through every page of the live dashboard, as the operator sees it, on 11 October. Most
+of what it found was wording and layout; two things it found were faults the pages were hiding.
+
+**The nightly screen had not finished since 30 September.** The Incubator tile said "last screen
+11 days ago" in the same grey as any other number. The service log said why: 9 October timed out
+at the unit's six-hour limit, 10 October timed out, 11 October was killed by the unit's memory cap
+at 8.4 GB resident. The slices had grown (the gate now allows 49 markets, up from the twenties),
+and every script that could not finish the full history in 120 seconds was tried on three markets
+before the three-strike rule quarantined it, at roughly eight minutes a strike. Twelve such scripts
+cost four hours of a six-hour run. Because the summary is written only at the end, a killed run
+left no trace the dashboard could read, and the judge that follows the screen never ran: the shadow
+book went unjudged for eleven days.
+
+Three changes. The job announces itself before it screens (`incubator.lastStart`), so a start with
+no matching finish is visible; the Incubator tile turns red and names it, and the Overview carries
+a "needs attention" line above the verdict. The screen keeps a time budget (`BUDGET_MIN`, 270 by
+default) and a memory line (80% of the unit's cap) and, at either, stops launching scripts and goes
+straight to the judge, recording how many scripts were not reached. One timeout over the full
+history is the screen's verdict: the script is quarantined with that reason, and the other markets
+are not tried.
+
+**The screen had quarantined a scanner that trades in the account.** Pulse Trend Radar runs two
+cells live on 90 seconds and fewer bars; the screen tried it on 49 markets with the whole history
+at 120 seconds, struck it out three times, and quarantined it. The live engine does not schedule a
+quarantined script, so its two cells went silent at 01:45 on 11 October with nothing on any page
+to say so. The screen now leaves enabled scripts alone: a script in the account is judged by its
+live runs, never by the screen. The health check lists enabled-and-quarantined scripts as the first
+item of the attention line, the Scanners page shows the quarantine on the card where the status
+pill was, and a Release action (`POST /api/scanners/:id/release`, trade permission) lifts it from
+the list, the card or the detail page. Releasing is the operator's decision; a repeat failure
+quarantines again.
+
+**The rest of the audit**, fixed in the same change: "−0.00R" on the shadow book read as a loss
+(a value that rounds to zero now carries no sign); today's change sat under the Open PnL tile and
+now sits under Net PnL, where it belongs; the Overview's scanner fleet counted removed scripts in
+its total while the Scanners page did not, and now both say 1,246 in the list and 1,788 removed;
+the markets-today exclusion list stretched the row to forty lines and now scrolls inside its panel;
+the shadow-book tile showed 235/150 and now says 235 with the cap beside it; "Enable all runnable"
+was the one gold button on the Scanners page, the action behind the 1,260-cell incident, and is
+now an ordinary button with the warning in its tooltip; the signal buckets "reset" and "info" are
+named for what they are; the chart on a scanner's page no longer swallows the wheel (the page
+scrolls, Shift zooms); and the phone header wraps instead of pushing the sign-out button off the
+screen.
+
+**Left open.** The job's resident memory reaches 8 GB with two workers of 1 GB each and a main heap
+capped at 3 GB; something native or retained grows over a four-hour run, and the memory line only
+turns a kill into a clean stop. The Overview once showed 18 enabled scanners while the Scanners
+page showed 10; it could not be reproduced and both read 10 since. The full audit is in
+`docs/UI-AUDIT-2026-10-11.md`.

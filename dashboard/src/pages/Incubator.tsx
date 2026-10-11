@@ -53,10 +53,21 @@ export default function Incubator() {
             <>
               <div className="kpi-grid">
                 <KpiTile label="Waiting for you" value={decisions.length} tone={decisions.length ? 'accent' : 'neutral'} sub="proposals to approve or reject" />
-                <KpiTile label="Shadow book" value={`${shadow.length + by('proposed').length}/${d.config.maxShadow}`} sub={`${d.runner.entries} shadow entries since restart`} />
+                <KpiTile label="Shadow book" value={`${shadow.length + by('proposed').length}`} sub={`cap ${d.config.maxShadow} · ${d.runner.entries} shadow entries since restart`} hint={shadow.length + by('proposed').length > d.config.maxShadow ? 'Over the cap: pairs admitted by hand or carried over from the live fleet stay until they are judged' : undefined} />
                 <KpiTile label="Candidates" value={candidates.length} sub="passed the screen, waiting for a slot" />
                 <KpiTile label="In the account" value={`${d.fleet}/${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} />
-                <KpiTile label="Last screen" value={d.lastRun ? timeAgo(d.lastRun.at) : 'never'} sub={d.lastRun ? `slice ${d.lastRun.slice} · ${d.lastRun.runs} runs · ${d.lastRun.passed} passed` : 'the daily job has not run yet'} />
+                {(() => {
+                  const died = d.lastStart && (!d.lastRun || d.lastRun.at < d.lastStart.at) && Date.now() - d.lastStart.at > 7 * 3600_000
+                  const stale = d.lastRun && Date.now() - d.lastRun.at > 2 * 86400_000
+                  return (
+                    <KpiTile
+                      label="Last screen"
+                      value={d.lastRun ? timeAgo(d.lastRun.at) : 'never'}
+                      tone={died || stale ? 'loss' : 'neutral'}
+                      sub={died ? `a run started ${timeAgo(d.lastStart!.at)} and never finished — see the service log` : d.lastRun ? `slice ${d.lastRun.slice} · ${d.lastRun.runs} runs · ${d.lastRun.passed} passed${d.lastRun.truncated ? ` · ${d.lastRun.truncated} scripts not reached` : ''}` : 'the daily job has not run yet'}
+                    />
+                  )
+                })()}
               </div>
 
               <Panel title="Daily hunt" right={<span className="muted small">{d.lastHunt?.auto ? 'auto-promotion ON: gate proposals go live within the weekly and fleet limits' : 'auto-promotion off: proposals wait for your click'}</span>}>

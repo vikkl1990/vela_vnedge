@@ -228,8 +228,8 @@ function summarizeOutcomes(rows: Signal[]) {
     { key: 'regime', label: 'regime', tone: 'muted', hint: 'weekend or ATR floor', test: (a) => /regime/.test(a) },
     { key: 'exitnopos', label: 'exit, no position', tone: 'muted', hint: 'an exit signal with nothing open to close', test: (a) => /no position/.test(a) },
     { key: 'inpos', label: 'already in position', tone: 'muted', hint: 'the scanner already holds this market', test: (a) => /already in position/.test(a) },
-    { key: 'reset', label: 'reset', tone: 'muted', hint: 'the book was reset after the signal', test: (a) => a === 'reset' },
-    { key: 'info', label: 'info', tone: 'muted', hint: 'informational signal, nothing to act on', test: (a, s) => a === 'info' || s.kind === 'info' },
+    { key: 'reset', label: 'before the last reset', tone: 'muted', hint: 'the paper account was reset after this signal; whatever it did is no longer in the journal', test: (a) => a === 'reset' },
+    { key: 'info', label: 'info only', tone: 'muted', hint: 'a marker or note the script drew, not a trade call', test: (a, s) => a === 'info' || s.kind === 'info' },
   ]
   const counts = new Map<string, number>()
   let entries = 0

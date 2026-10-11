@@ -77,7 +77,9 @@ export function fmtPct(v: number | null | undefined, decimals = 1, signed = fals
 export function fmtR(v: number | null | undefined): string {
   if (!isNum(v)) return '–'
   const s = fmt(2, 2).format(Math.abs(v))
-  return `${v > 0 ? '+' : v < 0 ? '−' : ''}${s}R`
+  // a value that rounds to 0.00 carries no sign: "−0.00R" reads as a loss that is not there
+  const sign = s === '0.00' ? '' : v > 0 ? '+' : '−'
+  return `${sign}${s}R`
 }
 
 /** CSS class for a signed number. */

@@ -1345,3 +1345,13 @@ body { overflow-x: clip; }
 .kv-row > div { flex-direction: column; align-items: flex-start; gap: 2px; }
 .text-danger { color: var(--loss); }
 .list { margin: 8px 0 0; padding-left: 18px; }
+
+/* Phone header: the status strip wraps instead of pushing the sign-out button off screen. */
+@media (max-width: 720px) {
+  .topgroup, .topgroup-status { flex-wrap: wrap; white-space: normal; row-gap: 4px; }
+  .topnav { overflow-x: clip; }
+}
+/* The markets-today exclusion list can run to forty rows; it scrolls inside the panel instead of stretching the row. */
+.markets-out { max-height: 300px; overflow-y: auto; scrollbar-width: thin; }
+.attention { border-color: var(--danger, #e5484d); }
+.attention ul { margin: 4px 0 0; padding-left: 18px; }

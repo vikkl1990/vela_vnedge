@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import { Db } from '../db.ts';
 import { DeltaRest } from '../delta/rest.ts';
-import { PinePool } from '../pine/pool.ts';
+import { PinePool, memoryLimitBytes } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
@@ -59,6 +59,15 @@ if (process.env.ADD) {
 }
 const sliceArg = process.env.SLICE ?? String(Math.floor(Date.now() / DAY) % inc.screen.slices);
 const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0, tooCoarse: 0 };
+// The job announces itself before it screens: a start with no matching finish is how the dashboard
+// tells a killed run from one that never ran (2026-10-11: three nights died unnoticed).
+db.kvSet('incubator.lastStart', { at: started, slice: sliceArg, pid: process.pid });
+// The screen stops launching scripts once this much of the run is spent so the judge always runs
+// before the unit's 6 h limit; what is left waits for the slice's next turn.
+const BUDGET_MS = (Number(process.env.BUDGET_MIN) || 270) * 60_000;
+// The unit's memory cap kills the whole job without a word (2026-10-11: 8.4 GB resident after four
+// hours). At 80% of it the screen stops and the judge runs on what it has.
+const MEM_STOP = Math.round(memoryLimitBytes() * 0.8);
 
 if (sliceArg !== 'none') {
   const slice = Number(sliceArg);
@@ -110,7 +119,11 @@ if (sliceArg !== 'none') {
   const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000);
   const skipStages = new Set(['live', 'demote_proposed', 'shadow', 'proposed']);
   const markets = [...data.keys()];
-  for (const s of scripts) {
+  for (const [idx, s] of scripts.entries()) {
+    if (Date.now() - started > BUDGET_MS) { summary.truncated = scripts.length - idx; out(`time budget spent after ${idx} of ${scripts.length} scripts: ${summary.truncated} wait for this slice's next turn`); break; }
+    const rss = process.memoryUsage().rss;
+    if (idx % 25 === 0) out(`  ${idx}/${scripts.length} scripts · ${Math.round(rss / 1048576)} MB resident`);
+    if (rss > MEM_STOP) { summary.truncated = scripts.length - idx; summary.memoryStop = rss; out(`memory at ${Math.round(rss / 1048576)} MB, ${Math.round(MEM_STOP / 1048576)} MB is the line: ${summary.truncated} scripts wait for this slice's next turn`); break; }
     if (health.isQuarantined(s.id)) { summary.skippedSick++; continue; }
     let probed = 0, sawEntry = false;
     for (const symbol of markets) {
@@ -125,7 +138,20 @@ if (sliceArg !== 'none') {
       try {
         const inputs = cfg.scanners[s.id]?.inputs;
         const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
-        if (!res.ok) { summary.failed++; if (health.record(s.id, res.error)) { summary.quarantined++; out(`  ${s.id}: quarantined (${permanentReason(res.error)})`); break; } continue; }
+        if (!res.ok) {
+          summary.failed++;
+          if (/timeout after \d+ms/i.test(res.error ?? '')) {
+            // One timeout over the full history is the screen's verdict: trying two more markets only
+            // costs two more workers, and three strikes per slow script stretched a slice past its 6 h
+            // limit for three nights running. A script that trades in the account is judged by its live
+            // runs (fewer bars, its own timeout), never by the screen.
+            if (cfg.scanners[s.id]?.enabled) { summary.slowLive = (summary.slowLive ?? 0) + 1; out(`  ${s.id}: too slow for the screen, left alone — it trades in the account`); }
+            else { summary.quarantined++; health.quarantine(s.id, `timed out in the daily screen (${pool.timeoutMs / 1000} s over ${d.bars.length} bars)`); out(`  ${s.id}: quarantined — timed out in the screen`); }
+            break;
+          }
+          if (health.record(s.id, res.error)) { summary.quarantined++; out(`  ${s.id}: quarantined (${health.row(s.id)?.reason ?? permanentReason(res.error) ?? res.error})`); break; }
+          continue;
+        }
         health.clear(s.id);
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest' });
         const events = extractEvents(res.alerts, res.shapes, { derived });
@@ -163,7 +189,7 @@ const report = evaluate(store, cfg);
 summary.report = report;
 summary.ms = Date.now() - started;
 db.kvSet('incubator.lastRun', summary);
-out(`screen: ${summary.runs} runs, ${summary.passed} passed (${summary.new} new candidates), ${summary.silentSkipped} skipped as silent, ${summary.failed} failed`);
+out(`screen: ${summary.runs} runs, ${summary.passed} passed (${summary.new} new candidates), ${summary.silentSkipped} skipped as silent, ${summary.failed} failed${summary.truncated ? `, ${summary.truncated} scripts not reached (time budget)` : ''}`);
 out(`judge: ${report.admitted.length} admitted to shadow, ${report.proposed.length} proposed, ${report.retired.length} retired, ${report.demoteProposed.length} proposed for demotion, ${report.brewing} brewing, ${report.free} free slots`);
 for (const p of report.proposed) out(`  PROPOSED ${p}`);
 for (const p of report.demoteProposed) out(`  DEMOTION PROPOSED ${p}`);

@@ -135,6 +135,7 @@ export const api = {
   scannerIndex: () => get<ScannerIndexEntry[]>('/scanners?view=lite'),
   updateScanner: (id: string, body: ScannerUpdate) => post<Scanner>(`/scanners/${encodeURIComponent(id)}`, body),
   runScanner: (id: string) => post<{ queued: number }>(`/scanners/${encodeURIComponent(id)}/run`),
+  releaseScanner: (id: string) => post<{ released: boolean }>(`/scanners/${encodeURIComponent(id)}/release`),
   profileScanner: (id: string, body: { market?: string; tfs?: string[] } = {}) => post<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`, body),
   scannerProfile: (id: string) => get<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`),
   scannerSource: (id: string) => get<ScannerSource>(`/scanners/${encodeURIComponent(id)}/source`),
