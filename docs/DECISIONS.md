@@ -2701,3 +2701,35 @@ Open: the screen's main process reaches 6.7 GB after about six scripts of a slic
 advances six scripts a night under the 8 GB unit cap. Either the unit's cap rises (the VM has
 24 GB, the bot uses under 3) or the retained memory per run is found; both are for the next
 session.
+
+## 94. Leverage and lots checked against the exchange: each market brings its own margins
+
+The operator asked for the leverage and lot arithmetic to be checked. Every recent trade was
+recomputed by hand from the journal (contracts, contract value, entry, stop, fees, slippage) and
+every figure matched: lots are integer contracts, the stop loses the risk budget to the cent,
+leverage shown is the isolated leverage posted, margin is notional over that leverage. Contract
+values match Delta's product records exactly (BTC 0.001, ETH 0.01, ZEC 0.1, FIL and UNI 1,
+GRIFFAIN and MUBARAK 10, STRK and AIN 100).
+
+What was missing was the exchange's own margin table. The engine modelled every market with the
+config's flat 0.5% maintenance margin and 50× ceiling. Delta India sets 0.25% and 200× on BTC and
+ETH, 0.5% and 100× on UNI, 1% and 50× on FIL, and 2.5% and 20× on most alts. On an alt the
+modelled liquidation therefore sat two percent further from the entry than the exchange's: the
+STRKUSD short of 11 October was posted at 8.66×, its stop 8.8% away, its modelled liquidation 11%
+away, and its real one 9.05% away, a buffer of a fifth of a percent where the rule asks for a
+quarter of the stop distance. A wider stop on the same arithmetic would have been liquidated
+before it traded, which is how MUBARAKUSD was lost once before (decision 29). The ceiling was wrong
+the other way on tight alt stops, allowing 50× where the exchange stops at 20×, so the margin
+modelled was less than half of what the exchange would hold.
+
+Now each market's record (`maintenance_margin`, `initial_margin`) comes with its contract value
+and tick (`marketSpec`), and sizing, the stop-set leverage ceiling, the liquidation price and the
+margin reserved all use the market's figures, with the config's as the fallback when a record has
+none. A position carries the maintenance it was opened under, so a restart recomputes the same
+liquidation, and the detail panel names it beside the modelled price; the panel also shows the
+size in tokens and the notional beside the contract count, which is what the exchange calls lots.
+The backtest, the shadow runner and both screens carry the same figures, so the R they report is
+the R the account would have.
+
+Not modelled, noted: the liquidation penalty (a fifth of the maintenance margin on Delta) and the
+notional tiers above fifty thousand dollars, both outside this purse's range.

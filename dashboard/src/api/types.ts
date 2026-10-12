@@ -281,6 +281,8 @@ export interface Position {
   qtyOpen: number
   contractValue: number
   marginLeverage?: number
+  /** The market's maintenance margin the liquidation was modelled on (percent); null before decision 94. */
+  maintenanceMarginPct?: number | null
   leverage?: number
   liqPrice?: number | null
   notional?: number

@@ -13,6 +13,7 @@ import type { DeltaRest } from '../delta/rest.ts';
 import { logger } from '../log.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import type { MarketInfo } from '../paper/engine.ts';
+import { marketSpec } from '../delta/rest.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import { runBacktest, type BacktestResult } from '../paper/backtest.ts';
 import type { PinePool } from '../pine/pool.ts';
@@ -169,7 +170,7 @@ export class ScannerEngine extends EventEmitter {
     let m = this.markets.get(symbol);
     if (m) return m;
     const p = await this.rest.product(symbol);
-    m = { contractValue: Number(p?.contract_value ?? 0.001), tickSize: Number(p?.tick_size ?? 0.5) };
+    m = marketSpec(p);
     this.markets.set(symbol, m);
     return m;
   }

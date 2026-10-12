@@ -10,6 +10,23 @@ export interface DeltaCandle { time: number; open: number; high: number; low: nu
 export interface DeltaProduct {
   id: number; symbol: string; description: string; contract_type: string; state: string;
   tick_size: string; contract_value: string; underlying_asset?: { symbol: string }; quoting_asset?: { symbol: string };
+  /** Percent of notional: initial margin sets the maximum leverage (100 / initial), maintenance sets the liquidation distance. */
+  initial_margin?: string; maintenance_margin?: string; max_leverage_notional?: string;
+}
+
+/**
+ * The market facts sizing needs, from a product record. Delta India's margins differ by market:
+ * 0.25% maintenance and 200× on BTC/ETH, 1% and 50× on FIL, 2.5% and 20× on most alts. A flat
+ * 0.5% and 50× (the config's fallback) put an alt's modelled liquidation two percent further from
+ * the entry than the exchange's, which is most of the buffer between the stop and liquidation.
+ */
+export function marketSpec(p: DeltaProduct | undefined): { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number } {
+  const maint = Number(p?.maintenance_margin), init = Number(p?.initial_margin);
+  return {
+    contractValue: Number(p?.contract_value ?? 0.001), tickSize: Number(p?.tick_size ?? 0.5),
+    ...(Number.isFinite(maint) && maint > 0 ? { maintenanceMarginPct: maint } : {}),
+    ...(Number.isFinite(init) && init > 0 ? { maxLeverage: Math.floor(100 / init) } : {}),
+  };
 }
 export interface DeltaTicker {
   symbol: string; product_id: number; close: number; mark_price: string; spot_price?: string; open?: number; high?: number; low?: number;

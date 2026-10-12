@@ -265,9 +265,10 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <div><dt>Unrealized P&L (USD)</dt><dd><LiveUpnl p={p} /></dd></div>
               <div><dt>Mark price</dt><dd><LiveMark p={p} tick={tick} /></dd></div>
               <div><dt>Stop loss {p.breakEven ? '(break-even)' : ''}</dt><dd>{fmtPrice(p.sl, tick)}</dd></div>
-              <div><dt>Liquidation (modelled)</dt><dd>{fmtPrice(p.liqPrice, tick)}</dd></div>
+              <div><dt>Liquidation (modelled{p.maintenanceMarginPct != null ? `, ${p.maintenanceMarginPct}% maintenance` : ''})</dt><dd>{fmtPrice(p.liqPrice, tick)}</dd></div>
               <div><dt>Entry price</dt><dd>{fmtPrice(p.entryPrice, tick)}</dd></div>
               <div><dt>Open / initial contracts</dt><dd>{fmtInt(p.qtyOpen)} / {fmtInt(p.qty)}</dd></div>
+              <div><dt>Size</dt><dd>{fmtInt(p.qty * p.contractValue)} {p.symbol.replace(/USD$/, '')} · {fmtMoney(p.qty * p.contractValue * p.entryPrice, 2)} notional</dd></div>
               <div><dt>Margin (USD)</dt><dd>{fmtMoney(p.margin)}</dd></div>
               <div><dt>Leverage</dt><dd>{(p.marginLeverage ?? p.leverage)?.toFixed(1) ?? '–'}×</dd></div>
               <div><dt>Realized P&L (USD)</dt><dd><Pnl value={p.realizedPnl} /></dd></div>

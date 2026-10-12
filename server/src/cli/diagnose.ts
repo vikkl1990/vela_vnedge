@@ -20,7 +20,7 @@
  * the numbers support and the fix to try, in the script or in how it is read.
  */
 import fs from 'node:fs';
-import { DeltaRest } from '../delta/rest.ts';
+import { DeltaRest, marketSpec } from '../delta/rest.ts';
 import { PinePool } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents, type ScanEvent } from '../scanners/extractor.ts';
@@ -55,8 +55,8 @@ async function bars(symbol: string, tf: string, n: number): Promise<Bar[]> {
   if (!series.has(k)) series.set(k, toBars(await rest.recentCandles(symbol, tf, n, TF_SECONDS[tf])));
   return series.get(k)!;
 }
-const market = new Map<string, { contractValue: number; tickSize: number }>();
-for (const s of MARKETS) { const p = await rest.product(s); market.set(s, { contractValue: Number(p?.contract_value ?? 0.001), tickSize: Number(p?.tick_size ?? 0.5) }); }
+const market = new Map<string, ReturnType<typeof marketSpec>>();
+for (const s of MARKETS) { const p = await rest.product(s); market.set(s, marketSpec(p)); }
 for (const s of MARKETS) for (const tf of TFS) { const b = await bars(s, tf, BARS[tf]); await bars(s, SUB[tf], Math.min(60_000, Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]))); }
 console.error('candles ready');
 
@@ -132,7 +132,7 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
     md.push(`- ${id} · ${sym} ${tf}: **no entries** — ${why}`);
     return { id, tf, sym, variants: { base: empty }, labels: [], verdict: why, fix: why.startsWith('NO ENTRY READ') ? 'name the entry channel/labels in the scanner config, or add a rule' : why.startsWith('EXITS') ? 'an exit tool: pair it with an entry system in the exit lab' : 'a feature adapter, not a scanner' };
   }
-  const base: BacktestInput = { scannerId: id, scannerName: id, symbol: sym, tf, bars: b, events, cfg: cfg.paper, exitMode: sc.exitMode ?? 'both', trendGate: sc.trendGate, contractValue: m.contractValue, tickSize: m.tickSize, subBars: sub } as any;
+  const base: BacktestInput = { scannerId: id, scannerName: id, symbol: sym, tf, bars: b, events, cfg: cfg.paper, exitMode: sc.exitMode ?? 'both', trendGate: sc.trendGate, contractValue: m.contractValue, tickSize: m.tickSize, maintenanceMarginPct: m.maintenanceMarginPct, maxLeverage: m.maxLeverage, subBars: sub } as any;
   const run = (patch: Partial<BacktestInput>, paper: Partial<PaperConfig> = {}) => runBacktest({ ...base, ...patch, cfg: { ...cfg.paper, ...paper } }).trades as any[];
   const variants: Record<string, Stat> = {};
   variants.base = stat(run({}), b, tfMs);

@@ -131,7 +131,7 @@ export class ShadowLedger extends EventEmitter {
       const reserved = [...v.open.values()].reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || paper.maxLeverage), 0);
       const eq = this.equity(v);
       const score = sig.score ?? (cfg.ml.useAsScore && sig.mlProb !== null && sig.mlProb !== undefined ? sig.mlProb * 100 : undefined);
-      const sz = sizeContracts(price, lv.sl, { equity: eq, availableMargin: this.initialEquity + this.realized(v) - reserved, contractValue: market.contractValue, tickSize: market.tickSize, cfg: paper }, openNotional, score);
+      const sz = sizeContracts(price, lv.sl, { equity: eq, availableMargin: this.initialEquity + this.realized(v) - reserved, contractValue: market.contractValue, tickSize: market.tickSize, maintenanceMarginPct: market.maintenanceMarginPct, maxLeverage: market.maxLeverage, cfg: paper }, openNotional, score);
       if (sz.qty < 1) { v.rejected[sz.reason ?? 'size'] = (v.rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
       const pos = openPosition({ id: v.nextId++, scannerId: sig.scannerId, scannerName: sig.scannerName, symbol: sig.symbol, tf: sig.tf, side, qty: sz.qty, contractValue: market.contractValue, entryPrice: price, at, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: sig.id, cfg: paper, bt: false, leverage: sz.leverage, marginLeverage: sz.marginLeverage, mlProb: sig.mlProb ?? null, lastPriceBar: this.priceBars.get(sig.symbol) });
       v.open.set(pos.id, pos);

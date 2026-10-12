@@ -17,7 +17,7 @@
  */
 import fs from 'node:fs';
 import { Db } from '../db.ts';
-import { DeltaRest } from '../delta/rest.ts';
+import { DeltaRest, marketSpec } from '../delta/rest.ts';
 import { PinePool, memoryLimitBytes } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents } from '../scanners/extractor.ts';
@@ -96,14 +96,14 @@ if (sliceArg !== 'none') {
 
   // ---- candles, fetched once per market ----
   const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
-  const data = new Map<string, { bars: Bar[]; m1: Bar[]; market: { contractValue: number; tickSize: number } }>();
+  const data = new Map<string, { bars: Bar[]; m1: Bar[]; market: ReturnType<typeof marketSpec> }>();
   for (const symbol of universe) {
     try {
       const p = await rest.product(symbol);
       const bars = toBars(await rest.recentCandles(symbol, TF, inc.screen.bars, TF_SECONDS[TF]));
       if (bars.length < 500) { out(`  ${symbol}: only ${bars.length} bars, skipped`); continue; }
       const m1 = toBars(await rest.recentCandles(symbol, '1m', Math.ceil((bars.length + 2) * tfMs / 60_000), 60));
-      data.set(symbol, { bars, m1, market: { contractValue: Number(p?.contract_value ?? 0.001), tickSize: Number(p?.tick_size ?? 0.5) } });
+      data.set(symbol, { bars, m1, market: marketSpec(p) });
     } catch (e: any) { out(`  ${symbol}: no candles (${e?.message ?? e})`); }
   }
   out(`candles loaded for ${data.size} markets`);
@@ -169,7 +169,7 @@ if (sliceArg !== 'none') {
         const events = extractEvents(res.alerts, res.shapes, { derived });
         if (!events.some(e => e.kind === 'entry')) continue;
         sawEntry = true;
-        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, subBars: d.m1 } as const;
+        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1 } as const;
         const bt = runBacktest(base);
         const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps } });
         const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);

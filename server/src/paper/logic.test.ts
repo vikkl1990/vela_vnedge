@@ -657,3 +657,24 @@ test('a fallback stop too tight for fees is widened rather than refused', () => 
   assert.equal(scripted.sl, 99.99)
   assert.equal(scripted.source, 'mixed')
 })
+
+test('a market brings its own maintenance margin and leverage ceiling: an alt at 2.5% and 20× is sized and liquidated on those, not on the flat config', () => {
+  const c = { ...cfg, liquidation: true, maintenanceMarginPct: 0.5, maxLeverage: 50 };
+  // STRKUSD short, 11 Oct: entry 0.09315, stop 0.10138 (8.8% away). Flat 0.5% allowed 8.66×; at Delta's 2.5% the same
+  // leverage puts liquidation 0.2% past the stop, so the ceiling must fall to keep the 25% buffer.
+  const flat = sizeContracts(0.09315, 0.10138, { equity: 1000, contractValue: 100, tickSize: 0.00001, cfg: c });
+  const alt = sizeContracts(0.09315, 0.10138, { equity: 1000, contractValue: 100, tickSize: 0.00001, cfg: c, maintenanceMarginPct: 2.5, maxLeverage: 20 });
+  assert.ok(Math.abs(flat.marginLeverage - 8.66) < 0.05, `flat ${flat.marginLeverage}`);
+  assert.ok(alt.marginLeverage < flat.marginLeverage, 'a higher maintenance lowers the leverage the stop allows');
+  const liq = liquidationPrice('short', 0.09315, alt.marginLeverage, c, 2.5)!;
+  const stopPct = (0.10138 - 0.09315) / 0.09315, liqPct = (liq - 0.09315) / 0.09315;
+  assert.ok(liqPct > stopPct * 1.2, `liquidation ${liqPct} keeps its buffer beyond the stop ${stopPct}`);
+  assert.equal(alt.qty, flat.qty, 'the contract count is set by risk, not by margin, while margin is ample');
+  // a tight stop on an alt: the config would allow 50×, the exchange allows 20×
+  const tight = sizeContracts(100, 99.5, { equity: 1000, contractValue: 1, tickSize: 0.1, cfg: c, maintenanceMarginPct: 2.5, maxLeverage: 20 });
+  assert.ok(tight.marginLeverage <= 20, `ceiling ${tight.marginLeverage}`);
+  // the position carries the maintenance it was opened under, so a restart recomputes the same liquidation
+  const p = openPosition({ ...pos('short'), entryPrice: 0.09315, at: 0, sl: 0.10138, cfg: c, leverage: 0.1, marginLeverage: alt.marginLeverage, maintenanceMarginPct: 2.5 });
+  assert.equal(p.maintenanceMarginPct, 2.5);
+  assert.ok(Math.abs(p.liqPrice! - liq) < 1e-9);
+});

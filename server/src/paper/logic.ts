@@ -41,6 +41,8 @@ export interface Position {
   leverage: number;
   /** Selected isolated leverage; separate from account exposure above. */
   marginLeverage?: number;
+  /** The market's maintenance margin at open (percent of notional); the config's flat figure when unknown. */
+  maintenanceMarginPct?: number;
   /** Modelled liquidation price (null when liquidation modelling is off). */
   liqPrice: number | null;
   exitAt: number | null;
@@ -82,6 +84,9 @@ export interface SizingInputs {
   contractValue: number;
   tickSize: number;
   cfg: PaperConfig;
+  /** The market's own maintenance margin and leverage ceiling (Delta's product record); the config's figures when absent. */
+  maintenanceMarginPct?: number;
+  maxLeverage?: number;
 }
 
 export interface LevelResult { sl: number; tp: number[]; source: Position['levelsSource']; reason?: string }
@@ -203,11 +208,11 @@ export const LIQ_STOP_BUFFER = 0.25;
  *
  * So the stop sets the ceiling on leverage. Posting more margin is what buys the room.
  */
-export function leverageForStop(entry: number, sl: number, wanted: number, cfg: PaperConfig): number {
+export function leverageForStop(entry: number, sl: number, wanted: number, cfg: PaperConfig, maintenanceMarginPct = cfg.maintenanceMarginPct): number {
   if (!cfg.liquidation) return wanted;
   const stopPct = Math.abs(entry - sl) / entry;
   if (!(stopPct > 0)) return wanted;
-  const room = stopPct * (1 + LIQ_STOP_BUFFER) + cfg.maintenanceMarginPct / 100;
+  const room = stopPct * (1 + LIQ_STOP_BUFFER) + maintenanceMarginPct / 100;
   return Math.max(0.1, Math.min(wanted, 1 / room));
 }
 
@@ -217,18 +222,21 @@ export function leverageForStop(entry: number, sl: number, wanted: number, cfg: 
  *  - `quality` mode: notional = equity × leverage(score); the stop decides the R.
  */
 export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNotional = 0, score?: number): { qty: number; riskAmount: number; leverage: number; marginLeverage: number; reason?: string } {
-  const marginLeverage = leverageForStop(entry, sl, s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : s.cfg.maxLeverage, s.cfg);
+  // the exchange's ceiling for this market caps whatever the config allows; its maintenance sets the liquidation distance
+  const maxLeverage = Math.min(s.cfg.maxLeverage, s.maxLeverage ?? Infinity);
+  const maint = s.maintenanceMarginPct ?? s.cfg.maintenanceMarginPct;
+  const marginLeverage = leverageForStop(entry, sl, Math.min(maxLeverage, s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : maxLeverage), s.cfg, maint);
   const rejected = (reason: string) => ({ qty: 0, riskAmount: 0, leverage: 0, marginLeverage, reason });
   if (![entry, sl, s.equity, s.contractValue, marginLeverage].every(v => Number.isFinite(v) && v > 0) || entry === sl) return rejected('invalid sizing inputs');
-  if (s.cfg.liquidation && 1 / marginLeverage <= s.cfg.maintenanceMarginPct / 100) return rejected('initial margin must exceed maintenance margin');
+  if (s.cfg.liquidation && 1 / marginLeverage <= maint / 100) return rejected('initial margin must exceed maintenance margin');
   const long = sl < entry;
   const fillEntry = slip(entry, long ? 'buy' : 'sell', s.cfg);
   const fillStop = slip(sl, long ? 'sell' : 'buy', s.cfg);
   const entryFee = feeFor(fillEntry, 1, s.contractValue, s.cfg);
   const perContractRisk = Math.abs(fillEntry - fillStop) * s.contractValue + entryFee + feeFor(fillStop, 1, s.contractValue, s.cfg);
   const notional = fillEntry * s.contractValue;
-  const availableMargin = s.availableMargin ?? (s.equity - openNotional / s.cfg.maxLeverage);
-  const maxNotional = s.equity * s.cfg.maxLeverage - openNotional;
+  const availableMargin = s.availableMargin ?? (s.equity - openNotional / maxLeverage);
+  const maxNotional = s.equity * maxLeverage - openNotional;
   // Entry fees consume wallet cash too. Margin is released pro-rata on partial exits.
   const maxQty = Math.min(Math.floor(maxNotional / notional), Math.floor(availableMargin / (notional / marginLeverage + entryFee)));
   const desired = s.cfg.sizingMode === 'quality'
@@ -267,9 +275,9 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
 }
 
 /** Simplified isolated liquidation: fixed maintenance on entry notional, no funding or tiering. */
-export function liquidationPrice(side: Side, entry: number, leverage: number, cfg: PaperConfig): number | null {
+export function liquidationPrice(side: Side, entry: number, leverage: number, cfg: PaperConfig, maintenanceMarginPct = cfg.maintenanceMarginPct): number | null {
   if (!cfg.liquidation || !Number.isFinite(entry) || entry <= 0 || !Number.isFinite(leverage) || !(leverage > 0)) return null;
-  const move = 1 / leverage - cfg.maintenanceMarginPct / 100;
+  const move = 1 / leverage - maintenanceMarginPct / 100;
   if (move <= 0) return entry;
   const price = side === 'long' ? entry * (1 - move) : entry * (1 + move);
   return price > 0 ? price : null;
@@ -334,6 +342,7 @@ export interface OpenParams {
   entryPrice: number; at: number; sl: number; tp: number[]; riskAmount: number; levelsSource: Position['levelsSource']; signalId: number | null; cfg: PaperConfig; bt: boolean;
   leverage?: number;
   marginLeverage?: number;
+  maintenanceMarginPct?: number;
   features?: Record<string, number>;
   mlProb?: number | null;
   /** True when `entryPrice` is already an executable quote, so only depth impact is added. */
@@ -365,7 +374,7 @@ export function openPosition(p: OpenParams): Position {
     id: p.id, status: 'open', scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side,
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
-    levelsSource: p.levelsSource, leverage: p.leverage ?? 0, marginLeverage: p.marginLeverage ?? p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.marginLeverage ?? p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
+    levelsSource: p.levelsSource, leverage: p.leverage ?? 0, marginLeverage: p.marginLeverage ?? p.leverage ?? 0, maintenanceMarginPct: p.maintenanceMarginPct, liqPrice: liquidationPrice(p.side, fillPrice, p.marginLeverage ?? p.leverage ?? 0, p.cfg, p.maintenanceMarginPct), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
     fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar, openedAt: p.openedAt ?? p.at,
   };
 }
