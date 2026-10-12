@@ -2658,3 +2658,46 @@ and Manual Wedge Setup are drawing tools and stay silent; EQH/EQL Liquidity Zone
 run because the runtime reports the chart timeframe as 60 on every chart (a PineTS gap, the same
 one that stops the other MTF scripts) and Supertrend Error-Adaptive Cloud indexes an empty array
 (another). Nothing is enabled; the nightly screen takes the runnable ones in their slice.
+
+## 93. The ten new scripts judged on every market, not on ETHUSD
+
+The operator's rule: a fresh script is tested on all pairs before anything is said about it. The
+ten of decision 92 ran on the 44 gate-allowed markets with enough history at 15m, 1h and 4h under
+the live settings (`data/reports/2026-10-12-new-scripts-all-markets.*`), then the three that raise
+entries went through the real admission screen on all 49 markets (`IDS=` on the nightly job, new).
+
+**What held up.** Levels Likely to Break (Zeiierman) is positive fleet-wide at every timeframe
+(+0.04R, +0.03R, +0.11R a trade over 4,310 / 1,615 / 436 trades), pays on both halves of the
+history on 13 of 41 markets at 15m, 10 of 37 at 1h and 12 of 28 at 4h, and the markets recur
+across timeframes (STRK, ACT, FIL, TIA, GRIFFAIN, JTO). The screen admitted three of its cells as
+candidates: FILUSD (40 trades, PF 2.6), GRIFFAINUSD (41, PF 1.6) and JTOUSD (34, PF 5.6), all 15m.
+ATR Trend Channel Signals (BigBeluga) is flat fleet-wide (−0.02R, −0.04R, +0.01R) with a minority
+of paying cells; the screen admitted STRKUSD 15m (156 trades, PF 1.5). Buyers & Sellers Profile
+raises an entry on two bars in three and passed nowhere: where it paid it was riding a trend, and
+the density rule of decision 88 reads it as a state. The four drawing scripts raised no entry on
+any market at any timeframe, which settles them.
+
+**None of the four candidates can enter the shadow book**: it holds 212 pairs against a cap of
+150, so the judge admits nothing until retirements bring it under. Raising `incubator.maxShadow`
+or waiting is the operator's call.
+
+**Wyckoff Range Engine** is unrunnable at screen scale: one market at 4,000 bars takes more than
+6 GB in a single worker (native memory, outside the 1 GB heap cap), so every chunk of the
+all-markets run died at the memory cap and it would have stopped a nightly slice the same way.
+The screen now quarantines the script that was running when it crosses its memory line, with
+that reason (a wrong guess is one Release click), and a memory verdict survives a good run like a
+timeout verdict does.
+
+**The night's lessons, fixed the same day.** The uncapped all-markets run froze the VM at 16:55 on
+11 October (23 GB resident, no swap) and needed an Oracle reset; research runs now go in chunks of
+eight markets inside `systemd-run --user --scope -p MemoryMax=6G`, with outputs under
+`data/diag/` rather than `/tmp`, and lingering enabled for the service user. The nightly screen of
+12 October stopped at its memory line after six scripts, correctly, then sat two hours at the
+unit's 8 GB cap waiting on a worker's `terminate()`; the pool's stop now waits ten seconds at most
+and the job exits explicitly after the judge. The judge then ran by hand for the first time since
+29 September: 7 pairs proposed, 19 retired.
+
+Open: the screen's main process reaches 6.7 GB after about six scripts of a slice, so a slice
+advances six scripts a night under the 8 GB unit cap. Either the unit's cap rises (the VM has
+24 GB, the bot uses under 3) or the retained memory per run is found; both are for the next
+session.

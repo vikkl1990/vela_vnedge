@@ -126,7 +126,16 @@ if (sliceArg !== 'none') {
     if (Date.now() - started > BUDGET_MS) { summary.truncated = scripts.length - idx; out(`time budget spent after ${idx} of ${scripts.length} scripts: ${summary.truncated} wait for this slice's next turn`); break; }
     const rss = process.memoryUsage().rss;
     if (idx % 25 === 0) out(`  ${idx}/${scripts.length} scripts · ${Math.round(rss / 1048576)} MB resident`);
-    if (rss > MEM_STOP) { summary.truncated = scripts.length - idx; summary.memoryStop = rss; out(`memory at ${Math.round(rss / 1048576)} MB, ${Math.round(MEM_STOP / 1048576)} MB is the line: ${summary.truncated} scripts wait for this slice's next turn`); break; }
+    if (rss > MEM_STOP) {
+      summary.truncated = scripts.length - idx; summary.memoryStop = rss;
+      out(`memory at ${Math.round(rss / 1048576)} MB, ${Math.round(MEM_STOP / 1048576)} MB is the line: ${summary.truncated} scripts wait for this slice's next turn`);
+      // The script that was running when the line was crossed is the likely cause (Wyckoff Range Engine
+      // needs more than 6 GB for one market at 4,000 bars). Quarantined with that reason so the slice
+      // gets past it tomorrow; the Release button lifts a wrong guess.
+      const culprit = scripts[idx - 1];
+      if (culprit && !cfg.scanners[culprit.id]?.enabled) { health.quarantine(culprit.id, `memory: the screen crossed its line (${Math.round(rss / 1048576)} MB) while running it`); summary.quarantined++; out(`  ${culprit.id}: quarantined — ${Math.round(rss / 1048576)} MB resident after it ran`); }
+      break;
+    }
     if (health.isQuarantined(s.id)) { summary.skippedSick++; continue; }
     let probed = 0, sawEntry = false;
     for (const symbol of markets) {
