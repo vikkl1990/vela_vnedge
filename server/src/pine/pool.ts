@@ -253,6 +253,11 @@ export class PinePool {
       slot.retiring = true; slot.ready = false;
       if (slot.busy) { this.fail(slot.busy, 'worker pool stopped'); slot.busy = null; }
     }
-    await Promise.all(this.workers.map(s => s.w.terminate()));
+    // A worker wedged in native code may never acknowledge terminate(): the nightly job sat two hours on
+    // this await (12 Oct). Ten seconds is all a stop waits; the process exit reaps what is left.
+    await Promise.race([
+      Promise.all(this.workers.map(s => s.w.terminate().catch(() => undefined))),
+      new Promise<void>(r => setTimeout(r, 10_000).unref()),
+    ]);
   }
 }

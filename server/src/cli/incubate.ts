@@ -197,3 +197,5 @@ out(`judge: ${report.admitted.length} admitted to shadow, ${report.proposed.leng
 for (const p of report.proposed) out(`  PROPOSED ${p}`);
 for (const p of report.demoteProposed) out(`  DEMOTION PROPOSED ${p}`);
 out(`done in ${(summary.ms / 60000).toFixed(1)} min`);
+// a wedged worker thread must not keep the job alive past its last line
+process.exit(0);
