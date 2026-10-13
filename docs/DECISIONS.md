@@ -2733,3 +2733,37 @@ the R the account would have.
 
 Not modelled, noted: the liquidation penalty (a fifth of the maintenance margin on Delta) and the
 notional tiers above fifty thousand dollars, both outside this purse's range.
+
+## 95. The entry test: a pullback entry does not rescue dead entries; measured and declined
+
+A third of the shadow book's entries go to the stop without ever gaining a quarter of an R
+(decision 93's diagnosis of the operator's "the trades don't move and hit the stop"). The obvious
+remedy was tested rather than adopted: enter on a pullback instead of at the signal bar's close,
+and refuse signal bars that had already run. Both exist now as backtest options (`entry`) and
+diagnose variants, with a resting limit filled on the first minute that touches it at the maker
+fee, the stop measured from the fill, and the signal dropped when the pullback never comes.
+
+Run on 83 cells, every live fleet cell plus every shadow pair with fifteen or more trades, 9,183
+base trades (`data/reports/2026-10-13-entry-model-83-cells.*`):
+
+| Variant | Trades | R per trade | Cells better / worse than base | Stopped in the first bar |
+|---|---|---|---|---|
+| base | 9,183 | +0.13 | – | 9% |
+| pullback 0.3 ATR, 3 bars | 5,941 | −0.03 | 18 / 51 | 23% |
+| pullback 0.5 ATR, 5 bars | 5,772 | −0.05 | 16 / 60 | 26% |
+| no-chase (signal bar over 1.5 ATR skipped) | 6,600 | +0.12 | 20 / 35 | 8% |
+| pullback + no-chase | 4,135 | −0.07 | 22 / 56 | 23% |
+| efficiency gate 0.25 (decision 66, live) | 4,054 | +0.22 | 56 / 20 | 10% |
+
+The pullback entry is worse on 51 cells and turns the book negative. The reason is in the
+first-bar column: the signals that pull back enough to fill are the ones already reversing, and
+they stop out at twice the rate; the signals that run never come back to the limit, so the
+winners are the trades the rule gives away. A limit cannot tell a retrace from a reversal, and
+the fee saved does not cover the difference. The no-chase filter is a wash. The efficiency gate,
+already live, remains the one filter that improves most cells it touches.
+
+The dead-entry cost is therefore a property of these signals, not of how they are entered, and
+the remaining levers are the ones decision 93 listed after this one: honest costs in the shadow
+book, weight toward the 1h and 4h cells and the scanners positive across markets, and the
+discovery pipeline running at full speed. The variants stay in diagnose so any future script is
+judged on the same question.
