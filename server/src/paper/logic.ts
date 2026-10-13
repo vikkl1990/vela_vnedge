@@ -345,6 +345,8 @@ export interface OpenParams {
   maintenanceMarginPct?: number;
   features?: Record<string, number>;
   mlProb?: number | null;
+  /** A resting limit that was reached: filled at its own price, no slippage, the maker fee. */
+  maker?: boolean;
   /** True when `entryPrice` is already an executable quote, so only depth impact is added. */
   quoted?: boolean;
   /** Last cumulative live candle observed; retained across restarts. */
@@ -367,8 +369,8 @@ export function closingFeeWaived(pos: Position, at: number, reason: string, cfg:
 export function openPosition(p: OpenParams): Position {
   const side = p.side === 'long' ? 'buy' : 'sell';
   const notional = p.entryPrice * p.qty * p.contractValue;
-  const fillPrice = p.quoted ? impactOnly(p.entryPrice, side, p.cfg, notional) : slip(p.entryPrice, side, p.cfg, notional);
-  const fee = feeFor(fillPrice, p.qty, p.contractValue, p.cfg);
+  const fillPrice = p.maker ? p.entryPrice : p.quoted ? impactOnly(p.entryPrice, side, p.cfg, notional) : slip(p.entryPrice, side, p.cfg, notional);
+  const fee = feeFor(fillPrice, p.qty, p.contractValue, p.cfg, p.maker);
   const legs = splitLegs(p.qty, p.cfg.tpSplit, p.tp.length);
   return {
     id: p.id, status: 'open', scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side,

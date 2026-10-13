@@ -147,6 +147,11 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['er+stop1.5'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 1.5 }), b, tfMs);
   variants['er+stop2'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 2 }), b, tfMs);
   variants['confirm1+er'] = stat(run({ events: confirm(events, b), chopGate: { minEr: 0.25 } }), b, tfMs);
+  // the entry model (decision 95): do not chase the signal bar; enter on a pullback as a maker, or not at all
+  variants['nochase1.5'] = stat(run({ entry: { maxSignalBarAtr: 1.5 } }), b, tfMs);
+  variants['pull0.3'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3 } }), b, tfMs);
+  variants['pull0.5'] = stat(run({ entry: { pullbackAtr: 0.5, pullbackBars: 5 } }), b, tfMs);
+  variants['pull0.3+nochase'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3, maxSignalBarAtr: 1.5 } }), b, tfMs);
   variants.inverted = stat(run({ events: flip(events) }), b, tfMs);
   variants.long = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'long') }), b, tfMs);
   variants.short = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'short') }), b, tfMs);
@@ -184,6 +189,8 @@ function diagnose(v: Record<string, Stat>, labels: Array<[string, Stat]>): { ver
   if (v.gross.both && !b.both) return { verdict: 'COSTS: positive before fees, negative after', fix: 'a slower timeframe or a wider stop/target so each trade pays the round trip several times over' };
   if (v['er0.25'].both) return { verdict: 'WHIPSAW: pays only when the market is moving efficiently', fix: 'efficiency-ratio gate ≥ 0.25 on this timeframe' };
   if (b.mfe05 < 0.35) return { verdict: 'ENTRY: most trades never see +0.5R', fix: 'the signal is late or the stop sits inside the noise; try the slower timeframe or the script\'s confirmation inputs' };
+  if (v['pull0.3']?.both || v['pull0.5']?.both) return { verdict: 'CHASED: pays when entered on a pullback instead of the signal close', fix: 'pullback entry (limit a fraction of an ATR back, maker fee)' };
+  if (v['nochase1.5']?.both) return { verdict: 'CHASED: pays once spent signal bars are skipped', fix: 'skip signal bars that already ran 1.5 ATR' };
   return { verdict: 'no variant pays in both halves', fix: 'not a reading, exit or cost problem on this cell; re-time or retire the pair' };
 }
 

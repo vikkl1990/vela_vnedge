@@ -12,7 +12,7 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { applyBar, applyScriptExit, earlyStallExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
+import { applyBar, applyScriptExit, earlyStallExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -33,6 +33,13 @@ export interface BacktestInput {
   scannerExit?: ExitOverride;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
   subBars?: Bar[];
+  /**
+   * Entry model under test (decision 95). `maxSignalBarAtr`: refuse a signal whose bar already ran
+   * that many ATRs (the impulse is spent). `pullbackAtr`: do not enter at the signal bar's close;
+   * rest a limit that many ATRs back from the signal price for `pullbackBars` bars and enter there as
+   * a maker, or not at all. The stop is then measured from the fill, not from the impulse top.
+   */
+  entry?: { maxSignalBarAtr?: number; pullbackAtr?: number; pullbackBars?: number };
 }
 
 export interface BacktestResult {
@@ -63,7 +70,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       : trendPerBar(bars, gate!.emaLen);
 
   let equity = cfg.initialEquity;
-  let open: Position | null = null;
+  let open = null as Position | null;   // assigned inside closures below, so the declared type must survive the initialiser
   const closed: Position[] = [];
   const curve: Array<{ at: number; equity: number }> = [{ at: bars[0]?.time ?? 0, equity }];
   const rejected: Record<string, number> = {};
@@ -83,10 +90,55 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const sub = inp.subBars && inp.subBars.length && tfMs > 60_000 ? inp.subBars : null;
   let si = 0;   // cursor into `sub`, only ever moves forward
 
+  const refuse = (why: string) => { rejected[why] = (rejected[why] ?? 0) + 1; };
+  /** Open a position at `price` for signal `ev` raised on bar `sigI`; false when sizing or fees refuse it. */
+  const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean): boolean => {
+    const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
+    if ('error' in lv) { refuse(lv.error); return false; }
+    const feeErr = checkRiskVsFees(price, lv.sl, cfg, inp.symbol);
+    if (feeErr) { refuse('stop too tight for fees'); return false; }
+    const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
+    if (sz.qty < 1) { refuse(sz.reason ?? 'size'); return false; }
+    const features = computeFeatures({ bars, i: sigI, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[sigI], levelsSource: lv.source });
+    open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side!, qty: sz.qty, contractValue: inp.contractValue, maintenanceMarginPct: inp.maintenanceMarginPct, entryPrice: price, at, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: at + (maker ? 0 : tfMs), leverage: sz.leverage, marginLeverage: sz.marginLeverage, features, maker });
+    entries++;
+    return true;
+  };
+  // a limit resting back from a signal price (the pullback entry model); the latest signal replaces an earlier one
+  let pending: { ev: ScanEvent; limit: number; sigI: number; expires: number } | null = null;
+
   let busted = false;
   for (let i = 0; i < bars.length && !busted; i++) {
     const bar = bars[i];
     if (equity <= Math.max(0, cfg.initialEquity * 0.02)) { busted = true; rejected['purse_wiped'] = (rejected['purse_wiped'] ?? 0) + 1; break; }
+    // 0. a resting pullback limit: filled on the first minute that touches it, dropped when its bars run out
+    if (pending && !open) {
+      if (i > pending.expires) { refuse('no pullback'); pending = null; }
+      else if (pending.ev.side === 'long' ? bar.low <= pending.limit : bar.high >= pending.limit) {
+        const { ev, limit, sigI } = pending; pending = null;
+        if (sub) {
+          while (si < sub.length && sub[si].time < bar.time) si++;
+          let j = si;
+          for (; j < sub.length && sub[j].time < bar.time + tfMs; j++) if (ev.side === 'long' ? sub[j].low <= limit : sub[j].high >= limit) break;
+          const fillAt = j < sub.length && sub[j].time < bar.time + tfMs ? sub[j].time : bar.time;
+          if (openAt(limit, fillAt, ev, sigI, true)) {
+            // `openAt` assigned the closure's `open`; the narrowing above does not see that
+            const o = open as unknown as Position;
+            const atrKnown = atr[i - 1] ?? atr[i];
+            for (let k = j + 1; o.status === 'open' && k < sub.length && sub[k].time < bar.time + tfMs; k++) {
+              applyBar(o, sub[k], cfg, atrKnown);
+              if (o.status === 'open' && te?.enabled) trendExit(o, trend[i - 1], sub[k].close, sub[k].time, cfg);
+              if (o.status === 'open') earlyStallExit(o, sub[k].close, sub[k].time, cfg);
+            }
+            if (o.status === 'closed') finish(o);
+          }
+        } else if (openAt(limit, bar.time, ev, sigI, true)) {
+          const o = open as unknown as Position;
+          applyBar(o, bar, cfg, atr[i]);
+          if (o.status === 'closed') finish(o);
+        }
+      }
+    }
     // 1. level fills on this bar for a position opened on an earlier bar
     if (open && open.entryAt < bar.time) {
       if (sub) {
@@ -136,15 +188,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         finish(open);
       }
       const price = ev.price && ev.price > 0 ? ev.price : bar.close;
-      const lv = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr: atr[i] }, cfg, inp.tickSize);
-      if ('error' in lv) { rejected[lv.error] = (rejected[lv.error] ?? 0) + 1; continue; }
-      const feeErr = checkRiskVsFees(price, lv.sl, cfg, inp.symbol);
-      if (feeErr) { rejected['stop too tight for fees'] = (rejected['stop too tight for fees'] ?? 0) + 1; continue; }
-      const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
-      if (sz.qty < 1) { rejected[sz.reason ?? 'size'] = (rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
-      const features = computeFeatures({ bars, i, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[i], levelsSource: lv.source });
-      open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, maintenanceMarginPct: inp.maintenanceMarginPct, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: bar.time + tfMs, leverage: sz.leverage, marginLeverage: sz.marginLeverage, features });
-      entries++;
+      const em = inp.entry;
+      if (em?.maxSignalBarAtr && atr[i] > 0 && (bar.high - bar.low) / atr[i] > em.maxSignalBarAtr) { refuse('chased'); continue; }
+      if (em?.pullbackAtr && atr[i] > 0) {
+        const limit = roundTick(ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i], inp.tickSize);
+        pending = { ev, limit, sigI: i, expires: i + Math.max(1, em.pullbackBars ?? 3) };
+        continue;
+      }
+      openAt(price, bar.time, ev, i, false);
     }
   }
   const stats = computeStats(closed, cfg.initialEquity) as BacktestResult['stats'];
