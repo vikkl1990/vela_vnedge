@@ -2821,3 +2821,32 @@ selected cells and will shrink out of sample; the direction will not.
 Correction to decision 93's list: the shadow book is quoted exactly as the account is (both engines
 share the top-of-book), so it is not flattered by half the costs; the ratio that suggested it
 counted fees alone. The costs it pays are the book's real ones, which is the point above.
+
+## 97. Frames: one market on several timeframes, and what each live scanner actually draws
+
+The Chart page has a Frames view (up to four of Delta's timeframes side by side, every frame
+drawing the selected scripts, remembered with the symbol), and the scanner page a Frames toggle
+that shows the scanner's own script on every timeframe it trades. Each frame is its own Vela
+instance running its own Pine, so four is the ceiling on a laptop.
+
+Every live scanner was walked through it on ZECUSD at 15m, 1h, 4h and 1d:
+
+| Scanner | What it draws | Readable as a signal source |
+|---|---|---|
+| Structure-Anchored VWAP (WillyAlgoTrader) | a status table over the price (trend, signal "Wait", strength, anchor), faint VWAP lines | the table says Bearish on 15m–4h and Bullish on 1d at once; the signal is the table's row, not a drawing |
+| Liquidity Trail Matrix (WillyAlgoTrader) | trailing red/green bands with Long/Short and FLIP labels | yes, a trend-band flip system |
+| Pulse Trend Radar (WillyAlgoTrader) | a trend line with Long A/B/C and Short A/B/C ladders | crowded; many labels per swing |
+| Kinetic Momentum Vectors (BigBeluga) | horizontal levels at swings with price labels, a few squares | sparse and clear |
+| Session Killzones & Breakouts (BigBeluga) | session boxes, POC and Break labels on every session, a sessions table | unreadable below 1d, nothing on 1d; a state drawn every session |
+| Pivot Channel Breaks (BigBeluga) | pivot levels with circles, X marks at channel breaks, H/L | clean and sparse |
+| Smart Money Breakout Signals (AlgoAlpha) | order-block boxes, green/red entry markers, a win-rate table | clean; three or four marks per frame |
+| Smart Swing VWAP (Zeiierman) | one VWAP line, HL/LH/LL labels | clean |
+| AI Predictive Flow (Zeiierman) | an oscillator with regime shading and entry triangles | was drawn on the price pane and flattened its scale to zero; see below |
+| SuperTrend Cluster (Zeiierman) | supertrend bands with Bull/Bear Cluster labels and a percentage | clean; the flips are the signals |
+
+**The fault it found.** The importers wrote `overlay: true` for every script; 442 of 2,628 declare
+`overlay = false` in their own header. Every one of those oscillators was being drawn on the
+price pane, which squashed the price to a line at the top (AI Predictive Flow on four frames at
+once made it obvious). The registry now reads the declaration from the `indicator()` or
+`strategy()` call itself, with the manifest as a fallback, and the importers record it too.
+AI Predictive Flow now sits in its own pane under the price on every frame.
