@@ -13,6 +13,7 @@
  * a time, a pause between them).
  */
 import fs from 'node:fs';
+import { declaredOverlay } from '../scanners/registry.ts';
 import path from 'node:path';
 import { DATA_DIR, SCRIPTS_DIR } from '../config.ts';
 
@@ -57,7 +58,7 @@ for (const slug of candidates) {
     console.log(`${dry ? 'would import' : 'import'} ${slug} → ${file}`);
     if (!dry) {
       fs.writeFileSync(path.join(PINE_DIR, file), code);
-      manifest.push({ id, name, author: 'LuxAlgo', file, url: `https://www.luxalgo.com/library/indicator/${slug}/`, pub: null, access: 'Open-source script', pineVersion: (code.match(/\/\/@version=(\d+)/) ?? [])[1] ?? null, lines: code.split('\n').length, updated: ind.creationDateDisplayed ?? null, scriptType: /^\s*strategy\s*\(/m.test(code) ? 'strategy' : 'indicator', status: 'ok', reason: null, overlay: true, source: 'luxalgo-library', family: ind.family ?? null, license, tradingviewUuid: uuid });
+      manifest.push({ id, name, author: 'LuxAlgo', file, url: `https://www.luxalgo.com/library/indicator/${slug}/`, pub: null, access: 'Open-source script', pineVersion: (code.match(/\/\/@version=(\d+)/) ?? [])[1] ?? null, lines: code.split('\n').length, updated: ind.creationDateDisplayed ?? null, scriptType: /^\s*strategy\s*\(/m.test(code) ? 'strategy' : 'indicator', status: 'ok', reason: null, overlay: declaredOverlay(code) ?? true, source: 'luxalgo-library', family: ind.family ?? null, license, tradingviewUuid: uuid });
       known.ids.add(id); known.files.add(file); if (uuid) known.uuids.add(uuid);
     }
     added++;

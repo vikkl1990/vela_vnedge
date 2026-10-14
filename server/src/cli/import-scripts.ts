@@ -4,6 +4,7 @@
  * Only open-source scripts have retrievable source (via TradingView's pine-facade).
  */
 import fs from 'node:fs';
+import { declaredOverlay } from '../scanners/registry.ts';
 import path from 'node:path';
 import { PINE_DIR, SCRIPTS_DIR } from '../config.ts';
 
@@ -49,7 +50,7 @@ for (const item of list) {
     if (source.length > 100) fs.writeFileSync(path.join(PINE_DIR, file), source);
     manifest.push({
       id, name, author, file, url, pub: m ? m[1] : null, access, pineVersion: version, lines: source ? source.split('\n').length : null, updated: item.updated ?? null, scriptType: item.type ?? null,
-      status: source.length > 100 ? 'ok' : 'unavailable', reason: source.length > 100 ? null : `${access ?? 'Unknown access'} on TradingView: source not published`, overlay: true,
+      status: source.length > 100 ? 'ok' : 'unavailable', reason: source.length > 100 ? null : `${access ?? 'Unknown access'} on TradingView: source not published`, overlay: declaredOverlay(source) ?? true,
     });
     known.add(file); added++;
     if (added % 25 === 0) { fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 1)); console.log(`… ${added} added, ${errors} errors`); }

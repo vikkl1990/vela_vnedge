@@ -43,6 +43,28 @@ export function categorize(name: string): string {
 }
 
 /** Loads `scripts/manifest.json` + Pine sources, applying compatibility patches. */
+/**
+ * What the script itself says about where it draws. The importers wrote `overlay: true` for every
+ * script, so 442 oscillators were drawn on the price pane and flattened its scale (decision 97);
+ * the declaration in `indicator()`/`strategy()` is the truth, the manifest only a fallback.
+ */
+export function declaredOverlay(source: string): boolean | null {
+  const m = source.match(/\b(?:indicator|strategy)\s*\(/);
+  if (!m || m.index === undefined) return null;
+  // the call's own span: titles carry parentheses ("AI Predictive Flow (Zeiierman)"), so count them, outside quotes
+  let depth = 0, i = m.index + m[0].length - 1, quote: string | null = null;
+  const start = i + 1;
+  for (; i < source.length; i++) {
+    const ch = source[i];
+    if (quote) { if (ch === '\\') i++; else if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) break;
+  }
+  const ov = source.slice(start, i).match(/\boverlay\s*=\s*(true|false)\b/);
+  return ov ? ov[1] === 'true' : null;
+}
+
 export class ScannerRegistry {
   private map = new Map<string, LoadedScanner>();
 
@@ -76,7 +98,7 @@ export class ScannerRegistry {
       this.map.set(m.id, {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
         pineVersion: m.pineVersion ?? null, lines: m.lines ?? null, updated: m.updated ?? null,
-        status, reason, overlay: m.overlay ?? true, category: categorize(m.name),
+        status, reason, overlay: declaredOverlay(source) ?? m.overlay ?? true, category: categorize(m.name),
         source, patched, patches: applied,
       });
     }
