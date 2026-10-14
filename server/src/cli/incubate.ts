@@ -124,8 +124,10 @@ if (sliceArg !== 'none') {
   const markets = [...data.keys()];
   for (const [idx, s] of scripts.entries()) {
     if (Date.now() - started > BUDGET_MS) { summary.truncated = scripts.length - idx; out(`time budget spent after ${idx} of ${scripts.length} scripts: ${summary.truncated} wait for this slice's next turn`); break; }
-    const rss = process.memoryUsage().rss;
-    if (idx % 25 === 0) out(`  ${idx}/${scripts.length} scripts · ${Math.round(rss / 1048576)} MB resident`);
+    const mu = process.memoryUsage(); const rss = mu.rss;
+    const MB = (n: number) => Math.round(n / 1048576);
+    // MEMLOG=1 prints the breakdown every script (where the memory goes: V8 heap, native buffers, or the worker threads outside both)
+    if (idx % 25 === 0 || process.env.MEMLOG) out(`  ${idx}/${scripts.length} scripts · ${MB(rss)} MB resident · heap ${MB(mu.heapUsed)}/${MB(mu.heapTotal)} · external ${MB(mu.external)} · arrayBuffers ${MB(mu.arrayBuffers)} · runs ${summary.runs} · pool recycled ${pool.stats?.recycled ?? '?'}`);
     if (rss > MEM_STOP) {
       summary.truncated = scripts.length - idx; summary.memoryStop = rss;
       out(`memory at ${Math.round(rss / 1048576)} MB, ${Math.round(MEM_STOP / 1048576)} MB is the line: ${summary.truncated} scripts wait for this slice's next turn`);
