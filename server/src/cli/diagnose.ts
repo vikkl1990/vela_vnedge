@@ -161,6 +161,11 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants.spread = stat(run({ spreadPct }), b, tfMs);
   variants['limit0'] = stat(run({ spreadPct, entry: { pullbackAtr: 0, pullbackBars: 2 } }), b, tfMs);
   variants['limit0.1'] = stat(run({ spreadPct, entry: { pullbackAtr: 0.1, pullbackBars: 2 } }), b, tfMs);
+  // the cost rule: with the real book paid, only take a trade whose stop is many times the round trip's cost
+  variants['spread+ratio6'] = stat(run({ spreadPct, costRatio: 6 }), b, tfMs);
+  variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
+  variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
+  variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
   variants.inverted = stat(run({ events: flip(events) }), b, tfMs);
   variants.long = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'long') }), b, tfMs);
   variants.short = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'short') }), b, tfMs);

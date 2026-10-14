@@ -46,6 +46,8 @@ export interface BacktestInput {
    * quote. A resting limit (`entry.pullbackAtr`) pays none of it on the entry.
    */
   spreadPct?: number;
+  /** Under test: the stop must be at least this many times the round trip's cost (fees plus the book), overriding `minRiskFeeRatio`. */
+  costRatio?: number;
 }
 
 export interface BacktestResult {
@@ -102,7 +104,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean): boolean => {
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) { refuse(lv.error); return false; }
-    const feeErr = checkRiskVsFees(price, lv.sl, cfg, inp.symbol);
+    const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0);
     if (feeErr) { refuse('stop too tight for fees'); return false; }
     const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
     if (sz.qty < 1) { refuse(sz.reason ?? 'size'); return false; }
