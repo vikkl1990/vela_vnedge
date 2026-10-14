@@ -39,7 +39,7 @@ test('entry model: a pullback limit fills back from the signal close as a maker,
   const quiet = Array.from({ length: 20 }, (_, i) => b(i, 100, 100.5, 99.5, 100));
   const bars = [...quiet, b(20, 100, 100.5, 99.5, 100), b(21, 100, 100.2, 99.6, 100.1), b(22, 100.1, 106, 100, 105), b(23, 105, 105, 105, 105)];
   const ev = [{ kind: 'entry', side: 'long', price: 100, barTime: 20 * M15, barIndex: 20, source: 'alert', label: 'buy', message: '' }] as any;
-  const paper = { ...cfg, feeRatePct: 0.05, makerFeeRatePct: 0.02, feeTaxPct: 0, fallbackAtrSl: 1.5, fallbackRR: [2, 2, 2], tpSplit: [1, 0, 0] };
+  const paper = { ...cfg, feeRatePct: 0.05, makerFeeRatePct: 0.02, feeTaxPct: 0, fallbackAtrSl: 1.5, fallbackRR: [2, 2, 2] as [number, number, number], tpSplit: [1, 0, 0] as [number, number, number] };
   // a 0.5 tick would round the 99.7 limit to 99.5, below the dip: the limit rests on the tick grid, as a real order would
   const input = { ...base, bars, events: ev, cfg: paper, exitMode: 'levels' as const, tickSize: 0.1 };
   const plain = runBacktest(input);

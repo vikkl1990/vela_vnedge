@@ -28,6 +28,7 @@ import { applyRules } from '../scanners/rules.ts';
 import { runBacktest, type BacktestInput } from '../paper/backtest.ts';
 import { compareRepaint, REPAINT_CUT } from '../scanners/repaint.ts';
 import { ConfigStore, TF_SECONDS, type PaperConfig } from '../config.ts';
+import { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
 
 const cfg = new ConfigStore().get();
@@ -56,6 +57,9 @@ async function bars(symbol: string, tf: string, n: number): Promise<Bar[]> {
   return series.get(k)!;
 }
 const market = new Map<string, ReturnType<typeof marketSpec>>();
+// the market gate's last reading of each book (round-trip cost in %), so the honest variants pay the spread the account pays
+const bookCost = new Map<string, number>();
+try { for (const m of (new Db().kvGet<{ markets: Array<{ symbol: string; bookCostPct: number | null }> }>('risk.marketsToday')?.markets ?? [])) if (m.bookCostPct != null) bookCost.set(m.symbol, m.bookCostPct); } catch { /* no gate reading: the spread variants then equal base */ }
 for (const s of MARKETS) { const p = await rest.product(s); market.set(s, marketSpec(p)); }
 for (const s of MARKETS) for (const tf of TFS) { const b = await bars(s, tf, BARS[tf]); await bars(s, SUB[tf], Math.min(60_000, Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]))); }
 console.error('candles ready');
@@ -152,6 +156,11 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['pull0.3'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3 } }), b, tfMs);
   variants['pull0.5'] = stat(run({ entry: { pullbackAtr: 0.5, pullbackBars: 5 } }), b, tfMs);
   variants['pull0.3+nochase'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3, maxSignalBarAtr: 1.5 } }), b, tfMs);
+  // costs as the account pays them: every market leg crosses half the book; a limit at the signal price crosses nothing on entry and pays the maker fee
+  const spreadPct = bookCost.get(sym) ?? 0;
+  variants.spread = stat(run({ spreadPct }), b, tfMs);
+  variants['limit0'] = stat(run({ spreadPct, entry: { pullbackAtr: 0, pullbackBars: 2 } }), b, tfMs);
+  variants['limit0.1'] = stat(run({ spreadPct, entry: { pullbackAtr: 0.1, pullbackBars: 2 } }), b, tfMs);
   variants.inverted = stat(run({ events: flip(events) }), b, tfMs);
   variants.long = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'long') }), b, tfMs);
   variants.short = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'short') }), b, tfMs);

@@ -40,6 +40,12 @@ export interface BacktestInput {
    * a maker, or not at all. The stop is then measured from the fill, not from the impulse top.
    */
   entry?: { maxSignalBarAtr?: number; pullbackAtr?: number; pullbackBars?: number };
+  /**
+   * The market's round-trip book cost in percent (the market gate's `bookCostPct`): every market-style
+   * leg pays half of it on top of the configured slippage, as the account does when it crosses a real
+   * quote. A resting limit (`entry.pullbackAtr`) pays none of it on the entry.
+   */
+  spreadPct?: number;
 }
 
 export interface BacktestResult {
@@ -54,7 +60,8 @@ export interface BacktestResult {
 export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
   // a backtest is one market, so its exit rules are resolved once (decision 34)
-  const cfg = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExit);
+  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExit);
+  const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: (cfg0.slippageBps ?? 0) + inp.spreadPct * 50 } : cfg0;
   const atr = atrSeries(bars, 14);
   const idxByTime = new Map<number, number>();
   bars.forEach((b, i) => idxByTime.set(b.time, i));
@@ -190,7 +197,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const price = ev.price && ev.price > 0 ? ev.price : bar.close;
       const em = inp.entry;
       if (em?.maxSignalBarAtr && atr[i] > 0 && (bar.high - bar.low) / atr[i] > em.maxSignalBarAtr) { refuse('chased'); continue; }
-      if (em?.pullbackAtr && atr[i] > 0) {
+      if (em?.pullbackAtr != null && em.pullbackAtr >= 0 && atr[i] > 0) {
         const limit = roundTick(ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i], inp.tickSize);
         pending = { ev, limit, sigI: i, expires: i + Math.max(1, em.pullbackBars ?? 3) };
         continue;
