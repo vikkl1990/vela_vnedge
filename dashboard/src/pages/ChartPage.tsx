@@ -3,11 +3,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { qk, useConfig, useMarkets, usePositionPath, usePositions, useScannerIndex, useSignals } from '../api/queries'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
+import { ChartFrames, FramePicker } from '../chart/ChartFrames'
 import { positionOverlay } from '../chart/positionOverlay'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { ChipSelect, Panel, Pill, QueryState } from '../components/ui'
 import { fmtPct, fmtPrice, pnlClass } from '../lib/format'
-import { DELTA_TIMEFRAMES } from '../lib/timeframes'
+import { DELTA_TIMEFRAMES, FRAME_PRESET } from '../lib/timeframes'
 import { useLivePrice } from '../sse/prices'
 
 const LS_KEY = 'vnedge.chart'
@@ -31,6 +32,13 @@ export function ChartPage() {
       return '15m'
     }
   })
+  // single chart or several timeframes side by side (decision 97), remembered with the symbol
+  const [view, setView] = useState<'single' | 'frames'>(() => {
+    try { return JSON.parse(localStorage.getItem(LS_KEY) ?? '{}').view === 'frames' ? 'frames' : 'single' } catch { return 'single' }
+  })
+  const [frames, setFrames] = useState<string[]>(() => {
+    try { const f = JSON.parse(localStorage.getItem(LS_KEY) ?? '{}').frames; return Array.isArray(f) && f.length ? f : FRAME_PRESET } catch { return FRAME_PRESET }
+  })
   const [selected, setSelected] = useState<string[]>([])
   const [showPosition, setShowPosition] = useState(true)
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
@@ -44,11 +52,11 @@ export function ChartPage() {
   const symbol = symbolSel || symbolOptions[0] || 'BTCUSD'
   useEffect(() => {
     try {
-      localStorage.setItem(LS_KEY, JSON.stringify({ symbol, tf }))
+      localStorage.setItem(LS_KEY, JSON.stringify({ symbol, tf, view, frames }))
     } catch {
       /* ignore */
     }
-  }, [symbol, tf])
+  }, [symbol, tf, view, frames])
 
   const enabledScanners = useMemo(() => (scanners.data ?? []).filter((s) => s.enabled && s.status === 'ok' && !s.hidden), [scanners.data])
   const scannerNames = useMemo(() => enabledScanners.map((s) => s.name), [enabledScanners])
@@ -117,16 +125,24 @@ export function ChartPage() {
             ))}
           </select>
         </label>
-        <label className="field-inline">
-          <span className="chips-label">Timeframe</span>
-          <select className="select" value={tf} onChange={(e) => setTf(e.target.value)} aria-label="Timeframe">
-            {DELTA_TIMEFRAMES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        </label>
+        <span className="seg" role="group" aria-label="View">
+          <button className={`btn btn-xs ${view === 'single' ? 'btn-on' : ''}`} onClick={() => setView('single')} aria-pressed={view === 'single'}>Single</button>
+          <button className={`btn btn-xs ${view === 'frames' ? 'btn-on' : ''}`} onClick={() => setView('frames')} aria-pressed={view === 'frames'} title="The same market on several timeframes, every frame drawing the selected scripts">Frames</button>
+        </span>
+        {view === 'single' ? (
+          <label className="field-inline">
+            <span className="chips-label">Timeframe</span>
+            <select className="select" value={tf} onChange={(e) => setTf(e.target.value)} aria-label="Timeframe">
+              {DELTA_TIMEFRAMES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <FramePicker value={frames} onChange={setFrames} />
+        )}
         {market && (
           <span className="row gap">
             <span className="mono strong">{fmtPrice(live, market.tickSize)}</span>
@@ -165,9 +181,25 @@ export function ChartPage() {
         ))}
       </div>
 
-      <div className="chart-layout">
+      <div className={`chart-layout ${view === 'frames' ? 'chart-layout-frames' : ''}`}>
         <div className="chart-main">
-          {symbol ? (
+          {symbol && view === 'frames' ? (
+            <ChartFrames
+              symbol={symbol}
+              tfs={frames}
+              scripts={allScripts}
+              tickSize={market?.tickSize}
+              onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
+              onScriptReady={(id) =>
+                setScriptErrors((e) => {
+                  if (!(id in e)) return e
+                  const n = { ...e }
+                  delete n[id]
+                  return n
+                })
+              }
+            />
+          ) : symbol ? (
             <VelaChart
               symbol={symbol}
               tf={tf}

@@ -4,6 +4,7 @@ import { useBacktest, useConfig, useEquity, useMarkets, useProfileScanner, useRe
 import { useAuth } from '../auth/AuthGate'
 import type { EntrySource, Trade } from '../api/types'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
+import { ChartFrames } from '../chart/ChartFrames'
 import { EquityChart } from '../components/charts'
 import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconPlay } from '../components/Icons'
@@ -33,6 +34,8 @@ export function ScannerDetail() {
   const tf = tfSel && tfs.includes(tfSel) ? tfSel : (tfs[0] ?? '')
 
   const [showScript, setShowScript] = useState(false)
+  // the scanner's drawing on every timeframe it is traded on, side by side (decision 97)
+  const [framesView, setFramesView] = useState(false)
   const source = useScannerSource(showScript ? id : undefined)
   const scripts = useMemo<ChartScript[]>(() => {
     if (!showScript || !s || !source.data?.patched) return []
@@ -149,6 +152,9 @@ export function ScannerDetail() {
             <label className="check">
               <input type="checkbox" checked={showScript} onChange={(e) => setShowScript(e.target.checked)} /> Show script on chart
             </label>
+            <label className="check" title="Every timeframe this scanner trades, side by side, each drawing the script">
+              <input type="checkbox" checked={framesView} onChange={(e) => setFramesView(e.target.checked)} /> Frames
+            </label>
             {showScript && source.isLoading && <span className="muted small">loading source…</span>}
             {showScript && source.isError && <span className="loss small">source unavailable</span>}
           </div>
@@ -158,7 +164,9 @@ export function ScannerDetail() {
         {symbol && tf ? (
           // The chart swallows the wheel to zoom, which traps the page under the mouse. Here the page scrolls; hold Shift to zoom.
           <div onWheelCapture={(e) => { if (!e.shiftKey) e.stopPropagation() }} title="Scroll moves the page; hold Shift to zoom the chart">
-            <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} tickSize={tick} />
+            {framesView
+              ? <ChartFrames symbol={symbol} tfs={(tfs.length ? tfs : ['15m', '1h', '4h']).slice(0, 4)} scripts={scripts} tickSize={tick} height={tfs.length > 2 ? 760 : 420} />
+              : <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} tickSize={tick} />}
           </div>
         ) : <Loading kind="chart" height={520} />}
       </Panel>

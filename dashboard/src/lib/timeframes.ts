@@ -50,3 +50,6 @@ export function tfMinutes(tf: string): number {
 export function tfMs(tf: string): number {
   return tfMinutes(tf) * 60_000
 }
+
+/** The frames view's default: the four timeframes a scanner is usually read on. */
+export const FRAME_PRESET = ['15m', '1h', '4h', '1d']

@@ -1355,3 +1355,14 @@ body { overflow-x: clip; }
 .markets-out { max-height: 300px; overflow-y: auto; scrollbar-width: thin; }
 .attention { border-color: var(--danger, #e5484d); }
 .attention ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* Frames view (decision 97): one market, several timeframes, each its own chart */
+.chart-frames { display: grid; gap: 8px; min-height: 0; }
+.chart-frame { position: relative; min-height: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface-2); min-height: 260px; }
+.chart-frame .vela-wrap, .chart-frame .fallback-chart { height: 100%; }
+.chart-frame-tag { position: absolute; top: 6px; left: 10px; z-index: 3; font-size: 11px; padding: 2px 6px; border-radius: 6px; background: var(--surface-1, rgba(0,0,0,.5)); color: var(--muted); pointer-events: none; }
+.chart-layout-frames { grid-template-columns: 1fr; }
+.chart-layout-frames .chart-side { display: none; }
+.chart-layout-frames .chart-main { border: 0; background: transparent; overflow: visible; }
+.btn-on { background: var(--accent-soft, rgba(124,108,255,.25)); border-color: var(--accent, #7c6cff); }
+@media (max-width: 900px) { .chart-frames { grid-template-columns: 1fr !important; } }
