@@ -678,3 +678,12 @@ test('a market brings its own maintenance margin and leverage ceiling: an alt at
   assert.equal(p.maintenanceMarginPct, 2.5);
   assert.ok(Math.abs(p.liqPrice! - liq) < 1e-9);
 });
+
+test('the stop-versus-cost check counts the book when it is known: a stop that clears the fees alone fails once the spread is in', () => {
+  const c = { ...cfg, feeRatePct: 0.05, feeTaxPct: 18, minRiskFeeRatio: 6 };
+  // round-trip fees 0.118%; a 0.8% stop clears 6× fees (0.71%) with nothing else to pay
+  assert.equal(checkRiskVsFees(100, 99.2, c, 'X'), null);
+  // the same stop against a 0.3% book: 6 × (0.118% + 0.3%) = 2.5% is needed
+  assert.match(checkRiskVsFees(100, 99.2, c, 'X', 0.3) ?? '', /stop too tight/);
+  assert.equal(checkRiskVsFees(100, 97, c, 'X', 0.3), null);
+});

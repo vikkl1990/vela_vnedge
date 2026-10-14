@@ -1,0 +1,97 @@
+files 40 · cells 83
+
+variant           cells  trades  R/trade     sumR  both+  >base  <base 1stBarStop   mfe1
+base                 83    9122   +0.124  +1127.5     46      0      0       0.09   0.27
+gross                83    9604   +0.285  +2734.3     64     83      0       0.09   0.28
+spread               83    6879   -0.017   -117.2     16      4     72       0.08   0.22
+spread+ratio6        80    2421   +0.036    +88.0     17     21     51       0.07   0.18
+spread+ratio10       63    1108   +0.004     +4.1      7     19     39       0.08   0.14
+spread+er0.25        83    2965   +0.067   +199.2     25     28     46       0.09   0.24
+spread+er+ratio10    54     528   +0.077    +40.4      7     21     27       0.09   0.18
+limit0               83    6058   -0.046   -281.6     14      6     66       0.17   0.20
+er0.25               83    4009   +0.207   +831.6     46     55     18       0.09   0.30
+
+Per cell, base vs pullback 0.3 and no-chase (trades / R per trade); cells with ≥ 8 base trades, sorted by the pullback gain:
+smart-money-breakout-signals   4h   ETHUSD       base   13/+0.05  pull0.3    8/+0.33  nochase    2/-0.38  both    1/+0.29
+ai-predictive-flow-zeiierman   1h   BTCUSD       base   44/+0.07  pull0.3   28/+0.28  nochase   42/+0.04  both   27/+0.27
+kinetic-momentum-vectors       1h   VVVUSD       base   24/+0.14  pull0.3   22/+0.29  nochase    2/+0.32  both    2/+0.66
+smart-swing-vwap-zeiierman     15m  AKEUSD       base   56/-0.12  pull0.3   44/+0.01  nochase   42/-0.10  both   31/+0.03
+volume-supertrend-ai-expo      15m  AAVEUSD      base   76/-0.14  pull0.3   66/-0.02  nochase   62/-0.20  both   54/-0.03
+adaptive-atr-extension-scanner 15m  SOLUSD       base  205/-0.21  pull0.3  165/-0.11  nochase  134/-0.20  both  111/-0.17
+structure-anchored-vwap        1h   BTCUSD       base   60/+0.02  pull0.3   45/+0.12  nochase   32/-0.03  both   21/+0.04
+kalman-step-signals            15m  AKEUSD       base  149/-0.10  pull0.3  112/-0.00  nochase  109/-0.10  both   80/+0.03
+pivot-channel-breaks           1h   LINKUSD      base   65/+0.10  pull0.3   54/+0.20  nochase   50/+0.11  both   39/+0.19
+liquidity-pools-pro            15m  UNIUSD       base  101/-0.06  pull0.3   74/+0.03  nochase   65/-0.09  both   47/+0.04
+ict-session-zones-sweep-signal 15m  NEARUSD      base   59/-0.17  pull0.3   47/-0.09  nochase   46/-0.17  both   37/-0.08
+pulse-trend-radar              15m  SOLUSD       base   58/-0.02  pull0.3   54/+0.05  nochase   47/-0.02  both   43/+0.08
+liquidity-trail-matrix         1h   MUBARAKUSD   base   90/+0.02  pull0.3   58/+0.08  nochase   58/-0.01  both   33/+0.19
+session-killzones-breakouts    1h   ZECUSD       base   77/+0.15  pull0.3   59/+0.21  nochase   36/+0.20  both   28/+0.28
+volume-supertrend-ai-expo      15m  ZECUSD       base   70/+0.06  pull0.3   49/+0.11  nochase   58/+0.06  both   39/+0.14
+kinetic-momentum-vectors       1h   MUBARAKUSD   base   43/+0.19  pull0.3   34/+0.24  nochase    4/-0.15  both    4/-0.13
+supertrend-cluster-zeiierman   1h   ZECUSD       base   80/+0.05  pull0.3   60/+0.08  nochase   66/-0.02  both   48/-0.01
+ai-predictive-flow-zeiierman   1h   NEARUSD      base   46/+0.24  pull0.3   35/+0.26  nochase   36/+0.29  both   28/+0.36
+structure-anchored-vwap        1h   ZECUSD       base   64/+0.10  pull0.3   44/+0.12  nochase   45/+0.04  both   32/-0.03
+session-killzones-breakouts    1h   ETHUSD       base   90/-0.01  pull0.3   74/+0.01  nochase   41/-0.08  both   31/-0.14
+supertrend-cluster-zeiierman   1h   SAGAUSD      base   70/+0.03  pull0.3   51/+0.05  nochase   54/+0.02  both   39/-0.02
+kalman-step-signals            15m  TAOUSD       base  179/-0.07  pull0.3  122/-0.05  nochase  155/-0.07  both  105/-0.03
+kinetic-momentum-vectors       1h   FILUSD       base   20/+0.14  pull0.3   17/+0.15  nochase    1/+1.37  both    0/+0.00
+reverse-rsi-signals            15m  SAGAUSD      base  135/-0.16  pull0.3  103/-0.16  nochase  108/-0.15  both   78/-0.16
+machine-learning-rsi-ai-classi 15m  MUBARAKUSD   base  220/+0.00  pull0.3  173/-0.01  nochase  155/+0.03  both  118/+0.04
+machine-learning-rsi-ai-classi 15m  DOGEUSD      base  171/-0.13  pull0.3  120/-0.14  nochase  116/-0.17  both   79/-0.21
+liquidity-trail-matrix         4h   ETHUSD       base   27/+0.09  pull0.3   21/+0.08  nochase   14/+0.16  both   12/+0.12
+smart-money-breakout-signals   1h   ETHUSD       base   17/-0.16  pull0.3   16/-0.17  nochase    2/+0.25  both    2/-0.27
+pulse-trend-radar              1h   ZECUSD       base   73/+0.04  pull0.3   59/+0.02  nochase   63/+0.07  both   49/+0.06
+kinetic-momentum-vectors       1h   ETHUSD       base   12/+0.60  pull0.3   10/+0.58  nochase    0/+0.00  both    0/+0.00
+ai-predictive-flow-zeiierman   1h   ZECUSD       base   51/+0.35  pull0.3   41/+0.33  nochase   45/+0.27  both   37/+0.24
+machine-learning-rsi-ai-classi 15m  AVAXUSD      base  199/-0.06  pull0.3  156/-0.08  nochase  140/-0.08  both  112/-0.09
+ai-predictive-flow-zeiierman   1h   MUBARAKUSD   base   49/+0.17  pull0.3   36/+0.15  nochase   40/+0.24  both   28/+0.14
+volume-supertrend-ai-expo      15m  NEARUSD      base   79/+0.03  pull0.3   57/+0.00  nochase   65/+0.04  both   45/-0.09
+swing-traces                   4h   ETHUSD       base   71/-0.01  pull0.3   46/-0.04  nochase   64/-0.03  both   42/-0.08
+kinetic-momentum-vectors       1h   UNIUSD       base   34/+0.19  pull0.3   24/+0.16  nochase    8/+0.12  both    5/-0.17
+swing-traces                   4h   BTCUSD       base   74/+0.08  pull0.3   50/+0.05  nochase   65/+0.10  both   46/+0.03
+trend-pullback-guard           15m  AINUSD       base  205/+0.17  pull0.3  133/+0.14  nochase  126/+0.07  both   81/+0.03
+omni-flow-consensus            15m  MUBARAKUSD   base  247/+0.07  pull0.3  179/+0.04  nochase  223/+0.05  both  163/+0.04
+liquidity-trail-matrix         15m  AIOTUSD      base   69/+0.11  pull0.3   41/+0.07  nochase   25/+0.11  both   11/+0.01
+order-block-detector           15m  AINUSD       base  413/+0.07  pull0.3  266/+0.03  nochase  313/+0.10  both  202/-0.00
+session-killzones-breakouts    1h   MUBARAKUSD   base   68/+0.07  pull0.3   50/+0.02  nochase   37/-0.02  both   27/-0.07
+ai-predictive-flow-zeiierman   15m  UNIUSD       base   48/+0.13  pull0.3   34/+0.08  nochase   43/+0.10  both   32/+0.05
+reversal-and-breakout-signals  1h   ZECUSD       base  186/+0.06  pull0.3  148/+0.01  nochase  112/-0.04  both   89/-0.06
+smart-swing-vwap-zeiierman     15m  LINKUSD      base   72/-0.03  pull0.3   56/-0.10  nochase   53/-0.01  both   39/-0.09
+supertrend-cluster-zeiierman   15m  NEARUSD      base   89/+0.05  pull0.3   67/-0.01  nochase   78/+0.09  both   58/+0.01
+smart-swing-vwap-zeiierman     1h   SAGAUSD      base   65/-0.03  pull0.3   54/-0.10  nochase   40/-0.04  both   33/-0.05
+market-memory-average-zeiierma 15m  AINUSD       base   87/+0.08  pull0.3   56/-0.00  nochase   76/+0.06  both   46/-0.07
+pivot-channel-breaks           1h   SAGAUSD      base   56/+0.10  pull0.3   48/+0.00  nochase   39/+0.13  both   33/+0.03
+trend-pullback-guard           15m  TAOUSD       base  242/+0.06  pull0.3  161/-0.04  nochase  203/+0.10  both  136/+0.01
+volatility-supply-and-demand-z 15m  ETCUSD       base  369/+0.02  pull0.3  225/-0.09  nochase  266/-0.05  both  166/-0.18
+liquidity-trail-matrix         15m  STXUSD       base  112/-0.15  pull0.3   70/-0.27  nochase   63/-0.24  both   32/-0.38
+smart-swing-vwap-zeiierman     1h   UNIUSD       base   96/+0.06  pull0.3   72/-0.06  nochase   78/+0.01  both   59/-0.07
+supertrend-cluster-zeiierman   15m  EVAAUSD      base   99/+0.13  pull0.3   71/-0.00  nochase   85/+0.01  both   61/+0.03
+ai-predictive-flow-zeiierman   15m  GRIFFAINUSD  base   47/-0.03  pull0.3   31/-0.16  nochase   39/-0.07  both   25/-0.23
+trend-impulse-channels-zeiierm 15m  AINUSD       base  158/+0.23  pull0.3  108/+0.08  nochase   66/+0.12  both   51/+0.21
+pivot-channel-breaks           1h   UNIUSD       base   59/+0.07  pull0.3   44/-0.07  nochase   46/-0.01  both   34/-0.14
+kinetic-momentum-vectors       15m  API3USD      base   44/+0.27  pull0.3   32/+0.11  nochase   15/+0.68  both    9/+0.51
+liquidity-heatmap-sweep-radar  15m  1000PEPEUSD  base   60/+0.04  pull0.3   41/-0.12  nochase   35/-0.06  both   27/-0.16
+pivot-channel-breaks           1h   AINUSD       base   58/+0.24  pull0.3   44/+0.07  nochase   45/+0.26  both   31/-0.04
+kinetic-momentum-vectors       15m  STRKUSD      base   40/+0.13  pull0.3   27/-0.04  nochase   15/+0.35  both   10/-0.10
+trend-impulse-channels-zeiierm 15m  1000PEPEUSD  base  203/+0.11  pull0.3  134/-0.07  nochase  119/-0.10  both   78/-0.23
+trend-lines                    15m  ZECUSD       base   35/+0.00  pull0.3   26/-0.19  nochase   21/+0.00  both   14/-0.41
+bollinger-bands-simple-strateg 15m  AINUSD       base  255/+0.10  pull0.3  154/-0.09  nochase  150/+0.12  both   95/-0.10
+levels-likely-to-break-zeiierm 15m  FILUSD       base   61/+0.22  pull0.3   41/+0.00  nochase   35/-0.02  both   23/-0.07
+kinetic-momentum-vectors       1h   BCHUSD       base   23/+0.52  pull0.3   18/+0.29  nochase    1/+0.49  both    1/+0.26
+levels-likely-to-break-zeiierm 15m  GRIFFAINUSD  base   59/+0.15  pull0.3   38/-0.08  nochase   35/+0.19  both   17/-0.21
+atr-trend-channel-signals      15m  STRKUSD      base  179/+0.23  pull0.3  106/-0.01  nochase  135/+0.27  both   72/-0.16
+kinetic-momentum-vectors       15m  MUBARAKUSD   base   44/+0.21  pull0.3   38/-0.04  nochase    5/-0.47  both    5/-0.41
+levels-likely-to-break-zeiierm 15m  JTOUSD       base   59/+0.53  pull0.3   35/+0.24  nochase   39/+0.72  both   20/+0.70
+supertrend-cluster-zeiierman   15m  GRIFFAINUSD  base   96/+0.16  pull0.3   67/-0.14  nochase   81/+0.17  both   53/-0.15
+volatility-supply-and-demand-z 15m  WIFUSD       base  400/+0.15  pull0.3  196/-0.21  nochase  312/+0.22  both  146/-0.16
+atr-trend-channel-signals      15m  ACTUSD       base  255/+0.21  pull0.3  123/-0.15  nochase  217/+0.24  both  103/-0.22
+supertrend-cluster-zeiierman   1h   STRKUSD      base  148/+0.18  pull0.3   88/-0.25  nochase  137/+0.14  both   77/-0.32
+levels-likely-to-break-zeiierm 15m  ACTUSD       base   49/+0.33  pull0.3   28/-0.12  nochase   36/+0.45  both   17/+0.04
+levels-likely-to-break-zeiierm 15m  STRKUSD      base   48/+0.48  pull0.3   28/+0.02  nochase   34/+0.29  both   18/-0.15
+smart-money-breakout-signals   1h   FILUSD       base   22/+0.29  pull0.3   18/-0.18  nochase    7/+0.25  both    6/-0.10
+supertrend-cluster-zeiierman   15m  STXUSD       base  144/+0.20  pull0.3   87/-0.27  nochase  124/+0.21  both   77/-0.28
+pivot-channel-breaks           15m  API3USD      base   63/+0.22  pull0.3   41/-0.38  nochase   55/+0.30  both   35/-0.41
+trend-impulse-channels-zeiierm 15m  COOKIEUSD    base  157/+0.40  pull0.3   74/-0.28  nochase   88/+0.16  both   44/-0.34
+pvrple-oracle-250              15m  BTCUSD       base  635/+0.60  pull0.3  186/-0.10  nochase  511/+0.63  both  142/-0.09
+supertrend-cluster-zeiierman   15m  STRKUSD      base  117/+0.38  pull0.3   60/-0.34  nochase  106/+0.43  both   54/-0.37
+pulse-trend-radar              15m  STRKUSD      base  130/+0.42  pull0.3   65/-0.36  nochase  118/+0.41  both   59/-0.34

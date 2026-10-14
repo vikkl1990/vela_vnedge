@@ -194,6 +194,19 @@ export class PaperEngine extends EventEmitter {
    * Price a market-style fill. With a fresh quote we cross the real spread (buy at ask,
    * sell at bid); otherwise we fall back to the configured slippage around `reference`.
    */
+  /**
+   * The book's round-trip cost right now, as a percent of price: the spread a market entry and a
+   * market exit cross between them (decision 96). Zero when no fresh quote exists, so the check falls
+   * back to fees alone rather than inventing a book.
+   */
+  spreadPct(symbol: string, cfg: PaperConfig, now = Date.now()): number {
+    if (!cfg.useSpread || !this.quotes?.markState) return 0;
+    const q = this.quotes.markState(symbol);
+    if (!q || q.bestBid == null || q.bestAsk == null || !(q.bestAsk > q.bestBid) || !(q.bestBid > 0)) return 0;
+    if ((cfg.quoteMaxAgeMs ?? 0) > 0 && q.quoteAt != null && now - q.quoteAt > (cfg.quoteMaxAgeMs ?? 0)) return 0;
+    return (q.bestAsk - q.bestBid) / ((q.bestAsk + q.bestBid) / 2) * 100;
+  }
+
   marketPrice(symbol: string, side: 'buy' | 'sell', reference: number, cfg: PaperConfig, now = Date.now()): { price: number; source: 'quote' | 'slippage' } {
     if (cfg.useSpread && this.quotes) {
       const q = this.quotes.executable(symbol, side, cfg.quoteMaxAgeMs ?? 0, now);
@@ -290,7 +303,7 @@ export class PaperEngine extends EventEmitter {
     const entryContext: FillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return refused(levels.error);
-    const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol);
+    const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol, this.spreadPct(ctx.symbol, cfg, ctx.at));
     if (feeErr) return refused(feeErr);
     // portfolio risk layer: kill switches, position caps, cooldowns, regime filter, drawdown scaling
     let leverageMult = 1;
@@ -381,7 +394,7 @@ export class PaperEngine extends EventEmitter {
     // the signal's levels are absolute; the fill price must still sit on the right side of them
     const levels = resolveLevels({ side: pe.side, price, sl: pe.levels.sl, tp: pe.levels.tp }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
-    const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol);
+    const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, at));
     if (feeErr) return cancel(feeErr);
     if (this.open.size >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
     // the portfolio risk layer was consulted when the entry was queued; the book can have

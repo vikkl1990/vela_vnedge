@@ -2767,3 +2767,57 @@ the remaining levers are the ones decision 93 listed after this one: honest cost
 book, weight toward the 1h and 4h cells and the scanners positive across markets, and the
 discovery pipeline running at full speed. The variants stay in diagnose so any future script is
 judged on the same question.
+
+## 96. Why the scanners are not profitable: the book eats the edge, and what the fleet must change
+
+The operator asked for the deep dive and a working design. The dive was run on data rather than
+argued: 1,799 shadow trades since 28 September, the ten-script all-markets run (decision 93), and
+three variant runs over the 83 cells that are the fleet and its best shadow pairs
+(`data/reports/2026-10-13-entry-model-*`, `2026-10-14-limit-entries-*`, `2026-10-14-cost-rule-*`).
+
+**Where the R goes.** On the same signals across 44 markets, 15m cells make +0.14R a trade before
+costs and −0.02R after fees and slippage; 1h cells +0.07R before and −0.01R after; 4h cells have
+almost no gross edge (+0.02R). Costs take 0.16R a trade at 15m, 0.08R at 1h, 0.03R at 4h. The
+shadow book agrees: 33% of entries stop out and 69% of those never gain a quarter of an R, which
+costs −0.21R on every trade; the trail exits earn +0.27R; the book nets +0.03R, and that figure
+still pays only the slippage model on legs with no quote. The slippage stress of September showed
+the same: +0.24R at 2 bp, −0.11R at 10 bp.
+
+**What was tried and failed.** A pullback entry (decision 95): worse by 0.16R, because the signals
+that come back are the ones reversing. A resting limit at the signal price with the maker fee:
+fills 84% of entries and is still worse than the honest base (−0.05R against −0.02R), for the same
+reason at a smaller scale. A time stop (decision 39, re-read not re-run): worse in every setting.
+A wider stop: worse. No entry or exit mechanism recovers what the book takes.
+
+**What works, measured against a base that pays the real book** (the market gate's round-trip
+cost on every market leg):
+
+| Rule, 83 cells | Trades | R per trade | 15m | 1h |
+|---|---|---|---|---|
+| honest base | 6,879 | −0.02 | −0.03 | +0.02 |
+| stop ≥ 6× round-trip cost | 2,421 | +0.04 | +0.01 | +0.07 |
+| efficiency gate 0.25 | 2,965 | +0.07 | +0.04 | +0.14 |
+| gate and stop ≥ 10× cost | 528 | +0.08 | +0.01 | +0.16 |
+
+Fifteen-minute cells do not pay under any rule; the edge that survives real costs lives at 1h,
+behind the efficiency gate, with stops many times the round trip. These are in-sample on
+selected cells and will shrink out of sample; the direction will not.
+
+**The design that follows.**
+
+1. *The cost check pays the book.* `checkRiskVsFees` now counts the live spread (bid to ask, as a
+   round trip) beside the fees, from the same top-of-book the account fills on; with no fresh
+   quote it falls back to fees alone. Deployed.
+2. *The ratio must rise.* `paper.minRiskFeeRatio` is 2, which lets a 0.3% stop through against a
+   0.12% fee; the data says 6. This is a Settings change for the operator (the auto-mode rule
+   forbids this session from editing gates on the VM): **Settings → Paper account → minimum stop
+   over round-trip fee: 2 → 6.**
+3. *Discovery must look where the edge is.* The incubator screens one timeframe, `incubator.tf`,
+   and it is 15m: the whole pipeline hunts the timeframe that cannot pay. **Settings → incubator
+   timeframe: 15m → 1h.** The shadow book's 1h and 4h pairs are few because nothing admits them.
+4. *The fleet's 15m alt cells go as their records come in.* Decision 90's delivery rule retires
+   them on evidence; nothing is cut by hand here.
+
+Correction to decision 93's list: the shadow book is quoted exactly as the account is (both engines
+share the top-of-book), so it is not flattered by half the costs; the ratio that suggested it
+counted fees alone. The costs it pays are the book's real ones, which is the point above.
