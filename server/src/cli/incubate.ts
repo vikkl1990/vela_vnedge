@@ -69,6 +69,8 @@ const BUDGET_MS = (Number(process.env.BUDGET_MIN) || 270) * 60_000;
 // The unit's memory cap kills the whole job without a word (2026-10-11: 8.4 GB resident after four
 // hours). At 80% of it the screen stops and the judge runs on what it has.
 const MEM_STOP = Math.round(memoryLimitBytes() * 0.8);
+/** A single run that grows the process by this much names a hog (see the run loop). */
+const HOG_BYTES = (Number(process.env.HOG_MB) || 1536) * 1048576;
 
 if (sliceArg !== 'none') {
   const slice = Number(sliceArg);
@@ -151,7 +153,19 @@ if (sliceArg !== 'none') {
       summary.runs++;
       try {
         const inputs = cfg.scanners[s.id]?.inputs;
+        const rssBefore = process.memoryUsage().rss;
         const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
+        // One run that takes more than a gigabyte and a half is a memory hog (Wyckoff Range Engine needs 6 GB for
+        // one market): quarantine it at once, drop the workers that hold its memory, and go on with the slice.
+        // Waiting for the memory line (decision 93) cost a whole night per hog.
+        const took = process.memoryUsage().rss - rssBefore;
+        if (took > HOG_BYTES) {
+          summary.quarantined++; summary.hogs = (summary.hogs ?? 0) + 1;
+          if (!cfg.scanners[s.id]?.enabled) health.quarantine(s.id, `memory: one run on ${symbol} took ${Math.round(took / 1048576)} MB`);
+          out(`  ${s.id}: ${cfg.scanners[s.id]?.enabled ? 'skipped for the screen' : 'quarantined'} — one run on ${symbol} took ${Math.round(took / 1048576)} MB`);
+          pool.recycleAll();
+          break;
+        }
         if (!res.ok) {
           summary.failed++;
           if (/timeout after \d+ms/i.test(res.error ?? '')) {

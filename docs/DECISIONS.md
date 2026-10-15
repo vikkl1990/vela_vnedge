@@ -2850,3 +2850,28 @@ price pane, which squashed the price to a line at the top (AI Predictive Flow on
 once made it obvious). The registry now reads the declaration from the `indicator()` or
 `strategy()` call itself, with the manifest as a fallback, and the importers record it too.
 AI Predictive Flow now sits in its own pane under the price on every frame.
+
+## 98. Where the screen's memory goes, measured; hogs are named per run
+
+An instrumented screen (`MEMLOG=1`, 13 scripts on 49 markets, 111 runs) showed the main process's
+V8 heap flat at about 500 MB from the first script to the last, native buffers under 40 MB, and
+resident memory rising from 778 MB to 1.7 GB across nine worker recycles. The growth is outside the
+heap: memory the terminated worker threads leave behind in the allocator, plus the two live
+workers filling toward their caps. The live bot shows the same shape (heap 200 MB flat, resident
+1.7 to 2.8 GB, 160 recycles a day). With glibc's arenas capped (`MALLOC_ARENA_MAX=2`,
+`MALLOC_TRIM_THRESHOLD_=131072`) the identical run rose 588 MB instead of 941, a third less; it
+is an environment setting, so it belongs in the units:
+
+    # /etc/systemd/system/vnedge.service.d/malloc.conf and vnedge-incubate.service.d/malloc.conf
+    [Service]
+    Environment=MALLOC_ARENA_MAX=2
+    Environment=MALLOC_TRIM_THRESHOLD_=131072
+
+(root-owned; the operator applies it, then `systemctl daemon-reload` and a restart.)
+
+That leak is slow and bounded. What stopped a night after six scripts was a different thing: one
+script whose single run takes gigabytes of native memory inside its worker, beyond the worker's
+1 GB heap cap, pushing the process over the memory line at once. The screen now measures the
+resident delta of every run; a run that takes more than 1.5 GB (`HOG_MB`) names the script, puts it
+in quarantine with that reason (an enabled script is skipped for the screen instead), recycles the
+workers that hold its memory, and the slice continues. Decision 93's line remains the backstop.
