@@ -101,6 +101,34 @@ export class PinePool {
     for (let i = 0; i < size; i++) this.spawn(i);
     this.timeoutTimer = setInterval(() => this.reapTimeouts(), 5_000);
     this.timeoutTimer.unref();
+    this.memoryTimer = setInterval(() => this.reapMemory(), 1_000);
+    this.memoryTimer.unref();
+  }
+
+  /**
+   * The memory watchdog (decision 98). A worker's heap cap bounds V8 objects only; a script that
+   * fills typed arrays grows the process outside every cap until the kernel kills it, and one did
+   * at 8 GB with nothing logged. While any job runs, the process's resident size is sampled every
+   * second; past `memoryGuardBytes` (60% of the memory limit by default) every busy worker is
+   * retired with a `memory:` error, which the health check treats as a verdict.
+   */
+  memoryGuardBytes = Math.round(memoryLimitBytes() * 0.6);
+  /** Replaceable in tests. */
+  rssReader: () => number = () => process.memoryUsage().rss;
+  private memoryTimer: ReturnType<typeof setInterval>;
+  memoryRetirements = 0;
+  reapMemory(): void {
+    if (!this.workers.some(w => w.busy)) return;
+    const rss = this.rssReader();
+    if (!(rss > this.memoryGuardBytes)) return;
+    const mb = Math.round(rss / 1048576);
+    for (const slot of this.workers) {
+      const p = slot.busy;
+      if (!p) continue;
+      this.memoryRetirements++;
+      log.warn(`job ${p.job.scannerId} on ${p.job.symbol}: resident ${mb} MB over the ${Math.round(this.memoryGuardBytes / 1048576)} MB guard while it ran; terminating worker ${slot.index}`);
+      this.retire(slot, `memory: resident ${mb} MB over the guard while it ran`);
+    }
   }
 
   /** Jobs completed since start (the ops monitor turns the delta into runs per hour). */
@@ -248,6 +276,7 @@ export class PinePool {
   async stop() {
     this.stopped = true;
     clearInterval(this.timeoutTimer);
+    clearInterval(this.memoryTimer);
     for (const p of [...this.live.splice(0), ...this.queue.splice(0)]) this.fail(p, 'worker pool stopped');
     for (const slot of this.workers) {
       slot.retiring = true; slot.ready = false;

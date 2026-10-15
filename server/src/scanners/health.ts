@@ -62,6 +62,8 @@ export class ScriptHealth {
   /** Record one failed run. Returns true when this call quarantined the script. */
   record(scannerId: string, error: string | null | undefined, at = Date.now()): boolean {
     if (error && /timeout after \d+ms/i.test(error)) return this.recordTimeout(scannerId, error, at);
+    // a run that took the process to its memory guard is a verdict on the first strike: it endangers the machine
+    if (error && /^memory:/.test(error)) return this.quarantine(scannerId, error, at);
     const reason = permanentReason(error);
     if (!reason) return false;
     const cur = this.db.get<any>('SELECT fails, quarantined FROM script_health WHERE scanner_id=?', scannerId);

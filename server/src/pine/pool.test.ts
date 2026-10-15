@@ -162,3 +162,23 @@ test('decision 78: the worker count fits 60% of the memory limit at the heap cap
   assert.equal(workerBudget(64 * G, 1024, 32).workers, 12, 'capped at twelve');
   assert.equal(workerBudget(10 * G, 1536, 8).workers, 4, 'a bigger heap means fewer workers, not a bigger sum');
 });
+
+test('memory watchdog: resident size over the guard while a job runs retires the busy worker with a memory verdict', async t => {
+  const { pool, workers } = setup(); t.after(() => pool.stop());
+  pool.memoryGuardBytes = 1000;
+  let rss = 500;
+  pool.rssReader = () => rss;
+  const p = pool.run(job);
+  workers[0].ready();
+  pool.reapMemory();
+  assert.equal(workers[0].terminated, 0, 'under the guard nothing happens');
+  rss = 5000;
+  pool.reapMemory();
+  const r = await p;
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? '', /^memory: resident 0 MB over the guard/);
+  assert.equal(workers[0].terminated, 1);
+  assert.equal(pool.memoryRetirements, 1);
+  rss = 500; pool.reapMemory();
+  assert.equal(pool.memoryRetirements, 1, 'idle: no further retirements');
+});

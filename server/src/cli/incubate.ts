@@ -168,6 +168,13 @@ if (sliceArg !== 'none') {
         }
         if (!res.ok) {
           summary.failed++;
+          if (/^memory:/.test(res.error ?? '')) {
+            // the pool's watchdog retired the worker mid-run (decision 98): the script is the verdict, the slice goes on
+            if (cfg.scanners[s.id]?.enabled) { summary.slowLive = (summary.slowLive ?? 0) + 1; out(`  ${s.id}: ${res.error} — skipped for the screen, it trades in the account`); }
+            else { summary.quarantined++; summary.hogs = (summary.hogs ?? 0) + 1; health.quarantine(s.id, res.error!); out(`  ${s.id}: quarantined — ${res.error}`); }
+            pool.recycleAll();
+            break;
+          }
           if (/timeout after \d+ms/i.test(res.error ?? '')) {
             // One timeout over the full history is the screen's verdict: trying two more markets only
             // costs two more workers, and three strikes per slow script stretched a slice past its 6 h

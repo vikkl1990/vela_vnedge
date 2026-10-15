@@ -77,3 +77,11 @@ test('a timeout verdict survives a good run, and releasing one script lifts it w
   assert.equal(h.isQuarantined('other'), true);
   assert.equal(h.releaseOne('slow'), false, 'nothing left to release');
 });
+
+test('a memory verdict quarantines on the first strike and survives a good run', () => {
+  const h = new ScriptHealth(new Db(':memory:'));
+  assert.equal(h.record('hog', 'memory: resident 5000 MB over the guard while it ran'), true);
+  assert.equal(h.isQuarantined('hog'), true);
+  h.clear('hog');
+  assert.equal(h.isQuarantined('hog'), true);
+});
