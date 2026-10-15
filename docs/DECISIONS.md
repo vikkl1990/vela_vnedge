@@ -2875,3 +2875,14 @@ script whose single run takes gigabytes of native memory inside its worker, beyo
 resident delta of every run; a run that takes more than 1.5 GB (`HOG_MB`) names the script, puts it
 in quarantine with that reason (an enabled script is skipped for the screen instead), recycles the
 workers that hold its memory, and the slice continues. Decision 93's line remains the backstop.
+
+**Addendum, 15 October.** The per-run delta guard was not enough on its own: Wyckoff Range Engine
+on SOLUSD took the process from 1 GB to 8.3 GB inside one run, and a worker *thread* asked to
+terminate kept growing for three seconds until the cgroup killed everything, quarantine written,
+judge never run. Two changes, both validated on the same script: the pool samples the cgroup's
+memory every second while jobs run and retires every busy worker past 60% of the limit with a
+`memory:` verdict, which the health check quarantines on the first strike; and research workers
+(the screen, diagnose, profile, agree) are now child processes rather than threads, so a retired
+one is SIGKILLed and its memory is back at once, and a recycled one returns everything it held.
+The validation run: Wyckoff quarantined at 6.0 GB, the two other scripts screened, the judge ran,
+done in 2.2 minutes. The live bot keeps thread workers for now; the watchdog protects it too.
