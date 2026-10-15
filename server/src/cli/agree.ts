@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs';
 import { DeltaRest } from '../delta/rest.ts';
-import { PinePool } from '../pine/pool.ts';
+import { PinePool, processWorker } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents, type ScanEvent } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
@@ -28,7 +28,7 @@ const MIN_ER = Number(process.env.MIN_ER ?? 0.25);
 const BARS: Record<string, number> = { '5m': 4000, '15m': 8000, '1h': 4000, '4h': 2000 };
 const rest = new DeltaRest();
 const registry = new ScannerRegistry();
-const pool = new PinePool(Number(process.env.CONCURRENCY ?? 2), 120_000);
+const pool = new PinePool(Number(process.env.CONCURRENCY ?? 2), 120_000, processWorker);
 const out = fs.createWriteStream(process.env.OUT ?? '/tmp/agree.tsv');
 out.write(['tf', 'symbol', 'variant', 'scanners', 'trades', 'avgR', 'sumR', 'win', 't1', 'r1', 't2', 'r2', 'both', 'firstBarStops'].join('\t') + '\n');
 

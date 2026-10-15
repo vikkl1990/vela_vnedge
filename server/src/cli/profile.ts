@@ -12,7 +12,7 @@
  */
 import fs from 'node:fs';
 import { DeltaRest } from '../delta/rest.ts';
-import { PinePool } from '../pine/pool.ts';
+import { PinePool, processWorker } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
@@ -33,7 +33,7 @@ const p = await rest.product(MARKET);
 const tickSize = Number(p?.tick_size ?? 0.5);
 const series = new Map<string, Bar[]>();
 for (const tf of TFS) series.set(tf, toBars(await rest.recentCandles(MARKET, tf, BARS[tf], TF_SECONDS[tf])));
-const pool = new PinePool(Number(process.env.CONCURRENCY ?? 8), 120_000);
+const pool = new PinePool(Number(process.env.CONCURRENCY ?? 8), 120_000, processWorker);
 type Row = { id: string; tf: string; kind: string; ms: number; entries: number; withSl: number; withTp: number; exits: number; info: number; alertEntries: number; alertconds: number; shapes: number; labels: number; labelTexts: string; plots: number; error: string };
 const rows: Row[] = [];
 const tasks = ids.filter(id => registry.get(id)).flatMap(id => TFS.map(tf => ({ id, tf })));

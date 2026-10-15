@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import { fork } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,33 @@ export function memoryLimitBytes(): number {
   return os.totalmem();
 }
 
+/** What this process and its children use now: the cgroup's figure when one exists (it counts forked workers), else this process's resident size. */
+export function memoryUsedBytes(): number {
+  try {
+    const own = fs.readFileSync('/proc/self/cgroup', 'utf8').split('\n').find(l => l.startsWith('0::'))?.slice(3).trim();
+    if (own) { const v = Number(fs.readFileSync(`/sys/fs/cgroup${own}/memory.current`, 'utf8').trim()); if (v > 0) return v; }
+  } catch { /* no cgroup */ }
+  return process.memoryUsage().rss;
+}
+
+/**
+ * A worker as its own process (decision 98). Threads share the allocator, so a recycled thread
+ * leaves its memory behind and a runaway one cannot be stopped mid-loop; a process gives it all
+ * back on exit and dies on SIGKILL at once. Research (the screen, diagnose) runs on these.
+ */
+export function processWorker(index: number, heapMb = WORKER_HEAP_MB): PoolWorker {
+  const child = fork(WORKER_FILE, [], {
+    execArgv: ['--no-warnings=ExperimentalWarning', `--max-old-space-size=${heapMb}`],
+    env: { ...process.env, WORKER_INDEX: String(index) },
+    serialization: 'advanced', stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+  });
+  return {
+    on: (event, listener) => child.on(event, listener),
+    postMessage: job => { child.send(job); },
+    terminate: () => { try { child.kill('SIGKILL'); } catch { /* already gone */ } return Promise.resolve(0); },
+  };
+}
+
 /**
  * How many workers fit: 60% of the memory limit at `heapMb` each, never fewer than 2 nor more than the
  * cores (capped at 12). Decision 78: eight workers at 1,536 MB summed to 12 GB against a 10 GB cgroup, and
@@ -41,7 +69,7 @@ export function workerBudget(limitBytes = memoryLimitBytes(), heapMb = WORKER_HE
   return { workers: Math.max(2, Math.min(12, cpus, fit)), heapMb, limitMb };
 }
 
-interface PoolWorker {
+export interface PoolWorker {
   on(event: string, listener: (...args: any[]) => void): unknown;
   postMessage(job: WorkerJob): void;
   terminate(): Promise<number>;
@@ -114,7 +142,7 @@ export class PinePool {
    */
   memoryGuardBytes = Math.round(memoryLimitBytes() * 0.6);
   /** Replaceable in tests. */
-  rssReader: () => number = () => process.memoryUsage().rss;
+  rssReader: () => number = memoryUsedBytes;
   private memoryTimer: ReturnType<typeof setInterval>;
   memoryRetirements = 0;
   reapMemory(): void {

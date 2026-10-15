@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import { Db } from '../db.ts';
 import { DeltaRest, marketSpec } from '../delta/rest.ts';
-import { PinePool, memoryLimitBytes } from '../pine/pool.ts';
+import { PinePool, memoryLimitBytes, memoryUsedBytes, processWorker } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
@@ -121,12 +121,13 @@ if (sliceArg !== 'none') {
   }
 
   // ---- screen ----
-  const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000);
+  // workers as processes (decision 98): a recycled one gives its memory back, a runaway one dies at once
+  const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000, processWorker);
   const skipStages = new Set(['live', 'demote_proposed', 'shadow', 'proposed']);
   const markets = [...data.keys()];
   for (const [idx, s] of scripts.entries()) {
     if (Date.now() - started > BUDGET_MS) { summary.truncated = scripts.length - idx; out(`time budget spent after ${idx} of ${scripts.length} scripts: ${summary.truncated} wait for this slice's next turn`); break; }
-    const mu = process.memoryUsage(); const rss = mu.rss;
+    const mu = process.memoryUsage(); const rss = memoryUsedBytes();
     const MB = (n: number) => Math.round(n / 1048576);
     // MEMLOG=1 prints the breakdown every script (where the memory goes: V8 heap, native buffers, or the worker threads outside both)
     if (idx % 25 === 0 || process.env.MEMLOG) out(`  ${idx}/${scripts.length} scripts · ${MB(rss)} MB resident · heap ${MB(mu.heapUsed)}/${MB(mu.heapTotal)} · external ${MB(mu.external)} · arrayBuffers ${MB(mu.arrayBuffers)} · runs ${summary.runs} · pool recycled ${pool.stats?.recycled ?? '?'}`);
@@ -153,12 +154,12 @@ if (sliceArg !== 'none') {
       summary.runs++;
       try {
         const inputs = cfg.scanners[s.id]?.inputs;
-        const rssBefore = process.memoryUsage().rss;
+        const rssBefore = memoryUsedBytes();
         const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
         // One run that takes more than a gigabyte and a half is a memory hog (Wyckoff Range Engine needs 6 GB for
         // one market): quarantine it at once, drop the workers that hold its memory, and go on with the slice.
         // Waiting for the memory line (decision 93) cost a whole night per hog.
-        const took = process.memoryUsage().rss - rssBefore;
+        const took = memoryUsedBytes() - rssBefore;
         if (took > HOG_BYTES) {
           summary.quarantined++; summary.hogs = (summary.hogs ?? 0) + 1;
           if (!cfg.scanners[s.id]?.enabled) health.quarantine(s.id, `memory: one run on ${symbol} took ${Math.round(took / 1048576)} MB`);

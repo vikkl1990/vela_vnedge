@@ -21,7 +21,7 @@
  */
 import fs from 'node:fs';
 import { DeltaRest, marketSpec } from '../delta/rest.ts';
-import { PinePool } from '../pine/pool.ts';
+import { PinePool, processWorker } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents, type ScanEvent } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
@@ -44,7 +44,7 @@ for (const kv of (process.env.BARS ?? '').split(',').filter(Boolean)) { const [t
 const SUB: Record<string, string> = { '5m': '1m', '15m': '1m', '1h': '15m', '4h': '15m' };
 const rest = new DeltaRest();
 const registry = new ScannerRegistry();
-const pool = new PinePool(CONC, 120_000);
+const pool = new PinePool(CONC, 120_000, processWorker);
 const out = fs.createWriteStream(process.env.OUT ?? '/tmp/diagnose.tsv');
 out.write(['scanner', 'tf', 'symbol', 'variant', 'trades', 'avgR', 'sumR', 'win', 't1', 'r1', 't2', 'r2', 'both', 'mfe05', 'mfe1', 'mfe2', 'firstBarStops', 'note'].join('\t') + '\n');
 const md: string[] = [];

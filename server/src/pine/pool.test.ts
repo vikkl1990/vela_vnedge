@@ -182,3 +182,19 @@ test('memory watchdog: resident size over the guard while a job runs retires the
   rss = 500; pool.reapMemory();
   assert.equal(pool.memoryRetirements, 1, 'idle: no further retirements');
 });
+
+test('a process worker becomes ready, runs a Pine job, and dies at once when retired', { timeout: 30_000 }, async t => {
+  const { processWorker } = await import('./pool.ts');
+  const pool = new PinePool(1, 20_000, processWorker);
+  t.after(() => pool.stop());
+  const result = await pool.run({ ...job, source: '//@version=5\nindicator("Smoke")\nplot(close)',
+    bars: Array.from({ length: 60 }, (_, i) => ({ time: i * 60_000, open: 100, high: 101, low: 99, close: 100, volume: 10 })) });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.bars, 60);
+  const before = pool.stats.recycled;
+  assert.ok(pool.recycleAll() >= 1, 'the busy-free worker is recycled');
+  const again = await pool.run({ ...job, source: '//@version=5\nindicator("Smoke")\nplot(close)',
+    bars: Array.from({ length: 30 }, (_, i) => ({ time: i * 60_000, open: 100, high: 101, low: 99, close: 100, volume: 10 })) });
+  assert.equal(again.ok, true, again.error);
+  assert.ok(pool.stats.recycled > before);
+});

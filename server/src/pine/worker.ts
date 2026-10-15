@@ -158,4 +158,11 @@ if (parentPort) {
     parentPort!.postMessage(res);
   });
   parentPort.postMessage({ id: -1, ok: true, ready: true, worker: workerData?.index });
+} else if (process.send) {
+  // forked as a process (decision 98): the same contract over IPC; the parent kills it outright when it must
+  process.on('message', async (job: WorkerJob) => {
+    const res = await runJob(job);
+    process.send!(res);
+  });
+  process.send({ id: -1, ok: true, ready: true, worker: Number(process.env.WORKER_INDEX ?? -1) });
 }
