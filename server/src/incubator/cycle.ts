@@ -69,6 +69,22 @@ const gateFor = (inc: IncubatorConfig, tf: string) => ({ ...inc.gate, maxDays: i
 const marketsFor = (inc: IncubatorConfig, tf: string) => inc.admit.cohortMarkets[tf] ?? inc.admit.cohortMarkets.default ?? 5;
 
 /** The live fleet as the config describes it: enabled, not hidden, one row per scanner × market. */
+/** The screen's timeframe for a given night (decision 106): the list rotates day by day, so with 7 slices and 3 timeframes every (slice, timeframe) comes round once in 21 nights. */
+export function screenTf(inc: AppConfig['incubator'], now = Date.now()): string {
+  const tfs = inc.tfs?.length ? inc.tfs : [inc.tf];
+  return tfs[Math.floor(now / DAY) % tfs.length];
+}
+
+/** Live cells on this market and for this scanner, against the diversity caps (decision 106). */
+export function diversityRefusal(cfg: AppConfig, scannerId: string, symbol: string): string | null {
+  const inc = cfg.incubator; const live = livePairs(cfg);
+  const perMarket = inc.promote.maxPerMarket ?? Infinity, perScanner = inc.promote.maxPerScanner ?? Infinity;
+  const onMarket = live.filter(p => p.symbol === symbol).length, forScanner = live.filter(p => p.scannerId === scannerId).length;
+  if (onMarket >= perMarket) return `${symbol} already has ${onMarket} live cell${onMarket === 1 ? '' : 's'} (cap ${perMarket}): the fleet spreads across markets`;
+  if (forScanner >= perScanner) return `${scannerId} already has ${forScanner} live cells (cap ${perScanner}): the fleet spreads across scanners`;
+  return null;
+}
+
 export function livePairs(cfg: AppConfig): PairKey[] {
   // decision 79: a scanner is in the fleet only where it was explicitly put — its pairs, or its own symbol
   // list at the incubator timeframe. The global symbol list never puts a scanner anywhere.
@@ -136,9 +152,22 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   else for (const r of active) judgePair(store, cfg, r, rep, now);
 
   for (const r of store.list(['live'])) {
-    const d = demoteVerdict(store.trades(r.scannerId, r.symbol, r.tf, 0).filter(t => t.entryAt >= r.since), inc.demote);
-    store.setGate(r.id, { at: now, stats: d.stats, reasons: [d.reason], decision: d.demote ? 'demote' : 'keep' }, now);
-    if (d.demote) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason: d.reason }, d.reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
+    const trades = store.trades(r.scannerId, r.symbol, r.tf, 0).filter(t => t.entryAt >= r.since);
+    const d = demoteVerdict(trades, inc.demote);
+    // decision 106: a live cell that has not traded for `silentDays` holds a fleet slot and does nothing
+    const silentDays = inc.demote.silentDays ?? 0;
+    const lastAt = Math.max(r.since, ...trades.map(t => t.entryAt));
+    const silent = silentDays > 0 && now - lastAt > silentDays * DAY;
+    const reason = silent ? `silent: no account trade in ${Math.round((now - lastAt) / DAY)} days (cap ${silentDays})` : d.reason;
+    store.setGate(r.id, { at: now, stats: d.stats, reasons: [reason], decision: d.demote || silent ? 'demote' : 'keep' }, now);
+    if (d.demote || silent) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason }, reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
+  }
+  // decision 106: a shadow pair with no shadow trade for `gate.staleDays` proves nothing and gives its slot back
+  const staleDays = inc.gate.staleDays ?? 0;
+  if (staleDays > 0) for (const r of store.list(['shadow'])) {
+    const t = store.trades(r.scannerId, r.symbol, r.tf, 2).filter(x => x.entryAt >= r.since);
+    const lastAt = Math.max(r.since, ...t.map(x => x.entryAt));
+    if (now - lastAt > staleDays * DAY) { const why = `stale: no shadow trade in ${Math.round((now - lastAt) / DAY)} days (cap ${staleDays})`; store.move(r, 'retired', 'gate', { reasons: [why] }, why, now); rep.retired.push(name(r)); }
   }
 
   admit(store, cfg, rep, now);
@@ -201,7 +230,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
     // only markets the account can trade today are picked for the fleet (decision 104); the rest keep brewing as evidence
     const markets = store.marketsToday();
     const pick = v.decision === 'propose'
-      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol)).slice(0, inc.promote.maxPerWeek).map(p => p.symbol))
+      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol) && !diversityRefusal(cfg, rows[0].scannerId, p.symbol)).slice(0, inc.promote.maxPerWeek).map(p => p.symbol))
       : new Set<string>();
     for (const m of members) {
       const wanted = pick.has(m.symbol);
@@ -286,6 +315,8 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
     if (week >= inc.promote.maxPerWeek) throw new IncubatorError(`weekly promotion limit reached (${week}/${inc.promote.maxPerWeek}); try again later or raise incubator.promote.maxPerWeek`);
     const fleet = livePairs(cfg).length;
     if (fleet >= inc.promote.maxFleet) throw new IncubatorError(`the live fleet is full (${fleet}/${inc.promote.maxFleet} pairs); demote one first or raise incubator.promote.maxFleet`);
+    const crowded = diversityRefusal(cfg, r.scannerId, r.symbol);
+    if (crowded) throw new IncubatorError(crowded);
     const stats = pairStats(store.trades(r.scannerId, r.symbol, r.tf, 2), r.since, now);
     setScanner(r.scannerId, { enabled: true, hidden: false, pairs: [...(sc?.pairs ?? []).filter(p => !(p.symbol === r.symbol && p.tf === r.tf)), { symbol: r.symbol, tf: r.tf }] });
     return store.move(r, 'live', actor, { shadow: stats, gate: r.gate }, 'promoted from the shadow book', now);

@@ -30,7 +30,7 @@ import { PaperEngine } from '../paper/engine.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { IncubatorStore } from '../incubator/store.ts';
-import { evaluate, recordScreen, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
+import { evaluate, recordScreen, screenTf, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
 import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
 
@@ -41,7 +41,8 @@ const db = new Db();
 const store = new IncubatorStore(db);
 const health = new ScriptHealth(db);
 const rest = new DeltaRest();
-const TF = inc.tf, tfMs = TF_SECONDS[TF] * 1000;
+// decision 106: the timeframe rotates night by night through incubator.tfs (TF=… overrides for a hand run)
+const TF = process.env.TF || screenTf(inc), tfMs = TF_SECONDS[TF] * 1000;
 const DAY = 86400_000;
 const out = (m: string) => console.log(`[incubate ${new Date().toISOString().slice(0, 19)}] ${m}`);
 

@@ -293,6 +293,8 @@ export interface IncubatorConfig {
   /** Run shadow pairs in the bot. The daily screen is a separate job (`npm run incubate`). */
   enabled: boolean;
   tf: string;
+  /** Decision 106: the screen rotates through these timeframes night by night (`tf` is the fallback when absent). */
+  tfs?: string[];
   /** Most liquid USD perpetuals screened, by 24h turnover, and the turnover floor. */
   /** Cap on the markets one screen covers; the universe is what the market gate allows today (or the turnover top-N when the gate has no verdicts). */
   universeTop: number;
@@ -314,6 +316,8 @@ export interface IncubatorConfig {
     pool: 'cohort' | 'pair'; minPositiveMarketsPct: number; minMarketTrades: number;
     /** Slow timeframes need longer to produce a sample; `maxDays` is the fallback. */
     maxDaysByTf: Record<string, number>;
+    /** Decision 106: a shadow pair with no shadow trade for this many days is retired; it holds a slot and proves nothing. */
+    staleDays?: number;
   };
   /**
    * How shadow slots are filled: each scanner×timeframe is admitted on several markets at once, and
@@ -323,9 +327,13 @@ export interface IncubatorConfig {
    */
   admit: { cohortMarkets: Record<string, number>; minCohortMarkets: number };
   promote: { maxPerWeek: number; maxFleet: number;
+    /** Decision 106: no more live cells than this on one market, or for one scanner, so the fleet spreads across pairs. */
+    maxPerMarket?: number; maxPerScanner?: number;
     /** Promote gate proposals into the fleet without the owner's click, within maxPerWeek and maxFleet (decision 55). */
     auto?: boolean };
-  demote: { window: number; minTrades: number; maxPfR: number };
+  demote: { window: number; minTrades: number; maxPfR: number;
+    /** Decision 106: a live cell with no account trade for this many days is proposed for demotion; it holds a slot and does nothing. */
+    silentDays?: number };
   /** A pair that failed shadow is not screened again for this long. */
   cooldownDays: number;
   /**
@@ -463,15 +471,16 @@ export const DEFAULT_CONFIG: AppConfig = {
   universe: { mode: 'list', top: 20, exclude: [] },
   ml: { minProb: 0, useAsScore: false },
   incubator: {
-    enabled: true, tf: '15m', universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
+    enabled: true, tf: '15m', tfs: ['15m', '1h', '4h'], universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
     screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true },
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 },
+      staleDays: 21,
     },
     admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3 },
-    promote: { maxPerWeek: 2, maxFleet: 20, auto: false },
-    demote: { window: 50, minTrades: 30, maxPfR: 0.9 },
+    promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
+    demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14 },
     cooldownDays: 30,
     maxContractRiskShare: 0.5,
   },
@@ -667,6 +676,7 @@ export function validateConfig(c: AppConfig): string[] {
   const inc = c.incubator;
   if (inc !== undefined) {
     if (!(inc.tf in TF_SECONDS)) errs.push('incubator.tf must be a supported timeframe');
+    if (inc.tfs && (!inc.tfs.length || inc.tfs.some(t => !(t in TF_SECONDS)))) errs.push('incubator.tfs must list supported timeframes');
     if (!(inc.maxShadow >= 0 && inc.maxShadow <= 1000)) errs.push('incubator.maxShadow must be 0..1000');
     if (!(inc.universeTop >= 1 && inc.universeTop <= 500)) errs.push('incubator.universeTop must be 1..500');
     if (!(inc.gate?.minTrades >= 1 && inc.gate?.minDays >= 0 && inc.gate?.maxDays > inc.gate?.minDays)) errs.push('incubator.gate needs minTrades ≥ 1 and maxDays > minDays');

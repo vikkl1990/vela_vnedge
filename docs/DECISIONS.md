@@ -3070,3 +3070,31 @@ that. `probeNotionalUsd` is the next setting to look at, with the same arithmeti
 
 This holds for a purse of about a thousand dollars. At ten times the size the touch no longer
 covers an order and the floor does real work again; the setting goes back up with the purse.
+
+## 106. Continuous trade across pairs and timeframes: the pipeline made to spread
+
+The operator reviewed the shadow book and the fleet and asked for continuous trading across
+different pairs on different timeframes. What the review found: the screen ran on 15m only, so
+all 413 waiting candidates were 15m; the shadow book held 193 pairs of which 25 had ten trades or
+more, 27 had none and 37 sat on markets the gate refuses; the fleet had four cells on each of
+three markets and eight cells of one scanner; and 27 live cells had not traded in their first eight
+to fourteen days. Nothing in the rules asked for spread or for activity.
+
+Four rules, all in the judge, none in the live path:
+
+1. **The screen rotates timeframes.** `incubator.tfs` (15m, 1h, 4h) is walked night by night; with
+   seven slices and three timeframes every (slice, timeframe) comes round once in 21 nights, so 1h
+   and 4h candidates flow in on their own evidence.
+2. **The fleet spreads.** `promote.maxPerMarket` (2) and `promote.maxPerScanner` (6): approval
+   refuses a crowded proposal, and the cohort judge does not propose onto a crowded market.
+3. **Silent live cells give their slot back.** A live cell with no account trade for
+   `demote.silentDays` (14) is proposed for demotion with that reason; the operator's click, as for
+   any demotion.
+4. **Stale shadow pairs are retired.** A shadow pair with no shadow trade for `gate.staleDays`
+   (21) is retired, so the book stops holding slots for pairs that prove nothing (a dead market's
+   pairs leave this way, on evidence, without a special case).
+
+The learning model, for the record: 35,966 samples, retrained an hour ago, advisory and off as a
+gate; the account book at −0.06R on 51 trades, the shadow book at +0.02R on 2,432, both
+undecided, costs 19 to 20% of risk. The "under current settings" book restarted today with the
+settings of decision 105 and will speak in a week or two.

@@ -8,7 +8,7 @@ import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR, deliveryVerdict, type PairStats } from './gate.ts';
-import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -338,4 +338,44 @@ test('a pair on a market the gate refuses today is neither proposed nor admitted
   db.kvSet('risk.marketsToday', { enabled: true, at: T0 + 24 * DAY, markets: [{ symbol: 'WIFUSD', allowed: false, tracked: true, reasons: ['costly book: 0.34% round trip'] }] });
   evaluate(store, cfg, T0 + 24 * DAY);
   assert.equal(store.find('cand', 'WIFUSD', '15m')!.stage, 'shadow');
+});
+
+test('decision 106: the screen rotates timeframes night by night', () => {
+  const inc = { ...DEFAULT_CONFIG.incubator, tfs: ['15m', '1h', '4h'] };
+  const days = Array.from({ length: 6 }, (_, i) => screenTf(inc, T0 + i * DAY));
+  assert.deepEqual(new Set(days).size, 3, 'every timeframe comes round');
+  assert.equal(days[0], days[3], 'a cycle of three');
+  assert.equal(screenTf({ ...DEFAULT_CONFIG.incubator, tfs: undefined }, T0), DEFAULT_CONFIG.incubator.tf, 'no list: the single timeframe');
+});
+
+test('decision 106: the fleet spreads across markets and scanners; a crowded proposal is refused, a silent live cell is proposed for demotion, a stale shadow pair is retired', () => {
+  const { db, store, cfg, insertTrade, screen } = world();
+  cfg.incubator.promote = { ...cfg.incubator.promote, maxPerWeek: 10, maxFleet: 50, maxPerMarket: 1, maxPerScanner: 2 };
+  cfg.scanners = { live1: { enabled: true, pairs: [{ symbol: 'BTCUSD', tf: '15m' }], timeframes: null, exitMode: 'both' } as any };
+  syncLive(store, cfg, T0);
+  assert.match(diversityRefusal(cfg, 'other', 'BTCUSD') ?? '', /already has 1 live cell/);
+  assert.equal(diversityRefusal(cfg, 'other', 'ETHUSD'), null);
+  // a proposal on the crowded market is refused at approval
+  recordScreen(store, { scannerId: 'cand', symbol: 'BTCUSD', tf: '15m' }, screen(), cfg.incubator, T0);
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [{ symbol: 'BTCUSD', allowed: true, tracked: true, reasons: [] }] });
+  evaluate(store, cfg, T0);
+  const row = store.find('cand', 'BTCUSD', '15m')!;
+  store.move(row, 'proposed', 'test', null, 'forced for the test', T0 + 1);
+  assert.throws(() => approve(store, cfg, row.id, 'op', () => {}, T0 + 2), /already has 1 live cell/);
+  // the live cell never trades: after silentDays it is proposed for demotion
+  cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 14 };
+  const rep = evaluate(store, cfg, T0 + 15 * DAY);
+  assert.deepEqual(rep.demoteProposed, ['live1 BTCUSD 15m']);
+  assert.match(store.find('live1', 'BTCUSD', '15m')!.gate?.reasons?.[0] ?? '', /silent: no account trade in 15 days/);
+  // a shadow pair with no shadow trade for staleDays is retired
+  recordScreen(store, { scannerId: 'quiet', symbol: 'SOLUSD', tf: '1h' }, screen({ at: T0 + 15 * DAY }), cfg.incubator, T0 + 15 * DAY);
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [{ symbol: 'SOLUSD', allowed: true, tracked: true, reasons: [] }] });
+  cfg.incubator.gate = { ...cfg.incubator.gate, staleDays: 21 };
+  assert.deepEqual(evaluate(store, cfg, T0 + 15 * DAY + 1).admitted, ['quiet SOLUSD 1h']);
+  assert.equal(store.find('quiet', 'SOLUSD', '1h')!.stage, 'shadow');
+  evaluate(store, cfg, T0 + 30 * DAY);
+  assert.equal(store.find('quiet', 'SOLUSD', '1h')!.stage, 'shadow', 'not yet stale');
+  const r3 = evaluate(store, cfg, T0 + 37 * DAY);
+  assert.ok(r3.retired.includes('quiet SOLUSD 1h'));
+  assert.match(JSON.stringify(store.events(5, store.find('quiet', 'SOLUSD', '1h')!.id)[0] ?? {}), /stale/);
 });
