@@ -2988,3 +2988,35 @@ record that accrues. The collector keeps hourly rows (the top-trader ratio and, 
 to borrow, the smart-money cohort's book), and the test reruns when the record is long enough to
 judge the ratio on more than three weeks and the cohort's positioning at all. Phase 4 (staged
 signals) does not wait on this.
+
+## 103. Ten live cells demoted, ten proposals promoted, by the operator's instruction
+
+The Incubator page had ten proposals waiting (all 15m, 17 to 74 shadow trades each, PF 1.1 to
+3.6, two to four positive weeks) and a full fleet. The operator ordered the non-performers out
+and the proposals in. Demotion went by two facts per cell, the delivered account record where one
+existed and the honest-base backtest of decision 102 where the cell had never fired:
+
+| Demoted | Live record | Honest base (both halves) |
+|---|---|---|
+| SuperTrend Cluster STRK 15m | 7 trades, −1.72R | −0.11R (−0.10 / −0.11) |
+| SuperTrend Cluster GRIFFAIN 15m | 7 trades, −1.52R | −0.13R (−0.16 / −0.11) |
+| Smart Swing VWAP AKE 15m | 5 trades, −1.21R | −0.22R (−0.17 / −0.23) |
+| SuperTrend Cluster ZEC 1h | 3 trades, −1.73R | −0.03R |
+| Session Killzones ETH 1h | 3 trades, −0.35R | −0.13R (−0.10 / −0.16) |
+| Smart Money Breakout ETH 1h | no trade in 14 days | −0.42R (−0.49 / −0.37) |
+| Smart Swing VWAP SAGA 1h | no trade in 14 days | −0.13R (−0.16 / −0.10) |
+| SuperTrend Cluster SAGA 1h | no trade in 14 days | −0.10R |
+| Pivot Channel Breaks LINK 1h | no trade in 14 days | −0.01R, −0.04R behind the gate |
+| Kinetic Momentum Vectors MUBARAK 15m | no trade in 9 days | −0.06R (0.00 / −0.14) |
+
+All ten go back to the shadow book, where their record continues. Promoted, through the same
+API the page uses: Trend Lines VVV, Volatility Supply and Demand WIF and ETC, Kalman Step TAO,
+Trend Impulse Channels 1000PEPE and COOKIE, Liquidity Trail Matrix AIOT and ONDO, SuperTrend
+Cluster OPN and API3, all 15m. The weekly cap of two was raised to ten for the batch and put back.
+Eight new markets were backfilled within seconds and every new cell ran on the next 15m close.
+
+Said plainly, because decision 96 is still the yardstick: these are ten 15m alt cells, the kind
+the fleet-wide numbers say cannot pay the book. Each one earned its proposal in the shadow book,
+quoted and charged as the account is, so each has a record against that yardstick; delivery
+retirement (decision 90) and the demotion rule judge them from here. The cost-rule and
+timeframe settings named in decision 96 remain the operator's.
