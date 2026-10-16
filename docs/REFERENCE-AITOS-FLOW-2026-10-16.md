@@ -75,3 +75,14 @@ Option chains, per-strike OI, expiry plays, FII/DII, MCX, voice. Their crypto co
 
 Everything above sits on top of the cost truth of decision 96: no context layer rescues a cell
 whose stop cannot pay its round trip, so the two Settings changes named there come first.
+
+## The reference picture (16 October, evening)
+
+`docs/images/reference-architecture-2026-10-16.webp` is the corrected four-column picture, aligned
+to the decisions log after two rounds of corrections: the cell's own closed bar as the trigger, the
+40-cell fleet cap, the nightly screen as the only place the 2,628 scripts run, the live exits as
+they are, and the cost truth as the gate before sizing. Two labels are still loose and are read
+with these notes: the "three explicit regime rules" box is decision 102's test, which cleared
+nothing, so the only regime gate live is the efficiency ratio; and the cost gate counts fees and
+the live spread against the stop (funding is charged to open positions, not to the entry check).
+`docs/images/vnedge-architecture-2026-10-16.svg` remains the coloured status picture.
