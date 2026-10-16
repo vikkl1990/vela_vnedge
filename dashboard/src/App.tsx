@@ -16,6 +16,7 @@ import { Settings } from './pages/Settings'
 import { Signals } from './pages/Signals'
 import { Trades } from './pages/Trades'
 import { Exchange } from './pages/Exchange'
+import { Gates } from './pages/Gates'
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="chart" element={<ChartPage />} />
           <Route path="analytics" element={<Analytics />} />
           <Route path="incubator" element={<Incubator />} />
+          <Route path="gates" element={<Gates />} />
           <Route path="learn" element={<Learn />} />
           <Route path="settings" element={<Settings />} />
           <Route path="exchange" element={<Exchange />} />

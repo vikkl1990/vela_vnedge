@@ -546,6 +546,11 @@ export interface AuthStatus {
   roles: RoleOption[]
 }
 
+// ---- gate center ----
+export type GateState = 'open' | 'armed' | 'blocking' | 'off' | 'attention'
+export interface Gate { key: string; group: string; name: string; state: GateState; value: string; rule: string; next: string; href?: string }
+export interface GatesView { at: number; gates: Gate[]; summary: { blocking: number; attention: number } }
+
 // ---- incubator ----
 export type IncubatorStage = 'candidate' | 'shadow' | 'proposed' | 'live' | 'demote_proposed' | 'retired'
 export interface IncubatorStats {

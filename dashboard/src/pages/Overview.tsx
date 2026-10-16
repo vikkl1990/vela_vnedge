@@ -212,7 +212,7 @@ function AttentionBanner() {
   if (!items.length) return null
   return (
     <div className="banner banner-warn attention small" role="alert">
-      <b>Needs attention</b>
+      <b>Needs attention</b> <Link to="/gates" className="small">· every gate</Link>
       <ul>
         {items.map((it) => (
           <li key={it.key}>

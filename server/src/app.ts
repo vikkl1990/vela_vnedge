@@ -257,6 +257,61 @@ export class App {
   }
 
   /**
+   * Every gate between a setup and real money, with its live state (the Gate Center, decision 99).
+   * Nothing here is computed anew: each row reads the state its owner already keeps, so the page
+   * can never disagree with the gate that acts. `blocking` stops entries now, `armed` is a rule
+   * that would stop one, `open` lets them through, `off` is disabled, `attention` needs the operator.
+   */
+  gates() {
+    type Gate = { key: string; group: string; name: string; state: 'open' | 'armed' | 'blocking' | 'off' | 'attention'; value: string; rule: string; next: string; href?: string };
+    const cfg = this.config.get();
+    const now = Date.now();
+    const r = this.risk.state();
+    const rc = cfg.risk;
+    const g: Gate[] = [];
+    const pct = (v: number, d = 1) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(d)}%`;
+    // --- the account's own limits ---
+    g.push({ key: 'kill', group: 'Account', name: 'Kill switch', state: r.halted ? 'blocking' : 'armed', value: r.halted ? (r.haltReason ?? 'halted') : 'not tripped', rule: 'No new entries while halted; open positions keep their exits', next: r.halted ? 'Resume on the Overview once the cause is understood' : 'Pause entries on the Overview to halt by hand', href: '/' });
+    g.push({ key: 'day', group: 'Account', name: 'Daily loss limit', state: r.day.tripped ? 'blocking' : rc.maxDailyLossPct > 0 ? 'armed' : 'off', value: `${pct(r.day.pnlPct)} today of −${rc.maxDailyLossPct}%`, rule: 'Trips the kill switch for the day', next: r.day.tripped ? 'Resets at 00:00 UTC, or Resume' : 'Settings → risk → max daily loss', href: '/settings' });
+    g.push({ key: 'week', group: 'Account', name: 'Weekly loss limit', state: r.week.tripped ? 'blocking' : rc.maxWeeklyLossPct > 0 ? 'armed' : 'off', value: `${pct(r.week.pnlPct)} this week of −${rc.maxWeeklyLossPct}%`, rule: 'Trips the kill switch for the week', next: 'Settings → risk → max weekly loss', href: '/settings' });
+    g.push({ key: 'dd', group: 'Account', name: 'Drawdown scaling', state: r.leverageMult < 1 ? 'blocking' : rc.ddScale?.length ? 'armed' : 'off', value: `−${r.drawdownPct.toFixed(1)}% from the peak · risk ×${r.leverageMult.toFixed(2)}`, rule: 'Risk per trade and leverage shrink with the drawdown', next: r.leverageMult < 1 ? 'Recovers as equity climbs back toward the peak' : 'Settings → risk → drawdown scale', href: '/settings' });
+    g.push({ key: 'positions', group: 'Account', name: 'Position caps', state: r.positions.max != null && r.positions.open + r.positions.pending >= r.positions.max ? 'blocking' : 'armed', value: `${r.positions.open} open, ${r.positions.pending} pending of ${r.positions.max ?? '∞'} · ${r.positions.maxPerSymbol ?? '∞'} per market · ${r.positions.maxPerScanner ?? '∞'} per scanner`, rule: 'Total, per market and per scanner', next: 'Settings → risk → positions', href: '/settings' });
+    g.push({ key: 'exposure', group: 'Account', name: 'BTC-beta exposure', state: r.exposure.limitPct > 0 ? ((r.exposure as any).pct ?? 0) >= r.exposure.limitPct ? 'blocking' : 'armed' : 'off', value: `${((r.exposure as any).pct ?? 0).toFixed(1)}% of ${r.exposure.limitPct}% on ${r.exposure.tf}`, rule: 'Correlated exposure to BTC is capped', next: 'Settings → risk → max beta exposure', href: '/settings' });
+    const cooling = Object.values(r.scanners).filter((s: any) => s.inCooldown).length;
+    g.push({ key: 'cooldown', group: 'Account', name: 'Loss cooldown', state: cooling ? 'blocking' : rc.cooldownAfterLosses > 0 ? 'armed' : 'off', value: cooling ? `${cooling} scanner${cooling > 1 ? 's' : ''} cooling down` : `after ${rc.cooldownAfterLosses} losses in a row, ${rc.cooldownMinutes} min`, rule: 'A scanner that loses N in a row sits out', next: 'Settings → risk → cooldown', href: '/settings' });
+    g.push({ key: 'reentry', group: 'Account', name: 'Re-entry and burst', state: (rc.reentryCooldownMinutes ?? 0) > 0 || (rc.burstWindowSec ?? 0) > 0 ? 'armed' : 'off', value: `${rc.reentryCooldownMinutes ?? 0} min after a stop on the same market · one entry per side per ${rc.burstWindowSec ?? 0}s`, rule: 'No immediate re-entry after a stop, no bursts of the same side', next: 'Settings → risk', href: '/settings' });
+    // --- the market ---
+    const mt = this.db.kvGet<{ at: number; enabled: boolean; markets: Array<{ symbol: string; allowed: boolean; tracked: boolean }> }>('risk.marketsToday');
+    const tracked = (mt?.markets ?? []).filter(m => m.tracked !== false), allowed = tracked.filter(m => m.allowed);
+    const stale = mt ? now - mt.at > 2 * 3600_000 : true;
+    g.push({ key: 'market', group: 'Market', name: 'Markets today', state: !rc.marketGate?.enabled ? 'off' : stale ? 'attention' : allowed.length ? 'armed' : 'blocking', value: mt ? `${allowed.length} of ${tracked.length} scanned markets allowed${stale ? ' · judgement stale' : ''}` : 'no judgement yet', rule: `Book under ${rc.marketGate?.maxBookCostPct ?? '?'}% round trip, turnover over $${((rc.marketGate?.minTurnoverUsd ?? 0) / 1e6).toFixed(2)}M, ATR over ${rc.regime?.minAtrPct ?? '?'}%`, next: stale ? 'Re-judge on the Overview' : 'The Overview lists every market and its reason', href: '/' });
+    g.push({ key: 'regime', group: 'Market', name: 'Regime', state: rc.regime?.enabled ? 'armed' : 'off', value: `ATR ≥ ${rc.regime?.minAtrPct ?? 0}%${(rc.regime as any)?.minEr ? ` · efficiency ≥ ${(rc.regime as any).minEr}` : ''}${rc.regime?.noWeekend ? ' · no weekend entries' : ''}`, rule: 'No entries in dead or choppy markets', next: 'Settings → risk → regime', href: '/settings' });
+    // --- the trade ---
+    const ratio = cfg.paper.minRiskFeeRatio ?? 0;
+    g.push({ key: 'cost', group: 'Trade', name: 'Stop versus round-trip cost', state: ratio >= 6 ? 'armed' : ratio > 0 ? 'attention' : 'off', value: `stop ≥ ${ratio}× fees plus the live spread`, rule: 'A stop that cannot pay the round trip is refused before it loses (decision 96)', next: ratio < 6 ? 'Settings → Paper account → minimum stop over round-trip fee: 6 (measured in decision 96)' : 'As measured', href: '/settings' });
+    g.push({ key: 'liq', group: 'Trade', name: 'Liquidation headroom', state: cfg.paper.liquidation ? 'armed' : 'off', value: `leverage capped so the stop sits inside liquidation by 25% of the stop, on each market's maintenance margin`, rule: 'The stop must trade before the exchange liquidates (decision 94)', next: 'Automatic per market', href: '/trades' });
+    g.push({ key: 'size', group: 'Trade', name: 'Risk per trade and size caps', state: 'armed', value: `${cfg.paper.riskPerTradePct}% of equity · stop ≤ ${cfg.paper.maxStopLossPct}% · leverage ≤ ${cfg.paper.maxLeverage}× or the market's own`, rule: 'Lots from the stop distance; never more than the caps allow', next: 'Settings → Paper account', href: '/settings' });
+    // --- the pipeline ---
+    const inc = cfg.incubator;
+    const shadowN = this.incubatorStore.counts?.()?.shadow ?? null;
+    g.push({ key: 'shadow', group: 'Pipeline', name: 'Shadow book capacity', state: shadowN != null && shadowN >= inc.maxShadow ? 'attention' : 'open', value: shadowN != null ? `${shadowN} pairs of ${inc.maxShadow}` : `cap ${inc.maxShadow}`, rule: 'Candidates enter only while there is room', next: shadowN != null && shadowN >= inc.maxShadow ? 'Raise incubator.maxShadow in Settings, or wait for retirements' : 'Room for new candidates', href: '/incubator' });
+    const start = this.db.kvGet<{ at: number }>('incubator.lastStart'), run = this.db.kvGet<{ at: number }>('incubator.lastRun');
+    const died = start && (!run || run.at < start.at) && now - start.at > 7 * 3600_000;
+    g.push({ key: 'nightly', group: 'Pipeline', name: 'Nightly screen', state: died ? 'attention' : run && now - run.at > 2 * 86400_000 ? 'attention' : 'open', value: run ? `last finished ${Math.round((now - run.at) / 3600_000)} h ago on ${inc.tf}` : 'never finished', rule: 'Disabled scripts are screened every night, then the shadow book is judged', next: inc.tf === '15m' ? 'Settings → incubator timeframe: 1h (the timeframe that pays costs, decision 96)' : 'Runs at 01:00 UTC', href: '/incubator' });
+    g.push({ key: 'promote', group: 'Pipeline', name: 'Promotion', state: 'armed', value: `≤ ${inc.promote.maxPerWeek} a week · fleet ≤ ${inc.promote.maxFleet} cells · ${livePairs(cfg).length} live now`, rule: '30 shadow trades over 14 days, PF 1.2, positive weeks, then a proposal', next: 'Incubator → Waiting for your decision', href: '/incubator' });
+    // --- the way out ---
+    const l = this.learning();
+    const gl = l.golive;
+    g.push({ key: 'golive', group: 'Real money', name: 'Go-live rule', state: gl.ok ? 'open' : 'blocking', value: `${gl.checks.filter((c: any) => c.ok).length} of ${gl.checks.length} checks pass`, rule: 'Every check with its number; keys stay unset until all are green', next: gl.ok ? 'All green' : `Failing: ${gl.checks.filter((c: any) => !c.ok).map((c: any) => c.name ?? c.label ?? c.key).slice(0, 3).join(', ')}`, href: '/analytics' });
+    const alerts = this.ops.alerts.status();
+    g.push({ key: 'alerts', group: 'Real money', name: 'Alert channel', state: alerts.configured ? 'open' : 'attention', value: alerts.configured ? `${alerts.channel ?? 'channel'} · ${alerts.sent ?? 0} sent` : 'not configured', rule: 'A halt, a stranded position or a hunt result must reach a person', next: alerts.configured ? 'Configured' : 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the service environment', href: '/exchange' });
+    const ex = cfg.execution;
+    const live = ex.allowProduction === true && process.env.DELTA_LIVE === '1';
+    g.push({ key: 'execution', group: 'Real money', name: 'Execution lock', state: ex.mode === 'paper' ? 'blocking' : live ? 'attention' : 'armed', value: `mode ${ex.mode} · host ${live ? 'production' : 'demo'} · ${ex.bracket ? 'brackets on' : 'market orders, reduce-only exits'}`, rule: 'Production needs allowProduction and DELTA_LIVE=1 both; the mode cannot change at runtime', next: ex.mode === 'paper' ? 'Paper until the go-live rule is green' : 'Keys live only in the service environment', href: '/exchange' });
+    return { at: now, gates: g, summary: { blocking: g.filter(x => x.state === 'blocking').length, attention: g.filter(x => x.state === 'attention').length } };
+  }
+
+  /**
    * What the operator must know before anything else: a daily job that died, a scanner in the
    * account that is not running. Each item names the fault and the page that acts on it. The
    * dashboard shows the list on the Overview; an empty list is the normal state.

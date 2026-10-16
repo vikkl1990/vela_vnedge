@@ -62,6 +62,7 @@ export function useBackendOnline(): { online: boolean; error: ApiError | null; c
  */
 const LIVE_STALE = 30_000
 
+export const useGates = () => useQuery({ queryKey: ['gates'], queryFn: api.gates, refetchInterval: 30_000, staleTime: 15_000, retry: 1 })
 export const useConfig = () => useQuery({ queryKey: qk.config, queryFn: api.config, staleTime: 60_000, retry: 1 })
 export const useMarkets = () =>
   useQuery({ queryKey: qk.markets, queryFn: api.markets, staleTime: 5 * 60_000, refetchInterval: 5 * 60_000, retry: 1 })
