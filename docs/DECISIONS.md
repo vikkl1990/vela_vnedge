@@ -2955,3 +2955,36 @@ The dashboard carries a context bar under the header on every page; `/api/contex
 build plan tests, as diagnose variants on the 83 cells against the honest base of decision 96,
 before any of it is allowed to gate an entry. Sources fail soft and say so on the bar; a missing
 reading stays missing.
+
+## 102. The regime test: context measured as a gate; nothing clears the bar yet
+
+Phase 3 of the build plan, run as planned: explicit regime rules, not clusters, judged on the 83
+cells against the honest base that pays the real book (decision 96), with a context gate in the
+backtest that can answer allow, block or unknown (`data/reports/2026-10-16-regime-test-83-cells.*`).
+Three rules, one window: trade only with BTC's 4h bias (rebuilt from candles for every bar, so the
+whole history is covered); fade the crowded funding side (Delta's own funding history per market,
+60 days); agree with Binance's top-trader long/short ratio (the only one with a history limit, 30
+days, so it is compared against the same 30-day base).
+
+| Rule, 83 cells | Trades | R per trade | 15m | 1h | Cells better / worse than the honest base |
+|---|---|---|---|---|---|
+| honest base | 6,902 | −0.02 | −0.04 | +0.01 | – |
+| efficiency gate 0.25 (live) | 2,950 | +0.06 | +0.03 | +0.13 | 27 / 51 |
+| with BTC's 4h bias | 4,003 | −0.01 | −0.03 | +0.03 | 12 / 64 |
+| fade the crowded funding side | 3,368 | −0.04 | −0.05 | −0.02 | 11 / 61 |
+| bias and funding together | 1,711 | −0.01 | −0.02 | +0.03 | 18 / 49 |
+| 30-day base | 4,191 | −0.05 | | | – |
+| agree with top traders (30 days) | 2,309 | −0.02 | | | 29 / 18 |
+
+The majors' bias adds a hundredth of an R by dropping four trades in ten, which is not a gate.
+Fading the crowded funding side loses: on these markets the crowded side was more often right
+than wrong over the window, and the rule cuts winners. The top traders' ratio is the one with a
+sign in the right direction, +0.03R over its 30-day window on 75 cells and better on 29 against
+18 worse, but the window is three weeks on markets where thirty trades is a lot; it is a lead,
+not a verdict. The efficiency gate remains the only context that pays, and it is already live.
+
+Nothing becomes a gate. The context stays what it was built as: a bar the operator reads and a
+record that accrues. The collector keeps hourly rows (the top-trader ratio and, with no history
+to borrow, the smart-money cohort's book), and the test reruns when the record is long enough to
+judge the ratio on more than three weeks and the cohort's positioning at all. Phase 4 (staged
+signals) does not wait on this.
