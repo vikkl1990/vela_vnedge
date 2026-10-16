@@ -1,0 +1,96 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=6
+indicator("Low-Pass Bands [ChartPrime]", overlay = true)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+int   length               = input.int(25, "Length")                        // Indicator length
+float percentageDistance   = input.float(0.5, "% Distance", step=0.1)       // Percentage distance for bands
+float source               = input.source(hlc3, "Source")                   // Source for calculations
+color color_plus           = input.color(#1ed872, "+", inline = "1")      // Color for positive trend
+color color_minus          = input.color(#d81e5c, "-", inline = "1")      // Color for negative trend
+bool  bars_col             = input.bool(false, "Bars Color")                // Toggle for coloring bars
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+// Low-pass filter method
+method lp_filter(float src, int length) =>
+    float alpha = 2.0 / (length + 1)   // Alpha for EMA smoothing
+    var float smooth_val = na
+    smooth_val := na(smooth_val[1]) ? src : alpha * src + (1 - alpha) * smooth_val[1]
+    smooth_val
+
+// Bands calculation method
+method bands(float src) =>
+    float lower = src * (1 - percentageDistance / 100)  // Lower band
+    float upper = src * (1 + percentageDistance / 100)  // Upper band
+    [lower, src, upper]
+
+// Calculate the bands
+[lower, src, upper] = source.lp_filter(length).bands()
+
+// Determine colors based on source position relative to bands
+color1 = source > lower ? color_plus : color_minus
+color2 = source > upper ? color_plus : color_minus
+color3 = source > src   ? color_plus : color_minus
+
+// Plot bands and fills
+p1 = plot(lower, color = color(na))
+p2 = plot(upper, color = color(na))
+p0 = plot(src, color = color3, linewidth = 2)
+
+fill(p1, p0, src, lower, na, color.new(color1, 50))
+fill(p2, p0, upper, src, color.new(color2, 50), na)
+
+// Trend detection
+var trend = bool(na)
+trend_dn = ta.crossunder(source, lower)
+trend_up = ta.crossover(source, upper)
+
+switch
+    trend_up => trend := true
+    trend_dn => trend := false
+
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+// Plot trend change signals
+atr = ta.atr(200) * 0.5
+plotshape(trend_up and not trend[1] ? lower - atr : na, "", shape.diamond, location.absolute, color = color_plus, size = size.tiny)
+plotshape(trend_dn and trend[1] ? upper + atr : na, "", shape.diamond, location.absolute, color = color_minus, size = size.tiny)
+
+// Determine trend text and color
+trend_txt = trend and source > upper 
+             ? "Trend Up +" : 
+             trend and source < upper 
+             ? "Trend Up -" : 
+             not trend and source < lower 
+             ? "Trend Down +" : 
+             not trend and source > lower 
+             ? "Trend Down -" 
+             : "" 
+
+text_col = str.contains(trend_txt, "Up +") 
+             ? color_plus 
+             : str.contains(trend_txt, "Down +") 
+             ? color_minus 
+             : str.contains(trend_txt, "-") 
+             ? chart.fg_color 
+             : na
+
+// Display trend information on the chart
+if barstate.islast
+    var table = table.new(position.top_center, 1, 1)
+    table.cell(table, 0, 0, trend_txt, text_color = text_col, text_size = size.large)
+
+// Optional bar coloring
+bar_color = bars_col ? text_col : na
+plotcandle(open, high, low, close, '', color = bar_color, wickcolor = bar_color, bordercolor = bar_color, editable = false)
+// --------------------------------------------------------------------------------------------------------------------}

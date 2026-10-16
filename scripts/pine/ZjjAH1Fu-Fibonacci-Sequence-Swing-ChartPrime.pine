@@ -1,0 +1,196 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ChartPrime
+
+//@version=6
+indicator("Fibonacci Sequence Swing [ChartPrime]", overlay=true, max_lines_count = 500, calc_bars_count = 3000)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+depth       = input.int(150, "ZigZag Depth")
+zig_col     = input.color(color.rgb(146, 151, 167), "ZigZag Color")
+
+colUp = input.color(color.green, "", inline = "cl")
+colDn = input.color(color.red, "", "", inline = "cl")
+
+max = input.int(30, "Retest Limit", tooltip = "The input allows traders to normalize and control how level strength is visualized.")
+
+// ZigZag Core Logic
+var float zigzag_high = na
+var float zigzag_low  = na
+var int   lastDir  = 0
+var int   lastIdx_h  = na
+var int   lastIdx_l  = na
+
+var zigzag_up = line(na)
+var zigzag_dn = line(na)
+
+type levels 
+    line lvl 
+    label lbl
+
+fibonacciSeq = array.from(0, 1, 1, 2, 3, 5, 8, 13, 21)
+
+var fibLevels = array.new<levels>()
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+highest = ta.highest(high, depth) 
+lowest = ta.lowest(low, depth)
+isHigh = high == highest
+isLow  = low  == lowest
+
+
+for l in fibLevels
+
+    l.lvl.delete()
+    l.lbl.delete()
+
+fibLevels.clear()
+
+
+if isHigh 
+    zigzag_high := high
+    lastDir     := 1
+    lastIdx_h   := bar_index
+
+if isLow 
+    zigzag_low  := low
+    lastDir     := -1
+    lastIdx_l   := bar_index
+
+
+// ZigZagUp 
+if lastDir != lastDir[1] and lastDir == 1
+
+    zigzag_up := line.new(lastIdx_l, zigzag_low, bar_index, zigzag_high, color = zig_col, width = 1, style = line.style_dashed)
+    label.new(lastIdx_l, zigzag_low,  "▲\n" + str.tostring(zigzag_high), style = label.style_label_up, color = color.new(color.black, 100), textcolor = zig_col)
+
+    ll = zigzag_low[1]
+    hh = zigzag_high[1]
+
+    step = (hh-ll)/21
+
+    for i = fibonacciSeq.size() - 1 to 0
+        lvl = fibonacciSeq.get(i)
+
+        level = hh - step * lvl
+        cross = 0
+        for k = 0 to bar_index - lastIdx_h[1]
+
+            h = high[k]
+            l = low[k]
+
+            if h > level and l < level
+                cross += 1
+
+        col = cross == 0 ? color.new(colDn, 80) : color.from_gradient(cross, 0, max, color.new(colDn, 80), colDn)
+
+        line.new(lastIdx_h[1], level, lastIdx_l, level, color = col, width = int(cross/10))
+
+
+
+if lastDir == 1
+    zigzag_up.set_xy2(lastIdx_h, zigzag_high)
+
+    ll = zigzag_low
+    hh = zigzag_high
+
+    step = (hh-ll)/21
+
+    // Plot Levels
+    for i = 0 to fibonacciSeq.size() - 1
+        lvl = fibonacciSeq.get(i)
+        level = ll + step * lvl
+
+        cross = 0
+
+        for k = 0 to bar_index - lastIdx_l
+
+            h = high[k]
+            l = low[k]
+
+            if h > level and l < level
+                cross += 1
+        
+
+        col = cross == 0 ? color.new(colUp, 80) : color.from_gradient(cross, 0, max, color.new(colUp, 80), colUp)
+        
+ 
+        fibLevels.push(levels.new(
+                                 line.new(lastIdx_l, level, bar_index+5, level, color = col, width = int(cross/10))
+                                 , label.new(bar_index+5, level
+                                    , str.tostring(lvl) + (cross != 0 ? " -◆- " + str.tostring(cross) : "")
+                                    , color = col
+                                    , textcolor = chart.fg_color, style = label.style_label_left
+                                    , tooltip = "Fibonacci Sequence ◆ Retest Frequency")))
+
+
+
+// ZigZagDown 
+if lastDir != lastDir[1] and lastDir == -1
+    zigzag_dn := line.new(lastIdx_h, zigzag_high, bar_index, zigzag_low, color = zig_col, width = 1, style = line.style_dashed)
+    label.new(lastIdx_h, zigzag_high, str.tostring(zigzag_high) + "\n▼", style = label.style_label_down, color = color.new(color.black, 100), textcolor = zig_col)
+
+    ll = zigzag_low[1]
+    hh = zigzag_high[1]
+
+    step = (hh-ll)/21
+
+    for i = 0 to fibonacciSeq.size() - 1
+        lvl = fibonacciSeq.get(i)
+
+        level = ll + step * lvl
+        cross = 0
+        for k = 0 to bar_index - lastIdx_l[1]
+
+            h = high[k]
+            l = low[k]
+
+            if h > level and l < level
+                cross += 1
+        col = cross == 0 ? color.new(colUp, 80) : color.from_gradient(cross, 0, max, color.new(colUp, 80), colUp)
+
+        line.new(lastIdx_l[1], ll + step * lvl, lastIdx_h, ll + step * lvl, color = col, width = int(cross/10))
+
+
+if lastDir == -1
+    zigzag_dn.set_xy2(lastIdx_l, zigzag_low)
+
+    ll = zigzag_low
+    hh = zigzag_high
+
+    step = (hh-ll)/21
+
+
+    // Plot Levels
+    for i = 0 to fibonacciSeq.size() - 1
+        lvl = fibonacciSeq.get(i)
+
+        cross = 0
+        
+        level = hh - step * lvl
+
+        for k = 0 to bar_index - lastIdx_h
+
+            h = high[k]
+            l = low[k]
+
+            if h > level and l < level
+                cross += 1
+
+    
+        col = cross == 0 ? color.new(colDn, 80) : color.from_gradient(cross, 0, max, color.new(colDn, 80), colDn)
+
+        fibLevels.push(levels.new(
+                        line.new(bar_index+5, level, lastIdx_h, level, color = col, width = int(cross/10))
+                        , label.new(bar_index+5, level
+                                    , str.tostring(lvl) + (cross != 0 ? " -◆- " + str.tostring(cross) : "")
+                                    , color = col
+                                    , textcolor = chart.fg_color, style = label.style_label_left
+                                    , tooltip = "Fibonacci Sequence ◆ Retest Frequency")))
+
+
+
+// --------------------------------------------------------------------------------------------------------------------}

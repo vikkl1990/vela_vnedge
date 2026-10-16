@@ -1,0 +1,1245 @@
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// (c) Zeiierman {
+indicator("Market Matrix (Zeiierman)", overlay=true, max_lines_count=500, max_boxes_count=500, max_polylines_count=100, max_labels_count=150, max_bars_back=2600)
+//}
+
+// ~~ Tooltips {
+const string ttTf="Higher timeframe for all six mini-panels. Must be equal to or above the main chart timeframe."
+const string ttBars="Historical bars displayed in each panel, limited by the 500-future-bar drawing boundary."
+const string ttGap="Horizontal separation between the latest chart candle and the first mini-panel."
+const string ttStep="Horizontal bar spacing. Larger values spread out the history but may reduce how much fits."
+const string ttCol="Spacing between the two mini-panel columns."
+const string ttHeight="Scales panel heights without changing the underlying indicator values."
+const string ttAnchor="Price lookback used to position the panel rows vertically."
+const string ttScale="Reserve space for all three panel rows in the TradingView price scale."
+const string ttMetrics="Show latest indicator values directly under each panel title."
+const string ttGuides="Draw center guides and dashed overbought/oversold reference lines."
+const string ttBackdrop="Show the panel background and header-strip colors."
+const string ttZones="Show the faint background zones beyond overbought and oversold thresholds."
+const string ttFills="Show RSI/RTI/ASI extreme fills and Range Oscillator zero-centered layers."
+const string ttMA="Master switch for the three HTF moving averages. Each moving average can also be disabled separately."
+const string ttMaRow="Each moving average has its own visibility, period, and native Solid / Dashed / Dotted stroke."
+const string ttVW="Draw swing-anchored VWAP segments over the HTF candle panel."
+const string ttSwing="Swing detection lookback used to reconstruct the HTF anchored VWAP."
+const string ttApt="VWAP adaptive price-tracking period. Higher values track changes more slowly."
+const string ttAdapt="Adapt VWAP tracking speed using the ATR-to-average-ATR ratio."
+const string ttBias="Strength of the ATR adaptation. Available only while adaptive tracking is enabled."
+const string ttVWStyle="Independent native Solid / Dashed / Dotted styles for up and down VWAP segments."
+const string ttWidth="Thickness of both VWAP directional strokes."
+const string ttMarks="Mark confirmed VWAP swing anchors as HH/LH/HL/LL. Classification compares with the previous confirmed anchor of the same type. Labels are placed on earlier pivot candles only AFTER a swing direction flip confirms them."
+const string ttRSI="Standard relative-strength index, calculated inside the selected higher-timeframe context."
+const string ttRSIMa="Simple moving average of the higher-timeframe RSI."
+const string ttLimits="Dashed reference boundaries; the overbought level must exceed the oversold level."
+const string ttMACD="Classic MACD fast, slow, and signal periods; histogram uses four independently colored states."
+const string ttHist="Four histogram states: positive rising/falling and negative falling/rising."
+const string ttRTI="Relative Trend Index lookback, using nearest-rank percentile upper/lower populations."
+const string ttSensitivity="Percentile sensitivity of the Relative Trend Index."
+const string ttRTISig="EMA smoothing applied to the Relative Trend Index."
+const string ttASI="ASI normalization uses historical bar returns and upper/lower percentile benchmarks."
+const string ttASISig="Signal moving average type and length for the Absolute Strength Index."
+const string ttRange="Window for the weighted-center Range Oscillator calculation."
+const string ttRangeMult="ATR multiplier for Range Oscillator normalization."
+const string ttHeat="Number of heat buckets and minimum count required to highlight a bucket."
+const string ttHeatOn="Color the Range Oscillator by the original Zeiierman heatmap instead of using one fixed stroke."
+const string ttEMA="Main-chart EMA and its translucent glow band."
+const string ttVol="Show main-chart volume bars under the price history, bottom-aligned with the lowest panels. Bar heights do not change."
+const string ttFib="Optional automatic Fibonacci guides from recent highest high and lowest low."
+const string ttReg="Optional linear-regression channel around the current chart prices."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+gLAY="Layout"
+gPST="Panel Style"
+gHTF="HTF Candles"
+gHTFS="HTF Candles Style"
+gVW="Swing VWAP"
+gVWS="Swing VWAP Style"
+gRSI="RSI"
+gRSIS="RSI Style"
+gMACD="MACD"
+gMACDS="MACD Style"
+gRTI="Relative Trend Index"
+gRTIS="RTI Style"
+gASI="Absolute Strength Index"
+gASIS="ASI Style"
+gRNG="Range Oscillator"
+gRNGS="Range Oscillator Style"
+gMAIN="Main Chart"
+gMS="Main Chart Style"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+// Layout
+panelTf=input.timeframe("D", "Mini-chart timeframe", group=gLAY,tooltip=ttTf)
+histBars=input.int(150, "History points per panel", minval=20, maxval=245, group=gLAY,tooltip=ttBars)
+xGap=input.int(6, "Gap after latest price bar", minval=1, maxval=60, group=gLAY,tooltip=ttGap)
+xStep=input.int(1, "Horizontal spacing", minval=1, maxval=4, group=gLAY,tooltip=ttStep)
+colGap=input.int(8, "Space between columns", minval=2, maxval=50, group=gLAY,tooltip=ttCol)
+panelSize=input.float(1.22, "Panel height multiplier", minval=0.7, maxval=2.0, step=0.05, group=gLAY,tooltip=ttHeight)
+anchorLen=input.int(160, "Vertical anchor lookback", minval=40, maxval=600, group=gLAY,tooltip=ttAnchor)
+extendScale=input.bool(true, "Reserve vertical chart space", group=gLAY,tooltip=ttScale)
+valuesOn=input.bool(true, "Show values in panel headers", group=gLAY,tooltip=ttMetrics)
+guidesOn=input.bool(true, "Show level / reference lines", group=gLAY,tooltip=ttGuides)
+bgOn=input.bool(false, "Show panel backgrounds", group=gLAY,tooltip=ttBackdrop)
+zonesOn=input.bool(true, "Show shaded OB/OS zones", group=gLAY,tooltip=ttZones)
+fillsOn=input.bool(true, "Show oscillator / OB/OS fills", group=gLAY,tooltip=ttFills)
+
+// Panel Style
+panelBg=input.color(color.new(color.rgb(10, 27, 56), 36), "Background", inline="panel-bg", group=gPST,active=bgOn)
+panelHeadBg=input.color(color.new(color.rgb(35, 52, 81), 47), "Header strip", inline="panel-bg", group=gPST,active=bgOn)
+panelEdge=input.color(color.new(color.rgb(54, 83, 108), 81), "Frame border", inline="panel-txt", group=gPST,active=bgOn)
+panelTitle=input.color(color.rgb(225, 237, 244), "Header title", inline="panel-txt", group=gPST)
+
+// HTF Candles
+maOn=input.bool(true, "Show HTF moving averages", group=gHTF,inline="maMaster",tooltip=ttMA)
+maFastOn=input.bool(true, "Fast MA", inline="ma1", group=gHTF,active=maOn,tooltip=ttMaRow)
+maFastLen=input.int(20, "Length", minval=2, maxval=400, inline="ma1", group=gHTF,active=maOn and maFastOn)
+maFastSty=input.string("Dotted", "Style", options=["Solid", "Dashed", "Dotted"], inline="ma1", group=gHTF,active=maOn and maFastOn)
+maMidOn=input.bool(true, "Mid MA", inline="ma2", group=gHTF,active=maOn,tooltip=ttMaRow)
+maMidLen=input.int(50, "Length", minval=2, maxval=400, inline="ma2", group=gHTF,active=maOn and maMidOn)
+maMidSty=input.string("Dotted", "Style", options=["Solid", "Dashed", "Dotted"], inline="ma2", group=gHTF,active=maOn and maMidOn)
+maSlowOn=input.bool(true, "Slow MA", inline="ma3", group=gHTF,active=maOn,tooltip=ttMaRow)
+maSlowLen=input.int(200, "Length", minval=2, maxval=400, inline="ma3", group=gHTF,active=maOn and maSlowOn)
+maSlowSty=input.string("Dotted", "Style", options=["Solid", "Dashed", "Dotted"], inline="ma3", group=gHTF,active=maOn and maSlowOn)
+
+// HTF Candles Style
+candleUpCol=input.color(color.new(color.rgb(0, 177, 142), 15), "Up body", inline="candle-body", group=gHTFS)
+candleDownCol=input.color(color.new(color.rgb(235, 65, 80), 15), "Down body", inline="candle-body", group=gHTFS)
+candleUpWick=input.color(color.rgb(0, 177, 142), "Up wick", inline="candle-wick", group=gHTFS)
+candleDownWick=input.color(color.rgb(235, 65, 80), "Down wick", inline="candle-wick", group=gHTFS)
+candleUpBorder=input.color(color.rgb(0, 177, 142), "Up border", inline="candle-border", group=gHTFS)
+candleDownBorder=input.color(color.rgb(235, 65, 80), "Down border", inline="candle-border", group=gHTFS)
+maFastCol=input.color(color.rgb(247, 211, 42), "Fast MA", inline="htf-ma", group=gHTFS,active=maOn and maFastOn)
+maMidCol=input.color(color.rgb(72, 132, 255), "Mid MA", inline="htf-ma", group=gHTFS,active=maOn and maMidOn)
+maSlowCol=input.color(color.rgb(240, 240, 240), "Slow MA", inline="htf-ma2", group=gHTFS,active=maOn and maSlowOn)
+htfValueCol=input.color(color.rgb(0, 177, 142), "Header values", inline="htf-ma2", group=gHTFS,active=valuesOn)
+
+// Swing VWAP
+vwOn=input.bool(true, "Show Swing Anchored VWAP", group=gVW,inline="vwMaster",tooltip=ttVW)
+swLen=input.int(50, "Swing Period", minval=2, maxval=250, group=gVW,inline="vw1",active=vwOn,tooltip=ttSwing)
+vwApt=input.float(20.0, "Adaptive Price Tracking", minval=1, step=1, group=gVW,inline="vw2",active=vwOn,tooltip=ttApt)
+vwAdapt=input.bool(false, "Adapt APT by ATR ratio", group=gVW,inline="vw3",active=vwOn,tooltip=ttAdapt)
+vwBias=input.float(10.0, "Volatility Bias", minval=0.1, step=0.1, group=gVW,inline="vw3",active=vwOn and vwAdapt,tooltip=ttBias)
+vwWidth=input.int(2, "VWAP line width", minval=1, maxval=4, group=gVW,inline="vwWidth",active=vwOn,tooltip=ttWidth)
+vwMarks=input.bool(true, "Show HH / LH / HL / LL", group=gVW,inline="vwMarks",active=vwOn,tooltip=ttMarks)
+
+// Swing VWAP Style
+vwUpCol=input.color(color.lime, "Up-swing", inline="vwap-up", group=gVWS,active=vwOn)
+vwUpSty=input.string("Solid", "Line style", options=["Solid", "Dashed", "Dotted"], inline="vwap-up", group=gVWS,active=vwOn,tooltip=ttVWStyle)
+vwDnCol=input.color(color.red, "Down-swing", inline="vwap-down", group=gVWS,active=vwOn)
+vwDnSty=input.string("Solid", "Line style", options=["Solid", "Dashed", "Dotted"], inline="vwap-down", group=gVWS,active=vwOn,tooltip=ttVWStyle)
+vwMarkCol=input.color(color.new(#00a2ff, 20), "Swing marker text", group=gVWS,active=vwOn and vwMarks)
+
+// RSI
+rsiLen=input.int(14, "RSI Period", minval=2, group=gRSI,inline="rsi1",tooltip=ttRSI)
+rsiMaLen=input.int(9, "RSI MA Period", minval=2, group=gRSI,inline="rsi1",tooltip=ttRSIMa)
+rsiOb=input.float(70.0, "Overbought", minval=1, maxval=100, group=gRSI,inline="rsi2",tooltip=ttLimits)
+rsiOs=input.float(30.0, "Oversold", minval=0, maxval=99, group=gRSI,inline="rsi2",tooltip=ttLimits)
+
+// RSI Style
+rsiCol=input.color(color.rgb(158, 123, 240), "RSI line", inline="rsi-curves", group=gRSIS)
+rsiMaCol=input.color(color.rgb(247, 211, 42), "RSI MA", inline="rsi-curves", group=gRSIS)
+rsiObLineCol=input.color(color.new(color.rgb(0, 177, 142), 10), "OB dashed", inline="rsi-lines", group=gRSIS,active=guidesOn)
+rsiOsLineCol=input.color(color.new(color.rgb(235, 65, 80), 10), "OS dashed", inline="rsi-lines", group=gRSIS,active=guidesOn)
+rsiMidLineCol=input.color(color.new(color.rgb(139, 163, 188), 75), "50 midline", inline="rsi-other", group=gRSIS,active=guidesOn)
+rsiValueCol=input.color(color.rgb(247, 211, 42), "Header values", inline="rsi-other", group=gRSIS,active=valuesOn)
+rsiObFillCol=input.color(color.new(color.rgb(0, 177, 142), 64), "OB fill", inline="rsi-fill", group=gRSIS,active=fillsOn)
+rsiOsFillCol=input.color(color.new(color.rgb(235, 65, 80), 64), "OS fill", inline="rsi-fill", group=gRSIS,active=fillsOn)
+rsiObZoneCol=input.color(color.new(color.rgb(0, 177, 142), 95), "OB zone", inline="rsi-zone", group=gRSIS,active=zonesOn)
+rsiOsZoneCol=input.color(color.new(color.rgb(235, 65, 80), 95), "OS zone", inline="rsi-zone", group=gRSIS,active=zonesOn)
+
+// MACD
+macdFast=input.int(12, "MACD Fast", minval=2, group=gMACD,inline="macd1",tooltip=ttMACD)
+macdSlow=input.int(26, "MACD Slow", minval=3, group=gMACD,inline="macd1",tooltip=ttMACD)
+macdSignal=input.int(9, "MACD Signal", minval=2, group=gMACD,inline="macd1",tooltip=ttMACD)
+
+// MACD Style
+macdCol=input.color(color.rgb(246, 151, 21), "MACD line", inline="macd-curves", group=gMACDS)
+macdSigCol=input.color(color.rgb(52, 112, 245), "Signal line", inline="macd-curves", group=gMACDS)
+macdHistPosRise=input.color(color.rgb(15, 176, 166), "Pos rising", inline="macd-pos", group=gMACDS,tooltip=ttHist)
+macdHistPosFall=input.color(color.rgb(126, 206, 206), "Pos falling", inline="macd-pos", group=gMACDS)
+macdHistNegFall=input.color(color.rgb(229, 78, 100), "Neg falling", inline="macd-neg", group=gMACDS,tooltip=ttHist)
+macdHistNegRise=input.color(color.rgb(241, 158, 172), "Neg rising", inline="macd-neg", group=gMACDS)
+macdZeroLineCol=input.color(color.new(color.rgb(139, 163, 188), 75), "Zero line", inline="macd-extra", group=gMACDS,active=guidesOn)
+macdValueCol=input.color(color.rgb(243, 157, 39), "Header values", inline="macd-extra", group=gMACDS,active=valuesOn)
+
+// Relative Trend Index
+rtiLength=input.int(100, "Trend Length", minval=10, maxval=300, step=4, group=gRTI,inline="rti1",tooltip=ttRTI)
+rtiSensitivity=input.int(95, "Sensitivity", minval=50, maxval=98, group=gRTI,inline="rti1",tooltip=ttSensitivity)
+rtiSigLen=input.int(20, "Signal Length", minval=1, maxval=200, group=gRTI,inline="rti2",tooltip=ttRTISig)
+rtiOb=input.float(80, "Overbought", minval=0, maxval=100, group=gRTI,inline="rti3",tooltip=ttLimits)
+rtiOs=input.float(20, "Oversold", minval=0, maxval=100, group=gRTI,inline="rti3",tooltip=ttLimits)
+
+// RTI Style
+rtiCol=input.color(color.rgb(12, 194, 174), "RTI line", inline="rti-curves", group=gRTIS)
+rtiSigCol=input.color(color.rgb(40, 190, 235), "RTI EMA", inline="rti-curves", group=gRTIS)
+rtiObLineCol=input.color(color.new(color.rgb(0, 177, 142), 10), "OB dashed", inline="rti-levels", group=gRTIS,active=guidesOn)
+rtiOsLineCol=input.color(color.new(color.rgb(235, 65, 80), 10), "OS dashed", inline="rti-levels", group=gRTIS,active=guidesOn)
+rtiMidLineCol=input.color(color.new(color.rgb(139, 163, 188), 75), "50 midline", inline="rti-extra", group=gRTIS,active=guidesOn)
+rtiValueCol=input.color(color.rgb(12, 194, 174), "Header values", inline="rti-extra", group=gRTIS,active=valuesOn)
+rtiObFillCol=input.color(color.new(#09ff00, 48), "OB fill", inline="rti-fill", group=gRTIS,active=fillsOn)
+rtiOsFillCol=input.color(color.new(color.red, 48), "OS fill", inline="rti-fill", group=gRTIS,active=fillsOn)
+rtiObZoneCol=input.color(color.new(color.rgb(0, 177, 142), 95), "OB zone", inline="rti-zone", group=gRTIS,active=zonesOn)
+rtiOsZoneCol=input.color(color.new(color.rgb(235, 65, 80), 95), "OS zone", inline="rti-zone", group=gRTIS,active=zonesOn)
+
+// Absolute Strength Index
+asiLookback=input.int(15, "Returns Lookback", minval=3, maxval=100, group=gASI,inline="asi1",tooltip=ttASI)
+asiTop=input.float(0.15, "Top Percentile", minval=0.05, maxval=0.30, step=0.01, group=gASI,inline="asi1",tooltip=ttASI)
+asiBottom=input.float(0.15, "Bottom Percentile", minval=0.05, maxval=0.30, step=0.01, group=gASI,inline="asi2",tooltip=ttASI)
+asiMaType=input.string("SMA", "Signal MA Type", options=["SMA", "EMA", "WMA", "RMA", "HMA"], group=gASI,inline="asi3",tooltip=ttASISig)
+asiMaLen=input.int(14, "Signal Length", minval=1, maxval=150, group=gASI,inline="asi3",tooltip=ttASISig)
+asiOb=input.float(8.0, "Overbought", minval=-20, maxval=20, group=gASI,inline="asi4",tooltip=ttLimits)
+asiOs=input.float(-8.0, "Oversold", minval=-20, maxval=20, group=gASI,inline="asi4",tooltip=ttLimits)
+
+// ASI Style
+asiCol=input.color(color.rgb(87, 128, 245), "ASI line", inline="asi-curves", group=gASIS)
+asiSigCol=input.color(color.rgb(241, 207, 51), "ASI signal", inline="asi-curves", group=gASIS)
+asiObLineCol=input.color(color.new(color.rgb(0, 177, 142), 10), "OB dashed", inline="asi-levels", group=gASIS,active=guidesOn)
+asiOsLineCol=input.color(color.new(color.rgb(235, 65, 80), 10), "OS dashed", inline="asi-levels", group=gASIS,active=guidesOn)
+asiMidLineCol=input.color(color.new(color.rgb(139, 163, 188), 75), "Zero line", inline="asi-extra", group=gASIS,active=guidesOn)
+asiValueCol=input.color(color.rgb(87, 128, 245), "Header values", inline="asi-extra", group=gASIS,active=valuesOn)
+asiObFillCol=input.color(color.new(#09ff00, 50), "OB fill", inline="asi-fill", group=gASIS,active=fillsOn)
+asiOsFillCol=input.color(color.new(color.red, 50), "OS fill", inline="asi-fill", group=gASIS,active=fillsOn)
+asiObZoneCol=input.color(color.new(color.rgb(0, 177, 142), 95), "OB zone", inline="asi-zone", group=gASIS,active=zonesOn)
+asiOsZoneCol=input.color(color.new(color.rgb(235, 65, 80), 95), "OS zone", inline="asi-zone", group=gASIS,active=zonesOn)
+
+// Range Oscillator
+rangeLen=input.int(50, "Minimum Range Length", minval=1, group=gRNG,inline="rng1",tooltip=ttRange)
+rangeMult=input.float(2.0, "Range Width Multiplier", minval=0.1, step=0.1, group=gRNG,inline="rng1",tooltip=ttRangeMult)
+heatLevels=input.int(2, "Heat Levels", minval=2, maxval=100, group=gRNG,inline="rng2",tooltip=ttHeat)
+heatThresh=input.int(1, "Minimum Touches / Level", minval=1, group=gRNG,inline="rng2",tooltip=ttHeat)
+heatOn=input.bool(true, "Use original heatmap line colors", group=gRNG,inline="rng3",tooltip=ttHeatOn)
+
+// Range Oscillator Style
+rngBull=input.color(#09ff00, "Strong bull", inline="rng-strong", group=gRNGS)
+rngBear=input.color(color.rgb(255, 0, 0), "Strong bear", inline="rng-strong", group=gRNGS)
+rngWeakUp=input.color(color.green, "Weak bull", inline="rng-weak", group=gRNGS,active=heatOn)
+rngWeakDn=input.color(color.maroon, "Weak bear", inline="rng-weak", group=gRNGS,active=heatOn)
+rngTransition=input.color(color.blue, "Transition", inline="rng-curves", group=gRNGS,active=heatOn)
+rngFixed=input.color(color.blue, "Fixed line", inline="rng-curves", group=gRNGS,active=not heatOn)
+rangeObLineCol=input.color(color.new(color.rgb(0, 177, 142), 10), "+100 dashed", inline="rng-levels", group=gRNGS,active=guidesOn)
+rangeOsLineCol=input.color(color.new(color.rgb(235, 65, 80), 10), "-100 dashed", inline="rng-levels", group=gRNGS,active=guidesOn)
+rangeZeroLineCol=input.color(color.new(color.rgb(139, 163, 188), 75), "Zero guide", inline="rng-extra", group=gRNGS,active=guidesOn)
+rangeValueCol=input.color(color.blue, "Header values", inline="rng-extra", group=gRNGS,active=valuesOn)
+rngUpFill=input.color(#09ff00, "Positive fill", inline="rng-fill", group=gRNGS,active=fillsOn)
+rngDnFill=input.color(color.rgb(255, 0, 0), "Negative fill", inline="rng-fill", group=gRNGS,active=fillsOn)
+rangeObZoneCol=input.color(color.new(color.rgb(0, 177, 142), 95), "Upper zone", inline="rng-zone", group=gRNGS,active=zonesOn)
+rangeOsZoneCol=input.color(color.new(color.rgb(235, 65, 80), 95), "Lower zone", inline="rng-zone", group=gRNGS,active=zonesOn)
+
+// Main Chart
+emaOn=input.bool(true, "Show 89 EMA", group=gMAIN,inline="main1",tooltip=ttEMA)
+emaLen=input.int(89, "EMA Length", minval=2, group=gMAIN,inline="main1",active=emaOn)
+volOn=input.bool(true, "Show chart volume", group=gMAIN,inline="main2",tooltip=ttVol)
+volBars=input.int(135, "Price volume bars", minval=20, maxval=400, group=gMAIN,inline="main2",active=volOn)
+showFib=input.bool(false, "Auto Fibonacci", group=gMAIN,inline="main3",tooltip=ttFib)
+fibLookback=input.int(160, "Fibonacci Lookback", minval=30, maxval=450, group=gMAIN,inline="main3",active=showFib)
+showChannel=input.bool(false, "Auto regression channel", group=gMAIN,inline="main4",tooltip=ttReg)
+channelLen=input.int(100, "Regression Length", minval=30, maxval=400, group=gMAIN,inline="main4",active=showChannel)
+
+// Main Chart Style
+emaCol=input.color(color.rgb(0, 229, 192), "EMA line", inline="price-ema", group=gMS,active=emaOn)
+emaGlow=input.color(color.new(color.rgb(0, 177, 142), 88), "EMA glow", inline="price-ema", group=gMS,active=emaOn)
+volUpCol=input.color(color.new(color.rgb(0, 177, 142), 74), "Volume up", inline="price-vol", group=gMS,active=volOn)
+volDnCol=input.color(color.new(color.rgb(235, 65, 80), 74), "Volume down", inline="price-vol", group=gMS,active=volOn)
+channelCenterCol=input.color(color.new(color.rgb(235, 65, 80), 48), "Channel mid", inline="price-reg", group=gMS,active=showChannel)
+channelOuterCol=input.color(color.new(color.rgb(235, 65, 80), 20), "Channel outer", inline="price-reg", group=gMS,active=showChannel)
+fibLineCol=input.color(color.new(color.rgb(139, 163, 188), 52), "Fib levels", inline="price-fib", group=gMS,active=showFib)
+fibLabelCol=input.color(color.new(color.rgb(225, 237, 244), 30), "Fib text", inline="price-fib", group=gMS,active=showFib)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Core Series {
+float atr = ta.atr(14)
+float ema = ta.ema(close, emaLen)
+plot(emaOn ? ema : na, "89 EMA", color = emaCol, linewidth = 2)
+float emaBandHi = emaOn ? ema + atr * 0.10 : na
+float emaBandLo = emaOn ? ema - atr * 0.10 : na
+p1 = plot(emaBandHi, "EMA band top", color = color.new(emaGlow, 100))
+p2 = plot(emaBandLo, "EMA band bottom", color = color.new(emaGlow, 100))
+fill(p1, p2, color = emaGlow, title = "EMA glow")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type HtfSnap
+    array<float> opens = na
+    array<float> highs = na
+    array<float> lows = na
+    array<float> closes = na
+    array<float> volumes = na
+    array<float> atr50s = na
+    array<float> atrAvgs = na
+    array<float> rsis = na
+    array<float> rsiMas = na
+    array<float> macds = na
+    array<float> signals = na
+    array<float> histograms = na
+    array<float> rtis = na
+    array<float> rtiSignals = na
+    array<float> asis = na
+    array<float> asiSignals = na
+    array<float> rangeOscs = na
+    array<color> rangeColors = na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ HTF Indicator Functions {
+rti_calc() =>
+    float deviation = ta.stdev(close, 2)
+    float upperTrend = close + deviation
+    float lowerTrend = close - deviation
+    int upperRank = math.max(1, math.min(rtiLength, int(math.round(rtiSensitivity / 100.0 * rtiLength))))
+    int lowerRank = math.max(1, math.min(rtiLength, int(math.round((100.0 - rtiSensitivity) / 100.0 * rtiLength))))
+    float upperPct = (upperRank - 0.5) * 100.0 / rtiLength
+    float lowerPct = (lowerRank - 0.5) * 100.0 / rtiLength
+    float hi = ta.percentile_nearest_rank(upperTrend, rtiLength, upperPct)
+    float lo = ta.percentile_nearest_rank(lowerTrend, rtiLength, lowerPct)
+    float result = not na(upperTrend[rtiLength - 1]) and not na(lowerTrend[rtiLength - 1]) and hi != lo ? 100.0 * (close - lo) / (hi - lo) : na
+    float signal = ta.ema(result, rtiSigLen)
+    [result, signal]
+
+// ASI
+asi_calc() =>
+    array<float> previousReturns = array.new_float()
+    for k = 1 to asiLookback
+        if not na(close[k]) and not na(close[k + 1]) and close[k + 1] != 0
+            previousReturns.push(close[k] / close[k + 1] - 1.0)
+    float value = 0.0
+    if previousReturns.size() > 0
+        previousReturns.sort(order.ascending)
+        int count = previousReturns.size()
+        int winIdx = int(math.ceil(count * (1.0 - asiTop))) - 1
+        int lossIdx = int(math.ceil(count * asiBottom)) - 1
+        winIdx := math.max(0, math.min(count - 1, winIdx))
+        lossIdx := math.max(0, math.min(count - 1, lossIdx))
+        float winner = previousReturns.get(winIdx)
+        float loser = previousReturns.get(lossIdx)
+        float currentReturn = not na(close[asiLookback]) and close[asiLookback] != 0 ? close / close[asiLookback] - 1.0 : na
+        value := not na(currentReturn) and winner != loser ? (currentReturn - loser) / (winner - loser) * 2.0 - 1.0 : 0.0
+    float smoothed = switch asiMaType
+        "SMA" => ta.sma(value, asiMaLen)
+        "EMA" => ta.ema(value, asiMaLen)
+        "WMA" => ta.wma(value, asiMaLen)
+        "RMA" => ta.rma(value, asiMaLen)
+        "HMA" => ta.hma(value, asiMaLen)
+        => na
+    [value, smoothed]
+
+range_calc() =>
+    float atrRaw = nz(ta.atr(2000), ta.atr(200))
+    float rangeAtr = atrRaw * rangeMult
+    float weightedPrice = 0.0
+    float weightTotal = 0.0
+    for i = 0 to rangeLen - 1
+        float prevC = close[i + 1]
+        float currC = close[i]
+        if not na(prevC) and not na(currC) and prevC != 0
+            float w = math.abs(currC - prevC) / prevC
+            weightedPrice += currC * w
+            weightTotal += w
+    float mean = weightTotal != 0 ? weightedPrice / weightTotal : na
+    float osc = not na(mean) and not na(rangeAtr) and rangeAtr != 0 ? 100.0 * (close - mean) / rangeAtr : na
+
+    var int trendDir = 0
+    int oldTrend = nz(trendDir[1], 0)
+    trendDir := close > mean ? 1 : close < mean ? -1 : oldTrend
+    bool noColorOnFlip = trendDir != oldTrend
+    float hi = ta.highest(osc, 100)
+    float lo = ta.lowest(osc, 100)
+    float step = (hi - lo) / heatLevels
+    color heatColor = na
+    if not na(osc) and not na(step) and step > 0
+        int nearest = math.max(0, math.min(heatLevels - 1, int(math.ceil((osc - lo) / step)) - 1))
+        float mid = lo + step * (nearest + 0.5)
+        int cnt = 0
+        for j = 0 to 99
+            float observed = osc[j]
+            if not na(observed) and observed >= mid - step * 0.5 and observed < mid + step * 0.5
+                cnt += 1
+        color baseColor = trendDir == 1 ? rngWeakUp : rngWeakDn
+        heatColor := color.from_gradient(cnt, heatThresh, heatThresh + 10, color.new(baseColor, math.max(0, 80 - cnt)), baseColor)
+    color oscColor = na(heatColor) or noColorOnFlip ? rngTransition : heatColor
+    oscColor := not na(mean) and not na(rangeAtr) and close > mean + rangeAtr ? rngBull : not na(mean) and not na(rangeAtr) and close < mean - rangeAtr ? rngBear : oscColor
+    [osc, oscColor]
+
+htf_data() =>
+    float r = ta.rsi(close, rsiLen)
+    float rma = ta.sma(r, rsiMaLen)
+    [m, s, hist] = ta.macd(close, macdFast, macdSlow, macdSignal)
+    [rti, rtiSig] = rti_calc()
+    [asiValue, asiSig] = asi_calc()
+    [rangeOsc, rangeColor] = range_calc()
+    float atr50 = ta.atr(50)
+    float atrAverage = ta.rma(atr50, 50)
+    [open, high, low, close, volume, atr50, atrAverage, r, rma, m, s, hist, rti, rtiSig, asiValue, asiSig, rangeOsc, rangeColor]
+
+htf_prev() =>
+    [o, h, l, c, v, a50, aavg, r, rma, m, s, hist, rti, rtiSig, av, asig, ro, rc] = htf_data()
+    [o[1], h[1], l[1], c[1], v[1], a50[1], aavg[1], r[1], rma[1], m[1], s[1], hist[1], rti[1], rtiSig[1], av[1], asig[1], ro[1], rc[1]]
+
+int warmBars = math.max(maSlowLen, math.max(rtiLength, math.max(swLen * 2, rangeLen + 100)))
+int histDepth = math.min(1000, histBars + warmBars + 90)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Historical Snapshot {
+daily_snapshot() =>
+    [o, h, l, c, v, a50, aavg, r, rma, m, s, hist, rti, rtiSig, asi, asiSig, ro, rc] = htf_data()
+    HtfSnap snap = na
+    // Deliver the historical vector from the daily request context only once.
+    if barstate.islast
+        snap := HtfSnap.new()
+        snap.opens := array.new_float()
+        snap.highs := array.new_float()
+        snap.lows := array.new_float()
+        snap.closes := array.new_float()
+        snap.volumes := array.new_float()
+        snap.atr50s := array.new_float()
+        snap.atrAvgs := array.new_float()
+        snap.rsis := array.new_float()
+        snap.rsiMas := array.new_float()
+        snap.macds := array.new_float()
+        snap.signals := array.new_float()
+        snap.histograms := array.new_float()
+        snap.rtis := array.new_float()
+        snap.rtiSignals := array.new_float()
+        snap.asis := array.new_float()
+        snap.asiSignals := array.new_float()
+        snap.rangeOscs := array.new_float()
+        snap.rangeColors := array.new_color()
+        for k = histDepth to 1
+            if not na(c[k])
+                snap.opens.push(o[k])
+                snap.highs.push(h[k])
+                snap.lows.push(l[k])
+                snap.closes.push(c[k])
+                snap.volumes.push(v[k])
+                snap.atr50s.push(a50[k])
+                snap.atrAvgs.push(aavg[k])
+                snap.rsis.push(r[k])
+                snap.rsiMas.push(rma[k])
+                snap.macds.push(m[k])
+                snap.signals.push(s[k])
+                snap.histograms.push(hist[k])
+                snap.rtis.push(rti[k])
+                snap.rtiSignals.push(rtiSig[k])
+                snap.asis.push(asi[k])
+                snap.asiSignals.push(asiSig[k])
+                snap.rangeOscs.push(ro[k])
+                snap.rangeColors.push(rc[k])
+    snap
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ HTF Requests {
+HtfSnap directDaily = na
+if timeframe.in_seconds(panelTf) == timeframe.in_seconds("1D")
+    directDaily := request.security(syminfo.tickerid, panelTf, daily_snapshot(), lookahead = barmerge.lookahead_off, calc_bars_count = 2700)
+
+[dO, dH, dL, dC, dV, dAtr, dAtrAvg, dRSI, dRSIMa, dMACD, dSIG, dHIST, dRTI, dRTISIG, dASI, dASISIG, dRANGE, dRANGEC] = request.security(syminfo.tickerid, panelTf, htf_data(), lookahead = barmerge.lookahead_off, calc_bars_count = 2700)
+[pO, pH, pL, pC, pV, pAtr, pAtrAvg, pRSI, pRSIMa, pMACD, pSIG, pHIST, pRTI, pRTISIG, pASI, pASISIG, pRANGE, pRANGEC] = request.security(syminfo.tickerid, panelTf, htf_prev(), lookahead = barmerge.lookahead_on, calc_bars_count = 2700)
+
+if rsiOb <= rsiOs or rtiOb <= rtiOs or asiOb <= asiOs
+    runtime.error("Each Overbought level must be greater than its Oversold level.")
+
+if timeframe.in_seconds(timeframe.period) > timeframe.in_seconds(panelTf)
+    runtime.error("The mini-chart timeframe must be equal to or higher than the chart timeframe.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ HTF History {
+var array<float> ao = array.new_float()
+var array<float> ah = array.new_float()
+var array<float> al = array.new_float()
+var array<float> ac = array.new_float()
+var array<float> avol = array.new_float()
+var array<float> aatr = array.new_float()
+var array<float> aatravg = array.new_float()
+var array<float> ar = array.new_float()
+var array<float> arm = array.new_float()
+var array<float> am = array.new_float()
+var array<float> asi = array.new_float()  // MACD signal line
+var array<float> ahi = array.new_float()
+var array<float> arti = array.new_float()
+var array<float> artisig = array.new_float()
+var array<float> aasi = array.new_float()
+var array<float> aasisig = array.new_float()
+var array<float> arange = array.new_float()
+var array<color> arangec = array.new_color()
+
+save_val(array<float> a, float v) =>
+    a.push(v)
+    if a.size() > 1200
+        a.shift()
+
+save_color(array<color> a, color v) =>
+    a.push(v)
+    if a.size() > 1200
+        a.shift()
+
+if timeframe.change(panelTf) and not na(pC)
+    save_val(ao, pO)
+    save_val(ah, pH)
+    save_val(al, pL)
+    save_val(ac, pC)
+    save_val(avol, pV)
+    save_val(aatr, pAtr)
+    save_val(aatravg, pAtrAvg)
+    save_val(ar, pRSI)
+    save_val(arm, pRSIMa)
+    save_val(am, pMACD)
+    save_val(asi, pSIG)
+    save_val(ahi, pHIST)
+    save_val(arti, pRTI)
+    save_val(artisig, pRTISIG)
+    save_val(aasi, pASI)
+    save_val(aasisig, pASISIG)
+    save_val(arange, pRANGE)
+    save_color(arangec, pRANGEC)
+
+get_val(array<float> data, float live, int back) =>
+    back == 0 ? live : data.size() >= back ? data.get(data.size() - back) : na
+
+get_color(array<color> data, color live, int back) =>
+    back == 0 ? live : data.size() >= back ? data.get(data.size() - back) : na
+
+htf_ma(array<float> data, float live, int back, int length) =>
+    float total = 0.0
+    int used = 0
+    for k = 0 to length - 1
+        float v = get_val(data, live, back + k)
+        if na(v)
+            break
+        total += v
+        used += 1
+    used == length ? total / length : na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Swing VWAP Reconstruction {
+swing_vwap(array<float> highs, array<float> lows, array<float> closes, array<float> vols, array<float> atrs, array<float> avgAtrs) =>
+    int count = closes.size()
+    array<float> value = array.new_float(count, na)
+    array<int> directionAt = array.new_int(count, 0)
+    array<int> anchors = array.new_int()
+    array<float> anchorPrices = array.new_float()
+    array<int> anchorKinds = array.new_int()  // +1 swing high, -1 swing low
+    float ph = na
+    float pl = na
+    int phIndex = -1
+    int plIndex = -1
+    int lastDirection = 0
+    float weightedPrice = na
+    float weightedVolume = na
+    for j = 0 to count - 1
+        float hj = highs.get(j)
+        float lj = lows.get(j)
+        float cj = closes.get(j)
+        float volj = vols.get(j)
+        bool newestHigh = not na(hj)
+        bool newestLow = not na(lj)
+        if newestHigh or newestLow
+            for k = math.max(0, j - swLen + 1) to j
+                float hk = highs.get(k)
+                float lk = lows.get(k)
+                if not na(hk) and not na(hj) and hk > hj
+                    newestHigh := false
+                if not na(lk) and not na(lj) and lk < lj
+                    newestLow := false
+        if newestHigh
+            ph := hj
+            phIndex := j
+        if newestLow
+            pl := lj
+            plIndex := j
+        int direction = phIndex > plIndex ? 1 : -1
+        bool switchDirection = lastDirection != 0 and direction != lastDirection
+        if switchDirection
+            int anchorIndex = direction > 0 ? plIndex : phIndex
+            float anchorPrice = direction > 0 ? pl : ph
+            if anchorIndex >= 0 and not na(anchorPrice)
+                anchors.push(anchorIndex)
+                anchorPrices.push(anchorPrice)
+                anchorKinds.push(direction > 0 ? -1 : 1)
+                float anchorVolume = nz(vols.get(anchorIndex))
+                weightedPrice := anchorPrice * anchorVolume
+                weightedVolume := anchorVolume
+                for k = anchorIndex to j
+                    float v = nz(vols.get(k))
+                    float hc3 = (highs.get(k) + lows.get(k) + closes.get(k)) / 3.0
+                    float apt = vwApt
+                    if vwAdapt
+                        float tAtr = atrs.get(k)
+                        float tAvg = avgAtrs.get(k)
+                        if not na(tAtr) and not na(tAvg) and tAvg > 0 and tAtr > 0
+                            apt := vwApt / math.pow(tAtr / tAvg, vwBias)
+                    apt := math.round(math.max(5.0, math.min(300.0, apt)))
+                    float alpha = 1.0 - math.exp(-math.log(2.0) / math.max(1.0, apt))
+                    weightedPrice := (1.0 - alpha) * weightedPrice + alpha * hc3 * v
+                    weightedVolume := (1.0 - alpha) * weightedVolume + alpha * v
+                    value.set(k, weightedVolume > 0 ? weightedPrice / weightedVolume : na)
+                    directionAt.set(k, direction)
+        else
+            if not na(cj)
+                float apt = vwApt
+                if vwAdapt
+                    float tAtr = atrs.get(j)
+                    float tAvg = avgAtrs.get(j)
+                    if not na(tAtr) and not na(tAvg) and tAvg > 0 and tAtr > 0
+                        apt := vwApt / math.pow(tAtr / tAvg, vwBias)
+                apt := math.round(math.max(5.0, math.min(300.0, apt)))
+                float alpha = 1.0 - math.exp(-math.log(2.0) / math.max(1.0, apt))
+                float hc3 = (hj + lj + cj) / 3.0
+                if na(weightedPrice)
+                    weightedPrice := hc3 * nz(volj)
+                    weightedVolume := nz(volj)
+                weightedPrice := (1.0 - alpha) * weightedPrice + alpha * hc3 * nz(volj)
+                weightedVolume := (1.0 - alpha) * weightedVolume + alpha * nz(volj)
+                value.set(j, weightedVolume > 0 ? weightedPrice / weightedVolume : na)
+                directionAt.set(j, direction)
+        lastDirection := direction
+    [value, directionAt, anchors, anchorPrices, anchorKinds]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing Object Pools {
+var array<line> linePool = array.new<line>()
+var array<box> boxPool = array.new<box>()
+var array<label> labelPool = array.new<label>()
+var array<polyline> polyPool = array.new<polyline>()
+var array<int> drawUsed = array.from(0, 0, 0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing Helpers {
+begin_draw() =>
+    drawUsed.set(0, 0)
+    drawUsed.set(1, 0)
+    drawUsed.set(2, 0)
+    for item in polyPool
+        polyline.delete(item)
+    polyPool.clear()
+
+draw_line(int x1, float y1, int x2, float y2, color ink, int thick, string style) =>
+    if not na(y1) and not na(y2)
+        int pos = drawUsed.get(0)
+        if pos < linePool.size()
+            line item = linePool.get(pos)
+            item.set_xy1(x1, y1)
+            item.set_xy2(x2, y2)
+            item.set_color(ink)
+            item.set_width(thick)
+            item.set_style(style)
+        else
+            line item = line.new(x1, y1, x2, y2, xloc = xloc.bar_index, color = ink, width = thick, style = style)
+            linePool.push(item)
+        drawUsed.set(0, pos + 1)
+
+draw_box(int left, float top, int right, float bottom, color bgColor, color edge) =>
+    if not na(top) and not na(bottom)
+        int pos = drawUsed.get(1)
+        if pos < boxPool.size()
+            box item = boxPool.get(pos)
+            item.set_left(left)
+            item.set_right(right)
+            item.set_top(top)
+            item.set_bottom(bottom)
+            item.set_bgcolor(bgColor)
+            item.set_border_color(edge)
+        else
+            box item = box.new(left, top, right, bottom, xloc = xloc.bar_index, bgcolor = bgColor, border_color = edge)
+            boxPool.push(item)
+        drawUsed.set(1, pos + 1)
+
+draw_label(int x, float y, string message, color ink, string fontSize) =>
+    if not na(y)
+        int pos = drawUsed.get(2)
+        if pos < labelPool.size()
+            label item = labelPool.get(pos)
+            item.set_xy(x, y)
+            item.set_text(message)
+            item.set_textcolor(ink)
+            item.set_size(fontSize)
+            item.set_style(label.style_none)
+            item.set_textalign(text.align_left)
+        else
+            label item = label.new(x, y, message, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = ink, size = fontSize, textalign = text.align_left)
+            labelPool.push(item)
+        drawUsed.set(2, pos + 1)
+
+header_label(int x, float y, string message, color ink, string fontSize) =>
+    if not na(y)
+        int pos = drawUsed.get(2)
+        if pos < labelPool.size()
+            label item = labelPool.get(pos)
+            item.set_xy(x, y)
+            item.set_text(message)
+            item.set_textcolor(color.new(ink, 0))
+            item.set_size(fontSize)
+            item.set_style(label.style_label_left)
+            item.set_color(color(na))
+            item.set_textalign(text.align_left)
+        else
+            label item = label.new(x, y, message, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_label_left, color = color(na), textcolor = color.new(ink, 0), size = fontSize, textalign = text.align_left)
+            labelPool.push(item)
+        drawUsed.set(2, pos + 1)
+
+end_draw() =>
+    while linePool.size() > drawUsed.get(0)
+        line item = linePool.pop()
+        item.delete()
+    while boxPool.size() > drawUsed.get(1)
+        box item = boxPool.pop()
+        item.delete()
+    while labelPool.size() > drawUsed.get(2)
+        label item = labelPool.pop()
+        item.delete()
+
+map_y(float v, float vMin, float vMax, float yMin, float yMax) =>
+    float t = vMax != vMin ? (v - vMin) / (vMax - vMin) : 0.5
+    na(v) ? na : yMin + math.max(0.005, math.min(0.995, t)) * (yMax - yMin)
+
+line_sty(string chosen) =>
+    chosen == "Dashed" ? line.style_dashed : chosen == "Dotted" ? line.style_dotted : line.style_solid
+
+trace(array<float> values, int firstX, int stepX, float vMin, float vMax, float yLow, float yHigh, color ink, int thick, string strokeStyle = line.style_solid) =>
+    array<chart.point> pts = array.new<chart.point>()
+    for j = 0 to values.size() - 1
+        float v = values.get(j)
+        if not na(v)
+            pts.push(chart.point.from_index(firstX + j * stepX, map_y(v, vMin, vMax, yLow, yHigh)))
+    if pts.size() >= 2
+        polyline item = polyline.new(pts, curved = false, closed = false, xloc = xloc.bar_index, line_color = ink, line_style = strokeStyle, line_width = thick)
+        polyPool.push(item)
+
+dir_trace(array<float> values, array<int> dirs, int firstX, int stepX, float vMin, float vMax, float yLow, float yHigh, color positive, color negative, int thick, string positiveStyle, string negativeStyle) =>
+    array<chart.point> segment = array.new<chart.point>()
+    int priorDir = 0
+    for j = 0 to values.size() - 1
+        float v = values.get(j)
+        int direction = dirs.get(j)
+        if na(v)
+            if segment.size() >= 2
+                polyline item = polyline.new(segment, curved = false, closed = false, xloc = xloc.bar_index, line_color = priorDir > 0 ? positive : negative, line_style = priorDir > 0 ? positiveStyle : negativeStyle, line_width = thick)
+                polyPool.push(item)
+            segment := array.new<chart.point>()
+            priorDir := 0
+        else
+            chart.point point = chart.point.from_index(firstX + j * stepX, map_y(v, vMin, vMax, yLow, yHigh))
+            if priorDir != 0 and direction != priorDir
+                if segment.size() >= 2
+                    polyline item = polyline.new(segment, curved = false, closed = false, xloc = xloc.bar_index, line_color = priorDir > 0 ? positive : negative, line_style = priorDir > 0 ? positiveStyle : negativeStyle, line_width = thick)
+                    polyPool.push(item)
+                segment := array.new<chart.point>()
+            segment.push(point)
+            priorDir := direction
+    if segment.size() >= 2
+        polyline item = polyline.new(segment, curved = false, closed = false, xloc = xloc.bar_index, line_color = priorDir > 0 ? positive : negative, line_style = priorDir > 0 ? positiveStyle : negativeStyle, line_width = thick)
+        polyPool.push(item)
+
+// Range Oscillator's original colors
+heat_trace(array<float> values, array<color> inks, int firstX, int stepX, float vMin, float vMax, float yLow, float yHigh) =>
+    int count = values.size()
+    if count >= 2
+        int stride = count > 220 ? 2 : 1
+        for j = stride to count - 1 by stride
+            float leftVal = values.get(j - stride)
+            float rightVal = values.get(j)
+            color ink = inks.get(j)
+            if not na(leftVal) and not na(rightVal)
+                color visibleInk = na(ink) ? color.new(rngTransition, 0) : color.new(ink, 0)
+                draw_line(firstX + (j - stride) * stepX, map_y(leftVal, vMin, vMax, yLow, yHigh), firstX + j * stepX, map_y(rightVal, vMin, vMax, yLow, yHigh), visibleInk, 2, line.style_solid)
+        if stride == 2 and (count - 1) % 2 != 0
+            int j = count - 1
+            float a = values.get(j - 1)
+            float b = values.get(j)
+            color ink = inks.get(j)
+            if not na(a) and not na(b)
+                draw_line(firstX + (j - 1) * stepX, map_y(a, vMin, vMax, yLow, yHigh), firstX + j * stepX, map_y(b, vMin, vMax, yLow, yHigh), na(ink) ? color.new(rngTransition, 0) : color.new(ink, 0), 2, line.style_solid)
+
+underlay(int leftX, float topY, int rightX, float bottomY, color shade, color borderInk) =>
+    if not na(topY) and not na(bottomY)
+        array<chart.point> pts = array.from(chart.point.from_index(leftX, topY), chart.point.from_index(rightX, topY), chart.point.from_index(rightX, bottomY), chart.point.from_index(leftX, bottomY))
+        polyline bg = polyline.new(pts, curved = false, closed = true, xloc = xloc.bar_index, line_color = borderInk, fill_color = shade, line_width = 1)
+        polyPool.push(bg)
+
+panel_back(int leftX, int rightX, float topY, float bottomY) =>
+    if bgOn
+        float h = topY - bottomY
+        underlay(leftX - 3, topY + h * 0.012, rightX + 3, bottomY - h * 0.012, panelBg, panelEdge)
+        underlay(leftX - 3, topY + h * 0.012, rightX + 3, topY - h * 0.185, panelHeadBg, color(na))
+
+add_rect(array<chart.point> pts, int leftX, int rightX, float baseline, float tip) =>
+    if not na(tip) and not na(baseline) and math.abs(tip - baseline) > 0.0000001
+        pts.push(chart.point.from_index(leftX, baseline))
+        pts.push(chart.point.from_index(leftX, tip))
+        pts.push(chart.point.from_index(rightX, tip))
+        pts.push(chart.point.from_index(rightX, baseline))
+        pts.push(chart.point.from_index(leftX, baseline))
+
+draw_fill(array<chart.point> pts, color fillColor) =>
+    if pts.size() >= 4
+        polyline item = polyline.new(pts, curved = false, closed = true, xloc = xloc.bar_index, line_color = color.new(fillColor, 100), fill_color = fillColor, line_width = 1)
+        polyPool.push(item)
+
+excursion(array<float> values, float threshold, bool above, int firstX, int stepX, float vMin, float vMax, float yLow, float yHigh, color ink) =>
+    array<chart.point> pts = array.new<chart.point>()
+    int count = values.size()
+    if count >= 2
+        float yyBase = map_y(threshold, vMin, vMax, yLow, yHigh)
+        for j = 1 to count - 1
+            float p = values.get(j - 1)
+            float q = values.get(j)
+            if not na(p) and not na(q) and (above ? p > threshold or q > threshold : p < threshold or q < threshold)
+                int x1 = firstX + (j - 1) * stepX
+                int x2 = firstX + j * stepX
+                float yp = map_y(above ? math.max(p, threshold) : math.min(p, threshold), vMin, vMax, yLow, yHigh)
+                float yq = map_y(above ? math.max(q, threshold) : math.min(q, threshold), vMin, vMax, yLow, yHigh)
+                pts.push(chart.point.from_index(x1, yyBase))
+                pts.push(chart.point.from_index(x1, yp))
+                pts.push(chart.point.from_index(x2, yq))
+                pts.push(chart.point.from_index(x2, yyBase))
+                pts.push(chart.point.from_index(x1, yyBase))
+    draw_fill(pts, ink)
+
+obos_bg(int leftX, int rightX, float ob, float os, float vMin, float vMax, float yLow, float yHigh, color obZone, color osZone) =>
+    float yOb = map_y(ob, vMin, vMax, yLow, yHigh)
+    float yOs = map_y(os, vMin, vMax, yLow, yHigh)
+    if zonesOn
+        underlay(leftX, yHigh, rightX, yOb, obZone, color(na))
+        underlay(leftX, yOs, rightX, yLow, osZone, color(na))
+
+obos_lines(int leftX, int rightX, float ob, float os, float vMin, float vMax, float yLow, float yHigh, color obLine, color osLine) =>
+    if guidesOn
+        float yOb = map_y(ob, vMin, vMax, yLow, yHigh)
+        float yOs = map_y(os, vMin, vMax, yLow, yHigh)
+        draw_line(leftX, yOb, rightX, yOb, obLine, 1, line.style_dashed)
+        draw_line(leftX, yOs, rightX, yOs, osLine, 1, line.style_dashed)
+
+draw_header(int leftX, int rightX, float top, float bottom, string name, string info, color infoColor) =>
+    float h = top - bottom
+    int headerX = leftX
+    string headingFont = str.length(name) > 22 ? size.tiny : size.small
+    header_label(headerX, top - h * 0.050, name, panelTitle, headingFont)
+    if valuesOn
+        header_label(headerX, top - h * 0.160, info, infoColor, size.tiny)
+
+guide(int leftX, int rightX, float yy, color ink) =>
+    if guidesOn
+        draw_line(leftX, yy, rightX, yy, ink, 1, line.style_dotted)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Panel Anchors {
+float atrPeriod = ta.atr(14)
+float windowHigh = ta.highest(high, anchorLen)
+float windowLow = ta.lowest(low, anchorLen)
+float windowSpan = math.max(windowHigh - windowLow, atrPeriod * 12)
+float panelH = windowSpan * 0.310 * panelSize
+float rowGap = windowSpan * 0.034
+float y1Top = windowHigh + windowSpan * 0.008
+float y1Bot = y1Top - panelH
+float y2Top = y1Bot - rowGap
+float y2Bot = y2Top - panelH
+float y3Top = y2Bot - rowGap
+float y3Bot = y3Top - panelH
+float topPad = panelH * 0.215
+float bottomPad = panelH * 0.055
+float fibHiSeries = ta.highest(high, fibLookback)
+float fibLoSeries = ta.lowest(low, fibLookback)
+float priceVolPeak = ta.highest(volume, volBars)
+float regEnd = ta.linreg(close, channelLen, 0)
+float regStart = ta.linreg(close, channelLen, channelLen - 1)
+float regSigma = ta.stdev(close - regEnd, channelLen)
+plot(extendScale ? y3Bot - windowSpan * 0.032 : na, "Dashboard scale bottom", color = color.new(color.black, 100), linewidth = 1, show_last = 1, editable = false, display = display.pane)
+plot(extendScale ? y1Top + windowSpan * 0.028 : na, "Dashboard scale top", color = color.new(color.black, 100), linewidth = 1, show_last = 1, editable = false, display = display.pane)
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing {
+if barstate.islast
+    bool directDailyLoaded = false
+    if not na(directDaily) and not na(directDaily.closes)
+        int rows = directDaily.closes.size()
+        if rows > ac.size() and rows > 2
+            ao.clear()
+            ah.clear()
+            al.clear()
+            ac.clear()
+            avol.clear()
+            aatr.clear()
+            aatravg.clear()
+            ar.clear()
+            arm.clear()
+            am.clear()
+            asi.clear()
+            ahi.clear()
+            arti.clear()
+            artisig.clear()
+            aasi.clear()
+            aasisig.clear()
+            arange.clear()
+            arangec.clear()
+            for k = 0 to rows - 1
+                save_val(ao, directDaily.opens.get(k))
+                save_val(ah, directDaily.highs.get(k))
+                save_val(al, directDaily.lows.get(k))
+                save_val(ac, directDaily.closes.get(k))
+                save_val(avol, directDaily.volumes.get(k))
+                save_val(aatr, directDaily.atr50s.get(k))
+                save_val(aatravg, directDaily.atrAvgs.get(k))
+                save_val(ar, directDaily.rsis.get(k))
+                save_val(arm, directDaily.rsiMas.get(k))
+                save_val(am, directDaily.macds.get(k))
+                save_val(asi, directDaily.signals.get(k))
+                save_val(ahi, directDaily.histograms.get(k))
+                save_val(arti, directDaily.rtis.get(k))
+                save_val(artisig, directDaily.rtiSignals.get(k))
+                save_val(aasi, directDaily.asis.get(k))
+                save_val(aasisig, directDaily.asiSignals.get(k))
+                save_val(arange, directDaily.rangeOscs.get(k))
+                save_color(arangec, directDaily.rangeColors.get(k))
+            directDailyLoaded := true
+    begin_draw()
+
+    int glyphW = math.max(1, math.min(2, xStep))
+    float futureBudget = 490.0 
+    int maxFit = math.max(12, int(math.floor((futureBudget - xGap - colGap - 2.0 * glyphW) / (2.0 * xStep))) + 1)
+    int n = math.max(2, math.min(histBars, maxFit, ac.size() + 1))
+    int xL = bar_index + xGap
+    int chartW = (n - 1) * xStep + glyphW
+    int xR = xL + chartW + colGap
+    int endL = xL + chartW
+    int endR = xR + chartW
+    float yPlotTop1 = y1Top - topPad
+    float yPlotBottom1 = y1Bot + bottomPad
+    float yPlotTop2 = y2Top - topPad
+    float yPlotBottom2 = y2Bot + bottomPad
+    float yPlotTop3 = y3Top - topPad
+    float yPlotBottom3 = y3Bot + bottomPad
+    string tfTitle = panelTf == "D" ? "1D" : panelTf == "W" ? "1W" : panelTf == "M" ? "1M" : panelTf
+
+    panel_back(xL, endL, y1Top, y1Bot)
+    panel_back(xR, endR, y1Top, y1Bot)
+    panel_back(xL, endL, y2Top, y2Bot)
+    panel_back(xR, endR, y2Top, y2Bot)
+    panel_back(xL, endL, y3Top, y3Bot)
+    panel_back(xR, endR, y3Top, y3Bot)
+
+    // MAIN PRICE VOLUME
+    if volOn and not na(priceVolPeak) and priceVolPeak > 0
+        array<chart.point> volumeUp = array.new<chart.point>()
+        array<chart.point> volumeDown = array.new<chart.point>()
+        float vBase = y3Bot - panelH * 0.012
+        int vCount = math.min(volBars, bar_index + 1)
+        for j = 0 to vCount - 1
+            int k = vCount - 1 - j
+            if not na(volume[k])
+                int vx = bar_index - k
+                float vy = vBase + windowSpan * 0.16 * math.min(volume[k] / priceVolPeak, 1.0)
+                if close[k] >= open[k]
+                    add_rect(volumeUp, vx, vx + 1, vBase, vy)
+                else
+                    add_rect(volumeDown, vx, vx + 1, vBase, vy)
+        draw_fill(volumeUp, volUpCol)
+        draw_fill(volumeDown, volDnCol)
+
+    if showChannel and not na(regSigma)
+        int cx0 = math.max(0, bar_index - channelLen + 1)
+        for factor in array.from(-2.0, 0.0, 2.0)
+            draw_line(cx0, regStart + factor * regSigma, bar_index, regEnd + factor * regSigma, factor == 0 ? channelCenterCol : channelOuterCol, 1, line.style_dashed)
+
+    if showFib and not na(fibHiSeries) and not na(fibLoSeries)
+        float fibSpan = fibHiSeries - fibLoSeries
+        for ratio in array.from(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+            float level = fibLoSeries + fibSpan * ratio
+            draw_line(math.max(0, bar_index - fibLookback + 1), level, bar_index, level, fibLineCol, 1, line.style_dashed)
+            draw_label(bar_index - math.round(fibLookback * 0.55), level, str.tostring(ratio, "#.###") + " (" + str.tostring(level, format.mintick) + ")", fibLabelCol, size.tiny)
+
+    // PANEL 1: HTF CANDLES + 20/50/200 SMA + SWING ANCHORED VWAP (Zeiierman).
+    int historyCount = math.min(ac.size() + 1, 1050)
+    array<float> fullHighs = array.new_float()
+    array<float> fullLows = array.new_float()
+    array<float> fullCloses = array.new_float()
+    array<float> fullVolumes = array.new_float()
+    array<float> fullAtrs = array.new_float()
+    array<float> fullAtrAvgs = array.new_float()
+    if vwOn
+        for j = 0 to historyCount - 1
+            int back = historyCount - j - 1
+            fullHighs.push(get_val(ah, dH, back))
+            fullLows.push(get_val(al, dL, back))
+            fullCloses.push(get_val(ac, dC, back))
+            fullVolumes.push(get_val(avol, dV, back))
+            fullAtrs.push(get_val(aatr, dAtr, back))
+            fullAtrAvgs.push(get_val(aatravg, dAtrAvg, back))
+    array<float> vwapAll = array.new_float()
+    array<int> dirAll = array.new_int()
+    array<int> anchorAt = array.new_int()
+    array<float> anchorPrice = array.new_float()
+    array<int> anchorKind = array.new_int()
+    if vwOn
+        [vwapValues, swingDirections, swingAnchors, swingPrices, swingKinds] = swing_vwap(fullHighs, fullLows, fullCloses, fullVolumes, fullAtrs, fullAtrAvgs)
+        vwapAll := vwapValues
+        dirAll := swingDirections
+        anchorAt := swingAnchors
+        anchorPrice := swingPrices
+        anchorKind := swingKinds
+    int startFrom = historyCount - n
+    float candleHigh = -1e20
+    float candleLow = 1e20
+    array<float> htfMaFastPts = array.new_float()
+    array<float> htfMaMidPts = array.new_float()
+    array<float> htfMaSlowPts = array.new_float()
+    array<float> vwapPts = array.new_float()
+    array<int> vwapDirs = array.new_int()
+    for j = 0 to n - 1
+        int back = n - j - 1
+        float hh = get_val(ah, dH, back)
+        float ll = get_val(al, dL, back)
+        if not na(hh) and not na(ll)
+            candleHigh := math.max(candleHigh, hh)
+            candleLow := math.min(candleLow, ll)
+        if maOn
+            float m20 = maFastOn ? htf_ma(ac, dC, back, maFastLen) : na
+            float m50 = maMidOn ? htf_ma(ac, dC, back, maMidLen) : na
+            float m200 = maSlowOn ? htf_ma(ac, dC, back, maSlowLen) : na
+            htfMaFastPts.push(m20)
+            htfMaMidPts.push(m50)
+            htfMaSlowPts.push(m200)
+            for v in array.from(m20, m50, m200)
+                if not na(v)
+                    candleHigh := math.max(candleHigh, v)
+                    candleLow := math.min(candleLow, v)
+        if vwOn
+            float vw = vwapAll.get(startFrom + j)
+            int dir = dirAll.get(startFrom + j)
+            vwapPts.push(vw)
+            vwapDirs.push(dir)
+            if not na(vw)
+                candleHigh := math.max(candleHigh, vw)
+                candleLow := math.min(candleLow, vw)
+    float candleRange = math.max(candleHigh - candleLow, syminfo.mintick * 15)
+    float candleMax = candleHigh + candleRange * 0.065
+    float candleMin = candleLow - candleRange * 0.065
+    float latestMa20 = htf_ma(ac, dC, 0, maFastLen)
+    float latestMa50 = htf_ma(ac, dC, 0, maMidLen)
+    float latestMa200 = htf_ma(ac, dC, 0, maSlowLen)
+    float latestVwap = vwOn and vwapPts.size() > 0 ? vwapPts.get(vwapPts.size() - 1) : na
+    string htfInfo = "C " + str.tostring(dC, format.mintick) + " | " + str.tostring(n) + (directDailyLoaded ? "D" : " bars")
+    if vwOn
+        htfInfo += " | VW " + str.tostring(latestVwap, format.mintick)
+    if maOn
+        if maFastOn
+            htfInfo += " | " + str.tostring(maFastLen) + ":" + str.tostring(latestMa20, format.mintick)
+        if maMidOn
+            htfInfo += " | " + str.tostring(maMidLen) + ":" + str.tostring(latestMa50, format.mintick)
+        if maSlowOn
+            htfInfo += " | " + str.tostring(maSlowLen) + ":" + str.tostring(latestMa200, format.mintick)
+    draw_header(xL, endL, y1Top, y1Bot, tfTitle + "  |  HTF CANDLES + SWING VWAP", htfInfo, htfValueCol)
+    for j = 0 to n - 1
+        int back = n - j - 1
+        int x = xL + j * xStep
+        float o = get_val(ao, dO, back)
+        float h = get_val(ah, dH, back)
+        float l = get_val(al, dL, back)
+        float c = get_val(ac, dC, back)
+        if not na(o) and not na(h) and not na(l) and not na(c)
+            color ink = c >= o ? candleUpCol : candleDownCol
+            color wickInk = c >= o ? candleUpWick : candleDownWick
+            color borderInk = c >= o ? candleUpBorder : candleDownBorder
+            float yo = map_y(o, candleMin, candleMax, yPlotBottom1, yPlotTop1)
+            float yc = map_y(c, candleMin, candleMax, yPlotBottom1, yPlotTop1)
+            float yh = map_y(h, candleMin, candleMax, yPlotBottom1, yPlotTop1)
+            float yl = map_y(l, candleMin, candleMax, yPlotBottom1, yPlotTop1)
+            int wickX = x + int(math.floor(glyphW / 2.0))
+            draw_line(wickX, yl, wickX, yh, wickInk, 1, line.style_solid)
+            float center = (yo + yc) * 0.5
+            float half = math.max(math.abs(yc - yo) * 0.5, panelH * 0.003)
+            draw_box(x, center + half, x + glyphW, center - half, ink, borderInk)
+    if maOn
+        if maFastOn
+            trace(htfMaFastPts, xL, xStep, candleMin, candleMax, yPlotBottom1, yPlotTop1, maFastCol, 2, line_sty(maFastSty))
+        if maMidOn
+            trace(htfMaMidPts, xL, xStep, candleMin, candleMax, yPlotBottom1, yPlotTop1, maMidCol, 2, line_sty(maMidSty))
+        if maSlowOn
+            trace(htfMaSlowPts, xL, xStep, candleMin, candleMax, yPlotBottom1, yPlotTop1, maSlowCol, 2, line_sty(maSlowSty))
+    if vwOn
+        dir_trace(vwapPts, vwapDirs, xL, xStep, candleMin, candleMax, yPlotBottom1, yPlotTop1, vwUpCol, vwDnCol, vwWidth, line_sty(vwUpSty), line_sty(vwDnSty))
+        if vwMarks and anchorAt.size() > 0
+            float prevHigh = na
+            float prevLow = na
+            for j = 0 to anchorAt.size() - 1
+                int idx = anchorAt.get(j)
+                int kind = anchorKind.get(j)
+                float price = anchorPrice.get(j)
+                string tag = ""
+                if kind == 1
+                    if not na(prevHigh)
+                        tag := price > prevHigh ? "HH" : price < prevHigh ? "LH" : ""
+                    prevHigh := price
+                else if kind == -1
+                    if not na(prevLow)
+                        tag := price > prevLow ? "HL" : price < prevLow ? "LL" : ""
+                    prevLow := price
+    
+                if tag != "" and idx >= startFrom and idx < historyCount
+                    float yy = map_y(price, candleMin, candleMax, yPlotBottom1, yPlotTop1)
+                    float pad = (yPlotTop1 - yPlotBottom1) * 0.025
+                    float labelY = kind == 1 ? yy + pad : yy - pad
+                    draw_label(xL + (idx - startFrom) * xStep, labelY, tag, vwMarkCol, size.small)
+
+    // PANEL 2: RSI
+    draw_header(xR, endR, y1Top, y1Bot, tfTitle + "  |  RSI", "RSI " + str.tostring(dRSI, "#.##") + "    MA " + str.tostring(dRSIMa, "#.##"), rsiValueCol)
+    obos_bg(xR, endR, rsiOb, rsiOs, 0, 100, yPlotBottom1, yPlotTop1, rsiObZoneCol, rsiOsZoneCol)
+    guide(xR, endR, map_y(50.0, 0, 100, yPlotBottom1, yPlotTop1), rsiMidLineCol)
+    array<float> rsiPts = array.new_float()
+    array<float> rsiMaPts = array.new_float()
+    for j = 0 to n - 1
+        int back = n - j - 1
+        rsiPts.push(get_val(ar, dRSI, back))
+        rsiMaPts.push(get_val(arm, dRSIMa, back))
+    if fillsOn
+        excursion(rsiPts, rsiOb, true, xR, xStep, 0, 100, yPlotBottom1, yPlotTop1, rsiObFillCol)
+        excursion(rsiPts, rsiOs, false, xR, xStep, 0, 100, yPlotBottom1, yPlotTop1, rsiOsFillCol)
+    trace(rsiPts, xR, xStep, 0, 100, yPlotBottom1, yPlotTop1, rsiCol, 2)
+    trace(rsiMaPts, xR, xStep, 0, 100, yPlotBottom1, yPlotTop1, rsiMaCol, 2)
+    obos_lines(xR, endR, rsiOb, rsiOs, 0, 100, yPlotBottom1, yPlotTop1, rsiObLineCol, rsiOsLineCol)
+
+    // PANEL 3: MACD
+    float macdAbs = 0.00001
+    for j = 0 to n - 1
+        int back = n - j - 1
+        float m = get_val(am, dMACD, back)
+        float s = get_val(asi, dSIG, back)
+        float h = get_val(ahi, dHIST, back)
+        if not na(m)
+            macdAbs := math.max(macdAbs, math.abs(m))
+        if not na(s)
+            macdAbs := math.max(macdAbs, math.abs(s))
+        if not na(h)
+            macdAbs := math.max(macdAbs, math.abs(h))
+    macdAbs *= 1.18
+    float macdZero = map_y(0, -macdAbs, macdAbs, yPlotBottom2, yPlotTop2)
+    draw_header(xL, endL, y2Top, y2Bot, tfTitle + "  |  MACD", "MACD " + str.tostring(dMACD, "#.##") + "  SIG " + str.tostring(dSIG, "#.##") + "  HIST " + str.tostring(dHIST, "#.##"), macdValueCol)
+    guide(xL, endL, macdZero, macdZeroLineCol)
+    array<chart.point> positiveRising = array.new<chart.point>()
+    array<chart.point> positiveFalling = array.new<chart.point>()
+    array<chart.point> negativeFalling = array.new<chart.point>()
+    array<chart.point> negativeRising = array.new<chart.point>()
+    array<float> macdPts = array.new_float()
+    array<float> signalPts = array.new_float()
+    for j = 0 to n - 1
+        int back = n - j - 1
+        float hh = get_val(ahi, dHIST, back)
+        float previous = get_val(ahi, dHIST, back + 1)
+        macdPts.push(get_val(am, dMACD, back))
+        signalPts.push(get_val(asi, dSIG, back))
+        if not na(hh)
+            int x = xL + j * xStep
+            float tip = map_y(hh, -macdAbs, macdAbs, yPlotBottom2, yPlotTop2)
+            if hh >= 0
+                if na(previous) or hh >= previous
+                    add_rect(positiveRising, x, x + glyphW, macdZero, tip)
+                else
+                    add_rect(positiveFalling, x, x + glyphW, macdZero, tip)
+            else
+                if na(previous) or hh <= previous
+                    add_rect(negativeFalling, x, x + glyphW, macdZero, tip)
+                else
+                    add_rect(negativeRising, x, x + glyphW, macdZero, tip)
+    draw_fill(positiveRising, macdHistPosRise)
+    draw_fill(positiveFalling, macdHistPosFall)
+    draw_fill(negativeFalling, macdHistNegFall)
+    draw_fill(negativeRising, macdHistNegRise)
+    trace(macdPts, xL, xStep, -macdAbs, macdAbs, yPlotBottom2, yPlotTop2, macdCol, 2)
+    trace(signalPts, xL, xStep, -macdAbs, macdAbs, yPlotBottom2, yPlotTop2, macdSigCol, 2)
+
+    // PANEL 4: RTI (Zeiierman)
+    float rtiMin = math.min(0.0, rtiOs)
+    float rtiMax = math.max(100.0, rtiOb)
+    array<float> rtiPts = array.new_float()
+    array<float> rtiSigPts = array.new_float()
+    for j = 0 to n - 1
+        int back = n - j - 1
+        float v = get_val(arti, dRTI, back)
+        float sig = get_val(artisig, dRTISIG, back)
+        rtiPts.push(v)
+        rtiSigPts.push(sig)
+        if not na(v)
+            rtiMin := math.min(rtiMin, v)
+            rtiMax := math.max(rtiMax, v)
+        if not na(sig)
+            rtiMin := math.min(rtiMin, sig)
+            rtiMax := math.max(rtiMax, sig)
+    float rtiPad = math.max((rtiMax - rtiMin) * 0.08, 3.0)
+    rtiMin -= rtiPad
+    rtiMax += rtiPad
+    draw_header(xR, endR, y2Top, y2Bot, tfTitle + "  |  RELATIVE TREND INDEX", "RTI " + str.tostring(dRTI, "#.##") + "    EMA " + str.tostring(dRTISIG, "#.##"), rtiValueCol)
+    obos_bg(xR, endR, rtiOb, rtiOs, rtiMin, rtiMax, yPlotBottom2, yPlotTop2, rtiObZoneCol, rtiOsZoneCol)
+    guide(xR, endR, map_y(50.0, rtiMin, rtiMax, yPlotBottom2, yPlotTop2), rtiMidLineCol)
+    if fillsOn
+        excursion(rtiPts, rtiOb, true, xR, xStep, rtiMin, rtiMax, yPlotBottom2, yPlotTop2, rtiObFillCol)
+        excursion(rtiPts, rtiOs, false, xR, xStep, rtiMin, rtiMax, yPlotBottom2, yPlotTop2, rtiOsFillCol)
+    trace(rtiPts, xR, xStep, rtiMin, rtiMax, yPlotBottom2, yPlotTop2, rtiCol, 2)
+    trace(rtiSigPts, xR, xStep, rtiMin, rtiMax, yPlotBottom2, yPlotTop2, rtiSigCol, 2)
+    obos_lines(xR, endR, rtiOb, rtiOs, rtiMin, rtiMax, yPlotBottom2, yPlotTop2, rtiObLineCol, rtiOsLineCol)
+
+    // PANEL 5: ASI (Zeiierman)
+    array<float> asiPts = array.new_float()
+    array<float> asiSigPts = array.new_float()
+    float asiMin = math.min(-10.0, asiOs)
+    float asiMax = math.max(10.0, asiOb)
+    for j = 0 to n - 1
+        int back = n - j - 1
+        float val = get_val(aasi, dASI, back)
+        float sig = get_val(aasisig, dASISIG, back)
+        asiPts.push(val)
+        asiSigPts.push(sig)
+        if not na(val)
+            asiMin := math.min(asiMin, val)
+            asiMax := math.max(asiMax, val)
+        if not na(sig)
+            asiMin := math.min(asiMin, sig)
+            asiMax := math.max(asiMax, sig)
+    float asiPad = math.max((asiMax - asiMin) * 0.08, 0.4)
+    asiMin -= asiPad
+    asiMax += asiPad
+    draw_header(xL, endL, y3Top, y3Bot, tfTitle + "  |  ABSOLUTE STRENGTH INDEX", "ASI " + str.tostring(dASI, "#.##") + "    " + asiMaType + " " + str.tostring(dASISIG, "#.##"), asiValueCol)
+    obos_bg(xL, endL, asiOb, asiOs, asiMin, asiMax, yPlotBottom3, yPlotTop3, asiObZoneCol, asiOsZoneCol)
+    guide(xL, endL, map_y(0.0, asiMin, asiMax, yPlotBottom3, yPlotTop3), asiMidLineCol)
+    if fillsOn
+        excursion(asiPts, asiOb, true, xL, xStep, asiMin, asiMax, yPlotBottom3, yPlotTop3, asiObFillCol)
+        excursion(asiPts, asiOs, false, xL, xStep, asiMin, asiMax, yPlotBottom3, yPlotTop3, asiOsFillCol)
+    trace(asiPts, xL, xStep, asiMin, asiMax, yPlotBottom3, yPlotTop3, asiCol, 2)
+    trace(asiSigPts, xL, xStep, asiMin, asiMax, yPlotBottom3, yPlotTop3, asiSigCol, 2)
+    obos_lines(xL, endL, asiOb, asiOs, asiMin, asiMax, yPlotBottom3, yPlotTop3, asiObLineCol, asiOsLineCol)
+
+    // PANEL 6: RANGE OSCILLATOR (Zeiierman)
+    array<float> rangePts = array.new_float()
+    array<color> rangeInk = array.new_color()
+    float rangeMin = -100.0
+    float rangeMax = 100.0
+    for j = 0 to n - 1
+        int back = n - j - 1
+        float v = get_val(arange, dRANGE, back)
+        color c = get_color(arangec, dRANGEC, back)
+        rangePts.push(v)
+        rangeInk.push(c)
+        if not na(v)
+            rangeMin := math.min(rangeMin, v)
+            rangeMax := math.max(rangeMax, v)
+    float rangePad = math.max((rangeMax - rangeMin) * 0.055, 10.0)
+    rangeMin -= rangePad
+    rangeMax += rangePad
+    draw_header(xR, endR, y3Top, y3Bot, tfTitle + "  |  RANGE OSCILLATOR", "OSC " + str.tostring(dRANGE, "#.##") + "    BOUNDS +/-100", rangeValueCol)
+    obos_bg(xR, endR, 100.0, -100.0, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, rangeObZoneCol, rangeOsZoneCol)
+    guide(xR, endR, map_y(0.0, rangeMin, rangeMax, yPlotBottom3, yPlotTop3), rangeZeroLineCol)
+    if fillsOn
+        excursion(rangePts, 0.0, true, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, color.new(rngUpFill, 92))
+        excursion(rangePts, 50.0, true, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, color.new(rngUpFill, 84))
+        excursion(rangePts, 100.0, true, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, color.new(rngUpFill, 68))
+        excursion(rangePts, 0.0, false, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, color.new(rngDnFill, 92))
+        excursion(rangePts, -50.0, false, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, color.new(rngDnFill, 84))
+        excursion(rangePts, -100.0, false, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, color.new(rngDnFill, 68))
+    if heatOn
+        heat_trace(rangePts, rangeInk, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3)
+    else
+        trace(rangePts, xR, xStep, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, rngFixed, 2)
+
+    obos_lines(xR, endR, 100.0, -100.0, rangeMin, rangeMax, yPlotBottom3, yPlotTop3, rangeObLineCol, rangeOsLineCol)
+
+    end_draw()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

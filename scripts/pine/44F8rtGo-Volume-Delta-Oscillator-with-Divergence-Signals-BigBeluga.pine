@@ -1,0 +1,252 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Volume Delta Oscillator with Divergence Signals [BigBeluga]", overlay = false, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Engine Settings
+deltaPeriod = input.int(14, title="Volume Delta Lookback", minval=1, group="Engine Settings", tooltip="Lookback period for net buying/selling volume delta.")
+smoothLen   = input.int(5, title="Signal Smoothing Length", minval=1, group="Engine Settings", tooltip="Smoothing length for oscillator trend line.")
+autoScale   = input.bool(true, title="Stabilize Oscillator Range", group="Engine Settings", tooltip="Normalizes the EMA output so the oscillator range stays consistent regardless of the Volume Delta Lookback period.")
+
+// Pivot Divergence Settings
+pivLeft            = input.int(7, title="Pivot Left Lookback", minval=1, group="Divergence Settings")
+pivRight           = input.int(2, title="Pivot Right Lookback", minval=1, group="Divergence Settings")
+showBullDiv        = input.bool(true, title="Show Bullish Divergence Labels", group="Divergence Settings")
+showBearDiv        = input.bool(true, title="Show Bearish Divergence Labels", group="Divergence Settings")
+divLabelSize       = input.string("small", title="Divergence Label Size", options=["tiny", "small", "normal", "large", "huge"], group="Divergence Settings", tooltip="Size of the divergence labels (both price chart signals and price level values).")
+showDivLines       = input.bool(true, title="Show Divergence Lines on Oscillator", group="Divergence Settings")
+showDivLevels      = input.bool(true, title="Show Divergence Price Levels", group="Divergence Settings")
+showDivLevelsLabels= input.bool(true, title="Show Price Values on Levels", group="Divergence Settings")
+maxLevels          = 5
+
+// Threshold Settings
+obThreshold = 50
+osThreshold = -50
+
+// Palette Settings
+bullColor   = input.color(color.rgb(13, 176, 182), title="Positive Delta Color", group="Artistic Palette", tooltip="Soft sage teal color for net buying volume delta.")
+bearColor   = input.color(#d65933, title="Negative Delta Color", group="Artistic Palette", tooltip="Dusty rose color for net selling volume delta.")
+signalColor = input.color(#ffb74d, title="Signal Line Color", group="Artistic Palette", tooltip="Muted amber color for oscillator signal line.")
+zeroColor   = input.color(#b2b5be, title="Zero Level Line Color", group="Artistic Palette", tooltip="Platinum gray color for baseline center.")
+
+// Display Settings
+showSignal  = input.bool(true, title="Show Signal Line", group="Visual Options", tooltip="Toggle visibility of smooth trend signal line.")
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+clamp(float val, float min_val, float max_val) =>
+    math.min(max_val, math.max(min_val, val))
+
+// Volume Delta Approximation
+float bodyRatio  = math.abs(close - open) / math.max(high - low, syminfo.mintick)
+float volDelta   = (close >= open ? volume * bodyRatio : -volume * bodyRatio)
+
+// Normalized to range [-50, +50]
+float rawDeltaRatio = (volDelta / math.max(volume, 1.0)) * 50.0
+float deltaRatio    = clamp(rawDeltaRatio, -50.0, 50.0)
+
+// --- Stabilized EMA scaling ---
+// EMA alpha = 2 / (N + 1). Output amplitude scales with alpha.
+// Multiply by 1/alpha to keep the range roughly constant across different periods.
+// The factor 10 keeps the original visual range when deltaPeriod == 14 (alpha ≈ 0.1333, 1/alpha ≈ 7.5, 7.5 * 10 = 75... 
+// so we use a reference alpha at the default period to preserve the original look).
+float refAlpha   = 2.0 / (14 + 1)               // alpha at the default period (14)
+float curAlpha   = 2.0 / (deltaPeriod + 1)
+float emaScale   = autoScale ? (refAlpha / curAlpha) * 10.0 : 10.0
+
+float rawSmoothed   = ta.ema(deltaRatio, deltaPeriod) * emaScale
+float smoothedDelta = rawSmoothed
+float signalLine    = ta.wma(smoothedDelta, smoothLen)
+
+// Divergence Engine (Pivot on smoothedDelta vs close)
+float ph = ta.pivothigh(smoothedDelta, pivLeft, pivRight)
+float pl = ta.pivotlow(smoothedDelta, pivLeft, pivRight)
+
+var float prevPhOsc   = na
+var float prevPhPrice = na
+var int   prevPhIdx   = na
+
+var float prevPlOsc   = na
+var float prevPlPrice = na
+var int   prevPlIdx   = na
+
+bool bearDiv = false
+bool bullDiv = false
+
+int currentPivotIdx = bar_index - pivRight
+
+// UNCROSSED ACTIVE LEVEL TRACKING ARRAYS
+var line[]  activeLines  = array.new_line()
+var label[] activeLabels = array.new_label()
+var float[] activePrices = array.new_float()
+var bool[]  activeIsBull = array.new_bool()
+
+// Trim function: removes excess uncrossed lines from oldest to newest
+trimActive(int cap) =>
+    while array.size(activeLines) > cap
+        line  oldL = array.shift(activeLines)
+        label oldB = array.shift(activeLabels)
+        array.shift(activePrices)
+        array.shift(activeIsBull)
+        line.delete(oldL)
+        if not na(oldB)
+            label.delete(oldB)
+
+if not na(ph)
+    float currentPriceHigh = high[pivRight]
+    if not na(prevPhOsc) and ph < prevPhOsc and currentPriceHigh > prevPhPrice
+        bearDiv := true
+        if showDivLines
+            line.new(
+                 x1=prevPhIdx, y1=prevPhOsc, 
+                 x2=currentPivotIdx, y2=ph, 
+                 color=bearColor, width=2, style=line.style_solid
+             )
+        if showDivLevels
+            line newL = line.new(
+                 x1=currentPivotIdx, y1=currentPriceHigh, 
+                 x2=bar_index, y2=currentPriceHigh, 
+                 color=bearColor, width=1, style=line.style_solid, 
+                 force_overlay=true
+             )
+            
+            label newLbl = showDivLevelsLabels ? label.new(
+                 x=bar_index, y=currentPriceHigh, 
+                 text=str.tostring(currentPriceHigh, "#.##"), 
+                 style=label.style_label_left, 
+                 color=color.new(bearColor, 100), 
+                 textcolor=bearColor, 
+                 size=divLabelSize, 
+                 force_overlay=true
+             ) : na
+
+            array.push(activeLines, newL)
+            array.push(activeLabels, newLbl)
+            array.push(activePrices, currentPriceHigh)
+            array.push(activeIsBull, false)
+
+            trimActive(maxLevels)
+
+    prevPhOsc   := ph
+    prevPhPrice := currentPriceHigh
+    prevPhIdx   := currentPivotIdx
+
+if not na(pl)
+    float currentPriceLow = low[pivRight]
+    if not na(prevPlOsc) and pl > prevPlOsc and currentPriceLow < prevPlPrice
+        bullDiv := true
+        if showDivLines
+            line.new(
+                 x1=prevPlIdx, y1=prevPlOsc, 
+                 x2=currentPivotIdx, y2=pl, 
+                 color=bullColor, width=2, style=line.style_solid
+             )
+        if showDivLevels
+            line newL = line.new(
+                 x1=currentPivotIdx, y1=currentPriceLow, 
+                 x2=bar_index, y2=currentPriceLow, 
+                 color=bullColor, width=1, style=line.style_solid, 
+                 force_overlay=true
+             )
+
+            label newLbl = showDivLevelsLabels ? label.new(
+                 x=bar_index, y=currentPriceLow, 
+                 text=str.tostring(currentPriceLow, "#.##"), 
+                 style=label.style_label_left, 
+                 color=color.new(bullColor, 100), 
+                 textcolor=bullColor, 
+                 size=divLabelSize, 
+                 force_overlay=true
+             ) : na
+
+            array.push(activeLines, newL)
+            array.push(activeLabels, newLbl)
+            array.push(activePrices, currentPriceLow)
+            array.push(activeIsBull, true)
+
+            trimActive(maxLevels)
+
+    prevPlOsc   := pl
+    prevPlPrice := currentPriceLow
+    prevPlIdx   := currentPivotIdx
+
+// Process active levels on every bar
+if array.size(activeLines) > 0
+    for i = array.size(activeLines) - 1 to 0
+        line  l      = array.get(activeLines, i)
+        label lbl    = array.get(activeLabels, i)
+        float lPrice = array.get(activePrices, i)
+        bool  isBull = array.get(activeIsBull, i)
+
+        bool crossed = isBull ? (close < lPrice) : (close > lPrice)
+
+        if crossed
+            // Lock line endpoint at current bar, turn dashed, freeze in place
+            line.set_x2(l, bar_index)
+            line.set_style(l, line.style_dashed)
+            if not na(lbl)
+                label.set_x(lbl, bar_index)
+
+            // Remove from active tracking array so a slot opens for a new active level
+            array.remove(activeLines, i)
+            array.remove(activeLabels, i)
+            array.remove(activePrices, i)
+            array.remove(activeIsBull, i)
+        else
+            // Extend active line & label to current live bar
+            line.set_x2(l, bar_index)
+            if not na(lbl)
+                label.set_x(lbl, bar_index)
+
+trimActive(maxLevels)
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+hline(0, "Baseline", color=zeroColor, linestyle=hline.style_dashed)
+
+// OB/OS Zone Fills
+hOB = hline(obThreshold, "Overbought Lower", color=color.new(bearColor, 100), linestyle=hline.style_dotted)
+hOB_top = hline(150, "Overbought Upper", color=color.new(bearColor, 50), linestyle=hline.style_solid)
+fill(hOB, hOB_top, 150, 20, color.new(bearColor, 80), color.new(bearColor, 100), title="Overbought Zone Fill")
+
+hOS = hline(osThreshold, "Oversold Upper", color=color.new(bullColor, 100), linestyle=hline.style_dotted)
+hOS_bot = hline(-150, "Oversold Lower", color=color.new(bullColor, 50), linestyle=hline.style_solid)
+fill(hOS, hOS_bot, -20, -100, color.new(bullColor, 100), color.new(bullColor, 80), title="Oversold Zone Fill")
+
+colgradient = color.from_gradient(deltaRatio, -50, 50, color.new(bearColor, 50), color.new(bullColor, 50))
+
+plot(deltaRatio, "Raw Volume Delta", color=colgradient, style=plot.style_columns)
+plot(smoothedDelta, "Smoothed Delta Shadow", color=color.new(chart.bg_color, 50), linewidth=8)
+plot(smoothedDelta, "Smoothed Delta", color=chart.fg_color, linewidth=2)
+
+
+plot(showSignal ? signalLine : na, "Signal Line", color=signalColor, linewidth=1)
+
+// Price Chart Overlay Divergence Labels
+if bullDiv and showBullDiv
+    label.new(
+         x=bar_index[pivRight], 
+         y=low[pivRight], 
+         text="▲\nBull", 
+         style=label.style_label_up, 
+         color=na, 
+         textcolor=chart.fg_color, 
+         size=divLabelSize, 
+         force_overlay=true
+     )
+
+if bearDiv and showBearDiv
+    label.new(
+         x=bar_index[pivRight], 
+         y=high[pivRight], 
+         text="Bear\n▼", 
+         style=label.style_label_down, 
+         color=na, 
+         textcolor=chart.fg_color, 
+         size=divLabelSize, 
+         force_overlay=true
+     )
+// }
