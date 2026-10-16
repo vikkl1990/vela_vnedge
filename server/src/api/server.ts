@@ -347,6 +347,9 @@ export class ApiServer {
     this.add('GET', '/api/analytics', () => a.analytics());
     this.add('GET', '/api/learning', () => a.learning());
     this.add('GET', '/api/gates', () => a.gates());
+    this.add('GET', '/api/context', () => a.context.latest());
+    this.add('GET', '/api/context/history', (_r, _s, _p, url) => ({ symbol: url.searchParams.get('symbol') ?? '', rows: a.context.history(url.searchParams.get('symbol') ?? '', Number(url.searchParams.get('hours') ?? 168)) }));
+    this.add('POST', '/api/context/refresh', async () => { await a.context.runOnce(); return a.context.latest(); });
     this.add('GET', '/api/ml', () => ({ ...(a.ml.insights() ?? { trainedAt: null, samples: 0, liveSamples: 0, scannersWithModel: 0, global: null, scanners: [] }), counts: a.ml.count(), config: a.config.get().ml }));
     this.add('POST', '/api/ml/train', () => a.ml.train());
     this.add('GET', '/api/ml/scanner/:id', (_r, _s, p) => a.ml.insightFor(p.id) ?? { scannerId: p.id, samples: 0, rules: [], model: null });

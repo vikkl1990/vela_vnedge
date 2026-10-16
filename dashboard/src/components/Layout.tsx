@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useBackendOnline, useHealth, useKill, usePositions, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
 import { RiskBanner } from './RiskBanner'
+import { ContextBar } from './ContextBar'
 import { useAuth } from '../auth/AuthGate'
 import { useDensity } from '../lib/density'
 import { fmtAge, fmtMoney, fmtPnl, LOCAL_TZ, pnlClass } from '../lib/format'
@@ -227,6 +228,7 @@ export function Layout() {
           </span>
         </div>
       </header>
+      <ContextBar />
 
       {backendDown && (
         <div className="banner banner-danger" role="alert">

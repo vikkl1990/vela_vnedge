@@ -25,7 +25,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView } from './types'
+  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -111,6 +111,7 @@ export const api = {
   risk: () => get<RiskState>('/risk'),
   marketsToday: () => get<MarketsToday>('/markets/today'),
   gates: () => get<GatesView>('/gates'),
+  context: () => get<ContextView>('/context'),
   opsMetricsHistory: (hours = 24) => get<{ hours: number; rows: OpsMetricRow[] }>(`/api/ops/metrics/history?hours=${hours}`),
   ops: () => get<{ alerts?: { channel?: string; configured?: boolean; sent?: number; lastAt?: number | null; lastError?: string | null; recent?: Array<{ at: number; text: string; delivered: boolean }> } }>('/ops'),
   refreshMarketsToday: () => post<MarketsToday>('/markets/today/refresh'),

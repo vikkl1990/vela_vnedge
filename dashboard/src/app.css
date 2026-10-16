@@ -1374,3 +1374,7 @@ body { overflow-x: clip; }
 .gate-now { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
 .row-loss td:first-child { box-shadow: inset 3px 0 0 var(--danger, #e5484d); }
 @media (max-width: 900px) { .gates-table th:nth-child(4), .gates-table td:nth-child(4) { display: none; } }
+
+/* Context bar (decision 101): the market as a whole, one line under the header */
+.context-bar { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: center; padding: 4px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--muted); }
+.context-bar .ctx b { color: var(--text); font-weight: 600; margin-right: 4px; }

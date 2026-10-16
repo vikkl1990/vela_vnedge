@@ -546,6 +546,23 @@ export interface AuthStatus {
   roles: RoleOption[]
 }
 
+// ---- market context (decision 101) ----
+export interface MarketContext {
+  symbol: string; coin: string
+  delta: { oiUsd: number | null; oiChange6hUsd: number | null; fundingPct: number | null; change24hPct: number | null; turnoverUsd: number | null }
+  hl: { oi: number | null; oiUsd: number | null; fundingHourly: number | null; premium: number | null; markPx: number | null; dayVolumeUsd: number | null } | null
+  smart: { longUsd: number; shortUsd: number; netUsd: number; longs: number; shorts: number; wallets: number } | null
+  binance: { topTraderLongShort: number | null; globalLongShort: number | null; takerBuySell: number | null; oiUsd: number | null } | null
+}
+export interface GlobalContext {
+  at: number; session: string
+  bias: { BTC: { h4: number; d1: number }; ETH: { h4: number; d1: number } }
+  fundingSkewPct: number | null
+  cohort: { wallets: number; refreshedAt: number | null }
+  sources: Record<'delta' | 'hyperliquid' | 'binance', 'ok' | 'failed' | 'skipped'>
+}
+export interface ContextView { global: GlobalContext | null; markets: MarketContext[] }
+
 // ---- gate center ----
 export type GateState = 'open' | 'armed' | 'blocking' | 'off' | 'attention'
 export interface Gate { key: string; group: string; name: string; state: GateState; value: string; rule: string; next: string; href?: string }

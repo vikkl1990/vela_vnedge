@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS ops_metrics (
   runs_h INTEGER NOT NULL, signals_h INTEGER NOT NULL, feed_up INTEGER NOT NULL, open_positions INTEGER NOT NULL, close_lag_s REAL
 );
 
+CREATE TABLE IF NOT EXISTS market_context (
+  at INTEGER NOT NULL, symbol TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (at, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_market_context_symbol ON market_context(symbol, at);
+
 CREATE TABLE IF NOT EXISTS equity (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, scanner_id TEXT, equity REAL NOT NULL, realized REAL NOT NULL, unrealized REAL NOT NULL
 );

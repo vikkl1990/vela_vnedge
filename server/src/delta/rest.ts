@@ -32,6 +32,8 @@ export interface DeltaTicker {
   symbol: string; product_id: number; close: number; mark_price: string; spot_price?: string; open?: number; high?: number; low?: number;
   volume?: number; turnover_usd?: number; mark_change_24h?: string; tick_size?: string; contract_value?: string; description?: string;
   timestamp?: number; contract_type?: string;
+  /** Open interest in USD, its six-hour change, and the current funding rate (percent per interval). */
+  oi_value_usd?: string; oi_change_usd_6h?: string; funding_rate?: string;
 }
 
 export interface DeltaRestOptions {
