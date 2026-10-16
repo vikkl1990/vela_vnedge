@@ -3048,3 +3048,25 @@ revive; a pair whose market comes back is proposed on its record the day it does
 
 The nine live cells on dead markets stay in the fleet by the operator's instruction. They cannot
 trade until their markets clear the gate, and the delivery rule judges them when they do.
+
+## 105. The turnover floor lowered to $50k, with a live quote required and the stop ratio at six
+
+The operator asked whether $250k of daily turnover was required and said profit was the only
+concern. Measured on the nine markets decision 104 found dead: spreads 0.03% to 0.15%, well under
+the 0.25% cost cap; $150 to $20k resting at the touch against orders of $100 to $1,000; the shadow
+book positive on eight of nine with real fees charged. Turnover was standing in for a question
+that can be asked directly, with one honest caveat: only about half of those shadow fills were
+priced off a live quote, the rest off the slippage model because no fresh quote existed, and a
+modelled fill on a market that prints a few times an hour is a fill that may not have happened.
+
+So three settings moved together, on the operator's OK, through the config API: `paper.requireQuote`
+on (an entry without a fresh top-of-book quote is refused rather than modelled, which is what makes
+a thin market safe to allow); `paper.minRiskFeeRatio` 2 → 6 (decision 96's measured figure, the stop
+must clear six times fees plus the live spread); `risk.marketGate.minTurnoverUsd` 250,000 → 50,000.
+The book-cost cap stays at 0.25%. The re-judge allows 27 of 41 scanned markets (16 of 25 before);
+WIF, COOKIE, EVAA, 1000PEPE and API3 remain out as dead, and AIOT, BASED and OPN are out on the
+book-cost probe, which prices a $2,500 round trip against a purse whose orders are a fifth of
+that. `probeNotionalUsd` is the next setting to look at, with the same arithmetic.
+
+This holds for a purse of about a thousand dollars. At ten times the size the touch no longer
+covers an order and the floor does real work again; the setting goes back up with the purse.
