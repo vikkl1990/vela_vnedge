@@ -3027,3 +3027,24 @@ cells still carrying negative records had one trade each, which is no ground to 
 fleet cap went from 40 to 43 instead (`incubator.promote.maxFleet`), the weekly cap was lifted for
 the batch and put back to two, and the three went live. Fleet 43 of 43; the delivery and demotion
 rules judge all thirteen newcomers from here.
+
+## 104. The judge consults the market gate: no proposal on a market the account cannot trade
+
+Looking at the reasons on the Signals page after decision 103 answered the operator's question
+in one line: every entry from the newly promoted cells was refused by the market gate. WIFUSD
+turns over $22k a day on Delta India, COOKIE $5k, API3 $4k, ETC $11k, EVAA $25k, 1000PEPE $27k,
+OPN $73k, ONDO $152k, AIOT $212k, all under the $250k floor, several with a book over the 0.25%
+cost cap; only VVV, BASED, AIN and TAO clear it. Nothing in the scanners had failed; the account
+simply cannot trade nine of the thirteen markets it was just given.
+
+The shadow book had traded them because it never consults the market gate: it is the evidence
+book, and evidence on a dead market is still evidence. But a proposal is a claim that the account
+can take the trade, and the judge made that claim without asking. Now it asks: the judge reads the
+gate's verdicts (`risk.marketsToday`, the same record the risk layer refuses entries from), never
+proposes a pair whose market is refused today, moves an already proposed pair back to brewing with
+the refusal on its row, and the admission never fills a shadow slot with a candidate on a refused
+market. The Incubator page shows "market out today" with the reason on any such row. Markets
+revive; a pair whose market comes back is proposed on its record the day it does.
+
+The nine live cells on dead markets stay in the fleet by the operator's instruction. They cannot
+trade until their markets clear the gate, and the delivery rule judges them when they do.

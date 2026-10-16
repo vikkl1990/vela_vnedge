@@ -32,6 +32,19 @@ export class IncubatorStore {
   constructor(db: Db) { this.db = db; }
 
   get(id: number): PairRow | null { const r = this.db.get('SELECT * FROM incubator_pairs WHERE id=?', id); return r ? toPair(r) : null; }
+  /**
+   * The market gate's verdict per market as the risk layer last wrote it (decision 104): `true`
+   * allowed, `false` refused with its reasons, `null` never judged. The account refuses entries on a
+   * refused market, so the judge must not propose one and the admission must not fill a slot with one.
+   */
+  marketsToday(): Map<string, { allowed: boolean; reasons: string[] }> {
+    const kv = this.db.kvGet<{ enabled?: boolean; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[] }> }>('risk.marketsToday');
+    const out = new Map<string, { allowed: boolean; reasons: string[] }>();
+    if (!kv || kv.enabled === false) return out;
+    for (const m of kv.markets ?? []) out.set(m.symbol, { allowed: Boolean(m.allowed), reasons: m.reasons ?? [] });
+    return out;
+  }
+
   find(scannerId: string, symbol: string, tf: string): PairRow | null {
     const r = this.db.get('SELECT * FROM incubator_pairs WHERE scanner_id=? AND symbol=? AND tf=?', scannerId, symbol, tf);
     return r ? toPair(r) : null;

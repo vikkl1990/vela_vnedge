@@ -579,6 +579,8 @@ export interface IncubatorScreen {
   windowsUp: number; winRatePct: number; avgR: number; bars: number; days: number
 }
 export interface IncubatorPair {
+  /** The market gate's verdict on this pair's market today; null when the gate has not judged it. */
+  market?: { allowed: boolean; reasons: string[] } | null
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; stage: IncubatorStage
   since: number; updated: number; note: string | null; screen: IncubatorScreen | null
   gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats } | null

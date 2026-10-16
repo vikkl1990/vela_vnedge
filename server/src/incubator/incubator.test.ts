@@ -314,3 +314,28 @@ test('decision 90: a pair whose shadow delivery is flat or worse against a scree
   assert.equal(deliveryVerdict({ avgR: 0.30 }, s(30, -0.05)).retire, false, 'a small gap is noise');
   assert.equal(deliveryVerdict(null, s(40, -0.5)).retire, false, 'no promise, nothing to hold it to');
 });
+
+test('a pair on a market the gate refuses today is neither proposed nor admitted; a proposed one goes back to brewing (decision 104)', () => {
+  const { db, store, cfg, insertTrade, screen } = world();
+  syncLive(store, cfg, T0);
+  recordScreen(store, { scannerId: 'cand', symbol: 'WIFUSD', tf: '15m' }, screen(), cfg.incubator, T0);
+  recordScreen(store, { scannerId: 'cand2', symbol: 'SOLUSD', tf: '15m' }, screen(), cfg.incubator, T0);
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [{ symbol: 'WIFUSD', allowed: false, tracked: true, reasons: ['dead: $0.02M 24h turnover < $0.25M'] }, { symbol: 'SOLUSD', allowed: true, tracked: true, reasons: [] }] });
+  const r1 = evaluate(store, cfg, T0);
+  assert.deepEqual(r1.admitted, ['cand2 SOLUSD 15m'], 'the dead market holds no shadow slot');
+  // the dead market later revives: the candidate is admitted, trades well, but dies again before the judge
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0 + DAY, markets: [{ symbol: 'WIFUSD', allowed: true, tracked: true, reasons: [] }, { symbol: 'SOLUSD', allowed: true, tracked: true, reasons: [] }] });
+  assert.deepEqual(evaluate(store, cfg, T0 + DAY).admitted, ['cand WIFUSD 15m']);
+  for (const t of series(40, 20, 2, 2, T0 + DAY + 1000)) insertTrade(2, 'cand', 'WIFUSD', t);
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0 + 22 * DAY, markets: [{ symbol: 'WIFUSD', allowed: false, tracked: true, reasons: ['dead: $0.02M 24h turnover < $0.25M'] }] });
+  const r2 = evaluate(store, cfg, T0 + 22 * DAY);
+  assert.deepEqual(r2.proposed, [], 'a record on a market the account cannot trade is not a proposal');
+  assert.equal(store.find('cand', 'WIFUSD', '15m')!.stage, 'shadow');
+  assert.match(store.find('cand', 'WIFUSD', '15m')!.gate?.reasons?.[0] ?? '', /market gate refuses WIFUSD/);
+  // the market revives: proposed; dies again: back to brewing with the reason on the row
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0 + 23 * DAY, markets: [{ symbol: 'WIFUSD', allowed: true, tracked: true, reasons: [] }] });
+  assert.deepEqual(evaluate(store, cfg, T0 + 23 * DAY).proposed, ['cand WIFUSD 15m']);
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0 + 24 * DAY, markets: [{ symbol: 'WIFUSD', allowed: false, tracked: true, reasons: ['costly book: 0.34% round trip'] }] });
+  evaluate(store, cfg, T0 + 24 * DAY);
+  assert.equal(store.find('cand', 'WIFUSD', '15m')!.stage, 'shadow');
+});

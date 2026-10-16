@@ -617,6 +617,7 @@ export class App {
     const openShadow = new Map<string, number>();
     for (const p of this.shadow.openPositions()) { const k = `${p.scannerId}|${p.symbol}|${p.tf}`; openShadow.set(k, (openShadow.get(k) ?? 0) + 1); }
     const names = new Map(this.registry.all().map(s => [s.id, s.name]));
+    const markets = this.incubatorStore.marketsToday();
     const pairs = this.incubatorStore.list().map(r => {
       const book = r.stage === 'live' || r.stage === 'demote_proposed' ? 0 : 2;
       const judged = r.stage !== 'candidate' && r.stage !== 'retired';
@@ -624,6 +625,8 @@ export class App {
         ...r, scannerName: names.get(r.scannerId) ?? r.scannerId,
         stats: judged ? pairStats(this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book), r.since, now) : null,
         openShadow: openShadow.get(`${r.scannerId}|${r.symbol}|${r.tf}`) ?? 0,
+        // decision 104: whether the account could trade this market today, and why not
+        market: markets.get(r.symbol) ?? null,
       };
     });
     return {
