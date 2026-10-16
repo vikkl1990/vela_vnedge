@@ -1,0 +1,170 @@
+//@version=6
+indicator("Levent Şen | CMF RSI MFI EMA200 | BIST 18 Grup", overlay=true, dynamic_requests=true)
+
+// GORSELDEKI FILTRELER:
+// CMF(20, 1 saat) > 0
+// RSI(14) 40 ile 75 arasinda
+// MFI(14) > 50
+// Son fiyat > EMA(200)
+// TEK request.security sorgusu/hisse icin diger 3 filtre de 1 saatliktir.
+// Son KAPANMIS saatlik mum kullanilir: repaint azaltilir.
+// Onceki BIST taramana ait 18 grup ve 636 simgelik aday liste korunur.
+// Semboller guncel olmayabilir. Bir seferde SADECE SECILI GRUP taranir.
+
+selectedGroup = input.int(1, "Aktif grup (1-18)", minval=1, maxval=18, group="Hisse gruplari")
+showOnlyPassed = input.bool(true, "Yalnizca 4 filtreyi gecenleri goster", group="Gorunum")
+cmfLen   = input.int(20, "CMF uzunlugu", minval=1, group="Filtreler")
+rsiLen   = input.int(14, "RSI uzunlugu", minval=1, group="Filtreler")
+rsiMin   = input.float(40.0, "RSI alt sinir", minval=0, maxval=100, group="Filtreler")
+rsiMax   = input.float(75.0, "RSI ust sinir", minval=0, maxval=100, group="Filtreler")
+mfiLen   = input.int(14, "MFI uzunlugu", minval=1, group="Filtreler")
+mfiMin   = input.float(50.0, "MFI alt sinir (ustunde)", minval=0, maxval=100, group="Filtreler")
+emaLen   = input.int(200, "EMA uzunlugu", minval=1, group="Filtreler")
+
+// 7 dk ve 1 saat dahil, 1 saatten kisa grafiklerde de kullanilabilir.
+// Gunluk vb. grafige 1 saatlik istek yapmayin (alt-zaman dilimi sorunu).
+if timeframe.in_seconds() > timeframe.in_seconds("60")
+    runtime.error("Grafik periyodunu 1 saat veya daha kisa secin (or. 7 dk ya da 1 saat).")
+
+// 18 GRUP | Eski taramadaki sembol havuzu
+G1 = "A1CAP,AKFGY,ALKA,ARZUM,AYCES,BESLR,BMSTL,BURCE,CMENT,DGATE,DURDO,EKGYO,ERCB,FONET,GLBMD,GSRAY,HURGZ,INVES,IZMDC,KLKIM,KRDMD,LINK,MARTI,MMCAS,NTHOL,OYAKC,PEKGY,PSDTC,SANFM,SKTAS,SURGY,TKFEN,TSPOR,USAK,YATAS,ZRGYO"
+G2 = "A1YEN,AKFIS,ALKIM,ASELS,AYDEM,BESTE,BNTAS,BURVA,CONSE,DGGYO,DURKN,EKIM,EREGL,FORMT,GLCVY,GUBRF,ICBCT,ISATR,JANTS,KLMSN,KRGYO,LKMNH,MASFN,MNDRS,NUGYO,OYAYO,PENGD,PSGYO,SANKO,SKYLP,SUWEN,TKNKA,TTKOM,USDTR,YAYLA,BKRGY"
+G3 = "AAGYO,AKFYE,ALKLC,ASGYO,AYEN,BETAE,BOBET,BVSAN,COSMO,DGNMO,DYOBY,EKIZ,ERSU,FORTE,GLDTR,GUNDG,ICUGS,ISBIR,KAPLM,KLNMA,KRONT,LMKDC,MAVI,MNDTR,NUHCM,OYLUM,PENTA,QUAGR,SARAE,SKYMD,SVGYO,TKNSA,TTRAK,VAKBN,YBTAS,INTET"
+G4 = "ACSEL,AKGRT,ALTIN,ASTOR,AYES,BEYAZ,BORLS,BYDNR,CRDFA,DIRIT,DZGYO,EKOS,ESCAR,FRIGO,GLRMK,GWIND,IDGYO,ISBTR,KARCL,KLRHO,KRPLS,LOGO,MCARD,MOBTL,OBAMS,OYYAT,PETKM,RALYH,SARKY,SMART,TABGD,TLMAN,TUCLK,VAKFA,YEOTK,KPEKS"
+G5 = "ADEL,AKHAN,ALTNY,ASUZU,AYGAZ,BFREN,BORSK,CANTE,CRFSA,DITAS,EBEBK,EKSUN,ESCOM,FRMPL,GLRYH,GZNMI,IEYHO,ISCTR,KAREL,KLSER,KRSTL,LRSHO,MEDTR,MOGAN,OBASE,OZATD,PETUN,RAYSG,SASA,SMRTG,TARKM,TMPOL,TUKAS,VAKFN,YESIL,NETGL"
+G6 = "ADESE,AKMGY,ALVES,ATAGY,AZTEK,BIENY,BOSSA,CASA,CUSAN,DMLKT,ECILC,ELITE,ESEN,FROTO,GLYHO,HALKB,IHAAS,ISDMR,KARSN,KLSYN,KRTEK,LUKSK,MEGAP,MOPAS,ODAS,OZGYO,PGSUS,REEDR,SAYAS,SMRVA,TATEN,TMSN,TUPRS,VAKKO,YGGYO,VEYAS"
+G7 = "ADGYO,AKSA,ANELE,ATAKP,BAGFS,BIGCH,BRISA,CATES,CVKMD,DMRGD,ECOGR,EMKEL,ETILR,FZLGY,GMSTR,HATEK,IHEVA,ISFIN,KARTN,KLYPV,KRVGD,LXGYO,MEGMT,MPARK,ODINE,OZKGY,PINSU,RGYAS,SDTTR,SNGYO,TATGD,TNZTP,TUREX,VANGD,YIGIT"
+G8 = "AEFES,AKSEN,ANGEN,ATATP,BAHKM,BIGEN,BRKO,CCOLA,CWENE,DMSAS,ECZYT,EMNIS,ETYAT,GARAN,GMTAS,HATSN,IHGZT,ISGSY,KATMR,KMPUR,KSTUR,LYDHO,MEKAG,MRGYO,OFSYM,OZRDN,PKART,RNPOL,SEGMN,SNICA,TAVHL,TOASO,TURGG,VBTYZ,YKBNK"
+G9 = "AFYON,AKSGY,ANHYT,ATATR,BAKAB,BIGTK,BRKSN,CELHA,DAGI,DNISI,EDATA,EMPAE,EUHOL,GARFA,GOKNR,HDFGS,IHLAS,ISGYO,KAYSE,KNFRT,KTLEV,LYDYE,MEPET,MRSHL,ONCSM,OZSUB,PKENT,RODRG,SEGYO,SNPAM,TBORG,TPKGY,TURSG,VERTU,YKSLN"
+G10 = "AGESA,AKSUE,ANSGR,ATEKS,BALAT,BIMAS,BRKVY,CEMAS,DAPGM,DOAS,EDIP,ENDAE,EUKYO,GATEG,GOLDA,HEDEF,IHLGM,ISKPL,KBORU,KOCMT,KTSKR,MAALT,MERCN,MSGYO,ONRYT,OZYSR,PLTUR,RTALB,SEKFK,SODSN,TCELL,TRALT,UCAYM,VERUS,YONGA"
+G11 = "AGHOL,AKYHO,ARASE,ATLAS,BALSU,BINBN,BRLSM,CEMTS,DARDL,DOCO,EFOR,ENERY,EUPWR,GEDIK,GOLTS,HEKTS,IHYAY,ISKUR,KCAER,KONKA,KUTPO,MACKO,MERIT,MTRKS,ORCAY,PAGYO,PNLSN,RUBNS,SEKUR,SOHOE,TCKRC,TRCAS,UFUK,VESBE,YUNSA"
+G12 = "AGROT,ALARK,ARCLK,ATPAY,BANVT,BINHO,BRMEN,CEMZY,DCTTR,DOFER,EGEEN,ENJSA,EUREN,GEDZA,GOODY,HKTM,IMASM,ISMEN,KCHOL,KONTR,KUVVA,MAGEN,MERKO,MTRYO,ORGE,PAHOL,PNSUT,RUZYE,SELEC,SOKE,TDGYO,TRENJ,ULAS,VESTL,YYAPI"
+G13 = "AGYO,ALBRK,ARDYZ,ATSYH,BARMA,BIOEN,BRSAN,CEOEM,DENGE,DOFRB,EGEGY,ENKAI,EUYO,GENIL,GOZDE,HLGYO,INDES,ISSEN,KENT,KONYA,KUYAS,MAKIM,METEN,MZHLD,ORMA,PAMEL,POLHO,RYGYO,SELVA,SOKM,TEHOL,TRGYO,ULKER,VKFYO,YYLGD"
+G14 = "AHGAZ,ALBTN,ARENA,AVGYO,BASCM,BIZIM,BRYAT,CGCAM,DERHL,DOGUB,EGEPO,ENPRA,EYGYO,GENKM,GRNYO,HOROZ,INFO,ISVEA,KERVN,KOPOL,KZBGY,MAKTK,METRO,NATEN,ORZAX,PAPIL,POLTK,RYSAS,SERNT,SONME,TEKTU,TRHOL,ULUFA,VKGYO,ZEDUR"
+G15 = "AHSGY,ALCAR,ARFYE,AVHOL,BASGZ,BJKAS,BSOKE,CIMSA,DERIM,DOHOL,EGGUB,ENSRI,FADE,GENTS,GRSEL,HRKET,INGRM,ISYAT,KFEIN,KORDS,KZGYO,MANAS,MEYSU,NETAS,OSMEN,PARSN,PRDGS,SAFKR,SEYKM,SRVGY,TERA,TRILC,ULUSE,VKING,ZERGY"
+G16 = "AKBNK,ALCTL,ARMGD,AVOD,BAYRK,BLCYT,BTCIM,CITAS,DESA,DOKTA,EGPRO,ENTRA,FENER,GEREL,GRTHO,HTTBT,INTEK,IZENR,KGYO,KOTON,LIDER,MARBL,MGROS,NETCD,OSTIM,PASEU,PRKAB,SAHOL,SILVR,SSAAT,TEZOL,TRMET,ULUUN,VRGYO,ZGOLD"
+G17 = "AKCNS,ALFAS,ARSAN,AVPGY,BEGYO,BLUME,BUCIM,CLEBI,DESPC,DSTKF,EGSER,EPLAS,FLAP,GESAN,GSDDE,HUBVC,INTEM,IZFAS,KIMMR,KRDMA,LIDFA,USHOL,MHRGY,NIBAS,OTKAR,PATEK,PRKME,SAMAT,SISE,SUMAS,TGSAS,TSGYO,UMPAS,VSNMD,ZGYO"
+G18 = "AKENR,ALGYO,ARTMS,AVTUR,BERA,BMSCH,BULGS,CMBTN,DEVA,DUNYH,EKDMR,ERBOS,FMIZP,GIPTA,GSDHO,HUNER,INVEO,IZINV,KLGYO,KRDMB,LILAK,MARMR,MIATK,NTGAZ,OTTO,PCILT,PRZMA,SANEL,SKBNK,SUNTK,THYAO,TSKB,UNLU,YAPRK,ZOREN"
+
+string groupText = switch selectedGroup
+    1 => G1
+    2 => G2
+    3 => G3
+    4 => G4
+    5 => G5
+    6 => G6
+    7 => G7
+    8 => G8
+    9 => G9
+    10 => G10
+    11 => G11
+    12 => G12
+    13 => G13
+    14 => G14
+    15 => G15
+    16 => G16
+    17 => G17
+    18 => G18
+    => G1
+
+var array<string> symbols = str.split(groupText, ",")
+
+// Chaikin Money Flow: mum ici kapanis-konumuna gore hacim akis oranidir.
+f_cmf(int length) =>
+    float spread = high - low
+    float multiplier = spread != 0.0 ? ((close - low) - (high - close)) / spread : 0.0
+    float v = nz(volume, 0.0)
+    float sumV = math.sum(v, length)
+    float sumMFV = math.sum(v * multiplier, length)
+    sumV > 0.0 ? sumMFV / sumV : na
+
+// BIR HISSENIN BUTUN VERILERI AYNI 1 SAATLIK BAGLAMDA HESAPLANIR.
+// [1] + lookahead_on => tum degerler onceki TAMAMLANMIS saatlik mumundur.
+f_metrics() =>
+    float e = ta.ema(close, emaLen)
+    float c = f_cmf(cmfLen)
+    float r = ta.rsi(close, rsiLen)
+    float m = ta.mfi(hlc3, mfiLen)
+    bool pass = not na(e) and not na(c) and not na(r) and not na(m) and c > 0 and r >= rsiMin and r <= rsiMax and m > mfiMin and close > e
+    [close[1], e[1], c[1], r[1], m[1], pass[1], pass[2]]
+
+color backgroundDark = color.rgb(24, 29, 38)
+color backgroundAlt  = color.rgb(35, 42, 54)
+color backgroundHead = color.rgb(23, 60, 87)
+color backgroundPass = color.rgb(14, 112, 81)
+color backgroundNew  = color.rgb(0, 148, 115)
+color backgroundFail = color.rgb(110, 64, 65)
+
+var table screen = table.new(position.top_right, 7, 42, border_width=1, border_color=color.rgb(72, 82, 96))
+f_cell(int x, int y, string s, color bg) =>
+    table.cell(screen, x, y, s, bgcolor=bg, text_color=color.white, text_size=size.tiny)
+
+f_float(float x) =>
+    na(x) ? "-" : str.tostring(x, "#.##")
+
+bool groupHasNew = false
+string newMatches = ""
+int matchingCount = 0
+int validCount = 0
+int outRow = 2
+bool newHour = timeframe.change("60")
+
+if barstate.islast
+    table.clear(screen, 0, 0, 6, 41)
+    f_cell(0, 0, "Levent Şen", backgroundHead)
+    f_cell(1, 0, "GRUP " + str.tostring(selectedGroup), backgroundHead)
+    f_cell(2, 0, "1 SAAT", backgroundHead)
+    f_cell(3, 0, "CMF > 0", backgroundHead)
+    f_cell(4, 0, "RSI 40-75", backgroundHead)
+    f_cell(5, 0, "MFI > 50", backgroundHead)
+    f_cell(6, 0, "F>EMA200", backgroundHead)
+    f_cell(0, 1, "HISSE", backgroundHead)
+    f_cell(1, 1, "FIYAT", backgroundHead)
+    f_cell(2, 1, "CMF 20", backgroundHead)
+    f_cell(3, 1, "RSI 14", backgroundHead)
+    f_cell(4, 1, "MFI 14", backgroundHead)
+    f_cell(5, 1, "EMA 200", backgroundHead)
+    f_cell(6, 1, "DURUM", backgroundHead)
+
+// request.security HER BARDA cagrilir, son muma kisitlanmaz.
+// Boylece Pine v6 dinamik veri setlerini onceden acabilir.
+for i = 0 to math.min(array.size(symbols) - 1, 39)
+    string ticker = str.trim(array.get(symbols, i))
+    if str.length(ticker) > 0
+        string fullSymbol = "BIST:" + ticker
+        [p, e, c, r, m, passNow, passPrev] = request.security(fullSymbol, "60", f_metrics(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on, ignore_invalid_symbol=true, calc_bars_count=300)
+        bool dataOk = not na(p) and not na(e) and not na(c) and not na(r) and not na(m)
+        bool eligible = dataOk and passNow
+        bool fresh = eligible and not passPrev
+        validCount += dataOk ? 1 : 0
+        matchingCount += eligible ? 1 : 0
+        groupHasNew := groupHasNew or fresh
+        if fresh
+            newMatches += (str.length(newMatches) == 0 ? "" : ", ") + ticker
+        if barstate.islast and (not showOnlyPassed or eligible) and outRow <= 40
+            color bg = eligible ? (fresh ? backgroundNew : backgroundPass) : backgroundAlt
+            f_cell(0, outRow, ticker, bg)
+            f_cell(1, outRow, f_float(p), backgroundDark)
+            f_cell(2, outRow, f_float(c), c > 0 ? backgroundPass : backgroundFail)
+            f_cell(3, outRow, f_float(r), r >= rsiMin and r <= rsiMax ? backgroundPass : backgroundFail)
+            f_cell(4, outRow, f_float(m), m > mfiMin ? backgroundPass : backgroundFail)
+            f_cell(5, outRow, f_float(e), p > e ? backgroundPass : backgroundFail)
+            f_cell(6, outRow, not dataOk ? "VERI YOK" : fresh ? "YENI" : eligible ? "UYGUN" : "ELENDI", bg)
+            outRow += 1
+
+if newHour and groupHasNew and barstate.isrealtime
+    alert("Levent Şen | Yeni filtre eşleşmeleri (1S): " + newMatches, alert.freq_once_per_bar)
+
+if barstate.islast
+    if outRow == 2
+        f_cell(0, 2, "ESLESEN YOK", backgroundAlt)
+        f_cell(1, 2, "0", backgroundAlt)
+    f_cell(0, 41, "ESLESEN", backgroundHead)
+    f_cell(1, 41, str.tostring(matchingCount), backgroundHead)
+    f_cell(2, 41, "VERILI", backgroundHead)
+    f_cell(3, 41, str.tostring(validCount), backgroundHead)
+    f_cell(4, 41, "ADAY", backgroundHead)
+    f_cell(5, 41, str.tostring(array.size(symbols)), backgroundHead)
+    f_cell(6, 41, "1S", backgroundHead)
+
+alertcondition(newHour and groupHasNew, "Yeni filtre eslesmesi", "Secilen BIST grubunda en az bir hisse 1 saatlik filtreyi yeni gecti.")

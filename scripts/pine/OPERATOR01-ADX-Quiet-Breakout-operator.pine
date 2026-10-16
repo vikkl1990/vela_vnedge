@@ -1,0 +1,33 @@
+//@version=5
+// Operator test, 16 October 2026: a TradeStation (EasyLanguage) idea translated.
+//   Filter  = ADX(25) < 15 and ADX(25) < Average(ADX, MALength)      — a quiet, contracting market
+//   Entry   = one a day, when Close < Breakout_LONG: buy next bar at Breakout_LONG stop
+//   Exit    = sell at market once BarsSinceEntry >= Bars_Since_Entry
+// Breakout_LONG, MALength, Bars_Since_Entry and TimeCondition were not in the snippet: here the
+// level is the prior N-bar high, the average 10 bars, the hold 10 bars, and crypto has no session.
+strategy("ADX Quiet Breakout (operator test)", overlay=true, pyramiding=0, calc_on_every_tick=false)
+adxLen   = input.int(25, "ADX length")
+adxMax   = input.int(15, "ADX must be below")
+maLen    = input.int(10, "ADX average length")
+brkLen   = input.int(20, "Breakout lookback (bars)")
+holdBars = input.int(10, "Exit after this many bars")
+
+[dip, dim, adx] = ta.dmi(adxLen, adxLen)
+adxMA  = ta.sma(adx, maLen)
+quiet  = adx < adxMax and adx < adxMA
+level  = ta.highest(high, brkLen)[1]
+
+var int entriesToday = 0
+if dayofmonth != dayofmonth[1]
+    entriesToday := 0
+entered = ta.change(strategy.position_size) > 0
+if entered
+    entriesToday += 1
+
+if strategy.position_size == 0 and entriesToday < 1 and quiet and close < level
+    strategy.entry("L", strategy.long, stop=level)
+if strategy.position_size > 0 and ta.barssince(entered) >= holdBars
+    strategy.close("L", comment="time exit")
+
+plot(level, "Breakout level", color=color.new(color.orange, 0))
+plotshape(quiet, "quiet", shape.circle, location.bottom, color=color.new(color.aqua, 50), size=size.tiny)
