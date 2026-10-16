@@ -61,3 +61,16 @@ test('entry model: a pullback limit fills back from the signal close as a maker,
   assert.equal(chased.entries, 0); assert.equal(chased.rejected['chased'], 1);
   assert.equal(runBacktest({ ...input, bars: spent, events: evSpent }).entries, 1, 'without the filter the same signal is taken');
 });
+
+test('the context gate refuses an entry it blocks, and an unknown reading is allowed or blocked as asked', () => {
+  const b = (i: number, o: number, h: number, l: number, c: number) => ({ time: i * M15, open: o, high: h, low: l, close: c, volume: 1 });
+  const bars = [...Array.from({ length: 20 }, (_, i) => b(i, 100, 100.5, 99.5, 100)), b(20, 100, 100.5, 99.5, 100), b(21, 100, 106, 100, 105), b(22, 105, 105, 105, 105)];
+  const ev = [{ kind: 'entry', side: 'long', price: 100, barTime: 20 * M15, barIndex: 20, source: 'alert', label: 'buy', message: '' }] as any;
+  const input = { ...base, bars, events: ev, exitMode: 'levels' as const, tickSize: 0.1 };
+  assert.equal(runBacktest({ ...input, contextGate: () => 'allow' }).entries, 1);
+  const blocked = runBacktest({ ...input, contextGate: () => 'block' });
+  assert.equal(blocked.entries, 0); assert.equal(blocked.rejected['context'], 1);
+  assert.equal(runBacktest({ ...input, contextGate: () => 'unknown' }).entries, 1, 'unknown allows by default');
+  const unk = runBacktest({ ...input, contextGate: () => 'unknown', unknownIs: 'block' });
+  assert.equal(unk.entries, 0); assert.equal(unk.rejected['no context'], 1);
+});

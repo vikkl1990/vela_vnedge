@@ -48,6 +48,14 @@ export interface BacktestInput {
   spreadPct?: number;
   /** Under test: the stop must be at least this many times the round trip's cost (fees plus the book), overriding `minRiskFeeRatio`. */
   costRatio?: number;
+  /**
+   * The context gate under test (decision 102): asked at every entry with the signal bar's time and
+   * the side; `allow`, `block`, or `unknown` when the context has no reading for that time (the
+   * Binance history stops 30 days back). `unknownIs` decides what an unknown does; blocking on
+   * unknown confines a variant to the window the context covers, which is how it is compared fairly.
+   */
+  contextGate?: (time: number, side: 'long' | 'short') => 'allow' | 'block' | 'unknown';
+  unknownIs?: 'allow' | 'block';
 }
 
 export interface BacktestResult {
@@ -188,6 +196,10 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const blocked = gateMode === 'off' ? null : trendGateReason(ev.side, gateTrend[i], gateMode);
       if (blocked) { rejected['against the trend'] = (rejected['against the trend'] ?? 0) + 1; continue; }
       if (inp.chopGate && chopBlocked(bars, i, inp.chopGate)) { rejected['choppy'] = (rejected['choppy'] ?? 0) + 1; continue; }
+      if (inp.contextGate) {
+        const v = inp.contextGate(bar.time, ev.side);
+        if (v === 'block' || (v === 'unknown' && (inp.unknownIs ?? 'allow') === 'block')) { refuse(v === 'block' ? 'context' : 'no context'); continue; }
+      }
       if (open) {
         if (open.side === ev.side) { rejected['already_open'] = (rejected['already_open'] ?? 0) + 1; continue; }
         if (!cfg.allowReversal) { rejected['reversal_disabled'] = (rejected['reversal_disabled'] ?? 0) + 1; continue; }

@@ -61,6 +61,35 @@ const market = new Map<string, ReturnType<typeof marketSpec>>();
 const bookCost = new Map<string, number>();
 try { for (const m of (new Db().kvGet<{ markets: Array<{ symbol: string; bookCostPct: number | null }> }>('risk.marketsToday')?.markets ?? [])) if (m.bookCostPct != null) bookCost.set(m.symbol, m.bookCostPct); } catch { /* no gate reading: the spread variants then equal base */ }
 for (const s of MARKETS) { const p = await rest.product(s); market.set(s, marketSpec(p)); }
+
+// ---- context series for the regime test (decision 102): the majors' bias, each market's funding, the top traders' ratio ----
+const H = 3600_000;
+const btc4h = toBars(await rest.recentCandles('BTCUSD', '4h', 2600, 14400));
+const btcBias: Array<[number, number]> = (() => {
+  const out: Array<[number, number]> = []; const k = 2 / 51; let ema = btc4h[0]?.close ?? 0; const emas: number[] = [];
+  btc4h.forEach((b, i) => { ema = i ? b.close * k + ema * (1 - k) : b.close; emas.push(ema); if (i >= 55) out.push([b.time + 14400_000, b.close > ema && ema > emas[i - 5] ? 1 : b.close < ema && ema < emas[i - 5] ? -1 : 0]); });
+  return out;   // [time the bar closed, bias known from then on]
+})();
+const biasAt = (t: number): number | undefined => { let lo = 0, hi = btcBias.length - 1, ans = -1; while (lo <= hi) { const mid = (lo + hi) >> 1; if (btcBias[mid][0] <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1; } return ans < 0 ? undefined : btcBias[ans][1]; };
+const fundingSeries = new Map<string, Map<number, number>>();
+const ratioSeries = new Map<string, Map<number, number>>();
+for (const s of MARKETS) {
+  try { const c = await rest.recentCandles(`FUNDING:${s}`, '1h', 4000, 3600); fundingSeries.set(s, new Map(c.map(x => [x.time * 1000, x.close]))); } catch { fundingSeries.set(s, new Map()); }
+  const r = new Map<number, number>();
+  try {
+    let end = Date.now();
+    for (let page = 0; page < 2; page++) {
+      const d: any[] = await (await fetch(`https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=${s.replace(/USD$/, 'USDT')}&period=1h&limit=500&endTime=${end}`)).json();
+      if (!Array.isArray(d) || !d.length) break;
+      for (const x of d) r.set(Number(x.timestamp), Number(x.longShortRatio));
+      end = Number(d[0].timestamp) - 1;
+    }
+  } catch { /* not listed on Binance, or blocked: the ratio variant then has no window here */ }
+  ratioSeries.set(s, r);
+}
+console.error(`context: BTC bias from ${btcBias.length} 4h bars · funding ${[...fundingSeries.values()].filter(m => m.size).length} markets · ratio ${[...ratioSeries.values()].filter(m => m.size).length} markets`);
+const lastHour = (t: number) => Math.floor(t / H) * H - H;   // the last fully closed hour before t
+const FUND_BAND = 0.005;   // percent per interval: inside the band nobody is crowded
 for (const s of MARKETS) for (const tf of TFS) { const b = await bars(s, tf, BARS[tf]); await bars(s, SUB[tf], Math.min(60_000, Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]))); }
 console.error('candles ready');
 
@@ -166,6 +195,19 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
   variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
   variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
+  // the regime test (decision 102), every variant paying the real book
+  const fund = fundingSeries.get(sym) ?? new Map<number, number>(), rat = ratioSeries.get(sym) ?? new Map<number, number>();
+  const gBias = (t: number, side: 'long' | 'short') => { const bb = biasAt(t); return bb === undefined ? 'unknown' as const : bb === 0 ? 'allow' as const : (side === 'long') === (bb > 0) ? 'allow' as const : 'block' as const; };
+  const gFund = (t: number, side: 'long' | 'short') => { const f = fund.get(lastHour(t)); return f === undefined ? 'unknown' as const : Math.abs(f) < FUND_BAND ? 'allow' as const : (side === 'long' ? f < 0 : f > 0) ? 'allow' as const : 'block' as const; };
+  const gRatio = (t: number, side: 'long' | 'short') => { const r = rat.get(lastHour(t)); return r === undefined ? 'unknown' as const : (side === 'long' ? r >= 1 : r <= 1) ? 'allow' as const : 'block' as const; };
+  const gWindow = (t: number) => (rat.get(lastHour(t)) === undefined ? 'unknown' as const : 'allow' as const);
+  variants['ctx-bias'] = stat(run({ spreadPct, contextGate: gBias }), b, tfMs);
+  variants['ctx-funding'] = stat(run({ spreadPct, contextGate: gFund }), b, tfMs);
+  variants['ctx-bias+fund'] = stat(run({ spreadPct, contextGate: (t, side) => (gBias(t, side) === 'block' || gFund(t, side) === 'block' ? 'block' : 'allow') }), b, tfMs);
+  if (rat.size) {
+    variants['base30d'] = stat(run({ spreadPct, contextGate: gWindow, unknownIs: 'block' }), b, tfMs);
+    variants['ctx-ratio30d'] = stat(run({ spreadPct, contextGate: gRatio, unknownIs: 'block' }), b, tfMs);
+  }
   variants.inverted = stat(run({ events: flip(events) }), b, tfMs);
   variants.long = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'long') }), b, tfMs);
   variants.short = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'short') }), b, tfMs);
