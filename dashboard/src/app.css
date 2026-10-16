@@ -1366,3 +1366,11 @@ body { overflow-x: clip; }
 .chart-layout-frames .chart-main { border: 0; background: transparent; overflow: visible; }
 .btn-on { background: var(--accent-soft, rgba(124,108,255,.25)); border-color: var(--accent, #7c6cff); }
 @media (max-width: 900px) { .chart-frames { grid-template-columns: 1fr !important; } }
+
+/* Gate Center (decision 99): five fixed columns, every cell wraps, nothing leaves the panel */
+.gates-table { table-layout: fixed; width: 100%; }
+.gates-table th:nth-child(1) { width: 18%; } .gates-table th:nth-child(2) { width: 9%; } .gates-table th:nth-child(3) { width: 27%; } .gates-table th:nth-child(4) { width: 24%; } .gates-table th:nth-child(5) { width: 22%; }
+.gates-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.gate-now { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+.row-loss td:first-child { box-shadow: inset 3px 0 0 var(--danger, #e5484d); }
+@media (max-width: 900px) { .gates-table th:nth-child(4), .gates-table td:nth-child(4) { display: none; } }

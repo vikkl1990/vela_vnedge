@@ -21,7 +21,7 @@ export function Gates() {
             </div>
             {ORDER.filter((g) => d.gates.some((x) => x.group === g)).map((group) => (
               <Panel key={group} title={group} pad={false}>
-                <table className="table">
+                <table className="table gates-table">
                   <thead>
                     <tr><th>Gate</th><th>State</th><th>Now</th><th>Rule</th><th>Next step</th></tr>
                   </thead>
@@ -30,7 +30,7 @@ export function Gates() {
                       <tr key={g.key} className={g.state === 'blocking' ? 'row-loss' : ''}>
                         <td><b>{g.name}</b></td>
                         <td><Pill tone={TONE[g.state]}>{WORD[g.state]}</Pill></td>
-                        <td className="mono small">{g.value}</td>
+                        <td className="small gate-now">{g.value}</td>
                         <td className="muted small">{g.rule}</td>
                         <td className="small">{g.href ? <Link to={g.href}>{g.next}</Link> : g.next}</td>
                       </tr>

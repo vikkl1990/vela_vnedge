@@ -2886,3 +2886,23 @@ memory every second while jobs run and retires every busy worker past 60% of the
 one is SIGKILLed and its memory is back at once, and a recycled one returns everything it held.
 The validation run: Wyckoff quarantined at 6.0 GB, the two other scripts screened, the judge ran,
 done in 2.2 minutes. The live bot keeps thread workers for now; the watchdog protects it too.
+
+## 99. The Gate Center: every gate in one place, and the build-up it opens
+
+The operator named the AITOS Trade flow as the reference (`docs/REFERENCE-AITOS-FLOW-2026-10-16.md`)
+and asked for a proper build-up; the plan is `docs/BUILD-PLAN-2026-10-16.md`, six phases, each
+leaving the bot running. Phase 1 is the page that costs the least and shows the most: every gate
+between a setup and real money, its live state and its next step, on one page (`/gates`).
+
+Nineteen gates in five groups: the account's limits (kill switch, daily and weekly loss,
+drawdown scaling, position caps, beta exposure, cooldowns, re-entry and burst), the market
+(markets today, regime), the trade (stop versus round-trip cost, liquidation headroom, risk and
+size caps), the pipeline (shadow capacity, the nightly screen, promotion) and the way to real
+money (the go-live rule, the alert channel, the execution lock). Each row reads the state its
+gate already keeps, so the page cannot disagree with the gate that acts. States are `open`,
+`armed`, `blocking`, `off` and `attention`; the last one is the operator's list.
+
+On the day it went up it said: 2 blocking (the go-live rule at 3 of 7, the execution lock in
+paper), 3 needing the operator (the stop-versus-cost ratio still at 2, the shadow book at 195
+of 150, no alert channel), and, for the first time in weeks, a nightly screen that finished
+(14 hours earlier, on 15m). The Overview's attention line links to it.
