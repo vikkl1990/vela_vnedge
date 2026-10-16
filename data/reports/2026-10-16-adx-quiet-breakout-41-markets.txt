@@ -1,0 +1,52 @@
+rows 3330 · cells 123
+
+15m: 41 markets, 40 with ≥8 base trades
+  variant          trades  R/trade  both+  mfe1 firstBarStop
+  base               1539   +0.030     12  0.26         0.17
+  spread             1046   -0.125      6  0.22         0.18
+  gross              1580   +0.180     17  0.27         0.16
+  script             1497   +0.026     11  0.26         0.16
+  levels             1493   +0.030     11  0.26         0.16
+  tp1                1515   -0.124      3  0.00         0.16
+  stop2              1355   +0.005      8  0.20         0.03
+  er0.25              793   +0.205     14  0.33         0.14
+  spread+er0.25       555   +0.021      6  0.29         0.15
+  spread+ratio6       180   -0.051      2  0.22         0.24
+  inverted           1572   -0.025      7  0.26         0.23
+  long               1497   +0.026     11  0.26         0.16
+  pays on both halves (base): DUSKUSD +0.69R/24, INITUSD +0.60R/30, ZKUSD +0.58R/31, STBLUSD +0.51R/24, TIAUSD +0.47R/38, STRKUSD +0.47R/47, GRIFFAINUSD +0.41R/38, INJUSD +0.24R/50, ETHFIUSD +0.20R/41, ARIAUSD +0.17R/46, ZROUSD +0.16R/42, ZECUSD +0.02R/38
+  verdicts: 12× no variant pays in both halves; 11× pays as read; 6× too few trades to say; 5× COSTS: positive before fees, negative after
+
+1h: 41 markets, 36 with ≥8 base trades
+  variant          trades  R/trade  both+  mfe1 firstBarStop
+  base               2607   +0.012     12  0.26         0.22
+  spread             2339   -0.094      3  0.24         0.23
+  gross              2548   +0.096     13  0.26         0.22
+  script             2523   +0.011     11  0.26         0.23
+  levels             2509   +0.014     11  0.27         0.23
+  tp1                2540   -0.114      3  0.00         0.23
+  stop2              2166   -0.025     10  0.17         0.04
+  er0.25             1373   +0.158     18  0.31         0.19
+  spread+er0.25      1271   +0.054     12  0.29         0.20
+  spread+ratio6       877   -0.078      3  0.23         0.24
+  inverted           2647   +0.053     12  0.26         0.23
+  long               2523   +0.011     11  0.26         0.23
+  pays on both halves (base): DUSKUSD +0.43R/74, SOPHUSD +0.37R/60, STBLUSD +0.34R/82, ZECUSD +0.28R/66, ZKUSD +0.27R/89, STRKUSD +0.23R/74, ETHFIUSD +0.20R/83, INITUSD +0.18R/70, BNBUSD +0.14R/70, MUBARAKUSD +0.08R/75, ZROUSD +0.04R/84, XMRUSD +0.00R/108
+  verdicts: 12× no variant pays in both halves; 11× pays as read; 6× READING: direction inverted; 5× WHIPSAW: pays only when the market is moving efficiently
+
+4h: 41 markets, 35 with ≥8 base trades
+  variant          trades  R/trade  both+  mfe1 firstBarStop
+  base               1386   -0.107      4  0.18         0.21
+  spread             1334   -0.157      1  0.17         0.21
+  gross              1348   -0.076      4  0.17         0.21
+  script             1348   -0.112      3  0.17         0.21
+  levels             1346   -0.112      2  0.18         0.21
+  tp1                1252   -0.138      2  0.00         0.21
+  stop2              1119   -0.048      6  0.09         0.04
+  er0.25              784   -0.018      6  0.20         0.21
+  spread+er0.25       774   -0.070      2  0.19         0.21
+  spread+ratio6      1231   -0.147      1  0.17         0.21
+  inverted           1326   +0.131     14  0.22         0.16
+  long               1348   -0.112      3  0.17         0.21
+  pays on both halves (base): BCHUSD +0.11R/35, HYPEUSD +0.11R/47, ZROUSD +0.10R/38, UNIUSD +0.01R/29
+  verdicts: 14× no variant pays in both halves; 12× READING: direction inverted; 3× WHIPSAW: pays only when the market is moving efficiently; 3× pays as read

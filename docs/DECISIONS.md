@@ -2906,3 +2906,27 @@ On the day it went up it said: 2 blocking (the go-live rule at 3 of 7, the execu
 paper), 3 needing the operator (the stop-versus-cost ratio still at 2, the shadow book at 195
 of 150, no alert channel), and, for the first time in weeks, a nightly screen that finished
 (14 hours earlier, on 15m). The Overview's attention line links to it.
+
+## 100. The operator's ADX quiet-breakout idea, translated and judged on every market
+
+A TradeStation snippet (buy a stop at the breakout level when ADX(25) is under 15 and under its
+own average, one entry a day, out after N bars) became a Pine strategy with the missing pieces as
+inputs (the level is the prior 20-bar high, the average 10 bars, the hold 10 bars; crypto has no
+session), ran under PineTS with its own time exits, and was judged on 41 markets at 15m, 1h and 4h
+(`data/reports/2026-10-16-adx-quiet-breakout-41-markets.*`). Also checked: the TradingView author
+leventsen77 publishes eight scripts; seven are protected and the open one is a BIST stock-group
+screener that requests Turkish equities, so it cannot run here.
+
+| Timeframe | Trades | As read | Paying the real book | With the efficiency gate | Gate and book | Inverted |
+|---|---|---|---|---|---|---|
+| 15m | 1,539 | +0.03 | −0.13 | +0.21 | +0.02 | −0.03 |
+| 1h | 2,607 | +0.01 | −0.09 | +0.16 | +0.05 | +0.05 |
+| 4h | 1,386 | −0.11 | −0.16 | −0.02 | −0.07 | +0.13 |
+
+The same shape as the fleet (decision 96): a real gross edge at 15m and 1h that the book eats,
+rescued only by the efficiency gate, and then marginal; at 4h the breakout is better faded than
+followed. On 1h behind the gate it pays on both halves on DUSK, SOPH, STBL, ZEC, ZK and STRK,
+which is as good as the fleet's best cells and no better. The script's own time exit changes
+nothing against the fleet's exits (`script` equals `base`). It stays in the library, disabled,
+where the nightly screen will judge it on the same terms as every other script; it is not a
+reason to change the fleet.
