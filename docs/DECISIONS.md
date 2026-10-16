@@ -2930,3 +2930,28 @@ which is as good as the fleet's best cells and no better. The script's own time 
 nothing against the fleet's exits (`script` equals `base`). It stays in the library, disabled,
 where the nightly screen will judge it on the same terms as every other script; it is not a
 reason to change the fleet.
+
+## 101. Flow intelligence built from public data, not bought
+
+The operator pointed at Nansen and then said: not reused, built. What Nansen sells for crypto perps
+is assembled from sources anyone can read, and the bot now reads them itself, once an hour, into
+`market_context` (one row per fleet market and one for the market as a whole, 120 days kept):
+
+- **Delta**: open interest in USD, its six-hour change, the funding rate and the 24h change, from
+  the tickers the bot already polls.
+- **Hyperliquid's public API**: per-coin open interest, funding and premium for 234 coins (12 of
+  the fleet's 16 are listed), and a smart-money cohort of our own definition: from the public
+  leaderboard of 47,000 traders, the 300 with the largest month's PnL that are also profitable
+  this week, with at least $100k in the account and $5M of monthly turnover; their open positions
+  are read wallet by wallet and summed per coin into long USD, short USD, net and counts. The
+  rule is simple and published on purpose; a label nobody can audit is not an edge.
+- **Binance futures public data**: the top traders' long/short ratio, the crowd's, taker buy/sell,
+  open interest, for the same coins.
+- From the bot's own candles: BTC and ETH bias on 4h and 1d (price against a rising or falling
+  50-bar EMA), the fleet's average funding (the crowded side), the session.
+
+The dashboard carries a context bar under the header on every page; `/api/context` and
+`/api/context/history` serve the rows. Nothing here trades: the history is what phase 3 of the
+build plan tests, as diagnose variants on the 83 cells against the honest base of decision 96,
+before any of it is allowed to gate an entry. Sources fail soft and say so on the bar; a missing
+reading stays missing.
