@@ -3020,3 +3020,10 @@ the fleet-wide numbers say cannot pay the book. Each one earned its proposal in 
 quoted and charged as the account is, so each has a record against that yardstick; delivery
 retirement (decision 90) and the demotion rule judge them from here. The cost-rule and
 timeframe settings named in decision 96 remain the operator's.
+
+**Addendum, later the same day.** A re-judge raised three more proposals (SuperTrend Cluster on
+EVAA and BASED, Trend Impulse Channels on AIN, all 15m) and the operator allowed them. The live
+cells still carrying negative records had one trade each, which is no ground to demote on, so the
+fleet cap went from 40 to 43 instead (`incubator.promote.maxFleet`), the weekly cap was lifted for
+the batch and put back to two, and the three went live. Fleet 43 of 43; the delivery and demotion
+rules judge all thirteen newcomers from here.
