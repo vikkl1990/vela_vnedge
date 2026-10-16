@@ -41,8 +41,21 @@ const db = new Db();
 const store = new IncubatorStore(db);
 const health = new ScriptHealth(db);
 const rest = new DeltaRest();
-// decision 106: the timeframe rotates night by night through incubator.tfs (TF=… overrides for a hand run)
-const TF = process.env.TF || screenTf(inc), tfMs = TF_SECONDS[TF] * 1000;
+// Decision 107: the screen walks the library continuously. A cursor over (timeframe, slice, script) is
+// kept in the database; every night starts where the last one stopped and goes as far as the time and
+// memory budgets allow, so a fast night covers two slices and a slow one half of one, and nothing is
+// screened twice before everything is screened once. SLICE=, TF= or IDS= make a hand run that leaves
+// the cursor alone.
+const TFS = inc.tfs?.length ? inc.tfs : [inc.tf];
+const SLICES = inc.screen.slices;
+const handRun = Boolean(process.env.SLICE || process.env.TF || process.env.IDS);
+type Cursor = { tfIdx: number; slice: number; scriptIdx: number };
+let cursor: Cursor = handRun
+  ? { tfIdx: Math.max(0, TFS.indexOf(process.env.TF || TFS[0])), slice: Number(process.env.SLICE ?? 0) || 0, scriptIdx: 0 }
+  : (db.kvGet<Cursor>('incubator.screenCursor') ?? { tfIdx: TFS.indexOf(screenTf(inc)) >= 0 ? TFS.indexOf(screenTf(inc)) : 0, slice: Math.floor(Date.now() / 86400_000) % SLICES, scriptIdx: 0 });
+const advance = (c: Cursor): Cursor => (c.slice + 1 < SLICES ? { tfIdx: c.tfIdx, slice: c.slice + 1, scriptIdx: 0 } : { tfIdx: (c.tfIdx + 1) % TFS.length, slice: 0, scriptIdx: 0 });
+const saveCursor = (c: Cursor) => { if (!handRun) db.kvSet('incubator.screenCursor', c); };
+let TF = TFS[cursor.tfIdx % TFS.length], tfMs = TF_SECONDS[TF] * 1000;
 const DAY = 86400_000;
 const out = (m: string) => console.log(`[incubate ${new Date().toISOString().slice(0, 19)}] ${m}`);
 
@@ -59,8 +72,8 @@ if (process.env.ADD) {
   }
   out(`recorded ${added} screen results from ${process.env.ADD}`);
 }
-const sliceArg = process.env.SLICE ?? String(Math.floor(Date.now() / DAY) % inc.screen.slices);
-const summary: any = { at: started, slice: sliceArg, tf: TF, done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0, tooCoarse: 0 };
+const sliceArg = process.env.SLICE ?? 'walk';
+const summary: any = { at: started, slice: sliceArg, tf: TF, walked: [] as string[], done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0, tooCoarse: 0 };
 // The job announces itself before it screens: a start with no matching finish is how the dashboard
 // tells a killed run from one that never ran (2026-10-11: three nights died unnoticed).
 db.kvSet('incubator.lastStart', { at: started, slice: sliceArg, pid: process.pid });
@@ -73,8 +86,9 @@ const MEM_STOP = Math.round(memoryLimitBytes() * 0.8);
 /** A single run that grows the process by this much names a hog (see the run loop). */
 const HOG_BYTES = (Number(process.env.HOG_MB) || 1536) * 1048576;
 
-if (sliceArg !== 'none') {
-  const slice = Number(sliceArg);
+while (sliceArg !== 'none') {
+  const slice = cursor.slice; TF = TFS[cursor.tfIdx % TFS.length]; tfMs = TF_SECONDS[TF] * 1000;
+  summary.walked.push(`${TF} slice ${slice}${cursor.scriptIdx ? ` from ${cursor.scriptIdx}` : ''}`);
   // ---- universe: every market the gate allows today (decision 56b: a book cheap enough to cross,
   //      not dead, not too quiet), most liquid first; the turnover top-N only when the gate has no verdicts ----
   const tickers = await rest.tickers();
@@ -126,14 +140,17 @@ if (sliceArg !== 'none') {
   const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000, processWorker);
   const skipStages = new Set(['live', 'demote_proposed', 'shadow', 'proposed']);
   const markets = [...data.keys()];
+  let stopped = false;
   for (const [idx, s] of scripts.entries()) {
-    if (Date.now() - started > BUDGET_MS) { summary.truncated = scripts.length - idx; out(`time budget spent after ${idx} of ${scripts.length} scripts: ${summary.truncated} wait for this slice's next turn`); break; }
+    if (idx < cursor.scriptIdx) continue;   // already screened on an earlier night
+    if (idx % 10 === 0) saveCursor({ ...cursor, scriptIdx: idx });
+    if (Date.now() - started > BUDGET_MS) { stopped = true; saveCursor({ ...cursor, scriptIdx: idx }); summary.truncated = scripts.length - idx; out(`time budget spent after ${idx} of ${scripts.length} scripts: ${summary.truncated} wait for this slice's next turn`); break; }
     const mu = process.memoryUsage(); const rss = memoryUsedBytes();
     const MB = (n: number) => Math.round(n / 1048576);
     // MEMLOG=1 prints the breakdown every script (where the memory goes: V8 heap, native buffers, or the worker threads outside both)
     if (idx % 25 === 0 || process.env.MEMLOG) out(`  ${idx}/${scripts.length} scripts · ${MB(rss)} MB resident · heap ${MB(mu.heapUsed)}/${MB(mu.heapTotal)} · external ${MB(mu.external)} · arrayBuffers ${MB(mu.arrayBuffers)} · runs ${summary.runs} · pool recycled ${pool.stats?.recycled ?? '?'}`);
     if (rss > MEM_STOP) {
-      summary.truncated = scripts.length - idx; summary.memoryStop = rss;
+      stopped = true; saveCursor({ ...cursor, scriptIdx: idx }); summary.truncated = scripts.length - idx; summary.memoryStop = rss;
       out(`memory at ${Math.round(rss / 1048576)} MB, ${Math.round(MEM_STOP / 1048576)} MB is the line: ${summary.truncated} scripts wait for this slice's next turn`);
       // The script that was running when the line was crossed is the likely cause (Wyckoff Range Engine
       // needs more than 6 GB for one market at 4,000 bars). Quarantined with that reason so the slice
@@ -219,6 +236,11 @@ if (sliceArg !== 'none') {
     if (++summary.done % 25 === 0 || summary.done === scripts.length) out(`  ${summary.done}/${scripts.length} scripts · ${summary.runs} runs · ${summary.passed} passed`);
   }
   await pool.stop();
+  if (stopped || handRun) break;
+  // this slice is done: the cursor moves on, and so does the night while there is budget for another pass
+  cursor = advance(cursor); saveCursor(cursor);
+  if (Date.now() - started > BUDGET_MS - 25 * 60_000) { out(`budget nearly spent: the next pass (${TFS[cursor.tfIdx]} slice ${cursor.slice}) waits for tomorrow`); break; }
+  out(`slice done with budget left: continuing with ${TFS[cursor.tfIdx]} slice ${cursor.slice}`);
 }
 
 // ---- judge ----

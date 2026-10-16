@@ -67,3 +67,41 @@ for (const slug of candidates) {
 }
 if (!dry && added) fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 1));
 console.log(`${dry ? 'would add' : 'added'} ${added} · skipped ${skipped} · failed ${failed} · ${OUT_ROOT === SCRIPTS_DIR ? 'repo manifest' : 'overlay manifest'} ${manifest.length}`);
+
+// ---- TradingView authors (decision 107): the same weekly pass walks each author's published list and
+//      imports the open-source newcomers, so a new script is in the library within a week of publication ----
+const AUTHORS = (process.env.AUTHORS ?? 'WillyAlgoTrader,Zeiierman,AlgoAlpha,BigBeluga,LuxAlgo,ChartPrime').split(',').map(a => a.trim()).filter(Boolean);
+const knownPubs = new Set(knownRows.map(m => m.pub).filter(Boolean));
+let tvAdded = 0, tvSkipped = 0, tvFailed = 0;
+for (const author of AUTHORS) {
+  try {
+    const items: any[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const d: any = await (await fetch(`https://www.tradingview.com/api/v1/scripts/?page=${page}&per_page=50&by=${encodeURIComponent(author)}&q=`, { headers: { 'User-Agent': UA, Accept: 'application/json' } })).json();
+      items.push(...(d?.results ?? []));
+      if (!d?.next || page >= (d?.page_count ?? 1)) break;
+      await sleep(500);
+    }
+    for (const r of items) {
+      const slug = String(r.chart_url ?? '').replace(/\/$/, '').split('/').pop() ?? '';
+      if (!slug || r.script_access !== 1 || knownPubs.has(r.script_id_part) || known.files.has(`${slug}.pine`)) { tvSkipped++; continue; }
+      const fu = `https://pine-facade.tradingview.com/pine-facade/get/${String(r.script_id_part).replace(';', '%3B')}/last?no_4xx=true`;
+      const src: any = await (await fetch(fu, { headers: { 'User-Agent': UA } })).json();
+      const code = String(src?.source ?? '');
+      if (code.length < 100) { tvSkipped++; continue; }
+      const name = String(r.name ?? slug).replace(/\s*[\[(][^\])]*[\])]\s*$/, '').trim();
+      let id = slugify(name); if (known.ids.has(id)) id = `${id}-${slugify(author)}`; if (known.ids.has(id)) id = `${id}-${slug.slice(0, 8).toLowerCase()}`;
+      const file = `${slug}.pine`;
+      console.log(`${dry ? 'would import' : 'import'} ${author}: ${name} → ${file}`);
+      if (!dry) {
+        fs.writeFileSync(path.join(PINE_DIR, file), code);
+        manifest.push({ id, name, author, file, url: String(r.chart_url ?? ''), pub: r.script_id_part, access: 'Open-source script', pineVersion: (code.match(/\/\/@version=(\d+)/) ?? [])[1] ?? null, lines: code.split('\n').length, updated: r.updated_at ?? r.created_at ?? null, scriptType: r.script_type ?? null, status: 'ok', reason: null, overlay: declaredOverlay(code) ?? true });
+        known.ids.add(id); known.files.add(file); knownPubs.add(r.script_id_part);
+      }
+      tvAdded++;
+      await sleep(300);
+    }
+  } catch (e: any) { tvFailed++; console.error(`${author}: ${e?.message ?? e}`); }
+}
+if (!dry && tvAdded) fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 1));
+console.log(`authors: ${dry ? 'would add' : 'added'} ${tvAdded} · skipped ${tvSkipped} · failed ${tvFailed} · manifest ${manifest.length}`);
