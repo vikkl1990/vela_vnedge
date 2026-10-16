@@ -68,8 +68,11 @@ const isLoopbackAddress = (a: string) => LOOPBACK.has(a.trim().replace(/^\[|\]$/
 export function clientAddress(req: http.IncomingMessage): string {
   const peer = req.socket.remoteAddress ?? '';
   if (!isLoopbackAddress(peer)) return peer;
-  const fwd = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
-  return fwd || peer;
+  // Behind the proxy on this box the header's RIGHTMOST entry is the one the proxy itself appended;
+  // anything to its left came from the client and can say "127.0.0.1". nginx here sets the header to
+  // $remote_addr outright, but the code must not depend on that (review, 16 Oct).
+  const parts = String(req.headers['x-forwarded-for'] ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  return parts.at(-1) || peer;
 }
 
 /** Loopback-only, used to gate first-run setup so nobody can claim an empty instance remotely. */

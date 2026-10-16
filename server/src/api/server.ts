@@ -119,7 +119,7 @@ export class ApiServer {
   private serveStatic(pathname: string, res: http.ServerResponse, req?: http.IncomingMessage) {
     if (!fs.existsSync(DASHBOARD_DIST)) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<h1>VNEdge server running</h1><p>Dashboard not built yet — run <code>npm run build</code> in the repo root, or use the Vite dev server on :5173.</p><p>API: <a href="/api/health">/api/health</a></p>'); return; }
     let file = path.join(DASHBOARD_DIST, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
-    if (!file.startsWith(DASHBOARD_DIST)) { res.writeHead(403); res.end(); return; }
+    if (!insideDir(file, DASHBOARD_DIST)) { res.writeHead(403); res.end(); return; }
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       // hashed build assets must never fall back to the SPA shell (stale tabs after a rebuild)
       if (pathname.startsWith('/assets/')) { res.writeHead(404); res.end(); return; }
@@ -394,11 +394,17 @@ function json(res: http.ServerResponse, status: number, data: unknown, req?: htt
   res.end(body);
 }
 
+/** True when `file` is `dir` itself or lies under it: a prefix test alone lets `dist-backup` pass for `dist`. */
+export function insideDir(file: string, dir: string): boolean {
+  const d = dir.endsWith(path.sep) ? dir : dir + path.sep;
+  return file === dir || file.startsWith(d);
+}
+
 function readBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     if (req.method === 'GET' || req.method === 'HEAD') return resolve(undefined);
-    const chunks: Buffer[] = [];
-    req.on('data', c => { chunks.push(c); if (chunks.reduce((a, b) => a + b.length, 0) > 5_000_000) reject(new HttpError(413, 'body too large')); });
+    const chunks: Buffer[] = []; let received = 0;
+    req.on('data', c => { received += c.length; if (received > 5_000_000) { reject(new HttpError(413, 'body too large')); req.destroy(); return; } chunks.push(c); });
     req.on('end', () => { const raw = Buffer.concat(chunks).toString('utf8'); if (!raw) return resolve(undefined); try { resolve(JSON.parse(raw)); } catch { reject(new HttpError(400, 'invalid JSON')); } });
     req.on('error', reject);
   });

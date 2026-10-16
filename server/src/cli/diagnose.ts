@@ -270,4 +270,5 @@ for (const id of ids) {
 lines.push('## Notes', ...md);
 fs.writeFileSync(process.env.MD ?? '/tmp/diagnose.md', lines.join('\n'));
 console.error(`done: ${results.length} cells · ${process.env.OUT} · ${process.env.MD}`);
-process.exit(0);
+// the row stream must reach the disk before the process goes (half the files of the 16 Oct run were cut mid-write)
+out.end(() => process.exit(0));

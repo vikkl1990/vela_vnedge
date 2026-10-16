@@ -134,7 +134,9 @@ test('a proxied request is judged by the real client, not by the proxy', async (
 
   // behind the reverse proxy every request arrives from loopback; the header must decide
   assert.equal(isLoopback(mk('127.0.0.1', '203.0.113.9')), false, 'a public caller must not look local');
-  assert.equal(isLoopback(mk('127.0.0.1', '203.0.113.9, 127.0.0.1')), false, 'the leftmost entry is the client');
+  // only the entry the proxy itself appended (the rightmost) is trusted; what the client put before it is not (review, 16 Oct)
+  assert.equal(isLoopback(mk('127.0.0.1', '127.0.0.1, 203.0.113.9')), false, 'a client claiming loopback on the left is still remote');
+  assert.equal(isLoopback(mk('127.0.0.1', '203.0.113.9, 127.0.0.1')), true, 'the proxy says its peer was local');
   assert.equal(isLoopback(mk('127.0.0.1', '127.0.0.1')), true, 'a genuine local call through the proxy stays local');
 
   // a direct public connection may not forge the header
