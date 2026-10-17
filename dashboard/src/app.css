@@ -1392,8 +1392,9 @@ body { overflow-x: clip; }
 .attention-row .attention-all { align-self: center; }
 @media (max-width: 700px) { .attention-row { grid-template-columns: 1fr; } }
 /* the top bar: the nav scrolls inside its own box; the account group wraps instead of pushing past the viewport */
-.topnav { grid-template-columns: auto minmax(0, 1fr) auto; }
-.navpills { overflow-x: auto; min-width: 0; scrollbar-width: none; }
+.topnav { grid-template-columns: auto max-content minmax(0, 1fr); }
+.navpills { overflow-x: auto; min-width: 0; max-width: 100%; scrollbar-width: none; }
+@media (max-width: 1180px) { .topnav { grid-template-columns: auto minmax(0, 1fr) auto; } }
 .topright { min-width: 0; max-width: 100%; }
 .topgroup { flex-wrap: wrap; row-gap: 4px; }
 @media (max-width: 1500px) { .topright .hide-mid { display: none; } }
