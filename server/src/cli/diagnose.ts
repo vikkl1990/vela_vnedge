@@ -44,6 +44,13 @@ for (const kv of (process.env.BARS ?? '').split(',').filter(Boolean)) { const [t
 const SUB: Record<string, string> = { '5m': '1m', '15m': '1m', '1h': '15m', '4h': '15m' };
 const rest = new DeltaRest();
 const registry = new ScannerRegistry();
+// an id that is not in the manifest, or a script that does not run, is said so up front: a run that tests nothing is not a result
+{
+  const unknown = ids.filter(id => !registry.get(id)); const notOk = ids.filter(id => registry.get(id) && registry.get(id)!.status !== 'ok');
+  for (const id of unknown) console.error(`unknown scanner id "${id}": ids are the "id" fields in scripts/manifest.json (the scanner page's URL in the dashboard)`);
+  for (const id of notOk) console.error(`scanner "${id}" is ${registry.get(id)!.status} and cannot run`);
+  if (unknown.length + notOk.length === ids.length) { console.error('nothing to test'); process.exit(2); }
+}
 const pool = new PinePool(CONC, 120_000, processWorker);
 const out = fs.createWriteStream(process.env.OUT ?? '/tmp/diagnose.tsv');
 out.write(['scanner', 'tf', 'symbol', 'variant', 'trades', 'avgR', 'sumR', 'win', 't1', 'r1', 't2', 'r2', 'both', 'mfe05', 'mfe1', 'mfe2', 'firstBarStops', 'note'].join('\t') + '\n');
@@ -347,6 +354,6 @@ for (const id of ids) {
 }
 lines.push('## Notes', ...md);
 fs.writeFileSync(process.env.MD ?? '/tmp/diagnose.md', lines.join('\n'));
-console.error(`done: ${results.length} cells · ${process.env.OUT} · ${process.env.MD}`);
+console.error(`done: ${results.length} cells with trades · ${process.env.OUT ?? '/tmp/diagnose.tsv'} · ${process.env.MD ?? '/tmp/diagnose.md'}`);
 // the row stream must reach the disk before the process goes (half the files of the 16 Oct run were cut mid-write)
 out.end(() => process.exit(0));
