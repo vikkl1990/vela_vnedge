@@ -139,6 +139,27 @@ const withStop = (evs: ScanEvent[], bars: Bar[], stopOf: (i: number, side: 'long
   });
 };
 
+/**
+ * The cost-floor stop (under test, 17 Oct): an entry whose own stop (the script's, or the 1.5×ATR fallback) sits
+ * inside the cost rule's floor is not refused but widened to the floor, when it was already at least `frac` of the
+ * way there; the position is sized to the wider stop, so the dollar risk is the same. Entries further inside the
+ * floor are left as they are and the rule refuses them exactly as the account does.
+ */
+const withCostFloor = (evs: ScanEvent[], bars: Bar[], spreadPct: number, frac: number): ScanEvent[] => {
+  const ratio = cfg.paper.minRiskFeeRatio ?? 0; if (!(ratio > 0)) return evs;
+  const at = new Map<number, number>(); bars.forEach((b, i) => at.set(b.time, i));
+  return evs.map(e => {
+    if (e.kind !== 'entry' || !e.side) return e;
+    const i = at.get(e.barTime); const atr = i !== undefined ? atrAt(bars, i) : undefined;
+    if (i === undefined || !atr) return e;
+    const entry = e.price && e.price > 0 ? e.price : bars[i].close;
+    const own = e.sl && e.sl > 0 ? Math.abs(entry - e.sl) : cfg.paper.fallbackAtrSl * atr;
+    const need = entry * ((cfg.paper.feeRatePct / 100) * (1 + (cfg.paper.feeTaxPct ?? 0) / 100) * 2 + Math.max(0, spreadPct) / 100) * ratio * 1.01;
+    if (own >= need || own < frac * need) return e;
+    return { ...e, sl: e.side === 'long' ? entry - need : entry + need };
+  });
+};
+
 const confirm = (evs: ScanEvent[], bars: Bar[]): ScanEvent[] => {
   const at = new Map<number, number>(); bars.forEach((b, i) => at.set(b.time, i));
   const out: ScanEvent[] = [];
@@ -241,6 +262,10 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['s-be0.5'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0 }), b, tfMs);
   variants['s-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0 }), b, tfMs);
   variants['s-floor0.5k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0.2 }), b, tfMs);
+  // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
+  variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
+  variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);
+  variants['cf0'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0) }), b, tfMs);
   // the same stops under the whipsaw gate the account runs (minEr 0.25): the live baseline is spread+er0.25
   const er = { chopGate: { minEr: 0.25 } };
   variants['e-atr1.25'] = stat(run({ spreadPct, ...er }, slAt(1.25)), b, tfMs);
