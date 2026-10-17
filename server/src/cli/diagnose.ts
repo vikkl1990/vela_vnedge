@@ -280,6 +280,11 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['x-half1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 4, 6], tpSplit: [0.5, 0, 0.5] }), b, tfMs);
   variants['x-all2R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [1, 0, 0] }), b, tfMs);
   variants['x-nostall'] = stat(run({ spreadPct }, { trailStall: { minutes: 0, factor: 1 } }), b, tfMs);
+  // second pass: where is the knee, and is it the early trail or the runner steps that pay
+  variants['x-gb10'] = stat(run({ spreadPct }, { trailGiveBackPct: 10, trailSteps: [[2, 8], [4, 6]] }), b, tfMs);
+  variants['x-gb5'] = stat(run({ spreadPct }, { trailGiveBackPct: 5, trailSteps: [[2, 5], [4, 5]] }), b, tfMs);
+  variants['x-gb15s'] = stat(run({ spreadPct }, { trailGiveBackPct: 15 }), b, tfMs);
+  variants['x-gb15after0.3'] = stat(run({ spreadPct }, { trailAfterR: 0.3, trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]] }), b, tfMs);
   // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
   variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
   variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);
