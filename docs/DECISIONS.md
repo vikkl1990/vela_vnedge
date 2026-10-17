@@ -3172,3 +3172,24 @@ scanner, pair and timeframe, hold time, hour, and now regime at entry (efficienc
 0.25, 0.25–0.35, over 0.35) and session (Asia, London, New York, off), for both books. The dollar
 tables by pair, scanner, hour and weekday are gone from the page and the API; the account's exits
 in dollars stay because the fees live there.
+
+**Measured on deploy (17 October, 02:30 UTC).** The yardstick over 60 days: shadow book 2,465
+trades, 1,636 scored after the fact (829 have no bars left in the store), ranking AUC 0.51 — a
+coin. The lowest bucket is the best one: entries the model rated under 45% made +0.10R each over
+365 trades, and every threshold from 45% to 65% would have cost the book R (−35R at 45%, −10R at
+60%). The account's 51 trades, in sample, would have gained 5.5R from a gate at 65% — which is
+what the shadow book says is noise. The call is no gate; `ml.minProb` stays 0, and the Learn
+page now shows why on its first panel. The question is closed with evidence rather than left
+open: the model does not rank live entries, so it does not vote.
+
+The journal's new cuts on the shadow book: entries in a choppy regime (ER under 0.25) made
+−0.01R over 1,016 trades, mixed +0.06R over 252, trending +0.07R over 368 — the efficiency gate's
+measured edge, now visible per trade. Sessions: Asia +0.08R over 729, London 0.00R over 590,
+New York −0.04R over 994, off-hours +0.17R over 152. Nothing here is a gate yet; the New York
+number is the one to watch.
+
+The gate after the change: of the 250 shadow pairs' blocking reasons, the 113 that read "0/1",
+"1/2" or "0/0 weeks positive" are gone; what remains is age (117 pairs under 14 days), trade
+count (46 under 30) and losing starts (44 at PF 0). The first verdicts under the new gate come
+as the 20 pairs at 13.9 days cross 14. The retry batch starts with the next slice the nightly
+walk opens.
