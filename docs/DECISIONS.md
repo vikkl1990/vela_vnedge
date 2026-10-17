@@ -3216,3 +3216,70 @@ the account pays are both in the number a cell is admitted on.
 1.5×ATR fallback, which measured best (decision 93) — a scanner here is a trigger, the exit is the
 bot's. The chop gate's refusals (61 of the last 150 entries) stay: it is the one filter that paid.
 The runtime quarantines get their retry under decision 108.
+
+## 110. The stop study, the majors scanner, and the rejection audit (17 October 2026)
+
+**Where the stop-outs come from.** Shadow book, 60 days, 2,467 closed trades: 873 stopped out,
+and 603 of those never reached +0.25R; 196 were stopped inside the first bar; 30 had reached
++0.5R and one +1R before the stop. The account's 17 stop-outs read the same (12 never moved, none
+reached +0.5R). A stop that moves to break-even at +1R would have rescued one trade in 873; at
++0.5R, thirty at most. Of the 1,368 shadow winners, 220 dipped below −0.5R and 110 below −0.67R
+on the way — a 1.0×ATR stop would have killed those. The losses on stops are dead entries, not a
+stop in the wrong place.
+
+**The study.** Every live cell (43), 4,000 bars, the real book paid, under the whipsaw gate the
+account runs (`minEr` 0.25 — that is the live baseline: +0.168R per trade over 562 trades, +94R).
+Stops tried: 1.25 and 2.0×ATR; beyond the signal bar's wick (+0.25 ATR, floor 1.0 or 2.0 ATR);
+beyond the 10-bar swing; scaled by the efficiency ratio; and the moving stops (break-even at
++0.5R and +1R, a floor keeping 0.2R), which under the fleet's existing floor and trail changed
+nothing. Results, trade-weighted:
+
+| stop | trades | R/trade | ΣR | cells positive both halves | cells better / worse than live |
+|---|---|---|---|---|---|
+| live (1.5×ATR) | 562 | +0.168 | +94 | 9 | — |
+| 1.25×ATR | 482 | +0.151 | +73 | 8 | 8 / 11 |
+| 2.0×ATR | 685 | +0.185 | +127 | 13 | 8 / 9 |
+| beyond the wick | 506 | +0.205 | +104 | 13 | 12 / 12 |
+| beyond the wick, floor 2.0 | 710 | +0.148 | +105 | 14 | 8 / 10 |
+| beyond the 10-bar swing | 739 | +0.147 | +109 | 18 | 10 / 14 |
+
+Every wider or structural stop adds total R, mostly because more trades clear the cost rule and
+first-bar stops fall from 8% to 2–6%; none improves most cells, and per trade the wick stop's
+gain comes with fewer trades. On 1h the 2.0×ATR floor is the best line (+0.243R, +100R against
++78R, 9 cells both-halves against 6) and on 15m the swing stop (+24R against +7R, 5 cells against
+1), both in sample and both mixed cell by cell. By decision 96's yardstick — adopt what improves
+most cells against the honest base — nothing here is adopted. The stop stays at 1.5×ATR. The gap
+between the worst and the best stop in this table (+73R to +127R) is smaller than the gap the
+whipsaw gate already makes (+56R to +94R): the lever on stop losses is the entry, as the anatomy
+says. The variants stay in `diagnose` as `s-*` and `e-*` for the next scanner.
+
+**The majors scanner.** `majors-pullback-resume-operator`: trend on the chart frame and a rising
+or falling 4h EMA50, an efficiency floor, a touch of the EMA20 within N bars, a close back through
+the prior bar's extreme with volume; presets for BTC, ETH and other picked from the symbol; the
+stop beyond the pullback's own low. Measured on BTC, ETH and SOL over 15m, 1h and 4h with the book
+paid: as a trend-follower it lost everywhere, and the harness's own verdict on BTC 1h and ETH 4h
+was "direction inverted" (+0.22R and +0.23R over 23 and 26 trades read the other way). So the
+script gained a fade mode, now its default: the same trigger opens the opposite side with the
+stop beyond the trigger bar. In fade mode ETH 4h pays as read (+0.18R over 22 trades, both halves;
++0.30R with the stop beyond the wick) and SOL 4h marginally (+0.08R); BTC on 1h and 4h is
+strangled by the cost rule — its ATR gives stops under the 6× floor on most bars, so 5 of 18
+signals trade — and 15m and 1h pay nothing on any of the three. The nightly screen on 4h over
+666 days passed none of the three. The script stays in the library for the walk to screen on
+every market as the 4h slice comes round; it is not in the fleet or the shadow book. The honest
+reading: two design passes on one dataset is already in-sample, and the next pass is the shadow
+book's, not mine.
+
+**The rejections.** 985 entry signals over 60 days, 317 in the last 14. In the last 14: 53
+opened; 80 refused by the whipsaw gate (the one filter that measured as paying: real); 66 by the
+cost rule (15m signals on cheap markets where a 0.3–0.45% stop cannot cover six round trips —
+real, and decision 109 stops admitting such cells); 45 on dead markets and 19 on costly books
+(real; decision 109 demotes those cells after three days); 14 "not paying" and 12 "too quiet"
+from before 6 October, both rules since switched off; 8 by the one-position-per-market cap, all
+on ZECUSD 1h where four cells now sit (two should go — the operator's call, since the cap is a
+risk rule); 7 by the burst guard; 3 unpriceable on markets with no executable quote. Older: 214
+"reset" rows are signals voided at the 4 October account reset, not rejections; 86 "stale" rows
+all fell on 23 September when scans ran ten minutes late for twelve hours — now an attention line
+when three or more stale refusals land in two hours; 57 "margin exhausted" rows between 22
+September and 2 October ended with the sizing changes and have not recurred; 17 daily-loss rows
+are one day, 24 September, the limit doing its job. Nothing in the last fortnight is a bug;
+the fix for the biggest refusals is upstream, in what gets promoted, and is in place.
