@@ -305,7 +305,9 @@ export interface IncubatorConfig {
     /** A candidate must be positive in BOTH halves of its screen history (the halves discipline, decision 55). */
     requireBothHalves?: boolean;
     /** Holdout admission (decision 88): the pass is judged on the first (1 − holdoutShare) of the history; the last holdoutShare, never looked at for the pass, must be positive on its own with at least minHoldoutTrades trades. */
-    holdoutShare?: number; minHoldoutTrades?: number; requireHoldout?: boolean };
+    holdoutShare?: number; minHoldoutTrades?: number; requireHoldout?: boolean;
+    /** Decision 108: how many scripts quarantined for a runtime failure (a timeout, a hang, a runtime gap, memory) get one more screen per night; 0 turns the retry off. */
+    retryPerNight?: number };
   /**
    * The promotion gate. `pool: 'cohort'` judges a scanner on every shadow market it runs at once
    * (see `cohortStats`); `'pair'` judges each market on its own, which takes months per market.
@@ -318,6 +320,10 @@ export interface IncubatorConfig {
     maxDaysByTf: Record<string, number>;
     /** Decision 106: a shadow pair with no shadow trade for this many days is retired; it holds a slot and proves nothing. */
     staleDays?: number;
+    /** Decision 108: the stale cap per timeframe; a 4h pair cannot trade in 21 days what a 15m pair does. `staleDays` is the fallback. */
+    staleDaysByTf?: Record<string, number>;
+    /** Decision 108: the positive-weeks share is only asked once this many weeks have closed a trade; one or two weeks cannot be 60% positive and still be a sample. */
+    minWeeks?: number;
   };
   /**
    * How shadow slots are filled: each scanner×timeframe is admitted on several markets at once, and
@@ -472,11 +478,11 @@ export const DEFAULT_CONFIG: AppConfig = {
   ml: { minProb: 0, useAsScore: false },
   incubator: {
     enabled: true, tf: '15m', tfs: ['15m', '1h', '4h'], universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
-    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true },
+    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true, retryPerNight: 20 },
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 },
-      staleDays: 21,
+      staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3,
     },
     admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3 },
     promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
@@ -681,6 +687,9 @@ export function validateConfig(c: AppConfig): string[] {
     if (!(inc.universeTop >= 1 && inc.universeTop <= 500)) errs.push('incubator.universeTop must be 1..500');
     if (!(inc.gate?.minTrades >= 1 && inc.gate?.minDays >= 0 && inc.gate?.maxDays > inc.gate?.minDays)) errs.push('incubator.gate needs minTrades ≥ 1 and maxDays > minDays');
     if (!(inc.gate?.failPfR < inc.gate?.minPfR)) errs.push('incubator.gate.failPfR must be below minPfR');
+    if (inc.gate?.minWeeks !== undefined && !(Number.isInteger(inc.gate.minWeeks) && inc.gate.minWeeks >= 0 && inc.gate.minWeeks <= 12)) errs.push('incubator.gate.minWeeks must be 0..12');
+    if (inc.gate?.staleDaysByTf !== undefined && !Object.values(inc.gate.staleDaysByTf).every(v => v > 0 && v <= 365)) errs.push('incubator.gate.staleDaysByTf values must be 1..365 days');
+    if (inc.screen?.retryPerNight !== undefined && !(Number.isInteger(inc.screen.retryPerNight) && inc.screen.retryPerNight >= 0 && inc.screen.retryPerNight <= 200)) errs.push('incubator.screen.retryPerNight must be 0..200');
     if (!(inc.promote?.maxPerWeek >= 0 && inc.promote?.maxFleet >= 1)) errs.push('incubator.promote needs maxPerWeek ≥ 0 and maxFleet ≥ 1');
     if (!(inc.screen?.slices >= 1 && inc.screen?.slices <= 31)) errs.push('incubator.screen.slices must be 1..31');
   }

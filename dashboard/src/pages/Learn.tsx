@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { useMl } from '../api/queries'
-import type { MlRule, MlScannerInsight } from '../api/types'
+import { useMl, useMlYardstick } from '../api/queries'
+import type { MlRule, MlScannerInsight, YardBook } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
-import { Empty, ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, Time } from '../components/ui'
+import { Empty, ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, Segmented, Time } from '../components/ui'
 import { fmtPct } from '../lib/format'
 import { useToast } from '../lib/toast'
 
@@ -68,7 +68,11 @@ export function Learn() {
   return (
     <div className="page">
       <div className="banner banner-warn small" role="note">
-        Advisory only. The model is not wired to any decision (<span className="mono">ml.minProb 0</span>, <span className="mono">ml.useAsScore off</span>): measured as an entry filter it improved R per trade only by discarding trades and never improved total R (decision 37). Its features are price-shape at entry — nothing a script does not already see. Read the weights as description, not prescription.
+        {d?.config && d.config.minProb > 0 ? (
+          <>The gate is on at <span className="mono">{pct(d.config.minProb)}</span>: entries the model rates below it are refused. The yardstick below is what earned it, and what would take it away.</>
+        ) : (
+          <>Advisory only: the model gates nothing (<span className="mono">ml.minProb 0</span>). The yardstick below says, on trades that really happened, whether a gate would have paid — the shadow book is the out-of-sample judge, since its trades never train the model (decision 108). Measured on backtests it only ever raised the average by discarding trades (decision 37).</>
+        )}
       </div>
       <PageTitle pre="Every trade," accent="learned" post="from." sub="Entry-time features of every backtest and account trade train a win-probability model per scanner; bucket analysis turns the data into concrete rules." />
       {ml.isLoading && !d && (
@@ -100,6 +104,8 @@ export function Learn() {
             </button>
             <span className="muted small">Models retrain automatically 30 s after new samples arrive. Gate and score usage live in Settings → Machine learning.</span>
           </div>
+
+          <Yardstick />
 
           <div className="grid-2">
             <Panel title="Global feature weights">
@@ -203,5 +209,66 @@ function RuleList({ rules, baseline }: { rules: MlRule[]; baseline?: { n: number
         </li>
       ))}
     </ul>
+  )
+}
+
+/** Would the gate have paid (decision 108)? Both books, bucketed by the probability each trade had at entry. */
+function Yardstick() {
+  const q = useMlYardstick(60)
+  const [book, setBook] = useState<'shadow' | 'live'>('shadow')
+  const y = q.data
+  if (q.isLoading && !y) return <Panel title="Would the gate have paid?"><Loading rows={4} /></Panel>
+  if (q.isError && !y) return <Panel title="Would the gate have paid?"><ErrorState error={q.error} onRetry={() => q.refetch()} /></Panel>
+  if (!y) return null
+  const b: YardBook = y[book]
+  return (
+    <Panel
+      title={<span>Would the gate have paid? <Pill tone={y.call.minProb != null ? 'ok' : 'warn'}>{y.call.minProb != null ? `gate at ${pct(y.call.minProb)}` : 'no gate'}</Pill></span>}
+      right={<span className="muted small">last {y.windowDays} days · model trained {y.model.trainedAt ? <Time t={y.model.trainedAt} mode="datetime" /> : 'never'} · holdout AUC {y.model.holdoutAuc?.toFixed(2) ?? '–'}</span>}
+    >
+      <p className="small" style={{ marginTop: 0 }}>{y.call.text}</p>
+      <div className="row gap mb">
+        <Segmented
+          ariaLabel="Book"
+          value={book}
+          onChange={(v) => setBook(v as 'shadow' | 'live')}
+          options={[
+            { value: 'shadow', label: `Shadow book · ${y.shadow.trades} trades` },
+            { value: 'live', label: `Account · ${y.live.trades} trades` },
+          ]}
+        />
+        <span className="muted small">
+          {book === 'shadow' ? 'out of sample: these trades never train the model' : 'in sample: the account trains the model, so it may only veto'} · {b.scored} scored ({b.scoredAtEntry} at entry, {b.scored - b.scoredAtEntry} after the fact), {b.unscored} unscored · ranking AUC {b.auc?.toFixed(2) ?? '–'}
+        </span>
+      </div>
+      <div className="grid-2">
+        <div>
+          <div className="muted small mb">By the probability at entry</div>
+          <table className="table small">
+            <thead><tr><th>P(win)</th><th className="num">trades</th><th className="num">win %</th><th className="num">avg R</th><th className="num">ΣR</th></tr></thead>
+            <tbody>
+              {b.buckets.map((x) => (
+                <tr key={x.label}><td className="mono">{x.label}</td><td className="num">{x.n}</td><td className="num">{x.n ? fmtPct(x.winRatePct) : '–'}</td><td className={`num ${x.avgR >= 0 ? 'gain' : 'loss'}`}>{x.n ? r(x.avgR) : '–'}</td><td className={`num ${x.sumR >= 0 ? 'gain' : 'loss'}`}>{x.n ? r(x.sumR) : '–'}</td></tr>
+              ))}
+              <tr><td className="muted">all</td><td className="num">{b.trades}</td><td className="num"></td><td className={`num ${b.allAvgR >= 0 ? 'gain' : 'loss'}`}>{r(b.allAvgR)}</td><td className={`num ${b.allSumR >= 0 ? 'gain' : 'loss'}`}>{r(b.allSumR)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div className="muted small mb">A gate at … would have</div>
+          <table className="table small">
+            <thead><tr><th>min P</th><th className="num">dropped</th><th className="num">their ΣR</th><th className="num">kept</th><th className="num">kept avg</th><th className="num">book Δ</th></tr></thead>
+            <tbody>
+              {b.thresholds.map((x) => (
+                <tr key={x.minProb} className={b.verdict.minProb === x.minProb ? 'row-active' : undefined}>
+                  <td className="mono">{pct(x.minProb)}</td><td className="num">{x.dropped}</td><td className={`num ${x.droppedSumR <= 0 ? 'gain' : 'loss'}`}>{x.dropped ? r(x.droppedSumR) : '–'}</td><td className="num">{x.kept}</td><td className={`num ${x.keptAvgR >= 0 ? 'gain' : 'loss'}`}>{r(x.keptAvgR)}</td><td className={`num ${x.deltaSumR >= 0 ? 'gain' : 'loss'}`}>{r(x.deltaSumR)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="muted small">{b.verdict.text}. A gate pays only when what it drops is a losing set of 20+ trades worth −2R or more at −0.1R each; raising the average by discarding winners does not count.</p>
+        </div>
+      </div>
+    </Panel>
   )
 }

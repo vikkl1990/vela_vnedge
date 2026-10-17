@@ -3123,3 +3123,52 @@ a week of publication without anyone fetching it. Library: 3,184 scripts.
 **What else makes it faster, for the operator.** The weekly promotion cap of two (raised by hand
 for every batch so far; with the diversity caps of decision 106 in place, five is safe), and the
 unit's `WORKERS=2` for the screen (three would fit the memory cap with process workers).
+
+## 108. Learn gets a yardstick, the incubator gate stops asking the impossible, runtime quarantines get one retry, Analytics is the journal (17 October 2026)
+
+**What the audit found.** Of the five pages the operator named, three did nothing downstream.
+The model on the Learn page scored 954 of the last 982 entries and gated none (`ml.minProb` 0):
+fourteen of the 53 entries the account opened were rated under 50% and nobody saw. The ungated
+versus ml-gated ledger written for exactly this question (`validation/shadow.ts`) was never wired
+into the app. Analytics was a dollar report by pair, scanner, hour and weekday that no gate read
+and that fifty trades could not support. Signals was a log. The Incubator was the one real loop
+and it was throttled at its gate: 250 shadow pairs, median 13.9 days old, 159 of their 250
+blocking reasons were "n/w weeks positive (need 60%)" with one to three weeks closed — a rule
+that with two weeks closed demands both be positive, which is a coin, not a sample — and the
+stale rule retired a 4h pair after 21 days, in which it could have traded three times. Scanners
+carried 682 quarantines, 584 of them runtime verdicts (timeouts, hangs, runtime gaps, memory)
+from before the process workers and the budgets, and nothing ever screened them again.
+
+**The yardstick.** Every closed trade of both books over the last 60 days, with the probability
+the model gave it at entry. The shadow book never carried one (its entries skipped the scoring),
+so from tonight it does — `ShadowRunner` computes the same features and probability a live entry
+gets, scored without feeding the drift monitor — and for the trades already closed the features
+are computed after the fact from the bars the candle store still holds at the entry
+(`ml/enrich.ts`, cached once per position; a trade whose bars are gone stays unscored and is
+counted as such). `ml/yardstick.ts` buckets the trades by probability and, for each threshold
+from 45% to 65%, splits the book into kept and dropped. A gate pays only when what it drops is a
+losing set — at least 20 trades, at least −2R in total, at most −0.1R each; raising the average
+by discarding winners along with losers is decision 37's trap and does not count. The shadow
+book decides, because its trades never train the model; the account, which does, may only veto a
+threshold that would have cost it R. `GET /api/ml/yardstick` and the Learn page's first panel.
+The call it makes is advisory until the operator sets `ml.minProb`; the panel says which number.
+
+**The gate.** `gate.minWeeks` (3): the positive-weeks share is asked only once three weeks have
+closed a trade; before that the check reads "judged from 3 weeks" and passes, and the other five
+checks (30 trades, 14 days, PF 1.2, +0.1R per trade, overlap) still have to hold.
+`gate.staleDaysByTf` ({1h: 30, 4h: 45}, 15m keeps the 21-day fallback): the stale cap follows
+the timeframe. Cohort pooling was already in place (decision 89); the audit's first draft
+proposed it again and was wrong about that.
+
+**The retry.** Each slice of the nightly walk starts with up to `screen.retryPerNight` (20)
+scripts whose quarantine is a runtime verdict at least a week old, released and screened first;
+the list is kept in the cursor so a resumed slice sees the same one. A script that works clears
+its record as any healthy script does; one that fails again has "(retried <date>)" appended to
+its reason and is never retried. Transpile failures, unsupported Pine versions and markets Delta
+does not list are not retried: they fail the same way tomorrow.
+
+**Analytics.** The page is the journal: expectancy with a band, exits and give-back, edge by
+scanner, pair and timeframe, hold time, hour, and now regime at entry (efficiency ratio under
+0.25, 0.25–0.35, over 0.35) and session (Asia, London, New York, off), for both books. The dollar
+tables by pair, scanner, hour and weekday are gone from the page and the API; the account's exits
+in dollars stay because the fees live there.

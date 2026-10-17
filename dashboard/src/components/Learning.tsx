@@ -89,6 +89,14 @@ export function LearningSection() {
               <BucketBars data={L.hoursIst} />
             </Panel>
           </div>
+          <div className="grid-2">
+            <Panel title="Regime at entry vs R" right={<span className="muted small">Kaufman efficiency ratio, 20 bars, at the entry · avg R</span>}>
+              <BucketBars data={L.regimes} />
+            </Panel>
+            <Panel title="Session of entry vs R" right={<span className="muted small">UTC sessions · avg R</span>}>
+              <BucketBars data={L.sessions} />
+            </Panel>
+          </div>
 
           {d.golive && book === 'live' && (
             <Panel title={<span>The go-live rule <Pill tone={d.golive.ok ? 'ok' : 'danger'}>{d.golive.ok ? 'green' : 'not yet'}</Pill></span>} right={<span className="muted small">every check with its number; keys stay unset until all are green</span>} pad={false}>

@@ -370,7 +370,8 @@ test('decision 106: the fleet spreads across markets and scanners; a crowded pro
   // a shadow pair with no shadow trade for staleDays is retired
   recordScreen(store, { scannerId: 'quiet', symbol: 'SOLUSD', tf: '1h' }, screen({ at: T0 + 15 * DAY }), cfg.incubator, T0 + 15 * DAY);
   db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [{ symbol: 'SOLUSD', allowed: true, tracked: true, reasons: [] }] });
-  cfg.incubator.gate = { ...cfg.incubator.gate, staleDays: 21 };
+  // decision 108: the cap follows the timeframe; with no per-timeframe entry the 1h pair takes the 21-day fallback
+  cfg.incubator.gate = { ...cfg.incubator.gate, staleDays: 21, staleDaysByTf: {} };
   assert.deepEqual(evaluate(store, cfg, T0 + 15 * DAY + 1).admitted, ['quiet SOLUSD 1h']);
   assert.equal(store.find('quiet', 'SOLUSD', '1h')!.stage, 'shadow');
   evaluate(store, cfg, T0 + 30 * DAY);
@@ -378,4 +379,27 @@ test('decision 106: the fleet spreads across markets and scanners; a crowded pro
   const r3 = evaluate(store, cfg, T0 + 37 * DAY);
   assert.ok(r3.retired.includes('quiet SOLUSD 1h'));
   assert.match(JSON.stringify(store.events(5, store.find('quiet', 'SOLUSD', '1h')!.id)[0] ?? {}), /stale/);
+});
+
+test('decision 108: the positive-weeks share is judged only from minWeeks weeks, and the stale cap follows the timeframe', () => {
+  // 32 trades over 15 days: the second week lost, so 1/3 weeks positive would fail at 60%; under three weeks the share is not asked
+  const t = series(32, 15, 2, 2);
+  for (const x of t) if (x.entryAt >= T0 + 7 * DAY) x.r = -0.1;
+  const s = pairStats(t, T0, T0 + 15 * DAY);
+  assert.ok(s.weeks === 3 && s.positiveWeeks === 1 && s.avgR >= gate.minAvgR && (s.pfR ?? 9) >= gate.minPfR, `${s.positiveWeeks}/${s.weeks} weeks, ${s.avgR.toFixed(2)}R, PF ${s.pfR}`);
+  assert.equal(gateVerdict(s, { ...gate, minWeeks: 0 }).decision, 'brewing');
+  const v = gateVerdict(s, { ...gate, minWeeks: 4 });
+  assert.equal(v.decision, 'propose');
+  assert.ok(v.reasons.some(r => /judged from 4 weeks/.test(r)));
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vnedge-stale-'));
+  const db = new Db(path.join(dir, 'x.db'));
+  const store = new IncubatorStore(db);
+  const cfg: AppConfig = { ...DEFAULT_CONFIG, scanners: {}, incubator: { ...DEFAULT_CONFIG.incubator, gate: { ...gate, staleDays: 21, staleDaysByTf: { '4h': 45 } } } };
+  store.move({ scannerId: 's', symbol: 'ETHUSD', tf: '15m' }, 'shadow', 'test', null, null, T0);
+  store.move({ scannerId: 's', symbol: 'ETHUSD', tf: '4h' }, 'shadow', 'test', null, null, T0);
+  const rep = evaluate(store, cfg, T0 + 30 * DAY);
+  assert.deepEqual(rep.retired, ['s ETHUSD 15m'], 'the 15m pair is stale at 21 days; the 4h pair has 45');
+  assert.equal(store.find('s', 'ETHUSD', '4h')!.stage, 'shadow');
+  db.db.close(); fs.rmSync(dir, { recursive: true, force: true });
 });

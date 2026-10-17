@@ -49,7 +49,8 @@ const rest = new DeltaRest();
 const TFS = inc.tfs?.length ? inc.tfs : [inc.tf];
 const SLICES = inc.screen.slices;
 const handRun = Boolean(process.env.SLICE || process.env.TF || process.env.IDS);
-type Cursor = { tfIdx: number; slice: number; scriptIdx: number };
+/** `retry`: the quarantined scripts released for one more screen at the head of this slice (decision 108), kept in the cursor so a resumed slice sees the same list. */
+type Cursor = { tfIdx: number; slice: number; scriptIdx: number; retry?: string[] };
 let cursor: Cursor = handRun
   ? { tfIdx: Math.max(0, TFS.indexOf(process.env.TF || TFS[0])), slice: Number(process.env.SLICE ?? 0) || 0, scriptIdx: 0 }
   : (db.kvGet<Cursor>('incubator.screenCursor') ?? { tfIdx: TFS.indexOf(screenTf(inc)) >= 0 ? TFS.indexOf(screenTf(inc)) : 0, slice: Math.floor(Date.now() / 86400_000) % SLICES, scriptIdx: 0 });
@@ -108,6 +109,22 @@ while (sliceArg !== 'none') {
   const only = process.env.IDS ? new Set(fs.readFileSync(process.env.IDS, 'utf8').split(/\s+/).filter(Boolean)) : null;
   let scripts = registry.all().filter(s => s.status === 'ok' && (only ? only.has(s.id) : sliceOf(s.id, inc.screen.slices) === slice));
   if (Number(process.env.LIMIT) > 0) scripts = scripts.slice(0, Number(process.env.LIMIT));
+  // decision 108: a slice starts with one more screen for scripts quarantined by a runtime verdict a week or more ago
+  // (a timeout, a hang, a runtime gap, memory) — the process workers and the budgets changed under them. A script that
+  // fails again is marked and never retried; one that works clears its record like any healthy script.
+  const retryN = handRun ? 0 : inc.screen.retryPerNight ?? 20;
+  if (retryN > 0 && cursor.scriptIdx === 0 && !cursor.retry) {
+    const due = health.dueForRetry(7 * DAY).slice(0, retryN).map(r => r.scannerId).filter(id => registry.get(id)?.status === 'ok');
+    for (const id of due) health.releaseOne(id);
+    cursor = { ...cursor, retry: due }; saveCursor(cursor);
+  }
+  const retrying = new Set(cursor.retry ?? []);
+  if (retrying.size) {
+    const head = [...retrying].map(id => registry.get(id)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+    scripts = [...head, ...scripts.filter(x => !retrying.has(x.id))];
+    summary.retried = head.length;
+    out(`retrying ${head.length} quarantined scripts first: ${head.map(x => x.id).join(', ')}`);
+  }
   summary.scripts = scripts.length;
   out(only ? `IDS: ${scripts.length} of ${only.size} listed scripts × ${universe.length} markets` : `slice ${slice}/${inc.screen.slices}: ${scripts.length} scripts × ${universe.length} markets`);
 
@@ -232,6 +249,10 @@ while (sliceArg !== 'none') {
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);
         if (k === 'new' || k === 'updated' || k === 'cooldown') summary[k]++;
       } catch (e: any) { summary.failed++; }
+    }
+    if (retrying.has(s.id)) {
+      if (health.isQuarantined(s.id)) { health.markRetried(s.id); summary.retryFailed = (summary.retryFailed ?? 0) + 1; out(`  ${s.id}: failed its retry — ${health.row(s.id)?.reason ?? 'quarantined'}`); }
+      else { summary.retryOk = (summary.retryOk ?? 0) + 1; out(`  ${s.id}: back in the library after its retry`); }
     }
     if (++summary.done % 25 === 0 || summary.done === scripts.length) out(`  ${summary.done}/${scripts.length} scripts · ${summary.runs} runs · ${summary.passed} passed`);
   }

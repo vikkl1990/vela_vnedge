@@ -108,6 +108,23 @@ export class ScriptHealth {
     return this.db.all<any>('SELECT * FROM script_health ORDER BY quarantined DESC, fails DESC')
       .map(r => ({ scannerId: r.scanner_id, fails: r.fails, lastAt: r.last_at, lastError: r.last_error, reason: r.reason, quarantined: !!r.quarantined }));
   }
+  /**
+   * Quarantines that a runtime change can lift (decision 108): a timeout, a hang, a runtime gap, a memory
+   * verdict. A transpile failure, an unsupported Pine version or a market Delta does not list will fail
+   * the same way tomorrow. A script already retried once stays where it is.
+   */
+  static retryable(reason: string | null | undefined): boolean {
+    return !!reason && !/\(retried /.test(reason) && /timed out|never finishes|runtime gap|^memory:/i.test(reason);
+  }
+  /** Quarantined scripts whose verdict is retryable and at least `minAgeMs` old, oldest first. */
+  dueForRetry(minAgeMs: number, now = Date.now()): HealthRow[] {
+    return this.list().filter(r => r.quarantined && ScriptHealth.retryable(r.reason) && now - r.lastAt >= minAgeMs).sort((a, b) => a.lastAt - b.lastAt);
+  }
+  /** The retry failed again: the verdict is marked so no night retries it twice. */
+  markRetried(scannerId: string, at = Date.now()): void {
+    this.db.run("UPDATE script_health SET reason = substr(reason, 1, 100) || ' (retried ' || ? || ')' WHERE scanner_id=? AND quarantined=1 AND reason NOT LIKE '%(retried %'", new Date(at).toISOString().slice(0, 10), scannerId);
+    this.cache = null;
+  }
   /** Release one script whatever the verdict was: the operator has looked and decided. */
   releaseOne(scannerId: string): boolean {
     const r = this.db.run('DELETE FROM script_health WHERE scanner_id=?', scannerId);

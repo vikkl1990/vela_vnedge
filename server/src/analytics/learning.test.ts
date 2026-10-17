@@ -27,3 +27,16 @@ test('learnBook: breakeven win rate, cost share, stop anatomy, give-back and the
   assert.equal(many.byScanner[0].verdict, 'failing');
   assert.equal(L.holds.find(h => h.label === '15–60m')!.n, 6);
 });
+
+test('learnBook: R by regime at entry and by session (decision 108)', () => {
+  const ts: LearnTrade[] = [
+    mk({ entryAt: Date.UTC(2026, 9, 1, 3), exitAt: Date.UTC(2026, 9, 1, 4), rMultiple: -1, features: { er20: 0.1 } }),
+    mk({ entryAt: Date.UTC(2026, 9, 1, 9), exitAt: Date.UTC(2026, 9, 1, 10), rMultiple: 0.5, features: { er20: 0.3 } }),
+    mk({ entryAt: Date.UTC(2026, 9, 1, 15), exitAt: Date.UTC(2026, 9, 1, 16), rMultiple: 1, features: { er20: 0.6 } }),
+    mk({ entryAt: Date.UTC(2026, 9, 1, 22), exitAt: Date.UTC(2026, 9, 1, 23), rMultiple: 0.2 }),
+  ];
+  const L = learnBook(ts);
+  assert.deepEqual(L.regimes.map(b => [b.label.split(' ')[0], b.n, b.sumR]), [['choppy', 1, -1], ['mixed', 1, 0.5], ['trending', 1, 1], ['unknown', 1, 0.2]]);
+  assert.deepEqual(L.sessions.map(b => b.n), [1, 1, 1, 1]);
+  assert.equal(L.sessions[2].avgR, 1);
+});

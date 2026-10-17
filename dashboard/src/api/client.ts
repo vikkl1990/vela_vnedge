@@ -25,7 +25,8 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView } from './types'
+  TradeQuery, MlSnapshot,
+  MlYardstick, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -169,6 +170,7 @@ export const api = {
   learning: () => get<Learning>('/learning'),
   ml: () => get<MlSnapshot>('/ml'),
   mlTrain: () => post<MlSnapshot>('/ml/train'),
+  mlYardstick: (days = 60) => get<MlYardstick>(`/ml/yardstick?days=${days}`),
   mlScanner: (id: string) => get<MlScannerInsight>(`/ml/scanner/${id}`),
 }
 

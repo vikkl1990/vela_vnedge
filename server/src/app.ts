@@ -28,6 +28,8 @@ import { applyRules } from './scanners/rules.ts';
 import { MarkStore } from './data/marks.ts';
 import { RiskManager } from './risk/manager.ts';
 import { MlService } from './ml/service.ts';
+import { FeatureEnricher } from './ml/enrich.ts';
+import { theCall, yardstick, type YardTrade } from './ml/yardstick.ts';
 import { OpsService } from './ops/service.ts';
 import { WorkerTracker } from './ops/workers.ts';
 
@@ -58,6 +60,8 @@ export class App {
   readonly incubatorStore: IncubatorStore;
   readonly incubator: ShadowRunner;
   readonly ml: MlService;
+  /** Decision 108: entry-time features for trades opened without them, costed once from the candle store. */
+  readonly enricher: FeatureEnricher;
   readonly scanners: ScannerEngine;
   readonly profiles: ProfileStore;
   readonly marketGate: MarketGate;
@@ -110,10 +114,11 @@ export class App {
     this.incubatorStore = new IncubatorStore(this.db);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.ml.excluded = () => this.scanners.health.quarantined();
+    this.enricher = new FeatureEnricher(this.db, this.candles);
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.resolvedSymbols = cfg().symbols;
     this.incubator = new ShadowRunner({
-      store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s),
+      store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
     });
     // 1m candles drive paper fills for every open position
@@ -531,15 +536,16 @@ export class App {
 
   /** What the journal teaches, in R, for the live book and the shadow book (decision 63). */
   learning() {
-    const toLearn = (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount , configFp: t.configFp ?? null });
+    const toLearn = (book: number) => (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount, configFp: t.configFp ?? null, features: this.featuresOf(book, t) });
     const since = Date.now() - 30 * 86_400_000;
-    const liveAll = this.paper.trades({ limit: 5000 }).map(toLearn);
+    const liveAll = this.paper.trades({ limit: 5000 }).map(toLearn(this.paper.book));
     const live = learnBook(liveAll);
     // the book under the settings that are live now (decision 90): the only part of the journal a change today can be judged on
     const fpCache = new Map<string, string>();
     const fpFor = (sid: string, tf: string) => { const k = `${sid}|${tf}`; let v = fpCache.get(k); if (!v) { v = configFingerprint(this.config.get(), sid, tf).fp; fpCache.set(k, v); } return v; };
     const current = learnBook(liveAll.filter(t => t.configFp && t.configFp === fpFor(t.scannerId, t.tf)));
-    const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => (t.exitAt ?? 0) >= since).map(toLearn));
+    const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => (t.exitAt ?? 0) >= since).map(toLearn(this.shadow.book)));
+    this.enricher.flush();
     const counts = this.incubatorStore.counts();
     const hunt = this.db.kvGet<any>('incubator.lastHunt') ?? null;
     const ages = this.incubatorStore.list(['shadow']).map(r => (Date.now() - r.since) / 86_400_000).sort((a, b) => a - b);
@@ -559,54 +565,49 @@ export class App {
     return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
   }
 
+  /** The trade's entry-time features: its own when it carries them, else computed from the bars closed at its entry (decision 108). */
+  private featuresOf(book: number, t: any): Record<string, number> | null {
+    return this.enricher.featuresFor({ book, id: t.id, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, entryPrice: t.entryPrice, sl: t.sl ?? null, tp: t.tp ?? null, levelsSource: t.levelsSource ?? null, features: t.features ?? null });
+  }
+
+  /**
+   * Would the model's gate have paid (decision 108)? Every closed trade of the last `days` in both books,
+   * with the probability it had at entry or, failing that, the one the current model gives its entry
+   * after the fact; the shadow book is the out-of-sample judge.
+   */
+  mlYardstick(days = 60) {
+    const since = Date.now() - days * 86_400_000;
+    const collect = (engine: PaperEngine): YardTrade[] => engine.trades({ limit: 20000 })
+      .filter(t => Number.isFinite(t.exitAt) && (t.exitAt ?? 0) >= since && Number.isFinite(t.rMultiple))
+      .map(t => {
+        const r = t.rMultiple as number;
+        if (typeof t.mlProb === 'number' && Number.isFinite(t.mlProb)) return { r, prob: t.mlProb, scored: 'entry' as const };
+        const f = this.featuresOf(engine.book, t);
+        const prob = f ? this.ml.score(t.scannerId, f as any, { record: false })?.prob ?? null : null;
+        return { r, prob, scored: prob === null ? null : ('later' as const) };
+      });
+    const live = yardstick(collect(this.paper)), shadow = yardstick(collect(this.shadow));
+    this.enricher.flush();
+    const snap = this.ml.insights();
+    return { at: Date.now(), windowDays: days, model: { trainedAt: snap.trainedAt, holdoutAuc: snap.global?.model?.auc ?? null, samples: snap.samples }, config: this.config.get().ml, enriched: this.enricher.size(), live, shadow, call: theCall(live, shadow) };
+  }
+
+  /** Account exits by reason and the totals, in dollars (decision 108): the cuts the journal does not already give in R. */
   analytics() {
     type Agg = { trades: number; wins: number; pnl: number; gp: number; gl: number; fees: number };
     const mk = (): Agg => ({ trades: 0, wins: 0, pnl: 0, gp: 0, gl: 0, fees: 0 });
     const add = (a: Agg, pnl: number, fees: number) => { a.trades++; if (pnl > 0) { a.wins++; a.gp += pnl; } else a.gl += -pnl; a.pnl += pnl; a.fees += fees; };
     const fin = (a: Agg) => ({ trades: a.trades, wins: a.wins, winRatePct: a.trades ? a.wins / a.trades * 100 : 0, pnl: a.pnl, fees: a.fees, profitFactor: a.gl > 0 ? a.gp / a.gl : a.gp > 0 ? 999 : null });
-    const names = Object.fromEntries(this.registry.all().map(s => [s.id, { name: s.name, author: s.author }]));
-    const active = new Set(this.registry.all().filter(s => this.scanners.isActive(s)).map(s => s.id));
-    // backtest side (enabled scanners on their configured symbols only)
-    const btSym: Record<string, Agg> = {}, btSc: Record<string, Agg> = {}, btCell: Record<string, Agg> = {};
-    for (const b of this.scanners.allBacktests()) {
-      if (!active.has(b.id) || !this.scanners.symbolsFor(b.id).includes(b.symbol)) continue;
-      for (const t of b.result.trades) {
-        add(btSym[b.symbol] ??= mk(), t.pnl, t.fees ?? 0); add(btSc[b.id] ??= mk(), t.pnl, t.fees ?? 0); add(btCell[`${b.id}|${b.symbol}`] ??= mk(), t.pnl, t.fees ?? 0);
-      }
-    }
-    // live side
     const trades = this.paper.trades({ limit: 5000 });
-    const lvSym: Record<string, Agg> = {}, lvSc: Record<string, Agg> = {}, lvCell: Record<string, Agg> = {}, exits: Record<string, Agg> = {}, hours: Agg[] = Array.from({ length: 24 }, mk), dows: Agg[] = Array.from({ length: 7 }, mk);
-    const btHours: Agg[] = Array.from({ length: 24 }, mk), btDows: Agg[] = Array.from({ length: 7 }, mk);
-    for (const t of trades) {
-      add(lvSym[t.symbol] ??= mk(), t.pnl, t.fees); add(lvSc[t.scannerId] ??= mk(), t.pnl, t.fees); add(lvCell[`${t.scannerId}|${t.symbol}`] ??= mk(), t.pnl, t.fees);
-      add(exits[String(t.exitReason ?? 'unknown')] ??= mk(), t.pnl, t.fees);
-      const d = new Date(t.entryAt); add(hours[d.getUTCHours()], t.pnl, t.fees); add(dows[d.getUTCDay()], t.pnl, t.fees);
-    }
-    for (const b of this.scanners.allBacktests()) { if (!active.has(b.id) || !this.scanners.symbolsFor(b.id).includes(b.symbol)) continue; for (const t of b.result.trades) { const d = new Date(t.entryAt); add(btHours[d.getUTCHours()], t.pnl, t.fees ?? 0); add(btDows[d.getUTCDay()], t.pnl, t.fees ?? 0); } }
-    const open = this.paper.openPositions();
-    const symbols = [...new Set([...Object.keys(btSym), ...Object.keys(lvSym)])].map(symbol => ({
-      symbol, backtest: fin(btSym[symbol] ?? mk()), live: fin(lvSym[symbol] ?? mk()),
-      scannersOn: [...active].filter(id => this.scanners.symbolsFor(id).includes(symbol)).length,
-      profitableScanners: [...active].filter(id => (btCell[`${id}|${symbol}`]?.pnl ?? 0) > 0).length,
-      openPositions: open.filter(p => p.symbol === symbol).length,
-      unrealized: open.filter(p => p.symbol === symbol).reduce((a, p) => a + (this.paper.mark(p.symbol) ?? p.entryPrice) * 0 + ((this.paper.mark(p.symbol) ?? p.entryPrice) - p.entryPrice) * (p.side === 'long' ? 1 : -1) * p.contractValue * p.qtyOpen, 0),
-    })).sort((a, b) => (b.live.pnl + b.backtest.pnl) - (a.live.pnl + a.backtest.pnl));
-    // every scanner that traded the account gets a row (disabled ones too) so the table sums to the total
-    const scanners = [...new Set([...active, ...Object.keys(lvSc)])].map(id => ({
-      id, name: names[id]?.name ?? id, author: names[id]?.author ?? '', symbols: this.scanners.symbolsFor(id).length, active: active.has(id),
-      backtest: fin(btSc[id] ?? mk()), live: fin(lvSc[id] ?? mk()), openPositions: open.filter(p => p.scannerId === id).length,
-    })).sort((a, b) => (b.live.pnl + b.backtest.pnl) - (a.live.pnl + a.backtest.pnl));
-    const matrix = Object.entries(btCell).map(([k, v]) => { const [id, symbol] = k.split('|'); const lv = lvCell[k]; return { scannerId: id, scannerName: names[id]?.name ?? id, symbol, backtest: fin(v), live: lv ? fin(lv) : null }; });
-    for (const [k, v] of Object.entries(lvCell)) if (!btCell[k]) { const [id, symbol] = k.split('|'); matrix.push({ scannerId: id, scannerName: names[id]?.name ?? id, symbol, backtest: fin(mk()), live: fin(v) }); }
+    const exits: Record<string, Agg> = {}; const total = mk();
+    for (const t of trades) { add(exits[String(t.exitReason ?? 'unknown')] ??= mk(), t.pnl, t.fees); add(total, t.pnl, t.fees); }
     return {
-      at: Date.now(), symbols, scanners, matrix,
+      at: Date.now(),
       exits: Object.entries(exits).map(([reason, a]) => ({ reason, ...fin(a) })).sort((a, b) => b.trades - a.trades),
-      hours: hours.map((a, h) => ({ hour: h, live: fin(a), backtest: fin(btHours[h]) })),
-      weekdays: dows.map((a, d) => ({ dow: d, live: fin(a), backtest: fin(btDows[d]) })),
-      totals: { live: fin(trades.reduce((acc, t) => (add(acc, t.pnl, t.fees), acc), mk())), backtest: fin(Object.values(btSc).reduce((acc, a) => ({ trades: acc.trades + a.trades, wins: acc.wins + a.wins, pnl: acc.pnl + a.pnl, gp: acc.gp + a.gp, gl: acc.gl + a.gl, fees: acc.fees + a.fees }), mk())) },
+      totals: { live: fin(total) },
     };
   }
+
 
   // ---- incubator ----
 

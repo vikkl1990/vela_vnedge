@@ -18,7 +18,8 @@ import type { MarketInfo, PaperEngine } from '../paper/engine.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules, labelKey } from '../scanners/rules.ts';
 import { lastAtr } from '../data/indicators.ts';
-import { trendGateReason, trendNow } from '../paper/logic.ts';
+import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
+import type { Features, FeatureInputs } from '../ml/features.ts';
 import { logger } from '../log.ts';
 import { IncubatorStore, type PairRow } from './store.ts';
 import { ACTIVE_STAGES } from './cycle.ts';
@@ -35,7 +36,7 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; subscribe?: (symbols: string[]) => void };
+  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void };
   readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, lastBarAt: 0 };
 
   constructor(deps: ShadowRunner['deps']) { this.deps = deps; }
@@ -135,7 +136,20 @@ export class ShadowRunner {
           const closes = this.deps.candles.get(r.symbol, trendTf, { closedOnly: true, limit: g.emaLen * 4 }).map(b => b.close);
           if (trendGateReason(ev.side, trendNow(closes, g.emaLen), mode)) continue;
         }
-        const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, atr: lastAtr(bars, 14), refPrice: this.deps.paper.mark(r.symbol) ?? lastBar.close, at: now, signalId: null, exitMode });
+        const atr = lastAtr(bars, 14);
+        const refPrice = this.deps.paper.mark(r.symbol) ?? lastBar.close;
+        // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
+        // judge the model out of sample; scored without feeding the drift monitor, which watches the account
+        let features: Features | undefined; let mlProb: number | null = null;
+        if (this.deps.ml && atr) {
+          const price = ev.price && ev.price > 0 ? ev.price : refPrice;
+          const levels = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr }, cfg.paper, market.tickSize);
+          if (!('error' in levels)) {
+            features = this.deps.ml.features({ bars, i: bars.length - 1, ev, entry: price, sl: levels.sl, tp1: levels.tp[0], atr, levelsSource: levels.source });
+            mlProb = this.deps.ml.score(s.id, features, { record: false })?.prob ?? null;
+          }
+        }
+        const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
       } else if (ev.kind === 'exit') {
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);

@@ -352,6 +352,7 @@ export class ApiServer {
     this.add('POST', '/api/context/refresh', async () => { await a.context.runOnce(); return a.context.latest(); });
     this.add('GET', '/api/ml', () => ({ ...(a.ml.insights() ?? { trainedAt: null, samples: 0, liveSamples: 0, scannersWithModel: 0, global: null, scanners: [] }), counts: a.ml.count(), config: a.config.get().ml }));
     this.add('POST', '/api/ml/train', () => a.ml.train());
+    this.add('GET', '/api/ml/yardstick', (_r, _s, _p, url) => a.mlYardstick(Math.min(180, Math.max(7, Number(url.searchParams.get('days') ?? 60) || 60))));
     this.add('GET', '/api/ml/scanner/:id', (_r, _s, p) => a.ml.insightFor(p.id) ?? { scannerId: p.id, samples: 0, rules: [], model: null });
     this.add('GET', '/api/ml/samples', (_r, _s, _p, url) => a.ml.samples(url.searchParams.get('scanner') ?? undefined, Number(url.searchParams.get('limit') ?? 500)));
     // Fill quality: what the cost assumption was worth against the book actually quoted.

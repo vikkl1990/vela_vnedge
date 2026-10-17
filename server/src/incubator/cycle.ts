@@ -163,8 +163,10 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (d.demote || silent) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason }, reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
   }
   // decision 106: a shadow pair with no shadow trade for `gate.staleDays` proves nothing and gives its slot back
-  const staleDays = inc.gate.staleDays ?? 0;
-  if (staleDays > 0) for (const r of store.list(['shadow'])) {
+  // decision 108: the cap follows the timeframe — 21 days is three weeks of 15m bars and five 4h trades at best
+  for (const r of store.list(['shadow'])) {
+    const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
+    if (!(staleDays > 0)) continue;
     const t = store.trades(r.scannerId, r.symbol, r.tf, 2).filter(x => x.entryAt >= r.since);
     const lastAt = Math.max(r.since, ...t.map(x => x.entryAt));
     if (now - lastAt > staleDays * DAY) { const why = `stale: no shadow trade in ${Math.round((now - lastAt) / DAY)} days (cap ${staleDays})`; store.move(r, 'retired', 'gate', { reasons: [why] }, why, now); rep.retired.push(name(r)); }

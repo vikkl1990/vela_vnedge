@@ -80,7 +80,8 @@ export function gateVerdict(s: PairStats, g: IncubatorConfig['gate'], overlapPct
     [s.trades >= g.minTrades, `${s.trades}/${g.minTrades} trades`],
     [s.days >= g.minDays, `${s.days.toFixed(1)}/${g.minDays} days`],
     [pf >= g.minPfR, `PF ${fmtPf(s.pfR)} (need ${g.minPfR})`],
-    [s.positiveWeeksPct >= g.minPositiveWeeksPct, `${s.positiveWeeks}/${s.weeks} weeks positive (need ${g.minPositiveWeeksPct}%)`],
+    // decision 108: with one or two weeks closed, 60% positive means every week positive — a coin, not a sample
+    [s.weeks < (g.minWeeks ?? 0) || s.positiveWeeksPct >= g.minPositiveWeeksPct, s.weeks < (g.minWeeks ?? 0) ? `${s.positiveWeeks}/${s.weeks} weeks positive (judged from ${g.minWeeks} weeks)` : `${s.positiveWeeks}/${s.weeks} weeks positive (need ${g.minPositiveWeeksPct}%)`],
     [s.avgR >= g.minAvgR, `${s.avgR.toFixed(2)}R per trade (need ${g.minAvgR})`],
     [overlapPct <= g.maxOverlapPct, `${overlapPct.toFixed(0)}% of entries duplicate a live pair (max ${g.maxOverlapPct}%)`],
   ];

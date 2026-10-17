@@ -477,6 +477,18 @@ export interface MlSnapshot {
   counts?: { total: number; live: number }
   config?: { minProb: number; useAsScore: boolean }
 }
+// ---- the gate's yardstick (decision 108) ----
+export interface YardBucket { label: string; lo: number; hi: number; n: number; avgR: number; winRatePct: number; sumR: number }
+export interface YardThreshold { minProb: number; kept: number; keptAvgR: number; keptSumR: number; dropped: number; droppedAvgR: number; droppedSumR: number; deltaSumR: number }
+export interface YardBook {
+  trades: number; scored: number; scoredAtEntry: number; unscored: number; allAvgR: number; allSumR: number; auc: number | null
+  buckets: YardBucket[]; thresholds: YardThreshold[]; verdict: { pays: boolean; minProb: number | null; text: string }
+}
+export interface MlYardstick {
+  at: number; windowDays: number; model: { trainedAt: number | null; holdoutAuc: number | null; samples: number }
+  config: { minProb: number; useAsScore: boolean }; enriched: { cached: number; unscorable: number }
+  live: YardBook; shadow: YardBook; call: { minProb: number | null; text: string }
+}
 
 // ---- analytics ----
 export interface Agg { trades: number; wins: number; winRatePct: number; pnl: number; fees: number; profitFactor: number | null }
@@ -492,6 +504,8 @@ export interface BookLearning {
   curve: Array<{ i: number; t: number; cumR: number; ddR: number }>
   daily: Array<{ day: string; n: number; sumR: number }>
   holds: LearnBucket[]; hoursIst: LearnBucket[]
+  /** Decision 108: R by the regime at entry and by session. */
+  regimes: LearnBucket[]; sessions: LearnBucket[]
   windowDays?: number
 }
 export interface GoLiveCheck { key: string; label: string; ok: boolean; value: string; need: string }
@@ -503,15 +517,11 @@ export interface Learning {
   funnel: { stages: Record<string, number>; lastHunt: { at?: number; [k: string]: unknown } | null; shadowAgeDays: { median: number | null; over30: number }; gate: Record<string, unknown> }
   golive?: GoLiveVerdict
 }
+/** Account exits by reason and the totals, in dollars (decision 108): the journal gives everything else in R. */
 export interface Analytics {
   at: number
-  symbols: Array<{ symbol: string; backtest: Agg; live: Agg; scannersOn: number; profitableScanners: number; openPositions: number; unrealized: number }>
-  scanners: Array<{ id: string; name: string; author: string; symbols: number; active: boolean; backtest: Agg; live: Agg; openPositions: number }>
-  matrix: Array<{ scannerId: string; scannerName: string; symbol: string; backtest: Agg; live: Agg | null }>
   exits: Array<Agg & { reason: string }>
-  hours: Array<{ hour: number; live: Agg; backtest: Agg }>
-  weekdays: Array<{ dow: number; live: Agg; backtest: Agg }>
-  totals: { live: Agg; backtest: Agg }
+  totals: { live: Agg }
 }
 
 // ---- authentication ----

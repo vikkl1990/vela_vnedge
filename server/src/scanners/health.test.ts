@@ -85,3 +85,24 @@ test('a memory verdict quarantines on the first strike and survives a good run',
   h.clear('hog');
   assert.equal(h.isQuarantined('hog'), true);
 });
+
+test('decision 108: runtime verdicts get one retry after a week, permanent ones and retried ones never', () => {
+  const h = new ScriptHealth(new Db(':memory:'));
+  const t0 = Date.UTC(2026, 9, 1);
+  h.quarantine('slow', 'timed out in the daily screen (120 s over 4000 bars)', t0);
+  h.quarantine('hog', 'memory: one run on STRKUSD took 1988 MB', t0);
+  h.record('gap', "ta.foo is not a function", t0); h.record('gap', "ta.foo is not a function", t0);
+  h.record('broken', 'Failed to transpile Pine Script version 6', t0); h.record('broken', 'Failed to transpile Pine Script version 6', t0);
+  h.quarantine('fresh', 'hung: no result within 150s', t0 + 6 * 86_400_000);
+  assert.deepEqual(h.dueForRetry(7 * 86_400_000, t0 + 8 * 86_400_000).map(r => r.scannerId).sort(), ['gap', 'hog', 'slow'], 'transpile failures and verdicts under a week old are not due');
+  assert.ok(ScriptHealth.retryable('never finishes under PineTS'));
+  assert.equal(ScriptHealth.retryable('does not transpile'), false);
+  // a retry that fails again is marked and never due again
+  h.releaseOne('slow');
+  assert.equal(h.isQuarantined('slow'), false);
+  h.quarantine('slow', 'timed out in the daily screen (120 s over 4000 bars)', t0 + 8 * 86_400_000);
+  h.markRetried('slow', t0 + 8 * 86_400_000);
+  assert.match(h.row('slow')!.reason!, /\(retried 2026-10-09\)$/);
+  assert.equal(ScriptHealth.retryable(h.row('slow')!.reason), false);
+  assert.deepEqual(h.dueForRetry(0, t0 + 30 * 86_400_000).map(r => r.scannerId).sort(), ['gap', 'hog']);
+});

@@ -13,6 +13,8 @@ export interface LearnTrade {
   exitReason: string | null; peakR?: number | null; riskAmount?: number;
   /** Fingerprint of the settings that produced the trade (decision 90). */
   configFp?: string | null;
+  /** Entry-time features (decision 108): the regime cut reads the efficiency ratio from here. */
+  features?: Record<string, number> | null;
 }
 
 export interface EdgeRow {
@@ -30,6 +32,8 @@ export interface BookLearning {
   curve: Array<{ i: number; t: number; cumR: number; ddR: number }>;
   daily: Array<{ day: string; n: number; sumR: number }>;
   holds: Bucket[]; hoursIst: Bucket[];
+  /** Decision 108: R by the regime at entry (Kaufman efficiency ratio over 20 bars) and by the session the entry fell in. */
+  regimes: Bucket[]; sessions: Bucket[];
 }
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
@@ -68,6 +72,15 @@ function bucketize(ts: LearnTrade[], labels: string[], pick: (t: LearnTrade) => 
 const HOLD_LABELS = ['< 15m', '15–60m', '1–4h', '4–24h', '> 24h'];
 const holdBucket = (ms: number) => (ms < 15 * 60_000 ? 0 : ms < 60 * 60_000 ? 1 : ms < 4 * 3_600_000 ? 2 : ms < 24 * 3_600_000 ? 3 : 4);
 const IST_OFFSET_MS = 5.5 * 3_600_000;
+/** The regime at entry from the efficiency ratio: below 0.25 is where the whipsaw gate measured as the one paying filter (decisions 66, 96). */
+export const REGIME_LABELS = ['choppy ER < 0.25', 'mixed 0.25–0.35', 'trending ER ≥ 0.35', 'unknown'];
+export const regimeBucket = (f: Record<string, number> | null | undefined) => {
+  const er = f?.er20;
+  return typeof er !== 'number' || !Number.isFinite(er) ? 3 : er < 0.25 ? 0 : er < 0.35 ? 1 : 2;
+};
+/** The session by UTC hour of entry: Asia 00–07, London 07–13, New York 13–21, off-hours otherwise (the context collector's clock). */
+export const SESSION_LABELS = ['Asia 00–07', 'London 07–13', 'New York 13–21', 'off 21–24'];
+export const sessionBucket = (at: number) => { const h = new Date(at).getUTCHours(); return h < 7 ? 0 : h < 13 ? 1 : h < 21 ? 2 : 3; };
 
 export function learnBook(trades: LearnTrade[]): BookLearning {
   const ts = [...trades].filter(t => Number.isFinite(t.entryAt) && Number.isFinite(t.exitAt)).sort((a, b) => a.exitAt - b.exitAt);
@@ -102,5 +115,7 @@ export function learnBook(trades: LearnTrade[]): BookLearning {
     curve, daily,
     holds: bucketize(ts, HOLD_LABELS, t => holdBucket(t.exitAt - t.entryAt)),
     hoursIst: bucketize(ts, Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0')), t => new Date(t.entryAt + IST_OFFSET_MS).getUTCHours()),
+    regimes: bucketize(ts, REGIME_LABELS, t => regimeBucket(t.features)),
+    sessions: bucketize(ts, SESSION_LABELS, t => sessionBucket(t.entryAt)),
   };
 }
