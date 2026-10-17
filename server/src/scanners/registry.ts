@@ -20,6 +20,8 @@ export interface ScannerMeta {
   reason: string | null;
   overlay: boolean;
   category: string;
+  /** `indicator` or `strategy` as the manifest tags the script (decision 114 consults it). */
+  scriptType: 'indicator' | 'strategy' | null;
 }
 
 export interface LoadedScanner extends ScannerMeta {
@@ -98,7 +100,7 @@ export class ScannerRegistry {
       this.map.set(m.id, {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
         pineVersion: m.pineVersion ?? null, lines: m.lines ?? null, updated: m.updated ?? null,
-        status, reason, overlay: declaredOverlay(source) ?? m.overlay ?? true, category: categorize(m.name),
+        status, reason, overlay: declaredOverlay(source) ?? m.overlay ?? true, category: categorize(m.name), scriptType: m.scriptType === 'strategy' ? 'strategy' : m.scriptType === 'indicator' ? 'indicator' : null,
         source, patched, patches: applied,
       });
     }

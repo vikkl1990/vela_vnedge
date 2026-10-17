@@ -101,7 +101,7 @@ export default function Incubator() {
                             <td>{p.stage === 'proposed' ? <Pill tone="ok">Promote</Pill> : <Pill tone="danger">Demote</Pill>}</td>
                             <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
                             <td className="mono">{p.symbol} · {p.tf}</td>
-                            <td>{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={g} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
+                            <td>{p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={g} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
                             <td className="muted small">{timeAgo(p.since)}</td>
                             <td className="nowrap">
                               {auth.canTrade ? (
@@ -131,10 +131,11 @@ export default function Incubator() {
                     const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
                     const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
                     const decision = ps.find((p) => p.gate)?.gate?.decision ?? 'brewing'
+                    const own = ps.find((p) => p.gate?.strategyComparison)?.gate?.strategyComparison ?? null
                     const rate = days > 0 ? trades / days : 0
                     const need = Math.max(0, g.minTrades - trades)
                     const eta = need === 0 ? Math.max(0, g.minDays - days) : rate > 0 ? Math.max(need / rate, g.minDays - days) : Infinity
-                    return { k, scanner: ps[0].scannerName, tf: ps[0].tf, markets: ps.length, trades, avgR: trades ? netR / trades : 0, days, pos, judged, decision, eta }
+                    return { k, scanner: ps[0].scannerName, tf: ps[0].tf, markets: ps.length, trades, avgR: trades ? netR / trades : 0, days, pos, judged, decision, eta, own }
                   }).sort((a, b) => a.eta - b.eta || b.trades - a.trades)
                   if (!rows.length) return <p className="muted small">Nothing in the shadow book.</p>
                   return (
@@ -144,7 +145,7 @@ export default function Incubator() {
                         <tbody>
                           {rows.slice(0, 60).map((r) => (
                             <tr key={r.k}>
-                              <td>{r.scanner}</td><td className="mono">{r.tf}</td><td className="num mono">{r.markets}</td><td className="num mono">{r.trades}</td>
+                              <td>{r.scanner}{r.own && <> <Pill tone={r.own.preferred === 'script' ? 'ok' : 'muted'} title={r.own.reason}>{r.own.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill></>}</td><td className="mono">{r.tf}</td><td className="num mono">{r.markets}</td><td className="num mono">{r.trades}</td>
                               <td className={`num mono ${r.trades ? (r.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{r.trades ? fmtR(r.avgR) : '–'}</td>
                               <td className="num mono">{r.days.toFixed(0)}</td><td className="num mono">{r.judged ? `${r.pos}/${r.judged}` : '–'}</td>
                               <td><Pill tone={r.decision === 'propose' ? 'ok' : r.decision === 'retire' ? 'danger' : 'muted'}>{r.decision}</Pill></td>

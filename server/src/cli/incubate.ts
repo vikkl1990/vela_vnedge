@@ -240,6 +240,12 @@ while (sliceArg !== 'none') {
         const bt = runBacktest(base);
         const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps } });
         const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);
+        // decision 114: a strategy is also screened on its own exits, so the gate can say which exit mode its evidence prefers
+        if (s.scriptType === 'strategy') {
+          const sc = runBacktest({ ...base, exitMode: 'script' });
+          const rs = screenVerdict(sc.trades as any[], sc.trades as any[], d.bars, inc, Date.now());
+          r.scriptExit = { trades: rs.trades, avgR: rs.avgR, avgR1: rs.avgR1 ?? 0, avgR2: rs.avgR2 ?? 0, sumR: rs.avgR * rs.trades };
+        }
         if ((r.entryDensity ?? 0) > 0.10) out(`  ${s.id} ${symbol}: fires on ${((r.entryDensity ?? 0) * 100).toFixed(0)}% of bars — a state read as entries, not screened`);
         // a market whose one contract eats the risk budget cannot be sized: the stop cap, not the
         // strategy, decides whether each signal becomes a trade (decision 31)

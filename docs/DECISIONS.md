@@ -3366,3 +3366,39 @@ The diagnose `script` variant is now a real comparison, and the next strategy ce
 proposes can be judged on its own brackets before anyone prefers them. `levels` and `both` are
 unchanged. Proven with a backtest fixture: the same signal under `both` is taken by the bot's
 ladder, under `script` it runs to the script's exit at +5.25R; a signal with no stop gets 3 ATR.
+
+## 114. Strategies judged on their own exits: five scanners move to exit mode `script`, and the screen now carries the comparison (17 October 2026)
+
+**The study.** With exit mode `script` real (decision 113), the 65 strategy cells of the shadow
+book — 18 scanner × timeframe cohorts — were run through `diagnose` on 4,000 bars, the script's
+own exits against the fleet's on the same events and costs. Overall the script's exits made
++0.238R per trade over 2,878 trades against the fleet's +0.217R over 2,818, 42 cells positive in
+both halves either way; per cell 20 were better by more than 0.05R and 29 worse. No fleet-wide
+preference, so no fleet-wide change. Per cohort the picture is sharp:
+
+| cohort | fleet exits | own exits |
+|---|---|---|
+| alphamojo-supertrend-strategy-ha-with-buffer 15m | 167 trades, +0.48R | 311 trades, +0.69R |
+| donchian-breakout-with-atr-trailing-stop 1h | 214, +0.08R | 70, +0.64R |
+| kaufman-moving-average-adaptive-strategy 15m | 201, +0.02R | 281, +0.17R |
+| l-l-htf-trend-cloud-strategy 15m | 25, +0.06R | 34, +0.45R |
+| rsi-volume-ladder 1h | 148, +0.10R | 134, +0.15R |
+| inside-day-breakout-strategy 1h | 201, +0.83R | 206, +0.49R |
+| dnse / psol keltner breakouts 4h | 49–77, +0.25 to +0.31R | +0.04 to +0.05R |
+
+**Applied.** The five cohorts whose own exits win on R per trade, both halves and most markets
+run on exit mode `script` from now: alphamojo-supertrend, donchian-breakout-with-atr-trailing-stop,
+kaufman-moving-average-adaptive, l-l-htf-trend-cloud, rsi-volume-ladder. None is in the account,
+so this changes the shadow book only, where the setting is measured forward against the same gate
+as every other pair. The breakout strategies whose brackets lose to the fleet's trail stay on
+`both`.
+
+**The rule, wired.** The nightly screen runs every strategy a second time under exit mode
+`script` and records both results on the screen (`scriptExit`). The cohort judge turns them into
+one advisory verdict per cohort (`preferScript`): the script's exits are preferred only when they
+make more R per trade, are positive in both halves, and are not worse on a majority of the markets
+screened — the cell yardstick used everywhere else. The verdict rides on the cohort's gate and is
+shown on the Incubator page beside the cohort and on the proposal row, so the operator sees "own
+exits" or "fleet exits" before clicking Promote. It changes nothing by itself: the exit mode is
+still a setting the operator sets, and the fill path, the gates and the live fleet are untouched.
+Cohorts screened before tonight carry no comparison until the walk screens them again.

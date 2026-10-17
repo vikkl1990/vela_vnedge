@@ -14,6 +14,40 @@ export interface ScreenResult {
   holdoutTrades?: number; holdoutAvgR?: number; holdoutPf?: number; holdoutPass?: boolean;
   /** Entry signals per bar over the history (decision 88): a script that fires on more than a tenth of all bars is a state read as entries, not a signal. */
   entryDensity?: number;
+  /** Decision 114: the same history under exit mode `script` — the strategy's own exits — beside the fleet's exits above. */
+  scriptExit?: { trades: number; avgR: number; avgR1: number; avgR2: number; sumR: number };
+}
+
+// ---- decision 114: a strategy cohort judged on its own exits ----
+export interface VariantResult { trades: number; avgR: number; positiveHalves: boolean; marketsBetter: number; marketsWorse: number; markets: number }
+export interface StrategyComparison { preferred: 'script' | 'both'; reason: string; script: VariantResult; both: VariantResult }
+
+/**
+ * Prefer the strategy's own exits only when they beat the fleet's on the cell yardstick used everywhere else:
+ * higher R per trade, positive in both halves, and not worse on a majority of the markets screened.
+ */
+export function preferScript(script: VariantResult, both: VariantResult): StrategyComparison {
+  const prefer = script.trades > 0 && script.avgR > both.avgR && script.positiveHalves && script.marketsWorse <= script.marketsBetter;
+  const reason = prefer
+    ? `own exits ${fmtR(script.avgR)} over ${script.trades} trades (both halves positive, better on ${script.marketsBetter} of ${script.markets} markets) beat the fleet's ${fmtR(both.avgR)}: exit mode script`
+    : `own exits ${fmtR(script.avgR)} do not beat the fleet's ${fmtR(both.avgR)} (${script.positiveHalves ? 'both halves positive' : 'a losing half'}, better on ${script.marketsBetter}, worse on ${script.marketsWorse} of ${script.markets} markets): keep exit mode both`;
+  return { preferred: prefer ? 'script' : 'both', reason, script, both };
+}
+const fmtR = (r: number) => `${r >= 0 ? '+' : '−'}${Math.abs(r).toFixed(2)}R`;
+
+/** The comparison for a cohort from its members' screens; null when no member was screened under both modes. */
+export function cohortComparison(screens: Array<ScreenResult | null | undefined>): StrategyComparison | null {
+  const pairs = screens.filter((s): s is ScreenResult & { scriptExit: NonNullable<ScreenResult['scriptExit']> } => !!s && !!s.scriptExit && s.trades > 0);
+  if (!pairs.length) return null;
+  const agg = (pick: (s: typeof pairs[number]) => { trades: number; avgR: number; avgR1: number; avgR2: number }) => {
+    const t = pairs.reduce((a, s) => a + pick(s).trades, 0);
+    const w = (f: (x: ReturnType<typeof pick>) => number) => (t ? pairs.reduce((a, s) => a + f(pick(s)) * pick(s).trades, 0) / t : 0);
+    return { trades: t, avgR: w(x => x.avgR), avgR1: w(x => x.avgR1), avgR2: w(x => x.avgR2) };
+  };
+  const sc = agg(s => s.scriptExit), bo = agg(s => ({ trades: s.trades, avgR: s.avgR, avgR1: s.avgR1 ?? 0, avgR2: s.avgR2 ?? 0 }));
+  const better = pairs.filter(s => s.scriptExit.avgR > s.avgR + 0.02).length, worse = pairs.filter(s => s.scriptExit.avgR < s.avgR - 0.02).length;
+  const v = (x: typeof sc, b: number, w: number): VariantResult => ({ trades: x.trades, avgR: x.avgR, positiveHalves: x.avgR1 > 0 && x.avgR2 > 0, marketsBetter: b, marketsWorse: w, markets: pairs.length });
+  return preferScript(v(sc, better, worse), v(bo, worse, better));
 }
 
 export const MAX_ENTRY_DENSITY = 0.10;
@@ -241,7 +275,9 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
     const overlap = n ? hit / n * 100 : 0;
     const v = cohortVerdict(stats, gateFor(inc, rows[0].tf), overlap);
     const cohort = `${rows[0].scannerId} ${rows[0].tf} across ${rows.length} market${rows.length === 1 ? '' : 's'}`;
-    for (const m of members) store.setGate(m.row.id, { at: now, cohort, stats, overlapPct: overlap, market: stats.perMarket.find(p => p.symbol === m.symbol) ?? null, ...v }, now);
+    // decision 114: a strategy cohort carries the verdict on its own exits, advisory, beside the gate's
+    const strategyComparison = cohortComparison(rows.map(r => r.screen));
+    for (const m of members) store.setGate(m.row.id, { at: now, cohort, stats, overlapPct: overlap, market: stats.perMarket.find(p => p.symbol === m.symbol) ?? null, ...v, ...(strategyComparison ? { strategyComparison } : {}) }, now);
 
     if (v.decision === 'retire') {
       for (const m of members) { store.move(m.row, 'retired', 'gate', { cohort, stats, reasons: v.reasons }, `${cohort}: ${v.reasons[0]}`, now); rep.retired.push(name(m.row)); }

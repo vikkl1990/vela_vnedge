@@ -593,7 +593,7 @@ export interface IncubatorPair {
   market?: { allowed: boolean; reasons: string[] } | null
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; stage: IncubatorStage
   since: number; updated: number; note: string | null; screen: IncubatorScreen | null
-  gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats } | null
+  gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats; marketOutDays?: number; strategyComparison?: { preferred: 'script' | 'both'; reason: string } } | null
   stats: IncubatorStats | null; openShadow: number
   /** Decision 112: what became of the cell's entry signals in the last 14 days — opened, or which gate refused them. */
   funnel?: { entries: number; opened: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null

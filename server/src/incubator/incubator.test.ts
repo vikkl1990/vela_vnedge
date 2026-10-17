@@ -8,7 +8,7 @@ import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR, deliveryVerdict, type PairStats } from './gate.ts';
-import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal, preferScript, cohortComparison, type VariantResult } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -452,4 +452,19 @@ test('decision 112: a cost-starved live cell is proposed for demotion; one that 
   assert.match(store.find('s1', 'BTCUSD', '15m')!.gate?.reasons?.[0] ?? '', /cost-starved: 5 of 6 signals refused by the cost rule and none opened in 14 days/);
   assert.equal(store.find('s1', 'ETHUSD', '15m')!.stage, 'live', 'one open in the window keeps the cell');
   assert.equal(store.signalFunnel('s1', 'ETHUSD', '15m', now - 14 * DAY).lastOpenAt, now - 2 * DAY + 60_000);
+});
+
+test('decision 114: a strategy cohort is judged on its own exits — preferred only when they beat the fleet on the cell yardstick', () => {
+  const v = (o: Partial<VariantResult>): VariantResult => ({ trades: 60, avgR: 0.2, positiveHalves: true, marketsBetter: 3, marketsWorse: 1, markets: 5, ...o });
+  assert.equal(preferScript(v({ avgR: 0.3 }), v({ avgR: 0.2 })).preferred, 'script');
+  assert.equal(preferScript(v({ avgR: 0.3, positiveHalves: false }), v({ avgR: 0.2 })).preferred, 'both', 'a losing half keeps the fleet exits');
+  assert.equal(preferScript(v({ avgR: 0.3, marketsBetter: 1, marketsWorse: 3 }), v({ avgR: 0.2 })).preferred, 'both', 'worse on most markets keeps the fleet exits');
+  assert.equal(preferScript(v({ avgR: 0.15 }), v({ avgR: 0.2 })).preferred, 'both');
+  assert.match(preferScript(v({ avgR: 0.3 }), v({ avgR: 0.2 })).reason, /exit mode script/);
+  // from screens: two markets screened under both modes, one not (an indicator-era screen) is left out
+  const sc = (trades: number, avgR: number, s?: { trades: number; avgR: number; avgR1: number; avgR2: number }): ScreenResult => ({ pass: true, at: T0, trades, profitFactor: 1.5, netPnl: 1, netAtStress: 1, windowsUp: 6, winRatePct: 50, avgR, avgR1: avgR, avgR2: avgR, bars: 4000, days: 40, scriptExit: s ? { ...s, sumR: s.avgR * s.trades } : undefined });
+  const c = cohortComparison([sc(40, 0.1, { trades: 50, avgR: 0.3, avgR1: 0.2, avgR2: 0.4 }), sc(40, 0.2, { trades: 50, avgR: 0.35, avgR1: 0.3, avgR2: 0.4 }), sc(40, 0.5)]);
+  assert.ok(c); assert.equal(c!.preferred, 'script'); assert.equal(c!.script.markets, 2); assert.equal(c!.script.trades, 100); assert.equal(c!.both.trades, 80);
+  assert.ok(Math.abs(c!.script.avgR - 0.325) < 1e-9);
+  assert.equal(cohortComparison([sc(40, 0.5)]), null, 'no screen under both modes: no comparison');
 });
