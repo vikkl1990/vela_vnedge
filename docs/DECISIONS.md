@@ -3588,3 +3588,30 @@ scroll. Positions already fell back to cards; the grouped Signals table now does
 a block with labelled values, and the Decisions cards stack full width. No primary view scrolls
 sideways on a phone. The shared pieces of the Incubator — evidence, funnel, clocks, the clock
 rank — moved to one module so both pages read the same numbers.
+
+## 122. The cost-floor stop: a near-miss cost refusal is a real refusal (17 October 2026)
+
+**Why.** The mirror's first ninety minutes offered the account 16 of the shadow book's entries
+and the cost rule refused 14, several by a hair (a 1.19% stop against 1.26% needed, 1.25%
+against 1.32%). Over the fortnight, 41 of the account's 99 entry refusals were the cost rule,
+11 of them within a quarter of the required distance. The aggressive reading: widen the stop to
+the floor, size to the wider stop, take the trade. Before turning that on, measure it.
+
+**The study.** `diagnose` gained `cf75`, `cf50` and `cf0`: every entry whose own stop (the
+script's, or the 1.5×ATR fallback) sits inside the cost floor is widened to the floor when it
+was already at least 75%, 50% or any part of the way there, with the same book cost and the same
+ratio of six as the account. The baseline is `spread`, the account's own refusals. Thirty cells
+behind the fortnight's near-miss refusals, 15m and one 1h, 4,000 bars.
+
+| variant | trades | sum R | marginal trades | R per marginal trade | cells better / worse |
+|---|---|---|---|---|---|
+| spread (the account) | 610 | +3.0 | | | |
+| cf75 | 916 | −8.6 | +306 | −0.038 | 15 / 14 |
+| cf50 | 1,557 | −26.3 | +947 | −0.031 | 13 / 17 |
+| cf0 | 4,081 | −72.5 | +3,471 | −0.022 | 13 / 16 |
+
+**Verdict.** Every widening loses: the nearer the entry was to clearing the rule, the worse its
+marginal trade. The cost rule is not refusing good trades by a rounding margin; it is refusing
+entries whose move is too small to pay for, and giving them a wider stop only adds a smaller
+loser. No code change beyond the study. The rule stays at six, and the near-miss refusals on
+the Signals page are real rejections, as the rejection audit of decision 110 found for the rest.
