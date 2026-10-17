@@ -3550,3 +3550,18 @@ dialog — setting, was, becomes, measured value and the decision it overrides �
 fresh installs rest on them; the measured table is the operator's reference, not a second
 default. Scanner-level reading and exit settings stay on the scanner pages, which now layer over
 these sections and will get the same treatment when they move.
+
+## 120. The Signals page groups by cell and names the gate (17 October 2026)
+
+**Why.** The log was a flat table of 500 rows whose refusal reasons were sixty-character
+strings, and the only way to see what a cell's signals had become was to filter and count. The
+external review asked for grouping and expandable reasons; the audit had asked for the same.
+
+**The page.** Read-only, and it says so first: a signal is the record of a decision the gates
+already made, and nothing on the page can open a trade. The default view groups the loaded
+window by cell — one scanner on one market and timeframe — with the cell's own funnel on the
+group row: signals, opened, and the refusals by gate as short pills (regime gate, cost rule,
+market gate, no quote, capacity, guard, halted, stale, model gate). A group opens to its signals,
+each with its gate as a short name and a "why" that shows the full reason and links to the Gate
+Center. The flat table stays one switch away for sorting and the scanner pages still use it.
+Groups sort by opened, then signals, so the cells doing something come first.

@@ -1408,3 +1408,7 @@ body { overflow-x: clip; }
 .settings-row.settings-changed { box-shadow: inset 3px 0 0 var(--warn); padding-left: 8px; border-radius: 4px; }
 .field-diff { display: block; margin-top: 2px; }
 .field-diff .warn { color: var(--warn); }
+
+.group-row { cursor: pointer; }
+.group-row:hover th, .group-row:hover td { background: var(--surface); }
+.reason-row td { background: var(--surface); }
