@@ -8,7 +8,7 @@ import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR, deliveryVerdict, type PairStats } from './gate.ts';
-import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal, preferScript, cohortComparison, type VariantResult } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal, preferScript, cohortComparison, type VariantResult, atrNeededPct, tooQuietForTf } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -467,4 +467,18 @@ test('decision 114: a strategy cohort is judged on its own exits — preferred o
   assert.ok(c); assert.equal(c!.preferred, 'script'); assert.equal(c!.script.markets, 2); assert.equal(c!.script.trades, 100); assert.equal(c!.both.trades, 80);
   assert.ok(Math.abs(c!.script.avgR - 0.325) < 1e-9);
   assert.equal(cohortComparison([sc(40, 0.5)]), null, 'no screen under both modes: no comparison');
+});
+
+test('decision 115: a market is too quiet for a fast timeframe when its bars cannot clear the cost rule at the fallback stop', () => {
+  const paper = { minRiskFeeRatio: 6, fallbackAtrSl: 1.5, feeRatePct: 0.05, feeTaxPct: 18 };
+  // a 0.12% book: 15m needs 0.48% ATR; 5m needs √3 of that; 1h half; 4h a quarter
+  assert.ok(Math.abs(atrNeededPct(0.12, '15m', paper)! - 0.48) < 1e-9);
+  assert.ok(Math.abs(atrNeededPct(0.12, '5m', paper)! - 0.48 * 1.73) < 1e-9);
+  assert.ok(Math.abs(atrNeededPct(0.12, '4h', paper)! - 0.12) < 1e-9);
+  assert.equal(tooQuietForTf(0.09, 0.119, '15m', paper)?.startsWith('too quiet for 15m: 15m ATR 0.09%'), true, 'BTC on 15m');
+  assert.equal(tooQuietForTf(2.25, 0.224, '15m', paper), null, 'ARIA clears');
+  assert.equal(tooQuietForTf(0.5, 0.12, '1h', paper), null, 'the same market clears on 1h');
+  assert.equal(tooQuietForTf(null, 0.12, '15m', paper), null, 'no reading: not refused');
+  assert.ok(atrNeededPct(null, '15m', paper)! > 0.47, 'no book reading: the fees alone set the floor');
+  assert.equal(atrNeededPct(0.12, '15m', { ...paper, minRiskFeeRatio: 0 }), null, 'cost rule off: no floor');
 });

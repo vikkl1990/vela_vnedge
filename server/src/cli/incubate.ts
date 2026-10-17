@@ -30,7 +30,7 @@ import { PaperEngine } from '../paper/engine.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { IncubatorStore } from '../incubator/store.ts';
-import { evaluate, recordScreen, screenTf, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
+import { tooQuietForTf, evaluate, recordScreen, screenTf, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
 import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
 
@@ -94,7 +94,7 @@ while (sliceArg !== 'none') {
   //      not dead, not too quiet), most liquid first; the turnover top-N only when the gate has no verdicts ----
   const tickers = await rest.tickers();
   const turnover = new Map(tickers.map((t: any) => [String(t.symbol), Number(t.turnover_usd ?? 0)]));
-  const today = db.kvGet<{ enabled: boolean; markets: Array<{ symbol: string; allowed: boolean; bookCostPct?: number | null }> }>('risk.marketsToday');
+  const today = db.kvGet<{ enabled: boolean; markets: Array<{ symbol: string; allowed: boolean; bookCostPct?: number | null; atrPct?: number | null }> }>('risk.marketsToday');
   // decision 109: the screen pays each market's measured round-trip book cost, as the account does (decision 96's honest
   // base), so a cell whose stop the live cost rule would refuse is not admitted on a backtest that never paid the book
   const bookCost = new Map((today?.markets ?? []).filter(m => typeof m.bookCostPct === 'number' && m.bookCostPct! > 0).map(m => [m.symbol, m.bookCostPct as number]));
@@ -107,6 +107,13 @@ while (sliceArg !== 'none') {
     .filter(sym => !onlyMarkets || onlyMarkets.has(sym))
     .sort((a, b) => (turnover.get(b) ?? 0) - (turnover.get(a) ?? 0))
     .slice(0, inc.universeTop);
+  // decision 115: on a fast timeframe a quiet market is not screened — its cells could never clear the cost rule
+  const quietTfs = new Set(inc.screen.quietFilterTfs ?? ['5m', '15m']);
+  const verdictOf = new Map((today?.markets ?? []).map(m => [m.symbol, m]));
+  const quiet = quietTfs.has(TF) && !onlyMarkets ? universe.filter(sym => { const v = verdictOf.get(sym); return v ? tooQuietForTf(v.atrPct, v.bookCostPct, TF, cfg.paper) !== null : false; }) : [];
+  for (const sym of quiet) universe.splice(universe.indexOf(sym), 1);
+  summary.quiet = quiet.length;
+  if (quiet.length) out(`${TF}: ${quiet.length} markets too quiet for this timeframe's cost floor, not screened: ${quiet.slice(0, 12).join(', ')}${quiet.length > 12 ? ', …' : ''}`);
   summary.symbols = universe.length;
   out(allowed.length ? `universe: ${universe.length} of the ${allowed.length} markets the gate allows today (cap ${inc.universeTop})` : `universe: ${universe.length} perpetuals over $${(inc.minTurnoverUsd / 1e6).toFixed(1)}M 24h turnover (no gate verdicts yet)`);
 

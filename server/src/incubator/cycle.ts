@@ -95,6 +95,25 @@ export function screenVerdict(trades: ScreenTrade[], stressed: ScreenTrade[], ba
 }
 
 type PairKey = { scannerId: string; symbol: string; tf: string };
+
+/**
+ * Decision 115: on a fast timeframe a market is only worth screening when its bars are big enough for the
+ * fallback stop to clear the cost rule — otherwise every signal the cell ever produces is refused as "stop too
+ * tight". The market gate reads ATR on 15m; ATR scales roughly with the square root of the bar, so 5m needs
+ * √3 times the 15m reading. Returns the 15m ATR% the market needs, or null when nothing is known.
+ */
+export const TF_ATR_SCALE: Record<string, number> = { '1m': 3.9, '3m': 2.2, '5m': 1.73, '15m': 1, '30m': 0.71, '1h': 0.5, '2h': 0.35, '4h': 0.25 };
+export function atrNeededPct(bookCostPct: number | null | undefined, tf: string, paper: { minRiskFeeRatio?: number; fallbackAtrSl: number; feeRatePct: number; feeTaxPct?: number }): number | null {
+  const ratio = paper.minRiskFeeRatio ?? 0;
+  if (!(ratio > 0) || !(paper.fallbackAtrSl > 0)) return null;
+  const cost = bookCostPct ?? paper.feeRatePct * (1 + (paper.feeTaxPct ?? 0) / 100) * 2;
+  return cost * ratio / paper.fallbackAtrSl * (TF_ATR_SCALE[tf] ?? 1);
+}
+export function tooQuietForTf(atrPct: number | null | undefined, bookCostPct: number | null | undefined, tf: string, paper: Parameters<typeof atrNeededPct>[2]): string | null {
+  const need = atrNeededPct(bookCostPct, tf, paper);
+  if (need === null || atrPct === null || atrPct === undefined) return null;
+  return atrPct < need ? `too quiet for ${tf}: 15m ATR ${atrPct.toFixed(2)}% < ${need.toFixed(2)}% needed for a ${paper.fallbackAtrSl}×ATR stop to cover ${paper.minRiskFeeRatio}× the round trip` : null;
+}
 const DAY = 86400_000;
 
 /** The gate for one timeframe: a 4h pair cannot produce in 45 days what a 15m pair produces in 8. */

@@ -3402,3 +3402,42 @@ shown on the Incubator page beside the cohort and on the proposal row, so the op
 exits" or "fleet exits" before clicking Promote. It changes nothing by itself: the exit mode is
 still a setting the operator sets, and the fill path, the gates and the live fleet are untouched.
 Cohorts screened before tonight carry no comparison until the walk screens them again.
+
+## 115. Fast timeframes: what they need, what pays, and the screen skips the markets that cannot clear the floor (17 October 2026)
+
+**The floor.** On a fast timeframe a cell can only trade where one bar's range is big enough for the
+fallback stop to cover the cost rule: ATR% ≥ book cost × 6 ÷ 1.5. On 17 October, of the 38 markets
+the gate allows with a 15m reading, 9 clear it on 15m (ARIA, BTW, TIA, AKE, STRK, STBL, AIN, FIL,
+INJ, all with 15m ATR of 0.66% or more against a 0.12–0.22% round trip). BTC (ATR 0.09%), ETH
+(0.15%) and SOL (0.20%) are three to five times too quiet for 15m under taker fees (0.05% + 18% GST
+each way, maker 0.02%), and 5m needs √3 times the 15m reading, so four markets clear it. This is
+why the 15m majors cells refuse every signal as "stop too tight" and why decision 109's cost-aware
+screen stopped admitting them.
+
+**The 5m measurement.** The fleet's 14 scanners on the 9 clearing markets, 8,000 5m bars (28
+days), every variant paying the real book: 117 cells. Before costs the edge is large — +0.30R per
+trade over 19,599 trades, 81 cells positive in both halves. After the book it is gone: −0.01R over
+1,839 trades, 15 cells. Under the efficiency gate +0.03R over 809 trades, 10 of 33 judgeable cells
+positive in both halves. Nothing in the toolbox recovers it: a 2×ATR stop −0.03R, the wick stop
+−0.05R, the swing stop −0.08R, a resting maker limit at the signal −0.01R, 0.1 ATR back +0.01R,
+a cost ratio of 10 +0.01R. 23 cells carry the verdict "positive before fees, negative after". The
+ten cells that do pay under the live rules — kalman-step-signals on BTW and AKE, supertrend-cluster
+on BTW, liquidity-trail-matrix on TIA and STRK, trend-impulse-channels on ARIA, AKE and TIA,
+pulse-trend-radar on AIN and TIA — make +0.14R to +0.46R on 9 to 33 trades each: leads for the
+shadow book, not a fleet.
+
+**The rule.** The nightly screen, on `screen.quietFilterTfs` (5m and 15m), skips every market whose
+15m ATR is under the floor for that timeframe (`tooQuietForTf`), and says which. A cell on such a
+market could never open, so screening it only produced candidates the cost rule would starve. 1h
+and 4h are not filtered: their floor is a half and a quarter of the 15m one and nearly every
+market clears it. 5m is not added to the rotation: the measured edge after costs does not justify
+screening the library on it. The ten paying 5m cells are offered to the shadow book by a hand
+screen, where they are judged under the same gate as everything else.
+
+**What would change the picture.** Costs, not signals. The 5m edge before fees is the largest
+measured anywhere in this project; what takes it is 0.12% a round trip plus the book. A maker-only
+execution model (both legs resting, 0.047% a round trip) would lower the 15m floor to 0.19% ATR
+and bring the majors inside it — but the only maker entry measured (decision 96) filled 84% of
+signals and still lost, because the fills that come back are the reversals, and the stop leg
+cannot rest. Until an execution model is measured that pays maker on more than the target leg,
+fast timeframes stay where the volatility is: the nine markets, not the majors.

@@ -313,7 +313,9 @@ export interface IncubatorConfig {
     /** Holdout admission (decision 88): the pass is judged on the first (1 − holdoutShare) of the history; the last holdoutShare, never looked at for the pass, must be positive on its own with at least minHoldoutTrades trades. */
     holdoutShare?: number; minHoldoutTrades?: number; requireHoldout?: boolean;
     /** Decision 108: how many scripts quarantined for a runtime failure (a timeout, a hang, a runtime gap, memory) get one more screen per night; 0 turns the retry off. */
-    retryPerNight?: number };
+    retryPerNight?: number;
+    /** Decision 115: on these timeframes the screen skips markets whose volatility cannot clear the cost rule at the fallback stop. */
+    quietFilterTfs?: string[] };
   /**
    * The promotion gate. `pool: 'cohort'` judges a scanner on every shadow market it runs at once
    * (see `cohortStats`); `'pair'` judges each market on its own, which takes months per market.
@@ -488,7 +490,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   ml: { minProb: 0, useAsScore: false },
   incubator: {
     enabled: true, tf: '15m', tfs: ['15m', '1h', '4h'], universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
-    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true, retryPerNight: 20 },
+    screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true, retryPerNight: 20, quietFilterTfs: ['5m', '15m'] },
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 },
