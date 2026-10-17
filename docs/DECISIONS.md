@@ -3441,3 +3441,45 @@ and bring the majors inside it — but the only maker entry measured (decision 9
 signals and still lost, because the fills that come back are the reversals, and the stop leg
 cannot rest. Until an execution model is measured that pays maker on more than the target leg,
 fast timeframes stay where the volatility is: the nine markets, not the majors.
+
+## 116. The shadow book is the fleet: the account mirrors it under its own gates (17 October 2026)
+
+**The question.** "Are we too defensive?" The shadow book is the undefended version of this
+account — 2,495 trades in 30 days, taken without the account's caps — so it was replayed as an
+account under different levels of aggression, each trade sized at the risk per trade and
+compounded, the efficiency gate applied from the entry-time features, the position caps applied
+in time order.
+
+| setting | trades | R per trade | 30-day return | max drawdown |
+|---|---|---|---|---|
+| today's rules on the whole shadow book: 8 positions, 1 per market, 1%, ER 0.25 | 1,135 | +0.042 | +49% | 26% |
+| the same without the efficiency gate | 2,098 | +0.028 | +60% | 51% |
+| 2 per market | 1,227 | +0.033 | +38% | 34% |
+| 16 positions, no market cap | 1,449 | +0.040 | +64% | 42% |
+| 16 positions, no cap, 0.5% risk | 1,449 | +0.040 | +31% | 24% |
+
+The account itself took 54 trades in 14 days, because it runs 43 cells. The gates are not what
+starves it: under today's rules the 250 shadow pairs produced 1,135 gate-passing trades, and every
+loosening — no efficiency gate, two per market, stacking — lowered R per trade and raised the
+drawdown. Real time is not the problem either: bar close to decision is a median of 6 s, 134 s at
+the 90th percentile, never past the 300 s stale limit. What is too small is the fleet.
+
+**The caveats.** Thirty days, one sample; weekly R of −7, −14, +50, +17, so the return came from
+the last two weeks; +0.04R over 1,135 trades is not yet separable from zero; a 26% drawdown at 1%
+risk is heavy (0.5% gives about +22% at 13%). The replay sizes from the shadow book's own fills
+and does not model the account's margin.
+
+**The rule.** `incubator.mirror.enabled` (off by default; on for this paper account from today):
+every shadow pair's entry and exit event is also offered to the account, down exactly the live
+path — the signal row, the trend gate, the risk manager's gates and caps (8 positions, 1 per
+market, 4 per scanner, loss limits, burst, cooldowns), the market gate, the efficiency gate, the
+cost rule, the quote requirement, the probability — and the paper engine opens it or refuses it
+as it would a promoted cell's. Mirrored signals are labelled "(shadow mirror)" on the Signals page.
+The shadow book keeps its own copy of every trade, so its evidence and the promotion pipeline are
+unchanged; promotion still decides which cells would trade with the mirror off. The Gate Center
+shows the mirror as a gate.
+
+**What is not changed.** Every gate, cap and threshold. The mirror adds trades the account's
+rules already allow; it does not relax them. If the replay's edge is real the account's own
+journal will show it within weeks at 1,000+ trades a month; if it is not, the same journal says
+so and the setting goes off.

@@ -121,6 +121,7 @@ export class App {
     this.incubator = new ShadowRunner({
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
+      mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
       subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
     });
     // 1m candles drive paper fills for every open position
@@ -306,6 +307,7 @@ export class App {
     // --- the pipeline ---
     const inc = cfg.incubator;
     const shadowN = this.incubatorStore.counts?.()?.shadow ?? null;
+    g.push({ key: 'mirror', group: 'Pipeline', name: 'Shadow mirror', state: inc.mirror?.enabled ? 'open' : 'off', value: inc.mirror?.enabled ? 'on: the account takes every shadow pair\'s signals under its own gates and caps' : 'off: only promoted cells trade the account', rule: 'Decision 116. With the mirror on, the shadow book is the fleet; the risk manager, the efficiency gate, the cost rule, the market gate and the position caps still decide every entry.', next: inc.mirror?.enabled ? 'switch off in Settings → Incubator to go back to promoted cells only' : 'switch on in Settings → Incubator to let the account take the shadow book\'s signals', href: '/incubator' });
     g.push({ key: 'shadow', group: 'Pipeline', name: 'Shadow book capacity', state: shadowN != null && shadowN >= inc.maxShadow ? 'attention' : 'open', value: shadowN != null ? `${shadowN} pairs of ${inc.maxShadow}` : `cap ${inc.maxShadow}`, rule: 'Candidates enter only while there is room', next: shadowN != null && shadowN >= inc.maxShadow ? 'Raise incubator.maxShadow in Settings, or wait for retirements' : 'Room for new candidates', href: '/incubator' });
     const start = this.db.kvGet<{ at: number }>('incubator.lastStart'), run = this.db.kvGet<{ at: number }>('incubator.lastRun');
     const died = start && (!run || run.at < start.at) && now - start.at > 7 * 3600_000;

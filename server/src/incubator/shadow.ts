@@ -14,7 +14,9 @@ import { TF_SECONDS, type AppConfig, type RiskConfig } from '../config.ts';
 import { regimeRefusal } from '../risk/manager.ts';
 import type { CandleStore, Bar } from '../data/candleStore.ts';
 import type { PinePool } from '../pine/pool.ts';
-import type { ScannerRegistry } from '../scanners/registry.ts';
+import type { LoadedScanner, ScannerRegistry } from '../scanners/registry.ts';
+import type { ScanEvent } from '../scanners/extractor.ts';
+import type { ExitMode } from '../config.ts';
 import type { MarketInfo, PaperEngine } from '../paper/engine.ts';
 import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules, labelKey } from '../scanners/rules.ts';
@@ -54,8 +56,8 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void };
-  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, lastBarAt: 0 };
+  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void };
+  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, lastBarAt: 0 };
   /** Decision 112: per shadow pair, what became of its signals — [at, class], newest last. */
   private funnel: Map<string, Array<[number, string]>>;
   private funnelDirty = false;
@@ -179,6 +181,11 @@ export class ShadowRunner {
       this.seen.add(id);
       if (this.seen.size > 20_000) this.seen = new Set([...this.seen].slice(-10_000));
       const now = Date.now();
+      // decision 116: the account is offered the same event, and judges it by its own gates and caps
+      if (cfg.incubator.mirror?.enabled && this.deps.mirror && (ev.kind === 'entry' || ev.kind === 'exit')) {
+        this.stats.mirrored++;
+        try { this.deps.mirror(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`mirror ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
+      }
       if (ev.kind === 'entry' && ev.side) {
         // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is
         const g = cfg.paper.trendGate;

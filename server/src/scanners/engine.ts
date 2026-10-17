@@ -510,6 +510,15 @@ export class ScannerEngine extends EventEmitter {
     return trendGateReason(side, trendNow(closes, g.emaLen), mode);
   }
 
+  /**
+   * Decision 116: a shadow pair's event offered to the account. It goes down the same path as a live scanner's —
+   * the signal row, the trend gate, the risk manager's gates and caps, the probability, the paper engine — with
+   * its label marked so the Signals page says where it came from. The shadow book keeps its own copy.
+   */
+  ingestEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar): void {
+    this.handleLiveEvent(s, symbol, tf, { ...ev, label: `${ev.label} (shadow mirror)`.slice(0, 80) }, bars, market, exitMode, lastBar);
+  }
+
   private handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) {
     if (this.db.signalExists(s.id, symbol, tf, ev.barTime, ev.kind, ev.side ?? null, ev.label)) return;
     const refPrice = this.paper.mark(symbol) ?? lastBar.close;

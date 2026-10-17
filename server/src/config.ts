@@ -354,6 +354,8 @@ export interface IncubatorConfig {
     costStarvedRefusals?: number; costStarvedDays?: number };
   /** A pair that failed shadow is not screened again for this long. */
   cooldownDays: number;
+  /** Decision 116: the account takes every shadow pair's signals under its own gates and caps — the shadow book as the fleet. */
+  mirror?: { enabled: boolean };
   /**
    * Largest share of the risk budget one contract may consume before a market is skipped: contracts
    * are indivisible, so above this the bot can only take one contract or none and position sizing
@@ -500,6 +502,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
+    mirror: { enabled: false },
     maxContractRiskShare: 0.5,
   },
   autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },

@@ -120,3 +120,31 @@ test('explicit pairs replace the symbols × timeframes product (decision 70)', (
   assert.deepEqual(engine.requiredSeries().map(r => `${r.symbol}:${r.tf}`).sort(), ['BTCUSD:15m', 'ETHUSD:15m', 'UNIUSD:1h', 'ZECUSD:4h']);
   db.db.close();
 });
+
+test('decision 116: a mirrored shadow event goes down the live path — signal row, gates, paper engine — with its label marked', async t => {
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.symbols = ['BTCUSD']; cfg.timeframes = ['1m'];
+  cfg.paper.latencyMs = 0; cfg.paper.requireQuote = false; cfg.paper.minRiskFeeRatio = 0;
+  cfg.risk.regime = { ...cfg.risk.regime, enabled: false }; cfg.paper.trendGate = { enabled: false, emaLen: 50, tf: '', mode: 'follow' };
+  const lastClose = Math.floor(Date.now() / 60_000) * 60_000;
+  const bars = Array.from({ length: 60 }, (_, i) => ({ time: lastClose - (60 - i) * 60_000, open: 100, high: 101, low: 99, close: 100, volume: 100 }));
+  const candles = Object.assign(new EventEmitter(), { get: () => bars });
+  const pool = { stats: { queued: 0 }, run: () => new Promise<WorkerResult>(() => {}) };
+  const scanner = { id: 'shadow-only', name: 'Shadow Only', status: 'ok', patched: '' };
+  const paper = new PaperEngine(db, () => cfg);
+  paper.setMark('BTCUSD', 100);
+  const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper, candles: candles as any, pool: pool as any, registry: { all: () => [scanner], get: () => scanner } as any, rest: { product: async () => ({ tick_size: '0.25', contract_value: '1' }) } as any });
+  const ev = { kind: 'entry', side: 'long', price: 100, sl: 98, tp: [102, 104, 106], barTime: bars.at(-1)!.time, barIndex: 59, source: 'alert', label: 'LONG', message: 'long' } as any;
+  engine.ingestEvent(scanner as any, 'BTCUSD', '1m', ev, bars as any, { contractValue: 1, tickSize: 0.25 }, 'both', bars.at(-1)! as any);
+  const rows = db.all<any>('SELECT label, action, scanner_id FROM signals');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].label, 'LONG (shadow mirror)');
+  assert.equal(rows[0].scanner_id, 'shadow-only');
+  assert.equal(rows[0].action, 'opened', `the account opened it: ${rows[0].action}`);
+  assert.equal(paper.openPositions().length, 1);
+  // the same event again is a duplicate on the signals table, not a second position
+  engine.ingestEvent(scanner as any, 'BTCUSD', '1m', ev, bars as any, { contractValue: 1, tickSize: 0.25 }, 'both', bars.at(-1)! as any);
+  assert.equal(db.all<any>('SELECT 1 FROM signals').length, 1);
+});
