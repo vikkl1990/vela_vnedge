@@ -3653,3 +3653,52 @@ The majors' 1m and 5m returns carry about a basis point of reversion and no mome
 needs ten. Nothing to build. The majors remain a 4h question (decision 110's fade scanner), and
 the cost rule that refuses their 15m signals is refusing correctly, as decision 122 found for
 the alts.
+
+## 124. The exit study: the trail gives back too much (17 October 2026)
+
+**Why.** The account's 59 closed trades net −0.038R: +0.022R gross, −0.061R of fees. Its
+winners leave by the trail at +0.51R on an average peak of +0.91R, its losers at −0.93R, and at
+a 61% win rate that is zero. The shadow book reads the same, +0.59R kept of a +1.09R peak. The
+trail arms at +0.5R and gives back 40% of the peak, 30% past +2R and 20% past +4R, with the
+stall rule tightening it by 0.6 after 45 minutes. The question was whether keeping more of the
+peak pays, measured, not whether it feels right.
+
+**The study.** `diagnose` gained an exit set: the same entries, the account's costs and the
+book paid, the stop checked before the target and the trail moved only after a bar's exits, on
+1m sub-bars as the live engine runs. Every cell with ten or more closed trades in the last 30
+days in either book: 72 cells, 40 of them with ten or more trades under the account's rules,
+4,410 trades, 15m, 1h and 4h.
+
+| variant | R per trade | sum R | Δ vs the account | cells better / worse | both halves positive |
+|---|---|---|---|---|---|
+| the account's exits | +0.029 | +130 | | | 13 |
+| give back 25% (20/15 past 2R/4R) | +0.037 | +166 | +36 | 22 / 7 | 16 |
+| give back 15% (12/10) | +0.047 | +209 | +79 | 29 / 5 | 17 |
+| give back 15%, runner steps unchanged | +0.045 | +201 | +72 | 28 / 5 | 17 |
+| give back 10% (8/6) | +0.053 | +237 | +107 | 35 / 3 | 17 |
+| give back 5% | +0.064 | +284 | +155 | 36 / 2 | 19 |
+| give back 60% | +0.028 | +120 | −9 | 13 / 16 | 13 |
+| arm the trail at +1R | +0.031 | +135 | +5 | 16 / 13 | 14 |
+| arm at +1R, give back 25% | +0.033 | +145 | +15 | 16 / 10 | 13 |
+| arm at +0.3R, give back 15% | +0.030 | +139 | +9 | 18 / 17 | 16 |
+| half off at +1R, rest trails | +0.021 | +92 | −38 | 3 / 18 | 11 |
+| all off at +2R | +0.023 | +102 | −28 | 5 / 18 | 10 |
+| no stall rule | +0.031 | +138 | +8 | 9 / 3 | 13 |
+| floor +0.5R once +1R seen | +0.029 | +130 | 0 | 0 / 0 | 13 |
+
+The gain is on 15m and on 4h alike (15%: +39R on 23 cells and +35R on 15 cells), and it comes
+from the early trail, not the runner steps: 15% with the steps left alone keeps nine tenths of
+it. Arming later, taking partials and fixed targets all lose. The profit floor never binds,
+because the trail at 40% already sits above it.
+
+**The caveat.** The curve does not turn: 5% beats 10% beats 15%. At 5% of a 2.4% stop the
+trail sits 0.12% behind the peak, which is one 1m bar's range on an alt, and the live engine
+sees every update of the forming minute, not only its close, so a trail that tight would fire
+in the market more often than in the study. The study is trustworthy where the give-back is
+wider than the minute's noise, 15% and above; below that it flatters.
+
+**Decision.** Propose `trailGiveBackPct` 15 with `trailSteps` [[2, 12], [4, 10]], from 40 and
+[[2, 30], [4, 20]]. It is a risk setting on the shared paper config, so the operator authorises
+it; nothing changed on the VM in this decision. The shadow book, at 2,500 trades a month,
+measures the change forward under the live engine's granularity within two weeks; the 10%
+step is the next question only if the forward reading matches the study.
