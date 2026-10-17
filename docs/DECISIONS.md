@@ -3702,3 +3702,9 @@ wider than the minute's noise, 15% and above; below that it flatters.
 it; nothing changed on the VM in this decision. The shadow book, at 2,500 trades a month,
 measures the change forward under the live engine's granularity within two weeks; the 10%
 step is the next question only if the forward reading matches the study.
+
+**Applied.** The operator authorised it the same evening ("apply"). Set on the VM through the
+config route at 18:04 UTC on 17 October: `trailGiveBackPct` 15, `trailSteps` [[2, 12], [4, 10]].
+Open positions take the new give-back from their next 1m bar; a trail only ever tightens, so
+no open stop moved against a trade. Forward reading: the shadow book's trail exits from 18 October
+on, against the +0.59R of +1.09R peak they kept before.
