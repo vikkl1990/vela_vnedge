@@ -585,6 +585,8 @@ export type IncubatorStage = 'candidate' | 'shadow' | 'proposed' | 'live' | 'dem
 export interface IncubatorStats {
   trades: number; days: number; wins: number; winRatePct: number; netR: number; avgR: number; pfR: number | null
   weeks: number; positiveWeeks: number; positiveWeeksPct: number
+  /** Cohort pooling (decision 89): how many markets the cohort runs on, how many are judged, how many are positive. */
+  markets?: number; marketsJudged?: number; positiveMarkets?: number; positiveMarketsPct?: number; perMarket?: Array<{ symbol: string; trades: number; netR: number; avgR: number }>
 }
 export interface IncubatorScreen {
   pass: boolean; at: number; trades: number; profitFactor: number; netPnl: number; netAtStress: number
@@ -595,7 +597,7 @@ export interface IncubatorPair {
   market?: { allowed: boolean; reasons: string[] } | null
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; stage: IncubatorStage
   since: number; updated: number; note: string | null; screen: IncubatorScreen | null
-  gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats; marketOutDays?: number; strategyComparison?: { preferred: 'script' | 'both'; reason: string } } | null
+  gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats; marketOutDays?: number; cohort?: string; market?: { symbol: string; trades: number; netR: number; avgR: number } | null; strategyComparison?: { preferred: 'script' | 'both'; reason: string } } | null
   stats: IncubatorStats | null; openShadow: number
   /** Decision 112: what became of the cell's entry signals in the last 14 days — opened, or which gate refused them. */
   funnel?: { entries: number; opened: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null

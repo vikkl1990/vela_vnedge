@@ -3502,3 +3502,29 @@ unchanged: a guest session is refused by every mutating route the way a viewer's
 **What it does not do.** It does not grant the link's holder anything the Signals, Incubator,
 Gates and journal pages do not already show a signed-in reader. The self-signed certificate on
 the bare IP still has to be accepted by the visitor's browser.
+
+## 118. The operator console, first batch: the Overview's hierarchy and the Incubator's working set (17 October 2026)
+
+**Why.** The external UI review ranked the operator console's faults, and its first two matched
+the October audit's own list: an Overview of ten equal tiles with the attention line sharing the
+title's row and a top bar that overflowed narrower desktops; an Incubator three screens long
+whose decision buttons sat far from the evidence and whose cohort table repeated the shadow
+table. The review's commercial direction was taken where it fit a single-operator console and
+declined where it did not: Signals stays read-only, the top navigation stays, scanner-level
+settings move only with the risk-grouped Settings work.
+
+**Overview.** Three primary cards: equity with today's change, net and drawdown beneath it;
+open P&L with the open count and the share of equity at risk if every stop fills; the markets
+the gate allows today with the 24-hour entry count. The attention row sits under the title in
+its own full-width bar and never shares it. The edge line follows the cards; everything else
+(closed P&L, trades, win rate, profit factor, expectancy, worst drawdown) is one compact strip.
+The top bar's nav scrolls inside its own box and the account group wraps, so nothing pushes past
+the viewport.
+
+**Incubator.** The working set first: decisions, then the account's cells sorted by demotion
+clock, then the shadow book grouped by cohort — the unit the gate judges — with the cohort's
+progress, funnel, verdict, ETA and own-exits pill on the group row and each market beneath it.
+The separate cohorts panel is gone. A proposal's row now carries the cohort evidence it was
+proposed on, its 14-day funnel and the market verdict beside the Promote and Reject buttons;
+the daily hunt and the history close the page. Pure layout: every number was already in the
+view, and the decision routes are unchanged.

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -37,6 +37,7 @@ export default function Incubator() {
   const decide = useMutation({ mutationFn: api.incubatorDecide, onSuccess: invalidate })
   const evaluate = useMutation({ mutationFn: api.incubatorEvaluate, onSuccess: invalidate })
   const [confirm, setConfirm] = useState<{ pair: IncubatorPair; action: 'approve' | 'reject' | 'demote' } | null>(null)
+  const [renderedAt] = useState(() => Date.now())
 
   return (
     <>
@@ -47,8 +48,32 @@ export default function Incubator() {
           const decisions = [...by('proposed'), ...by('demote_proposed')]
           const shadow = by('shadow').sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
           const candidates = by('candidate').filter((p) => p.screen?.pass).sort((a, b) => (b.screen!.profitFactor - 1) * Math.sqrt(b.screen!.trades) - (a.screen!.profitFactor - 1) * Math.sqrt(a.screen!.trades))
-          const live = by('live')
+          const now = d.lastRun?.at ?? renderedAt
+          const clockRank = (p: IncubatorPair) => {
+            const out = p.market && !p.market.allowed ? 2 : 0
+            const silent = d.config.demote.silentDays ? (now - (p.lastTradeAt ?? p.since)) / 86_400_000 >= d.config.demote.silentDays ? 2 : (now - (p.lastTradeAt ?? p.since)) / 86_400_000 >= d.config.demote.silentDays / 2 ? 1 : 0 : 0
+            const starved = d.config.demote.costStarvedRefusals && p.funnel && p.funnel.opened === 0 && p.funnel.cost > 0 ? (p.funnel.cost >= d.config.demote.costStarvedRefusals ? 2 : 1) : 0
+            return Math.max(out, silent, starved)
+          }
+          const live = by('live').sort((a, b) => clockRank(b) - clockRank(a) || (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
           const g = d.config.gate
+          // the shadow book grouped by cohort (scanner × timeframe): the gate judges the cohort, so the row that carries its verdict heads its members
+          const cohorts = (() => {
+            const groups = new Map<string, IncubatorPair[]>()
+            for (const p of [...shadow, ...by('proposed')]) { const k = `${p.scannerId}|${p.tf}`; groups.set(k, [...(groups.get(k) ?? []), p]) }
+            return [...groups.entries()].map(([k, ps]) => {
+              const trades = ps.reduce((a, p) => a + (p.stats?.trades ?? 0), 0)
+              const netR = ps.reduce((a, p) => a + (p.stats?.netR ?? 0), 0)
+              const days = Math.max(0, ...ps.map((p) => p.stats?.days ?? 0))
+              const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
+              const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
+              const gate = ps.find((p) => p.gate)?.gate ?? null
+              const rate = days > 0 ? trades / days : 0
+              const need = Math.max(0, g.minTrades - trades)
+              const eta = need === 0 ? Math.max(0, g.minDays - days) : rate > 0 ? Math.max(need / rate, g.minDays - days) : Infinity
+              return { k, scanner: ps[0].scannerName, scannerId: ps[0].scannerId, tf: ps[0].tf, members: ps.sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0)), trades, avgR: trades ? netR / trades : 0, days, pos, judged, gate, eta }
+            }).sort((a, b) => Number(b.gate?.decision === 'propose') - Number(a.gate?.decision === 'propose') || a.eta - b.eta || b.trades - a.trades)
+          })()
           return (
             <>
               <div className="kpi-grid">
@@ -70,20 +95,6 @@ export default function Incubator() {
                 })()}
               </div>
 
-              <Panel title="Daily hunt" right={<span className="muted small">{d.lastHunt?.auto ? 'auto-promotion ON: gate proposals go live within the weekly and fleet limits' : 'auto-promotion off: proposals wait for your click'}</span>}>
-                {!d.lastHunt ? (
-                  <p className="muted small">No hunt yet. The screen runs daily; when it finishes the shadow book is judged here and, with auto-promotion on, gate proposals go live.</p>
-                ) : (
-                  <div className="small">
-                    <p><b>{timeAgo(d.lastHunt.at)}</b> by {d.lastHunt.actor}{d.lastHunt.screen ? <> · screen slice {d.lastHunt.screen.slice}: {d.lastHunt.screen.runs} runs, {d.lastHunt.screen.passed} passed, {d.lastHunt.screen.newCandidates} new candidates, {d.lastHunt.screen.quarantined} quarantined, {d.lastHunt.screen.minutes} min</> : null}</p>
-                    <p>admitted to shadow <b>{d.lastHunt.admitted.length}</b> · proposed <b>{d.lastHunt.proposed.length}</b> · promoted <b className={d.lastHunt.promoted.length ? 'gain' : ''}>{d.lastHunt.promoted.length}</b> · retired {d.lastHunt.retired.length} · brewing {d.lastHunt.brewing} · free slots {d.lastHunt.free}</p>
-                    {d.lastHunt.promoted.map((p) => <p key={p} className="mono gain">+ LIVE {p}</p>)}
-                    {d.lastHunt.blocked.map((b) => <p key={b} className="mono muted">! {b}</p>)}
-                    {d.lastHunt.admitted.slice(0, 8).map((p) => <p key={p} className="mono muted">→ shadow {p}</p>)}
-                  </div>
-                )}
-              </Panel>
-
               <Panel
                 title="Waiting for your decision"
                 right={auth.canTrade ? <button className="btn btn-sm" onClick={() => evaluate.mutate()} disabled={evaluate.isPending}>{evaluate.isPending ? 'Judging…' : 'Re-judge now'}</button> : null}
@@ -94,14 +105,15 @@ export default function Incubator() {
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Pairs waiting for approval</caption>
-                      <thead><tr><th scope="col">Proposal</th><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Evidence</th><th scope="col">Since</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+                      <thead><tr><th scope="col">Proposal</th><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Evidence</th><th scope="col">Signals 14d</th><th scope="col">Since</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
                       <tbody>
                         {decisions.map((p) => (
                           <tr key={p.id}>
                             <td>{p.stage === 'proposed' ? <Pill tone="ok">Promote</Pill> : <Pill tone="danger">Demote</Pill>}</td>
                             <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
                             <td className="mono">{p.symbol} · {p.tf}</td>
-                            <td>{p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={g} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
+                            <td>{p.stage === 'proposed' ? <div className="small"><Evidence s={p.gate?.stats ?? p.stats} g={g} />{p.gate?.cohort && <div className="muted">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}</div> : <div className="small">{p.gate?.reasons?.[0] ?? 'the gate proposes demotion'}</div>}{p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={g} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
+                            <td className="small"><Funnel f={p.funnel} /></td>
                             <td className="muted small">{timeAgo(p.since)}</td>
                             <td className="nowrap">
                               {auth.canTrade ? (
@@ -120,61 +132,56 @@ export default function Incubator() {
                 {decide.isError && <div className="auth-error mt" role="alert">{(decide.error as Error).message}</div>}
               </Panel>
 
-              <Panel title="Cohorts — what the gate is judging" right={<span className="muted small">pooled per scanner × timeframe; a verdict needs ≥{g.minTrades} trades over ≥{g.minDays} days and half the markets positive</span>}>
-                {(() => {
-                  const groups = new Map<string, IncubatorPair[]>()
-                  for (const p of [...shadow, ...by('proposed')]) { const k = `${p.scannerId}|${p.tf}`; groups.set(k, [...(groups.get(k) ?? []), p]) }
-                  const rows = [...groups.entries()].map(([k, ps]) => {
-                    const trades = ps.reduce((a, p) => a + (p.stats?.trades ?? 0), 0)
-                    const netR = ps.reduce((a, p) => a + (p.stats?.netR ?? 0), 0)
-                    const days = Math.max(0, ...ps.map((p) => p.stats?.days ?? 0))
-                    const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
-                    const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
-                    const decision = ps.find((p) => p.gate)?.gate?.decision ?? 'brewing'
-                    const own = ps.find((p) => p.gate?.strategyComparison)?.gate?.strategyComparison ?? null
-                    const rate = days > 0 ? trades / days : 0
-                    const need = Math.max(0, g.minTrades - trades)
-                    const eta = need === 0 ? Math.max(0, g.minDays - days) : rate > 0 ? Math.max(need / rate, g.minDays - days) : Infinity
-                    return { k, scanner: ps[0].scannerName, tf: ps[0].tf, markets: ps.length, trades, avgR: trades ? netR / trades : 0, days, pos, judged, decision, eta, own }
-                  }).sort((a, b) => a.eta - b.eta || b.trades - a.trades)
-                  if (!rows.length) return <p className="muted small">Nothing in the shadow book.</p>
-                  return (
-                    <div className="table-wrap">
-                      <table className="table small">
-                        <thead><tr><th>scanner</th><th>tf</th><th className="num">markets</th><th className="num">trades</th><th className="num">avg R</th><th className="num">days</th><th className="num">markets +</th><th>gate</th><th className="num">to a verdict</th></tr></thead>
-                        <tbody>
-                          {rows.slice(0, 60).map((r) => (
-                            <tr key={r.k}>
-                              <td>{r.scanner}{r.own && <> <Pill tone={r.own.preferred === 'script' ? 'ok' : 'muted'} title={r.own.reason}>{r.own.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill></>}</td><td className="mono">{r.tf}</td><td className="num mono">{r.markets}</td><td className="num mono">{r.trades}</td>
-                              <td className={`num mono ${r.trades ? (r.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{r.trades ? fmtR(r.avgR) : '–'}</td>
-                              <td className="num mono">{r.days.toFixed(0)}</td><td className="num mono">{r.judged ? `${r.pos}/${r.judged}` : '–'}</td>
-                              <td><Pill tone={r.decision === 'propose' ? 'ok' : r.decision === 'retire' ? 'danger' : 'muted'}>{r.decision}</Pill></td>
-                              <td className="num mono muted">{r.eta === Infinity ? 'no trades yet' : r.eta <= 0 ? 'now' : `~${Math.ceil(r.eta)}d`}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )
-                })()}
+              <Panel title={<span>In the account ({live.length}) <BookBadge book="account" generic /></span>}>
+                {live.length === 0 ? <Empty label="The incubator has not synced the fleet yet." /> : (
+                  <div className="table-wrap">
+                    <table className="table">
+                      <caption className="sr-only">Live pairs and their recent record</caption>
+                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Live record</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col" title="The demotion clocks: days the market has been out, days since the last account trade, cost-rule starvation">Clock</th><th scope="col">Health</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+                      <tbody>
+                        {live.map((p) => (
+                          <tr key={p.id}>
+                            <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
+                            <td className="mono">{p.symbol}{p.market && !p.market.allowed && <> <Pill tone="warn">market out</Pill></>}</td>
+                            <td className="small">{p.stats ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%` : '—'}</td>
+                            <td className="small"><Funnel f={p.funnel} /></td>
+                            <td className="small"><Clocks p={p} cfg={d.config.demote} now={now} /></td>
+                            <td className="small">{(p.stats?.trades ?? 0) < d.config.demote.minTrades ? <span className="muted">collecting ({p.stats?.trades ?? 0}/{d.config.demote.minTrades})</span> : <Pill tone="ok">healthy</Pill>}</td>
+                            <td className="num">{auth.isAdmin && <button className="btn btn-xs" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow</button>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </Panel>
 
-              <Panel title={<span>Brewing in the shadow book ({shadow.length}) <BookBadge book="shadow" short /></span>}>
+              <Panel title={<span>Brewing in the shadow book ({shadow.length}) <BookBadge book="shadow" short /></span>} right={<span className="muted small">grouped by cohort, the unit the gate judges · a verdict needs ≥{g.minTrades} trades over ≥{g.minDays} days and half the markets positive</span>}>
                 {shadow.length === 0 ? <Empty label="No shadow pairs yet." hint="The daily screen admits its best candidates here." /> : (
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Shadow pairs and their progress toward the promotion gate</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Progress</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col">Still missing</th><th scope="col">Open</th></tr></thead>
+                      <thead><tr><th scope="col">Cohort · market</th><th scope="col">Progress</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col">Gate</th><th scope="col">Open</th></tr></thead>
                       <tbody>
-                        {shadow.map((p) => (
-                          <tr key={p.id}>
-                            <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
-                            <td className="mono">{p.symbol}</td>
-                            <td><Evidence s={p.stats} g={g} /></td>
-                            <td className="small"><Funnel f={p.funnel} /></td>
-                            <td className="muted small">{p.gate?.decision === 'brewing' ? p.gate.reasons.join('; ') : 'not judged yet'}</td>
-                            <td className="mono">{p.openShadow || ''}</td>
-                          </tr>
+                        {cohorts.map((c) => (
+                          <Fragment key={c.k}>
+                            <tr className="cohort-row">
+                              <th scope="rowgroup" colSpan={1}><Link to={`/scanners/${c.scannerId}`} className="strong">{c.scanner}</Link> <span className="mono muted">{c.tf}</span> <span className="muted small">· {c.members.length} markets</span>{c.gate?.strategyComparison && <> <Pill tone={c.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'} title={c.gate.strategyComparison.reason}>{c.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill></>}</th>
+                              <td className="small"><Need have={c.trades} need={g.minTrades} /> trades · <Need have={c.days} need={g.minDays} /> days · <span className={`mono ${c.trades ? (c.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{c.trades ? fmtR(c.avgR) : '–'}</span>/trade · {c.judged ? `${c.pos}/${c.judged} markets +` : 'no market judged'}</td>
+                              <td className="small muted">{c.members.reduce((a, p) => a + (p.funnel?.entries ?? 0), 0)} signals · {c.members.reduce((a, p) => a + (p.funnel?.opened ?? 0), 0)} opened</td>
+                              <td className="small"><Pill tone={c.gate?.decision === 'propose' ? 'ok' : c.gate?.decision === 'retire' ? 'danger' : 'muted'}>{c.gate?.decision ?? 'brewing'}</Pill> <span className="muted mono">{c.eta === Infinity ? 'no trades yet' : c.eta <= 0 ? 'now' : `~${Math.ceil(c.eta)}d`}</span>{c.gate?.decision === 'brewing' && c.gate.reasons.length > 0 && <div className="muted">{c.gate.reasons.join('; ')}</div>}</td>
+                              <td className="mono">{c.members.reduce((a, p) => a + (p.openShadow ?? 0), 0) || ''}</td>
+                            </tr>
+                            {c.members.map((p) => (
+                              <tr key={p.id} className="cohort-member">
+                                <td className="mono">{p.symbol}{p.stage === 'proposed' && <> <Pill tone="ok">proposed</Pill></>}{p.market && !p.market.allowed && <> <Pill tone="warn" title={p.market.reasons.join(' · ')}>market out</Pill></>}</td>
+                                <td><Evidence s={p.stats} g={g} /></td>
+                                <td className="small"><Funnel f={p.funnel} /></td>
+                                <td className="muted small">{p.gate?.market ? `${p.gate.market.trades} trades · ${r(p.gate.market.avgR)}` : ''}</td>
+                                <td className="mono">{p.openShadow || ''}</td>
+                              </tr>
+                            ))}
+                          </Fragment>
                         ))}
                       </tbody>
                     </table>
@@ -206,26 +213,16 @@ export default function Incubator() {
                 )}
               </Panel>
 
-              <Panel title={<span>In the account ({live.length}) <BookBadge book="account" generic /></span>}>
-                {live.length === 0 ? <Empty label="The incubator has not synced the fleet yet." /> : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <caption className="sr-only">Live pairs and their recent record</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Live record</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col" title="The demotion clocks: days the market has been out, days since the last account trade, cost-rule starvation">Clock</th><th scope="col">Health</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
-                      <tbody>
-                        {live.map((p) => (
-                          <tr key={p.id}>
-                            <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
-                            <td className="mono">{p.symbol}{p.market && !p.market.allowed && <> <Pill tone="warn">market out</Pill></>}</td>
-                            <td className="small">{p.stats ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%` : '—'}</td>
-                            <td className="small"><Funnel f={p.funnel} /></td>
-                            <td className="small"><Clocks p={p} cfg={d.config.demote} now={d.lastRun?.at ?? Date.now()} /></td>
-                            <td className="small">{(p.stats?.trades ?? 0) < d.config.demote.minTrades ? <span className="muted">collecting ({p.stats?.trades ?? 0}/{d.config.demote.minTrades})</span> : <Pill tone="ok">healthy</Pill>}</td>
-                            <td className="num">{auth.isAdmin && <button className="btn btn-xs" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow</button>}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              <Panel title="Daily hunt" right={<span className="muted small">{d.lastHunt?.auto ? 'auto-promotion ON: gate proposals go live within the weekly and fleet limits' : 'auto-promotion off: proposals wait for your click'}</span>}>
+                {!d.lastHunt ? (
+                  <p className="muted small">No hunt yet. The screen runs daily; when it finishes the shadow book is judged here and, with auto-promotion on, gate proposals go live.</p>
+                ) : (
+                  <div className="small">
+                    <p><b>{timeAgo(d.lastHunt.at)}</b> by {d.lastHunt.actor}{d.lastHunt.screen ? <> · screen slice {d.lastHunt.screen.slice}: {d.lastHunt.screen.runs} runs, {d.lastHunt.screen.passed} passed, {d.lastHunt.screen.newCandidates} new candidates, {d.lastHunt.screen.quarantined} quarantined, {d.lastHunt.screen.minutes} min</> : null}</p>
+                    <p>admitted to shadow <b>{d.lastHunt.admitted.length}</b> · proposed <b>{d.lastHunt.proposed.length}</b> · promoted <b className={d.lastHunt.promoted.length ? 'gain' : ''}>{d.lastHunt.promoted.length}</b> · retired {d.lastHunt.retired.length} · brewing {d.lastHunt.brewing} · free slots {d.lastHunt.free}</p>
+                    {d.lastHunt.promoted.map((p) => <p key={p} className="mono gain">+ LIVE {p}</p>)}
+                    {d.lastHunt.blocked.map((b) => <p key={b} className="mono muted">! {b}</p>)}
+                    {d.lastHunt.admitted.slice(0, 8).map((p) => <p key={p} className="mono muted">→ shadow {p}</p>)}
                   </div>
                 )}
               </Panel>

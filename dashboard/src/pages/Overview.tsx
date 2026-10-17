@@ -1,5 +1,5 @@
 import type { MarketVerdict } from '../api/types'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useEquity, useHealth, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
@@ -42,28 +42,58 @@ export function Overview() {
   const visibleScanners = (scanners.data ?? []).filter((x) => !x.hidden).length
   const net = s ? s.closedPnl + s.openPnl : 0
   const day = risk.data?.day
+  const markets = useMarketsToday()
+  const mt = markets.data
+  const tracked = (mt?.markets ?? []).filter((m) => m.tracked !== false)
+  const allowedN = tracked.filter((m) => m.allowed).length
+  // the risk the open positions carry right now, as a share of equity: what a run of stops would cost
+  const openRisk = (positions.data ?? []).reduce((a, p) => a + (p.riskAmount ?? 0), 0)
+  const openRiskPct = s && s.equity > 0 ? (openRisk / s.equity) * 100 : 0
+  const [renderedAt] = useState(() => Date.now())
+  const signals24 = (signals.data ?? []).filter((x) => x.kind === 'entry' && renderedAt - x.at < 86_400_000).length
 
   return (
     <div className="page">
       <TickerTape />
-      <AttentionBanner />
-      <EdgeVerdictLine />
       <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account: ${visibleScanners} Pine scanners on Delta India data, fills and P&L simulated. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
+      <AttentionBanner />
 
-      {stats.isLoading && !s && <Loading kind="kpi" rows={9} />}
+      {stats.isLoading && !s && <Loading kind="kpi" rows={3} />}
       {stats.isError && !s && <ErrorState error={stats.error} onRetry={() => stats.refetch()} />}
       {s && (
-        <div className="kpi-grid">
-          <KpiTile label="Equity (USD)" value={fmtMoney(s.equity, 2)} sub={<span className="muted">initial {fmtMoney(s.initialEquity, 0)}</span>} />
-          <KpiTile label="Net PnL (USD)" value={fmtPnl(net)} tone={pnlClass(net) as 'gain' | 'loss' | 'neutral'} hint="Closed plus open, after fees" sub={day ? <span className={pnlClass(day.pnl)}>today {fmtPnl(day.pnl)} since 00:00 UTC</span> : <span className="muted">{s.initialEquity ? `${fmtPct((net / s.initialEquity) * 100, 1, true)} of purse` : ''} · after fees</span>} />
-          <KpiTile label="Closed PnL (USD)" value={fmtPnl(s.closedPnl)} tone={pnlClass(s.closedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">fees {fmtMoney(s.closedFees)} · {fmtInt(s.trades)} trades, the journal</span>} />
-          <KpiTile label="Open PnL (USD)" value={fmtPnl(s.openPnl)} tone={pnlClass(s.openPnl) as 'gain' | 'loss' | 'neutral'} hint="Open positions: banked legs, fees and mark" sub={<span className="muted">{s.openPositions} open{s.openFees ? ` · fees so far ${fmtMoney(s.openFees)}` : ''}</span>} />
-          <KpiTile label="Win rate" value={fmtPct(s.winRatePct)} sub={<span className="muted">{s.wins}W / {s.losses}L</span>} />
-          <KpiTile label="Profit factor" value={fmtProfitFactor(s.profitFactor)} tone={s.profitFactor >= 1 ? 'gain' : 'loss'} />
-          <KpiTile label="Expectancy" value={fmtR(expectancy)} tone={expectancy == null ? 'neutral' : expectancy >= 0 ? 'gain' : 'loss'} hint="Average R per trade, weighted by trade count" />
-          <KpiTile label="Drawdown" value={`−${fmtPct(s.drawdownPct)}`} tone={s.drawdownPct > 0 ? 'loss' : 'neutral'} hint="From the equity peak since the reset, open positions included; the Risk page and the alerts use this same number" sub={<span className="muted">worst −{fmtPct(s.maxDrawdownPct)} · peak {fmtMoney(s.peakEquity, 0)}</span>} />
-          <KpiTile label="Trades" value={fmtInt(s.trades)} sub={<span className="muted">{s.openPositions} open</span>} />
-        </div>
+        <>
+          <div className="hero-grid">
+            <KpiTile
+              label="Equity (USD)"
+              value={fmtMoney(s.equity, 2)}
+              tone={day ? (pnlClass(day.pnl) as 'gain' | 'loss' | 'neutral') : 'neutral'}
+              sub={<span>{day ? <span className={pnlClass(day.pnl)}>{fmtPnl(day.pnl)} today</span> : null}<span className="muted"> · net {fmtPnl(net)} on {fmtMoney(s.initialEquity, 0)} · drawdown −{fmtPct(s.drawdownPct)} from the peak</span></span>}
+            />
+            <KpiTile
+              label="Open PnL (USD)"
+              value={fmtPnl(s.openPnl)}
+              tone={pnlClass(s.openPnl) as 'gain' | 'loss' | 'neutral'}
+              hint="Open positions: banked legs, fees and mark"
+              sub={<span className="muted">{s.openPositions} open · {fmtPct(openRiskPct)} of equity at risk if every stop fills{s.openFees ? ` · fees so far ${fmtMoney(s.openFees)}` : ''}</span>}
+            />
+            <KpiTile
+              label="Markets the gate allows today"
+              value={mt ? (mt.enabled ? `${allowedN} of ${tracked.length}` : 'gate off') : '–'}
+              tone={mt?.enabled && allowedN === 0 ? 'loss' : 'neutral'}
+              hint="The market gate's verdict: turnover, book cost and quote, judged every hour"
+              sub={<span className="muted">{signals24} entry signals in 24 h · <Link to="/gates">every gate</Link></span>}
+            />
+          </div>
+          <EdgeVerdictLine />
+          <div className="stat-strip" role="list" aria-label="Secondary figures">
+            <span role="listitem"><span className="stat-k">Closed</span> <span className={`mono ${pnlClass(s.closedPnl)}`}>{fmtPnl(s.closedPnl)}</span> <span className="muted">fees {fmtMoney(s.closedFees)}</span></span>
+            <span role="listitem"><span className="stat-k">Trades</span> <span className="mono">{fmtInt(s.trades)}</span></span>
+            <span role="listitem"><span className="stat-k">Win</span> <span className="mono">{fmtPct(s.winRatePct)}</span> <span className="muted">{s.wins}W / {s.losses}L</span></span>
+            <span role="listitem"><span className="stat-k">PF</span> <span className={`mono ${s.profitFactor >= 1 ? 'gain' : 'loss'}`}>{fmtProfitFactor(s.profitFactor)}</span></span>
+            <span role="listitem" title="Average R per trade, weighted by trade count"><span className="stat-k">Expectancy</span> <span className={`mono ${expectancy == null ? '' : expectancy >= 0 ? 'gain' : 'loss'}`}>{fmtR(expectancy)}</span></span>
+            <span role="listitem" title="From the equity peak since the reset, open positions included"><span className="stat-k">Worst drawdown</span> <span className="mono loss">−{fmtPct(s.maxDrawdownPct)}</span> <span className="muted">peak {fmtMoney(s.peakEquity, 0)}</span></span>
+          </div>
+        </>
       )}
 
       <div className="grid-2-1">
@@ -211,8 +241,8 @@ function AttentionBanner() {
   const items = h.data?.attention ?? []
   if (!items.length) return null
   return (
-    <div className="banner banner-warn attention small" role="alert">
-      <b>Needs attention</b> <Link to="/gates" className="small">· every gate</Link>
+    <div className="banner banner-warn attention attention-row small" role="alert">
+      <span className="attention-head"><b>Needs attention</b> <span className="muted">{items.length}</span></span>
       <ul>
         {items.map((it) => (
           <li key={it.key}>
@@ -220,6 +250,7 @@ function AttentionBanner() {
           </li>
         ))}
       </ul>
+      <Link to="/gates" className="btn btn-xs attention-all">Every gate →</Link>
     </div>
   )
 }
