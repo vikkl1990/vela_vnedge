@@ -1402,3 +1402,9 @@ body { overflow-x: clip; }
 .cohort-row th, .cohort-row td { background: var(--surface-2); border-top: 2px solid var(--border); }
 .cohort-row th { text-align: left; font-weight: 500; }
 .cohort-member td:first-child { padding-left: 22px; }
+/* ---------- decision 119: settings grouped by risk, every value against its measured default ---------- */
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 12px; }
+@media (max-width: 960px) { .settings-grid { grid-template-columns: 1fr; } }
+.settings-row.settings-changed { box-shadow: inset 3px 0 0 var(--warn); padding-left: 8px; border-radius: 4px; }
+.field-diff { display: block; margin-top: 2px; }
+.field-diff .warn { color: var(--warn); }

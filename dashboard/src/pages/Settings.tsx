@@ -1,303 +1,287 @@
-import { useMemo, useState } from 'react'
-import { useConfig, useMarkets, useUpdateConfig } from '../api/queries'
-import type { Config, PaperConfig } from '../api/types'
-import { ChipSelect, ErrorState, Loading, PageTitle, Panel, Pill, SymbolPicker } from '../components/ui'
+import { useMemo, useState, type ReactNode } from 'react'
+import { useConfig, useConfigDefaults, useMarkets, useUpdateConfig } from '../api/queries'
+import type { ConfigPatch } from '../api/types'
+import { ChipSelect, ConfirmDialog, ErrorState, Loading, PageTitle, Panel, Pill, SymbolPicker } from '../components/ui'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
+import { MEASURED } from '../lib/measured'
 import { useToast } from '../lib/toast'
 
-type Form = {
-  symbols: string[]
-  universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
-  ml?: { minProb: number; useAsScore: boolean }
-  autoTune?: { enabled: boolean; minTrades: number; minProfitFactor: number; intervalHours: number }
-  timeframes: string[]
-  historyBars: number
-  paper: PaperConfig
-}
+/**
+ * Decision 119: every number the system runs on, grouped by what it can cost, each shown against the value the
+ * decisions log measured. A change to a high-risk section is listed back, with the decision it overrides, before
+ * it is saved. The server validates every patch; this page sends only the paths that changed.
+ */
 
-function toForm(c: Config): Form {
-  return {
-    symbols: [...(c.symbols ?? [])],
-    universe: c.universe ? { ...c.universe, exclude: [...(c.universe.exclude ?? [])] } : { mode: 'list' as const, top: 20, exclude: [] },
-    ml: { minProb: c.ml?.minProb ?? 0, useAsScore: c.ml?.useAsScore ?? false },
-    autoTune: { enabled: c.autoTune?.enabled ?? true, minTrades: c.autoTune?.minTrades ?? 3, minProfitFactor: c.autoTune?.minProfitFactor ?? 1, intervalHours: c.autoTune?.intervalHours ?? 6 },
-    timeframes: [...(c.timeframes ?? [])],
-    historyBars: c.historyBars,
-    paper: {
-      ...c.paper,
-      tpSplit: [...(c.paper?.tpSplit ?? [0.4, 0.3, 0.3])] as [number, number, number],
-      fallbackRR: [...(c.paper?.fallbackRR ?? [1, 2, 3])] as [number, number, number],
-    },
-  }
-}
+type Risk = 'high' | 'medium' | 'low'
+const RISK_LABEL: Record<Risk, string> = { high: 'can lose money', medium: 'changes what trades', low: 'housekeeping' }
+const RISK_TONE: Record<Risk, 'danger' | 'warn' | 'muted'> = { high: 'danger', medium: 'warn', low: 'muted' }
 
-function validate(f: Form): Record<string, string> {
-  const e: Record<string, string> = {}
-  if (!f.symbols.length) e.symbols = 'Pick at least one symbol'
-  if (!f.timeframes.length) e.timeframes = 'Pick at least one timeframe'
-  if (!(f.historyBars >= 100 && f.historyBars <= 20000)) e.historyBars = '100 – 20000'
-  const p = f.paper
-  if (!(p.initialEquity > 0)) e.initialEquity = 'Must be > 0'
-  if (!(p.riskPerTradePct > 0 && p.riskPerTradePct <= 100)) e.riskPerTradePct = '0 < x ≤ 100'
-  if (!(p.maxLeverage >= 1 && p.maxLeverage <= 200)) e.maxLeverage = '1 – 200'
-  if (!(p.feeRatePct >= 0 && p.feeRatePct < 5)) e.feeRatePct = '0 ≤ x < 5'
-  if (!(p.slippageBps >= 0 && p.slippageBps < 1000)) e.slippageBps = '0 ≤ x < 1000'
-  if (p.tpSplit.some((x) => !(x >= 0 && x <= 1))) e.tpSplit = 'Each 0 – 1'
-  else if (Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) > 0.001) e.tpSplit = 'Must sum to 1'
-  if (!(p.fallbackAtrSl > 0)) e.fallbackAtrSl = 'Must be > 0'
-  if (p.fallbackRR.some((x) => !(x > 0))) e.fallbackRR = 'Each > 0'
-  else if (!(p.fallbackRR[0] <= p.fallbackRR[1] && p.fallbackRR[1] <= p.fallbackRR[2])) e.fallbackRR = 'Must be ascending'
-  if (!(p.maxOpenPositions >= 1 && p.maxOpenPositions <= 500)) e.maxOpenPositions = '1 – 500'
-  return e
-}
+interface FieldDef { path: string; label: string; kind: 'number' | 'bool' | 'select' | 'tfs'; step?: string; hint?: string; options?: Array<[string, string]>; validate?: (v: unknown) => string | null }
+interface Section { key: string; title: string; risk: Risk; intro: string; fields: FieldDef[] }
 
-const num = (v: string) => (v === '' ? NaN : Number(v))
+const num = (lo: number, hi: number) => (v: unknown) => (typeof v === 'number' && v >= lo && v <= hi ? null : `${lo} – ${hi}`)
+const SECTIONS: Section[] = [
+  {
+    key: 'sizing', title: 'Account and sizing', risk: 'high', intro: 'What one trade can lose and how many can be open. The risk per trade is what every R is measured against.',
+    fields: [
+      { path: 'paper.initialEquity', label: 'Initial equity (USD)', kind: 'number', step: '100', validate: num(1, 1e9) },
+      { path: 'paper.riskPerTradePct', label: 'Risk per trade (% of equity)', kind: 'number', step: '0.1', validate: num(0.01, 100) },
+      { path: 'paper.maxLeverage', label: 'Max leverage', kind: 'number', step: '1', hint: 'or the market\'s own ceiling, whichever is lower', validate: num(1, 200) },
+      { path: 'paper.maxOpenPositions', label: 'Max open positions (engine)', kind: 'number', step: '1', validate: num(1, 500) },
+      { path: 'risk.maxPositionsTotal', label: 'Max open positions (risk layer)', kind: 'number', step: '1', validate: num(1, 500) },
+      { path: 'risk.maxPositionsPerSymbol', label: 'Positions per market', kind: 'number', step: '1', validate: num(1, 20) },
+      { path: 'risk.perScannerMaxPositions', label: 'Positions per scanner', kind: 'number', step: '1', validate: num(1, 50) },
+      { path: 'paper.liquidation', label: 'Model isolated-margin liquidation', kind: 'bool' },
+    ],
+  },
+  {
+    key: 'limits', title: 'Loss limits and guards', risk: 'high', intro: 'The kill switches and the guards against re-entering a loss.',
+    fields: [
+      { path: 'risk.enabled', label: 'Risk layer on', kind: 'bool' },
+      { path: 'risk.maxDailyLossPct', label: 'Daily loss limit (% of equity)', kind: 'number', step: '0.5', validate: num(0.5, 100) },
+      { path: 'risk.maxWeeklyLossPct', label: 'Weekly loss limit (%)', kind: 'number', step: '0.5', validate: num(0.5, 100) },
+      { path: 'risk.reentryCooldownMinutes', label: 'Re-entry cooldown after a stop (min)', kind: 'number', step: '5', validate: num(0, 1440) },
+      { path: 'risk.burstWindowSec', label: 'Burst guard window (s)', kind: 'number', step: '10', hint: 'one entry per side inside the window', validate: num(0, 3600) },
+    ],
+  },
+  {
+    key: 'costs', title: 'Costs and fills', risk: 'high', intro: 'What a round trip costs and the rule that refuses a stop too tight to pay it. The cost rule is the filter the account\'s loss is made of.',
+    fields: [
+      { path: 'paper.feeRatePct', label: 'Taker fee (%)', kind: 'number', step: '0.01', validate: num(0, 5) },
+      { path: 'paper.makerFeeRatePct', label: 'Maker fee (%)', kind: 'number', step: '0.01', validate: num(0, 5) },
+      { path: 'paper.feeTaxPct', label: 'Tax on fees (%)', kind: 'number', step: '1', hint: 'GST', validate: num(0, 100) },
+      { path: 'paper.slippageBps', label: 'Slippage (bps)', kind: 'number', step: '1', hint: 'on top of the measured book cost', validate: num(0, 1000) },
+      { path: 'paper.minRiskFeeRatio', label: 'Stop must cover this many round trips', kind: 'number', step: '0.5', hint: '0 turns the cost rule off', validate: num(0, 50) },
+      { path: 'paper.requireQuote', label: 'Require an executable quote to enter', kind: 'bool' },
+    ],
+  },
+  {
+    key: 'gates', title: 'Gates', risk: 'high', intro: 'The regime and market gates every entry must clear. The efficiency floor is the one filter that measured as paying.',
+    fields: [
+      { path: 'risk.regime.enabled', label: 'Regime gate on', kind: 'bool' },
+      { path: 'risk.regime.minEr', label: 'Efficiency ratio floor (20 bars)', kind: 'number', step: '0.05', hint: '0 = off', validate: num(0, 1) },
+      { path: 'risk.regime.minAtrPct', label: 'ATR floor (% of price)', kind: 'number', step: '0.05', validate: num(0, 10) },
+      { path: 'risk.regime.noWeekend', label: 'No entries on weekends', kind: 'bool' },
+      { path: 'risk.marketGate.enabled', label: 'Market gate on', kind: 'bool' },
+      { path: 'risk.marketGate.minTurnoverUsd', label: 'Turnover floor (USD, 24 h)', kind: 'number', step: '10000', validate: num(0, 1e9) },
+      { path: 'risk.marketGate.maxBookCostPct', label: 'Max book cost (% round trip)', kind: 'number', step: '0.01', validate: num(0, 5) },
+      { path: 'risk.marketGate.probeNotionalUsd', label: 'Probe notional (USD)', kind: 'number', step: '500', hint: 'the order the book is costed for', validate: num(100, 1e6) },
+    ],
+  },
+  {
+    key: 'exits', title: 'Exits', risk: 'medium', intro: 'Where the stop sits when a script publishes none, how the trail and the floor move it, and the targets.',
+    fields: [
+      { path: 'paper.fallbackAtrSl', label: 'Fallback stop (× ATR)', kind: 'number', step: '0.1', validate: num(0.1, 10) },
+      { path: 'paper.scriptDisasterStopAtr', label: 'Disaster stop under exit mode script (× ATR)', kind: 'number', step: '0.5', validate: num(0.5, 10) },
+      { path: 'paper.trailAfterR', label: 'Trail arms at (R)', kind: 'number', step: '0.1', hint: '0 = no trail', validate: num(0, 20) },
+      { path: 'paper.trailGiveBackPct', label: 'Trail gives back (% of peak)', kind: 'number', step: '5', validate: num(0, 95) },
+      { path: 'paper.floorAtR', label: 'Floor arms at (R)', kind: 'number', step: '0.1', hint: '0 = no floor', validate: num(0, 20) },
+      { path: 'paper.floorKeepR', label: 'Floor keeps (R)', kind: 'number', step: '0.05', validate: num(0, 20) },
+      { path: 'paper.breakEvenAfterTp1', label: 'Stop to break-even after TP1', kind: 'bool' },
+      { path: 'paper.allowReversal', label: 'Opposite signal closes and flips', kind: 'bool' },
+    ],
+  },
+  {
+    key: 'incubator', title: 'Incubator', risk: 'medium', intro: 'How the library becomes the fleet: the screen, the shadow book, the gate, the clocks. The mirror is the one switch here that changes what the account trades.',
+    fields: [
+      { path: 'incubator.mirror.enabled', label: 'Mirror: the account takes every shadow pair\'s signals under its own gates', kind: 'bool' },
+      { path: 'incubator.tfs', label: 'Screen timeframes', kind: 'tfs' },
+      { path: 'incubator.maxShadow', label: 'Shadow book cap (pairs)', kind: 'number', step: '10', validate: num(1, 2000) },
+      { path: 'incubator.promote.maxFleet', label: 'Fleet cap (cells)', kind: 'number', step: '1', validate: num(1, 1000) },
+      { path: 'incubator.promote.maxPerWeek', label: 'Promotions per week', kind: 'number', step: '1', validate: num(0, 100) },
+      { path: 'incubator.promote.maxPerMarket', label: 'Live cells per market', kind: 'number', step: '1', validate: num(1, 20) },
+      { path: 'incubator.promote.maxPerScanner', label: 'Live cells per scanner', kind: 'number', step: '1', validate: num(1, 50) },
+      { path: 'incubator.gate.minTrades', label: 'Gate: shadow trades', kind: 'number', step: '1', validate: num(1, 500) },
+      { path: 'incubator.gate.minDays', label: 'Gate: days', kind: 'number', step: '1', validate: num(0, 365) },
+      { path: 'incubator.gate.minPfR', label: 'Gate: profit factor in R', kind: 'number', step: '0.05', validate: num(0.5, 10) },
+      { path: 'incubator.gate.minAvgR', label: 'Gate: R per trade', kind: 'number', step: '0.05', validate: num(-1, 5) },
+      { path: 'incubator.gate.minWeeks', label: 'Gate: positive weeks judged from (weeks)', kind: 'number', step: '1', validate: num(0, 12) },
+      { path: 'incubator.gate.staleDays', label: 'Stale shadow pair after (days, 15m)', kind: 'number', step: '1', validate: num(1, 365) },
+      { path: 'incubator.demote.silentDays', label: 'Silent live cell after (days)', kind: 'number', step: '1', validate: num(0, 365) },
+      { path: 'incubator.demote.marketOutDays', label: 'Market out for (days) proposes demotion', kind: 'number', step: '1', validate: num(1, 60) },
+      { path: 'incubator.demote.costStarvedRefusals', label: 'Cost-rule refusals that propose demotion', kind: 'number', step: '1', validate: num(0, 1000) },
+    ],
+  },
+  {
+    key: 'model', title: 'Model', risk: 'low', intro: 'Advisory. The Learn page\'s yardstick says whether a gate would have paid; today it would not.',
+    fields: [
+      { path: 'ml.minProb', label: 'Refuse entries under P(win)', kind: 'number', step: '0.05', hint: '0 = no gate', validate: num(0, 0.95) },
+      { path: 'ml.useAsScore', label: 'Use P(win) as the score for sizing', kind: 'bool' },
+    ],
+  },
+  {
+    key: 'data', title: 'Market data', risk: 'low', intro: 'What the live engine subscribes to and how far back it warms up. Changing symbols or timeframes re-subscribes the feed.',
+    fields: [
+      { path: 'universe.mode', label: 'Symbol universe', kind: 'select', options: [['list', 'Fixed list'], ['top', 'Top N Delta perpetuals by 24 h volume'], ['all', 'All live Delta perpetuals']] },
+      { path: 'universe.top', label: 'Top N', kind: 'number', step: '1', validate: num(1, 300) },
+      { path: 'timeframes', label: 'Timeframes', kind: 'tfs' },
+      { path: 'historyBars', label: 'History bars (warm-up per symbol and timeframe)', kind: 'number', step: '100', validate: num(100, 20000) },
+    ],
+  },
+  {
+    key: 'autotune', title: 'Auto-tune', risk: 'low', intro: 'Off on the account since the incubator owns the fleet (decision 112).',
+    fields: [
+      { path: 'autoTune.enabled', label: 'Auto-tune on', kind: 'bool' },
+      { path: 'autoTune.minTrades', label: 'Min trades per symbol', kind: 'number', step: '1', validate: num(1, 1000) },
+      { path: 'autoTune.minProfitFactor', label: 'Min profit factor', kind: 'number', step: '0.1', validate: num(0, 10) },
+      { path: 'autoTune.intervalHours', label: 'Re-tune every (hours)', kind: 'number', step: '1', validate: num(1, 168) },
+    ],
+  },
+]
 
-function NumField({
-  label,
-  value,
-  error,
-  step = 'any',
-  hint,
-  onChange,
-}: {
-  label: string
-  value: number
-  error?: string
-  step?: string
-  hint?: string
-  onChange: (v: number) => void
-}) {
-  return (
-    <label className={`field ${error ? 'field-error' : ''}`}>
-      <span className="field-label">
-        {label}
-        {hint && <span className="muted"> · {hint}</span>}
-      </span>
-      <input className="input mono" type="number" step={step} value={Number.isNaN(value) ? '' : String(value)} onChange={(e) => onChange(num(e.target.value))} />
-      {error && <span className="field-err">{error}</span>}
-    </label>
-  )
+const getPath = (o: unknown, path: string): unknown => path.split('.').reduce<unknown>((a, k) => (a && typeof a === 'object' ? (a as Record<string, unknown>)[k] : undefined), o)
+function setPath(o: Record<string, unknown>, path: string, v: unknown): Record<string, unknown> {
+  const [head, ...rest] = path.split('.')
+  const child = o[head]
+  return { ...o, [head]: rest.length ? setPath(child && typeof child === 'object' ? (child as Record<string, unknown>) : {}, rest.join('.'), v) : v }
 }
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+const show = (v: unknown) => (v === undefined || v === null ? 'unset' : Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'on' : 'off') : typeof v === 'number' ? (Math.abs(v) >= 10_000 ? v.toLocaleString() : String(v)) : String(v))
 
 export function Settings() {
   const config = useConfig()
+  const defaults = useConfigDefaults()
   const markets = useMarkets()
   const update = useUpdateConfig()
   const toast = useToast()
-  /** Local edits; `null` means "mirror the server config". */
-  const [draft, setDraft] = useState<Form | null>(null)
+  const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
+  const [confirm, setConfirm] = useState(false)
 
-  const serverForm = useMemo(() => (config.data ? toForm(config.data) : null), [config.data])
-  const form = draft ?? serverForm
-  const errors = useMemo(() => (form ? validate(form) : {}), [form])
-  const dirty = !!draft && !!serverForm && JSON.stringify(draft) !== JSON.stringify(serverForm)
-  const symbolOptions = useMemo(() => {
-    const set = new Set<string>(config.data?.symbols ?? [])
-    for (const m of markets.data ?? []) set.add(m.symbol)
-    return Array.from(set)
-  }, [config.data, markets.data])
+  const server = config.data as unknown as Record<string, unknown> | undefined
+  const form = draft ?? server
+  const changes = useMemo(() => {
+    if (!form || !server) return [] as Array<{ path: string; from: unknown; to: unknown; section: Section; field: FieldDef }>
+    const out: Array<{ path: string; from: unknown; to: unknown; section: Section; field: FieldDef }> = []
+    for (const sec of SECTIONS) for (const f of sec.fields) { const from = getPath(server, f.path), to = getPath(form, f.path); if (!same(from, to)) out.push({ path: f.path, from, to, section: sec, field: f }) }
+    return out
+  }, [form, server])
+  const errors = useMemo(() => {
+    const e: Record<string, string> = {}
+    if (!form) return e
+    for (const sec of SECTIONS) for (const f of sec.fields) { const v = getPath(form, f.path); if (f.kind === 'number' && f.validate && v !== undefined && v !== null) { const p = f.validate(v); if (p) e[f.path] = p } }
+    if (Array.isArray(getPath(form, 'timeframes')) && !(getPath(form, 'timeframes') as unknown[]).length) e.timeframes = 'Pick at least one timeframe'
+    if ((getPath(form, 'universe.mode') ?? 'list') === 'list' && !((getPath(form, 'symbols') as string[] | undefined)?.length)) e.symbols = 'Pick at least one symbol'
+    return e
+  }, [form])
+  const symbolOptions = useMemo(() => { const set = new Set<string>(config.data?.symbols ?? []); for (const m of markets.data ?? []) set.add(m.symbol); return Array.from(set) }, [config.data, markets.data])
+  const dirty = changes.length > 0 || (!!draft && !!server && !same(getPath(draft, 'symbols'), getPath(server, 'symbols')))
+  const highRisk = changes.filter((c) => c.section.risk === 'high' || c.path === 'incubator.mirror.enabled')
 
-  if (config.isLoading && !config.data)
-    return (
-      <div className="page">
-        <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Configure market data and paper risk settings." />
-        <div className="grid-2">
-          <Panel title="Market data">
-            <Loading rows={6} />
-          </Panel>
-          <Panel title="Paper account · simulated fills">
-            <Loading rows={8} />
-          </Panel>
-        </div>
-      </div>
-    )
+  if (config.isLoading && !config.data) return <div className="page"><PageTitle pre="Every number" accent="the system" post="runs on." /><Loading rows={8} /></div>
   if (config.isError && !config.data) return <ErrorState error={config.error} onRetry={() => config.refetch()} />
-  if (!form || !config.data) return <Loading rows={6} />
+  if (!form || !server) return <Loading rows={6} />
 
-  const edit = (fn: (f: Form) => Form) => setDraft(fn(draft ?? form))
-  const setPaper = <K extends keyof PaperConfig>(k: K, v: PaperConfig[K]) => edit((f) => ({ ...f, paper: { ...f.paper, [k]: v } }))
-  const setTriple = (k: 'tpSplit' | 'fallbackRR', i: number, v: number) =>
-    edit((f) => {
-      const arr = [...f.paper[k]] as [number, number, number]
-      arr[i] = v
-      return { ...f, paper: { ...f.paper, [k]: arr } }
+  const edit = (path: string, v: unknown) => setDraft(setPath(draft ?? server, path, v))
+  const measuredFor = (path: string) => { const m = MEASURED[path]; if (m) return { value: m.value, decision: m.decision, note: m.note }; const d = getPath(defaults.data, path); return d === undefined ? null : { value: d, decision: null as number | null, note: 'the code\'s default' } }
+
+  const buildPatch = (): ConfigPatch => {
+    let patch: Record<string, unknown> = {}
+    for (const c of changes) patch = setPath(patch, c.path, c.to)
+    if (!same(getPath(draft, 'symbols'), getPath(server, 'symbols'))) patch.symbols = getPath(draft, 'symbols')
+    return patch as ConfigPatch
+  }
+  const doSave = () => {
+    update.mutate(buildPatch(), {
+      onSuccess: () => { setDraft(null); setConfirm(false); toast.success('Settings saved', `${changes.length} change${changes.length === 1 ? '' : 's'} applied`) },
+      onError: (e) => { setConfirm(false); toast.error('Save failed', e.message) },
     })
-  const numField = (k: keyof PaperConfig, label: string, step?: string, hint?: string) => (
-    <NumField label={label} value={form.paper[k] as number} error={errors[k]} step={step} hint={hint} onChange={(v) => setPaper(k, v as never)} />
-  )
-
+  }
   const save = () => {
-    if (Object.keys(errors).length) return toast.error('Fix validation errors first')
-    update.mutate(
-      { symbols: form.symbols, universe: form.universe, ml: form.ml, autoTune: form.autoTune, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
-      {
-        onSuccess: () => {
-          setDraft(null)
-          toast.success('Settings saved', 'Feed re-subscribed and scanners re-warmed if needed.')
-        },
-        onError: (e) => toast.error('Save failed', e.message),
-      },
+    if (Object.keys(errors).length) return toast.error('Fix the fields marked first')
+    if (highRisk.length) setConfirm(true); else doSave()
+  }
+
+  const field = (f: FieldDef) => {
+    const v = getPath(form, f.path)
+    const m = measuredFor(f.path)
+    const changed = !same(getPath(server, f.path), v)
+    const offMeasured = m !== null && !same(m.value, v)
+    const err = errors[f.path]
+    const diff = (
+      <span className="field-diff small">
+        {changed && <span className="warn">was {show(getPath(server, f.path))} · </span>}
+        {m ? (offMeasured ? <span className={m.decision ? 'warn' : 'muted'} title={m.note}>measured {show(m.value)}{m.decision ? ` (decision ${m.decision})` : ''}</span> : <span className="muted" title={m.note}>as measured{m.decision ? ` · decision ${m.decision}` : ''}</span>) : null}
+      </span>
+    )
+    let control: ReactNode
+    if (f.kind === 'bool') control = <input type="checkbox" checked={Boolean(v)} onChange={(e) => edit(f.path, e.target.checked)} />
+    else if (f.kind === 'select') control = <select className="input" value={String(v ?? f.options?.[0]?.[0] ?? '')} onChange={(e) => edit(f.path, e.target.value)}>{f.options?.map(([val, label]) => <option key={val} value={val}>{label}</option>)}</select>
+    else if (f.kind === 'tfs') control = <ChipSelect options={[...DELTA_TIMEFRAMES]} value={(v as string[] | undefined) ?? []} onChange={(x) => edit(f.path, x)} emptyLabel="none" />
+    else control = <input className="input mono" type="number" step={f.step ?? 'any'} value={typeof v === 'number' && Number.isFinite(v) ? String(v) : ''} onChange={(e) => edit(f.path, e.target.value === '' ? undefined : Number(e.target.value))} />
+    if (f.kind === 'bool') return (
+      <label key={f.path} className={`check settings-row ${changed ? 'settings-changed' : ''}`}>
+        {control} <span>{f.label}{f.hint && <span className="muted"> · {f.hint}</span>}</span> {diff}
+      </label>
+    )
+    return (
+      <label key={f.path} className={`field settings-row ${err ? 'field-error' : ''} ${changed ? 'settings-changed' : ''}`}>
+        <span className="field-label">{f.label}{f.hint && <span className="muted"> · {f.hint}</span>}</span>
+        {control}
+        {err ? <span className="field-err">{err}</span> : diff}
+      </label>
     )
   }
 
   return (
     <div className="page">
       <div className="page-head">
-        <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Configure market data and paper risk settings. Changing symbols or timeframes re-subscribes the feed and re-warms scanners." />
+        <PageTitle pre="Every number" accent="the system" post="runs on." sub="Grouped by what a change can cost. Each value is shown against what the decisions log measured; a change in a red section is read back to you before it is saved." />
         <div className="page-actions">
-          <Pill tone="muted">execution: {config.data.execution?.mode ?? 'paper'}</Pill>
-          {dirty && <Pill tone="warn">unsaved changes</Pill>}
-          <button className="btn" onClick={() => setDraft(null)} disabled={!dirty || update.isPending}>
-            Revert
-          </button>
-          <button className="btn btn-cta" onClick={save} disabled={!dirty || update.isPending || Object.keys(errors).length > 0}>
-            {update.isPending ? 'Saving…' : 'Save settings'}
-          </button>
+          <Pill tone="muted">execution: {config.data?.execution?.mode ?? 'paper'}</Pill>
+          {dirty && <Pill tone="warn">{changes.length} unsaved change{changes.length === 1 ? '' : 's'}</Pill>}
+          <button className="btn" onClick={() => setDraft(null)} disabled={!dirty || update.isPending}>Revert</button>
+          <button className="btn btn-cta" onClick={save} disabled={!dirty || update.isPending || Object.keys(errors).length > 0}>{update.isPending ? 'Saving…' : highRisk.length ? 'Review and save' : 'Save settings'}</button>
         </div>
       </div>
 
-      <div className="grid-2">
-        <Panel title="Market data">
-          <div className="form">
-            <label className="field">
-              <span className="field-label">Symbol universe</span>
-              <select className="input" value={form.universe?.mode ?? 'list'} onChange={(e) => edit((f) => ({ ...f, universe: { mode: e.target.value as 'list' | 'top' | 'all', top: f.universe?.top ?? 20, exclude: f.universe?.exclude ?? [] } }))}>
-                <option value="list">Fixed list (below)</option>
-                <option value="top">Top N Delta perpetuals by 24h volume</option>
-                <option value="all">All live Delta perpetuals (heavy)</option>
-              </select>
-              {config.data.resolvedSymbols && (
-                <span className="muted small">currently scanning {config.data.resolvedSymbols.length} symbols: {config.data.resolvedSymbols.slice(0, 12).join(', ')}{config.data.resolvedSymbols.length > 12 ? '…' : ''}</span>
+      <div className="settings-grid">
+        {SECTIONS.map((sec) => (
+          <Panel key={sec.key} title={<span>{sec.title} <Pill tone={RISK_TONE[sec.risk]}>{RISK_LABEL[sec.risk]}</Pill></span>} right={changes.some((c) => c.section.key === sec.key) ? <Pill tone="warn">edited</Pill> : undefined}>
+            <p className="muted small" style={{ marginTop: 0 }}>{sec.intro}</p>
+            <div className="form form-2">
+              {sec.fields.filter((f) => !(f.path === 'universe.top' && (getPath(form, 'universe.mode') ?? 'list') !== 'top')).map(field)}
+              {sec.key === 'data' && (
+                <div className={`field ${errors.symbols ? 'field-error' : ''}`} style={{ gridColumn: '1 / -1' }}>
+                  <span className="field-label">Symbols{(getPath(form, 'universe.mode') ?? 'list') !== 'list' && <span className="muted"> · used when the universe is a fixed list</span>}</span>
+                  <SymbolPicker options={symbolOptions} value={(getPath(form, 'symbols') as string[] | undefined) ?? []} onChange={(v) => edit('symbols', v)} />
+                  {errors.symbols && <span className="field-err">{errors.symbols}</span>}
+                  {config.data?.resolvedSymbols && <span className="muted small">scanning {config.data.resolvedSymbols.length} symbols now</span>}
+                </div>
               )}
-            </label>
-            {(form.universe?.mode ?? 'list') === 'top' && (
-              <label className="field">
-                <span className="field-label">Top N</span>
-                <input className="input mono" type="number" min={1} max={300} step={1} value={form.universe?.top ?? 20} onChange={(e) => edit((f) => ({ ...f, universe: { mode: 'top', top: Number(e.target.value), exclude: f.universe?.exclude ?? [] } }))} />
-              </label>
-            )}
-            <div className={`field ${errors.symbols ? 'field-error' : ''}`}>
-              <span className="field-label">{(form.universe?.mode ?? 'list') === 'list' ? 'Symbols' : 'Symbols (used when universe = fixed list)'}</span>
-              <SymbolPicker options={symbolOptions} value={form.symbols} onChange={(v) => edit((f) => ({ ...f, symbols: v }))} />
-              {errors.symbols && <span className="field-err">{errors.symbols}</span>}
-              {markets.isError && <span className="muted small">markets endpoint unavailable — showing configured symbols only</span>}
             </div>
-            <div className={`field ${errors.timeframes ? 'field-error' : ''}`}>
-              <span className="field-label">Timeframes</span>
-              <ChipSelect options={[...DELTA_TIMEFRAMES]} value={form.timeframes} onChange={(v) => edit((f) => ({ ...f, timeframes: v }))} emptyLabel="none" />
-              {errors.timeframes && <span className="field-err">{errors.timeframes}</span>}
-            </div>
-            <NumField label="History bars" hint="warm-up depth per symbol/tf" step="1" value={form.historyBars} error={errors.historyBars} onChange={(v) => edit((f) => ({ ...f, historyBars: v }))} />
-            <label className="field">
-              <span className="field-label">Execution mode</span>
-              <input className="input mono" value={config.data.execution?.mode ?? 'paper'} readOnly disabled />
-            </label>
-          </div>
-        </Panel>
-
-        <Panel title="Auto-tune">
-          <div className="form form-2">
-            <label className="check">
-              <input type="checkbox" checked={form.autoTune?.enabled ?? true} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { minTrades: 3, minProfitFactor: 1, intervalHours: 6 }), enabled: e.target.checked } }))} /> Keep each scanner only on symbols where its backtest is profitable (after warm-up and on a schedule)
-            </label>
-            <label className="field"><span className="field-label">Min trades per symbol</span><input className="input mono" type="number" min={1} step={1} value={form.autoTune?.minTrades ?? 3} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { enabled: true, minProfitFactor: 1, intervalHours: 6 }), minTrades: Number(e.target.value) } }))} /></label>
-            <label className="field"><span className="field-label">Min profit factor</span><input className="input mono" type="number" min={0} step={0.1} value={form.autoTune?.minProfitFactor ?? 1} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { enabled: true, minTrades: 3, intervalHours: 6 }), minProfitFactor: Number(e.target.value) } }))} /></label>
-            <label className="field"><span className="field-label">Re-backtest and re-tune every (hours)</span><input className="input mono" type="number" min={1} step={1} value={form.autoTune?.intervalHours ?? 6} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { enabled: true, minTrades: 3, minProfitFactor: 1 }), intervalHours: Number(e.target.value) } }))} /></label>
-          </div>
-        </Panel>
-
-        <Panel title="Machine learning">
-          <div className="form form-2">
-            <label className="field">
-              <span className="field-label">Minimum win probability <span className="muted">· 0 = no gate</span></span>
-              <input className="input mono" type="number" min={0} max={0.95} step={0.05} value={form.ml?.minProb ?? 0} onChange={(e) => edit((f) => ({ ...f, ml: { minProb: Number(e.target.value), useAsScore: f.ml?.useAsScore ?? false } }))} />
-              <span className="muted small">entries whose predicted P(win) is below this are skipped and logged as rejected</span>
-            </label>
-            <label className="check">
-              <input type="checkbox" checked={form.ml?.useAsScore ?? false} onChange={(e) => edit((f) => ({ ...f, ml: { minProb: f.ml?.minProb ?? 0, useAsScore: e.target.checked } }))} /> Use P(win) as the quality score for leverage when the script publishes none
-            </label>
-          </div>
-        </Panel>
-
-        <Panel title="Paper account · simulated fills">
-          <div className="form form-2">
-            {numField('initialEquity', 'Initial equity', '100')}
-            <label className="field">
-              <span className="field-label">Sizing mode</span>
-              <select className="input" value={form.paper.sizingMode ?? 'risk'} onChange={(e) => setPaper('sizingMode', e.target.value as PaperConfig['sizingMode'])}>
-                <option value="risk">Risk % of equity per trade</option>
-                <option value="quality">Quality leverage (min→max by signal score)</option>
-              </select>
-            </label>
-            {numField('riskPerTradePct', 'Risk per trade %', '0.1', 'risk mode only')}
-            {numField('minLeverage', 'Min leverage', '1', 'quality mode: unscored / score 0')}
-            {numField('maxLeverage', 'Max leverage', '1', 'risk mode: isolated leverage · quality mode: score 100 · account exposure cap')}
-            {numField('maintenanceMarginPct', 'Maintenance margin %', '0.1', 'for liquidation modelling')}
-            {numField('minRiskFeeRatio', 'Min stop ÷ round-trip fee', '0.5', 'skip entries whose stop is tighter than this × fees (0 = off)')}
-            {numField('feeRatePct', 'Fee rate %', '0.01')}
-            {numField('slippageBps', 'Slippage (bps)', '1')}
-            {numField('maxOpenPositions', 'Max open positions', '1')}
-            {numField('fallbackAtrSl', 'Fallback ATR SL', '0.1', '× ATR when script has no SL')}
-            <div className={`field ${errors.tpSplit ? 'field-error' : ''}`}>
-              <span className="field-label">
-                TP split <span className="muted">· fractions, sum 1</span>
-              </span>
-              <div className="triple">
-                {[0, 1, 2].map((i) => (
-                  <input
-                    key={i}
-                    className="input mono"
-                    type="number"
-                    step="0.05"
-                    min="0"
-                    max="1"
-                    aria-label={`TP${i + 1} split`}
-                    value={Number.isNaN(form.paper.tpSplit[i]) ? '' : form.paper.tpSplit[i]}
-                    onChange={(e) => setTriple('tpSplit', i, num(e.target.value))}
-                  />
-                ))}
-              </div>
-              {errors.tpSplit && <span className="field-err">{errors.tpSplit}</span>}
-            </div>
-            <div className={`field ${errors.fallbackRR ? 'field-error' : ''}`}>
-              <span className="field-label">
-                Fallback RR <span className="muted">· TP1/2/3 in R</span>
-              </span>
-              <div className="triple">
-                {[0, 1, 2].map((i) => (
-                  <input
-                    key={i}
-                    className="input mono"
-                    type="number"
-                    step="0.5"
-                    min="0"
-                    aria-label={`Fallback RR ${i + 1}`}
-                    value={Number.isNaN(form.paper.fallbackRR[i]) ? '' : form.paper.fallbackRR[i]}
-                    onChange={(e) => setTriple('fallbackRR', i, num(e.target.value))}
-                  />
-                ))}
-              </div>
-              {errors.fallbackRR && <span className="field-err">{errors.fallbackRR}</span>}
-            </div>
-            <label className="check">
-              <input type="checkbox" checked={form.paper.breakEvenAfterTp1} onChange={(e) => setPaper('breakEvenAfterTp1', e.target.checked)} /> Move SL to break-even after TP1
-            </label>
-            <label className="check">
-              <input type="checkbox" checked={form.paper.allowReversal} onChange={(e) => setPaper('allowReversal', e.target.checked)} /> Allow reversal (opposite signal closes & flips)
-            </label>
-            <label className="check">
-              <input type="checkbox" checked={form.paper.liquidation ?? true} onChange={(e) => setPaper('liquidation', e.target.checked)} /> Model approximate isolated liquidation (fixed maintenance rate; candle prices)
-            </label>
-          </div>
-        </Panel>
+          </Panel>
+        ))}
       </div>
 
-      <Panel title="Per-scanner overrides" right={<span className="muted small">edited on the Scanners page</span>}>
-        <div className="muted small">
-          {Object.keys(config.data.scanners ?? {}).length} scanner override(s) stored. Symbols/timeframes set to <code>null</code> inherit the global lists above.
-        </div>
+      <Panel title="Per-scanner overrides" right={<span className="muted small">edited on each scanner's page and on the Scanners page</span>}>
+        <div className="muted small">{Object.keys(config.data?.scanners ?? {}).length} scanner override(s) stored: reading, exit mode, pairs, inputs. They layer over the sections above.</div>
       </Panel>
+
+      <ConfirmDialog
+        open={confirm}
+        title={`Save ${changes.length} change${changes.length === 1 ? '' : 's'}, ${highRisk.length} of them in a section that can lose money?`}
+        body={
+          <div className="small">
+            <table className="table small">
+              <thead><tr><th>setting</th><th>was</th><th>becomes</th><th>measured</th></tr></thead>
+              <tbody>
+                {changes.map((c) => { const m = measuredFor(c.path); return (
+                  <tr key={c.path} className={c.section.risk === 'high' ? 'loss' : ''}>
+                    <td>{c.field.label} <span className="muted">· {c.section.title}</span></td>
+                    <td className="mono">{show(c.from)}</td><td className="mono">{show(c.to)}</td>
+                    <td className="muted">{m ? <>{show(m.value)}{m.decision ? ` (decision ${m.decision})` : ''}{m.decision && !same(m.value, c.to) ? ' — this overrides a measured value' : ''}</> : '—'}</td>
+                  </tr>) })}
+              </tbody>
+            </table>
+            <p className="muted">Nothing here reaches an exchange: the account is paper. The decisions log is the place to record why, if the change stays.</p>
+          </div>
+        }
+        confirmLabel="Save these changes"
+        danger
+        busy={update.isPending}
+        onConfirm={doSave}
+        onCancel={() => setConfirm(false)}
+      />
     </div>
   )
 }

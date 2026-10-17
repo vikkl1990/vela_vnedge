@@ -3528,3 +3528,25 @@ The separate cohorts panel is gone. A proposal's row now carries the cohort evid
 proposed on, its 14-day funnel and the market verdict beside the Promote and Reject buttons;
 the daily hunt and the history close the page. Pure layout: every number was already in the
 view, and the decision routes are unchanged.
+
+## 119. Settings grouped by what they can cost, every value against what was measured (17 October 2026)
+
+**Why.** The Settings page was one flat form of market-data and paper-engine fields. The rules
+the decisions log had measured — the cost ratio, the quote requirement, the market gate's floor,
+the efficiency floor, the incubator's caps and clocks, the mirror — were not on it at all and had
+been changed through the API; a changed value showed no sign of what it had been or why; and
+the kill switch sat beside the history-bars field.
+
+**The page.** Nine sections, each badged by what a change can cost: account and sizing, loss
+limits and guards, costs and fills, gates (red: can lose money); exits, incubator (amber:
+changes what trades); model, market data, auto-tune (grey: housekeeping). Every field shows its
+value against the one the decisions log measured, with the decision number (`lib/measured.ts`),
+or against the code's default (`GET /api/config/defaults`) when no decision touched it. An
+edited field is marked and shows what it was. Saving sends only the paths that changed, as a
+deep patch the server validates. A change in a red section, or to the mirror, is read back in a
+dialog — setting, was, becomes, measured value and the decision it overrides — before it saves.
+
+**Not changed.** No threshold moved. The code's defaults stay what they were, since tests and
+fresh installs rest on them; the measured table is the operator's reference, not a second
+default. Scanner-level reading and exit settings stay on the scanner pages, which now layer over
+these sections and will get the same treatment when they move.

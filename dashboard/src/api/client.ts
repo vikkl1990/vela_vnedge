@@ -92,6 +92,7 @@ export const api = {
   // health / config
   health: () => get<Health>('/health'),
   config: () => get<Config>('/config'),
+  configDefaults: () => get<Config>('/config/defaults'),
   updateConfig: (patch: ConfigPatch) => put<Config>('/config', patch),
 
   // markets & candles

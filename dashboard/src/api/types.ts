@@ -43,6 +43,38 @@ export interface PaperConfig {
   fallbackAtrSl: number
   fallbackRR: [number, number, number]
   maxOpenPositions: number
+  requireQuote?: boolean
+  makerFeeRatePct?: number
+  feeTaxPct?: number
+  trailAfterR?: number
+  trailGiveBackPct?: number
+  floorAtR?: number
+  floorKeepR?: number
+  scriptDisasterStopAtr?: number
+}
+/** The risk layer, as far as the Settings page edits it (decision 119). */
+export interface RiskConfig {
+  enabled: boolean
+  maxDailyLossPct: number
+  maxWeeklyLossPct: number
+  maxPositionsTotal: number
+  maxPositionsPerSymbol: number
+  perScannerMaxPositions: number
+  reentryCooldownMinutes?: number
+  burstWindowSec?: number
+  regime?: { enabled: boolean; minAtrPct: number; noWeekend: boolean; minEr?: number; exempt?: string[] }
+  marketGate?: { enabled: boolean; minTurnoverUsd: number; maxBookCostPct?: number; probeNotionalUsd?: number; [k: string]: unknown }
+  [k: string]: unknown
+}
+export interface IncubatorConfig {
+  enabled: boolean
+  tfs?: string[]
+  maxShadow: number
+  promote: { maxPerWeek: number; maxFleet: number; maxPerMarket?: number; maxPerScanner?: number; [k: string]: unknown }
+  gate: { minTrades: number; minDays: number; minPfR: number; minAvgR: number; minPositiveWeeksPct: number; minWeeks?: number; staleDays?: number; [k: string]: unknown }
+  demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
+  mirror?: { enabled: boolean }
+  [k: string]: unknown
 }
 
 export interface ScannerConfig {
@@ -61,12 +93,16 @@ export interface Config {
   timeframes: string[]
   historyBars: number
   paper: PaperConfig
+  risk?: RiskConfig
+  incubator?: IncubatorConfig
   execution: { mode: 'paper' | string }
   scanners: Record<string, ScannerConfig>
 }
 
-export type ConfigPatch = Partial<Omit<Config, 'paper' | 'scanners'>> & {
+export type ConfigPatch = Partial<Omit<Config, 'paper' | 'scanners' | 'risk' | 'incubator'>> & {
   paper?: Partial<PaperConfig>
+  risk?: Partial<RiskConfig> & { regime?: Partial<NonNullable<RiskConfig['regime']>>; marketGate?: Partial<NonNullable<RiskConfig['marketGate']>> }
+  incubator?: Partial<IncubatorConfig> & { promote?: Partial<IncubatorConfig['promote']>; gate?: Partial<IncubatorConfig['gate']>; demote?: Partial<IncubatorConfig['demote']> }
   scanners?: Record<string, Partial<ScannerConfig>>
 }
 

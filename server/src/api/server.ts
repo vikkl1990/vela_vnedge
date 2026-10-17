@@ -4,7 +4,7 @@ import zlib from 'node:zlib';
 import path from 'node:path';
 import { URL } from 'node:url';
 import type { App } from '../app.ts';
-import { DASHBOARD_DIST, DATA_DIR, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
+import { DEFAULT_CONFIG, DASHBOARD_DIST, DATA_DIR, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
 import { logger } from '../log.ts';
 import { AuthStore, can, type User } from '../auth/store.ts';
 import { authRoutes, cookieHeader, createAuth, isSecureRequest, parseCookies, permissionFor, SESSION_COOKIE } from '../auth/routes.ts';
@@ -194,6 +194,8 @@ export class ApiServer {
     const a = this.app;
     this.add('GET', '/api/health', () => a.health());
     this.add('GET', '/api/config', () => ({ ...a.config.get(), resolvedSymbols: a.resolvedSymbols }));
+    // decision 119: the measured defaults, so the Settings page can show every value as a diff against them
+    this.add('GET', '/api/config/defaults', () => DEFAULT_CONFIG);
     this.add('PUT', '/api/config', async (_r, _s, _p, _u, body) => {
       let next;
       try { a.assertExecutionUnchanged(body?.execution); } catch (e: any) { throw new HttpError(409, String(e?.message ?? e)); }
