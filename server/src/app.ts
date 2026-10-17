@@ -343,6 +343,9 @@ export class App {
     } else if (cfg.incubator.enabled && run && now - run.at > 2 * 86400_000) {
       items.push({ key: 'incubate-stale', text: `the daily screen last finished ${Math.round((now - run.at) / 86400_000)} days ago`, href: '/incubator' });
     }
+    // decision 110: on 23 September the scans ran ten minutes late for twelve hours and 86 entries were refused as stale without a word
+    const stale = this.db.get<{ n: number }>("SELECT COUNT(*) n FROM signals WHERE kind='entry' AND action LIKE 'rejected:stale%' AND at > ?", now - 2 * 3600_000)?.n ?? 0;
+    if (stale >= 3) items.push({ key: 'scans-late', text: `scans are running late: ${stale} entries refused as stale in the last 2 h (the bar had closed more than the allowed age before the scan ran)`, href: '/signals' });
     return items;
   }
 

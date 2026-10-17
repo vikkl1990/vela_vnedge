@@ -48,7 +48,7 @@ const rest = new DeltaRest();
 // the cursor alone.
 const TFS = inc.tfs?.length ? inc.tfs : [inc.tf];
 const SLICES = inc.screen.slices;
-const handRun = Boolean(process.env.SLICE || process.env.TF || process.env.IDS);
+const handRun = Boolean(process.env.SLICE || process.env.TF || process.env.IDS || process.env.MARKETS);
 /** `retry`: the quarantined scripts released for one more screen at the head of this slice (decision 108), kept in the cursor so a resumed slice sees the same list. */
 type Cursor = { tfIdx: number; slice: number; scriptIdx: number; retry?: string[] };
 let cursor: Cursor = handRun
@@ -99,9 +99,12 @@ while (sliceArg !== 'none') {
   // base), so a cell whose stop the live cost rule would refuse is not admitted on a backtest that never paid the book
   const bookCost = new Map((today?.markets ?? []).filter(m => typeof m.bookCostPct === 'number' && m.bookCostPct! > 0).map(m => [m.symbol, m.bookCostPct as number]));
   const allowed = today?.enabled ? today.markets.filter(m => m.allowed && /USD$/.test(m.symbol)).map(m => m.symbol) : [];
+  // MARKETS=BTCUSD,ETHUSD: a hand run on just these markets (a 4h screen of the whole universe pulls a million 1m bars per market)
+  const onlyMarkets = process.env.MARKETS ? new Set(process.env.MARKETS.split(',').map(x => x.trim()).filter(Boolean)) : null;
   const universe = (allowed.length
     ? allowed
     : tickers.filter((t: any) => t.contract_type === 'perpetual_futures' && /USD$/.test(t.symbol) && Number(t.turnover_usd ?? 0) >= inc.minTurnoverUsd).map((t: any) => String(t.symbol)))
+    .filter(sym => !onlyMarkets || onlyMarkets.has(sym))
     .sort((a, b) => (turnover.get(b) ?? 0) - (turnover.get(a) ?? 0))
     .slice(0, inc.universeTop);
   summary.symbols = universe.length;
