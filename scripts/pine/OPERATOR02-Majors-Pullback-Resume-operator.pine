@@ -1,0 +1,104 @@
+//@version=5
+// Operator scanner, 17 October 2026: BTC and ETH, each with its own preset (decision 110).
+//   The fleet is poor on the two majors: 1h cells on BTC and ETH have made a handful of trades at
+//   +0.1R. Majors trend on the higher frame and chop inside it; the entry here is the resume after a
+//   pullback to value inside a trend both frames agree on, and the stop sits beyond the pullback's
+//   own low — not a fixed ATR multiple from the close.
+//   Trend   = EMA20 > EMA50 > EMA200 on the chart frame, and price above a rising 4h EMA50 (mirror for shorts)
+//   Regime  = Kaufman efficiency ratio over 20 bars at or above the preset's floor (the whipsaw gate, decision 66)
+//   Setup   = the low touched the EMA20 within the last N bars
+//   Trigger = a close above the prior bar's high, back above the EMA20, with volume at or above the preset's share of its 20-bar average
+//   Stop    = the pullback's lowest low minus a quarter ATR, kept between the preset's floor and 2.5 ATR; targets 1R, 2R, 3R
+//   One entry per pullback, then a cooldown. Presets pick themselves from the symbol: BTC, ETH, or "other".
+indicator("Majors Pullback-Resume (operator)", overlay=true, max_labels_count=200)
+
+isBtc = str.contains(syminfo.ticker, "BTC")
+isEth = str.contains(syminfo.ticker, "ETH")
+
+// ---- presets: BTC, ETH, other ----
+erMinBtc    = input.float(0.30, "BTC: efficiency floor", step=0.05)
+erMinEth    = input.float(0.25, "ETH: efficiency floor", step=0.05)
+erMinOth    = input.float(0.25, "Other: efficiency floor", step=0.05)
+touchBtc    = input.int(6,  "BTC: pullback touch within (bars)")
+touchEth    = input.int(8,  "ETH: pullback touch within (bars)")
+touchOth    = input.int(8,  "Other: pullback touch within (bars)")
+volBtc      = input.float(0.8, "BTC: volume vs 20-bar average", step=0.1)
+volEth      = input.float(1.0, "ETH: volume vs 20-bar average", step=0.1)
+volOth      = input.float(1.0, "Other: volume vs 20-bar average", step=0.1)
+minStopBtc  = input.float(1.0,  "BTC: stop at least (ATR)", step=0.25)
+minStopEth  = input.float(1.25, "ETH: stop at least (ATR)", step=0.25)
+minStopOth  = input.float(1.25, "Other: stop at least (ATR)", step=0.25)
+maxStopAtr  = input.float(2.5, "Stop at most (ATR)", step=0.25)
+stopBuf     = input.float(0.25, "Buffer beyond the pullback low (ATR)", step=0.05)
+cooldown    = input.int(12, "Cooldown after an entry (bars)")
+htfTf       = input.string("240", "Higher frame for the bias (minutes)")
+
+erMin   = isBtc ? erMinBtc : isEth ? erMinEth : erMinOth
+touchN  = isBtc ? touchBtc : isEth ? touchEth : touchOth
+volMin  = isBtc ? volBtc : isEth ? volEth : volOth
+minStop = isBtc ? minStopBtc : isEth ? minStopEth : minStopOth
+
+// ---- the frames ----
+emaF = ta.ema(close, 20)
+emaM = ta.ema(close, 50)
+emaS = ta.ema(close, 200)
+atr  = ta.atr(14)
+htfEma     = request.security(syminfo.tickerid, htfTf, ta.ema(close, 50))
+// the slope over three higher-frame bars, read in chart bars (an offset inside request.security is not honoured by the runtime)
+htfBars    = math.max(1, math.round(3 * 240 * 60 / timeframe.in_seconds()))
+htfEmaPrev = htfEma[htfBars]
+biasUp   = close > htfEma and htfEma > htfEmaPrev
+biasDown = close < htfEma and htfEma < htfEmaPrev
+upTrend   = emaF > emaM and emaM > emaS and biasUp
+downTrend = emaF < emaM and emaM < emaS and biasDown
+
+// ---- the regime ----
+erPath = math.sum(math.abs(close - close[1]), 20)
+er     = erPath > 0 ? math.abs(close - close[20]) / erPath : 0.0
+moving = er >= erMin
+
+// ---- the setup and the trigger ----
+volOk    = volume >= volMin * ta.sma(volume, 20)
+touchedL = low <= emaF
+touchedS = high >= emaF
+sinceL   = ta.barssince(touchedL)
+sinceS   = ta.barssince(touchedS)
+setupL   = not na(sinceL) and sinceL <= touchN
+setupS   = not na(sinceS) and sinceS <= touchN
+resumeL  = close > high[1] and close > emaF and close > open
+resumeS  = close < low[1]  and close < emaF and close < open
+
+var int lastEntry = -100000
+cool = bar_index - lastEntry > cooldown
+
+longSig  = upTrend   and moving and setupL and resumeL and volOk and cool
+shortSig = downTrend and moving and setupS and resumeS and volOk and cool
+
+// ---- the stop: beyond the pullback's own extreme ----
+pullLow  = ta.lowest(low,  math.max(1, sinceL + 1))
+pullHigh = ta.highest(high, math.max(1, sinceS + 1))
+rawL = close - (pullLow - stopBuf * atr)
+rawS = (pullHigh + stopBuf * atr) - close
+distL = math.min(maxStopAtr * atr, math.max(minStop * atr, rawL))
+distS = math.min(maxStopAtr * atr, math.max(minStop * atr, rawS))
+slL = close - distL
+slS = close + distS
+
+if longSig
+    lastEntry := bar_index
+if shortSig
+    lastEntry := bar_index
+
+f(x) => str.tostring(x, "#.########")
+if longSig
+    alert('{"schema":"sats.events.v2","events":[{"event":"buy","side":"long","fill_price":' + f(close) + ',"sl":' + f(slL) + ',"tp1":' + f(close + distL) + ',"tp2":' + f(close + 2 * distL) + ',"tp3":' + f(close + 3 * distL) + '}]}', alert.freq_once_per_bar_close)
+if shortSig
+    alert('{"schema":"sats.events.v2","events":[{"event":"sell","side":"short","fill_price":' + f(close) + ',"sl":' + f(slS) + ',"tp1":' + f(close - distS) + ',"tp2":' + f(close - 2 * distS) + ',"tp3":' + f(close - 3 * distS) + '}]}', alert.freq_once_per_bar_close)
+
+plotshape(longSig,  "Long resume",  shape.triangleup,   location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(shortSig, "Short resume", shape.triangledown, location.abovebar, color=color.new(color.red, 0),  size=size.small)
+plot(emaF, "EMA20",  color=color.new(color.aqua, 40))
+plot(emaM, "EMA50",  color=color.new(color.orange, 40))
+plot(emaS, "EMA200", color=color.new(color.gray, 40))
+alertcondition(longSig,  "Majors long resume",  "Majors: long resume")
+alertcondition(shortSig, "Majors short resume", "Majors: short resume")

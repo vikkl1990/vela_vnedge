@@ -110,6 +110,35 @@ const flip = (evs: ScanEvent[]): ScanEvent[] => evs.map(e => (e.side ? { ...e, s
  * only if that bar closed in the trade's direction. The journal's stop exits were hit within the first bar
  * with no favourable excursion — late entries into a move that reversed — and this is the cheapest test of it.
  */
+/** ATR(14) (Wilder) at bar i from the bars before it, like the engine's `lastAtr` on the closed bars. */
+const atrAt = (bars: Bar[], i: number): number | undefined => {
+  if (i < 15) return undefined;
+  let a = 0; for (let j = i - 13; j <= i; j++) { const b = bars[j], p = bars[j - 1]; a += Math.max(b.high - b.low, Math.abs(b.high - p.close), Math.abs(b.low - p.close)); }
+  return a / 14;
+};
+/** Kaufman efficiency ratio over 20 closes ending at bar i. */
+const erAt = (bars: Bar[], i: number): number => {
+  if (i < 20) return 0;
+  let path = 0; for (let j = i - 19; j <= i; j++) path += Math.abs(bars[j].close - bars[j - 1].close);
+  return path > 0 ? Math.abs(bars[i].close - bars[i - 20].close) / path : 0;
+};
+/**
+ * The stop study (decision 110): every entry keeps its signal, only the stop moves. `stopOf` returns the stop
+ * price for the entry at bar i, or undefined to leave the signal's own; the distance is clamped to [lo, hi] ATR.
+ */
+const withStop = (evs: ScanEvent[], bars: Bar[], stopOf: (i: number, side: 'long' | 'short', atr: number) => number | undefined, lo = 1.0, hi = 2.5): ScanEvent[] => {
+  const at = new Map<number, number>(); bars.forEach((b, i) => at.set(b.time, i));
+  return evs.map(e => {
+    if (e.kind !== 'entry' || !e.side) return e;
+    const i = at.get(e.barTime); const atr = i !== undefined ? atrAt(bars, i) : undefined;
+    if (i === undefined || !atr) return e;
+    const entry = e.price && e.price > 0 ? e.price : bars[i].close;
+    const raw = stopOf(i, e.side, atr); if (raw === undefined) return e;
+    const dist = Math.min(hi * atr, Math.max(lo * atr, Math.abs(entry - raw)));
+    return { ...e, sl: e.side === 'long' ? entry - dist : entry + dist };
+  });
+};
+
 const confirm = (evs: ScanEvent[], bars: Bar[]): ScanEvent[] => {
   const at = new Map<number, number>(); bars.forEach((b, i) => at.set(b.time, i));
   const out: ScanEvent[] = [];
@@ -195,6 +224,23 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
   variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
   variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
+  // the stop study (decision 110), every variant paying the real book: where else could the stop go
+  const slAt = (mult: number) => ({ fallbackAtrSl: mult, widenStopToFee: false } as Partial<PaperConfig>);
+  const lows = (i: number, n: number) => Math.min(...b.slice(Math.max(0, i - n + 1), i + 1).map(x => x.low));
+  const highs = (i: number, n: number) => Math.max(...b.slice(Math.max(0, i - n + 1), i + 1).map(x => x.high));
+  variants['s-atr1.0'] = stat(run({ spreadPct }, slAt(1.0)), b, tfMs);
+  variants['s-atr1.25'] = stat(run({ spreadPct }, slAt(1.25)), b, tfMs);
+  variants['s-atr2.0'] = stat(run({ spreadPct }, slAt(2.0)), b, tfMs);
+  // beyond the signal bar's own extreme: a first-bar reversal cannot tag it
+  variants['s-wick'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr)) }), b, tfMs);
+  // beyond the last 10 bars' swing
+  variants['s-swing10'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => (side === 'long' ? lows(i, 10) - 0.1 * atr : highs(i, 10) + 0.1 * atr), 1.0, 3.0) }), b, tfMs);
+  // scaled by the regime: tight when the market moves efficiently, wide when it chops
+  variants['s-erscaled'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => { const er = erAt(b, i); const m = er >= 0.35 ? 1.25 : er < 0.25 ? 2.0 : 1.5; return side === 'long' ? b[i].close - m * atr : b[i].close + m * atr; }, 1.0, 2.5) }), b, tfMs);
+  // the stop moves: to the entry once the trade has +0.5R or +1R, or keeps a fifth of the gain
+  variants['s-be0.5'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0 }), b, tfMs);
+  variants['s-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0 }), b, tfMs);
+  variants['s-floor0.5k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0.2 }), b, tfMs);
   // the regime test (decision 102), every variant paying the real book
   const fund = fundingSeries.get(sym) ?? new Map<number, number>(), rat = ratioSeries.get(sym) ?? new Map<number, number>();
   const gBias = (t: number, side: 'long' | 'short') => { const bb = biasAt(t); return bb === undefined ? 'unknown' as const : bb === 0 ? 'allow' as const : (side === 'long') === (bb > 0) ? 'allow' as const : 'block' as const; };
