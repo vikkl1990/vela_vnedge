@@ -241,6 +241,13 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['s-be0.5'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0 }), b, tfMs);
   variants['s-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0 }), b, tfMs);
   variants['s-floor0.5k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0.2 }), b, tfMs);
+  // the same stops under the whipsaw gate the account runs (minEr 0.25): the live baseline is spread+er0.25
+  const er = { chopGate: { minEr: 0.25 } };
+  variants['e-atr1.25'] = stat(run({ spreadPct, ...er }, slAt(1.25)), b, tfMs);
+  variants['e-atr2.0'] = stat(run({ spreadPct, ...er }, slAt(2.0)), b, tfMs);
+  variants['e-wick'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr)) }), b, tfMs);
+  variants['e-wick2.0'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr), 2.0, 3.0) }), b, tfMs);
+  variants['e-swing10'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? lows(i, 10) - 0.1 * atr : highs(i, 10) + 0.1 * atr), 1.0, 3.0) }), b, tfMs);
   // the regime test (decision 102), every variant paying the real book
   const fund = fundingSeries.get(sym) ?? new Map<number, number>(), rat = ratioSeries.get(sym) ?? new Map<number, number>();
   const gBias = (t: number, side: 'long' | 'short') => { const bb = biasAt(t); return bb === undefined ? 'unknown' as const : bb === 0 ? 'allow' as const : (side === 'long') === (bb > 0) ? 'allow' as const : 'block' as const; };

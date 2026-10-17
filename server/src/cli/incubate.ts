@@ -228,7 +228,9 @@ while (sliceArg !== 'none') {
         }
         health.clear(s.id);
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest' });
-        const events = extractEvents(res.alerts, res.shapes, { derived });
+        // decision 110: the screen reads a script the way the shadow book and the account would (its sources, edge, labels, inversion)
+        const rd = cfg.scanners[s.id] ?? {};
+        const events = extractEvents(res.alerts, res.shapes, { derived, sources: rd.sources, edge: rd.edge, labels: rd.labels, invert: rd.invert });
         if (!events.some(e => e.kind === 'entry')) continue;
         sawEntry = true;
         const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: bookCost.get(symbol) } as const;

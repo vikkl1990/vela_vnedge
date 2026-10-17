@@ -32,6 +32,10 @@ maxStopAtr  = input.float(2.5, "Stop at most (ATR)", step=0.25)
 stopBuf     = input.float(0.25, "Buffer beyond the pullback low (ATR)", step=0.05)
 cooldown    = input.int(12, "Cooldown after an entry (bars)")
 htfTf       = input.string("240", "Higher frame for the bias (minutes)")
+// Measured 17 October on BTC, ETH and SOL over 15m, 1h and 4h: the resume bar is the chase, and the majors fade it
+// (BTC 1h and ETH 4h paid only read the other way). In fade mode the same trigger opens the opposite side, with
+// the stop beyond the trigger bar's own extreme and targets back toward value.
+fadeMode    = input.bool(true, "Fade the resume bar (majors mean-revert)")
 
 erMin   = isBtc ? erMinBtc : isEth ? erMinEth : erMinOth
 touchN  = isBtc ? touchBtc : isEth ? touchEth : touchOth
@@ -89,14 +93,24 @@ if longSig
 if shortSig
     lastEntry := bar_index
 
-f(x) => str.tostring(x, "#.########")
-if longSig
-    alert('{"schema":"sats.events.v2","events":[{"event":"buy","side":"long","fill_price":' + f(close) + ',"sl":' + f(slL) + ',"tp1":' + f(close + distL) + ',"tp2":' + f(close + 2 * distL) + ',"tp3":' + f(close + 3 * distL) + '}]}', alert.freq_once_per_bar_close)
-if shortSig
-    alert('{"schema":"sats.events.v2","events":[{"event":"sell","side":"short","fill_price":' + f(close) + ',"sl":' + f(slS) + ',"tp1":' + f(close - distS) + ',"tp2":' + f(close - 2 * distS) + ',"tp3":' + f(close - 3 * distS) + '}]}', alert.freq_once_per_bar_close)
+// fade: the trigger bar's own extreme is the invalidation
+fadeDistS = math.min(maxStopAtr * atr, math.max(minStop * atr, (high + stopBuf * atr) - close))   // short against a long resume
+fadeDistL = math.min(maxStopAtr * atr, math.max(minStop * atr, close - (low - stopBuf * atr)))    // long against a short resume
 
-plotshape(longSig,  "Long resume",  shape.triangleup,   location.belowbar, color=color.new(color.lime, 0), size=size.small)
-plotshape(shortSig, "Short resume", shape.triangledown, location.abovebar, color=color.new(color.red, 0),  size=size.small)
+f(x) => str.tostring(x, "#.########")
+if longSig and not fadeMode
+    alert('{"schema":"sats.events.v2","events":[{"event":"buy","side":"long","fill_price":' + f(close) + ',"sl":' + f(slL) + ',"tp1":' + f(close + distL) + ',"tp2":' + f(close + 2 * distL) + ',"tp3":' + f(close + 3 * distL) + '}]}', alert.freq_once_per_bar_close)
+if shortSig and not fadeMode
+    alert('{"schema":"sats.events.v2","events":[{"event":"sell","side":"short","fill_price":' + f(close) + ',"sl":' + f(slS) + ',"tp1":' + f(close - distS) + ',"tp2":' + f(close - 2 * distS) + ',"tp3":' + f(close - 3 * distS) + '}]}', alert.freq_once_per_bar_close)
+if longSig and fadeMode
+    alert('{"schema":"sats.events.v2","events":[{"event":"sell","side":"short","fill_price":' + f(close) + ',"sl":' + f(close + fadeDistS) + ',"tp1":' + f(close - fadeDistS) + ',"tp2":' + f(close - 2 * fadeDistS) + ',"tp3":' + f(close - 3 * fadeDistS) + '}]}', alert.freq_once_per_bar_close)
+if shortSig and fadeMode
+    alert('{"schema":"sats.events.v2","events":[{"event":"buy","side":"long","fill_price":' + f(close) + ',"sl":' + f(close - fadeDistL) + ',"tp1":' + f(close + fadeDistL) + ',"tp2":' + f(close + 2 * fadeDistL) + ',"tp3":' + f(close + 3 * fadeDistL) + '}]}', alert.freq_once_per_bar_close)
+
+plotshape(longSig and not fadeMode,  "Long resume",  shape.triangleup,   location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(shortSig and not fadeMode, "Short resume", shape.triangledown, location.abovebar, color=color.new(color.red, 0),  size=size.small)
+plotshape(longSig and fadeMode,  "Fade long resume (short)",  shape.triangledown, location.abovebar, color=color.new(color.red, 0),  size=size.small)
+plotshape(shortSig and fadeMode, "Fade short resume (long)", shape.triangleup,   location.belowbar, color=color.new(color.lime, 0), size=size.small)
 plot(emaF, "EMA20",  color=color.new(color.aqua, 40))
 plot(emaM, "EMA50",  color=color.new(color.orange, 40))
 plot(emaS, "EMA200", color=color.new(color.gray, 40))
