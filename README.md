@@ -290,7 +290,7 @@ launchd/pm2 files.
 server/      Node/TypeScript bot: feed, PineTS workers, scanners, paper engine, REST+SSE API
 dashboard/   Vite + React dashboard (Vela chart)
 scripts/     Pine sources (scripts/pine/*.pine), manifest.json, compat-report.json
-docs/        API.md (contract), ARCHITECTURE.md, SCANNERS.md, ROADMAP.md
+docs/        PROCESS.md (the scanner process, for the operator), API.md (contract), ARCHITECTURE.md, SCANNERS.md, ROADMAP.md
 ops/         launchd plist + install scripts, pm2 config
 data/        runtime: vnedge.db, config.json, logs/, backups/   (ignored by version control)
 ```
