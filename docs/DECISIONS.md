@@ -3098,3 +3098,28 @@ The learning model, for the record: 35,966 samples, retrained an hour ago, advis
 gate; the account book at −0.06R on 51 trades, the shadow book at +0.02R on 2,432, both
 undecided, costs 19 to 20% of risk. The "under current settings" book restarted today with the
 settings of decision 105 and will speak in a week or two.
+
+## 107. Faster: the screen walks the library continuously, and the authors sync themselves
+
+The operator asked how to go faster, and about new scripts from the four authors.
+
+**The walk.** The nightly screen used to take one fixed slice of one timeframe, chosen by the date,
+and start over each night: a slow night lost its progress, a fast night wasted its remaining budget,
+and the 21 (slice, timeframe) combinations came round in lockstep. Now a cursor over (timeframe,
+slice, script) is kept in the database; every night starts where the last one stopped, saves its
+place every ten scripts, and when a slice finishes with budget left it goes on into the next one.
+Nothing is screened twice before everything is screened once, and the budgets (time, memory, the
+hog rule) decide the pace instead of the calendar. `SLICE=`, `TF=` and `IDS=` make a hand run that
+leaves the cursor alone. First night under it: 73 markets in the universe now that the floor is
+$50k (decision 105), 313 scripts on 15m slice 1, cursor advancing.
+
+**The authors.** Since the 11 October import the four authors had published four more open-source
+scripts (a WillyAlgoTrader breakout strategy, Zeiierman's Market Matrix, two BigBeluga volume
+tools), and ChartPrime, not in the library at all, had 135 open-source scripts. All 139 are in, and
+the weekly `library-sync` now walks the six authors' published lists after the LuxAlgo library and
+imports the open-source newcomers into the VM's overlay, so a new script reaches the screen within
+a week of publication without anyone fetching it. Library: 3,184 scripts.
+
+**What else makes it faster, for the operator.** The weekly promotion cap of two (raised by hand
+for every batch so far; with the diversity caps of decision 106 in place, five is safe), and the
+unit's `WORKERS=2` for the screen (three would fit the memory cap with process workers).
