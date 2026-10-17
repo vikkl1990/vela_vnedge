@@ -26,7 +26,7 @@ import type {
   Ticker,
   Trade,
   TradeQuery, MlSnapshot,
-  MlYardstick, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView } from './types'
+  MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -132,6 +132,9 @@ export const api = {
   updateUser: (id: number, body: Partial<{ role: Role; displayName: string; disabled: boolean; password: string }>) => post<{ user: Me }>(`/users/${id}`, body),
   deleteUser: (id: number) => del<{ ok: true }>(`/users/${id}`),
   revokeSessions: (id: number) => post<{ ok: true }>(`/users/${id}/sessions/revoke`),
+  shareLinks: () => get<{ links: ShareLink[]; maxHours: number }>('/share'),
+  createShareLink: (body: { label: string; hours: number }) => post<{ link: ShareLink; url: string }>('/share', body),
+  revokeShareLink: (id: number) => del<{ link: ShareLink }>(`/share/${id}`),
 
   scanners: () => get<Scanner[]>('/scanners'),
   /** id/name/status/category/enabled/hidden only — the full list carries per-scanner stats for ~2000 scripts. */

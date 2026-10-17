@@ -3483,3 +3483,22 @@ shows the mirror as a gate.
 rules already allow; it does not relax them. If the replay's edge is real the account's own
 journal will show it within weeks at 1,000+ trades a month; if it is not, the same journal says
 so and the setting goes off.
+
+## 117. Share links: a read-only, expiring, revocable way in (17 October 2026)
+
+**Why.** An outside reviewer asked to look at the dashboard. The only ways in were an account
+with a password, which hands over more than a look, or a session row planted by hand, which is
+not a product. The operator authorised a share.
+
+**The rule.** A new role, `guest`, may read everything and do nothing: no backtest, no trade, no
+setting. One account carries it, `share-guest`, created on first use with a password nobody
+holds, so it can only ever be entered through a link. An administrator mints a link on the Users
+page with a label and a lifetime of up to 14 days; the token is shown once and only its hash is
+kept. Opening `/share/<token>` signs the visitor in as the guest with a session that ends when the
+link does, and lands them on the dashboard; every opening is counted and logged. Revoking a link
+ends every guest session at once. The nginx door, the cookie rules and the permission table are
+unchanged: a guest session is refused by every mutating route the way a viewer's is, and more.
+
+**What it does not do.** It does not grant the link's holder anything the Signals, Incubator,
+Gates and journal pages do not already show a signed-in reader. The self-signed certificate on
+the bare IP still has to be accepted by the visitor's browser.

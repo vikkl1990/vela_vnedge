@@ -143,3 +143,27 @@ test('a proxied request is judged by the real client, not by the proxy', async (
   assert.equal(isLoopback(mk('203.0.113.9', '127.0.0.1')), false, 'only a loopback peer is trusted to forward');
   assert.equal(clientAddress(mk('203.0.113.9', '127.0.0.1')), '203.0.113.9');
 });
+
+test('decision 117: a share link signs in as a read-only guest, expires with the link, and dies when revoked', () => {
+  const s = store(test as any);
+  const t0 = Date.UTC(2026, 9, 17, 12);
+  assert.ok(can('guest', 'read') && !can('guest', 'backtest') && !can('guest', 'trade') && !can('guest', 'admin'));
+  const { link, token } = s.createShareLink({ label: 'audit', hours: 48, createdBy: null }, t0);
+  assert.equal(link.expiresAt, t0 + 48 * 3_600_000); assert.equal(link.uses, 0);
+  assert.ok(!s.listShareLinks().some(l => JSON.stringify(l).includes(token)), 'the token is never stored');
+  const got = s.redeemShareLink(token, t0 + 1000)!;
+  assert.ok(got); assert.equal(s.resolve(got.session.token, t0 + 2000)?.role, 'guest');
+  assert.equal(s.resolve(got.session.token, t0 + 2000)?.username, 'share-guest');
+  assert.equal(got.session.expiresAt, Math.min(t0 + 1000 + 12 * 3_600_000, link.expiresAt), 'a guest session never outlives the link');
+  assert.equal(s.shareLink(link.id)!.uses, 1);
+  assert.equal(s.redeemShareLink('not-a-real-token-at-all-really', t0), null);
+  assert.equal(s.redeemShareLink(token, link.expiresAt + 1), null, 'expired');
+  // revoke: the link stops redeeming and the guest's sessions end at once
+  s.revokeShareLink(link.id, t0 + 5000);
+  assert.equal(s.redeemShareLink(token, t0 + 6000), null);
+  assert.equal(s.resolve(got.session.token, t0 + 6000), null);
+  assert.throws(() => s.createShareLink({ hours: 0 }, t0), /hours/);
+  assert.throws(() => s.createShareLink({ hours: 24 * 30 }, t0), /hours/);
+  // the guest cannot be logged into with a password
+  assert.equal(s.login('share-guest', 'anything-at-all-12', t0), null);
+});

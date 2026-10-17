@@ -12,17 +12,20 @@ import crypto from 'node:crypto';
 import type { Db } from '../db.ts';
 
 /** What a role is allowed to do. Checked on the server for every request; the UI only mirrors it. */
-export type Role = 'admin' | 'trader' | 'viewer';
+export type Role = 'admin' | 'trader' | 'viewer' | 'guest';
 /** `read` is any GET, `backtest` runs simulations, `trade` changes what the bot does, `admin` manages users. */
 export type Permission = 'read' | 'backtest' | 'trade' | 'admin';
 
 const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  /** Decision 117: a share link signs in as this — it can look at everything and change nothing, not even run a backtest. */
+  guest: ['read'],
   viewer: ['read', 'backtest'],
   trader: ['read', 'backtest', 'trade'],
   admin: ['read', 'backtest', 'trade', 'admin'],
 };
 
 export const ROLE_LABELS: Record<Role, string> = {
+  guest: 'Read only (share links)',
   viewer: 'Backtest only',
   trader: 'Backtest and trade',
   admin: 'Administrator',
@@ -56,7 +59,24 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS share_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL DEFAULT '',
+  user_id INTEGER NOT NULL,
+  created_by INTEGER,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  uses INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER
+);
 `;
+
+export interface ShareLink { id: number; label: string; userId: number; createdBy: number | null; createdAt: number; expiresAt: number; revokedAt: number | null; uses: number; lastUsedAt: number | null }
+/** The account every share link signs in as: a read-only guest nobody can log into with a password. */
+export const SHARE_GUEST_USERNAME = 'share-guest';
+export const SHARE_MAX_HOURS = 24 * 14;
 
 const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64 };
 export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -92,6 +112,10 @@ export function usernameProblem(username: string): string | null {
     return 'username must be 3–32 characters: letters, digits, dot, dash or underscore';
   }
   return null;
+}
+
+function rowToShare(r: any): ShareLink {
+  return { id: r.id, label: r.label ?? '', userId: r.user_id, createdBy: r.created_by ?? null, createdAt: r.created_at, expiresAt: r.expires_at, revokedAt: r.revoked_at ?? null, uses: r.uses ?? 0, lastUsedAt: r.last_used_at ?? null };
 }
 
 function rowToUser(r: any): User {
@@ -164,9 +188,9 @@ export class AuthStore {
 
   // ---- sessions ----
 
-  startSession(userId: number, at = Date.now()): Session {
+  startSession(userId: number, at = Date.now(), expiresAt?: number): Session {
     const token = crypto.randomBytes(32).toString('base64url');
-    const s: Session = { token, userId, createdAt: at, expiresAt: at + SESSION_TTL_MS };
+    const s: Session = { token, userId, createdAt: at, expiresAt: Math.min(at + SESSION_TTL_MS, expiresAt ?? Infinity) };
     this.db.run('INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES (?,?,?,?)', s.token, s.userId, s.createdAt, s.expiresAt);
     return s;
   }
@@ -183,6 +207,53 @@ export class AuthStore {
   }
 
   revoke(token: string): void { this.db.run('DELETE FROM sessions WHERE token=?', token); }
+
+  // ---- share links (decision 117) ----
+
+  /** The guest account share links sign in as, created on first use with a password nobody holds. */
+  shareGuest(): User {
+    const u = this.byUsername(SHARE_GUEST_USERNAME);
+    if (u) return u;
+    this.db.run('INSERT INTO users(username, display_name, password_hash, role, created_at, disabled) VALUES (?,?,?,?,?,0)',
+      SHARE_GUEST_USERNAME, 'Share link guest', hashPassword(crypto.randomBytes(36).toString('base64url')), 'guest', Date.now());
+    return this.byUsername(SHARE_GUEST_USERNAME)!;
+  }
+
+  /** A new link: the token is returned once and only its hash is kept. */
+  createShareLink(input: { label?: string; hours: number; createdBy?: number | null }, at = Date.now()): { link: ShareLink; token: string } {
+    const hours = Number(input.hours);
+    if (!(hours > 0 && hours <= SHARE_MAX_HOURS)) throw new Error(`hours must be 1..${SHARE_MAX_HOURS}`);
+    const guest = this.shareGuest();
+    const token = crypto.randomBytes(32).toString('base64url');
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const label = String(input.label ?? '').slice(0, 80);
+    const r = this.db.run('INSERT INTO share_links(token_hash, label, user_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?)', hash, label, guest.id, input.createdBy ?? null, at, at + hours * 3_600_000);
+    return { link: this.shareLink(Number(r.lastInsertRowid))!, token };
+  }
+
+  shareLink(id: number): ShareLink | null { const r = this.db.get<any>('SELECT * FROM share_links WHERE id=?', id); return r ? rowToShare(r) : null; }
+  listShareLinks(): ShareLink[] { return this.db.all<any>('SELECT * FROM share_links ORDER BY created_at DESC').map(rowToShare); }
+
+  /** Sign a visitor in through a link: a guest session that ends when the link does. Null when the link is unknown, revoked or expired. */
+  redeemShareLink(token: string, at = Date.now()): { session: Session; link: ShareLink } | null {
+    if (typeof token !== 'string' || token.length < 20 || token.length > 64) return null;
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const r = this.db.get<any>('SELECT * FROM share_links WHERE token_hash=?', hash);
+    if (!r || r.revoked_at || r.expires_at <= at) return null;
+    const guest = this.getUser(r.user_id);
+    if (!guest || guest.disabled) return null;
+    this.db.run('UPDATE share_links SET uses=uses+1, last_used_at=? WHERE id=?', at, r.id);
+    return { session: this.startSession(guest.id, at, r.expires_at), link: this.shareLink(r.id)! };
+  }
+
+  /** Revoke a link, and with it every guest session, since a guest session cannot be told apart by its link. */
+  revokeShareLink(id: number, at = Date.now()): ShareLink {
+    const l = this.shareLink(id);
+    if (!l) throw new Error('unknown share link');
+    this.db.run('UPDATE share_links SET revoked_at=COALESCE(revoked_at, ?) WHERE id=?', at, id);
+    this.revokeAllFor(l.userId);
+    return this.shareLink(id)!;
+  }
   revokeAllFor(userId: number): void { this.db.run('DELETE FROM sessions WHERE user_id=?', userId); }
   sessionCount(userId: number): number { return this.db.get<{ n: number }>('SELECT COUNT(*) n FROM sessions WHERE user_id=? AND expires_at>?', userId, Date.now())?.n ?? 0; }
   /** Drop expired rows; called on a timer so the table does not grow without bound. */

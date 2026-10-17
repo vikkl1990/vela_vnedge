@@ -527,7 +527,9 @@ export interface Analytics {
 // ---- authentication ----
 
 /** `viewer` is backtest only, `trader` adds trading, `admin` adds user management. */
-export type Role = 'admin' | 'trader' | 'viewer'
+export type Role = 'admin' | 'trader' | 'viewer' | 'guest'
+/** Decision 117: a read-only, expiring, revocable way into the dashboard for someone without an account. */
+export interface ShareLink { id: number; label: string; userId: number; createdBy: number | null; createdAt: number; expiresAt: number; revokedAt: number | null; uses: number; lastUsedAt: number | null }
 export type Permission = 'read' | 'backtest' | 'trade' | 'admin'
 export interface RoleOption { role: Role; label: string }
 

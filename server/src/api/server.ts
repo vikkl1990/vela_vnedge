@@ -7,7 +7,7 @@ import type { App } from '../app.ts';
 import { DASHBOARD_DIST, DATA_DIR, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
 import { logger } from '../log.ts';
 import { AuthStore, can, type User } from '../auth/store.ts';
-import { authRoutes, createAuth, parseCookies, permissionFor, SESSION_COOKIE } from '../auth/routes.ts';
+import { authRoutes, cookieHeader, createAuth, isSecureRequest, parseCookies, permissionFor, SESSION_COOKIE } from '../auth/routes.ts';
 import { positionView } from '../paper/engine.ts';
 import { EXTENSIONS } from './extensions.ts';
 import { aggregateMonthly } from '../pine/provider.ts';
@@ -81,6 +81,16 @@ export class ApiServer {
     if (url.pathname === '/api/events') {
       if (!this.userFor(req)) { json(res, 401, { error: 'not signed in' }, req); return; }
       return this.handleSse(req, res);
+    }
+    // decision 117: a share link signs its visitor in as the read-only guest and lands them on the dashboard
+    if (url.pathname.startsWith('/share/')) {
+      const token = url.pathname.slice('/share/'.length).replace(/\/$/, '');
+      const got = this.auth.redeemShareLink(token);
+      if (!got) { res.writeHead(410, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('This share link is not valid any more.'); return; }
+      res.setHeader('Set-Cookie', cookieHeader(got.session.token, Math.max(60, Math.floor((got.session.expiresAt - Date.now()) / 1000)), isSecureRequest(req)));
+      log.warn(`share link #${got.link.id} "${got.link.label}" opened (use ${got.link.uses})`);
+      res.writeHead(302, { Location: '/' }); res.end();
+      return;
     }
     if (!url.pathname.startsWith('/api/')) return this.serveStatic(url.pathname, res, req);
     // Authorisation happens here, before any handler runs, so no route can forget it.

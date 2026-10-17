@@ -6,7 +6,7 @@
  * opens it, which is the direction a mistake should fail in.
  */
 import http from 'node:http';
-import { AuthStore, ROLE_LABELS, ROLES, SESSION_TTL_MS, can, isRole, passwordProblem, type Permission, type Role, type User } from './store.ts';
+import { AuthStore, ROLE_LABELS, ROLES, SESSION_TTL_MS, SHARE_MAX_HOURS, can, isRole, passwordProblem, type Permission, type Role, type User } from './store.ts';
 import { logger } from '../log.ts';
 
 const log = logger.scoped('auth');
@@ -25,6 +25,7 @@ export function permissionFor(method: string, pathname: string): Permission | nu
   if (pathname === '/api/auth/login' || pathname === '/api/auth/setup' || pathname === '/api/auth/status') return null;
   if (pathname.startsWith('/api/auth/')) return 'read';        // me, logout, own password: any signed-in user
   if (pathname.startsWith('/api/users')) return 'admin';
+  if (pathname.startsWith('/api/share')) return 'admin';           // decision 117: share links are an administrator's to mint and revoke
   if (method === 'GET' || method === 'HEAD') return 'read';
   if (BACKTEST_SAFE.some(r => r.test(pathname))) return 'backtest';
   return 'trade';                                               // default-deny for anything that changes state
@@ -42,14 +43,14 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
-function cookieHeader(token: string, maxAgeSec: number, secure: boolean): string {
+export function cookieHeader(token: string, maxAgeSec: number, secure: boolean): string {
   const bits = [`${SESSION_COOKIE}=${encodeURIComponent(token)}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${maxAgeSec}`];
   if (secure) bits.push('Secure');
   return bits.join('; ');
 }
 
 /** True when the request reached us over TLS, directly or through a proxy that says so. */
-function isSecureRequest(req: http.IncomingMessage): boolean {
+export function isSecureRequest(req: http.IncomingMessage): boolean {
   if ((req.socket as any)?.encrypted) return true;
   return String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
 }
@@ -113,6 +114,22 @@ export function authRoutes(add: Add, ctx: AuthContext, currentUser: (req: http.I
   const fail = (status: number, message: string) => { const e: any = new Error(message); e.status = status; throw e; };
   /** Store validation failures are the caller's fault, not ours: surface them as 400, not 500. */
   const valid = <T>(fn: () => T): T => { try { return fn(); } catch (e: any) { fail(400, String(e?.message ?? e)); throw e; } };
+
+  // ---- share links (decision 117): a read-only, expiring, revocable way in for someone without an account ----
+  add('GET', '/api/share', () => ({ links: store.listShareLinks(), maxHours: SHARE_MAX_HOURS }));
+  add('POST', '/api/share', (req, _res, _p, _u, body) => {
+    const me = currentUser(req);
+    const { link, token } = valid(() => store.createShareLink({ label: body?.label, hours: Number(body?.hours ?? 48), createdBy: me?.id ?? null }));
+    const proto = isSecureRequest(req) ? 'https' : 'http';
+    const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost').split(',')[0].trim();
+    log.warn(`share link #${link.id} "${link.label}" created by ${me?.username ?? 'unknown'}, expires ${new Date(link.expiresAt).toISOString()}`);
+    return { link, url: `${proto}://${host}/share/${token}` };
+  });
+  add('DELETE', '/api/share/:id', (req, _res, p) => {
+    const link = valid(() => store.revokeShareLink(Number(p.id)));
+    log.warn(`share link #${link.id} revoked by ${currentUser(req)?.username ?? 'unknown'}`);
+    return { link };
+  });
 
   add('GET', '/api/auth/status', (req) => ({
     configured: store.countUsers() > 0,

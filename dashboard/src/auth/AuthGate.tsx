@@ -184,6 +184,7 @@ function SetupForm({ canSetup, onDone }: { canSetup: boolean; onDone: () => void
 }
 
 export const ROLE_HELP: Record<Role, string> = {
+  guest: 'Reads everything through a share link. Cannot run anything, trade, or change settings.',
   viewer: 'Reads everything and runs backtests and validation. Cannot trade or change settings.',
   trader: 'Everything a backtest account can do, plus trading, scanner changes and settings.',
   admin: 'Everything, plus creating accounts and changing what each one may do.',
