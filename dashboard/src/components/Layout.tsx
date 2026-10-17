@@ -283,6 +283,13 @@ export function Layout() {
               <Outlet />
             </RouteErrorBoundary>
           </main>
+          {/* decision 121: on a phone the four views an operator checks in on sit in a bar at the bottom */}
+          <nav className="bottombar" aria-label="Phone">
+            <NavLink to="/" end className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Overview</NavLink>
+            <NavLink to="/decisions" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Decisions</NavLink>
+            <NavLink to="/trades" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Positions</NavLink>
+            <NavLink to="/signals" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Signals</NavLink>
+          </nav>
         </div>
       </div>
 

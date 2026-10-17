@@ -250,7 +250,7 @@ function AttentionBanner() {
           </li>
         ))}
       </ul>
-      <Link to="/gates" className="btn btn-xs attention-all">Every gate →</Link>
+      <Link to="/decisions" className="btn btn-xs attention-all">Decisions →</Link>
     </div>
   )
 }

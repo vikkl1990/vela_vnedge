@@ -3,27 +3,11 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthGate'
-import type { IncubatorPair, IncubatorStats, IncubatorView } from '../api/types'
+import type { IncubatorPair } from '../api/types'
 import { BookBadge, ConfirmDialog, Empty, KpiTile, PageTitle, Panel, Pill, QueryState } from '../components/ui'
+import { Clocks, Evidence, Funnel, Need } from '../components/incubatorBits'
+import { clockRank, pf, r } from '../lib/incubatorLogic'
 import { fmtNum, timeAgo, fmtR } from '../lib/format'
-
-const pf = (v: number | null | undefined) => (v === null ? '∞' : v === undefined ? '—' : v.toFixed(2))
-const r = (v: number | undefined) => (v === undefined ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`)
-
-/** Progress toward one gate requirement, e.g. "22/30". Green once met. */
-function Need({ have, need, fmt = (x: number) => x.toFixed(0) }: { have: number; need: number; fmt?: (x: number) => string }) {
-  const met = have >= need
-  return <span className={`mono ${met ? 'gain' : 'muted'}`} title={met ? 'met' : 'not yet'}>{fmt(have)}/{fmt(need)}</span>
-}
-
-function Evidence({ s, g }: { s: IncubatorStats | null; g: IncubatorView['config']['gate'] }) {
-  if (!s) return <span className="muted">—</span>
-  return (
-    <span className="small">
-      <Need have={s.trades} need={g.minTrades} /> trades · <Need have={s.days} need={g.minDays} /> days · PF <span className={`mono ${(s.pfR ?? 99) >= g.minPfR ? 'gain' : ''}`}>{pf(s.pfR)}</span> · {r(s.avgR)}/trade · {s.positiveWeeks}/{s.weeks} weeks up · win {s.winRatePct.toFixed(0)}%
-    </span>
-  )
-}
 
 /**
  * The incubator: disabled scanner/market pairs are screened daily, the promising ones trade in a
@@ -49,13 +33,7 @@ export default function Incubator() {
           const shadow = by('shadow').sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
           const candidates = by('candidate').filter((p) => p.screen?.pass).sort((a, b) => (b.screen!.profitFactor - 1) * Math.sqrt(b.screen!.trades) - (a.screen!.profitFactor - 1) * Math.sqrt(a.screen!.trades))
           const now = d.lastRun?.at ?? renderedAt
-          const clockRank = (p: IncubatorPair) => {
-            const out = p.market && !p.market.allowed ? 2 : 0
-            const silent = d.config.demote.silentDays ? (now - (p.lastTradeAt ?? p.since)) / 86_400_000 >= d.config.demote.silentDays ? 2 : (now - (p.lastTradeAt ?? p.since)) / 86_400_000 >= d.config.demote.silentDays / 2 ? 1 : 0 : 0
-            const starved = d.config.demote.costStarvedRefusals && p.funnel && p.funnel.opened === 0 && p.funnel.cost > 0 ? (p.funnel.cost >= d.config.demote.costStarvedRefusals ? 2 : 1) : 0
-            return Math.max(out, silent, starved)
-          }
-          const live = by('live').sort((a, b) => clockRank(b) - clockRank(a) || (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
+          const live = by('live').sort((a, b) => clockRank(b, d.config.demote, now) - clockRank(a, d.config.demote, now) || (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
           const g = d.config.gate
           // the shadow book grouped by cohort (scanner × timeframe): the gate judges the cohort, so the row that carries its verdict heads its members
           const cohorts = (() => {
@@ -263,36 +241,3 @@ export default function Incubator() {
   )
 }
 
-/** Decision 112: the last 14 days of a cell's entry signals — opened, or the gate that refused them. */
-function Funnel({ f }: { f: IncubatorPair['funnel'] }) {
-  if (!f) return <span className="muted">—</span>
-  if (!f.entries) return <span className="muted">no signals</span>
-  const parts = [
-    ['regime', f.regime],
-    ['cost', f.cost],
-    ['market', f.market],
-    ['quote', f.quote],
-    ['other', f.other],
-  ].filter(([, n]) => (n as number) > 0) as Array<[string, number]>
-  return (
-    <span>
-      <span className="mono">{f.entries}</span> signals · <span className={f.opened ? 'gain' : 'loss'}>{f.opened} opened</span>
-      {parts.length > 0 && <span className="muted"> · refused: {parts.map(([k, n]) => `${n} ${k}`).join(', ')}</span>}
-    </span>
-  )
-}
-
-/** The demotion clocks a live cell is on (decisions 106, 109, 112), or "none". */
-function Clocks({ p, cfg, now }: { p: IncubatorPair; cfg: { silentDays?: number; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }; now: number }) {
-  const items: Array<{ text: string; tone: 'warn' | 'danger' }> = []
-  const out = (p.gate as { marketOutDays?: number } | null)?.marketOutDays ?? 0
-  if (p.market && !p.market.allowed) items.push({ text: `market out ${Math.floor(out)}/${cfg.marketOutDays ?? '–'} d`, tone: out >= (cfg.marketOutDays ?? Infinity) ? 'danger' : 'warn' })
-  if (cfg.silentDays) {
-    const last = p.lastTradeAt ?? p.since
-    const days = Math.floor((now - last) / 86_400_000)
-    if (days >= Math.max(1, Math.floor(cfg.silentDays / 2))) items.push({ text: `silent ${days}/${cfg.silentDays} d`, tone: days >= cfg.silentDays ? 'danger' : 'warn' })
-  }
-  if (cfg.costStarvedRefusals && p.funnel && p.funnel.opened === 0 && p.funnel.cost > 0) items.push({ text: `cost-starved ${p.funnel.cost}/${cfg.costStarvedRefusals}`, tone: p.funnel.cost >= cfg.costStarvedRefusals ? 'danger' : 'warn' })
-  if (!items.length) return <span className="muted">none</span>
-  return <>{items.map((it) => <Pill key={it.text} tone={it.tone}>{it.text}</Pill>)}</>
-}

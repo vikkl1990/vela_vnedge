@@ -5,6 +5,7 @@ import { Layout } from './components/Layout'
 import Profile from './pages/Profile'
 import Users from './pages/Users'
 import Incubator from './pages/Incubator'
+import { Decisions } from './pages/Decisions'
 import { ChartPage } from './pages/ChartPage'
 import { Analytics } from './pages/Analytics'
 import { Learn } from './pages/Learn'
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="chart" element={<ChartPage />} />
           <Route path="analytics" element={<Analytics />} />
           <Route path="incubator" element={<Incubator />} />
+          <Route path="decisions" element={<Decisions />} />
           <Route path="gates" element={<Gates />} />
           <Route path="learn" element={<Learn />} />
           <Route path="settings" element={<Settings />} />

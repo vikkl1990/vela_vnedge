@@ -308,10 +308,10 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
             <Fragment key={g.k}>
               <tr className="cohort-row group-row" onClick={() => toggle(g.k)} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(g.k) } }} aria-expanded={open.has(g.k)}>
                 <th scope="rowgroup"><span className="muted mono">{open.has(g.k) ? '▾' : '▸'}</span> <Link to={`/scanners/${g.scannerId}`} className="strong" onClick={(e) => e.stopPropagation()}>{g.scannerName}</Link> <span className="mono">{g.symbol} {g.tf}</span></th>
-                <td className="mono">{g.entries}{g.list.length !== g.entries ? <span className="muted"> +{g.list.length - g.entries} exits/info</span> : null}</td>
-                <td className={`mono ${g.opened ? 'gain' : 'muted'}`}>{g.opened}</td>
-                <td>{[...g.counts.entries()].filter(([k]) => k !== 'opened').sort((a, b) => b[1] - a[1]).map(([k, n]) => { const sample = g.list.find((s) => gateOf(s.action).key === k); const gg = gateOf(sample?.action); return <Pill key={k} tone={gg.tone} title={sample?.action ?? ''}>{n} {gg.label}</Pill> })}</td>
-                <td className="muted"><Time t={g.last} /></td>
+                <td className="mono" data-label="signals">{g.entries}{g.list.length !== g.entries ? <span className="muted"> +{g.list.length - g.entries} exits/info</span> : null}</td>
+                <td className={`mono ${g.opened ? 'gain' : 'muted'}`} data-label="opened">{g.opened}</td>
+                <td data-label="refused by">{[...g.counts.entries()].filter(([k]) => k !== 'opened').sort((a, b) => b[1] - a[1]).map(([k, n]) => { const sample = g.list.find((s) => gateOf(s.action).key === k); const gg = gateOf(sample?.action); return <Pill key={k} tone={gg.tone} title={sample?.action ?? ''}>{n} {gg.label}</Pill> })}</td>
+                <td className="muted" data-label="last"><Time t={g.last} /></td>
               </tr>
               {open.has(g.k) && g.list.slice(0, 60).map((s) => {
                 const gg = gateOf(s.action)
@@ -319,8 +319,8 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
                   <Fragment key={s.id}>
                     <tr className="cohort-member">
                       <td><Time t={s.at} className="small" /> <span className={`kind kind-${s.kind}`}>{s.kind}</span> <SidePill side={s.side} /> <span className="muted small">{truncate(s.label, 40)}</span></td>
-                      <td className="mono small">{fmtPrice(s.price, tick(s.symbol))}{s.sl != null ? <span className="loss"> · SL {fmtPrice(s.sl, tick(s.symbol))}</span> : null}{s.tp?.[0] != null ? <span className="gain"> · TP {fmtPrice(s.tp[0], tick(s.symbol))}</span> : null}</td>
-                      <td>{s.kind === 'entry' ? <Pill tone={gg.tone}>{gg.label}</Pill> : <ActionPill action={s.action} />}</td>
+                      <td className="mono small" data-label="price">{fmtPrice(s.price, tick(s.symbol))}{s.sl != null ? <span className="loss"> · SL {fmtPrice(s.sl, tick(s.symbol))}</span> : null}{s.tp?.[0] != null ? <span className="gain"> · TP {fmtPrice(s.tp[0], tick(s.symbol))}</span> : null}</td>
+                      <td data-label="gate">{s.kind === 'entry' ? <Pill tone={gg.tone}>{gg.label}</Pill> : <ActionPill action={s.action} />}</td>
                       <td className="small">{s.kind === 'entry' && gg.key !== 'opened' ? <button className="btn btn-xs" onClick={() => setReason(reason === s.id ? null : s.id)} aria-expanded={reason === s.id}>{reason === s.id ? 'hide reason' : 'why'}</button> : <span className="muted">{s.mlProb != null ? `P(win) ${Math.round(s.mlProb * 100)}%` : ''}</span>}</td>
                       <td className="muted small">{s.score != null ? <ScoreBadge score={s.score} /> : null}</td>
                     </tr>

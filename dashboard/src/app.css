@@ -1420,3 +1420,25 @@ body { overflow-x: clip; }
 /* narrower desktops: the fourteen pills tighten before they scroll */
 @media (max-width: 1320px) { .topnav .navpills .navpill { padding: 5px 8px; font-size: 12px; } }
 @media (max-width: 1140px) { .topnav .navpills .navpill { padding: 4px 6px; font-size: 11.5px; letter-spacing: -0.01em; } }
+
+/* ---------- decision 121: the phone — a bottom bar for the four views an operator checks in on, cards instead of sideways tables ---------- */
+.bottombar { display: none; }
+@media (max-width: 720px) {
+  .bottombar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; background: var(--surface); border-top: 1px solid var(--border); padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); }
+  .bottombar-item { text-align: center; font-size: 12px; padding: 8px 4px; border-radius: 8px; color: var(--muted); text-decoration: none; }
+  .bottombar-item.on { color: var(--text); background: var(--surface-2); font-weight: 600; }
+  .main { padding-bottom: 76px; }
+  .topnav .topright { display: none; }
+  .signals-grouped thead { display: none; }
+  .signals-grouped tr { display: block; border-bottom: 1px solid var(--border); padding: 6px 0; }
+  .signals-grouped td, .signals-grouped th { display: flex; justify-content: space-between; gap: 8px; border: 0; padding: 2px 8px; align-items: center; }
+  .signals-grouped td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .cohort-member td:first-child { padding-left: 8px; }
+}
+.decision-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+@media (max-width: 720px) { .decision-cards { grid-template-columns: 1fr; } }
+.decision-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); padding: 12px 14px; display: grid; gap: 8px; }
+.decision-card.urgent { box-shadow: inset 3px 0 0 var(--danger, #e5484d); }
+.decision-card.soon { box-shadow: inset 3px 0 0 var(--warn); }
+.decision-card .dc-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.decision-card .dc-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }

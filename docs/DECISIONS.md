@@ -3565,3 +3565,26 @@ market gate, no quote, capacity, guard, halted, stale, model gate). A group open
 each with its gate as a short name and a "why" that shows the full reason and links to the Gate
 Center. The flat table stays one switch away for sorting and the scanner pages still use it.
 Groups sort by opened, then signals, so the cells doing something come first.
+
+## 121. The phone, and a Decisions page: what waits for the operator on one screen (17 October 2026)
+
+**Why.** The operator checks in on a phone and works on a desktop. The phone showed the desktop's
+tables scrolled sideways and a nav of fourteen pills; the desktop showed the decisions in three
+places — the Incubator's proposals, its live cells' clocks and the Overview's attention line.
+The external review asked for one ranked surface with the evidence and the controls together
+and a phone limited to the few views that matter.
+
+**Decisions.** `/decisions`: a stat strip (to decide, proposals, clocks due, attention), then
+three groups of cards — faults from the attention line, the gate's proposals with the cohort
+evidence, the 14-day funnel, the market verdict and the own-exits verdict beside Promote and
+Reject, and the live cells whose demotion clock is half way or due with their clocks and a "To
+shadow now" for an administrator. The same routes and confirmation dialogs as the Incubator, so
+nothing bypasses them. The Overview's attention row links here. The Incubator keeps the full
+tables and the shadow book.
+
+**The phone.** Under 720 px a bar at the bottom holds Overview, Decisions, Positions and Signals
+and sits above the safe area; the account's status row hides behind it, the nav pills still
+scroll. Positions already fell back to cards; the grouped Signals table now does too, each cell
+a block with labelled values, and the Decisions cards stack full width. No primary view scrolls
+sideways on a phone. The shared pieces of the Incubator — evidence, funnel, clocks, the clock
+rank — moved to one module so both pages read the same numbers.
