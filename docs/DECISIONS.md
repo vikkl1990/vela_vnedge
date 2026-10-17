@@ -3283,3 +3283,29 @@ when three or more stale refusals land in two hours; 57 "margin exhausted" rows 
 September and 2 October ended with the sizing changes and have not recurred; 17 daily-loss rows
 are one day, 24 September, the limit doing its job. Nothing in the last fortnight is a bug;
 the fix for the biggest refusals is upstream, in what gets promoted, and is in place.
+
+## 111. A strategy's own stop and limit ride on its last-bar entry (17 October 2026)
+
+**The gap.** The worker has read strategy() scripts from the runtime's trade ledger since the strategy
+path was built: one machine message per fill, at the bar it filled on, and the extractor turns them
+into entries and exits (71 entries and 88 exits in the last 60 days, 123 positions closed by a script's
+own exit). What the message never carried was the stop and limit the strategy placed with
+`strategy.exit`, because the runtime keeps resting orders only as they stand when a run ends, not per
+historical trade. So a strategy cell traded the 1.5×ATR fallback levels while its own bracket fired
+later as a script exit, when it fired at all.
+
+**The change.** The ledger-to-messages step is its own module (`pine/strategyLedger.ts`). A fill on
+the run's last bar — the one the live engine acts on — now carries the stop nearest the entry and up
+to three limits from the orders still resting against that trade, on the right side of the entry:
+`STRATEGY entry long @ 103.42 sl=101.35 tp=106.53`. The extractor reads them into the event's own
+levels, so under exit mode `both` or `script` the trade opens with the strategy's bracket and the
+fallback applies only when the strategy placed none. An entry on any earlier bar carries nothing:
+backtests, the nightly screen and the shadow history are byte for byte what they were. Proven with a
+fixture strategy through the real worker: the entry that filled on the last bar arrived with its 2%
+stop and 3% limit.
+
+**What it does not change.** No live cell is a strategy today, so the account is untouched until one
+is promoted. The per-cell `script` variant in `diagnose` remains the measurement of whether a
+strategy's own levels beat the fallback; nothing about the fill model, the stop width or the gates
+moves. Classification, exit modes and the silent-script rule were already in place and were not
+rebuilt.

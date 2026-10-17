@@ -140,9 +140,12 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
   const st = msg.match(new RegExp(String.raw`^STRATEGY (entry|exit) (long|short) @ ${NUM}`));
   if (st) {
     const side = st[2] as Side; const price = Number(st[3]);
-    return st[1] === 'entry'
-      ? { ...base, kind: 'entry', side, price, label: `${side.toUpperCase()} (strategy)` }
-      : { ...base, kind: 'exit', side, exitType: 'close', price, label: `EXIT ${side.toUpperCase()} (strategy)` };
+    if (st[1] !== 'entry') return { ...base, kind: 'exit', side, exitType: 'close', price, label: `EXIT ${side.toUpperCase()} (strategy)` };
+    // decision 111: a last-bar fill may carry the strategy's own resting stop and limits
+    const slM = msg.match(/\bsl=(\d+(?:\.\d+)?)/), tpM = msg.match(/\btp=([\d.,]+)/);
+    const sl = slM ? Number(slM[1]) : undefined;
+    const tp = tpM ? tpM[1].split(',').map(Number).filter(v => Number.isFinite(v) && v > 0) : [];
+    return { ...base, kind: 'entry', side, price, sl, tp, label: `${side.toUpperCase()} (strategy)` };
   }
 
   // ----- Self-Aware Trend System (SATS) machine format -----

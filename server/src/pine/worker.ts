@@ -4,6 +4,7 @@
  * runaway script cannot block the event loop of the main process.
  */
 import { parentPort, workerData } from 'node:worker_threads';
+import { ledgerAlerts } from './strategyLedger.ts';
 import { PineTS, Indicator } from 'pinets';
 import { DeltaPineProvider, type ProviderBar } from './provider.ts';
 import { DeltaRest } from '../delta/rest.ts';
@@ -99,22 +100,8 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
     // strategy() scripts trade through strategy.entry / strategy.exit, not alerts. The runtime keeps
     // their ledger; each fill becomes a machine-readable message at the bar it FILLED on (by default
     // the bar after the signal), so a strategy can never be acted on before its order could exist.
-    const st = ctx.strategy;
-    if (st) {
-      const seen = new Set<string>();
-      const emit = (idx: number | undefined, verb: 'entry' | 'exit', side: string, price: number) => {
-        if (idx === undefined || idx === null || idx < fromIdx || !(price > 0)) return;
-        const k = `${idx}:${verb}:${side}`;
-        if (seen.has(k)) return;
-        seen.add(k);
-        alerts.push({ barIndex: idx, time: timeAt(idx), type: 'alert', title: 'strategy', message: `STRATEGY ${verb} ${side} @ ${price}` });
-      };
-      for (const t of [...(st.closedtrades ?? []), ...(st.opentrades ?? [])]) {
-        const side = t.size > 0 ? 'long' : 'short';
-        emit(t.entry_bar_index, 'entry', side, Number(t.entry_price));
-        if (t.status === 'closed' || t.exit_bar_index !== undefined) emit(t.exit_bar_index, 'exit', side, Number(t.exit_price));
-      }
-    }
+    // A fill on the last bar also carries the stop and limit the strategy has resting for it (decision 111).
+    if (ctx.strategy) alerts.push(...ledgerAlerts(ctx.strategy, fromIdx, n - 1, timeAt));
 
     const shapes: WorkerShape[] = [];
     const plots: WorkerPlot[] = [];
