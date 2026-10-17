@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
 import { runBacktest } from './backtest.ts';
+import { resolveLevels, scriptModeExit } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false, trailAfterR: 0, floorAtR: 0, staleBars: 0, breakEvenAfterTp1: false, tpSplit: [0, 0, 1] as [number, number, number] };
 const M15 = 900_000;
@@ -73,4 +74,30 @@ test('the context gate refuses an entry it blocks, and an unknown reading is all
   assert.equal(runBacktest({ ...input, contextGate: () => 'unknown' }).entries, 1, 'unknown allows by default');
   const unk = runBacktest({ ...input, contextGate: () => 'unknown', unknownIs: 'block' });
   assert.equal(unk.entries, 0); assert.equal(unk.rejected['no context'], 1);
+});
+
+test('decision 113: exit mode script trades the script\'s own exits — no bot target, no trail, a disaster stop when the script publishes none', () => {
+  const b = (i: number, o: number, h: number, l: number, c: number) => ({ time: i * M15, open: o, high: h, low: l, close: c, volume: 1 });
+  // 20 quiet bars give ATR ≈ 1; the signal at bar 20 publishes a stop at 98 and no target; the move runs to 112, then a script exit closes at bar 25
+  const quiet = Array.from({ length: 20 }, (_, i) => b(i, 100, 100.5, 99.5, 100));
+  const bars = [...quiet, b(20, 100, 100.5, 99.5, 100), b(21, 100, 104, 100, 104), b(22, 104, 108, 104, 108), b(23, 108, 112, 108, 112), b(24, 112, 112, 110, 111), b(25, 111, 111, 110, 110.5), b(26, 110.5, 111, 110, 110.5)];
+  const ev = (over: any) => ({ kind: 'entry', side: 'long', price: 100, sl: 98, tp: [], barTime: 20 * M15, barIndex: 20, source: 'alert', label: 'buy', message: '', ...over });
+  const exit = { kind: 'exit', side: 'long', exitType: 'close', price: 110.5, barTime: 25 * M15, barIndex: 25, source: 'alert', label: 'EXIT LONG', message: '' };
+  const c = { ...cfg, fallbackRR: [1, 2, 3] as [number, number, number], tpSplit: [0.4, 0.3, 0.3] as [number, number, number], trailAfterR: 0.5, trailGiveBackPct: 40 };
+  const run = (mode: 'both' | 'script', events: any[]) => runBacktest({ ...base, bars, events, cfg: c, exitMode: mode, tickSize: 0.5 });
+  // under `both` the bot's 1R/2R/3R ladder and trail take the trade well before the script's exit
+  const both = run('both', [ev({}), exit]);
+  assert.equal(both.trades.length, 1);
+  assert.ok(both.trades[0].exitReason !== 'script_exit' && both.trades[0].exitReason !== 'close', `both: ${both.trades[0].exitReason}`);
+  // under `script` nothing of the bot's fires: the script's exit closes it at 110.5 for +6.25R on a 2-point stop
+  const sc = run('script', [ev({}), exit]);
+  assert.equal(sc.trades.length, 1);
+  assert.ok(['script_exit', 'close'].includes(String(sc.trades[0].exitReason)), `script: ${sc.trades[0].exitReason}`);
+  assert.ok(Math.abs((sc.trades[0].rMultiple ?? 0) - 5.25) < 0.01, `R ${sc.trades[0].rMultiple}`);
+  // a script that publishes no stop gets the disaster stop: 3 ATR, not 1.5
+  const lv = resolveLevels({ side: 'long', price: 100, atr: 1 }, { ...c, ...scriptModeExit({ ...c, scriptDisasterStopAtr: 3 }) } as any, 0.5);
+  assert.ok(!('error' in lv) && lv.sl === 97 && lv.tp.length === 0, JSON.stringify(lv));
+  // and the mode's override is exactly the bot's exits switched off
+  const o = scriptModeExit({ ...c, scriptDisasterStopAtr: 2.5 });
+  assert.deepEqual([o.fallbackAtrSl, o.fallbackRR, o.trailAfterR, o.floorAtR, o.staleBars], [2.5, [0, 0, 0], 0, 0, 0]);
 });

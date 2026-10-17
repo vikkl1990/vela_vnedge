@@ -127,7 +127,8 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
   if (risk <= 0) return { error: 'zero risk distance' };
   let tp = (req.tp ?? []).filter(v => Number.isFinite(v) && v > 0 && (req.side === 'long' ? v > entry : v < entry));
   tp.sort((a, b) => (req.side === 'long' ? a - b : b - a));
-  const ladder = cfg.fallbackRR.map(rr => entry + dir * rr * risk);
+  // a ladder rung at 0R is no rung (exit mode script, decision 113): the trade may then carry no target of the bot's
+  const ladder = cfg.fallbackRR.filter(rr => rr > 0).map(rr => entry + dir * rr * risk);
   const mode = cfg.scriptTargets ?? 'use';
   if (tp.length === 0 || mode === 'ignore') {
     tp = ladder;
@@ -141,7 +142,9 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
   sl = roundTick(sl!, tick);
   tp = [...new Set(tp.slice(0, 3).map(v => roundTick(v, tick)))];
   if (!validSl(sl)) return { error: 'stop invalid after tick rounding' };
-  if (!tp.length || tp.some(v => !Number.isFinite(v) || v <= 0 || (req.side === 'long' ? v <= entry : v >= entry))) return { error: 'target invalid after tick rounding' };
+  if (tp.some(v => !Number.isFinite(v) || v <= 0 || (req.side === 'long' ? v <= entry : v >= entry))) return { error: 'target invalid after tick rounding' };
+  // decision 113: with no ladder configured (exit mode script) a trade may carry no target at all; the script's exits close it
+  if (!tp.length && ladder.length) return { error: 'target invalid after tick rounding' };
   return { sl, tp, source };
 }
 
@@ -183,6 +186,19 @@ export function contractRiskShare(stopDistance: number, contractValue: number, e
  * Three layers, narrowest last: the fleet's policy, then the market's, then the scanner's. A scanner
  * knows its own trades better than the market does, so where both have an opinion the scanner wins.
  */
+/**
+ * Exit mode `script` (decision 113): the script's exits are the exits. The bot's targets, trail, floor, stall and
+ * time stop are off; a stop the script did not publish is a wide disaster stop (`scriptDisasterStopAtr` × ATR),
+ * kept so sizing has a risk basis. Returned as an override so every path that layers exit rules applies it.
+ */
+export function scriptModeExit(cfg: PaperConfig): ExitOverride {
+  return {
+    fallbackAtrSl: cfg.scriptDisasterStopAtr ?? 3, fallbackRR: [0, 0, 0],
+    trailAfterR: 0, trailGiveBackPct: 0, trailAtrMult: 0, floorAtR: 0, floorKeepR: 0,
+    trailSteps: [], trailStall: { minutes: 0, factor: 1 }, earlyStall: undefined, staleBars: 0,
+  };
+}
+
 export function exitConfigFor(cfg: PaperConfig, symbol: string, scannerOverride?: ExitOverride | null): PaperConfig {
   const bySymbol = cfg.exitBySymbol?.[symbol];
   const layers = [bySymbol, scannerOverride].filter((x): x is ExitOverride => !!x && Object.keys(x).length > 0);

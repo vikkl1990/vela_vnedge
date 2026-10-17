@@ -12,7 +12,7 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { applyBar, applyScriptExit, earlyStallExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
+import { scriptModeExit, applyBar, applyScriptExit, earlyStallExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -70,7 +70,8 @@ export interface BacktestResult {
 export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
   // a backtest is one market, so its exit rules are resolved once (decision 34)
-  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExit);
+  // decision 113: under exit mode `script` the script's exits are the exits
+  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit);
   const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: (cfg0.slippageBps ?? 0) + inp.spreadPct * 50 } : cfg0;
   const atr = atrSeries(bars, 14);
   const idxByTime = new Map<number, number>();

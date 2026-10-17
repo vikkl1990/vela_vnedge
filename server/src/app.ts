@@ -1,5 +1,5 @@
 import { lastAtr } from './data/indicators.ts';
-import { trendSide } from './paper/logic.ts';
+import { scriptModeExit, trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
@@ -100,7 +100,8 @@ export class App {
     this.shadow = new PaperEngine(this.db, shadowRef, { book: 2 });
     this.shadow.atrFor = this.paper.atrFor;
     // a scanner's own exit rules reach both books the same way (decision 38)
-    const scannerExit = (id: string) => cfg().scanners[id]?.exit;
+    // decision 113: a scanner on exit mode `script` trades its own exits; the bot's targets and trail are off for it
+    const scannerExit = (id: string) => { const c = cfg(); const sc = c.scanners[id]; return sc?.exitMode === 'script' ? { ...(sc.exit ?? {}), ...scriptModeExit(c.paper) } : sc?.exit; };
     this.paper.scannerExit = scannerExit;
     this.shadow.scannerExit = scannerExit;
     // the same trend both books and the backtest use: closes of the position's own timeframe

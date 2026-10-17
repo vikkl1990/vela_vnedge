@@ -95,7 +95,7 @@ Delta Exchange India ──REST (history, products, tickers)──┐
 * Entry at signal price (or bar close) ± slippage; taker fee (0.05 % default) on every fill.
 * Every 1-minute candle update of the symbol is applied to open positions: SL first (worst case),
   then sequential TP legs (40/30/30 % default), SL → entry after TP1 when `breakEvenAfterTp1`.
-* Script exits are honoured according to the scanner's `exitMode` (`levels`, `script`, `both`).
+* Script exits are honoured according to the scanner's `exitMode`: `levels` ignores the script's exit events and trades the bot's levels; `both` trades the bot's levels and closes on the script's exits too; `script` (decision 113) trades the script's own exits only — no bot target, trail, floor or time stop, and a disaster stop of `paper.scriptDisasterStopAtr` × ATR when the script publishes none.
 * **Dashboard payloads**: `GET /api/scanners` carries per-scanner statistics and symbol lists for every
   script on disk, which is what the scanner pages need and roughly a hundred times what a name lookup
   needs. `?view=lite` returns id, name, status, category, enabled, hidden, overlay and the last run's

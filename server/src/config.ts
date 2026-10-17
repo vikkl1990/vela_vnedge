@@ -174,6 +174,12 @@ export interface PaperConfig {
    */
   widenStopToFee?: boolean;
   fallbackAtrSl: number;
+  /**
+   * Decision 113: under exit mode `script` the bot's targets, trail, floor and time stop are off and the
+   * script's own exits close the trade; a script that published no stop gets this many ATR as a disaster
+   * stop, so sizing keeps a risk basis and a runaway cannot happen.
+   */
+  scriptDisasterStopAtr?: number;
   fallbackRR: [number, number, number];
   /**
    * What a script's own targets are allowed to do. `use`: they replace the ladder (the default so
@@ -209,7 +215,7 @@ export interface PaperConfig {
  */
 export type ExitOverride = Partial<Pick<PaperConfig,
   'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' |
-  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl'>>;
+  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
 
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
 export type TrendGateMode = 'follow' | 'fade' | 'off';
@@ -534,6 +540,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     trailSteps: [],
     trailStall: { minutes: 0, factor: 1 },
     fallbackAtrSl: 1.5,
+    scriptDisasterStopAtr: 3,
     fallbackRR: [1, 2, 3],
     minSizeShare: 0,
     maxOpenPositions: 20,
@@ -656,6 +663,7 @@ export function validateConfig(c: AppConfig): string[] {
   }
   if (p.trailSteps?.length && !p.trailSteps.every(x => Array.isArray(x) && x.length === 2 && x[0] > 0 && x[1] >= 0 && x[1] <= 100)) errs.push('paper.trailSteps must be [atR, giveBackPct] pairs');
   if (p.trailStall && !(p.trailStall.minutes >= 0 && p.trailStall.factor > 0 && p.trailStall.factor <= 1)) errs.push('paper.trailStall needs minutes ≥ 0 and 0 < factor ≤ 1');
+  if (p.scriptDisasterStopAtr !== undefined && !(p.scriptDisasterStopAtr >= 0.5 && p.scriptDisasterStopAtr <= 10)) errs.push('paper.scriptDisasterStopAtr must be 0.5..10');
   if (p.earlyStall && !(p.earlyStall.minutes >= 0 && p.earlyStall.minR >= 0 && p.earlyStall.maxR >= p.earlyStall.minR)) errs.push('paper.earlyStall needs minutes ≥ 0 and 0 ≤ minR ≤ maxR');
   if (p.trendGate) {
     if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');

@@ -3341,3 +3341,28 @@ already covers that wait.
 **Not changed.** The fill model, the stop width, every measured threshold, the exit modes, the
 strategy ledger (decision 111) and the 43 live cells, which the account's own record judges faster
 than a re-vetted shadow book would.
+
+## 113. Exit mode `script` means what it says (17 October 2026)
+
+**The gap.** The exit mode was consulted in one place, the function that applies a script's exit
+event, and it only distinguished `levels` (ignore the event) from everything else. The bot's stop,
+targets, trail, floor, stall and time stop ran in every mode. So `script` behaved exactly like
+`both`, the diagnose `script` variant was a copy of the baseline — identical in all nine cells of
+the majors test — and the verdict "the script's own exits pay, ours do not: use exit mode script"
+could never fire. Nothing in the toolchain measured a scanner's own exits against the fallback,
+although 280 library strategies place their own brackets.
+
+**The rule.** Under exit mode `script` the script's exits are the exits. `scriptModeExit()` is an
+exit override that every path layers in — the account and the shadow book through the per-scanner
+exit callback, the backtest and the nightly screen through `runBacktest` — switching off the bot's
+target ladder, trail, floor, stall and time stop. A stop the script published is the stop; a
+script that published none gets `paper.scriptDisasterStopAtr` × ATR (3), kept so sizing has a
+risk basis and a runaway cannot happen, and still subject to the stop cap and the cost rule. The
+script's targets, when it publishes them, are honoured with the fleet's split. A level resolver
+that demanded at least one target now accepts none when no ladder is configured.
+
+**What it changes today.** Nothing in the account: all 14 live scanners are indicators on `both`.
+The diagnose `script` variant is now a real comparison, and the next strategy cell the screen
+proposes can be judged on its own brackets before anyone prefers them. `levels` and `both` are
+unchanged. Proven with a backtest fixture: the same signal under `both` is taken by the bot's
+ladder, under `script` it runs to the script's exit at +5.25R; a signal with no stop gets 3 ATR.

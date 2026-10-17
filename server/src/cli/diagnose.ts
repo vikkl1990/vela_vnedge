@@ -11,7 +11,7 @@
  *   gross       no fees, no slippage — the edge before costs
  *   stop1.5/2   a wider ATR stop (same targets)
  *   tp1         one target at 1R, no trail — do the moves it finds reach 1R at all
- *   levels      only our ATR levels (script exits ignored); script: only the script's own exits
+ *   levels      our levels, script exit events ignored; script: the script's own exits only — no bot target or trail, a disaster stop (decision 113)
  *   er0.25      the whipsaw gate (decision 66)
  *   inverted    every signal read the other way — a sign error in the reading shows up here
  *   long/short  one direction only
