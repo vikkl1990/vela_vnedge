@@ -10,7 +10,8 @@
  * Live scanners always go first: shadow runs are queued a little after each bar close and are
  * skipped entirely when the worker queue is backed up.
  */
-import { TF_SECONDS, type AppConfig } from '../config.ts';
+import { TF_SECONDS, type AppConfig, type RiskConfig } from '../config.ts';
+import { regimeRefusal } from '../risk/manager.ts';
 import type { CandleStore, Bar } from '../data/candleStore.ts';
 import type { PinePool } from '../pine/pool.ts';
 import type { ScannerRegistry } from '../scanners/registry.ts';
@@ -21,11 +22,28 @@ import { lastAtr } from '../data/indicators.ts';
 import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import type { Features, FeatureInputs } from '../ml/features.ts';
 import { logger } from '../log.ts';
-import { IncubatorStore, type PairRow } from './store.ts';
+import { IncubatorStore, funnelClass, type PairRow, type SignalFunnel } from './store.ts';
 import { ACTIVE_STAGES } from './cycle.ts';
 
 const log = logger.scoped('incubator');
 const SYNC_MS = 5 * 60_000;
+/** Decision 112: how long a shadow pair's signal record is kept, and how many entries per pair. */
+const FUNNEL_MS = 14 * 86_400_000;
+const FUNNEL_CAP = 120;
+const FUNNEL_SAVE_MS = 10_000;
+
+export type FunnelKind = 'opened' | 'regime' | 'cost' | 'market' | 'quote' | 'other';
+
+/**
+ * The cell-intrinsic gates the account applies, asked of a shadow entry (decision 112): the market gate and the
+ * regime gate, by the same rules. Account-state gates (loss limits, caps, burst, cooldowns) stay live-only, because
+ * they depend on what else the book holds and would make shadow evidence depend on the fleet's luck.
+ */
+export function shadowRefusal(inp: { regime: RiskConfig['regime'] | undefined; scannerId: string; symbol: string; at: number; price: number; atr?: number; bars: Bar[]; market: { allowed: boolean; reasons: string[] } | null | undefined }): { kind: 'market' | 'regime'; reason: string } | null {
+  if (inp.market && !inp.market.allowed) return { kind: 'market', reason: `market: ${inp.market.reasons.join('; ') || 'not allowed'}` };
+  const regime = regimeRefusal(inp.regime, inp.scannerId, { at: inp.at, price: inp.price, atr: inp.atr }, inp.bars);
+  return regime ? { kind: 'regime', reason: regime } : null;
+}
 const DELAY_MS = 20_000;
 const MAX_QUEUE = 300;
 /** Time a scan is assumed to need once it starts, kept aside from the staleness budget. */
@@ -36,10 +54,44 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void };
-  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, lastBarAt: 0 };
+  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void };
+  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, lastBarAt: 0 };
+  /** Decision 112: per shadow pair, what became of its signals — [at, class], newest last. */
+  private funnel: Map<string, Array<[number, string]>>;
+  private funnelDirty = false;
+  private funnelTimer: NodeJS.Timeout | null = null;
 
-  constructor(deps: ShadowRunner['deps']) { this.deps = deps; }
+  constructor(deps: ShadowRunner['deps']) {
+    this.deps = deps;
+    this.funnel = new Map(Object.entries(deps.store.shadowFunnel()));
+  }
+
+  /** Record what became of one signal on a pair. */
+  private note(key: string, kind: FunnelKind, at: number): void {
+    const list = this.funnel.get(key) ?? [];
+    list.push([at, kind]);
+    const cut = at - FUNNEL_MS;
+    const kept = list.filter(x => x[0] >= cut).slice(-FUNNEL_CAP);
+    this.funnel.set(key, kept);
+    this.funnelDirty = true;
+    if (!this.funnelTimer) { this.funnelTimer = setTimeout(() => { this.funnelTimer = null; this.saveFunnel(); }, FUNNEL_SAVE_MS); this.funnelTimer.unref(); }
+  }
+
+  saveFunnel(): void {
+    if (!this.funnelDirty) return;
+    try { this.deps.store.setShadowFunnel(Object.fromEntries(this.funnel)); this.funnelDirty = false; } catch (e: any) { log.warn(`shadow funnel not saved: ${e?.message ?? e}`); }
+  }
+
+  /** What became of a pair's signals since `since`, in the shape the live cells' record has. */
+  funnelOf(key: string, since: number): SignalFunnel {
+    const f: SignalFunnel = { entries: 0, opened: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
+    for (const [at, k] of this.funnel.get(key) ?? []) {
+      if (at < since) continue;
+      f.entries++; const kk = (k in f ? k : 'other') as FunnelKind; f[kk]++;
+      if (kk === 'opened') f.lastOpenAt = Math.max(f.lastOpenAt ?? 0, at);
+    }
+    return f;
+  }
 
   get active(): PairRow[] { return this.pairs; }
 
@@ -56,7 +108,7 @@ export class ShadowRunner {
     this.timer.unref();
   }
 
-  stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
+  stop() { if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
 
   /** Pick up stage changes made by the daily job or the API, and make sure their candles are live. */
   async sync(): Promise<void> {
@@ -138,6 +190,10 @@ export class ShadowRunner {
         }
         const atr = lastAtr(bars, 14);
         const refPrice = this.deps.paper.mark(r.symbol) ?? lastBar.close;
+        // decision 112: the market and regime gates refuse a shadow entry exactly as they refuse a live one
+        const fkey = `${s.id}|${r.symbol}|${r.tf}`;
+        const refusal = shadowRefusal({ regime: cfg.risk?.regime, scannerId: s.id, symbol: r.symbol, at: now, price: ev.price && ev.price > 0 ? ev.price : refPrice, atr, bars, market: this.deps.marketVerdict?.(r.symbol) });
+        if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now); continue; }
         // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
         // judge the model out of sample; scored without feeding the drift monitor, which watches the account
         let features: Features | undefined; let mlProb: number | null = null;
@@ -151,6 +207,7 @@ export class ShadowRunner {
         }
         const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
+        this.note(fkey, d.action === 'opened' || d.action === 'reversed' ? 'opened' : funnelClass(`${d.action}:${d.reason ?? ''}`), now);
       } else if (ev.kind === 'exit') {
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
       }

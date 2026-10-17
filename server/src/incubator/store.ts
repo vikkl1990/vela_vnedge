@@ -27,6 +27,17 @@ const toPair = (r: any): PairRow => ({
   screen: r.screen ? JSON.parse(r.screen) : null, gate: r.gate ? JSON.parse(r.gate) : null, note: r.note,
 });
 
+export interface SignalFunnel { entries: number; opened: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
+/** The gate an entry signal's recorded action names (decision 112); the same words the Signals page shows. */
+export function funnelClass(action: string): 'opened' | 'regime' | 'cost' | 'market' | 'quote' | 'other' {
+  if (action === 'opened' || action === 'reversed' || action.startsWith('pending')) return 'opened';
+  if (action.startsWith('rejected:risk regime')) return 'regime';
+  if (action.startsWith('rejected:stop too tight')) return 'cost';
+  if (action.startsWith('rejected:risk market')) return 'market';
+  if (action.startsWith('rejected:unpriceable')) return 'quote';
+  return 'other';
+}
+
 export class IncubatorStore {
   private db: Db;
   constructor(db: Db) { this.db = db; }
@@ -37,6 +48,21 @@ export class IncubatorStore {
    * allowed, `false` refused with its reasons, `null` never judged. The account refuses entries on a
    * refused market, so the judge must not propose one and the admission must not fill a slot with one.
    */
+  /**
+   * Decision 112: what became of a live cell's entry signals since `since` — opened, or which gate refused them.
+   * The account's own record from the signals table; the shadow runner keeps the same shape for shadow pairs.
+   */
+  signalFunnel(scannerId: string, symbol: string, tf: string, since: number): SignalFunnel {
+    const rows = this.db.all<{ action: string; at: number }>("SELECT action, at FROM signals WHERE kind='entry' AND scanner_id=? AND symbol=? AND tf=? AND at>=?", scannerId, symbol, tf, since);
+    const f: SignalFunnel = { entries: 0, opened: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
+    for (const r of rows) { f.entries++; const k = funnelClass(r.action); f[k]++; if (k === 'opened') f.lastOpenAt = Math.max(f.lastOpenAt ?? 0, r.at); }
+    return f;
+  }
+
+  /** Decision 112: the shadow runner's record of what became of each shadow pair's signals, by pair key: [at, class] pairs, newest last. */
+  shadowFunnel(): Record<string, Array<[number, string]>> { return this.db.kvGet<Record<string, Array<[number, string]>>>('incubator.shadowFunnel') ?? {}; }
+  setShadowFunnel(rec: Record<string, Array<[number, string]>>): void { this.db.kvSet('incubator.shadowFunnel', rec); }
+
   /** Decision 109: since when each live pair's market has been out (refused or not judged), by pair key; cleared the day it is allowed again. */
   marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut') ?? {}; }
   setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut', rec); }

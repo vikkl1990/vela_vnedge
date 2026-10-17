@@ -3309,3 +3309,35 @@ is promoted. The per-cell `script` variant in `diagnose` remains the measurement
 strategy's own levels beat the fallback; nothing about the fill model, the stop width or the gates
 moves. Classification, exit modes and the silent-script rule were already in place and were not
 rebuilt.
+
+## 112. The shadow book refuses what the account refuses (17 October 2026)
+
+**The gap.** The shadow runner applied the trend gate and the paper engine's own checks (the cost
+rule, sizing, the quote requirement) but never the risk manager, so the efficiency gate and the
+market gate never refused a shadow entry. The journal showed the consequence: 1,028 choppy-regime
+shadow trades at −0.01R that the account would have refused, and cohorts clearing the promotion
+gate on a trade rate the live rules then halved. 26 of the 43 live cells had opened nothing in 14
+days. Decision 109 fixed the screen's cost assumption; this closes the runner's.
+
+**The rules.** The regime gate is one exported function (`regimeRefusal`) that the risk manager and
+the shadow runner both call, so the two cannot drift. A shadow entry is now refused by the market
+gate's verdict of the day and by the regime gate (weekend, ATR floor, efficiency floor) exactly as a
+live one is. Account-state gates stay live-only — daily and weekly loss, position caps, the burst
+guard, re-entry and loss cooldowns — because they depend on what else the book holds and would make
+shadow evidence depend on the fleet's luck. The 30-trade, PF 1.2, +0.1R promotion floor is
+unchanged: with shadow refusing what the account refuses, it now means opens under the live rules.
+
+**The record.** Every shadow pair keeps what became of its signals — opened, or refused by regime,
+cost, market or quote — for 14 days (`incubator.shadowFunnel`), and every live cell has the same
+funnel read from the signals table. The Incubator page shows it per cell, with the demotion clocks a
+live cell is on: market out (decision 109), silent (decision 106), cost-starved (below).
+
+**Cost-starved cells.** A live cell with `demote.costStarvedRefusals` (5) or more cost-rule
+refusals and no open in `demote.costStarvedDays` (14) is proposed for demotion: its stops cannot
+cover six round trips on its market, and that will not change tomorrow. No such clock for the
+efficiency gate — a cell refused by it is waiting for the market to move, and the 14-day silent rule
+already covers that wait.
+
+**Not changed.** The fill model, the stop width, every measured threshold, the exit modes, the
+strategy ledger (decision 111) and the 43 live cells, which the account's own record judges faster
+than a re-vetted shadow book would.

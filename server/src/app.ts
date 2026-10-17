@@ -119,6 +119,7 @@ export class App {
     this.resolvedSymbols = cfg().symbols;
     this.incubator = new ShadowRunner({
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
+      marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
       subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
     });
     // 1m candles drive paper fills for every open position
@@ -622,15 +623,21 @@ export class App {
     for (const p of this.shadow.openPositions()) { const k = `${p.scannerId}|${p.symbol}|${p.tf}`; openShadow.set(k, (openShadow.get(k) ?? 0) + 1); }
     const names = new Map(this.registry.all().map(s => [s.id, s.name]));
     const markets = this.incubatorStore.marketsToday();
+    const since14 = now - 14 * 86400_000;
     const pairs = this.incubatorStore.list().map(r => {
       const book = r.stage === 'live' || r.stage === 'demote_proposed' ? 0 : 2;
       const judged = r.stage !== 'candidate' && r.stage !== 'retired';
+      const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
+      const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       return {
         ...r, scannerName: names.get(r.scannerId) ?? r.scannerId,
-        stats: judged ? pairStats(this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book), r.since, now) : null,
-        openShadow: openShadow.get(`${r.scannerId}|${r.symbol}|${r.tf}`) ?? 0,
+        stats: judged ? pairStats(trades, r.since, now) : null,
+        openShadow: openShadow.get(key) ?? 0,
         // decision 104: whether the account could trade this market today, and why not
         market: markets.get(r.symbol) ?? null,
+        // decision 112: what became of the cell's signals in the last 14 days, from the account's record or the shadow runner's
+        funnel: book === 0 ? this.incubatorStore.signalFunnel(r.scannerId, r.symbol, r.tf, since14) : judged ? this.incubator.funnelOf(key, since14) : null,
+        lastTradeAt: trades.length ? Math.max(...trades.map(t => t.entryAt)) : null,
       };
     });
     return {

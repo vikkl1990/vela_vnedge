@@ -163,13 +163,14 @@ export default function Incubator() {
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Shadow pairs and their progress toward the promotion gate</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Progress</th><th scope="col">Still missing</th><th scope="col">Open</th></tr></thead>
+                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Progress</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col">Still missing</th><th scope="col">Open</th></tr></thead>
                       <tbody>
                         {shadow.map((p) => (
                           <tr key={p.id}>
                             <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
                             <td className="mono">{p.symbol}</td>
                             <td><Evidence s={p.stats} g={g} /></td>
+                            <td className="small"><Funnel f={p.funnel} /></td>
                             <td className="muted small">{p.gate?.decision === 'brewing' ? p.gate.reasons.join('; ') : 'not judged yet'}</td>
                             <td className="mono">{p.openShadow || ''}</td>
                           </tr>
@@ -209,13 +210,15 @@ export default function Incubator() {
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Live pairs and their recent record</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Live record</th><th scope="col">Health</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Live record</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col" title="The demotion clocks: days the market has been out, days since the last account trade, cost-rule starvation">Clock</th><th scope="col">Health</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
                       <tbody>
                         {live.map((p) => (
                           <tr key={p.id}>
                             <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
-                            <td className="mono">{p.symbol}</td>
+                            <td className="mono">{p.symbol}{p.market && !p.market.allowed && <> <Pill tone="warn">market out</Pill></>}</td>
                             <td className="small">{p.stats ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%` : '—'}</td>
+                            <td className="small"><Funnel f={p.funnel} /></td>
+                            <td className="small"><Clocks p={p} cfg={d.config.demote} now={d.lastRun?.at ?? Date.now()} /></td>
                             <td className="small">{(p.stats?.trades ?? 0) < d.config.demote.minTrades ? <span className="muted">collecting ({p.stats?.trades ?? 0}/{d.config.demote.minTrades})</span> : <Pill tone="ok">healthy</Pill>}</td>
                             <td className="num">{auth.isAdmin && <button className="btn btn-xs" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow</button>}</td>
                           </tr>
@@ -260,4 +263,38 @@ export default function Incubator() {
       </QueryState>
     </>
   )
+}
+
+/** Decision 112: the last 14 days of a cell's entry signals — opened, or the gate that refused them. */
+function Funnel({ f }: { f: IncubatorPair['funnel'] }) {
+  if (!f) return <span className="muted">—</span>
+  if (!f.entries) return <span className="muted">no signals</span>
+  const parts = [
+    ['regime', f.regime],
+    ['cost', f.cost],
+    ['market', f.market],
+    ['quote', f.quote],
+    ['other', f.other],
+  ].filter(([, n]) => (n as number) > 0) as Array<[string, number]>
+  return (
+    <span>
+      <span className="mono">{f.entries}</span> signals · <span className={f.opened ? 'gain' : 'loss'}>{f.opened} opened</span>
+      {parts.length > 0 && <span className="muted"> · refused: {parts.map(([k, n]) => `${n} ${k}`).join(', ')}</span>}
+    </span>
+  )
+}
+
+/** The demotion clocks a live cell is on (decisions 106, 109, 112), or "none". */
+function Clocks({ p, cfg, now }: { p: IncubatorPair; cfg: { silentDays?: number; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }; now: number }) {
+  const items: Array<{ text: string; tone: 'warn' | 'danger' }> = []
+  const out = (p.gate as { marketOutDays?: number } | null)?.marketOutDays ?? 0
+  if (p.market && !p.market.allowed) items.push({ text: `market out ${Math.floor(out)}/${cfg.marketOutDays ?? '–'} d`, tone: out >= (cfg.marketOutDays ?? Infinity) ? 'danger' : 'warn' })
+  if (cfg.silentDays) {
+    const last = p.lastTradeAt ?? p.since
+    const days = Math.floor((now - last) / 86_400_000)
+    if (days >= Math.max(1, Math.floor(cfg.silentDays / 2))) items.push({ text: `silent ${days}/${cfg.silentDays} d`, tone: days >= cfg.silentDays ? 'danger' : 'warn' })
+  }
+  if (cfg.costStarvedRefusals && p.funnel && p.funnel.opened === 0 && p.funnel.cost > 0) items.push({ text: `cost-starved ${p.funnel.cost}/${cfg.costStarvedRefusals}`, tone: p.funnel.cost >= cfg.costStarvedRefusals ? 'danger' : 'warn' })
+  if (!items.length) return <span className="muted">none</span>
+  return <>{items.map((it) => <Pill key={it.text} tone={it.tone}>{it.text}</Pill>)}</>
 }

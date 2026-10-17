@@ -432,3 +432,24 @@ test('decision 109: a live cell on a market the gate refuses for marketOutDays i
   db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [{ symbol: 'BTCUSD', allowed: false, tracked: true, reasons: ['costly book'] }, { symbol: 'ETHUSD', allowed: true, tracked: true, reasons: [] }] });
   assert.deepEqual(evaluate(store, cfg, T0 + 5 * DAY).demoteProposed.filter(n => n.includes('BTC')), [], 'one day out again: not yet');
 });
+
+test('decision 112: a cost-starved live cell is proposed for demotion; one that opened is not; the funnel reads the signals table', () => {
+  const { db, store, cfg } = world();
+  cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 0, costStarvedRefusals: 5, costStarvedDays: 14 };
+  cfg.scanners = { s1: { enabled: true, pairs: [{ symbol: 'BTCUSD', tf: '15m' }, { symbol: 'ETHUSD', tf: '15m' }], timeframes: null, exitMode: 'both' } as any };
+  syncLive(store, cfg, T0);
+  const now = T0 + 10 * DAY;
+  const sig = (symbol: string, at: number, action: string) => db.insertSignal({ at, barTime: at, scannerId: 's1', scannerName: 'S1', symbol, tf: '15m', kind: 'entry', side: 'long', price: 100, sl: 99, tp: [], score: null, label: 'L', message: '', summary: '', source: 'alert', levelsSource: 'atr-fallback', action, positionId: null });
+  for (let i = 0; i < 5; i++) sig('BTCUSD', now - i * DAY, 'rejected:stop too tight for fees (0.25% stop vs 0.19% round-trip cost; need ≥ 6×)');
+  sig('BTCUSD', now - 6 * DAY, 'rejected:risk regime: choppy (efficiency 0.10 < 0.25)');
+  for (let i = 0; i < 5; i++) sig('ETHUSD', now - i * DAY, 'rejected:stop too tight for fees (0.25% stop vs 0.19% round-trip cost; need ≥ 6×)');
+  sig('ETHUSD', now - 2 * DAY + 60_000, 'opened'); // its own bar: the signals table keys on bar, side and label
+  sig('BTCUSD', now - 20 * DAY, 'opened'); // outside the window
+  const f = store.signalFunnel('s1', 'BTCUSD', '15m', now - 14 * DAY);
+  assert.deepEqual(f, { entries: 6, opened: 0, regime: 1, cost: 5, market: 0, quote: 0, other: 0, lastOpenAt: null });
+  const rep = evaluate(store, cfg, now);
+  assert.deepEqual(rep.demoteProposed, ['s1 BTCUSD 15m']);
+  assert.match(store.find('s1', 'BTCUSD', '15m')!.gate?.reasons?.[0] ?? '', /cost-starved: 5 of 6 signals refused by the cost rule and none opened in 14 days/);
+  assert.equal(store.find('s1', 'ETHUSD', '15m')!.stage, 'live', 'one open in the window keeps the cell');
+  assert.equal(store.signalFunnel('s1', 'ETHUSD', '15m', now - 14 * DAY).lastOpenAt, now - 2 * DAY + 60_000);
+});

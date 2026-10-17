@@ -167,9 +167,16 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (why) out[key] ??= now; else delete out[key];
     const outFor = why ? (now - out[key]) / DAY : 0;
     const marketOut = outDays > 0 && why !== null && outFor >= outDays;
-    const reason = marketOut ? `market out: ${why} — ${Math.round(outFor)} days in a row (cap ${outDays})` : silent ? `silent: no account trade in ${Math.round((now - lastAt) / DAY)} days (cap ${silentDays})` : d.reason;
-    store.setGate(r.id, { at: now, stats: d.stats, reasons: [reason], decision: d.demote || silent || marketOut ? 'demote' : 'keep', marketOutDays: why ? outFor : 0 }, now);
-    if (d.demote || silent || marketOut) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason }, reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
+    // decision 112: a cell whose stops cannot cover the cost rule on its market will never trade; it gives its slot back
+    const csN = inc.demote.costStarvedRefusals ?? 0, csDays = inc.demote.costStarvedDays ?? 14;
+    const funnel = csN > 0 ? store.signalFunnel(r.scannerId, r.symbol, r.tf, now - csDays * DAY) : null;
+    const costStarved = funnel !== null && funnel.cost >= csN && funnel.opened === 0;
+    const reason = marketOut ? `market out: ${why} — ${Math.round(outFor)} days in a row (cap ${outDays})`
+      : costStarved ? `cost-starved: ${funnel!.cost} of ${funnel!.entries} signals refused by the cost rule and none opened in ${csDays} days`
+      : silent ? `silent: no account trade in ${Math.round((now - lastAt) / DAY)} days (cap ${silentDays})` : d.reason;
+    const demote = d.demote || silent || marketOut || costStarved;
+    store.setGate(r.id, { at: now, stats: d.stats, reasons: [reason], decision: demote ? 'demote' : 'keep', marketOutDays: why ? outFor : 0 }, now);
+    if (demote) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason }, reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
   }
   for (const k of Object.keys(out)) if (!liveKeys.has(k)) delete out[k];
   store.setMarketOut(out);

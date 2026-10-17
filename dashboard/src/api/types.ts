@@ -595,6 +595,10 @@ export interface IncubatorPair {
   since: number; updated: number; note: string | null; screen: IncubatorScreen | null
   gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats } | null
   stats: IncubatorStats | null; openShadow: number
+  /** Decision 112: what became of the cell's entry signals in the last 14 days — opened, or which gate refused them. */
+  funnel?: { entries: number; opened: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null
+  /** When the cell's last trade in its book was entered. */
+  lastTradeAt?: number | null
 }
 export interface IncubatorEvent { id: number; at: number; pairId: number; scannerId: string; symbol: string; tf: string; from: IncubatorStage | null; to: IncubatorStage; actor: string; evidence: unknown }
 export interface IncubatorView {
@@ -604,7 +608,7 @@ export interface IncubatorView {
     screen: { minTrades: number; minProfitFactor: number; minWindowsUp: number; stressBps: number; slices: number }
     gate: { minTrades: number; minDays: number; minPfR: number; minPositiveWeeksPct: number; minAvgR: number; maxOverlapPct: number; maxDays: number; failPfR: number }
     promote: { maxPerWeek: number; maxFleet: number }
-    demote: { window: number; minTrades: number; maxPfR: number }
+    demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
   }
   counts: Partial<Record<IncubatorStage, number>>
   fleet: number; promotionsThisWeek: number
