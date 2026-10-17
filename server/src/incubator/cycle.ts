@@ -134,7 +134,9 @@ const name = (r: PairKey) => `${r.scannerId} ${r.symbol} ${r.tf}`;
 /** Why the account could not trade this market today, or null when the gate allows it or has not judged it. */
 function marketRefusal(markets: Map<string, { allowed: boolean; reasons: string[] }>, symbol: string): string | null {
   const m = markets.get(symbol);
-  return m && !m.allowed ? `the market gate refuses ${symbol} today: ${m.reasons.join('; ') || 'not allowed'}` : null;
+  // decision 109: a market the gate has verdicts for but none on this symbol is outside its universe — below the turnover floor or unlisted — and is out, not unknown
+  if (!m) return markets.size ? `the market gate does not judge ${symbol} today: outside its universe` : null;
+  return !m.allowed ? `the market gate refuses ${symbol} today: ${m.reasons.join('; ') || 'not allowed'}` : null;
 }
 
 export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()): CycleReport {
@@ -151,6 +153,8 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   if (inc.gate.pool === 'cohort') judgeCohorts(store, cfg, active, rep, now);
   else for (const r of active) judgePair(store, cfg, r, rep, now);
 
+  // decision 109: a live cell on a market the gate refuses cannot trade; after `marketOutDays` in a row it gives its slot back
+  const out = store.marketOut(); const outDays = inc.demote.marketOutDays ?? 0; const liveKeys = new Set<string>();
   for (const r of store.list(['live'])) {
     const trades = store.trades(r.scannerId, r.symbol, r.tf, 0).filter(t => t.entryAt >= r.since);
     const d = demoteVerdict(trades, inc.demote);
@@ -158,10 +162,17 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     const silentDays = inc.demote.silentDays ?? 0;
     const lastAt = Math.max(r.since, ...trades.map(t => t.entryAt));
     const silent = silentDays > 0 && now - lastAt > silentDays * DAY;
-    const reason = silent ? `silent: no account trade in ${Math.round((now - lastAt) / DAY)} days (cap ${silentDays})` : d.reason;
-    store.setGate(r.id, { at: now, stats: d.stats, reasons: [reason], decision: d.demote || silent ? 'demote' : 'keep' }, now);
-    if (d.demote || silent) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason }, reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
+    const key = `${r.scannerId}|${r.symbol}|${r.tf}`; liveKeys.add(key);
+    const why = markets.size ? marketRefusal(markets, r.symbol) : null;
+    if (why) out[key] ??= now; else delete out[key];
+    const outFor = why ? (now - out[key]) / DAY : 0;
+    const marketOut = outDays > 0 && why !== null && outFor >= outDays;
+    const reason = marketOut ? `market out: ${why} — ${Math.round(outFor)} days in a row (cap ${outDays})` : silent ? `silent: no account trade in ${Math.round((now - lastAt) / DAY)} days (cap ${silentDays})` : d.reason;
+    store.setGate(r.id, { at: now, stats: d.stats, reasons: [reason], decision: d.demote || silent || marketOut ? 'demote' : 'keep', marketOutDays: why ? outFor : 0 }, now);
+    if (d.demote || silent || marketOut) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason }, reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
   }
+  for (const k of Object.keys(out)) if (!liveKeys.has(k)) delete out[k];
+  store.setMarketOut(out);
   // decision 106: a shadow pair with no shadow trade for `gate.staleDays` proves nothing and gives its slot back
   // decision 108: the cap follows the timeframe — 21 days is three weeks of 15m bars and five 4h trades at best
   for (const r of store.list(['shadow'])) {

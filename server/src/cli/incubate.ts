@@ -94,7 +94,10 @@ while (sliceArg !== 'none') {
   //      not dead, not too quiet), most liquid first; the turnover top-N only when the gate has no verdicts ----
   const tickers = await rest.tickers();
   const turnover = new Map(tickers.map((t: any) => [String(t.symbol), Number(t.turnover_usd ?? 0)]));
-  const today = db.kvGet<{ enabled: boolean; markets: Array<{ symbol: string; allowed: boolean }> }>('risk.marketsToday');
+  const today = db.kvGet<{ enabled: boolean; markets: Array<{ symbol: string; allowed: boolean; bookCostPct?: number | null }> }>('risk.marketsToday');
+  // decision 109: the screen pays each market's measured round-trip book cost, as the account does (decision 96's honest
+  // base), so a cell whose stop the live cost rule would refuse is not admitted on a backtest that never paid the book
+  const bookCost = new Map((today?.markets ?? []).filter(m => typeof m.bookCostPct === 'number' && m.bookCostPct! > 0).map(m => [m.symbol, m.bookCostPct as number]));
   const allowed = today?.enabled ? today.markets.filter(m => m.allowed && /USD$/.test(m.symbol)).map(m => m.symbol) : [];
   const universe = (allowed.length
     ? allowed
@@ -140,7 +143,7 @@ while (sliceArg !== 'none') {
       data.set(symbol, { bars, m1, market: marketSpec(p) });
     } catch (e: any) { out(`  ${symbol}: no candles (${e?.message ?? e})`); }
   }
-  out(`candles loaded for ${data.size} markets`);
+  out(`candles loaded for ${data.size} markets; book cost known for ${[...data.keys()].filter(s => bookCost.has(s)).length} of them`);
 
   // markets this account cannot size a position in, measured from contract size and volatility
   const equity = new PaperEngine(db, () => cfg).equity();
@@ -228,7 +231,7 @@ while (sliceArg !== 'none') {
         const events = extractEvents(res.alerts, res.shapes, { derived });
         if (!events.some(e => e.kind === 'entry')) continue;
         sawEntry = true;
-        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1 } as const;
+        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: bookCost.get(symbol) } as const;
         const bt = runBacktest(base);
         const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps } });
         const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);

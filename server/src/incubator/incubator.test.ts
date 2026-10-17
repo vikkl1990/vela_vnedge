@@ -403,3 +403,32 @@ test('decision 108: the positive-weeks share is judged only from minWeeks weeks,
   assert.equal(store.find('s', 'ETHUSD', '4h')!.stage, 'shadow');
   db.db.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('decision 109: a live cell on a market the gate refuses for marketOutDays in a row is proposed for demotion; an unjudged market counts as out', () => {
+  const { db, store, cfg } = world();
+  cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 3 };
+  cfg.scanners = {
+    s1: { enabled: true, pairs: [{ symbol: 'BTCUSD', tf: '1h' }, { symbol: 'ETHUSD', tf: '1h' }, { symbol: 'ZZZUSD', tf: '1h' }], timeframes: null, exitMode: 'both' } as any,
+  };
+  syncLive(store, cfg, T0);
+  // BTC refused, ETH allowed, ZZZ not judged at all while the gate has verdicts
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [
+    { symbol: 'BTCUSD', allowed: false, tracked: true, reasons: ['dead: $0.02M 24h turnover < $0.05M'] },
+    { symbol: 'ETHUSD', allowed: true, tracked: true, reasons: [] },
+  ] });
+  assert.deepEqual(evaluate(store, cfg, T0).demoteProposed, [], 'day one: counted, not proposed');
+  assert.equal(store.find('s1', 'BTCUSD', '1h')!.gate?.reasons?.[0]?.startsWith('last '), true);
+  assert.deepEqual(evaluate(store, cfg, T0 + 2 * DAY).demoteProposed, []);
+  const r3 = evaluate(store, cfg, T0 + 3 * DAY);
+  assert.deepEqual(r3.demoteProposed.sort(), ['s1 BTCUSD 1h', 's1 ZZZUSD 1h']);
+  assert.match(store.find('s1', 'BTCUSD', '1h')!.gate?.reasons?.[0] ?? '', /market out: the market gate refuses BTCUSD today: dead.*3 days in a row/);
+  assert.match(store.find('s1', 'ZZZUSD', '1h')!.gate?.reasons?.[0] ?? '', /does not judge ZZZUSD today/);
+  assert.equal(store.find('s1', 'ETHUSD', '1h')!.stage, 'live');
+  // the market comes back: the counter clears and the days start over
+  reject(store, store.find('s1', 'BTCUSD', '1h')!.id, 'op', null, T0 + 3 * DAY + 1);
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [{ symbol: 'BTCUSD', allowed: true, tracked: true, reasons: [] }, { symbol: 'ETHUSD', allowed: true, tracked: true, reasons: [] }] });
+  evaluate(store, cfg, T0 + 4 * DAY);
+  assert.equal(store.marketOut()['s1|BTCUSD|1h'], undefined);
+  db.kvSet('risk.marketsToday', { enabled: true, at: T0, markets: [{ symbol: 'BTCUSD', allowed: false, tracked: true, reasons: ['costly book'] }, { symbol: 'ETHUSD', allowed: true, tracked: true, reasons: [] }] });
+  assert.deepEqual(evaluate(store, cfg, T0 + 5 * DAY).demoteProposed.filter(n => n.includes('BTC')), [], 'one day out again: not yet');
+});

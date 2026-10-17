@@ -37,6 +37,10 @@ export class IncubatorStore {
    * allowed, `false` refused with its reasons, `null` never judged. The account refuses entries on a
    * refused market, so the judge must not propose one and the admission must not fill a slot with one.
    */
+  /** Decision 109: since when each live pair's market has been out (refused or not judged), by pair key; cleared the day it is allowed again. */
+  marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut') ?? {}; }
+  setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut', rec); }
+
   marketsToday(): Map<string, { allowed: boolean; reasons: string[] }> {
     const kv = this.db.kvGet<{ enabled?: boolean; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[] }> }>('risk.marketsToday');
     const out = new Map<string, { allowed: boolean; reasons: string[] }>();

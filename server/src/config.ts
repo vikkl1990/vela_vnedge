@@ -339,7 +339,9 @@ export interface IncubatorConfig {
     auto?: boolean };
   demote: { window: number; minTrades: number; maxPfR: number;
     /** Decision 106: a live cell with no account trade for this many days is proposed for demotion; it holds a slot and does nothing. */
-    silentDays?: number };
+    silentDays?: number;
+    /** Decision 109: a live cell whose market the gate has refused (or not judged) for this many consecutive days is proposed for demotion. */
+    marketOutDays?: number };
   /** A pair that failed shadow is not screened again for this long. */
   cooldownDays: number;
   /**
@@ -486,7 +488,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3 },
     promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
-    demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14 },
+    demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, marketOutDays: 3 },
     cooldownDays: 30,
     maxContractRiskShare: 0.5,
   },
@@ -687,6 +689,7 @@ export function validateConfig(c: AppConfig): string[] {
     if (!(inc.universeTop >= 1 && inc.universeTop <= 500)) errs.push('incubator.universeTop must be 1..500');
     if (!(inc.gate?.minTrades >= 1 && inc.gate?.minDays >= 0 && inc.gate?.maxDays > inc.gate?.minDays)) errs.push('incubator.gate needs minTrades ≥ 1 and maxDays > minDays');
     if (!(inc.gate?.failPfR < inc.gate?.minPfR)) errs.push('incubator.gate.failPfR must be below minPfR');
+    if (inc.demote?.marketOutDays !== undefined && !(inc.demote.marketOutDays >= 1 && inc.demote.marketOutDays <= 60)) errs.push('incubator.demote.marketOutDays must be 1..60');
     if (inc.gate?.minWeeks !== undefined && !(Number.isInteger(inc.gate.minWeeks) && inc.gate.minWeeks >= 0 && inc.gate.minWeeks <= 12)) errs.push('incubator.gate.minWeeks must be 0..12');
     if (inc.gate?.staleDaysByTf !== undefined && !Object.values(inc.gate.staleDaysByTf).every(v => v > 0 && v <= 365)) errs.push('incubator.gate.staleDaysByTf values must be 1..365 days');
     if (inc.screen?.retryPerNight !== undefined && !(Number.isInteger(inc.screen.retryPerNight) && inc.screen.retryPerNight >= 0 && inc.screen.retryPerNight <= 200)) errs.push('incubator.screen.retryPerNight must be 0..200');

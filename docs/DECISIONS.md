@@ -3193,3 +3193,26 @@ The gate after the change: of the 250 shadow pairs' blocking reasons, the 113 th
 count (46 under 30) and losing starts (44 at PF 0). The first verdicts under the new gate come
 as the 20 pairs at 13.9 days cross 14. The retry batch starts with the next slice the nightly
 walk opens.
+
+## 109. The fleet stops holding markets it cannot trade, and the screen pays the book (17 October 2026)
+
+**What the cells were doing.** Of the 43 live cells, 11 sat on markets the gate refused that day
+(dead turnover under $50k, a costly book) or did not judge at all (outside its universe): every
+one of their signals ended in "rejected: risk market", 16 of 17 on one cell. A cell on a refused
+market cannot trade, so the 14-day silent rule would have freed it two weeks later; and of the 13
+cells promoted by hand on 16 October onto 15m, the first signals were refused as "stop too tight
+for fees" — the screen had passed them on a backtest that never paid the book, which the live
+cost rule does (decision 105).
+
+**The rules.** A live cell whose market the gate refuses, or does not judge, for
+`demote.marketOutDays` (3) consecutive days is proposed for demotion with that reason; the day
+the market is allowed again the count clears. A market the gate has verdicts for but none on a
+symbol is out, not unknown: `marketRefusal` refuses it for proposal, admission and the demotion
+count alike. And the nightly screen passes each market's measured round-trip book cost into its
+backtest (`spreadPct`, decision 96's honest base), so the stop-versus-cost rule and the slippage
+the account pays are both in the number a cell is admitted on.
+
+**Not changed.** Three scanners publish their own stops and targets; the other eleven trade the
+1.5×ATR fallback, which measured best (decision 93) — a scanner here is a trigger, the exit is the
+bot's. The chop gate's refusals (61 of the last 150 entries) stay: it is the one filter that paid.
+The runtime quarantines get their retry under decision 108.
