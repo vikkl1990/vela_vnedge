@@ -3615,3 +3615,41 @@ marginal trade. The cost rule is not refusing good trades by a rounding margin; 
 entries whose move is too small to pay for, and giving them a wider stop only adds a smaller
 loser. No code change beyond the study. The rule stays at six, and the near-miss refusals on
 the Signals page are real rejections, as the rejection audit of decision 110 found for the rest.
+
+## 123. Scalping the majors on 1m: there is nothing to scalp at the account's costs (17 October 2026)
+
+**Why.** The operator asked for the scalp logic on BTC and ETH from the 1m data. 180 days of 1m
+bars for both, 20 April to 17 October, 259,200 bars each, pulled from Delta. Costs as the account
+pays them: 11.8 bp per round trip as a taker, 4.7 bp as a maker; the book on the majors is
+negligible. The study is under `_research/scalp-majors-20261017/`.
+
+**The structure.** A 1m bar moves 3.4 bp on BTC and 4.4 on ETH; 5m moves 7.5 and 9.8; an hour
+26 and 33. Autocorrelation of 1m and 5m returns is −0.01 to −0.02 at every lag; the variance
+ratio runs 0.94 at 5 minutes to 0.85 at 4 hours on BTC, 0.96 to 0.91 on ETH. That is mild mean
+reversion worth about one basis point, against a cost of five or twelve. After a 5m move of 2.5
+to 3.5σ the next 15 minutes give back 1.2 bp on both; a break of the 60m range continues by
+nothing on the upside and reverts 1 to 2 bp on the downside. By hour of day the only pocket is
+16 to 19 UTC, where a 2σ move gives back 5 to 7 bp over the next 15 minutes.
+
+**The simulations.** Every rule run bar by bar on the 1m history, entry at the next open, the
+stop checked before the target in a bar, a time stop, both halves reported.
+
+| rule | BTC taker | BTC maker | ETH taker | ETH maker |
+|---|---|---|---|---|
+| fade a 2–3σ 5m move, stop 1.5–2σ, target 1–1.5σ, 30 min | −0.69 to −0.97R | −0.27 to −0.39R | −0.51 to −0.76R | −0.21 to −0.31R |
+| ride a 2.5–3.5σ move, 2σ stop and target, 60 min | −0.71 to −0.76R | −0.30 to −0.34R | −0.52 to −0.56R | −0.23 to −0.24R |
+| 60m range breakout, 1.5–2 ATR stop, 1.5–4 ATR target | −1.34 to −1.80R | −0.57 to −0.77R | −0.91 to −1.26R | −0.37 to −0.54R |
+| fade a 2.5σ move with the stop at the account's 0.71% floor, 1:1 | −0.12R | −0.02R | −0.16R | −0.06R |
+| fade a 2σ move in 16–20 UTC, pure 15 min time exit | +2.4 bp gross, −9.4 net | −2.3 bp | +4.7 bp gross, −7.1 net | −0.0 bp |
+
+The gross edge of every scalp rule is within a basis point of zero; the net is the fee. The
+only rule that clears the cost rule's floor, the 0.71% stop, is flat before fees and loses after.
+The 16–19 UTC pocket is real in the sense that it is positive in every month of the seven and
+in both halves, but it is 2 to 5 bp gross against a 4.7 bp maker round trip, and the second half
+is a third of the first.
+
+**Verdict.** There is no scalp on BTC or ETH at this account's costs, as a taker or as a maker.
+The majors' 1m and 5m returns carry about a basis point of reversion and no momentum; a scalp
+needs ten. Nothing to build. The majors remain a 4h question (decision 110's fade scanner), and
+the cost rule that refuses their 15m signals is refusing correctly, as decision 122 found for
+the alts.
