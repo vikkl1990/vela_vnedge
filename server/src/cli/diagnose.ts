@@ -269,6 +269,17 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['s-be0.5'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0 }), b, tfMs);
   variants['s-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0 }), b, tfMs);
   variants['s-floor0.5k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0.2 }), b, tfMs);
+  // the exit study (17 Oct): the same entries, the account's costs, only the trail, the floor and the first target move.
+  // The account keeps half of its winners' peak (trail +0.51R on a 0.91R peak); these ask what keeping more of it costs.
+  variants['x-gb25'] = stat(run({ spreadPct }, { trailGiveBackPct: 25, trailSteps: [[2, 20], [4, 15]] }), b, tfMs);
+  variants['x-gb15'] = stat(run({ spreadPct }, { trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]] }), b, tfMs);
+  variants['x-gb60'] = stat(run({ spreadPct }, { trailGiveBackPct: 60, trailSteps: [[2, 40], [4, 25]] }), b, tfMs);
+  variants['x-after1'] = stat(run({ spreadPct }, { trailAfterR: 1.0 }), b, tfMs);
+  variants['x-after1gb25'] = stat(run({ spreadPct }, { trailAfterR: 1.0, trailGiveBackPct: 25, trailSteps: [[2, 20], [4, 15]] }), b, tfMs);
+  variants['x-floor1k0.5'] = stat(run({ spreadPct }, { floorAtR: 1.0, floorKeepR: 0.5 }), b, tfMs);
+  variants['x-half1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 4, 6], tpSplit: [0.5, 0, 0.5] }), b, tfMs);
+  variants['x-all2R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [1, 0, 0] }), b, tfMs);
+  variants['x-nostall'] = stat(run({ spreadPct }, { trailStall: { minutes: 0, factor: 1 } }), b, tfMs);
   // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
   variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
   variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);
