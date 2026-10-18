@@ -3881,3 +3881,23 @@ holds on the second half is the 10% give-back, +153R against +138R.
 every fixed ladder loses; the scripts in the fleet publish no targets to use; per-scanner target
 settings cannot be chosen from history. The trail's give-back remains the only exit setting that
 pays, and 10% is its next step, on the operator's word once the forward sample is in.
+
+**Applied, and the account's own ledger replayed.** The operator authorised the 10% give-back on
+18 October ("go ahead"); set through the config route at 16:47 UTC: `trailGiveBackPct` 10,
+`trailSteps` [[2, 8], [4, 6]]. The account's 80 closed trades were then replayed through the live
+exit engine on 1m candles (`npm run replay`, policies brought up to date), with their real fills,
+stops and sizes and the account's costs:
+
+| policy | total | per trade | win rate |
+|---|---|---|---|
+| as they actually ended | −4.81R | | |
+| trail 40%, steps 30/20 (as traded until 17 October) | −5.68R | −0.071R | 60% |
+| trail 15%, steps 12/10 (decision 124) | −1.66R | −0.021R | 61% |
+| trail 10%, steps 8/6 (deployed) | −0.98R | −0.012R | 61% |
+
+43 of the 80 trades end differently under the deployed trail: 35 keep more, the largest a runner
+that the 40% trail still held open at the 48-hour horizon and the 10% trail banked at +1.13R, and
+8 keep less, the largest a +1.65R runner cut to +0.42R. The gain on this ledger is +4.7R over 80
+trades, smaller per trade than the 72-cell study because the account's result is set by its 28
+stop-outs, which no trail touches. The optimistic reading (targets before stops in a bar) gives the
+same figure, so the number does not depend on the bar-order assumption.

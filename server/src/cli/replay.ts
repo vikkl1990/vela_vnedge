@@ -25,12 +25,12 @@ const rest = new DeltaRest();
 
 type Over = ExitOverride & { barOrder?: 'stop-first' | 'target-first' };
 const POLICIES: Array<{ name: string; over: Over }> = [
-  { name: 'before 24 Sep (floor 1/0.5, trail 60% from 1.5R)', over: { floorAtR: 1, floorKeepR: 0.5, trailAfterR: 1.5, trailGiveBackPct: 40, trailSteps: [], trailStall: { minutes: 0, factor: 1 } } },
-  { name: 'trail from 1R (decision 34)', over: { floorAtR: 1, floorKeepR: 0.5, trailAfterR: 1, trailGiveBackPct: 40, trailSteps: [], trailStall: { minutes: 0, factor: 1 } } },
   // spelled out rather than inherited: a policy that depends on whichever config file is loaded is
   // how this comparison first came out with two identical rows
-  { name: 'deployed now (steps + stall, decision 36)', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 } } },
-  { name: 'deployed, read optimistically', over: { trailAfterR: 1, trailSteps: [[2, 30], [4, 20]], trailStall: { minutes: 45, factor: 0.6 }, barOrder: 'target-first' } },
+  { name: 'as traded until 17 Oct (trail 40%, steps 30/20)', over: { trailAfterR: 0.5, trailGiveBackPct: 40, trailSteps: [[2, 30], [4, 20]], floorAtR: 0.5, floorKeepR: 0.25, trailStall: { minutes: 45, factor: 0.6 } } },
+  { name: 'decision 124 (trail 15%, steps 12/10)', over: { trailAfterR: 0.5, trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]], floorAtR: 0.5, floorKeepR: 0.25, trailStall: { minutes: 45, factor: 0.6 } } },
+  { name: 'decision 129, deployed (trail 10%, steps 8/6)', over: { trailAfterR: 0.5, trailGiveBackPct: 10, trailSteps: [[2, 8], [4, 6]], floorAtR: 0.5, floorKeepR: 0.25, trailStall: { minutes: 45, factor: 0.6 } } },
+  { name: 'deployed, read optimistically', over: { trailAfterR: 0.5, trailGiveBackPct: 10, trailSteps: [[2, 8], [4, 6]], floorAtR: 0.5, floorKeepR: 0.25, trailStall: { minutes: 45, factor: 0.6 }, barOrder: 'target-first' } },
 ];
 
 const bars = new Map<string, any[]>();
