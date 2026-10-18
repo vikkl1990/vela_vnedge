@@ -304,6 +304,11 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['x-ladder2-4-6split'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [0.5, 0.25, 0.25] }), b, tfMs);
   variants['x-tp1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 1, 1], tpSplit: [1, 0, 0] }), b, tfMs);
   variants['x-tp1.5R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 1.5, 1.5], tpSplit: [1, 0, 0] }), b, tfMs);
+  // the hybrid entry (decision 133): the signal on this timeframe, the fill on the first lower bar that continues beyond the signal bar
+  variants['h-break0'] = stat(run({ spreadPct, entry: { breakAtr: 0, breakBars: 4 } }), b, tfMs);
+  variants['h-break0.25'] = stat(run({ spreadPct, entry: { breakAtr: 0.25, breakBars: 4 } }), b, tfMs);
+  variants['h-break0@8'] = stat(run({ spreadPct, entry: { breakAtr: 0, breakBars: 8 } }), b, tfMs);
+  variants['h-break0+er'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 }, entry: { breakAtr: 0, breakBars: 4 } }), b, tfMs);
   // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
   variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
   variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);

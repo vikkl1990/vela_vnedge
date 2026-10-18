@@ -39,7 +39,14 @@ export interface BacktestInput {
    * rest a limit that many ATRs back from the signal price for `pullbackBars` bars and enter there as
    * a maker, or not at all. The stop is then measured from the fill, not from the impulse top.
    */
-  entry?: { maxSignalBarAtr?: number; pullbackAtr?: number; pullbackBars?: number };
+  entry?: { maxSignalBarAtr?: number; pullbackAtr?: number; pullbackBars?: number;
+    /**
+     * The hybrid entry (decision 133): the signal comes from this timeframe, the execution from the one below. A stop
+     * order rests `breakAtr` ATR beyond the signal bar's extreme in the trade's direction and fills on the first lower
+     * bar that crosses it (a taker fill at the trigger), or lapses after `breakBars` signal bars. A signal whose move
+     * never continues on the lower timeframe is never taken.
+     */
+    breakAtr?: number; breakBars?: number };
   /**
    * The market's round-trip book cost in percent (the market gate's `bookCostPct`): every market-style
    * leg pays half of it on top of the configured slippage, as the account does when it crosses a real
@@ -123,7 +130,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     return true;
   };
   // a limit resting back from a signal price (the pullback entry model); the latest signal replaces an earlier one
-  let pending: { ev: ScanEvent; limit: number; sigI: number; expires: number } | null = null;
+  let pending: { ev: ScanEvent; limit: number; sigI: number; expires: number; kind?: 'limit' | 'stop' } | null = null;
 
   let busted = false;
   for (let i = 0; i < bars.length && !busted; i++) {
@@ -132,14 +139,15 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     // 0. a resting pullback limit: filled on the first minute that touches it, dropped when its bars run out
     if (pending && !open) {
       if (i > pending.expires) { refuse('no pullback'); pending = null; }
-      else if (pending.ev.side === 'long' ? bar.low <= pending.limit : bar.high >= pending.limit) {
-        const { ev, limit, sigI } = pending; pending = null;
+      else if (pending.kind === 'stop' ? (pending.ev.side === 'long' ? bar.high >= pending.limit : bar.low <= pending.limit) : (pending.ev.side === 'long' ? bar.low <= pending.limit : bar.high >= pending.limit)) {
+        const { ev, limit, sigI } = pending; const isStop = pending.kind === 'stop'; pending = null;
+        const touched = (b: { high: number; low: number }) => isStop ? (ev.side === 'long' ? b.high >= limit : b.low <= limit) : (ev.side === 'long' ? b.low <= limit : b.high >= limit);
         if (sub) {
           while (si < sub.length && sub[si].time < bar.time) si++;
           let j = si;
-          for (; j < sub.length && sub[j].time < bar.time + tfMs; j++) if (ev.side === 'long' ? sub[j].low <= limit : sub[j].high >= limit) break;
+          for (; j < sub.length && sub[j].time < bar.time + tfMs; j++) if (touched(sub[j])) break;
           const fillAt = j < sub.length && sub[j].time < bar.time + tfMs ? sub[j].time : bar.time;
-          if (openAt(limit, fillAt, ev, sigI, true)) {
+          if (openAt(limit, fillAt, ev, sigI, !isStop)) {
             // `openAt` assigned the closure's `open`; the narrowing above does not see that
             const o = open as unknown as Position;
             const atrKnown = atr[i - 1] ?? atr[i];
@@ -151,7 +159,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
             }
             if (o.status === 'closed') finish(o);
           }
-        } else if (openAt(limit, bar.time, ev, sigI, true)) {
+        } else if (openAt(limit, bar.time, ev, sigI, !isStop)) {
           const o = open as unknown as Position;
           applyBar(o, bar, cfg, atr[i]);
           if (o.status === 'closed') finish(o);
@@ -218,6 +226,11 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       if (em?.pullbackAtr != null && em.pullbackAtr >= 0 && atr[i] > 0) {
         const limit = roundTick(ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i], inp.tickSize);
         pending = { ev, limit, sigI: i, expires: i + Math.max(1, em.pullbackBars ?? 3) };
+        continue;
+      }
+      if (em?.breakAtr != null && em.breakAtr >= 0 && atr[i] > 0) {
+        const trigger = roundTick(ev.side === 'long' ? bar.high + em.breakAtr * atr[i] : bar.low - em.breakAtr * atr[i], inp.tickSize);
+        pending = { ev, limit: trigger, sigI: i, expires: i + Math.max(1, em.breakBars ?? 4), kind: 'stop' };
         continue;
       }
       openAt(price, bar.time, ev, i, false);
