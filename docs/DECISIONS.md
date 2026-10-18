@@ -3966,3 +3966,19 @@ middle one, the top grades never fire, and a retest the script rates 80 or bette
 a flip it rates zero. This is the same finding as decision 128 for the entry side at large, now on
 the two scripts whose authors rated their own signals. The scores stay captured as features; they
 gate nothing and size nothing.
+
+**Precision Sniper, the threshold lowered.** Its score gates its own alerts, so the split needed
+the gate opened: `Min Confluence Score` 1, preset Custom, C grades shown, run on the five markets
+the screen judged it on, 15m, 4,000 bars, the account's costs. Its alerts carry the score and the
+extractor reads it.
+
+| grade (score of 10) | trades | R per trade | win rate |
+|---|---|---|---|
+| A (6.5 to 7.9) | 315 | +0.073 | 62% |
+| B (5 to 6.4) | 65 | −0.091 | 48% |
+| C (under 5) | 30 | +0.043 | 43% |
+| A+ (8 and above) | none in 4,000 bars | | |
+
+All 410 at +0.050R; the script's own default (B and above) at +0.045R; A alone at +0.073R. The
+order is not monotonic, B is the worst band on 65 trades and C is positive, so the tilt toward A is
+what 65 trades of noise look like, not a gate. Same verdict as the other two.
