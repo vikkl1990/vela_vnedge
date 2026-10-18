@@ -3847,3 +3847,37 @@ for the fees (122), and not a trade that should have been cut sooner (this). The
 move the book are which cells trade (the gate) and how much of a winner is kept (124). The early
 cut stays in the code as a study option and off. `earlyCut` is a risk setting; it is never set
 without the operator.
+
+## 129. "Smarter take-profits", tested: the floor, the ladders and per-scanner overrides all lose; the trail is the only lever (18 October 2026)
+
+**Why.** A reviewer's note on smarter take-profits proposed an earlier profit floor, per-scanner
+target overrides, the script's own targets over the fleet ladder, and warned against tighter
+ladders. The operator asked for it to be tested. Same 72 exit-study cells, 41 with ten or more
+trades under the account's costs, 4,511 trades, 1m sub-bars, the applied 15% trail as the base.
+
+| variant | Δ sum R | cells better / worse |
+|---|---|---|
+| floor at +0.3R keep +0.15R | −112 | 5 / 30 |
+| floor at +0.4R keep +0.2R | −68 | 8 / 20 |
+| floor at +0.3R keep +0.1R, trail armed at +0.3R | −66 | 11 / 23 |
+| script targets ignored, or widened only | 0 | none of the 41 cells' scripts publish a target |
+| ladder 1.5R / 3R / 6R in three legs | −8 | 0 / 6 |
+| ladder 1R / 2R / 4R in three legs | −29 | 0 / 14 |
+| ladder 2R / 4R / 6R, half at the first | −6 | 0 / 4 |
+| everything at +1R | −73 | 0 / 22 |
+| everything at +1.5R | −26 | 1 / 15 |
+| trail give-back 10% | +30 | 20 / 3 |
+
+**Per-scanner overrides, out of sample.** For each cell the exit with the best first-half R was
+chosen from seven candidates and judged on the second half: +133R, against +132R for the fleet
+default on the same cells and +159R with hindsight. Choosing exits per cell on the past transfers
+nothing to the future; the gap to hindsight is the in-sample illusion. The one global change that
+holds on the second half is the 10% give-back, +153R against +138R.
+
+**Forward reading of decision 124.** Shadow trail exits entered after the change: 16 so far, keeping
+79% of their peak and +0.70R per trade, against 52% and +0.56R in the week before.
+
+**Verdict.** An earlier floor gives runners away for a small lock and loses on three cells in four;
+every fixed ladder loses; the scripts in the fleet publish no targets to use; per-scanner target
+settings cannot be chosen from history. The trail's give-back remains the only exit setting that
+pays, and 10% is its next step, on the operator's word once the forward sample is in.
