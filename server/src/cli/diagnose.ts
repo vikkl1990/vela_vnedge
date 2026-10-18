@@ -292,6 +292,18 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['x-cut0.4@60'] = stat(run({ spreadPct }, { earlyCut: { r: -0.4, minutes: 60 } }), b, tfMs);
   variants['x-cut0.6@90'] = stat(run({ spreadPct }, { earlyCut: { r: -0.6, minutes: 90 } }), b, tfMs);
   variants['x-cut0.7@240'] = stat(run({ spreadPct }, { earlyCut: { r: -0.7, minutes: 240 } }), b, tfMs);
+  // the target study (decision 129): the reviewer's "smarter TPs" as variants: an earlier floor, the script's own targets
+  // against the fleet ladder, and tighter ladders that take profit in legs
+  variants['x-floor0.3k0.15'] = stat(run({ spreadPct }, { floorAtR: 0.3, floorKeepR: 0.15 }), b, tfMs);
+  variants['x-floor0.4k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.4, floorKeepR: 0.2 }), b, tfMs);
+  variants['x-floor0.3k0.1@0.3'] = stat(run({ spreadPct }, { floorAtR: 0.3, floorKeepR: 0.1, trailAfterR: 0.3 }), b, tfMs);
+  variants['x-st-ignore'] = stat(run({ spreadPct }, { scriptTargets: 'ignore' }), b, tfMs);
+  variants['x-st-widen'] = stat(run({ spreadPct }, { scriptTargets: 'widen' }), b, tfMs);
+  variants['x-ladder1.5-3-6'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 3, 6], tpSplit: [0.3, 0.3, 0.4] }), b, tfMs);
+  variants['x-ladder1-2-4'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 2, 4], tpSplit: [0.4, 0.3, 0.3] }), b, tfMs);
+  variants['x-ladder2-4-6split'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [0.5, 0.25, 0.25] }), b, tfMs);
+  variants['x-tp1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 1, 1], tpSplit: [1, 0, 0] }), b, tfMs);
+  variants['x-tp1.5R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 1.5, 1.5], tpSplit: [1, 0, 0] }), b, tfMs);
   // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
   variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
   variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);
