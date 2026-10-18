@@ -3941,3 +3941,28 @@ not more edge; it is less of the same edge.
 composite study of 29 September and the family lab (decision 45) found by other routes, and what
 decision 128 implies: the entry side carries no separable signal. Scanners stay separate cells.
 Measurement only; nothing promoted, no setting changed.
+
+## 131. The published scores of the WillyAlgo scripts carry no outcome information (18 October 2026)
+
+**Why.** A reviewer set out the scoring engines of three WillyAlgoTrader scripts, Precision Sniper's
+ten-factor confluence, Pulse Trend Radar's four-factor grade and Liquidity Trail Matrix's five-factor
+retest score, and suggested the score as an entry filter or a sizing input. The extractor already
+reads a `Score:` field and the grade in a label; the question was whether either separates
+outcomes. The diagnose tool's record per label now splits by the published score band.
+
+| script | reading | trades | R per trade | win rate |
+|---|---|---|---|---|
+| Pulse Trend Radar, 9 cells | grade B | 108 | +0.051 | 67% |
+| | grade C | 459 | +0.059 | 61% |
+| | grade A or A+ | 0 in 4,000 bars | | |
+| Liquidity Trail Matrix, 12 cells | band flip, score 0 | 250 | +0.054 | 62% |
+| | retest, score 80 and above | 232 | +0.044 | 66% |
+
+Precision Sniper has no shadow trades to read (decision 130's queue), and its score gates its own
+alerts before the extractor sees them, so it cannot be split after the fact.
+
+**Verdict.** Neither score separates anything under the fleet's exits: the lowest grade matches the
+middle one, the top grades never fire, and a retest the script rates 80 or better earns the same as
+a flip it rates zero. This is the same finding as decision 128 for the entry side at large, now on
+the two scripts whose authors rated their own signals. The scores stay captured as features; they
+gate nothing and size nothing.
