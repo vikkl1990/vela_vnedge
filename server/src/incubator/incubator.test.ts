@@ -541,3 +541,15 @@ test('decision 134: the backtest fills a market entry at the signal bar close, n
   assert.ok(r.trades[0].entryPrice >= 105, `filled at the close, not at the 101 breakout level (got ${r.trades[0].entryPrice})`);
 });
 function cfg0() { return structuredClone(DEFAULT_CONFIG); }
+
+test('decision 135: a script exit and a reversal fill at the close in the backtest, a target hit at its level', async () => {
+  const { runBacktest } = await import('../paper/backtest.ts');
+  const H = 3600_000; const bars = Array.from({ length: 40 }, (_, i) => ({ time: T0 + i * H, open: 100, high: 101, low: 99, close: 100, volume: 1 }));
+  bars[30] = { time: T0 + 30 * H, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1 };
+  bars[32] = { time: T0 + 32 * H, open: 100, high: 104, low: 99.5, close: 100.2, volume: 1 };
+  const ev = (kind: 'entry' | 'exit', i: number, price?: number, exitType?: any) => ({ kind, side: 'long' as const, price, exitType, tp: [], label: kind, message: '', source: 'alert' as const, barTime: bars[i].time, barIndex: i });
+  const base = { scannerId: 's', scannerName: 's', symbol: 'XUSD', tf: '1h', bars, cfg: { ...cfg0().paper, minRiskFeeRatio: 0, fallbackAtrSl: 5 }, exitMode: 'script' as const, contractValue: 1, tickSize: 0.01 };
+  const closeExit = runBacktest({ ...base, events: [ev('entry', 30), ev('exit', 32, 103.5, 'close')] });
+  assert.equal(closeExit.trades.length, 1);
+  assert.ok(Math.abs(closeExit.trades[0].exitPrice - 100.2) < 0.2, `a script close fills at the bar close (got ${closeExit.trades[0].exitPrice})`);
+});

@@ -198,8 +198,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if (!evs) continue;
     for (const ev of evs) {
       if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
-        const fb = ev.price ?? bar.close;
-        applyScriptExit(open, ev.exitType ?? 'close', ev.price, bar.time, cfg, inp.exitMode, fb);
+        // decision 135: a script's exit is acted on after the close, so it fills there; only a target hit keeps its level (a resting limit fills at it)
+        const type = ev.exitType ?? 'close';
+        applyScriptExit(open, type, /^tp\d$/.test(type) ? ev.price : undefined, bar.time, cfg, inp.exitMode, bar.close);
         if (open.status === 'closed') finish(open);
       }
     }
@@ -216,8 +217,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         if (open.side === ev.side) { rejected['already_open'] = (rejected['already_open'] ?? 0) + 1; continue; }
         if (!cfg.allowReversal) { rejected['reversal_disabled'] = (rejected['reversal_disabled'] ?? 0) + 1; continue; }
         // hold a losing position through an opposite signal when reversalMinR asks us to
-        if (!reversalAllowed(open, ev.price ?? bar.close, cfg)) { rejected['reversal_below_min'] = (rejected['reversal_below_min'] ?? 0) + 1; continue; }
-        fillExit(open, ev.price ?? bar.close, open.qtyOpen, 'reversal', bar.time, cfg, true);
+        // decision 135: the reversal is acted on after the close and fills there, as the live engine fills it at the quote
+        if (!reversalAllowed(open, bar.close, cfg)) { rejected['reversal_below_min'] = (rejected['reversal_below_min'] ?? 0) + 1; continue; }
+        fillExit(open, bar.close, open.qtyOpen, 'reversal', bar.time, cfg, true);
         finish(open);
       }
       // decision 134: a market entry fills at the signal bar's close, as the live engine fills at the market when it acts

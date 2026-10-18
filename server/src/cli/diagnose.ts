@@ -309,6 +309,11 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['h-break0.25'] = stat(run({ spreadPct, entry: { breakAtr: 0.25, breakBars: 4 } }), b, tfMs);
   variants['h-break0@8'] = stat(run({ spreadPct, entry: { breakAtr: 0, breakBars: 8 } }), b, tfMs);
   variants['h-break0+er'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 }, entry: { breakAtr: 0, breakBars: 4 } }), b, tfMs);
+  // the reversal study (decision 135): an opposite signal closes and flips the position; never, or only once the trade is ahead
+  variants['r-none'] = stat(run({ spreadPct }, { allowReversal: false }), b, tfMs);
+  variants['r-min0.5'] = stat(run({ spreadPct }, { reversalMinR: 0.5 }), b, tfMs);
+  variants['r-min1'] = stat(run({ spreadPct }, { reversalMinR: 1 }), b, tfMs);
+  variants['r-min0'] = stat(run({ spreadPct }, { reversalMinR: 0.0001 }), b, tfMs);
   // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
   variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
   variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);

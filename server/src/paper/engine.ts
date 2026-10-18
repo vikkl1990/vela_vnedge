@@ -495,8 +495,10 @@ export class PaperEngine extends EventEmitter {
     const pos = this.findOpen(scannerId, symbol, tf);
     if (!pos) return undefined;
     if (side && pos.side !== side) return undefined;
-    const fallback = price ?? this.marks.get(symbol) ?? pos.entryPrice;
-    const fills = applyScriptExit(pos, exitType, price, at, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId)), exitMode, fallback);
+    // decision 135: the exit is acted on now, at the market; only a target hit keeps its level (a resting limit fills at it).
+    // The script's price is a level its bar passed before it closed, which no order placed now can get.
+    const fallback = this.marks.get(symbol) ?? price ?? pos.entryPrice;
+    const fills = applyScriptExit(pos, exitType, /^tp\d$/.test(exitType) ? price : undefined, at, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId)), exitMode, fallback);
     if (fills.length) this.applyFills(pos, fills);
     return pos;
   }
