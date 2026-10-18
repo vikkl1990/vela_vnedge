@@ -3,6 +3,7 @@
  * Everything here reads public state (feed, pool stats, paper stats, candle store, db counters);
  * nothing is mutated except the alert manager and the drawdown peak persisted in `kv`.
  */
+import { dailyReport, dailyText } from '../analytics/daily.ts';
 import fs from 'node:fs';
 import { TF_SECONDS, type AppConfig } from '../config.ts';
 import type { Db } from '../db.ts';
@@ -199,8 +200,12 @@ export class Monitor {
     }
   }
 
-  /** Text of the daily summary (equity, pnl, trades, top scanners over the last 24 h). */
+  /** Text of the daily summary: the live equity and the last 24 hours, then decision 136's report for the day that closed. */
   dailySummary(now = this.now()): string {
+    const plain = this.plainSummary(now);
+    try { return `${plain}\n\n${dailyText(dailyReport(this.d.db, this.d.paper.stats().initialEquity, 8, now))}`; } catch { return plain; }
+  }
+  private plainSummary(now = this.now()): string {
     const stats = this.d.paper.stats();
     const since = now - 86_400_000;
     const trades = this.d.paper.trades({ limit: 5000 }).filter(t => (t.exitAt ?? 0) >= since);

@@ -2,6 +2,7 @@ import { lastAtr } from './data/indicators.ts';
 import { scriptModeExit, trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
+import { dailyReport } from './analytics/daily.ts';
 import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, type AppConfig } from './config.ts';
@@ -600,6 +601,9 @@ export class App {
   }
 
   /** Account exits by reason and the totals, in dollars (decision 108): the cuts the journal does not already give in R. */
+  /** Decision 136: one row per UTC day for the books and the incubator, newest first, today partial. */
+  dailyReport(days = 30) { return dailyReport(this.db, this.paper.stats().initialEquity, Math.max(1, Math.min(120, days))); }
+
   analytics() {
     type Agg = { trades: number; wins: number; pnl: number; gp: number; gl: number; fees: number };
     const mk = (): Agg => ({ trades: 0, wins: 0, pnl: 0, gp: 0, gl: 0, fees: 0 });

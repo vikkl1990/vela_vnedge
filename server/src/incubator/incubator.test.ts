@@ -551,5 +551,5 @@ test('decision 135: a script exit and a reversal fill at the close in the backte
   const base = { scannerId: 's', scannerName: 's', symbol: 'XUSD', tf: '1h', bars, cfg: { ...cfg0().paper, minRiskFeeRatio: 0, fallbackAtrSl: 5 }, exitMode: 'script' as const, contractValue: 1, tickSize: 0.01 };
   const closeExit = runBacktest({ ...base, events: [ev('entry', 30), ev('exit', 32, 103.5, 'close')] });
   assert.equal(closeExit.trades.length, 1);
-  assert.ok(Math.abs(closeExit.trades[0].exitPrice - 100.2) < 0.2, `a script close fills at the bar close (got ${closeExit.trades[0].exitPrice})`);
+  assert.ok(Math.abs((closeExit.trades[0].exitPrice ?? 0) - 100.2) < 0.2, `a script close fills at the bar close (got ${closeExit.trades[0].exitPrice})`);
 });

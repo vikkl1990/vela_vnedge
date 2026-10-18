@@ -357,6 +357,7 @@ export class ApiServer {
       return { file, n: body.list.length };
     });
     this.add('GET', '/api/analytics', () => a.analytics());
+    this.add('GET', '/api/reports/daily', (_r, _s, _p, url) => a.dailyReport(Number(url.searchParams.get('days')) || 30));
     this.add('GET', '/api/learning', () => a.learning());
     this.add('GET', '/api/gates', () => a.gates());
     this.add('GET', '/api/context', () => a.context.latest());

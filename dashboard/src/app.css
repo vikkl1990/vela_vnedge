@@ -1442,3 +1442,11 @@ body { overflow-x: clip; }
 .decision-card.soon { box-shadow: inset 3px 0 0 var(--warn); }
 .decision-card .dc-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .decision-card .dc-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* decision 136: the daily tables stack into labelled cards on a phone, like the grouped Signals table */
+@media (max-width: 720px) {
+  .daily-table thead { display: none; }
+  .daily-table tr { display: block; border-bottom: 1px solid var(--border); padding: 6px 0; }
+  .daily-table td { display: flex; justify-content: space-between; gap: 8px; border: 0; padding: 2px 8px; align-items: center; }
+  .daily-table td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+}

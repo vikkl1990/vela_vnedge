@@ -4130,3 +4130,23 @@ candidates left, 71 sit on markets the market gate refuses today (decision 104 k
 grows at the rate the nightly screen produces passes, and that screen runs two workers and
 truncates at about 180 of 318 scripts a night; at 400 cells the VM ran at a load of 0.06 with 2 of
 24 GB in use.
+
+## 136. A daily report, from the books, every day (19 October 2026)
+
+**Why.** The operator: "I need a daily thing, no need to wait." The system had a daily summary in
+the ops monitor (equity, the day's P&L, the top scanners), but it only goes out by Telegram and
+Telegram is not configured on the VM, so it reached no one.
+
+**What.** `analytics/daily.ts` computes one row per UTC day straight from the positions table and
+the incubator's event log, so every past day is available at once and today reads as it happens;
+nothing is stored. Per book: trades closed that day, net of fees, fees, R per trade and summed,
+stops and trail exits, the share of the peak the trail exits kept (decision 124's number), the best
+and worst scanner; the shadow book split by timeframe; the incubator's admissions, proposals,
+promotions, retirements and demotions; the account's equity at the day's close. `GET
+/api/reports/daily?days=N` serves it, the new Daily page shows 30 days with the last seven against
+the seven before, and the ops monitor's daily message at 00:00 UTC is now this report for the day
+that closed. On a phone the two tables stack into labelled cards.
+
+**To have it on the phone each morning,** Telegram needs `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` in the service's systemd drop-in on the VM, set by the operator; the message then
+arrives at 00:00 UTC (05:30 IST).

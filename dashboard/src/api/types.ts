@@ -726,3 +726,15 @@ export interface MarketsToday { at: number; enabled: boolean; markets: MarketVer
 
 /** One minute of the process (decision 80). */
 export interface OpsMetricRow { at: number; rss: number; heap: number; rssPct: number; queued: number; busy: number; recycled: number; runsH: number; signalsH: number; feedUp: number; openPositions: number; closeLagS: number | null }
+
+/** Decision 136: one UTC day of both books and the incubator. */
+export interface BookDay {
+  trades: number; net: number; fees: number; sumR: number; avgR: number; wins: number; stops: number; trails: number
+  trailKeeps: number | null
+  byTf: Record<string, { trades: number; sumR: number }>
+  best: { scanner: string; sumR: number } | null; worst: { scanner: string; sumR: number } | null
+}
+export interface DailyRow {
+  day: string; partial: boolean; account: BookDay; shadow: BookDay; equity: number
+  incubator: { admitted: number; proposed: number; promoted: number; retired: number; demoted: number }
+}
