@@ -658,6 +658,18 @@ export function earlyStallExit(pos: Position, price: number, at: number, cfg: Pa
   return fillExit(pos, price, pos.qtyOpen, 'stalled', at, cfg, true);
 }
 
+/** The early adverse cut (decision 128): at or past `r` inside the first `minutes`, out at market. */
+export function earlyCutExit(pos: Position, price: number, at: number, cfg: PaperConfig): Fill | null {
+  const c = cfg.earlyCut;
+  if (!c || !(c.minutes > 0) || pos.status !== 'open' || !(price > 0) || !(pos.riskAmount > 0)) return null;
+  if (at - pos.entryAt > c.minutes * 60_000) return null;
+  const base = pos.slOriginal ?? pos.sl; if (base === null) return null;
+  const risk = Math.abs(pos.entryPrice - base); if (!(risk > 0)) return null;
+  const r = ((price - pos.entryPrice) * (pos.side === 'long' ? 1 : -1)) / risk;
+  if (r > c.r) return null;
+  return fillExit(pos, price, pos.qtyOpen, 'cut', at, cfg, true);
+}
+
 export function staleExit(pos: Position, bar: { time: number; close: number }, cfg: PaperConfig, tfMs: number): Fill | null {
   const bars = cfg.staleBars ?? 0;
   if (!(bars > 0) || pos.status !== 'open' || !(tfMs > 0)) return null;

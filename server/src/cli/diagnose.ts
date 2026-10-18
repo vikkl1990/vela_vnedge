@@ -285,6 +285,13 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants['x-gb5'] = stat(run({ spreadPct }, { trailGiveBackPct: 5, trailSteps: [[2, 5], [4, 5]] }), b, tfMs);
   variants['x-gb15s'] = stat(run({ spreadPct }, { trailGiveBackPct: 15 }), b, tfMs);
   variants['x-gb15after0.3'] = stat(run({ spreadPct }, { trailAfterR: 0.3, trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]] }), b, tfMs);
+  // the early adverse cut (decision 128): the stop-outs are known early; cut them before the full stop
+  variants['x-cut0.5@30'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 30 } }), b, tfMs);
+  variants['x-cut0.5@60'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 60 } }), b, tfMs);
+  variants['x-cut0.5@120'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 120 } }), b, tfMs);
+  variants['x-cut0.4@60'] = stat(run({ spreadPct }, { earlyCut: { r: -0.4, minutes: 60 } }), b, tfMs);
+  variants['x-cut0.6@90'] = stat(run({ spreadPct }, { earlyCut: { r: -0.6, minutes: 90 } }), b, tfMs);
+  variants['x-cut0.7@240'] = stat(run({ spreadPct }, { earlyCut: { r: -0.7, minutes: 240 } }), b, tfMs);
   // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
   variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
   variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);

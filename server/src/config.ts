@@ -154,6 +154,12 @@ export interface PaperConfig {
    */
   earlyStall?: { minR: number; maxR: number; minutes: number };
   /**
+   * Early adverse cut (under study, decision 128): a trade that is already `r` or worse within its first `minutes`
+   * is closed at market instead of riding to the full stop. The shadow book's stop-outs sit at a median −0.46R
+   * thirty minutes in and 64% are past −0.5R at an hour, while 2% of its winners ever are.
+   */
+  earlyCut?: { r: number; minutes: number };
+  /**
    * How a candle that touches both the stop and a target is resolved.
    *
    * A 1m bar records the extremes but not their order, so a minute that reaches both is ambiguous.
@@ -214,7 +220,7 @@ export interface PaperConfig {
  * global, so an override is always a small, readable difference from the fleet's rules.
  */
 export type ExitOverride = Partial<Pick<PaperConfig,
-  'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' |
+  'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'earlyCut' |
   'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
 
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
@@ -650,6 +656,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Number.isFinite(p.minRiskFeeRatio) && p.minRiskFeeRatio >= 0)) errs.push('paper.minRiskFeeRatio must be ≥ 0');
   if (!(Number.isFinite(p.maxStopLossPct) && p.maxStopLossPct >= 0 && p.maxStopLossPct <= 100)) errs.push('paper.maxStopLossPct must be 0..100');
   if (!(Number.isFinite(p.maxSignalAgeSec) && p.maxSignalAgeSec >= 0)) errs.push('paper.maxSignalAgeSec must be ≥ 0');
+  if (p.earlyCut && !(p.earlyCut.r < 0 && p.earlyCut.r > -1 && p.earlyCut.minutes > 0)) errs.push('paper.earlyCut needs r between −1 and 0 and minutes > 0');
   if (typeof p.useSpread !== 'boolean') errs.push('paper.useSpread must be boolean');
   if (!(Number.isFinite(p.quoteMaxAgeMs) && p.quoteMaxAgeMs >= 0)) errs.push('paper.quoteMaxAgeMs must be ≥ 0');
   if (p.requireQuote && !p.useSpread) errs.push('paper.requireQuote needs paper.useSpread');

@@ -12,7 +12,7 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { scriptModeExit, applyBar, applyScriptExit, earlyStallExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
+import { scriptModeExit, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -147,6 +147,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
               applyBar(o, sub[k], cfg, atrKnown);
               if (o.status === 'open' && te?.enabled) trendExit(o, trend[i - 1], sub[k].close, sub[k].time, cfg);
               if (o.status === 'open') earlyStallExit(o, sub[k].close, sub[k].time, cfg);
+              if (o.status === 'open') earlyCutExit(o, sub[k].close, sub[k].time, cfg);
             }
             if (o.status === 'closed') finish(o);
           }
@@ -171,6 +172,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
           // live checks the trend on every 1m bar, so the 1m path must too, not once per signal bar
           if (open.status === 'open' && te?.enabled) trendExit(open, trend[i - 1], sub[j].close, sub[j].time, cfg);
           if (open.status === 'open') earlyStallExit(open, sub[j].close, sub[j].time, cfg);
+          if (open.status === 'open') earlyCutExit(open, sub[j].close, sub[j].time, cfg);
         }
       } else applyBar(open, bar, cfg, atr[i]);
       if (open.status === 'closed') finish(open);
@@ -180,6 +182,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         if (f && (open as Position).status === 'closed') finish(open);
       }
       if (open && (open as Position).status === 'open' && !sub) earlyStallExit(open, bar.close, bar.time, cfg);
+      if (open && (open as Position).status === 'open' && !sub) earlyCutExit(open, bar.close, bar.time, cfg);
       if (open && (open as Position).status === 'closed') finish(open);
     }
     // 2. script events on this bar (exits first, then entries)
