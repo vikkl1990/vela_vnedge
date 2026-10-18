@@ -333,7 +333,9 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   variants.short = stat(run({ events: events.filter(e => e.kind !== 'entry' || e.side === 'short') }), b, tfMs);
   // per label: the base run's trades mapped back to the signal that opened them
   const byLabel = new Map<string, any[]>();
-  const sig = new Map<string, string>(); for (const e of events) if (e.kind === 'entry') sig.set(`${e.barTime}:${e.side}`, `${e.source}:${(e.label ?? '').slice(0, 30)}`);
+  // a script that publishes a score (decision 131) has its labels split by score band, so the record per label is also the record per score
+  const band = (sc: number | undefined) => (sc == null ? '' : sc >= 80 ? ' score 80+' : sc >= 50 ? ' score 50-79' : sc > 0 ? ' score 1-49' : ' score 0');
+  const sig = new Map<string, string>(); for (const e of events) if (e.kind === 'entry') sig.set(`${e.barTime}:${e.side}`, `${e.source}:${(e.label ?? '').slice(0, 30)}${band(e.score)}`);
   for (const t of run({})) { const k = sig.get(`${t.entryAt}:${t.side}`) ?? 'unknown'; byLabel.set(k, [...(byLabel.get(k) ?? []), t]); }
   const labels: Array<[string, Stat]> = [...byLabel].filter(([, ts]) => ts.length >= 10).map(([k, ts]) => [k, stat(ts, b, tfMs)] as [string, Stat]).sort((a, c) => c[1].sumR - a[1].sumR);
   for (const [v, st] of Object.entries(variants)) row(id, tf, sym, v, st);
