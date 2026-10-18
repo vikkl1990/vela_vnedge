@@ -508,6 +508,8 @@ The offer itself is worth ~6% on the fleet with no change in behaviour: quick st
 close inside the window. Taking profit early to stay inside it, or scratching trades that are not
 working at the window's end, still loses more than the fee saves. Enabled on the VM on the
 assumption that the account has opted in; if it has not, paper results are ~6% flattered.
+Confirmed by the operator on 18 October 2026: the account has joined the offer on Delta, so the
+model matches the account and the flag stays on.
 
 ## 21. Tested: a stricter cost filter (minimum stop in round-trip fees). Not adopted; available per market.
 
