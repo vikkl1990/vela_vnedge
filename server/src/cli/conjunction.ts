@@ -7,6 +7,11 @@
  * pairs.txt, one conjunction per line: `<scannerA> <scannerB> <tf> <SYM,SYM,…>`. The conjunction is run twice, once
  * with each scanner's events (its levels and exits) gated by the other's entries. Measurement only: nothing is
  * promoted, no setting changes.
+ *
+ * Cross-timeframe (decision 134): `<htfScanner> <htfTf> <ltfScanner> <ltfTf> <SYM,…>`. A lower-timeframe entry is kept
+ * only when the higher-timeframe scanner agrees at the moment the lower bar closes, read two ways: its signal state
+ * (the side of its last entry, until an exit for that side or an opposite entry) and its position (an open trade on
+ * that side under the fleet's exits). Only higher bars that had closed by then count, so there is no look-ahead.
  */
 import fs from 'node:fs';
 import { DeltaRest, marketSpec } from '../delta/rest.ts';
@@ -54,6 +59,27 @@ function gate(a: ScanEvent[], b: ScanEvent[]): ScanEvent[] {
   return a.filter(e => e.kind !== 'entry' || (e.side && key.has(`${e.barTime}:${e.side}`)));
 }
 interface Cell { trades: number; avgR: number; sumR: number; pf: number; windowsUp: number; r1: number; r2: number; holdR: number | null; pass: boolean; sl: number; peak: number; density: number }
+function baseFor(id: string, symbol: string, tf: string, b: Bar[], events: ScanEvent[]): BacktestInput {
+  const m = market.get(symbol)!; const sc = cfg.scanners[id] ?? {};
+  return { scannerId: id, scannerName: id, symbol, tf, bars: b, events, cfg: cfg.paper, exitMode: sc.exitMode ?? 'both', trendGate: sc.trendGate, scannerExit: sc.exit, contractValue: m.contractValue, tickSize: m.tickSize, maintenanceMarginPct: m.maintenanceMarginPct, maxLeverage: m.maxLeverage, subBars: series.get(`${symbol}:${SUB[tf]}`), spreadPct: bookCost.get(symbol) ?? 0, chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr } : undefined } as any;
+}
+/** The higher scanner's signal state: [the time it became known, the side or null], in time order. */
+function htfStates(events: ScanEvent[], htfMs: number): Array<[number, 'long' | 'short' | null]> {
+  const out: Array<[number, 'long' | 'short' | null]> = []; let st: 'long' | 'short' | null = null;
+  for (const e of [...events].sort((a, b) => a.barTime - b.barTime)) {
+    const at = e.barTime + htfMs;
+    if (e.kind === 'entry' && e.side) { st = e.side; out.push([at, st]); }
+    else if (e.kind === 'exit' && e.side && e.side === st) { st = null; out.push([at, null]); }
+  }
+  return out;
+}
+const stateAt = (states: Array<[number, 'long' | 'short' | null]>, t: number) => { let lo = 0, hi = states.length - 1, ans: 'long' | 'short' | null = null; while (lo <= hi) { const mid = (lo + hi) >> 1; if (states[mid][0] <= t) { ans = states[mid][1]; lo = mid + 1; } else hi = mid - 1; } return ans; };
+function gateByState(ltf: ScanEvent[], states: Array<[number, 'long' | 'short' | null]>, ltfMs: number): ScanEvent[] {
+  return ltf.filter(e => e.kind !== 'entry' || (e.side && stateAt(states, e.barTime + ltfMs) === e.side));
+}
+function gateByPosition(ltf: ScanEvent[], htfTrades: any[], htfMs: number, ltfMs: number): ScanEvent[] {
+  return ltf.filter(e => { if (e.kind !== 'entry' || !e.side) return e.kind !== 'entry'; const d = e.barTime + ltfMs; return htfTrades.some(t => t.side === e.side && t.entryAt + htfMs <= d && d < (t.exitAt ?? Infinity)); });
+}
 function judge(id: string, symbol: string, tf: string, b: Bar[], events: ScanEvent[]): Cell {
   const m = market.get(symbol)!; const sc = cfg.scanners[id] ?? {};
   const base: BacktestInput = { scannerId: id, scannerName: id, symbol, tf, bars: b, events, cfg: cfg.paper, exitMode: sc.exitMode ?? 'both', trendGate: sc.trendGate, scannerExit: sc.exit, contractValue: m.contractValue, tickSize: m.tickSize, maintenanceMarginPct: m.maintenanceMarginPct, maxLeverage: m.maxLeverage, subBars: series.get(`${symbol}:${SUB[tf]}`), spreadPct: bookCost.get(symbol) ?? 0, chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr } : undefined } as any;
@@ -66,9 +92,49 @@ const f = (x: number, d = 2) => (x >= 0 ? '+' : '') + x.toFixed(d);
 const pool_ = (cells: Cell[]): Cell => { const n = cells.reduce((a, c) => a + c.trades, 0); const sum = cells.reduce((a, c) => a + c.sumR, 0); const w = (k: keyof Cell) => n ? cells.reduce((a, c) => a + (c[k] as number) * c.trades, 0) / n : 0; return { trades: n, avgR: n ? sum / n : 0, sumR: sum, pf: 0, windowsUp: 0, r1: w('r1'), r2: w('r2'), holdR: w('holdR' as any), pass: cells.some(c => c.pass), sl: w('sl'), peak: w('peak'), density: w('density') }; };
 
 const md: string[] = [`# Conjunction test — ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`, '', `An entry only when both scanners enter on the same closed bar and side. Screen path: ${inc.screen.minTrades}+ trades, PF ${inc.screen.minProfitFactor}, ${inc.screen.minWindowsUp}/8 windows, both halves, stressed ${inc.screen.stressBps} bps, holdout ${(inc.screen.holdoutShare ?? 0.3) * 100}%; the fleet's current exits (trail ${cfg.paper.trailGiveBackPct}%); book cost paid.`, ''];
+let xCleared = 0, xBeat = 0, xConj = 0, xBetter = 0, xN = 0, xJoint = 0, xLtf = 0, xLtfSum = 0, xLtfBeat = 0;
+async function crossTf([H, htf, L, ltf, syms]: string[]): Promise<void> {
+  const markets = syms.split(','); const htfMs = TF_SECONDS[htf] * 1000, ltfMs = TF_SECONDS[ltf] * 1000;
+  for (const s of markets) if (!market.has(s)) { try { market.set(s, marketSpec(await rest.product(s))); } catch { console.error(`no market ${s}`); } }
+  const rows: Array<{ sym: string; h: Cell; l: Cell; st: Cell; pos: Cell; ltfEntries: number; stEntries: number; posEntries: number }> = [];
+  for (const sym of markets) {
+    if (!market.has(sym)) continue;
+    const hb = await bars(sym, htf, BARS[htf]); await bars(sym, SUB[htf], Math.min(60_000, Math.ceil((hb.length + 2) * TF_SECONDS[htf] / TF_SECONDS[SUB[htf]])));
+    const lb = await bars(sym, ltf, BARS[ltf]); await bars(sym, SUB[ltf], Math.min(60_000, Math.ceil((lb.length + 2) * TF_SECONDS[ltf] / TF_SECONDS[SUB[ltf]])));
+    const eh = await eventsFor(H, sym, htf, hb), el = await eventsFor(L, sym, ltf, lb); if (!eh || !el) continue;
+    const hTrades = runBacktest(baseFor(H, sym, htf, hb, eh)).trades as any[];
+    const st = gateByState(el, htfStates(eh, htfMs), ltfMs), pos = gateByPosition(el, hTrades, htfMs, ltfMs);
+    const n = (x: ScanEvent[]) => x.filter(e => e.kind === 'entry').length;
+    rows.push({ sym, h: judge(H, sym, htf, hb, eh), l: judge(L, sym, ltf, lb, el), st: judge(L, sym, ltf, lb, st), pos: judge(L, sym, ltf, lb, pos), ltfEntries: n(el), stEntries: n(st), posEntries: n(pos) });
+    const r = rows.at(-1)!; console.error(`${H} ${htf} > ${L} ${ltf} ${sym}: HTF ${r.h.trades} LTF ${r.l.trades} gated ${r.st.trades}/${r.pos.trades} trades (entries ${r.ltfEntries} → ${r.stEntries}/${r.posEntries})`);
+  }
+  if (!rows.length) return;
+  xN++;
+  md.push(`## ${H} ${htf} gating ${L} ${ltf} · ${rows.map(r => r.sym).join(', ')}`, '', '| market | reading | entries | trades | avg R | sum R | PF | windows | half 1 | half 2 | holdout | stop-outs | peak R | screen |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const r of rows) for (const [name, c, e] of [[`${H} ${htf} alone`, r.h, '–'], [`${L} ${ltf} alone`, r.l, r.ltfEntries], [`${ltf} entry, ${htf} signal agrees`, r.st, r.stEntries], [`${ltf} entry, ${htf} position open`, r.pos, r.posEntries]] as Array<[string, Cell, number | string]>)
+    md.push(`| ${r.sym} | ${name} | ${e} | ${c.trades} | ${f(c.avgR, 3)} | ${f(c.sumR, 1)} | ${c.pf.toFixed(2)} | ${c.windowsUp}/8 | ${f(c.r1, 3)} | ${f(c.r2, 3)} | ${c.holdR == null ? '–' : f(c.holdR, 3)} | ${(c.sl * 100).toFixed(0)}% | ${c.peak.toFixed(2)} | ${c.pass ? 'pass' : 'fail'} |`);
+  const ph = pool_(rows.map(r => r.h)), pl = pool_(rows.map(r => r.l)), pst = pool_(rows.map(r => r.st)), ppos = pool_(rows.map(r => r.pos));
+  const better = ph.avgR >= pl.avgR ? ph : pl; const betterName = better === ph ? `${H} ${htf}` : `${L} ${ltf}`; const comp = (r: typeof rows[number]) => (better === ph ? r.h : r.l);
+  // both readings judged in full; the gate is credited if either one wins (two chances, generous to the idea)
+  const judgeReading = (pooled: Cell, pick: (r: typeof rows[number]) => Cell, entries: (r: typeof rows[number]) => number) => {
+    const per = rows.map(r => pick(r).sumR - comp(r).sumR); const up = per.filter(x => x > 0.5).length, dn = per.filter(x => x < -0.5).length;
+    return { pooled, up, dn, clears: rows.some(r => pick(r).pass), beats: pooled.trades > 0 && pooled.avgR > better.avgR && pooled.r1 > 0 && pooled.r2 > 0 && dn <= up, joint: rows.reduce((a, r) => a + entries(r), 0) };
+  };
+  const rs = judgeReading(pst, r => r.st, r => r.stEntries), rp = judgeReading(ppos, r => r.pos, r => r.posEntries);
+  const ltfAll = rows.reduce((a, r) => a + r.ltfEntries, 0);
+  const clears = rs.clears || rp.clears, beats = rs.beats || rp.beats;
+  if (clears) xCleared++; if (beats) xBeat++; xConj += Math.max(pst.sumR, ppos.sumR); xBetter += better.sumR; xJoint += Math.max(rs.joint, rp.joint); xLtf += ltfAll;
+  xLtfSum += pl.sumR; const filterHelps = [pst, ppos].some(x => x.trades > 0 && x.avgR > pl.avgR && x.r1 > 0 && x.r2 > 0 && x.sumR >= pl.sumR); if (filterHelps) xLtfBeat++;
+  const line = (name: string, x: ReturnType<typeof judgeReading>) => `${name}: ${f(x.pooled.avgR, 3)}R over ${x.pooled.trades} trades, sum ${f(x.pooled.sumR, 1)}, halves ${f(x.pooled.r1, 2)} / ${f(x.pooled.r2, 2)}, stop-outs ${(x.pooled.sl * 100).toFixed(0)}%, joint entries ${x.joint} of ${ltfAll} (${ltfAll ? (x.joint / ltfAll * 100).toFixed(0) : 0}%), markets better / worse than ${betterName} ${x.up} / ${x.dn}, clears the screen ${x.clears ? 'yes' : 'no'}, beats it ${x.beats ? 'yes' : 'no'}.`;
+  md.push('', `Pooled: ${H} ${htf} alone ${f(ph.avgR, 3)}R over ${ph.trades} (sum ${f(ph.sumR, 1)}) · ${L} ${ltf} alone ${f(pl.avgR, 3)}R over ${pl.trades} (sum ${f(pl.sumR, 1)}). Better component: ${betterName}.`,
+    '', `- ${line(`${htf} signal agrees`, rs)}`, `- ${line(`${htf} position open`, rp)}`, '',
+    `Clears the screen on any market: **${clears ? 'yes' : 'no'}**. Beats the better component on the cell yardstick: **${beats ? 'yes' : 'no'}**. Improves ${L} ${ltf} as a filter (higher R per trade, both halves positive, and no less total R): **${filterHelps ? 'yes' : 'no'}**.`, '');
+}
 let cleared = 0, beat = 0, totalConj = 0, totalBetter = 0, nConj = 0;
 for (const line of lines) {
-  const [A, B, tf, syms] = line.split(/\s+/); const markets = syms.split(',');
+  const parts = line.split(/\s+/);
+  if (parts.length === 5) { await crossTf(parts); continue; }
+  const [A, B, tf, syms] = parts; const markets = syms.split(',');
   for (const s of markets) if (!market.has(s)) { try { market.set(s, marketSpec(await rest.product(s))); } catch { console.error(`no market ${s}`); } }
   const rows: Array<{ sym: string; a: Cell; b: Cell; ab: Cell; ba: Cell }> = [];
   for (const sym of markets) {
@@ -93,8 +159,9 @@ for (const line of lines) {
   md.push('', `Pooled: ${A} alone ${f(pa.avgR, 3)}R over ${pa.trades} · ${B} alone ${f(pb.avgR, 3)}R over ${pb.trades} · conjunction (${bestName}) ${f(best.avgR, 3)}R over ${best.trades}, halves ${f(best.r1, 2)} / ${f(best.r2, 2)}, stop-outs ${(best.sl * 100).toFixed(0)}% against ${(better.sl * 100).toFixed(0)}% for ${betterName}.`,
     `Clears the screen on any market: **${clears ? 'yes' : 'no'}**. Beats the better component (${betterName}, ${f(better.avgR, 3)}R) on the cell yardstick: **${beats ? 'yes' : 'no'}**. Markets better / worse than it: ${up} / ${dn}.`, '');
 }
-md.push('## Summary', '', `${nConj} conjunctions run. ${cleared} cleared the screen on at least one market; ${beat} beat their better component on the cell yardstick (higher R per trade, both halves positive, not worse on a majority of markets).`, `Sum R of the conjunctions ${f(totalConj, 1)} against ${f(totalBetter, 1)} for their better components on the same history.`);
+if (xN) md.push('## Cross-timeframe summary', '', `${xN} higher-timeframe gates run. ${xCleared} cleared the screen on at least one market; ${xBeat} beat their better component on the cell yardstick.`, `Sum R of the gated readings ${f(xConj, 1)} against ${f(xBetter, 1)} for their better components and ${f(xLtfSum, 1)} for the lower-timeframe scanners alone, on the same history. The gate improves the lower scanner as a filter in ${xLtfBeat} of ${xN}. Joint entries ${xJoint} of ${xLtf} lower-timeframe entries (${xLtf ? (xJoint / xLtf * 100).toFixed(0) : 0}%).`, '');
+if (nConj) md.push('## Summary', '', `${nConj} conjunctions run. ${cleared} cleared the screen on at least one market; ${beat} beat their better component on the cell yardstick (higher R per trade, both halves positive, not worse on a majority of markets).`, `Sum R of the conjunctions ${f(totalConj, 1)} against ${f(totalBetter, 1)} for their better components on the same history.`);
 fs.writeFileSync(process.env.OUT ?? '/tmp/conjunction.md', md.join('\n') + '\n');
-console.error(`done: ${nConj} conjunctions · ${process.env.OUT ?? '/tmp/conjunction.md'}`);
+console.error(`done: ${nConj} conjunctions, ${xN} cross-timeframe gates · ${process.env.OUT ?? '/tmp/conjunction.md'}`);
 await pool.stop();
 process.exit(0);
