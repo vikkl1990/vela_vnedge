@@ -3982,3 +3982,36 @@ extractor reads it.
 All 410 at +0.050R; the script's own default (B and above) at +0.045R; A alone at +0.073R. The
 order is not monotonic, B is the worst band on 65 trades and C is positive, so the tilt toward A is
 what 65 trades of noise look like, not a gate. Same verdict as the other two.
+
+## 132. The incubator rebuilt around the cell: each scanner, timeframe and market judged on its own (18 October 2026)
+
+**Why.** The operator asked for the incubator to treat each scanner × timeframe × market as its own
+unit, and the audit of the same day found three silent faults in the cohort design as it ran: the
+shadow book stuck at 256 cells against a cap of 250 since a cohort admission overshot it on
+16 October, with no admission since; passing candidates going stale under an 8-day eligibility
+window while the nightly walk truncated at 140 of 318 scripts; and cells returning from the account
+restarting their evidence from zero, so Trend Impulse Channels read 23 trades over 2 days with 172
+shadow trades in the month.
+
+**What changed.**
+- The gate's `pool: 'pair'` mode, kept since decision 29, is the mode: `judgePair` on every cell,
+  admission per cell by screen score. Decision 29's objection, that one market needs months to
+  reach 30 trades on 1h and never on 4h, is answered by per-timeframe floors: `gate.minTradesByTf`
+  and `gate.minDaysByTf` beside the existing `maxDaysByTf`, so a 4h cell is asked for a sample it
+  can produce in its window rather than one it cannot.
+- Pair-mode admission takes a per-scanner cap at each timeframe (`admit.maxPerScannerTf`, the
+  cohort market count as the fallback), so one strong screen cannot fill the book.
+- A passing candidate stays eligible for `admit.candidateMaxAgeDays`, default 30, long enough for
+  the walk to come round and re-screen it.
+- A cell demoted to the shadow book, by the gate or by hand, keeps the `since` of its original
+  admission, so the shadow trades it earned before promotion count again.
+
+**Settings applied on the VM.** `gate.pool` pair; `gate.minTradesByTf` { 1h: 20, 4h: 12 };
+`gate.minDaysByTf` { 1h: 28, 4h: 45 }; `gate.maxDaysByTf` { 1h: 90, 4h: 150 };
+`admit.candidateMaxAgeDays` 30; `admit.maxPerScannerTf` { 15m: 5, 1h: 8, 4h: 12 }; `maxShadow` 400,
+which clears the overshoot and admits the queue by score. The 4h floor of 12 trades is thin
+evidence by the fleet's standard and is the price of judging 4h cells one at a time; the gate's
+profit-factor, positive-weeks and R floors still apply to it.
+
+**What this does not change.** The screen, the shadow runner, the demotion rules, the exits and
+the promotion caps are as they were. The cohort code stays for `pool: 'cohort'`.

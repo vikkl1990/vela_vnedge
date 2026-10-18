@@ -332,6 +332,9 @@ export interface IncubatorConfig {
     pool: 'cohort' | 'pair'; minPositiveMarketsPct: number; minMarketTrades: number;
     /** Slow timeframes need longer to produce a sample; `maxDays` is the fallback. */
     maxDaysByTf: Record<string, number>;
+    /** Decision 132: per-timeframe sample floors for `pool: 'pair'`; `minTrades` / `minDays` are the fallbacks. A 4h pair cannot produce 30 trades in 14 days. */
+    minTradesByTf?: Record<string, number>;
+    minDaysByTf?: Record<string, number>;
     /** Decision 106: a shadow pair with no shadow trade for this many days is retired; it holds a slot and proves nothing. */
     staleDays?: number;
     /** Decision 108: the stale cap per timeframe; a 4h pair cannot trade in 21 days what a 15m pair does. `staleDays` is the fallback. */
@@ -345,7 +348,12 @@ export interface IncubatorConfig {
    * market-day on 15m, 0.28 on 1h, 0.064 on 4h — so a pooled 30-trade sample takes 8 days on 15m
    * with 5 markets, 14 on 1h with 8, and 39 on 4h with 12. `default` covers anything unlisted.
    */
-  admit: { cohortMarkets: Record<string, number>; minCohortMarkets: number };
+  admit: { cohortMarkets: Record<string, number>; minCohortMarkets: number
+    /** Decision 132: how long a passing screen keeps a candidate eligible for a slot (the nightly walk re-screens it in time). Was 8 days, which stranded candidates while the book was full. */
+    candidateMaxAgeDays?: number;
+    /** Decision 132: in `pool: 'pair'` mode, the most shadow cells one scanner may hold at a timeframe (`cohortMarkets` is the fallback). */
+    maxPerScannerTf?: Record<string, number>;
+};
   promote: { maxPerWeek: number; maxFleet: number;
     /** Decision 106: no more live cells than this on one market, or for one scanner, so the fleet spreads across pairs. */
     maxPerMarket?: number; maxPerScanner?: number;
@@ -501,7 +509,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true, retryPerNight: 20, quietFilterTfs: ['5m', '15m'] },
     gate: {
       minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0,
-      pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 },
+      pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 }, minTradesByTf: {}, minDaysByTf: {},
       staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3,
     },
     admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3 },

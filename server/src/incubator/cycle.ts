@@ -117,7 +117,7 @@ export function tooQuietForTf(atrPct: number | null | undefined, bookCostPct: nu
 const DAY = 86400_000;
 
 /** The gate for one timeframe: a 4h pair cannot produce in 45 days what a 15m pair produces in 8. */
-const gateFor = (inc: IncubatorConfig, tf: string) => ({ ...inc.gate, maxDays: inc.gate.maxDaysByTf?.[tf] ?? inc.gate.maxDays });
+export const gateFor = (inc: IncubatorConfig, tf: string) => ({ ...inc.gate, maxDays: inc.gate.maxDaysByTf?.[tf] ?? inc.gate.maxDays, minTrades: inc.gate.minTradesByTf?.[tf] ?? inc.gate.minTrades, minDays: inc.gate.minDaysByTf?.[tf] ?? inc.gate.minDays });
 /** How many markets one scanner is admitted on at this timeframe. */
 const marketsFor = (inc: IncubatorConfig, tf: string) => inc.admit.cohortMarkets[tf] ?? inc.admit.cohortMarkets.default ?? 5;
 
@@ -330,11 +330,20 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   let slots = Math.max(0, inc.maxShadow - active.length);
   const markets = store.marketsToday();
   // a candidate on a market the gate refuses today would hold a shadow slot the account can never use (decision 104)
-  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= 8 * DAY && !marketRefusal(markets, r.symbol));
+  const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
+  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol));
   const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); slots--; };
 
   if (inc.gate.pool !== 'cohort') {
-    for (const r of fresh.sort((a, b) => screenScore(b.screen) - screenScore(a.screen)).slice(0, slots)) take(r);
+    // decision 132: each pair is admitted on its own score, but one scanner may not fill the book at a timeframe
+    const held = new Map<string, number>();
+    for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
+    for (const r of fresh.sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
+      if (slots <= 0) break;
+      const k = `${r.scannerId}|${r.tf}`; const cap = inc.admit.maxPerScannerTf?.[r.tf] ?? marketsFor(inc, r.tf);
+      if ((held.get(k) ?? 0) >= cap) continue;
+      take(r); held.set(k, (held.get(k) ?? 0) + 1);
+    }
     rep.free = slots;
     return;
   }
@@ -398,7 +407,7 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
   }
   if (r.stage === 'demote_proposed') {
     removePair(sc, r, setScanner);
-    return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null }, 'demoted: back to the shadow book', now);
+    return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null }, 'demoted: back to the shadow book', now, { since: store.admittedAt(r.id) ?? undefined });
   }
   throw new IncubatorError(`nothing to approve: the pair is ${r.stage}`);
 }
@@ -414,7 +423,8 @@ export function demote(store: IncubatorStore, cfg: AppConfig, id: number, actor:
   if (r.stage !== 'live' && r.stage !== 'demote_proposed') throw new IncubatorError(`nothing to demote: the pair is ${r.stage}`);
   const sc = cfg.scanners[r.scannerId];
   removePair(sc, r, setScanner);
-  return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null }, note ?? 'demoted by the operator: back to the shadow book', now);
+  // decision 132: a cell that comes back from the account keeps the shadow evidence it earned before promotion
+  return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null }, note ?? 'demoted by the operator: back to the shadow book', now, { since: store.admittedAt(r.id) ?? undefined });
 }
 
 /** Reject a proposal: a promotion is retired (cooldown applies); a demotion is dismissed and the pair stays live. */

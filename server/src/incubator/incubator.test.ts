@@ -8,7 +8,7 @@ import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR, deliveryVerdict, type PairStats } from './gate.ts';
-import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal, preferScript, cohortComparison, type VariantResult, atrNeededPct, tooQuietForTf } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal, preferScript, cohortComparison, type VariantResult, atrNeededPct, tooQuietForTf, gateFor } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -481,4 +481,37 @@ test('decision 115: a market is too quiet for a fast timeframe when its bars can
   assert.equal(tooQuietForTf(null, 0.12, '15m', paper), null, 'no reading: not refused');
   assert.ok(atrNeededPct(null, '15m', paper)! > 0.47, 'no book reading: the fees alone set the floor');
   assert.equal(atrNeededPct(0.12, '15m', { ...paper, minRiskFeeRatio: 0 }), null, 'cost rule off: no floor');
+});
+
+test('decision 132: pair mode admits by score with a per-scanner cap, and the gate scales its floors by timeframe', () => {
+  const { store, cfg, screen } = world();
+  cfg.incubator.gate.pool = 'pair';
+  cfg.incubator.maxShadow = 10;
+  cfg.incubator.admit.maxPerScannerTf = { '15m': 2 };
+  for (let i = 0; i < 5; i++) recordScreen(store, { scannerId: 'hog', symbol: `M${i}USD`, tf: '15m' }, screen({ profitFactor: 3 }), cfg.incubator, T0);
+  recordScreen(store, { scannerId: 'other', symbol: 'XUSD', tf: '15m' }, screen({ profitFactor: 1.3 }), cfg.incubator, T0);
+  const rep = evaluate(store, cfg, T0);
+  assert.equal(rep.admitted.filter(n => n.startsWith('hog')).length, 2, 'one scanner holds at most its cap at a timeframe');
+  assert.ok(rep.admitted.includes('other XUSD 15m'), 'the weaker candidate still gets a slot');
+  // a passing screen stays eligible for the configured window, not eight days
+  recordScreen(store, { scannerId: 'late', symbol: 'YUSD', tf: '15m' }, screen({ profitFactor: 1.4, at: T0 }), cfg.incubator, T0);
+  assert.ok(evaluate(store, cfg, T0 + 20 * DAY).admitted.includes('late YUSD 15m'), 'eligible at 20 days');
+  assert.ok(!evaluate(store, cfg, T0 + 40 * DAY).admitted.includes('late YUSD 15m'), 'stale after the window');
+  cfg.incubator.gate.minTradesByTf = { '4h': 12 }; cfg.incubator.gate.minDaysByTf = { '4h': 45 };
+  const g4 = gateFor(cfg.incubator, '4h'), g15 = gateFor(cfg.incubator, '15m');
+  assert.equal(g4.minTrades, 12); assert.equal(g4.minDays, 45); assert.equal(g4.maxDays, 90);
+  assert.equal(g15.minTrades, cfg.incubator.gate.minTrades); assert.equal(g15.minDays, cfg.incubator.gate.minDays);
+});
+
+test('decision 132: a cell demoted to the shadow book keeps the evidence window of its original admission', () => {
+  const { store, cfg, screen } = world();
+  recordScreen(store, { scannerId: 'cand', symbol: 'ETHUSD', tf: '15m' }, screen(), cfg.incubator, T0);
+  evaluate(store, cfg, T0);
+  const p = store.find('cand', 'ETHUSD', '15m')!;
+  store.move(p, 'live', 'admin', null, 'promoted', T0 + 10 * DAY);
+  const patches: any[] = [];
+  demote(store, cfg, p.id, 'admin', (id, patch) => patches.push({ id, patch }), null, T0 + 20 * DAY);
+  const back = store.get(p.id)!;
+  assert.equal(back.stage, 'shadow');
+  assert.equal(back.since, T0, 'the shadow evidence from before promotion counts again');
 });

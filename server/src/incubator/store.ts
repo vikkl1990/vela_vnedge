@@ -67,6 +67,11 @@ export class IncubatorStore {
   /** Decision 125: the last bar each shadow pair acted on. */
   liveMarks(): Record<string, number> | undefined { return this.db.kvGet<Record<string, number>>('incubator.liveMarks'); }
   setLiveMarks(rec: Record<string, number>): void { this.db.kvSet('incubator.liveMarks', rec); }
+  /** Decision 132: when this cell was last admitted to the shadow book by the screen, so a cell returning from the account keeps that evidence window. */
+  admittedAt(pairId: number): number | null {
+    const r = this.db.get<{ at: number }>("SELECT at FROM incubator_events WHERE pair_id=? AND to_stage='shadow' AND actor='screen' ORDER BY at DESC LIMIT 1", pairId);
+    return r?.at ?? null;
+  }
   marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut') ?? {}; }
   setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut', rec); }
 
@@ -93,7 +98,7 @@ export class IncubatorStore {
   }
 
   /** Create the pair in `stage`, or move it there, and log the move with its evidence. */
-  move(p: { scannerId: string; symbol: string; tf: string }, to: Stage, actor: string, evidence: any = null, note: string | null = null, at = Date.now(), opts: { keepSince?: boolean } = {}): PairRow {
+  move(p: { scannerId: string; symbol: string; tf: string }, to: Stage, actor: string, evidence: any = null, note: string | null = null, at = Date.now(), opts: { keepSince?: boolean; since?: number } = {}): PairRow {
     return this.db.transaction(() => {
       const cur = this.find(p.scannerId, p.symbol, p.tf);
       if (cur && cur.stage === to) {
@@ -102,7 +107,7 @@ export class IncubatorStore {
       }
       let id: number;
       // keepSince: shadow ⇄ proposed and live → demote_proposed are judged on the same evidence window
-      if (cur) { this.db.run('UPDATE incubator_pairs SET stage=?, since=?, updated=?, note=? WHERE id=?', to, opts.keepSince ? cur.since : at, at, note, cur.id); id = cur.id; }
+      if (cur) { this.db.run('UPDATE incubator_pairs SET stage=?, since=?, updated=?, note=? WHERE id=?', to, opts.since ?? (opts.keepSince ? cur.since : at), at, note, cur.id); id = cur.id; }
       else id = Number(this.db.run('INSERT INTO incubator_pairs(scanner_id, symbol, tf, stage, since, updated, note) VALUES (?,?,?,?,?,?,?)', p.scannerId, p.symbol, p.tf, to, at, at, note).lastInsertRowid);
       this.db.run('INSERT INTO incubator_events(at, pair_id, scanner_id, symbol, tf, from_stage, to_stage, actor, evidence) VALUES (?,?,?,?,?,?,?,?,?)',
         at, id, p.scannerId, p.symbol, p.tf, cur?.stage ?? null, to, actor, evidence === null ? null : JSON.stringify(evidence));
