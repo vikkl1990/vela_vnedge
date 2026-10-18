@@ -4091,3 +4091,33 @@ below zero and 0.5R short of its screen once it has 20 trades, which these will 
 in this log that screened strategies before today (decisions 113, 114, 129 to 133) compared
 variants on the same flattered entries, so their relative verdicts stand; their absolute R on
 strategy cells was too high.
+
+## 135. Reversals pay; script exits fill at the market (19 October 2026)
+
+**Why.** On the majors' 4h cells the shadow book's largest exit by count was the reversal: 72 trades
+closed at −0.15 to −0.17R with a peak of 0.2R, about 12R of BTC's and ETH's 30-day deficit. A
+reviewer named it the one exit question left. Measured on the 72 exit-study cells plus the BTC and
+ETH 4h cells, the account's costs, 1m sub-bars, the deployed exits, with the fill fixes below.
+
+| cells | reversals as now | never reverse | only above +0.5R | only above +1R |
+|---|---|---|---|---|
+| all 48 with 10+ trades | +208R | +144R (7 better / 17 worse) | +143R | +143R |
+| 15m, 25 cells | +87R | +87R | +86R | +86R |
+| 4h, 21 cells | +114R | +52R (1 / 9) | +52R | +52R |
+| 4h BTC and ETH, 10 cells | +27R | +22R | +22R | +22R |
+
+**Verdict.** Keep reversals as they are. The per-exit view was misleading: a reversal closes a trade
+at −0.15R that would otherwise ride to a −1R stop, and the flip that follows is a trade in its own
+right. Removing them costs 62R on 4h and nothing anywhere gains. This replaces decision 8's hint,
+measured on a different fleet, that reversing less might help.
+
+**The fill fixes, from the same review.** Decision 134 made backtest entries fill at the signal
+bar's close. Two exits had the same flaw. The backtest's reversal exit filled at the opposite
+signal's own price; it now fills at the close, as the live engine fills it at the quote. And a
+script's exit, in the backtest and in the live paper engine, filled at the price the script
+reported: for a strategy that is the level its stop or limit passed inside a bar that had already
+closed, which no order placed after the close can get. A script exit now fills at the market when
+it is acted on, the close in the backtest and the mark live; a target hit keeps its level, since a
+resting limit fills there. This changes the paper results of the five strategy cohorts on their own
+exits (decision 114) from today; their earlier own-exit trades were filled at levels they could not
+have had.
