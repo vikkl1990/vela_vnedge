@@ -4150,3 +4150,12 @@ that closed. On a phone the two tables stack into labelled cards.
 **To have it on the phone each morning,** Telegram needs `TELEGRAM_BOT_TOKEN` and
 `TELEGRAM_CHAT_ID` in the service's systemd drop-in on the VM, set by the operator; the message then
 arrives at 00:00 UTC (05:30 IST).
+
+**ML, re-read on 19 October (decision 108's yardstick, 30 days).** The training set is 41,426
+backtest rows and 307 live ones. The global model's walk-forward AUC is 0.58. 36 of 112 per-scanner
+models show 0.60 or better, but their holdouts are a median 30 trades and the best six are measured
+on 10 to 19; with no signal at all about 18 of 112 would reach 0.60 on holdouts that small. Forward,
+on 1,740 scored shadow trades, the probability's AUC is 0.52 and no threshold pays: the trades it
+rates below 45% made +0.11R each, the best bucket in the book, and every cut from 45% to 65% loses
+27 to 62R. On the account's 94 scored trades the AUC is 0.48. The model stays a recorded feature;
+it gates nothing and sizes nothing (`minProb` 0, `useAsScore` false).
