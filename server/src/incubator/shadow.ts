@@ -11,6 +11,7 @@
  * skipped entirely when the worker queue is backed up.
  */
 import { TF_SECONDS, type AppConfig, type RiskConfig } from '../config.ts';
+import { BarWatermark } from '../scanners/watermark.ts';
 import { regimeRefusal } from '../risk/manager.ts';
 import type { CandleStore, Bar } from '../data/candleStore.ts';
 import type { PinePool } from '../pine/pool.ts';
@@ -63,7 +64,10 @@ export class ShadowRunner {
   private funnelDirty = false;
   private funnelTimer: NodeJS.Timeout | null = null;
 
+  /** Decision 125: the last bar each pair acted on, so a skipped bar's exits are still read. */
+  private marks: BarWatermark;
   constructor(deps: ShadowRunner['deps']) {
+    this.marks = new BarWatermark({ load: () => deps.store.liveMarks(), save: rec => deps.store.setLiveMarks(rec) });
     this.deps = deps;
     this.funnel = new Map(Object.entries(deps.store.shadowFunnel()));
   }
@@ -173,7 +177,10 @@ export class ShadowRunner {
     this.labels.set(key, current);
     const lastBar = bars.at(-1)!;
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars, mode: 'live', newLabelKeys });
-    const events = extractEvents(res.alerts, res.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert });
+    // decision 125: read from the bar after the last one this pair acted on; entries on a superseded bar are stale and dropped
+    const events = extractEvents(res.alerts, res.shapes, { sinceBarTime: this.marks.since(key, lastBar.time, r.tf), derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert })
+      .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
+    this.marks.advance(key, lastBar.time);
     const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';
     for (const ev of events) {
       const id = `${key}:${ev.barTime}:${ev.kind}:${ev.side ?? ''}:${ev.label}`;

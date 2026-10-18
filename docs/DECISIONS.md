@@ -3708,3 +3708,24 @@ config route at 18:04 UTC on 17 October: `trailGiveBackPct` 15, `trailSteps` [[2
 Open positions take the new give-back from their next 1m bar; a trail only ever tightens, so
 no open stop moved against a trade. Forward reading: the shadow book's trail exits from 18 October
 on, against the +0.59R of +1.09R peak they kept before.
+
+## 125. A bar watermark per pair: a deferred or skipped bar's exits are still read (18 October 2026)
+
+**Why.** An external architecture review made six claims about the code. Checked against the
+source: the shadow book's missing gates and the symbols × timeframes expansion were out of date
+(decisions 112 and 82), the paper-first account state and the absence of one strategy spec are
+real but matter at live execution, ML training in-process is real and small. The one claim with
+a live consequence today: a run is dispatched per closed bar, a bar that closes during the
+previous run is deferred and only the newest request survives, a queue past 500 skips the bar,
+and the run that finally happens read events from its last bar only. A script exit raised on a
+superseded bar was never seen. Stops and targets are the paper engine's own on 1m bars, so the
+loss was confined to script-exit events, which decisions 113 and 114 made real for five cohorts.
+
+**Decision.** `scanners/watermark.ts`: each live pair, in the fleet and in the shadow book,
+remembers the last bar it acted on (`scanner.liveMarks`, `incubator.liveMarks` in kv, so a
+restart neither replays nor skips). A run reads events from the bar after that mark, at most two
+bars back, which is what the live job evaluates. Exits and information from a superseded bar
+pass to the engine; entries on one are dropped and counted in the funnel as `entry: superseded
+bar`, since they are stale by definition. A bar too old to act on still advances the mark.
+Neither the paper-first write nor the strategy spec is changed; both go on the list for before
+live execution.

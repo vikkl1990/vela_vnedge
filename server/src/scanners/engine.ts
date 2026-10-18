@@ -24,6 +24,7 @@ import type { MlService } from '../ml/service.ts';
 import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 import { ScriptHealth } from './health.ts';
+import { BarWatermark } from './watermark.ts';
 
 const log = logger.scoped('scanner');
 
@@ -74,6 +75,8 @@ export class ScannerEngine extends EventEmitter {
   private pool: PinePool;
   private paper: PaperEngine;
   private db: Db;
+  /** Decision 125: the last bar each live pair acted on, so a deferred or skipped bar's exits are still read. */
+  private marks: BarWatermark;
   private rest: DeltaRest;
   private lastRun = new Map<string, RunInfo>();
   private overlays = new Map<string, Overlay>();
@@ -101,6 +104,7 @@ export class ScannerEngine extends EventEmitter {
   constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[]; ml?: MlService; cfgStore?: { setScanner(id: string, patch: Partial<ScannerConfig>): ScannerConfig } }) {
     super();
     this.registry = deps.registry; this.health = new ScriptHealth(deps.db); this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
+    this.marks = new BarWatermark({ load: () => this.db.kvGet<Record<string, number>>('scanner.liveMarks'), save: rec => this.db.kvSet('scanner.liveMarks', rec) });
     this.symbolsRef = deps.symbolsRef ?? (() => this.cfgRef().symbols);
     this.ml = deps.ml ?? null;
     this.cfgStore = deps.cfgStore ?? null;
@@ -472,14 +476,20 @@ export class ScannerEngine extends EventEmitter {
         const barAge = PaperEngine.signalAgeSec({ barTime: lastBar.time }, tf, Date.now());
         if (maxAge > 0 && barAge > maxAge) {
           this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: 0, exits: 0, info: 0 }, {}, [], `bar ${barAge.toFixed(0)}s old (max ${maxAge}s): stats only, no live signals`);
+          this.marks.advance(key, lastBar.time);
           log.debug(`${key}: last closed bar is ${barAge.toFixed(0)}s old (max ${maxAge}s) — stats only, no live signals`);
           this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });
           return;
         }
         const derived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
         const drops: Record<string, number> = {};
-        const events = extractEvents(liveRes.alerts, liveRes.shapes, { sinceBarTime: lastBar.time, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert, drops });
+        // decision 125: read from the bar after the last one this pair acted on, so an exit on a deferred or skipped bar is seen
+        const since = this.marks.since(key, lastBar.time, tf);
+        const events = extractEvents(liveRes.alerts, liveRes.shapes, { sinceBarTime: since, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert, drops })
+          .filter(ev => { if (ev.kind === 'entry' && ev.barTime < lastBar.time) { drops['entry: superseded bar'] = (drops['entry: superseded bar'] ?? 0) + 1; return false; } return true; });
+        if (since < lastBar.time && events.some(ev => ev.barTime < lastBar.time)) log.info(`${key}: ${events.filter(ev => ev.barTime < lastBar.time).length} event(s) from a superseded bar read on this run`);
         for (const ev of events) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
+        this.marks.advance(key, lastBar.time);
         const acts = this.db.all<{ action: string }>('SELECT action FROM signals WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time=?', s.id, symbol, tf, lastBar.time).map(r => r.action);
         this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: events.filter(e => e.kind === 'entry').length, exits: events.filter(e => e.kind === 'exit').length, info: events.filter(e => e.kind === 'info').length }, drops, acts);
       }

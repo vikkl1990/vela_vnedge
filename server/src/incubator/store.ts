@@ -64,6 +64,9 @@ export class IncubatorStore {
   setShadowFunnel(rec: Record<string, Array<[number, string]>>): void { this.db.kvSet('incubator.shadowFunnel', rec); }
 
   /** Decision 109: since when each live pair's market has been out (refused or not judged), by pair key; cleared the day it is allowed again. */
+  /** Decision 125: the last bar each shadow pair acted on. */
+  liveMarks(): Record<string, number> | undefined { return this.db.kvGet<Record<string, number>>('incubator.liveMarks'); }
+  setLiveMarks(rec: Record<string, number>): void { this.db.kvSet('incubator.liveMarks', rec); }
   marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut') ?? {}; }
   setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut', rec); }
 
