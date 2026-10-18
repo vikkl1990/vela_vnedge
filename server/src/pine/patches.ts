@@ -6,6 +6,8 @@
  * The same patched source is served to the dashboard so the Vela chart runs the exact
  * code the scanner executed.
  */
+import { dropQualifiers, fundamentalsToNa, joinContinuations, liftV4, renameReserved } from './compat.ts';
+
 export interface PatchRule {
   id: string;
   description: string;
@@ -15,6 +17,12 @@ export interface PatchRule {
 }
 
 export const PATCH_RULES: PatchRule[] = [
+  // decision 126: generic lowerings for what the PineTS parser and runtime cannot take, applied before the specific rules
+  { id: 'v4-to-v5', description: 'Pine v4 (v3, v2) lifted to v5 by the published migration table: study → indicator, security → request.security, ta.* and math.* prefixes, typed inputs, str.*; transp and iff lowered.', apply: liftV4 },
+  { id: 'line-continuation', description: "Pine's continuation lines (inside brackets, or a more-indented line starting with an operator) are joined onto their statement and comment-only lines are removed; PineTS's indentation lexer rejects the first and tokenises the second at a depth that can break the block around it.", apply: joinContinuations },
+  { id: 'drop-qualifiers', description: '`for int i = …` loop types and `series` / `simple` / `const` declaration qualifiers are dropped; PineTS does not parse them and they carry no runtime meaning.', apply: dropQualifiers },
+  { id: 'reserved-identifier', description: 'A script that uses `type` or `method` as a variable name has it renamed; PineTS lexes both as keywords.', apply: renameReserved },
+  { id: 'fundamentals-na', description: 'request.financial / earnings / dividends / splits / footprint / economic return na on a crypto perpetual on TradingView too; lowered to na so the script runs.', apply: fundamentalsToNa },
   {
     id: 'label.all-size',
     description: "PineTS returns a plain JS array for `label.all` / `line.all` / `box.all`, so `array.size(x.all)` throws. These calls only guard drawing-object housekeeping; the branch is disabled.",

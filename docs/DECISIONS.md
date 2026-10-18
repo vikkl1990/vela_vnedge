@@ -3731,3 +3731,50 @@ pass to the engine; entries on one are dropped and counted in the funnel as `ent
 bar`, since they are stale by definition. A bar too old to act on still advances the mark.
 Neither the paper-first write nor the strategy spec is changed; both go on the list for before
 live execution.
+
+## 126. The quarantine, worked: 304 of 690 scripts come back (18 October 2026)
+
+**Why.** `script_health` held 690 quarantined scripts, a quarter of the library. The operator asked
+whether they could be fixed or converted. The verdicts, grouped: 405 for time or memory (213
+"never finishes", 180 "timed out 3× in 24 h", the rest memory), 124 "does not transpile", 92
+"PineTS runtime gap", 35 "needs a market Delta does not list", 34 "Pine version the runtime does
+not support".
+
+**The slow ones were judged on the wrong history.** The compat and screen verdicts came from
+4,000-bar runs; the live engine runs on 1,500. Every one of the 405 was run again on BTCUSD 15m at
+1,500 bars under a capped scope on the VM: 246 ran on the first pass (median 375 ms, p90 2 s),
+and of the 159 that fell to the run's own memory guard 48 more ran with two workers instead of
+four. 291 of 405 run at the live bar count. 65 need more than two gigabytes of heap apiece at
+1,500 bars and stay out; the live pool gives a worker one. The compat tool takes `WORKERS=` now.
+
+**The parser gaps are five shapes.** The failing lines were sampled rather than guessed:
+`import` of a library (48, 25 of them `TradingView/ta`), Pine's continuation lines inside brackets
+or starting with an operator (24 plus the comma and colon cases), `for int i = …` and `series
+float x` qualifiers (12), `type` and `method` used as variable names (10), and Pine v4 (31).
+`pine/compat.ts` lowers each: continuation lines are joined onto their statement with trailing
+comments dropped, comment-only lines removed (PineTS tokenises them and their depth breaks the
+block around them; `//@version` and the other annotations stay), qualifiers dropped, the two
+identifiers renamed outside strings, v4 lifted to v5 by the published migration table with every
+untyped `input()` typed by its default, and `request.financial` and its kin lowered to `na`, which
+is what TradingView returns for a perpetual too. Each is a patch rule, applied before the
+specific ones.
+
+**Measured, not assumed.** The 250 transpile, version and runtime-gap scripts on 300 BTCUSD 15m
+bars: 60 ran before the patches, 73 after, 13 fixed, none broken. The 216 scanners the fleet and
+the incubator run: 212 ran before and 212 after, no regression, and the 32 whose alert counts
+differed between the two runs gave identical output when run raw and patched on identical bars.
+Two earlier drafts failed that check and were not kept: re-indenting comment lines broke a live
+script, and removing `// @version=5` written with a space broke another; the version annotation
+is now matched with the space allowed.
+
+**What stays out.** 48 scripts import a library, and a library's source needs its own script id,
+which the facade does not resolve by name; 35 ask for SPY, VIX or another series Delta does not
+list; 11 request a timeframe PineTS does not have (1S, 10, 480, 720: its list is fixed); 65 are
+memory hogs; the rest are runtime gaps inside PineTS (`e.slice`, `syminfo.param`, variables the
+transpiler loses). The library import is the one worth another pass, with the `TradingView/ta`
+source inlined, once its id is found.
+
+**Decision.** The 304 scripts that now run, 291 at the live bar count and 13 by the patches, are
+released through the product's release route and go back to the nightly screen, which re-judges
+them at 4,000 bars with its own retry rule; a repeat verdict quarantines again. The patches
+reach the live engine on the next restart; no live script's output changes.
