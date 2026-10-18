@@ -3778,3 +3778,30 @@ source inlined, once its id is found.
 released through the product's release route and go back to the nightly screen, which re-judges
 them at 4,000 bars with its own retry rule; a repeat verdict quarantines again. The patches
 reach the live engine on the next restart; no live script's output changes.
+
+## 127. 164 scripts retired from the library for good (18 October 2026)
+
+**Why.** After decision 126 the quarantine held 386 scripts. The operator asked that the ones that
+are not useful be removed permanently. "Not useful" is read as "cannot run on this stack by
+nature", judged from each script's latest error, not its old verdict:
+
+| retired | n | why it can never run here |
+|---|---|---|
+| series Delta does not list | 60 | `request.security` on SPY, VIX, DXY, WALCL and the like |
+| memory beyond the live worker | 69 | over two gigabytes of heap at 1,500 bars; a live worker has one |
+| imports a data library | 23 | chess data, Forex Factory calendars, COT, machine-learning libraries |
+| timeframe PineTS does not have | 9 | seconds bars and minute counts outside its fixed list |
+| hangs at the live bar count | 1 | |
+| Pine v2 and v3 | 2 | the lift covers v4 only |
+
+**Kept.** 192 remain quarantined: 143 runtime gaps inside PineTS (variables the transpiler loses,
+`e.slice`, `syminfo.param`), 24 gaps that appear only on the long history, and 25 that import
+`TradingView/ta`, which one inlining pass could bring back. 30 Pine v4 scripts whose verdict
+predates the lift were released for the screen to re-judge.
+
+**How "permanent" is kept.** A manifest status `removed`, with the reason and the date, on each
+row; the source file deleted. The row stays because the weekly library sync treats every manifest
+id as known, so a removed script is never re-imported; the registry never loads a removed row, so
+it is absent from the library, the screen and the dashboard. The health rows went through the
+release route. 354 scripts whose source TradingView does not publish are a separate, older set,
+still listed as unavailable; they could go the same way on a word.

@@ -32,7 +32,7 @@ const previous: Record<string, any> = {};
 if (merge && fs.existsSync(reportFile)) for (const r of JSON.parse(fs.readFileSync(reportFile, 'utf8')).rows ?? []) previous[r.id] = r;
 const save = () => { const byId: Record<string, any> = { ...previous }; for (const r of rows) byId[r.id] = r; fs.writeFileSync(reportFile, JSON.stringify({ at: new Date().toISOString(), symbol, tf, bars: bars.length, rows: Object.values(byId) }, null, 1)); };
 const withDeadline = <T,>(p: Promise<T>, ms: number, onTimeout: () => T): Promise<T> => new Promise((resolve) => { const t = setTimeout(() => resolve(onTimeout()), ms); p.then(v => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(onTimeout()); }); });
-await Promise.all(manifest.filter(m => m.status !== 'unavailable' && (!only || only === '-' || only.split(',').some((o: string) => m.id === o || m.id.includes(o)))).map(async (m) => {
+await Promise.all(manifest.filter(m => m.status !== 'unavailable' && m.status !== 'removed' && (!only || only === '-' || only.split(',').some((o: string) => m.id === o || m.id.includes(o)))).map(async (m) => {
   const raw = fs.readFileSync(path.join(PINE_DIR, m.file), 'utf8');
   const { source, applied } = applyPatches(raw, m.file);
   const r = await withDeadline(pool.run({ scannerId: m.id, source, symbol, tf, tickSize: tick, bars, tailBars: 'all', plotTail: 50 }), 150_000, (): WorkerResult => ({ id: -1, bars: bars.length, lastBarTime: bars.at(-1)?.time ?? 0, ok: false, error: 'hung: no result within 150s (script likely loops forever under PineTS)', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 }));

@@ -3,7 +3,8 @@ import path from 'node:path';
 import { DATA_DIR, PINE_DIR, SCRIPTS_DIR } from '../config.ts';
 import { applyPatches } from '../pine/patches.ts';
 
-export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable';
+/** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
+export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
 
 export interface ScannerMeta {
   id: string;
@@ -87,6 +88,7 @@ export class ScannerRegistry {
     const seen = new Set(manifest.map(m => m.id));
     const all = [...manifest.map(m => ({ ...m, __dir: PINE_DIR })), ...extra.filter(m => !seen.has(m.id)).map(m => ({ ...m, __dir: path.join(extraRoot, 'pine') }))];
     for (const m of all) {
+      if (m.status === 'removed') continue;
       const file = path.join(m.__dir, m.file);
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       const { source: patched, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
