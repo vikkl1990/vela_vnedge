@@ -1,6 +1,6 @@
 /**
  * Compatibility matrix: runs every manifest script through the worker pool on real Delta
- * candles and prints what each one produces. Usage: npm run compat -- [SYMBOL] [TF] [BARS]
+ * candles and prints what each one produces. Usage: [WORKERS=2] npm run compat -- [SYMBOL] [TF] [BARS] [ids,…] [--merge]
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,7 +23,8 @@ const candles = await rest.recentCandles(symbol, tf, nBars, TF_SECONDS[tf]);
 const bars = candles.slice(0, -1).map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
 console.log(`${symbol} ${tf}: ${bars.length} closed bars, tick ${tick}`);
 
-const pool = new PinePool(4, 120_000);
+// WORKERS=2 keeps a capped research run under its memory guard (decision 126: 115 scripts were casualties of the guard, not of their own code)
+const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000);
 const rows: any[] = [];
 const reportFile = path.join(SCRIPTS_DIR, 'compat-report.json');
 const merge = process.argv[6] === '--merge'; // keep rows of scripts not run this time
