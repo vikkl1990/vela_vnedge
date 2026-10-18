@@ -3901,3 +3901,43 @@ that the 40% trail still held open at the 48-hour horizon and the 10% trail bank
 trades, smaller per trade than the 72-cell study because the account's result is set by its 28
 stop-outs, which no trail touches. The optimistic reading (targets before stops in a bar) gives the
 same figure, so the number does not depend on the bar-order assumption.
+
+## 130. The conjunction test: two scanners agreeing on a bar is not a better signal (18 October 2026)
+
+**Why.** A reviewer asked for the measurement behind "combine indicators to raise the win rate":
+an entry only when two scanners enter on the same closed bar, same side, same market and
+timeframe, judged on the nightly screen's own path and against each component alone on
+identical history. `npm run conjunction` is the harness; nine pairs chosen among scanners that
+share shadow cells with trades in the last 30 days, 33 market cells, 4,000 bars, the fleet's
+current exits, book cost paid, each conjunction run both ways (each scanner's levels gated by the
+other's entries).
+
+| conjunction | tf | components alone, R per trade over trades | conjunction, R per trade over trades |
+|---|---|---|---|
+| SuperTrend Cluster + Structure-Anchored VWAP | 15m | −0.05 / 21, −0.05 / 16 | no joint entry in 4 markets |
+| Trend Impulse Channels + Smart Swing VWAP | 15m | +0.16 / 126, −0.18 / 29 | 1 trade |
+| AI Predictive Flow + Pivot Channel Breaks | 15m | −0.22 / 17, −0.13 / 28 | 1 trade |
+| Trend Impulse Channels + Smart Money Breakout | 15m | +0.13 / 112, −0.20 / 10 | 1 trade, stopped |
+| Order Block Detector + Trend Impulse Channels | 15m | +0.09 / 85, +0.13 / 51 | +0.31 / 7 |
+| Pivot Channel Breaks + SuperTrend Cluster | 15m | +0.08 / 14, −0.03 / 19 | +0.10 / 3 |
+| Trend Pullback Guard + Volatility S&D Zones | 15m | −0.20 / 21, +0.05 / 104 | −0.51 / 3 |
+| Trend Continuation Signals + Trend Tracer | 4h | +0.03 / 172, +0.14 / 107 | +0.45 / 14 |
+| Donchian Breakout + Momentum Bands Breakout | 1h | +0.12 / 70, +0.38 / 131 | +1.23 / 38 |
+
+**Result.** None of the nine clears the screen on any market; none beats its better component on
+the cell yardstick (higher R per trade, both halves positive, not worse on a majority of markets).
+Summed, the conjunctions make +54R where their better components make +108R on the same history.
+Seven of the nine produce between zero and seven joint entries over 4,000 bars: agreement on a bar
+is rare, which is the sample collapse the yardstick exists to catch.
+
+**The one with substance.** Momentum Bands gated by the Donchian breakout on ZEC 1h: 26 trades at
++1.00R, both halves positive, holdout +0.90R, 4% stop-outs, against Momentum Bands alone at +0.50R
+over 74 trades, which passes the screen. The conjunction is better per trade and worse in total,
++26R against +37R, because it drops two thirds of the trades, and it cannot be screened on 18
+training trades. A filter that raises R per trade by discarding most of a passing cell's trades is
+not more edge; it is less of the same edge.
+
+**Verdict.** Agreement between scanners adds nothing the screen can use, which is what the
+composite study of 29 September and the family lab (decision 45) found by other routes, and what
+decision 128 implies: the entry side carries no separable signal. Scanners stay separate cells.
+Measurement only; nothing promoted, no setting changed.
