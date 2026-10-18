@@ -3805,3 +3805,45 @@ id as known, so a removed script is never re-imported; the registry never loads 
 it is absent from the library, the screen and the dashboard. The health rows went through the
 release route. 354 scripts whose source TradingView does not publish are a separate, older set,
 still listed as unavailable; they could go the same way on a word.
+
+## 128. The stop-outs, worked through: decided early, unpredictable at entry, and cutting them early loses (18 October 2026)
+
+**Why.** The account's closed trades read 69, net −79 dollars, 38 of them in fees; 28 left by the
+stop at −0.93R, 39 by the trail at +0.58R. The operator asked for the deep dive and the fix.
+
+**Anatomy.** Account stop-outs: average peak +0.18R, 68% never reached +0.25R, median hold 109
+minutes, stops 2.5% wide, half of them shorts. Shadow book, 30 days, 898 stop-outs: peak +0.12R,
+62% never reached +0.25R. From the recorded paths of 2,460 trades: thirty minutes after entry the
+eventual stop-outs sit at a median −0.46R, 47% already at or past −0.5R, 88% under water; the
+eventual winners sit at +0.25R with 2% at or past −0.5R. At an hour, 64% of stop-outs are past
+−0.5R and 93% under water, 64% of winners are past +0.25R.
+
+**Nothing at entry predicts them.** 1,665 shadow trades of the last 30 days with the enriched
+features, cut into terciles on eleven features plus side, hour block, weekday and timeframe: the
+stop rate sits between 28% and 38% in every bucket. The only tilts are in R, not in stops: with
+the 200-bar trend +0.22R against +0.02R, shorts +0.30R against longs +0.01R, 4h cells stopped
+25% of the time against 37% on 15m. The yardstick's AUC of 0.51 (decision 108) is the same fact.
+
+**The early cut, measured.** The path numbers suggested closing a trade at −0.5R inside its first
+hour. Built as `paper.earlyCut` (off by default) and run on the 72 exit-study cells, 4,544 trades,
+the account's costs, 1m sub-bars:
+
+| variant | Δ sum R | cells better / worse |
+|---|---|---|
+| cut at −0.5R inside 30 min | −24 | 4 / 10 |
+| cut at −0.5R inside 60 min | −39 | 6 / 13 |
+| cut at −0.5R inside 120 min | −58 | 7 / 16 |
+| cut at −0.4R inside 60 min | −64 | 5 / 18 |
+| cut at −0.6R inside 90 min | −42 | 5 / 13 |
+| cut at −0.7R inside 240 min | −48 | 4 / 18 |
+
+Every variant loses, on 15m and on 1h. The sampled path sees a winner's position every few
+minutes; the 1m bars see every touch, and far more winners touch −0.5R on the way than the path
+suggested. The same run confirms decision 124's next step: a 10% give-back is +31R over the
+applied 15%, 21 cells better and one worse.
+
+**Verdict.** A stop-out here is a dead entry, not a stop placed wrong (110), not a stop too tight
+for the fees (122), and not a trade that should have been cut sooner (this). The levers that
+move the book are which cells trade (the gate) and how much of a winner is kept (124). The early
+cut stays in the code as a study option and off. `earlyCut` is a risk setting; it is never set
+without the operator.
