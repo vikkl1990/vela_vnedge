@@ -4015,3 +4015,11 @@ profit-factor, positive-weeks and R floors still apply to it.
 
 **What this does not change.** The screen, the shadow runner, the demotion rules, the exits and
 the promotion caps are as they were. The cohort code stays for `pool: 'cohort'`.
+
+**Promotion unrestricted (19 October).** The operator: "allow, don't restrict the promotion". The
+caps that held the fleet to two promotions a week, 43 live pairs, two cells per market and six per
+scanner are set to 1,000 each through the config route, with auto-promotion on, so every cell the
+gate proposes goes live as proposed. The first proposal under the per-cell gate, ML RSI on
+MUBARAK 15m, was approved the same way: the fleet is 38 pairs. The account's own risk caps, the
+position and burst limits and the daily and weekly loss stops, are unchanged and still bound what
+the fleet can do with the account.
