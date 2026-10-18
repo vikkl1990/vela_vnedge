@@ -220,7 +220,11 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         fillExit(open, ev.price ?? bar.close, open.qtyOpen, 'reversal', bar.time, cfg, true);
         finish(open);
       }
-      const price = ev.price && ev.price > 0 ? ev.price : bar.close;
+      // decision 134: a market entry fills at the signal bar's close, as the live engine fills at the market when it acts
+      // after the close. The event's own price is a reference: a strategy's stop-order fill at the breakout level, read
+      // after the bar closed beyond it, handed the screen a head start the account never gets (Inside Day Breakout: a
+      // median 60% of the bar's range).
+      const price = bar.close;
       const em = inp.entry;
       if (em?.maxSignalBarAtr && atr[i] > 0 && (bar.high - bar.low) / atr[i] > em.maxSignalBarAtr) { refuse('chased'); continue; }
       if (em?.pullbackAtr != null && em.pullbackAtr >= 0 && atr[i] > 0) {

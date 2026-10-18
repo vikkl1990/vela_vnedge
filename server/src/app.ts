@@ -670,7 +670,7 @@ export class App {
   async incubatorEvaluate(actor: string) {
     const cfg = this.config.get();
     const synced = incubatorSyncLive(this.incubatorStore, cfg);
-    const report = incubatorEvaluate(this.incubatorStore, cfg);
+    const report = incubatorEvaluate(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' });
     let promoted: string[] = [], blocked: string[] = [];
     if (cfg.incubator.promote.auto && report.proposed.length) {
       ({ promoted, blocked } = incubatorAutoPromote(this.incubatorStore, cfg, (sid, patch) => { this.config.setScanner(sid, patch); }));

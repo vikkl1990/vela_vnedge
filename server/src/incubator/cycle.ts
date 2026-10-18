@@ -16,6 +16,8 @@ export interface ScreenResult {
   entryDensity?: number;
   /** Decision 114: the same history under exit mode `script` — the strategy's own exits — beside the fleet's exits above. */
   scriptExit?: { trades: number; avgR: number; avgR1: number; avgR2: number; sumR: number };
+  /** Decision 134: set on screens whose entries were filled at the signal bar's close; a strategy screen without it was flattered and must be re-run. */
+  fill?: 'close';
 }
 
 // ---- decision 114: a strategy cohort judged on its own exits ----
@@ -192,7 +194,9 @@ function marketRefusal(markets: Map<string, { allowed: boolean; reasons: string[
   return !m.allowed ? `the market gate refuses ${symbol} today: ${m.reasons.join('; ') || 'not allowed'}` : null;
 }
 
-export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()): CycleReport {
+/** `needsRescreen`: scanners whose screens from before decision 134 cannot be trusted (strategy scripts); their candidates wait for a fresh screen. */
+export interface EvaluateOptions { needsRescreen?: (scannerId: string) => boolean }
+export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): CycleReport {
   const inc = cfg.incubator;
   const rep: CycleReport = { proposed: [], retired: [], brewing: 0, demoteProposed: [], admitted: [], free: 0 };
   const active = store.list(['shadow', 'proposed']);
@@ -243,7 +247,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (now - lastAt > staleDays * DAY) { const why = `stale: no shadow trade in ${Math.round((now - lastAt) / DAY)} days (cap ${staleDays})`; store.move(r, 'retired', 'gate', { reasons: [why] }, why, now); rep.retired.push(name(r)); }
   }
 
-  admit(store, cfg, rep, now);
+  admit(store, cfg, rep, now, opts);
   return rep;
 }
 
@@ -324,14 +328,15 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
  * running are topped up first, and a new cohort is only started when enough of its markets passed
  * the screen to fill `admit.minCohortMarkets` slots.
  */
-function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: number): void {
+function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: number, opts: EvaluateOptions = {}): void {
   const inc = cfg.incubator;
   const active = store.list(['shadow', 'proposed']);
   let slots = Math.max(0, inc.maxShadow - active.length);
   const markets = store.marketsToday();
   // a candidate on a market the gate refuses today would hold a shadow slot the account can never use (decision 104)
   const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
-  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol));
+  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol)
+    && !(opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close'));
   const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); slots--; };
 
   if (inc.gate.pool !== 'cohort') {

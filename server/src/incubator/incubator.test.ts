@@ -515,3 +515,29 @@ test('decision 132: a cell demoted to the shadow book keeps the evidence window 
   assert.equal(back.stage, 'shadow');
   assert.equal(back.since, T0, 'the shadow evidence from before promotion counts again');
 });
+
+test('decision 134: a strategy candidate screened before the fill fix waits for a fresh screen', () => {
+  const { store, cfg, screen } = world();
+  cfg.incubator.gate.pool = 'pair';
+  recordScreen(store, { scannerId: 'strat', symbol: 'AUSD', tf: '15m' }, screen({ profitFactor: 3 }), cfg.incubator, T0);
+  recordScreen(store, { scannerId: 'strat', symbol: 'BUSD', tf: '15m' }, screen({ profitFactor: 3, fill: 'close' }), cfg.incubator, T0);
+  recordScreen(store, { scannerId: 'ind', symbol: 'CUSD', tf: '15m' }, screen({ profitFactor: 2 }), cfg.incubator, T0);
+  const rep = evaluate(store, cfg, T0, { needsRescreen: id => id === 'strat' });
+  assert.ok(!rep.admitted.includes('strat AUSD 15m'), 'the flattered screen is not trusted');
+  assert.ok(rep.admitted.includes('strat BUSD 15m'), 'a fresh screen is');
+  assert.ok(rep.admitted.includes('ind CUSD 15m'), 'indicator screens are unaffected');
+});
+
+test('decision 134: the backtest fills a market entry at the signal bar close, not at the event price', async () => {
+  const { runBacktest } = await import('../paper/backtest.ts');
+  const H = 3600_000; const bars = Array.from({ length: 40 }, (_, i) => ({ time: T0 + i * H, open: 100, high: 101, low: 99, close: 100, volume: 1 }));
+  bars[30] = { time: T0 + 30 * H, open: 100, high: 106, low: 99, close: 105, volume: 1 };
+  for (let i = 31; i < 40; i++) bars[i] = { time: T0 + i * H, open: 105, high: 105.5, low: 104.5, close: 105, volume: 1 };
+  bars[35] = { time: T0 + 35 * H, open: 105, high: 105.5, low: 80, close: 81, volume: 1 };   // the stop is hit, so the trade closes and its fill can be read
+  const events = [{ kind: 'entry' as const, side: 'long' as const, price: 101, tp: [], label: 'STRATEGY entry long', message: '', source: 'alert' as const, barTime: bars[30].time, barIndex: 30 }];
+  const r = runBacktest({ scannerId: 's', scannerName: 's', symbol: 'XUSD', tf: '1h', bars, events, cfg: { ...cfg0().paper, minRiskFeeRatio: 0 }, exitMode: 'both', contractValue: 1, tickSize: 0.01 });
+  assert.equal(r.entries, 1);
+  assert.equal(r.trades.length, 1, 'the trade closed');
+  assert.ok(r.trades[0].entryPrice >= 105, `filled at the close, not at the 101 breakout level (got ${r.trades[0].entryPrice})`);
+});
+function cfg0() { return structuredClone(DEFAULT_CONFIG); }

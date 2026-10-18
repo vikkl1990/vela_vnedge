@@ -267,6 +267,7 @@ while (sliceArg !== 'none') {
           }
         }
         if (r.pass) summary.passed++;
+        r.fill = 'close';   // decision 134: entries filled at the signal bar's close
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);
         if (k === 'new' || k === 'updated' || k === 'cooldown') summary[k]++;
       } catch (e: any) { summary.failed++; }
@@ -286,7 +287,8 @@ while (sliceArg !== 'none') {
 }
 
 // ---- judge ----
-const report = evaluate(store, cfg);
+const judgeRegistry = new ScannerRegistry();
+const report = evaluate(store, cfg, Date.now(), { needsRescreen: id => judgeRegistry.get(id)?.scriptType === 'strategy' });
 summary.report = report;
 summary.ms = Date.now() - started;
 db.kvSet('incubator.lastRun', summary);

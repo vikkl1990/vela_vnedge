@@ -4023,3 +4023,71 @@ gate proposes goes live as proposed. The first proposal under the per-cell gate,
 MUBARAK 15m, was approved the same way: the fleet is 38 pairs. The account's own risk caps, the
 position and burst limits and the daily and weekly loss stops, are unchanged and still bound what
 the fleet can do with the account.
+
+## 133. The hybrid entry: a higher-timeframe signal filled on a lower-timeframe break (19 October 2026)
+
+**Why.** The operator wanted execution on a lower timeframe and signals from a higher one. Built as
+an entry model in the backtest (`entry.breakAtr`, `entry.breakBars`): the signal is read on its own
+timeframe, and a stop order rests just beyond the signal bar's extreme in the trade's direction; it
+fills on the first lower-timeframe bar that crosses it, as a taker, or lapses after a number of
+signal bars. A signal whose move never continues is never taken. Measured on 118 cells on 1h and 4h
+with 15m sub-bars, the account's costs, against the direct entry.
+
+| | trades | R per trade | sum R | both halves | cells better / worse |
+|---|---|---|---|---|---|
+| 1h direct entry, 64 cells | 2,235 | +0.164 | +367 | +0.12 / +0.20 | |
+| 1h break, 4 bars | 1,657 | +0.108 | +179 | +0.10 / +0.12 | 25 / 33 |
+| 1h break, 8 bars | 1,828 | +0.113 | +206 | +0.10 / +0.12 | 27 / 32 |
+| 4h direct entry, 45 cells | 4,683 | +0.066 | +311 | +0.06 / +0.07 | |
+| 4h break, 4 bars | 3,411 | +0.097 | +330 | +0.11 / +0.08 | 20 / 20 |
+| 4h break, 8 bars | 3,607 | +0.095 | +343 | +0.11 / +0.08 | 21 / 21 |
+
+**Verdict.** On 1h it loses half the result: the signals that do not continue are not the losers,
+and the ones that do continue are bought higher. On 4h it raises R per trade and holds in both
+halves, but the cells split exactly evenly, which is not a change the yardstick can accept. The
+entry model stays in the backtest and in diagnose (`h-break*` variants); nothing in the fleet uses it.
+
+## 134. The cross-timeframe gate, and a backtest that filled strategies at prices they could not get (19 October 2026)
+
+**The gate.** A reviewer's prompt asked for a higher-timeframe scanner to gate a lower-timeframe
+scanner's entries, measured on the screen's path. `npm run conjunction` takes a five-field line for
+it and reads the higher scanner two ways with no look-ahead: its signal state (the side of its last
+entry until an exit or an opposite entry) and its open position under the fleet's exits. Six pairs
+on the lower scanner's own markets; five ran, the sixth timed out on its first market.
+
+| gate | lower scanner alone | gated by the higher signal | joint entries |
+|---|---|---|---|
+| SuperTrend Cluster 1h → Trend Impulse 15m | +0.175R × 407, sum +71 | +0.157R × 159, sum +25 | 47% |
+| Structure-Anchored VWAP 1h → Smart Swing VWAP 15m | −0.072R × 85 | −0.125R × 39 | 46% |
+| Momentum Bands 1h → SuperTrend Cluster 15m | +0.073R × 73 | no trades | 0% |
+| Inside Day Breakout 1h → Trend Impulse 15m | +0.181R × 394, sum +71 | +0.158R × 42, sum +7 | 9% |
+| Trend Tracer 4h → Momentum Bands 1h | +0.305R × 242, sum +74 | +0.312R × 180, sum +56 | 68% |
+
+None beats its better component; none improves its lower scanner as a filter; one clears the screen
+on one market. Summed, the gated readings make +88R where the lower scanners alone make +216R on the
+same history. The position reading keeps almost nothing: under the 10% trail a higher-timeframe
+trade is open for a few hours at most. The higher timeframe's direction does not select the lower
+timeframe's winners, which is decision 102's finding for BTC's 4h bias, decision 130's for
+same-timeframe agreement, and decision 128's for the entry side at large.
+
+**The flaw it surfaced.** Inside Day Breakout Strategy 1h made +1.45R a trade in the study's
+backtest and +0.03R over 23 trades in the shadow book. Its daily data was read correctly (PineTS
+returns yesterday's high on all 189 intraday bars tested). The cause was the backtest: it filled a
+market entry at the price the event carried. For an alert script that price is the close; for a
+strategy's stop order it is the breakout level, recorded after the bar had closed far beyond it.
+Inside Day Breakout's entries sat a median 60% of the bar's range better than the close. The live
+engine acts after the close and buys at the ask; it never gets that price.
+
+Fixed: a market entry in the backtest fills at the signal bar's close. Inside Day Breakout on five
+markets goes from +0.90R a trade to +0.13R, beside its +0.03R forward. Across the shadow book, the 22
+strategy cells with five or more forward trades had screens promising +0.44R and delivered 0.00R;
+the 37 indicator cells promised +0.21R and delivered +0.17R. No strategy cell is live: the gate
+judges forward trades and none passed.
+
+**Clean-up.** Screens computed from now carry `fill: 'close'`; a strategy candidate without that
+stamp is not admitted until the nightly walk re-screens it (50 candidates). The 100 strategy cells in
+the shadow book are left to the gate: the delivery rule retires a cell whose forward R is at or
+below zero and 0.5R short of its screen once it has 20 trades, which these will meet. Every study
+in this log that screened strategies before today (decisions 113, 114, 129 to 133) compared
+variants on the same flattered entries, so their relative verdicts stand; their absolute R on
+strategy cells was too high.
