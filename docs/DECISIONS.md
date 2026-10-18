@@ -4121,3 +4121,12 @@ it is acted on, the close in the backtest and the mark live; a target hit keeps 
 resting limit fills there. This changes the paper results of the five strategy cohorts on their own
 exits (decision 114) from today; their earlier own-exit trades were filled at levels they could not
 have had.
+
+**Shadow book enlarged (19 October).** On the operator's "increase shadow": `incubator.maxShadow`
+400 → 600 and `admit.maxPerScannerTf` 15m 5 → 8, through the config route, with the judge run at
+once: 26 cells admitted, 426 in the book, 174 slots free. The cap no longer binds. Of the passing
+candidates left, 71 sit on markets the market gate refuses today (decision 104 keeps them out) and
+18 are strategy scripts waiting for a re-screen under decision 134's fill pricing. The book now
+grows at the rate the nightly screen produces passes, and that screen runs two workers and
+truncates at about 180 of 318 scripts a night; at 400 cells the VM ran at a load of 0.06 with 2 of
+24 GB in use.
