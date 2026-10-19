@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop, giveBackPct, earlyStallExit } from './logic.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, recordLeverage, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop, giveBackPct, earlyStallExit } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -686,4 +686,34 @@ test('the stop-versus-cost check counts the book when it is known: a stop that c
   // the same stop against a 0.3% book: 6 × (0.118% + 0.3%) = 2.5% is needed
   assert.match(checkRiskVsFees(100, 99.2, c, 'X', 0.3) ?? '', /stop too tight/);
   assert.equal(checkRiskVsFees(100, 97, c, 'X', 0.3), null);
+});
+
+test('decision 144: recordLeverage picks the tier from the cell record, and the base when the record is short', () => {
+  const m = { base: 5, strong: 20, weak: 5, strongAboveR: 0.05, weakBelowR: -0.05, minTrades: 5, lookback: 30 };
+  assert.deepEqual(recordLeverage([1, 1, 1, 1], m), { leverage: 5, avgR: null, n: 4 });
+  assert.equal(recordLeverage([0.2, 0.1, 0, -0.1, 0.3], m).leverage, 20);
+  assert.equal(recordLeverage([-0.2, -0.1, 0, 0.1, -0.3], { ...m, weak: 3 }).leverage, 3);
+  assert.equal(recordLeverage([0.05, 0.05, 0.05, 0.05, 0.05], m).leverage, 5, 'exactly at the threshold stays at base');
+  // only the newest `lookback` trades count
+  assert.equal(recordLeverage([...Array(30).fill(-1), ...Array(100).fill(5)], m).leverage, 5);
+});
+
+test('decision 144: margin sizing puts up marginPerTrade at the wanted leverage, capped by the market and the stop guard', () => {
+  const c = { ...cfg, sizingMode: 'margin' as const, marginPerTrade: 150, maxLeverage: 50, maxStopLossPct: 2, minSizeShare: 0 };
+  const base = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: c });
+  assert.equal(base.qty, 7, '$150 at the base 5x is $750, 7 contracts at 100');
+  assert.equal(base.marginLeverage, 5);
+  const strong = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: c, wantedLeverage: 20 });
+  assert.equal(strong.qty, 30, '$150 at 20x is $3,000');
+  // the 2% equity stop cap would allow only 13 contracts at a 1.5% stop; margin sizing is bounded by the margin instead
+  assert.ok(strong.riskAmount > 1000 * 0.02);
+  const capped = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: c, wantedLeverage: 20, maxLeverage: 10 });
+  assert.equal(capped.marginLeverage, 10, "Delta's ceiling caps the record's ask");
+  const guarded = sizeContracts(100, 90, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: { ...c, liquidation: true }, wantedLeverage: 20, maintenanceMarginPct: 2.5 });
+  assert.ok(guarded.marginLeverage < 20 && guarded.marginLeverage > 1, 'a 10% stop lowers the leverage so liquidation stays beyond it');
+  const liqMove = 1 / guarded.marginLeverage - 0.025;
+  assert.ok(liqMove > 0.10, 'liquidation sits beyond the stop');
+  assert.ok(guarded.riskAmount < 150, 'a stop-out costs less than the margin');
+  const noRoom = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 60, contractValue: 1, tickSize: 0.01, cfg: { ...c, minSizeShare: 0.5 } });
+  assert.equal(noRoom.qty, 0, 'less free margin than half the intended position is refused');
 });

@@ -87,6 +87,19 @@ export interface SizingInputs {
   /** The market's own maintenance margin and leverage ceiling (Delta's product record); the config's figures when absent. */
   maintenanceMarginPct?: number;
   maxLeverage?: number;
+  /** Margin sizing: the leverage the cell's record asks for (recordLeverage); the config's base when absent. */
+  wantedLeverage?: number;
+}
+
+/**
+ * Decision 144: the leverage a cell's record asks for under margin sizing. `netRs` are its most recent closed shadow
+ * trades' net R, newest first; only the first `lookback` count.
+ */
+export function recordLeverage(netRs: number[], m: NonNullable<PaperConfig['marginLeverage']>): { leverage: number; avgR: number | null; n: number } {
+  const xs = netRs.filter(Number.isFinite).slice(0, m.lookback);
+  if (xs.length < m.minTrades) return { leverage: m.base, avgR: null, n: xs.length };
+  const avgR = xs.reduce((a, b) => a + b, 0) / xs.length;
+  return { leverage: avgR > m.strongAboveR ? m.strong : avgR < m.weakBelowR ? m.weak : m.base, avgR, n: xs.length };
 }
 
 export interface LevelResult { sl: number; tp: number[]; source: Position['levelsSource']; reason?: string }
@@ -242,7 +255,9 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   // the exchange's ceiling for this market caps whatever the config allows; its maintenance sets the liquidation distance
   const maxLeverage = Math.min(s.cfg.maxLeverage, s.maxLeverage ?? Infinity);
   const maint = s.maintenanceMarginPct ?? s.cfg.maintenanceMarginPct;
-  const marginLeverage = leverageForStop(entry, sl, Math.min(maxLeverage, s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : maxLeverage), s.cfg, maint);
+  const margin = s.cfg.sizingMode === 'margin';
+  const wanted = margin ? (s.wantedLeverage ?? s.cfg.marginLeverage?.base ?? 5) : s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : maxLeverage;
+  const marginLeverage = leverageForStop(entry, sl, Math.min(maxLeverage, wanted), s.cfg, maint);
   const rejected = (reason: string) => ({ qty: 0, riskAmount: 0, leverage: 0, marginLeverage, reason });
   if (![entry, sl, s.equity, s.contractValue, marginLeverage].every(v => Number.isFinite(v) && v > 0) || entry === sl) return rejected('invalid sizing inputs');
   if (s.cfg.liquidation && 1 / marginLeverage <= maint / 100) return rejected('initial margin must exceed maintenance margin');
@@ -256,12 +271,16 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   const maxNotional = s.equity * maxLeverage - openNotional;
   // Entry fees consume wallet cash too. Margin is released pro-rata on partial exits.
   const maxQty = Math.min(Math.floor(maxNotional / notional), Math.floor(availableMargin / (notional / marginLeverage + entryFee)));
-  const desired = s.cfg.sizingMode === 'quality'
-    ? Math.floor(s.equity * marginLeverage / notional)
-    : Math.floor(s.equity * (s.cfg.riskPerTradePct / 100) / perContractRisk);
+  const desired = margin
+    ? Math.floor((s.cfg.marginPerTrade ?? 0) * marginLeverage / notional)
+    : s.cfg.sizingMode === 'quality'
+      ? Math.floor(s.equity * marginLeverage / notional)
+      : Math.floor(s.equity * (s.cfg.riskPerTradePct / 100) / perContractRisk);
   // Hard cap in EVERY mode: the loss at the stop may never exceed maxStopLossPct of equity.
   // Quality sizing targets a notional, so without this a wide (ATR-fallback) stop can cost most of the account.
-  const stopCapPct = s.cfg.maxStopLossPct ?? 0;
+  // Margin sizing (decision 144) is the exception: leverageForStop keeps liquidation beyond the stop, so a stop-out
+  // costs less than the margin put up, and the equity cap would shrink exactly the wide-stop trades that carry the book.
+  const stopCapPct = margin ? 0 : s.cfg.maxStopLossPct ?? 0;
   const stopCapQty = stopCapPct > 0 ? Math.floor((s.equity * stopCapPct / 100) / perContractRisk) : Infinity;
   let qty = Math.min(desired, maxQty, stopCapQty);
   if (!Number.isFinite(qty) || qty < 1) {

@@ -15,8 +15,21 @@ export interface PaperConfig {
   initialEquity: number;
   riskPerTradePct: number;
   maxLeverage: number;
-  /** `risk`: size so the stop loses riskPerTradePct of equity. `quality`: notional = equity × leverage, leverage scaled from minLeverage (no/low score) to maxLeverage (score 100). */
-  sizingMode: 'risk' | 'quality';
+  /**
+   * `risk`: size so the stop loses riskPerTradePct of equity. `quality`: notional = equity × leverage, leverage scaled
+   * from minLeverage (no/low score) to maxLeverage (score 100). `margin` (decision 144): a fixed `marginPerTrade` at a
+   * leverage chosen from the cell's own shadow record (`marginLeverage`); the margin, not maxStopLossPct, bounds the loss.
+   */
+  sizingMode: 'risk' | 'quality' | 'margin';
+  /** Margin sizing: the cash put up per position, in USD. */
+  marginPerTrade?: number;
+  /**
+   * Margin sizing: the leverage per trade from the scanner's record on the same market and timeframe, its last
+   * `lookback` closed shadow trades: average net R above `strongAboveR` takes `strong`, below `weakBelowR` takes `weak`,
+   * otherwise (or with fewer than `minTrades`) `base`. Delta's ceiling and the stop guard (liquidation beyond the stop)
+   * still apply on top.
+   */
+  marginLeverage?: { base: number; strong: number; weak: number; strongAboveR: number; weakBelowR: number; minTrades: number; lookback: number };
   minLeverage: number;
   /** Model exchange liquidation: position closes when the loss reaches its margin (notional / leverage) less maintenance. */
   liquidation: boolean;
@@ -527,6 +540,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     riskPerTradePct: 1,
     maxLeverage: 10,
     sizingMode: 'risk',
+    marginPerTrade: 150,
+    marginLeverage: { base: 5, strong: 20, weak: 5, strongAboveR: 0.05, weakBelowR: -0.05, minTrades: 5, lookback: 30 },
     minLeverage: 5,
     liquidation: true,
     maintenanceMarginPct: 0.5,
@@ -658,7 +673,13 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.initialEquity > 0)) errs.push('paper.initialEquity must be > 0');
   if (!(p.riskPerTradePct > 0 && p.riskPerTradePct <= 20)) errs.push('paper.riskPerTradePct must be 0..20');
   if (!(p.maxLeverage >= 1 && p.maxLeverage <= 200)) errs.push('paper.maxLeverage must be 1..200');
-  if (!['risk', 'quality'].includes(p.sizingMode)) errs.push('paper.sizingMode must be risk|quality');
+  if (!['risk', 'quality', 'margin'].includes(p.sizingMode)) errs.push('paper.sizingMode must be risk|quality|margin');
+  if (p.sizingMode === 'margin') {
+    if (!(Number(p.marginPerTrade) > 0)) errs.push('paper.marginPerTrade must be > 0 in margin sizing');
+    const m = p.marginLeverage;
+    if (!m || ![m.base, m.strong, m.weak].every(v => Number.isFinite(v) && v >= 1 && v <= 200)) errs.push('paper.marginLeverage base/strong/weak must be 1..200');
+    else if (!(m.minTrades >= 1 && m.lookback >= m.minTrades && m.strongAboveR >= m.weakBelowR)) errs.push('paper.marginLeverage needs lookback ≥ minTrades ≥ 1 and strongAboveR ≥ weakBelowR');
+  }
   if (!(p.minLeverage >= 1 && p.minLeverage <= p.maxLeverage)) errs.push('paper.minLeverage must be 1..maxLeverage');
   if (!(p.maintenanceMarginPct >= 0 && p.maintenanceMarginPct < 5)) errs.push('paper.maintenanceMarginPct must be 0..5');
   if (!(Number.isFinite(p.minRiskFeeRatio) && p.minRiskFeeRatio >= 0)) errs.push('paper.minRiskFeeRatio must be ≥ 0');

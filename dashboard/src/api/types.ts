@@ -30,7 +30,7 @@ export interface PaperConfig {
   initialEquity: number
   riskPerTradePct: number
   maxLeverage: number
-  sizingMode: 'risk' | 'quality'
+  sizingMode: 'risk' | 'quality' | 'margin'
   minLeverage: number
   liquidation: boolean
   maintenanceMarginPct: number

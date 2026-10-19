@@ -4410,3 +4410,25 @@ a cell's poor recent record does not carry forward as strongly as a good one. Mo
 buys more profit and more drop: 5 / 7 / 20× +$397 (20%) and +$4,985 (24%); 5 / 10 / 20× +$417 (27%)
 and +$5,229 (28%), whose five-open shadow falls 57% with a losing first half. The sliding and
 confidence scales add nothing over the tiers.
+
+## 144. Margin sizing deployed: $150 a trade, 5× by default, 20× on a strong cell record, eight open (19 October 2026)
+
+**Why.** The operator said "deploy" after the 5–20× study (decision 143's notes): $150 of margin, 5× by
+default and for a weak record, 20× when the cell's last 30 shadow trades average above +0.05R, under
+Delta's ceiling and the stop guard, eight open. Two weeks: account +$371 (drop 15%), shadow +$4,715
+(drop 19%); today +$333 against +$61 as traded at 1% risk.
+
+**What changed.**
+- `paper.sizingMode` takes `margin`: the position is `marginPerTrade` × the leverage the record asks for,
+  lowered by `leverageForStop` so liquidation stays beyond 1.25× the stop, and by the market's ceiling.
+- `paper.marginLeverage` holds the tiers ({base 5, strong 20, weak 5, ±0.05R, 5 trades, last 30}).
+  The engine reads the record at entry from the shadow book: same scanner, market and timeframe,
+  closed before the entry, net of fees.
+- `maxStopLossPct` does not apply in margin mode. The guard makes a stop-out cost less than the margin;
+  measured, keeping the 3% equity cap would halve the result (account +$154, shadow +$1,854 with a
+  39% drop) because it shrinks the wide-stop trades that carry the book. Risk and quality modes keep it.
+- The shadow book stays on risk sizing, so its R evidence and the records it feeds do not change.
+- `maxOpenPositions` 20 → 8.
+
+**Watch.** The account's two-week edge rests on a few big winners; size multiplies it either way. The
+Daily page's margin comparison (decision 138) keeps running against the R the trades make.

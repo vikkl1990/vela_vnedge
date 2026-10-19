@@ -5,7 +5,7 @@ import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import { configFingerprint } from './fingerprint.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf } from './logic.ts';
+  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf } from './logic.ts';
 
 const log = logger.scoped('paper');
 
@@ -312,7 +312,7 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return refused(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id);
+    const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at });
     if (size.qty < 1) return refused(size.reason ?? 'size');
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price, replacing: replacing?.id });
@@ -338,13 +338,26 @@ export class PaperEngine extends EventEmitter {
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
   }
 
-  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number) {
+  /**
+   * Decision 144: the leverage the cell's shadow record asks for under margin sizing. The record is the scanner's last
+   * closed shadow trades on the same market and timeframe, net of fees, closed before `at`.
+   */
+  cellLeverage(cell: { scannerId: string; symbol: string; tf: string; at: number }, cfg: PaperConfig): { leverage: number; avgR: number | null; n: number } {
+    const m = cfg.marginLeverage ?? { base: 5, strong: 20, weak: 5, strongAboveR: 0.05, weakBelowR: -0.05, minTrades: 5, lookback: 30 };
+    const rows = this.db.all<{ r: number }>(
+      "SELECT (realized_pnl - fees) / risk_amount r FROM positions WHERE bt=2 AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND exit_at<=? AND risk_amount>0 ORDER BY exit_at DESC LIMIT ?",
+      cell.scannerId, cell.symbol, cell.tf, cell.at, m.lookback);
+    return recordLeverage(rows.map(x => x.r), m);
+  }
+
+  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number, cell?: { scannerId: string; symbol: string; tf: string; at: number }) {
     const cfg = this.scaledCfg(leverageMult);
+    const wantedLeverage = cfg.sizingMode === 'margin' && cell ? this.cellLeverage(cell, cfg).leverage : undefined;
     const others = [...this.open.values()].filter(p => p.id !== replacing);
     const openNotional = others.reduce((a, p) => a + notionalOf(p), 0);
     const reservedMargin = others.reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0);
     const wallet = this.book === 0 ? this.initialEquity + this.realizedPnl() : this.initialEquity;
-    return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, maintenanceMarginPct: market.maintenanceMarginPct, maxLeverage: market.maxLeverage, cfg }, openNotional, score);
+    return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, maintenanceMarginPct: market.maintenanceMarginPct, maxLeverage: market.maxLeverage, cfg, wantedLeverage }, openNotional, score);
   }
 
   private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig, context: FillContext): Position {
@@ -405,7 +418,7 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return cancel(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult);
+    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price });

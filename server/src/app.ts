@@ -96,7 +96,7 @@ export class App {
     let shadowBase: AppConfig | null = null, shadowCfg: AppConfig | null = null;
     const shadowRef = () => {
       const c = cfg();
-      if (c !== shadowBase) { shadowBase = c; shadowCfg = { ...c, paper: { ...c.paper, initialEquity: 10_000_000, maxOpenPositions: 100_000 } }; }
+      if (c !== shadowBase) { shadowBase = c; shadowCfg = { ...c, paper: { ...c.paper, initialEquity: 10_000_000, maxOpenPositions: 100_000, sizingMode: c.paper.sizingMode === 'margin' ? 'risk' : c.paper.sizingMode } }; }
       return shadowCfg!;
     };
     this.shadow = new PaperEngine(this.db, shadowRef, { book: 2 });

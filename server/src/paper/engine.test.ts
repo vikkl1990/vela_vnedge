@@ -348,3 +348,19 @@ test('decision 85: a failed exit write leaves memory as the database has it, and
   assert.equal(db.get<any>('SELECT status FROM positions WHERE id=?', p.id).status, 'closed');
   assert.equal(engine.openPositions().length, 0);
 });
+
+test('decision 144: margin sizing reads the cell record from the shadow book; a strong record takes the strong leverage', t => {
+  const { db, cfg, engine } = setup(t);
+  Object.assign(cfg.paper, { sizingMode: 'margin', marginPerTrade: 150, maxLeverage: 50, minSizeShare: 0 });
+  const entry = (scannerId: string) => engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 98.5, tp: [105], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId, scannerName: scannerId, symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' }).position!;
+  const shadow = (scannerId: string, netR: number, exitAt: number, tf = '15m') => db.run(
+    "INSERT INTO positions (status, scanner_id, scanner_name, symbol, tf, side, qty, qty_open, contract_value, entry_price, entry_at, realized_pnl, fees, risk_amount, exit_at, bt) VALUES ('closed', ?, ?, 'BTCUSD', ?, 'long', 1, 0, 1, 100, 0, ?, 0, 100, ?, 2)",
+    scannerId, scannerId, tf, netR * 100, exitAt);
+  for (let i = 0; i < 6; i++) shadow('good', 0.4, 50_000 + i);
+  for (let i = 0; i < 6; i++) shadow('late', 0.4, 70_000 + i); // closed after the entry: not known yet
+  for (let i = 0; i < 6; i++) shadow('other-tf', 0.4, 50_000 + i, '1h');
+  assert.equal(entry('good').qty, 30, '$150 at 20x');
+  assert.equal(entry('late').qty, 7, 'a record that closes after the entry does not count');
+  assert.equal(entry('other-tf').qty, 7, 'the record is per timeframe');
+  assert.equal(entry('fresh').qty, 7, 'no record: the base 5x');
+});
