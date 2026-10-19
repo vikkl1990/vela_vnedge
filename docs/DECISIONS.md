@@ -4353,3 +4353,31 @@ size multiplies whatever it is.
 **Verdict.** If sized by margin: $100 at 10×, leverage lowered on the few markets where 10× would
 put liquidation inside the stop, at most five open. Not applied; decision 138's forward check on the
 Daily page is the same question and stays the gate.
+
+## 143. Leverage per trade at $100 of margin: set by the cell's own recent record (19 October 2026)
+
+**Why.** The operator did not want a constant 10× (decision 142). Rules that choose each trade's
+leverage from what was known at entry, against flat 10×, at $100 of margin, liquidation always kept
+beyond 1.25× the stop and under Delta's maximum, five open (and eight in the shadow), on the account's
+156 trades and the shadow's 1,911 over the same fortnight, with shadow history from 22 September.
+
+| rule | account, ≤5 open | shadow, ≤5 | shadow, ≤8 |
+|---|---|---|---|
+| flat 10× | +$206, DD 19% | +$1,779, DD 35% | +$3,611, DD 20% |
+| by stop width 5 / 10 / 15× | +$152 | +$1,806 | +$3,806 |
+| by timeframe 8 / 10 / 15× | +$167 | +$1,686 | +$3,528 |
+| majors 15×, alts 8× | +$182 | +$1,764 | +$3,311 |
+| drawdown throttle 10×, 5× when 5% down | +$106 | +$1,549 | +$2,729 |
+| by scanner record | +$170 | +$1,474 | +$3,131 |
+| **by the cell's record, ±0.05R → 20× / 5×, else 10×** | **+$291, DD 18%** | **+$2,049, DD 40%** | **+$4,118, DD 19%** |
+
+The cell's record is the scanner on the same market and timeframe, its last 30 shadow trades closed
+before the entry, at least 5 of them. Twelve settings of the rule (5 or 10 trades, thresholds ±0.05
+to 0/0.2, the last 20 or 30) beat flat 10× on the account in all twelve, on the eight-open shadow in
+ten, and on the five-open shadow in five; the ±0.05R setting wins in all three, both halves positive.
+Its cost is a deeper drop in the five-open shadow, 40% against 35%.
+
+**Today replayed:** +$242 against +$192 flat and +$61 as traded, deepest drop $69 against $93. The
+record decided 13 of 62 trades (8 at 20×, 5 at 5×); 49 had under five past trades and stayed at 10×.
+Not applied: the live engine sizes by risk, and decision 138's forward check is the gate for any
+change of sizing.
