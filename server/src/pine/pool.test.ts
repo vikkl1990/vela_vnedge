@@ -183,6 +183,25 @@ test('memory watchdog: resident size over the guard while a job runs retires the
   assert.equal(pool.memoryRetirements, 1, 'idle: no further retirements');
 });
 
+test('decision 140: a guard kill with several runs in progress is shared and quarantines nobody', async t => {
+  const workers: FakeWorker[] = [];
+  const pool = new PinePool(2, 100, () => { const w = new FakeWorker(); workers.push(w); return w; }); t.after(() => pool.stop());
+  pool.memoryGuardBytes = 1000; pool.rssReader = () => 5000;
+  const a = pool.run(job), b = pool.run({ ...job, scannerId: 'other' });
+  for (const w of workers) w.ready();
+  assert.equal(workers.length, 2, 'two workers, both busy');
+  pool.reapMemory();
+  const [ra, rb] = await Promise.all([a, b]);
+  assert.match(ra.error ?? '', /^memory-shared: resident 0 MB over the guard with 2 runs in progress/);
+  assert.match(rb.error ?? '', /^memory-shared: /);
+  const { ScriptHealth } = await import('../scanners/health.ts');
+  const { Db } = await import('../db.ts');
+  const h = new ScriptHealth(new Db(':memory:'));
+  assert.equal(h.record('s', 'memory-shared: resident 6678 MB over the guard with 6 runs in progress'), false);
+  assert.equal(h.isQuarantined('s'), false, 'a shared kill quarantines nobody');
+  assert.equal(h.record('s', 'memory: resident 6678 MB over the guard while it ran'), true, 'a sole run is still the culprit');
+});
+
 test('a process worker becomes ready, runs a Pine job, and dies at once when retired', { timeout: 30_000 }, async t => {
   const { processWorker } = await import('./pool.ts');
   const pool = new PinePool(1, 20_000, processWorker);

@@ -4258,3 +4258,19 @@ entries on these markets; the 7 silent tools (also the slowest, 0.7 to 2.2 s a r
 Breakout 15m (a PineTS gap on `strategy.closedtrades.entry_bar_index`) were released, and saving a
 narrower set now returns the dropped cells to the candidates. 228 cells; the next bar ran 312 runs
 with no error at 3.5 GB.
+
+## 140. A memory kill is blamed on a script only when it ran alone (19 October 2026)
+
+**Why.** At 06:15 UTC on 19 October, with the tracker's cells added to the shadow book, a bar-close
+burst took the service to 6,678 MB, over the pool's memory guard (60% of the 10 GB limit). The guard
+retires every busy worker with a `memory:` error, and the health check quarantines on the first
+`memory:` strike (decision 98), so four live account scanners that happened to be running were
+quarantined and stopped trading: Liquidity Trail Matrix, Pulse Trend Radar, ML RSI and AI Predictive
+Flow. The Decisions page's attention row showed it. None of the four was the cause; the resident
+size is the whole process's.
+
+**Decision.** When the guard trips with one run in progress, that run is the culprit and gets the
+`memory:` verdict as before. With several, each is retired with `memory-shared:`, which counts as a
+failed run and quarantines nobody. The guard moves from 60% to 72% of the limit (7.2 GB), still below
+the service's 8 GB throttle and 10 GB ceiling. The four scanners were released through the product's
+release route.

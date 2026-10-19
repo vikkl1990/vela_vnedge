@@ -140,7 +140,8 @@ export class PinePool {
    * second; past `memoryGuardBytes` (60% of the memory limit by default) every busy worker is
    * retired with a `memory:` error, which the health check treats as a verdict.
    */
-  memoryGuardBytes = Math.round(memoryLimitBytes() * 0.6);
+  // decision 140: 72% of the limit (7.2 GB of the service's 10 GB), under its 8 GB throttle; 60% tripped on a busy bar close
+  memoryGuardBytes = Math.round(memoryLimitBytes() * 0.72);
   /** Replaceable in tests. */
   rssReader: () => number = memoryUsedBytes;
   private memoryTimer: ReturnType<typeof setInterval>;
@@ -150,12 +151,16 @@ export class PinePool {
     const rss = this.rssReader();
     if (!(rss > this.memoryGuardBytes)) return;
     const mb = Math.round(rss / 1048576);
+    // decision 140: with one run in progress, that run took the process over the guard and the verdict is its own; with
+    // several, the resident size is the process's and no single script can be blamed, so the kill is recorded as shared
+    // and quarantines nobody (four live scanners were quarantined on 19 October for a bar-close burst)
+    const busy = this.workers.filter(w => w.busy).length;
     for (const slot of this.workers) {
       const p = slot.busy;
       if (!p) continue;
       this.memoryRetirements++;
-      log.warn(`job ${p.job.scannerId} on ${p.job.symbol}: resident ${mb} MB over the ${Math.round(this.memoryGuardBytes / 1048576)} MB guard while it ran; terminating worker ${slot.index}`);
-      this.retire(slot, `memory: resident ${mb} MB over the guard while it ran`);
+      log.warn(`job ${p.job.scannerId} on ${p.job.symbol}: resident ${mb} MB over the ${Math.round(this.memoryGuardBytes / 1048576)} MB guard while it ran with ${busy} busy; terminating worker ${slot.index}`);
+      this.retire(slot, busy === 1 ? `memory: resident ${mb} MB over the guard while it ran` : `memory-shared: resident ${mb} MB over the guard with ${busy} runs in progress`);
     }
   }
 
