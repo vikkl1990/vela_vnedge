@@ -17,19 +17,22 @@ const note = (id: string) => `tracker:${id}`;
 export const listTrackers = (db: Db): TrackerDef[] => db.kvGet<TrackerDef[]>(KEY) ?? [];
 
 /** Create or extend a tracker: every cell not already shadow, proposed or live becomes `tracked`. */
-export function saveTracker(db: Db, store: IncubatorStore, def: Omit<TrackerDef, 'createdAt'>, now = Date.now()): { tracker: TrackerDef; added: number; kept: number } {
+export function saveTracker(db: Db, store: IncubatorStore, def: Omit<TrackerDef, 'createdAt'>, now = Date.now()): { tracker: TrackerDef; added: number; kept: number; released: number } {
   if (!/^[a-z0-9-]{2,40}$/.test(def.id)) throw new Error('tracker id: 2–40 lowercase letters, digits or dashes');
   if (!def.scanners.length || !def.symbols.length || !def.tfs.length) throw new Error('a tracker needs scanners, markets and timeframes');
   const all = listTrackers(db); const prev = all.find(t => t.id === def.id);
   const tracker: TrackerDef = { ...def, createdAt: prev?.createdAt ?? now };
-  let added = 0, kept = 0;
+  let added = 0, kept = 0, released = 0;
+  // a cell this tracker held that is no longer in its set goes back to the candidates, as when a tracker is removed
+  const want = new Set(def.scanners.flatMap(a => def.symbols.flatMap(b => def.tfs.map(c => `${a}|${b}|${c}`))));
+  for (const r of store.list(['tracked'])) if (r.note === note(def.id) && !want.has(`${r.scannerId}|${r.symbol}|${r.tf}`)) { store.move(r, 'candidate', 'tracker', { released: def.id }, 'left the tracker', now); released++; }
   for (const scannerId of def.scanners) for (const symbol of def.symbols) for (const tf of def.tfs) {
     const cur = store.find(scannerId, symbol, tf);
     if (cur && ['shadow', 'proposed', 'live', 'demote_proposed', 'tracked'].includes(cur.stage)) { kept++; continue; }
     store.move({ scannerId, symbol, tf }, 'tracked', 'tracker', { tracker: def.id }, note(def.id), now); added++;
   }
   db.kvSet(KEY, [...all.filter(t => t.id !== def.id), tracker]);
-  return { tracker, added, kept };
+  return { tracker, added, kept, released };
 }
 
 /** Remove a tracker: its tracked cells go back to candidates with no screen, so only a fresh pass can admit them. */
