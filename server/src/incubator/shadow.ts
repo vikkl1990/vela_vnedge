@@ -58,7 +58,9 @@ export class ShadowRunner {
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
   private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void };
-  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, lastBarAt: 0 };
+  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, lastBarAt: 0,
+    /** The last error per scanner, so a script failing on every bar is visible rather than a bare count. */
+    lastErrors: {} as Record<string, { error: string; at: number; count: number; symbol: string; tf: string }> };
   /** Decision 112: per shadow pair, what became of its signals — [at, class], newest last. */
   private funnel: Map<string, Array<[number, string]>>;
   private funnelDirty = false;
@@ -140,7 +142,7 @@ export class ShadowRunner {
     const barAt = closedAt;
     setTimeout(() => {
       if (this.deps.pool.stats.queued > MAX_QUEUE) { this.stats.skipped += due.length; log.warn(`shadow: worker queue ${this.deps.pool.stats.queued} deep, skipping ${due.length} runs on ${symbol}`); return; }
-      for (const r of due) this.run(r, barAt).catch(e => { this.stats.errors++; log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
+      for (const r of due) this.run(r, barAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
     }, DELAY_MS).unref();
   }
 
@@ -152,6 +154,14 @@ export class ShadowRunner {
   private budgetMs(cfg: AppConfig, barAt: number): number {
     const age = cfg.paper.maxSignalAgeSec > 0 ? cfg.paper.maxSignalAgeSec * 1000 : 300_000;
     return Math.max(0, age - (Date.now() - barAt) - RUN_ALLOWANCE_MS);
+  }
+
+  private noteError(r: PairRow, error: string) {
+    this.stats.errors++;
+    const prev = this.stats.lastErrors[r.scannerId];
+    this.stats.lastErrors[r.scannerId] = { error: error.slice(0, 200), at: Date.now(), count: (prev?.count ?? 0) + 1, symbol: r.symbol, tf: r.tf };
+    const keys = Object.keys(this.stats.lastErrors);
+    if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
   private async run(r: PairRow, barAt = Date.now()): Promise<void> {
@@ -169,7 +179,7 @@ export class ShadowRunner {
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
       { deadlineMs: budget });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
-    if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.stats.errors++; return; }
+    if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
     const key = `${r.scannerId}:${r.symbol}:${r.tf}`;
     const prev = this.labels.get(key);
     const current = new Set(res.labels.map(labelKey));
