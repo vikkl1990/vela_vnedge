@@ -4188,3 +4188,37 @@ the top half's R from the bottom half's on the first split (+0.22R against +0.04
 the second; the cell's recent record, the one new piece of information, predicts its next trade no
 better than chance. The model stays as it is, a recorded feature that gates and sizes nothing.
 This is decision 128's finding a fourth way: the information is not at the entry.
+
+## 138. Sizing by margin instead of by equity: a lead worth a forward check (19 October 2026)
+
+**Why.** A reviewer set out that sizing is equity-based (the stop costs `riskPerTradePct` of equity,
+free margin is a cap, `maxStopLossPct` caps any stop at 2% of equity) and that sizing to a share of
+posted margin would be a different, unmeasured risk model. The description of the code is exact.
+One thing it leaves out: leverage is lowered until liquidation sits beyond the stop
+(`leverageForStop`), so under a fixed margin per trade the dollar risk is roughly constant for wide
+stops and shrinks in proportion to the stop for tight ones, where leverage meets the market's cap.
+
+**The test.** R does not depend on size, so any sizing rule can be re-scored on closed trades: under
+margin sizing each trade's dollar result is its R times margin × leverage × stop distance, scaled so
+the average risk equals today's 1% of equity. Shadow book, 2,611 trades; account, 111. Units are 1%
+of equity.
+
+| | equity sizing (now) | margin sizing | margin sizing, weights capped 0.25×–2× |
+|---|---|---|---|
+| shadow book, total | +115 | +225 | +216 |
+| shadow book, worst drawdown | −71 | −37 | −36 |
+| first half / second half | −12 / +127 | +70 / +147 | +59 / +148 |
+| account, total | −7.6 | −5.3 | −5.3 |
+
+**Why it helps, and why it is not yet a verdict.** By stop width the shadow book's R per trade is a
+U: +0.07R for stops under 0.72% (where fees take 0.15R of every trade), −0.05R and −0.01R for the
+middle half, +0.17R for stops of 2.3% and over. Margin sizing shrinks the tight-stop trades to about
+half and lifts the widest to about 1.6×. But the gain is concentrated: +103 of the +105 comes from the
+widest quartile, the ten largest single-trade gains make 63 of it, and within cells of 15 or more
+trades it is better in 22 and worse in 16. Plain stop-width sizing gains more in total (+381) without
+the drawdown improvement, which marks it as a bet on the same few big winners.
+
+**Decision.** Nothing changes yet. The comparison is re-run on the shadow trades closed after today;
+if margin sizing still wins in total and in drawdown over two weeks of new trades, it becomes a
+sizing mode (fixed margin of about 2.7% of equity per trade, leverage set as now, the 2% stop cap
+kept) for the operator to switch on. The units for that are already measured here.
