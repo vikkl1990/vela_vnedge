@@ -4159,3 +4159,32 @@ on 1,740 scored shadow trades, the probability's AUC is 0.52 and no threshold pa
 rates below 45% made +0.11R each, the best bucket in the book, and every cut from 45% to 65% loses
 27 to 62R. On the account's 94 scored trades the AUC is 0.48. The model stays a recorded feature;
 it gates nothing and sizes nothing (`minProb` 0, `useAsScore` false).
+
+## 137. Retraining and refactoring the model: nothing raises the forward AUC (19 October 2026)
+
+**Why.** The operator asked to retrain or refactor the ML layer to improve its AUC. Two things
+could plausibly help: better training data (the model learns from 41,426 backtest rows and 307
+live ones, while the shadow book's forward trades, filled as the account fills, are not in its
+training set) and new information (a cell's own track record, which the features never carry).
+
+**The test.** Seven candidates, each trained only on data known before the test period, scored on
+the newest shadow trades; backtest rows from the test period were excluded, since they replay the
+same market moments. Two splits: the newest 30% of 1,665 shadow trades (500) and the newest 50%
+(833). Script: `_research/ml-retrain-20261019/experiment.py`.
+
+| candidate | AUC, newest 30% | AUC, newest 50% | sum R from dropping its lowest third |
+|---|---|---|---|
+| the current setup (backtest and live samples) | 0.488 | 0.518 | −35.6 / −64.7 |
+| shadow trades only | 0.465 | 0.497 | +2.2 / −17.3 |
+| shadow trades and backtest samples | 0.458 | 0.504 | −43.3 / −67.2 |
+| the cell's own track record only | 0.506 | 0.515 | −8.0 / −43.3 |
+| features and track record, logistic | 0.487 | 0.499 | −13.4 / −48.2 |
+| features and track record, boosted trees | 0.541 | 0.502 | +0.2 / −35.7 |
+| rule: the cell's last ten trades' mean R | 0.486 | 0.495 | −16.3 / −18.2 |
+
+**Verdict.** Nothing clears noise: the best figure, 0.541 for boosted trees, falls to 0.502 on the
+other split, and no candidate's lowest third is worth dropping. Training on shadow trades separates
+the top half's R from the bottom half's on the first split (+0.22R against +0.04R) and barely on
+the second; the cell's recent record, the one new piece of information, predicts its next trade no
+better than chance. The model stays as it is, a recorded feature that gates and sizes nothing.
+This is decision 128's finding a fourth way: the information is not at the entry.
