@@ -26,7 +26,7 @@ import type {
   Ticker,
   Trade,
   TradeQuery, MlSnapshot,
-  MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow } from './types'
+  MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -172,6 +172,7 @@ export const api = {
   autoTune: () => post<{ tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
   analytics: () => get<Analytics>('/analytics'),
   dailyReport: (days = 30) => get<DailyRow[]>(`/reports/daily?days=${days}`),
+  trackers: () => get<TrackerView[]>('/trackers'),
   learning: () => get<Learning>('/learning'),
   ml: () => get<MlSnapshot>('/ml'),
   mlTrain: () => post<MlSnapshot>('/ml/train'),

@@ -120,7 +120,7 @@ export class ShadowRunner {
   async sync(): Promise<void> {
     const cfg = this.deps.cfgRef();
     if (!cfg.incubator?.enabled) { this.pairs = []; return; }
-    this.pairs = this.deps.store.list(ACTIVE_STAGES).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
+    this.pairs = this.deps.store.list([...ACTIVE_STAGES, 'tracked']).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
     // symbols of open shadow positions keep their 1m feed until those positions close
     const symbols = new Set(this.symbols());
     this.deps.subscribe?.([...symbols]);
@@ -189,7 +189,8 @@ export class ShadowRunner {
       if (this.seen.size > 20_000) this.seen = new Set([...this.seen].slice(-10_000));
       const now = Date.now();
       // decision 116: the account is offered the same event, and judges it by its own gates and caps
-      if (cfg.incubator.mirror?.enabled && this.deps.mirror && (ev.kind === 'entry' || ev.kind === 'exit')) {
+      // decision 139: a tracked cell is the operator's to watch, never the account's to copy
+      if (cfg.incubator.mirror?.enabled && this.deps.mirror && r.stage !== 'tracked' && (ev.kind === 'entry' || ev.kind === 'exit')) {
         this.stats.mirrored++;
         try { this.deps.mirror(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`mirror ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
       }

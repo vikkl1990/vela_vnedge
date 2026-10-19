@@ -357,6 +357,9 @@ export class ApiServer {
       return { file, n: body.list.length };
     });
     this.add('GET', '/api/analytics', () => a.analytics());
+    this.add('GET', '/api/trackers', () => a.trackers());
+    this.add('POST', '/api/trackers', (_r, _s, _p, _u, body) => { try { return a.saveTracker(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); } });
+    this.add('DELETE', '/api/trackers/:id', (_r, _s, p) => a.removeTracker(p.id));
     this.add('GET', '/api/reports/daily', (_r, _s, _p, url) => a.dailyReport(Number(url.searchParams.get('days')) || 30));
     this.add('GET', '/api/learning', () => a.learning());
     this.add('GET', '/api/gates', () => a.gates());

@@ -553,3 +553,25 @@ test('decision 135: a script exit and a reversal fill at the close in the backte
   assert.equal(closeExit.trades.length, 1);
   assert.ok(Math.abs((closeExit.trades[0].exitPrice ?? 0) - 100.2) < 0.2, `a script close fills at the bar close (got ${closeExit.trades[0].exitPrice})`);
 });
+
+test('decision 139: a tracker tracks new cells, keeps existing ones, and the gate never touches tracked cells', async () => {
+  const { saveTracker, removeTracker, trackerView, listTrackers } = await import('./tracker.ts');
+  const { db, store, cfg, screen } = world();
+  recordScreen(store, { scannerId: 'w1', symbol: 'BTCUSD', tf: '15m' }, screen(), cfg.incubator, T0);
+  evaluate(store, cfg, T0);   // w1 BTC 15m is admitted to the shadow book
+  assert.equal(store.find('w1', 'BTCUSD', '15m')!.stage, 'shadow');
+  const r = saveTracker(db, store, { id: 'willy', name: 'Willy on the majors', scanners: ['w1', 'w2'], symbols: ['BTCUSD', 'ETHUSD'], tfs: ['15m'] }, T0);
+  assert.equal(r.added, 3); assert.equal(r.kept, 1, 'the shadow cell keeps its stage');
+  assert.equal(store.find('w2', 'ETHUSD', '15m')!.stage, 'tracked');
+  // forty days with no trades: a shadow cell would be retired as stale, a tracked one is left alone and holds no slot
+  const rep = evaluate(store, cfg, T0 + 40 * DAY);
+  assert.ok(!rep.retired.some(n => n.startsWith('w2')), 'tracked cells are never retired');
+  assert.equal(store.list(['tracked']).length, 3);
+  // recording a screen on a tracked cell does not move it
+  recordScreen(store, { scannerId: 'w2', symbol: 'ETHUSD', tf: '15m' }, screen(), cfg.incubator, T0 + 41 * DAY);
+  assert.equal(store.find('w2', 'ETHUSD', '15m')!.stage, 'tracked');
+  const v = trackerView(db, store, listTrackers(db)[0]);
+  assert.equal(v.cells.length, 4); assert.equal(v.totals.trades, 0);
+  assert.equal(removeTracker(db, store, 'willy', T0 + 42 * DAY), 3);
+  assert.equal(store.list(['tracked']).length, 0); assert.equal(listTrackers(db).length, 0);
+});

@@ -12,7 +12,8 @@
 import type { Db } from '../db.ts';
 import type { TradeR } from './gate.ts';
 
-export type Stage = 'candidate' | 'shadow' | 'proposed' | 'live' | 'demote_proposed' | 'retired';
+/** `tracked` (decision 139): shadow-traded for an operator's tracker, outside the gate, the slots, the screen and the mirror. */
+export type Stage = 'candidate' | 'shadow' | 'proposed' | 'live' | 'demote_proposed' | 'retired' | 'tracked';
 export const STAGES: Stage[] = ['proposed', 'demote_proposed', 'shadow', 'candidate', 'live', 'retired'];
 
 export interface PairRow {

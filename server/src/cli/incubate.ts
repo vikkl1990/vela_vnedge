@@ -168,7 +168,7 @@ while (sliceArg !== 'none') {
   // ---- screen ----
   // workers as processes (decision 98): a recycled one gives its memory back, a runaway one dies at once
   const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000, processWorker);
-  const skipStages = new Set(['live', 'demote_proposed', 'shadow', 'proposed']);
+  const skipStages = new Set(['live', 'demote_proposed', 'shadow', 'proposed', 'tracked']);
   const markets = [...data.keys()];
   let stopped = false;
   for (const [idx, s] of scripts.entries()) {

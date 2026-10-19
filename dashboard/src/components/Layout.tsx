@@ -36,6 +36,7 @@ const NAV = [
   { to: '/chart', label: 'Chart', icon: IconChart, key: 'c' },
   { to: '/settings', label: 'Settings', icon: IconSettings, key: 'e' },
   { to: '/daily', label: 'Daily', icon: IconChart, key: 'y' },
+  { to: '/trackers', label: 'Trackers', icon: IconScan, key: 'r' },
   { to: '/analytics', label: 'Analytics', icon: IconChart, key: 'a' },
   { to: '/incubator', label: 'Incubator', icon: IconScan, key: 'n' },
   { to: '/gates', label: 'Gates', icon: IconSettings, key: 'k' },

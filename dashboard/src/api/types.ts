@@ -739,3 +739,11 @@ export interface DailyRow {
   day: string; partial: boolean; account: BookDay; shadow: BookDay; equity: number
   incubator: { admitted: number; proposed: number; promoted: number; retired: number; demoted: number }
 }
+
+/** Decision 139: an operator's tracker of shadow-traded cells. */
+export interface TrackerCell { scannerId: string; symbol: string; tf: string; stage: string; trades: number; sumR: number; avgR: number; wins: number; stops: number; open: number; lastAt: number | null }
+export interface TrackerView {
+  tracker: { id: string; name: string; scanners: string[]; symbols: string[]; tfs: string[]; createdAt: number }
+  cells: TrackerCell[]
+  totals: { cells: number; trading: number; trades: number; sumR: number; avgR: number; winRate: number; open: number }
+}

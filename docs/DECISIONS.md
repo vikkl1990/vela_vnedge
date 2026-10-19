@@ -4228,3 +4228,24 @@ beside the summed R, for the account and for the shadow book: the same trades re
 decision 138's weights (leverage × stop distance over 0.3765, capped 0.25×–2×). The stat strip
 keeps the running totals from 20 October, the first full day after the measurement. Two weeks of
 that column decide whether margin sizing becomes a mode to switch on.
+
+## 139. Trackers: cells the operator wants watched, traded in the shadow book outside the incubator (19 October 2026)
+
+**Why.** The operator asked to shadow-trade the WillyAlgoTrader scripts on BTC, ETH, XRP and SOL
+with a separate tracker. The incubator would not do it on its own: it admits cells by screen score,
+retires them on its clocks, and mirrors them into the account.
+
+**What.** A new incubator stage, `tracked`. The shadow runner trades tracked cells with the same
+engine, gates and costs as every shadow cell. The gate never promotes, retires or ages them; they
+hold no shadow slot; the nightly screen skips them; the mirror never copies them into the account;
+the Daily page's shadow row leaves them out. A tracker (`incubator/tracker.ts`, kv `trackers`) is a
+named set of scanners × markets × timeframes: saving one marks every cell that is not already in the
+shadow book or live as tracked; a cell that is keeps its stage and is read as a member. Removing a
+tracker returns its tracked cells to candidates with no screen, so only a fresh pass could admit
+them. `GET/POST /api/trackers`, `DELETE /api/trackers/:id`; the Trackers page shows the totals since
+the tracker began, a script-by-market grid, a market-by-timeframe grid and every cell that has traded.
+
+**First tracker.** "WillyAlgo on the majors": the 27 runnable WillyAlgoTrader scripts (the 28th is
+quarantined) on BTCUSD, ETHUSD, XRPUSD and SOLUSD, on 15m, 1h and 4h: 324 cells. Some of the 27 are
+tools that publish no entries (a trade calculator, volume profiles, an almanac); they stay in and
+show as silent.
