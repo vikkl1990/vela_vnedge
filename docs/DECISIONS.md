@@ -4319,3 +4319,37 @@ from the slow runners at the time a rule could act, which is decision 128's find
 side. The stop costs one R by design; what it buys is the runners. The levers left are which trades
 are taken (entries, markets) and how they are sized (decision 138's forward check on the Daily page).
 `diagnose` takes `VARIANTS=a,b` to run only the named study variants.
+
+## 142. $100 of margin per trade: 10× fixed, five open at most; 30× and Delta's maximum ruin the account (19 October 2026)
+
+**Why.** The operator asked to see today's trades at 30× with $100 of margin each, then for the best
+combination at $100 of margin. Replayed with the trades' real fills, exits and times; profit and
+fees scale with size; a trade whose recorded worst point crossed the liquidation price (1 ÷ leverage
+minus the market's maintenance margin, from Delta India's product list) loses the $100 and the entry
+fee. Starting equity $1,000; a trade is skipped without free margin or over the open-position cap.
+
+**Today at 30×.** Delta allows 30× on 3 of the 71 markets; on a 2.5% maintenance alt 30× liquidates
+0.83% away against stops a median 1.48% away. 34 of 71 liquidated, the balance gone at 06:39 IST.
+At each market's maximum (mostly 20×) +$413 against +$61 as traded, on a day 49 of 71 won.
+
+**Two weeks** (account 156 trades; shadow 1,942, tracker cells excluded):
+
+| $100 margin at | account, ≤5 open | DD | shadow, ≤8 open | DD | liquidations |
+|---|---|---|---|---|---|
+| 5× | +$126 | 10% | +$1,940 | 16% | 0 / 1 |
+| 10× | +$241 | 21% | +$4,035 | 25% | 1 / 5 |
+| 10×, lowered so liquidation stays beyond the stop | +$210 | 20% | +$3,274 | 25% | 0 / 0 |
+| 15× | +$72 | 46% | +$5,617 | 45% | 6 / 25 |
+| 20× | −$622 | 84% | −$907 | 94% | 8 / 23 |
+| Delta's maximum | −$994 | 99% | −$942 | 95% | 12 / 12 |
+| leverage set so the stop costs $20 | +$95 | 17% | +$751 | 70% | 0 / 0 |
+
+Fixed size beats sizing by the stop because the wide-stop trades carry the book: in the shadow,
+stops of 3% or more made +0.27R a trade over 394 trades and +$5,979 of the 10× total. Both halves
+of the fortnight are positive at 5× to 10×. The shadow's 10× total keeps +$2,268 without its ten
+best trades; the account's turns negative without its five best, so the account's edge is thin and
+size multiplies whatever it is.
+
+**Verdict.** If sized by margin: $100 at 10×, leverage lowered on the few markets where 10× would
+put liquidation inside the stop, at most five open. Not applied; decision 138's forward check on the
+Daily page is the same question and stays the gate.
