@@ -4381,3 +4381,11 @@ Its cost is a deeper drop in the five-open shadow, 40% against 35%.
 record decided 13 of 62 trades (8 at 20×, 5 at 5×); 49 had under five past trades and stayed at 10×.
 Not applied: the live engine sizes by risk, and decision 138's forward check is the gate for any
 change of sizing.
+
+**Note, 19 October: the top tier lifted to 50× or Delta's maximum.** At the operator's request the
+strong-record tier was raised from 20× to 50×, still under Delta's maximum and the stop guard. Over
+the fortnight it changes almost nothing: account +$291 (unchanged), shadow +$2,108 at five open and
++$4,138 at eight, worst drops 41% and 22%. Delta India caps most alts at 20× and the guard holds
+wide stops lower, so only low-margin markets reach past 20×. Raising the middle tier instead costs:
+10× → 20× takes the account to +$146 with a 35% drop; every trade at its maximum, +$114 and 37%.
+Today's replay is the same +$242: the eight strong-record trades were all on 20× markets.
