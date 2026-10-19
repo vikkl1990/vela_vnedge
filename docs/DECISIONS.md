@@ -4399,3 +4399,14 @@ no drop past 30%, the best is **$150 at 5× by record (2.5× weak, up to 50× st
 as margin allows**: account +$303, worst drop 14%, worst day −$55; shadow +$4,418, drop 25%. Next,
 $100 at 10× by record, eight open: +$233 and +$4,138. The account as traded made +$15 over the same
 fortnight. Today: +$320 and +$265.
+
+**Note, 19 October: smart leverage held between 5× and 20×.** Tiers, a sliding scale on the cell's
+record (−0.1R → 5×, +0.2R → 20×) and a scale on the record's confidence (10× + 5 per t-unit), at $100
+and $150, eight open and five. Every 5–20× rule is positive in both halves of both books at eight
+open. The best balance is **$150, 5× by default and for a weak record, 20× for a strong one**:
+account +$371 (drop 15%, worst day −$55), shadow +$4,718 (drop 19%), today +$333, against the 2.5 / 5
+/ 50× setting's +$303 (14%), +$4,418 (25%) and +$320. Dropping a weak record to 2.5× does not pay:
+a cell's poor recent record does not carry forward as strongly as a good one. More default leverage
+buys more profit and more drop: 5 / 7 / 20× +$397 (20%) and +$4,985 (24%); 5 / 10 / 20× +$417 (27%)
+and +$5,229 (28%), whose five-open shadow falls 57% with a losing first half. The sliding and
+confidence scales add nothing over the tiers.
