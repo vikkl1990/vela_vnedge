@@ -4249,3 +4249,12 @@ the tracker began, a script-by-market grid, a market-by-timeframe grid and every
 quarantined) on BTCUSD, ETHUSD, XRPUSD and SOLUSD, on 15m, 1h and 4h: 324 cells. Some of the 27 are
 tools that publish no entries (a trade calculator, volume profiles, an almanac); they stay in and
 show as silent.
+
+**Trimmed the same night.** With 753 cells the shadow runner's bar-close burst took the service past
+its memory guard (60% of the 10 GB limit) and about 11 of 311 runs a bar were killed mid-run; no
+account run failed, live runs going first. The runner now keeps the last error per scanner
+(`stats.lastErrors`), which is how the cause showed. The tracker keeps the 19 scripts that produce
+entries on these markets; the 7 silent tools (also the slowest, 0.7 to 2.2 s a run) and Gold
+Breakout 15m (a PineTS gap on `strategy.closedtrades.entry_bar_index`) were released, and saving a
+narrower set now returns the dropped cells to the candidates. 228 cells; the next bar ran 312 runs
+with no error at 3.5 GB.
