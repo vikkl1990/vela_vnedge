@@ -733,6 +733,7 @@ export interface BookDay {
   trailKeeps: number | null
   byTf: Record<string, { trades: number; sumR: number }>
   best: { scanner: string; sumR: number } | null; worst: { scanner: string; sumR: number } | null
+  marginSumR: number
 }
 export interface DailyRow {
   day: string; partial: boolean; account: BookDay; shadow: BookDay; equity: number

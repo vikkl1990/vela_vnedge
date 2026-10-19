@@ -4222,3 +4222,9 @@ the drawdown improvement, which marks it as a bet on the same few big winners.
 if margin sizing still wins in total and in drawdown over two weeks of new trades, it becomes a
 sizing mode (fixed margin of about 2.7% of equity per trade, leverage set as now, the 2% stop cap
 kept) for the operator to switch on. The units for that are already measured here.
+
+**The forward check is on the Daily page (19 October).** Each day's row carries "If sized by margin"
+beside the summed R, for the account and for the shadow book: the same trades re-scored with
+decision 138's weights (leverage × stop distance over 0.3765, capped 0.25×–2×). The stat strip
+keeps the running totals from 20 October, the first full day after the measurement. Two weeks of
+that column decide whether margin sizing becomes a mode to switch on.

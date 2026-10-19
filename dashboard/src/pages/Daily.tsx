@@ -21,6 +21,12 @@ function sumWeek(rows: DailyRow[]) {
 
 export function Daily() {
   const q = useQuery({ queryKey: ['daily'], queryFn: () => api.dailyReport(30), refetchInterval: 60_000, staleTime: 30_000 })
+  // decision 138: the forward check of margin sizing, from the day it was measured
+  const since = useMemo(() => {
+    const rows = (q.data ?? []).filter((x) => x.day >= '2026-10-20')
+    const t = (f: (x: DailyRow) => number) => rows.reduce((a, x) => a + f(x), 0)
+    return { days: rows.length, a: t((x) => x.account.sumR), am: t((x) => x.account.marginSumR), s: t((x) => x.shadow.sumR), sm: t((x) => x.shadow.marginSumR) }
+  }, [q.data])
   const weeks = useMemo(() => {
     const done = (q.data ?? []).filter((x) => !x.partial)
     return { last: sumWeek(done.slice(0, 7)), prior: sumWeek(done.slice(7, 14)) }
@@ -36,10 +42,11 @@ export function Daily() {
               <span role="listitem"><span className="stat-k">7 days before</span> <span className={`mono ${tone(weeks.prior.sr)}`}>{r(weeks.prior.avg, 3)}R</span> <span className="muted">over {weeks.prior.n}, net {fmtPnl(weeks.prior.net)}</span></span>
               <span role="listitem"><span className="stat-k">Shadow, last 7 days</span> <span className={`mono ${tone(weeks.last.ssr)}`}>{r(weeks.last.savg, 3)}R</span> <span className="muted">over {weeks.last.sn}</span></span>
               <span role="listitem"><span className="stat-k">7 days before</span> <span className={`mono ${tone(weeks.prior.ssr)}`}>{r(weeks.prior.savg, 3)}R</span> <span className="muted">over {weeks.prior.sn}</span></span>
+              <span role="listitem" title="Decision 138: the same trades re-scored as if each had posted the same margin, at the same average risk. Two weeks of this decide whether margin sizing is switched on."><span className="stat-k">Sizing check since 20 Oct</span> <span className="muted">shadow</span> <span className={`mono ${tone(since.s)}`}>{r(since.s, 1)}R</span> <span className="muted">now vs</span> <span className={`mono ${tone(since.sm)}`}>{r(since.sm, 1)}R</span> <span className="muted">by margin · account</span> <span className={`mono ${tone(since.a)}`}>{r(since.a, 1)}</span> <span className="muted">vs</span> <span className={`mono ${tone(since.am)}`}>{r(since.am, 1)}</span> <span className="muted">· {since.days} days</span></span>
             </div>
             <Panel title="Account" pad={false}>
               <div className="table-wrap"><table className="table small daily-table">
-                <thead><tr><th>Day</th><th>Trades</th><th>Net</th><th>Fees</th><th>R a trade</th><th>Sum R</th><th>Stopped</th><th>Trailed</th><th>Trail kept</th><th>Equity</th><th>Best · worst scanner</th></tr></thead>
+                <thead><tr><th>Day</th><th>Trades</th><th>Net</th><th>Fees</th><th>R a trade</th><th>Sum R</th><th>If sized by margin</th><th>Stopped</th><th>Trailed</th><th>Trail kept</th><th>Equity</th><th>Best · worst scanner</th></tr></thead>
                 <tbody>{rows.map((d) => (
                   <tr key={d.day} className={d.partial ? 'muted' : ''}>
                     <td className="mono" data-label="Day">{d.day}{d.partial ? ' (so far)' : ''}</td>
@@ -48,6 +55,7 @@ export function Daily() {
                     <td className="mono" data-label="Fees">{d.account.trades ? d.account.fees.toFixed(2) : '–'}</td>
                     <td className={`mono ${tone(d.account.avgR)}`} data-label="R a trade">{d.account.trades ? r(d.account.avgR, 3) : '–'}</td>
                     <td className={`mono ${tone(d.account.sumR)}`} data-label="Sum R">{d.account.trades ? r(d.account.sumR, 1) : '–'}</td>
+                    <td className={`mono ${tone(d.account.marginSumR)}`} data-label="If sized by margin">{d.account.trades ? r(d.account.marginSumR, 1) : '–'}</td>
                     <td className="mono" data-label="Stopped">{d.account.stops}</td>
                     <td className="mono" data-label="Trailed">{d.account.trails}</td>
                     <td className="mono" data-label="Trail kept">{keeps(d.account.trailKeeps)}</td>
@@ -58,13 +66,14 @@ export function Daily() {
             </Panel>
             <Panel title="Shadow book and incubator" pad={false}>
               <div className="table-wrap"><table className="table small daily-table">
-                <thead><tr><th>Day</th><th>Trades</th><th>R a trade</th><th>Sum R</th><th>15m</th><th>1h</th><th>4h</th><th>Trail kept</th><th>Admitted</th><th>Proposed</th><th>Promoted</th><th>Retired</th><th>Demoted</th></tr></thead>
+                <thead><tr><th>Day</th><th>Trades</th><th>R a trade</th><th>Sum R</th><th>If sized by margin</th><th>15m</th><th>1h</th><th>4h</th><th>Trail kept</th><th>Admitted</th><th>Proposed</th><th>Promoted</th><th>Retired</th><th>Demoted</th></tr></thead>
                 <tbody>{rows.map((d) => (
                   <tr key={d.day} className={d.partial ? 'muted' : ''}>
                     <td className="mono" data-label="Day">{d.day}{d.partial ? ' (so far)' : ''}</td>
                     <td className="mono" data-label="Trades">{d.shadow.trades}</td>
                     <td className={`mono ${tone(d.shadow.avgR)}`} data-label="R a trade">{d.shadow.trades ? r(d.shadow.avgR, 3) : '–'}</td>
                     <td className={`mono ${tone(d.shadow.sumR)}`} data-label="Sum R">{d.shadow.trades ? r(d.shadow.sumR, 1) : '–'}</td>
+                    <td className={`mono ${tone(d.shadow.marginSumR)}`} data-label="If sized by margin">{d.shadow.trades ? r(d.shadow.marginSumR, 1) : '–'}</td>
                     {(['15m', '1h', '4h'] as const).map((tf) => { const v = d.shadow.byTf[tf]; return <td key={tf} className={`mono ${v ? tone(v.sumR) : 'muted'}`} data-label={tf}>{v ? `${r(v.sumR, 1)} / ${v.trades}` : '–'}</td> })}
                     <td className="mono" data-label="Trail kept">{keeps(d.shadow.trailKeeps)}</td>
                     <td className="mono" data-label="Admitted">{d.incubator.admitted}</td>

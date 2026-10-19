@@ -14,25 +14,41 @@ export interface BookDay {
   trailKeeps: number | null;
   byTf: Record<string, { trades: number; sumR: number }>;
   best: { scanner: string; sumR: number } | null; worst: { scanner: string; sumR: number } | null;
+  /** Decision 138: the same trades re-scored under margin sizing, at the same average risk, in units of today's R. */
+  marginSumR: number;
 }
 export interface IncubatorDay { admitted: number; proposed: number; promoted: number; retired: number; demoted: number }
 export interface DailyRow { day: string; partial: boolean; account: BookDay; shadow: BookDay; incubator: IncubatorDay; equity: number }
 
+/**
+ * Decision 138's weight: under a fixed margin per trade the dollar risk is margin × leverage × stop distance. 0.3765 is
+ * the shadow book's average leverage × stop on 19 October, so the weights average 1 and the comparison is at equal risk;
+ * capped at 0.25×–2× as the sizing mode would be (the 2% stop cap).
+ */
+const MARGIN_NORM = 0.3765;
+function marginWeight(x: { ep: number; sl: number | null; fills: string | null }): number {
+  let lev = 0; try { const f = x.fills ? JSON.parse(x.fills) : {}; lev = f.marginLeverage || f.leverage || 0; } catch { /* no leverage recorded */ }
+  const stop = x.sl && x.ep ? Math.abs(x.ep - x.sl) / x.ep : 0;
+  if (!(lev > 0 && stop > 0)) return 1;
+  return Math.max(0.25, Math.min(2, lev * stop / MARGIN_NORM));
+}
+
 function book(db: Db, bt: number, from: number, to: number): BookDay {
-  const rows = db.all<{ scanner_name: string; tf: string; exit_reason: string; pnl: number; fees: number; risk: number; peak: number | null }>(
-    'SELECT scanner_name, tf, exit_reason, realized_pnl pnl, fees, risk_amount risk, peak_r peak FROM positions WHERE bt=? AND status=\'closed\' AND exit_at>=? AND exit_at<?', bt, from, to);
+  const rows = db.all<{ scanner_name: string; tf: string; exit_reason: string; pnl: number; fees: number; risk: number; peak: number | null; ep: number; sl: number | null; fills: string | null }>(
+    'SELECT scanner_name, tf, exit_reason, realized_pnl pnl, fees, risk_amount risk, peak_r peak, entry_price ep, sl_original sl, fills FROM positions WHERE bt=? AND status=\'closed\' AND exit_at>=? AND exit_at<?', bt, from, to);
   const r = (x: typeof rows[number]) => (x.risk > 0 ? (x.pnl - x.fees) / x.risk : 0);
   const trails = rows.filter(x => x.exit_reason === 'trail' && x.risk > 0 && (x.peak ?? 0) > 0);
   const byTf: BookDay['byTf'] = {}; const byScanner = new Map<string, number>();
   for (const x of rows) { const t = (byTf[x.tf] ??= { trades: 0, sumR: 0 }); t.trades++; t.sumR += r(x); byScanner.set(x.scanner_name, (byScanner.get(x.scanner_name) ?? 0) + r(x)); }
   const ranked = [...byScanner].sort((a, b) => b[1] - a[1]);
   const sumR = rows.reduce((a, x) => a + r(x), 0);
+  const marginSumR = rows.reduce((a, x) => a + r(x) * marginWeight(x), 0);
   return {
     trades: rows.length, net: rows.reduce((a, x) => a + x.pnl - x.fees, 0), fees: rows.reduce((a, x) => a + x.fees, 0),
     sumR, avgR: rows.length ? sumR / rows.length : 0, wins: rows.filter(x => x.pnl - x.fees > 0).length,
     stops: rows.filter(x => x.exit_reason === 'sl').length, trails: trails.length,
     trailKeeps: trails.length ? trails.reduce((a, x) => a + r(x) / (x.peak as number), 0) / trails.length : null,
-    byTf, best: ranked.length ? { scanner: ranked[0][0], sumR: ranked[0][1] } : null,
+    marginSumR, byTf, best: ranked.length ? { scanner: ranked[0][0], sumR: ranked[0][1] } : null,
     worst: ranked.length ? { scanner: ranked.at(-1)![0], sumR: ranked.at(-1)![1] } : null,
   };
 }

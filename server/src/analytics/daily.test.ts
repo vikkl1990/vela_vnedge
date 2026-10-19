@@ -18,7 +18,8 @@ test('the daily report counts each book on the day its trades closed, net of fee
   assert.equal(y.account.stops, 1); assert.equal(y.account.trails, 1);
   assert.equal(Math.round(y.account.trailKeeps! * 100), 50, 'the trail exit banked 0.5R of a 1R peak');
   assert.equal(y.shadow.byTf['4h'].sumR, 2); assert.equal(y.incubator.admitted, 1);
-  assert.equal(y.equity, 995); assert.match(dailyText(rows), /VNEdge daily report 2026-10-18/);
+  assert.equal(y.equity, 995);
+  assert.equal(y.account.marginSumR, y.account.sumR, 'with no leverage recorded the margin weight is 1'); assert.match(dailyText(rows), /VNEdge daily report 2026-10-18/);
   assert.equal(rows[2].account.trades, 0);
   void D;
 });
