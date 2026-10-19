@@ -4274,3 +4274,48 @@ size is the whole process's.
 failed run and quarantines nobody. The guard moves from 60% to 72% of the limit (7.2 GB), still below
 the service's 8 GB throttle and 10 GB ceiling. The four scanners were released through the product's
 release route.
+
+## 141. Today's stop-outs, read and tested: no armed trade stops, but break even at +0.25R and a time stop both lose (19 October 2026)
+
+**Why.** The operator: "TPs are too wide and SLs are too costly, any pattern in today's trades?" The
+account closed 69 trades since 00:00 IST (+5.54R, +$51.54 after $36.67 of fees); the shadow book 147
+(+8.45R).
+
+**What today shows.**
+
+| account, 19 Oct | trades | net | per trade |
+|---|---|---|---|
+| trail exits | 46 | +27.00R | +0.59R |
+| stop-outs | 22 | −21.66R | −0.98R |
+| reversal | 1 | +0.20R | |
+
+- No account trade reached a target: the first target sits at 2R and 1 of 69 trades got there; 6
+  reached 1R. The trail is the exit; the target is not where the money is lost.
+- No stop-out was worse than −1R; the stop's width (median 1.47%) is the same for the trades that
+  stopped and the trades that won.
+- No trade that armed the trail (+0.5R) stopped out. Of the 22 stop-outs, 9 never showed +0.1R and
+  13 reached +0.1R to +0.5R before failing. Winners arm in a median 16 minutes; stop-outs are held 56.
+
+**Tested on today's minute closes**, then on the 72 exit-study cells (39 with ten or more trades,
+4,479 trades, 1m sub-bars, the account's costs, the deployed 10% trail as the base):
+
+| variant | today, account | 72 cells, Δ sum R | cells better / worse |
+|---|---|---|---|
+| target at 1R | −1.63R | −73 (decision 129) | 0 / 22 |
+| break even at +0.25R | +4.57R | −133 | 6 / 21 |
+| break even at +0.25R, keep fees | | −126 | 6 / 24 |
+| break even at +0.35R | +0.00R | −76 | 7 / 21 |
+| time stop, unarmed after 2 bars | +1.44R | −299 | 3 / 32 |
+| time stop, unarmed after 4 bars | +1.08R | −130 | 6 / 28 |
+| time stop, unarmed after 8 bars | | −55 | 6 / 22 |
+| time stop, below +0.25R after 4 bars | | −50 | 6 / 24 |
+
+Every variant loses on 15m alone, on 4h alone, and in both halves of the sample. Today's replay
+flatters break even because it reads minute closes: a stop at the entry is touched by wicks the
+closes do not show, and one day has no slow runner that dips to the entry before paying.
+
+**Verdict.** The pattern is real and not usable as an exit: the trades that will stop cannot be told
+from the slow runners at the time a rule could act, which is decision 128's finding from the other
+side. The stop costs one R by design; what it buys is the runners. The levers left are which trades
+are taken (entries, markets) and how they are sized (decision 138's forward check on the Daily page).
+`diagnose` takes `VARIANTS=a,b` to run only the named study variants.

@@ -187,6 +187,9 @@ const confirm = (evs: ScanEvent[], bars: Bar[]): ScanEvent[] => {
  * hidden is reading the future — the BTC 15m script that screened at +1.03R and traded −0.21R in the shadow book.
  */
 const REPAINT_ONLY = process.env.REPAINT_ONLY === '1';
+// VARIANTS=a,b runs only the named study variants (the base rows always run): a focused study costs a fraction of the full set.
+const ONLY = process.env.VARIANTS ? new Set(process.env.VARIANTS.split(',').map(v => v.trim()).filter(Boolean)) : null;
+const want = (k: string) => !ONLY || ONLY.has(k);
 interface CellResult { id: string; tf: string; sym: string; variants: Record<string, Stat>; labels: Array<[string, Stat]>; verdict: string; fix: string; repaint?: { prefix: number; changed: number } }
 async function cell(id: string, tf: string, sym: string): Promise<CellResult | null> {
   const s = registry.get(id); if (!s || s.status !== 'ok') return null;
@@ -227,113 +230,121 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   const variants: Record<string, Stat> = {};
   variants.base = stat(run({}), b, tfMs);
   variants.gross = stat(run({}, { feeRatePct: 0, feeTaxPct: 0, slippageBps: 2 }), b, tfMs);
-  variants['stop1.5'] = stat(run({}, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 1.5 }), b, tfMs);
+  if (want('stop1.5')) variants['stop1.5'] = stat(run({}, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 1.5 }), b, tfMs);
   variants.stop2 = stat(run({}, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 2 }), b, tfMs);
   variants.tp1 = stat(run({}, { scriptTargets: 'ignore', fallbackRR: [1, 1, 1], tpSplit: [1, 0, 0], trailAfterR: 99, floorAtR: 99 } as any), b, tfMs);
   variants.levels = stat(run({ exitMode: 'levels' }), b, tfMs);
   if (events.some(e => e.kind === 'exit') || events.some(e => e.kind === 'entry' && (e.sl || e.tp?.length))) variants.script = stat(run({ exitMode: 'script' }), b, tfMs);
-  variants['er0.25'] = stat(run({ chopGate: { minEr: 0.25 } }), b, tfMs);
+  if (want('er0.25')) variants['er0.25'] = stat(run({ chopGate: { minEr: 0.25 } }), b, tfMs);
   variants.confirm1 = stat(run({ events: confirm(events, b) }), b, tfMs);
-  variants['er+stop1.5'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 1.5 }), b, tfMs);
-  variants['er+stop2'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 2 }), b, tfMs);
-  variants['confirm1+er'] = stat(run({ events: confirm(events, b), chopGate: { minEr: 0.25 } }), b, tfMs);
+  if (want('er+stop1.5')) variants['er+stop1.5'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 1.5 }), b, tfMs);
+  if (want('er+stop2')) variants['er+stop2'] = stat(run({ chopGate: { minEr: 0.25 } }, { fallbackAtrSl: cfg.paper.fallbackAtrSl * 2 }), b, tfMs);
+  if (want('confirm1+er')) variants['confirm1+er'] = stat(run({ events: confirm(events, b), chopGate: { minEr: 0.25 } }), b, tfMs);
   // the entry model (decision 95): do not chase the signal bar; enter on a pullback as a maker, or not at all
-  variants['nochase1.5'] = stat(run({ entry: { maxSignalBarAtr: 1.5 } }), b, tfMs);
-  variants['pull0.3'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3 } }), b, tfMs);
-  variants['pull0.5'] = stat(run({ entry: { pullbackAtr: 0.5, pullbackBars: 5 } }), b, tfMs);
-  variants['pull0.3+nochase'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3, maxSignalBarAtr: 1.5 } }), b, tfMs);
+  if (want('nochase1.5')) variants['nochase1.5'] = stat(run({ entry: { maxSignalBarAtr: 1.5 } }), b, tfMs);
+  if (want('pull0.3')) variants['pull0.3'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3 } }), b, tfMs);
+  if (want('pull0.5')) variants['pull0.5'] = stat(run({ entry: { pullbackAtr: 0.5, pullbackBars: 5 } }), b, tfMs);
+  if (want('pull0.3+nochase')) variants['pull0.3+nochase'] = stat(run({ entry: { pullbackAtr: 0.3, pullbackBars: 3, maxSignalBarAtr: 1.5 } }), b, tfMs);
   // costs as the account pays them: every market leg crosses half the book; a limit at the signal price crosses nothing on entry and pays the maker fee
   const spreadPct = bookCost.get(sym) ?? 0;
   variants.spread = stat(run({ spreadPct }), b, tfMs);
-  variants['limit0'] = stat(run({ spreadPct, entry: { pullbackAtr: 0, pullbackBars: 2 } }), b, tfMs);
-  variants['limit0.1'] = stat(run({ spreadPct, entry: { pullbackAtr: 0.1, pullbackBars: 2 } }), b, tfMs);
+  if (want('limit0')) variants['limit0'] = stat(run({ spreadPct, entry: { pullbackAtr: 0, pullbackBars: 2 } }), b, tfMs);
+  if (want('limit0.1')) variants['limit0.1'] = stat(run({ spreadPct, entry: { pullbackAtr: 0.1, pullbackBars: 2 } }), b, tfMs);
   // the cost rule: with the real book paid, only take a trade whose stop is many times the round trip's cost
-  variants['spread+ratio6'] = stat(run({ spreadPct, costRatio: 6 }), b, tfMs);
-  variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
-  variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
-  variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
+  if (want('spread+ratio6')) variants['spread+ratio6'] = stat(run({ spreadPct, costRatio: 6 }), b, tfMs);
+  if (want('spread+ratio10')) variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
+  if (want('spread+er0.25')) variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
+  if (want('spread+er+ratio10')) variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
   // the stop study (decision 110), every variant paying the real book: where else could the stop go
   const slAt = (mult: number) => ({ fallbackAtrSl: mult, widenStopToFee: false } as Partial<PaperConfig>);
   const lows = (i: number, n: number) => Math.min(...b.slice(Math.max(0, i - n + 1), i + 1).map(x => x.low));
   const highs = (i: number, n: number) => Math.max(...b.slice(Math.max(0, i - n + 1), i + 1).map(x => x.high));
-  variants['s-atr1.0'] = stat(run({ spreadPct }, slAt(1.0)), b, tfMs);
-  variants['s-atr1.25'] = stat(run({ spreadPct }, slAt(1.25)), b, tfMs);
-  variants['s-atr2.0'] = stat(run({ spreadPct }, slAt(2.0)), b, tfMs);
+  if (want('s-atr1.0')) variants['s-atr1.0'] = stat(run({ spreadPct }, slAt(1.0)), b, tfMs);
+  if (want('s-atr1.25')) variants['s-atr1.25'] = stat(run({ spreadPct }, slAt(1.25)), b, tfMs);
+  if (want('s-atr2.0')) variants['s-atr2.0'] = stat(run({ spreadPct }, slAt(2.0)), b, tfMs);
   // beyond the signal bar's own extreme: a first-bar reversal cannot tag it
-  variants['s-wick'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr)) }), b, tfMs);
+  if (want('s-wick')) variants['s-wick'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr)) }), b, tfMs);
   // beyond the last 10 bars' swing
-  variants['s-swing10'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => (side === 'long' ? lows(i, 10) - 0.1 * atr : highs(i, 10) + 0.1 * atr), 1.0, 3.0) }), b, tfMs);
+  if (want('s-swing10')) variants['s-swing10'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => (side === 'long' ? lows(i, 10) - 0.1 * atr : highs(i, 10) + 0.1 * atr), 1.0, 3.0) }), b, tfMs);
   // scaled by the regime: tight when the market moves efficiently, wide when it chops
-  variants['s-erscaled'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => { const er = erAt(b, i); const m = er >= 0.35 ? 1.25 : er < 0.25 ? 2.0 : 1.5; return side === 'long' ? b[i].close - m * atr : b[i].close + m * atr; }, 1.0, 2.5) }), b, tfMs);
+  if (want('s-erscaled')) variants['s-erscaled'] = stat(run({ spreadPct, events: withStop(events, b, (i, side, atr) => { const er = erAt(b, i); const m = er >= 0.35 ? 1.25 : er < 0.25 ? 2.0 : 1.5; return side === 'long' ? b[i].close - m * atr : b[i].close + m * atr; }, 1.0, 2.5) }), b, tfMs);
   // the stop moves: to the entry once the trade has +0.5R or +1R, or keeps a fifth of the gain
-  variants['s-be0.5'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0 }), b, tfMs);
-  variants['s-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0 }), b, tfMs);
-  variants['s-floor0.5k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0.2 }), b, tfMs);
+  if (want('s-be0.5')) variants['s-be0.5'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0 }), b, tfMs);
+  if (want('s-be1')) variants['s-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0 }), b, tfMs);
+  if (want('s-floor0.5k0.2')) variants['s-floor0.5k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.5, floorKeepR: 0.2 }), b, tfMs);
   // the exit study (17 Oct): the same entries, the account's costs, only the trail, the floor and the first target move.
   // The account keeps half of its winners' peak (trail +0.51R on a 0.91R peak); these ask what keeping more of it costs.
-  variants['x-gb25'] = stat(run({ spreadPct }, { trailGiveBackPct: 25, trailSteps: [[2, 20], [4, 15]] }), b, tfMs);
-  variants['x-gb15'] = stat(run({ spreadPct }, { trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]] }), b, tfMs);
-  variants['x-gb60'] = stat(run({ spreadPct }, { trailGiveBackPct: 60, trailSteps: [[2, 40], [4, 25]] }), b, tfMs);
-  variants['x-after1'] = stat(run({ spreadPct }, { trailAfterR: 1.0 }), b, tfMs);
-  variants['x-after1gb25'] = stat(run({ spreadPct }, { trailAfterR: 1.0, trailGiveBackPct: 25, trailSteps: [[2, 20], [4, 15]] }), b, tfMs);
-  variants['x-floor1k0.5'] = stat(run({ spreadPct }, { floorAtR: 1.0, floorKeepR: 0.5 }), b, tfMs);
-  variants['x-half1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 4, 6], tpSplit: [0.5, 0, 0.5] }), b, tfMs);
-  variants['x-all2R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [1, 0, 0] }), b, tfMs);
-  variants['x-nostall'] = stat(run({ spreadPct }, { trailStall: { minutes: 0, factor: 1 } }), b, tfMs);
+  if (want('x-gb25')) variants['x-gb25'] = stat(run({ spreadPct }, { trailGiveBackPct: 25, trailSteps: [[2, 20], [4, 15]] }), b, tfMs);
+  if (want('x-gb15')) variants['x-gb15'] = stat(run({ spreadPct }, { trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]] }), b, tfMs);
+  if (want('x-gb60')) variants['x-gb60'] = stat(run({ spreadPct }, { trailGiveBackPct: 60, trailSteps: [[2, 40], [4, 25]] }), b, tfMs);
+  if (want('x-after1')) variants['x-after1'] = stat(run({ spreadPct }, { trailAfterR: 1.0 }), b, tfMs);
+  if (want('x-after1gb25')) variants['x-after1gb25'] = stat(run({ spreadPct }, { trailAfterR: 1.0, trailGiveBackPct: 25, trailSteps: [[2, 20], [4, 15]] }), b, tfMs);
+  if (want('x-floor1k0.5')) variants['x-floor1k0.5'] = stat(run({ spreadPct }, { floorAtR: 1.0, floorKeepR: 0.5 }), b, tfMs);
+  if (want('x-half1R')) variants['x-half1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 4, 6], tpSplit: [0.5, 0, 0.5] }), b, tfMs);
+  if (want('x-all2R')) variants['x-all2R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [1, 0, 0] }), b, tfMs);
+  if (want('x-nostall')) variants['x-nostall'] = stat(run({ spreadPct }, { trailStall: { minutes: 0, factor: 1 } }), b, tfMs);
   // second pass: where is the knee, and is it the early trail or the runner steps that pay
-  variants['x-gb10'] = stat(run({ spreadPct }, { trailGiveBackPct: 10, trailSteps: [[2, 8], [4, 6]] }), b, tfMs);
-  variants['x-gb5'] = stat(run({ spreadPct }, { trailGiveBackPct: 5, trailSteps: [[2, 5], [4, 5]] }), b, tfMs);
-  variants['x-gb15s'] = stat(run({ spreadPct }, { trailGiveBackPct: 15 }), b, tfMs);
-  variants['x-gb15after0.3'] = stat(run({ spreadPct }, { trailAfterR: 0.3, trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]] }), b, tfMs);
+  if (want('x-gb10')) variants['x-gb10'] = stat(run({ spreadPct }, { trailGiveBackPct: 10, trailSteps: [[2, 8], [4, 6]] }), b, tfMs);
+  if (want('x-gb5')) variants['x-gb5'] = stat(run({ spreadPct }, { trailGiveBackPct: 5, trailSteps: [[2, 5], [4, 5]] }), b, tfMs);
+  if (want('x-gb15s')) variants['x-gb15s'] = stat(run({ spreadPct }, { trailGiveBackPct: 15 }), b, tfMs);
+  if (want('x-gb15after0.3')) variants['x-gb15after0.3'] = stat(run({ spreadPct }, { trailAfterR: 0.3, trailGiveBackPct: 15, trailSteps: [[2, 12], [4, 10]] }), b, tfMs);
   // the early adverse cut (decision 128): the stop-outs are known early; cut them before the full stop
-  variants['x-cut0.5@30'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 30 } }), b, tfMs);
-  variants['x-cut0.5@60'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 60 } }), b, tfMs);
-  variants['x-cut0.5@120'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 120 } }), b, tfMs);
-  variants['x-cut0.4@60'] = stat(run({ spreadPct }, { earlyCut: { r: -0.4, minutes: 60 } }), b, tfMs);
-  variants['x-cut0.6@90'] = stat(run({ spreadPct }, { earlyCut: { r: -0.6, minutes: 90 } }), b, tfMs);
-  variants['x-cut0.7@240'] = stat(run({ spreadPct }, { earlyCut: { r: -0.7, minutes: 240 } }), b, tfMs);
+  if (want('x-cut0.5@30')) variants['x-cut0.5@30'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 30 } }), b, tfMs);
+  if (want('x-cut0.5@60')) variants['x-cut0.5@60'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 60 } }), b, tfMs);
+  if (want('x-cut0.5@120')) variants['x-cut0.5@120'] = stat(run({ spreadPct }, { earlyCut: { r: -0.5, minutes: 120 } }), b, tfMs);
+  if (want('x-cut0.4@60')) variants['x-cut0.4@60'] = stat(run({ spreadPct }, { earlyCut: { r: -0.4, minutes: 60 } }), b, tfMs);
+  if (want('x-cut0.6@90')) variants['x-cut0.6@90'] = stat(run({ spreadPct }, { earlyCut: { r: -0.6, minutes: 90 } }), b, tfMs);
+  if (want('x-cut0.7@240')) variants['x-cut0.7@240'] = stat(run({ spreadPct }, { earlyCut: { r: -0.7, minutes: 240 } }), b, tfMs);
+  // today's journal (19 Oct): no armed trade stopped out; every stop-out came from a trade that never reached +0.5R.
+  // Two answers, measured: a stop to break even once the trade shows +0.25R, and a time stop that closes a trade the
+  // trail has not armed after N bars of its own timeframe.
+  if (want('t-be0.25')) variants['t-be0.25'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0 }), b, tfMs);
+  if (want('t-be0.25k0.06')) variants['t-be0.25k0.06'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0.06 }), b, tfMs);
+  if (want('t-be0.35')) variants['t-be0.35'] = stat(run({ spreadPct }, { floorAtR: 0.35, floorKeepR: 0 }), b, tfMs);
+  for (const n of [2, 3, 4, 6, 8]) if (want(`t-stale${n}`)) variants[`t-stale${n}`] = stat(run({ spreadPct }, { staleBars: n, staleMinR: 0.5 }), b, tfMs);
+  if (want('t-stale4m0.25')) variants['t-stale4m0.25'] = stat(run({ spreadPct }, { staleBars: 4, staleMinR: 0.25 }), b, tfMs);
   // the target study (decision 129): the reviewer's "smarter TPs" as variants: an earlier floor, the script's own targets
   // against the fleet ladder, and tighter ladders that take profit in legs
-  variants['x-floor0.3k0.15'] = stat(run({ spreadPct }, { floorAtR: 0.3, floorKeepR: 0.15 }), b, tfMs);
-  variants['x-floor0.4k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.4, floorKeepR: 0.2 }), b, tfMs);
-  variants['x-floor0.3k0.1@0.3'] = stat(run({ spreadPct }, { floorAtR: 0.3, floorKeepR: 0.1, trailAfterR: 0.3 }), b, tfMs);
-  variants['x-st-ignore'] = stat(run({ spreadPct }, { scriptTargets: 'ignore' }), b, tfMs);
-  variants['x-st-widen'] = stat(run({ spreadPct }, { scriptTargets: 'widen' }), b, tfMs);
-  variants['x-ladder1.5-3-6'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 3, 6], tpSplit: [0.3, 0.3, 0.4] }), b, tfMs);
-  variants['x-ladder1-2-4'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 2, 4], tpSplit: [0.4, 0.3, 0.3] }), b, tfMs);
-  variants['x-ladder2-4-6split'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [0.5, 0.25, 0.25] }), b, tfMs);
-  variants['x-tp1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 1, 1], tpSplit: [1, 0, 0] }), b, tfMs);
-  variants['x-tp1.5R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 1.5, 1.5], tpSplit: [1, 0, 0] }), b, tfMs);
+  if (want('x-floor0.3k0.15')) variants['x-floor0.3k0.15'] = stat(run({ spreadPct }, { floorAtR: 0.3, floorKeepR: 0.15 }), b, tfMs);
+  if (want('x-floor0.4k0.2')) variants['x-floor0.4k0.2'] = stat(run({ spreadPct }, { floorAtR: 0.4, floorKeepR: 0.2 }), b, tfMs);
+  if (want('x-floor0.3k0.1@0.3')) variants['x-floor0.3k0.1@0.3'] = stat(run({ spreadPct }, { floorAtR: 0.3, floorKeepR: 0.1, trailAfterR: 0.3 }), b, tfMs);
+  if (want('x-st-ignore')) variants['x-st-ignore'] = stat(run({ spreadPct }, { scriptTargets: 'ignore' }), b, tfMs);
+  if (want('x-st-widen')) variants['x-st-widen'] = stat(run({ spreadPct }, { scriptTargets: 'widen' }), b, tfMs);
+  if (want('x-ladder1.5-3-6')) variants['x-ladder1.5-3-6'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 3, 6], tpSplit: [0.3, 0.3, 0.4] }), b, tfMs);
+  if (want('x-ladder1-2-4')) variants['x-ladder1-2-4'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 2, 4], tpSplit: [0.4, 0.3, 0.3] }), b, tfMs);
+  if (want('x-ladder2-4-6split')) variants['x-ladder2-4-6split'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 4, 6], tpSplit: [0.5, 0.25, 0.25] }), b, tfMs);
+  if (want('x-tp1R')) variants['x-tp1R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 1, 1], tpSplit: [1, 0, 0] }), b, tfMs);
+  if (want('x-tp1.5R')) variants['x-tp1.5R'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 1.5, 1.5], tpSplit: [1, 0, 0] }), b, tfMs);
   // the hybrid entry (decision 133): the signal on this timeframe, the fill on the first lower bar that continues beyond the signal bar
-  variants['h-break0'] = stat(run({ spreadPct, entry: { breakAtr: 0, breakBars: 4 } }), b, tfMs);
-  variants['h-break0.25'] = stat(run({ spreadPct, entry: { breakAtr: 0.25, breakBars: 4 } }), b, tfMs);
-  variants['h-break0@8'] = stat(run({ spreadPct, entry: { breakAtr: 0, breakBars: 8 } }), b, tfMs);
-  variants['h-break0+er'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 }, entry: { breakAtr: 0, breakBars: 4 } }), b, tfMs);
+  if (want('h-break0')) variants['h-break0'] = stat(run({ spreadPct, entry: { breakAtr: 0, breakBars: 4 } }), b, tfMs);
+  if (want('h-break0.25')) variants['h-break0.25'] = stat(run({ spreadPct, entry: { breakAtr: 0.25, breakBars: 4 } }), b, tfMs);
+  if (want('h-break0@8')) variants['h-break0@8'] = stat(run({ spreadPct, entry: { breakAtr: 0, breakBars: 8 } }), b, tfMs);
+  if (want('h-break0+er')) variants['h-break0+er'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 }, entry: { breakAtr: 0, breakBars: 4 } }), b, tfMs);
   // the reversal study (decision 135): an opposite signal closes and flips the position; never, or only once the trade is ahead
-  variants['r-none'] = stat(run({ spreadPct }, { allowReversal: false }), b, tfMs);
-  variants['r-min0.5'] = stat(run({ spreadPct }, { reversalMinR: 0.5 }), b, tfMs);
-  variants['r-min1'] = stat(run({ spreadPct }, { reversalMinR: 1 }), b, tfMs);
-  variants['r-min0'] = stat(run({ spreadPct }, { reversalMinR: 0.0001 }), b, tfMs);
+  if (want('r-none')) variants['r-none'] = stat(run({ spreadPct }, { allowReversal: false }), b, tfMs);
+  if (want('r-min0.5')) variants['r-min0.5'] = stat(run({ spreadPct }, { reversalMinR: 0.5 }), b, tfMs);
+  if (want('r-min1')) variants['r-min1'] = stat(run({ spreadPct }, { reversalMinR: 1 }), b, tfMs);
+  if (want('r-min0')) variants['r-min0'] = stat(run({ spreadPct }, { reversalMinR: 0.0001 }), b, tfMs);
   // the cost-floor stop: the near-miss refusals taken at the floor instead (compare with `spread`, the same costs and refusals as the account)
-  variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
-  variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);
-  variants['cf0'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0) }), b, tfMs);
+  if (want('cf75')) variants['cf75'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.75) }), b, tfMs);
+  if (want('cf50')) variants['cf50'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0.5) }), b, tfMs);
+  if (want('cf0')) variants['cf0'] = stat(run({ spreadPct, events: withCostFloor(events, b, spreadPct, 0) }), b, tfMs);
   // the same stops under the whipsaw gate the account runs (minEr 0.25): the live baseline is spread+er0.25
   const er = { chopGate: { minEr: 0.25 } };
-  variants['e-atr1.25'] = stat(run({ spreadPct, ...er }, slAt(1.25)), b, tfMs);
-  variants['e-atr2.0'] = stat(run({ spreadPct, ...er }, slAt(2.0)), b, tfMs);
-  variants['e-wick'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr)) }), b, tfMs);
-  variants['e-wick2.0'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr), 2.0, 3.0) }), b, tfMs);
-  variants['e-swing10'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? lows(i, 10) - 0.1 * atr : highs(i, 10) + 0.1 * atr), 1.0, 3.0) }), b, tfMs);
+  if (want('e-atr1.25')) variants['e-atr1.25'] = stat(run({ spreadPct, ...er }, slAt(1.25)), b, tfMs);
+  if (want('e-atr2.0')) variants['e-atr2.0'] = stat(run({ spreadPct, ...er }, slAt(2.0)), b, tfMs);
+  if (want('e-wick')) variants['e-wick'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr)) }), b, tfMs);
+  if (want('e-wick2.0')) variants['e-wick2.0'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? b[i].low - 0.25 * atr : b[i].high + 0.25 * atr), 2.0, 3.0) }), b, tfMs);
+  if (want('e-swing10')) variants['e-swing10'] = stat(run({ spreadPct, ...er, events: withStop(events, b, (i, side, atr) => (side === 'long' ? lows(i, 10) - 0.1 * atr : highs(i, 10) + 0.1 * atr), 1.0, 3.0) }), b, tfMs);
   // the regime test (decision 102), every variant paying the real book
   const fund = fundingSeries.get(sym) ?? new Map<number, number>(), rat = ratioSeries.get(sym) ?? new Map<number, number>();
   const gBias = (t: number, side: 'long' | 'short') => { const bb = biasAt(t); return bb === undefined ? 'unknown' as const : bb === 0 ? 'allow' as const : (side === 'long') === (bb > 0) ? 'allow' as const : 'block' as const; };
   const gFund = (t: number, side: 'long' | 'short') => { const f = fund.get(lastHour(t)); return f === undefined ? 'unknown' as const : Math.abs(f) < FUND_BAND ? 'allow' as const : (side === 'long' ? f < 0 : f > 0) ? 'allow' as const : 'block' as const; };
   const gRatio = (t: number, side: 'long' | 'short') => { const r = rat.get(lastHour(t)); return r === undefined ? 'unknown' as const : (side === 'long' ? r >= 1 : r <= 1) ? 'allow' as const : 'block' as const; };
   const gWindow = (t: number) => (rat.get(lastHour(t)) === undefined ? 'unknown' as const : 'allow' as const);
-  variants['ctx-bias'] = stat(run({ spreadPct, contextGate: gBias }), b, tfMs);
-  variants['ctx-funding'] = stat(run({ spreadPct, contextGate: gFund }), b, tfMs);
-  variants['ctx-bias+fund'] = stat(run({ spreadPct, contextGate: (t, side) => (gBias(t, side) === 'block' || gFund(t, side) === 'block' ? 'block' : 'allow') }), b, tfMs);
+  if (want('ctx-bias')) variants['ctx-bias'] = stat(run({ spreadPct, contextGate: gBias }), b, tfMs);
+  if (want('ctx-funding')) variants['ctx-funding'] = stat(run({ spreadPct, contextGate: gFund }), b, tfMs);
+  if (want('ctx-bias+fund')) variants['ctx-bias+fund'] = stat(run({ spreadPct, contextGate: (t, side) => (gBias(t, side) === 'block' || gFund(t, side) === 'block' ? 'block' : 'allow') }), b, tfMs);
   if (rat.size) {
     variants['base30d'] = stat(run({ spreadPct, contextGate: gWindow, unknownIs: 'block' }), b, tfMs);
     variants['ctx-ratio30d'] = stat(run({ spreadPct, contextGate: gRatio, unknownIs: 'block' }), b, tfMs);
