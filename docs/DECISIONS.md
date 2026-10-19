@@ -4389,3 +4389,13 @@ the fortnight it changes almost nothing: account +$291 (unchanged), shadow +$2,1
 wide stops lower, so only low-margin markets reach past 20×. Raising the middle tier instead costs:
 10× → 20× takes the account to +$146 with a 35% drop; every trade at its maximum, +$114 and 37%.
 Today's replay is the same +$242: the eight strong-record trades were all on 20× markets.
+
+**Note, 19 October: the margin and leverage grid.** 180 combinations: margin $50 to $300, base
+leverage 3× to 20×, flat or by the cell's record (weak half the base, strong up to 50× or Delta's
+maximum), three, five or eight open, all under the stop guard. The most profitable on one book breaks
+the other: $300 at 3× by record tops the account (+$447) and falls 83% in the five-open shadow; $300
+at 20× tops the shadow (+$8,248) and ruins the account. Held to both books, both halves positive and
+no drop past 30%, the best is **$150 at 5× by record (2.5× weak, up to 50× strong), up to eight open
+as margin allows**: account +$303, worst drop 14%, worst day −$55; shadow +$4,418, drop 25%. Next,
+$100 at 10× by record, eight open: +$233 and +$4,138. The account as traded made +$15 over the same
+fortnight. Today: +$320 and +$265.
