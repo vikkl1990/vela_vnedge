@@ -579,3 +579,22 @@ test('decision 139: a tracker tracks new cells, keeps existing ones, and the gat
   assert.equal(removeTracker(db, store, 'willy', T0 + 42 * DAY), 4, 'w1 BTC aged out of the shadow book at day 40, so the re-save tracked it too');
   assert.equal(store.list(['tracked']).length, 0); assert.equal(listTrackers(db).length, 0);
 });
+
+test('decision 151: restartEvidence moves the window start and logs it; expireScreen stops a candidate from being admitted', () => {
+  const db = new Db(':memory:'); const store = new IncubatorStore(db);
+  const sh = store.move({ scannerId: 's', symbol: 'BTCUSD', tf: '15m' }, 'shadow', 'screen', null, null, 1_000);
+  const r = store.restartEvidence(sh.id, 'engine-upgrade', 'new engine', 5_000)!;
+  assert.equal(r.stage, 'shadow');
+  assert.equal(r.since, 5_000);
+  const ev = store.events(5, sh.id)[0];
+  assert.equal(ev.actor, 'engine-upgrade');
+  assert.equal(ev.from, 'shadow');
+  assert.equal(ev.to, 'shadow');
+  const c = store.move({ scannerId: 's', symbol: 'ETHUSD', tf: '15m' }, 'candidate', 'screen', null, null, 1_000);
+  store.setScreen(c.id, { pass: true, at: 4_000, trades: 50 });
+  const x = store.expireScreen(c.id, 'engine-upgrade', 'new engine', 6_000)!;
+  assert.equal(x.screen.at, 0, 'an expired screen is older than any candidate window');
+  assert.equal(x.screen.trades, 50, 'the screen itself is kept for the record');
+  assert.equal(x.screen.expiredAt, 6_000);
+  db.db.close();
+});

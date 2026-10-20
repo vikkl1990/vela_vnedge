@@ -116,6 +116,30 @@ export class IncubatorStore {
     });
   }
 
+  /**
+   * Decision 151: the engine changed under the pair, so its evidence restarts. The stage stays; `since` (the start of the
+   * window the gate judges, and of its deadline clock) moves to `at`. Logged as an event from the stage to itself.
+   */
+  restartEvidence(id: number, actor: string, note: string, at = Date.now()): PairRow | null {
+    const cur = this.get(id); if (!cur) return null;
+    this.db.transaction(() => {
+      this.db.run('UPDATE incubator_pairs SET since=?, updated=?, note=? WHERE id=?', at, at, note, id);
+      this.db.run('INSERT INTO incubator_events(at, pair_id, scanner_id, symbol, tf, from_stage, to_stage, actor, evidence) VALUES (?,?,?,?,?,?,?,?,?)',
+        at, id, cur.scannerId, cur.symbol, cur.tf, cur.stage, cur.stage, actor, JSON.stringify({ restarted: { since: cur.since, note } }));
+    });
+    return this.get(id);
+  }
+  /** Decision 151: a candidate's screen was made on another engine; it is kept for the record but no longer admits the pair. */
+  expireScreen(id: number, actor: string, note: string, at = Date.now()): PairRow | null {
+    const cur = this.get(id); if (!cur?.screen) return cur ?? null;
+    this.db.transaction(() => {
+      this.db.run('UPDATE incubator_pairs SET screen=?, updated=?, note=? WHERE id=?', JSON.stringify({ ...cur.screen, at: 0, expiredAt: at, expiredBy: note }), at, note, id);
+      this.db.run('INSERT INTO incubator_events(at, pair_id, scanner_id, symbol, tf, from_stage, to_stage, actor, evidence) VALUES (?,?,?,?,?,?,?,?,?)',
+        at, id, cur.scannerId, cur.symbol, cur.tf, cur.stage, cur.stage, actor, JSON.stringify({ screenExpired: { at: cur.screen.at, note } }));
+    });
+    return this.get(id);
+  }
+
   setScreen(id: number, screen: any, at = Date.now()) { this.db.run('UPDATE incubator_pairs SET screen=?, updated=? WHERE id=?', JSON.stringify(screen), at, id); }
   setGate(id: number, gate: any, at = Date.now()) { this.db.run('UPDATE incubator_pairs SET gate=?, updated=? WHERE id=?', JSON.stringify(gate), at, id); }
 

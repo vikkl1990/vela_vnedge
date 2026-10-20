@@ -128,6 +128,15 @@ export function fundamentalsToNa(src: string): string {
   return out;
 }
 
+/**
+ * Decision 151: a `ta.*` window whose length is written as a division (`ta.wma(src, len / 2)`, the Hull average's
+ * construction) is wrapped in `int(...)`. Pine v6 divides ints to a float; PineTS from 0.12.0 returns na for a
+ * window that is not a whole number, where 0.10.0 truncated it, so the Hull family went silent.
+ */
+export function intWindowLengths(src: string): string {
+  return src.replace(/(\bta\.(?:wma|sma|ema|rma|hma|vwma|swma|alma|linreg|stdev|dev|variance|highest|lowest|highestbars|lowestbars|change|mom|roc|rsi|cci|mfi|cmo|wpr|pivothigh|pivotlow|percentrank|median|range|rising|falling|correlation)\()([^()]*?,\s*)([A-Za-z_][A-Za-z0-9_.]*\s*\/\s*[0-9A-Za-z_.]+)(\s*\))/g, '$1$2int($3)$4');
+}
+
 const TA = ['sma', 'ema', 'rma', 'wma', 'vwma', 'hma', 'alma', 'swma', 'vwap', 'rsi', 'macd', 'stoch', 'cci', 'mfi', 'obv', 'atr', 'tr', 'sar', 'bb', 'bbw', 'kc', 'kcw', 'dmi', 'supertrend', 'cum', 'change', 'mom', 'roc', 'tsi', 'wpr', 'cog', 'correlation', 'percentrank', 'percentile_linear_interpolation', 'percentile_nearest_rank', 'linreg', 'variance', 'stdev', 'dev', 'median', 'mode', 'range', 'highest', 'lowest', 'highestbars', 'lowestbars', 'valuewhen', 'barssince', 'crossover', 'crossunder', 'cross', 'rising', 'falling', 'pivothigh', 'pivotlow', 'accdist', 'iii', 'nvi', 'pvi', 'pvt', 'wad', 'wvad'];
 const MATH = ['abs', 'max', 'min', 'pow', 'sqrt', 'exp', 'log', 'log10', 'floor', 'ceil', 'round', 'sign', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'avg', 'sum', 'random', 'round_to_mintick', 'todegrees', 'toradians'];
 const INPUT_TYPES: Record<string, string> = { integer: 'int', float: 'float', bool: 'bool', string: 'string', symbol: 'symbol', resolution: 'timeframe', session: 'session', source: 'source', color: 'color', time: 'time' };

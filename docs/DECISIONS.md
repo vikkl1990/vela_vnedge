@@ -4624,3 +4624,34 @@ strategies, so their shadow records would describe a different engine. Adoption,
 word, means: 0.12.0 with the `mincontract` fix; triangular-hull and two or three of the rewritten
 scanners checked against TradingView; the cells whose signals change sent back to the screen, as
 decision 134 does for strategy cells. The worktree stays in the session scratchpad until then.
+
+## 151. PineTS upgraded to 0.12.0; 41 changed scanners re-prove themselves on it (20 October 2026)
+
+**Why.** Decision 150's assessment; the operator: "upgrade".
+
+**Two fixes the upgrade needs.**
+- `int-window-length` (a compat rule): a `ta.*` window whose length is written as a division is wrapped
+  in `int()`. Pine v6 divides ints to a float; 0.12.0 returns na for a fractional window where 0.10.0
+  truncated, so Hull-type averages went silent: triangular-hull-moving-average-volatility, which
+  trades in the account, had 54 signals under 0.10.0 and none under 0.12.0, and 54 again with the
+  rule (89% of them on the same bars; the rest is 0.12.0's TradingView history inside functions).
+  14 library scripts carry the pattern.
+- `mincontract` 1 → 0.000001 in the provider: from 0.11 strategy orders are floored to it, so a
+  strategy sized under one BTC traded nothing; seven of the eight silent fleet strategies came back.
+
+**Parity of the final build** (0.12.0 with both fixes) against 0.10.0 on the 189 scanners in live,
+shadow and tracker stages, BTCUSD 15m and SOLUSD 1h: 148 keep at least 90% of their signals on the
+same bars on both markets; 41 do not (30 strategies, 11 indicators; listed in
+`ops/engine-0.12-changed-scanners.txt`); none fails. fast-v-slow-moving-averages-strategy produces no
+trade under 0.12.0 on either market and will fall out at the screen. The suite passes (345).
+
+**Re-proof.** `cli/rescreen.ts` (dry run unless `APPLY=1`), through the incubator's store, logged as
+`engine-upgrade` events: the changed scanners' shadow and proposed pairs keep trading with their
+evidence window restarted at the upgrade, so the gate and its deadline judge only trades on the new
+engine; their candidates' screens expire (kept for the record) so none is admitted on an old screen
+and the nightly screen re-screens them. Live, tracked and retired pairs are left: the one live pair
+(pulse-trend-radar on STRKUSD 15m) kept every signal on BTCUSD and 83% on SOLUSD.
+
+**Not done.** No scanner was compared with TradingView itself; the ones most worth a look on the
+operator's chart are volumetric-fair-value-gaps, ranked-order-block-zones-zeiierman and
+dynamic-trend-bands-anchored-vwap-signals, the three whose signals changed most.

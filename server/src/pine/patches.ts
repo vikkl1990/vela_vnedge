@@ -6,7 +6,7 @@
  * The same patched source is served to the dashboard so the Vela chart runs the exact
  * code the scanner executed.
  */
-import { dropQualifiers, fundamentalsToNa, joinContinuations, liftV4, renameReserved } from './compat.ts';
+import { dropQualifiers, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved } from './compat.ts';
 
 export interface PatchRule {
   id: string;
@@ -22,6 +22,7 @@ export const PATCH_RULES: PatchRule[] = [
   { id: 'line-continuation', description: "Pine's continuation lines (inside brackets, or a more-indented line starting with an operator) are joined onto their statement and comment-only lines are removed; PineTS's indentation lexer rejects the first and tokenises the second at a depth that can break the block around it.", apply: joinContinuations },
   { id: 'drop-qualifiers', description: '`for int i = …` loop types and `series` / `simple` / `const` declaration qualifiers are dropped; PineTS does not parse them and they carry no runtime meaning.', apply: dropQualifiers },
   { id: 'reserved-identifier', description: 'A script that uses `type` or `method` as a variable name has it renamed; PineTS lexes both as keywords.', apply: renameReserved },
+  { id: 'int-window-length', description: 'A ta.* window length written as a division is wrapped in int(); PineTS 0.12 returns na for a fractional window where TradingView and PineTS 0.10 truncate (decision 151).', apply: intWindowLengths },
   { id: 'fundamentals-na', description: 'request.financial / earnings / dividends / splits / footprint / economic return na on a crypto perpetual on TradingView too; lowered to na so the script runs.', apply: fundamentalsToNa },
   {
     id: 'label.all-size',

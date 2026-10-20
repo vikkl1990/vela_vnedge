@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dropQualifiers, fundamentalsToNa, joinContinuations, liftV4, renameReserved, replaceCall } from './compat.ts';
+import { dropQualifiers, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved, replaceCall } from './compat.ts';
 
 test('continuation lines inside brackets and leading-operator lines are joined; comments re-indented', () => {
   const src = [
@@ -67,4 +67,10 @@ test('v4 is lifted to v5 by the migration table', () => {
   assert.match(out, /^k = ta\.rsi\(src, 2\)$/m);
   assert.equal(liftV4('//@version=5\nm = sma(close, 3)'), '//@version=5\nm = sma(close, 3)');
   assert.match(liftV4("//@version=4\npos = input('Long', 'Position Type', options=['Long', 'Short'])\nn = input(3, 'N', options=[3, 5])\nk = input(close)\nc = input(#ff5d00, 'Color')\nb = input(true)\nf = input(1.5, minval=0)\nt = input(title='T', type=bool, defval=false)\nz = input(syminfo.tickerid)"), /^pos = input\.string\('Long', 'Position Type', options=\['Long', 'Short'\]\)\nn = input\.int\(3, 'N', options=\[3, 5\]\)\nk = input\.source\(close\)\nc = input\.color\(#ff5d00, 'Color'\)\nb = input\.bool\(true\)\nf = input\.float\(1\.5, minval=0\)\nt = input\.bool\(title='T', defval=false\)\nz = input\(syminfo\.tickerid\)$/m);
+});
+
+test('decision 151: a ta.* window length written as a division is truncated to an int', () => {
+  assert.equal(intWindowLengths('x = ta.wma(ta.wma(_src,_length / 3) * 3 - ta.wma(_src, _length / 2), _length)'), 'x = ta.wma(ta.wma(_src,int(_length / 3)) * 3 - ta.wma(_src, int(_length / 2)), _length)');
+  assert.equal(intWindowLengths('h = ta.highest(high, len/2)'), 'h = ta.highest(high, int(len/2))');
+  assert.equal(intWindowLengths('a = ta.sma(close, 20)\nb = ta.ema(close / 2, len)'), 'a = ta.sma(close, 20)\nb = ta.ema(close / 2, len)', 'whole lengths and divided sources are untouched');
 });
