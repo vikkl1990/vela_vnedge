@@ -4514,3 +4514,32 @@ keeps 94% of the ungated R on 29% fewer trades, with the best R per trade of the
 
 **Verdict.** The 0.25 floor (decision 70, set under the old 40% trail) now costs the fleet most of its
 edge. Proposed: `risk.regime.minEr` 0.25 → 0.1, for the account and the shadow book alike. Not applied.
+
+## 148. The first-move problem: four ways round it, all four lose; the pullback limit entry measured (20 October 2026)
+
+**Why.** Minute paths of 1,929 trades over 14 days (paper and shadow): on 15m a stop-out leaves ±0.25R
+in a median 6 minutes, 91% of them downward, and is stopped at 39 minutes; a winner leaves in 7, 64%
+upward, arms the trail at 22 (a quarter after 51, a tenth after 94). Trades still unarmed after 15 to
+120 minutes end as winners 50–57% of the time. No armed trade stopped out. The operator: "how to
+address this chicken and egg".
+
+**The untested quadrant, the pullback limit.** Enter only if the price first comes back k R against
+the signal within N bars, at that price; same exits. Estimated from the minute paths (closes; the
+recorded worst when the trade ended inside the window):
+
+| 15m | filled | stop-outs filled | winners missed | R |
+|---|---|---|---|---|
+| at the signal | 100% | 573 of 573 | 0 | +67.0 |
+| 0.1R, 1 bar | 72% | 496 | 354 of 966 | +2.4 |
+| 0.2R, 2 bars | 62% | 513 | 522 | −35.4 |
+| 0.3R, 4 bars | 57% | 539 | 627 | −23.6 |
+
+On 1h every limit is worse than the signal; on 4h the best (0.1R, 4 bars) is +58.6R against +60.6R.
+A resting order is filled by the trades going wrong and missed by the ones going right.
+
+**Verdict.** Enter later on confirmation (decisions 133, the `confirm1` variant), enter better on a
+pullback (this), leave earlier on the first adverse move (128), leave a trade that has not moved
+(141): all lose. The first move cannot be used at the level of one trade; the −1R is the price of the
+trades that go straight up. It is handled across trades: which cells trade (the incubator), how much
+each gets (decision 144's record), the script-stop filter (146), one position per market, and the
+timeframe mix (4h +0.23R a trade on 259 trades against 15m +0.04R on 1,597 in this sample).
