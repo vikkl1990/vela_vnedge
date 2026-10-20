@@ -4655,3 +4655,23 @@ and the nightly screen re-screens them. Live, tracked and retired pairs are left
 **Not done.** No scanner was compared with TradingView itself; the ones most worth a look on the
 operator's chart are volumetric-fair-value-gaps, ranked-order-block-zones-zeiierman and
 dynamic-trend-bands-anchored-vwap-signals, the three whose signals changed most.
+
+## 152. The LuxAlgo MCP read: the library is already synced, nothing to import; Edge Stats agrees with our timing findings (20 October 2026)
+
+**Why.** The operator asked what the LuxAlgo MCP (`mcp.luxalgo.com/mcp`, added to Claude Code for this
+project) and LuxAlgo's other updates mean here. Read over its HTTP endpoint (no key; the client is
+`_research/journal-20261018/luxalgo-mcp.py`; the catalogue pages from 0).
+
+**Library.** 853 indicators in the catalogue; 800 are in the repo's manifest. Of the other 53, 47
+(January to October 2026, Valid BOS Pullback and Displacement Sweep Reversal among them) are already
+on the VM: the weekly `vnedge-library-sync` timer (Sundays 03:30 UTC, decision 65) imported them into
+`data/library`, all runnable, and the screen walks them with the rest. The remaining six are LuxAlgo's
+own screeners and backtesters, whose source is not published ("runs-in-quant"). Nothing to import; the
+sync keeps running. `library_get_source_code` is a cleaner source than the page scrape if the site
+changes.
+
+**Edge Stats** (BTCUSDT, UTC sessions since 2020, 2,484 days): the day closes green 50.9% of the time,
+both halves agreeing; CPI days 54% (81) and FOMC days 58% (53), intervals spanning 50%; the daily high
+falls in the first UTC hour on 14.8% of days, drifting from 17% to 12%; after a narrow-range (NR4) day
+the next reaches a full ATR 3.2% of the time. The same story as decision 123 and the regime study: no
+direction by day or event, and volatility that persists. No rule follows from it.
