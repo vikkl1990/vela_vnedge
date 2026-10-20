@@ -4734,3 +4734,57 @@ chart; no chart error in the console. The dashboard builds; the server suite pas
 **Also read from the blog**, for later: a random-entry benchmark with matched trade count, holding time and side mix;
 directional dependence tested on detrended prices and against the market's own drift; edge decay judged on rolling
 expectancy; Monte Carlo of trade order for drawdown percentiles. None is built here.
+
+## 155. Four checks from LuxAlgo's research posts, run: the signals beat random entries; the rest adds no rule (20 October 2026)
+
+**Why.** Decision 154 listed four tests from LuxAlgo's blog that had never been run here. The operator: "run and check".
+
+**1. The fair benchmark.** `diagnose` variants (decision 155):
+- `sig-atr`: the scanner's own entries with the bot's exits and the ATR stop. The script's stops, targets and exit
+  events are dropped, as the account trades since decision 146.
+- `rand-1..20`: the same number of entries with the same sides on seeded random bars, same exits and costs.
+- `sig-long`, `sig-short` and `drift` (the market's own move over the bars).
+
+Run on the 72 exit-study cells; 35 have ten or more trades.
+
+| | cells | scanner entries | random median | above 90% of random | above the median |
+|---|---|---|---|---|---|
+| all | 35 | +221.5R | −119.7R | 19 | 33 |
+| 15m | 18 | +72.9R | −13.4R | 7 | 16 |
+| 1h | 2 | +26.4R | −7.2R | 2 | 2 |
+| 4h | 15 | +122.2R | −99.0R | 10 | 15 |
+
+Both halves: scanner +88.0 / +133.4R, random median −57.1 / −47.0R. One cell sits at the bottom of its random runs
+(trend-impulse-channels on 1000PEPE, ten trades).
+
+**Reading.** The exits and the trail do not make money by themselves: on random entries they lose about −0.03R a trade
+after costs. The edge is in the entries' timing. Caveat: these cells were picked because they traded in the books, which
+the screen and the gate fed on overlapping history, so the size of the margin is flattering; its sign, in every
+timeframe and in both halves, is not.
+
+**2. Directional dependence.** Across cells, the gap between long and short R a trade does not follow the market's drift
+(correlation −0.01). In totals, longs earned more where the market rose (+104.5R against shorts' +11.4R) and shorts
+where it fell (+57.2R against longs' +21.7R), but both sides were positive in both. The random runs carry the same side
+mix and still lost, so drift alone did not pay. Our "October" pattern of shorts winning is the month's tilt, not the
+edge.
+
+**3. Edge decay.** A warning when a pair's last trades turn negative after a positive record, or its win rate falls ten
+points or more, was tested at every checkpoint in the shadow history:
+
+| window | checkpoints warned | next trades, warned | next trades, not warned |
+|---|---|---|---|
+| per pair, last 15, next 10 | 14 | +0.136R | +0.119R |
+| per scanner and timeframe, last 30, next 20 | 26 | +0.097R | +0.198R |
+| per scanner and timeframe, last 50, next 30 | 3 | +0.464R | +0.311R |
+
+It does not separate consistently, and only three pairs in use have the 60 trades the posts' windows need. No rule; the
+shadow book is too young for this test.
+
+**4. Monte Carlo of trade order** (decision 146's corrected ledgers, current sizing, 10,000 reshuffles):
+
+| book | trades | actual worst drop | median | 95th percentile | 99th | wiped out |
+|---|---|---|---|---|---|---|
+| paper | 154 | 10% | 11% | 18% | 22% | 0% |
+| shadow as one $1,000 account | 1,502 | 33% | 20% | 42% | 57% | 0.01% |
+
+Paper's sizing leaves a fifth of the account as a plausible worst drop and no ruin. Nothing changes.

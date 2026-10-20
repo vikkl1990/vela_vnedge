@@ -254,6 +254,38 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (want('spread+ratio6')) variants['spread+ratio6'] = stat(run({ spreadPct, costRatio: 6 }), b, tfMs);
   if (want('spread+ratio10')) variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
   if (want('spread+er0.25')) variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
+  // decision 155: the fair benchmark (LuxAlgo's "random-entry baseline"). The scanner's own entries with the bot's exits
+  // and the ATR stop (the script's stops, targets and exit events dropped, as the account trades since decision 146),
+  // against the same number of entries with the same sides on random bars, 20 seeded draws, same exits and costs.
+  if (want('sig-atr') || want('rand')) {
+    const own = events.filter(e => e.kind === 'entry' && e.side).map(e => ({ ...e, sl: undefined, tp: [] as number[] }));
+    if (want('sig-atr')) {
+      variants['sig-atr'] = stat(run({ spreadPct, events: own }), b, tfMs);
+      variants['sig-long'] = stat(run({ spreadPct, events: own.filter(e => e.side === 'long') }), b, tfMs);
+      variants['sig-short'] = stat(run({ spreadPct, events: own.filter(e => e.side === 'short') }), b, tfMs);
+      // the market's own move over the same bars, as percent, in the trades column's place (0 trades marks it)
+      variants['drift'] = { ...stat([], b, tfMs), sumR: (b[b.length - 1].close / b[0].close - 1) * 100, avgR: 0 } as Stat;
+    }
+    if (want('rand') && own.length) {
+      let h = 2166136261; for (const ch of `${id}|${sym}|${tf}`) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+      const lo = Math.min(60, Math.floor(b.length / 10)), hi = b.length - 2;
+      for (let k = 1; k <= 20; k++) {
+        let x = (h ^ (k * 0x9e3779b9)) >>> 0;
+        const rnd = () => { x = (x + 0x6d2b79f5) >>> 0; let t = x; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+        const used = new Set<number>(); const sides = own.map(e => e.side!);
+        for (let i = sides.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [sides[i], sides[j]] = [sides[j], sides[i]]; }
+        const evs: ScanEvent[] = [];
+        for (const side of sides) {
+          let i = lo + Math.floor(rnd() * Math.max(1, hi - lo)); let guard = 0;
+          while (used.has(i) && guard++ < 50) i = lo + Math.floor(rnd() * Math.max(1, hi - lo));
+          used.add(i);
+          evs.push({ ...own[0], side, barTime: b[i].time, barIndex: i, price: undefined, sl: undefined, tp: [], score: undefined, label: 'random', message: 'random entry' });
+        }
+        evs.sort((p, q) => p.barTime - q.barTime);
+        variants[`rand-${k}`] = stat(run({ spreadPct, events: evs }), b, tfMs);
+      }
+    }
+  }
   // decision 147: the live whipsaw floor against looser ones, under the current exits and costs
   for (const m of [0.1, 0.15, 0.2]) if (want(`spread+er${m}`)) variants[`spread+er${m}`] = stat(run({ spreadPct, chopGate: { minEr: m } }), b, tfMs);
   if (want('spread+er+ratio10')) variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
