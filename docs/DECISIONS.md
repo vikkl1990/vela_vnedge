@@ -4983,3 +4983,24 @@ adds their conditions. On BTC 1h and SOL 15m it changes nothing for 7, adds a fe
 entries of Money Flow Divergence Zones (15 → 179 on BTC 1h), Nadaraya-Watson Liquidity Sweeps (77 → 157), Candlestick
 Reversal and Trend Signals (87 → 154), Fisher Williams %R Divergence, Reverse RSI and Trend Targets. Their shadow records
 were earned on the shapes alone, so the fix is not applied until the operator chooses how those records are treated.
+
+## 164. Named-argument condition titles are read; every scanner with a record keeps the reading it was judged on (20 October 2026)
+
+Decision 163 found that PineTS returns `alertcondition(c, title = …, message = …)` as one object in `title`, so such a
+condition carried no direction and was dropped. The operator chose the fix that changes no current scanner ("deploy but
+don't break anything", then "fix").
+
+**What changed.**
+- The worker unpacks the title and message, so a condition written with named arguments reads like a positional one.
+- `scripts/condition-titles-legacy.json` lists the 243 scanners with a record on 20 October: every scanner with a
+  candidate, shadow, proposed, live or tracked pair on the VM, or enabled in the account. The pool sets
+  `legacyConditionTitles` on every job for one of them, live or research, and the worker then keeps the old reading
+  exactly. A scanner whose conditions were never affected reads the same either way, so listing all of them costs
+  nothing and guarantees none moves.
+- Every other script reads its conditions from now on, which is how the nightly screen will judge it.
+
+**Verified.** The 25 active scanners whose conditions use named arguments (decision 163) were run under the old and the
+new code on BTCUSD 1h and SOLUSD 15m: all 50 extractions are identical, entry for entry and exit for exit. Volume Filtered
+Candlestick Patterns, which has no record, goes from 0 entries to 31 and 54.
+
+**To let a listed scanner read its conditions,** remove its id and re-screen it, as a new record.

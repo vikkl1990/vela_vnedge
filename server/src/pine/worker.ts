@@ -22,6 +22,11 @@ export interface WorkerJob {
   tailBars: number | 'all';
   /** Number of plot points to return for charting overlays. */
   plotTail: number;
+  /**
+   * Decision 164: keep the pre-fix reading of `alertcondition(c, title = …, message = …)` (the title left as PineTS's object,
+   * so the condition carries no direction). Set by the pool for scanners whose record was earned that way.
+   */
+  legacyConditionTitles?: boolean;
   /** Per-script `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
   inputs?: Record<string, number | string | boolean>;
   /** IANA timezone for the script's sessions (default Etc/UTC). */
@@ -95,7 +100,12 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
     const alerts: WorkerAlert[] = [];
     for (const a of ctx.alerts ?? []) {
       if (a.bar_index < fromIdx) continue;
-      alerts.push({ barIndex: a.bar_index, time: a.time ?? timeAt(a.bar_index), type: a.type, title: a.title, message: String(a.message ?? '') });
+      // PineTS hands `alertcondition(c, title = …, message = …)` back as one object in `title` with an empty message;
+      // unpacked here (decision 164), except for a scanner whose record was earned on the old, unreadable title
+      const named = !job.legacyConditionTitles && a.title && typeof a.title === 'object' ? a.title as { title?: unknown; message?: unknown } : null;
+      const title = named ? (named.title != null ? String(named.title) : undefined) : a.title;
+      const message = String((named && !a.message ? named.message : a.message) ?? '');
+      alerts.push({ barIndex: a.bar_index, time: a.time ?? timeAt(a.bar_index), type: a.type, title, message });
     }
     // strategy() scripts trade through strategy.entry / strategy.exit, not alerts. The runtime keeps
     // their ledger; each fill becomes a machine-readable message at the bar it FILLED on (by default
