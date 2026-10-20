@@ -18,6 +18,7 @@ const BACKTEST_SAFE: RegExp[] = [
   /^\/api\/validation\/run$/,
   /^\/api\/validation\/history\/fetch$/,
   /^\/api\/dev\/script-list$/,
+  /^\/api\/library\/favorites$/,   // decision 153: a favorite is the viewer's own bookmark, not a trade
 ];
 
 /** What a request needs. `null` means the route is public. */

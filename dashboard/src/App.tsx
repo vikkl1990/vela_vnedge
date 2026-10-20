@@ -10,6 +10,7 @@ import { ChartPage } from './pages/ChartPage'
 import { Analytics } from './pages/Analytics'
 import { Daily } from './pages/Daily'
 import { Trackers } from './pages/Trackers'
+import { Library } from './pages/Library'
 import { Learn } from './pages/Learn'
 import { Logs } from './pages/Logs'
 import { Overview } from './pages/Overview'
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="analytics" element={<Analytics />} />
           <Route path="daily" element={<Daily />} />
           <Route path="trackers" element={<Trackers />} />
+          <Route path="library" element={<Library />} />
           <Route path="incubator" element={<Incubator />} />
           <Route path="decisions" element={<Decisions />} />
           <Route path="gates" element={<Gates />} />

@@ -26,7 +26,10 @@ import type {
   Ticker,
   Trade,
   TradeQuery, MlSnapshot,
-  MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView } from './types'
+  MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
+  LibraryDetail,
+  LibraryList,
+} from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -146,6 +149,10 @@ export const api = {
   profileScanner: (id: string, body: { market?: string; tfs?: string[] } = {}) => post<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`, body),
   scannerProfile: (id: string) => get<{ rows: ProfileRow[] }>(`/scanners/${encodeURIComponent(id)}/profile`),
   scannerSource: (id: string) => get<ScannerSource>(`/scanners/${encodeURIComponent(id)}/source`),
+  // decision 153: the Library
+  library: () => get<LibraryList>('/library'),
+  libraryDetail: (id: string) => get<LibraryDetail>(`/library/${encodeURIComponent(id)}`),
+  libraryFavorite: (b: { id: string; on: boolean }) => post<{ favorites: string[] }>('/library/favorites', b),
   scannerOverlay: (id: string, symbol: string, tf: string) =>
     get<ScannerOverlay>(`/scanners/${encodeURIComponent(id)}/overlay${qs({ symbol, tf })}`),
 

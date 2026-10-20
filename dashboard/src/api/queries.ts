@@ -10,6 +10,8 @@ export const qk = {
   markets: ['markets'] as const,
   scanners: ['scanners'] as const,
   scannerIndex: ['scanners', 'index'] as const,
+  library: ['library'] as const,
+  libraryDetail: (id: string) => ['library', id] as const,
   scannerSource: (id: string) => ['scanners', 'source', id] as const,
   scannerOverlay: (id: string, symbol: string, tf: string) => ['scanners', 'overlay', id, symbol, tf] as const,
   signals: (q: SignalQuery = {}) => ['signals', q] as const,
@@ -77,6 +79,24 @@ export const useScanners = (opts?: Opts<Awaited<ReturnType<typeof api.scanners>>
  */
 export const useScannerIndex = (opts?: Opts<Awaited<ReturnType<typeof api.scannerIndex>>>) =>
   useQuery({ queryKey: qk.scannerIndex, queryFn: api.scannerIndex, staleTime: LIVE_STALE, retry: 1, ...opts })
+// decision 153: the Library list (cached a minute on the server), one script's detail, and the user's favorites
+export const useLibrary = () => useQuery({ queryKey: qk.library, queryFn: api.library, staleTime: 60_000, retry: 1 })
+export const useLibraryDetail = (id: string | null) =>
+  useQuery({ queryKey: qk.libraryDetail(id ?? ''), queryFn: () => api.libraryDetail(id!), enabled: Boolean(id), staleTime: 60_000, retry: 1 })
+export function useLibraryFavorite() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.libraryFavorite,
+    onMutate: async ({ id, on }) => {
+      await qc.cancelQueries({ queryKey: qk.library })
+      const prev = qc.getQueryData<Awaited<ReturnType<typeof api.library>>>(qk.library)
+      if (prev) qc.setQueryData(qk.library, { ...prev, favorites: on ? [...new Set([...prev.favorites, id])] : prev.favorites.filter((f) => f !== id) })
+      return { prev }
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(qk.library, ctx.prev) },
+    onSuccess: (res) => { const prev = qc.getQueryData<Awaited<ReturnType<typeof api.library>>>(qk.library); if (prev) qc.setQueryData(qk.library, { ...prev, favorites: res.favorites }) },
+  })
+}
 export const useScannerSource = (id: string | undefined) =>
   useQuery({
     queryKey: qk.scannerSource(id ?? ''),

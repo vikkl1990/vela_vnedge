@@ -1,5 +1,6 @@
 import { useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { qk, useConfig, useMarkets, usePositionPath, usePositions, useScannerIndex, useSignals } from '../api/queries'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
@@ -40,6 +41,15 @@ export function ChartPage() {
     try { const f = JSON.parse(localStorage.getItem(LS_KEY) ?? '{}').frames; return Array.isArray(f) && f.length ? f : FRAME_PRESET } catch { return FRAME_PRESET }
   })
   const [selected, setSelected] = useState<string[]>([])
+  // decision 153: the Library's "Add to chart" hands scripts over as ?add=<id>[,<id>], any runnable script, enabled or not
+  const [params, setParams] = useSearchParams()
+  const addedIds = useMemo(() => (params.get('add') ?? '').split(',').map((x) => x.trim()).filter(Boolean), [params])
+  const removeAdded = (id: string) => {
+    const left = addedIds.filter((x) => x !== id)
+    const p = new URLSearchParams(params)
+    if (left.length) p.set('add', left.join(',')); else p.delete('add')
+    setParams(p, { replace: true })
+  }
   const [showPosition, setShowPosition] = useState(true)
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
 
@@ -69,7 +79,12 @@ export function ChartPage() {
   const autoScannerId = position?.scannerId ?? null
   const autoName = useMemo(() => (autoScannerId ? enabledScanners.find((s) => s.id === autoScannerId)?.name ?? null : null), [autoScannerId, enabledScanners])
   const shownSelection = useMemo(() => (autoName && !selected.includes(autoName) ? [...selected, autoName] : selected), [selected, autoName])
-  const selectedIds = useMemo(() => enabledScanners.filter((s) => shownSelection.includes(s.name)).map((s) => s.id), [enabledScanners, shownSelection])
+  const addedScanners = useMemo(() => addedIds.map((id) => (scanners.data ?? []).find((s) => s.id === id)).filter((s): s is NonNullable<typeof s> => Boolean(s && s.status === 'ok')), [addedIds, scanners.data])
+  const selectedIds = useMemo(() => {
+    const ids = enabledScanners.filter((s) => shownSelection.includes(s.name)).map((s) => s.id)
+    for (const s of addedScanners) if (!ids.includes(s.id)) ids.push(s.id)
+    return ids
+  }, [enabledScanners, shownSelection, addedScanners])
 
   const sources = useQueries({
     queries: selectedIds.map((id) => ({
@@ -84,11 +99,11 @@ export function ChartPage() {
     const out: ChartScript[] = []
     selectedIds.forEach((id, i) => {
       const src = sources[i]?.data
-      const sc = enabledScanners.find((s) => s.id === id)
+      const sc = enabledScanners.find((s) => s.id === id) ?? addedScanners.find((s) => s.id === id)
       if (src?.patched && sc) out.push({ id, title: sc.name, source: src.patched, overlay: sc.overlay })
     })
     return out
-  }, [selectedIds, sources, enabledScanners])
+  }, [selectedIds, sources, enabledScanners, addedScanners])
 
 
   const path = usePositionPath(showPosition && position ? position.id : null)
@@ -173,10 +188,16 @@ export function ChartPage() {
 
       <div className="chips-row">
         <ChipSelect label="Overlay scripts" options={scannerNames} value={shownSelection} onChange={setSelected} emptyLabel={enabledScanners.length ? 'none selected' : 'no enabled scanners'} />
+        {addedScanners.map((s) => (
+          <span key={s.id} className="chip chip-on" title="Added from the Library">
+            {s.name}
+            <button className="chip-x" onClick={() => removeAdded(s.id)} aria-label={`Remove ${s.name} from the chart`}>×</button>
+          </span>
+        ))}
         {sources.some((s) => s.isLoading) && <span className="muted small">loading sources…</span>}
         {Object.entries(scriptErrors).map(([id, msg]) => (
           <Pill key={id} tone="danger" title={msg}>
-            {enabledScanners.find((s) => s.id === id)?.name ?? id}: error
+            {enabledScanners.find((s) => s.id === id)?.name ?? addedScanners.find((s) => s.id === id)?.name ?? id}: error
           </Pill>
         ))}
       </div>

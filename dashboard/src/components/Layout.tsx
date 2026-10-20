@@ -16,6 +16,7 @@ import {
   IconActivity,
   IconBell,
   IconChart,
+  IconGrid,
   IconList,
   IconLogo,
   IconLogs,
@@ -31,6 +32,7 @@ import { BookBadge, ConfirmDialog, StatusDot } from './ui'
 const NAV = [
   { to: '/', label: 'Overview', icon: IconActivity, end: true, key: 'o' },
   { to: '/scanners', label: 'Scanners', icon: IconScan, key: 's' },
+  { to: '/library', label: 'Library', icon: IconGrid, key: 'b' },
   { to: '/signals', label: 'Signals', icon: IconBell, key: 'i' },
   { to: '/trades', label: 'Trades', icon: IconTrades, key: 't' },
   { to: '/chart', label: 'Chart', icon: IconChart, key: 'c' },

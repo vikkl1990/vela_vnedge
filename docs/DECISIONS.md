@@ -4675,3 +4675,40 @@ both halves agreeing; CPI days 54% (81) and FOMC days 58% (53), intervals spanni
 falls in the first UTC hour on 14.8% of days, drifting from 17% to 12%; after a narrow-range (NR4) day
 the next reaches a full ATR 3.2% of the time. The same story as decision 123 and the regime study: no
 direction by day or event, and volatility that persists. No rule follows from it.
+
+## 153. The Library page: every script, browsed like a chart platform's indicator library, with the bot's measured record (20 October 2026)
+
+**Why.** The operator showed LuxAlgo Vela's indicator browser (families with counts, new releases, a card grid, a
+detail panel with Add to chart and Favorite) and asked for "something like this".
+
+**What it is.** `/library` (nav "Library", hotkey `g b`):
+- **Sidebar.** Yours (Favorites, In use), Library (Discover, All scripts, Strategies, Doesn't run), and the families
+  with counts. On a phone it becomes a strip of chips.
+- **Discover.** New releases (the manifest's `updated`), Earning in the shadow book (30 days, ten trades or more),
+  Trading in paper (a live pair), and More to explore (runnable, no pair in use, shuffled).
+- **Other views.** A sorted grid: relevant, newest, shadow R or name, sixty at a time.
+- **Cards.** Where Vela shows a picture, a card draws the script's cumulative R over its last 30 shadow days. Its
+  chips give where its pairs sit (live, shadow, proposed, tracked) and whether it runs.
+- **Detail panel.** The 30-day shadow result, the paper record in dollars, every pair with its stage, screen result
+  and 30-day shadow line, the last twelve trades, and Add to chart, Favorite, Scanner page, and a link to the source.
+  On a phone it opens as a full-screen sheet.
+- **Layout and keys.** On a wide screen the three columns scroll on their own. `/` searches, Escape closes. The view
+  and the selected script live in the address.
+
+**Families.** LuxAlgo's 17 families (the taxonomy of its Library). They are assigned from the manifest row, then from
+LuxAlgo's catalogue (`scripts/luxalgo-families.json`, names and family keys only, read from the LuxAlgo MCP), then
+from the script's name; 506 of 2,667 stay "Other". The registry now carries `family`, `origin` and `license`.
+
+**Server.**
+- `GET /api/library` returns the list, cached a minute, plus the caller's favorites.
+- `GET /api/library/:id` returns one script's detail.
+- `POST /api/library/favorites` saves a favorite. It is allowed to viewers, like a backtest. Favorites are kept per
+  user in `kv`.
+
+**Add to chart.** The Chart page takes `?add=<id>[,<id>]` and runs any runnable script on the chart, enabled or not,
+with a chip to remove it.
+
+**Checked.** In the browser on a local server over a snapshot of the VM's database: the shelves, a family view, search,
+the detail panel, Add to chart for an enabled script (SuperTrend Cluster) and for one that is not (Retest & Break
+Setup), a favorite saved and listed, the phone layout with the sheet, and the light theme. 347 server tests pass,
+including the classifier and the service; the dashboard builds and the changed files lint clean.

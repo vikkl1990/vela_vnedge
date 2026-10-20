@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, PINE_DIR, SCRIPTS_DIR } from '../config.ts';
 import { applyPatches } from '../pine/patches.ts';
+import { familyFor, originOf } from '../library/families.ts';
 
 /** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
@@ -23,6 +24,10 @@ export interface ScannerMeta {
   category: string;
   /** `indicator` or `strategy` as the manifest tags the script (decision 114 consults it). */
   scriptType: 'indicator' | 'strategy' | null;
+  /** Decision 153: the Library family (LuxAlgo's taxonomy), where the script came from, and its licence when the manifest records one. */
+  family: string;
+  origin: 'luxalgo' | 'tradingview' | 'other';
+  license: string | null;
 }
 
 export interface LoadedScanner extends ScannerMeta {
@@ -103,6 +108,7 @@ export class ScannerRegistry {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
         pineVersion: m.pineVersion ?? null, lines: m.lines ?? null, updated: m.updated ?? null,
         status, reason, overlay: declaredOverlay(source) ?? m.overlay ?? true, category: categorize(m.name), scriptType: m.scriptType === 'strategy' ? 'strategy' : m.scriptType === 'indicator' ? 'indicator' : null,
+        family: familyFor(m), origin: originOf(m.url), license: m.license ?? null,
         source, patched, patches: applied,
       });
     }

@@ -9,6 +9,7 @@ import { logger } from '../log.ts';
 import { AuthStore, can, type User } from '../auth/store.ts';
 import { authRoutes, cookieHeader, createAuth, isSecureRequest, parseCookies, permissionFor, SESSION_COOKIE } from '../auth/routes.ts';
 import { positionView } from '../paper/engine.ts';
+import { LibraryService } from '../library/library.ts';
 import { EXTENSIONS } from './extensions.ts';
 import { aggregateMonthly } from '../pine/provider.ts';
 
@@ -288,6 +289,15 @@ export class ApiServer {
     // what the script produces in our runtime, on one market across timeframes (decision 48)
     this.add('POST', '/api/scanners/:id/profile', async (_r, _s, p, _u, body) => ({ rows: await a.profileScanner(p.id, { market: body?.market ? String(body.market) : undefined, tfs: Array.isArray(body?.tfs) ? body.tfs.map(String) : undefined }) }));
     this.add('GET', '/api/scanners/:id/profile', (_r, _s, p) => ({ rows: a.profiles.forScanner(p.id) }));
+    // decision 153: the Library page — every script with its measured record, one script's detail, and each user's favorites
+    const library = new LibraryService(a);
+    this.add('GET', '/api/library', (req) => { const u = this.userFor(req); return { ...library.list(), favorites: u ? library.favorites(u.id) : [] }; });
+    this.add('GET', '/api/library/:id', (_r, _s, p) => { const d = library.detail(p.id); if (!d) throw new HttpError(404, 'unknown script'); return d; });
+    this.add('POST', '/api/library/favorites', (req, _s, _p, _u, body) => {
+      const u = this.userFor(req); if (!u) throw new HttpError(401, 'sign in to keep favorites');
+      if (!body || typeof body.id !== 'string') throw new HttpError(400, 'id required');
+      try { return { favorites: library.setFavorite(u.id, body.id, body.on !== false) }; } catch (e: any) { throw new HttpError(404, String(e?.message ?? e)); }
+    });
     this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches }; });
     this.add('GET', '/api/scanners/:id/overlay', (_r, _s, p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.scanners.symbolsFor(p.id)[0];

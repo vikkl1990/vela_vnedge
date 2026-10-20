@@ -747,3 +747,27 @@ export interface TrackerView {
   cells: TrackerCell[]
   totals: { cells: number; trading: number; trades: number; sumR: number; avgR: number; winRate: number; open: number }
 }
+
+// ---- decision 153: the Library ----
+export interface LibraryFamily { key: string; label: string; count: number }
+export type LibraryStage = 'live' | 'shadow' | 'proposed' | 'tracked' | 'candidate' | 'retired' | 'demote_proposed'
+export interface LibraryEntry {
+  id: string; name: string; author: string; family: string; origin: 'luxalgo' | 'tradingview' | 'other'
+  status: 'runs' | 'fails' | 'quarantined'; error: string | null; scriptType: 'indicator' | 'strategy' | null
+  overlay: boolean; updated: string | null; url: string; enabled: boolean
+  stages: Partial<Record<LibraryStage, number>>
+  shadow: { n: number; r: number; win: number; spark: number[] } | null
+  paper: { n: number; net: number; r: number } | null
+}
+export interface LibraryList { at: number; families: LibraryFamily[]; scripts: LibraryEntry[]; favorites: string[] }
+export interface LibraryPair {
+  symbol: string; tf: string; stage: LibraryStage; since: number
+  screen: { pass: boolean; trades: number | null; avgR: number | null; profitFactor: number | null; at: number | null; expired: boolean } | null
+  shadow30: { n: number; r: number } | null
+}
+export interface LibraryTrade { book: 'paper' | 'shadow'; symbol: string; tf: string; side: string; entryAt: number; exitAt: number; exitReason: string; r: number; net: number | null }
+export interface LibraryDetail extends LibraryEntry {
+  license: string | null; pineVersion: string | null; lines: number | null; patches: string[]; reason: string | null
+  health: { fails: number; lastError: string | null; quarantined: boolean; reason: string | null } | null
+  pairs: LibraryPair[]; recent: LibraryTrade[]
+}
