@@ -4543,3 +4543,36 @@ pullback (this), leave earlier on the first adverse move (128), leave a trade th
 trades that go straight up. It is handled across trades: which cells trade (the incubator), how much
 each gets (decision 144's record), the script-stop filter (146), one position per market, and the
 timeframe mix (4h +0.23R a trade on 259 trades against 15m +0.04R on 1,597 in this sample).
+
+## 149. The timeframe mix measured: more weight on 4h loses out of sample; the current mix stays (20 October 2026)
+
+**Why.** Decision 148 named the timeframe mix as the one lever not yet pulled (4h +0.23R a trade
+against 15m +0.04R over 14 days). The operator: measure, do not apply; apply only if it improves the
+result out of sample. Per-cell `diagnose` cannot measure it, since a cell's R does not depend on its
+size; the mix shows only when trades compete for one account's money and slots. So: an account replay
+under the live rules (decisions 144 and 146: $150, 5× or 20× by record, stop guard, ATR stops only,
+eight open), size factors per timeframe and caps on the slots 15m may hold, on the shadow book's
+2,731 trades over 35 days as one $1,000 account and on paper's 188 (paper has never taken a 4h trade).
+Each variant judged in both halves; the variant with the best first half is the out-of-sample pick.
+
+| shadow, $1,000 account | net | Δ | drop | Δ 1st half | Δ 2nd half | Δ size-weighted R, 2nd |
+|---|---|---|---|---|---|---|
+| as live | +$6,623 | | 33% | | | |
+| 4h ×1.5, 15m ×0.67 | +$5,417 | −$1,206 | 49% | −$448 | −$758 | −12.2 |
+| 4h ×2, 15m ×0.5 | +$5,018 | −$1,605 | 54% | −$603 | −$1,002 | −7.5 |
+| 4h ×1.5 alone | +$6,853 | +$231 | 48% | −$187 | +$418 | +3.3 |
+| 15m ×0.67 alone | +$4,877 | −$1,745 | 33% | −$266 | −$1,479 | −21.6 |
+| 15m in at most 6 of 8 slots | +$6,706 | +$83 | 33% | $0 | +$83 | −1.6 |
+| 15m in at most 4 of 8 slots | +$6,026 | −$596 | 31% | +$36 | −$632 | −14.5 |
+
+Out-of-sample picks: shadow, "15m in at most 4 slots" (first half +$36) → second half −$632; paper,
+"4h ×1.5, 1h ×1.25, 15m ×0.75" (first half +$22) → second half −$218. Every factor that moves size
+from 15m to 4h loses on paper (−$187 to −$303).
+
+**Reading.** In dollars under margin sizing the 15m cells are the book: +$5,272 of the shadow's
++$6,623, at much the same dollars a trade as 4h ($4.6 against $5.0), because they turn the slots over
+many times. Decision 148's R-per-trade ranking, over 14 days, does not survive the 35-day account
+replay. The one variant ahead overall (4h ×1.5 alone) lost its first half and lifts the drop from 33%
+to 48%.
+
+**Verdict.** Nothing passes out of sample. The current mix stays.
