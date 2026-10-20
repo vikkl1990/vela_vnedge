@@ -8,8 +8,11 @@ const log = logger.scoped('candles');
 
 export interface Bar { time: number; open: number; high: number; low: number; close: number; volume: number }
 
-/** How long after a period ends its bar is announced closed when no later trade has announced it. */
-const CLOSE_GRACE_MS = 2500;
+/**
+ * How long after a period ends its bar is announced closed when no later trade has announced it. Decision 166: 1.5 s,
+ * checked every 250 ms (was 2.5 s checked every second, which announced a 15m close a median 3.3 s late).
+ */
+const CLOSE_GRACE_MS = 1500;
 
 interface Series {
   symbol: string;
@@ -297,7 +300,7 @@ export class CandleStore extends EventEmitter {
   startMaintenance(opts: { intervalMs?: number; driftWarnMs?: number } = {}) {
     this.stopMaintenance();
     if (opts.driftWarnMs) this.driftWarnMs = opts.driftWarnMs;
-    this.closeTicker = setInterval(() => this.announceDueCloses(), 1000);
+    this.closeTicker = setInterval(() => this.announceDueCloses(), 250);
     this.closeTicker.unref();
     let ticks = 0;
     this.maintenance = setInterval(() => {
