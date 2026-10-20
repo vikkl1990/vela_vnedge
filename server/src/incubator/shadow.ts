@@ -139,7 +139,7 @@ export class ShadowRunner {
     if (!due.length) return;
     // measured from when the bar actually closed, not from now: tracking a new market announces its
     // newest closed bar mid-cycle, and a scan of a bar that old could never be traded
-    const barAt = closedAt;
+    const barAt = closedAt, seenAt = Date.now();
     // decision 165: a pair the account may copy is scanned at once, in the pool's `mirror` tier (after the account's own
     // scans, before background work); the 20 s wait and the background queue had put the account's mirrored entries a
     // median 54 s after the bar's close
@@ -151,7 +151,7 @@ export class ShadowRunner {
     const launch = (rows: PairRow[], live: boolean) => {
       if (!rows.length) return;
       if (!live && this.deps.pool.stats.queued > MAX_QUEUE) { this.stats.skipped += rows.length; log.warn(`shadow: worker queue ${this.deps.pool.stats.queued} deep, skipping ${rows.length} runs on ${symbol}`); return; }
-      for (const r of rows) this.run(r, barAt, live).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
+      for (const r of rows) this.run(r, barAt, live, seenAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
     };
     launch(urgent, true);
     if (later.length) setTimeout(() => launch(later, false), DELAY_MS).unref();
@@ -169,23 +169,23 @@ export class ShadowRunner {
 
   /**
    * Decision 166: how a bar close's wave of mirror-tier scans spent its time, so latency is measured, not guessed. Per
-   * wave (timeframe and bar): from the close to each run's dispatch (prep), in the pool before and around the script
+   * wave (timeframe and bar): from the close to its announcement (seen), from there to each run's dispatch (prep), in the pool before and around the script
    * (queue), the script itself (exec), and the close to the last result. Logged once the wave is quiet for 5 s.
    */
-  private waves = new Map<string, { tf: string; barAt: number; prep: number[]; queue: number[]; exec: number[]; last: number; timer?: ReturnType<typeof setTimeout> }>();
-  readonly lastWaves: Array<{ tf: string; barAt: number; runs: number; doneSec: number; prepP50: number; queueP50: number; queueP90: number; execP50: number; execP90: number }> = [];
-  private noteWave(tf: string, barAt: number, tPool: number, tDone: number, execMs: number) {
+  private waves = new Map<string, { tf: string; barAt: number; seen: number[]; prep: number[]; queue: number[]; exec: number[]; last: number; timer?: ReturnType<typeof setTimeout> }>();
+  readonly lastWaves: Array<{ tf: string; barAt: number; runs: number; doneSec: number; seenP50: number; seenP90: number; prepP50: number; queueP50: number; queueP90: number; execP50: number; execP90: number }> = [];
+  private noteWave(tf: string, barAt: number, seenAt: number, tPool: number, tDone: number, execMs: number) {
     const key = `${tf}:${barAt}`;
-    const w = this.waves.get(key) ?? { tf, barAt, prep: [], queue: [], exec: [], last: 0 };
-    w.prep.push(tPool - barAt); w.exec.push(execMs); w.queue.push(Math.max(0, tDone - tPool - execMs)); w.last = Math.max(w.last, tDone);
+    const w = this.waves.get(key) ?? { tf, barAt, seen: [], prep: [], queue: [], exec: [], last: 0 };
+    w.seen.push(seenAt - barAt); w.prep.push(tPool - seenAt); w.exec.push(execMs); w.queue.push(Math.max(0, tDone - tPool - execMs)); w.last = Math.max(w.last, tDone);
     this.waves.set(key, w);
     if (w.timer) clearTimeout(w.timer);
     w.timer = setTimeout(() => {
       this.waves.delete(key);
       const q = (a: number[], p: number) => { const x = [...a].sort((m, n) => m - n); return x[Math.min(x.length - 1, Math.floor(p * x.length))] ?? 0; };
-      const sum = { tf, barAt, runs: w.exec.length, doneSec: Math.round((w.last - barAt) / 100) / 10, prepP50: q(w.prep, 0.5), queueP50: q(w.queue, 0.5), queueP90: q(w.queue, 0.9), execP50: q(w.exec, 0.5), execP90: q(w.exec, 0.9) };
+      const sum = { tf, barAt, runs: w.exec.length, doneSec: Math.round((w.last - barAt) / 100) / 10, seenP50: q(w.seen, 0.5), seenP90: q(w.seen, 0.9), prepP50: q(w.prep, 0.5), queueP50: q(w.queue, 0.5), queueP90: q(w.queue, 0.9), execP50: q(w.exec, 0.5), execP90: q(w.exec, 0.9) };
       this.lastWaves.unshift(sum); if (this.lastWaves.length > 24) this.lastWaves.pop();
-      log.info(`shadow wave ${tf} ${new Date(barAt).toISOString().slice(11, 16)}: ${sum.runs} runs done ${sum.doneSec}s after close · prep p50 ${sum.prepP50}ms · queue p50 ${sum.queueP50} p90 ${sum.queueP90}ms · exec p50 ${sum.execP50} p90 ${sum.execP90}ms`);
+      log.info(`shadow wave ${tf} ${new Date(barAt).toISOString().slice(11, 16)}: ${sum.runs} runs done ${sum.doneSec}s after close · close seen p50 ${sum.seenP50} p90 ${sum.seenP90}ms · prep p50 ${sum.prepP50}ms · queue p50 ${sum.queueP50} p90 ${sum.queueP90}ms · exec p50 ${sum.execP50} p90 ${sum.execP90}ms`);
     }, 5_000);
     w.timer.unref?.();
   }
@@ -198,7 +198,7 @@ export class ShadowRunner {
     if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
-  private async run(r: PairRow, barAt = Date.now(), live = false): Promise<void> {
+  private async run(r: PairRow, barAt = Date.now(), live = false, seenAt = Date.now()): Promise<void> {
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') return;
     const cfg = this.deps.cfgRef();
@@ -214,7 +214,7 @@ export class ShadowRunner {
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
       { deadlineMs: budget, priority: live ? 'mirror' : 'background' });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
-    if (live) this.noteWave(r.tf, barAt, tPool, Date.now(), res.ms ?? 0);
+    if (live) this.noteWave(r.tf, barAt, seenAt, tPool, Date.now(), res.ms ?? 0);
     if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
     const key = `${r.scannerId}:${r.symbol}:${r.tf}`;
     const prev = this.labels.get(key);
