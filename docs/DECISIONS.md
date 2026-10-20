@@ -4895,3 +4895,20 @@ unchanged and keeps measuring the strategies' own exits.
 **Why a cutoff.** A bar fills a stop at the stop's price. A trail applied to an open trade after the fact would set a stop
 from a peak the price has already left (#3241: about +1.2R, with price near +0.5R) and book an exit at a level that did not
 trade. #3241 finishes under its own exits; it was the only open account trade of the five scanners at the change.
+
+## 160. A trail switched on mid-trade protects the open trade from that moment (20 October 2026)
+
+Decision 159 left ARIAUSD #3241 out of the new protection because a trail measured from its old +1.33R peak would have set a
+stop price had already left, and the bar fill would have booked it. The trade then ran to +5.3R with its stop still at −1R
+and the operator closed it by hand: "protect the open in switch".
+
+**What changed.** `trailStop` notes a position that runs under settings with no trail and no floor (`trailOff`). When a
+trail later applies to it (protection switched on, or its scanner moved off exit mode `script`), the trail is armed then
+(`trailArmedAt`) and measures its own peak from that moment and price (`trailPeakR`, `trailPeakAt`); the floor and the stall
+clock use the same. The stop therefore starts below the price at the switch and ratchets with the run from there. The
+trade's own `peakR` keeps recording the whole excursion for the forensics. The flags persist with the position, so a switch
+made by a deploy's restart is caught too. The account now protects every script-exit trade once `scriptExitTrailFrom` has
+passed, including one already open.
+
+A trade that has trailed since entry is untouched, as is the backtest, whose settings never change mid-trade. No open
+account trade of the five script-exit scanners existed at the change.

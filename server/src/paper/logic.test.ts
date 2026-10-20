@@ -729,3 +729,23 @@ test('decision 159: a script-exit trade trails only when the account layers the 
   assert.ok(Math.abs((b.sl ?? 0) - 111.97) < 0.01, `protected: 10% give-back of 1.33R keeps 1.197R, stop ${b.sl}`);
   assert.deepEqual([guarded.fallbackRR, guarded.fallbackAtrSl, guarded.staleBars], [[0, 0, 0], c.scriptDisasterStopAtr ?? 3, 0], 'targets, stop width and time stop stay the script mode\'s');
 });
+
+test('decision 160: a trail switched on mid-trade measures from that moment, not from the earlier peak', () => {
+  const c = { ...DEFAULT_CONFIG.paper, trailAfterR: 0.5, trailGiveBackPct: 10, floorAtR: 0.5, floorKeepR: 0.25, trailSteps: [[2, 8], [4, 6]] as Array<[number, number]>, trailStall: { minutes: 45, factor: 0.6 } };
+  const own = exitConfigFor(c, 'ARIAUSD', scriptModeExit(c));
+  const guarded = exitConfigFor(c, 'ARIAUSD', { ...scriptModeExit(c), ...scriptModeProtection(c) });
+  const p = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'ARIAUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [], riskAmount: 100, levelsSource: 'atr-fallback', signalId: null, cfg: own, bt: false });
+  trailStop(p, 113.3, own, undefined, 60_000);                       // +1.33R under the strategy's own exits
+  assert.equal(p.sl, 90); assert.equal(p.trailOff, true);
+  const risk = p.entryPrice - 90, rAt = (px: number) => (px - p.entryPrice) / risk;
+  trailStop(p, 106, guarded, undefined, 120 * 60_000);               // switched on with price back near +0.6R
+  assert.ok((p.sl ?? 0) < 106, `the stop starts below the price at the switch, not near +1.2R: ${p.sl}`);
+  assert.ok(Math.abs((p.sl ?? 0) - (p.entryPrice + rAt(106) * 0.9 * risk)) < 1e-9, `the R at the switch less 10%: ${p.sl}`);
+  assert.equal(p.trailArmedAt, 120 * 60_000);
+  trailStop(p, 130, guarded, undefined, 121 * 60_000);               // the run to about +3R ratchets it
+  assert.ok(Math.abs((p.sl ?? 0) - (p.entryPrice + rAt(130) * 0.92 * risk)) < 1e-9, `3R less 8%: ${p.sl}`);
+  assert.ok(Math.abs((p.peakR ?? 0) - rAt(130)) < 1e-12, 'the trade\'s own peak is still recorded for the forensics');
+  const fresh = openPosition({ id: 2, scannerId: 's', scannerName: 's', symbol: 'ARIAUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [], riskAmount: 100, levelsSource: 'atr-fallback', signalId: null, cfg: guarded, bt: false });
+  trailStop(fresh, 113.3, guarded, undefined, 60_000);
+  assert.equal(fresh.trailArmedAt, undefined, 'a trade that trailed from entry is untouched');
+});

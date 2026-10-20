@@ -204,8 +204,9 @@ export interface PaperConfig {
   /**
    * Decision 159: the account trails trades of exit-mode `script` scanners. A position the account opens at or after
    * this time (epoch ms) keeps the strategy's own exits and adds the bot's trail and profit floor, so a run the strategy
-   * hands back is protected; the shadow book keeps measuring the strategy's exits alone. Positions opened before it are
-   * left as they were: a trail applied late would set a stop price has already passed. Unset: off.
+   * hands back is protected; the shadow book keeps measuring the strategy's exits alone. A position already open when it
+   * takes effect is protected too, its trail measured from that moment and price, never from an earlier peak (decision 160).
+   * Unset: off.
    */
   scriptExitTrailFrom?: number;
   fallbackRR: [number, number, number];

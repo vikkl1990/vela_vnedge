@@ -56,6 +56,15 @@ export interface Position {
   mlProb?: number | null;
   /** Best favourable excursion seen so far, in R; drives the trailing stop. */
   peakR?: number;
+  /**
+   * Decision 160: true while the position runs under settings with no trail and no floor. When a trail is switched on
+   * for it later, the trail is armed then (`trailArmedAt`) and measures its own peak from that moment and that price
+   * (`trailPeakR`, `trailPeakAt`), not from `peakR`, which price may have left long ago.
+   */
+  trailOff?: boolean;
+  trailArmedAt?: number;
+  trailPeakR?: number;
+  trailPeakAt?: number;
   /** When the peak was reached, and the worst excursion before it — the forensic view (decision 35). */
   peakAt?: number;
   worstR?: number;
@@ -558,8 +567,14 @@ export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, a
   const dir = long ? 1 : -1;
   const r = ((favourable - pos.entryPrice) * dir) / risk;
   if (r > (pos.peakR ?? 0)) { pos.peakR = r; if (at) pos.peakAt = at; }
-  const peak = pos.peakR ?? 0;
-  const stalledMin = at && pos.peakAt ? (at - pos.peakAt) / 60_000 : 0;
+  // decision 160: a trail switched on mid-trade starts from here, never from a peak price has already left
+  if (!((cfg.trailAfterR ?? 0) > 0 || (cfg.floorAtR ?? 0) > 0)) { pos.trailOff = true; return; }
+  if (pos.trailOff) { pos.trailOff = false; pos.trailArmedAt = at ?? 0; pos.trailPeakR = r; pos.trailPeakAt = at; }
+  if (pos.trailArmedAt !== undefined && r > (pos.trailPeakR ?? -Infinity)) { pos.trailPeakR = r; if (at) pos.trailPeakAt = at; }
+  const late = pos.trailArmedAt !== undefined;
+  const peak = (late ? pos.trailPeakR : pos.peakR) ?? 0;
+  const peakAt = late ? pos.trailPeakAt : pos.peakAt;
+  const stalledMin = at && peakAt ? (at - peakAt) / 60_000 : 0;
 
   // Two independent protections, whichever is higher wins. The floor banks a small gain once
   // the trade clears `floorAtR` and then stops moving, so it does not cap a runner; the trail
