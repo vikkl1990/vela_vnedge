@@ -30,6 +30,10 @@ class FakeTransport implements ExchangeTransport {
   queue: Array<typeof this.nextFill> = [];
   /** Failures to throw on the next edit, cancel or lookup. */
   failEdit = false;
+  /** Decision 165: leverage calls seen, a refusal to raise, and a leverage the exchange insists on holding. */
+  leverageCalls: Array<{ product_id: number; leverage: number }> = [];
+  failLeverage: string | null = null;
+  holdLeverage: number | null = null;
   /** How many client-id lookups answer null before the order is found (exchange lag). */
   lagLookups = 0;
   private seq = 1;
@@ -53,6 +57,7 @@ class FakeTransport implements ExchangeTransport {
   async wallet() { return []; }
   async order(id: number | string) { return this.orders.get(String(id)) ?? null; }
   async orderByClientId(cid: string) { if (this.lagLookups > 0) { this.lagLookups--; return null; } return [...this.orders.values()].find(o => o.client_order_id === cid) ?? null; }
+  async setLeverage(product_id: number, leverage: number) { this.leverageCalls.push({ product_id, leverage }); if (this.failLeverage) throw new Error(this.failLeverage); return { leverage: this.holdLeverage ?? leverage }; }
   async editOrder(e: EditOrder) { if (this.failEdit) throw new Error('Delta PUT /v2/orders → 400 edit refused'); this.edited.push(e); const o = this.orders.get(String(e.id)); if (o) { if (e.stop_price) o.stop_price = e.stop_price; if (e.size) { o.size = e.size; o.unfilled_size = e.size; } } return { id: e.id, state: 'open' }; }
   /** The exchange fills a resting order on its own. */
   fill(id: number | string, price: number, fee = 0, size?: number) { const o = this.orders.get(String(id))!; const q = size ?? o.size; o.unfilled_size = o.size - q; o.state = o.unfilled_size <= 0 ? 'closed' : 'open'; o.average_fill_price = price; o.paid_commission = fee; }
@@ -438,4 +443,35 @@ test('the executor reports the mode it was built with, not the config of the mom
   assert.equal(ex.mode, 'testnet');
   cfg.execution.mode = 'paper';
   assert.equal(ex.mode, 'testnet', 'a config edit cannot relabel a running transport');
+});
+
+test('decision 165: the product leverage is set to the position\'s before the entry, once per change', async t => {
+  const { fake, ex, open, paper } = await setup(t);
+  const a = open();
+  await ex.flush();
+  const want = Math.max(1, Math.floor(a.marginLeverage || a.leverage || 1));
+  assert.deepEqual(fake.leverageCalls, [{ product_id: 27, leverage: want }]);
+  assert.equal(fake.placed[0].purpose, 'entry', 'the order follows the leverage call');
+  paper.closeAll('test', 2_000);
+  await ex.flush();
+  open();
+  await ex.flush();
+  assert.equal(fake.byPurpose('entry').length, 2, 'a second BTC entry went out');
+  assert.equal(fake.leverageCalls.length, 1, 'the exchange already holds that leverage for BTC: no second call');
+  open('long', 'ETHUSD');
+  await ex.flush();
+  assert.deepEqual(fake.leverageCalls.map(c => c.product_id), [27, 3136], 'a new product gets its own call');
+});
+
+test('decision 165: a refused leverage call, or more leverage held than asked, voids the entry before any order', async t => {
+  const { fake, ex, open, paper } = await setup(t);
+  fake.failLeverage = 'Delta POST /v2/products/27/orders/leverage → 400 leverage_limit_exceeded';
+  const a = open();
+  await ex.flush();
+  assert.equal(paper.position(a.id), undefined); assert.equal(fake.placed.length, 0);
+  fake.failLeverage = null; fake.holdLeverage = 100;
+  const b = open();
+  await ex.flush();
+  assert.equal(paper.position(b.id), undefined, 'the exchange would trade nearer liquidation than the paper book checked');
+  assert.equal(fake.placed.length, 0);
 });

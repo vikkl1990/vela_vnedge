@@ -217,3 +217,17 @@ test('a process worker becomes ready, runs a Pine job, and dies at once when ret
   assert.equal(again.ok, true, again.error);
   assert.ok(pool.stats.recycled > before);
 });
+
+test('decision 165: queued work runs live first, then mirror, then background; mirror is not counted as live', async t => {
+  const { pool, workers } = setup(); t.after(() => pool.stop());
+  workers[0].ready();
+  void pool.run({ ...job, scannerId: 'busy' });                          // occupies the only worker
+  const order: string[] = [];
+  const run = (id: string, priority: 'live' | 'mirror' | 'background') => pool.run({ ...job, scannerId: id }, { priority }).then(() => order.push(id));
+  const all = [run('bg', 'background'), run('mirror-1', 'mirror'), run('live-1', 'live'), run('mirror-2', 'mirror'), run('live-2', 'live')];
+  assert.equal(pool.stats.queuedLive, 2, 'the live backlog guard sees only live work');
+  assert.equal(pool.stats.queuedMirror, 2);
+  for (let i = 0; i < 6; i++) { workers[0].finish(); await new Promise(r => setImmediate(r)); }
+  await Promise.all(all);
+  assert.deepEqual(order, ['live-1', 'live-2', 'mirror-1', 'mirror-2', 'bg']);
+});

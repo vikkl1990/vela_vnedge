@@ -196,6 +196,8 @@ export class DeltaRest {
   async order(id: number | string): Promise<any> { return this.request('GET', `/v2/orders/${id}`, { auth: true }); }
   /** One order by the client order id this bot stamped on it: how an order sent before a crash is found again. */
   async orderByClientId(clientOrderId: string): Promise<any> { return this.request('GET', `/v2/orders/client_order_id/${encodeURIComponent(clientOrderId)}`, { auth: true }); }
+  /** Decision 165: the order leverage of one product, which sets the margin and liquidation price of the next order on it. */
+  async setLeverage(product_id: number, leverage: number): Promise<any> { return this.request('POST', `/v2/products/${product_id}/orders/leverage`, { auth: true, body: { leverage: String(leverage) }, retries: 0 }); }
   /** Edit a resting order in place (stop price, limit price, size) — no unprotected window between a cancel and a new order. */
   async editOrder(body: { id: number | string; product_id: number; stop_price?: string; limit_price?: string; size?: number }): Promise<any> { return this.request('PUT', '/v2/orders', { auth: true, body, retries: 0 }); }
 }

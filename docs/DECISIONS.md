@@ -5004,3 +5004,34 @@ new code on BTCUSD 1h and SOLUSD 15m: all 50 extractions are identical, entry fo
 Candlestick Patterns, which has no record, goes from 0 entries to 31 and 54.
 
 **To let a listed scanner read its conditions,** remove its id and re-screen it, as a new record.
+
+## 165. Going-live preparation, first part: the account's mirrored entries scanned at once, and leverage set on the exchange (21 October 2026)
+
+The operator asked to prepare for going live, then whether the execution layer matches Delta production and where the
+latency is.
+
+**What matches.** Hosts (`api.india.delta.exchange`, demo `cdn-ind.testnet.deltaex.org`), the HMAC-SHA256 signing of
+method, timestamp, path, query and body in the `api-key`, `timestamp` and `signature` headers, the order payloads (market,
+stop-loss on mark price, reduce-only limit targets, client ids) and the edit, cancel and client-id lookups. The VM's clock
+is NTP-synchronised. Not yet exercised against the real API: decision 46's demo session never ran.
+
+**Latency.** From the VM (Oracle Singapore) a request reaches Delta India's origin and returns in about 80 ms (CloudFront
+answers cached reads at the Singapore edge in 4 ms). The real delay was inside the bot. Over seven days the account took
+181 entries: 39 from its own scanners, a median 4.8 s after the bar's close; 142 mirrored from the shadow book (decision
+116), a median 54 s after (p90 88 s), whose fill was 159.5 bps worse than the signal price at the 90th percentile against
+−0.5 bps on the direct path. The shadow runner waited a fixed 20 s and then queued some 340 pairs at each 15m close as
+background work on the pool's 6 workers.
+
+**What changed.**
+- The pool has a third tier, `mirror`, between `live` and `background`: it runs after every queued live job and before any
+  background job, and the live backlog guard (500 queued live runs) does not count it, so a wave of shadow scans can
+  neither delay nor crowd out the account's own scans.
+- The shadow runner scans every pair the account may copy (every stage but `tracked`) at once in the mirror tier, the
+  account's live pairs first, then proposals, then the rest. Tracked pairs keep the 20 s wait and the background queue.
+- The executor sets a product's order leverage (`POST /v2/products/{id}/orders/leverage`) to the paper position's margin
+  leverage, rounded down, before its entry, and only when it changed. A refused call, or an exchange that answers with more
+  leverage than asked, voids the entry before any order is sent. Paper mode does not run the executor.
+
+**Expected and to measure.** Six workers draining about 340 jobs of some 0.7 s still take about 40 s at a 15m close, so
+the mirrored median should fall to roughly 20 s, not to the direct path's 5 s. More workers would take a service setting
+(`VNEDGE_WORKERS`), proposed to the operator: the service uses 3.9 GB of its 8 GB soft limit with six.

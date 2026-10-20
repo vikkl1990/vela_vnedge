@@ -94,7 +94,12 @@ interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedA
  * `live` is a current bar's evaluation, which can open or close a trade; `background` is
  * everything that can wait: backtests, warm-ups, the incubator's shadow runs and research.
  */
-export type JobPriority = 'live' | 'background';
+/**
+ * `mirror` (decision 165): a shadow pair the account may copy. It runs after every queued live job and before any
+ * background job, and it is not counted by the live backlog guard, so a bar close's wave of shadow scans can never
+ * hold up or crowd out the account's own scans.
+ */
+export type JobPriority = 'live' | 'mirror' | 'background';
 /** A live job still waiting after this long would act on a signal too old to trade: drop it. */
 export const LIVE_QUEUE_DEADLINE_MS = 240_000;
 interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: boolean; retiring: boolean   /** Jobs completed by this worker; it is recycled after `WORKER_MAX_RUNS` (decision 68). */
@@ -109,6 +114,7 @@ interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: bool
 export class PinePool {
   private workers: Slot[] = [];
   private live: Pending[] = [];
+  private mirror: Pending[] = [];
   private queue: Pending[] = [];
   private nextId = 1;
   readonly size: number;
@@ -183,11 +189,12 @@ export class PinePool {
   completed = 0;
   get stats() {
     return {
-      size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length, queuedLive: this.live.length, completed: this.completed,
-      busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredBackground: this.expiredBackground, recycled: this.recycled, maxRuns: this.maxRuns,
+      size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length + this.mirror.length, queuedLive: this.live.length, queuedMirror: this.mirror.length, completed: this.completed,
+      busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredMirror: this.expiredMirror, expiredBackground: this.expiredBackground, recycled: this.recycled, maxRuns: this.maxRuns,
     };
   }
   private expiredLive = 0;
+  private expiredMirror = 0;
   /** Workers replaced after `WORKER_MAX_RUNS` jobs, for the status page. */
   recycled = 0;
   private recycleTimes: number[] = [];
@@ -268,9 +275,9 @@ export class PinePool {
       const now = Date.now();
       const live = (opts.priority ?? 'background') === 'live';
       const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
-      const p: Pending = { job: { legacyConditionTitles: legacyConditionTitles().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live };
+      const p: Pending = { job: { legacyConditionTitles: legacyConditionTitles().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror' };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
-      (live ? this.live : this.queue).push(p);
+      (live ? this.live : opts.priority === 'mirror' ? this.mirror : this.queue).push(p);
       this.pump();
     });
   }
@@ -288,6 +295,11 @@ export class PinePool {
       if (expired(p)) { this.expiredLive++; this.fail(p, `expired after ${Math.round((now - p.queuedAt) / 1000)}s in the queue`); continue; }
       return p;
     }
+    while (this.mirror.length) {
+      const p = this.mirror.shift()!;
+      if (expired(p)) { this.expiredMirror++; this.fail(p, `dropped after ${Math.round((now - p.queuedAt) / 1000)}s queued: too late to be useful`); continue; }
+      return p;
+    }
     if (!canTakeReserved) return undefined;
     while (this.queue.length) {
       const p = this.queue.shift()!;
@@ -300,7 +312,7 @@ export class PinePool {
   private pump() {
     if (this.stopped) return;
     for (const slot of this.workers) {
-      if (!slot.ready || slot.retiring || slot.busy || (this.queue.length === 0 && this.live.length === 0)) continue;
+      if (!slot.ready || slot.retiring || slot.busy || (this.queue.length === 0 && this.live.length === 0 && this.mirror.length === 0)) continue;
       const busyOnBackground = this.workers.filter(w => w.busy && !w.busy.live).length;
       const p = this.next(busyOnBackground < this.size - this.reserved);
       if (!p) continue;
@@ -325,7 +337,7 @@ export class PinePool {
     this.stopped = true;
     clearInterval(this.timeoutTimer);
     clearInterval(this.memoryTimer);
-    for (const p of [...this.live.splice(0), ...this.queue.splice(0)]) this.fail(p, 'worker pool stopped');
+    for (const p of [...this.live.splice(0), ...this.mirror.splice(0), ...this.queue.splice(0)]) this.fail(p, 'worker pool stopped');
     for (const slot of this.workers) {
       slot.retiring = true; slot.ready = false;
       if (slot.busy) { this.fail(slot.busy, 'worker pool stopped'); slot.busy = null; }

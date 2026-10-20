@@ -140,10 +140,21 @@ export class ShadowRunner {
     // measured from when the bar actually closed, not from now: tracking a new market announces its
     // newest closed bar mid-cycle, and a scan of a bar that old could never be traded
     const barAt = closedAt;
-    setTimeout(() => {
-      if (this.deps.pool.stats.queued > MAX_QUEUE) { this.stats.skipped += due.length; log.warn(`shadow: worker queue ${this.deps.pool.stats.queued} deep, skipping ${due.length} runs on ${symbol}`); return; }
-      for (const r of due) this.run(r, barAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
-    }, DELAY_MS).unref();
+    // decision 165: a pair the account may copy is scanned at once, in the pool's `mirror` tier (after the account's own
+    // scans, before background work); the 20 s wait and the background queue had put the account's mirrored entries a
+    // median 54 s after the bar's close
+    const mirror = this.deps.cfgRef().incubator?.mirror?.enabled === true && Boolean(this.deps.mirror);
+    // the account's own live pairs first, then proposals, then the rest of the shadow book
+    const rank = (r: PairRow) => (r.stage === 'live' ? 0 : r.stage === 'proposed' ? 1 : 2);
+    const urgent = mirror ? due.filter(r => r.stage !== 'tracked').sort((a, b) => rank(a) - rank(b)) : [];
+    const later = mirror ? due.filter(r => r.stage === 'tracked') : due;
+    const launch = (rows: PairRow[], live: boolean) => {
+      if (!rows.length) return;
+      if (!live && this.deps.pool.stats.queued > MAX_QUEUE) { this.stats.skipped += rows.length; log.warn(`shadow: worker queue ${this.deps.pool.stats.queued} deep, skipping ${rows.length} runs on ${symbol}`); return; }
+      for (const r of rows) this.run(r, barAt, live).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
+    };
+    launch(urgent, true);
+    if (later.length) setTimeout(() => launch(later, false), DELAY_MS).unref();
   }
 
   /**
@@ -164,7 +175,7 @@ export class ShadowRunner {
     if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
-  private async run(r: PairRow, barAt = Date.now()): Promise<void> {
+  private async run(r: PairRow, barAt = Date.now(), live = false): Promise<void> {
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') return;
     const cfg = this.deps.cfgRef();
@@ -177,7 +188,7 @@ export class ShadowRunner {
     if (budget <= 0) { this.stats.expired++; return; }
     const res = await this.deps.pool.run(
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
-      { deadlineMs: budget });
+      { deadlineMs: budget, priority: live ? 'mirror' : 'background' });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
     const key = `${r.scannerId}:${r.symbol}:${r.tf}`;

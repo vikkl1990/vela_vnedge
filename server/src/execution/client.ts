@@ -54,6 +54,8 @@ export interface ExchangeTransport {
   orderByClientId(clientOrderId: string): Promise<ExchangeOrder | null>;
   /** Edit a resting order in place. */
   editOrder(e: EditOrder): Promise<{ id: number | string; state?: string }>;
+  /** Set a product's order leverage; resolves to the leverage the exchange now holds for it. */
+  setLeverage(product_id: number, leverage: number): Promise<{ leverage: number }>;
 }
 
 /** Demo host unless production is explicitly double-opted-in (config flag AND env var). */
@@ -110,6 +112,7 @@ export class RestTransport implements ExchangeTransport {
     catch (e: any) { if (/404|not found|invalid_order/i.test(String(e?.message))) return null; throw e; }
   }
   async editOrder(e: EditOrder) { const res = await this.rest.editOrder(e); return { id: res?.id ?? e.id, state: res?.state }; }
+  async setLeverage(product_id: number, leverage: number) { const res = await this.rest.setLeverage(product_id, leverage); return { leverage: Number(res?.leverage ?? res?.result?.leverage ?? NaN) }; }
   async placeOrder(o: OrderPayload) {
     if (this.host === 'production') assertProductionSafe(o);
     const res = await this.rest.placeOrder(wirePayload(o) as any);
@@ -123,14 +126,14 @@ export class RestTransport implements ExchangeTransport {
 /** Records every write instead of sending it; reads go to `reader` when one with keys is available. */
 export class DryRunTransport implements ExchangeTransport {
   readonly dryRun = true;
-  readonly log: Array<{ at: number; action: 'place' | 'cancel' | 'cancelAll' | 'edit'; payload: Record<string, unknown>; id?: string }> = [];
+  readonly log: Array<{ at: number; action: 'place' | 'cancel' | 'cancelAll' | 'edit' | 'leverage'; payload: Record<string, unknown>; id?: string }> = [];
   private seq = 1;
   private reader: ExchangeTransport | null;
   readonly host: ExchangeHost;
   constructor(reader: ExchangeTransport | null = null, host: ExchangeHost = 'testnet') { this.reader = reader; this.host = host; }
   get baseUrl(): string { return this.reader?.baseUrl ?? hostUrl(this.host); }
   get hasAuth(): boolean { return Boolean(this.reader?.hasAuth); }
-  private record(action: 'place' | 'cancel' | 'cancelAll' | 'edit', payload: Record<string, unknown>) {
+  private record(action: 'place' | 'cancel' | 'cancelAll' | 'edit' | 'leverage', payload: Record<string, unknown>) {
     this.log.push({ at: Date.now(), action, payload });
     if (this.log.length > 200) this.log.splice(0, this.log.length - 200);
     log.info(`dry-run ${action} ${JSON.stringify(payload)}`);
@@ -155,4 +158,5 @@ export class DryRunTransport implements ExchangeTransport {
     return mine?.id ? this.order(mine.id) : null;
   }
   async editOrder(e: EditOrder) { this.record('edit', { ...e }); return { id: e.id, state: 'dry-run' }; }
+  async setLeverage(product_id: number, leverage: number) { this.record('leverage', { product_id, leverage }); return { leverage }; }
 }

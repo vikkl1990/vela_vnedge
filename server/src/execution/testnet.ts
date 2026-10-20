@@ -56,6 +56,8 @@ export class ExchangeExecutor {
   private lastSeen = new Map<number, { sl: number | null; qtyOpen: number }>();
   /** Entries the exchange has not confirmed yet: no bracket until it does (the sweep keeps asking). */
   private unconfirmed = new Map<number, number>();   // positionId → ledger id
+  /** Decision 165: the order leverage this process last set or saw per product; cleared on a failed call. */
+  private leverage = new Map<number, number>();
   /** Positions whose fills are being booked FROM the exchange: their 'order' events must not be mirrored back. */
   private adopting = new Set<number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -199,11 +201,37 @@ export class ExchangeExecutor {
   }
 
   private async enter(o: { symbol: string; side: string; qty: number; positionId: number }, product_id: number) {
+    // decision 165: the exchange trades at the leverage the paper position was sized and its liquidation checked at
+    const lev = await this.ensureLeverage(o.positionId, o.symbol, product_id);
+    if (lev !== null) { this.adopt(o.positionId, () => this.paper.voidPosition(o.positionId, `exchange-leverage: ${lev}`)); return; }
     const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: false, client_order_id: cid(o.positionId, 'entry'), purpose: 'entry' };
     const sent = await this.send(payload, o.positionId, o.symbol);
     if (!sent.ok && sent.row.state === 'rejected') { this.adopt(o.positionId, () => this.paper.voidPosition(o.positionId, `exchange-rejected: ${sent.error}`)); return; }
     const c = await this.confirm(sent.row);
     await this.settleEntry(o.positionId, sent.row.id, c);
+  }
+
+  /**
+   * Set the product's order leverage to the paper position's, rounded down (less leverage only adds margin and moves the
+   * liquidation further from the stop). Skipped when the exchange already holds that leverage for the product. Returns
+   * null when the entry may go, or why it may not: a refused call, or an exchange that holds more leverage than asked.
+   */
+  private async ensureLeverage(positionId: number, symbol: string, product_id: number): Promise<string | null> {
+    const pos = this.paper.position(positionId);
+    const want = Math.max(1, Math.floor(pos?.marginLeverage || pos?.leverage || 1));
+    if (this.leverage.get(product_id) === want) return null;
+    try {
+      const got = (await this.transport.setLeverage(product_id, want)).leverage;
+      const held = Number.isFinite(got) && got > 0 ? got : want;
+      this.leverage.set(product_id, held);
+      if (held > want) { log.error(`leverage ${symbol}: asked ${want}x, the exchange holds ${held}x; entry #${positionId} refused`); return `asked ${want}x, exchange holds ${held}x`; }
+      log.info(`leverage ${symbol} set to ${held}x for #${positionId}`);
+      return null;
+    } catch (e: any) {
+      this.leverage.delete(product_id);
+      log.error(`leverage ${symbol} ${want}x refused (${e?.message ?? e}); entry #${positionId} not sent`);
+      return String(e?.message ?? e).slice(0, 160);
+    }
   }
 
   /** Apply what the exchange says about an entry: restate, void, or wait. */
