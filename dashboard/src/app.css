@@ -1548,3 +1548,35 @@ body { overflow-x: clip; }
   .lib-detail-close { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); }
   .lib-spark-empty span { font-size: 10.5px; }
 }
+
+/* ---------- Trade replay (decision 156): a trade's bars revealed one at a time beside its state at the cursor ---------- */
+.replay-page { max-width: none; }
+.replay { display: flex; flex-direction: column; gap: 12px; }
+.replay-head { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.replay-title { margin: 0; font-size: 20px; }
+.replay-title .side-long { color: var(--gain); } .replay-title .side-short { color: var(--loss); }
+.replay-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
+.replay-chart { height: 68vh; min-height: 420px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); min-width: 0; }
+.replay-side { display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 14px; max-height: 68vh; overflow-y: auto; }
+.replay-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.select-sm { padding: 4px 8px; font-size: 12.5px; }
+.replay-scrub { display: flex; flex-direction: column; gap: 4px; }
+.replay-scrub input[type='range'] { width: 100%; accent-color: var(--accent-2); }
+.replay-phase { font-weight: 600; font-size: 13px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.replay-phase.open { background: var(--accent-soft); color: var(--accent-3); }
+.replay-phase.closed { background: var(--surface-3); }
+.replay-facts { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 0; font-size: 13px; }
+.replay-facts dt { color: var(--muted); }
+.replay-facts dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.replay-facts .gain { color: var(--gain); } .replay-facts .loss { color: var(--loss); }
+.replay-events h3 { margin: 4px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+.replay-events ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.replay-events li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.replay-events .gain { color: var(--gain); } .replay-events .loss { color: var(--loss); }
+.replay-keys { margin: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 1000px) {
+  .replay-grid { grid-template-columns: minmax(0, 1fr); }
+  .replay-chart { height: 56vh; min-height: 340px; }
+  .replay-side { max-height: none; }
+}

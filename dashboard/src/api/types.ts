@@ -694,6 +694,16 @@ export interface ExecutionStatus {
 
 /** The levels a path is read against: break even, the stop it opened with, and the targets. */
 export interface PathLevels {
+  /** decision 156: the trade's context, for the replay page */
+  tf?: string
+  scannerId?: string
+  scannerName?: string
+  book?: 'paper' | 'shadow' | 'backtest'
+  status?: string
+  levelsSource?: string | null
+  realizedPnl?: number
+  fees?: number
+  riskAmount?: number
   id: number
   symbol: string
   side: 'long' | 'short'

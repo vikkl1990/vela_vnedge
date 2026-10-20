@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { usePositionPath } from '../api/queries'
 import type { PathLevels, PathPoint } from '../api/types'
 import { Loading, Pill } from './ui'
@@ -136,7 +137,10 @@ export function TradePath({ id, title, onClose }: { id: number | null; title?: s
           </p>
         </div>
       )}
-      <div className="dialog-actions"><button className="btn" onClick={onClose}>Close</button></div>
+      <div className="dialog-actions">
+        {id != null && <Link className="btn btn-primary" to={`/trades/${id}/replay`} onClick={onClose}>Replay on chart</Link>}
+        <button className="btn" onClick={onClose}>Close</button>
+      </div>
     </dialog>
   )
 }

@@ -333,6 +333,9 @@ export class ApiServer {
         slOriginal: row.sl_original ?? row.sl, sl: row.sl, tp: JSON.parse(row.tp || '[]') as number[],
         tpHit: JSON.parse(row.tp_hit || '[]') as number[], peakR: row.peak_r ?? null, peakAt: row.peak_at ?? null,
         worstR: row.worst_r ?? null, exitAt: row.exit_at ?? null, exitPrice: row.exit_price ?? null, exitReason: row.exit_reason ?? null,
+        // decision 156: what the replay page shows beside the chart
+        tf: row.tf, scannerId: row.scanner_id, scannerName: row.scanner_name, book: row.bt === 0 ? 'paper' : row.bt === 2 ? 'shadow' : 'backtest',
+        status: row.status, levelsSource: row.levels_source ?? null, realizedPnl: row.realized_pnl, fees: row.fees, riskAmount: row.risk_amount,
       };
       return { position: levels, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
     });

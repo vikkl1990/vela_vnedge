@@ -26,6 +26,8 @@ interface Props {
   onScriptReady?: (id: string) => void
   /** Market tick size — used by the fallback chart's price axis. */
   tickSize?: number
+  /** decision 156: the chart instance once it is ready (null when it goes away), for pages that drive it, e.g. replay. */
+  onChartReady?: (chart: VelaType | null) => void
 }
 
 type VelaModule = typeof import('@luxalgo/vela')
@@ -49,7 +51,7 @@ function loadLibs() {
  * Vela chart wrapper. Every call into Vela is guarded; on an unrecoverable
  * failure the component swaps to `FallbackChart` so the page never breaks.
  */
-export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptError, onScriptReady, tickSize }: Props) {
+export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptError, onScriptReady, tickSize, onChartReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<VelaType | null>(null)
   const handlesRef = useRef(new Map<string, { handle: IndicatorHandle; source: string; offs: (() => void)[] }>())
@@ -57,10 +59,13 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const { theme } = useTheme()
-  const cbRef = useRef({ onScriptError, onScriptReady })
+  const cbRef = useRef({ onScriptError, onScriptReady, onChartReady })
   useEffect(() => {
-    cbRef.current = { onScriptError, onScriptReady }
+    cbRef.current = { onScriptError, onScriptReady, onChartReady }
   })
+  useEffect(() => {
+    cbRef.current.onChartReady?.(ready ? chartRef.current : null)
+  }, [ready])
 
   // ---- create / destroy the chart once -------------------------------------
   useEffect(() => {

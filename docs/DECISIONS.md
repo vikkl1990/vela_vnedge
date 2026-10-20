@@ -4788,3 +4788,33 @@ shadow book is too young for this test.
 | shadow as one $1,000 account | 1,502 | 33% | 20% | 42% | 57% | 0.01% |
 
 Paper's sizing leaves a fifth of the account as a plausible worst drop and no ruin. Nothing changes.
+
+## 156. Trade replay: any trade's bars revealed one at a time, with its stop as it moved and its state at the cursor (20 October 2026)
+
+**Why.** LuxAlgo's trade journal replays a trade on its chart; the operator: "build trade replay".
+
+**What it is.** `/trades/:id/replay`, opened from the trade-path pop-up ("Replay on chart") on the Trades page and the
+open-positions table.
+- **Chart.** The trade's own market and timeframe on the chart, rewound through Vela 0.8's `chart.replay` to 40 bars
+  before the entry and framed to the trade (`setVisibleRange`).
+- **Controls.** Rewind, Entry, Play/Pause, Step, Exit, a speed choice and a scrubber; space, → and Home do the same from
+  the keyboard.
+- **Overlay.** A generated Pine overlay (`chart/replayOverlay.ts`):
+  - the entry, the stop it opened with and the targets, drawn only across the trade's life;
+  - the stop as a step line through every move the engine recorded in `position_path` (the floor and the trail);
+  - markers at the entry and exit bars.
+  - Each bar shows the stop as it stood when that bar closed, so the replay never shows a move early.
+- **Side panel**, as the trade stood when the cursor's bar closed: before / in the trade / closed, R now, best and worst
+  so far, where the stop was (in price and R), the levels, and every recorded event up to the cursor.
+
+**Server.** `GET /api/positions/:id/path` now also returns the trade's timeframe, scanner, book, status, stop source and
+result.
+
+**Chart.** `VelaChart` takes `onChartReady` to hand the instance to a page that drives it.
+
+**Checked** on a local server over a snapshot of the VM's database:
+- #3221, a stop-out: the panel reads −0.99R with a best of +0.10R and the stop-out event.
+- #3199, a trail exit: the stop line steps down as the trail tightened, "exit trail +0.39R" sits at the exit bar, and
+  the panel reads best +0.49R, worst −0.63R and the stop move.
+- Play, pause, seek and framing work; the pop-up links to the replay.
+- The dashboard builds; the server suite passes.
