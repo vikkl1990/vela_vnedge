@@ -91,7 +91,8 @@ export const deltaProvider: DataProvider = {
       current_contract: ticker,
       mintick: tick,
       minmove: 1,
-      mincontract: 1,
+      // decision 151: PineTS 0.11+ floors strategy orders to mincontract; 1 left BTC strategies with no trade
+      mincontract: 0.000001,
       pricescale: Number.isFinite(pricescale) && pricescale > 0 ? pricescale : 2,
       pointvalue: m?.contractValue ?? 1,
     }

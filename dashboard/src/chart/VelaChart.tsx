@@ -211,13 +211,24 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
       const existing = have.get(s.id)
       if (existing) {
         if (existing.source !== s.source) {
-          try {
-            existing.handle.updateCode(s.source)
-            existing.source = s.source
-          } catch (e) {
-            console.warn('[vela] updateCode failed', e)
-            toastExternal('error', `Script update failed: ${s.title}`, (e as Error)?.message)
-          }
+          // Vela 0.8.2+: updateCode resolves to { ok, error } and keeps the previous code when the new one fails
+          const prevSource = existing.source
+          existing.source = s.source
+          Promise.resolve(existing.handle.updateCode(s.source) as unknown)
+            .then((res) => {
+              const r = res as { ok?: boolean; error?: unknown } | undefined
+              if (r && r.ok === false) {
+                existing.source = prevSource
+                const msg = r.error instanceof Error ? r.error.message : String(r.error ?? 'unknown error')
+                console.warn('[vela] updateCode failed', r.error)
+                toastExternal('error', `Script update failed: ${s.title}`, msg)
+              }
+            })
+            .catch((e: unknown) => {
+              existing.source = prevSource
+              console.warn('[vela] updateCode failed', e)
+              toastExternal('error', `Script update failed: ${s.title}`, (e as Error)?.message)
+            })
         }
         continue
       }

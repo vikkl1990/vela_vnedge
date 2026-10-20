@@ -4712,3 +4712,25 @@ with a chip to remove it.
 the detail panel, Add to chart for an enabled script (SuperTrend Cluster) and for one that is not (Retest & Break
 Setup), a favorite saved and listed, the phone layout with the sheet, and the light theme. 347 server tests pass,
 including the classifier and the service; the dashboard builds and the changed files lint clean.
+
+## 154. The dashboard's chart upgraded: Vela 0.8.5, its Pine add-on 0.2.17, and the browser's PineTS 0.12.0 (20 October 2026)
+
+**Why.** LuxAlgo's blog announced Vela 0.8.5; the dashboard ran 0.7.6, and its charts ran their own PineTS 0.9.34
+while the engine trades on 0.12.0 (decision 151), so a script could draw differently from how it trades. The operator:
+"upgrade".
+
+**What changed.**
+- `@luxalgo/vela` 0.7.6 → 0.8.5 and `@luxalgo/vela-pinets` 0.2.12 → 0.2.17 (which supports 0.8). The only change
+  Vela's changelog flags as breaking, the removed `linear-regression` study, is not used here.
+- `updateCode` resolves to `{ ok, error }` since 0.8.2 instead of throwing; the chart now waits for it, keeps the
+  previous code on failure and shows the error.
+- The dashboard's `pinets` 0.9.34 → 0.12.0, the engine's version, and the chart's data provider reports the same tiny
+  `mincontract` as the engine's, so strategy scripts place their trades on the chart (decision 151).
+
+**Checked.** In the browser on a local server: triangular-hull (which needs decision 151's window-length rule) and a
+strategy (fast-scalper, which needs the `mincontract` fix) both draw on BTC 15m, added through the Library's Add to
+chart; no chart error in the console. The dashboard builds; the server suite passes (347).
+
+**Also read from the blog**, for later: a random-entry benchmark with matched trade count, holding time and side mix;
+directional dependence tested on detrended prices and against the market's own drift; edge decay judged on rolling
+expectancy; Monte Carlo of trade order for drawdown percentiles. None is built here.
