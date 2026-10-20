@@ -1,0 +1,1426 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KioseffTrading
+
+//@version=6
+
+indicator("Market Structure Volume Profiles BoS Signals (operator)", overlay = false,
+         max_labels_count                = 500, 
+         max_lines_count                 = 500, 
+         max_boxes_count                 = 500, 
+         max_polylines_count             = 100, 
+         dynamic_requests                = true, 
+         calc_bars_count                 = 5000
+         )
+
+// ICTlibrary v2 by Trading-IQ (MPL-2.0), inlined: PineTS cannot import TradingView libraries
+type labelLine 
+
+    line  lin 
+    label lab 
+
+// @type UDT for order block calculations
+// @field orderBlockData array containing order block x and y points   
+// @field orderBlockBox   optional order block box
+// @field vioCount = 0    violation count of the order block. 0 = Order Block, 1 = Breaker Block
+// @field bool        traded = false  False = OB hasn't been traded. True = OB has been traded. This is to limit the number of trades at the order block.
+// @field status = "OB"   status == "OB" => Level is order block. status == "BB" => Level is breaker block.
+// @field orderBlockLab   options label for the order block / breaker block.
+
+type orderBlock
+
+    array<float> orderBlockData
+    box    orderBlockBox
+    int    vioCount = 0
+    bool   traded = false
+    string status = "OB"
+    label  orderBlockLab
+
+// @type UDT for strong highs and strong lows
+// @field price             price of the strong high or strong low 
+// @field timeAtprice       time of the strong high or strong low
+// @field strongPointLabel  optional label for strong point         
+// @field strongPointLine   optional line for strong point              
+// @field overlayLine       optional lines for strong point to enhance visibility     
+// @field overlayLine2      optional lines for strong point to enhance visibility
+
+type rejectionBlocks 
+
+    chart.point rejectionPoint 
+    float       bodyPrice 
+    box         rejectionBox 
+    label       rejectionLabel 
+    
+// @type UDT for data storage and drawings associated with equal highs / equal lows
+// @field connector     single line placed at the first high or low, y = avgerage of distinguished equal highs/lows
+// @field connectorLab  optional label to be placed at the highs or lows      
+// @field levels        array containing the equal highs or lows prices        
+// @field times         array containing the equal highs or lows individual times    
+// @field startTime     the time of the first high or low that forms a sequence of equal highs or lows                              
+// @field radiate       options label to "radiate" the label in connector lab. Can be used for anything
+
+type necessaryData
+
+    array<float> highArr
+    array<float> lowArr
+    array<int>   timeArr
+    array<float> logArr 
+    array<float> signArr 
+    array<float> closeArr 
+    array<int>   binaryTimeArr 
+    array<float> binaryCloseArr 
+    array<float> binaryOpenArr
+    array<float> atrTFarr 
+    array<float> openArr
+
+// @enum enum for user selection of Unicorn Model Trade Exits
+// @field sL    swing low exit, whether for profit (short) or loss (long)         	
+// @field sH    swing high exit, whether for profit (long) or loss (short)                   
+// @field bFVG  long entry stop loss of math.min(FVGbottom/BBbottom)                     
+// @field tFVG  short entry stop loss of math.max(FVGtop/BBtop)                       
+// @field zero5 fib TP of -0.5            
+// @field one5  fib TP of -1                
+// @field two5  fib TP of -2
+
+necessaryData(float atrTF) =>
+
+    var historicalData = necessaryData.new(array.new<float>(), array.new<float>(), array.new<int>  (), 
+                                           array.new<float>(), array.new<float>(), array.new<float>(), 
+                                           array.new<int>  (), array.new<float>(), array.new<float>(), 
+                                           array.new<float>(), array.new<float>()
+                                             )
+
+    historicalData.highArr      .unshift(high) ,                   historicalData.lowArr        .unshift(low), 
+    historicalData.timeArr      .unshift(time) ,                   historicalData.binaryTimeArr .push   (time),                
+    historicalData.closeArr     .unshift(close),                   historicalData.logArr        .push   (math.log(close / close[1]))
+    historicalData.signArr      .unshift(math.sign(close - open)), historicalData.binaryCloseArr.push   (close), 
+    historicalData.binaryOpenArr.push   (open), historicalData.atrTFarr.unshift(atrTF), historicalData.openArr.unshift(open)
+
+    logZ           = (historicalData.logArr  .last() - historicalData.logArr  .avg()) / historicalData.logArr  .stdev()
+
+    if historicalData.logArr.size() > 200 
+        historicalData.logArr  .shift()
+
+
+    [historicalData, logZ]
+
+
+    
+// @function creates neon like effect for box drawings 
+// @param gradientBoxes an array.new<box>() to store the gradient boxes 
+// @param idcolor color for the neon effect 
+// @param timeStart left point of box
+// @param bottom bottom of box price point 
+// @param top top of box price point
+// @param rightCoordinate right point of box
+// @returns void
+
+isLastBar(simple int userTF) =>
+
+    userTF <= timeframe.in_seconds(timeframe.period) ? true : time_close >= time_close(timeframe.from_seconds(userTF))
+
+
+// @function returns necessaryData UDT for historical data access 
+// @param atrTF user-selected timeframe ATR value. 
+// @returns necessaryData UDT. Example declarationhistoricalData = necessaryData(ta.atr(14))//
+// To access the "highArr" would then call "historicalData.highArr"
+// @returns logZ. log return Z score, used for calculating order blocks.
+
+method drawBos(array<labelLine> id, chart.point startPoint, int getKeyPointTime, float getKeyPointPrice, color col, bool showBOS, bool isUp, bool forceOverlay) => 
+
+    avg = math.round(math.avg(getKeyPointTime, time))
+
+    if showBOS
+
+        position = switch isUp 
+
+            true => label.style_label_up 
+            =>      label.style_label_down
+
+
+        switch forceOverlay
+
+            true => id.push(
+                 labelLine.new(
+                     line.new(startPoint, chart.point.from_time(time, getKeyPointPrice),
+                                         color = col, 
+                                         xloc  = xloc.bar_time,
+                                         style = line.style_dotted, 
+                                         force_overlay = true 
+                                         ),
+
+                     label.new(avg, getKeyPointPrice, xloc = xloc.bar_time, 
+                                         color     = #00000000, 
+                                         textcolor = col,
+                                         text      = "BoS", 
+                                         size      = size.tiny, 
+                                         style     = position, 
+                                         force_overlay = true
+                                         )))
+
+            =>  id.push(
+                 labelLine.new(
+                     line.new(startPoint, chart.point.from_time(time, getKeyPointPrice),
+                                         color = col, 
+                                         xloc  = xloc.bar_time,
+                                         style = line.style_dotted, 
+                                         force_overlay = false
+                                         ),
+
+                     label.new(avg, getKeyPointPrice, xloc = xloc.bar_time, 
+                                         color     = #00000000, 
+                                         textcolor = col,
+                                         text      = "BoS", 
+                                         size      = size.tiny, 
+                                         style     = position, 
+                                         force_overlay = false
+                                         )))
+// @function calculates and draws Market Structure Shift. This data is also used to calculate Rejection Blocks.
+// @param array<labelLine> id      uses labelLine UDT explained above to pair line of MSS with label of MSS  
+// @param chart.point startPoint   the chart point of the start time of the broken level         
+// @param getKeyPointTime      the actual time of startPoint, simplystartPoint.time               
+// @param getKeyPointPrice   the actual time of startPoint, simplystartPoint.price                
+// @param col                color of the MSS line / label  
+// @param showMSS             whether to show label/line. This function still calculates internally for other ICT related concepts even if not drawn.                   
+// @param isUp                whether MSS happened during price increase or price decrease.    
+// @param array<rejectionBlocks> upRejections  array containing upside rejection block data, array must be declared as array<rejectionBlocks>()
+// @param array<rejectionBlocks> dnRejections  array containing downside rejection block data, array must be declared as array<rejectionBlocks>()
+// @param highArr  array containing historical highs, should be taken from the UDT "necessaryData" defined above
+// @param lowArr   array containing historical lows, should be taken from the UDT "necessaryData" defined above
+// @param timeArr  array containing historical times, should be taken from the UDT "necessaryData" defined above
+// @param closeArr  array containing historical closes, should be taken from the UDT "necessaryData" defined above
+// @param openArr  array containing historical opens, should be taken from the UDT "necessaryData" defined above
+// @param atrTFarr   array containing historical atr values (of user-selected TF), should be taken from the UDT "necessaryData" defined above
+// @param upRejectionsPrices   array containing up rejections prices. Is sorted and used to determine selective looping for invalidations.
+// @param dnRejectionsPrices   array containing down rejections prices. Is sorted and used to determine selective looping for invalidations.
+// @returnsvoid
+
+method drawMSS(array<labelLine> id, chart.point startPoint, int getKeyPointTime, float getKeyPointPrice, color col,  bool showMSS, bool isUp,
+                 array<rejectionBlocks> upRejections, array<rejectionBlocks> dnRejections, array<float> highArr, array<float> lowArr, 
+                     array<int> timeArr, array<float> closeArr, array<float> openArr, array<float> atrTFarr,
+                         array<float> upRejectionsPrices, array<float> dnRejectionsPrices, bool forceOverlay) => 
+
+
+
+
+    avg = math.round(math.avg(getKeyPointTime, time))
+
+    if isUp 
+
+        max = 0., maxTime = 0, isRejection = false, var bodyPrice = 0.
+
+        for [i, data] in highArr 
+
+            if data >= getKeyPointPrice
+
+                max := math.max(max, data)
+
+                if data == max 
+
+                    maxTime := timeArr.get(i)
+
+                    bodyPrice := math.max(closeArr.get(i), openArr.get(i))
+
+                    isRejection := (math.abs(data - bodyPrice) >= atrTFarr.get(i) / 3)
+
+            else 
+
+                break 
+
+        if max != 0 and isRejection 
+
+            upRejections      .unshift(rejectionBlocks.new(chart.point.from_time(maxTime, max), bodyPrice))
+            upRejectionsPrices.insert(upRejectionsPrices.binary_search_rightmost(max), max)
+
+
+    else 
+
+        min = 20e20, minTime = 0, isRejection = false, var bodyPrice = 0.
+
+        for [i, data] in lowArr 
+
+            if data <= getKeyPointPrice
+
+                min := math.min(min, data)
+
+                if data == min
+
+                    minTime := timeArr.get(i)
+
+                    bodyPrice := math.min(closeArr.get(i), openArr.get(i))
+
+                    isRejection := (math.abs(data - bodyPrice) >= atrTFarr.get(i) / 3)
+
+            else 
+
+                break 
+
+        if min != 20e20 and isRejection 
+
+            dnRejections      .unshift(rejectionBlocks.new(chart.point.from_time(minTime, min), bodyPrice))
+            dnRejectionsPrices.insert(dnRejectionsPrices.binary_search_rightmost(min), min)
+
+    if showMSS
+
+        position = switch isUp 
+
+            true => label.style_label_up 
+            =>      label.style_label_down
+
+        switch forceOverlay
+
+            true => id.push(
+              labelLine.new(
+                 line.new(startPoint, chart.point.from_time(time, getKeyPointPrice),
+                                     color = col, 
+                                     xloc  = xloc.bar_time, 
+                                     force_overlay = true
+                                     ),
+
+                 label.new(avg, getKeyPointPrice, xloc = xloc.bar_time, 
+                                     color     = #00000000, 
+                                     textcolor = col,
+                                     text      = "MSS", 
+                                     size      = size.tiny, 
+                                     style     = position, 
+                                     force_overlay = true
+                                     )))
+
+            => id.push(
+              labelLine.new(
+                 line.new(startPoint, chart.point.from_time(time, getKeyPointPrice),
+                                     color = col, 
+                                     xloc  = xloc.bar_time, 
+                                     force_overlay = false
+                                     ),
+
+                 label.new(avg, getKeyPointPrice, xloc = xloc.bar_time, 
+                                     color     = #00000000, 
+                                     textcolor = col,
+                                     text      = "MSS", 
+                                     size      = size.tiny, 
+                                     style     = position, 
+                                     force_overlay = false
+                                     )))
+
+// @function gets time of inputted price (compare) in an array of data 
+// this is useful when the user-selected timeframe for ICT concepts is greater than the chart's timeframe 
+// @param id the array of data to search through, to find which index has the same value as "compare"
+// @param compare the target data point to find in the array
+// @param timeArr array of historical times
+// @returns the time that the data point in the array was recorded
+
+method OB(array<orderBlock> id, array<float> highArr, array<float> signArr, array<float> lowArr, array<int> timeArr, int sign) =>
+
+    for i = 1 to highArr.size() - 1
+        if signArr.get(i) == sign
+
+            getHigh = highArr.get(i)
+            getLow  = lowArr .get(i)
+
+            id.unshift(orderBlock.new(array.from(timeArr.get(i), getHigh, last_bar_time, getLow)))
+
+            break
+
+
+
+// @function executes the OTE strategy 
+// @param chart.point OTEstart chart point of the first bar beginning the OTE setup
+// @param future future time point for drawings
+// @param closeArr array of historical closes
+// @param highArr array of historical highs
+// @param lowArr array of historical lows
+// @param timeArr array of historical times
+// @param longOTEPT user-selected long OTE profit target, please create an input.string() for this using the example below
+// @param longOTESL    user-selected long OTE stop loss, please create an input.string() for this using the example below
+// @param longOTElevel  long entry price of selected retracement ratio for OTE
+// @param shortOTEPT user-selected short OTE profit target, please create an input.string() for this using the example below   
+// @param shortOTESL    user-selected short OTE stop loss, please create an input.string() for this using the example below
+// @param shortOTElevel  short entry price of selected retracement ratio for OTE
+// @param structureDirection current market structure direction, this should be "Up" or "Down". This is used to cancel pending orders if market structure changes
+// @param oteLongs input.bool() for whether OTE longs can be executed
+// @param atrTF atr of the user-seleceted TF
+// @param oteShorts input.bool() for whether OTE shorts can be executed
+// @exampleInputs
+	 // oteLongs        = input.bool(defval = false, title = "OTE Longs", group = "Optimal Trade Entry")
+	 // longOTElevel    = input.float(defval = 0.79, title = "Long Entry Retracement Level", options = [0.79, 0.705, 0.62], group = "Optimal Trade Entry")
+	 // longOTEPT       = input.string(defval = "-0.5", title = "Long TP", options = ["-0.5", "-1", "-2", "Swing High"], group = "Optimal Trade Entry")
+	 // longOTESL       = input.int(defval = 0, title = "How Many Ticks Below Swing Low For Stop Loss", group = "Optimal Trade Entry")
+	 // oteShorts       = input.bool(defval = false, title = "OTE Shorts", group = "Optimal Trade Entry")
+	 // shortOTElevel   = input.float(defval = 0.79, title = "Short Entry Retracement Level", options = [0.79, 0.705, 0.62], group = "Optimal Trade Entry")
+	 // shortOTEPT      = input.string(defval = "-0.5", title = "Short TP", options = ["-0.5", "-1", "-2", "Swing Low"], group = "Optimal Trade Entry")
+	 // shortOTESL      = input.int(defval = 0, title = "How Many Ticks Above Swing Low For Stop Loss", group = "Optimal Trade Entry")
+// @returns void (0)
+
+
+miniP              = input.bool(defval = true, title = "Use Mini Profile", group = "Mini Profile Main Settings")
+showVolAtLevel     = input.bool(defval = false, title = "Show Volume At Level", group = "Mini Profile Main Settings")
+
+ltfData            = input.timeframe(defval = "1", title = "Lower Timeframe Volume", group = "Main Settings")
+profType           = input.string(defval = "Stacked", title = "Profile Type (Excludes Mini Profile)", options = ["Split", "Stacked"], group = "Main Settings")
+profileSize        = input.int(defval = 20, minval = 5, maxval = 500, title = "Profile Size (Excludes Mini Profile)", group = "Main Settings") - 1
+userTF             = timeframe.in_seconds(input.timeframe("", title = "Timeframe", group = "Main Settings"))
+showStructureStats = input.bool(defval = false, title = "Show Structure Stats", group = "Main Settings", inline = "SS"), labSize = input.string(title = "", defval = "Small", options = ["Auto", "Tiny", "Small", "Normal", "Large", "Huge"], group = "Main Settings", inline = "SS", active = showStructureStats)
+
+showBOS         = input.bool(defval = true, title = "Show BoS", group = "Market Structure", inline = "BoS"), boScol = input.color(defval = #6929f2, title = "", group = "Market Structure", inline = "BoS", active = showBOS)
+showCHoCH       = input.bool(defval = true, title = "Show CHoCH", group = "Market Structure", inline = "CHoCH"), MSScol = input.color(defval = #ff65fb, title = "", group = "Market Structure", inline = "CHoCH", active = showCHoCH)
+
+profColLoCUp    = input.color(defval = #b491ff, title = "Profile Up Buy Vol Color" , group = "Profile Color Settings")
+profColHiCUp    = input.color(defval = #6929f2, title = "Profile Up Sell Vol Color", group = "Profile Color Settings")
+profColLoCDn    = input.color(defval = #ff9ef9, title = "Profile Down Buy Vol Color", group = "Profile Color Settings")
+profColHiCDn    = input.color(defval = #ff65fb, title = "Profile Down Sell Vol Color", group = "Profile Color Settings")
+
+miniColLoCUp    = input.color(defval = #000000, title = "Mini Profile Up Low Vol Color" , group = "Mini Profile Color Settings")
+miniColHiCUp    = input.color(defval = #6929f2, title = "Mini Profile Up High Vol Color", group = "Mini Profile Color Settings")
+miniColLoCDn    = input.color(defval = #000000, title = "Mini Profile Down Low Vol Color", group = "Mini Profile Color Settings")
+miniColHiCDn    = input.color(defval = #ff65fb, title = "Mini Profile Down High Vol Color", group = "Mini Profile Color Settings")
+
+miniProfTransp  = input.int(50, minval = 0, maxval = 100, title = "Mini Profile Transparency", group = "All Profile Settings")
+profLineTransp  = input.int(50, minval = 0, maxval = 100, title = "Profile Line Transp", group = "All Profile Settings")
+profFillTransp  = input.int(98, minval = 0, maxval = 100, title = "Profile Fill Transp", group = "All Profile Settings")
+
+showPOC         = input.bool (defval = false, title = "Show POC", group = "POC")
+extendPOC       = input.bool (defval = true, title = "Extend POC", group = "POC", active = showPOC)
+pocLineCol      = input.color(defval = color.new(color.white, 50), title = "POC Color", group = "POC", active = showPOC)
+pocW            = input.int  (defval = 2, minval = 1, title = "POC Line Width", group = "POC", active = showPOC)
+nakedPOC        = input.bool (defval = true, title = "Naked POC's Only", group = "POC", active = showPOC)
+
+showVA          = input.bool(defval = true, title = "Show VA", group = "VA")
+vaColBos        = input.color(defval = #6929f2, title = "VA Color", group = "VA", active = showVA)
+vaColCHoCH      = input.color(defval = #ff65fb, title = "VA Color", group = "VA", active = showVA)
+vaW             = input.int(defval = 2, minval = 2, title = "VA Width", group = "VA", active = showVA)
+
+colorCandlesMarketStructure = input.bool(defval = false, title = "Color Candles by Market Structure", group = "Market Structure", inline = "MS")
+msUp = input.color(defval = #55ffda, title = "", group = "Market Structure", inline = "MS", active = colorCandlesMarketStructure)
+msDn = input.color(defval = color.rgb(255, 116, 116), title = "", group = "Market Structure", inline = "MS", active = colorCandlesMarketStructure)
+
+resetCVD   = input.string(defval = "CHoCH", title = "Reset CVD", options = ["CHoCH", "BoS + CHoCH", "Day", "Week"], group = "CVD Settings")
+cvdBuyCol  = input.color(defval = #6929f2, title = "CVD Up Col", group = "CVD Settings")
+cvdSellCol = input.color(defval = #ff65fb, title = "CVD Down Col", group = "CVD Settings")
+
+var finalTF                     = timeframe.from_seconds(math.max(timeframe.in_seconds(""), userTF))
+var upRejections                = array.new<rejectionBlocks>(), var dnRejections       = array.new<rejectionBlocks>(), atrN = ta.atr(14) * 2
+var upRejectionsPrices          = array.new<float>(),              var dnRejectionsPrices = array.new<float>()
+
+var txtSize = switch labSize 
+
+    "Auto"   => size.auto 
+    "Tiny"   => size.tiny 
+    "Small"  => size.small 
+    "Normal" => size.normal 
+    "Large"  => size.large 
+    "Huge"   => size.huge
+
+getSwings(tf) => 
+
+    atr = ta.atr(14)
+
+    [high[1], low[1], ta.pivothigh(3, 3), ta.pivotlow(3, 3), high[2], low, high, low[2], atr * .05, atr * 2, atr, atr * int(na), time[3], time[1]]
+
+[pdH, pdL, getPH, getPL, H2, L, H, L2, threshold, atrTF, atrTFreg, atrLiqSweep, time3, time1] 
+             = request.security(syminfo.tickerid, finalTF, getSwings(finalTF))
+
+[historicalData, logZ] = necessaryData(atrTF)
+
+var finalLTF = timeframe.from_seconds(math.min(timeframe.in_seconds(ltfData), timeframe.in_seconds("")))
+
+if barstate.isfirst
+
+    if timeframe.isticks or finalLTF == "0D" or na(finalLTF)
+        finalLTF := ltfData
+
+direction() => 
+
+    if finalLTF == "1T" 
+
+        switch 
+
+            close == bid => -1 
+            close == ask =>  1
+            =>               math.sign(close - close[1]) 
+        
+    else 
+
+        math.sign(close - close[1])
+
+[ltfH, ltfL, ltfD, ltfV] = request.security_lower_tf(syminfo.tickerid, finalLTF, [high, low, direction(), volume]) 
+
+type priceSpan 
+
+    float H 
+    float L
+    float vol
+
+type profileData
+
+    array<priceSpan> profilePointsBuy
+    array<priceSpan> profilePointsSell
+    array<float>     levelArr
+    array<float>     volAtLevelBuy
+    array<float>     volAtLevelSell
+    array<int>       masterTime
+    float highest      = high
+    float lowest       = low 
+    int   startTime    = time 
+    float startPrice   = close 
+    float endPrice     = close
+    float CVD          = 0.
+    float pCVD         = 0.
+    array<line> pocLine 
+    array<line> vaLine 
+    array<float> sumVol
+
+
+type profiles 
+
+    array<chart.point> buyProfile
+    array<chart.point> sellProfile
+
+type lastBarDrawings 
+
+    array<polyline> profilePoly
+    array<box>    miniProfileBox 
+    line          pocLine 
+    line          vaLine 
+    label         structureStats
+
+var profile     = profileData.new(array.new<priceSpan>(), array.new<priceSpan>(), array.new<float>(profileSize + 1), array.new<float>(profileSize + 1, 0), array.new<float>(profileSize + 1, 0), array.new<int>(), pocLine = array.new<line>(), vaLine = array.new<line>(), sumVol = array.new<float>())
+var miniProfile = profileData.new(levelArr = array.new<float>(10), volAtLevelBuy = array.new<float>(10, 0), volAtLevelSell = array.new<float>(10, 0), pocLine = array.new<line>(), vaLine = array.new<line>(), sumVol = array.new<float>())
+var lastBar     = lastBarDrawings.new(array.new<polyline>(), array.new<box>()), 
+
+cvdTreset = resetCVD == "Day" and timeframe.change("1D") or resetCVD == "Week" and timeframe.change("1W")
+
+profile.masterTime.push(time)
+
+method collectData(profileData profile) => 
+
+    if cvdTreset
+        profile.CVD := 0
+
+    profile.pCVD := profile.CVD
+
+    if ltfH.size() > 0 
+
+        for [i, data] in ltfV
+
+            switch math.sign(ltfD.get(i))
+
+                1  => profile.profilePointsBuy .push(priceSpan.new(ltfH.get(i), ltfL.get(i), data)), profile.CVD += data 
+                -1 => profile.profilePointsSell.push(priceSpan.new(ltfH.get(i), ltfL.get(i), data)), profile.CVD -= data
+
+            profile.highest := math.max(profile.highest, high)
+            profile.lowest  := math.min(profile.lowest , low )
+
+
+        profile.endPrice := close
+
+method appendPoints(array<chart.point> chartPoints, int x, float y, int centerPoint, float dist) => 
+
+    tempPoints = array.from(
+                 chart.point.from_time(x, y),
+                 chart.point.from_time(x, y + dist),
+                 chart.point.from_time(centerPoint, y + dist),
+                 chart.point.from_time(centerPoint, y), 
+                 chart.point.from_time(centerPoint, y + dist)
+         )
+
+    if chartPoints.size() == 0
+
+        tempPoints.unshift(chart.point.from_time(centerPoint, y))
+
+    chartPoints.concat(tempPoints)
+
+
+method checkPOCvio(profileData id) => 
+
+    idSize = id.pocLine.size()
+
+    if idSize > 0 and extendPOC
+
+        for i = idSize - 1 to 0 
+
+            obj        = id.pocLine.get(i)
+            overlapVal = obj.get_y1()
+
+            if low <= overlapVal and high >= overlapVal
+
+                switch nakedPOC
+
+                    true => id.pocLine.remove(i).delete()
+                    =>      id.pocLine.remove(i)
+            else 
+                obj.set_x2(time)
+
+    0
+
+method getVA(profileData profileObj, int getStartTimeIndex, string marketStructureDirection, bool isLast = false) => 
+
+    if showVA
+
+        getPOCindex = profileObj.sumVol.indexof(profileObj.sumVol.max())
+        sum         = profileObj.sumVol.sum ()
+        size        = profileObj.sumVol.size()
+
+        sumCount = 0.
+        countDn  = getPOCindex, countUp = getPOCindex 
+
+        for i = 0 to size 
+
+            if countDn == countUp 
+
+                sumCount += profileObj.sumVol.get(countUp)
+                countUp  += 1, countDn -= 1
+
+            else 
+
+                if countUp < size
+
+                    sumCount += profileObj.sumVol.get(countUp)
+                    countUp  += 1
+
+                if countDn > -1
+
+                    sumCount += profileObj.sumVol.get(countDn)
+                    countDn  -= 1
+
+            if sumCount >= sum * .7 
+
+                startTime = profile.masterTime.get(math.max(0, getStartTimeIndex - 1))
+
+                vaCol = switch marketStructureDirection
+
+                    "BoS" => vaColBos
+                    =>       vaColCHoCH
+
+                switch isLast 
+
+                    false => profile.vaLine.push(line.new(startTime, profileObj.levelArr.get(math.min(size - 1, countUp)), startTime, 
+                                       profileObj.levelArr.get(math.max(0, countDn)), 
+                                       color = vaCol, 
+                                       width = vaW, 
+                                       xloc  = xloc.bar_time,
+                                       force_overlay = true 
+                      ))
+
+                    =>       lastBar.vaLine := line.new(startTime, profileObj.levelArr.get(math.min(size - 1, countUp)), startTime, 
+                                       profileObj.levelArr.get(math.max(0, countDn)), 
+                                       color = vaCol, 
+                                       width = vaW, 
+                                       xloc  = xloc.bar_time,
+                                       force_overlay = true 
+                      )
+
+
+                break 
+
+convStr(string main) => 
+
+    main + "\n"
+ 
+method structureStatsLabel(profileData profile, bool isLast, int centerPoint) => 
+
+
+    if showStructureStats
+
+        RangeStr = convStr("Range: " + str.tostring(profile.highest - profile.lowest, format.mintick))
+        highestP = convStr("High: "  + str.tostring(profile.highest, format.mintick))
+        lowestP  = convStr("Low: "   + str.tostring(profile.lowest, format.mintick))
+
+        buySum = profile.volAtLevelBuy.sum(), sellSum = profile.volAtLevelSell.sum()
+
+        buyVol    = convStr("Buy Vol: "  + str.tostring(buySum, format.volume))
+        sellVol   = convStr("Sell Vol: " + str.tostring(sellSum, format.volume))
+        delta     = convStr("Delta: "    + str.tostring(buySum - sellSum, format.volume))
+        move      = convStr("Return: "   + str.tostring((profile.endPrice / profile.startPrice - 1) * 100, format.percent))
+
+
+        switch isLast 
+
+            false => label.new(centerPoint, profile.levelArr.max() + atrN, xloc = xloc.bar_time, 
+                                                 textcolor    = chart.fg_color,
+                                                 text         = RangeStr + highestP + lowestP + buyVol + sellVol + delta + move, 
+                                                 color        = color.new(chart.fg_color, 95),
+                                                 size         = txtSize,
+                                                 style        = label.style_text_outline,
+                                                 force_overlay = true  
+                                                 )
+
+            =>       lastBar.structureStats := label.new(centerPoint, profile.levelArr.max() + atrN, xloc = xloc.bar_time, 
+                                                 textcolor    = chart.fg_color,
+                                                 text         = RangeStr + highestP + lowestP + buyVol + sellVol + delta + move, 
+                                                 color        = color.new(chart.fg_color, 95),
+                                                 size         = txtSize,
+                                                 style        = label.style_text_outline,
+                                                 force_overlay = true  
+                                                 )
+
+
+
+method draw(profileData profile, string colorDirection, bool isLast = false) => 
+
+    sizeBuy  = profile.profilePointsBuy .size()
+    sizeSell = profile.profilePointsSell.size()
+    size     = math.max(sizeBuy, sizeSell)
+
+    lastBarSize = lastBar.profilePoly.size()
+
+    if lastBarSize  > 0 
+
+        for i = 0 to lastBarSize - 1
+
+            lastBar.profilePoly.shift().delete()
+
+    lastBarSize := lastBar.miniProfileBox.size() 
+
+    if lastBarSize > 0 
+
+        for i = 0 to lastBarSize - 1
+
+            lastBar.miniProfileBox.shift().delete()
+
+    
+
+    lastBar.pocLine.delete()
+    lastBar.vaLine .delete()
+    lastBar.structureStats.delete()
+
+    if size > 0 
+
+        profile.sumVol.clear(), miniProfile.sumVol.clear()
+
+        Range     = (profile.highest - profile.lowest) / (profileSize + 1)                                
+        miniRange = (profile.highest - profile.lowest) / 10   
+
+        for i = 0 to profileSize
+
+            profile.levelArr      .set(i, profile.lowest + Range * i)
+            profile.volAtLevelBuy .set(i, 0)
+            profile.volAtLevelSell.set(i, 0)
+
+        for i = 0 to miniProfile.levelArr.size() - 1
+
+            miniProfile.levelArr      .set(i, profile.lowest + miniRange * i)
+            miniProfile.volAtLevelBuy .set(i, 0)
+            miniProfile.volAtLevelSell.set(i, 0)
+
+        if sizeBuy > 0
+
+            for data in profile.profilePointsBuy
+
+                lowPoint  = profile.levelArr.binary_search_leftmost(data.L)
+                highPoint = profile.levelArr.binary_search_leftmost(data.H)
+
+                div = data.vol / (math.abs(highPoint - lowPoint) + 1)
+
+                for x = lowPoint to highPoint
+                
+                    profile.volAtLevelBuy.set(x, profile.volAtLevelBuy.get(x) + div)
+
+                lowPointMini  = miniProfile.levelArr.binary_search_leftmost(data.L)
+                highPointMini = miniProfile.levelArr.binary_search_leftmost(data.H)
+
+                div := data.vol / (math.abs(highPointMini - lowPointMini) + 1)
+
+                for x = lowPointMini to highPointMini 
+
+                    miniProfile.volAtLevelBuy.set(x, miniProfile.volAtLevelBuy.get(x) + div)    
+
+
+
+        if sizeSell > 0
+
+            for data in profile.profilePointsSell
+
+                lowPoint  = profile.levelArr.binary_search_leftmost(data.L)
+                highPoint = profile.levelArr.binary_search_leftmost(data.H)
+
+                div = data.vol / (math.abs(highPoint - lowPoint) + 1)
+
+                for x = lowPoint to highPoint
+                
+                    profile.volAtLevelSell.set(x, profile.volAtLevelSell.get(x) + div)
+
+                lowPointMini  = miniProfile.levelArr.binary_search_leftmost(data.L)
+                highPointMini = miniProfile.levelArr.binary_search_leftmost(data.H)
+
+                div := data.vol / (math.abs(highPointMini - lowPointMini) + 1)
+
+                for x = lowPointMini to highPointMini 
+
+                    miniProfile.volAtLevelSell.set(x, miniProfile.volAtLevelSell.get(x) + div)    
+
+        startTimeInd = profile.masterTime.binary_search_leftmost(profile.startTime)
+        center       = startTimeInd + math.floor((bar_index - startTimeInd) / 2)
+        endIndex     = bar_index 
+
+        [maxPoint, centerPoint] = switch profType 
+            
+            "Split"   => [math.min(math.abs(endIndex - center), math.abs(center - startTimeInd)), profile.masterTime.get(center)]
+            "Stacked" => [math.abs(math.round((center - startTimeInd) / 2)), profile.masterTime.get(startTimeInd)]
+
+        if maxPoint > 5 and not miniP
+
+            minVol       = math.min(profile.volAtLevelBuy.min(), profile.volAtLevelSell.min())
+            rangeVol     = math.max(profile.volAtLevelBuy.max(), profile.volAtLevelSell.max()) - minVol
+
+            pointsDraw  = profiles.new(array.new<chart.point>(), array.new<chart.point>())
+
+            for i = 0 to profileSize
+
+                getBuyVol = profile.volAtLevelBuy.get(i), getSellVol = profile.volAtLevelSell .get(i)
+
+                normBuy  = math.max(1, math.round(((getBuyVol   - minVol)  * maxPoint) / rangeVol))
+                normSell = math.max(1, math.round(((getSellVol  - minVol)  * maxPoint) / rangeVol))
+
+                profile.sumVol.push(getBuyVol + getSellVol)
+
+                [xBuy, xSell] = switch profType 
+
+                    "Split"   => [profile.masterTime.get(center - normBuy), profile.masterTime.get(center + normSell)]
+                    "Stacked" => [profile.masterTime.get(startTimeInd + normBuy), profile.masterTime.get(startTimeInd + normBuy + normSell)]
+
+                y = profile.levelArr.get(i)
+
+                sellCenterPoint = switch profType == "Stacked"
+
+                    true => xBuy
+                    =>      centerPoint
+
+                pointsDraw.sellProfile.appendPoints(xSell, y, sellCenterPoint, Range)
+                pointsDraw.buyProfile .appendPoints(xBuy, y, centerPoint, Range)
+
+            [colUp, colDn] = switch colorDirection 
+
+                "BoS" => [profColLoCUp, profColHiCUp]
+                =>       [profColLoCDn, profColHiCDn]
+
+        
+            switch isLast 
+
+                false => 
+
+
+                         polyline.new(pointsDraw.sellProfile, xloc = xloc.bar_time, line_color = color.new(colDn, profLineTransp), 
+                                                         fill_color = color.new(colDn, profFillTransp),
+                                                         force_overlay = true 
+                                                         ),
+
+                         polyline.new(pointsDraw.buyProfile , xloc = xloc.bar_time, line_color = color.new(colUp, profLineTransp), 
+                                                         fill_color = color.new(colUp, profFillTransp),
+                                                         force_overlay = true 
+                                                         )
+ 
+                =>                             
+
+                         lastBar.profilePoly.push(polyline.new(pointsDraw.sellProfile, xloc = xloc.bar_time, 
+                                                         line_color = color.new(colDn, profLineTransp), 
+                                                         fill_color = color.new(colDn, profFillTransp),
+                                                         force_overlay = true 
+                                                         )),
+                    
+                         lastBar.profilePoly.push(polyline.new(pointsDraw.buyProfile , xloc = xloc.bar_time, 
+                                                         line_color = color.new(colUp, profLineTransp), 
+                                                         fill_color = color.new(colUp, profFillTransp),
+                                                         force_overlay = true 
+                                                         ))
+            profile.structureStatsLabel(isLast, profile.masterTime.get(center))
+
+            if showPOC
+
+                getPoc = profile.levelArr.get(profile.sumVol.indexof(profile.sumVol.max())) + Range / 2
+
+                switch isLast 
+
+                    false => profile.pocLine.push(line.new(profile.masterTime.get(startTimeInd), getPoc, time, getPoc, 
+                                                 color = pocLineCol, 
+                                                 xloc  = xloc.bar_time, 
+                                                 width = pocW,
+                                                 force_overlay = true 
+                                                 ))
+
+                    =>       lastBar.pocLine := line.new(profile.masterTime.get(startTimeInd), getPoc, time, getPoc, 
+                                                 color = pocLineCol, 
+                                                 xloc  = xloc.bar_time, 
+                                                 width = pocW,
+                                                 force_overlay = true 
+                                                 )
+
+            profile.getVA(startTimeInd, colorDirection, isLast)
+
+        if maxPoint <= 5 or miniP
+            
+            for [i, data] in miniProfile.volAtLevelBuy
+
+                miniProfile.sumVol.push(data + miniProfile.volAtLevelSell.get(i))
+
+            minVol       = miniProfile.sumVol.min()
+            rangeVol     = miniProfile.sumVol.max() - minVol
+
+            startTime    = profile.masterTime  .get(startTimeInd)
+                
+            getPOCind    = miniProfile.sumVol.indexof(miniProfile.sumVol.max())
+            getPOC       = miniProfile.levelArr.get(getPOCind) + miniRange / 2
+                
+            countDn      = getPOCind, countUp = getPOCind 
+
+            if showVA 
+
+                sum         = miniProfile.sumVol.sum ()
+                sizeMini    = miniProfile.sumVol.size()
+
+                sumCount = 0.
+
+                for i = 0 to sizeMini
+
+                    if countDn == countUp 
+
+                        sumCount += miniProfile.sumVol.get(countUp)
+                        countUp  += 1, countDn -= 1
+
+                    else 
+
+                        if countUp < sizeMini
+
+                            sumCount += miniProfile.sumVol.get(countUp)
+                            countUp  += 1
+
+                        if countDn > -1
+
+                            sumCount += miniProfile.sumVol.get(countDn)
+                            countDn  -= 1
+
+                    if sumCount >= sum * .7 
+                        break 
+                
+
+            for i = 0 to miniProfile.volAtLevelBuy.size() - 1
+
+                sumVolAtLevel = miniProfile.sumVol.get(i)
+
+                norm  = math.round(1 + ((sumVolAtLevel - minVol) * 10) / rangeVol)
+                level = miniProfile.levelArr.get(i)
+                getText = "█"
+
+                if norm > 1 
+                    for x = 0 to math.min(norm - 1, 9)
+                        getText += "█"
+
+                if str.length(getText) < 10 
+
+                    for x = str.length(getText) to 10 
+                        getText += " "
+
+                else if str.length(getText) == 10 
+
+                    getText += " "
+                    
+                col = switch colorDirection 
+
+                    "BoS" => color.new(color.from_gradient(norm, 0, 10, miniColLoCUp, miniColHiCUp), miniProfTransp)
+                    =>      color.new(color.from_gradient(norm, 0, 10, miniColLoCDn, miniColHiCDn), miniProfTransp)
+
+                if showVolAtLevel
+
+                    getText += str.tostring(sumVolAtLevel, format.volume) 
+
+                if showVA 
+                    
+                    if i <= countDn or i >= countUp 
+
+                        col := color.new(color.gray, miniProfTransp)
+
+                switch isLast 
+
+                    false => box.new(startTime, level, time, level + miniRange, text = getText, 
+                                                         text_halign   = text.align_left, 
+                                                         text_valign   = text.align_center, 
+                                                         border_color  = color(na), 
+                                                         bgcolor       = #00000000, 
+                                                         xloc          = xloc.bar_time, 
+                                                         text_color    = col,
+                                                         force_overlay = true 
+                                                         )
+
+                    =>       lastBar.miniProfileBox.push(box.new(startTime, level, time, level + miniRange, text = getText, 
+                                                         text_halign  = text.align_left, 
+                                                         text_valign  = text.align_center, 
+                                                         border_color = color(na), 
+                                                         bgcolor      = #00000000, 
+                                                         xloc         = xloc.bar_time, 
+                                                         text_color   = col,
+                                                         force_overlay = true 
+                                                         ))
+
+            if showPOC
+
+                switch isLast 
+
+                    false => miniProfile.pocLine.push(line.new(startTime, getPOC, time, getPOC, xloc = xloc.bar_time, 
+                                                         color = pocLineCol, 
+                                                         width = pocW,
+                                                         force_overlay = true
+                                                         ))
+
+                    =>       lastBar.pocLine := line.new(startTime, getPOC, time, getPOC, xloc = xloc.bar_time, 
+                                                         color = pocLineCol, 
+                                                         width = pocW,
+                                                         force_overlay = true
+                                                         )
+
+            profile.structureStatsLabel(isLast, centerPoint)
+
+    float(na)
+
+method wipe(profileData profile, bool choch = false) => 
+
+    profile.profilePointsBuy .clear()
+    profile.profilePointsSell.clear()
+    profile.highest    := high 
+    profile.lowest     := low
+    profile.startTime  := time
+    profile.startPrice := close
+    profile.endPrice   := close
+ 
+    if choch and resetCVD == "CHoCH" or resetCVD == "BoS + CHoCH"
+        profile.CVD    := 0.
+
+
+zz(float atr, float buffer) =>
+    msEv = 0
+
+    var strongHighSorted = array.new<float>()
+    var strongLowSorted  = array.new<float>()
+
+    var point        = close
+    var pointTrail   = close
+    var timeP        = time
+    var dir          = 0
+
+    var chart.point cPoint     = na
+    var chart.point pPoint     = na
+    var chart.point p2Point    = na
+  
+    var bosUpL = array.new<labelLine>(), var choUpL = array.new<labelLine>()
+    var bosDnL = array.new<labelLine>(), var mssDnL = array.new<labelLine>()
+
+    var structureDirection = ""
+    var mostRecentPoint    = 0.
+
+    var historicalPoints = array.new<chart.point>()
+
+    profile    .checkPOCvio()
+    miniProfile.checkPOCvio()
+
+    if dir == 1
+
+        if not na(p2Point)
+
+            if structureDirection == "Up"
+
+                if close[1] <= p2Point.price and close > p2Point.price and barstate.isconfirmed and isLastBar(userTF)
+
+                    if p2Point.price != mostRecentPoint
+
+                        if bosUpL.size() == 0
+
+                            msEv := 1
+                            bosUpL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, false, forceOverlay = true)
+                            mostRecentPoint := p2Point.price
+
+                            startIndex = historicalData.timeArr.indexof(p2Point.time)
+                            profile.draw("BoS")
+                            profile.wipe()
+
+                        else 
+
+                            if p2Point.price != bosUpL.last().lin.get_y2()
+                            
+                                msEv := 1
+                                bosUpL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, false, forceOverlay = true)
+                                mostRecentPoint := p2Point.price
+
+                                startIndex = historicalData.timeArr.indexof(p2Point.time)
+
+                                profile.draw("BoS")
+                                profile.wipe()
+
+            else if structureDirection == "Down"
+
+                if close[1] <= p2Point.price and close > p2Point.price
+
+                    if p2Point.price != mostRecentPoint
+
+                        if mssDnL.size() == 0
+
+                            msEv := 2
+                            mssDnL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, false, upRejections, dnRejections, 
+                                 historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                 historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr,
+                                 upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+                                 )
+
+                            mostRecentPoint := p2Point.price
+                            structureDirection := "Up"
+                            profile.draw("CHoCH")
+                            profile.wipe(true)
+
+
+                        else 
+
+                            if p2Point.price != mssDnL.last().lin.get_y2()
+                            
+                                msEv := 2
+                                mssDnL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, false, upRejections, dnRejections, 
+                                 historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                 historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr,
+                                 upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+
+                                 )
+
+                                mostRecentPoint := p2Point.price
+                                structureDirection := "Up"
+                                profile.draw("CHoCH")                                
+                                profile.wipe(true)
+
+
+
+        point := math.max(point, high)
+
+        timeP := switch high == point 
+
+            true => time 
+            =>      timeP
+
+        cPoint := chart.point.from_time(timeP, point)
+
+        addition = math.abs(point - pPoint.price) * buffer
+
+        if low <= point - atr - addition and high != point
+           
+            if not na(pPoint)
+
+                p2Point    := pPoint.copy()
+
+                if close < p2Point.price and barstate.isconfirmed and isLastBar(userTF)
+
+                    if structureDirection == "Up"
+
+                        if p2Point.price != mostRecentPoint
+
+                            if choUpL.size() == 0
+
+                                msEv := -2
+                                choUpL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, true, upRejections, dnRejections,
+                                 historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                 historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr,
+                                 upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+                                 )
+                                mostRecentPoint := p2Point.price
+                                structureDirection := "Down"
+                                profile.draw("CHoCH")
+                                profile.wipe(true)
+
+
+                            else 
+
+                                if p2Point.price != choUpL.last().lin.get_y2()
+                                
+                                    msEv := -2
+                                    choUpL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, true, upRejections, dnRejections,
+                                      historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                      historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr,
+                                      upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+
+                                      )
+                                    mostRecentPoint := p2Point.price
+                                    structureDirection := "Down"
+                                    profile.draw("CHoCH")
+                                    profile.wipe(true)
+
+
+                    else if structureDirection == "Down"
+
+                        if p2Point.price != mostRecentPoint
+
+                            if bosDnL.size() == 0
+
+                                msEv := -1
+                                bosDnL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, true, forceOverlay = true)
+                                mostRecentPoint := p2Point.price
+
+                                startIndex = historicalData.timeArr.indexof(p2Point.time)
+                                profile.draw("BoS")
+                                profile.wipe()
+
+                            else 
+
+                                if p2Point.price != bosDnL.last().lin.get_y2()
+                                
+                                    msEv := -1
+                                    bosDnL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, true, forceOverlay = true)
+                                    mostRecentPoint := p2Point.price
+
+                                    startIndex = historicalData.timeArr.indexof(p2Point.time)
+                                    profile.draw("BoS")
+                                    profile.wipe()
+
+            pPoint  := chart.point.from_time(timeP, point)
+            cPoint  := chart.point.from_time(time, low)
+            historicalPoints.unshift(pPoint)
+
+            dir   := -1 
+            point := low
+            timeP := time
+
+
+    else if dir == -1
+
+        if not na(p2Point)
+
+            if structureDirection == "Up"
+
+                if close[1] > p2Point.price and close <= p2Point.price and barstate.isconfirmed and isLastBar(userTF)
+
+                    if p2Point.price != mostRecentPoint
+
+                        if choUpL.size() == 0
+
+                            msEv := -2
+                            choUpL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, true, upRejections, dnRejections,
+                                 historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                 historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr, 
+                                 upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+                                 )
+                            mostRecentPoint := p2Point.price
+                            structureDirection := "Down"
+                            profile.draw("CHoCH")
+                            profile.wipe(true)
+
+                        else 
+
+                            if p2Point.price != choUpL.last().lin.get_y2()
+                            
+                                msEv := -2
+                                choUpL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, true, upRejections, dnRejections,
+                                 historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                 historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr,
+                                 upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+
+                                 )
+                                mostRecentPoint := p2Point.price
+                                structureDirection := "Down"
+                                profile.draw("CHoCH")
+                                profile.wipe(true)
+
+
+            else if structureDirection == "Down"
+
+                if close[1] > p2Point.price and close <= p2Point.price and barstate.isconfirmed and isLastBar(userTF)
+                    
+                    if p2Point.price != mostRecentPoint
+
+                        if bosDnL.size() == 0
+
+                            msEv := -1
+                            bosDnL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, true, forceOverlay = true)
+                            mostRecentPoint := p2Point.price
+
+                            startIndex = historicalData.timeArr.indexof(p2Point.time)
+                            profile.draw("BoS")
+                            profile.wipe()
+
+
+                        else 
+
+                            if p2Point.price != bosDnL.last().lin.get_y2()
+                            
+                                msEv := -1
+                                bosDnL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, true, forceOverlay = true)
+                                mostRecentPoint := p2Point.price
+
+                                startIndex = historicalData.timeArr.indexof(p2Point.time)
+                                profile.draw("BoS")
+                                profile.wipe()
+
+                
+
+        point := math.min(low, point)
+
+        timeP := switch low == point 
+            true => time 
+            =>      timeP
+
+        cPoint := chart.point.from_time(timeP, point)
+
+        addition = math.abs(point - pPoint.price) * buffer
+
+        if high >= point + atr + addition and low != point
+
+            if not na(pPoint)
+
+                p2Point := pPoint.copy()
+
+                if close > p2Point.price and barstate.isconfirmed and isLastBar(userTF)
+
+                    if structureDirection == "Up"
+                                            
+                        if p2Point.price != mostRecentPoint
+                        
+                            if bosUpL.size() == 0
+                            
+                                msEv := 1
+                                bosUpL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, false, forceOverlay = true)
+                                mostRecentPoint := p2Point.price
+                                startIndex = historicalData.timeArr.indexof(p2Point.time)
+                                profile.draw("BoS")
+                                profile.wipe()
+
+
+                            else 
+                            
+                                if p2Point.price != bosUpL.last().lin.get_y2()
+                                
+                                    msEv := 1
+                                    bosUpL.drawBos(p2Point, p2Point.time, p2Point.price, boScol, showBOS, false, forceOverlay = true)
+                                    mostRecentPoint := p2Point.price
+                                    startIndex = historicalData.timeArr.indexof(p2Point.time)
+                                    profile.draw("BoS")
+                                    profile.wipe()
+
+
+                    else if structureDirection == "Down"
+                        
+                        if p2Point.price != mostRecentPoint
+                        
+                            if mssDnL.size() == 0
+                            
+                                msEv := 2
+                                mssDnL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, false, upRejections, dnRejections,
+                                 historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                 historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr,
+                                 upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+                                 )
+                                mostRecentPoint := p2Point.price
+                                structureDirection := "Up"
+                                profile.draw("CHoCH")
+                                profile.wipe(true)
+
+
+
+                            else 
+                            
+                                if p2Point.price != mssDnL.last().lin.get_y2()
+                                
+                                    msEv := 2
+                                    mssDnL.drawMSS(p2Point, p2Point.time, p2Point.price, MSScol, showCHoCH, false, upRejections, dnRejections,
+                                         historicalData.highArr , historicalData.lowArr , historicalData.timeArr, 
+                                         historicalData.closeArr, historicalData.openArr, historicalData.atrTFarr,
+                                         upRejectionsPrices, dnRejectionsPrices, forceOverlay = true
+                                         )
+                                    mostRecentPoint := p2Point.price
+                                    structureDirection := "Up"
+                                    profile.draw("CHoCH")
+                                    profile.wipe(true)
+
+
+
+
+            pPoint := chart.point.from_time(timeP, point)
+            cPoint := chart.point.from_time(time, high)
+            historicalPoints.unshift(pPoint)
+
+            dir   := 1 
+            point := high 
+            timeP := time
+
+    if dir == 0 
+
+        if high >= point + atr 
+
+            if not na(pPoint)
+                p2Point := pPoint.copy()
+                
+            pPoint := chart.point.from_time(timeP, point)
+            cPoint := chart.point.from_time(time, high)
+            historicalPoints.unshift(pPoint)
+
+            dir   := 1
+            pointTrail := point
+            point := high
+            timeP := time 
+            structureDirection := "Up"
+
+
+        else if low <= point + atr
+
+
+            if not na(pPoint)
+                p2Point := pPoint.copy()
+                
+            pPoint := chart.point.from_time(timeP, point)
+            cPoint := chart.point.from_time(time, low)
+            historicalPoints.unshift(pPoint)
+
+            dir   := -1 
+            pointTrail := point
+            point := low
+            timeP := time
+            structureDirection := "Down"
+
+    profile.collectData()
+
+    if barstate.islast 
+
+        profile.draw(structureDirection, true)
+
+    [cPoint, pPoint, p2Point, structureDirection, historicalPoints, dir, msEv]
+
+[cPoint, pPoint, getKeyPoint, structureDirection, historicalPoints, trendDir, msEvent] = zz(atrTF, 0)
+
+drawCVD = true
+
+if cvdTreset
+    drawCVD := false 
+
+if ta.change(label.all.size()) != 0
+
+    if label.all.last().get_text() == "MSS"
+        label.all.last().set_text("CHoCH")
+
+if resetCVD == "CHoCH" or resetCVD == "BoS + CHoCH"
+    if profile.pCVD == 0
+        drawCVD := false
+
+colCandles = color(na)
+
+if colorCandlesMarketStructure
+
+    colCandles := switch structureDirection 
+
+        "Up" => msUp 
+        =>      msDn 
+
+colCVD = switch profile.CVD >= profile.pCVD
+
+    true => cvdBuyCol
+    =>      cvdSellCol
+
+plotcandle(open, high, low, close, title = "Market Structure Candles", color = colCandles, wickcolor = colCandles, bordercolor = colCandles, force_overlay = true, display = display.pane)
+barcolor(colCandles)
+
+plotcandle(profile.pCVD, math.max(profile.pCVD, profile.CVD), math.min(profile.pCVD, profile.CVD), profile.CVD, color = colCVD, wickcolor = colCVD, bordercolor = colCVD)
+
+plot(drawCVD ? profile.CVD : na, style = plot.style_linebr, color = color.new(#6929f2, 94), linewidth = 10, display = display.pane)
+plot(drawCVD ? profile.CVD : na, style = plot.style_linebr, color = color.new(#6929f2, 96), linewidth = 12, display = display.pane)
+plot(drawCVD ? profile.CVD : na, style = plot.style_linebr, color = color.new(#6929f2, 98), linewidth = 14, display = display.pane)
+plot(drawCVD ? profile.CVD : na, style = plot.style_linebr, color = color.new(#6929f2, 99), linewidth = 16, display = display.pane)
+plot(0, title = "Zero Lone", color = bar_index % 10 == 0 ? color.gray : na, style = plot.style_linebr, linewidth = 2)
+
+// ~~ Signals (operator): a long on an upward structure break, a short on a downward one, at the close of the breaking bar.
+// CHoCH: structure changes direction. BoS: structure breaks on in its own direction. No stop is published; the bot's ATR stop applies.
+sigMode = input.string("BoS", "Signal", options = ["CHoCH", "BoS", "CHoCH + BoS"], group = "Signals")
+longSig  = (msEvent == 2 and sigMode != "BoS") or (msEvent == 1 and sigMode != "CHoCH")
+shortSig = (msEvent == -2 and sigMode != "BoS") or (msEvent == -1 and sigMode != "CHoCH")
+if longSig and barstate.isconfirmed
+    alert('{"schema":"sats.events.v2","events":[{"event":"buy","side":"long","fill_price":' + str.tostring(close) + ',"reason":"' + (msEvent == 2 ? "CHoCH" : "BoS") + '"}]}', alert.freq_once_per_bar_close)
+if shortSig and barstate.isconfirmed
+    alert('{"schema":"sats.events.v2","events":[{"event":"sell","side":"short","fill_price":' + str.tostring(close) + ',"reason":"' + (msEvent == -2 ? "CHoCH" : "BoS") + '"}]}', alert.freq_once_per_bar_close)

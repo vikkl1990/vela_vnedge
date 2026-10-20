@@ -4926,3 +4926,31 @@ both exit modes (`scriptExit`, decision 114), so the backtest comparison continu
 **The open trades.** Four shadow trades of these scanners were open, each marked `trailOff`: Alphamojo Supertrend ARIAUSD
 15m (#3242, peak +5.63R), Donchian Breakout AKEUSD, ZECUSD and ETHUSD 1h (#3193, #3254, #3306). By decision 160 each trail
 starts at the restart, from that moment's price.
+
+## 162. Kioseff Trading's Market Structure Volume Profiles, built as two signal indicators and benchmarked (20 October 2026)
+
+The operator shared the script and asked to "build and test as indicators". As published it cannot run (it imports
+Trading-IQ's ICTlibrary v2, and PineTS loads no TradingView library) and has nothing to trade (its BoS and CHoCH are drawn
+lines; no alert, no shape).
+
+**The build** (`OPERATOR03` CHoCH, `OPERATOR04` BoS; both MPL-2.0 like the originals, with the notices kept):
+- The library's two types and four functions the script uses (labelLine, rejectionBlocks, necessaryData, isLastBar,
+  drawBos, drawMSS, and what they call) are inlined in place of the import.
+- `isLastBar` asked for the next bar's open (`time("", -1)`), which PineTS does not evaluate, so every break it gated
+  was lost; it now compares the bar's own close with the chosen timeframe's, the same instant.
+- A trailing comma after a `switch` arm, accepted by TradingView, is removed.
+- The structure function returns the break it drew on the bar, and an alert fires at the close of the breaking bar: long on
+  an upward break, short on a downward one, with no stop, so the bot's ATR stop applies. An input picks CHoCH, BoS or both.
+
+**The benchmark** (decision 155: BTC, ETH, SOL, XRP, ZEC, AKE; 4,000 15m bars; 20 random-entry sets per cell):
+
+| variant | 15m | 1h | 4h |
+|---|---|---|---|
+| CHoCH (structure turns) | −35.8R / 352 | +16.4R / 410; halves −5.0 / +21.3; above random median 6/6 | **+29.2R / 196, +0.149 per trade; halves +14.2 / +15.0; above 90% of random 3/6, median 5/6** |
+| BoS (structure continues) | −26.6R / 335 | +6.8R / 431; halves −4.4 / +11.2 | −4.5R / 209 |
+
+On 4h the CHoCH variant gains on five of six markets: SOL +13.5R (above every random set), ZEC +10.7R, BTC +2.7R, AKE +2.7R
+and ETH +1.0R; XRP −1.4R. On 1h ZEC alone carries it (+18.7R of +16.4R). BoS adds nothing over random entries.
+
+**Not changed.** Neither variant is enabled. Both enter the library; the incubator's nightly screen decides whether any
+pair reaches the shadow book.
