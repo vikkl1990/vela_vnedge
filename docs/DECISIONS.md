@@ -4874,3 +4874,24 @@ matches only this script; the guards in two LuxAlgo scripts that check the chart
 
 **Not changed.** No scanner is admitted or released by this. The ones with a 4h or 1h edge reach the shadow book through the
 incubator's own screen.
+
+## 159. The account trails trades of strategies on their own exits; the shadow book keeps measuring the exits alone (20 October 2026)
+
+ARIAUSD long #3241 (Alphamojo Supertrend HA, 15m) ran to +1.33R and handed most of it back with its stop still at entry
+−1R. Its scanner is one of the five on exit mode `script` since decision 114, where the bot's trail, floor, stall and
+time stops are off and only the strategy's own exit, or a 3 ATR disaster stop, closes the trade. The bot's rules would have
+held the stop near +1.2R. The operator: "in the event of reversal we lose all".
+
+Decision 114 moved those five to their own exits for the shadow book, where none was then in the account. The account now
+takes them too (decision 146 admits their ATR stops), so it carried trades with no protection at all. Since the switch the
+five shadow trades of this scanner that closed were full stops that never reached +0.5R; #3241 is the first to run and turn.
+
+**What changed.** For a scanner on exit mode `script`, an account position opened at or after `paper.scriptExitTrailFrom`
+(default 20 October 2026 13:30 UTC) adds the bot's trail and profit floor (`scriptModeProtection`: trail after +0.5R with
+the give-back steps and stall tightening, floor +0.25R from +0.5R) over the script mode. The strategy's exit signals still
+close it, and its targets, disaster stop width and the absent time stops stay the script mode's. The shadow book is
+unchanged and keeps measuring the strategies' own exits.
+
+**Why a cutoff.** A bar fills a stop at the stop's price. A trail applied to an open trade after the fact would set a stop
+from a peak the price has already left (#3241: about +1.2R, with price near +0.5R) and book an exit at a level that did not
+trade. #3241 finishes under its own exits; it was the only open account trade of the five scanners at the change.

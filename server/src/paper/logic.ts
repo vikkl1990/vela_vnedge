@@ -212,6 +212,17 @@ export function scriptModeExit(cfg: PaperConfig): ExitOverride {
   };
 }
 
+/**
+ * Decision 159: the bot's protection for an exit-mode `script` trade in the account — its trail and profit floor,
+ * layered over `scriptModeExit`. Targets, stop width, stall and time stops stay the strategy's.
+ */
+export function scriptModeProtection(cfg: PaperConfig): ExitOverride {
+  return {
+    trailAfterR: cfg.trailAfterR, trailGiveBackPct: cfg.trailGiveBackPct, trailAtrMult: cfg.trailAtrMult,
+    floorAtR: cfg.floorAtR, floorKeepR: cfg.floorKeepR, trailSteps: cfg.trailSteps, trailStall: cfg.trailStall,
+  };
+}
+
 export function exitConfigFor(cfg: PaperConfig, symbol: string, scannerOverride?: ExitOverride | null): PaperConfig {
   const bySymbol = cfg.exitBySymbol?.[symbol];
   const layers = [bySymbol, scannerOverride].filter((x): x is ExitOverride => !!x && Object.keys(x).length > 0);

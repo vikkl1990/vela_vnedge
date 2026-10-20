@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, recordLeverage, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop, giveBackPct, earlyStallExit } from './logic.ts';
+import { DEFAULT_CONFIG, type PaperConfig } from '../config.ts';
+import { applyBar, applyLiveBar, applyTrade, closingFeeWaived, feeFor, fillExit, trendExit, trendSide, applyScriptExit, computeStats, openPosition, openR, resolveLevels, reversalAllowed, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees, contractRiskShare, leverageForStop, recordLeverage, trendGateReason, higherTrend, trendPerBar, exitConfigFor, trailStop, giveBackPct, earlyStallExit, scriptModeExit, scriptModeProtection } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, feeTaxPct: 0, liquidation: false };
 
@@ -716,4 +716,16 @@ test('decision 144: margin sizing puts up marginPerTrade at the wanted leverage,
   assert.ok(guarded.riskAmount < 150, 'a stop-out costs less than the margin');
   const noRoom = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 60, contractValue: 1, tickSize: 0.01, cfg: { ...c, minSizeShare: 0.5 } });
   assert.equal(noRoom.qty, 0, 'less free margin than half the intended position is refused');
+});
+
+test('decision 159: a script-exit trade trails only when the account layers the bot protection over the script mode', () => {
+  const c = { ...DEFAULT_CONFIG.paper, trailAfterR: 0.5, trailGiveBackPct: 10, floorAtR: 0.5, floorKeepR: 0.25, trailSteps: [[2, 8], [4, 6]] as Array<[number, number]>, trailStall: { minutes: 45, factor: 0.6 } };
+  const open = (cfg: PaperConfig) => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'ARIAUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [], riskAmount: 100, levelsSource: 'atr-fallback', signalId: null, cfg, bt: false });
+  const own = exitConfigFor(c, 'ARIAUSD', scriptModeExit(c));
+  const guarded = exitConfigFor(c, 'ARIAUSD', { ...scriptModeExit(c), ...scriptModeProtection(c) });
+  const a = open(own); trailStop(a, 113.3, own, undefined, 60_000);              // +1.33R
+  assert.equal(a.sl, 90, 'the strategy\'s own exits: the stop stays where it opened');
+  const b = open(guarded); trailStop(b, 113.3, guarded, undefined, 60_000);
+  assert.ok(Math.abs((b.sl ?? 0) - 111.97) < 0.01, `protected: 10% give-back of 1.33R keeps 1.197R, stop ${b.sl}`);
+  assert.deepEqual([guarded.fallbackRR, guarded.fallbackAtrSl, guarded.staleBars], [[0, 0, 0], c.scriptDisasterStopAtr ?? 3, 0], 'targets, stop width and time stop stay the script mode\'s');
 });

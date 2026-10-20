@@ -201,6 +201,13 @@ export interface PaperConfig {
    * stop, so sizing keeps a risk basis and a runaway cannot happen.
    */
   scriptDisasterStopAtr?: number;
+  /**
+   * Decision 159: the account trails trades of exit-mode `script` scanners. A position the account opens at or after
+   * this time (epoch ms) keeps the strategy's own exits and adds the bot's trail and profit floor, so a run the strategy
+   * hands back is protected; the shadow book keeps measuring the strategy's exits alone. Positions opened before it are
+   * left as they were: a trail applied late would set a stop price has already passed. Unset: off.
+   */
+  scriptExitTrailFrom?: number;
   fallbackRR: [number, number, number];
   /**
    * What a script's own targets are allowed to do. `use`: they replace the ladder (the default so
@@ -578,6 +585,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     trailStall: { minutes: 0, factor: 1 },
     fallbackAtrSl: 1.5,
     scriptDisasterStopAtr: 3,
+    // decision 159: account trades of script-exit scanners opened from 20 October 2026 13:30 UTC trail; earlier ones are left as they were
+    scriptExitTrailFrom: Date.UTC(2026, 9, 20, 13, 30),
     fallbackRR: [1, 2, 3],
     minSizeShare: 0,
     maxOpenPositions: 20,
@@ -707,6 +716,7 @@ export function validateConfig(c: AppConfig): string[] {
   }
   if (p.trailSteps?.length && !p.trailSteps.every(x => Array.isArray(x) && x.length === 2 && x[0] > 0 && x[1] >= 0 && x[1] <= 100)) errs.push('paper.trailSteps must be [atR, giveBackPct] pairs');
   if (p.trailStall && !(p.trailStall.minutes >= 0 && p.trailStall.factor > 0 && p.trailStall.factor <= 1)) errs.push('paper.trailStall needs minutes ≥ 0 and 0 < factor ≤ 1');
+  if (p.scriptExitTrailFrom !== undefined && !(Number.isFinite(p.scriptExitTrailFrom) && p.scriptExitTrailFrom >= 0)) errs.push('paper.scriptExitTrailFrom must be an epoch time in ms');
   if (p.scriptDisasterStopAtr !== undefined && !(p.scriptDisasterStopAtr >= 0.5 && p.scriptDisasterStopAtr <= 10)) errs.push('paper.scriptDisasterStopAtr must be 0.5..10');
   if (p.earlyStall && !(p.earlyStall.minutes >= 0 && p.earlyStall.minR >= 0 && p.earlyStall.maxR >= p.earlyStall.minR)) errs.push('paper.earlyStall needs minutes ≥ 0 and 0 ≤ minR ≤ maxR');
   if (p.trendGate) {
