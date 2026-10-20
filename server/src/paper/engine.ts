@@ -526,6 +526,8 @@ export class PaperEngine extends EventEmitter {
    */
   onBar(symbol: string, bar: PriceBar, observedAt = Date.now(), opts: { historical?: boolean } = {}): void {
     if (bar.time < (this.priceBars.get(symbol)?.time ?? -Infinity)) return;
+    // a candle with a zero or missing price is a feed fault, never a print: it must not fill, stop or sample a trade
+    if (!(bar.high > 0 && bar.low > 0 && bar.close > 0)) return;
     this.priceBars.set(symbol, { ...bar });
     // A bar a resync pulled from REST describes a period that has already ended. Its prices are
     // real, so open positions may still exit on them, but they are stamped at the bar's own close
@@ -788,7 +790,7 @@ export class PaperEngine extends EventEmitter {
   private readonly pathEveryMs = 60_000;
 
   private recordPath(p: Position, price: number, at: number, event?: string, note?: string): void {
-    if (!(p.riskAmount > 0) || !Number.isFinite(price)) return;
+    if (!(p.riskAmount > 0) || !(Number.isFinite(price) && price > 0)) return;
     const r = openR(p, price);
     let moved = false;
     // the trail raises peakR itself from intra-bar highs, so the timestamp is taken from whenever the
