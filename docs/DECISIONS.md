@@ -4468,3 +4468,15 @@ is the trades that lose on average. Script-placed stops are the one clean case: 
 of both books, and skipping them improves both books in both halves. The alt 0.8–1.2% band removes
 the most stop-outs (a quarter in both books) and the shadow's drop to 12%, but tighter alt stops win,
 so the band may be noise; it is a forward test, not a rule. Nothing applied.
+
+## 146. The account takes only the ATR stop: script-placed stops refused (20 October 2026)
+
+**Why.** Decision 145: stops a scanner places itself (levels source `script` or `mixed`) lose in both
+halves of both books, and skipping them improves both (paper +$387 → +$435, shadow +$4,722 → +$5,396
+under the deployed sizing). The operator said "deploy".
+
+**What changed.** `paper.skipScriptStops` (default off; on in the deployment): the account refuses an
+entry whose stop came from the script, with the reason "the scanner's own stop". The shadow book is
+untouched and keeps recording those trades, so decision 145's finding is checked forward. The refusal
+counts as `other` in the signal funnel, not `cost`; a live cell that only ever brings script stops goes
+silent and the silent clock demotes it.

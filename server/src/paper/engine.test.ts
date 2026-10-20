@@ -364,3 +364,20 @@ test('decision 144: margin sizing reads the cell record from the shadow book; a 
   assert.equal(entry('other-tf').qty, 7, 'the record is per timeframe');
   assert.equal(entry('fresh').qty, 7, 'no record: the base 5x');
 });
+
+test("decision 146: the account refuses a scanner's own stop when skipScriptStops is on; the ATR stop and the shadow book are untouched", t => {
+  const { db, cfg, engine } = setup(t);
+  cfg.paper.skipScriptStops = true;
+  const ctx = { scannerName: 's', symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' as const, atr: 2 };
+  const ev = (sl?: number) => ({ kind: 'entry' as const, side: 'long' as const, price: 100, sl, tp: [110], label: 'entry', message: '', source: 'alert' as const, barTime: 0, barIndex: 0 });
+  const own = engine.onEntry(ev(95), { ...ctx, scannerId: 'a' });
+  assert.equal(own.action, 'rejected');
+  assert.match(own.reason ?? '', /decision 146/);
+  const atr = engine.onEntry(ev(undefined), { ...ctx, scannerId: 'b' });
+  assert.equal(atr.action, 'opened');
+  assert.equal(atr.position!.levelsSource, 'atr-fallback');
+  const shadow = new PaperEngine(db, () => cfg, { book: 2 });
+  assert.equal(shadow.onEntry(ev(95), { ...ctx, scannerId: 'c' }).action, 'opened', 'the shadow book keeps recording script stops');
+  cfg.paper.skipScriptStops = false;
+  assert.equal(engine.onEntry(ev(95), { ...ctx, scannerId: 'd', symbol: 'ETHUSD' }).action, 'opened');
+});

@@ -303,6 +303,9 @@ export class PaperEngine extends EventEmitter {
     const entryContext: FillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return refused(levels.error);
+    // decision 146: a stop the scanner placed itself (source script or mixed) loses in both books and both halves of
+    // decision 145's sample; the account takes only entries on the engine's own ATR stop. The shadow book keeps them.
+    if (this.book === 0 && cfg.skipScriptStops && levels.source !== 'atr-fallback') return refused("the scanner's own stop: the account takes only the ATR stop (decision 146)");
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol, this.spreadPct(ctx.symbol, cfg, ctx.at));
     if (feeErr) return refused(feeErr);
     // portfolio risk layer: kill switches, position caps, cooldowns, regime filter, drawdown scaling

@@ -21,6 +21,8 @@ export interface PaperConfig {
    * leverage chosen from the cell's own shadow record (`marginLeverage`); the margin, not maxStopLossPct, bounds the loss.
    */
   sizingMode: 'risk' | 'quality' | 'margin';
+  /** Decision 146: the account refuses entries whose stop the scanner placed itself (levels source script or mixed). */
+  skipScriptStops?: boolean;
   /** Margin sizing: the cash put up per position, in USD. */
   marginPerTrade?: number;
   /**
@@ -541,6 +543,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     maxLeverage: 10,
     sizingMode: 'risk',
     marginPerTrade: 150,
+    skipScriptStops: false,
     marginLeverage: { base: 5, strong: 20, weak: 5, strongAboveR: 0.05, weakBelowR: -0.05, minTrades: 5, lookback: 30 },
     minLeverage: 5,
     liquidation: true,
