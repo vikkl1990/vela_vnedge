@@ -5035,3 +5035,36 @@ background work on the pool's 6 workers.
 **Expected and to measure.** Six workers draining about 340 jobs of some 0.7 s still take about 40 s at a 15m close, so
 the mirrored median should fall to roughly 20 s, not to the direct path's 5 s. More workers would take a service setting
 (`VNEDGE_WORKERS`), proposed to the operator: the service uses 3.9 GB of its 8 GB soft limit with six.
+
+## 166. Going-live preparation, second part: where the mirrored entries' latency goes, measured wave by wave (20–21 October 2026)
+
+The operator: "fix all performance issues, no latency accepted". Decision 165 removed the shadow runner's 20 s wait and
+gave mirrorable scans their own pool tier. To see what was left, the shadow runner now logs every bar close's wave of
+mirror-tier scans: when the close was announced, when each scan was handed to the pool, how long it queued, how long the
+script ran, and when the last one finished.
+
+**Measured on the VM** (15m waves of about 326 scans; the account's own scanners are separate and were 4.8 s already):
+
+| change | close seen | queue p50 / p90 | script p50 | wave done |
+|---|---|---|---|---|
+| before decision 165 (20 s wait, background tier, 6 workers) | — | 30 / 47 s | 0.48 s | 59.5 s |
+| 8 workers (`ops/systemd/vnedge.service.d/workers.conf`, approved by the operator) | 3.3 s | 19 / 31 s | 0.48 s | 38.6–39.4 s |
+| workers recycled after 500 runs instead of 12 | 1.8 s | 34 / 45 s | 0.62 s | 51.7 s, reverted |
+| close announced after 1.5 s, checked every 250 ms (was 2.5 s, every second) | 1.8–2.0 s | | | kept |
+| recycling back to 12, waves ordered by what the account can act on (20:45) | 1.7 s | 19 / 31 s | 0.45 s | 37 s |
+
+- Recycling after 500 runs was tried because six scripts run 108 times in one process stay flat under PineTS 0.12.0
+  (no leak). With some 150 different scripts passing through each worker it slowed the scripts and the wave; 12 stays.
+- Each wave is now ordered by what can change the account: its live pairs and pairs on a symbol it holds first, then
+  pairs it could enter now (not full, symbol free, market allowed), then the rest. All stay in the mirror tier, so the
+  shadow book's own evidence is not delayed.
+- The application logs to `data/logs/vnedge.log` and `vnedge.err`, not the journal. Read there: no error line on 20 or
+  21 October; the 481 in the file are from 3–4 October and before. The warnings did show that before decision 165 the
+  shadow runner skipped runs about 128 times an hour on a worker queue over 300; only tracked pairs can be skipped now.
+
+**What is left is compute.** A script takes 100–250 ms in one process on the VM's Neoverse-N1 cores (30–80 ms on an
+Apple laptop) and about 0.5 s inside a busy worker, and each scan replays 1,000 bars to judge the newest one. 326 scans on
+8 workers is about 20 s of work at every 15m close. Halving the history saves about 40% (fixed costs remain) and would need
+each scanner's signals proven identical at 500 bars. Only PineTS's streaming mode, which keeps a script's state and computes
+the new bar alone, removes the replay; it needs per-pair state kept across workers and restarts and a parity proof against
+full runs before any pair uses it. Proposed to the operator, not started.
