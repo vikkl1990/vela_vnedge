@@ -4488,3 +4488,29 @@ and 146 from $1,000 each. The stored records are unchanged. Paper: +$1 as record
 9.9%. Shadow as one $1,000 account: +$6,766, 1,502 taken, 212 script stops skipped, deepest drop 33%
 in late September; every ATR-stop signal at $150 +$8,962; +118.9R as recorded, +140.1R without the
 script stops.
+
+## 147. The whipsaw gate re-measured: it cuts volume, not bad trades; 0.1 keeps the fleet's edge (20 October 2026)
+
+**Why.** ETH's signals were refused as choppy all of 19–20 October (efficiency 0.03–0.09 against the
+0.25 floor; 788 of about 1,390 fleet signals in 48 hours). The operator: "check". `diagnose` with the
+gate off (`spread`) and at 0.1, 0.15, 0.2 and 0.25 (live), under the current exits and costs, on the
+tracker's 19 WillyAlgo scripts on ETH, BTC, SOL and XRP at 15m, 1h and 4h (127 cells with ten or more
+trades), and on the 72 exit-study cells (40 with ten or more).
+
+| floor | fleet R | R a trade | halves | majors R | ETH R |
+|---|---|---|---|---|---|
+| off | +200.5 | +0.044 | +72.7 / +127.9 | −347.8 | −61.3 |
+| 0.1 | +188.4 | +0.058 | +60.6 / +127.9 | −235.6 | −49.5 |
+| 0.15 | +147.2 | +0.054 | +53.2 / +94.2 | −153.9 | −34.1 |
+| 0.2 | +113.4 | +0.051 | +33.6 / +80.1 | −115.8 | −22.5 |
+| 0.25 (live) | +73.4 | +0.042 | +14.0 / +59.6 | −91.1 | −9.7 |
+
+**Reading.** The gate barely changes R per trade (fleet +0.044 off, +0.042 at 0.25): what it refuses is
+about as good as what it keeps, so it only sets how many trades are taken. On the fleet's cells, which
+make money, 0.25 gives up 127R of 200R and loses in both halves, 28 cells worse against 10 better. On
+the WillyAlgo scripts on the majors, which lose with or without it, it shrinks the loss by trading
+less; the incubator, not the gate, is what keeps those cells out of the account. At 0.1 the fleet
+keeps 94% of the ungated R on 29% fewer trades, with the best R per trade of the five.
+
+**Verdict.** The 0.25 floor (decision 70, set under the old 40% trail) now costs the fleet most of its
+edge. Proposed: `risk.regime.minEr` 0.25 → 0.1, for the account and the shadow book alike. Not applied.

@@ -254,6 +254,8 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (want('spread+ratio6')) variants['spread+ratio6'] = stat(run({ spreadPct, costRatio: 6 }), b, tfMs);
   if (want('spread+ratio10')) variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
   if (want('spread+er0.25')) variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
+  // decision 147: the live whipsaw floor against looser ones, under the current exits and costs
+  for (const m of [0.1, 0.15, 0.2]) if (want(`spread+er${m}`)) variants[`spread+er${m}`] = stat(run({ spreadPct, chopGate: { minEr: m } }), b, tfMs);
   if (want('spread+er+ratio10')) variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
   // the stop study (decision 110), every variant paying the real book: where else could the stop go
   const slAt = (mult: number) => ({ fallbackAtrSl: mult, widenStopToFee: false } as Partial<PaperConfig>);
