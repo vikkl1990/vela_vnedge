@@ -4480,3 +4480,11 @@ entry whose stop came from the script, with the reason "the scanner's own stop".
 untouched and keeps recording those trades, so decision 145's finding is checked forward. The refusal
 counts as `other` in the signal funnel, not `cost`; a live cell that only ever brings script stops goes
 silent and the silent clock demotes it.
+
+**Note, 20 October: both ledgers replayed under the live rules.** Every closed paper trade (172, since
+5 October) and 35 days of shadow trades (2,698), with their real fills and exits, under decisions 144
+and 146 from $1,000 each. The stored records are unchanged. Paper: +$1 as recorded → +$434 corrected,
+154 taken, 11 skipped for a script stop and 7 for no slot, 52 stop-outs instead of 61, deepest drop
+9.9%. Shadow as one $1,000 account: +$6,766, 1,502 taken, 212 script stops skipped, deepest drop 33%
+in late September; every ATR-stop signal at $150 +$8,962; +118.9R as recorded, +140.1R without the
+script stops.
