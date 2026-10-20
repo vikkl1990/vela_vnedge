@@ -1,0 +1,193 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KioseffTrading
+
+//@version=5
+indicator("RSI Failure Swings Signals (operator)", overlay = false, max_bars_back = 4000)
+
+// Input Values --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+indType = input.string(defval = "RSI", title = "Indicator Type", options = ["RSI", "AO"])
+fSwings = input.bool(true, title = "Failure Swings?")
+percentiles = input.string("On",title = "Percentile Range", options = ["On", "Off"])
+rangeMax = input.int(title = "Maximum Lookback (Candles)", defval = 14)
+rangeMin = input.int(title = "Minimum Lookback (Candles)", defval = 2)
+lookAheadRight = input.int(defval = 2, title = "Pivot Look Ahead Right")
+breakPoint = input.bool(true, title = "Break Point?")
+
+// Indicators--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+rsi = ta.rsi(close, 14)
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 14)
+difference = ao - ao[1]
+
+// RSI Plots--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+plot(indType == "RSI" ? rsi : ao, linewidth = 1, color = indType == "RSI" ? color.new(#FDD500, 0) : indType == "AO" and difference >= 0 ? color.white : 
+     indType == "AO" and difference < 0 ? color.black : na, style = indType == "AO" ? plot.style_columns : plot.style_line)
+mid = hline(indType == "RSI" ? 50 : 0)
+h1 = hline(indType == "RSI" ? 70 : na, color = color.new(color.aqua, 50), linewidth = 1, linestyle = hline.style_solid)
+h2 = hline(indType == "RSI" ? 30 : na, color = color.new(color.aqua, 50), linewidth = 1, linestyle = hline.style_solid)
+fill(h1, h2, color = indType == "RSI" ? color.new(color.purple, 95) : na)
+
+// RSI Pivots--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+PHrsi = na(ta.pivothigh(rsi, 1, lookAheadRight)) ? false : true
+PLrsi = na(ta.pivotlow(rsi, 1, lookAheadRight)) ? false : true
+
+// RSI Divergences & Failure Swings--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+rsiHigher = fSwings == false ? rsi[lookAheadRight] > ta.valuewhen(PLrsi, rsi[lookAheadRight], 1) and ta.barssince(PLrsi[1]) > rangeMin and ta.barssince(PLrsi[1]) <= rangeMax
+     and ta.valuewhen(PLrsi, rsi[lookAheadRight], 1) < 30 and rsi[lookAheadRight] < 30
+         : rsi[lookAheadRight] > ta.valuewhen(PLrsi, rsi[lookAheadRight], 1) and ta.barssince(PLrsi[1]) > rangeMin and
+             ta.barssince(PLrsi[1]) <= rangeMax and ta.valuewhen(PLrsi, rsi[lookAheadRight], 1) < 30
+             
+lc = close[lookAheadRight] < ta.valuewhen(PLrsi, close[lookAheadRight], 1) 
+bullDivergence = lc and rsiHigher and PLrsi
+
+rsiLower = fSwings == false ? rsi[lookAheadRight] < ta.valuewhen(PHrsi, rsi[lookAheadRight], 1) and ta.barssince(PHrsi[1]) > rangeMin and ta.barssince(PHrsi[1]) <= rangeMax
+     and ta.valuewhen(PHrsi, rsi[lookAheadRight], 1) > 70 and rsi[lookAheadRight] > 70
+         : rsi[lookAheadRight] < ta.valuewhen(PHrsi, rsi[lookAheadRight], 1) and ta.barssince(PHrsi[1]) > rangeMin and
+             ta.barssince(PHrsi[1]) <= rangeMax and ta.valuewhen(PHrsi, rsi[lookAheadRight], 1) > 70
+             
+hc = close[lookAheadRight] > ta.valuewhen(PHrsi, close[lookAheadRight], 1)
+bearDivergence = hc and rsiLower and PHrsi
+
+// Plot RSI Divergences--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+plot(PLrsi and indType == "RSI" ? rsi[lookAheadRight] : na, offset = lookAheadRight * -1, title = "Bullish Divergence",
+     linewidth =3 , color = bullDivergence ? color.new(#09FF00, 0) : color.new(#161923, 100))
+plot(PHrsi and indType == "RSI" ? rsi[lookAheadRight] : na, offset = lookAheadRight * -1, title = "Bearish Divergence",
+     linewidth =3 , color = bearDivergence ? color.new(color.red, 0) : color.new(#161923, 100))
+     
+     
+// Basic Labels --------------------------------------------------------------------------------------------------------------------------------------------------------------------
+if bullDivergence and (rsi[lookAheadRight] < 30) and indType == "RSI"
+    label.new(bar_index[lookAheadRight], math.round(rsi[lookAheadRight]), text = "Bullish Divergence", style = label.style_label_up, 
+         color = color.new(color.green, 100), textcolor = color.white, size = size.small)
+         
+if bearDivergence and (rsi[lookAheadRight] > 70) and indType == "RSI"
+    label.new(bar_index[lookAheadRight], math.round(rsi[lookAheadRight]), text = "Bearish Divergence", style = label.style_label_down, 
+         color = color.new(color.red, 100), textcolor = color.white, size = size.small)
+         
+// Bottom Failure Swing
+if bullDivergence and (rsi[lookAheadRight] >= 30) and indType == "RSI"
+    label.new(bar_index[lookAheadRight], math.round(rsi[lookAheadRight]), text = "Bottom Failure Swing", style = label.style_label_up, 
+         color = color.new(color.green, 100), textcolor = color.white, size = size.small)
+         
+         
+//  Top Failure Swing --------------------------------------------------------------------------------------------------------------------------------------------------------------------
+if bearDivergence and (rsi[lookAheadRight] < 70) and indType == "RSI"
+    label.new(bar_index[lookAheadRight], math.round(rsi[lookAheadRight]), text = "Top Failure Swing", style = label.style_label_down, 
+         color = color.new(color.red, 100), textcolor = color.white, size = size.small)
+        
+// Advanced Plots And Labels --------------------------------------------------------------------------------------------------------------------------------------------------------------------
+var int counter = 0
+var int counter1 = 0
+var float rsiHigherVar = 0.0
+var line lineZ = na
+
+rsiHighest = ta.highest(rsi, bar_index + 1 - counter)[lookAheadRight]
+if PLrsi and not bullDivergence and rsi[lookAheadRight] < 30 and ta.barssince(bullDivergence) > 14 and indType == "RSI"
+    counter := bar_index[lookAheadRight]
+if bullDivergence and indType == "RSI" and rsi[lookAheadRight] > 30
+    counter1 := bar_index[lookAheadRight] - counter
+    rsiHigherVar := rsiHighest
+    
+var int counter2 = 0
+var label labelZ = na
+
+if ta.change(rsiHigherVar) and breakPoint == true and rsi[lookAheadRight] > 30 and indType == "RSI"
+    lineZ := line.new(counter, rsiHigherVar, bar_index + 2, rsiHigherVar, color = color.green, width = 2)
+    counter2 := 1
+if counter2 == 1 and breakPoint == true and indType == "RSI"
+    label.delete(labelZ[1])
+    lineZ := line.new(counter, rsiHigherVar, bar_index + 2, rsiHigherVar, color = color.green, width = 2)
+    labelZ := label.new(bar_index, line.get_y1(lineZ), color = color.new(color.white, 100), 
+         textcolor = color.white, text = str.tostring(rsiHigherVar, format = '#.00') + "(Break Point)")
+         
+if rsi[1] > line.get_price(lineZ, bar_index) and rsi > line.get_price(lineZ, bar_index) and counter2 == 1 and breakPoint == true and indType == "RSI"
+    label.delete(labelZ)
+    labelZ := label.new(line.get_x1(lineZ), line.get_y1(lineZ) * .90, color = color.new(color.white, 100), 
+         textcolor = color.white, text = str.tostring(rsiHigherVar, format = '#.00') + "(CLEARED)")
+    counter2 := 0
+    
+// BFS Labels --------------------------------------------------------------------------------------------------------------------------------------------------------------------
+var int counterx = 0
+var int counter1x = 0
+var float rsiLowerVar = 0.0
+var line lineX = na
+
+rsiLowest = ta.lowest(rsi, bar_index + 1 - counterx)[lookAheadRight]
+if PHrsi and not bearDivergence and rsi[lookAheadRight] > 70 and ta.barssince(bearDivergence) > 14 and indType == "RSI"
+    counterx := bar_index[lookAheadRight]
+if bearDivergence and indType == "RSI" and rsi[lookAheadRight] < 70
+    counter1x := bar_index[lookAheadRight] - counterx
+    rsiLowerVar := rsiLowest
+    
+var int counter2x = 0
+var label labelX = na
+
+if ta.change(rsiLowerVar) and breakPoint == true and counter2x == 0 and indType == "RSI"
+    lineX := line.new(counterx, rsiLowerVar, bar_index + 2, rsiLowerVar, color = color.red, width = 2)
+    counter2x := 1
+if counter2x == 1 and breakPoint == true and indType == "RSI"
+    lineX := line.new(counterx, rsiLowerVar, bar_index + 2, rsiLowerVar, color = color.red, width = 2)
+    label.delete(labelX[1])
+    labelX := label.new(bar_index, line.get_y1(lineX), color = color.new(color.white, 100), 
+         textcolor = color.white, text = str.tostring(rsiLowerVar, format = '#.00') + "(Break Point)", style = label.style_label_up)
+         
+if rsi[1] < line.get_price(lineX, bar_index) and rsi < line.get_price(lineX, bar_index) and counter2x == 1 and breakPoint == true and indType == "RSI"
+    label.delete(labelX)
+    labelX := label.new(line.get_x1(lineX), line.get_y1(lineX), color = color.new(color.white, 100), 
+         textcolor = color.white, text = str.tostring(rsiLowerVar, format = '#.00') + "(CLEARED)" ,  style = label.style_label_up)
+    counter2x := 0
+    
+// Percentiles --------------------------------------------------------------------------------------------------------------------------------------------------------------------
+p90 = ta.percentile_linear_interpolation(ao, 1000, 90)
+p99 = ta.percentile_linear_interpolation(ao, 1000, 99)
+p10 = ta.percentile_linear_interpolation(ao, 1000, 10)
+p1 = ta.percentile_linear_interpolation(ao, 1000, 1)
+
+//  AO Plots--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+x1 = plot(indType == "AO" ? p90 : na, color = color.new(#161923, 100))
+x2 = plot(indType == "AO" ? p99 : na, color = color.new(#161923, 100))
+fill(x1, x2, color = indType == "AO" and percentiles == "On" ? color.new(color.red, 75) : color.new(#161923, 100))
+x3 = plot(indType == "AO" ? p10 : na, color = color.new(#161923, 100))
+x4 = plot(indType == "AO" ? p1 : na, color = color.new(#161923, 100))
+fill(x3, x4, color = indType == "AO" and percentiles == "On" ? color.new(color.green, 75) : color.new(#161923, 100))
+
+// AO Pivots--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+PHao = na(ta.pivothigh(ao, 1, lookAheadRight)) ? false : true
+PLao = na(ta.pivotlow(ao, 1, lookAheadRight)) ? false : true
+
+// AO Divergences--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+aoHigher = ao[lookAheadRight] > ta.valuewhen(PLao, ao[lookAheadRight], 1) and ta.barssince(PLao[1]) > rangeMin and ta.barssince(PLao[1]) <= rangeMax 
+     and ta.valuewhen(PLao, ao[lookAheadRight], 1) < p10 and ao[lookAheadRight] < p10
+     
+lcao = close[lookAheadRight] < ta.valuewhen(PLao, close[lookAheadRight], 1)
+aobullDivergence = lcao and aoHigher and PLao
+
+aoLower = ao[lookAheadRight] < ta.valuewhen(PHao, ao[lookAheadRight], 1) and ta.barssince(PHao[1]) > rangeMin and ta.barssince(PHao[1]) <= rangeMax 
+     and ta.valuewhen(PHao, ao[lookAheadRight], 1) > p90 and ao[lookAheadRight] > p90 
+     
+hcao = close[lookAheadRight] > ta.valuewhen(PHao, close[lookAheadRight], 1)
+aobearDivergence = hcao and aoLower and PHao
+
+// AO Plots--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+plot(PLao and indType == "AO" ? ao[lookAheadRight] : na, offset = lookAheadRight * -1, title = "Bullish Divergence",
+     linewidth =3 , color = aobullDivergence ? color.new(#09FF00, 0) : color.new(#161923, 100))
+plot(PHao and indType == "AO" ? ao[lookAheadRight] : na, offset = lookAheadRight * -1, title = "Bearish Divergence",
+     linewidth =3 , color = aobearDivergence ? color.new(color.red, 0) : color.new(#161923, 100))
+     
+// AO Basic Labels--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+if aobullDivergence and ao[lookAheadRight] < p10 and indType == "AO"
+    label.new(bar_index[lookAheadRight], math.round(ao[lookAheadRight]), text = "Bullish Divergence", style = label.style_label_up, 
+         color = color.new(color.green, 100), textcolor = color.white, size = size.small)
+         
+if aobearDivergence and ao[lookAheadRight] > p90 and indType == "AO"
+    label.new(bar_index[lookAheadRight], math.round(ao[lookAheadRight]), text = "Bearish Divergence", style = label.style_label_down, 
+         color = color.new(color.red, 100), textcolor = color.white, size = size.small)
+         
+     
+
+// ~~ Signals (operator): the script's own RSI divergences and failure swings, alerted on the bar that confirms them
+// (lookAheadRight bars after the pivot; the labels are drawn back on the pivot). No stop is published; the bot's ATR stop applies.
+if bullDivergence and indType == "RSI" and barstate.isconfirmed
+    alert('{"schema":"sats.events.v2","events":[{"event":"buy","side":"long","fill_price":' + str.tostring(close) + ',"reason":"' + (rsi[lookAheadRight] < 30 ? "bullish divergence" : "bottom failure swing") + '"}]}', alert.freq_once_per_bar_close)
+if bearDivergence and indType == "RSI" and barstate.isconfirmed
+    alert('{"schema":"sats.events.v2","events":[{"event":"sell","side":"short","fill_price":' + str.tostring(close) + ',"reason":"' + (rsi[lookAheadRight] > 70 ? "bearish divergence" : "top failure swing") + '"}]}', alert.freq_once_per_bar_close)

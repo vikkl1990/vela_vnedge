@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dropQualifiers, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved, replaceCall } from './compat.ts';
+import { dropQualifiers, dropStatementCommas, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved, replaceCall } from './compat.ts';
 import { PATCH_RULES } from './patches.ts';
 
 test('continuation lines inside brackets and leading-operator lines are joined; comments re-indented', () => {
@@ -83,4 +83,23 @@ test('decision 158: the "timeframe above the chart" guard is removed, other time
   assert.equal(guard(daily), daily, 'a guard on the chart timeframe alone stays');
   const more = 'if timeframe.in_seconds(tf) <= timeframe.in_seconds(timeframe.period)\n    runtime.error("x")\n    y := 1\n';
   assert.equal(guard(more), more, 'a block that does more than stop the script stays');
+});
+
+test('decision 163: a comma that ends a statement is dropped, a comma that wraps a line is kept', () => {
+  assert.equal(dropStatementCommas('if a\n    x := 1, y := 2,\n\nelse\n    x := 0'), 'if a\n    x := 1, y := 2\n\nelse\n    x := 0');
+  assert.equal(dropStatementCommas('switch k\n    1 => f(a,\n         b),\n    => g()'), 'switch k\n    1 => f(a,\n         b)\n    => g()');
+  const wrapped = 'var t = table.new(position.top_right, 2, 2),\n     bg = color.red';
+  assert.equal(dropStatementCommas(wrapped), wrapped, 'a following line at a wrap indent continues the statement');
+  const call = 'x = f(a,\n    b)';
+  assert.equal(dropStatementCommas(call), call, 'a comma inside open brackets is an argument separator');
+  assert.equal(dropStatementCommas('s = "a,"\nt = 1'), 's = "a,"\nt = 1', 'a comma inside a string is not counted');
+});
+
+test('decision 163: an unused TradingView/ta import is removed, a used one kept', () => {
+  const rule = PATCH_RULES.find((r) => r.id === 'unused-ta-import')!.apply;
+  assert.equal(rule('//@version=6\nindicator("x")\nimport TradingView/ta/12\nplot(ta.sma(close, 5))'), '//@version=6\nindicator("x")\n\nplot(ta.sma(close, 5))');
+  const used = '//@version=6\nindicator("x")\nimport TradingView/ta/12\nplot(ta.tema(close, 5))';
+  assert.equal(rule(used), used);
+  const aliased = 'import TradingView/ta/9 as tl\nplot(tl.kama(close, 10))';
+  assert.equal(rule(aliased), aliased);
 });

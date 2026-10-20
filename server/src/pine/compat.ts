@@ -185,3 +185,36 @@ function splitTop(args: string): string[] {
   if (cur.trim()) out.push(cur.trim());
   return out;
 }
+
+/**
+ * Decision 163: Pine lets a comma end a statement (`a := 1, b := 2,`); PineTS's lexer and the continuation joiner read
+ * a trailing comma as "the statement goes on". A comma that ends a line with every bracket closed, followed by a line
+ * that starts a statement (indented by a multiple of four, no deeper than this one), is that separator and is dropped.
+ * A following line wrapped at any other indentation continues the statement, and its comma stays. Strings and comments
+ * are skipped when counting brackets.
+ */
+export function dropStatementCommas(src: string): string {
+  const lines = src.split('\n');
+  const indent = (l: string) => l.length - l.trimStart().length;
+  const isCode = (l: string) => l.trim() !== '' && !l.trim().startsWith('//');
+  let depth = 0;
+  for (let n = 0; n < lines.length; n++) {
+    const line = lines[n];
+    let inStr: string | null = null, end = line.length;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inStr) { if (ch === '\\') i++; else if (ch === inStr) inStr = null; continue; }
+      if (ch === '"' || ch === "'") inStr = ch;
+      else if (ch === '/' && line[i + 1] === '/') { end = i; break; }
+      else if (ch === '(' || ch === '[') depth++;
+      else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    }
+    if (depth !== 0) continue;
+    const code = line.slice(0, end), m = code.match(/,\s*$/);
+    if (!m) continue;
+    let k = n + 1; while (k < lines.length && !isCode(lines[k])) k++;
+    const next = k < lines.length ? indent(lines[k]) : 0;
+    if (next % 4 === 0 && next <= indent(line)) lines[n] = code.slice(0, m.index) + line.slice(end);
+  }
+  return lines.join('\n');
+}

@@ -1,0 +1,1747 @@
+//@version=5
+
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+
+// © Tradingview 
+// © Kioseff Trading
+indicator("Volume Filtered Candle Patterns With Statistics [Kioseff Trading]", overlay=true, max_lines_count = 500, max_labels_count = 500)
+
+
+
+//  ________________________________________________
+// |                                               |  
+// |       ---------------------------------       | 
+// |      | K̲ i̲ o̲ s̲ e̲ f̲ f̲     T̲ r̲ a̲ d̲ i̲ n̲ g |      | 
+// |      |                                 |      |  
+// |      | ƃ u ᴉ p ɐ ɹ ꓕ     ⅎ ⅎ ǝ s o ᴉ ꓘ |      |  
+// |       --------------------------------        |  
+// |                                               | 
+// |_______________________________________________|
+
+dataType = input.string("Mean Reversions", title = "Data Type", options = ["Frequency", "Mean Reversions"], group = "Calculation Type [REQUIRED - Try Both]", tooltip = 'Setting the "Data Type" to "Frequency" calculates the raw number of candlestick patterns that have formed, in addition to the next candle close - whether higher or lower. Setting the "Data Type" to "Mean Reversions" calculates candlestick patterns that form near the outer Bollinger Bands. Bearish patterns must form when the high price of the candle, or the previous candle, extends above the upper band to be distinguished by the indicator. Bullish patterns must form when the low price of the candle, or the previous candle, extends below the lower band to be distinguished by the indicator. ')
+
+volinput = input.float(1.25, title = "Volume Must Be at Least [X] Percent Greater Than Average", group = "Volume Requirement", tooltip = "(1.01 = 1% Greater, 1.25 = 25% = 25% Greater, Numbers Less Than 1.00 Do Not Require the Pattern to Have Greater Than Average Volume) ", step = 0.01, minval = 0.00) 
+len = input.int(defval = 5, minval = 1, maxval = 10, title = "Average PnL Calculation Length", group = "Average Gain/loss Calculation Length", tooltip = 'When "Data Type" is set to "Mean Reversions", this setting configures the number of sessions that must occur subsequent to a candlestick pattern for the average gain/loss calculation.')
+tabl = input.string("On", title = "Show Statistics Table?", options = ["On", "Off"], group = "Display Options")
+
+volMA = ta.sma(volume, 28)
+
+[middle, upper, lower] = ta.bb(close, 20, 2.0)
+
+l1 = plot(dataType == "Mean Reversions" ? lower : na, color = color.yellow)
+u1 = plot(dataType == "Mean Reversions" ? upper : na, color = color.yellow)
+fill(l1, u1, color.new(color.yellow, 90))
+
+DownTrend = true
+UpTrend = true
+var trendRule1 = "SMA50"
+var trendRule2 = "SMA50, SMA200"
+var trendRule = input.string("No detection", "Detect Trend Based On", options=[trendRule1, trendRule2, "No detection"])
+
+if trendRule == trendRule1
+	priceAvg = ta.sma(close, 50)
+	DownTrend := close < priceAvg
+	UpTrend := close > priceAvg
+
+if trendRule == trendRule2
+	sma200 = ta.sma(close, 200)
+	sma50 = ta.sma(close, 50)
+	DownTrend := close < sma50 and sma50 < sma200
+	UpTrend := close > sma50 and sma50 > sma200
+Len = 14 // ta.ema depth for bodyAvg
+ShadowPercent = 5.0 // size of shadows
+ShadowEqualsPercent = 100.0
+DojiBodyPercent = 5.0
+Factor = 2.0 // shows the TIMES the shadow dominates the candlestick body
+
+BodyHi = math.max(close, open)
+BodyLo = math.min(close, open)
+Body = BodyHi - BodyLo
+BodyAvg = ta.ema(Body, Len)
+SmallBody = Body < BodyAvg
+LongBody = Body > BodyAvg
+UpShadow = high - BodyHi
+DnShadow = BodyLo - low
+HasUpShadow = UpShadow > ShadowPercent / 100 * Body
+HasDnShadow = DnShadow > ShadowPercent / 100 * Body
+WhiteBody = open < close
+BlackBody = open > close
+Range = high-low
+IsInsideBar = BodyHi[1] > BodyHi and BodyLo[1] < BodyLo
+BodyMiddle = Body / 2 + BodyLo
+ShadowEquals = UpShadow == DnShadow or (math.abs(UpShadow - DnShadow) / DnShadow * 100) < ShadowEqualsPercent and (math.abs(DnShadow - UpShadow) / UpShadow * 100) < ShadowEqualsPercent
+IsDojiBody = Range > 0 and Body <= Range * DojiBodyPercent / 100
+Doji = IsDojiBody and ShadowEquals
+
+patternLabelPosLow = low - (ta.atr(30) * 0.6)
+patternLabelPosHigh = high + (ta.atr(30) * 0.6)
+
+label_color_bullish = input(color.blue, "Label Color Bullish")
+label_color_bearish = input(color.red, "Label Color Bearish")
+label_color_neutral = input(color.gray, "Label Color Neutral")
+CandleType = input.string(title = "Pattern Type", defval="Both", options=["Bullish", "Bearish", "Both"])
+
+AbandonedBabyInput = input(title = "Abandoned Baby" ,defval=true) 
+
+DarkCloudCoverInput = input(title = "Dark Cloud Cover" ,defval=true) //
+
+DojiInput = input(title = "Doji" ,defval=true) 
+
+DojiStarInput = input(title = "Doji Star" ,defval=true) 
+
+DownsideTasukiGapInput = input(title = "Downside Tasuki Gap" ,defval=true) 
+
+DragonflyDojiInput = input(title = "Dragonfly Doji" ,defval=true) 
+
+EngulfingInput = input(title = "Engulfing" ,defval=true) //
+
+EveningDojiStarInput = input(title = "Evening Doji Star" ,defval=true) 
+
+EveningStarInput = input(title = "Evening Star" ,defval=true) //
+
+FallingThreeMethodsInput = input(title = "Falling Three Methods" ,defval=true) 
+
+FallingWindowInput = input(title = "Falling Window" ,defval=false) 
+
+GravestoneDojiInput = input(title = "Gravestone Doji" ,defval=true) 
+
+HammerInput = input(title = "Hammer" ,defval=true) //
+
+HangingManInput = input(title = "Hanging Man" ,defval=true) 
+
+HaramiCrossInput = input(title = "Harami Cross" ,defval=true) 
+
+HaramiInput = input(title = "Harami" ,defval=true) 
+
+InvertedHammerInput = input(title = "Inverted Hammer" ,defval=true) 
+
+KickingInput = input(title = "Kicking" ,defval=true) //
+
+LongLowerShadowInput = input(title = "Long Lower Shadow" ,defval=false) 
+
+LongUpperShadowInput = input(title = "Long Upper Shadow" ,defval=false) 
+
+MarubozuBlackInput = input(title = "Marubozu Black" ,defval=true) 
+
+MarubozuWhiteInput = input(title = "Marubozu White" ,defval=true) 
+
+MorningDojiStarInput = input(title = "Morning Doji Star" ,defval=true) 
+
+MorningStarInput = input(title = "Morning Star" ,defval=true) //
+
+OnNeckInput = input(title = "On Neck" ,defval=true) 
+
+PiercingInput = input(title = "Piercing" ,defval=true) //
+
+RisingThreeMethodsInput = input(title = "Rising Three Methods" ,defval=true) 
+
+RisingWindowInput = input(title = "Rising Window" ,defval=false) 
+
+ShootingStarInput = input(title = "Shooting Star" ,defval=true) //
+
+SpinningTopBlackInput = input(title = "Spinning Top Black" ,defval=true) 
+
+SpinningTopWhiteInput = input(title = "Spinning Top White" ,defval=true) 
+
+ThreeBlackCrowsInput = input(title = "Three Black Crows" ,defval=true) 
+
+ThreeWhiteSoldiersInput = input(title = "Three White Soldiers" ,defval=true) 
+
+TriStarInput = input(title = "Tri-Star" ,defval=true) 
+
+TweezerBottomInput = input(title = "Tweezer Bottom" ,defval=true) 
+
+TweezerTopInput = input(title = "Tweezer Top" ,defval=true) 
+
+UpsideTasukiGapInput = input(title = "Upside Tasuki Gap" ,defval=true) 
+
+
+v1(x, y) =>
+    j = y - x
+    t = math.abs(x)
+    fin = j / t * 100
+
+c = v1(volMA, volume)
+
+
+var label [] x = array.new_label()
+var line [] y = array.new_line()
+var label [] z = array.new_label()
+var float [] cX = array.new_float(44)
+
+xL = array.size(y) > 0 ? line.get_y2(array.get(y, array.size(y) - 1)) : na
+xString = "Volume Is " +  str.tostring(c, format.percent) + " Greater Than Average"
+
+xZ(x) => 
+    array.push(x, line.new(bar_index, patternLabelPosHigh, bar_index, patternLabelPosHigh * 1.05, color = color.new(color.red, 50), style = line.style_dashed))
+xY(x) =>
+    array.push(x, line.new(bar_index, patternLabelPosLow, bar_index, patternLabelPosLow * .95, color = color.new(color.blue, 50), style = line.style_dashed))
+zX(x) =>
+    array.push(x, label.new(bar_index, array.size(y) > 0 ? line.get_y2(array.get(y, array.size(y) - 1)) : patternLabelPosHigh * 1.05, text = xString, textcolor = color.white, color = color.new(color.red, 50)))
+zY(x) =>
+    array.push(x, label.new(bar_index,  array.size(y) > 0 ? line.get_y2(array.get(y, array.size(y) - 1)) : patternLabelPosLow * .95, style = label.style_label_up, text = xString, textcolor = color.white, color = color.new(color.blue, 50)))
+
+
+zN(x) =>
+    array.push(x, line.new(bar_index, patternLabelPosLow, bar_index, patternLabelPosLow * .95, color = color.new(color.gray, 50), style = line.style_dashed))
+zM(x) =>
+    array.push(x, label.new(bar_index, array.size(y) > 0 ? line.get_y2(array.get(y, array.size(y) - 1)) : patternLabelPosLow * .95, style = label.style_label_up, text = xString, textcolor = color.white, color = color.new(color.gray, 50)))
+
+
+// _________________________________________________________________________________________________________________________________________
+
+OnNeckBearish = DownTrend and BlackBody[1] and LongBody[1] and WhiteBody and open < close[1] and SmallBody and Range!=0 and math.abs(close-low[1])<=BodyAvg*0.05
+OnNeck = OnNeckBearish  and  OnNeckInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if OnNeck and dataType == "Frequency"
+    var ttBearishOnNeck = "On Neck\nOn Neck is a two-line continuation pattern found in a downtrend. The first candle is long and red, the second candle is short and has a green body. The closing price of the second candle is close or equal to the first candle's low price. The pattern hints at a continuation of a downtrend, and penetrating the low of the green candlestick is sometimes considered a confirmation. "
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="ON", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishOnNeck))
+    xZ(y)
+    zX(z)
+
+
+// _________________________________________________________________________________________________________________________________________ //
+
+RisingWindowBullish = UpTrend[1] and (Range!=0 and Range[1]!=0) and low > high[1]
+rWB = RisingWindowBullish and  RisingWindowInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if rWB and dataType == "Frequency"
+    var ttBullishRisingWindow = "Rising Window\nRising Window is a two-candle bullish continuation pattern that forms during an uptrend. Both candles in the pattern can be of any type with the exception of the Four-Price Doji. The most important characteristic of the pattern is a price gap between the first candle's high and the second candle's low. That gap (window) between two bars signifies support against the selling pressure."
+
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="RW", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishRisingWindow))
+    xY(y)
+    zY(z)
+
+
+// _________________________________________________________________________________________________________________________________________
+
+
+FallingWindowBearish = DownTrend[1] and (Range!=0 and Range[1]!=0) and high < low[1]
+cWB = FallingWindowBearish  and  FallingWindowInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cWB and dataType == "Frequency"
+    var ttBearishFallingWindow = "Falling Window\nFalling Window is a two-candle bearish continuation pattern that forms during a downtrend. Both candles in the pattern can be of any type, with the exception of the Four-Price Doji. The most important characteristic of the pattern is a price gap between the first candle's low and the second candle's high. The existence of this gap (window) means that the bearish trend is expected to continue."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="FW", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishFallingWindow))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+
+FallingThreeMethodsBearish = DownTrend[4] and (LongBody[4] and BlackBody[4]) and (SmallBody[3] and WhiteBody[3] and open[3]>low[4] and close[3]<high[4]) and (SmallBody[2] and WhiteBody[2] and open[2]>low[4] and close[2]<high[4]) and (SmallBody[1] and WhiteBody[1] and open[1]>low[4] and close[1]<high[4]) and (LongBody and BlackBody and close<close[4])
+cFTMB =  FallingThreeMethodsBearish  and  FallingThreeMethodsInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cFTMB and dataType == "Frequency"
+    var ttBearishFallingThreeMethods = "Falling Three Methods\nFalling Three Methods is a five-candle bearish pattern that signifies a continuation of an existing downtrend. The first candle is long and red, followed by three short green candles with bodies inside the range of the first candle. The last candle is also red and long and it closes below the close of the first candle. This decisive fifth strongly bearish candle hints that bulls could not reverse the prior downtrend and that bears have regained control of the market."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="FTM", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishFallingThreeMethods))
+    xZ(y)
+    zX(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+
+RisingThreeMethodsBullish = UpTrend[4] and (LongBody[4] and WhiteBody[4]) and (SmallBody[3] and BlackBody[3] and open[3]<high[4] and close[3]>low[4]) and (SmallBody[2] and BlackBody[2] and open[2]<high[4] and close[2]>low[4]) and (SmallBody[1] and BlackBody[1] and open[1]<high[4] and close[1]>low[4]) and (LongBody and WhiteBody and close>close[4])
+cRTMB =  RisingThreeMethodsBullish  and  RisingThreeMethodsInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cRTMB and dataType == "Frequency"
+    var ttBullishRisingThreeMethods = "Rising Three Methods\nRising Three Methods is a five-candle bullish pattern that signifies a continuation of an existing uptrend. The first candle is long and green, followed by three short red candles with bodies inside the range of the first candle. The last candle is also green and long and it closes above the close of the first candle. This decisive fifth strongly bullish candle hints that bears could not reverse the prior uptrend and that bulls have regained control of the market."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="RTM", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishRisingThreeMethods))
+    xY(y)
+    zY(z)
+    
+// _________________________________________________________________________________________________________________________________________
+
+TweezerTopBearish = UpTrend[1] and (not IsDojiBody or (HasUpShadow and HasDnShadow)) and math.abs(high-high[1]) <= BodyAvg*0.05 and WhiteBody[1] and BlackBody and LongBody[1]
+cTTB = TweezerTopBearish  and  TweezerTopInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cTTB and dataType == "Frequency"
+    var ttBearishTweezerTop = "Tweezer Top\nTweezer Top is a two-candle pattern that signifies a potential bearish reversal. The pattern is found during an uptrend. The first candle is long and green, the second candle is red, and its high is nearly identical to the high of the previous candle. The virtually identical highs, together with the inverted directions, hint that bears might be taking over the market."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="TT", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishTweezerTop))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+
+TweezerBottomBullish = UpTrend[1] and (not IsDojiBody or (HasUpShadow and HasDnShadow)) and math.abs(low-low[1]) <= BodyAvg*0.05 and BlackBody[1] and WhiteBody and LongBody[1]
+cTTb = TweezerBottomBullish  and  TweezerBottomInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cTTb and dataType == "Frequency"
+    var ttBullishTweezerBottom = "Tweezer Bottom\nTweezer Bottom is a two-candle pattern that signifies a potential bullish reversal. The pattern is found during a downtrend. The first candle is long and red, the second candle is green, its lows nearly identical to the low of the previous candle. The virtually identical lows together with the inverted directions hint that bulls might be taking over the market."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="TB", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishTweezerBottom))
+    xY(y)
+    zY(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+
+DarkCloudCoverBearish = (UpTrend[1] and WhiteBody[1] and LongBody[1]) and (BlackBody and open >= high[1] and  close < BodyMiddle[1] and close > open[1])
+cDCCB =  DarkCloudCoverBearish  and  DarkCloudCoverInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cDCCB and dataType == "Frequency"
+    var ttBearishDarkCloudCover = "Dark Cloud Cover\nDark Cloud Cover is a two-candle bearish reversal candlestick pattern found in an uptrend. The first candle is green and has a larger than average body. The second candle is red and opens above the high of the prior candle, creating a gap, and then closes below the midpoint of the first candle. The pattern shows a possible shift in the momentum from the upside to the downside, indicating that a reversal might happen soon."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="DCC", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishDarkCloudCover))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+
+DownsideTasukiGapBearish = LongBody[2] and SmallBody[1] and DownTrend and BlackBody[2] and BodyHi[1] < BodyLo[2] and BlackBody[1] and WhiteBody and BodyHi <= BodyLo[2] and BodyHi >= BodyHi[1]
+cDTGB = DownsideTasukiGapBearish  and  DownsideTasukiGapInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cDTGB and dataType == "Frequency"
+    var ttBearishDownsideTasukiGap = "Downside Tasuki Gap\nDownside Tasuki Gap is a three-candle pattern found in a downtrend that usually hints at the continuation of the downtrend. The first candle is long and red, followed by a smaller red candle with its opening price that gaps below the body of the previous candle. The third candle is green and it closes inside the gap created by the first two candles, unable to close it fully. The bull’s inability to close that gap hints that the downtrend might continue."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="DTG", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishDownsideTasukiGap))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+
+UpsideTasukiGapBullish = LongBody[2] and SmallBody[1] and UpTrend and WhiteBody[2] and BodyLo[1] > BodyHi[2] and WhiteBody[1] and BlackBody and BodyLo >= BodyHi[2] and BodyLo <= BodyLo[1]
+cUTGB = UpsideTasukiGapBullish  and  UpsideTasukiGapInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cUTGB and dataType == "Frequency"
+    var ttBullishUpsideTasukiGap = "Upside Tasuki Gap\nUpside Tasuki Gap is a three-candle pattern found in an uptrend that usually hints at the continuation of the uptrend. The first candle is long and green, followed by a smaller green candle with its opening price that gaps above the body of the previous candle. The third candle is red and it closes inside the gap created by the first two candles, unable to close it fully. The bear’s inability to close the gap hints that the uptrend might continue."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="UTG", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishUpsideTasukiGap))
+    xY(y)
+    zY(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+
+EveningDojiStarBearish = LongBody[2] and IsDojiBody[1] and LongBody and UpTrend and WhiteBody[2] and BodyLo[1] > BodyHi[2] and BlackBody and BodyLo <= BodyMiddle[2] and BodyLo > BodyLo[2] and BodyLo[1] > BodyHi
+cEDSB = EveningDojiStarBearish  and  EveningDojiStarInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cEDSB and dataType == "Frequency"
+    var ttBearishEveningDojiStar = "Evening Doji Star \nThis candlestick pattern is a variation of the EVENING STAR pattern. It is bearish and continues an uptrend with a long-bodied, green candle day. It is then followed by a gap and a Doji candle and concludes with a downward close. The close would be below the first day’s midpoint. It is more bearish than the regular EVENING STAR pattern because of the existence of the Doji."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="EDS", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishEveningDojiStar))
+    xZ(y)
+    zX(z)
+    
+
+DojiStarBearish =  UpTrend and WhiteBody[1] and LongBody[1] and IsDojiBody and BodyLo > BodyHi[1]
+cDSB = DojiStarBearish  and  DojiStarInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cDSB and dataType == "Frequency"
+    var ttBearishDojiStar = "Doji Star\nThis is a bearish reversal candlestick pattern that is found in an uptrend and consists of two candles. First comes a long green candle, followed by a Doji candle (except 4-Price Doji) that opens above the body of the first one, creating a gap. It is considered a reversal signal with confirmation during the next trading day."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="DS", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishDojiStar))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+DojiStarBullish = DownTrend and BlackBody[1] and LongBody[1] and IsDojiBody and BodyHi < BodyLo[1]
+cDSb = DojiStarBullish  and  DojiStarInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cDSb and dataType == "Frequency"
+    var ttBullishDojiStar = "Doji Star\nThis is a bullish reversal candlestick pattern that is found in a downtrend and consists of two candles. First comes a long red candle, followed by a Doji candle (except 4-Price Doji) that opens below the body of the first one, creating a gap. It is considered a reversal signal with confirmation during the next trading day."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="DS", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishDojiStar))
+    xY(y)
+    zY(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+MorningDojiStarBullish = LongBody[2] and IsDojiBody[1] and LongBody and DownTrend and BlackBody[2] and BodyHi[1] < BodyLo[2] and WhiteBody and BodyHi >= BodyMiddle[2] and BodyHi < BodyHi[2] and BodyHi[1] < BodyLo
+cMDSB = MorningDojiStarBullish  and  MorningDojiStarInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cMDSB  and dataType == "Frequency"
+    var ttBullishMorningDojiStar = "Morning Doji Star\nThis candlestick pattern is a variation of the Morning Star pattern. A three-day bullish reversal pattern, which consists of three candlesticks will look something like this: The first being a long-bodied red candle that extends the current downtrend. Next comes a Doji that gaps down on the open. After that comes a long-bodied green candle, which gaps up on the open and closes above the midpoint of the body of the first day. It is more bullish than the regular morning star pattern because of the existence of the Doji."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="MDS", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishMorningDojiStar))
+    xY(y)
+    zY(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+PiercingBullish = (DownTrend[1] and BlackBody[1] and LongBody[1]) and (WhiteBody and open <= low[1] and close > BodyMiddle[1] and close < open[1])
+cPB = PiercingBullish  and  PiercingInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cPB and dataType == "Frequency"
+    var ttBullishPiercing = "Piercing\nPiercing is a two-candle bullish reversal candlestick pattern found in a downtrend. The first candle is red and has a larger than average body. The second candle is green and opens below the low of the prior candle, creating a gap, and then closes above the midpoint of the first candle. The pattern shows a possible shift in the momentum from the downside to the upside, indicating that a reversal might happen soon."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="P", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishPiercing))
+    xY(y)
+    zY(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+HammerBullish = false
+if SmallBody and Body > 0 and BodyLo > hl2 and DnShadow >= Factor * Body and not HasUpShadow
+    if DownTrend
+        HammerBullish := true
+cHB = HammerBullish  and  HammerInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cHB and dataType == "Frequency"
+    var ttBullishHammer = "Hammer\nHammer candlesticks form when a security moves lower after the open, but continues to rally into close above the intraday low. The candlestick that you are left with will look like a square attached to a long stick-like figure. This candlestick is called a Hammer if it happens to form during a decline."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="H", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishHammer))
+    xY(y)
+    zY(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+HangingManBearish = false
+if SmallBody and Body > 0 and BodyLo > hl2 and DnShadow >= Factor * Body and not HasUpShadow
+	if UpTrend
+	    HangingManBearish := true
+alertcondition(HangingManBearish, title = "Hanging Man – Bearish", message = "New Hanging Man – Bearish pattern detected")
+cHMB = HangingManBearish  and  HangingManInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cHMB and dataType == "Frequency"
+    var ttBearishHangingMan = "Hanging Man\nWhen a specified security notably moves lower after the open, but continues to rally to close above the intraday low, a Hanging Man candlestick will form. The candlestick will resemble a square, attached to a long stick-like figure. It is referred to as a Hanging Man if the candlestick forms during an advance."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="HM", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishHangingMan))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+ShootingStarBearish = false
+if SmallBody and Body > 0 and BodyHi < hl2 and UpShadow >= Factor * Body and not HasDnShadow
+	if UpTrend
+	    ShootingStarBearish := true
+alertcondition(ShootingStarBearish, title = "Shooting Star – Bearish", message = "New SHOOTING STAR – Bearish pattern detected")
+cSSB = ShootingStarBearish  and  ShootingStarInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cSSB and dataType == "Frequency"
+    var ttBearishShootingStar = "Shooting Star\nThis single day pattern can appear during an uptrend and opens high, while it closes near its open. It trades much higher as well. It is bearish in nature, but looks like an Inverted Hammer."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="SS", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishShootingStar))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+InvertedHammerBullish = false
+if SmallBody and Body > 0 and BodyHi < hl2 and UpShadow >= Factor * Body and not HasDnShadow
+    if DownTrend
+        InvertedHammerBullish := true
+alertcondition(InvertedHammerBullish, title = "Inverted Hammer – Bullish", message = "New Inverted Hammer – Bullish pattern detected")
+cIHB = InvertedHammerBullish  and  InvertedHammerInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cIHB and dataType == "Frequency"
+    var ttBullishInvertedHammer = "Inverted Hammer\nIf in a downtrend, then the open is lower. When it eventually trades higher, but closes near its open, it will look like an inverted version of the Hammer Candlestick. This is a one-day bullish reversal pattern."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="IH", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishInvertedHammer))
+    xY(y)
+    zY(z)
+    
+
+
+
+// _________________________________________________________________________________________________________________________________________
+MorningStarBullish = false
+if LongBody[2] and SmallBody[1] and LongBody
+    if DownTrend and BlackBody[2] and BodyHi[1] < BodyLo[2] and WhiteBody and BodyHi >= BodyMiddle[2] and BodyHi < BodyHi[2] and BodyHi[1] < BodyLo
+        MorningStarBullish := true
+alertcondition(MorningStarBullish, title = "Morning Star – Bullish", message = "New Morning Star – Bullish pattern detected")
+cMSB = MorningStarBullish  and  MorningStarInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cMSB and dataType == "Frequency"
+    var ttBullishMorningStar = "Morning Star\nA three-day bullish reversal pattern, which consists of three candlesticks will look something like this: The first being a long-bodied red candle that extends the current downtrend. Next comes a short, middle candle that gaps down on the open. After comes a long-bodied green candle, which gaps up on the open and closes above the midpoint of the body of the first day."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="MS", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishMorningStar))
+    xY(y)
+    zY(z)
+    
+
+
+
+// _________________________________________________________________________________________________________________________________________
+EveningStarBearish = false
+if LongBody[2] and SmallBody[1] and LongBody
+    if UpTrend and WhiteBody[2] and BodyLo[1] > BodyHi[2] and BlackBody and BodyLo <= BodyMiddle[2] and BodyLo > BodyLo[2] and BodyLo[1] > BodyHi
+        EveningStarBearish := true
+alertcondition(EveningStarBearish, title = "Evening Star – Bearish", message = "New EVENING STAR – Bearish pattern detected")
+cESB = EveningStarBearish  and  EveningStarInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cESB and dataType == "Frequency"
+    var ttBearishEveningStar = "Evening Star\nThis candlestick pattern is bearish and continues an uptrend with a long-bodied, green candle day. It is then followed by a gapped and small-bodied candle day, and concludes with a downward close. The close would be below the first day’s midpoint."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="ES", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishEveningStar))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+MarubozuShadowPercentWhite = 5.0
+MarubozuWhiteBullish = WhiteBody and LongBody and UpShadow <= MarubozuShadowPercentWhite/100*Body and DnShadow <= MarubozuShadowPercentWhite/100*Body and WhiteBody
+cMWB =  MarubozuWhiteBullish  and  MarubozuWhiteInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cMWB and dataType == "Frequency"
+    var ttBullishMarubozuWhite = "Marubozu White\nA MARUBOZU WHITE Candle is a candlestick that does not have a shadow that extends from its candle body at either the open or the close. Marubozu is Japanese for “close-cropped” or “close-cut.” Other sources may call it a Bald or Shaven Head Candle."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="MW", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishMarubozuWhite))
+    xY(y)
+    zY(z)
+    
+
+
+
+
+// _________________________________________________________________________________________________________________________________________
+MarubozuShadowPercentBearish = 5.0
+MarubozuBlackBearish = BlackBody and LongBody and UpShadow <= MarubozuShadowPercentBearish/100*Body and DnShadow <= MarubozuShadowPercentBearish/100*Body and BlackBody
+cMBB = MarubozuBlackBearish  and  MarubozuBlackInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cMBB and dataType == "Frequency"
+    // var ttBearishMarubozuBlack = "Marubozu Black\nThis is a candlestick that has no shadow, which extends from the red-bodied candle at the open, the close, or even at both. In Japanese, the name means “close-cropped” or “close-cut.” The candlestick can also be referred to as Bald or Shaven Head."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="MB", style=label.style_label_down, color = label_color_bearish, textcolor=color.white))
+    xZ(y)
+    zX(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+DragonflyDoji = IsDojiBody and UpShadow <= Body
+GravestoneDojiOne = IsDojiBody and DnShadow <= Body
+cD = Doji and not DragonflyDoji and not GravestoneDojiOne and DojiInput and volume >= (volMA * volinput)
+  
+if cD  and dataType == "Frequency"
+    var ttDoji = "Doji\nWhen the open and close of a security are essentially equal to each other, a doji candle forms. The length of both upper and lower shadows may vary, causing the candlestick you are left with to either resemble a cross, an inverted cross, or a plus sign. Doji candles show the playout of buyer-seller indecision in a tug-of-war of sorts. As price moves either above or below the opening level during the session, the close is either at or near the opening level."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="D", style=label.style_label_up, color = label_color_neutral, textcolor=color.white, tooltip = ttDoji))
+    zN(y)
+    zM(z)
+    
+
+
+
+
+// _________________________________________________________________________________________________________________________________________
+GravestoneDojiBearish = IsDojiBody and DnShadow <= Body
+cGDB = GravestoneDojiBearish  and  GravestoneDojiInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cGDB and dataType == "Frequency"
+    var ttBearishGravestoneDoji = "Gravestone Doji\nWhen a doji is at or is close to the day’s low point, a doji line will develop."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="GD", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishGravestoneDoji))
+    xZ(y)
+    zX(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+DragonflyDojiBullish = IsDojiBody and UpShadow <= Body
+
+cDDB = DragonflyDojiBullish  and  DragonflyDojiInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cDDB and dataType == "Frequency"
+    var ttBullishDragonflyDoji = "Dragonfly Doji\nSimilar to other Doji days, this particular Doji also regularly appears at pivotal market moments. This is a specific Doji where both the open and close price are at the high of a given day."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="DD", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishDragonflyDoji))
+    xY(y)
+    zY(z)
+    
+
+
+
+
+// _________________________________________________________________________________________________________________________________________
+HaramiCrossBullish = LongBody[1] and BlackBody[1] and DownTrend[1] and IsDojiBody and high <= BodyHi[1] and low >= BodyLo[1]
+
+cHCB = HaramiCrossBullish  and  HaramiCrossInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cHCB and dataType == "Frequency"
+    var ttBullishHaramiCross = "Harami Cross\nThis candlestick pattern is a variation of the HARAMI BULLISH pattern. It is found during a downtrend. The two-day candlestick pattern consists of a Doji candle that is entirely encompassed within the body of what was once a red-bodied candle."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="HC", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishHaramiCross))
+    xY(y)
+    zY(z)
+    
+
+
+
+
+// _________________________________________________________________________________________________________________________________________
+HaramiCrossBearish = LongBody[1] and WhiteBody[1] and UpTrend[1] and IsDojiBody and high <= BodyHi[1] and low >= BodyLo[1]
+
+cHCb = HaramiCrossBearish  and  HaramiCrossInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cHCb and dataType == "Frequency"
+    var ttBearishHaramiCross = "Harami Cross\nThis candlestick pattern is a variation of the HARAMI BEARISH pattern. It is found during an uptrend. This is a two-day candlestick pattern with a Doji candle that is entirely encompassed within the body that was once a green-bodied candle. The Doji shows that some indecision has entered the minds of sellers, and the pattern hints that the trend might reverse."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="HC", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishHaramiCross))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+HaramiBullish = LongBody[1] and BlackBody[1] and DownTrend[1] and WhiteBody and SmallBody and high <= BodyHi[1] and low >= BodyLo[1]
+
+cHBu = HaramiBullish  and  HaramiInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cHBu and dataType == "Frequency"
+    var ttBullishHarami = "Harami\nThis two-day candlestick pattern consists of a small-bodied green candle that is entirely encompassed within the body of what was once a red-bodied candle."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="BH", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishHarami))
+    xY(y)
+    zY(z)
+    
+
+
+
+
+// _________________________________________________________________________________________________________________________________________
+HaramiBearish = LongBody[1] and WhiteBody[1] and UpTrend[1] and BlackBody and SmallBody and high <= BodyHi[1] and low >= BodyLo[1]
+
+cHb = HaramiBearish  and  HaramiInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cHb and dataType == "Frequency"
+    var ttBearishHarami = "Harami\nThis is a two-day candlestick pattern with a small, red-bodied candle that is entirely encompassed within the body that was once a green-bodied candle."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="BH", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishHarami))
+    xZ(y)
+    zX(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+LongLowerShadowPercent = 75.0
+LongLowerShadowBullish = DnShadow > Range/100*LongLowerShadowPercent
+
+cLLSB = LongLowerShadowBullish  and  LongLowerShadowInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cLLSB and dataType == "Frequency"
+    var ttBullishLongLowerShadow = "Long Lower Shadow\nTo indicate seller domination of the first part of a session, candlesticks will present with LONG LOWER SHADOWs and short upper shadows, consequently lowering prices."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="LLS", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishLongLowerShadow))
+    xY(y)
+    zY(z)
+    
+
+
+
+
+// _________________________________________________________________________________________________________________________________________
+LongShadowPercent = 75.0
+LongUpperShadowBearish = UpShadow > Range/100*LongShadowPercent
+cLUSB = LongUpperShadowBearish  and  LongUpperShadowInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cLUSB and dataType == "Frequency"
+    var ttBearishLongUpperShadow = "Long Upper Shadow\nTo indicate buyer domination of the first part of a session, candlesticks will present with LONG UPPER SHADOWs, as well as short lower shadows, consequently raising bidding prices."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="LUS", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishLongUpperShadow))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+SpinningTopWhitePercent = 34.0
+IsSpinningTopWhite = DnShadow >= Range / 100 * SpinningTopWhitePercent and UpShadow >= Range / 100 * SpinningTopWhitePercent and not IsDojiBody
+SpinningTopWhite = IsSpinningTopWhite and WhiteBody
+cSTW = SpinningTopWhite and SpinningTopWhiteInput and volume >= (volMA * volinput)
+
+if cSTW and dataType == "Frequency"
+    var ttSpinningTopWhite = "Spinning Top White\nWhite spinning tops are candlestick lines that are small, green-bodied, and possess shadows (upper and lower) that end up exceeding the length of candle bodies. They often signal indecision between buyer and seller."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="STW", style=label.style_label_up, color = label_color_neutral, textcolor=color.white, tooltip = ttSpinningTopWhite))
+    zN(y)
+    zM(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+SpinningTopBlackPercent = 34.0
+IsSpinningTop = DnShadow >= Range / 100 * SpinningTopBlackPercent and UpShadow >= Range / 100 * SpinningTopBlackPercent and not IsDojiBody
+SpinningTopBlack = IsSpinningTop and BlackBody
+
+
+
+cSTB = SpinningTopBlack and SpinningTopBlackInput and volume >= (volMA * volinput)
+if cSTB     and dataType == "Frequency"
+    var ttSpinningTopBlack = "Spinning Top Black\nBlack spinning tops are candlestick lines that are small, red-bodied, and possess shadows (upper and lower) that end up exceeding the length of candle bodies. They often signal indecision."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="STB", style=label.style_label_up, color = label_color_neutral, textcolor=color.white, tooltip = ttSpinningTopBlack))
+    zN(y)
+    zM(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+WSld_ShadowPercent = 5.0
+WSld_HaveNotUpShadow = Range * WSld_ShadowPercent / 100 > UpShadow
+ThreeWhiteSoldiersBullish = false
+
+if LongBody and LongBody[1] and LongBody[2]
+    if WhiteBody and WhiteBody[1] and WhiteBody[2]
+        ThreeWhiteSoldiersBullish := close > close[1] and close[1] > close[2] and open < close[1] and open > open[1] and open[1] < close[2] and open[1] > open[2] and WSld_HaveNotUpShadow and WSld_HaveNotUpShadow[1] and WSld_HaveNotUpShadow[2]
+cTWSB = ThreeWhiteSoldiersBullish  and  ThreeWhiteSoldiersInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cTWSB and dataType == "Frequency"
+    var ttBullishThreeWhiteSoldiers = "Three White Soldiers\nThis bullish reversal pattern is made up of three long-bodied, green candles in immediate succession. Each one opens within the body before it and the close is near to the daily high."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="3WS", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishThreeWhiteSoldiers))
+    xY(y)
+    zY(z)
+    
+
+
+
+// _________________________________________________________________________________________________________________________________________
+BCrw_ShadowPercent = 5.0
+BCrw_HaveNotDnShadow = Range * BCrw_ShadowPercent / 100 > DnShadow
+ThreeBlackCrowsBearish = false
+if LongBody and LongBody[1] and LongBody[2]
+    if BlackBody and BlackBody[1] and BlackBody[2]
+        ThreeBlackCrowsBearish := close < close[1] and close[1] < close[2] and open > close[1] and open < open[1] and open[1] > close[2] and open[1] < open[2] and BCrw_HaveNotDnShadow and BCrw_HaveNotDnShadow[1] and BCrw_HaveNotDnShadow[2]
+cTBCB = ThreeBlackCrowsBearish  and  ThreeBlackCrowsInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cTBCB and dataType == "Frequency"
+    var ttBearishThreeBlackCrows = "Three Black Crows\nThis is a bearish reversal pattern that consists of three long, red-bodied candles in immediate succession. For each of these candles, each day opens within the body of the day before and closes either at or near its low."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="3BC", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishThreeBlackCrows))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+EngulfingBullish = DownTrend and WhiteBody and LongBody and BlackBody[1] and SmallBody[1] and close >= open[1] and open <= close[1] and ( close > open[1] or open < close[1] )
+cEB = EngulfingBullish  and  EngulfingInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cEB and dataType == "Frequency"
+    var ttBullishEngulfing = "Engulfing\nAt the end of a given downward trend, there will most likely be a reversal pattern. To distinguish the first day, this candlestick pattern uses a small body, followed by a day where the candle body fully overtakes the body from the day before, and closes in the trend’s opposite direction. Although similar to the outside reversal chart pattern, it is not essential for this pattern to completely overtake the range (high to low), rather only the open and the close."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="BE", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishEngulfing))
+    xY(y)
+    zY(z)
+    
+
+
+
+// _________________________________________________________________________________________________________________________________________
+EngulfingBearish = UpTrend and BlackBody and LongBody and WhiteBody[1] and SmallBody[1] and close <= open[1] and open >= close[1] and ( close < open[1] or open > close[1] )
+cEb = EngulfingBearish  and  EngulfingInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cEb and dataType == "Frequency"
+    var ttBearishEngulfing = "Engulfing\nAt the end of a given uptrend, a reversal pattern will most likely appear. During the first day, this candlestick pattern uses a small body. It is then followed by a day where the candle body fully overtakes the body from the day before it and closes in the trend’s opposite direction. Although similar to the outside reversal chart pattern, it is not essential for this pattern to fully overtake the range (high to low), rather only the open and the close."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="BE", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishEngulfing))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+AbandonedBabyBullish = DownTrend[2] and BlackBody[2] and IsDojiBody[1] and low[2] > high[1] and WhiteBody and high[1] < low
+cABB = AbandonedBabyBullish  and  AbandonedBabyInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cABB and dataType == "Frequency"
+    var ttBullishAbandonedBaby = "Abandoned Baby\nThis candlestick pattern is quite rare as far as reversal patterns go. The first of the pattern is a large down candle. Next comes a doji candle that gaps below the candle before it. The doji candle is then followed by another candle that opens even higher and swiftly moves to the upside."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="AB", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishAbandonedBaby))
+    xY(y)
+    zY(z)
+    
+
+
+// _________________________________________________________________________________________________________________________________________
+AbandonedBabyBearish = UpTrend[2] and WhiteBody[2] and IsDojiBody[1] and high[2] < low[1] and BlackBody and low[1] > high
+cABb =  AbandonedBabyBearish  and  AbandonedBabyInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cABb and dataType == "Frequency"
+    var ttBearishAbandonedBaby = "Abandoned Baby\nA bearish abandoned baby is a specific candlestick pattern that often signals a downward reversal trend in terms of security price. It is formed when a gap appears between the lowest price of a doji-like candle and the candlestick of the day before. The earlier candlestick is green, tall, and has small shadows. The doji candle is also tailed by a gap between its lowest price point and the highest price point of the candle that comes next, which is red, tall and also has small shadows. The doji candle shadows must completely gap either below or above the shadows of the first and third day in order to have the abandoned baby pattern effect."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="AB", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishAbandonedBaby))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+DojisBullish = Doji[2] and Doji[1] and Doji
+BodyGapUpBullish = BodyHi[1] < BodyLo
+BodyGapDnBullish = BodyLo[1] > BodyHi
+TriStarBullish = DojisBullish and DownTrend[2] and BodyGapDnBullish[1] and BodyGapUpBullish
+cTSB = TriStarBullish  and  TriStarInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cTSB and dataType == "Frequency"
+    var ttBullishTriStar = "Tri-Star\nA bullish TriStar candlestick pattern can form when three doji candlesticks materialize in immediate succession at the tail-end of an extended downtrend. The first doji candle marks indecision between bull and bear. The second doji gaps in the direction of the leading trend. The third changes the attitude of the market once the candlestick opens in the direction opposite to the trend. Each doji candle has a shadow, all comparatively shallow, which signify an interim cutback in volatility."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="3S", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishTriStar))
+    xY(y)
+    zY(z)
+    
+
+
+
+// _________________________________________________________________________________________________________________________________________
+Dojis = Doji[2] and Doji[1] and Doji
+BodyGapUp = BodyHi[1] < BodyLo
+BodyGapDn = BodyLo[1] > BodyHi
+TriStarBearish = Dojis and UpTrend[2] and BodyGapUp[1] and BodyGapDn
+cTSb = TriStarBearish  and  TriStarInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cTSb and dataType == "Frequency"
+    var ttBearishTriStar = "Tri-Star\nThis particular pattern can form when three doji candlesticks appear in immediate succession at the end of an extended uptrend. The first doji candle marks indecision between bull and bear. The second doji gaps in the direction of the leading trend. The third changes the attitude of the market once the candlestick opens in the direction opposite to the trend. Each doji candle has a shadow, all comparatively shallow, which signify an interim cutback in volatility."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="3S", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishTriStar))
+    xZ(y)
+    zX(z)
+    
+
+// _________________________________________________________________________________________________________________________________________
+MarubozuShadowPercent = 5.0
+Marubozu = LongBody and UpShadow <= MarubozuShadowPercent/100*Body and DnShadow <= MarubozuShadowPercent/100*Body
+MarubozuWhiteBullishKicking = Marubozu and WhiteBody
+MarubozuBlackBullish = Marubozu and BlackBody
+KickingBullish = MarubozuBlackBullish[1] and MarubozuWhiteBullishKicking and high[1] < low
+cKB = KickingBullish  and  KickingInput and (("Bullish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cKB and dataType == "Frequency"
+    var ttBullishKicking = "Kicking\nThe first day candlestick is a bearish marubozu candlestick with next to no upper or lower shadow and where the price opens at the day’s high and closes at the day’s low. The second day is a bullish marubozu pattern, with next to no upper or lower shadow and where the price opens at the day’s low and closes at the day’s high. Additionally, the second day gaps up extensively and opens above the opening price of the day before. This gap or window, as the Japanese call it, lies between day one and day two’s bullish candlesticks."
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="K", style=label.style_label_up, color = label_color_bullish, textcolor=color.white, tooltip = ttBullishKicking))
+    xY(y)
+    zY(z)
+    
+
+
+
+// _________________________________________________________________________________________________________________________________________
+KickingBearishNumberOfCandles = 2
+MarubozuBullishShadowPercent = 5.0
+MarubozuBearishKicking = LongBody and UpShadow <= MarubozuBullishShadowPercent/100*Body and DnShadow <= MarubozuBullishShadowPercent/100*Body
+MarubozuWhiteBearish = MarubozuBearishKicking and WhiteBody
+MarubozuBlackBearishKicking = MarubozuBearishKicking and BlackBody
+KickingBearish = MarubozuWhiteBearish[1] and MarubozuBlackBearishKicking and low[1] > high
+cKb = KickingBearish  and  KickingInput and (("Bearish" == CandleType) or CandleType == "Both") and volume >= (volMA * volinput)
+
+if cKb and dataType == "Frequency"
+    var ttBearishKicking = "Kicking\nA bearish kicking pattern will occur, subsequently signaling a reversal for a new downtrend. The first day candlestick is a bullish marubozu. The second day gaps down extensively and opens below the opening price of the day before. There is a gap between day one and two’s bearish candlesticks."
+    array.push(x, label.new(bar_index, patternLabelPosHigh, text="K", style=label.style_label_down, color = label_color_bearish, textcolor=color.white, tooltip = ttBearishKicking))
+    xZ(y)
+    zX(z)    
+    
+    var ttAllCandlestickPatterns = "All Candlestick Patterns\n"
+    array.push(x, label.new(bar_index, patternLabelPosLow, text="Collection", style=label.style_label_up, color = label_color_neutral, textcolor=color.white, tooltip = ttAllCandlestickPatterns))
+    xY(y)
+    zY(z)
+    
+    
+// End Tradingview Code
+
+
+var int [] count = array.new_int(44)
+var float[] perc = array.new_float(44)
+
+s(x, y) => 
+    array.set(count, x, y) , array.set(cX, x, y)
+
+if barstate.isfirst
+    s(0, 0) 
+    s(1, 0) 
+    s(2, 0) 
+    s(3, 0) 
+    s(4, 0) 
+    s(5, 0) 
+    s(6, 0) 
+    s(7, 0) 
+    s(8, 0) 
+    s(9, 0) 
+    s(10, 0)
+    s(11, 0)
+    s(12, 0)
+    s(13, 0)
+    s(14, 0)
+    s(15, 0)
+    s(16, 0)
+    s(17, 0)
+    s(18, 0)
+    s(19, 0)
+    s(20, 0)
+    s(21, 0)
+    s(22, 0)
+    s(23, 0)
+    s(24, 0)
+    s(25, 0)
+    s(26, 0)
+    s(27, 0)
+    s(28, 0)
+    s(29, 0)
+    s(30, 0)
+    s(31, 0)
+    s(32, 0)
+    s(33, 0)
+    s(34, 0)
+    s(35, 0)
+    s(36, 0)
+    s(37, 0)
+    s(38, 0)
+    s(39, 0)
+    s(40, 0)
+    s(41, 0)
+    s(42, 0)
+    s(43, 0)
+
+     
+volY = volume >= (volMA * volinput)
+volYY = volume[1] >= (volMA[1] * volinput)         
+        
+volr(x) =>
+    array.get(count, x)
+
+sZ(x, y) =>
+    array.set(count, x, y and volY ? volr(x) + 1 : volr(x))
+        
+        
+cXcount(y) =>
+    array.get(cX, y)
+    
+cXcond = volYY and close > close[1] 
+
+cXfin(x, y) => 
+    array.set(cX, x,  y [1] and cXcond ? cXcount(x) + 1 : cXcount(x))    
+    
+    
+div(x) =>
+    j = nz(array.get(cX, x) / array.get(count, x)) * 100
+    
+
+set(x) =>
+    array.set(perc, x, div(x))
+
+
+loww = low < lower or low[1] < lower[1]
+highh = high > upper or high[1] > upper[1]
+var float [] stdC = array.new_float(44)
+
+setX(x, y) =>
+    if barstate.isfirst
+        array.set(stdC, x, 0)
+    else
+        array.set(stdC, x, loww and y and volume >= (volMA * volinput) ? array.get(stdC, x) + 1 : array.get(stdC, x))
+    
+setXB(x, y) => 
+    if barstate.isfirst
+        array.set(stdC, x, 0)
+    else
+        array.set(stdC, x, highh and y and volume >= (volMA * volinput) ? array.get(stdC, x) + 1 : array.get(stdC, x))
+            
+        
+        
+sZ(0,  EngulfingBullish             )
+sZ(1,  EngulfingBearish             )
+sZ(2,  PiercingBullish              )
+sZ(3,  DarkCloudCoverBearish        )
+sZ(4,  HammerBullish                )
+sZ(5,  ShootingStarBearish          )
+sZ(6,  MorningStarBullish           )
+sZ(7,  EveningStarBearish           )
+sZ(8,  InvertedHammerBullish        )
+sZ(9,  KickingBullish               )
+sZ(10, RisingWindowBullish          )
+sZ(11, RisingThreeMethodsBullish    )
+sZ(12, TweezerBottomBullish         )
+sZ(13, UpsideTasukiGapBullish       )
+sZ(14, DojiStarBullish              )
+sZ(15, MorningDojiStarBullish       )
+sZ(16, MarubozuWhiteBullish         )
+sZ(17, DragonflyDojiBullish         )
+sZ(18, HaramiCrossBullish           )
+sZ(19, HaramiBullish                )
+sZ(20, LongLowerShadowBullish       )
+sZ(21, ThreeWhiteSoldiersBullish    )
+sZ(22, AbandonedBabyBullish         )
+sZ(23, TriStarBullish               )
+sZ(24, OnNeckBearish                )
+sZ(25, FallingWindowBearish         )
+sZ(26, FallingThreeMethodsBearish   )
+sZ(27, TweezerTopBearish            )
+sZ(28, DownsideTasukiGapBearish     )
+sZ(29, EveningDojiStarBearish       )
+sZ(30, DojiStarBearish              )
+sZ(31, HangingManBearish            )
+sZ(32, MarubozuBlackBearish         )
+sZ(33, GravestoneDojiBearish        )
+sZ(34, HaramiCrossBearish           )
+sZ(35, HaramiBearish                )
+sZ(36, LongUpperShadowBearish       )
+sZ(37, ThreeBlackCrowsBearish       )
+sZ(38, AbandonedBabyBearish         )
+sZ(39, TriStarBearish               )
+sZ(40, KickingBearish               )
+sZ(41, SpinningTopWhite             )
+sZ(42, Doji                         )
+sZ(43, SpinningTopBlack             )
+
+
+
+cXfin(0,  EngulfingBullish            )
+cXfin(1,  EngulfingBearish            )
+cXfin(2,  PiercingBullish             )
+cXfin(3,  DarkCloudCoverBearish       )
+cXfin(4,  HammerBullish               )
+cXfin(5,  ShootingStarBearish         )
+cXfin(6,  MorningStarBullish          )
+cXfin(7,  EveningStarBearish          )
+cXfin(8,  InvertedHammerBullish       )
+cXfin(9,  KickingBullish              )
+cXfin(10, RisingWindowBullish         )
+cXfin(11, RisingThreeMethodsBullish   )
+cXfin(12, TweezerBottomBullish        )
+cXfin(13, UpsideTasukiGapBullish      )
+cXfin(14, DojiStarBullish             )
+cXfin(15, MorningDojiStarBullish      )
+cXfin(16, MarubozuWhiteBullish        )
+cXfin(17, DragonflyDojiBullish        )
+cXfin(18, HaramiCrossBullish          )
+cXfin(19, HaramiBullish               )
+cXfin(20, LongLowerShadowBullish      )
+cXfin(21, ThreeWhiteSoldiersBullish   )
+cXfin(22, AbandonedBabyBullish        )
+cXfin(23, TriStarBullish              )
+cXfin(24, OnNeckBearish               )
+cXfin(25, FallingWindowBearish        )
+cXfin(26, FallingThreeMethodsBearish  )
+cXfin(27, TweezerTopBearish           )
+cXfin(28, DownsideTasukiGapBearish    )
+cXfin(29, EveningDojiStarBearish      )
+cXfin(30, DojiStarBearish             )
+cXfin(31, HangingManBearish           )
+cXfin(32, MarubozuBlackBearish        )
+cXfin(33, GravestoneDojiBearish       )
+cXfin(34, HaramiCrossBearish          )
+cXfin(35, HaramiBearish               )
+cXfin(36, LongUpperShadowBearish      )
+cXfin(37, ThreeBlackCrowsBearish      )
+cXfin(38, AbandonedBabyBearish        )
+cXfin(39, TriStarBearish              )
+cXfin(40, KickingBearish              )
+cXfin(41, SpinningTopWhite            )
+cXfin(42, Doji                        )
+cXfin(43, SpinningTopBlack            )
+
+
+set(0)
+set(1)
+set(2)
+set(3)
+set(4)
+set(5)
+set(6)
+set(7)
+set(8)
+set(9)
+set(10)
+set(11)
+set(12)
+set(13)
+set(14)
+set(15)
+set(16)
+set(17)
+set(18)
+set(19)
+set(20)
+set(21)
+set(22)
+set(23)
+set(24)
+set(25)
+set(26)
+set(27)
+set(28)
+set(29)
+set(30)
+set(31)
+set(32)
+set(33)
+set(34)
+set(35)
+set(36)
+set(37)
+set(38)
+set(39)
+set(40)
+set(41)
+set(42)
+set(43)
+    
+
+setX(0,  EngulfingBullish            )
+setXB(1,  EngulfingBearish           )
+setX(2,  PiercingBullish             )
+setXB(3,  DarkCloudCoverBearish      )
+setX(4,  HammerBullish               )
+setXB(5,  ShootingStarBearish        )
+setX(6,  MorningStarBullish          )
+setXB(7,  EveningStarBearish         )
+setX(8,  InvertedHammerBullish       )
+setX(9,  KickingBullish              )
+setX(10, RisingWindowBullish         )
+setX(11, RisingThreeMethodsBullish   )
+setX(12, TweezerBottomBullish        )
+setX(13, UpsideTasukiGapBullish      )
+setX(14, DojiStarBullish             )
+setX(15, MorningDojiStarBullish      )
+setX(16, MarubozuWhiteBullish        )
+setX(17, DragonflyDojiBullish        )
+setX(18, HaramiCrossBullish          )
+setX(19, HaramiBullish               )
+setX(20, LongLowerShadowBullish      )
+setX(21, ThreeWhiteSoldiersBullish   )
+setX(22, AbandonedBabyBullish        )
+setX(23, TriStarBullish              )
+setXB(24, OnNeckBearish              )
+setXB(25, FallingWindowBearish       )
+setXB(26, FallingThreeMethodsBearish )
+setXB(27, TweezerTopBearish          )
+setXB(28, DownsideTasukiGapBearish   )
+setXB(29, EveningDojiStarBearish     )
+setXB(30, DojiStarBearish            )
+setXB(31, HangingManBearish          )
+setXB(32, MarubozuBlackBearish       )
+setXB(33, GravestoneDojiBearish      )
+setXB(34, HaramiCrossBearish         )
+setXB(35, HaramiBearish              )
+setXB(36, LongUpperShadowBearish     )
+setXB(37, ThreeBlackCrowsBearish     )
+setXB(38, AbandonedBabyBearish       )
+setXB(39, TriStarBearish             )
+setXB(40, KickingBearish             )
+setX(41, SpinningTopWhite            )
+setX(42, Doji                        )
+setX(43, SpinningTopBlack            )
+
+
+
+var float [] r  = array.new_float()
+var float [] r1 = array.new_float()
+var float [] r2 = array.new_float()
+var float [] r3 = array.new_float()
+var float [] r4 = array.new_float()
+var float [] r5 = array.new_float()
+var float [] r6 = array.new_float()
+var float [] r7 = array.new_float()
+var float [] r8 = array.new_float()
+var float [] r9 = array.new_float()
+var float [] r10 = array.new_float()
+var float [] r11 = array.new_float()
+var float [] r12 = array.new_float()
+var float [] r13 = array.new_float()
+var float [] r14 = array.new_float()
+var float [] r15 = array.new_float()
+var float [] r16 = array.new_float()
+var float [] r17 = array.new_float()
+var float [] r18 = array.new_float()
+var float [] r19 = array.new_float()
+var float [] r20 = array.new_float()
+var float [] r21 = array.new_float()
+var float [] r22 = array.new_float()
+var float [] r23 = array.new_float()
+var float [] r24 = array.new_float()
+var float [] r25 = array.new_float()
+var float [] r26 = array.new_float()
+var float [] r27 = array.new_float()
+var float [] r28 = array.new_float()
+var float [] r29 = array.new_float()
+var float [] r30 = array.new_float()
+var float [] r31 = array.new_float()
+var float [] r32 = array.new_float()
+var float [] r33 = array.new_float()
+var float [] r34 = array.new_float()
+var float [] r35 = array.new_float()
+var float [] r36 = array.new_float()
+var float [] r37 = array.new_float()
+var float [] r38 = array.new_float()
+var float [] r39 = array.new_float()
+var float [] r40 = array.new_float()
+var float [] r41 = array.new_float()
+var float [] r42 = array.new_float()
+var float [] r43 = array.new_float()
+
+var label [] xP = array.new_label()
+var line  [] xPl = array.new_line()
+
+
+f(x) => 
+    ta.barssince(ta.change(array.get(stdC, x))) == len
+
+f1(x) =>
+    ta.change(array.get(stdC, x))
+
+bull = f1(0) or f1(2 ) or f1(4 ) or f1(6 ) or f1(8 ) or f1(9) or f1(10) or f1(11) or f1(12 ) or f1(13 )or f1(14 ) or f1(15 ) or f1(16 ) or f1(17 ) or f1(18 ) or f1(19 ) or f1(20 ) or f1(21 ) or f1(22 ) or f1(23 )
+f2(y) =>
+    array.push(xP, label.new(bar_index, bull ? low * .97 : high * 1.03, style = bull ? label.style_label_up : label.style_label_down, textcolor = color.white, color = bull ? color.new(color.blue, 75) : color.new(color.red, 75), text = y + "\n" + str.tostring(c, format.percent) + " Greater Than Average Volume"))
+
+f3() => 
+    array.push(xPl, line.new(bar_index, bull ? low * .97 : high * 1.03, bar_index, bull ? low : high, style = line.style_dashed, color = color.white))
+
+if dataType == "Mean Reversions"
+
+    if f1(0)
+        f2("Bullish Engulfing")      
+        f3()
+    if f1(1 )
+        f2("Bearish Engulfing")
+        f3()
+    if f1(2 )
+        f2("Piercing Bullish")
+        f3()
+    if f1(3 )
+        f2("Dark Cloud Cover")
+        f3()
+    if f1(4 ) 
+        f2("Hammer")
+        f3()
+    if f1(5 ) 
+        f2("Shooting Star")
+        f3()
+    if f1(6 )
+        f2("Morning Star")
+        f3()
+    if f1(7 )
+        f2("Evening Star")
+        f3()
+    if f1(8 )
+        f2("Inverted Hammer")
+        f3()
+    if f1(9 )
+        f2("Kicking Bullish")
+        f3()
+    if RisingWindowInput == true
+        if f1(10)
+            f2("Rising Window Bullish")
+            f3()
+    if f1(11)
+        f2("Rising Threes")
+        f3()
+    if f1(12)
+        f2("Tweezer Bottom")
+        f3()
+    if f1(13)
+        f2("Upside Tasuki Gap")
+        f3()
+    if f1(14)
+        f2("Doji Star Bullish")
+        f3()
+    if f1(15)
+        f2("Morning Doji Star Bullish")
+        f3()
+    if f1(16) and not f1(2)
+        f2("Marubozu White")
+        f3()
+    if f1(17)
+        f2("Dragonfly Doji")
+        f3()
+    if f1(18)
+        f2("Harami Cross Bullish")
+        f3()
+    if f1(19)
+        f2("Harami Bullish")
+        f3()
+    if f1(20) and not f1(4) and not f1(14)
+        f2("Long Lower Shadow Bullish")
+        f3()
+    if f1(21)
+        f2("Three White Soldiers")
+        f3()
+    if f1(22)
+        f2("Abandoned Baby Bullish")
+        f3()
+    if f1(23)
+        f2("Tri Star Bullish")
+        f3()
+    if f1(24)
+        f2("On Neck Bearish")
+        f3()
+    if FallingWindowInput == true
+        if f1(25)
+            f2("Falling Window Bearish")
+            f3()
+    if f1(26)
+        f2("Falling Three")
+        f3()
+    if f1(27)
+        f2("Tweezer Top")
+        f3()
+    if f1(28)
+        f2("Downside Tasuki Gap")
+        f3()
+    if f1(29)
+        f2("Evening Doji Star")
+        f3()
+    if f1(30)
+        f2("Doji Star Bearish")
+        f3()
+    if f1(31)
+        f2("Hanging Man")
+        f3()
+    if f1(32) and not f1(5)
+        f2("Marubozu Black")
+        f3()
+    if f1(33)
+        f2("Gravestone Doji")
+        f3()
+    if f1(34)
+        f2("Harami Cross Bearish")
+        f3()
+    if f1(35)
+        f2("Harami Bearish")
+        f3()
+    if f1(36) and not f1(5)
+        f2("Long Upper Shadow Bearish")
+        f3()
+    if f1(37)
+        f2("Three Black Crows")
+        f3()
+    if f1(38)
+        f2("Abandoned Baby Bearish")
+        f3()
+    if f1(39)
+        f2("Tri Star Bearish")
+        f3()
+    if f1(40)
+        f2("Kicking Bearish")
+        f3()
+
+
+
+
+
+PNL = (((close / close[len]) - 1) * 100)
+
+var box [] b = array.new_box()
+
+bgcol = bull[5] ? color.new(color.blue, 50) : color.new(color.white, 50)
+border =  bull[5] ? color.new(color.blue, 50) : color.new(color.white, 50)
+
+bo() =>
+    array.push(b, box.new(bar_index - 1 , close > open ? high : low,  bar_index + 1, math.avg(close, open) , bgcolor = bgcol, border_color = border))
+
+if dataType == "Mean Reversions"
+
+    if f(0)
+        array.push(r, PNL)
+        bo() 
+    if f(1)
+        array.push(r1, PNL)
+        bo() 
+    if f(2)
+        array.push(r2, PNL)
+        bo() 
+
+    if f(3)
+        array.push(r3, PNL)
+        bo() 
+
+    if f(4)
+        array.push(r4, PNL)
+        bo() 
+
+    if f(5)
+        array.push(r5, PNL)
+        bo() 
+
+    if f(6)
+        array.push(r6, PNL)
+        bo() 
+
+    if f(7)
+        array.push(r7, PNL)
+        bo() 
+
+    if f(8)
+        array.push(r8, PNL)
+        bo() 
+
+    if f(9)
+        array.push(r9, PNL)
+        bo() 
+
+    if RisingWindowInput == true
+        if f(10)
+            array.push(r10, PNL)
+            bo() 
+
+    if f(11)
+        array.push(r11, PNL)
+        bo() 
+
+    if f(12)
+        array.push(r12, PNL)
+        bo() 
+
+    if f(13)
+        array.push(r13, PNL)
+        bo() 
+
+    if f(14)
+        array.push(r14, PNL)
+        bo() 
+
+    if f(15)
+        array.push(r15, PNL)
+        bo() 
+
+    if f(16)
+        array.push(r16, PNL)
+        bo() 
+
+    if f(17)
+        array.push(r17, PNL)
+        bo() 
+
+    if f(18)
+        array.push(r18, PNL)
+        bo() 
+
+    if f(19)
+        array.push(r19, PNL)
+        bo() 
+
+    if f(20) and not f(4) and not f(14)
+        array.push(r20, PNL)
+        bo() 
+
+    if f(21)
+        array.push(r21, PNL)
+        bo() 
+
+    if f(22)
+        array.push(r22, PNL)
+        bo() 
+
+    if f(23)
+        array.push(r23, PNL)
+        bo() 
+
+    if f(24)
+        array.push(r24, PNL)
+        bo() 
+
+    if FallingWindowInput == true
+        if f(25)
+            array.push(r25, PNL)
+            bo() 
+
+    if f(26)
+        array.push(r26, PNL)
+        bo() 
+
+    if f(27)
+        array.push(r27, PNL)
+        bo() 
+
+    if f(28)
+        array.push(r28, PNL)
+        bo() 
+
+    if f(29)
+        array.push(r29, PNL)
+        bo() 
+
+    if f(30)
+        array.push(r30, PNL)
+        bo() 
+
+    if f(31)
+        array.push(r31, PNL)
+        bo() 
+
+    if f(32)
+        array.push(r32, PNL)
+        bo() 
+
+    if f(33)
+        array.push(r33, PNL)
+        bo() 
+
+    if f(34)
+        array.push(r34, PNL)
+        bo() 
+
+    if f(35)
+        array.push(r35, PNL)
+        bo() 
+
+    if f(36)
+        array.push(r36, PNL)
+        bo() 
+
+    if f(37)
+        array.push(r37, PNL)
+        bo() 
+
+    if f(38)
+        array.push(r38, PNL)
+        bo() 
+
+    if f(39)
+        array.push(r39, PNL)
+        bo() 
+
+    if f(40)
+        array.push(r40, PNL)
+        bo() 
+
+    
+
+aD(x, y) =>
+    nz(array.sum(x) / array.get(stdC, y))
+
+fL   = aD(r,   0)
+fL1  = aD(r1 , 1)
+fL2  = aD(r2 , 2)
+fL3  = aD(r3 , 3)
+fL4  = aD(r4 , 4)
+fL5  = aD(r5 , 5)
+fL6  = aD(r6 , 6)
+fL7  = aD(r7 , 7)
+fL8  = aD(r8 , 8)
+fL9  = aD(r9 , 9)
+fL10 = aD(r10, 10)
+fL11 = aD(r11, 11)
+fL12 = aD(r12, 12)
+fL13 = aD(r13, 13)
+fL14 = aD(r14, 14)
+fL15 = aD(r15, 15)
+fL16 = aD(r16, 16)
+fL17 = aD(r17, 17)
+fL18 = aD(r18, 18)
+fL19 = aD(r19, 19)
+fL20 = aD(r20, 20)
+fL21 = aD(r21, 21)
+fL22 = aD(r22, 22)
+fL23 = aD(r23, 23)
+fL24 = aD(r24, 24)
+fL25 = aD(r25, 25)
+fL26 = aD(r26, 26)
+fL27 = aD(r27, 27)
+fL28 = aD(r28, 28)
+fL29 = aD(r29, 29)
+fL30 = aD(r30, 30)
+fL31 = aD(r31, 31)
+fL32 = aD(r32, 32)
+fL33 = aD(r33, 33)
+fL34 = aD(r34, 34)
+fL35 = aD(r35, 35)
+fL36 = aD(r36, 36)
+fL37 = aD(r37, 37)
+fL38 = aD(r38, 38)
+fL39 = aD(r39, 39)
+fL40 = aD(r40, 40)
+fL41 = aD(r41, 41)
+fL42 = aD(r42, 42)
+fL43 = aD(r43, 43)
+
+
+
+
+        
+str(x) =>
+    str.tostring(array.get(cX, x))  + " (" + str.tostring(array.get(perc,  x), format.percent) + ")\n\n"
+strX(x) =>
+    str.tostring(array.get(count, x))
+strY(x) =>
+    x + ", Next Session Higher Closes: "
+
+// 
+// 
+// 
+
+
+new(x) =>
+    str.tostring(array.get(stdC, x)) 
+
+newY(x) =>  
+    x + " Closed Near Lower Band, Avg. " + str.tostring(len, "#") + "-Session PnL: "
+    
+newYY(x) =>
+    x + " Closed Near Upper Band, Avg. " + str.tostring(len, "#") + "-Session PnL: "
+    
+newX(x) =>
+    str.tostring(x, format.percent) + "\n\n"
+
+
+
+tab = array.new_table()
+
+array.push(tab, table.new(position.bottom_right, 10, 10, bgcolor = na, frame_color = color.white, frame_width = 1, border_color = #000000, border_width = 2))
+
+if barstate.islast
+    if tabl == "On" 
+        if dataType == "Frequency"
+            table.cell(
+            
+                 array.get(tab, 0), 0, 0, text_color = color.white, bgcolor = color.new(color.black, 90), text = "Candlestick Patterns With at Least " + str.tostring(volinput * 100 - 100, format.percent) + " Greater Than Average Volume" )
+            table.merge_cells(array.get(tab,0), 0, 0, 1, 0)     
+            
+            table.cell(
+            
+                 array.get(tab, 0), 0, 1, bgcolor = color.new(color.green, 90), text = "Bullish Patterns", text_color = color.green)
+                 
+            table.cell(
+            
+                 array.get(tab, 0), 1, 1, bgcolor = color.new(color.red, 90), text = "Bearish Patterns", text_color = color.red)    
+                
+            table.cell(
+            
+                 array.get(tab, 0), 0, 3, text_color = color.blue, bgcolor = color.new(color.blue, 90), text_size = size.normal,
+                 
+                 text =  "Neutral Patterns"
+                 
+                 )    
+                 
+            
+            
+                 
+            table.merge_cells(array.get(tab, 0), 0,3, 1, 3)
+            table.merge_cells(array.get(tab, 0), 0,4, 1, 4)
+            
+        
+                
+            table.cell(
+            
+                 array.get(tab, 0), 0, 2, text_color = color.white, bgcolor = color.new(color.green, 90), text_size = size.small,
+                 
+                 text = 
+                 
+                 
+                   strX(0)     + strY(" BULLISH ENGULFING PATTERNS")   + str(0)        
+                 + strX(2)     + strY(" PIERCING PATTERNS")           + str(2)            
+                 + strX(4)     + strY(" HAMMERS")                     + str(4)                       
+                 + strX(6)     + strY(" MORNING STARS ")              + str(6)                
+                 + strX(8)     + strY(" INVERTED HAMMER")             + str(8)             
+                 + strX(9)     + strY(" KICKING BULLISH")             + str(9)  
+                 + strX(10)    + strY(" RISING WINDOW ")              + str(10) 
+                 + strX(11)    + strY(" RISING THREES ")              + str(11) 
+                 + strX(12)    + strY(" TWEEZER BOTTOMS")             + str(12) 
+                 + strX(13)    + strY(" TASUKI UPSIDE GAPS")          + str(13) 
+                 + strX(14)    + strY(" DOJI STARS, ")                + str(14) 
+                 + strX(15)    + strY(" MORNING DOJI STARS")          + str(15) 
+                 + strX(16)    + strY(" MARUBOZU WHITE")              + str(16) 
+                 + strX(17)    + strY(" DRAGONFLY DOJI")              + str(17) 
+                 + strX(18)    + strY(" HARAMI CROSS BULLISH" )       + str(18) 
+                 + strX(19)    + strY(" HARAMI BULLISH")              + str(19) 
+                 + strX(20)    + strY(" LONG LOWER SHADOW Formation") + str(20) 
+                 + strX(21)    + strY(" THREE WHITE SOLDIER")         + str(21) 
+                 + strX(22)    + strY(" BULLISH ABANDONED BABY")      + str(22) 
+                 + strX(23)    + strY(" TRI STAR BULLISH")            + str(23) 
+            
+            
+                 )
+            
+            table.cell(
+            
+                 array.get(tab, 0), 1, 2, text_color = color.white, bgcolor = color.new(color.red, 90), text_size = size.small,
+                 
+                 text =   
+                 
+                   strX(1)     + strY(" BEARISH ENGULFING")            + str(1)  
+                 + strX(3)     + strY(" DARK CLOUD COVER")             + str(3)  
+                 + strX(5)     + strY(" SHOOTING STAR")                + str(5)  
+                 + strX(7)     + strY(" EVENING STAR")                 + str(7)  
+                 + strX(24)    + strY(" ON NECK BEARISH")              + str(24) 
+                 + strX(25)    + strY(" FALLING WINDOW")               + str(25) 
+                 + strX(27)    + strY(" TWEEZER TOPS")                 + str(27) 
+                 + strX(28)    + strY(" DOWNSIDE TASUKI GAPS")         + str(28) 
+                 + strX(29)    + strY(" EVENING DOJI STAR")            + str(29) 
+                 + strX(30)    + strY(" DOJI STAR BEARISH")            + str(30) 
+                 + strX(31)    + strY(" HANGING MAN BEARISH")          + str(31) 
+                 + strX(32)    + strY(" MARUBOZU BLACK")               + str(32) 
+                 + strX(33)    + strY(" GRAVESTONE DOJI")              + str(33) 
+                 + strX(34)    + strY(" HARAMI CROSS BEARISH")         + str(34) 
+                 + strX(35)    + strY(" HARAMI BEARISH")               + str(35) 
+                 + strX(36)    + strY(" LONG UPPER SHADOW")            + str(36)  
+                 + strX(37)    + strY(" THREE BLACK CROW")             + str(37)  
+                 + strX(38)    + strY(" ABANDONED BABY BEARISH")       + str(38) 
+                 + strX(39)    + strY(" TRI STAR BEARISH")             + str(39) 
+                 + strX(40)    + strY(" KICKING BEARISH")              + str(40) 
+                 + strX(26)    + strY(" FALLING THREE BEARISH")        + str(26) 
+                            
+            
+                 )
+                 
+            
+            table.cell(
+            
+                 array.get(tab, 0), 0, 4, text_color = color.white, bgcolor = color.new(color.blue, 90), text_size = size.small,
+                 
+                 text =   
+                 
+                  strX(41) +    strY(" GREEN SPINNING TOPS") + str(41)
+                 + strX(42) +    strY(" DOJI") + str(42)
+                 + strX(43) +    strY("RED SPINNING TOPS") + str(43)
+                 
+                 )
+        
+        if dataType == "Mean Reversions"
+            table.cell(
+            
+                 array.get(tab, 0), 0, 0, text_color = color.white, bgcolor = color.new(color.black, 90), text_size = size.small, text = "Candlestick Patterns With at Least " + str.tostring(volinput * 100 - 100, format.percent) + " Greater Than Average Volume Candle That Form Near Outer Bands" )
+            table.merge_cells(array.get(tab,0), 0, 0, 1, 0)     
+            
+            table.cell(
+            
+                 array.get(tab, 0), 0, 1, bgcolor = color.new(color.green, 90), text_size = size.small, text = "Bullish Patterns \n(Low Price of Current Candle or Preceding Candle Must Extend Below Lower Band)", text_color = color.green)
+                 
+            table.cell(
+            
+                 array.get(tab, 0), 1, 1, bgcolor = color.new(color.red, 90), text_size = size.small, text = "Bearish Patterns \n(High Price of Current Candle or Preceding Candle Must Extend Above Upper Band)", text_color = color.red)    
+                
+            // table.cell(
+            
+            //      array.get(tab, 0), 0, 3, text_color = color.blue, bgcolor = color.new(color.blue, 90), text_size = size.normal,
+                 
+            //      text =  "Neutral Patterns"
+                 
+            //      )    
+                 
+            
+            
+                
+            
+        
+                
+            table.cell(
+            
+                 array.get(tab, 0), 0, 2, text_color = color.white, bgcolor = color.new(color.green, 90), text_size = size.small,
+                 
+                 text = 
+                 
+                 
+                   new(0)     + newY(" BULLISH ENGULFING PATTERNS")    + newX(fL)        
+                 + new(2)     + newY(" PIERCING PATTERNS")            + newX(fL2)            
+                 + new(4)     + newY(" HAMMERS")                      + newX(fL4)                       
+                 + new(6)     + newY(" MORNING STARS ")               + newX(fL6)                
+                 + new(8)     + newY(" INVERTED HAMMER")              + newX(fL8)             
+                 + new(9)     + newY(" KICKING BULLISH")              + newX(fL9)  
+                 + new(10)    + newY(" RISING WINDOW ")               + newX(fL10) 
+                 + new(11)    + newY(" RISING THREES ")               + newX(fL11) 
+                 + new(12)    + newY(" TWEEZER BOTTOMS")              + newX(fL12) 
+                 + new(13)    + newY(" TASUKI UPSIDE GAPS")           + newX(fL13) 
+                 + new(14)    + newY(" DOJI STARS, ")                 + newX(fL14) 
+                 + new(15)    + newY(" MORNING DOJI STARS")           + newX(fL15) 
+                 + new(16)    + newY(" MARUBOZU WHITE")               + newX(fL16) 
+                 + new(17)    + newY(" DRAGONFLY DOJI")               + newX(fL17) 
+                 + new(18)    + newY(" HARAMI CROSS BULLISH" )        + newX(fL18) 
+                 + new(19)    + newY(" HARAMI BULLISH")               + newX(fL19) 
+                 + new(20)    + newY(" LONG LOWER SHADOW Formation")  + newX(fL20) 
+                 + new(21)    + newY(" THREE WHITE SOLDIER")          + newX(fL21) 
+                 + new(22)    + newY(" BULLISH ABANDONED BABY")       + newX(fL22) 
+                 + new(23)    + newY(" TRI STAR BULLISH")             + newX(fL23) 
+            
+            
+                 )
+            
+            table.cell(
+            
+                 array.get(tab, 0), 1, 2, text_color = color.white, bgcolor = color.new(color.red, 90), text_size = size.small,
+                 
+                 text =   
+                 
+                   new(1)     + newYY(" BEARISH ENGULFING")           + newX(fL1)  
+                 + new(3)     + newYY(" DARK CLOUD COVER")            + newX(fL3)  
+                 + new(5)     + newYY(" SHOOTING STAR")               + newX(fL5)  
+                 + new(7)     + newYY(" EVENING STAR")                + newX(fL7)  
+                 + new(24)    + newYY(" ON NECK BEARISH")             + newX(fL24) 
+                 + new(25)    + newYY(" FALLING WINDOW")              + newX(fL25) 
+                 + new(27)    + newYY(" TWEEZER TOPS")                + newX(fL27) 
+                 + new(28)    + newYY(" DOWNSIDE TASUKI GAPS")        + newX(fL28) 
+                 + new(29)    + newYY(" EVENING DOJI STAR")           + newX(fL29) 
+                 + new(30)    + newYY(" DOJI STAR BEARISH")           + newX(fL30) 
+                 + new(31)    + newYY(" HANGING MAN BEARISH")         + newX(fL31) 
+                 + new(32)    + newYY(" MARUBOZU BLACK")              + newX(fL32) 
+                 + new(33)    + newYY(" GRAVESTONE DOJI")             + newX(fL33) 
+                 + new(34)    + newYY(" HARAMI CROSS BEARISH")        + newX(fL34) 
+                 + new(35)    + newYY(" HARAMI BEARISH")              + newX(fL35) 
+                 + new(36)    + newYY(" LONG UPPER SHADOW")           + newX(fL36)  
+                 + new(37)    + newYY(" THREE BLACK CROW")            + newX(fL37)  
+                 + new(38)    + newYY(" ABANDONED BABY BEARISH")      + newX(fL38) 
+                 + new(39)    + newYY(" TRI STAR BEARISH")            + newX(fL39) 
+                 + new(40)    + newYY(" KICKING BEARISH")             + newX(fL40) 
+                 + new(26)    + newYY(" FALLING THREE BEARISH")       + newX(fL26) 
+                            
+            
+                 )
+                 
+            
+            // table.cell(
+            
+            //      array.get(tab, 0), 0, 4, text_color = color.white, bgcolor = color.new(color.blue, 90), text_size = size.small,
+                 
+            //      text =   
+                 
+            //       new(41) +     newY(" GREEN SPINNING TOPS") + newX(fL41)
+            //      + new(42) +    newY(" DOJI")                + newX(fL42)
+            //      + new(43) +    newY("RED SPINNING TOPS")    + newX(fL43)
+                 
+            //      )   

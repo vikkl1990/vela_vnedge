@@ -1,5 +1,5 @@
 {
- "at": "2026-10-20T17:29:33.731Z",
+ "at": "2026-10-20T17:47:28.824Z",
  "symbol": "BTCUSD",
  "tf": "15m",
  "bars": 999,
@@ -30,6 +30,143 @@
    "shapes": "",
    "labels": 45,
    "plots": 5,
+   "warnings": 0
+  },
+  {
+   "id": "trend-deviation-channel-zeiierman",
+   "ok": true,
+   "ms": 414,
+   "patches": [
+    "line-continuation",
+    "drop-qualifiers"
+   ],
+   "alerts": 68,
+   "entryish": 0,
+   "shapes": "Upper 2D Expansion:11,Lower 2D Expansion:12,Upper 3D Expansion:0,Lower 3D Expansion:0,Upper 2D Re-entry:11,Lower 2D Re-entry:12,Upper 3D Re-entry:0,Lower 3D Re-entry:0",
+   "labels": 7,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "smart-money-breakouts",
+   "ok": true,
+   "ms": 86,
+   "patches": [
+    "statement-comma",
+    "line-continuation"
+   ],
+   "alerts": 14,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 42,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "trendline-breakouts-with-targets",
+   "ok": true,
+   "ms": 74,
+   "patches": [
+    "statement-comma",
+    "line-continuation",
+    "int-window-length"
+   ],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "plot:9",
+   "labels": 9,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "htf-3-candle-system-zeiierman",
+   "ok": true,
+   "ms": 1066,
+   "patches": [
+    "line-continuation",
+    "htf-guard"
+   ],
+   "alerts": 45,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 15,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "volume-filtered-all-candlestick-patterns",
+   "ok": true,
+   "ms": 723,
+   "patches": [
+    "line-continuation"
+   ],
+   "alerts": 62,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 25,
+   "plots": 2,
+   "warnings": 0
+  },
+  {
+   "id": "rsi-failure-swings-ao-divergences",
+   "ok": false,
+   "ms": 26,
+   "error": "Undeclared identifier \"indicator\"",
+   "patches": [
+    "line-continuation"
+   ],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 0,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "rsi-failure-swings-signals-operator",
+   "ok": true,
+   "ms": 91,
+   "patches": [
+    "line-continuation"
+   ],
+   "alerts": 6,
+   "entryish": 6,
+   "shapes": "",
+   "labels": 8,
+   "plots": 6,
+   "warnings": 0
+  },
+  {
+   "id": "mtf-liquidity-stack-zeiierman",
+   "ok": true,
+   "ms": 2286,
+   "patches": [
+    "line-continuation",
+    "drop-qualifiers",
+    "timeframe.in_seconds-noarg"
+   ],
+   "alerts": 174,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 125,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "stop-loss-cascades-breakouts",
+   "ok": false,
+   "ms": 1259,
+   "error": "Cannot read properties of null (reading 'delete')",
+   "patches": [
+    "statement-comma",
+    "line-continuation",
+    "unused-ta-import"
+   ],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 0,
+   "plots": 0,
    "warnings": 0
   }
  ]

@@ -4954,3 +4954,32 @@ and ETH +1.0R; XRP −1.4R. On 1h ZEC alone carries it (+18.7R of +16.4R). BoS a
 
 **Not changed.** Neither variant is enabled. Both enter the library; the incubator's nightly screen decides whether any
 pair reaches the shadow book.
+
+## 163. Kioseff Trading's published scripts checked; two parser patches; a condition-title bug found and held (20 October 2026)
+
+The operator: "check anything works for us" on KioseffTrading's profile. 49 scripts, 5 closed-source. Of the 44 open, 40 are
+visual tools with nothing to trade (volume and TPO profiles, ladders, optimizers, dashboards). Four carry signals:
+
+| script | outcome |
+|---|---|
+| Market Structure Volume Profiles | built as CHoCH / BoS signals in decision 162: CHoCH on 4h +29.2R over 196 trades |
+| Volume Filtered Candlestick Patterns | runs; 15m −57.3R / 681, 1h −34.9R / 452, 4h +1.7R / 94: no edge |
+| RSI Failure Swings & AO Divergences | built as `OPERATOR05` (its variable `indicator` renamed, alerts added): 15m −4.7R, 1h −35.4R, 4h −2.8R: no edge |
+| Stop Loss Cascades (Breakouts) | gets past the parser now, then stops on a PineTS runtime gap (`.delete()` on an empty drawing); not run |
+
+**Two parser patches, kept.** Each was run on every script it changes, with and without it, on BTCUSD 15m: every script
+that ran before gives identical output, and more run.
+- `unused-ta-import`: an `import TradingView/ta/N` whose own functions (the library exports that are not built-in `ta.*`)
+  the script never calls is removed. 15 library scripts.
+- `statement-comma`: a comma that ends a statement with every bracket closed, followed by a line that starts a statement,
+  is dropped (Pine's statement separator, which the continuation joiner read as a wrap). 18 library scripts; Smart Money
+  Breakouts and Trendline Breakouts with Targets now run.
+
+**The condition-title bug, held for the operator.** PineTS returns `alertcondition(c, title = …, message = …)` written
+with named arguments as one object in `title` and an empty message; the extractor read "[object Object]", found no
+direction and dropped the signal. 247 library scripts write their conditions that way. The candlestick test above ran
+with the fix applied locally. Of the 191 active scanners, 25 are affected: they trade on their shapes today, and the fix
+adds their conditions. On BTC 1h and SOL 15m it changes nothing for 7, adds a few entries for 12, and multiplies the
+entries of Money Flow Divergence Zones (15 → 179 on BTC 1h), Nadaraya-Watson Liquidity Sweeps (77 → 157), Candlestick
+Reversal and Trend Signals (87 → 154), Fisher Williams %R Divergence, Reverse RSI and Trend Targets. Their shadow records
+were earned on the shapes alone, so the fix is not applied until the operator chooses how those records are treated.

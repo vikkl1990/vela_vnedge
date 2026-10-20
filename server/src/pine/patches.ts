@@ -6,7 +6,7 @@
  * The same patched source is served to the dashboard so the Vela chart runs the exact
  * code the scanner executed.
  */
-import { dropQualifiers, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved } from './compat.ts';
+import { dropQualifiers, dropStatementCommas, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved } from './compat.ts';
 
 export interface PatchRule {
   id: string;
@@ -16,9 +16,13 @@ export interface PatchRule {
   apply: (src: string) => string;
 }
 
+/** TradingView's `ta` library (v12): the exports that are not built-in `ta.*` functions (decision 163). */
+const TA_LIBRARY_OWN = ['ao', 'aroon', 'atr2', 'cagr', 'chandelier', 'chandelier2', 'changePercent', 'coppock', 'dema', 'dema2', 'dm', 'donchian', 'ema2', 'eom', 'er', 'frama', 'ft', 'highestSince', 'ht', 'ichimoku', 'ift', 'kama', 'kvo', 'lowestSince', 'macd2', 'pmo', 'ppo', 'ppo2', 'pzo', 'relativeVolume', 'requestUpAndDownVolume', 'requestVolumeDelta', 'rma2', 'rms', 'rwi', 'specialK', 'stc', 'stochFull', 'stochRsi', 'supertrend2', 'szo', 't3', 't3Alt', 'tema', 'tema2', 'trima', 'trix', 'ulcerIndex', 'uo', 'vStop', 'vStop2', 'vhf', 'vi', 'vzo', 'williamsFractal', 'wpo'];
+
 export const PATCH_RULES: PatchRule[] = [
   // decision 126: generic lowerings for what the PineTS parser and runtime cannot take, applied before the specific rules
   { id: 'v4-to-v5', description: 'Pine v4 (v3, v2) lifted to v5 by the published migration table: study → indicator, security → request.security, ta.* and math.* prefixes, typed inputs, str.*; transp and iff lowered.', apply: liftV4 },
+  { id: 'statement-comma', description: "A comma that ends a statement with every bracket closed (Pine's statement separator) is dropped; PineTS and the continuation joiner read it as a continuation (decision 163).", apply: dropStatementCommas },
   { id: 'line-continuation', description: "Pine's continuation lines (inside brackets, or a more-indented line starting with an operator) are joined onto their statement and comment-only lines are removed; PineTS's indentation lexer rejects the first and tokenises the second at a depth that can break the block around it.", apply: joinContinuations },
   { id: 'drop-qualifiers', description: '`for int i = …` loop types and `series` / `simple` / `const` declaration qualifiers are dropped; PineTS does not parse them and they carry no runtime meaning.', apply: dropQualifiers },
   { id: 'reserved-identifier', description: 'A script that uses `type` or `method` as a variable name has it renamed; PineTS lexes both as keywords.', apply: renameReserved },
@@ -27,6 +31,16 @@ export const PATCH_RULES: PatchRule[] = [
     id: 'htf-guard',
     description: "A one-line `runtime.error` guard that the chosen timeframe is above the chart's is removed; PineTS evaluates request.security by re-running the script on that timeframe, where the guard compares the timeframe with itself and stops the script. The guard only checks the input, so removing it changes no signal.",
     apply: (src) => src.replace(/^if (?:barstate\.isfirst and )?timeframe\.in_seconds\(\w+\)\s*<=\s*timeframe\.in_seconds\(timeframe\.period\)[ \t]*\n[ \t]+runtime\.error\([^\n]*\)[ \t]*\n(?![ \t])/gm, ''),
+  },
+  {
+    id: 'unused-ta-import',
+    description: "An `import TradingView/ta/N` whose own functions the script never calls is removed; PineTS loads no TradingView library, and without that library's functions the import only names the built-in `ta` namespace the script already uses (decision 163).",
+    apply: (src) => {
+      const m = src.match(/^import\s+TradingView\/ta\/\d+(?:\s+as\s+(\w+))?[ \t]*\r?$/m);
+      if (!m) return src;
+      const alias = m[1] ?? 'ta';
+      return TA_LIBRARY_OWN.some(f => new RegExp(`\\b${alias}\\.${f}\\s*\\(`).test(src)) ? src : src.replace(m[0], '');
+    },
   },
   { id: 'fundamentals-na', description: 'request.financial / earnings / dividends / splits / footprint / economic return na on a crypto perpetual on TradingView too; lowered to na so the script runs.', apply: fundamentalsToNa },
   {
