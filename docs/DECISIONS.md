@@ -4432,3 +4432,39 @@ Delta's ceiling and the stop guard, eight open. Two weeks: account +$371 (drop 1
 
 **Watch.** The account's two-week edge rests on a few big winners; size multiplies it either way. The
 Daily page's margin comparison (decision 138) keeps running against the R the trades make.
+
+## 145. Where the stop-outs come from: one clean pattern, script-placed stops (20 October 2026)
+
+**Why.** The operator: "what's the pattern of SL, how to reduce the SLs". 2,698 closed shadow trades
+over 35 days (946 stop-outs, 35%) and 172 paper trades, split by what was known at entry, each bucket
+judged in both halves (before and after 5 October); then each filter replayed in dollars under the
+deployed sizing (decision 144) on the fortnight's paper and shadow trades.
+
+| trait, shadow | n | stopped | R a trade, halves |
+|---|---|---|---|
+| stop placed by the script | 209 | 42% | −0.122 / −0.089 |
+| ATR fallback stop | 2,486 | 35% | −0.073 / +0.100 |
+| majors, stop under 1.2% | 214 | 18–25% | −0.17 both |
+| alts, stop 0.8–1.2% | 439 | 44% | −0.017 / −0.108 |
+| alts, stop under 0.8% | 631 | 39% | −0.013 / +0.181 |
+| alts, stop 4% or more | 285 | 28% | +0.075 / +0.344 |
+| cell record below −0.1R | 602 | 32% | −0.057 / −0.045 |
+| entered 12–16 UTC | 582 | 38% | −0.204 / −0.010 |
+
+Another signal on the same market and side within 15 minutes looked strong (26% stopped) until only
+signals before the entry were counted: the effect was later confirmations, not usable at entry.
+Longs lost and shorts won in October; that is the month's direction, not a rule.
+
+| filter, $150 at 5× / 20× | paper net | paper stop-outs | shadow net | shadow drop |
+|---|---|---|---|---|
+| none (deployed) | +$387 | 48 | +$4,722 | 19% |
+| skip script-placed stops | +$435 | 45 | +$5,396 | 18% |
+| skip majors with stops under 1.2% | +$321 | 46 | +$5,206 | 19% |
+| skip cell record below −0.1R | +$289 | 45 | +$4,328 | 22% |
+| script stops + alts 0.8–1.2% + majors under 1.2% | +$406 | 38 | +$5,911 | 12% |
+
+**Verdict.** The stop-out rate cannot be predicted at entry (decisions 128, 137); what can be avoided
+is the trades that lose on average. Script-placed stops are the one clean case: worse in both halves
+of both books, and skipping them improves both books in both halves. The alt 0.8–1.2% band removes
+the most stop-outs (a quarter in both books) and the shadow's drop to 12%, but tighter alt stops win,
+so the band may be noise; it is a forward test, not a rule. Nothing applied.
