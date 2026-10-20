@@ -376,6 +376,55 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   rep.free = slots;
 }
 
+/**
+ * Decision 157: admission on its own, outside the nightly hunt. Judging, promotion and demotion keep their daily pace;
+ * this only fills free shadow slots with candidates whose blocker has cleared (the market gate allows the market again,
+ * a re-screen landed, a slot was freed). Returns the pairs admitted.
+ */
+export function admitOnly(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): string[] {
+  if (!cfg.incubator?.enabled) return [];
+  const rep: CycleReport = { proposed: [], retired: [], brewing: 0, demoteProposed: [], admitted: [], free: 0 };
+  admit(store, cfg, rep, now, opts);
+  return rep.admitted;
+}
+
+export type CandidateBlocker = 'expired' | 'stale' | 'outside' | 'refused' | 'rescreen' | 'capped' | 'noSlot' | 'cohort' | 'admissible';
+/**
+ * Decision 157: why each candidate that passed its screen is not in the shadow book, by the rules `admit` applies and in
+ * its order: a screen expired by an engine change, a screen past its age, the market gate (outside its universe, or
+ * refusing the market today), a strategy screened before decision 134, then room — its scanner's cap on that timeframe
+ * or the book's. What is left would be admitted by the next admission.
+ */
+export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): { passed: number; free: number; counts: Record<CandidateBlocker, number> } {
+  const inc = cfg.incubator;
+  const counts: Record<CandidateBlocker, number> = { expired: 0, stale: 0, outside: 0, refused: 0, rescreen: 0, capped: 0, noSlot: 0, cohort: 0, admissible: 0 };
+  const active = store.list(['shadow', 'proposed']);
+  let slots = Math.max(0, inc.maxShadow - active.length);
+  const free = slots;
+  const markets = store.marketsToday();
+  const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
+  const passed = store.list(['candidate']).filter(r => r.screen?.pass);
+  const fresh: PairRow[] = [];
+  for (const r of passed) {
+    const why = marketRefusal(markets, r.symbol);
+    if (r.screen?.expiredAt) counts.expired++;
+    else if (now - (r.screen?.at ?? 0) > maxAge) counts.stale++;
+    else if (why) (markets.get(r.symbol) ? counts.refused++ : counts.outside++);
+    else if (opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close') counts.rescreen++;
+    else fresh.push(r);
+  }
+  if (inc.gate.pool === 'cohort') { counts.cohort = fresh.length; return { passed: passed.length, free, counts }; }
+  const held = new Map<string, number>();
+  for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
+  for (const r of fresh.sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
+    const k = `${r.scannerId}|${r.tf}`; const cap = inc.admit.maxPerScannerTf?.[r.tf] ?? marketsFor(inc, r.tf);
+    if ((held.get(k) ?? 0) >= cap) { counts.capped++; continue; }
+    if (slots <= 0) { counts.noSlot++; continue; }
+    counts.admissible++; slots--; held.set(k, (held.get(k) ?? 0) + 1);
+  }
+  return { passed: passed.length, free, counts };
+}
+
 export class IncubatorError extends Error { status = 409; }
 
 /** Take one (market, timeframe) off a scanner: from its explicit pairs when it has them, else from its symbol list; the scanner is switched off when it was the last. */

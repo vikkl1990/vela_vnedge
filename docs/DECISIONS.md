@@ -4818,3 +4818,31 @@ result.
   the panel reads best +0.49R, worst −0.63R and the stop move.
 - Play, pause, seek and framing work; the pop-up links to the replay.
 - The dashboard builds; the server suite passes.
+
+## 157. Admission in real time: candidates enter the shadow book when their blocker clears, not at the next night (20 October 2026)
+
+**Why.** The Incubator page said 68 candidates "passed the screen, waiting for a slot" while 126 shadow slots were free.
+None waited for a slot. On the VM at 12:30 UTC:
+
+| candidates | held by |
+|---|---|
+| 50 | the market is outside the gate's universe today |
+| 10 | the screen was expired by the PineTS upgrade (decision 151) |
+| 6 | the gate refuses the market today |
+| 1 | a strategy screened before the fill fix (decision 134) |
+| 1 | its scanner already holds 8 pairs on 15m |
+
+Admission ran only inside the hunt: the nightly `incubate` run at 01:00 UTC, or when a screen finished. A market the
+hourly gate allowed again at 09:00 let its candidates in at 01:00 the next night. The operator: "can't that be real time?"
+
+**What changed.**
+- `admitOnly` runs the admission step on its own. `App.incubatorAdmit` calls it after every market-gate refresh (hourly)
+  and every 10 minutes between hunts, then syncs the shadow runner so the new pairs trade from their next bar.
+- Judging, promotion, demotion and retirement keep their daily pace in the hunt.
+- `candidateBlockers` names what holds each passed candidate, by `admit`'s own rules in its order: expired, stale,
+  outside, refused, re-screen, scanner cap, no slot, otherwise admissible.
+- `/api/incubator` returns the counts and the last admission. The Candidates card shows them instead of "waiting for a
+  slot", with the rules in its tooltip.
+
+**Not changed.** Re-screens still come from the nightly screen, a separate job; the 11 that wait for one move as it
+reaches them.

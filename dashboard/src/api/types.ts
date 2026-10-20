@@ -641,7 +641,14 @@ export interface IncubatorPair {
   lastTradeAt?: number | null
 }
 export interface IncubatorEvent { id: number; at: number; pairId: number; scannerId: string; symbol: string; tf: string; from: IncubatorStage | null; to: IncubatorStage; actor: string; evidence: unknown }
+/** Decision 157: why the candidates that passed their screen are not in the shadow book, right now. */
+export interface CandidateBlockers {
+  passed: number; free: number
+  counts: { expired: number; stale: number; outside: number; refused: number; rescreen: number; capped: number; noSlot: number; cohort: number; admissible: number }
+}
 export interface IncubatorView {
+  candidates?: CandidateBlockers
+  lastAdmit?: { at: number; actor: string; admitted: string[] } | null
   enabled: boolean
   config: {
     tf: string; universeTop: number; maxShadow: number; cooldownDays: number

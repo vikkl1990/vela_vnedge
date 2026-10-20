@@ -4,7 +4,7 @@ import { IncubatorStore } from './incubator/store.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { dailyReport } from './analytics/daily.ts';
 import { listTrackers, removeTracker, saveTracker, trackerView } from './incubator/tracker.ts';
-import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
+import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, type AppConfig } from './config.ts';
 import { learnBook } from './analytics/learning.ts';
@@ -194,7 +194,8 @@ export class App {
     subscribeRealtime(this);
     if (this.executor) await this.executor.start();
     // markets today: judged now and every refreshMinutes, over the fleet's and the incubator's markets
-    const refreshMarkets = () => { const own = [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])]; return this.marketGate.universe(own).then(list => this.marketGate.refresh(list, undefined, own)).catch(e => log.warn(`markets today failed: ${e?.message ?? e}`)); };
+    // decision 157: a market the gate allows again lets its waiting candidates in at once, not at the next night's hunt
+    const refreshMarkets = () => { const own = [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])]; return this.marketGate.universe(own).then(list => this.marketGate.refresh(list, undefined, own)).then(() => this.incubatorAdmit('market gate')).catch(e => log.warn(`markets today failed: ${e?.message ?? e}`)); };
     // once the candle store has warmed up (the ATR test needs bars), then hourly
     setTimeout(refreshMarkets, 3 * 60_000).unref?.();
     void refreshMarkets();
@@ -205,6 +206,8 @@ export class App {
     this.huntTimer = setInterval(() => {
       const at = this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
       if (at > this.huntSeenAt) { this.huntSeenAt = at; this.incubatorEvaluate('hunter').catch(e => log.warn(`hunt failed: ${e?.message ?? e}`)); }
+      // decision 157: between hunts, free slots are filled as soon as a candidate can take one (a slot freed, a re-screen landed)
+      else this.incubatorAdmit('timer').catch(e => log.warn(`admission failed: ${e?.message ?? e}`));
     }, 10 * 60_000);
     this.huntTimer.unref?.();
     this.ops.start();
@@ -658,6 +661,9 @@ export class App {
       fleet: livePairs(cfg).length, promotionsThisWeek: this.incubatorStore.promotionsSince(now - 7 * 86400_000),
       lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastStart: this.db.kvGet('incubator.lastStart') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length },
       pairs, events: this.incubatorStore.events(100),
+      // decision 157: why the candidates that passed their screen are not in the shadow book, right now
+      candidates: candidateBlockers(this.incubatorStore, cfg, now, { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' }),
+      lastAdmit: this.db.kvGet<any>('incubator.lastAdmit') ?? null,
     };
   }
 
@@ -677,6 +683,17 @@ export class App {
    * The hunt: judge the shadow book, promote what the gate proposed when `promote.auto` is on, and
    * say what happened. Runs on the owner's click and every time the daily screen finishes.
    */
+  /** Decision 157: admission alone, as often as the market gate and the timer allow; judging stays with the hunt. */
+  async incubatorAdmit(actor: string): Promise<string[]> {
+    const admitted = incubatorAdmitOnly(this.incubatorStore, this.config.get(), Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' });
+    if (admitted.length) {
+      await this.incubator.sync();
+      this.db.kvSet('incubator.lastAdmit', { at: Date.now(), actor, admitted });
+      log.info(`incubator: ${admitted.length} admitted to the shadow book (${actor}): ${admitted.slice(0, 5).join(', ')}${admitted.length > 5 ? ' …' : ''}`);
+    }
+    return admitted;
+  }
+
   async incubatorEvaluate(actor: string) {
     const cfg = this.config.get();
     const synced = incubatorSyncLive(this.incubatorStore, cfg);

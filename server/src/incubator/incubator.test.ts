@@ -8,7 +8,7 @@ import { ConfigStore, DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { IncubatorStore } from './store.ts';
 import { cohortStats, cohortVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, sliceOf, type TradeR, deliveryVerdict, type PairStats } from './gate.ts';
-import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, screenVerdict, screenTf, diversityRefusal, preferScript, cohortComparison, type VariantResult, atrNeededPct, tooQuietForTf, gateFor } from './cycle.ts';
+import { approve, demote, evaluate, recordScreen, reject, syncLive, type ScreenResult, livePairs, admitOnly, candidateBlockers, screenVerdict, screenTf, diversityRefusal, preferScript, cohortComparison, type VariantResult, atrNeededPct, tooQuietForTf, gateFor } from './cycle.ts';
 
 const DAY = 86400_000;
 const T0 = Date.UTC(2026, 0, 5);
@@ -597,4 +597,36 @@ test('decision 151: restartEvidence moves the window start and logs it; expireSc
   assert.equal(x.screen.trades, 50, 'the screen itself is kept for the record');
   assert.equal(x.screen.expiredAt, 6_000);
   db.db.close();
+});
+
+test('decision 157: candidateBlockers names what holds each passed candidate; admitOnly admits only the admissible, between hunts', () => {
+  const { db, store, cfg, screen } = world();
+  cfg.incubator.gate.pool = 'pair';
+  cfg.incubator.maxShadow = 3;
+  cfg.incubator.admit.maxPerScannerTf = { '15m': 1 };
+  const T = T0 + DAY;
+  db.kvSet('risk.marketsToday', { enabled: true, at: T, markets: [
+    { symbol: 'AAA', allowed: true, reasons: [] }, { symbol: 'BBB', allowed: true, reasons: [] }, { symbol: 'CCC', allowed: true, reasons: [] },
+    { symbol: 'NOPE', allowed: false, reasons: ['dead'] }, { symbol: 'DDD', allowed: true, reasons: [] }] });
+  const at = (scannerId: string, symbol: string, over: Partial<ScreenResult> = {}) => recordScreen(store, { scannerId, symbol, tf: '15m' }, screen({ at: T, ...over }), cfg.incubator, T);
+  at('a', 'AAA'); at('a', 'BBB');                         // the second of scanner a is over its cap of one
+  at('b', 'CCC');                                          // admissible
+  at('c', 'NOPE');                                         // refused by the gate today
+  at('d', 'OUTSIDE');                                      // not judged by the gate at all
+  at('e', 'DDD', { at: T - 40 * DAY });                    // a screen past its 30 days
+  at('f', 'AAA', { fill: undefined } as any);              // a strategy screened before decision 134
+  const ex = store.list(['candidate']).find(r => r.scannerId === 'b')!;
+  at('g', 'DDD'); store.expireScreen(store.list(['candidate']).find(r => r.scannerId === 'g')!.id, 'engine-upgrade', 'test', T); // expired by an engine change
+  at('h', 'DDD', { pass: false });                         // did not pass: not a candidate that waits
+  const opts = { needsRescreen: (id: string) => id === 'f' };
+  const b = candidateBlockers(store, cfg, T, opts);
+  assert.equal(b.passed, 8);
+  assert.deepEqual(b.counts, { expired: 1, stale: 1, outside: 1, refused: 1, rescreen: 1, capped: 1, noSlot: 0, cohort: 0, admissible: 2 });
+  const admitted = admitOnly(store, cfg, T, opts);
+  assert.equal(admitted.length, 2, 'what the classifier calls admissible is what admission takes');
+  assert.ok(store.list(['shadow']).some(r => r.id === ex.id));
+  assert.equal(store.list(['proposed', 'retired']).length, 0, 'admission alone neither judges nor retires');
+  assert.equal(candidateBlockers(store, cfg, T, opts).counts.admissible, 0);
+  cfg.incubator.enabled = false;
+  assert.deepEqual(admitOnly(store, cfg, T, opts), [], 'off when the incubator is off');
 });

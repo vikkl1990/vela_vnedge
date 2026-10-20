@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthGate'
-import type { IncubatorPair } from '../api/types'
+import type { IncubatorPair, IncubatorView } from '../api/types'
 import { BookBadge, ConfirmDialog, Empty, KpiTile, PageTitle, Panel, Pill, QueryState } from '../components/ui'
 import { Clocks, Evidence, Funnel, Need } from '../components/incubatorBits'
 import { clockRank, pf, r } from '../lib/incubatorLogic'
@@ -57,7 +57,7 @@ export default function Incubator() {
               <div className="kpi-grid">
                 <KpiTile label="Waiting for you" value={decisions.length} tone={decisions.length ? 'accent' : 'neutral'} sub="proposals to approve or reject" />
                 <KpiTile label="Shadow book" value={`${shadow.length + by('proposed').length}`} sub={`cap ${d.config.maxShadow} · ${d.runner.entries} shadow entries since restart`} hint={shadow.length + by('proposed').length > d.config.maxShadow ? 'Over the cap: pairs admitted by hand or carried over from the live fleet stay until they are judged' : undefined} />
-                <KpiTile label="Candidates" value={candidates.length} sub="passed the screen, waiting for a slot" />
+                <KpiTile label="Candidates" value={candidates.length} sub={candidateLine(d.candidates, d.lastAdmit)} hint={candidateHint(d.candidates)} />
                 <KpiTile label="In the account" value={`${d.fleet}/${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} />
                 {(() => {
                   const died = d.lastStart && (!d.lastRun || d.lastRun.at < d.lastStart.at) && Date.now() - d.lastStart.at > 7 * 3600_000
@@ -239,5 +239,35 @@ export default function Incubator() {
       </QueryState>
     </>
   )
+}
+
+/**
+ * Decision 157: what the candidates that passed their screen wait for, right now — admission runs after every market-gate
+ * refresh and every ten minutes, so "waiting" names the rule that holds each one, not a slot.
+ */
+function candidateLine(c: IncubatorView['candidates'], last: IncubatorView['lastAdmit']): string {
+  if (!c) return 'passed the screen'
+  const k = c.counts
+  const parts = [
+    k.admissible ? `${k.admissible} enter at the next admission` : null,
+    k.outside + k.refused ? `${k.outside + k.refused} market out today` : null,
+    k.expired + k.rescreen ? `${k.expired + k.rescreen} await a re-screen` : null,
+    k.stale ? `${k.stale} screen too old` : null,
+    k.capped ? `${k.capped} scanner at its cap` : null,
+    k.noSlot ? `${k.noSlot} wait for a slot` : null,
+    k.cohort ? `${k.cohort} wait for their cohort` : null,
+  ].filter(Boolean)
+  const tail = last ? ` · last admitted ${timeAgo(last.at)}` : ''
+  return (parts.length ? parts.join(' · ') : 'none waiting') + tail
+}
+function candidateHint(c: IncubatorView['candidates']): string | undefined {
+  if (!c) return undefined
+  const k = c.counts
+  return [
+    `Admission runs after every market-gate refresh (hourly) and every 10 minutes; the nightly hunt judges and promotes.`,
+    `Market out today: ${k.outside} outside the gate's universe, ${k.refused} refused by it.`,
+    `Awaiting a re-screen: ${k.expired} screened on the previous engine, ${k.rescreen} strategies screened before the fill fix.`,
+    `Screen older than the candidate window: ${k.stale}. Scanner at its per-timeframe cap: ${k.capped}. ${c.free} shadow slots free.`,
+  ].join('\n')
 }
 
