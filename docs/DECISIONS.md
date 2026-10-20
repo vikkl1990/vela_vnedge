@@ -4846,3 +4846,31 @@ hourly gate allowed again at 09:00 let its candidates in at 01:00 the next night
 
 **Not changed.** Re-screens still come from the nightly screen, a separate job; the 11 that wait for one move as it
 reaches them.
+
+## 158. Zeiierman's recent scripts tested against the fair benchmark; three that the old compatibility report blocked re-checked under PineTS 0.12 (20 October 2026)
+
+The operator: "Zeiierman Trading new scripts are available, check and test". The weekly library sync had imported
+Rolling Candle Profile with Buy/Sell Signals (published 19 October). Each recent Zeiierman script ran through diagnose
+with the decision 155 benchmark (`VARIANTS=sig-atr,rand`) on BTC, ETH, SOL, XRP, ZEC and AKE at 15m, 1h and 4h.
+
+| script | 15m | 1h | 4h |
+|---|---|---|---|
+| Rolling Candle Profile (new) | −17.3R / 163 | +26.5R / 318, both halves up | +32.8R / 292, both halves up |
+| Levels Likely to Break | −1.5R / 37 | −3.1R / 60 | +33.9R / 81, both halves up, above 90% of random in 5/5 |
+| Zeiierman Bands | −7.0R / 122 | −10.0R / 142 | +32.0R / 295, both halves up, above random median in 5/6 |
+| Trend Deviation Channel | −88.1R / 932 | +25.4R / 852, above 90% of random in 4/6 | +6.8R / 433 |
+| Buyers & Sellers Profile | −4.0R | −5.8R | +4.9R; about zero per trade, never above 90% of random |
+
+Curved Trendlines draws only (no entries in 18 cells). Market Matrix emits labels only and stays quarantined for memory.
+HTF 3-Candle System and MTF Liquidity Stack now run but give no entry: the first's bullish/bearish alerts describe a
+state that holds for many bars ("FVG currently present"); the second's alerts are about liquidity levels, with no direction.
+
+**The compatibility re-check.** The report still carried the PineTS 0.10 failures for three scripts, so diagnose refused
+them. Under 0.12 Trend Deviation Channel and MTF Liquidity Stack run unchanged (the `railPaint` / `trackWick` method gaps are
+closed). HTF 3-Candle stopped on its own guard: PineTS serves `request.security` by re-running the script on the requested
+timeframe, where the guard compares that timeframe with itself. The new `htf-guard` patch removes only a one-line
+`runtime.error` guard of the form `timeframe.in_seconds(x) <= timeframe.in_seconds(timeframe.period)`. Of the library it
+matches only this script; the guards in two LuxAlgo scripts that check the chart timeframe alone are kept.
+
+**Not changed.** No scanner is admitted or released by this. The ones with a 4h or 1h edge reach the shadow book through the
+incubator's own screen.

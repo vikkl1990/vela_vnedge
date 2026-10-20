@@ -23,6 +23,11 @@ export const PATCH_RULES: PatchRule[] = [
   { id: 'drop-qualifiers', description: '`for int i = …` loop types and `series` / `simple` / `const` declaration qualifiers are dropped; PineTS does not parse them and they carry no runtime meaning.', apply: dropQualifiers },
   { id: 'reserved-identifier', description: 'A script that uses `type` or `method` as a variable name has it renamed; PineTS lexes both as keywords.', apply: renameReserved },
   { id: 'int-window-length', description: 'A ta.* window length written as a division is wrapped in int(); PineTS 0.12 returns na for a fractional window where TradingView and PineTS 0.10 truncate (decision 151).', apply: intWindowLengths },
+  {
+    id: 'htf-guard',
+    description: "A one-line `runtime.error` guard that the chosen timeframe is above the chart's is removed; PineTS evaluates request.security by re-running the script on that timeframe, where the guard compares the timeframe with itself and stops the script. The guard only checks the input, so removing it changes no signal.",
+    apply: (src) => src.replace(/^if (?:barstate\.isfirst and )?timeframe\.in_seconds\(\w+\)\s*<=\s*timeframe\.in_seconds\(timeframe\.period\)[ \t]*\n[ \t]+runtime\.error\([^\n]*\)[ \t]*\n(?![ \t])/gm, ''),
+  },
   { id: 'fundamentals-na', description: 'request.financial / earnings / dividends / splits / footprint / economic return na on a crypto perpetual on TradingView too; lowered to na so the script runs.', apply: fundamentalsToNa },
   {
     id: 'label.all-size',

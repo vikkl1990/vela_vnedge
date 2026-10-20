@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dropQualifiers, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved, replaceCall } from './compat.ts';
+import { PATCH_RULES } from './patches.ts';
 
 test('continuation lines inside brackets and leading-operator lines are joined; comments re-indented', () => {
   const src = [
@@ -73,4 +74,13 @@ test('decision 151: a ta.* window length written as a division is truncated to a
   assert.equal(intWindowLengths('x = ta.wma(ta.wma(_src,_length / 3) * 3 - ta.wma(_src, _length / 2), _length)'), 'x = ta.wma(ta.wma(_src,int(_length / 3)) * 3 - ta.wma(_src, int(_length / 2)), _length)');
   assert.equal(intWindowLengths('h = ta.highest(high, len/2)'), 'h = ta.highest(high, int(len/2))');
   assert.equal(intWindowLengths('a = ta.sma(close, 20)\nb = ta.ema(close / 2, len)'), 'a = ta.sma(close, 20)\nb = ta.ema(close / 2, len)', 'whole lengths and divided sources are untouched');
+});
+
+test('decision 158: the "timeframe above the chart" guard is removed, other timeframe guards are kept', () => {
+  const guard = PATCH_RULES.find((r) => r.id === 'htf-guard')!.apply;
+  assert.equal(guard('a = 1\nif barstate.isfirst and timeframe.in_seconds(tf)<=timeframe.in_seconds(timeframe.period)\n    runtime.error("Selected timeframe must be higher than the chart timeframe.")\nb = 2\n'), 'a = 1\nb = 2\n');
+  const daily = 'if timeframe.in_seconds(timeframe.period) >= timeframe.in_seconds("D")\n    runtime.error("Timeframe is too High!")\nb = 2\n';
+  assert.equal(guard(daily), daily, 'a guard on the chart timeframe alone stays');
+  const more = 'if timeframe.in_seconds(tf) <= timeframe.in_seconds(timeframe.period)\n    runtime.error("x")\n    y := 1\n';
+  assert.equal(guard(more), more, 'a block that does more than stop the script stays');
 });
