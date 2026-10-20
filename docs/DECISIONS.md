@@ -4576,3 +4576,51 @@ replay. The one variant ahead overall (4h ×1.5 alone) lost its first half and l
 to 48%.
 
 **Verdict.** Nothing passes out of sample. The current mix stays.
+
+## 150. PineTS 0.11.1 and 0.12.0 assessed: 170 scripts recovered, but a fifth of the fleet's signals change; not adopted (20 October 2026)
+
+**Why.** LuxAlgo shipped PineTS 0.11.0 (1 October), 0.11.1 (13 October) and 0.12.0 (19 October:
+strategy broker emulator rebuilt on TradingView's intrabar path, `ta.pivothigh`/`pivotlow`/`valuewhen`/
+`math.sum` from quadratic to O(1), resource limits and a closed-world verifier against host access).
+We run 0.10.0. The operator: "go ahead" with the assessment. Done in an isolated worktree; the live
+engine and the VM are untouched.
+
+**Method.** `parity-dump` (new, `server/src/cli/`) runs a list of scripts on one saved candle set and
+records every alert and shape bar time. 779 scripts (the 189 scanners in live, shadow and tracker
+stages, and the 590 the 30 September compat report failed; 696 after removals) on BTCUSD 15m × 1,499
+bars and SOLUSD 1h × 999, under 0.10.0, 0.11.1 and 0.12.0. The test suite passes on both (343).
+
+**A harness flaw, also in `compat`.** The first run reported about 300 scripts "hung" under every
+version, fleet scanners included. Every script was queued at once and its 150 s deadline started at
+the queue, so the tail of the queue timed out waiting. With one script per worker in flight the hangs
+vanish. `compat` had the same flaw and is fixed the same way; quarantine counts it produced since the
+library grew were inflated by it.
+
+**Results, BTCUSD 15m (SOLUSD 1h within a few scripts):**
+
+| | 0.11.1 | 0.12.0 |
+|---|---|---|
+| scripts that fail on 0.10.0 and run | 168 | 186 |
+| scripts that run on 0.10.0 and fail | 3 | 3 |
+| fleet indicator scanners, identical signals | 127 of 144 | 124 of 144 |
+| fleet strategy scanners, identical signals (with the fix below) | 20 of 40 | 12 of 40 |
+| total run time of the scripts that run on both | 444 s → 296 s | 444 s → 415 s |
+
+**Strategies and `mincontract`.** Our provider tells PineTS every market's minimum contract is 1
+(`pine/provider.ts`). 0.10.0 ignored it; from 0.11.0 orders are floored to it and rejected below, so
+a strategy sized under one BTC places no trade: eight fleet strategies went to zero on BTC. Reporting
+0.000001 brings seven back. It is part of any upgrade, not applied now.
+
+**What still changes.** 21 fleet indicator scanners differ: some barely (nexus-fusion 98% of signals
+shared), some wholly (volumetric-fair-value-gaps 35 → 126 signals with 8% shared, ranked-order-block
+258 → 1,551, dynamic-trend-bands 18% shared); triangular-hull-moving-average-volatility, which trades
+in the account, has 54 signals under 0.11.1 and none under 0.12.0. About half the strategy scanners
+keep their count but fire on other bars, as the TradingView fill path predicts. Which version matches
+TradingView can only be read on TradingView itself.
+
+**Verdict.** Not adopted. The upgrade would recover about 170 library scripts for the screen and
+bring the resource caps, but it rewrites the signals of a fifth of the fleet's indicators and half its
+strategies, so their shadow records would describe a different engine. Adoption, on the operator's
+word, means: 0.12.0 with the `mincontract` fix; triangular-hull and two or three of the rewritten
+scanners checked against TradingView; the cells whose signals change sent back to the screen, as
+decision 134 does for strategy cells. The worktree stays in the session scratchpad until then.
