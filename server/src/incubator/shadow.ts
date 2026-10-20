@@ -167,6 +167,29 @@ export class ShadowRunner {
     return Math.max(0, age - (Date.now() - barAt) - RUN_ALLOWANCE_MS);
   }
 
+  /**
+   * Decision 166: how a bar close's wave of mirror-tier scans spent its time, so latency is measured, not guessed. Per
+   * wave (timeframe and bar): from the close to each run's dispatch (prep), in the pool before and around the script
+   * (queue), the script itself (exec), and the close to the last result. Logged once the wave is quiet for 5 s.
+   */
+  private waves = new Map<string, { tf: string; barAt: number; prep: number[]; queue: number[]; exec: number[]; last: number; timer?: ReturnType<typeof setTimeout> }>();
+  readonly lastWaves: Array<{ tf: string; barAt: number; runs: number; doneSec: number; prepP50: number; queueP50: number; queueP90: number; execP50: number; execP90: number }> = [];
+  private noteWave(tf: string, barAt: number, tPool: number, tDone: number, execMs: number) {
+    const key = `${tf}:${barAt}`;
+    const w = this.waves.get(key) ?? { tf, barAt, prep: [], queue: [], exec: [], last: 0 };
+    w.prep.push(tPool - barAt); w.exec.push(execMs); w.queue.push(Math.max(0, tDone - tPool - execMs)); w.last = Math.max(w.last, tDone);
+    this.waves.set(key, w);
+    if (w.timer) clearTimeout(w.timer);
+    w.timer = setTimeout(() => {
+      this.waves.delete(key);
+      const q = (a: number[], p: number) => { const x = [...a].sort((m, n) => m - n); return x[Math.min(x.length - 1, Math.floor(p * x.length))] ?? 0; };
+      const sum = { tf, barAt, runs: w.exec.length, doneSec: Math.round((w.last - barAt) / 100) / 10, prepP50: q(w.prep, 0.5), queueP50: q(w.queue, 0.5), queueP90: q(w.queue, 0.9), execP50: q(w.exec, 0.5), execP90: q(w.exec, 0.9) };
+      this.lastWaves.unshift(sum); if (this.lastWaves.length > 24) this.lastWaves.pop();
+      log.info(`shadow wave ${tf} ${new Date(barAt).toISOString().slice(11, 16)}: ${sum.runs} runs done ${sum.doneSec}s after close · prep p50 ${sum.prepP50}ms · queue p50 ${sum.queueP50} p90 ${sum.queueP90}ms · exec p50 ${sum.execP50} p90 ${sum.execP90}ms`);
+    }, 5_000);
+    w.timer.unref?.();
+  }
+
   private noteError(r: PairRow, error: string) {
     this.stats.errors++;
     const prev = this.stats.lastErrors[r.scannerId];
@@ -186,10 +209,12 @@ export class ShadowRunner {
     const inputs = cfg.scanners[s.id]?.inputs;
     const budget = this.budgetMs(cfg, barAt);
     if (budget <= 0) { this.stats.expired++; return; }
+    const tPool = Date.now();
     const res = await this.deps.pool.run(
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
       { deadlineMs: budget, priority: live ? 'mirror' : 'background' });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
+    if (live) this.noteWave(r.tf, barAt, tPool, Date.now(), res.ms ?? 0);
     if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
     const key = `${r.scannerId}:${r.symbol}:${r.tf}`;
     const prev = this.labels.get(key);
