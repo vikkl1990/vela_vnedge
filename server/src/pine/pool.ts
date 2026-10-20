@@ -18,12 +18,11 @@ export const WORKER_HEAP_MB = Number(process.env.VNEDGE_WORKER_HEAP_MB) || 1024;
  * over 48 runs; 0.9.34 is flat). Left alone a worker reaches the heap cap, crashes mid-job, and the
  * fleet's runs time out — no signals. Recycling bounds the leak; a fresh worker costs under a second.
  *
- * Decision 166: PineTS 0.12.0 does not leak. Six fleet scripts run 108 times in one process stay flat (54 → 43 ms a run,
- * heap 25 → 27 MB, resident memory settling near 460 MB), while a restart on the VM's ARM cores costs a second or more
- * and a 15m wave of some 330 scans made about 27 of them. The bound stays, far out, and the memory guard still retires
- * any worker that grows past it.
+ * Decision 166: six fleet scripts run 108 times in one process stay flat under PineTS 0.12.0, so 500 was tried. On the VM,
+ * with some 150 different scripts passing through each worker, it made the 15m wave slower, not faster: script runs
+ * 0.48 → 0.62 s at the median and the wave 39 → 52 s. Twelve stays.
  */
-export const WORKER_MAX_RUNS = Number(process.env.VNEDGE_WORKER_MAX_RUNS) || 500;
+export const WORKER_MAX_RUNS = Number(process.env.VNEDGE_WORKER_MAX_RUNS) || 12;
 
 /** The memory this process may use: its cgroup limit when one is set (systemd MemoryMax), else the machine's RAM. */
 export function memoryLimitBytes(): number {

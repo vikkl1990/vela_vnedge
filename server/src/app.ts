@@ -131,6 +131,11 @@ export class App {
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
       mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
       subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
+      accountFocus: () => {
+        const open = this.paper.openPositions(); const c = cfg();
+        const cap = Math.min(c.paper.maxOpenPositions || Infinity, c.risk?.maxPositionsTotal || Infinity);
+        return { held: new Set(open.map(p => p.symbol)), full: open.length >= cap };
+      },
     });
     // 1m candles drive paper fills for every open position
     // `historical` marks bars that a resync or gap fill pulled from REST: they describe the past,

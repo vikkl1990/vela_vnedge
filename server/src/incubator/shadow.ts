@@ -57,7 +57,7 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void };
+  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean } };
   readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, lastBarAt: 0,
     /** The last error per scanner, so a script failing on every bar is visible rather than a bare count. */
     lastErrors: {} as Record<string, { error: string; at: number; count: number; symbol: string; tf: string }> };
@@ -144,8 +144,11 @@ export class ShadowRunner {
     // scans, before background work); the 20 s wait and the background queue had put the account's mirrored entries a
     // median 54 s after the bar's close
     const mirror = this.deps.cfgRef().incubator?.mirror?.enabled === true && Boolean(this.deps.mirror);
-    // the account's own live pairs first, then proposals, then the rest of the shadow book
-    const rank = (r: PairRow) => (r.stage === 'live' ? 0 : r.stage === 'proposed' ? 1 : 2);
+    // decision 166: what can change the account first — its live pairs and any pair on a symbol it holds (an exit there
+    // is money), then pairs it could enter now (not full, symbol free, market allowed), then the rest of the book
+    const focus = this.deps.accountFocus?.();
+    const canEnter = (r: PairRow) => !!focus && !focus.full && !focus.held.has(r.symbol) && this.deps.marketVerdict?.(r.symbol)?.allowed !== false;
+    const rank = (r: PairRow) => (r.stage === 'live' || focus?.held.has(r.symbol) ? 0 : canEnter(r) ? 1 : 2);
     const urgent = mirror ? due.filter(r => r.stage !== 'tracked').sort((a, b) => rank(a) - rank(b)) : [];
     const later = mirror ? due.filter(r => r.stage === 'tracked') : due;
     const launch = (rows: PairRow[], live: boolean) => {
