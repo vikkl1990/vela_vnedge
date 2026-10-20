@@ -4912,3 +4912,17 @@ passed, including one already open.
 
 A trade that has trailed since entry is untouched, as is the backtest, whose settings never change mid-trade. No open
 account trade of the five script-exit scanners existed at the change.
+
+## 161. The shadow book protects script-exit trades too (20 October 2026)
+
+The operator: "protect shadow too". Decisions 159 and 160 gave the account's trades of the five exit-mode `script` scanners
+the bot's trail and floor and kept the shadow book on the strategies' own exits as the forward measurement of decision
+114. The shadow book now gets the same protection, from the same `scriptExitTrailFrom`.
+
+**What it costs.** The forward test of the strategies' exits alone ends: from now the shadow book measures their exits with
+the bot's trail and floor added, the configuration the account trades. The nightly screen still runs every strategy under
+both exit modes (`scriptExit`, decision 114), so the backtest comparison continues.
+
+**The open trades.** Four shadow trades of these scanners were open, each marked `trailOff`: Alphamojo Supertrend ARIAUSD
+15m (#3242, peak +5.63R), Donchian Breakout AKEUSD, ZECUSD and ETHUSD 1h (#3193, #3254, #3306). By decision 160 each trail
+starts at the restart, from that moment's price.

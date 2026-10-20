@@ -202,9 +202,9 @@ export interface PaperConfig {
    */
   scriptDisasterStopAtr?: number;
   /**
-   * Decision 159: the account trails trades of exit-mode `script` scanners. A position the account opens at or after
-   * this time (epoch ms) keeps the strategy's own exits and adds the bot's trail and profit floor, so a run the strategy
-   * hands back is protected; the shadow book keeps measuring the strategy's exits alone. A position already open when it
+   * Decision 159: trades of exit-mode `script` scanners trail. From this time (epoch ms) a position keeps the strategy's
+   * own exits and adds the bot's trail and profit floor, so a run the strategy hands back is protected; in the account
+   * (decision 159) and the shadow book (decision 161). A position already open when it
    * takes effect is protected too, its trail measured from that moment and price, never from an earlier peak (decision 160).
    * Unset: off.
    */

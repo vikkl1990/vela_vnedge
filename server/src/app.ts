@@ -104,13 +104,14 @@ export class App {
     // a scanner's own exit rules reach both books the same way (decision 38)
     // decision 113: a scanner on exit mode `script` trades its own exits; the bot's targets and trail are off for it
     const scannerExit = (id: string) => { const c = cfg(); const sc = c.scanners[id]; return sc?.exitMode === 'script' ? { ...(sc.exit ?? {}), ...scriptModeExit(c.paper) } : sc?.exit; };
-    // decision 159: the account adds the bot's trail and floor to script-exit trades from `scriptExitTrailFrom`;
-    // decision 160: a trade already open then is protected too, its trail starting from that moment (trailStop)
-    this.paper.scannerExit = (id) => {
+    // decision 159: script-exit trades add the bot's trail and floor from `scriptExitTrailFrom`; decision 160: a trade
+    // already open then is protected too, its trail starting from that moment (trailStop); decision 161: both books
+    const protectedExit = (id: string) => {
       const o = scannerExit(id); const c = cfg(); const from = c.paper.scriptExitTrailFrom;
       return c.scanners[id]?.exitMode === 'script' && from !== undefined && Date.now() >= from ? { ...o, ...scriptModeProtection(c.paper) } : o;
     };
-    this.shadow.scannerExit = scannerExit;
+    this.paper.scannerExit = protectedExit;
+    this.shadow.scannerExit = protectedExit;
     // the same trend both books and the backtest use: closes of the position's own timeframe
     const trendFor = (symbol: string, tf: string) => {
       const len = cfg().paper.trendExit?.emaLen ?? 20;
