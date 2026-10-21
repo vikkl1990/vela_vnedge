@@ -5104,3 +5104,14 @@ expectancy check still fails (−0.003%): a measurement corrected, not a bar low
 | $53 | 5.2% / 9.1% |
 
 About $50 a trade passes. Proposed to the operator, not applied.
+
+## 168. The Telegram alert channel installs from a script the operator runs on the VM (21 October 2026)
+
+The go-live rule and the Gates page both wait on an alert channel: a halt, a stranded position or a hunt result must
+reach a person. The bot reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from its service environment (decision 18: never
+config.json, never the chat). `ops/telegram-setup.sh`, run by the operator with sudo on the VM:
+- reads the token hidden from the keyboard and checks it with Telegram's `getMe`;
+- finds the chat id from the message the operator sends the bot (`getUpdates`);
+- writes both to `/etc/systemd/system/vnedge.service.d/telegram.conf`, root-only (600), reloads and restarts the bot, waits
+  for its "alerts via telegram" line, and sends a test message.
+The token is never on a command line (curl reads the URL from stdin), never logged and never printed.
