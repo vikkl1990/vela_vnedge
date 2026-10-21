@@ -5198,3 +5198,32 @@ and promoted it again. Each turn flipped the scanner's live pairs in the config 
 day live with old refusals (kept), a full window with none (kept), five refusals inside its live window (demoted), the
 day after with nothing new (not proposed), three more cost refusals (still not proposed), then one opened signal
 (proposed again).
+
+## 172. The silent library surveyed; drawn labels, shape geometry and "above / below" read as signals; 228 more scripts speak (21 October 2026)
+
+The operator: "some of the scripts may need tuning or the missing part; research and fix". `silent-survey` ran every
+runnable script (2,664) on BTCUSD and SOLUSD, 15m, 1,500 bars, and read the output exactly as the scanner does. 1,132
+produced entries; 1,532 did not: 386 drew labels only, 256 raised conditions with titles the reader found no direction
+in, 78 drew shapes with neutral titles, 28 wrote alert text in their own words, 536 drew plots or nothing, 248 failed.
+
+**What the silent ones emit.** Labels: ▲ and ▼ (27 scripts each), △ ▽, B / S, BOS / CHoCH / MSS, beside price texts.
+Condition titles: "Price Crossed Above R1 / Below S1", overbought and oversold states, BOS and CHoCH, pattern phases.
+Shapes: untitled ("plot", 11 scripts), "Signal", pivots and swings. Errors: a long tail of v4 syntax with no version
+tag (40), library imports (25), one PineTS array gap (12), sessions PineTS rejects (14), external series (18).
+
+**What changed** (`extractor.ts`; the reading-legacy list of decision 164 guards every rule, so the 243 scanners with
+a record read exactly as before, which the survey ran under):
+- A drawn label is read as an entry when nothing else in the run produced one: arrow glyphs, buy / sell words (B, S, L,
+  BUY, SELL, LONG, SHORT, ACHAT, VENTE), directional phrases, and structure words (BOS, CHoCH, MSS, Break, Sweep) by
+  where the label sits (under the bar a long, above it a short). Source `label`; the allow-list applies.
+- A shape with a neutral title takes its side from its geometry: below the bar or an up-pointing shape is a long, above
+  or down-pointing a short. Pivots, swings, extremes, tracks, levels, zones and session marks never.
+- "above" and "below" carry direction in a condition title.
+
+**Measured.** The 748 silent-with-output scripts re-surveyed: 228 now read (121 from labels, 79 from titles, 19 from
+geometry, 9 from the rest); 76 LuxAlgo, 70 crypto-search, 31 BigBeluga, 17 ChartPrime, 8 Zeiierman. Their entry
+density runs from one in 3,000 bars to a shape on most bars; the screen's density cap and the fair benchmark judge
+that, not this decision. The nightly screen picks them up from its next slice.
+
+**Not changed.** The 536 plot-only scripts (no signal to read; some could be given one by hand where a backtest says it
+is worth it) and the 248 that fail, each error a handful of scripts.

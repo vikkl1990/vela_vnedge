@@ -7,7 +7,8 @@
  *   "SATS DELTA:BTCUSD 15 | buy LONG @ 77360.5 (Price band break)"
  * This module parses them without any per-script code.
  */
-import type { WorkerAlert, WorkerShape } from '../pine/worker.ts';
+import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
+import { readingLegacy } from './legacy.ts';
 
 export type Side = 'long' | 'short';
 export type EventKind = 'entry' | 'exit' | 'info';
@@ -26,7 +27,7 @@ export interface ScanEvent {
   score?: number;
   label: string;
   message: string;
-  source: 'alert' | 'shape' | 'derived' | 'alertcondition';
+  source: 'alert' | 'shape' | 'derived' | 'alertcondition' | 'label';
   barTime: number;
   barIndex: number;
 }
@@ -240,23 +241,66 @@ export function shapeSide(title: string): Side | undefined {
  * Direction of a free-form title such as "Bullish Internal OB Breakout", "Upward Breakout",
  * "Upper Break", "Lower Break", "Bearish CHoCH". Undefined when ambiguous or neutral.
  */
-export function directionalTitle(title: string): Side | undefined {
+export function directionalTitle(title: string, extended = false): Side | undefined {
   const t = title.trim();
   if (!t || /\b(exit|close|stop|target|tp\d?|take profit|equal|divergence|alert|any|bias|regime|interval|sampling|noise)\b/i.test(t)) return undefined;
-  const up = /\b(bull(ish)?|upward|upper|up|long|buy|higher|rising|crossover|cross up|breakout up|break up|support)\b/i.test(t);
-  const dn = /\b(bear(ish)?|downward|lower|down|short|sell|falling|crossunder|cross down|breakout down|break down|resistance)\b/i.test(t);
+  // decision 172: "Price Crossed Above R1" / "Breakout Below Range" carry their direction in above / below
+  const up = /\b(bull(ish)?|upward|upper|up|long|buy|higher|rising|crossover|cross up|breakout up|break up|support)\b/i.test(t) || (extended && /\babove\b/i.test(t));
+  const dn = /\b(bear(ish)?|downward|lower|down|short|sell|falling|crossunder|cross down|breakout down|break down|resistance)\b/i.test(t) || (extended && /\bbelow\b/i.test(t));
   if (up && !dn) return 'long';
   if (dn && !up) return 'short';
   return undefined;
 }
 
+/**
+ * Decision 172: a shape whose title says nothing ("plot", "Signal") still says where it was drawn. Below the bar, or an
+ * up-pointing shape, is a long; above the bar, or a down-pointing one, a short. Pivots, swings, extremes, tracks and
+ * session marks are not entries whatever their geometry.
+ */
+const GEOMETRY_NOT_ENTRY = /pivot|swing|\bhigh\b|\blow\b|\btop\b|\bbottom\b|divergen|track|marker|level|zone|session|target|exit|stop|\btp\d?\b|\bam\b|\bpm\b|monday|tuesday|wednesday|thursday|friday|saturday|sunday|label|text/i;
+export function geometrySide(s: Pick<WorkerShape, 'title' | 'shape' | 'location'>): Side | undefined {
+  if (GEOMETRY_NOT_ENTRY.test(s.title ?? '')) return undefined;
+  const loc = String(s.location ?? '').toLowerCase(), kind = String(s.shape ?? '').toLowerCase();
+  if (/below/.test(loc) || /(triangle|arrow|label)up$/.test(kind)) return 'long';
+  if (/above/.test(loc) || /(triangle|arrow|label)down$/.test(kind)) return 'short';
+  return undefined;
+}
+
+/**
+ * Decision 172: a drawn label as an entry. The text decides where it can: an arrow glyph, a buy / sell word (B, S, L,
+ * BUY, SELL, LONG, SHORT, ACHAT, VENTE), or a directional phrase. A structure word alone (BOS, CHoCH, MSS, Break, Sweep)
+ * takes its side from where the label sits: a label drawn under the bar (style label_up, lower_*) marks a low, a
+ * long; one above the bar a high, a short.
+ */
+export function labelSide(text: string, style?: string): Side | undefined {
+  const t = text.trim();
+  if (!t || t.length > 40) return undefined;
+  if (/[▲△⬆↑🔼]/.test(t) && !/[▼▽⬇↓🔽]/.test(t)) return 'long';
+  if (/[▼▽⬇↓🔽]/.test(t) && !/[▲△⬆↑🔼]/.test(t)) return 'short';
+  const word = t.replace(/[0-9.,%+\-:#()]/g, ' ').trim();
+  if (/^(buy|long|achat|b|l|le)$/i.test(word)) return 'long';
+  if (/^(sell|short|vente|s|se)$/i.test(word)) return 'short';
+  const d = directionalTitle(word, true);
+  if (d) return d;
+  if (/\b(bos|choch|mss|break|sweep|ob)\b/i.test(word)) {
+    const st = String(style ?? '').toLowerCase();
+    if (/label_up$|lower/.test(st)) return 'long';
+    if (/label_down$|upper/.test(st)) return 'short';
+  }
+  return undefined;
+}
+
 export interface ExtractOptions {
+  /** Decision 172: the labels the script drew; read only when no alert, condition, shape or rule produced an entry. */
+  drawn?: WorkerLabel[];
+  /** Decision 172: the scanner, so a scanner on the reading-legacy list keeps the reading its record was earned under. */
+  scannerId?: string;
   /** Only events on/after this bar time are returned (live: last closed bar). */
   sinceBarTime?: number;
   /** Extra events produced by per-scanner rules (see rules.ts); merged with alert/shape events. */
   derived?: ScanEvent[];
   /** Which channels may produce entries (unset: all). Exits and info from `alert()` always pass. */
-  sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
+  sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived' | 'label'>;
   /**
    * Rising edge only: an `alertcondition()` or shape that is true on every bar of a state ("bullish")
    * becomes one entry on the first bar of the run, not one per bar (decision 57).
@@ -276,7 +320,9 @@ export interface ExtractOptions {
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
-  const allow = (src: 'alert' | 'alertcondition' | 'shape' | 'derived') => !opts.sources || opts.sources.includes(src);
+  const allow = (src: 'alert' | 'alertcondition' | 'shape' | 'derived' | 'label') => !opts.sources || opts.sources.includes(src);
+  // decision 172: the newer reading rules are withheld from a scanner whose record predates them
+  const legacy = opts.scannerId ? readingLegacy().has(opts.scannerId) : false;
   const events: ScanEvent[] = [];
   const seenEntry = new Set<string>();
   const alertBars = new Set<number>();
@@ -317,7 +363,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       events.push({ kind: 'exit', side: exit.side, exitType: exit.exitType, tp: [], label: title.slice(0, 60), message: `alertcondition "${title}"`.slice(0, 500), source: 'alertcondition', barTime: a.time, barIndex: a.barIndex });
       continue;
     }
-    const side = directionalTitle(title);
+    const side = directionalTitle(title, !legacy);
     if (!side) { drop('condition: no direction in title'); continue; }
     // the same word means the same thing on every channel: a BOS or CHoCH condition is context, like a BOS alert() —
     // unless the operator's allow-list names it, which is the explicit opt-in
@@ -346,7 +392,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   }
   for (const s of shapes) {
     if (!allow('shape')) break;
-    const side = shapeSide(s.title);
+    const side = shapeSide(s.title) ?? (legacy ? undefined : geometrySide(s));
     if (!side) { drop('shape: no direction in title'); continue; }
     // a shape drawn on every bar of a state is one signal per run: the bar spacing is the smallest
     // gap between its own prints, and a print one spacing after the previous one continues the run
@@ -364,6 +410,19 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       if (seenEntry.has(key)) { drop('shape: same-bar duplicate'); continue; }
       seenEntry.add(key);
       events.push({ kind: 'entry', side, tp: [], label: s.title, message: `plotshape ${s.title}`, source: 'shape', barTime: t, barIndex: -1 });
+    }
+  }
+  // decision 172: labels are the last resort, read only when nothing else produced an entry
+  if (!legacy && opts.drawn?.length && allow('label') && !events.some(e => e.kind === 'entry')) {
+    for (const l of opts.drawn) {
+      const side = labelSide(l.text, l.style);
+      if (!side) { drop('label: no direction in text'); continue; }
+      if (opts.sinceBarTime !== undefined && l.time < opts.sinceBarTime) continue;
+      if (!labelOk(l.text)) { drop('label: not in allow-list'); continue; }
+      const key = `entry:${side}:${l.time}:`;
+      if (seenEntry.has(key)) { drop('label: same-bar duplicate'); continue; }
+      seenEntry.add(key);
+      events.push({ kind: 'entry', side, tp: [], label: l.text.slice(0, 60), message: `label "${l.text.slice(0, 80)}"`, source: 'label', barTime: l.time, barIndex: -1 });
     }
   }
   const kept = events;

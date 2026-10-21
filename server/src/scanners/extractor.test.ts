@@ -226,3 +226,30 @@ test('decision 77: every dropped output is counted with its reason', () => {
   assert.deepEqual(evs.map(e => [e.kind, e.source, e.barTime]), [['entry', 'alert', 10]]);
   assert.deepEqual(drops, { 'condition: an alert() entry owned the bar': 1, 'condition: context title (BOS, CHoCH, divergence…)': 1, 'condition: no direction in title': 1, 'shape: no direction in title': 1 });
 });
+
+test('decision 172: drawn labels are read as a last resort; glyphs, words, phrases and structure labels by their side', () => {
+  const lab = (text: string, time: number, style?: string) => ({ time, y: 100, text, style });
+  const drawn = [lab('▲', 1000, 'label_up'), lab('▼', 2000, 'label_down'), lab('BUY', 3000), lab('S', 4000), lab('Bullish BOS', 5000), lab('CHoCH', 6000, 'label_down'), lab('1,234.5', 7000), lab('HIGH 100', 8000)];
+  const ev = extractEvents([], [], { drawn });
+  assert.deepEqual(ev.map(e => [e.side, e.barTime, e.source]), [['long', 1000, 'label'], ['short', 2000, 'label'], ['long', 3000, 'label'], ['short', 4000, 'label'], ['long', 5000, 'label'], ['short', 6000, 'label']]);
+  // not when another channel produced an entry
+  const alert: any = { type: 'alertcondition', title: 'Buy Signal', message: '', time: 1000, barIndex: 1 };
+  assert.equal(extractEvents([alert], [], { drawn }).filter(e => e.source === 'label').length, 0);
+  // never for a scanner on the reading-legacy list
+  assert.equal(extractEvents([], [], { drawn, scannerId: 'kalman-step-signals' }).length, 0);
+});
+
+test('decision 172: an untitled or neutral shape takes its side from where it is drawn; pivots and extremes never do', () => {
+  const sh = (title: string, extra: any, times: number[]) => ({ title, times, ...extra });
+  const shapes = [sh('plot', { location: 'location.belowbar', shape: 'triangleup' }, [1000]), sh('Signal', { location: 'location.abovebar' }, [2000]), sh('Pivot High', { location: 'location.abovebar' }, [3000]), sh('Bubbles', { shape: 'arrowdown' }, [4000]), sh('Trail Mark', { location: 'absolute' }, [5000])];
+  const ev = extractEvents([], shapes as any, {});
+  assert.deepEqual(ev.map(e => [e.side, e.barTime]), [['long', 1000], ['short', 2000], ['short', 4000]]);
+  assert.equal(extractEvents([], shapes as any, { scannerId: 'kalman-step-signals' }).length, 0, 'legacy: titles only');
+});
+
+test('decision 172: "above" and "below" carry direction in a condition title, except for a legacy scanner', () => {
+  const a = (title: string, time: number): any => ({ type: 'alertcondition', title, message: '', time, barIndex: time / 1000 });
+  const alerts = [a('Price Crossed Above R1', 1000), a('Price Crossed Below S1', 2000), a('Price Crossed Above Pivot (P)', 3000)];
+  assert.deepEqual(extractEvents(alerts, [], {}).map(e => e.side), ['long', 'short', 'long']);
+  assert.equal(extractEvents(alerts, [], { scannerId: 'kalman-step-signals' }).length, 0);
+});

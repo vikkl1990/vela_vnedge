@@ -79,19 +79,8 @@ export interface PoolWorker {
   postMessage(job: WorkerJob): void;
   terminate(): Promise<number>;
 }
-/**
- * Decision 164: the scanners whose record was earned before named-argument condition titles were read. Every job for
- * one of them keeps the old reading, so its signals stay those its record vouches for. Read once; a missing or broken
- * file means none.
- */
-let legacyTitles: Set<string> | null = null;
-export function legacyConditionTitles(): Set<string> {
-  if (!legacyTitles) {
-    try { legacyTitles = new Set(JSON.parse(fs.readFileSync(path.join(SCRIPTS_DIR, 'condition-titles-legacy.json'), 'utf8')).ids ?? []); }
-    catch { legacyTitles = new Set(); }
-  }
-  return legacyTitles;
-}
+export { readingLegacy as legacyConditionTitles } from '../scanners/legacy.ts';
+import { readingLegacy } from '../scanners/legacy.ts';
 
 interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number; live: boolean }
 /**
@@ -279,7 +268,7 @@ export class PinePool {
       const now = Date.now();
       const live = (opts.priority ?? 'background') === 'live';
       const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
-      const p: Pending = { job: { legacyConditionTitles: legacyConditionTitles().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror' };
+      const p: Pending = { job: { legacyConditionTitles: readingLegacy().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror' };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
       (live ? this.live : opts.priority === 'mirror' ? this.mirror : this.queue).push(p);
       this.pump();
