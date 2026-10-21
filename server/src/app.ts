@@ -7,7 +7,7 @@ import { listTrackers, removeTracker, saveTracker, trackerView } from './incubat
 import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, type AppConfig } from './config.ts';
-import { learnBook } from './analytics/learning.ts';
+import { band, learnBook } from './analytics/learning.ts';
 import { goLive } from './analytics/golive.ts';
 import { ContextCollector } from './context/collector.ts';
 import { CandleStore } from './data/candleStore.ts';
@@ -547,6 +547,22 @@ export class App {
 
   /** Cross-sectional analytics: pairs, scanners, scanner×pair matrix, exits and time-of-day, for backtest and live. */
   /** Median risk per closed account trade as a share of the equity at entry, over the last 30 closed trades so a sizing change shows within weeks; null before five trades. */
+  /**
+   * Decision 167: each closed account trade's net result as % of the account's equity when it was opened, in exit order —
+   * what the money did under margin sizing, where trades carry different risk.
+   */
+  equityReturnsPct(): number[] {
+    const rows = this.db.all<{ net: number; at: number }>("SELECT realized_pnl - fees AS net, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND exit_at IS NOT NULL ORDER BY exit_at");
+    const eq = this.db.all<{ at: number; equity: number }>('SELECT at, equity FROM equity WHERE scanner_id IS NULL ORDER BY at');
+    const initial = this.config.get().paper.initialEquity;
+    return rows.map(r => {
+      // the last equity point at or before the entry; the series is short enough to search
+      let lo = 0, hi = eq.length - 1, e = initial;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (eq[m].at <= r.at) { e = eq[m].equity; lo = m + 1; } else hi = m - 1; }
+      return e > 0 ? (r.net / e) * 100 : 0;
+    });
+  }
+
   realisedRiskPct(): number | null {
     const rows = this.db.all<{ risk: number; at: number }>("SELECT risk_amount AS risk, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND risk_amount > 0 ORDER BY entry_at DESC LIMIT 30").reverse();
     if (rows.length < 5) return null;
@@ -579,7 +595,9 @@ export class App {
     const span = liveTrades.length > 1 ? (Math.max(...liveTrades.map(t => t.exitAt!)) - Math.min(...liveTrades.map(t => t.entryAt))) / 86_400_000 : 1;
     const halts = this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM positions WHERE bt=0 AND status='closed' AND exit_reason='risk-kill' AND exit_at > ?", since)?.n ?? 0;
     const riskState = this.risk.state();
+    const equityPcts = cfg.paper.sizingMode === 'margin' ? this.equityReturnsPct() : null;
     const golive = goLive({
+      equityPcts, lbPct90: equityPcts && equityPcts.length >= 10 ? band(equityPcts).lb : null,
       rs: [...liveTrades].sort((a, b) => a.exitAt! - b.exitAt!).map(t => (typeof t.rMultiple === 'number' && Number.isFinite(t.rMultiple) ? t.rMultiple : 0)),
       // the risk actually taken, not the configured intention: quality sizing and the stop cap set the size, so measure risk_amount against equity at entry (decision 69)
       tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: this.realisedRiskPct() ?? cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,

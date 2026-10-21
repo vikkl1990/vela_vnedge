@@ -5068,3 +5068,39 @@ Apple laptop) and about 0.5 s inside a busy worker, and each scan replays 1,000 
 each scanner's signals proven identical at 500 bars. Only PineTS's streaming mode, which keeps a script's state and computes
 the new bar alone, removes the replay; it needs per-pair state kept across workers and restarts and a parity proof against
 full runs before any pair uses it. Proposed to the operator, not started.
+
+## 167. The go-live rule reads what the money did under margin sizing; the size that passes its drawdown line (21 October 2026)
+
+The operator asked to recheck the two failing go-live checks on the paper account, then to measure expectancy as the
+account experiences it and to find the sizing that passes the drawdown check.
+
+**The recheck** (238 account trades, read-only on the VM):
+
+| trades | equal-weight R, mean / 90% lower band | R weighted by size | % of equity per trade, mean / lower band | net |
+|---|---|---|---|---|
+| all | +0.042 / −0.048 | +0.142 | +0.18% / −0.002% | +$493 |
+| without the two manual closes | +0.021 / −0.062 | +0.080 | +0.11% / −0.029% | +$273 |
+| before margin sizing (107) | −0.033 / −0.162 | −0.038 | −0.03% / −0.160% | −$38 |
+| margin sizing (131) | +0.104 / −0.022 | +0.216 | +0.35% / +0.043% | +$531 |
+| margin sizing, without the ARIAUSD manual close | +0.065 / −0.044 | +0.128 | +0.22% / −0.001% | +$309 |
+
+The signals alone are about breakeven; the gain is in the sizing, and its lower band sits at zero. The drawdown check holds:
+replayed from the account's own % returns the 30-day 95th percentile is 24–25%, and the real equity path already fell 13.8%.
+
+**What changed.** Under `sizingMode: 'margin'` the rule now reads each closed trade's net result as % of equity at its
+entry (`App.equityReturnsPct`): the expectancy check is the lower 90% band of that return, and the survival and drawdown
+simulation replays those returns instead of R at the median risk. Under risk or quality sizing nothing changes. Today the
+expectancy check still fails (−0.003%): a measurement corrected, not a bar lowered.
+
+**The size that passes the drawdown line** (the rule's own simulation, the account's returns scaled):
+
+| margin per trade | 30-day drawdown p50 / p95 |
+|---|---|
+| $150 (now) | 14.6% / 23.9% |
+| $113 | 11.0% / 18.8% |
+| $90 | 8.8% / 15.2% |
+| $75 | 7.4% / 12.8% |
+| $60 | 5.9% / 10.4% |
+| $53 | 5.2% / 9.1% |
+
+About $50 a trade passes. Proposed to the operator, not applied.

@@ -24,6 +24,13 @@ export interface GoLiveInputs {
   lb90: number | null;          // lower band of E[R] after costs
   haltsInWindow: number;
   alertsConfigured: boolean;
+  /**
+   * Decision 167: under margin sizing each trade carries its own risk (5× to 20×), so R weighted equally misreads what the
+   * money did. When given, the return of every closed trade as % of equity at its entry, in exit order: the expectancy
+   * check reads its lower band (`lbPct90`) and the simulation replays these returns as they happened.
+   */
+  equityPcts?: number[] | null;
+  lbPct90?: number | null;
   days?: number; paths?: number; seed?: number; minTrades?: number; maxBreachPct?: number; maxRiskPct?: number;
 }
 export interface GoLiveCheck { key: string; label: string; ok: boolean; value: string; need: string }
@@ -58,13 +65,17 @@ export function simulateSurvival(rs: number[], o: { tradesPerDay: number; riskPc
 
 export function goLive(inp: GoLiveInputs): GoLiveVerdict {
   const minTrades = inp.minTrades ?? 200, maxBreach = inp.maxBreachPct ?? 10, days = inp.days ?? 30, paths = inp.paths ?? 2000;
-  const sim = inp.rs.length >= 10 ? { paths, days, ...simulateSurvival(inp.rs, { tradesPerDay: inp.tradesPerDay, riskPct: inp.riskPct, dailyLossPct: inp.dailyLossPct, maxLossPct: inp.maxLossPct, days, paths, seed: inp.seed ?? 42 }) } : null;
+  const byEquity = !!inp.equityPcts && inp.equityPcts.length >= 10;
+  // a % return is replayed at 1% "risk" per unit, so equity moves by exactly that return
+  const sim = inp.rs.length >= 10 ? { paths, days, ...simulateSurvival(byEquity ? inp.equityPcts! : inp.rs, { tradesPerDay: inp.tradesPerDay, riskPct: byEquity ? 1 : inp.riskPct, dailyLossPct: inp.dailyLossPct, maxLossPct: inp.maxLossPct, days, paths, seed: inp.seed ?? 42 }) } : null;
   const checks: GoLiveCheck[] = [
     { key: 'trades', label: 'Closed account trades', ok: inp.rs.length >= minTrades, value: String(inp.rs.length), need: `≥ ${minTrades}` },
     { key: 'risk', label: 'Risk per trade actually taken, median of the last 30 closed trades (% of equity)', ok: inp.riskPct <= (inp.maxRiskPct ?? 1.5), value: `${inp.riskPct.toFixed(2)}%`, need: `≤ ${inp.maxRiskPct ?? 1.5}%` },
-    { key: 'expectancy', label: 'Lower 90% bound of E[R] after costs', ok: inp.lb90 !== null && inp.lb90 > 0, value: inp.lb90 === null ? 'no band yet' : `${inp.lb90 >= 0 ? '+' : ''}${inp.lb90.toFixed(3)}R`, need: '> 0' },
+    byEquity
+      ? { key: 'expectancy', label: 'Lower 90% bound of the return per trade after costs, % of equity (margin sizing)', ok: inp.lbPct90 != null && inp.lbPct90 > 0, value: inp.lbPct90 == null ? 'no band yet' : `${inp.lbPct90 >= 0 ? '+' : ''}${inp.lbPct90.toFixed(3)}%`, need: '> 0' }
+      : { key: 'expectancy', label: 'Lower 90% bound of E[R] after costs', ok: inp.lb90 !== null && inp.lb90 > 0, value: inp.lb90 === null ? 'no band yet' : `${inp.lb90 >= 0 ? '+' : ''}${inp.lb90.toFixed(3)}R`, need: '> 0' },
     { key: 'survival', label: `P(halt within ${days} days), block bootstrap of the journal`, ok: sim !== null && sim.breachPct <= maxBreach, value: sim ? `${sim.breachPct.toFixed(1)}%` : 'under 10 trades', need: `≤ ${maxBreach}%` },
-    { key: 'drawdown', label: `Simulated 95th-percentile drawdown in ${days} days`, ok: sim !== null && sim.dd95Pct <= inp.drawdownAlertPct, value: sim ? `${sim.dd95Pct.toFixed(1)}%` : '–', need: `≤ ${inp.drawdownAlertPct}%` },
+    { key: 'drawdown', label: `Simulated 95th-percentile drawdown in ${days} days${byEquity ? ', from the trades\' own % returns' : ''}`, ok: sim !== null && sim.dd95Pct <= inp.drawdownAlertPct, value: sim ? `${sim.dd95Pct.toFixed(1)}%` : '–', need: `≤ ${inp.drawdownAlertPct}%` },
     { key: 'halts', label: 'Halts tripped in the window', ok: inp.haltsInWindow === 0, value: String(inp.haltsInWindow), need: '0' },
     { key: 'alerts', label: 'Alert channel configured', ok: inp.alertsConfigured, value: inp.alertsConfigured ? 'yes' : 'no', need: 'yes' },
   ];
