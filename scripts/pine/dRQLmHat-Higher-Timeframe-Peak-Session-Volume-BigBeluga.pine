@@ -1,0 +1,353 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Higher Timeframe Peak Session Volume [BigBeluga]", "HTF Peak Session Volume [BigBeluga]", overlay = true, max_boxes_count = 500, max_lines_count = 100, max_labels_count = 100, max_polylines_count = 100, max_bars_back = 5000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+tfInput      = input.timeframe("D", "Profile Timeframe", tooltip = "The higher timeframe used to build each volume profile period (e.g., 720 = 12h, D = daily, W = weekly). Each completed period gets its own overlaid profile.")
+lookbackDays = input.int(3, "Number of Profiles", minval = 1, maxval = 5, tooltip = "How many historical profile periods to display simultaneously. Max 5 due to color palette limit.")
+atrPeriod    = 100
+atrDivisor   = input.float(8.0, "ATR Divisor (Higher = Smaller Bins)", minval = 1.0, tooltip = "Controls bin height granularity. Bin size = ATR(100) / Divisor. Higher values create thinner bins (more detail); lower values create thicker bins (smoother profile).")
+smoothRadius = input.int(6, "Profile Smoothing Radius (0 = Off)", minval = 0, maxval = 10, tooltip = "Gaussian smoothing kernel radius applied to the volume bins. 0 disables smoothing. Higher values produce a smoother, more generalized profile shape.")
+pocWidth     = input.int(2, "POC Line Width", minval = 1, tooltip = "Thickness of the Point of Control (POC) horizontal line drawn for each profile period.")
+rightOffset  = input.int(40, "Right Margin Offset (Bars)", minval = 5, maxval = 200, tooltip = "How far into the future (right side of chart) the profiles are drawn, measured in bars. Must be large enough to fit the widest profile bar.")
+
+// Visibility Toggles
+showProfiles   = input.bool(true, "Show Profiles", group = "Visibility", tooltip = "Toggle visibility of the volume profile histogram boxes.")
+showPOCs       = input.bool(true, "Show POC Lines", group = "Visibility", tooltip = "Toggle visibility of the Point of Control (POC) horizontal lines.")
+showLabels     = input.bool(true, "Show Labels", group = "Visibility", tooltip = "Toggle visibility of all labels (period start markers, POC text labels, and right-margin circle markers).")
+labelSizeInput = input.string("Small", "Label Size", options = ["Auto", "Tiny", "Small", "Normal", "Large"], group = "Visibility", tooltip = "Adjust the display size of chart labels.")
+showBinBorders = input.bool(true, "Show Bin Borders", group = "Visibility", tooltip = "Toggle visibility of the borders around each individual volume profile bin. Disable for a cleaner, borderless look.")
+showPolyline   = input.bool(true, "Show Total Polyline Profile", group = "Visibility", tooltip = "Toggle combined polyline volume profile covering all selected periods.")
+
+// Colors & Styling
+c1            = input.color(color.blue, "Profile 1 Color", group = "Colors & Styling", tooltip = "Color for the most recent profile period.")
+c2            = input.color(color.purple, "Profile 2 Color", group = "Colors & Styling", tooltip = "Color for the 2nd most recent profile period.")
+c3            = input.color(color.orange, "Profile 3 Color", group = "Colors & Styling", tooltip = "Color for the 3rd most recent profile period.")
+c4            = input.color(color.teal, "Profile 4 Color", group = "Colors & Styling", tooltip = "Color for the 4th most recent profile period.")
+c5            = input.color(color.red, "Profile 5 Color", group = "Colors & Styling", tooltip = "Color for the 5th most recent profile period.")
+polylineColor = input.color(color.yellow, "Total Profile Color", group = "Colors & Styling", tooltip = "Color for the aggregated polyline volume profile.")
+polylineStyle = input.string("Dotted", "Total Profile Line Style", options = ["Solid", "Dotted", "Dashed"], group = "Colors & Styling", tooltip = "Line style for the aggregated polyline volume profile outline.")
+polylineWidth = input.int(2, "Total Profile Line Width", minval = 1, maxval = 5, group = "Colors & Styling", tooltip = "Line width of the total polyline profile.")
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Helper function to map string choices to Pine Script line styles
+getLineStyle(string styleStr) =>
+    switch styleStr
+        "Dotted" => line.style_dotted
+        "Dashed" => line.style_dashed
+        => line.style_solid
+
+// Helper function to map string choices to Pine Script label sizes
+getLabelSize(string sizeStr) =>
+    switch sizeStr
+        "Auto"   => size.auto
+        "Tiny"   => size.tiny
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+// Helper Function to Format Minutes to Hours/Days
+formatTimeframe(string tf) =>
+    float minutes = str.tonumber(tf)
+    string formatted = tf
+    if not na(minutes)
+        if minutes >= 1440 and (minutes % 1440 == 0)
+            formatted := str.tostring(math.floor(minutes / 1440)) + "D"
+        else if minutes >= 60 and (minutes % 60 == 0)
+            formatted := str.tostring(math.floor(minutes / 60)) + "h"
+        else
+            formatted := str.tostring(minutes) + "m"
+    formatted
+
+// Calculate dynamic bin step size based on ATR
+atr = ta.atr(atrPeriod)
+var atrValue = float(na)
+var atrStep = float(na)
+
+// Palette array built from user inputs
+var color[] profileColors = array.new_color(5)
+if barstate.isfirst
+    array.set(profileColors, 0, c1)
+    array.set(profileColors, 1, c2)
+    array.set(profileColors, 2, c3)
+    array.set(profileColors, 3, c4)
+    array.set(profileColors, 4, c5)
+
+// Timeframe Change Detection
+isNewPeriod = timeframe.change(tfInput)
+
+// Track historical period start/end indexes and prices
+var int[]   periodStartBars = array.new_int()
+var int[]   periodEndBars   = array.new_int()
+var float[] periodHighs     = array.new_float()
+var float[] periodLows      = array.new_float()
+
+if isNewPeriod
+    atrValue := atr
+    atrStep  := atrValue / atrDivisor
+
+    if array.size(periodStartBars) > 0
+        array.unshift(periodEndBars, bar_index[1])
+    else
+        array.unshift(periodEndBars, bar_index)
+
+    array.unshift(periodStartBars, bar_index)
+    array.unshift(periodHighs, high)
+    array.unshift(periodLows, low)
+    
+    // Keep array size capped to lookback count
+    if array.size(periodStartBars) > lookbackDays
+        array.pop(periodStartBars)
+        array.pop(periodEndBars)
+        array.pop(periodHighs)
+        array.pop(periodLows)
+else if array.size(periodHighs) > 0
+    array.set(periodHighs, 0, math.max(array.get(periodHighs, 0), high))
+    array.set(periodLows, 0, math.min(array.get(periodLows, 0), low))
+    if array.size(periodEndBars) > 0
+        array.set(periodEndBars, 0, bar_index)
+    else
+        array.unshift(periodEndBars, bar_index)
+
+// Drawing object storage
+var box[]      profileBoxes    = array.new_box()
+var line[]     pocLines        = array.new_line()
+var label[]    pocLabels       = array.new_label()
+var polyline   totalPolyline   = na
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if barstate.islast and array.size(periodStartBars) > 0 and atrStep > 0
+
+    // Clean up previous drawing objects
+    if array.size(profileBoxes) > 0
+        for i = 0 to array.size(profileBoxes) - 1
+            box.delete(array.get(profileBoxes, i))
+        array.clear(profileBoxes)
+        
+    if array.size(pocLines) > 0
+        for i = 0 to array.size(pocLines) - 1
+            line.delete(array.get(pocLines, i))
+        array.clear(pocLines)
+
+    if array.size(pocLabels) > 0
+        for i = 0 to array.size(pocLabels) - 1
+            label.delete(array.get(pocLabels, i))
+        array.clear(pocLabels)
+
+    if not na(totalPolyline)
+        polyline.delete(totalPolyline)
+
+    int totalPeriods = array.size(periodStartBars)
+    int profileRightBar = bar_index + rightOffset
+    string tfDisplay = formatTimeframe(tfInput)
+    string lblSize = getLabelSize(labelSizeInput)
+    
+    // Global price bounds across all periods
+    float globalHigh = array.max(periodHighs)
+    float globalLow  = array.min(periodLows)
+
+    int globalMinBin = math.floor(globalLow / atrStep)
+    int globalMaxBin = math.floor(globalHigh / atrStep)
+    int totalGlobalBins = globalMaxBin - globalMinBin + 1
+
+    float[] globalVolumes = array.new_float(totalGlobalBins, 0.0)
+
+    // Iterate through available historical periods
+    for p = 0 to totalPeriods - 1
+        int pStartBar = array.get(periodStartBars, p)
+        int pEndBar   = array.get(periodEndBars, p)
+        
+        float pHigh = array.get(periodHighs, p)
+        float pLow  = array.get(periodLows, p)
+
+        color baseColor       = array.get(profileColors, p % array.size(profileColors))
+        color currentPocColor = color.new(baseColor, 0) // Solid color for POC line & text
+
+        // Standardized global grid bin indices for this period
+        int minBinIdx = math.floor(pLow / atrStep)
+        int maxBinIdx = math.floor(pHigh / atrStep)
+        int numBins   = maxBinIdx - minBinIdx + 1
+
+        if numBins > 0
+            float[] binVolumes = array.new_float(numBins, 0.0)
+            float totalPeriodVolume = 0.0
+            
+            // Accumulate raw volume strictly inside this period's HTF boundaries [pStartBar, pEndBar]
+            for b = pStartBar to pEndBar
+                int offset = bar_index - b
+                if offset >= 0
+                    float bCl  = close[offset]
+                    float bVol = volume[offset]
+                    
+                    int bIdx = math.floor(bCl / atrStep) - minBinIdx
+                    bIdx := math.min(math.max(bIdx, 0), numBins - 1)                
+                    
+                    array.set(binVolumes, bIdx, array.get(binVolumes, bIdx) + bVol)
+                    totalPeriodVolume += bVol
+
+                    // Accumulate into global bins array
+                    int gIdx = math.floor(bCl / atrStep) - globalMinBin
+                    gIdx := math.min(math.max(gIdx, 0), totalGlobalBins - 1)
+                    array.set(globalVolumes, gIdx, array.get(globalVolumes, gIdx) + bVol)
+
+            // Smooth Profile Bins
+            float[] smoothedVolumes = array.new_float(numBins, 0.0)
+            if smoothRadius > 0
+                for k = 0 to numBins - 1
+                    float sumVol = 0.0
+                    float totalWeight = 0.0
+                    
+                    for r = -smoothRadius to smoothRadius
+                        int neighborIdx = k + r
+                        if neighborIdx >= 0 and neighborIdx < numBins
+                            float weight = math.exp(-0.5 * math.pow(r / (smoothRadius / 2.0), 2))
+                            sumVol += array.get(binVolumes, neighborIdx) * weight
+                            totalWeight += weight
+                            
+                    array.set(smoothedVolumes, k, sumVol / totalWeight)
+            else
+                for k = 0 to numBins - 1
+                    array.set(smoothedVolumes, k, array.get(binVolumes, k))
+
+            // Find Maximum Volume on Smoothed Profile (POC Bin)
+            float maxVol = 0.0
+            int pocIdx = 0
+            for k = 0 to numBins - 1
+                float v = array.get(smoothedVolumes, k)
+                if v > maxVol
+                    maxVol := v
+                    pocIdx := k
+
+            // Draw Profile Bars in Right Margin
+            int maxBoxWidthBars = rightOffset
+            
+            if showProfiles
+                for k = 0 to numBins - 1
+                    float vol = array.get(smoothedVolumes, k)
+                    if vol > 0 and maxVol > 0
+                        int boxWidth = math.round((vol / maxVol) * maxBoxWidthBars)
+                        float binBottom = (minBinIdx + k) * atrStep
+                        float binTop    = binBottom + atrStep
+                        
+                        // Dynamic Gradient Transparency
+                        int trans = math.round(85.0 * (1.0 - (vol / maxVol)))
+                        color boxGradColor = color.new(baseColor, trans)
+
+                        // Bin border controlled by toggle
+                        color borderCol = showBinBorders ? chart.bg_color : na
+
+                        // Anchored to the right margin into future bars
+                        box b = box.new(
+                              left = profileRightBar - boxWidth,
+                              top = binTop,
+                              right = profileRightBar,
+                              bottom = binBottom,
+                              bgcolor = boxGradColor,
+                              border_color = borderCol
+                              )
+                        array.push(profileBoxes, b)
+
+            // Draw POC Line extending from period start bar to right margin profile
+            float pocPrice = (minBinIdx + pocIdx + 0.5) * atrStep
+            
+            if showPOCs
+                line poc = line.new(
+                      x1 = pStartBar,
+                      y1 = pocPrice,
+                      x2 = profileRightBar,
+                      y2 = pocPrice,
+                      color = currentPocColor,
+                      width = pocWidth,
+                      style = line.style_solid
+                      )
+                array.push(pocLines, poc)
+
+            if showLabels
+                // Label at the START of the POC line (period start bar)
+                string labelTxt = tfDisplay + " #" + str.tostring(p + 1) + "\nVol: " + str.tostring(totalPeriodVolume, "#.##")
+                label lStart = label.new(
+                      x = pStartBar,
+                      y = pocPrice,
+                      color = color.new(currentPocColor, 50),
+                      style = label.style_circle,
+                      size = lblSize, force_overlay = true
+                      )
+                array.push(pocLabels, lStart)
+
+                label lStart1 = label.new(
+                      x = pStartBar,
+                      y = pocPrice,
+                      text = labelTxt,
+                      color = color.new(chart.bg_color, 30),
+                      textcolor = chart.fg_color,
+                      style = label.style_label_right,
+                      size = lblSize
+                      )
+                array.push(pocLabels, lStart1)
+
+                // Circle marker at the END of the POC line (right margin)
+                label lEnd = label.new(
+                      x = profileRightBar,
+                      y = pocPrice,
+                      text = "",
+                      color = color.new(currentPocColor, 20),
+                      style = label.style_circle,
+                      size = lblSize, force_overlay = true
+                      )
+                array.push(pocLabels, lEnd)
+
+    // ＰＯＬＹＬＩＮＥ ＴＯＴＡＬ ＰＲＯＦＩＬＥ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+    if showPolyline and totalGlobalBins > 0
+        // Apply Gaussian smoothing to total aggregated volume profile
+        float[] smoothedGlobalVols = array.new_float(totalGlobalBins, 0.0)
+        if smoothRadius > 0
+            for k = 0 to totalGlobalBins - 1
+                float sumVol = 0.0
+                float totalWeight = 0.0
+                for r = -smoothRadius to smoothRadius
+                    int neighborIdx = k + r
+                    if neighborIdx >= 0 and neighborIdx < totalGlobalBins
+                        float weight = math.exp(-0.5 * math.pow(r / (smoothRadius / 2.0), 2))
+                        sumVol += array.get(globalVolumes, neighborIdx) * weight
+                        totalWeight += weight
+                array.set(smoothedGlobalVols, k, sumVol / totalWeight)
+        else
+            for k = 0 to totalGlobalBins - 1
+                array.set(smoothedGlobalVols, k, array.get(globalVolumes, k))
+
+        float maxGlobalVol = array.max(smoothedGlobalVols)
+
+        if maxGlobalVol > 0
+            chart.point[] polyPoints = array.new<chart.point>()
+
+            // Start polyline base point at lowest price bin
+            float bottomPrice = globalMinBin * atrStep
+            array.push(polyPoints, chart.point.from_index(profileRightBar, bottomPrice))
+
+            // Map each bin center to scaled bar coordinate
+            for k = 0 to totalGlobalBins - 1
+                float gVol = array.get(smoothedGlobalVols, k)
+                int xOffset = math.round((gVol / maxGlobalVol) * rightOffset)
+                int px = profileRightBar - xOffset
+                float py = (globalMinBin + k + 0.5) * atrStep
+                array.push(polyPoints, chart.point.from_index(px, py))
+
+            // Close polyline top point at highest price bin
+            float topPrice = (globalMaxBin + 1) * atrStep
+            array.push(polyPoints, chart.point.from_index(profileRightBar, topPrice))
+
+            // Create polyline object with configurable line style, width, and color
+            totalPolyline := polyline.new(
+                  points = polyPoints,
+                  line_color = polylineColor,
+                  fill_color = color.new(polylineColor, 100),
+                  line_width = polylineWidth,
+                  line_style = getLineStyle(polylineStyle),
+                  force_overlay = true
+                  )
+// }
