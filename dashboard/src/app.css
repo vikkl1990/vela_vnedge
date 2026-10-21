@@ -1580,3 +1580,47 @@ body { overflow-x: clip; }
   .replay-chart { height: 56vh; min-height: 340px; }
   .replay-side { max-height: none; }
 }
+
+/* ---- PnL by scanner board (replaces the vertical bar chart) ---- */
+.pnlb { display: flex; flex-direction: column; gap: 10px; }
+.pnlb-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pnlb-list { display: flex; flex-direction: column; }
+.pnlb-row {
+  display: grid;
+  grid-template-columns: 26px minmax(110px, 1.3fr) minmax(120px, 2fr) 76px 92px;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 12.5px;
+}
+.pnlb-row:hover { background: var(--surface-2); }
+.pnlb-rank { text-align: right; font-size: 11px; }
+.pnlb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pnlb-track { display: grid; grid-template-columns: 1fr 1fr; height: 10px; }
+.pnlb-half { display: flex; height: 100%; }
+.pnlb-neg { justify-content: flex-end; border-right: 1px solid var(--border); }
+.pnlb-pos { justify-content: flex-start; }
+.pnlb-bar { height: 100%; min-width: 2px; }
+.pnlb-bar-gain { background: var(--gain); border-radius: 0 3px 3px 0; }
+.pnlb-bar-loss { background: var(--loss); border-radius: 3px 0 0 3px; }
+.pnlb-val { text-align: right; font-size: 12px; }
+.pnlb-meta { text-align: right; font-size: 11px; white-space: nowrap; }
+.pnlb-fold {
+  margin: 4px 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.pnlb-fold:hover { color: var(--text); border-color: var(--muted); }
+@media (max-width: 640px) {
+  .pnlb-row { grid-template-columns: 22px minmax(90px, 1fr) minmax(70px, 1fr) 64px; }
+  .pnlb-meta { display: none; }
+}

@@ -3,7 +3,8 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useEquity, useHealth, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
-import { EquityChart, PnlByScannerChart, Sparkline, type PnlBar } from '../components/charts'
+import { EquityChart, Sparkline } from '../components/charts'
+import { ScannerPnlBoard, type ScannerPnlRow } from '../components/ScannerPnlBoard'
 import { PositionsTable } from '../components/PositionsTable'
 import { TickerTape } from '../components/TickerTape'
 import { ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, QueryState } from '../components/ui'
@@ -18,12 +19,12 @@ export function Overview() {
   const risk = useRisk()
 
   const s = stats.data
-  const pnlBars = useMemo<PnlBar[]>(() => {
+  const pnlRows = useMemo<ScannerPnlRow[]>(() => {
     if (!s?.byScanner) return []
     const names = new Map((scanners.data ?? []).map((x) => [x.id, x.name]))
     return Object.entries(s.byScanner)
       .filter(([, v]) => v && (v.trades > 0 || v.pnl !== 0))
-      .map(([id, v]) => ({ id, name: names.get(id) ?? id, pnl: v.pnl }))
+      .map(([id, v]) => ({ id, name: names.get(id) ?? id, pnl: v.pnl, trades: v.trades, winRatePct: v.winRatePct, avgR: v.avgR }))
   }, [s, scanners.data])
 
   const expectancy = useMemo(() => {
@@ -118,8 +119,8 @@ export function Overview() {
       </div>
 
       <div className="grid-2-1">
-        <Panel title="PnL by scanner">
-          {stats.isLoading && !s ? <Loading kind="chart" height={240} /> : <PnlByScannerChart data={pnlBars} height={240} />}
+        <Panel title="PnL by scanner" right={<span className="muted small">since the reset · click a row for the scanner</span>}>
+          {stats.isLoading && !s ? <Loading kind="chart" height={240} /> : <ScannerPnlBoard rows={pnlRows} />}
         </Panel>
         <AlertsStatusLine />
         <SystemPanel />
