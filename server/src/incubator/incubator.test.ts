@@ -631,10 +631,10 @@ test('decision 157: candidateBlockers names what holds each passed candidate; ad
   assert.deepEqual(admitOnly(store, cfg, T, opts), [], 'off when the incubator is off');
 });
 
-test('decision 171: a freshly promoted cell is judged on its own live period, and a demoted pair cools down before the gate proposes it again', () => {
+test('decision 171: a freshly promoted cell is judged on its own live period, and a demoted pair returns only once its demotion is answered', () => {
   const { db, store, cfg, insertTrade, screen } = world();
   cfg.incubator.gate.pool = 'pair';
-  cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 0, costStarvedRefusals: 5, costStarvedDays: 14, cooldownDays: 7 };
+  cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 0, costStarvedRefusals: 5, costStarvedDays: 14 };
   recordScreen(store, { scannerId: 'p', symbol: 'p1', tf: '15m' }, screen(), cfg.incubator, T0);
   evaluate(store, cfg, T0);
   for (const t of series(40, 20, 2, 2, T0 + 1000)) insertTrade(2, 'p', 'p1', t);
@@ -654,9 +654,12 @@ test('decision 171: a freshly promoted cell is judged on its own live period, an
   assert.deepEqual(evaluate(store, cfg, demoteAt).demoteProposed, ['p p1 15m'], 'five refusals inside its own live window: cost-starved');
   approve(store, cfg, pair.id, 'admin', setScanner, demoteAt);
   assert.equal(store.get(pair.id)!.stage, 'shadow');
-  assert.equal(store.lastDemotedAt(pair.id), demoteAt);
+  assert.deepEqual(store.lastDemotion(pair.id), { at: demoteAt, reason: 'cost-starved: 5 of 5 signals refused by the cost rule and none opened in 14 days' });
   const soon = evaluate(store, cfg, demoteAt + DAY);
   assert.deepEqual(soon.proposed, [], 'the same shadow record, a day after the demotion: not proposed');
-  assert.match(store.get(pair.id)!.gate?.reasons?.[0] ?? '', /demoted 1 day\(s\) ago: proposed again after 7/);
-  assert.deepEqual(evaluate(store, cfg, demoteAt + 8 * DAY).proposed, ['p p1 15m'], 'after the cooldown the gate judges it again');
+  assert.match(store.get(pair.id)!.gate?.reasons?.[0] ?? '', /cost-starved when demoted; since then 0 signal\(s\), 0 refused by the cost rule, none opened/);
+  for (let i = 0; i < 3; i++) sig(demoteAt + 2 * DAY + i * 3600_000, 'rejected:stop too tight for fees (0.25% stop vs 0.19% round-trip cost; need ≥ 6×)');
+  assert.deepEqual(evaluate(store, cfg, demoteAt + 3 * DAY).proposed, [], 'still refused by the cost rule: not proposed, however long ago');
+  sig(demoteAt + 4 * DAY, 'opened');
+  assert.deepEqual(evaluate(store, cfg, demoteAt + 4 * DAY + 60_000).proposed, ['p p1 15m'], 'the account opened one of its signals: the demotion is answered');
 });

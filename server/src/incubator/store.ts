@@ -150,9 +150,17 @@ export class IncubatorStore {
     return rows.map((r: any) => ({ id: r.id, at: r.at, pairId: r.pair_id, scannerId: r.scanner_id, symbol: r.symbol, tf: r.tf, from: r.from_stage, to: r.to_stage, actor: r.actor, evidence: r.evidence ? JSON.parse(r.evidence) : null }));
   }
 
-  /** Decision 171: when the pair last went from the live fleet back to the shadow book; null if never. */
-  lastDemotedAt(pairId: number): number | null {
-    return this.db.get<{ at: number | null }>("SELECT MAX(at) at FROM incubator_events WHERE pair_id=? AND from_stage IN ('live','demote_proposed') AND to_stage='shadow'", pairId)?.at ?? null;
+  /**
+   * Decision 171: the pair's last demotion (live or demote_proposed → shadow) and the gate's reason for it, read from the
+   * demotion proposal that preceded it; the reason is null for the operator's own demotion. Null if never demoted.
+   */
+  lastDemotion(pairId: number): { at: number; reason: string | null } | null {
+    const d = this.db.get<{ at: number }>("SELECT at FROM incubator_events WHERE pair_id=? AND from_stage IN ('live','demote_proposed') AND to_stage='shadow' ORDER BY at DESC, id DESC LIMIT 1", pairId);
+    if (!d) return null;
+    const p = this.db.get<{ evidence: string | null }>("SELECT evidence FROM incubator_events WHERE pair_id=? AND to_stage='demote_proposed' AND at<=? ORDER BY at DESC, id DESC LIMIT 1", pairId, d.at);
+    let reason: string | null = null;
+    try { reason = p?.evidence ? (JSON.parse(p.evidence)?.reason ?? null) : null; } catch { reason = null; }
+    return { at: d.at, reason };
   }
 
   /** Promotions to live since `since`, for the weekly limit. */

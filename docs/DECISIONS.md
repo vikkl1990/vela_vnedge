@@ -5185,11 +5185,16 @@ and promoted it again. Each turn flipped the scanner's live pairs in the config 
 **What changed.**
 - The cost-starved rule reads the signals from the pair's own live period, and only once that period is a full
   `costStarvedDays` long. The silent rule already measured from promotion.
-- A pair demoted less than `demote.cooldownDays` (7, 0 turns it off) ago is not proposed again, whatever its shadow
-  record says; the gate records why. Applies to the pair pool and the cohort pool.
+- A demoted pair is proposed again only on evidence gathered since the demotion that answers the reason it was demoted
+  for (the operator refused a blind cooldown). Cost-starved or silent: the account must have opened one of the pair's
+  mirrored signals since, or, for cost-starved, the cost rule must now pass at least half of a window's worth of them.
+  A record below the floor, or the operator's own demotion: the shadow record since the demotion must pass the gate by
+  itself. Market out: nothing beyond the market gate. The gate records which of these holds a pair back. Applies to the
+  pair pool and the cohort pool.
 - The live record's `days` is unchanged in meaning; the 20,747-day figure in the hunt evidence was the window's start
   with no trades, cosmetic.
 
 **Tested.** The decision 112 test now gives its cell a full window live; a new test walks a pair through promotion, a
 day live with old refusals (kept), a full window with none (kept), five refusals inside its live window (demoted), the
-day after (not proposed), and eight days after (proposed again).
+day after with nothing new (not proposed), three more cost refusals (still not proposed), then one opened signal
+(proposed again).
