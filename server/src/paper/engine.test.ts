@@ -381,3 +381,14 @@ test("decision 146: the account refuses a scanner's own stop when skipScriptStop
   cfg.paper.skipScriptStops = false;
   assert.equal(engine.onEntry(ev(95), { ...ctx, scannerId: 'd', symbol: 'ETHUSD' }).action, 'opened');
 });
+
+test('decision 170: the drawdown multiplier halves the margin posted per trade under margin sizing', t => {
+  const { cfg, engine } = setup(t);
+  Object.assign(cfg.paper, { sizingMode: 'margin', marginPerTrade: 150, maxLeverage: 50, minSizeShare: 0 });
+  let mult = 1;
+  engine.risk = { gate: () => ({ leverageMult: mult }), exposureCheck: () => null };
+  const entry = (scannerId: string) => engine.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 98.5, tp: [105], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId, scannerName: scannerId, symbol: 'BTCUSD', tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' }).position!;
+  assert.equal(entry('full').qty, 7, '$150 at the base 5x');
+  mult = 0.5;
+  assert.equal(entry('scaled').qty, 3, '$75 at the base 5x: half the size, the same leverage');
+});

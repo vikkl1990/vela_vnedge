@@ -255,7 +255,10 @@ export class PaperEngine extends EventEmitter {
     const cfg = this.paper;
     if (!(mult > 0) || mult >= 1) return cfg;
     const maxLeverage = Math.max(1, cfg.maxLeverage * mult);
-    return { ...cfg, riskPerTradePct: cfg.riskPerTradePct * mult, maxLeverage, minLeverage: Math.min(maxLeverage, Math.max(1, cfg.minLeverage * mult)) };
+    // decision 170: margin sizing reads neither riskPerTradePct nor maxLeverage (5× and 20× sit under it), so the drawdown
+    // multiplier scales the margin posted per trade; the leverage tiers and the liquidation rule are unchanged
+    const marginPerTrade = cfg.marginPerTrade === undefined ? undefined : cfg.marginPerTrade * mult;
+    return { ...cfg, riskPerTradePct: cfg.riskPerTradePct * mult, maxLeverage, minLeverage: Math.min(maxLeverage, Math.max(1, cfg.minLeverage * mult)), marginPerTrade };
   }
 
   /** Seconds between the close of the signal's bar and `at` (negative while the bar is still forming). */

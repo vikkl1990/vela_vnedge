@@ -5139,3 +5139,30 @@ inherit the tokens).
 
 **Verified** on the local dashboard against a copy of the account: desktop at 1280 px expanded and collapsed, the phone
 drawer at 721 px, the light theme, and the Library page's fixed-height layout; lint and the production build pass.
+
+## 170. Why 21 October bled: a chop in three alts at full size, because drawdown scaling never reached margin sizing (21 October 2026)
+
+The operator: "what went sideways today, too many SLs". By 15:30 UTC the account had closed 43 trades: 22 trails for
++$369, 19 stops for −$456. Equity 1,406 → 1,282 on the day, 14.4% below the 1,498 peak of 03:04 UTC.
+
+**What it was.**
+- A chop, not a code change. Eleven of the nineteen stops came from three markets the gate allowed (ATR 2–5%, book cost
+  0.13–0.16%): AKEUSD lost long and short four times, BTWUSD four, GTCUSD three, re-entered an hour apart each time. The
+  shadow book, which the day's changes did not touch, stopped out 34% of its trades today and 36% yesterday for −4.3R
+  and −5.6R, against 31% and +2.0R on the 19th. The latency work (decisions 165–166) and the trails on script-exit trades
+  (159–161) are not implicated: stops within fifteen minutes fell from 8 to 4 and stops that never reached +0.1R from 11
+  to 6.
+- The stops cost more than they used to. On the 19th a stop cost $9, yesterday $21, today $24. Median risk per trade went
+  $10 → $16 → $20: the 20× tier faded as cell records weakened (51 trades at 20× on the 19th, 16 yesterday, 2 today), and
+  $150 at the base 5× on alts with 2–5% ATR stops carries about $20 of risk.
+- Drawdown scaling never engaged. `risk.ddScale` halves risk past 10% from the peak, and the account has been past it
+  since this morning, but the multiplier scaled `riskPerTradePct` and `maxLeverage` (50 → 25), which margin sizing never
+  reads: the margin stayed $150 and the tiers 5× and 20× sit far under the cap.
+
+**What changed.** Under margin sizing the drawdown multiplier scales the margin posted per trade (`scaledCfg`): at
+−10% from the peak the account posts $75 instead of $150 at the same leverage, until equity recovers. Tested on the
+engine: the same entry sizes 7 contracts at ×1 and 3 at ×0.5.
+
+**Not changed.** The repeat entries into a chopping market: the re-entry cooldown is 60 minutes and the regime gate's
+efficiency ratio is 0.25 (decision 147 measured it as cutting volume, not bad trades). A per-market daily stop count is
+the obvious next guard and is proposed, not applied.
