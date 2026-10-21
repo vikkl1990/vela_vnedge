@@ -96,10 +96,31 @@ export const PATCH_RULES: PatchRule[] = [
 
 export interface PatchResult { source: string; applied: string[] }
 
+/**
+ * Decision 172: a label can be drawn at a past bar (a pivot label at the pivot, confirmed bars later), so its position is
+ * not the bar it appeared on. Appended to every script that creates labels: each new label is stamped, through its
+ * tooltip, with the bar it was created on, and the worker reads the stamp back as the label's `createdAt`. A label's own
+ * tooltip is replaced; nothing else about the label changes. Last in the list so no other rewrite touches it.
+ */
+const LABEL_STAMP = `
+// VNEdge: stamp each new label with the bar it was created on (read back by the worker)
+var int _vn_seen = 0
+_vn_n = array.size(label.all)
+if _vn_n > _vn_seen
+    for _vi = _vn_seen to _vn_n - 1
+        label.set_tooltip(array.get(label.all, _vi), "vn:" + str.tostring(bar_index))
+    _vn_seen := _vn_n
+`;
+export const LABEL_STAMP_RULE: PatchRule = {
+  id: 'label-created-bar',
+  description: 'Every new label is stamped with the bar it was created on, so a label drawn at a past bar is read as a signal on the bar it appeared, not where it points (decision 172).',
+  apply: (src) => (/\blabel\.new\s*\(/.test(src) ? src.replace(/\s*$/, '\n') + LABEL_STAMP : src),
+};
+
 export function applyPatches(source: string, fileName: string): PatchResult {
   let out = source;
   const applied: string[] = [];
-  for (const rule of PATCH_RULES) {
+  for (const rule of [...PATCH_RULES, LABEL_STAMP_RULE]) {
     if (rule.only && !rule.only.some(p => fileName.startsWith(p))) continue;
     const next = rule.apply(out);
     if (next !== out) { applied.push(rule.id); out = next; }

@@ -417,12 +417,15 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     for (const l of opts.drawn) {
       const side = labelSide(l.text, l.style);
       if (!side) { drop('label: no direction in text'); continue; }
-      if (opts.sinceBarTime !== undefined && l.time < opts.sinceBarTime) continue;
+      // a label can be drawn at a past bar; the signal is the bar it appeared on, and without that bar it is not read
+      if (l.createdAt === undefined) { drop('label: creation bar unknown'); continue; }
+      const at = l.createdAt;
+      if (opts.sinceBarTime !== undefined && at < opts.sinceBarTime) continue;
       if (!labelOk(l.text)) { drop('label: not in allow-list'); continue; }
-      const key = `entry:${side}:${l.time}:`;
+      const key = `entry:${side}:${at}:`;
       if (seenEntry.has(key)) { drop('label: same-bar duplicate'); continue; }
       seenEntry.add(key);
-      events.push({ kind: 'entry', side, tp: [], label: l.text.slice(0, 60), message: `label "${l.text.slice(0, 80)}"`, source: 'label', barTime: l.time, barIndex: -1 });
+      events.push({ kind: 'entry', side, tp: [], label: l.text.slice(0, 60), message: `label "${l.text.slice(0, 80)}"${at !== l.time ? ' (drawn at an earlier bar)' : ''}`, source: 'label', barTime: at, barIndex: -1 });
     }
   }
   const kept = events;

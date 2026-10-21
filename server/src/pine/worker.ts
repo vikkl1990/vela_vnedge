@@ -35,7 +35,7 @@ export interface WorkerJob {
 
 export interface WorkerAlert { barIndex: number; time: number; type: 'alert' | 'alertcondition'; title?: string; message: string }
 export interface WorkerShape { title: string; shape?: string; location?: string; color?: string; times: number[] }
-export interface WorkerLabel { time: number; y: number; text: string; color?: string; style?: string; barIndex?: number }
+export interface WorkerLabel { time: number; y: number; text: string; color?: string; style?: string; barIndex?: number; /** Decision 172: the bar the label was created on, from the label stamp; absent when the script set no stamp. */ createdAt?: number }
 export interface WorkerPlot { title: string; style: string; overlay: boolean; color?: string; data: Array<{ time: number; value: number | null; color?: string }> }
 
 export interface WorkerResult {
@@ -140,7 +140,9 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
       const t = Number(l.x ?? l.time ?? l.bar_time ?? 0);
       const time = (l.xloc === 'bar_index' || (t > 0 && t < 1e9)) ? timeAt(Math.round(t)) : t;
       if (!Number.isFinite(y)) continue;
-      labels.push({ time, y, text: String(l.text ?? '').slice(0, 80), color: l.color, style: l.style });
+      const stamp = /^vn:(\d+)$/.exec(String(l.tooltip ?? ''));
+      const createdAt = stamp ? timeAt(Number(stamp[1])) : undefined;
+      labels.push({ time, y, text: String(l.text ?? '').slice(0, 80), color: l.color, style: l.style, createdAt });
     }
 
     return { ...base, ok: true, ms: Date.now() - t0, title: ctx.indicator?.title, overlay: ctx.indicator?.overlay, warnings: (ctx.warnings ?? []).length, alerts, shapes, labels, plots };

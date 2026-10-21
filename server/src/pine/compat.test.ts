@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dropQualifiers, dropStatementCommas, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved, replaceCall } from './compat.ts';
-import { PATCH_RULES } from './patches.ts';
+import { PATCH_RULES, applyPatches } from './patches.ts';
 
 test('continuation lines inside brackets and leading-operator lines are joined; comments re-indented', () => {
   const src = [
@@ -102,4 +102,15 @@ test('decision 163: an unused TradingView/ta import is removed, a used one kept'
   assert.equal(rule(used), used);
   const aliased = 'import TradingView/ta/9 as tl\nplot(tl.kama(close, 10))';
   assert.equal(rule(aliased), aliased);
+});
+
+test('decision 172: a script that creates labels gets the creation-bar stamp appended, last; one without labels does not', () => {
+  const withLabels = '//@version=5\nindicator("x")\nif close > open\n    label.new(bar_index[2], high, "▼")\nn = array.size(label.all)';
+  const r = applyPatches(withLabels, 'x.pine');
+  assert.equal(r.applied.at(-1), 'label-created-bar');
+  assert.match(r.source, /_vn_seen := _vn_n\n$/);
+  assert.match(r.source, /n = 0\n/, 'the earlier label.all-size rewrite still applies to the script\'s own line');
+  assert.match(r.source, /_vn_n = array\.size\(label\.all\)/, 'but not to the stamp, which runs under PineTS 0.12');
+  const without = applyPatches('//@version=5\nindicator("y")\nplot(close)', 'y.pine');
+  assert.ok(!without.applied.includes('label-created-bar'));
 });

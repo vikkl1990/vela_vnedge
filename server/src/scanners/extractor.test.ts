@@ -228,7 +228,7 @@ test('decision 77: every dropped output is counted with its reason', () => {
 });
 
 test('decision 172: drawn labels are read as a last resort; glyphs, words, phrases and structure labels by their side', () => {
-  const lab = (text: string, time: number, style?: string) => ({ time, y: 100, text, style });
+  const lab = (text: string, time: number, style?: string) => ({ time, y: 100, text, style, createdAt: time });
   const drawn = [lab('▲', 1000, 'label_up'), lab('▼', 2000, 'label_down'), lab('BUY', 3000), lab('S', 4000), lab('Bullish BOS', 5000), lab('CHoCH', 6000, 'label_down'), lab('1,234.5', 7000), lab('HIGH 100', 8000)];
   const ev = extractEvents([], [], { drawn });
   assert.deepEqual(ev.map(e => [e.side, e.barTime, e.source]), [['long', 1000, 'label'], ['short', 2000, 'label'], ['long', 3000, 'label'], ['short', 4000, 'label'], ['long', 5000, 'label'], ['short', 6000, 'label']]);
@@ -252,4 +252,12 @@ test('decision 172: "above" and "below" carry direction in a condition title, ex
   const alerts = [a('Price Crossed Above R1', 1000), a('Price Crossed Below S1', 2000), a('Price Crossed Above Pivot (P)', 3000)];
   assert.deepEqual(extractEvents(alerts, [], {}).map(e => e.side), ['long', 'short', 'long']);
   assert.equal(extractEvents(alerts, [], { scannerId: 'kalman-step-signals' }).length, 0);
+});
+
+test('decision 172: a label drawn at a past bar is an entry on the bar it was created; one with no creation bar is not read', () => {
+  const pivot = { time: 1000, y: 100, text: '▼', style: 'label_down', createdAt: 4000 };
+  const ev = extractEvents([], [], { drawn: [pivot] });
+  assert.deepEqual(ev.map(e => [e.side, e.barTime]), [['short', 4000]]);
+  assert.match(ev[0].message, /drawn at an earlier bar/);
+  assert.equal(extractEvents([], [], { drawn: [{ time: 1000, y: 100, text: '▲' }] }).length, 0);
 });
