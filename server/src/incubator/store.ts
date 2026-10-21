@@ -150,6 +150,11 @@ export class IncubatorStore {
     return rows.map((r: any) => ({ id: r.id, at: r.at, pairId: r.pair_id, scannerId: r.scanner_id, symbol: r.symbol, tf: r.tf, from: r.from_stage, to: r.to_stage, actor: r.actor, evidence: r.evidence ? JSON.parse(r.evidence) : null }));
   }
 
+  /** Decision 171: when the pair last went from the live fleet back to the shadow book; null if never. */
+  lastDemotedAt(pairId: number): number | null {
+    return this.db.get<{ at: number | null }>("SELECT MAX(at) at FROM incubator_events WHERE pair_id=? AND from_stage IN ('live','demote_proposed') AND to_stage='shadow'", pairId)?.at ?? null;
+  }
+
   /** Promotions to live since `since`, for the weekly limit. */
   promotionsSince(since: number): number {
     return this.db.get<{ n: number }>("SELECT COUNT(*) n FROM incubator_events WHERE to_stage='live' AND from_stage='proposed' AND at>=?", since)?.n ?? 0;

@@ -5166,3 +5166,30 @@ engine: the same entry sizes 7 contracts at ×1 and 3 at ×0.5.
 **Not changed.** The repeat entries into a chopping market: the re-entry cooldown is 60 minutes and the regime gate's
 efficiency ratio is 0.25 (decision 147 measured it as cutting volume, not bad trades). A per-market daily stop count is
 the obvious next guard and is proposed, not applied.
+
+## 171. The incubator audited: a promote–demote loop closed; the demotion rules judge the live period; a cooldown after demotion (21 October 2026)
+
+The operator: "make sure the incubator is working with all scanners, promotion and demotions". The audit on the VM:
+the nightly screen walks the library (7,845 runs last night, 74 passed, cursor on 1h slice 0), real-time admission runs
+(3 admitted at 09:00), the gate proposes and `promote.auto` promotes (16 auto promotions in three days), retirement runs,
+and no proposal waits on a click. 555 shadow pairs of 600, 323 candidates, 28 live cells.
+
+**The fault.** Every demotion proposal of the last four days (27 of 27) came from the cost-starved and market-out rules,
+17 of them within 24 hours of the pair's promotion, and two pairs went round in a loop: `kalman-step-signals TAOUSD 15m`
+was promoted and demoted thirteen times in two days, `supertrend-cluster-zeiierman EVAAUSD 15m` four. The cost-starved
+rule (decision 112) counted the cost-rule refusals of the last 14 days wherever they came from, and since decision 116
+mirrors every shadow signal to the account, a pair arrived live with two weeks of refusals already on its record and was
+proposed for demotion at the next hunt. Demoted, its shadow record still passed the gate, so the following hunt proposed
+and promoted it again. Each turn flipped the scanner's live pairs in the config and sent a hunt alert.
+
+**What changed.**
+- The cost-starved rule reads the signals from the pair's own live period, and only once that period is a full
+  `costStarvedDays` long. The silent rule already measured from promotion.
+- A pair demoted less than `demote.cooldownDays` (7, 0 turns it off) ago is not proposed again, whatever its shadow
+  record says; the gate records why. Applies to the pair pool and the cohort pool.
+- The live record's `days` is unchanged in meaning; the 20,747-day figure in the hunt evidence was the window's start
+  with no trades, cosmetic.
+
+**Tested.** The decision 112 test now gives its cell a full window live; a new test walks a pair through promotion, a
+day live with old refusals (kept), a full window with none (kept), five refusals inside its live window (demoted), the
+day after (not proposed), and eight days after (proposed again).

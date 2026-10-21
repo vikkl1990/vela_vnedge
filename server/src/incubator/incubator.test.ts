@@ -438,7 +438,7 @@ test('decision 112: a cost-starved live cell is proposed for demotion; one that 
   cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 0, costStarvedRefusals: 5, costStarvedDays: 14 };
   cfg.scanners = { s1: { enabled: true, pairs: [{ symbol: 'BTCUSD', tf: '15m' }, { symbol: 'ETHUSD', tf: '15m' }], timeframes: null, exitMode: 'both' } as any };
   syncLive(store, cfg, T0);
-  const now = T0 + 10 * DAY;
+  const now = T0 + 20 * DAY;   // decision 171: the cell has been live a full window
   const sig = (symbol: string, at: number, action: string) => db.insertSignal({ at, barTime: at, scannerId: 's1', scannerName: 'S1', symbol, tf: '15m', kind: 'entry', side: 'long', price: 100, sl: 99, tp: [], score: null, label: 'L', message: '', summary: '', source: 'alert', levelsSource: 'atr-fallback', action, positionId: null });
   for (let i = 0; i < 5; i++) sig('BTCUSD', now - i * DAY, 'rejected:stop too tight for fees (0.25% stop vs 0.19% round-trip cost; need ≥ 6×)');
   sig('BTCUSD', now - 6 * DAY, 'rejected:risk regime: choppy (efficiency 0.10 < 0.25)');
@@ -629,4 +629,34 @@ test('decision 157: candidateBlockers names what holds each passed candidate; ad
   assert.equal(candidateBlockers(store, cfg, T, opts).counts.admissible, 0);
   cfg.incubator.enabled = false;
   assert.deepEqual(admitOnly(store, cfg, T, opts), [], 'off when the incubator is off');
+});
+
+test('decision 171: a freshly promoted cell is judged on its own live period, and a demoted pair cools down before the gate proposes it again', () => {
+  const { db, store, cfg, insertTrade, screen } = world();
+  cfg.incubator.gate.pool = 'pair';
+  cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 0, costStarvedRefusals: 5, costStarvedDays: 14, cooldownDays: 7 };
+  recordScreen(store, { scannerId: 'p', symbol: 'p1', tf: '15m' }, screen(), cfg.incubator, T0);
+  evaluate(store, cfg, T0);
+  for (const t of series(40, 20, 2, 2, T0 + 1000)) insertTrade(2, 'p', 'p1', t);
+  const sig = (at: number, action: string) => db.insertSignal({ at, barTime: at, scannerId: 'p', scannerName: 'P', symbol: 'p1', tf: '15m', kind: 'entry', side: 'long', price: 100, sl: 99, tp: [], score: null, label: 'L', message: '', summary: '', source: 'alert', levelsSource: 'atr-fallback', action, positionId: null });
+  // the shadow mirror's refusals from before promotion (decision 116)
+  for (let i = 1; i <= 5; i++) sig(T0 + 21 * DAY - i * DAY, 'rejected:stop too tight for fees (0.25% stop vs 0.19% round-trip cost; need ≥ 6×)');
+  const promoteAt = T0 + 21 * DAY;
+  assert.deepEqual(evaluate(store, cfg, promoteAt).proposed, ['p p1 15m']);
+  const setScanner = (id: string, patch: any) => { cfg.scanners[id] = { ...(cfg.scanners[id] ?? { enabled: false, symbols: null, timeframes: null, exitMode: 'both' }), ...patch }; };
+  const pair = store.find('p', 'p1', '15m')!;
+  approve(store, cfg, pair.id, 'admin', setScanner, promoteAt);
+  assert.equal(store.get(pair.id)!.stage, 'live');
+  assert.deepEqual(evaluate(store, cfg, promoteAt + DAY).demoteProposed, [], 'live for a day: the refusals before promotion do not count');
+  assert.deepEqual(evaluate(store, cfg, promoteAt + 15 * DAY).demoteProposed, [], 'a full window live, no refusal in it: kept');
+  for (let i = 0; i < 5; i++) sig(promoteAt + 10 * DAY + i * DAY, 'rejected:stop too tight for fees (0.25% stop vs 0.19% round-trip cost; need ≥ 6×)');
+  const demoteAt = promoteAt + 16 * DAY;
+  assert.deepEqual(evaluate(store, cfg, demoteAt).demoteProposed, ['p p1 15m'], 'five refusals inside its own live window: cost-starved');
+  approve(store, cfg, pair.id, 'admin', setScanner, demoteAt);
+  assert.equal(store.get(pair.id)!.stage, 'shadow');
+  assert.equal(store.lastDemotedAt(pair.id), demoteAt);
+  const soon = evaluate(store, cfg, demoteAt + DAY);
+  assert.deepEqual(soon.proposed, [], 'the same shadow record, a day after the demotion: not proposed');
+  assert.match(store.get(pair.id)!.gate?.reasons?.[0] ?? '', /demoted 1 day\(s\) ago: proposed again after 7/);
+  assert.deepEqual(evaluate(store, cfg, demoteAt + 8 * DAY).proposed, ['p p1 15m'], 'after the cooldown the gate judges it again');
 });

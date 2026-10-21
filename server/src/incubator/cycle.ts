@@ -225,8 +225,11 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     const outFor = why ? (now - out[key]) / DAY : 0;
     const marketOut = outDays > 0 && why !== null && outFor >= outDays;
     // decision 112: a cell whose stops cannot cover the cost rule on its market will never trade; it gives its slot back
+    // decision 171: judged on the pair's own live period, and only once that period is a full window long. Counting
+    // the 14 days before promotion read the shadow mirror's refusals (decision 116) and demoted a pair within hours.
     const csN = inc.demote.costStarvedRefusals ?? 0, csDays = inc.demote.costStarvedDays ?? 14;
-    const funnel = csN > 0 ? store.signalFunnel(r.scannerId, r.symbol, r.tf, now - csDays * DAY) : null;
+    const liveLongEnough = now - r.since >= csDays * DAY;
+    const funnel = csN > 0 && liveLongEnough ? store.signalFunnel(r.scannerId, r.symbol, r.tf, Math.max(r.since, now - csDays * DAY)) : null;
     const costStarved = funnel !== null && funnel.cost >= csN && funnel.opened === 0;
     const reason = marketOut ? `market out: ${why} — ${Math.round(outFor)} days in a row (cap ${outDays})`
       : costStarved ? `cost-starved: ${funnel!.cost} of ${funnel!.entries} signals refused by the cost rule and none opened in ${csDays} days`
@@ -251,6 +254,19 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   return rep;
 }
 
+/**
+ * Decision 171: a pair demoted less than `demote.cooldownDays` ago is not proposed again, whatever its shadow record says.
+ * Without this a pair demoted for a reason the shadow record cannot see (cost-starved, silent, market out) was
+ * re-proposed and re-promoted at the next hunt: one pair went round thirteen times in two days.
+ */
+function demotionCooldown(store: IncubatorStore, cfg: AppConfig, r: PairRow, now: number): string | null {
+  const days = cfg.incubator.demote.cooldownDays ?? 0;
+  if (!(days > 0)) return null;
+  const at = store.lastDemotedAt(r.id);
+  if (at === null || now - at >= days * DAY) return null;
+  return `demoted ${Math.max(1, Math.round((now - at) / DAY))} day(s) ago: proposed again after ${days}`;
+}
+
 /** One market judged on its own: the original gate, kept for `gate.pool: 'pair'`. */
 function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: CycleReport, now: number): void {
   const trades = store.trades(r.scannerId, r.symbol, r.tf, 2);
@@ -261,6 +277,7 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
   const v = gateVerdict(stats, gateFor(cfg.incubator, r.tf), overlap);
   store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v }, now);
   if (v.decision === 'propose' && r.stage === 'shadow' && marketRefusal(store.marketsToday(), r.symbol)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [marketRefusal(store.marketsToday(), r.symbol)!] }, now); rep.brewing++; }
+  else if (v.decision === 'propose' && r.stage === 'shadow' && demotionCooldown(store, cfg, r, now)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [demotionCooldown(store, cfg, r, now)!] }, now); rep.brewing++; }
   else if (v.decision === 'propose' && r.stage === 'shadow') { store.move(r, 'proposed', 'gate', { stats, overlap, reasons: v.reasons }, 'passed the promotion gate', now, { keepSince: true }); rep.proposed.push(name(r)); }
   else if (v.decision === 'brewing' && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { stats, reasons: v.reasons }, 'no longer passes the gate', now, { keepSince: true }); rep.brewing++; }
   else if (v.decision === 'retire') { store.move(r, 'retired', 'gate', { stats, reasons: v.reasons }, v.reasons[0], now); rep.retired.push(name(r)); }
@@ -313,6 +330,8 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
       : new Set<string>();
     for (const m of members) {
       const wanted = pick.has(m.symbol);
+      const cooling = v.decision === 'propose' && wanted ? demotionCooldown(store, cfg, m.row, now) : null;
+      if (cooling) { pick.delete(m.symbol); store.setGate(m.row.id, { at: now, cohort, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [cooling] }, now); rep.brewing++; continue; }
       const why = v.decision === 'propose' && !wanted ? marketRefusal(markets, m.symbol) : null;
       if (why) store.setGate(m.row.id, { at: now, cohort, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [why] }, now);
       if (wanted && m.row.stage === 'shadow') { store.move(m.row, 'proposed', 'gate', { cohort, stats, reasons: v.reasons }, `${cohort} passed the gate`, now, { keepSince: true }); rep.proposed.push(name(m.row)); }
