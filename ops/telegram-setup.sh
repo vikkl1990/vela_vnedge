@@ -18,6 +18,8 @@ tg() {  # tg METHOD [curl args...]: call the Bot API without the token appearing
 }
 
 read -rsp "Telegram bot token from @BotFather (input hidden): " TOKEN; echo
+# a paste often carries spaces, a newline or the "bot" prefix from the API URL; keep only the token itself
+TOKEN=$(printf "%s" "$TOKEN" | tr -d "[:space:]" | sed -E "s/^(HTTP API:)?(bot)?//")
 [[ "$TOKEN" =~ ^[0-9]{6,}:[A-Za-z0-9_-]{30,}$ ]] || { echo "That does not look like a bot token (digits:letters)."; exit 1; }
 
 ME=$(tg getMe) || { echo "Telegram refused the token. Check it in @BotFather and run again."; exit 1; }
