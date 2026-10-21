@@ -5115,3 +5115,27 @@ config.json, never the chat). `ops/telegram-setup.sh`, run by the operator with 
 - writes both to `/etc/systemd/system/vnedge.service.d/telegram.conf`, root-only (600), reloads and restarts the bot, waits
   for its "alerts via telegram" line, and sends a test message.
 The token is never on a command line (curl reads the URL from stdin), never logged and never printed.
+
+## 169. The dashboard shell modernised: a grouped sidebar and a slim top bar replace the pill row, the icon rail and the terminal window (21 October 2026)
+
+The operator: "do UI modernization". Twenty pages shared a header that had grown by accretion: seventeen navigation
+pills in a row that overflowed at 1440 px, a second icon rail repeating the same five icons, a fake terminal window
+(traffic-light dots and a monospace crumb) round every page, and a status strip that wrapped onto two rows.
+
+**What changed** (`components/Layout.tsx`, `app.css`, `components/Icons.tsx`; the pages themselves are untouched and
+inherit the tokens).
+- A sidebar with the pages in four groups, each with its own icon: Trade (Overview, Signals, Trades, Chart), Research
+  (Scanners, Library, Incubator, Trackers, Analytics, Daily, Learn, Decisions), Control (Gates, Exchange, Settings, Logs)
+  and Account (Profile, Users). Decisions joins the navigation. The `g <key>` hotkeys are unchanged and show on hover.
+- The sidebar collapses to icons (`[`, remembered in the browser) and on a phone becomes a drawer behind a menu button;
+  the bottom bar of decision 121 stays.
+- A slim sticky top bar: breadcrumb (section › page, with the parent for a scanner or a trade replay), the account's
+  equity, day and open count, the kill-switch and reset actions, and the user. Connection state (stream, feed, last tick)
+  and the theme, density and shortcut buttons live in the sidebar's foot.
+- The terminal window, its dots and crumb, the icon rail and the pill row are gone. Tokens: 12 px radius, a softer
+  accent glow, a real card shadow, calmer panel and KPI labels, the page title at 22 px. The serif accent in page titles
+  stays, as the operator chose it (decision 91).
+- The sidebar classes are `sidebar-*`: `.side` was already the long/short pill.
+
+**Verified** on the local dashboard against a copy of the account: desktop at 1280 px expanded and collapsed, the phone
+drawer at 721 px, the light theme, and the Library page's fixed-height layout; lint and the production build pass.

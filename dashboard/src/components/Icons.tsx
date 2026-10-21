@@ -102,3 +102,92 @@ export const IconLogo = ({ size = 18, ...p }: P) => (
     <path d="M4 17L9 7l5 8 6-11" />
   </svg>
 )
+
+// ---- navigation icons (decision 169: one per section, so the sidebar reads at a glance) ----
+export const IconBook = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2z" />
+    <path d="M4 19a2 2 0 0 1 2-2h12" />
+  </svg>
+)
+export const IconFlask = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M9 3h6M10 3v6L4.5 18a2 2 0 0 0 1.7 3h11.6a2 2 0 0 0 1.7-3L14 9V3" />
+    <path d="M7 15h10" />
+  </svg>
+)
+export const IconTarget = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <circle cx="12" cy="12" r="8" />
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+  </svg>
+)
+export const IconBars = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M5 20V10M12 20V4M19 20v-7" />
+  </svg>
+)
+export const IconCalendar = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <rect x="3" y="5" width="18" height="16" rx="2" />
+    <path d="M3 10h18M8 3v4M16 3v4" />
+  </svg>
+)
+export const IconGraduation = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M2 9l10-5 10 5-10 5z" />
+    <path d="M6 11v5c0 1.5 3 3 6 3s6-1.5 6-3v-5" />
+  </svg>
+)
+export const IconBookmark = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M6 3h12v18l-6-4-6 4z" />
+  </svg>
+)
+export const IconShield = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" />
+  </svg>
+)
+export const IconExchange = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M4 8h13l-3-3M20 16H7l3 3" />
+  </svg>
+)
+export const IconTerminal = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M5 7l5 5-5 5M12 17h7" />
+  </svg>
+)
+export const IconUser = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 21a8 8 0 0 1 16 0" />
+  </svg>
+)
+export const IconUsers = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <circle cx="9" cy="8" r="3.5" />
+    <path d="M2.5 20a6.5 6.5 0 0 1 13 0" />
+    <path d="M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4.5-6.2" />
+  </svg>
+)
+export const IconCandles = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M7 4v3M7 17v3M17 4v4M17 16v4" />
+    <rect x="4.5" y="7" width="5" height="10" rx="1" />
+    <rect x="14.5" y="8" width="5" height="8" rx="1" />
+  </svg>
+)
+export const IconMenu = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M4 7h16M4 12h16M4 17h16" />
+  </svg>
+)
+export const IconPanelLeft = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16" />
+  </svg>
+)

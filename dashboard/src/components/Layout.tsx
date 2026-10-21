@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useBackendOnline, useHealth, useKill, usePositions, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
 import { RiskBanner } from './RiskBanner'
@@ -14,61 +14,103 @@ import { useSSE } from '../sse/SSEProvider'
 import { RouteErrorBoundary } from './ErrorBoundary'
 import {
   IconActivity,
+  IconBars,
   IconBell,
-  IconChart,
-  IconGrid,
-  IconList,
+  IconBook,
+  IconBookmark,
+  IconCalendar,
+  IconCandles,
+  IconExchange,
+  IconFlask,
+  IconGraduation,
   IconLogo,
-  IconLogs,
+  IconMenu,
   IconMoon,
+  IconPanelLeft,
   IconRows,
   IconScan,
   IconSettings,
+  IconShield,
   IconSun,
+  IconTarget,
+  IconTerminal,
   IconTrades,
+  IconUser,
+  IconUsers,
 } from './Icons'
 import { BookBadge, ConfirmDialog, StatusDot } from './ui'
 
-const NAV = [
-  { to: '/', label: 'Overview', icon: IconActivity, end: true, key: 'o' },
-  { to: '/scanners', label: 'Scanners', icon: IconScan, key: 's' },
-  { to: '/library', label: 'Library', icon: IconGrid, key: 'b' },
-  { to: '/signals', label: 'Signals', icon: IconBell, key: 'i' },
-  { to: '/trades', label: 'Trades', icon: IconTrades, key: 't' },
-  { to: '/chart', label: 'Chart', icon: IconChart, key: 'c' },
-  { to: '/settings', label: 'Settings', icon: IconSettings, key: 'e' },
-  { to: '/daily', label: 'Daily', icon: IconChart, key: 'y' },
-  { to: '/trackers', label: 'Trackers', icon: IconScan, key: 'r' },
-  { to: '/analytics', label: 'Analytics', icon: IconChart, key: 'a' },
-  { to: '/incubator', label: 'Incubator', icon: IconScan, key: 'n' },
-  { to: '/gates', label: 'Gates', icon: IconSettings, key: 'k' },
-  { to: '/learn', label: 'Learn', icon: IconChart, key: 'l' },
-  { to: '/exchange', label: 'Exchange', icon: IconTrades, key: 'x' },
-  { to: '/logs', label: 'Logs', icon: IconLogs, key: 'g' },
-  { to: '/profile', label: 'Profile', icon: IconSettings, key: 'p' },
-  { to: '/users', label: 'Users', icon: IconSettings, key: 'u', adminOnly: true },
+type NavItem = { to: string; label: string; icon: (p: { size?: number }) => ReactElement; key: string; end?: boolean; adminOnly?: boolean }
+
+/** Decision 169: the twenty pages in four groups, read down a sidebar instead of across a row of pills. */
+const GROUPS: Array<{ label: string; items: NavItem[] }> = [
+  {
+    label: 'Trade',
+    items: [
+      { to: '/', label: 'Overview', icon: IconActivity, end: true, key: 'o' },
+      { to: '/signals', label: 'Signals', icon: IconBell, key: 'i' },
+      { to: '/trades', label: 'Trades', icon: IconTrades, key: 't' },
+      { to: '/chart', label: 'Chart', icon: IconCandles, key: 'c' },
+    ],
+  },
+  {
+    label: 'Research',
+    items: [
+      { to: '/scanners', label: 'Scanners', icon: IconScan, key: 's' },
+      { to: '/library', label: 'Library', icon: IconBook, key: 'b' },
+      { to: '/incubator', label: 'Incubator', icon: IconFlask, key: 'n' },
+      { to: '/trackers', label: 'Trackers', icon: IconTarget, key: 'r' },
+      { to: '/analytics', label: 'Analytics', icon: IconBars, key: 'a' },
+      { to: '/daily', label: 'Daily', icon: IconCalendar, key: 'y' },
+      { to: '/learn', label: 'Learn', icon: IconGraduation, key: 'l' },
+      { to: '/decisions', label: 'Decisions', icon: IconBookmark, key: 'd' },
+    ],
+  },
+  {
+    label: 'Control',
+    items: [
+      { to: '/gates', label: 'Gates', icon: IconShield, key: 'k' },
+      { to: '/exchange', label: 'Exchange', icon: IconExchange, key: 'x' },
+      { to: '/settings', label: 'Settings', icon: IconSettings, key: 'e' },
+      { to: '/logs', label: 'Logs', icon: IconTerminal, key: 'g' },
+    ],
+  },
+  {
+    label: 'Account',
+    items: [
+      { to: '/profile', label: 'Profile', icon: IconUser, key: 'p' },
+      { to: '/users', label: 'Users', icon: IconUsers, key: 'u', adminOnly: true },
+    ],
+  },
 ]
-
 const STALE_AFTER_MS = 60_000
+const SIDE_KEY = 'vnedge.sidebar'
 
-/** Route → { title, crumb } (scanner detail resolves the scanner's name when loaded). */
-function routeMeta(pathname: string, scannerName?: string): { title: string; crumb: string } {
-  if (pathname === '/') return { title: 'Overview', crumb: 'overview' }
-  const m = /^\/scanners\/([^/]+)/.exec(pathname)
-  if (m) {
-    const id = decodeURIComponent(m[1])
-    return { title: scannerName ?? id, crumb: `scanners / ${id}` }
+function readSidebar(): boolean {
+  try {
+    return localStorage.getItem(SIDE_KEY) === 'collapsed'
+  } catch {
+    return false
   }
-  const seg = pathname.replace(/^\//, '').split('/')[0]
-  const nav = NAV.find((n) => n.to === `/${seg}`)
-  return nav ? { title: nav.label, crumb: nav.label.toLowerCase() } : { title: 'Not found', crumb: seg }
+}
+
+/** Route → { title, section, crumb } (scanner detail resolves the scanner's name when loaded). */
+function routeMeta(pathname: string, scannerName?: string): { title: string; section: string | null; parent?: { label: string; to: string } } {
+  const m = /^\/scanners\/([^/]+)/.exec(pathname)
+  if (m) return { title: scannerName ?? decodeURIComponent(m[1]), section: 'Research', parent: { label: 'Scanners', to: '/scanners' } }
+  const r = /^\/trades\/(\d+)\/replay/.exec(pathname)
+  if (r) return { title: `Trade #${r[1]} replay`, section: 'Trade', parent: { label: 'Trades', to: '/trades' } }
+  const seg = pathname === '/' ? '/' : `/${pathname.replace(/^\//, '').split('/')[0]}`
+  const group = GROUPS.find((g) => g.items.some((n) => n.to === seg))
+  const nav = group?.items.find((n) => n.to === seg)
+  return nav ? { title: nav.label, section: group!.label } : { title: 'Not found', section: null }
 }
 
 /** Header tick age. Owns the 1 s clock so only this text re-renders. */
 function TickAge({ lastTick }: { lastTick: number | null }) {
   const now = useNow(1000)
   // the 1 s clock can lag a tick that has just arrived: clamp so the age never reads as missing
-  return <span className="mono muted small hide-mid"> · tick <span className="tick-age">{fmtAge(lastTick ? Math.max(0, now - lastTick) : null)}</span></span>
+  return <span className="tick-age mono">{fmtAge(lastTick ? Math.max(0, now - lastTick) : null)}</span>
 }
 
 /** Stale-stream banner. Owns its own clock for the same reason as TickAge. */
@@ -106,7 +148,28 @@ export function Layout() {
   const [showKeys, setShowKeys] = useState(false)
   const loc = useLocation()
   const auth = useAuth()
-  const nav = NAV.filter((n) => !n.adminOnly || auth.isAdmin)
+  const groups = useMemo(() => GROUPS.map((g) => ({ ...g, items: g.items.filter((n) => !n.adminOnly || auth.isAdmin) })), [auth.isAdmin])
+  const nav = useMemo(() => groups.flatMap((g) => g.items), [groups])
+
+  // ---- sidebar: collapsed to icons on a desktop (remembered), a drawer on a phone ----
+  const [collapsed, setCollapsed] = useState(readSidebar)
+  const [drawer, setDrawer] = useState(false)
+  const toggleSidebar = useCallback(() => {
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem(SIDE_KEY, c ? 'open' : 'collapsed')
+      } catch {
+        /* ignore */
+      }
+      return !c
+    })
+  }, [])
+  useEffect(() => {
+    if (!drawer) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawer(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawer])
 
   const h = health.data
   // "not loaded yet" is not "down": defaulting to false flashed a red FEED UNAVAILABLE on every page load
@@ -123,12 +186,11 @@ export function Layout() {
   useEffect(() => {
     document.title = `VNEdge · ${meta.title}`
   }, [meta.title])
-  const crumb = `vnedge · delta india · ${h?.mode === 'paper' || !h ? 'paper account' : h.mode} · ${meta.crumb}`
 
   // ---- connection state ----
   const sseTone = sse.status === 'connected' ? 'ok' : sse.status === 'offline' ? 'danger' : 'warn'
   const sseLabel =
-    sse.status === 'connected' ? 'SSE live' : sse.status === 'connecting' ? 'SSE connecting' : sse.status === 'reconnecting' ? `SSE reconnecting (${sse.attempts})` : 'SSE offline'
+    sse.status === 'connected' ? 'Stream live' : sse.status === 'connecting' ? 'Stream connecting' : sse.status === 'reconnecting' ? `Stream reconnecting (${sse.attempts})` : 'Stream offline'
   const backendDown = (checked && !online) || sse.status === 'offline' || sse.status === 'reconnecting'
   // Freshness is time-derived, so it lives in leaf components with their own 1 s clock.
   // Keeping that clock in Layout re-rendered <Outlet/> — the whole active page — every second.
@@ -140,161 +202,161 @@ export function Layout() {
   const hotkeys = useMemo<Hotkey[]>(
     () => [
       ...nav.map((n) => ({ keys: `g ${n.key}`, label: `Go to ${n.label}`, run: () => navigate(n.to) })),
+      { keys: '[', label: 'Collapse / expand the sidebar', run: toggleSidebar },
       { keys: 't', label: 'Toggle light / dark theme', run: toggle },
       { keys: 'd', label: 'Toggle compact density', run: toggleDensity },
       { keys: '?', label: 'Show this list', run: () => setShowKeys((v) => !v) },
     ],
-    [navigate, toggle, toggleDensity, nav],
+    [navigate, toggle, toggleDensity, toggleSidebar, nav],
   )
   useHotkeys(hotkeys)
 
+  const bookLabel = !h ? 'loading' : h.mode === 'paper' ? 'paper account' : h.mode
+
   return (
-    <div className="app">
+    <div className={`app ${collapsed ? 'sidebar-collapsed' : ''} ${drawer ? 'sidebar-open' : ''}`}>
       <a href="#main" className="skip-link">
         Skip to content
       </a>
-      <header className="topnav">
-        <div className="brand">
+      <div className="sidebar-backdrop" onClick={() => setDrawer(false)} aria-hidden />
+      <aside className="sidebar" aria-label="Sections">
+        <div className="sidebar-brand">
           <span className="brand-tile" aria-hidden>
             <IconLogo />
           </span>
-          <span className="brand-name">VNEdge</span>
-          <span className="brand-dot" aria-hidden />
+          <span className="brand-name _lbl">VNEdge</span>
+          <button className="iconbtn sidebar-collapse" onClick={toggleSidebar} aria-label={collapsed ? 'Expand the sidebar' : 'Collapse the sidebar'} title={`${collapsed ? 'Expand' : 'Collapse'} ( [ )`} aria-expanded={!collapsed}>
+            <IconPanelLeft />
+          </button>
         </div>
-
-        <nav className="navpills" aria-label="Primary">
-          {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `navpill ${isActive ? 'navpill-on' : ''}`} aria-current={loc.pathname === n.to ? 'page' : undefined}>
-              {n.label}
-            </NavLink>
+        <nav className="sidebar-nav" aria-label="Primary">
+          {groups.map((g) => (
+            <div key={g.label} className="sidebar-group">
+              <div className="sidebar-group-label _lbl">{g.label}</div>
+              {g.items.map((n) => {
+                const Icon = n.icon
+                return (
+                  <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `sidebar-link ${isActive ? 'on' : ''}`} title={collapsed ? `${n.label} (g ${n.key})` : undefined} onClick={() => setDrawer(false)}>
+                    <Icon size={17} />
+                    <span className="_lbl">{n.label}</span>
+                    <kbd className="sidebar-key _lbl" aria-hidden>g {n.key}</kbd>
+                  </NavLink>
+                )
+              })}
+            </div>
           ))}
         </nav>
-
-        <div className="topright">
-          <span className="topgroup topgroup-status">
-          {!h ? <span className="pill pill-muted">Account: loading</span> : <BookBadge book="account" mode={h.mode} />}
-          <span className="topstat topstat-eq" title="Equity (USD)">
-            <span className="topstat-label">EQ USD</span>
-            <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
-          </span>
-          <span className="topstat topstat-day" title="Equity change since 00:00 UTC, open positions included: the figure the daily kill switch watches">
-            <span className="topstat-label">DAY USD</span>
-            <span className={`mono ${pnlClass(risk.data?.day?.pnl)}`}>{risk.data?.day ? fmtPnl(risk.data.day.pnl) : '–'}</span>
-          </span>
-          <span className="topstat" title="Open positions">
-            <span className="topstat-label">POS</span>
-            <span className="mono">{s ? openCount : '–'}</span>
-          </span>
-          <span className="topstat hide-mid" title="Worker queue (queued / busy / size)">
-            <span className="topstat-label">Q</span>
-            <span className="mono">{h ? `${h.worker.queued}/${h.worker.busy}/${h.worker.size}` : '–'}</span>
-          </span>
-          <span className="conn" title={sseLabel}>
-            <StatusDot tone={sseTone} /> <span className="hide-narrow">{sseLabel}</span>
-          </span>
-          <span className="conn" title={feedConnected ? 'Market feed connected' : 'Market feed disconnected'}>
-            <StatusDot tone={feedConnected ? 'ok' : 'danger'} />{' '}
-            <span className="hide-narrow">feed {feedConnected ? 'on' : 'off'}</span>
-            <TickAge lastTick={lastTick} />
-          </span>
-          </span>
-          <span className="topgroup topgroup-actions">
-          {auth.canTrade && (paused ? (
-            <button className="btn btn-sm btn-entries" title={`Entries paused: ${risk.data?.manualHalt?.reason ?? ''}. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
-              {resume.isPending ? 'Resuming…' : '▶ Resume entries'}
+        <div className="sidebar-foot">
+          <div className="sidebar-conn" title={`${sseLabel} · ${feedLabel} · last tick`}>
+            <span className="conn"><StatusDot tone={sseTone} /> <span className="_lbl">{sseLabel}</span></span>
+            <span className="conn"><StatusDot tone={feedTone} /> <span className="_lbl">{feedLabel}</span></span>
+            <span className="conn _lbl muted">tick <TickAge lastTick={lastTick} /></span>
+          </div>
+          <div className="sidebar-tools">
+            <button className={`iconbtn ${density === 'compact' ? 'iconbtn-on' : ''}`} onClick={toggleDensity} aria-label={`Density: ${density}. Switch to ${density === 'compact' ? 'comfortable' : 'compact'}`} title={`Density: ${density} (d)`} aria-pressed={density === 'compact'}>
+              <IconRows />
             </button>
-          ) : (
-            <button className="btn btn-sm btn-danger-outline btn-entries" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || kill.isPending}>
-              Pause entries
+            <button className="iconbtn" onClick={toggle} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title="Toggle light/dark (t)">
+              {theme === 'dark' ? <IconSun /> : <IconMoon />}
             </button>
-          ))}
-          {auth.canTrade && (
-            <button className="btn btn-sm btn-danger-outline" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
-              Reset paper account
+            <button className="iconbtn" onClick={() => setShowKeys(true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
+              <span aria-hidden>?</span>
             </button>
-          )}
-          <span className="account-chip">
-            <NavLink to="/profile" className="account-name" title={`${auth.user.username} · ${auth.user.roleLabel}`}>
-              {auth.user.displayName || auth.user.username}
-            </NavLink>
-            <span className="muted small hide-mid">{auth.user.roleLabel}</span>
-            <button className="btn btn-sm" onClick={auth.signOut}>Sign out</button>
-          </span>
-          <button className={`iconbtn ${density === 'compact' ? 'iconbtn-on' : ''}`} onClick={toggleDensity} aria-label={`Density: ${density}. Switch to ${density === 'compact' ? 'comfortable' : 'compact'}`} title={`Density: ${density} (d)`} aria-pressed={density === 'compact'}>
-            <IconRows />
-          </button>
-          <button className="iconbtn" onClick={toggle} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} title="Toggle light/dark (t)">
-            {theme === 'dark' ? <IconSun /> : <IconMoon />}
-          </button>
-          <button className="iconbtn" onClick={() => setShowKeys(true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
-            <span aria-hidden>?</span>
-          </button>
-          </span>
+          </div>
         </div>
-      </header>
-      <ContextBar />
+      </aside>
 
-      {backendDown && (
-        <div className="banner banner-danger" role="alert">
-          <StatusDot tone="danger" /> Backend offline — reconnecting{sse.attempts > 0 ? ` (attempt ${sse.attempts})` : ''}…
-          <span className="muted"> Pages keep the last known data until <code>/api</code> on localhost:8787 answers.</span>
-          {health.error?.message ? <span className="muted"> ({health.error.message})</span> : null}
-        </div>
-      )}
-            <StaleBanner getLastEventAt={sse.getLastEventAt} enabled={!backendDown && sse.status === 'connected'} />
-      {h?.lastError && (
-        <div className="banner banner-warn" role="status">
-          Server last error: <code>{h.lastError}</code>
-        </div>
-      )}
-
-      <div className="terminal">
-        <div className="terminal-head">
-          <span className="tdots" aria-hidden>
-            <i />
-            <i />
-            <i />
-          </span>
-          <span className="tcrumb mono" aria-label="Breadcrumb">
-            {crumb}
-          </span>
-          <span className="tcrumb-tz mono muted small hide-narrow" title="Times are shown in your local zone; hover any time for UTC">
-            {LOCAL_TZ}
-          </span>
-          <span className={`pill ${feedTone === 'ok' ? 'pill-ok' : feedTone === 'warn' ? 'pill-warn' : ''} live-pill`} aria-live="polite">
-            <StatusDot tone={feedTone} />
-            {feedLabel}
-          </span>
-        </div>
-        <div className="terminal-body">
-          <aside className="rail" aria-label="Sections">
-            {nav.map((n) => {
-              const Icon = n.icon
-              return (
-                <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `rail-btn ${isActive ? 'rail-on' : ''}`} title={`${n.label} (g ${n.key})`} aria-label={n.label}>
-                  <Icon size={17} />
-                </NavLink>
-              )
-            })}
-            <span className="rail-spacer" />
-            <span className="rail-btn muted" title={h ? `Scanners: ${h.scanners.enabled} enabled / ${h.scanners.runnable} runnable / ${h.scanners.total} total` : 'Scanners'} aria-hidden>
-              <IconList size={17} />
-            </span>
-          </aside>
-          <main className="main" id="main" tabIndex={-1}>
-            <RiskBanner />
-            <RouteErrorBoundary>
-              <Outlet />
-            </RouteErrorBoundary>
-          </main>
-          {/* decision 121: on a phone the four views an operator checks in on sit in a bar at the bottom */}
-          <nav className="bottombar" aria-label="Phone">
-            <NavLink to="/" end className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Overview</NavLink>
-            <NavLink to="/decisions" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Decisions</NavLink>
-            <NavLink to="/trades" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Positions</NavLink>
-            <NavLink to="/signals" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Signals</NavLink>
+      <div className="frame">
+        <header className="topbar">
+          <button className="iconbtn topbar-menu" onClick={() => setDrawer(true)} aria-label="Open the menu" aria-expanded={drawer}>
+            <IconMenu />
+          </button>
+          <nav className="crumb" aria-label="Breadcrumb">
+            {meta.section && <span className="muted">{meta.section}</span>}
+            {meta.section && <span className="crumb-sep" aria-hidden>›</span>}
+            {meta.parent && (
+              <>
+                <NavLink to={meta.parent.to} className="muted">{meta.parent.label}</NavLink>
+                <span className="crumb-sep" aria-hidden>›</span>
+              </>
+            )}
+            <b>{meta.title}</b>
+            <span className="pill pill-muted hide-mid" title="Times are shown in your local zone; hover any time for UTC">{LOCAL_TZ}</span>
           </nav>
-        </div>
+
+          <div className="topbar-status">
+            {!h ? <span className="pill pill-muted">Account: loading</span> : <BookBadge book="account" mode={h.mode} />}
+            <span className="topstat topstat-eq" title={`Equity (USD) · ${bookLabel}`}>
+              <span className="topstat-label">Equity</span>
+              <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
+            </span>
+            <span className="topstat topstat-day" title="Equity change since 00:00 UTC, open positions included: the figure the daily kill switch watches">
+              <span className="topstat-label">Day</span>
+              <span className={`mono ${pnlClass(risk.data?.day?.pnl)}`}>{risk.data?.day ? fmtPnl(risk.data.day.pnl) : '–'}</span>
+            </span>
+            <span className="topstat" title="Open positions">
+              <span className="topstat-label">Open</span>
+              <span className="mono">{s ? openCount : '–'}</span>
+            </span>
+            <span className="topstat hide-mid" title="Worker queue (queued / busy / size)">
+              <span className="topstat-label">Queue</span>
+              <span className="mono">{h ? `${h.worker.queued}/${h.worker.busy}/${h.worker.size}` : '–'}</span>
+            </span>
+          </div>
+
+          <div className="topbar-actions">
+            {auth.canTrade && (paused ? (
+              <button className="btn btn-sm btn-entries" title={`Entries paused: ${risk.data?.manualHalt?.reason ?? ''}. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
+                {resume.isPending ? 'Resuming…' : '▶ Resume entries'}
+              </button>
+            ) : (
+              <button className="btn btn-sm btn-danger-outline btn-entries" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || kill.isPending}>
+                Pause entries
+              </button>
+            ))}
+            {auth.canTrade && (
+              <button className="btn btn-sm btn-danger-outline hide-narrow" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
+                Reset paper account
+              </button>
+            )}
+            <span className="account-chip">
+              <NavLink to="/profile" className="account-name" title={`${auth.user.username} · ${auth.user.roleLabel}`}>
+                <span className="account-avatar" aria-hidden>{(auth.user.displayName || auth.user.username).slice(0, 1).toUpperCase()}</span>
+                <span className="hide-narrow">{auth.user.displayName || auth.user.username}</span>
+              </NavLink>
+              <button className="btn btn-sm" onClick={auth.signOut}>Sign out</button>
+            </span>
+          </div>
+        </header>
+        <ContextBar />
+
+        {backendDown && (
+          <div className="banner banner-danger" role="alert">
+            <StatusDot tone="danger" /> Backend offline — reconnecting{sse.attempts > 0 ? ` (attempt ${sse.attempts})` : ''}…
+            <span className="muted"> Pages keep the last known data until <code>/api</code> on localhost:8787 answers.</span>
+            {health.error?.message ? <span className="muted"> ({health.error.message})</span> : null}
+          </div>
+        )}
+        <StaleBanner getLastEventAt={sse.getLastEventAt} enabled={!backendDown && sse.status === 'connected'} />
+        {h?.lastError && (
+          <div className="banner banner-warn" role="status">
+            Server last error: <code>{h.lastError}</code>
+          </div>
+        )}
+
+        <main className="main" id="main" tabIndex={-1}>
+          <RiskBanner />
+          <RouteErrorBoundary>
+            <Outlet />
+          </RouteErrorBoundary>
+        </main>
+        {/* decision 121: on a phone the four views an operator checks in on sit in a bar at the bottom */}
+        <nav className="bottombar" aria-label="Phone">
+          <NavLink to="/" end className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Overview</NavLink>
+          <NavLink to="/decisions" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Decisions</NavLink>
+          <NavLink to="/trades" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Positions</NavLink>
+          <NavLink to="/signals" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Signals</NavLink>
+        </nav>
       </div>
 
       <ConfirmDialog
