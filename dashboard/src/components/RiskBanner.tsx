@@ -17,7 +17,7 @@ export function RiskBanner() {
 
   const items: Item[] = []
   const r = risk.data
-  if (r?.halted) items.push({ tone: 'danger', text: `Entries halted — ${r.haltReason ?? 'risk limit'}`, hint: 'Open positions still run to their exits. Clear it on Settings → Risk.' })
+  if (r?.halted) items.push({ tone: 'danger', text: `Entries halted — ${r.haltReason ?? 'risk limit'}`, hint: 'Open positions still run to their exits. A daily or weekly trip resets at the next UTC period, or now with “Resume entries” in the top bar.' })
   if (r && !r.halted && r.day?.tripped) items.push({ tone: 'warn', text: `Daily loss limit reached (${fmtPct(r.day.pnlPct, 1, true)} of ${r.day.limitPct}%)` })
   if (r && r.leverageMult !== undefined && r.leverageMult < 1) items.push({ tone: 'warn', text: `Position size scaled to ${Math.round(r.leverageMult * 100)}% after a ${fmtPct(r.drawdownPct, 1)} drawdown` })
 

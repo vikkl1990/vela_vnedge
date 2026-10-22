@@ -144,7 +144,8 @@ export function Layout() {
   const risk = useRisk()
   const kill = useKill()
   const resume = useResume()
-  const paused = Boolean(risk.data?.manualHalt)
+  // a manual pause or a tripped loss limit: either is cleared by the same reset (the halt reason says which)
+  const paused = Boolean(risk.data?.halted)
   const [showKeys, setShowKeys] = useState(false)
   const loc = useLocation()
   const auth = useAuth()
@@ -306,7 +307,7 @@ export function Layout() {
 
           <div className="topbar-actions">
             {auth.canTrade && (paused ? (
-              <button className="btn btn-sm btn-entries" title={`Entries paused: ${risk.data?.manualHalt?.reason ?? ''}. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
+              <button className="btn btn-sm btn-entries" title={`Entries halted — ${risk.data?.haltReason ?? 'risk limit'}. Resuming clears the halt and restarts the day and week windows from the current equity. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
                 {resume.isPending ? 'Resuming…' : '▶ Resume entries'}
               </button>
             ) : (
