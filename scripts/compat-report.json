@@ -1,5 +1,5 @@
 {
- "at": "2026-10-21T16:15:48.492Z",
+ "at": "2026-10-22T02:03:02.023Z",
  "symbol": "BTCUSD",
  "tf": "15m",
  "bars": 999,
@@ -181,6 +181,182 @@
    "shapes": "",
    "labels": 3,
    "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "liquidity-trail-matrix",
+   "ok": true,
+   "ms": 433,
+   "patches": [
+    "line-continuation",
+    "ltm-short-circuit",
+    "label-created-bar"
+   ],
+   "alerts": 39,
+   "entryish": 39,
+   "shapes": "",
+   "labels": 39,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "amd-po3-with-live-edge-stats",
+   "ok": true,
+   "ms": 1069,
+   "patches": [
+    "line-continuation",
+    "amd-enum-to-strings",
+    "label-created-bar"
+   ],
+   "alerts": 30,
+   "entryish": 9,
+   "shapes": "",
+   "labels": 39,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-ichimoku-nexus",
+   "ok": true,
+   "ms": 1129,
+   "patches": [
+    "line-continuation",
+    "label.all-size",
+    "timeframe.in_seconds-noarg",
+    "label-created-bar"
+   ],
+   "alerts": 127,
+   "entryish": 19,
+   "shapes": "Kumo Break Up:8,Kumo Break Down:6,Retest Bull:7,Retest Bear:8,Kumo Twist Bull:17,Kumo Twist Bear:17",
+   "labels": 43,
+   "plots": 5,
+   "warnings": 0
+  },
+  {
+   "id": "synapse-trail-pro",
+   "ok": true,
+   "ms": 2223,
+   "patches": [
+    "line-continuation",
+    "timeframe.in_seconds-noarg",
+    "synapse-htf-string",
+    "label-created-bar"
+   ],
+   "alerts": 42,
+   "entryish": 27,
+   "shapes": "",
+   "labels": 27,
+   "plots": 1,
+   "warnings": 0
+  },
+  {
+   "id": "ict-session-zones-sweep-signals",
+   "ok": true,
+   "ms": 859,
+   "patches": [
+    "line-continuation",
+    "label.all-size",
+    "label-created-bar"
+   ],
+   "alerts": 25,
+   "entryish": 25,
+   "shapes": "plot:9",
+   "labels": 55,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "strat-trap-vwap-engine",
+   "ok": true,
+   "ms": 3536,
+   "patches": [
+    "line-continuation",
+    "strat-inline-security",
+    "label-created-bar"
+   ],
+   "alerts": 3339,
+   "entryish": 84,
+   "shapes": "Inside (1):161,Two Up (2U):366,Two Down (2D):373,Outside (3):98,Hammer:27,Shooter:30",
+   "labels": 52,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-pivot-structure",
+   "ok": true,
+   "ms": 355,
+   "patches": [
+    "line-continuation",
+    "label.all-size",
+    "label-created-bar"
+   ],
+   "alerts": 35,
+   "entryish": 24,
+   "shapes": "",
+   "labels": 95,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-squeeze-momentum-pro",
+   "ok": true,
+   "ms": 442,
+   "patches": [
+    "line-continuation",
+    "label.all-size"
+   ],
+   "alerts": 50,
+   "entryish": 23,
+   "shapes": "",
+   "labels": 23,
+   "plots": 2,
+   "warnings": 0
+  },
+  {
+   "id": "phantom-trend-cloud",
+   "ok": true,
+   "ms": 286,
+   "patches": [
+    "line-continuation",
+    "label.all-size"
+   ],
+   "alerts": 174,
+   "entryish": 59,
+   "shapes": "Trend Up:0,Trend Dn:0",
+   "labels": 59,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "amd-po3-with-live-edge-stats-willyalgotrader-version-orga",
+   "ok": false,
+   "ms": 821,
+   "error": "HTF bias timeframe must be greater than or equal to the chart timeframe",
+   "patches": [
+    "line-continuation",
+    "label-created-bar"
+   ],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 0,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "smarttrend-pro",
+   "ok": true,
+   "ms": 2752,
+   "patches": [
+    "line-continuation",
+    "label.all-size",
+    "label-created-bar"
+   ],
+   "alerts": 42,
+   "entryish": 17,
+   "shapes": "Strong Buy:7,Buy:2,Strong Sell:7,Sell:1,Pullback Buy:0,Pullback Sell:5,TP1 Hit Long:4,TP2 Hit Long:4,TP3 Hit Long:3,TP1 Hit Short:4,TP2 Hit Short:2,TP3 Hit Short:2,SL Hit Long:3,SL Hit Short:3",
+   "labels": 4,
+   "plots": 8,
    "warnings": 0
   }
  ]

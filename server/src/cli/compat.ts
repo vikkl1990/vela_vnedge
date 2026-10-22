@@ -1,6 +1,6 @@
 /**
  * Compatibility matrix: runs every manifest script through the worker pool on real Delta
- * candles and prints what each one produces. Usage: [WORKERS=2] npm run compat -- [SYMBOL] [TF] [BARS] [ids,…] [--merge]
+ * candles and prints what each one produces. Usage: [WORKERS=2] npm run compat -- [SYMBOL] [TF] [BARS] [ids,…] [--replace]
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +27,9 @@ console.log(`${symbol} ${tf}: ${bars.length} closed bars, tick ${tick}`);
 const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000);
 const rows: any[] = [];
 const reportFile = path.join(SCRIPTS_DIR, 'compat-report.json');
-const merge = process.argv[6] === '--merge'; // keep rows of scripts not run this time
+// decision 173: rows of scripts not run this time are kept unless `--replace` is given; a partial run that overwrote the
+// report once left the registry reading the manifest's old `incompatible` for a live scanner
+const merge = process.argv[6] !== '--replace';
 const previous: Record<string, any> = {};
 if (merge && fs.existsSync(reportFile)) for (const r of JSON.parse(fs.readFileSync(reportFile, 'utf8')).rows ?? []) previous[r.id] = r;
 const save = () => { const byId: Record<string, any> = { ...previous }; for (const r of rows) byId[r.id] = r; fs.writeFileSync(reportFile, JSON.stringify({ at: new Date().toISOString(), symbol, tf, bars: bars.length, rows: Object.values(byId) }, null, 1)); };

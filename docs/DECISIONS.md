@@ -5238,3 +5238,18 @@ own tooltip keeps it (that label carries no stamp). Regression over the whole li
 before and one, Balance vs Imbalance (LuxAlgo, inactive), fails on a PineTS scoping quirk the stamp exposes. Re-benchmarked: Support Resistance Pro Toolkit +0.46–0.59R a
 trade → −0.07 (15m, 1h) and +0.08 (4h); Trend Reset Cumulative Delta +0.19–0.25 → −0.06 to −0.11; Volumetric Order Flow
 Structure −0.68 → −0.15. The reading is honest now; the screen judges what is left.
+
+## 173. A live scanner silently unscheduled for 37 hours: the compatibility report was load-bearing and a partial run overwrote it (22 October 2026)
+
+The operator's screenshot: Liquidity Trail Matrix, three live cells and four shadow pairs, marked INCOMPATIBLE with a
+PineTS 0.9-era error and "ran 1d 13h ago". No run had failed. Its manifest entry has said `incompatible` since the
+original import; the registry overrode that only while `scripts/compat-report.json` held a passing row for it, and the
+first `compat` run of 20 October (decision 158, without `--merge`) replaced the whole report with three rows. From that
+deploy at 13:xx UTC the registry read the manifest, set the scanner `incompatible`, and the engine stopped scheduling
+it: 37 hours without a scan on AIOTUSD 15m, MUBARAKUSD 1h and ETHUSD 4h. Two shadow-only scanners in the same state
+(AMD PO3, Synapse Trail Pro) had never run. Ten scripts carried the old status.
+
+**What changed.** All ten run under PineTS 0.12; their manifest status is `ok` now, so the report is not load-bearing
+for them. `compat` keeps the rows of scripts it did not run unless `--replace` is given. The health and attention lines
+did not catch this because nothing failed; a scanner that is enabled, holds live pairs and has not been scheduled is
+worth an attention line of its own, proposed.
