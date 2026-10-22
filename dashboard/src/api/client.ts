@@ -28,8 +28,7 @@ import type {
   TradeQuery, MlSnapshot,
   MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
   LibraryDetail,
-  LibraryList,
-} from './types'
+  LibraryList, ScreenJob, ScreenQueueView } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -131,6 +130,9 @@ export const api = {
   incubator: () => get<IncubatorView>('/incubator'),
   incubatorDecide: (v: { id: number; action: 'approve' | 'reject' | 'demote'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
   incubatorEvaluate: () => post<{ report: unknown }>('/incubator/evaluate'),
+  screenQueue: () => get<ScreenQueueView>('/incubator/screen'),
+  screenNow: (body: { ids?: string[]; author?: string; family?: string; tf: string; markets?: string[] }) => post<ScreenJob>('/incubator/screen', body),
+  screenCancel: (id: string) => del<ScreenJob>(`/incubator/screen/${encodeURIComponent(id)}`),
   users: () => get<{ users: Me[]; roles: RoleOption[] }>('/users'),
   createUser: (body: { username: string; password: string; role: Role; displayName?: string }) => post<{ user: Me }>('/users', body),
   updateUser: (id: number, body: Partial<{ role: Role; displayName: string; disabled: boolean; password: string }>) => post<{ user: Me }>(`/users/${id}`, body),

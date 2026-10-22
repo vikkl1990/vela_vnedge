@@ -6,6 +6,7 @@ import { useAuth } from '../auth/AuthGate'
 import type { IncubatorPair, IncubatorView } from '../api/types'
 import { BookBadge, ConfirmDialog, Empty, KpiTile, PageTitle, Panel, Pill, QueryState } from '../components/ui'
 import { Clocks, Evidence, Funnel, Need } from '../components/incubatorBits'
+import { ScreenQueuePanel } from '../components/ScreenQueuePanel'
 import { clockRank, pf, r } from '../lib/incubatorLogic'
 import { fmtNum, timeAgo, fmtR } from '../lib/format'
 
@@ -204,6 +205,8 @@ export default function Incubator() {
                   </div>
                 )}
               </Panel>
+
+              <ScreenQueuePanel />
 
               <Panel title="History">
                 {d.events.length === 0 ? <Empty label="No moves yet." /> : (

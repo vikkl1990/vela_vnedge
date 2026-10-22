@@ -8,6 +8,7 @@ import { ChartFrames } from '../chart/ChartFrames'
 import { EquityChart } from '../components/charts'
 import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconPlay } from '../components/Icons'
+import { ScreenNow } from '../components/ScreenNow'
 import { ChipSelect, Collapsible, Empty, ErrorState, ExitReasonPill, KpiTile, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
 import { SignalsTable } from './Signals'
 import { fmtInt, fmtMs, fmtProfitFactor, fmtPct, fmtPrice, fmtR } from '../lib/format'
@@ -96,6 +97,7 @@ export function ScannerDetail() {
             <span className="muted small mono">
               v{s.pineVersion} · {s.lines} lines · {s.file}
             </span>
+            {s.status === 'ok' && <ScreenNow ids={[s.id]} label={s.name} />}
           </div>
           {s.reason && <div className="small loss mt">{s.reason}</div>}
           {s.lastRun && (

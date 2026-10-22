@@ -5,6 +5,7 @@ import type { LibraryEntry, LibraryFamily, LibraryList } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
 import { IconChart, IconExternal, IconX } from '../components/Icons'
 import { Pill, QueryState } from '../components/ui'
+import { ScreenNow } from '../components/ScreenNow'
 
 /**
  * Decision 153: the Library. Every script the bot holds, browsed the way a chart platform's indicator library is
@@ -280,6 +281,8 @@ function Detail({ id, family, fav, canFav, onFav, onClose }: { id: string; famil
                 <button className="btn btn-primary" disabled={d.status === 'fails'} onClick={() => nav(`/chart?add=${encodeURIComponent(d.id)}`)} title={d.status === 'fails' ? "The engine can't run this script" : 'Run it on the chart, on the market and timeframe the chart shows'}><IconChart /> Add to chart</button>
                 <button className={`btn ${fav ? 'btn-on' : ''}`} disabled={!canFav} onClick={onFav} aria-pressed={fav}>{fav ? 'Favorited' : 'Favorite'}</button>
                 <Link className="btn" to={`/scanners/${encodeURIComponent(d.id)}`}>Scanner page</Link>
+                {d.status !== 'fails' && <ScreenNow ids={[d.id]} label={d.name} />}
+                {d.status !== 'fails' && <ScreenNow author={d.author} label={`everything by ${d.author}`} compact />}
                 {d.url && <a className="btn" href={d.url} target="_blank" rel="noreferrer">{d.origin === 'luxalgo' ? 'LuxAlgo Library' : d.origin === 'tradingview' ? 'TradingView' : 'Source'} <IconExternal /></a>}
               </div>
 

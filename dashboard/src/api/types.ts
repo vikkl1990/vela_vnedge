@@ -788,3 +788,11 @@ export interface LibraryDetail extends LibraryEntry {
   health: { fails: number; lastError: string | null; quarantined: boolean; reason: string | null } | null
   pairs: LibraryPair[]; recent: LibraryTrade[]
 }
+
+/** Decision 174: screening on demand. */
+export interface ScreenJob {
+  id: string; label: string; ids: string[]; tf: string; markets?: string[]; actor: string; requestedAt: number
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'; startedAt?: number; finishedAt?: number
+  progress?: { scripts: number; done: number; runs: number; passed: number }; summary?: string; error?: string; tail: string[]
+}
+export interface ScreenQueueView { running: ScreenJob | null; queued: ScreenJob[]; history: ScreenJob[]; nightlyRunning: boolean; capped: boolean }

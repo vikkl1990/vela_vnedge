@@ -276,3 +276,16 @@ export function usePositionPath(id: number | null) {
 export function useOpsMetricsHistory(hours = 24) {
   return useQuery({ queryKey: qk.opsMetricsHistory(hours), queryFn: () => api.opsMetricsHistory(hours), refetchInterval: 60_000 })
 }
+
+/** Decision 174: the on-demand screen queue, polled while something runs. */
+export function useScreenQueue() {
+  return useQuery({ queryKey: ['screen-queue'], queryFn: api.screenQueue, refetchInterval: (q) => (q.state.data?.running || q.state.data?.queued.length ? 10_000 : 60_000) })
+}
+export function useScreenNow() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: api.screenNow, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['screen-queue'] }) } })
+}
+export function useScreenCancel() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: api.screenCancel, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['screen-queue'] }) } })
+}

@@ -1,12 +1,14 @@
+import path from 'node:path';
 import { lastAtr } from './data/indicators.ts';
 import { scriptModeExit, scriptModeProtection, trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
+import { ScreenQueue } from './incubator/screenQueue.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { dailyReport } from './analytics/daily.ts';
 import { listTrackers, removeTracker, saveTracker, trackerView } from './incubator/tracker.ts';
 import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
-import { ConfigStore, type ScannerConfig, DATA_DIR, type AppConfig } from './config.ts';
+import { ConfigStore, type ScannerConfig, DATA_DIR, ROOT_DIR, type AppConfig } from './config.ts';
 import { band, learnBook } from './analytics/learning.ts';
 import { goLive } from './analytics/golive.ts';
 import { ContextCollector } from './context/collector.ts';
@@ -74,6 +76,8 @@ export class App {
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
   readonly ops: OpsService;
+  /** Decision 174: screens on demand, one at a time, never over the nightly. */
+  readonly screenQueue: ScreenQueue;
   readonly context: ContextCollector;
   lastError: string | null = null;
   private marketCache: { at: number; list: any[] } | null = null;
@@ -168,6 +172,16 @@ export class App {
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });
     this.context.start();
     this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, marks: this.marks, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport, peakEquity: () => this.risk.peakEquity() });
+    this.screenQueue = new ScreenQueue({
+      db: this.db, diagDir: path.join(DATA_DIR, 'diag'), serverDir: path.join(ROOT_DIR, 'server'),
+      nightlyRunning: () => {
+        const s = this.db.kvGet<{ at: number; pid?: number }>('incubator.lastStart'), r = this.db.kvGet<{ at: number }>('incubator.lastRun');
+        if (!s || (r && r.at >= s.at)) return false;
+        if (!s.pid) return Date.now() - s.at < 7 * 3600_000;
+        try { process.kill(s.pid, 0); return true; } catch { return false; }
+      },
+      notify: text => { void this.ops.alerts.notify(text); },
+    });
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
     process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
   }
@@ -222,6 +236,7 @@ export class App {
     }, 10 * 60_000);
     this.huntTimer.unref?.();
     this.ops.start();
+    this.screenQueue.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
     // the incubator's live rows follow the config from the first second (decision 83): a fleet edited on disk and restarted used to
@@ -661,6 +676,19 @@ export class App {
   // ---- incubator ----
 
   /** Everything the Incubator page shows: stages, the evidence behind each pair, and the audit trail. */
+  /** Decision 174: queue a screen of scripts, an author, or a family, on one timeframe. */
+  screenNow(body: { ids?: string[]; author?: string; family?: string; tf?: string; markets?: string[] }, actor: string) {
+    const tf = String(body.tf ?? '15m');
+    if (!(tf in TF_SECONDS)) throw Object.assign(new Error(`unknown timeframe ${tf}`), { status: 400 });
+    const all = this.registry.all().filter(s => s.status === 'ok');
+    let ids: string[] = [], label = '';
+    if (body.ids?.length) { ids = all.filter(s => body.ids!.includes(s.id)).map(s => s.id); label = ids.length === 1 ? (all.find(s => s.id === ids[0])?.name ?? ids[0]) : `${ids.length} scripts`; }
+    else if (body.author) { ids = all.filter(s => s.author === body.author).map(s => s.id); label = `everything by ${body.author}`; }
+    else if (body.family) { ids = all.filter(s => s.family === body.family).map(s => s.id); label = `the ${body.family} family`; }
+    const markets = Array.isArray(body.markets) ? body.markets.map(m => String(m).toUpperCase()).filter(Boolean) : undefined;
+    return this.screenQueue.enqueue({ label, ids, tf, markets, actor });
+  }
+
   incubatorView() {
     const cfg = this.config.get();
     const now = Date.now();
@@ -747,6 +775,7 @@ export class App {
   }
 
   async stop() {
+    this.screenQueue.stop();
     this.incubator.stop();
     this.executor?.stop();
     if (this.marketTimer) clearInterval(this.marketTimer);

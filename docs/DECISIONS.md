@@ -5253,3 +5253,24 @@ it: 37 hours without a scan on AIOTUSD 15m, MUBARAKUSD 1h and ETHUSD 4h. Two sha
 for them. `compat` keeps the rows of scripts it did not run unless `--replace` is given. The health and attention lines
 did not catch this because nothing failed; a scanner that is enabled, holds live pairs and has not been scheduled is
 worth an attention line of its own, proposed.
+
+## 174. Screening on demand: "Screen now" from the Library and a scanner's page, a queue the Incubator page shows (22 October 2026)
+
+The operator: "this screening cannot be on demand?" and "build it". The nightly screen walked the library a seventh at a
+time; a new or newly readable script waited up to a week per timeframe, and the only way round was a hand run from the
+VM's shell (which decision 172 used for the 213 newly readable scripts).
+
+**What changed.**
+- `ScreenQueue`: hand runs of the same screen job (`cli/incubate.ts` with `IDS=`), one at a time, never while the
+  nightly's own process is alive, each inside a capped user scope (6 GB, two workers, nice 19; the service's user lingers,
+  so the scope is reachable from it). Progress and the closing summary are read from the job's own log; the queue and the
+  last twenty results live in the kv store, so a restart keeps what was queued and marks what it interrupted. The alert
+  channel hears when a job ends.
+- `POST /api/incubator/screen` with a script list, an author or a family and a timeframe (optionally markets);
+  `GET` for the queue; `DELETE` to cancel (a running job is sent SIGTERM and stops at its next step).
+- "Screen now" with a timeframe choice on every runnable script in the Library and on its scanner page, plus
+  "Screen everything by <author>"; a "Screens on demand" panel on the Incubator page with the running job's progress bar
+  and last log line, the queue, and the recent results.
+
+**Verified** locally end to end: queued from a scanner page, running with the job's own lines on the Incubator page,
+cancelled from there. The capped scope is the VM's and is checked after the deploy.
