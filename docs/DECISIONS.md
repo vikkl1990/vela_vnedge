@@ -5232,8 +5232,9 @@ is worth it) and the 248 that fail, each error a handful of scripts.
 the newly label-readable scripts went through the fair benchmark: two came out at +0.5R a trade on every market and five
 at −0.6R on every market, the signature of labels drawn at past bars (a pivot label placed back at the pivot, confirmed
 bars later) read as entries dated where they point. PineTS keeps only each label's final position, so a source patch
-applied last (`label-created-bar`) stamps every new label, through its tooltip, with the bar it was created on; the
-worker reads the stamp back as `createdAt`, and a label is read as an entry on that bar only, never without it. The
-label's own tooltip is replaced; nothing else changes. Re-benchmarked: Support Resistance Pro Toolkit +0.46–0.59R a
+applied last (`label-created-bar`) gives every `label.new` call a tooltip naming the bar it is created on; the worker
+reads it back as `createdAt`, and a label is read as an entry on that bar only, never without it. A call that sets its
+own tooltip keeps it (that label carries no stamp). Regression over the whole library: no script reads less than
+before and one, Balance vs Imbalance (LuxAlgo, inactive), fails on a PineTS scoping quirk the stamp exposes. Re-benchmarked: Support Resistance Pro Toolkit +0.46–0.59R a
 trade → −0.07 (15m, 1h) and +0.08 (4h); Trend Reset Cumulative Delta +0.19–0.25 → −0.06 to −0.11; Volumetric Order Flow
 Structure −0.68 → −0.15. The reading is honest now; the screen judges what is left.

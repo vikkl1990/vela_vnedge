@@ -6,7 +6,7 @@
  * The same patched source is served to the dashboard so the Vela chart runs the exact
  * code the scanner executed.
  */
-import { dropQualifiers, dropStatementCommas, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved } from './compat.ts';
+import { dropQualifiers, dropStatementCommas, fundamentalsToNa, intWindowLengths, joinContinuations, liftV4, renameReserved, stampLabels } from './compat.ts';
 
 export interface PatchRule {
   id: string;
@@ -98,23 +98,14 @@ export interface PatchResult { source: string; applied: string[] }
 
 /**
  * Decision 172: a label can be drawn at a past bar (a pivot label at the pivot, confirmed bars later), so its position is
- * not the bar it appeared on. Appended to every script that creates labels: each new label is stamped, through its
- * tooltip, with the bar it was created on, and the worker reads the stamp back as the label's `createdAt`. A label's own
- * tooltip is replaced; nothing else about the label changes. Last in the list so no other rewrite touches it.
+ * not the bar it appeared on. Every `label.new(...)` is given a tooltip naming the bar it was created on, which the
+ * worker reads back as the label's `createdAt`. A label that sets its own tooltip keeps it and carries no stamp. Last in
+ * the list so no other rewrite touches it.
  */
-const LABEL_STAMP = `
-// VNEdge: stamp each new label with the bar it was created on (read back by the worker)
-var int _vn_seen = 0
-_vn_n = array.size(label.all)
-if _vn_n > _vn_seen
-    for _vi = _vn_seen to _vn_n - 1
-        label.set_tooltip(array.get(label.all, _vi), "vn:" + str.tostring(bar_index))
-    _vn_seen := _vn_n
-`;
 export const LABEL_STAMP_RULE: PatchRule = {
   id: 'label-created-bar',
-  description: 'Every new label is stamped with the bar it was created on, so a label drawn at a past bar is read as a signal on the bar it appeared, not where it points (decision 172).',
-  apply: (src) => (/\blabel\.new\s*\(/.test(src) ? src.replace(/\s*$/, '\n') + LABEL_STAMP : src),
+  description: 'Every label.new call is given a tooltip naming the bar it was created on, so a label drawn at a past bar is read as a signal on the bar it appeared, not where it points (decision 172).',
+  apply: stampLabels,
 };
 
 export function applyPatches(source: string, fileName: string): PatchResult {

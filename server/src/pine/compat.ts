@@ -218,3 +218,30 @@ export function dropStatementCommas(src: string): string {
   }
   return lines.join('\n');
 }
+
+/** Top-level arguments of a call's argument text (commas inside brackets or strings do not split). */
+function topLevelArgs(args: string): string[] {
+  const out: string[] = []; let d = 0, q: string | null = null, cur = '';
+  for (let i = 0; i < args.length; i++) {
+    const c = args[i];
+    if (q) { cur += c; if (c === '\\') { cur += args[++i] ?? ''; } else if (c === q) q = null; continue; }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (c === '(' || c === '[') d++; else if (c === ')' || c === ']') d--;
+    if (c === ',' && d === 0) { out.push(cur); cur = ''; } else cur += c;
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
+/**
+ * Decision 172: every `label.new(...)` gets `tooltip = "vn:" + str.tostring(bar_index)` at creation, so the worker can read
+ * the bar a label appeared on, whatever bar it points at. A call that sets its own tooltip, or passes eleven or more
+ * positional arguments (the tooltip among them), is left alone and that label carries no stamp.
+ */
+export function stampLabels(src: string): string {
+  return replaceCall(src, 'label.new', (args) => {
+    const top = topLevelArgs(args);
+    if (top.some(a => /^\s*tooltip\s*=/.test(a)) || top.length >= 11) return `label.new(${args})`;
+    return `label.new(${args}, tooltip = "vn:" + str.tostring(bar_index))`;
+  });
+}

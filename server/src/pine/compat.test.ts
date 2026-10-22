@@ -104,13 +104,14 @@ test('decision 163: an unused TradingView/ta import is removed, a used one kept'
   assert.equal(rule(aliased), aliased);
 });
 
-test('decision 172: a script that creates labels gets the creation-bar stamp appended, last; one without labels does not', () => {
-  const withLabels = '//@version=5\nindicator("x")\nif close > open\n    label.new(bar_index[2], high, "▼")\nn = array.size(label.all)';
-  const r = applyPatches(withLabels, 'x.pine');
+test('decision 172: every label.new call is stamped with its creation bar; a call with its own tooltip or eleven positional arguments is left alone', () => {
+  const src = '//@version=5\nindicator("x")\nif close > open\n    label.new(bar_index[2], high, "▼", style = label.style_label_down)\nlabel.new(bar_index, low, "▲", tooltip = "mine")\nlabel.new(bar_index, low, "x", xloc.bar_index, yloc.price, color.red, label.style_label_up, color.white, size.small, text.align_center, "own")\nn = array.size(label.all)';
+  const r = applyPatches(src, 'x.pine');
   assert.equal(r.applied.at(-1), 'label-created-bar');
-  assert.match(r.source, /_vn_seen := _vn_n\n$/);
-  assert.match(r.source, /n = 0\n/, 'the earlier label.all-size rewrite still applies to the script\'s own line');
-  assert.match(r.source, /_vn_n = array\.size\(label\.all\)/, 'but not to the stamp, which runs under PineTS 0.12');
+  assert.match(r.source, /label\.new\(bar_index\[2\], high, "▼", style = label\.style_label_down, tooltip = "vn:" \+ str\.tostring\(bar_index\)\)/);
+  assert.match(r.source, /label\.new\(bar_index, low, "▲", tooltip = "mine"\)/, 'its own tooltip kept');
+  assert.match(r.source, /text\.align_center, "own"\)/, 'eleven positional arguments: untouched');
+  assert.match(r.source, /n = 0$/, 'the earlier label.all-size rewrite still applies');
   const without = applyPatches('//@version=5\nindicator("y")\nplot(close)', 'y.pine');
   assert.ok(!without.applied.includes('label-created-bar'));
 });
