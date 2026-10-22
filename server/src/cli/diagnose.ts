@@ -289,6 +289,13 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   // decision 147: the live whipsaw floor against looser ones, under the current exits and costs
   for (const m of [0.1, 0.15, 0.2]) if (want(`spread+er${m}`)) variants[`spread+er${m}`] = stat(run({ spreadPct, chopGate: { minEr: m } }), b, tfMs);
   if (want('spread+er+ratio10')) variants['spread+er+ratio10'] = stat(run({ spreadPct, costRatio: 10, chopGate: { minEr: 0.25 } }), b, tfMs);
+  // decision 175: the trail's width. Today the account's winners average +0.5R against −1R stops (the trail gives back
+  // only 10% of the peak from +0.5R), so it needs 65% winners; these widen the give-back, keep the floor alone, or
+  // switch the reversal rule off, all with the spread paid.
+  for (const g of [20, 30, 40]) if (want(`spread+give${g}`)) variants[`spread+give${g}`] = stat(run({ spreadPct }, { trailGiveBackPct: g, trailSteps: [] } as any), b, tfMs);
+  if (want('spread+floor')) variants['spread+floor'] = stat(run({ spreadPct }, { trailAfterR: 99 } as any), b, tfMs);
+  if (want('spread+trail1')) variants['spread+trail1'] = stat(run({ spreadPct }, { trailAfterR: 1, trailGiveBackPct: 20, trailSteps: [] } as any), b, tfMs);
+  if (want('spread+norev')) variants['spread+norev'] = stat(run({ spreadPct }, { allowReversal: false } as any), b, tfMs);
   // the stop study (decision 110), every variant paying the real book: where else could the stop go
   const slAt = (mult: number) => ({ fallbackAtrSl: mult, widenStopToFee: false } as Partial<PaperConfig>);
   const lows = (i: number, n: number) => Math.min(...b.slice(Math.max(0, i - n + 1), i + 1).map(x => x.low));

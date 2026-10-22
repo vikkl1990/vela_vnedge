@@ -5274,3 +5274,34 @@ VM's shell (which decision 172 used for the 213 newly readable scripts).
 
 **Verified** locally end to end: queued from a scanner page, running with the job's own lines on the Incubator page,
 cancelled from there. The capped scope is the VM's and is checked after the deploy.
+
+## 175. The trail's width measured: the tight trail is the right one; 15m is where the account bleeds (22 October 2026)
+
+22 October to 16:37 UTC: 64 closed, 32 trails for +$272, 28 stops for −$444, equity 1,389 → 1,182. The shadow book
+stopped out 34% of its 195 trades for about −16R: a chop day. The account's strong-record tier (9–20×, decision 144)
+went 50/50 for −$137 after three days at 70–92% (+$543); re-priced at 5× the four days come out at −$68 against +$223,
+so the tier stays. Over the four days the average trail exit was +0.53R against −0.98R stops, a 65% break-even win rate
+the account missed by three points, so the trail's width was measured rather than assumed.
+
+**The study.** The account's 15 scanners on BTC, ETH, SOL, XRP, ZEC and AKE at 15m, 1h and 4h, 4,000 bars, the spread
+paid, 265 cells with trades, 10,920 trades under the current exits: floor +0.25R at +0.5R, trail from +0.5R giving back
+10% of the peak (8% past 2R, 6% past 4R), tightening after 45 minutes without a new high.
+
+| exits | total R | R a trade | halves | cells positive |
+|---|---|---|---|---|
+| current | +652.7 | +0.060 | +394 / +260 | 163 of 265 |
+| give back 20% | +326.6 | +0.030 | +203 / +124 | 146 |
+| give back 30% | +70.1 | +0.006 | +73 / −4 | 129 |
+| give back 40% | −54.2 | −0.005 | −1 / −52 | 124 |
+| trail only from +1R, 20% | −32.0 | −0.003 | 0 / −32 | 128 |
+| floor only, no trail | −154.1 | −0.015 | −78 / −75 | 111 |
+| reversal rule off | +628.2 | +0.058 | +386 / +242 | 163 |
+
+Every inch of extra room costs more in give-backs than it earns on runners, in both halves. The small average winner is
+how these scanners make money, not a flaw. The reversal rule is a wash (−25R over 10,854 trades). By timeframe, under
+the current exits: 15m −125R over 2,726 trades, 1h +388R over 4,518, 4h +320R over 2,706; 15m loses under every exit
+rule tried. Today's 28 stops were almost all 15m.
+
+**Not changed.** Nothing. The exits stay as they are. The next question is the 15m cells' place in the account, to be
+measured over the same window before anything moves; `diagnose` carries the new variants (`spread+give20/30/40`,
+`spread+trail1`, `spread+floor`, `spread+norev`) for the record.
