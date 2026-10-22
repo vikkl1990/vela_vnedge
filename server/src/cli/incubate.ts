@@ -77,7 +77,9 @@ const sliceArg = process.env.SLICE ?? 'walk';
 const summary: any = { at: started, slice: sliceArg, tf: TF, walked: [] as string[], done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0, tooCoarse: 0 };
 // The job announces itself before it screens: a start with no matching finish is how the dashboard
 // tells a killed run from one that never ran (2026-10-11: three nights died unnoticed).
-db.kvSet('incubator.lastStart', { at: started, slice: sliceArg, pid: process.pid });
+// decision 176: a hand run (IDS=, TF=, SLICE=, MARKETS=) keeps its own marker; the nightly's `lastStart` is what the
+// attention line and the screen queue read, and a hand run writing it once made the nightly look dead for a day
+db.kvSet(handRun ? 'incubator.lastHandStart' : 'incubator.lastStart', { at: started, slice: sliceArg, pid: process.pid });
 // The screen stops launching scripts once this much of the run is spent so the judge always runs
 // before the unit's 6 h limit; what is left waits for the slice's next turn.
 const BUDGET_MS = (Number(process.env.BUDGET_MIN) || 270) * 60_000;
@@ -291,7 +293,7 @@ const judgeRegistry = new ScannerRegistry();
 const report = evaluate(store, cfg, Date.now(), { needsRescreen: id => judgeRegistry.get(id)?.scriptType === 'strategy' });
 summary.report = report;
 summary.ms = Date.now() - started;
-db.kvSet('incubator.lastRun', summary);
+db.kvSet('incubator.lastRun', { ...(summary), finishedAt: Date.now() });
 out(`screen: ${summary.runs} runs, ${summary.passed} passed (${summary.new} new candidates), ${summary.silentSkipped} skipped as silent, ${summary.failed} failed${summary.truncated ? `, ${summary.truncated} scripts not reached (time budget)` : ''}`);
 out(`judge: ${report.admitted.length} admitted to shadow, ${report.proposed.length} proposed, ${report.retired.length} retired, ${report.demoteProposed.length} proposed for demotion, ${report.brewing} brewing, ${report.free} free slots`);
 for (const p of report.proposed) out(`  PROPOSED ${p}`);

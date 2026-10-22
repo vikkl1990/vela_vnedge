@@ -5305,3 +5305,11 @@ rule tried. Today's 28 stops were almost all 15m.
 **Not changed.** Nothing. The exits stay as they are. The next question is the 15m cells' place in the account, to be
 measured over the same window before anything moves; `diagnose` carries the new variants (`spread+give20/30/40`,
 `spread+trail1`, `spread+floor`, `spread+norev`) for the record.
+
+## 176. A hand screen made the nightly look dead: hand runs keep their own marker; a run records when it finished (22 October 2026)
+
+The Overview said "the daily screen started 15 h ago and never finished". It had finished at 05:38 (146 passed, the
+shadow book judged after it). The hand screen of decision 172, started at 01:57 from the shell, had written the
+nightly's `incubator.lastStart`, and the nightly's own record carries only its start time, so the check read a start at
+01:57 against a run at 01:06 and called it dead. A hand run (IDS=, TF=, SLICE=, MARKETS=) now writes
+`incubator.lastHandStart`; every run stamps `finishedAt`; the check reads it. The line clears with tonight's screen.
