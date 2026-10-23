@@ -601,7 +601,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     exitBySymbol: {},
     trailSteps: [],
     trailStall: { minutes: 0, factor: 1 },
-    structureTrail: { enabled: true, pivot: 14, incrPct: 100, books: ['account', 'shadow'] },
+    structureTrail: { enabled: false, pivot: 14, incrPct: 100, books: ['shadow'] },
     fallbackAtrSl: 1.5,
     scriptDisasterStopAtr: 3,
     // decision 159: account trades of script-exit scanners opened from 20 October 2026 13:30 UTC trail; earlier ones are left as they were

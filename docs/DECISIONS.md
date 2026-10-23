@@ -5441,3 +5441,13 @@ Capped at 10× the whole comes to +$85 and 22 October to −$120. Set in the VM 
 
 Replayed and left alone: a per-cell daily stop cap of 2 (+$22 on 412 trades) and a per-market cap of 3 (+$161, all
 of it four market-days since 16 October — too concentrated to act on).
+
+**Reversed (23 October, 17:00 UTC).** The gain was the phantom fill. Once a model level beyond the price is capped
+at the close (a market exit, the only fill such a stop can get), the same grid reads: current exits +549R, Market
+Structure over ours **+479R** (−13%), worse in both halves (+348/+131 against +382/+168), 93 cells worse and 66
+better, 2 of 15 scanners better, win rate 61.2% → 59.3%; replacing the trail −161R. `_research/lux-exits-20261023/capped/`.
+The structure stop is off for both books (`structureTrail.enabled: false` in the VM config, restart 17:00; the code
+default is off). What it leaves behind: twelve shadow positions and one account trade booked at phantom prices
+between 03:46 and 15:36 UTC (about +10R on the shadow book, concentrated in ZECUSD and ENAUSD 1h, which inflates
+those cells' records for the gate a little), and a lesson for every exit study from here: a stop set beyond the
+price is a market exit, and the backtest must book it as one.
