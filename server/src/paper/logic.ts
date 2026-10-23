@@ -492,6 +492,9 @@ export function modelTrail(pos: Position, bar: { close: number }, m: TrailModel)
   const long = pos.side === 'long';
   const raise = (level: number | null | undefined) => {
     if (level == null || !Number.isFinite(level)) return;
+    // a stop cannot sit beyond the price: a level past this bar's close becomes a stop at the close, which the next
+    // bar fills at market, instead of a fill booked at a price the trade never had (the ZEC 1h long of 23 October)
+    if (long ? level > bar.close : level < bar.close) level = bar.close;
     if (pos.sl === null || (long ? level > pos.sl : level < pos.sl)) {
       pos.sl = level;
       if (long ? level >= pos.entryPrice : level <= pos.entryPrice) pos.breakEven = true;

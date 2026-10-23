@@ -34,6 +34,8 @@ test('decision 178: a level model ratchets and marks break-even once past the en
   assert.equal(p.sl, 101); assert.equal(p.breakEven, true);
   modelTrail(p, { close: 103 }, { level: { long: null, short: 90 } });
   assert.equal(p.sl, 101, 'the other side\'s level is not this position\'s');
+  modelTrail(p, { close: 103 }, { level: { long: 108, short: null } });
+  assert.equal(p.sl, 103, 'a level beyond the price is capped at the close: a market exit, never a fill the trade never had');
 });
 
 test('decision 178: the statistical distance is log-normal in the trailing true range and formed only after the window', () => {
