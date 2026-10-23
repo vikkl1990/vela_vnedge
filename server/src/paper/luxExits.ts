@@ -50,47 +50,82 @@ export function statDeltaSeries(bars: Bar[], level = 2, dataLength = 10, distrib
   return out;
 }
 
-/** The Market Structure Trailing Stop's level per bar for a long and for a short (null while the structure has not spoken). */
-export function marketStructureStops(bars: Bar[], length = 14, incrPct = 100): Array<{ long: number | null; short: number | null }> {
-  const out: Array<{ long: number | null; short: number | null }> = [];
-  let phY = NaN, phX = -1, plY = NaN, plX = -1, phCross = false, plCross = false;
-  let top = NaN, btm = NaN, max = NaN, min = NaN, ts = NaN, os = 0;
-  let prevMax = NaN, prevMin = NaN;
-  for (let n = 0; n < bars.length; n++) {
-    // pivots confirmed `length` bars after the fact, as ta.pivothigh(length, length) reports them
-    if (n >= 2 * length) {
-      const c = n - length;
-      let isHigh = true, isLow = true;
-      for (let k = n - 2 * length; k <= n; k++) {
-        if (k === c) continue;
-        if (bars[k].high >= bars[c].high) isHigh = false;
-        if (bars[k].low <= bars[c].low) isLow = false;
-      }
-      if (isHigh) { phY = bars[c].high; phX = c; phCross = false; }
-      if (isLow) { plY = bars[c].low; plX = c; plCross = false; }
-    }
-    const close = bars[n].close;
-    let ms = 0;
-    if (Number.isFinite(phY) && close > phY && !phCross) {
-      ms = os === -1 ? 1 : 0; phCross = true; os = 1;
-      btm = bars[n].low; for (let i = phX; i <= n; i++) btm = Math.min(btm, bars[i].low);
-    }
-    if (Number.isFinite(plY) && close < plY && !plCross) {
-      ms = os === 1 ? -1 : 0; plCross = true; os = -1;
-      top = bars[n].high; for (let i = plX; i <= n; i++) top = Math.max(top, bars[i].high);
-    }
-    prevMax = max; prevMin = min;
-    if (ms === 1) max = close;
-    else if (ms === -1) min = close;
-    else { max = Number.isFinite(max) ? Math.max(close, max) : close; min = Number.isFinite(min) ? Math.min(close, min) : close; }
-    if (ms === 1) ts = btm;
-    else if (ms === -1) ts = top;
-    else if (os === 1 && Number.isFinite(ts) && Number.isFinite(prevMax)) ts = ts + (max - prevMax) * incrPct / 100;
-    else if (os === -1 && Number.isFinite(ts) && Number.isFinite(prevMin)) ts = ts + (min - prevMin) * incrPct / 100;
-    const level = Number.isFinite(ts) ? ts : null;
-    out.push({ long: os === 1 ? level : null, short: os === -1 ? level : null });
+export interface StructureLevel { long: number | null; short: number | null }
+
+/**
+ * The Market Structure Trailing Stop, one bar at a time (the live engine feeds it the closed bars of a market and
+ * timeframe; the backtest feeds it a series). Pivots confirm `length` bars after the fact, as `ta.pivothigh(length,
+ * length)` reports them; in 'CHoCH' mode only a change of character (a break against the standing structure) resets
+ * the stop — the first break of a structure that was never the other way sets none, exactly as the Pine does.
+ */
+export class MarketStructureTrail {
+  private window: Bar[] = [];
+  private phY = NaN; private phX = -1; private plY = NaN; private plX = -1; private phCross = false; private plCross = false;
+  private top = NaN; private btm = NaN; private max = NaN; private min = NaN; private ts = NaN; private os = 0;
+  private n = -1;
+  private history: Bar[] = [];
+  /** The last bar pushed, so a bar seen twice (a seed then the live close) is not counted twice. */
+  lastTime = -Infinity;
+  readonly length: number;
+  readonly incrPct: number;
+  constructor(length = 14, incrPct = 100) { this.length = length; this.incrPct = incrPct; }
+
+  get level(): StructureLevel {
+    const level = Number.isFinite(this.ts) ? this.ts : null;
+    return { long: this.os === 1 ? level : null, short: this.os === -1 ? level : null };
   }
-  return out;
+
+  push(bar: Bar): StructureLevel {
+    if (bar.time <= this.lastTime) return this.level;
+    this.lastTime = bar.time;
+    const L = this.length;
+    this.n++;
+    this.history.push(bar);
+    // the local extreme of a broken leg is searched from the pivot's bar; keep what that can need
+    if (this.history.length > 4 * L + 2 && this.history.length > this.n - Math.min(this.phX, this.plX) + 2) {
+      const keep = Math.max(2 * L + 1, this.n - Math.min(this.phX < 0 ? this.n : this.phX, this.plX < 0 ? this.n : this.plX) + 1);
+      if (this.history.length > keep + 64) this.history.splice(0, this.history.length - keep);
+    }
+    const at = (i: number) => this.history[this.history.length - 1 - (this.n - i)];
+    if (this.n >= 2 * L) {
+      const c = this.n - L;
+      let isHigh = true, isLow = true;
+      const cb = at(c);
+      for (let k = this.n - 2 * L; k <= this.n; k++) {
+        if (k === c) continue;
+        const kb = at(k);
+        if (kb.high >= cb.high) isHigh = false;
+        if (kb.low <= cb.low) isLow = false;
+      }
+      if (isHigh) { this.phY = cb.high; this.phX = c; this.phCross = false; }
+      if (isLow) { this.plY = cb.low; this.plX = c; this.plCross = false; }
+    }
+    const close = bar.close;
+    let ms = 0;
+    if (Number.isFinite(this.phY) && close > this.phY && !this.phCross) {
+      ms = this.os === -1 ? 1 : 0; this.phCross = true; this.os = 1;
+      this.btm = bar.low; for (let i = Math.max(this.phX, this.n - this.history.length + 1); i <= this.n; i++) this.btm = Math.min(this.btm, at(i).low);
+    }
+    if (Number.isFinite(this.plY) && close < this.plY && !this.plCross) {
+      ms = this.os === 1 ? -1 : 0; this.plCross = true; this.os = -1;
+      this.top = bar.high; for (let i = Math.max(this.plX, this.n - this.history.length + 1); i <= this.n; i++) this.top = Math.max(this.top, at(i).high);
+    }
+    const prevMax = this.max, prevMin = this.min;
+    if (ms === 1) this.max = close;
+    else if (ms === -1) this.min = close;
+    else { this.max = Number.isFinite(this.max) ? Math.max(close, this.max) : close; this.min = Number.isFinite(this.min) ? Math.min(close, this.min) : close; }
+    if (ms === 1) this.ts = this.btm;
+    else if (ms === -1) this.ts = this.top;
+    else if (this.os === 1 && Number.isFinite(this.ts) && Number.isFinite(prevMax)) this.ts += (this.max - prevMax) * this.incrPct / 100;
+    else if (this.os === -1 && Number.isFinite(this.ts) && Number.isFinite(prevMin)) this.ts += (this.min - prevMin) * this.incrPct / 100;
+    return this.level;
+  }
+}
+
+/** The Market Structure Trailing Stop's level per bar for a long and for a short (null while the structure has not spoken). */
+export function marketStructureStops(bars: Bar[], length = 14, incrPct = 100): StructureLevel[] {
+  const t = new MarketStructureTrail(length, incrPct);
+  return bars.map(b => ({ ...t.push(b) }));
 }
 
 /** The three models as `trailModel` factories for the backtest, built once per bar series. */

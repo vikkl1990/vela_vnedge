@@ -5,7 +5,8 @@ import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import { configFingerprint } from './fingerprint.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf } from './logic.ts';
+  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
+import type { StructureLevel } from './luxExits.ts';
 
 const log = logger.scoped('paper');
 
@@ -94,6 +95,8 @@ export class PaperEngine extends EventEmitter {
 
   /** The position timeframe's trend, +1 or −1, for the trend exit (set by the composition root). */
   trendFor?: (symbol: string, tf: string) => 1 | -1 | undefined;
+  /** Decision 178: the market-structure stop of a market and timeframe as of its last closed bar; null while the structure has not spoken. */
+  structureFor?: (symbol: string, tf: string) => StructureLevel | null;
 
   constructor(db: Db, cfgRef: () => AppConfig, opts: { book?: number } = {}) {
     super();
@@ -555,6 +558,12 @@ export class PaperEngine extends EventEmitter {
       const slBefore = pos.sl;
       const fills = applyLiveBar(pos, bar, pcfg, eventAt, (pcfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       if (fills.length) this.applyFills(pos, fills);
+      // decision 178: the structure stop of the last closed bar of the position's timeframe, over the trail, from the next minute on
+      const st = this.paper.structureTrail;
+      if (pos.status === 'open' && st?.enabled && this.structureFor && st.books.includes(this.book === 0 ? 'account' : 'shadow')) {
+        const level = this.structureFor(pos.symbol, pos.tf);
+        if (level) modelTrail(pos, bar, { level });
+      }
       for (const f of fills) this.recordPath(pos, f.price, eventAt, f.reason, `${f.qty} at ${f.price}`);
       if (pos.sl !== slBefore && pos.status === 'open') this.recordPath(pos, bar.close, eventAt, 'stop moved', `${slBefore} → ${pos.sl}`);
       if (pos.status === 'open') this.recordPath(pos, bar.close, eventAt);

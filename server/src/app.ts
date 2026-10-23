@@ -17,6 +17,7 @@ import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
 import { DeltaFeed, type WsTicker } from './delta/ws.ts';
 import { logger } from './log.ts';
+import { MarketStructureTrail, type StructureLevel } from './paper/luxExits.ts';
 import { configFingerprint } from './paper/fingerprint.ts';
 import { PaperEngine } from './paper/engine.ts';
 import { PinePool } from './pine/pool.ts';
@@ -124,6 +125,24 @@ export class App {
     };
     this.paper.trendFor = trendFor;
     this.shadow.trendFor = trendFor;
+    // decision 178: one market-structure tracker per market and timeframe, seeded from history on first use and fed
+    // every closed bar after that; both books read the same level
+    const structures = new Map<string, MarketStructureTrail>();
+    const structureFor = (symbol: string, tf: string): StructureLevel | null => {
+      const st = cfg().paper.structureTrail;
+      if (!st?.enabled) return null;
+      const key = `${symbol}|${tf}`;
+      let t = structures.get(key);
+      if (!t || t.length !== st.pivot || t.incrPct !== st.incrPct) {
+        t = new MarketStructureTrail(st.pivot, st.incrPct);
+        for (const b of this.candles.get(symbol, tf, { closedOnly: true, limit: Math.max(600, st.pivot * 10) })) t.push(b);
+        structures.set(key, t);
+      }
+      return t.level;
+    };
+    this.candles.on('closed', (e: { symbol: string; tf: string; bar: { time: number; open: number; high: number; low: number; close: number; volume: number } }) => { structures.get(`${e.symbol}|${e.tf}`)?.push(e.bar); });
+    this.paper.structureFor = structureFor;
+    this.shadow.structureFor = structureFor;
     this.incubatorStore = new IncubatorStore(this.db);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.ml.excluded = () => this.scanners.health.quarantined();
@@ -338,6 +357,8 @@ export class App {
     // --- the pipeline ---
     const inc = cfg.incubator;
     const shadowN = this.incubatorStore.counts?.()?.shadow ?? null;
+    const st = cfg.paper.structureTrail;
+    g.push({ key: 'structureTrail', group: 'Trade', name: 'Market-structure stop', state: st?.enabled ? 'open' : 'off', value: st?.enabled ? `on for the ${st.books.join(' and ')} book${st.books.length === 1 ? '' : 's'}: after a change of character on the trade's timeframe the stop sits under the broken leg's low and follows the close (pivot ${st.pivot}, increment ${st.incrPct}%), over the trail` : 'off: the trail and floor alone', rule: 'Decision 178. Measured on the trail study\'s grid at +0.065 → +0.102R a trade, 14 of 15 scanners, every timeframe, by cutting losers before the trail arms. A forward test on the shadow book first; the account takes it on a shadow record with t > 1.', next: st?.enabled && !st.books.includes('account') ? 'after two weeks of shadow record, compare the shadow book\'s exits with the account\'s on the same signals' : st?.enabled ? 'measure the account\'s exits against the record' : 'switch on for the shadow book to start the forward test', href: '/incubator' });
     g.push({ key: 'mirror', group: 'Pipeline', name: 'Shadow mirror', state: inc.mirror?.enabled ? 'open' : 'off', value: inc.mirror?.enabled ? `on: the account copies a shadow pair once it has ${inc.mirror.minTrades ?? 0} shadow closes with a net R above ${inc.mirror.minNetR ?? 0}${inc.mirror.minTurnoverUsd ? ` on a market over $${(inc.mirror.minTurnoverUsd / 1e6).toFixed(1)}M a day` : ''}, under its own gates and caps` : 'off: only promoted cells trade the account', rule: 'Decision 116. With the mirror on, the shadow book is the fleet; the risk manager, the efficiency gate, the cost rule, the market gate and the position caps still decide every entry.', next: inc.mirror?.enabled ? 'switch off in Settings → Incubator to go back to promoted cells only' : 'switch on in Settings → Incubator to let the account take the shadow book\'s signals', href: '/incubator' });
     g.push({ key: 'shadow', group: 'Pipeline', name: 'Shadow book capacity', state: shadowN != null && shadowN >= inc.maxShadow ? 'attention' : 'open', value: shadowN != null ? `${shadowN} pairs of ${inc.maxShadow}` : `cap ${inc.maxShadow}`, rule: 'Candidates enter only while there is room', next: shadowN != null && shadowN >= inc.maxShadow ? 'Raise incubator.maxShadow in Settings, or wait for retirements' : 'Room for new candidates', href: '/incubator' });
     const start = this.db.kvGet<{ at: number }>('incubator.lastStart'), run = this.db.kvGet<{ at: number; finishedAt?: number }>('incubator.lastRun');

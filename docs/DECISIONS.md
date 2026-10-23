@@ -5370,3 +5370,11 @@ the running close, tightening a trade before the trail arms at +0.5R, on exactly
 **Not changed yet.** The gain is in-sample on the shadow journal. Next is a forward test on the shadow book: the
 structure stop computed live per open shadow position (`paper.structureTrail`), two weeks of record with t > 1 against
 the account's exits on the same signals, before the account takes it.
+
+**Built (23 October, later).** `paper.structureTrail` — `{ enabled: true, pivot: 14, incrPct: 100, books: ['shadow'] }`
+by default. `MarketStructureTrail` (`paper/luxExits.ts`) tracks one market and timeframe a closed bar at a time, matched
+bar for bar against the batch port on a 3,000-bar walk; the app keeps one per market×timeframe, seeded from 600 closed
+bars on first use and fed every closed bar after. Each book's engine asks `structureFor(symbol, tf)` on every minute
+bar and, when its book is named, layers the level over the trail through `modelTrail` (never lower, break-even once
+past the entry, a stop in profit reads as `trail`). The shadow book runs the forward test from the deploy; the account
+is untouched until `books` names it. The Gates page carries the rule under Trade → "Market-structure stop".

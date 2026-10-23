@@ -159,6 +159,13 @@ export interface PaperConfig {
    */
   trailStall?: { minutes: number; factor: number };
   /**
+   * Decision 178: the market-structure stop (the Vela library's Market Structure Trailing Stop) layered over the trail
+   * for the books named: after a change of character on the position's own timeframe the stop sits under the broken
+   * leg's local low (over its high for a short) and follows the running close; it only ever tightens. Measured on the
+   * trail study's grid at +0.065 → +0.102R a trade by cutting losers before the trail arms.
+   */
+  structureTrail?: { enabled: boolean; pivot: number; incrPct: number; books: Array<'account' | 'shadow'> };
+  /**
    * Close a trade that went a little way and then stopped, before the floor can protect it.
    *
    * The floor arms at `floorAtR`; below that a trade has no protection at all, so one that peaks at
@@ -592,6 +599,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     exitBySymbol: {},
     trailSteps: [],
     trailStall: { minutes: 0, factor: 1 },
+    structureTrail: { enabled: true, pivot: 14, incrPct: 100, books: ['shadow'] },
     fallbackAtrSl: 1.5,
     scriptDisasterStopAtr: 3,
     // decision 159: account trades of script-exit scanners opened from 20 October 2026 13:30 UTC trail; earlier ones are left as they were
