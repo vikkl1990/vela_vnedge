@@ -5391,3 +5391,12 @@ the VM's `config.json`, which `ConfigStore` writes back as the full merged confi
 reached it. ZECUSD 1h at 14:00 UTC showed it: the shadow twin's stop moved to +0.11R and closed, the account's stayed at
 −1R. Set in `config.json` at 15:05 UTC (backup `config.json.bak-d178-books-…`), service restarted 15:06. A changed
 code default is not a rollout once the key exists on the VM; the value goes in the config, or on the Settings page.
+
+## 179. The silent-demotion cap follows the timeframe: 4h cells could never hold a live slot (23 October 2026)
+
+The incubator check showed 0 live cells on 4h against 70 in shadow, and the day's demotions explained it: both ETHUSD
+4h cells went "silent: no account trade in 14 days (cap 14)". A 4h market produces about 0.064 trades a day, one every
+16 days, so every 4h cell ever promoted was demoted as silent before it could trade — the timeframe the audit measured
+as the one with payoff. The shadow stale cap already follows the timeframe (decision 108); the silent cap now does too:
+`demote.silentDaysByTf` `{ '1h': 30, '4h': 60 }`, `silentDays` the fallback. The two ETH 4h cells are back in shadow and
+must pass the gate again; the operator can promote them by hand from the Incubator page.

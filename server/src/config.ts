@@ -396,6 +396,8 @@ export interface IncubatorConfig {
   demote: { window: number; minTrades: number; maxPfR: number;
     /** Decision 106: a live cell with no account trade for this many days is proposed for demotion; it holds a slot and does nothing. */
     silentDays?: number;
+    /** Decision 179: the silent cap per timeframe; a 4h cell trades about once in 16 days, so 14 days demoted every 4h cell ever promoted. `silentDays` is the fallback. */
+    silentDaysByTf?: Record<string, number>;
     /** Decision 109: a live cell whose market the gate has refused (or not judged) for this many consecutive days is proposed for demotion. */
     marketOutDays?: number;
     /** Decision 112: a live cell with this many cost-rule refusals and no open in `costStarvedDays` is proposed for demotion; 0 turns it off. */
@@ -552,7 +554,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3 },
     promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
-    demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
+    demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, silentDaysByTf: { '1h': 30, '4h': 60 }, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
     mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
     maxContractRiskShare: 0.5,

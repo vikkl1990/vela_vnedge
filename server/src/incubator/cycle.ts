@@ -219,7 +219,8 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     const trades = store.trades(r.scannerId, r.symbol, r.tf, 0).filter(t => t.entryAt >= r.since);
     const d = demoteVerdict(trades, inc.demote);
     // decision 106: a live cell that has not traded for `silentDays` holds a fleet slot and does nothing
-    const silentDays = inc.demote.silentDays ?? 0;
+    // decision 179: the cap follows the timeframe, as the shadow stale cap does (decision 108)
+    const silentDays = inc.demote.silentDaysByTf?.[r.tf] ?? inc.demote.silentDays ?? 0;
     const lastAt = Math.max(r.since, ...trades.map(t => t.entryAt));
     const silent = silentDays > 0 && now - lastAt > silentDays * DAY;
     const key = `${r.scannerId}|${r.symbol}|${r.tf}`; liveKeys.add(key);
