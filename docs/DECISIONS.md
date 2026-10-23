@@ -5428,3 +5428,16 @@ is the backstop; the gate is kept at 0.1 rather than off because 0.1 still beats
 **Set (23 October, 16:35 UTC, the user's call).** `risk.regime.minEr` 0.1 in the VM config (backup
 `config.json.bak-d180-miner-…`), service restarted. The journal from here measures it: regime refusals per wave, the
 account's entries and stops on the next chop day.
+
+## 181. The strong-record tier sized on a record the gate would call noise: floor 20 trades, leverage 10× (23 October 2026)
+
+The day's stop review: 14 stops for −$240 against 20 trails for +$231 on a flat BTC day. Five stops and −$143 were
+one coin, BTWUSD (−11% on the day, a 24% range), four of them `woodie-pivots` 15m shorts sized at $23–39 of risk
+against $4–14 elsewhere — the strong-record tier (decision 144) on a shadow record of four to six trades. The journal
+since the reset: 90 tier trades, +$274 at 20×, the same trades at 5× +$27; their R a trade (+0.037) is the book's.
+The tier is the account's variance, not its edge: it made 20–21 October (+$422) and it made 22 October (−$165).
+Capped at 10× the whole comes to +$85 and 22 October to −$120. Set in the VM config (backup
+`config.json.bak-d181-tier-…`, restart 16:55 UTC): `marginLeverage.minTrades` 5 → 20, `strong` 20 → 10.
+
+Replayed and left alone: a per-cell daily stop cap of 2 (+$22 on 412 trades) and a per-market cap of 3 (+$161, all
+of it four market-days since 16 October — too concentrated to act on).
