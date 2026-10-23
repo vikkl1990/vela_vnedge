@@ -5451,3 +5451,20 @@ default is off). What it leaves behind: twelve shadow positions and one account 
 between 03:46 and 15:36 UTC (about +10R on the shadow book, concentrated in ZECUSD and ENAUSD 1h, which inflates
 those cells' records for the gate a little), and a lesson for every exit study from here: a stop set beyond the
 price is a market exit, and the backtest must book it as one.
+
+## 182. Shadow capacity reserved for what the score starves: 4h, and the majors on 4h (23 October 2026)
+
+"Top coins never get signals." Traced: the cost rule (a stop ≥ 6 round trips, 0.71% of price) refuses every 15m
+signal on BTC/ETH/BNB/DOGE by arithmetic (BTC's 15m ATR is 0.31%); the screen does find the majors (24 candidates each
+in a week) but admission ranks by screen score, which a coin with a 10% daily range wins every time, so BTC held 3 of
+800 shadow slots; and the 227 tracked cells on the majors (decision 139) are watch-only. Measured on the trail study's
+grid, spread paid: the majors lose on 15m and on 1h (−50.8R over 1,165 trades, both halves) and pay on 4h (+209.9R over
+3,819, +0.055R a trade, 36 of 56 cells, 26 in both halves; ETH 4h +0.105); the alts pay more on 4h (+0.223) and the
+book holds 70 4h pairs against 358 on 15m. `_research/er-floor-20261023/` (the `spread` rows).
+
+`admit.reserve`: capacity over and above `maxShadow`, each entry filled first from its own matching candidates by
+score under the same per-scanner caps, an active pair counting against the first entry it matches. Default
+`[{ tfs: ['4h'], markets: [BTC, ETH, SOL, XRP], slots: 80 }, { tfs: ['4h'], slots: 200 }]`. A 4h pair costs a sixteenth
+of a 15m pair's runs, so the reserved pool adds about thirteen 15m-equivalents of load, most of it at the 4h closes.
+Nothing on 1h or 15m for the majors; the cost rule stays; the gate (t ≥ 2) and the live turnover floor are unchanged.
+The nightly screen walks the timeframes in turn, so the 4h reservations fill over the coming nights, not at once.

@@ -372,26 +372,44 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   const markets = store.marketsToday();
   // a candidate on a market the gate refuses today would hold a shadow slot the account can never use (decision 104)
   const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
-  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd)
+  let fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd)
     && !(opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close'));
-  const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); slots--; };
+  const admitted = new Set<number>();
+  const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); admitted.add(r.id); slots--; };
+
+  // decision 182: the reservations first — capacity over and above `maxShadow` for what the score starves (4h, the
+  // majors), each filled from its own matching candidates by score, under the same per-scanner caps
+  const held = new Map<string, number>();
+  for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
+  const capFor = (tf: string) => inc.admit.maxPerScannerTf?.[tf] ?? marketsFor(inc, tf);
+  const counted = new Set<number>();
+  for (const res of inc.admit.reserve ?? []) {
+    if (!(res.slots > 0)) continue;
+    const matches = (r: PairRow) => (!res.tfs?.length || res.tfs.includes(r.tf)) && (!res.markets?.length || res.markets.includes(r.symbol));
+    let n = 0;
+    for (const r of active) if (!counted.has(r.id) && matches(r) && n < res.slots) { counted.add(r.id); n++; }
+    for (const r of fresh.filter(x => !admitted.has(x.id) && matches(x)).sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
+      if (n >= res.slots) break;
+      const k = `${r.scannerId}|${r.tf}`;
+      if ((held.get(k) ?? 0) >= capFor(r.tf)) continue;
+      take(r); slots++;   // a reserved slot, not one of the book's
+      held.set(k, (held.get(k) ?? 0) + 1); n++;
+    }
+  }
+  fresh = fresh.filter(r => !admitted.has(r.id));
 
   if (inc.gate.pool !== 'cohort') {
     // decision 132: each pair is admitted on its own score, but one scanner may not fill the book at a timeframe
-    const held = new Map<string, number>();
-    for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
     for (const r of fresh.sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
       if (slots <= 0) break;
-      const k = `${r.scannerId}|${r.tf}`; const cap = inc.admit.maxPerScannerTf?.[r.tf] ?? marketsFor(inc, r.tf);
-      if ((held.get(k) ?? 0) >= cap) continue;
+      const k = `${r.scannerId}|${r.tf}`;
+      if ((held.get(k) ?? 0) >= capFor(r.tf)) continue;
       take(r); held.set(k, (held.get(k) ?? 0) + 1);
     }
     rep.free = slots;
     return;
   }
 
-  const held = new Map<string, number>();
-  for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
   const byCohort = new Map<string, PairRow[]>();
   for (const r of fresh) { const k = `${r.scannerId}|${r.tf}`; const g = byCohort.get(k); g ? g.push(r) : byCohort.set(k, [r]); }
 

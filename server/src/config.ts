@@ -387,6 +387,13 @@ export interface IncubatorConfig {
     candidateMaxAgeDays?: number;
     /** Decision 132: in `pool: 'pair'` mode, the most shadow cells one scanner may hold at a timeframe (`cohortMarkets` is the fallback). */
     maxPerScannerTf?: Record<string, number>;
+    /**
+     * Decision 182: shadow capacity reserved for what the screen score starves. Each entry holds `slots` shadow pairs
+     * matching its filter (any timeframe or market when unset), filled first from matching candidates by score, over
+     * and above `maxShadow`; an active pair counts against the first entry it matches. A 4h pair costs a sixteenth of a
+     * 15m pair's runs, so the reserved pool is cheap.
+     */
+    reserve?: Array<{ tfs?: string[]; markets?: string[]; slots: number }>;
 };
   promote: { maxPerWeek: number; maxFleet: number;
     /** Decision 106: no more live cells than this on one market, or for one scanner, so the fleet spreads across pairs. */
@@ -552,7 +559,8 @@ export const DEFAULT_CONFIG: AppConfig = {
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 }, minTradesByTf: {}, minDaysByTf: {},
       staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3,
     },
-    admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3 },
+    admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
+      reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
     promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, silentDaysByTf: { '1h': 30, '4h': 60 }, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
