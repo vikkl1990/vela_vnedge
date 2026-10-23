@@ -364,6 +364,10 @@ export interface IncubatorConfig {
     staleDaysByTf?: Record<string, number>;
     /** Decision 108: the positive-weeks share is only asked once this many weeks have closed a trade; one or two weeks cannot be 60% positive and still be a sample. */
     minWeeks?: number;
+    /** Decision 177: the mean R must stand this many standard errors above zero (0 turns it off). At n = 30 the mean alone cannot be told from noise. */
+    minT?: number;
+    /** Decision 177: no proposal for the fleet on a market under this 24h turnover (0 turns it off); a slot is not spent where the fills will not exist. */
+    minTurnoverUsd?: number;
   };
   /**
    * How shadow slots are filled: each scanner×timeframe is admitted on several markets at once, and
@@ -392,7 +396,11 @@ export interface IncubatorConfig {
   /** A pair that failed shadow is not screened again for this long. */
   cooldownDays: number;
   /** Decision 116: the account takes every shadow pair's signals under its own gates and caps — the shadow book as the fleet. */
-  mirror?: { enabled: boolean };
+  mirror?: { enabled: boolean;
+    /** Decision 177: the account copies a pair's entries only once it has this many shadow closes with a net R above `minNetR`; it was copying pairs from the day they entered shadow, before any record, and those trades lost. */
+    minTrades?: number; minNetR?: number;
+    /** Decision 177: no copy on a market under this 24h turnover (0 turns it off). */
+    minTurnoverUsd?: number };
   /**
    * Largest share of the risk budget one contract may consume before a market is skipped: contracts
    * are indivisible, so above this the bot can only take one contract or none and position sizing
@@ -531,7 +539,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     enabled: true, tf: '15m', tfs: ['15m', '1h', '4h'], universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
     screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true, retryPerNight: 20, quietFilterTfs: ['5m', '15m'] },
     gate: {
-      minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0,
+      minTrades: 30, minDays: 14, minPfR: 1.2, minPositiveWeeksPct: 60, minAvgR: 0.1, maxOverlapPct: 50, maxDays: 45, failPfR: 1.0, minT: 2, minTurnoverUsd: 5_000_000,
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 }, minTradesByTf: {}, minDaysByTf: {},
       staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3,
     },
@@ -539,7 +547,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
-    mirror: { enabled: false },
+    mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
     maxContractRiskShare: 0.5,
   },
   autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },

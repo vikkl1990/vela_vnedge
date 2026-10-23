@@ -13,6 +13,17 @@ export interface PairStats {
   trades: number; days: number; wins: number; winRatePct: number;
   netR: number; avgR: number; pfR: number | null;
   weeks: number; positiveWeeks: number; positiveWeeksPct: number;
+  /** Decision 177: mean R over its standard error — how far the record stands above luck (0 with fewer than two trades). */
+  tStat: number;
+}
+
+/** Mean R over its standard error; 0 when there is nothing to measure against. */
+export function tStat(rs: number[]): number {
+  const n = rs.length;
+  if (n < 2) return 0;
+  const m = rs.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(rs.reduce((a, b) => a + (b - m) ** 2, 0) / (n - 1));
+  return sd > 1e-9 ? m / (sd / Math.sqrt(n)) : m > 1e-9 ? Infinity : m < -1e-9 ? -Infinity : 0;
 }
 
 const WEEK = 7 * 86400_000;
@@ -32,6 +43,7 @@ export function pairStats(trades: TradeR[], since: number, now = Date.now()): Pa
     trades: t.length, days: Math.max(0, (now - since) / 86400_000), wins, winRatePct: t.length ? wins / t.length * 100 : 0,
     netR, avgR: t.length ? netR / t.length : 0, pfR: gl > 0 ? gp / gl : gp > 0 ? null : 0,
     weeks, positiveWeeks, positiveWeeksPct: weeks ? positiveWeeks / weeks * 100 : 0,
+    tStat: tStat(t.map(x => x.r)),
   };
 }
 
@@ -83,6 +95,9 @@ export function gateVerdict(s: PairStats, g: IncubatorConfig['gate'], overlapPct
     // decision 108: with one or two weeks closed, 60% positive means every week positive — a coin, not a sample
     [s.weeks < (g.minWeeks ?? 0) || s.positiveWeeksPct >= g.minPositiveWeeksPct, s.weeks < (g.minWeeks ?? 0) ? `${s.positiveWeeks}/${s.weeks} weeks positive (judged from ${g.minWeeks} weeks)` : `${s.positiveWeeks}/${s.weeks} weeks positive (need ${g.minPositiveWeeksPct}%)`],
     [s.avgR >= g.minAvgR, `${s.avgR.toFixed(2)}R per trade (need ${g.minAvgR})`],
+    // decision 177: the standard error of a 30-trade mean is ±0.15–0.20R, so a mean alone passes the upper tail of noise;
+    // the record must stand `minT` standard errors above zero before it is evidence
+    [!(g.minT! > 0) || s.tStat >= g.minT!, `t ${Number.isFinite(s.tStat) ? s.tStat.toFixed(2) : s.tStat > 0 ? '∞' : '−∞'} (need ${g.minT ?? 0})`],
     [overlapPct <= g.maxOverlapPct, `${overlapPct.toFixed(0)}% of entries duplicate a live pair (max ${g.maxOverlapPct}%)`],
   ];
   const failing = checks.filter(c => !c[0]).map(c => c[1]);
@@ -137,6 +152,27 @@ export function sliceOf(id: string, slices: number): number {
 }
 
 export function fmtPf(pf: number | null): string { return pf === null ? '∞' : pf.toFixed(2); }
+
+/**
+ * Decision 177: the account copies a shadow pair's entry only once the pair has a record of its own. Measured on the
+ * account's journal: entries on pairs with fewer than five shadow closes were 282 of 385 bot trades and lost $416;
+ * entries on pairs with five or more closes and a positive net R were 64 trades and made $427. Null when the copy may go.
+ */
+export function mirrorRefusal(m: { enabled?: boolean; minTrades?: number; minNetR?: number; minTurnoverUsd?: number } | undefined, shadow: TradeR[], turnoverUsd: number | null): string | null {
+  const minTrades = m?.minTrades ?? 0, minNetR = m?.minNetR;
+  if (minTrades > 0 && shadow.length < minTrades) return `mirror held: ${shadow.length}/${minTrades} shadow closes`;
+  if (typeof minNetR === 'number' && minTrades > 0) {
+    const net = shadow.reduce((a, x) => a + x.r, 0);
+    if (!(net > minNetR)) return `mirror held: ${net >= 0 ? '+' : ''}${net.toFixed(1)}R over ${shadow.length} shadow closes (need > ${minNetR}R)`;
+  }
+  return thinMarketRefusal(m?.minTurnoverUsd, turnoverUsd);
+}
+
+/** Decision 177: a market under the turnover floor is not one the account should hold; null when it is deep enough or unjudged. */
+export function thinMarketRefusal(minTurnoverUsd: number | undefined, turnoverUsd: number | null): string | null {
+  if (!(minTurnoverUsd! > 0) || turnoverUsd === null) return null;
+  return turnoverUsd < minTurnoverUsd! ? `thin market: $${(turnoverUsd / 1e6).toFixed(2)}M 24h turnover < $${(minTurnoverUsd! / 1e6).toFixed(1)}M` : null;
+}
 
 /**
  * Promise versus delivery (decision 90). The screen promised an R per trade on history; the shadow book

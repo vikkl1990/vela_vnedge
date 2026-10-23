@@ -76,11 +76,11 @@ export class IncubatorStore {
   marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut') ?? {}; }
   setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut', rec); }
 
-  marketsToday(): Map<string, { allowed: boolean; reasons: string[] }> {
-    const kv = this.db.kvGet<{ enabled?: boolean; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[] }> }>('risk.marketsToday');
-    const out = new Map<string, { allowed: boolean; reasons: string[] }>();
+  marketsToday(): Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null }> {
+    const kv = this.db.kvGet<{ enabled?: boolean; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[]; turnoverUsd?: number | null }> }>('risk.marketsToday');
+    const out = new Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null }>();
     if (!kv || kv.enabled === false) return out;
-    for (const m of kv.markets ?? []) out.set(m.symbol, { allowed: Boolean(m.allowed), reasons: m.reasons ?? [] });
+    for (const m of kv.markets ?? []) out.set(m.symbol, { allowed: Boolean(m.allowed), reasons: m.reasons ?? [], turnoverUsd: typeof m.turnoverUsd === 'number' ? m.turnoverUsd : null });
     return out;
   }
 

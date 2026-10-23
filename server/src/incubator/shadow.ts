@@ -25,6 +25,7 @@ import { lastAtr } from '../data/indicators.ts';
 import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import type { Features, FeatureInputs } from '../ml/features.ts';
 import { logger } from '../log.ts';
+import { mirrorRefusal } from './gate.ts';
 import { IncubatorStore, funnelClass, type PairRow, type SignalFunnel } from './store.ts';
 import { ACTIVE_STAGES } from './cycle.ts';
 
@@ -58,7 +59,13 @@ export class ShadowRunner {
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
   private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean }): { prob: number } | null }; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean } };
-  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, lastBarAt: 0,
+  private marketsCache: { at: number; map: Map<string, { turnoverUsd: number | null }> } | null = null;
+  /** The market gate's 24h turnover for a symbol (null when unjudged), read at most once a minute. */
+  private turnoverOf(symbol: string): number | null {
+    if (!this.marketsCache || Date.now() - this.marketsCache.at > 60_000) this.marketsCache = { at: Date.now(), map: this.deps.store.marketsToday() };
+    return this.marketsCache.map.get(symbol)?.turnoverUsd ?? null;
+  }
+  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, /** Decision 177: entries the account was not offered because the pair had no record yet or the market is thin. */ mirrorHeld: 0, lastBarAt: 0,
     /** The last error per scanner, so a script failing on every bar is visible rather than a bare count. */
     lastErrors: {} as Record<string, { error: string; at: number; count: number; symbol: string; tf: string }> };
   /** Decision 112: per shadow pair, what became of its signals — [at, class], newest last. */
@@ -240,8 +247,14 @@ export class ShadowRunner {
       // decision 116: the account is offered the same event, and judges it by its own gates and caps
       // decision 139: a tracked cell is the operator's to watch, never the account's to copy
       if (cfg.incubator.mirror?.enabled && this.deps.mirror && r.stage !== 'tracked' && (ev.kind === 'entry' || ev.kind === 'exit')) {
-        this.stats.mirrored++;
-        try { this.deps.mirror(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`mirror ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
+        // decision 177: an entry is copied only once the pair has a record of its own and its market is deep enough; an
+        // exit always goes through, since the account may hold the position
+        const held = ev.kind === 'entry' && r.stage !== 'live' ? mirrorRefusal(cfg.incubator.mirror, this.deps.store.trades(r.scannerId, r.symbol, r.tf, 2), this.turnoverOf(r.symbol)) : null;
+        if (held) { this.stats.mirrorHeld++; log.debug(`${held}: ${s.id} ${r.symbol} ${r.tf} ${ev.side ?? ''}`); }
+        else {
+          this.stats.mirrored++;
+          try { this.deps.mirror(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`mirror ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
+        }
       }
       if (ev.kind === 'entry' && ev.side) {
         // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is

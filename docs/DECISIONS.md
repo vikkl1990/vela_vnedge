@@ -5313,3 +5313,29 @@ shadow book judged after it). The hand screen of decision 172, started at 01:57 
 nightly's `incubator.lastStart`, and the nightly's own record carries only its start time, so the check read a start at
 01:57 against a run at 01:06 and called it dead. A hand run (IDS=, TF=, SLICE=, MARKETS=) now writes
 `incubator.lastHandStart`; every run stamps `finishedAt`; the check reads it. The line clears with tonight's screen.
+
+## 177. The structural audit's first three corrections: a t-statistic at the gate, an evidence floor on the mirror, a turnover floor for the fleet (23 October 2026)
+
+`docs/STRUCTURAL-AUDIT-2026-10-22.md`. The incubator's selection threshold sat below the noise floor of what it
+measured: at 30 trades the standard error of a mean R is ±0.15–0.20R, and the gate asked for +0.1R. Cells promoted
+on that carried +0.144R/trade in shadow and did +0.070R in the account, while the shadow book on the same cells over
+the same period did −0.028R. Three rules, each measured on the account's own journal before it was written:
+
+- **Gate `minT` (default 2).** A pair's mean R must stand `minT` standard errors above zero. The t-statistic is on
+  `PairStats`, shown with the gate's other reasons. Cells that reached the fleet with t < 1 did −$18 after; the eight
+  with 1 ≤ t < 2 did +$85. Few cells will pass at n = 30; a pair earns its slot at 60–100 trades instead.
+- **Mirror floor `mirror.minTrades` 5, `minNetR` 0.** The account was copying a pair from the day it entered shadow
+  (decision 116), before any record. Those entries were 282 of 385 bot trades and lost $416; entries on pairs with
+  five or more shadow closes and a positive net R were 64 trades and made $427 (21 of 31 cells positive). Stronger
+  floors only shrank the sample. Exits always go through, and a promoted (live) cell is not held. Held entries are
+  counted (`mirrorHeld`) and logged at debug.
+- **Turnover floors.** `gate.minTurnoverUsd` (default $5M): no proposal for the fleet on a market under it.
+  `mirror.minTurnoverUsd` (default $2M): no copy there either. Ten of the fourteen live markets were under $2M a
+  day; the 20× tier's $3,000 is 1–3% of a day's volume on five of them, against a paper fill of 2 bps. The market
+  gate's own floor and the screening universe are untouched, so the shadow book keeps collecting evidence there.
+  The book-cost probe should run at the strong tier's notional (`probeNotionalUsd` 3,000; a Settings change).
+
+Tested and **not** adopted: a cap on net same-side exposure. Replayed at ±1/±2/±3 positions it removed 106/38/15
+trades, and those trades were net positive (±2: +$73) — the clustered same-side entries are the trend-day winners,
+and the cap cuts the good days with the bad. The 0.54 correlation of daily P&L with BTC's daily move stands as a
+description of what the book is, not something a side count fixes.

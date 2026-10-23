@@ -3,7 +3,7 @@
  */
 import type { AppConfig, IncubatorConfig, ScannerConfig } from '../config.ts';
 import { IncubatorStore, type PairRow, type Stage } from './store.ts';
-import { cohortStats, cohortVerdict, deliveryVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, screenScore, type CohortStats } from './gate.ts';
+import { cohortStats, cohortVerdict, deliveryVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, screenScore, thinMarketRefusal, type CohortStats } from './gate.ts';
 
 export interface ScreenResult {
   pass: boolean; at: number; trades: number; profitFactor: number; netPnl: number; netAtStress: number;
@@ -187,11 +187,14 @@ const name = (r: PairKey) => `${r.scannerId} ${r.symbol} ${r.tf}`;
 
 /** Judge every shadow and live pair, then fill free shadow slots with the best recent candidates. */
 /** Why the account could not trade this market today, or null when the gate allows it or has not judged it. */
-function marketRefusal(markets: Map<string, { allowed: boolean; reasons: string[] }>, symbol: string): string | null {
+function marketRefusal(markets: Map<string, { allowed: boolean; reasons: string[]; turnoverUsd?: number | null }>, symbol: string, minTurnoverUsd?: number): string | null {
   const m = markets.get(symbol);
   // decision 109: a market the gate has verdicts for but none on this symbol is outside its universe — below the turnover floor or unlisted — and is out, not unknown
   if (!m) return markets.size ? `the market gate does not judge ${symbol} today: outside its universe` : null;
-  return !m.allowed ? `the market gate refuses ${symbol} today: ${m.reasons.join('; ') || 'not allowed'}` : null;
+  if (!m.allowed) return `the market gate refuses ${symbol} today: ${m.reasons.join('; ') || 'not allowed'}`;
+  // decision 177: a fleet slot is not spent on a market where the fills will not exist
+  const thin = thinMarketRefusal(minTurnoverUsd, m.turnoverUsd ?? null);
+  return thin ? `${symbol} is ${thin}` : null;
 }
 
 /** `needsRescreen`: scanners whose screens from before decision 134 cannot be trusted (strategy scripts); their candidates wait for a fresh screen. */
@@ -203,7 +206,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // decision 104: a pair on a market the account's gate refuses today is never proposed; one already proposed goes back to brewing
   const markets = store.marketsToday();
   for (const r of active) {
-    const why = marketRefusal(markets, r.symbol);
+    const why = marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd);
     if (why && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { reasons: [why] }, why, now, { keepSince: true }); rep.brewing++; }
   }
 
@@ -220,7 +223,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     const lastAt = Math.max(r.since, ...trades.map(t => t.entryAt));
     const silent = silentDays > 0 && now - lastAt > silentDays * DAY;
     const key = `${r.scannerId}|${r.symbol}|${r.tf}`; liveKeys.add(key);
-    const why = markets.size ? marketRefusal(markets, r.symbol) : null;
+    const why = markets.size ? marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd) : null;
     if (why) out[key] ??= now; else delete out[key];
     const outFor = why ? (now - out[key]) / DAY : 0;
     const marketOut = outDays > 0 && why !== null && outFor >= outDays;
@@ -290,7 +293,7 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
   const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
   const v = gateVerdict(stats, gateFor(cfg.incubator, r.tf), overlap);
   store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v }, now);
-  if (v.decision === 'propose' && r.stage === 'shadow' && marketRefusal(store.marketsToday(), r.symbol)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [marketRefusal(store.marketsToday(), r.symbol)!] }, now); rep.brewing++; }
+  if (v.decision === 'propose' && r.stage === 'shadow' && marketRefusal(store.marketsToday(), r.symbol, cfg.incubator.gate.minTurnoverUsd)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [marketRefusal(store.marketsToday(), r.symbol, cfg.incubator.gate.minTurnoverUsd)!] }, now); rep.brewing++; }
   else if (v.decision === 'propose' && r.stage === 'shadow' && demotionAnswered(store, cfg, r, now)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [demotionAnswered(store, cfg, r, now)!] }, now); rep.brewing++; }
   else if (v.decision === 'propose' && r.stage === 'shadow') { store.move(r, 'proposed', 'gate', { stats, overlap, reasons: v.reasons }, 'passed the promotion gate', now, { keepSince: true }); rep.proposed.push(name(r)); }
   else if (v.decision === 'brewing' && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { stats, reasons: v.reasons }, 'no longer passes the gate', now, { keepSince: true }); rep.brewing++; }
@@ -340,7 +343,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
     // only markets the account can trade today are picked for the fleet (decision 104); the rest keep brewing as evidence
     const markets = store.marketsToday();
     const pick = v.decision === 'propose'
-      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol) && !diversityRefusal(cfg, rows[0].scannerId, p.symbol)).slice(0, inc.promote.maxPerWeek).map(p => p.symbol))
+      ? new Set(stats.perMarket.filter(p => p.trades >= inc.gate.minMarketTrades && p.avgR > 0 && !marketRefusal(markets, p.symbol, inc.gate.minTurnoverUsd) && !diversityRefusal(cfg, rows[0].scannerId, p.symbol)).slice(0, inc.promote.maxPerWeek).map(p => p.symbol))
       : new Set<string>();
     for (const m of members) {
       const wanted = pick.has(m.symbol);
@@ -368,7 +371,7 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   const markets = store.marketsToday();
   // a candidate on a market the gate refuses today would hold a shadow slot the account can never use (decision 104)
   const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
-  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol)
+  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd)
     && !(opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close'));
   const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); slots--; };
 
@@ -439,7 +442,7 @@ export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = D
   const passed = store.list(['candidate']).filter(r => r.screen?.pass);
   const fresh: PairRow[] = [];
   for (const r of passed) {
-    const why = marketRefusal(markets, r.symbol);
+    const why = marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd);
     if (r.screen?.expiredAt) counts.expired++;
     else if (now - (r.screen?.at ?? 0) > maxAge) counts.stale++;
     else if (why) (markets.get(r.symbol) ? counts.refused++ : counts.outside++);

@@ -306,7 +306,7 @@ test('decision 88: a script that fires on more than a tenth of all bars cannot p
 });
 
 test('decision 90: a pair whose shadow delivery is flat or worse against a screen promise half an R higher is retired by its record', () => {
-  const s = (trades: number, avgR: number): PairStats => ({ trades, days: 20, wins: 0, winRatePct: 0, netR: avgR * trades, avgR, pfR: 1, weeks: 3, positiveWeeks: 1, positiveWeeksPct: 33 });
+  const s = (trades: number, avgR: number): PairStats => ({ trades, days: 20, wins: 0, winRatePct: 0, netR: avgR * trades, avgR, pfR: 1, weeks: 3, positiveWeeks: 1, positiveWeeksPct: 33, tStat: 9 });
   assert.equal(deliveryVerdict({ avgR: 1.03 }, s(22, -0.21)).retire, true, 'the BTC 15m case');
   assert.match(deliveryVerdict({ avgR: 1.03 }, s(22, -0.21)).reason ?? '', /delivery: -0.21R over 22 shadow trades against a screen of \+1.03R/);
   assert.equal(deliveryVerdict({ avgR: 1.03 }, s(12, -0.21)).retire, false, 'not before twenty trades');
@@ -387,8 +387,9 @@ test('decision 108: the positive-weeks share is judged only from minWeeks weeks,
   for (const x of t) if (x.entryAt >= T0 + 7 * DAY) x.r = -0.1;
   const s = pairStats(t, T0, T0 + 15 * DAY);
   assert.ok(s.weeks === 3 && s.positiveWeeks === 1 && s.avgR >= gate.minAvgR && (s.pfR ?? 9) >= gate.minPfR, `${s.positiveWeeks}/${s.weeks} weeks, ${s.avgR.toFixed(2)}R, PF ${s.pfR}`);
-  assert.equal(gateVerdict(s, { ...gate, minWeeks: 0 }).decision, 'brewing');
-  const v = gateVerdict(s, { ...gate, minWeeks: 4 });
+  // decision 177's t-statistic is off here: this test is about the weeks rule
+  assert.equal(gateVerdict(s, { ...gate, minWeeks: 0, minT: 0 }).decision, 'brewing');
+  const v = gateVerdict(s, { ...gate, minWeeks: 4, minT: 0 });
   assert.equal(v.decision, 'propose');
   assert.ok(v.reasons.some(r => /judged from 4 weeks/.test(r)));
 
