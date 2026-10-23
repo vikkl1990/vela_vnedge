@@ -65,6 +65,8 @@ export interface Position {
   trailArmedAt?: number;
   trailPeakR?: number;
   trailPeakAt?: number;
+  /** Decision 178: scratch state of an exit model under measurement (the study only; never persisted). */
+  trailState?: Record<string, number>;
   /** When the peak was reached, and the worst excursion before it — the forensic view (decision 35). */
   peakAt?: number;
   worstR?: number;
@@ -474,7 +476,49 @@ export function fillExit(pos: Position, price: number, qty: number, reason: stri
  * Apply one price bar (or tick expressed as a degenerate bar) to an open position.
  * Returns fills produced. SL is evaluated before TPs on the same bar.
  */
-export function applyBar(pos: Position, bar: { time: number; high: number; low: number; close: number }, cfg: PaperConfig, atrNow?: number): Fill[] {
+/**
+ * Decision 178: an exit model from the Vela library under measurement, fed per bar by the backtest. Each model
+ * only ever moves the stop toward price (the trailing property), from wherever the account's own stop started.
+ */
+export interface TrailModel {
+  /** Sigmoid Transition Trailing Stop (LuxAlgo): once price runs `atrMult` ATR ahead of the stop, the stop converges toward price by `sigAmp` ATR along an S-curve over `sigLength` bars, halting within `minDist` ATR of the close. */
+  sigmoid?: { atr: number; atrMult: number; sigLength: number; sigAmp: number; minDist: number };
+  /** A stop level computed outside per side (Statistical / Market Structure Trailing Stop), null when the model has none this bar. */
+  level?: { long: number | null; short: number | null };
+}
+
+export function modelTrail(pos: Position, bar: { close: number }, m: TrailModel): void {
+  if (pos.status !== 'open') return;
+  const long = pos.side === 'long';
+  const raise = (level: number | null | undefined) => {
+    if (level == null || !Number.isFinite(level)) return;
+    if (pos.sl === null || (long ? level > pos.sl : level < pos.sl)) {
+      pos.sl = level;
+      if (long ? level >= pos.entryPrice : level <= pos.entryPrice) pos.breakEven = true;
+    }
+  };
+  if (m.level) raise(long ? m.level.long : m.level.short);
+  const s = m.sigmoid;
+  if (s && s.atr > 0) {
+    const st = (pos.trailState ??= {});
+    const stop = pos.sl ?? pos.slOriginal;
+    if (stop === null) return;
+    const dist = long ? bar.close - stop : stop - bar.close;
+    if (!st.adjusting && dist > s.atrMult * s.atr) { st.adjusting = 1; st.counter = 0; st.start = stop; st.offset = s.sigAmp * s.atr; }
+    if (st.adjusting) {
+      st.counter = (st.counter ?? 0) + 1;
+      const t = Math.min(1, Math.max(0, st.counter / s.sigLength));
+      const x = -6 + 12 * t, sMin = 1 / (1 + Math.exp(6)), sMax = 1 / (1 + Math.exp(-6));
+      const sig = (1 / (1 + Math.exp(-x)) - sMin) / (sMax - sMin);
+      const candidate = long ? st.start + st.offset * sig : st.start - st.offset * sig;
+      const newDist = long ? bar.close - candidate : candidate - bar.close;
+      if (newDist < s.minDist * s.atr || st.counter >= s.sigLength) st.adjusting = 0;
+      else raise(candidate);
+    }
+  }
+}
+
+export function applyBar(pos: Position, bar: { time: number; high: number; low: number; close: number }, cfg: PaperConfig, atrNow?: number, model?: TrailModel | null): Fill[] {
   if (pos.status !== 'open') return [];
   const fills: Fill[] = [];
   const long = pos.side === 'long';
@@ -517,6 +561,7 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   // opened, so a stop raised here only applies from the next bar. Trailing earlier would let
   // the same bar's high both raise the stop and then trigger it.
   trailStop(pos, long ? bar.high : bar.low, cfg, atrNow, bar.time);
+  if (model) modelTrail(pos, bar, model);
   const stale = staleExit(pos, bar, cfg, (TF_SECONDS[pos.tf] ?? 0) * 1000);
   if (stale) fills.push(stale);
   return fills;

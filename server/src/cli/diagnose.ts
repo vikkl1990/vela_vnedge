@@ -13,6 +13,7 @@
  *   tp1         one target at 1R, no trail — do the moves it finds reach 1R at all
  *   levels      our levels, script exit events ignored; script: the script's own exits only — no bot target or trail, a disaster stop (decision 113)
  *   er0.25      the whipsaw gate (decision 66)
+ *   lux-*       decision 178: the Vela library's exit models (sigmoid ATR, statistical L1/L2, market structure), replacing the trail or over it (+ours)
  *   inverted    every signal read the other way — a sign error in the reading shows up here
  *   long/short  one direction only
  * Plus the excursion profile (how many trades saw +0.5R / +1R / +2R before they ended, how many
@@ -26,6 +27,7 @@ import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents, type ScanEvent } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
 import { runBacktest, type BacktestInput } from '../paper/backtest.ts';
+import { luxTrailModels } from '../paper/luxExits.ts';
 import { compareRepaint, REPAINT_CUT } from '../scanners/repaint.ts';
 import { ConfigStore, TF_SECONDS, type PaperConfig } from '../config.ts';
 import { Db } from '../db.ts';
@@ -251,6 +253,18 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (want('limit0')) variants['limit0'] = stat(run({ spreadPct, entry: { pullbackAtr: 0, pullbackBars: 2 } }), b, tfMs);
   if (want('limit0.1')) variants['limit0.1'] = stat(run({ spreadPct, entry: { pullbackAtr: 0.1, pullbackBars: 2 } }), b, tfMs);
   // the cost rule: with the real book paid, only take a trade whose stop is many times the round trip's cost
+  // decision 178: the Vela library's exit models, replacing the account's trail (`lux-*`) or layered over it (`+ours`)
+  if (['lux-sig', 'lux-sig+ours', 'lux-stat1', 'lux-stat2', 'lux-stat2+ours', 'lux-ms', 'lux-ms+ours'].some(want)) {
+    const lux = luxTrailModels(b);
+    const noTrail: Partial<PaperConfig> = { trailAfterR: 0, floorAtR: 0, trailSteps: [] };
+    if (want('lux-sig')) variants['lux-sig'] = stat(run({ spreadPct, trailModel: lux.sigmoid }, noTrail), b, tfMs);
+    if (want('lux-sig+ours')) variants['lux-sig+ours'] = stat(run({ spreadPct, trailModel: lux.sigmoid }), b, tfMs);
+    if (want('lux-stat1')) variants['lux-stat1'] = stat(run({ spreadPct, trailModel: lux.stat1 }, noTrail), b, tfMs);
+    if (want('lux-stat2')) variants['lux-stat2'] = stat(run({ spreadPct, trailModel: lux.stat2 }, noTrail), b, tfMs);
+    if (want('lux-stat2+ours')) variants['lux-stat2+ours'] = stat(run({ spreadPct, trailModel: lux.stat2 }), b, tfMs);
+    if (want('lux-ms')) variants['lux-ms'] = stat(run({ spreadPct, trailModel: lux.ms }, noTrail), b, tfMs);
+    if (want('lux-ms+ours')) variants['lux-ms+ours'] = stat(run({ spreadPct, trailModel: lux.ms }), b, tfMs);
+  }
   if (want('spread+ratio6')) variants['spread+ratio6'] = stat(run({ spreadPct, costRatio: 6 }), b, tfMs);
   if (want('spread+ratio10')) variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
   if (want('spread+er0.25')) variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);

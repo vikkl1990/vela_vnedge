@@ -12,7 +12,7 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { scriptModeExit, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor } from './logic.ts';
+import { scriptModeExit, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor, modelTrail, type TrailModel } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -55,6 +55,8 @@ export interface BacktestInput {
   spreadPct?: number;
   /** Under test: the stop must be at least this many times the round trip's cost (fees plus the book), overriding `minRiskFeeRatio`. */
   costRatio?: number;
+  /** Decision 178: an exit model under measurement, asked once per signal bar (index into `bars`); applied on that bar's close after the bar's fills, as the trail is. */
+  trailModel?: (i: number) => TrailModel | null;
   /**
    * The context gate under test (decision 102): asked at every entry with the signal bar's time and
    * the side; `allow`, `block`, or `unknown` when the context has no reading for that time (the
@@ -134,6 +136,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
 
   let busted = false;
   for (let i = 0; i < bars.length && !busted; i++) {
+    const model = inp.trailModel?.(i) ?? null;
     const bar = bars[i];
     if (equity <= Math.max(0, cfg.initialEquity * 0.02)) { busted = true; rejected['purse_wiped'] = (rejected['purse_wiped'] ?? 0) + 1; break; }
     // 0. a resting pullback limit: filled on the first minute that touches it, dropped when its bars run out
@@ -161,7 +164,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
           }
         } else if (openAt(limit, bar.time, ev, sigI, !isStop)) {
           const o = open as unknown as Position;
-          applyBar(o, bar, cfg, atr[i]);
+          applyBar(o, bar, cfg, atr[i], model);
           if (o.status === 'closed') finish(o);
         }
       }
@@ -182,7 +185,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
           if (open.status === 'open') earlyStallExit(open, sub[j].close, sub[j].time, cfg);
           if (open.status === 'open') earlyCutExit(open, sub[j].close, sub[j].time, cfg);
         }
-      } else applyBar(open, bar, cfg, atr[i]);
+        // the model reads the signal timeframe, once per bar, however many 1m bars resolved the exits
+        if (model && open && (open as Position).status === 'open') modelTrail(open, bar, model);
+      } else applyBar(open, bar, cfg, atr[i], model);
       if (open.status === 'closed') finish(open);
       // a profitable trade whose timeframe turned against it is closed at this bar's close
       if (open && (open as Position).status === 'open' && te?.enabled && !sub) {
