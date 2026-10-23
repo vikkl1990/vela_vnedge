@@ -711,6 +711,47 @@ export class App {
     return this.screenQueue.enqueue({ label, ids, tf, markets, actor });
   }
 
+  /**
+   * The signal radar (decision 183): every market × timeframe the book knows, with its pairs by stage, what the last
+   * `hours` produced (signals as the account saw them, entries and stops in both books, net R) in `bins` time slices,
+   * and the one refusal that explains a quiet cell. The page draws it as a grid.
+   */
+  radarView(hours = 24, bins = 6) {
+    const cfg = this.config.get();
+    const now = Date.now(), since = now - hours * 3600_000, binMs = (hours * 3600_000) / bins;
+    const tfs = cfg.incubator.tfs?.length ? cfg.incubator.tfs : ['15m', '1h', '4h'];
+    type Cell = { live: number; shadow: number; candidate: number; tracked: number; signals: number; opened: number; stops: number; closes: number; netR: number; refusal: string | null; bins: Array<{ opened: number; stops: number }> };
+    const cells = new Map<string, Cell>();
+    const cell = (symbol: string, tf: string) => { const k = `${symbol}|${tf}`; let c = cells.get(k); if (!c) { c = { live: 0, shadow: 0, candidate: 0, tracked: 0, signals: 0, opened: 0, stops: 0, closes: 0, netR: 0, refusal: null, bins: Array.from({ length: bins }, () => ({ opened: 0, stops: 0 })) }; cells.set(k, c); } return c; };
+    for (const r of this.incubatorStore.list()) {
+      if (!tfs.includes(r.tf) || r.stage === 'retired') continue;
+      const c = cell(r.symbol, r.tf);
+      if (r.stage === 'live' || r.stage === 'demote_proposed') c.live++; else if (r.stage === 'shadow' || r.stage === 'proposed') c.shadow++; else if (r.stage === 'candidate') c.candidate++; else if (r.stage === 'tracked') c.tracked++;
+    }
+    const refusals = new Map<string, Map<string, number>>();
+    const classify = (a: string) => /stop too tight|cost rule|round trip/i.test(a) ? 'cost rule' : /regime/i.test(a) ? 'regime gate' : /market gate|dead:|thin|costly book|not paying/i.test(a) ? 'market gate' : /max .*positions|burst|cooldown|one at a time/i.test(a) ? 'position caps' : /daily loss|halt|kill/i.test(a) ? 'halt' : /own stop/i.test(a) ? 'script stop' : /unpriceable/i.test(a) ? 'no quote' : 'other';
+    for (const s of this.db.all<{ symbol: string; tf: string; action: string | null }>('SELECT symbol, tf, action FROM signals WHERE at >= ? AND kind = ?', since, 'entry')) {
+      if (!tfs.includes(s.tf)) continue;
+      const c = cell(s.symbol, s.tf); c.signals++;
+      if (s.action?.startsWith('rejected')) { const k = `${s.symbol}|${s.tf}`; const m = refusals.get(k) ?? new Map(); const cls = classify(s.action); m.set(cls, (m.get(cls) ?? 0) + 1); refusals.set(k, m); }
+    }
+    for (const [k, m] of refusals) { const c = cells.get(k)!; const top = [...m].sort((a, b) => b[1] - a[1])[0]; if (top) c.refusal = `${top[0]} ×${top[1]}`; }
+    for (const p of this.db.all<{ symbol: string; tf: string; entry_at: number; exit_at: number | null; exit_reason: string | null; net: number; risk: number }>('SELECT symbol, tf, entry_at, exit_at, exit_reason, realized_pnl - fees AS net, risk_amount AS risk FROM positions WHERE bt IN (0, 2) AND (entry_at >= ? OR exit_at >= ?)', since, since)) {
+      if (!tfs.includes(p.tf)) continue;
+      const c = cell(p.symbol, p.tf);
+      if (p.entry_at >= since) { c.opened++; c.bins[Math.min(bins - 1, Math.floor((p.entry_at - since) / binMs))].opened++; }
+      if (p.exit_at && p.exit_at >= since) { c.closes++; if (p.risk > 0) c.netR += p.net / p.risk; if (p.exit_reason === 'sl') { c.stops++; c.bins[Math.min(bins - 1, Math.floor((p.exit_at - since) / binMs))].stops++; } }
+    }
+    const gate = new Map(this.marketGate.today.markets.map(m => [m.symbol, m]));
+    const symbols = [...new Set([...cells.keys()].map(k => k.split('|')[0]))];
+    const markets = symbols.map(symbol => ({
+      symbol, turnoverUsd: gate.get(symbol)?.turnoverUsd ?? null, allowed: gate.get(symbol)?.allowed ?? null, atrPct: gate.get(symbol)?.atrPct ?? null,
+      cells: Object.fromEntries(tfs.map(tf => [tf, cells.get(`${symbol}|${tf}`) ?? null])),
+    })).sort((a, b) => (b.turnoverUsd ?? -1) - (a.turnoverUsd ?? -1));
+    const totals = Object.fromEntries(tfs.map(tf => { const t = { live: 0, shadow: 0, candidate: 0, tracked: 0, signals: 0, opened: 0, stops: 0, closes: 0, netR: 0 }; for (const [k, c] of cells) if (k.endsWith(`|${tf}`)) for (const f of Object.keys(t) as Array<keyof typeof t>) t[f] += c[f]; return [tf, t]; }));
+    return { at: now, hours, bins, tfs, markets, totals, reserve: cfg.incubator.admit.reserve ?? [], maxShadow: cfg.incubator.maxShadow };
+  }
+
   incubatorView() {
     const cfg = this.config.get();
     const now = Date.now();

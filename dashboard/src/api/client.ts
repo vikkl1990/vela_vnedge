@@ -28,7 +28,7 @@ import type {
   TradeQuery, MlSnapshot,
   MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
   LibraryDetail,
-  LibraryList, ScreenJob, ScreenQueueView } from './types'
+  LibraryList, ScreenJob, ScreenQueueView, RadarView } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -128,6 +128,7 @@ export const api = {
 
   // incubator
   incubator: () => get<IncubatorView>('/incubator'),
+  radar: (hours: number) => get<RadarView>(`/radar?hours=${hours}`),
   incubatorDecide: (v: { id: number; action: 'approve' | 'reject' | 'demote'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
   incubatorEvaluate: () => post<{ report: unknown }>('/incubator/evaluate'),
   screenQueue: () => get<ScreenQueueView>('/incubator/screen'),

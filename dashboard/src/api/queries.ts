@@ -278,6 +278,10 @@ export function useOpsMetricsHistory(hours = 24) {
 }
 
 /** Decision 174: the on-demand screen queue, polled while something runs. */
+export function useRadar(hours: number) {
+  return useQuery({ queryKey: ['radar', hours], queryFn: () => api.radar(hours), refetchInterval: 60_000 })
+}
+
 export function useScreenQueue() {
   return useQuery({ queryKey: ['screen-queue'], queryFn: api.screenQueue, refetchInterval: (q) => (q.state.data?.running || q.state.data?.queued.length ? 10_000 : 60_000) })
 }

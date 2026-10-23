@@ -796,3 +796,12 @@ export interface ScreenJob {
   progress?: { scripts: number; done: number; runs: number; passed: number }; summary?: string; error?: string; tail: string[]
 }
 export interface ScreenQueueView { running: ScreenJob | null; queued: ScreenJob[]; history: ScreenJob[]; nightlyRunning: boolean; capped: boolean }
+
+/** Decision 183: the signal radar, market × timeframe. */
+export interface RadarCell { live: number; shadow: number; candidate: number; tracked: number; signals: number; opened: number; stops: number; closes: number; netR: number; refusal: string | null; bins: Array<{ opened: number; stops: number }> }
+export interface RadarMarket { symbol: string; turnoverUsd: number | null; allowed: boolean | null; atrPct: number | null; cells: Record<string, RadarCell | null> }
+export interface RadarView {
+  at: number; hours: number; bins: number; tfs: string[]; markets: RadarMarket[]
+  totals: Record<string, { live: number; shadow: number; candidate: number; tracked: number; signals: number; opened: number; stops: number; closes: number; netR: number }>
+  reserve: Array<{ tfs?: string[]; markets?: string[]; slots: number }>; maxShadow: number
+}

@@ -37,6 +37,7 @@ import {
   IconTrades,
   IconUser,
   IconUsers,
+  IconGrid,
 } from './Icons'
 import { BookBadge, ConfirmDialog, StatusDot } from './ui'
 
@@ -49,6 +50,7 @@ const GROUPS: Array<{ label: string; items: NavItem[] }> = [
     items: [
       { to: '/', label: 'Overview', icon: IconActivity, end: true, key: 'o' },
       { to: '/signals', label: 'Signals', icon: IconBell, key: 'i' },
+      { to: '/radar', label: 'Radar', icon: IconGrid, key: 'w' },
       { to: '/trades', label: 'Trades', icon: IconTrades, key: 't' },
       { to: '/chart', label: 'Chart', icon: IconCandles, key: 'c' },
     ],

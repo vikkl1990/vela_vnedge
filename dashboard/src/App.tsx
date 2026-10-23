@@ -10,6 +10,7 @@ import { ChartPage } from './pages/ChartPage'
 import { Analytics } from './pages/Analytics'
 import { Daily } from './pages/Daily'
 import { Trackers } from './pages/Trackers'
+import Radar from './pages/Radar'
 import { Library } from './pages/Library'
 import { TradeReplay } from './pages/TradeReplay'
 import { Learn } from './pages/Learn'
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="scanners" element={<Scanners />} />
           <Route path="scanners/:id" element={<ScannerDetail />} />
           <Route path="signals" element={<Signals />} />
+          <Route path="radar" element={<Radar />} />
           <Route path="trades" element={<Trades />} />
           <Route path="trades/:id/replay" element={<TradeReplay />} />
           <Route path="chart" element={<ChartPage />} />

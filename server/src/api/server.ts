@@ -387,6 +387,7 @@ export class ApiServer {
     // Fill quality: what the cost assumption was worth against the book actually quoted.
     // incubator: reading is open to every account; deciding needs trade access (default-deny POST)
     this.add('GET', '/api/incubator', () => a.incubatorView());
+    this.add('GET', '/api/radar', (_r, _s, _p, url) => a.radarView(Math.min(168, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));
     this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));
     // decision 174: screening on demand
     this.add('GET', '/api/incubator/screen', () => a.screenQueue.list());
