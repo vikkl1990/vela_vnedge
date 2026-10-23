@@ -5385,3 +5385,9 @@ first minutes on the shadow book behaved as the study did (6 of 19 open position
 stop can act; no errors). Open account positions at the deploy get the current structure level at once, as the shadow
 book's did. The comparison that was to come from the forward test now comes from the account's own record: its exits
 from this deploy against the 17 days before, same cut as the audit.
+
+**The account missed the first eleven hours.** The first deploy's default (`books: ['shadow']`) had been persisted into
+the VM's `config.json`, which `ConfigStore` writes back as the full merged config; the second deploy's new default never
+reached it. ZECUSD 1h at 14:00 UTC showed it: the shadow twin's stop moved to +0.11R and closed, the account's stayed at
+−1R. Set in `config.json` at 15:05 UTC (backup `config.json.bak-d178-books-…`), service restarted 15:06. A changed
+code default is not a rollout once the key exists on the VM; the value goes in the config, or on the Settings page.
