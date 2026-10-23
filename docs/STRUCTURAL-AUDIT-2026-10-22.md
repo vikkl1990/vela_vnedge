@@ -118,3 +118,7 @@ Item 4 is a design decision for the user.
 Items 1, 2 and 5 are in as decision 177 (`gate.minT` 2, `mirror.minTrades` 5 / `minNetR` 0 / `minTurnoverUsd` $2M,
 `gate.minTurnoverUsd` $5M). Item 3 was replayed and rejected: a net-side cap removed the trend-day winners along with
 the losers (±2: 38 trades, +$73 given up). Item 4 (timeframe weight and payoff) remains the user's decision.
+
+Item 4, first result (decision 178): of the Vela library's exit models, a market-structure stop layered over the
+current trail lifts the study grid from +559R to +891R (+0.065 → +0.102 a trade), both halves, all timeframes, 14 of
+15 scanners — by cutting losers before the trail arms, not by enlarging winners. Forward test on the shadow book next.

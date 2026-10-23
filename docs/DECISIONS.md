@@ -5339,3 +5339,34 @@ Tested and **not** adopted: a cap on net same-side exposure. Replayed at ±1/±2
 trades, and those trades were net positive (±2: +$73) — the clustered same-side entries are the trend-day winners,
 and the cap cuts the good days with the bad. The 0.54 correlation of daily P&L with BTC's daily move stands as a
 description of what the book is, not something a side count fixes.
+
+## 178. The Vela library's exit models measured: a market-structure stop over the trail is the one that pays (23 October 2026)
+
+The structural audit named the payoff as the arithmetic problem: trail exits average +0.54R against −0.98R stops, a
+64.5% break-even hit rate the account runs three points under. The Vela library's Risk & Exits family holds three
+trailing-stop models of a different family from the fixed give-back, so they were ported from their Pine (© LuxAlgo,
+CC BY-NC-SA 4.0; `paper/luxExits.ts`, `modelTrail` in `paper/logic.ts`, `diagnose` variants `lux-*`) and run on
+the trail study's grid: the account's 15 scanners × BTC, ETH, SOL, XRP, ZEC, AKE × 15m/1h/4h, 4,000 bars, the spread
+paid, 221 cells, 8,658 trades. The account's ATR stop sets where every stop starts; a model only says how it moves,
+either replacing the trail or layered over it (whichever is higher wins). `_research/lux-exits-20261023/`.
+
+| exits | total R | R a trade | halves | cells positive | beats current |
+|---|---|---|---|---|---|
+| current | +559 | +0.065 | +391 / +168 | 129 of 221 | — |
+| Sigmoid ATR (replace / over ours) | −161 / +546 | −0.021 / +0.063 | | 88 / 130 | 79 / 60 |
+| Statistical L1 (replace) | −6 | −0.001 | +182 / −187 | 103 | 79 |
+| Statistical L2 (replace / over ours) | −4 / +546 | −0.001 / +0.063 | | 99 / 130 | 79 / 17 |
+| Market Structure (replace) | +265 | +0.036 | +340 / −74 | 110 | 88 |
+| **Market Structure over ours** | **+891** | **+0.102** | **+581 / +310** | **152** | **121** |
+
+Replacing the trail with any library model loses: a chart's trailing stop gives a 0.5R-sized trade back to the
+market. Layered over the trail, Sigmoid and Statistical are a wash. The Market Structure stop (pivot 14, CHoCH
+reset, increment 100%, the library's defaults, untuned) over the trail: 14 of 15 scanners better (alphamojo-supertrend
+−8R of 64), all six markets better, 15m −34R → +40R, 1h +177 → +292, 4h +416 → +560, median cell +0.30R, the top
+five cells 21% of the gain. The mechanism is not bigger winners — the win rate is 61.2% → 61.9% and no more trades
+reach 1R — it is smaller losers: after a change of character the stop sits under the broken leg's low and follows
+the running close, tightening a trade before the trail arms at +0.5R, on exactly the 40% of trades that never get there.
+
+**Not changed yet.** The gain is in-sample on the shadow journal. Next is a forward test on the shadow book: the
+structure stop computed live per open shadow position (`paper.structureTrail`), two weeks of record with t > 1 against
+the account's exits on the same signals, before the account takes it.
