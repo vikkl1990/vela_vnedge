@@ -5424,3 +5424,7 @@ The account is not slot-bound (open 0–7 of 8 through the day), so total R is t
 **Recommended, not changed:** `risk.regime.minEr` 0.25 → 0.1 (Settings → Gates): +30% total R against the current
 floor on the grid, 55% more trades, both halves. The cost is more entries on a chop day, where the daily loss limit
 is the backstop; the gate is kept at 0.1 rather than off because 0.1 still beats no gate on 1h and loses least on 4h.
+
+**Set (23 October, 16:35 UTC, the user's call).** `risk.regime.minEr` 0.1 in the VM config (backup
+`config.json.bak-d180-miner-…`), service restarted. The journal from here measures it: regime refusals per wave, the
+account's entries and stops on the next chop day.
