@@ -5378,3 +5378,10 @@ bars on first use and fed every closed bar after. Each book's engine asks `struc
 bar and, when its book is named, layers the level over the trail through `modelTrail` (never lower, break-even once
 past the entry, a stop in profit reads as `trail`). The shadow book runs the forward test from the deploy; the account
 is untouched until `books` names it. The Gates page carries the rule under Trade → "Market-structure stop".
+
+**The account too (23 October, 03:50 UTC, the user's call).** `books` defaults to `['account', 'shadow']`: the
+forward test on the shadow book is skipped and the paper account takes the structure stop from the same deploy. The
+first minutes on the shadow book behaved as the study did (6 of 19 open positions tightened under +0.5R, where only this
+stop can act; no errors). Open account positions at the deploy get the current structure level at once, as the shadow
+book's did. The comparison that was to come from the forward test now comes from the account's own record: its exits
+from this deploy against the 17 days before, same cut as the audit.
