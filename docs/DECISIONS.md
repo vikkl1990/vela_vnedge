@@ -5400,3 +5400,27 @@ The incubator check showed 0 live cells on 4h against 70 in shadow, and the day'
 as the one with payoff. The shadow stale cap already follows the timeframe (decision 108); the silent cap now does too:
 `demote.silentDaysByTf` `{ '1h': 30, '4h': 60 }`, `silentDays` the fallback. The two ETH 4h cells are back in shadow and
 must pass the gate again; the operator can promote them by hand from the Incubator page.
+
+## 180. The regime gate's efficiency floor measured: 0.25 buys +0.02R a trade with a third of the total (23 October 2026)
+
+The incubator check showed the regime gate (`risk.regime.minEr` 0.25, Kaufman efficiency over 20 bars) refusing 1,051
+of about 1,730 shadow entries a day — 61%, the dominant filter on the book. Decision 147 had proposed 0.1. Measured on
+the trail study's grid (15 account scanners × 6 majors × 3 timeframes, 4,000 bars, spread paid, 216 cells):
+`_research/er-floor-20261023/`.
+
+| floor | trades | total R | R a trade | halves | cells positive |
+|---|---|---|---|---|---|
+| none | 8,362 | +514 | +0.061 | +352 / +162 | 125 of 216 |
+| 0.10 | 6,715 | +458 | +0.068 | +310 / +148 | 127 |
+| 0.15 | 5,920 | +405 | +0.068 | +250 / +155 | 129 |
+| 0.20 | 5,137 | +406 | +0.079 | +243 / +163 | 130 |
+| **0.25 (current)** | 4,326 | +352 | +0.081 | +201 / +152 | 130 |
+
+The floor raises the average trade and lowers the total at every step: 0.25 drops 48% of the trades and 31% of the
+R against no gate, in both halves. By timeframe: 15m is negative under every floor (the gate does not rescue it); 1h is
+best at 0.1–0.2 (+172R at 0.1 against +160 ungated and +114 at 0.25); 4h loses total R at every floor (+380 → +262).
+The account is not slot-bound (open 0–7 of 8 through the day), so total R is the number that reaches the equity.
+
+**Recommended, not changed:** `risk.regime.minEr` 0.25 → 0.1 (Settings → Gates): +30% total R against the current
+floor on the grid, 55% more trades, both halves. The cost is more entries on a chop day, where the daily loss limit
+is the backstop; the gate is kept at 0.1 rather than off because 0.1 still beats no gate on 1h and loses least on 4h.
