@@ -5626,8 +5626,9 @@ and the top bar's Size stat explains whichever basis is in force. The VM's persi
 **Why.** The tape audit's first resting limits (24 October, 17:01–17:02 UTC): LABUSD and ONDOUSD 1h limits filled on paper
 while no trade after their placement went through the limit price. LABUSD's limit was placed at 17:01:32 and filled at
 17:02:00 on the 17:01 minute candle. That candle's low may have printed in the 32 seconds before the order existed. The
-fill rule accepted any minute that *ended* after placement. On thin coins the trade stream is often silent, and the candle
-is the fallback that decides the fill, so this was where the paper was optimistic.
+fill rule accepted any minute that *ended* after placement. The VM runs `paper.fillSource: 'candles'`, so the candle
+updates decide every paper fill, on every coin: each limit could fill on its placing minute's earlier low or high. (A first
+draft of this entry said only thin coins were affected; that was wrong.)
 
 **What.** The candle fallback now fills a resting limit only on a minute that *began* at or after placement. Fills from the
 trade stream are unchanged: each trade carries its own time and is compared with the placement. This matches the backtest
