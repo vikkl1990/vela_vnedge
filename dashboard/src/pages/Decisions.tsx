@@ -9,6 +9,7 @@ import { Clocks, Evidence, Funnel } from '../components/incubatorBits'
 import { clockRank } from '../lib/incubatorLogic'
 import { ConfirmDialog, Empty, PageTitle, Panel, Pill, QueryState } from '../components/ui'
 import { timeAgo } from '../lib/format'
+import { gateMinimums } from '../lib/incubatorLogic'
 
 /**
  * Decision 121: the operator's queue. Everything that waits for a decision, ranked, each with its evidence and its
@@ -69,7 +70,7 @@ export function Decisions() {
             )}
 
             <Panel title={`Proposals (${cards.proposals.length})`} right={<span className="muted small">promote, reject, or confirm a demotion</span>}>
-              {cards.proposals.length === 0 ? <p className="muted small">No proposal waits. The gate proposes a cohort after ≥{v.config.gate.minTrades} shadow trades over ≥{v.config.gate.minDays} days with PF ≥ {v.config.gate.minPfR} and ≥{v.config.gate.minAvgR}R per trade.</p> : (
+              {cards.proposals.length === 0 ? <p className="muted small">No proposal waits. The gate proposes {v.config.gate.pool === 'cohort' ? 'a cohort' : 'a pair'} after {gateMinimums(v.config.gate)} with PF ≥ {v.config.gate.minPfR} and ≥{v.config.gate.minAvgR}R per trade.</p> : (
                 <div className="decision-cards">
                   {cards.proposals.map((p) => (
                     <article key={p.id} className={`decision-card ${p.stage === 'demote_proposed' ? 'soon' : ''}`}>

@@ -285,7 +285,9 @@ function SystemPanel() {
   return (
     <Panel title="System, last 24 h" right={<span className="muted small">{rows.length ? `${rows.length} samples` : ''}</span>}>
       {h.isLoading && !rows.length ? <Loading kind="kpi" rows={4} /> : null}
-      {!h.isLoading && !rows.length ? <p className="muted small">No samples yet: the monitor writes one a minute.</p> : null}
+      {/* decision 196: a failed request is an error, not an empty history */}
+      {h.isError && !rows.length ? <ErrorState error={h.error as Error} label="System history unavailable" onRetry={() => h.refetch()} /> : null}
+      {!h.isLoading && !h.isError && !rows.length ? <p className="muted small">No samples yet: the monitor writes one a minute.</p> : null}
       {rows.length > 0 && (
         <div className="kv-list">
           {row('Resident memory', rows.map((r) => r.rss), mb, 'The whole process, worker heaps included; the kernel kills it at the cgroup limit')}

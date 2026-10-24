@@ -5789,3 +5789,25 @@ misreads actions:
   will not trade live without `scanners.<id>.rulePin`.
 - **Library.** The nightly judge retires a shadow, proposed or tracked pair whose scanner cannot run, with the
   library's reason (actor `library`).
+
+## 196. The dashboard audit: thresholds per timeframe, the system history, pair identity, the phone Daily page, two labels
+
+**Why.** A read-only review of the deployed dashboard (24 October), each finding checked against the source first.
+
+**What.**
+
+- **Incubator progress uses the gate the judge uses.** The page applied `gate.minTrades`/`minDays` to every
+  timeframe; the judge applies `minTradesByTf`/`minDaysByTf` (`gateFor`). A 4h pair showed a 14-day bar while its gate
+  needed 45, so its countdown read "now" weeks early. Progress, countdown, evidence and the explanatory text (Incubator
+  and Decisions) now use the timeframe's minimums, and list them. The shadow table follows the gate's pooling: one row
+  per pair in `pair` mode (the VM's), cohorts with their markets in `cohort` mode.
+- **The system history loads.** The client asked for `/api/api/ops/metrics/history`; the Overview panel defaulted the
+  failure to an empty list and said "No samples yet". The path is fixed and a failed request shows an error with Retry.
+- **A live pair names its timeframe** in the account table and in the confirmation titles, so "To shadow" says which
+  scanner, market and timeframe it moves.
+- **Daily on a phone.** The card layout kept the table's desktop width, so the values sat off-screen in a sideways
+  scroll. The table and its body take the container's width and long names wrap; checked at 375 px and at 130% text.
+- **Labels.** Daily's "Equity" is the realized balance (starting capital plus closed trades), now named so; the top
+  bar's equity also counts open positions. The sizing comparison was fixed to a 20 October trial whose decision is
+  made (margin sizing is on); it is now the last 14 days' margin re-weighting, described as a counterfactual on closed
+  trades, with the sizing mode in force beside it.

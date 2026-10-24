@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { useConfig } from '../api/queries'
 import type { DailyRow } from '../api/types'
 import { PageTitle, Panel, QueryState } from '../components/ui'
 import { fmtPnl } from '../lib/format'
@@ -21,11 +22,14 @@ function sumWeek(rows: DailyRow[]) {
 
 export function Daily() {
   const q = useQuery({ queryKey: ['daily'], queryFn: () => api.dailyReport(30), refetchInterval: 60_000, staleTime: 30_000 })
-  // decision 138: the forward check of margin sizing, from the day it was measured
+  const cfg = useConfig()
+  const sizing = cfg.data?.paper?.sizingMode
+  // decision 196: the margin re-weighting over a rolling 14 days (the newest first, today partial), not a trial window
+  // fixed to a date: a counterfactual statistic on closed trades, not a replay of the portfolio
   const since = useMemo(() => {
-    const rows = (q.data ?? []).filter((x) => x.day >= '2026-10-20')
+    const rows = (q.data ?? []).slice(0, 14)
     const t = (f: (x: DailyRow) => number) => rows.reduce((a, x) => a + f(x), 0)
-    return { days: rows.length, a: t((x) => x.account.sumR), am: t((x) => x.account.marginSumR), s: t((x) => x.shadow.sumR), sm: t((x) => x.shadow.marginSumR) }
+    return { days: rows.length, partial: rows.some((x) => x.partial), a: t((x) => x.account.sumR), am: t((x) => x.account.marginSumR), s: t((x) => x.shadow.sumR), sm: t((x) => x.shadow.marginSumR) }
   }, [q.data])
   const weeks = useMemo(() => {
     const done = (q.data ?? []).filter((x) => !x.partial)
@@ -33,7 +37,7 @@ export function Daily() {
   }, [q.data])
   return (
     <div className="page">
-      <PageTitle pre="Every day," accent="as it happened." sub="One row per UTC day, newest first; today is partial. Trades count on the day they closed, R is net of fees, and the trail column is the share of the peak a trail exit kept." />
+      <PageTitle pre="Every day," accent="as it happened." sub="One row per UTC day, newest first; today is partial. Trades count on the day they closed, R is net of fees, and the trail column is the share of the peak a trail exit kept. The realized balance is starting capital plus closed trades; the equity in the top bar also counts open positions." />
       <QueryState {...q} data={q.data} empty="No trades yet." onRetry={() => q.refetch()}>
         {(rows) => (
           <>
@@ -42,11 +46,11 @@ export function Daily() {
               <span role="listitem"><span className="stat-k">7 days before</span> <span className={`mono ${tone(weeks.prior.sr)}`}>{r(weeks.prior.avg, 3)}R</span> <span className="muted">over {weeks.prior.n}, net {fmtPnl(weeks.prior.net)}</span></span>
               <span role="listitem"><span className="stat-k">Shadow, last 7 days</span> <span className={`mono ${tone(weeks.last.ssr)}`}>{r(weeks.last.savg, 3)}R</span> <span className="muted">over {weeks.last.sn}</span></span>
               <span role="listitem"><span className="stat-k">7 days before</span> <span className={`mono ${tone(weeks.prior.ssr)}`}>{r(weeks.prior.savg, 3)}R</span> <span className="muted">over {weeks.prior.sn}</span></span>
-              <span role="listitem" title="Decision 138: the same trades re-scored as if each had posted the same margin, at the same average risk. Two weeks of this decide whether margin sizing is switched on."><span className="stat-k">Sizing check since 20 Oct</span> <span className="muted">shadow</span> <span className={`mono ${tone(since.s)}`}>{r(since.s, 1)}R</span> <span className="muted">now vs</span> <span className={`mono ${tone(since.sm)}`}>{r(since.sm, 1)}R</span> <span className="muted">by margin · account</span> <span className={`mono ${tone(since.a)}`}>{r(since.a, 1)}</span> <span className="muted">vs</span> <span className={`mono ${tone(since.am)}`}>{r(since.am, 1)}</span> <span className="muted">· {since.days} days</span></span>
+              <span role="listitem" title={`A counterfactual on closed trades, not a replay: the same trades' R re-weighted as if each had posted the same margin at the same average risk, beside their R as risk-sized. Sizing in force now: ${sizing ?? 'unknown'}.${since.partial ? ' Today is partial.' : ''}`}><span className="stat-k">Margin re-weighting, last {since.days} days</span> <span className="muted">shadow</span> <span className={`mono ${tone(since.s)}`}>{r(since.s, 1)}R</span> <span className="muted">now vs</span> <span className={`mono ${tone(since.sm)}`}>{r(since.sm, 1)}R</span> <span className="muted">by margin · account</span> <span className={`mono ${tone(since.a)}`}>{r(since.a, 1)}</span> <span className="muted">vs</span> <span className={`mono ${tone(since.am)}`}>{r(since.am, 1)}</span> <span className="muted">· sizing now {sizing ?? '–'}</span></span>
             </div>
             <Panel title="Account" pad={false}>
               <div className="table-wrap"><table className="table small daily-table">
-                <thead><tr><th>Day</th><th>Trades</th><th>Net</th><th>Fees</th><th>R a trade</th><th>Sum R</th><th>If sized by margin</th><th>Stopped</th><th>Trailed</th><th>Trail kept</th><th>Equity</th><th>Best · worst scanner</th></tr></thead>
+                <thead><tr><th>Day</th><th>Trades</th><th>Net</th><th>Fees</th><th>R a trade</th><th>Sum R</th><th>If sized by margin</th><th>Stopped</th><th>Trailed</th><th>Trail kept</th><th title="Starting capital plus every closed trade to the end of the day. The top bar's equity also counts open positions.">Realized balance</th><th>Best · worst scanner</th></tr></thead>
                 <tbody>{rows.map((d) => (
                   <tr key={d.day} className={d.partial ? 'muted' : ''}>
                     <td className="mono" data-label="Day">{d.day}{d.partial ? ' (so far)' : ''}</td>
@@ -59,7 +63,7 @@ export function Daily() {
                     <td className="mono" data-label="Stopped">{d.account.stops}</td>
                     <td className="mono" data-label="Trailed">{d.account.trails}</td>
                     <td className="mono" data-label="Trail kept">{keeps(d.account.trailKeeps)}</td>
-                    <td className="mono" data-label="Equity">{d.equity.toFixed(2)}</td>
+                    <td className="mono" data-label="Realized balance">{d.equity.toFixed(2)}</td>
                     <td className="small" data-label="Best · worst">{d.account.best ? `${d.account.best.scanner} ${r(d.account.best.sumR, 1)} · ${d.account.worst!.scanner} ${r(d.account.worst!.sumR, 1)}` : '–'}</td>
                   </tr>))}</tbody>
               </table></div>

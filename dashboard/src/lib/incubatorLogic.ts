@@ -12,3 +12,16 @@ export function clockRank(p: IncubatorPair, cfg: IncubatorView['config']['demote
   const starved = cfg.costStarvedRefusals && p.funnel && p.funnel.opened === 0 && p.funnel.cost > 0 ? (p.funnel.cost >= cfg.costStarvedRefusals ? 2 : 1) : 0
   return Math.max(out, silent, starved)
 }
+
+type Gate = IncubatorView['config']['gate']
+/** The gate as the judge applies it to one timeframe (server: `gateFor`): per-timeframe trade and day minimums win. */
+export function gateFor(g: Gate, tf: string): Gate {
+  return { ...g, minTrades: g.minTradesByTf?.[tf] ?? g.minTrades, minDays: g.minDaysByTf?.[tf] ?? g.minDays }
+}
+/** "≥30 trades over ≥14 days (1h: 20 over 28 · 4h: 12 over 45)": the minimums in words, every timeframe that differs. */
+export function gateMinimums(g: Gate): string {
+  const t = g.minTradesByTf ?? {}, d = g.minDaysByTf ?? {}
+  const tfs = [...new Set([...Object.keys(t), ...Object.keys(d)])]
+  const extra = tfs.map((tf) => `${tf}: ${t[tf] ?? g.minTrades} over ${d[tf] ?? g.minDays}`).join(' · ')
+  return `≥${g.minTrades} shadow trades over ≥${g.minDays} days${extra ? ` (${extra})` : ''}`
+}

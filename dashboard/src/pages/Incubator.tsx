@@ -8,7 +8,7 @@ import { BookBadge, ConfirmDialog, Empty, KpiTile, PageTitle, Panel, Pill, Query
 import { Clocks, Evidence, Funnel, Need } from '../components/incubatorBits'
 import { ScreenQueuePanel } from '../components/ScreenQueuePanel'
 import { OverlapPanel } from '../components/OverlapPanel'
-import { clockRank, pf, r } from '../lib/incubatorLogic'
+import { clockRank, gateFor, gateMinimums, pf, r } from '../lib/incubatorLogic'
 import { fmtNum, timeAgo, fmtR } from '../lib/format'
 
 /**
@@ -37,10 +37,11 @@ export default function Incubator() {
           const now = d.lastRun?.at ?? renderedAt
           const live = by('live').sort((a, b) => clockRank(b, d.config.demote, now) - clockRank(a, d.config.demote, now) || (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
           const g = d.config.gate
-          // the shadow book grouped by cohort (scanner × timeframe): the gate judges the cohort, so the row that carries its verdict heads its members
+          // grouped the way the gate judges: by cohort (scanner × timeframe) in cohort mode, one pair at a time in pair mode
+          const byCohort = g.pool === 'cohort'
           const cohorts = (() => {
             const groups = new Map<string, IncubatorPair[]>()
-            for (const p of [...shadow, ...by('proposed')]) { const k = `${p.scannerId}|${p.tf}`; groups.set(k, [...(groups.get(k) ?? []), p]) }
+            for (const p of [...shadow, ...by('proposed')]) { const k = byCohort ? `${p.scannerId}|${p.tf}` : `pair:${p.id}`; groups.set(k, [...(groups.get(k) ?? []), p]) }
             return [...groups.entries()].map(([k, ps]) => {
               const trades = ps.reduce((a, p) => a + (p.stats?.trades ?? 0), 0)
               const netR = ps.reduce((a, p) => a + (p.stats?.netR ?? 0), 0)
@@ -49,9 +50,11 @@ export default function Incubator() {
               const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
               const gate = ps.find((p) => p.gate)?.gate ?? null
               const rate = days > 0 ? trades / days : 0
-              const need = Math.max(0, g.minTrades - trades)
-              const eta = need === 0 ? Math.max(0, g.minDays - days) : rate > 0 ? Math.max(need / rate, g.minDays - days) : Infinity
-              return { k, scanner: ps[0].scannerName, scannerId: ps[0].scannerId, tf: ps[0].tf, members: ps.sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0)), trades, avgR: trades ? netR / trades : 0, days, pos, judged, gate, eta }
+              // decision 196: the minimums of this timeframe, as the judge applies them (4h needs 45 days, not 14)
+              const gg = gateFor(g, ps[0].tf)
+              const need = Math.max(0, gg.minTrades - trades)
+              const eta = need === 0 ? Math.max(0, gg.minDays - days) : rate > 0 ? Math.max(need / rate, gg.minDays - days) : Infinity
+              return { k, gg, symbol: ps[0].symbol, scanner: ps[0].scannerName, scannerId: ps[0].scannerId, tf: ps[0].tf, members: ps.sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0)), trades, avgR: trades ? netR / trades : 0, days, pos, judged, gate, eta }
             }).sort((a, b) => Number(b.gate?.decision === 'propose') - Number(a.gate?.decision === 'propose') || a.eta - b.eta || b.trades - a.trades)
           })()
           return (
@@ -80,7 +83,7 @@ export default function Incubator() {
                 right={auth.canTrade ? <button className="btn btn-sm" onClick={() => evaluate.mutate()} disabled={evaluate.isPending}>{evaluate.isPending ? 'Judging…' : 'Re-judge now'}</button> : null}
               >
                 {decisions.length === 0 ? (
-                  <Empty label="Nothing to decide." hint={`A shadow pair is proposed after ≥${g.minTrades} shadow trades over ≥${g.minDays} days with PF ≥ ${g.minPfR}, ≥${g.minPositiveWeeksPct}% of weeks positive and ≥${g.minAvgR}R per trade. A live pair is proposed for demotion when its last ${d.config.demote.window} trades fall below PF ${d.config.demote.maxPfR}.`} />
+                  <Empty label="Nothing to decide." hint={`A shadow pair is proposed after ${gateMinimums(g)} with PF ≥ ${g.minPfR}, ≥${g.minPositiveWeeksPct}% of weeks positive and ≥${g.minAvgR}R per trade. A live pair is proposed for demotion when its last ${d.config.demote.window} trades fall below PF ${d.config.demote.maxPfR}.`} />
                 ) : (
                   <div className="table-wrap">
                     <table className="table">
@@ -92,7 +95,7 @@ export default function Incubator() {
                             <td>{p.stage === 'proposed' ? <Pill tone="ok">Promote</Pill> : <Pill tone="danger">Demote</Pill>}</td>
                             <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
                             <td className="mono">{p.symbol} · {p.tf}</td>
-                            <td>{p.stage === 'proposed' ? <div className="small"><Evidence s={p.gate?.stats ?? p.stats} g={g} />{p.gate?.cohort && <div className="muted">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}</div> : <div className="small">{p.gate?.reasons?.[0] ?? 'the gate proposes demotion'}</div>}{p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={g} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
+                            <td>{p.stage === 'proposed' ? <div className="small"><Evidence s={p.gate?.stats ?? p.stats} g={gateFor(g, p.tf)} />{p.gate?.cohort && <div className="muted">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}</div> : <div className="small">{p.gate?.reasons?.[0] ?? 'the gate proposes demotion'}</div>}{p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={g} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
                             <td className="small"><Funnel f={p.funnel} /></td>
                             <td className="muted small">{timeAgo(p.since)}</td>
                             <td className="nowrap">
@@ -122,7 +125,7 @@ export default function Incubator() {
                         {live.map((p) => (
                           <tr key={p.id}>
                             <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
-                            <td className="mono">{p.symbol}{p.market && !p.market.allowed && <> <Pill tone="warn">market out</Pill></>}</td>
+                            <td className="mono">{p.symbol} · {p.tf}{p.market && !p.market.allowed && <> <Pill tone="warn">market out</Pill></>}</td>
                             <td className="small">{p.stats ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%` : '—'}
                               {p.stats && p.stats.trades > 0 && p.stats.avgLossR ? <span className="muted" title="Decision 186: the payoff shape — average winner over average loser, and the share of trades that ever reached +1R"> · W/L {(p.stats.avgWinR! / p.stats.avgLossR).toFixed(2)}{p.stats.reached1RPct !== undefined ? ` · +1R ${p.stats.reached1RPct.toFixed(0)}%` : ''}</span> : null}</td>
                             <td className="small"><Funnel f={p.funnel} /></td>
@@ -137,26 +140,26 @@ export default function Incubator() {
                 )}
               </Panel>
 
-              <Panel title={<span>Brewing in the shadow book ({shadow.length}) <BookBadge book="shadow" short /></span>} right={<span className="muted small">grouped by cohort, the unit the gate judges · a verdict needs ≥{g.minTrades} trades over ≥{g.minDays} days and half the markets positive</span>}>
+              <Panel title={<span>Brewing in the shadow book ({shadow.length}) <BookBadge book="shadow" short /></span>} right={<span className="muted small">{byCohort ? `grouped by cohort, the unit the gate judges · a verdict needs ${gateMinimums(g)} and half the markets positive` : `one row per pair, the unit the gate judges · a verdict needs ${gateMinimums(g)}`}</span>}>
                 {shadow.length === 0 ? <Empty label="No shadow pairs yet." hint="The daily screen admits its best candidates here." /> : (
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Shadow pairs and their progress toward the promotion gate</caption>
-                      <thead><tr><th scope="col">Cohort · market</th><th scope="col">Progress</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col">Gate</th><th scope="col">Open</th></tr></thead>
+                      <thead><tr><th scope="col">{byCohort ? 'Cohort · market' : 'Pair'}</th><th scope="col">Progress</th><th scope="col" title="Entry signals in the last 14 days: opened, or the gate that refused them (decision 112)">Signals 14d</th><th scope="col">Gate</th><th scope="col">Open</th></tr></thead>
                       <tbody>
                         {cohorts.map((c) => (
                           <Fragment key={c.k}>
                             <tr className="cohort-row">
-                              <th scope="rowgroup" colSpan={1}><Link to={`/scanners/${c.scannerId}`} className="strong">{c.scanner}</Link> <span className="mono muted">{c.tf}</span> <span className="muted small">· {c.members.length} markets</span>{c.gate?.strategyComparison && <> <Pill tone={c.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'} title={c.gate.strategyComparison.reason}>{c.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill></>}</th>
-                              <td className="small"><Need have={c.trades} need={g.minTrades} /> trades · <Need have={c.days} need={g.minDays} /> days · <span className={`mono ${c.trades ? (c.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{c.trades ? fmtR(c.avgR) : '–'}</span>/trade · {c.judged ? `${c.pos}/${c.judged} markets +` : 'no market judged'}</td>
+                              <th scope="rowgroup" colSpan={1}><Link to={`/scanners/${c.scannerId}`} className="strong">{c.scanner}</Link> <span className="mono muted">{c.tf}</span> <span className="muted small">· {byCohort ? `${c.members.length} markets` : <span className="mono">{c.symbol}</span>}</span>{!byCohort && c.members[0].stage === 'proposed' && <> <Pill tone="ok">proposed</Pill></>}{!byCohort && c.members[0].market && !c.members[0].market.allowed && <> <Pill tone="warn" title={c.members[0].market.reasons.join(' · ')}>market out</Pill></>}{c.gate?.strategyComparison && <> <Pill tone={c.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'} title={c.gate.strategyComparison.reason}>{c.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill></>}</th>
+                              <td className="small"><Need have={c.trades} need={c.gg.minTrades} /> trades · <Need have={c.days} need={c.gg.minDays} /> days · <span className={`mono ${c.trades ? (c.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{c.trades ? fmtR(c.avgR) : '–'}</span>/trade · {byCohort ? (c.judged ? `${c.pos}/${c.judged} markets +` : 'no market judged') : `PF ${pf(c.members[0].stats?.pfR)}`}</td>
                               <td className="small muted">{c.members.reduce((a, p) => a + (p.funnel?.entries ?? 0), 0)} signals · {c.members.reduce((a, p) => a + (p.funnel?.opened ?? 0), 0)} opened</td>
                               <td className="small"><Pill tone={c.gate?.decision === 'propose' ? 'ok' : c.gate?.decision === 'retire' ? 'danger' : 'muted'}>{c.gate?.decision ?? 'brewing'}</Pill> <span className="muted mono">{c.eta === Infinity ? 'no trades yet' : c.eta <= 0 ? 'now' : `~${Math.ceil(c.eta)}d`}</span>{c.gate?.decision === 'brewing' && c.gate.reasons.length > 0 && <div className="muted">{c.gate.reasons.join('; ')}</div>}</td>
                               <td className="mono">{c.members.reduce((a, p) => a + (p.openShadow ?? 0), 0) || ''}</td>
                             </tr>
-                            {c.members.map((p) => (
+                            {byCohort && c.members.map((p) => (
                               <tr key={p.id} className="cohort-member">
                                 <td className="mono">{p.symbol}{p.stage === 'proposed' && <> <Pill tone="ok">proposed</Pill></>}{p.market && !p.market.allowed && <> <Pill tone="warn" title={p.market.reasons.join(' · ')}>market out</Pill></>}</td>
-                                <td><Evidence s={p.stats} g={g} /></td>
+                                <td><Evidence s={p.stats} g={c.gg} /></td>
                                 <td className="small"><Funnel f={p.funnel} /></td>
                                 <td className="muted small">{p.gate?.market ? `${p.gate.market.trades} trades · ${r(p.gate.market.avgR)}` : ''}</td>
                                 <td className="mono">{p.openShadow || ''}</td>
@@ -226,7 +229,7 @@ export default function Incubator() {
 
               <ConfirmDialog
                 open={confirm !== null}
-                title={confirm ? (confirm.action === 'demote' ? `Move ${confirm.pair.scannerName} on ${confirm.pair.symbol} to the shadow book?` : confirm.action === 'approve' ? (confirm.pair.stage === 'proposed' ? `Promote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Demote ${confirm.pair.scannerName} on ${confirm.pair.symbol}?`) : confirm.pair.stage === 'proposed' ? `Reject ${confirm.pair.scannerName} on ${confirm.pair.symbol}?` : `Keep ${confirm.pair.scannerName} on ${confirm.pair.symbol} live?`) : ''}
+                title={confirm ? (confirm.action === 'demote' ? `Move ${confirm.pair.scannerName} on ${confirm.pair.symbol} ${confirm.pair.tf} to the shadow book?` : confirm.action === 'approve' ? (confirm.pair.stage === 'proposed' ? `Promote ${confirm.pair.scannerName} on ${confirm.pair.symbol} ${confirm.pair.tf}?` : `Demote ${confirm.pair.scannerName} on ${confirm.pair.symbol} ${confirm.pair.tf}?`) : confirm.pair.stage === 'proposed' ? `Reject ${confirm.pair.scannerName} on ${confirm.pair.symbol} ${confirm.pair.tf}?` : `Keep ${confirm.pair.scannerName} on ${confirm.pair.symbol} ${confirm.pair.tf} live?`) : ''}
                 body={confirm && (confirm.action === 'demote' ? <p>The market leaves this scanner's live list now (the scanner is switched off when it was its last market). Open positions keep running their exits. The pair keeps trading in the shadow book and must pass the gate again to come back.</p> : confirm.action === 'approve'
                   ? confirm.pair.stage === 'proposed'
                     ? 'It starts trading in the account from the next signal. Open shadow positions finish in the shadow book.'

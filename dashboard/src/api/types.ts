@@ -659,7 +659,11 @@ export interface IncubatorView {
   config: {
     tf: string; universeTop: number; maxShadow: number; cooldownDays: number
     screen: { minTrades: number; minProfitFactor: number; minWindowsUp: number; stressBps: number; slices: number }
-    gate: { minTrades: number; minDays: number; minPfR: number; minPositiveWeeksPct: number; minAvgR: number; maxOverlapPct: number; maxDays: number; failPfR: number }
+    gate: {
+      minTrades: number; minDays: number; minPfR: number; minPositiveWeeksPct: number; minAvgR: number; maxOverlapPct: number; maxDays: number; failPfR: number
+      /** Decision 196: how the gate judges (cohort of markets, or each pair), and its per-timeframe minimums. */
+      pool?: 'cohort' | 'pair'; minTradesByTf?: Record<string, number>; minDaysByTf?: Record<string, number>; maxDaysByTf?: Record<string, number>
+    }
     promote: { maxPerWeek: number; maxFleet: number }
     demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
   }

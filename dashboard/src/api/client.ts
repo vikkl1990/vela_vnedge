@@ -116,7 +116,7 @@ export const api = {
   marketsToday: () => get<MarketsToday>('/markets/today'),
   gates: () => get<GatesView>('/gates'),
   context: () => get<ContextView>('/context'),
-  opsMetricsHistory: (hours = 24) => get<{ hours: number; rows: OpsMetricRow[] }>(`/api/ops/metrics/history?hours=${hours}`),
+  opsMetricsHistory: (hours = 24) => get<{ hours: number; rows: OpsMetricRow[] }>(`/ops/metrics/history?hours=${hours}`),
   ops: () => get<{ alerts?: { channel?: string; configured?: boolean; sent?: number; lastAt?: number | null; lastError?: string | null; recent?: Array<{ at: number; text: string; delivered: boolean }> } }>('/ops'),
   refreshMarketsToday: () => post<MarketsToday>('/markets/today/refresh'),
   /** Manual halt: no new entries until resumed; optionally flatten the paper book. */
