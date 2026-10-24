@@ -373,6 +373,14 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (want('p-stale3')) variants['p-stale3'] = stat(run({ spreadPct }, { staleBars: 3, staleMinR: 0.25 }), b, tfMs);
   if (want('p-be1')) variants['p-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0, trailAfterR: 99 }), b, tfMs);
   if (want('p-tp1.5+stale3')) variants['p-tp1.5+stale3'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 1.5, 1.5], tpSplit: [1, 0, 0], trailAfterR: 99, floorAtR: 99, staleBars: 3, staleMinR: 0.25 } as any), b, tfMs);
+  // decision 186: the payoff-shape candidates, re-measured on the full exit path (1h/4h were coarse before decision 185)
+  if (want('q-part35@1')) variants['q-part35@1'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 4, 6], tpSplit: [0.35, 0, 0.65] } as any), b, tfMs);
+  if (want('q-part35@1.2')) variants['q-part35@1.2'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.2, 4, 6], tpSplit: [0.35, 0, 0.65] } as any), b, tfMs);
+  if (want('q-arm0.7')) variants['q-arm0.7'] = stat(run({ spreadPct }, { trailAfterR: 0.7, floorAtR: 0.7, floorKeepR: 0.35 }), b, tfMs);
+  if (want('q-stall3bars')) variants['q-stall3bars'] = stat(run({ spreadPct }, { trailStall: { minutes: 3 * (TF_SECONDS[tf] ?? 900) / 60, factor: 0.6 } }), b, tfMs);
+  if (want('q-stall1bar')) variants['q-stall1bar'] = stat(run({ spreadPct }, { trailStall: { minutes: (TF_SECONDS[tf] ?? 900) / 60, factor: 0.6 } }), b, tfMs);
+  if (want('q-nostall')) variants['q-nostall'] = stat(run({ spreadPct }, { trailStall: { minutes: 0, factor: 1 } }), b, tfMs);
+  for (const n of [3, 6]) if (want(`q-stale${n}`)) variants[`q-stale${n}`] = stat(run({ spreadPct }, { staleBars: n, staleMinR: 0.25 }), b, tfMs);
   if (want('t-be0.25')) variants['t-be0.25'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0 }), b, tfMs);
   if (want('t-be0.25k0.06')) variants['t-be0.25k0.06'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0.06 }), b, tfMs);
   if (want('t-be0.35')) variants['t-be0.35'] = stat(run({ spreadPct }, { floorAtR: 0.35, floorKeepR: 0 }), b, tfMs);
