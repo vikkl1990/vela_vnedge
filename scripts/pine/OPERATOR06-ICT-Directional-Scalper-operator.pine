@@ -1,0 +1,72 @@
+//@version=5
+indicator("ICT Directional Scalper (Sweep + Zone)", overlay=true, max_boxes_count=300, max_labels_count=100)
+
+// === Inputs ===
+htf = input.timeframe("60", "Higher TF Bias")
+minGapPct = input.float(0.03, "Min FVG Gap %", step=0.01)
+obBodyMin = input.float(0.55, "OB Min Body Ratio", step=0.05)
+sweepLookback = input.int(20, "Sweep Lookback Bars")
+requireHTFBias = input.bool(true, "Require HTF Bias")
+showZones = input.bool(true, "Show Zones")
+showSignals = input.bool(true, "Show Signals")
+
+// === Higher TF Bias ===
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, 21))
+htfBull = htfClose > htfEma
+htfBear = htfClose < htfEma
+
+// === FVG Detection ===
+bullFVG = low > high[2] and (low - high[2]) / high[2] * 100 >= minGapPct
+bearFVG = high < low[2] and (low[2] - high) / low[2] * 100 >= minGapPct
+
+// === Order Block Detection (simplified) ===
+body = math.abs(close - open)
+rng = high - low
+bullOB = close < open and body / rng >= obBodyMin and close[1] > open[1]
+bearOB = close > open and body / rng >= obBodyMin and close[1] < open[1]
+
+// === Liquidity Sweeps ===
+recentHigh = ta.highest(high, sweepLookback)[1]
+recentLow = ta.lowest(low, sweepLookback)[1]
+sellsideSweep = low < recentLow and close > recentLow
+buysideSweep = high > recentHigh and close < recentHigh
+
+// === Directional Confluence ===
+// Long: sellside sweep + (bullish FVG or bullish OB) + optional HTF bias
+longSetup = sellsideSweep and (bullFVG or bullOB) and (not requireHTFBias or htfBull)
+// Short: buyside sweep + (bearish FVG or bearish OB) + optional HTF bias
+shortSetup = buysideSweep and (bearFVG or bearOB) and (not requireHTFBias or htfBear)
+
+// === Plot Zones ===
+if bullFVG and showZones
+    box.new(bar_index[2], high[2], bar_index, low, bgcolor=color.new(color.green, 85), border_color=color.green)
+if bearFVG and showZones
+    box.new(bar_index[2], low[2], bar_index, high, bgcolor=color.new(color.red, 85), border_color=color.red)
+
+if bullOB and showZones
+    box.new(bar_index, high, bar_index + 8, low, bgcolor=color.new(color.teal, 85), border_color=color.teal)
+if bearOB and showZones
+    box.new(bar_index, high, bar_index + 8, low, bgcolor=color.new(color.orange, 85), border_color=color.orange)
+
+// === Signals ===
+if longSetup and showSignals
+    label.new(bar_index, low, "LONG", color=color.green, style=label.style_label_up, textcolor=color.white)
+if shortSetup and showSignals
+    label.new(bar_index, high, "SHORT", color=color.red, style=label.style_label_down, textcolor=color.white)
+
+// === Alerts ===
+alertcondition(longSetup, title="ICT Long", message="ICT Long Setup: Sellside sweep into bullish zone")
+alertcondition(shortSetup, title="ICT Short", message="ICT Short Setup: Buyside sweep into bearish zone")
+
+// === Info Table ===
+var table info = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "HTF Bias", text_color=color.white)
+    table.cell(info, 1, 0, htfBull ? "Bull" : htfBear ? "Bear" : "Neutral", text_color=htfBull ? color.green : color.red)
+    table.cell(info, 0, 1, "Last Sweep", text_color=color.white)
+    table.cell(info, 1, 1, sellsideSweep ? "Sellside" : buysideSweep ? "Buyside" : "—", text_color=color.yellow)
+    table.cell(info, 0, 2, "Long Ready", text_color=color.white)
+    table.cell(info, 1, 2, longSetup ? "YES" : "no", text_color=longSetup ? color.green : color.gray)
+    table.cell(info, 0, 3, "Short Ready", text_color=color.white)
+    table.cell(info, 1, 3, shortSetup ? "YES" : "no", text_color=shortSetup ? color.red : color.gray)

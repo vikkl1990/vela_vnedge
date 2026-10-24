@@ -1,0 +1,69 @@
+//@version=5
+indicator("ICT Sweep Into Zone (operator)", overlay=true, max_boxes_count=300, max_labels_count=100)
+
+// Decision 184 (research): the pasted "ICT Directional Scalper" asked for a sweep and a zone on the SAME bar, which a
+// sweep bar cannot satisfy for an FVG. This reading is the one the name describes: a sweep bar whose wick enters a
+// bullish zone (FVG or order block) formed within the last `zoneBars`, with the higher-timeframe bias one step up.
+minGapPct = input.float(0.03, "Min FVG Gap %", step=0.01)
+obBodyMin = input.float(0.55, "OB Min Body Ratio", step=0.05)
+sweepLookback = input.int(20, "Sweep Lookback Bars")
+zoneBars = input.int(20, "Zone Age (bars)")
+requireHTFBias = input.bool(true, "Require HTF Bias")
+
+// the bias timeframe follows the chart: 1h for 15m, 4h for 1h, 1D for 4h
+htf = timeframe.in_seconds(timeframe.period) <= 900 ? "60" : timeframe.in_seconds(timeframe.period) <= 3600 ? "240" : "D"
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, 21))
+htfBull = htfClose > htfEma
+htfBear = htfClose < htfEma
+
+// zones as they formed, remembered as price levels with their age
+bullFVG = low > high[2] and (low - high[2]) / high[2] * 100 >= minGapPct
+bearFVG = high < low[2] and (low[2] - high) / low[2] * 100 >= minGapPct
+body = math.abs(close - open)
+rng = high - low
+bullOB = rng > 0 and close < open and body / rng >= obBodyMin and close[1] > open[1]
+bearOB = rng > 0 and close > open and body / rng >= obBodyMin and close[1] < open[1]
+
+var float bullTop = na
+var float bullBot = na
+var int bullAge = 9999
+var float bearTop = na
+var float bearBot = na
+var int bearAge = 9999
+bullAge += 1
+bearAge += 1
+if bullFVG
+    bullTop := low
+    bullBot := high[2]
+    bullAge := 0
+if bullOB
+    bullTop := high
+    bullBot := low
+    bullAge := 0
+if bearFVG
+    bearTop := low[2]
+    bearBot := high
+    bearAge := 0
+if bearOB
+    bearTop := high
+    bearBot := low
+    bearAge := 0
+
+// sweeps of the prior range
+recentHigh = ta.highest(high, sweepLookback)[1]
+recentLow = ta.lowest(low, sweepLookback)[1]
+sellsideSweep = low < recentLow and close > recentLow
+buysideSweep = high > recentHigh and close < recentHigh
+
+// the sweep's wick enters a zone that formed recently; the close holds above (below) it
+longSetup = sellsideSweep and bullAge <= zoneBars and not na(bullBot) and low <= bullTop and close > bullBot and (not requireHTFBias or htfBull)
+shortSetup = buysideSweep and bearAge <= zoneBars and not na(bearTop) and high >= bearBot and close < bearTop and (not requireHTFBias or htfBear)
+
+if longSetup
+    label.new(bar_index, low, "LONG", color=color.green, style=label.style_label_up, textcolor=color.white)
+if shortSetup
+    label.new(bar_index, high, "SHORT", color=color.red, style=label.style_label_down, textcolor=color.white)
+
+alertcondition(longSetup, title="ICT Long", message="ICT Long: sellside sweep into a bullish zone")
+alertcondition(shortSetup, title="ICT Short", message="ICT Short: buyside sweep into a bearish zone")

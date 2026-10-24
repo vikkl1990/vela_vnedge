@@ -1,0 +1,76 @@
+//@version=5
+indicator("ICT Scalper Fixed (Sweep + Zone + Displacement)", overlay=true, max_boxes_count=200, max_labels_count=100)
+
+// === Inputs ===
+htf = input.timeframe("60", "Higher TF Bias")
+minGapPct = input.float(0.03, "Min FVG Gap %", step=0.01)
+obBodyMin = input.float(0.55, "OB Min Body Ratio", step=0.05)
+sweepLookback = input.int(20, "Sweep Lookback")
+atrLen = input.int(14, "ATR Length")
+atrStopMult = input.float(1.2, "Stop = Sweep Wick + ATR ×", step=0.1)
+minStopPct = input.float(0.6, "Min Stop % (cost filter)", step=0.1)
+requireHTF = input.bool(true, "Require HTF Bias")
+showZones = input.bool(true, "Show Zones")
+showSignals = input.bool(true, "Show Signals")
+
+// === HTF Bias ===
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, 21))
+htfBull = htfClose > htfEma
+htfBear = htfClose < htfEma
+
+// === FVG ===
+bullFVG = low > high[2] and (low - high[2]) / high[2] * 100 >= minGapPct
+bearFVG = high < low[2] and (low[2] - high) / low[2] * 100 >= minGapPct
+
+// === Order Block ===
+body = math.abs(close - open)
+rng = high - low
+bullOB = close < open and body / rng >= obBodyMin
+bearOB = close > open and body / rng >= obBodyMin
+
+// === Sweeps ===
+recentHigh = ta.highest(high, sweepLookback)[1]
+recentLow = ta.lowest(low, sweepLookback)[1]
+sellsideSweep = low < recentLow and close > recentLow
+buysideSweep = high > recentHigh and close < recentHigh
+
+// === Displacement (strong directional close after sweep) ===
+atr = ta.atr(atrLen)
+dispBull = close > open and (close - open) > atr * 0.5
+dispBear = close < open and (open - close) > atr * 0.5
+
+// === Zone + Sweep Confluence ===
+inBullZone = bullFVG or bullOB
+inBearZone = bearFVG or bearOB
+
+longRaw = sellsideSweep and inBullZone and dispBull and (not requireHTF or htfBull)
+shortRaw = buysideSweep and inBearZone and dispBear and (not requireHTF or htfBear)
+
+// === Cost-aware stop filter ===
+longStopDist = (close - (low - atr * atrStopMult)) / close * 100
+shortStopDist = ((high + atr * atrStopMult) - close) / close * 100
+
+longSetup = longRaw and longStopDist >= minStopPct
+shortSetup = shortRaw and shortStopDist >= minStopPct
+
+// === Plot Zones ===
+if bullFVG and showZones
+    box.new(bar_index[2], high[2], bar_index, low, bgcolor=color.new(color.green, 88), border_color=color.green)
+if bearFVG and showZones
+    box.new(bar_index[2], low[2], bar_index, high, bgcolor=color.new(color.red, 88), border_color=color.red)
+
+if bullOB and showZones
+    box.new(bar_index, high, bar_index + 6, low, bgcolor=color.new(color.teal, 88), border_color=color.teal)
+if bearOB and showZones
+    box.new(bar_index, high, bar_index + 6, low, bgcolor=color.new(color.orange, 88), border_color=color.orange)
+
+// === Signals ===
+if longSetup and showSignals
+    label.new(bar_index, low, "LONG\nStop " + str.tostring(longStopDist, "#.#") + "%", color=color.green, style=label.style_label_up, textcolor=color.white, size=size.small)
+if shortSetup and showSignals
+    label.new(bar_index, high, "SHORT\nStop " + str.tostring(shortStopDist, "#.#") + "%", color=color.red, style=label.style_label_down, textcolor=color.white, size=size.small)
+
+// === Alerts ===
+alertcondition(longSetup, title="ICT Long", message="ICT Long: Sellside sweep + bull zone + displacement")
+alertcondition(shortSetup, title="ICT Short", message="ICT Short: Buyside sweep + bear zone + displacement")

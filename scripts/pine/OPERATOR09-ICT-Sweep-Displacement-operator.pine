@@ -1,0 +1,79 @@
+//@version=5
+indicator("ICT Sweep + Displacement (operator)", overlay=true, max_labels_count=100)
+
+// Research (24 October 2026): the pasted "ICT Scalper Fixed" asked the sweep bar (a wick below the range) to also be a
+// displacement bar (a strong green body) and a bullish order block (a red body) — contradictions that make it mute.
+// This reading puts the events where the description puts them: the sweep on the previous bar, the displacement close
+// on this bar, into a zone formed within `zoneBars`, with a stop wide enough to pay the round trip and the bias one
+// timeframe up.
+minGapPct = input.float(0.03, "Min FVG Gap %", step=0.01)
+obBodyMin = input.float(0.55, "OB Min Body Ratio", step=0.05)
+sweepLookback = input.int(20, "Sweep Lookback")
+zoneBars = input.int(20, "Zone Age (bars)")
+atrLen = input.int(14, "ATR Length")
+atrStopMult = input.float(1.2, "Stop = Sweep Wick + ATR ×", step=0.1)
+minStopPct = input.float(0.6, "Min Stop % (cost filter)", step=0.1)
+requireHTF = input.bool(true, "Require HTF Bias")
+
+htf = timeframe.in_seconds(timeframe.period) <= 900 ? "60" : timeframe.in_seconds(timeframe.period) <= 3600 ? "240" : "D"
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, 21))
+htfBull = htfClose > htfEma
+htfBear = htfClose < htfEma
+
+bullFVG = low > high[2] and (low - high[2]) / high[2] * 100 >= minGapPct
+bearFVG = high < low[2] and (low[2] - high) / low[2] * 100 >= minGapPct
+body = math.abs(close - open)
+rng = high - low
+bullOB = rng > 0 and close < open and body / rng >= obBodyMin and close[1] > open[1]
+bearOB = rng > 0 and close > open and body / rng >= obBodyMin and close[1] < open[1]
+
+var float bullTop = na
+var float bullBot = na
+var int bullAge = 9999
+var float bearTop = na
+var float bearBot = na
+var int bearAge = 9999
+bullAge += 1
+bearAge += 1
+if bullFVG
+    bullTop := low
+    bullBot := high[2]
+    bullAge := 0
+if bullOB
+    bullTop := high
+    bullBot := low
+    bullAge := 0
+if bearFVG
+    bearTop := low[2]
+    bearBot := high
+    bearAge := 0
+if bearOB
+    bearTop := high
+    bearBot := low
+    bearAge := 0
+
+recentHigh = ta.highest(high, sweepLookback)[1]
+recentLow = ta.lowest(low, sweepLookback)[1]
+sellsideSweep = low < recentLow and close > recentLow
+buysideSweep = high > recentHigh and close < recentHigh
+
+atr = ta.atr(atrLen)
+dispBull = close > open and (close - open) > atr * 0.5
+dispBear = close < open and (open - close) > atr * 0.5
+
+// the sweep was the previous bar and its wick entered a recent zone; this bar displaces away from it
+sweptIntoBull = sellsideSweep[1] and bullAge <= zoneBars + 1 and not na(bullBot) and low[1] <= bullTop
+sweptIntoBear = buysideSweep[1] and bearAge <= zoneBars + 1 and not na(bearTop) and high[1] >= bearBot
+longStopDist = (close - (low[1] - atr * atrStopMult)) / close * 100
+shortStopDist = ((high[1] + atr * atrStopMult) - close) / close * 100
+longSetup = sweptIntoBull and dispBull and (not requireHTF or htfBull) and longStopDist >= minStopPct
+shortSetup = sweptIntoBear and dispBear and (not requireHTF or htfBear) and shortStopDist >= minStopPct
+
+if longSetup
+    label.new(bar_index, low, "LONG", color=color.green, style=label.style_label_up, textcolor=color.white)
+if shortSetup
+    label.new(bar_index, high, "SHORT", color=color.red, style=label.style_label_down, textcolor=color.white)
+
+alertcondition(longSetup, title="ICT Long", message="ICT Long: sellside sweep into a bullish zone, displacement close")
+alertcondition(shortSetup, title="ICT Short", message="ICT Short: buyside sweep into a bearish zone, displacement close")
