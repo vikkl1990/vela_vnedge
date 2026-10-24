@@ -222,7 +222,7 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
     return { id, tf, sym, variants: { base: empty }, labels: [], verdict: repaint ? 'repaint checked' : 'repaint not checked', fix: '', repaint };
   }
   const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest' });
-  const events = extractEvents(res.alerts, res.shapes, { drawn: res.labels, scannerId: s.id, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
+  const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
   const tfMs = TF_SECONDS[tf] * 1000;
   if (!events.some(e => e.kind === 'entry')) {
     // a zero-entry cell is a result, not a hole: say what came out of the run and where the funnel emptied

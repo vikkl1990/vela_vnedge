@@ -234,7 +234,7 @@ export class ShadowRunner {
     const lastBar = bars.at(-1)!;
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars, mode: 'live', newLabelKeys });
     // decision 125: read from the bar after the last one this pair acted on; entries on a superseded bar are stale and dropped
-    const events = extractEvents(res.alerts, res.shapes, { drawn: res.labels, scannerId: s.id, sinceBarTime: this.marks.since(key, lastBar.time, r.tf), derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert })
+    const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: this.marks.since(key, lastBar.time, r.tf), derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert })
       .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
     this.marks.advance(key, lastBar.time);
     const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';

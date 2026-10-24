@@ -257,6 +257,16 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (now - lastAt > staleDays * DAY) { const why = `stale: no shadow trade in ${Math.round((now - lastAt) / DAY)} days (cap ${staleDays})`; store.move(r, 'retired', 'gate', { reasons: [why] }, why, now); rep.retired.push(name(r)); }
   }
 
+  // decision 186: a shadow pair re-screened after its admission whose screen no longer passes was admitted on evidence
+  // that did not hold (the 1h/4h screens before decision 186 were resolved mostly on the coarse bar); it gives its slot
+  // back. A pair whose own shadow record has earned a proposal is judged by that record instead.
+  for (const r of store.list(['shadow'])) {
+    const sc = r.screen as any;
+    if (!sc || sc.pass !== false || !(typeof sc.at === 'number' && sc.at > r.since)) continue;
+    const why = `screen no longer passes (re-screened ${new Date(sc.at).toISOString().slice(0, 10)}: ${sc.reason ?? `PF ${Number(sc.profitFactor ?? 0).toFixed(2)}, ${sc.trades ?? 0} trades`})`;
+    store.move(r, 'retired', 'screen', { screen: sc, reasons: [why] }, why, now); rep.retired.push(name(r));
+  }
+
   admit(store, cfg, rep, now, opts);
   return rep;
 }
@@ -467,8 +477,13 @@ export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = D
   const inc = cfg.incubator;
   const counts: Record<CandidateBlocker, number> = { expired: 0, stale: 0, outside: 0, refused: 0, rescreen: 0, capped: 0, noSlot: 0, cohort: 0, admissible: 0 };
   const active = store.list(['shadow', 'proposed']);
-  let slots = Math.max(0, inc.maxShadow - active.length);
-  const free = slots;
+  // decision 186: the reservations as `admit` counts them — an active pair fills the first reservation it matches while
+  // that has room, and only the rest consume the book's own slots
+  const reserves = (inc.admit.reserve ?? []).filter(res => res.slots > 0).map(res => ({ matches: (r: PairRow) => (!res.tfs?.length || res.tfs.includes(r.tf)) && (!res.markets?.length || res.markets.includes(r.symbol)), room: res.slots }));
+  let inReserve = 0;
+  for (const r of active) for (const x of reserves) if (x.matches(r) && x.room > 0) { x.room--; inReserve++; break; }
+  let slots = Math.max(0, inc.maxShadow - (active.length - inReserve));
+  const free = slots + reserves.reduce((a, x) => a + x.room, 0);
   const markets = store.marketsToday(now);
   const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
   const passed = store.list(['candidate']).filter(r => r.screen?.pass);
@@ -487,6 +502,8 @@ export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = D
   for (const r of fresh.sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
     const k = `${r.scannerId}|${r.tf}`; const cap = inc.admit.maxPerScannerTf?.[r.tf] ?? marketsFor(inc, r.tf);
     if ((held.get(k) ?? 0) >= cap) { counts.capped++; continue; }
+    const res = reserves.find(x => x.matches(r) && x.room > 0);
+    if (res) { res.room--; counts.admissible++; held.set(k, (held.get(k) ?? 0) + 1); continue; }
     if (slots <= 0) { counts.noSlot++; continue; }
     counts.admissible++; slots--; held.set(k, (held.get(k) ?? 0) + 1);
   }

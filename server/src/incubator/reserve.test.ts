@@ -67,3 +67,18 @@ test('decision 184: pairs running under a reservation do not consume the book\'s
   assert.equal(store.find('d', 'ZECUSD', '15m')!.stage, 'shadow', 'the reserved 4h pairs did not count against maxShadow');
   assert.equal(rep.free, 0);
 });
+
+test('decision 186: a shadow pair whose re-screen fails after its admission gives its slot back; one re-screened and passing stays', () => {
+  const { store, cfg, screen } = world([]);
+  cfg.incubator.maxShadow = 10;
+  recordScreen(store, { scannerId: 'a', symbol: 'ZECUSD', tf: '4h' }, screen(2), cfg.incubator, T0);
+  recordScreen(store, { scannerId: 'b', symbol: 'AKEUSD', tf: '4h' }, screen(2), cfg.incubator, T0);
+  evaluate(store, cfg, T0);
+  assert.equal(store.find('a', 'ZECUSD', '4h')!.stage, 'shadow');
+  recordScreen(store, { scannerId: 'a', symbol: 'ZECUSD', tf: '4h' }, { ...screen(0.9), pass: false, at: T0 + 2000, reason: 'PF 0.90' }, cfg.incubator, T0 + 2000);
+  recordScreen(store, { scannerId: 'b', symbol: 'AKEUSD', tf: '4h' }, { ...screen(1.8), at: T0 + 2000 }, cfg.incubator, T0 + 2000);
+  const rep = evaluate(store, cfg, T0 + 3000);
+  assert.ok(rep.retired.includes('a ZECUSD 4h'), rep.retired.join(', '));
+  assert.match(store.find('a', 'ZECUSD', '4h')!.note ?? '', /screen no longer passes/);
+  assert.equal(store.find('b', 'AKEUSD', '4h')!.stage, 'shadow', 're-screened and still passing: kept');
+});

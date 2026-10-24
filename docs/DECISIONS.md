@@ -5559,3 +5559,28 @@ Against the limit at the signal price, cell by cell: at 1h, 0.1 ATR back is bett
 15 scanners); 0.2 and 0.3 lose breadth. At 4h nothing beats the signal price on breadth (0.1: 39 better / 44 worse;
 0.2: 46 / 36 but 9 of 15 scanners and a second half of +2.2R; 0.3: 40 / 44). `limitEntry.atrByTf` `{ '1h': 0.1 }`;
 4h stays at the signal price.
+
+## 186. The gaps closed on 24 October: the screen's coarse exits, re-judging what it admitted, reversals, blockers, a patch, the shape edge, payoff on the page
+
+**The screen resolved 1h and 4h exits mostly on the coarse bar.** One request returns at most 80,000 one-minute bars
+(55.6 days): 100% of a 15m screen's 42-day window, 33% of a 1h window (167 days) and 8% of a 4h window (667 days). The
+rest was resolved on the signal bar itself, which flatters a trail that ratchets at a bar's close (decision 185's
+finding in `diagnose`, here in the screen that admits candidates). `cli/incubate.ts` now resolves the part of the
+window before the 1m history on 15m bars. **Re-judging:** a shadow pair re-screened after its admission whose screen no
+longer passes is retired with that reason ("screen no longer passes"), unless its own record has earned a proposal; the
+1h and 4h shadow pairs are re-screened by hand on the corrected screen (their retirements happen in that run's judge).
+
+**Reversal in latency mode.** The held position was closed when the opposite signal was queued; if the new entry was
+then cancelled at its fill (levels, cost rule, caps) the book was flat. It is now closed in the same step as the fill,
+with the caps, sizing and exposure asked with the held position excluded; a cancelled reversal keeps it.
+
+**Smaller.** The Incubator page's blocker counts know the reservations (decision 182). The `if-array-get-field` patch
+leaves `else if` chains alone and names each rewrite apart (`__vnedge_el_0`, `_1`, …). The shape `edge` reading takes the
+signal bar's length from every live, shadow, screen, validation, diagnose and repaint caller, so a three-bar live tail
+reads a state the way the full-series backtest does. Each pair's stats carry the payoff shape (average winner and
+loser in R, the share that reached +1R), shown on the Incubator page as `W/L` and `+1R`.
+
+**Not code.** The 15m weight is a decision the shadow book informs (shadow 15m PF 1.14, 1h 1.04, 4h 1.43 on the 1m
+path); the account has no live 4h cells yet, and the reservations and the corrected screen are how it gets them. Exchange
+keys, the demo stage, the production rule for resting orders and the Telegram token remain the operator's. The stall
+rule is left as it is: trail exits come a median 0–7 minutes after the peak, so 45 minutes rarely pass (0–3% of exits).

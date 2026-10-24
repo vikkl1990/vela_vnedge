@@ -621,6 +621,8 @@ export type IncubatorStage = 'candidate' | 'shadow' | 'proposed' | 'live' | 'dem
 export interface IncubatorStats {
   trades: number; days: number; wins: number; winRatePct: number; netR: number; avgR: number; pfR: number | null
   weeks: number; positiveWeeks: number; positiveWeeksPct: number
+  /** Decision 186: the payoff shape. */
+  tStat?: number; avgWinR?: number; avgLossR?: number; reached1RPct?: number
   /** Cohort pooling (decision 89): how many markets the cohort runs on, how many are judged, how many are positive. */
   markets?: number; marketsJudged?: number; positiveMarkets?: number; positiveMarketsPct?: number; perMarket?: Array<{ symbol: string; trades: number; netR: number; avgR: number }>
 }

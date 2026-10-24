@@ -7,7 +7,7 @@
  */
 import type { IncubatorConfig } from '../config.ts';
 
-export interface TradeR { entryAt: number; exitAt: number; r: number; side?: string }
+export interface TradeR { entryAt: number; exitAt: number; r: number; side?: string; peakR?: number }
 
 export interface PairStats {
   trades: number; days: number; wins: number; winRatePct: number;
@@ -15,6 +15,8 @@ export interface PairStats {
   weeks: number; positiveWeeks: number; positiveWeeksPct: number;
   /** Decision 177: mean R over its standard error — how far the record stands above luck (0 with fewer than two trades). */
   tStat: number;
+  /** Decision 186: the payoff shape — the average winner and loser in R, and the share of trades that ever reached +1R. */
+  avgWinR?: number; avgLossR?: number; reached1RPct?: number;
 }
 
 /** Mean R over its standard error; 0 when there is nothing to measure against. */
@@ -44,6 +46,8 @@ export function pairStats(trades: TradeR[], since: number, now = Date.now()): Pa
     netR, avgR: t.length ? netR / t.length : 0, pfR: gl > 0 ? gp / gl : gp > 0 ? null : 0,
     weeks, positiveWeeks, positiveWeeksPct: weeks ? positiveWeeks / weeks * 100 : 0,
     tStat: tStat(t.map(x => x.r)),
+    avgWinR: wins ? gp / wins : 0, avgLossR: t.length - wins ? gl / (t.length - wins) : 0,
+    reached1RPct: t.length && t.some(x => x.peakR !== undefined) ? t.filter(x => (x.peakR ?? 0) >= 1).length / t.length * 100 : undefined,
   };
 }
 

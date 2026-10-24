@@ -115,3 +115,12 @@ test('decision 172: every label.new call is stamped with its creation bar; a cal
   const without = applyPatches('//@version=5\nindicator("y")\nplot(close)', 'y.pine');
   assert.ok(!without.applied.includes('label-created-bar'));
 });
+
+test('decision 186: the array-get-field patch rewrites plain ifs with distinct names and leaves an else-if chain intact', async () => {
+  const { applyPatches } = await import('./patches.ts');
+  const src = ['//@version=5', 'indicator("t")', 'var a = array.new<int>()', 'if array.get(a, 0).x > 1', '    y = 1', 'else if array.get(a, 1).x > 2', '    y = 2', 'if array.get(a, 2).x > 3', '    y = 3'].join('\n');
+  const { source } = applyPatches(src, 'test.pine');
+  assert.match(source, /__vnedge_el_0 = array\.get\(a, 0\)\nif __vnedge_el_0\.x > 1/);
+  assert.match(source, /else if array\.get\(a, 1\)\.x > 2/, 'the else-if line is left as it was');
+  assert.match(source, /__vnedge_el_1 = array\.get\(a, 2\)\nif __vnedge_el_1\.x > 3/, 'the second rewrite takes its own name');
+});

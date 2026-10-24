@@ -178,8 +178,8 @@ export class IncubatorStore {
 
   /** Closed trades of one pair in one book (0 live, 2 shadow), in R. */
   trades(scannerId: string, symbol: string, tf: string, book: number): TradeR[] {
-    return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount FROM positions WHERE bt=? AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND risk_amount > 0 ORDER BY exit_at`, book, scannerId, symbol, tf)
-      .map(r => ({ entryAt: r.entry_at, exitAt: r.exit_at, r: (r.realized_pnl - r.fees) / r.risk_amount, side: r.side }));
+    return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount, peak_r FROM positions WHERE bt=? AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND risk_amount > 0 ORDER BY exit_at`, book, scannerId, symbol, tf)
+      .map(r => ({ entryAt: r.entry_at, exitAt: r.exit_at, r: (r.realized_pnl - r.fees) / r.risk_amount, side: r.side, peakR: r.peak_r ?? undefined }));
   }
   /** Closed live trades on a market, any scanner: the overlap check compares against these. */
   liveTradesOn(symbol: string, excludeScanner?: string): TradeR[] {

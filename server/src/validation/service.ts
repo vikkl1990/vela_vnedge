@@ -161,7 +161,7 @@ export class ValidationService {
       if (!res.ok) { this.fail(key, res.error ?? 'script error'); return; }
       const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars, mode: 'backtest' });
       // decision 85: validation reads the scanner exactly as the live path does — the same channels, edge, labels and inversion
-      const events = extractEvents(res.alerts, res.shapes, { drawn: res.labels, scannerId: s.id, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
+      const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
       const wf = cfg.validation.walkForward;
       const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize, trendGate: sc.trendGate, scannerExit: sc.exit, chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr } : undefined,
         opts: { trainDays: wf.trainDays, testDays: wf.testDays, stepDays: wf.stepDays, minTrades: cfg.autoTune.minTrades, minProfitFactor: cfg.autoTune.minProfitFactor } });

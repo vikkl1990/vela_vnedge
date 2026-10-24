@@ -17,7 +17,7 @@ export interface RepaintCheck { prefix: number; changed: number; share: number; 
 /** Entries up to `cutAt`, as "barTime:side" keys, read the way the scanner's config reads them. */
 function entryKeys(res: WorkerResult, bars: Bar[], scannerId: string, sc: Partial<ScannerConfig>, cutAt: number): Set<string> {
   const derived = applyRules({ scannerId, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars, mode: 'backtest' });
-  const events = extractEvents(res.alerts, res.shapes, { drawn: res.labels, scannerId, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
+  const events = extractEvents(res.alerts, res.shapes, { barMs: bars.length > 1 ? bars[1].time - bars[0].time : undefined, drawn: res.labels, scannerId, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
   return new Set(events.filter(e => e.kind === 'entry' && e.barTime <= cutAt).map(e => `${e.barTime}:${e.side}`));
 }
 

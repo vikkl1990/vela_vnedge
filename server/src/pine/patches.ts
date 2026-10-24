@@ -64,10 +64,12 @@ export const PATCH_RULES: PatchRule[] = [
   {
     id: 'if-array-get-field',
     description: 'PineTS loses the binding of a global array when a field is read straight off `array.get(arr, i).field` in an `if` test ("arr is not defined"); the element is read into a local first (same value, same order).',
-    apply: (src) => src.replace(/^([ \t]*)(if|else if)([ \t]+)(.*?)array\.get\((\w+),[ \t]*([^()\n]+)\)\.(\w+)/gm, (_m, ind, kw, sp, pre, arr, idx, field, offset: number, whole: string) => {
-      const n = (whole.slice(0, offset).match(/__vnedge_el_/g) ?? []).length;
-      return `${ind}__vnedge_el_${n} = array.get(${arr}, ${idx})\n${ind}${kw}${sp}${pre}__vnedge_el_${n}.${field}`;
-    }),
+    // decision 186: plain `if` only — a statement placed before an `else if` would break the chain; and each rewrite takes
+    // its own name (the count used to be read off the unpatched source, so every rewrite declared `__vnedge_el_0`)
+    apply: (src) => { let n = 0; return src.replace(/^([ \t]*)(if)([ \t]+)(.*?)array\.get\((\w+),[ \t]*([^()\n]+)\)\.(\w+)/gm, (_m, ind, kw, sp, pre, arr, idx, field) => {
+      const v = `__vnedge_el_${n++}`;
+      return `${ind}${v} = array.get(${arr}, ${idx})\n${ind}${kw}${sp}${pre}${v}.${field}`;
+    }); },
   },
   {
     id: 'synapse-htf-string',

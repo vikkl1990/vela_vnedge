@@ -10,7 +10,7 @@ function setup(tf = '4h', over: Partial<AppConfig['paper']> = {}) {
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
   Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0.05, makerFeeRatePct: 0.02, liquidation: false, latencyMs: 0, minRiskFeeRatio: 0, limitFill: 'through', limitEntry: { enabled: true, tfs: ['4h'], atr: 0.3, bars: 2, books: ['account', 'shadow'] } }, over);
   const engine = new PaperEngine(db, () => cfg);
-  const at = Date.UTC(2026, 9, 24, 8, 0, 1);
+  const at = Math.floor(Date.now() / 60_000) * 60_000 + 1000;   // anchored to now: a restored limit must not have lapsed
   const enter = (side: 'long' | 'short' = 'long') => engine.onEntry({ kind: 'entry', side, price: 100, tp: [], label: 'entry', message: '', source: 'alert', barTime: at - ({ '15m': H / 4, '1h': H, '4h': 4 * H } as Record<string, number>)[tf], barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'ETHUSD', tf, market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at, signalId: null, exitMode: 'both', atr: 2 } as any);
   return { db, cfg, engine, at, enter };
 }

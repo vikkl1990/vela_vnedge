@@ -151,7 +151,15 @@ while (sliceArg !== 'none') {
       const p = await rest.product(symbol);
       const bars = toBars(await rest.recentCandles(symbol, TF, inc.screen.bars, TF_SECONDS[TF]));
       if (bars.length < 500) { out(`  ${symbol}: only ${bars.length} bars, skipped`); continue; }
-      const m1 = toBars(await rest.recentCandles(symbol, '1m', Math.ceil((bars.length + 2) * tfMs / 60_000), 60));
+      // decision 186: one request returns at most 80,000 one-minute bars (55.6 days); a 1h window is 167 days and a 4h
+      // window 667, and the bars before the 1m history were resolved on the signal bar itself — optimistic for a trail
+      // that ratchets at a bar's close. The older part of the window is resolved on 15m bars instead.
+      let m1 = toBars(await rest.recentCandles(symbol, '1m', Math.ceil((bars.length + 2) * tfMs / 60_000), 60));
+      if (tfMs > 900_000 && bars.length && (!m1.length || m1[0].time > bars[0].time)) {
+        const m15 = toBars(await rest.recentCandles(symbol, '15m', Math.ceil((bars.length + 2) * tfMs / 900_000), 900));
+        const cut = m1.length ? m1[0].time : Infinity;
+        m1 = [...m15.filter(b => b.time + 900_000 <= cut), ...m1];
+      }
       data.set(symbol, { bars, m1, market: marketSpec(p) });
     } catch (e: any) { out(`  ${symbol}: no candles (${e?.message ?? e})`); }
   }
@@ -242,7 +250,7 @@ while (sliceArg !== 'none') {
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest' });
         // decision 110: the screen reads a script the way the shadow book and the account would (its sources, edge, labels, inversion)
         const rd = cfg.scanners[s.id] ?? {};
-        const events = extractEvents(res.alerts, res.shapes, { drawn: res.labels, scannerId: s.id, derived, sources: rd.sources, edge: rd.edge, labels: rd.labels, invert: rd.invert });
+        const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[TF] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: rd.sources, edge: rd.edge, labels: rd.labels, invert: rd.invert });
         if (!events.some(e => e.kind === 'entry')) continue;
         sawEntry = true;
         const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: bookCost.get(symbol) } as const;

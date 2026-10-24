@@ -261,3 +261,14 @@ test('decision 172: a label drawn at a past bar is an entry on the bar it was cr
   assert.match(ev[0].message, /drawn at an earlier bar/);
   assert.equal(extractEvents([], [], { drawn: [{ time: 1000, y: 100, text: '▲' }] }).length, 0);
 });
+
+test('decision 186: with the bar length given, a shape two bars after the last is a new entry on a three-bar live tail too', () => {
+  const B = 900_000;
+  const shapes = [{ title: 'Buy', times: [10 * B, 12 * B] }] as any;
+  const withBar = extractEvents([], shapes, { edge: true, barMs: B }).filter(e => e.kind === 'entry');
+  assert.equal(withBar.length, 2, 'two prints two bars apart are two entries');
+  const legacy = extractEvents([], shapes, { edge: true }).filter(e => e.kind === 'entry');
+  assert.equal(legacy.length, 1, 'without the bar length the spacing is read off the prints (the old live reading)');
+  const run = extractEvents([], [{ title: 'Buy', times: [10 * B, 11 * B, 12 * B] }] as any, { edge: true, barMs: B }).filter(e => e.kind === 'entry');
+  assert.equal(run.length, 1, 'a print on every bar is one state');
+});

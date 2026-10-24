@@ -47,6 +47,8 @@ export interface PendingEntry {
   market: MarketInfo; at: number; dueAt: number; signalId: number | null; features?: Record<string, number>; mlProb: number | null; score?: number; leverageMult: number;
   /** Decision 185: a resting maker limit — its price, when it lapses, and what the levels are resolved from at the fill. */
   limit?: { price: number; expiresAt: number; atr: number; sl?: number; tp?: number[]; bars: number };
+  /** Decision 186: a reversal's held position, closed only when this entry fills (a cancelled reversal keeps it). */
+  replacingId?: number;
 }
 
 /**
@@ -335,7 +337,8 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price, replacing: replacing?.id });
       if (x) return refused(`risk ${x}`);
     }
-    if (replacing) {
+    const deferReversal = Boolean(replacing) && (this.tapeMode || (cfg.latencyMs ?? 0) > 0);
+    if (replacing && !deferReversal) {
       const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
       const exitQuote = this.marketPrice(replacing.symbol, replacing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
       if (!this.applyFills(replacing, [fillExit(replacing, exitQuote.price, replacing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref, source: exitQuote.source })) return refused('the position to be replaced could not be closed (write failed)');
@@ -360,7 +363,8 @@ export class PaperEngine extends EventEmitter {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
       // first price after that — a tape print, or in candles mode the next 1m candle update, or the mark once the feed is quiet
       const id = this.nextId();
-      const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult };
+      const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult,
+        ...(deferReversal ? { replacingId: replacing!.id } : {}) };
       this.pending.set(id, pe);
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, price, pe.at, pe.signalId, JSON.stringify({ pending: { dueAt: pe.dueAt, levels } }), id);
       log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
@@ -479,20 +483,26 @@ export class PaperEngine extends EventEmitter {
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, at));
     if (feeErr) return cancel(feeErr);
-    if (this.open.size >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
+    // decision 186: a reversal's held position is still open; it is closed only if this entry fills
+    const held = pe.replacingId !== undefined ? this.open.get(pe.replacingId) : undefined;
+    if (this.open.size - (held ? 1 : 0) >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
     // the portfolio risk layer was consulted when the entry was queued; the book can have
     // halted, hit a cap or changed the drawdown scaling since, so ask it again at fill time
     let leverageMult = pe.leverageMult;
     if (this.risk) {
-      const g = this.risk.gate({ scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, side: pe.side, price, sl: levels.sl, at: receivedAt });
+      const g = this.risk.gate({ scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, side: pe.side, price, sl: levels.sl, at: receivedAt, replacing: held?.id });
       if (g.reject) return cancel(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt });
+    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
     if (this.risk) {
-      const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price });
+      const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price, replacing: held?.id });
       if (x) return cancel(`risk ${x}`);
+    }
+    if (held && held.status === 'open') {
+      const exitQuote = this.marketPrice(held.symbol, held.side === 'long' ? 'sell' : 'buy', priceIn, cfg, receivedAt);
+      if (!this.applyFills(held, [fillExit(held, exitQuote.price, held.qtyOpen, 'reversal', at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref: priceIn, source: exitQuote.source })) return cancel('reversal: the held position could not be closed');
     }
     const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg, context);
     return pos;

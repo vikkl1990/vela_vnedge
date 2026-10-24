@@ -306,6 +306,9 @@ export interface ExtractOptions {
    * becomes one entry on the first bar of the run, not one per bar (decision 57).
    */
   edge?: boolean;
+  /** Decision 186: the signal bar's length. With `edge`, a shape print one bar after the previous one continues a state.
+   *  Without it the spacing is read off the prints themselves, which on a three-bar live tail is not the bar length. */
+  barMs?: number;
   /**
    * Only entries whose label starts with one of these (case-insensitive) may open a trade (decision 67):
    * the scanner test showed one channel of a script paying while its siblings lose. Exits and info
@@ -397,8 +400,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     // a shape drawn on every bar of a state is one signal per run: the bar spacing is the smallest
     // gap between its own prints, and a print one spacing after the previous one continues the run
     const times = [...s.times].sort((a, b) => a - b);
-    let step = Infinity;
-    for (let i = 1; i < times.length; i++) { const g = times[i] - times[i - 1]; if (g > 0 && g < step) step = g; }
+    let step = opts.barMs && opts.barMs > 0 ? opts.barMs : Infinity;
+    if (!(opts.barMs && opts.barMs > 0)) for (let i = 1; i < times.length; i++) { const g = times[i] - times[i - 1]; if (g > 0 && g < step) step = g; }
     let prevT = -Infinity;
     for (const t of times) {
       const continues = opts.edge && Number.isFinite(step) && t - prevT <= step * 1.5;
