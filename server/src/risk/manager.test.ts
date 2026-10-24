@@ -118,7 +118,7 @@ test('cooldown after N consecutive losses per scanner, cleared by a win or by ti
 });
 
 test('drawdown-scaled sizing halves risk below the configured drawdown from the equity peak', t => {
-  const { entry, closeAt, mgr } = setup(t, { ddScale: [{ ddPct: 10, leverageMult: 0.5 }, { ddPct: 20, leverageMult: 0.25 }], maxDailyLossPct: 0, maxWeeklyLossPct: 0 });
+  const { entry, closeAt, mgr } = setup(t, { ddScale: [{ ddPct: 10, leverageMult: 0.5 }, { ddPct: 20, leverageMult: 0.25 }], ddFrom: 'peak', maxDailyLossPct: 0, maxWeeklyLossPct: 0 });
   const p = entry().position!;
   assert.equal(p.qty, 200);
   closeAt(p.id, 101); // small win → peak 100 200
@@ -132,6 +132,22 @@ test('drawdown-scaled sizing halves risk below the configured drawdown from the 
   assert.equal(r.qty, expected, 'risk per trade halved');
   closeAt(r.id, 5); // deeper
   assert.equal(mgr.leverageMult(), 0.25);
+});
+
+test('decision 188: measured from capital, a drawdown off the peak keeps full size until equity falls below the start', t => {
+  const { entry, closeAt, mgr } = setup(t, { ddScale: [{ ddPct: 0, leverageMult: 0.5 }], ddFrom: 'capital', maxDailyLossPct: 0, maxWeeklyLossPct: 0 });
+  const start = mgr.state().equity;
+  const p = entry().position!;
+  closeAt(p.id, 200);                          // a big win: well above the start
+  const q = entry().position!;
+  closeAt(q.id, 45);                           // a loss off the new peak, still above the start
+  assert.ok(mgr.drawdownPct() > 10, `peak drawdown ${mgr.drawdownPct()}`);
+  assert.ok(mgr.state().equity > start);
+  assert.equal(mgr.leverageMult(), 1, 'above the starting capital: full size');
+  assert.equal(mgr.state().sizing.drawdownPct, 0);
+  while (mgr.state().equity >= start) { const r = entry().position!; closeAt(r.id, 60); }
+  assert.ok(mgr.state().sizing.drawdownPct > 0);
+  assert.equal(mgr.leverageMult(), 0.5, 'below the starting capital: half size');
 });
 
 test('regime filter: ATR floor and weekend, with per-scanner exemption', t => {

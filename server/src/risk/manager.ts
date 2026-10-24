@@ -204,10 +204,20 @@ export class RiskManager extends EventEmitter implements RiskGate {
   leverageMult(): number {
     const c = this.cfg;
     if (!c?.enabled || !Array.isArray(c.ddScale) || !c.ddScale.length) return 1;
-    const dd = this.drawdownPct();
+    const dd = this.sizingDrawdownPct();
+    if (this.ddFrom() === 'capital' && !(dd > 0)) return 1;   // at or above the starting capital: full size
     let mult = 1, best = -1;
     for (const d of c.ddScale) if (dd >= d.ddPct && d.ddPct > best) { best = d.ddPct; mult = d.leverageMult; }
     return mult;
+  }
+
+  ddFrom(): 'capital' | 'peak' { return this.cfg?.ddFrom === 'peak' ? 'peak' : 'capital'; }
+
+  /** Decision 188: the drawdown the size rule reads — the loss below the starting capital, or the drawdown from the peak. */
+  sizingDrawdownPct(): number {
+    if (this.ddFrom() === 'peak') return this.drawdownPct();
+    const start = this.paper.initialEquity, eq = this.paper.equity();
+    return start > 0 ? Math.max(0, (start - eq) / start * 100) : 0;
   }
 
   /** Highest equity since the last paper reset; the paper engine keeps it, so the Overview, this page and the ops monitor read one number. */
@@ -307,6 +317,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
       at: now, enabled: Boolean(c?.enabled), halted,
       haltReason: this.st.manualHalt ? `manual: ${this.st.manualHalt.reason}` : this.st.day.tripped ? 'daily loss limit' : this.st.week.tripped ? 'weekly loss limit' : null,
       manualHalt: this.st.manualHalt, equity: eq, peakEquity: this.peakEquity(), drawdownPct: this.drawdownPct(), leverageMult: this.leverageMult(),
+      sizing: { from: this.ddFrom(), drawdownPct: this.sizingDrawdownPct(), startEquity: this.paper.initialEquity },
       day: period(this.st.day, c?.maxDailyLossPct ?? 0), week: period(this.st.week, c?.maxWeeklyLossPct ?? 0),
       positions: { open: open.length, pending: pending.length, max: c?.maxPositionsTotal ?? null, bySymbol: count('symbol'), byScanner: count('scannerId'), maxPerSymbol: c?.maxPositionsPerSymbol ?? null, maxPerScanner: c?.perScannerMaxPositions ?? null },
       scanners: Object.fromEntries(Object.entries(this.st.scanners).map(([id, s]) => [id, { ...s, dayPnl: this.scannerDayPnl(id), inCooldown: Boolean(s.cooldownUntil && now < s.cooldownUntil) }])),

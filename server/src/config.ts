@@ -522,6 +522,12 @@ export interface RiskConfig {
   burstWindowSec: number;
   /** Drawdown-scaled sizing: when the equity drawdown from its peak is ≥ ddPct, multiply leverage/risk by leverageMult (largest matching ddPct wins). */
   ddScale: Array<{ ddPct: number; leverageMult: number }>;
+  /**
+   * Decision 188: what the ddScale drawdown is measured from. 'capital' (the default): the loss below the starting capital,
+   * so an account still above what it started with trades at full size however far it is off its peak; a ddPct of 0 then
+   * means any amount below the start. 'peak': the drawdown from the highest equity reached.
+   */
+  ddFrom: 'capital' | 'peak';
   perScannerMaxPositions: number;
   /** A scanner stops entering for the day when its realized loss today reaches this % of day-start equity (0 = off). */
   perScannerDailyLossPct: number;
@@ -650,7 +656,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     cooldownMinutes: 120,
     reentryCooldownMinutes: 60,
     burstWindowSec: 120,
-    ddScale: [{ ddPct: 10, leverageMult: 0.5 }],
+    ddScale: [{ ddPct: 0, leverageMult: 0.5 }],
+    ddFrom: 'capital',
     perScannerMaxPositions: 4,
     perScannerDailyLossPct: 0,
     regime: { enabled: true, minAtrPct: 0.30, noWeekend: true, exempt: [] },
@@ -828,6 +835,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
   if (!(r.cooldownAfterLosses >= 0 && r.cooldownMinutes >= 0)) errs.push('risk.cooldownAfterLosses and cooldownMinutes must be ≥ 0');
   if (!((r.reentryCooldownMinutes ?? 0) >= 0 && (r.burstWindowSec ?? 0) >= 0)) errs.push('risk.reentryCooldownMinutes and burstWindowSec must be ≥ 0');
+  if (r.ddFrom !== undefined && r.ddFrom !== 'capital' && r.ddFrom !== 'peak') errs.push("risk.ddFrom must be 'capital' or 'peak'");
   if (!Array.isArray(r.ddScale) || r.ddScale.some(d => !(d.ddPct >= 0 && d.ddPct <= 100 && d.leverageMult >= 0 && d.leverageMult <= 1))) errs.push('risk.ddScale must be [{ddPct 0..100, leverageMult 0..1}]');
   if (r.marketGate) { const g = r.marketGate; if (![g.minTurnoverUsd, g.minAtrFeeMult, g.lookbackDays, g.minTrades, g.minPf, g.refreshMinutes, g.probeNotionalUsd ?? 0, g.maxBookCostPct ?? 0].every(v => Number.isFinite(v) && v >= 0) || g.refreshMinutes < 1 || g.lookbackDays < 1) errs.push('risk.marketGate values must be ≥ 0 (refreshMinutes, lookbackDays ≥ 1)'); }
   if (!(r.regime && Number.isFinite(r.regime.minAtrPct) && r.regime.minAtrPct >= 0 && Array.isArray(r.regime.exempt))) errs.push('risk.regime.minAtrPct must be ≥ 0 and exempt an array');

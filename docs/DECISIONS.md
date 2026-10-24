@@ -5608,3 +5608,15 @@ trade's original stop. `GET /api/tape-audit?days=N` summarises by book and fill 
 warning on every page. It is now a quiet "Size 50%" stat in the top bar with the explanation on hover; the rule itself is
 unchanged. The ticker's "markets unavailable" came from a single failed load during a restart that then waited five
 minutes; the markets query now retries three times and re-polls every 30 s while it is failing.
+
+## 188. The drawdown size cut is measured from the starting capital
+
+**Why.** On 24 October the account stood near $1,197: 20% below its $1,501 peak and 20% above the $1,000 it started with.
+The `ddScale` rule halved every new position because of the drop from the peak. The operator's rule is simpler: cut size
+only when the account is below the capital it started with, otherwise trade at full size.
+
+**What.** `risk.ddFrom` chooses the basis: `'capital'` (the new default) reads the loss below `paper.initialEquity`;
+`'peak'` keeps the old drawdown from the highest equity. Measured from capital, equity at or above the start always means
+full size, and a `ddPct` of 0 means any amount below the start. The default ladder is now `[{ ddPct: 0, leverageMult:
+0.5 }]`: half size from the first dollar below $1,000. The risk view carries `sizing { from, drawdownPct, startEquity }`
+and the top bar's Size stat explains whichever basis is in force. The VM's persisted `risk.ddScale` is set to match.

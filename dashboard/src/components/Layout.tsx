@@ -302,7 +302,9 @@ export function Layout() {
               <span className="mono">{s ? openCount : '–'}</span>
             </span>
             {risk.data && risk.data.leverageMult !== undefined && risk.data.leverageMult < 1 && (
-              <span className="topstat" title={`New positions are sized at ${Math.round(risk.data.leverageMult * 100)}% while the account is ${risk.data.drawdownPct.toFixed(1)}% below its peak equity. Full size returns once the drawdown recovers below the threshold (risk.ddScale in Settings).`}>
+              <span className="topstat" title={risk.data.sizing?.from === 'peak'
+                ? `New positions are sized at ${Math.round(risk.data.leverageMult * 100)}% while the account is ${risk.data.drawdownPct.toFixed(1)}% below its peak equity. Full size returns once the drawdown recovers below the threshold (risk.ddScale).`
+                : `New positions are sized at ${Math.round(risk.data.leverageMult * 100)}% while equity is ${(risk.data.sizing?.drawdownPct ?? 0).toFixed(1)}% below the starting capital of ${fmtMoney(risk.data.sizing?.startEquity ?? 0, 0)}. Full size returns once equity is back above it (risk.ddScale, risk.ddFrom).`}>
                 <span className="topstat-label">Size</span>
                 <span className="mono">{Math.round(risk.data.leverageMult * 100)}%</span>
               </span>

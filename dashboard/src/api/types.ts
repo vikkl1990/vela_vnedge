@@ -677,6 +677,8 @@ export interface RiskState {
   at: number; enabled: boolean; halted: boolean; haltReason: string | null
   manualHalt: { reason: string; at: number } | null
   equity: number; peakEquity: number; drawdownPct: number; leverageMult: number
+  /** Decision 188: what the size rule reads — the loss below the starting capital, or the drawdown from the peak. */
+  sizing?: { from: 'capital' | 'peak'; drawdownPct: number; startEquity: number }
   day: RiskPeriod; week: RiskPeriod
   [k: string]: unknown
 }
