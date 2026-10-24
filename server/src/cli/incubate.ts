@@ -293,7 +293,9 @@ const judgeRegistry = new ScannerRegistry();
 const report = evaluate(store, cfg, Date.now(), { needsRescreen: id => judgeRegistry.get(id)?.scriptType === 'strategy' });
 summary.report = report;
 summary.ms = Date.now() - started;
-db.kvSet('incubator.lastRun', { ...(summary), finishedAt: Date.now() });
+// decision 184: the nightly's finish marker is the nightly's; a hand run (decision 176) keeps its own, so the died check,
+// the queue's "is the nightly running" and the bot's hunt trigger read only the nightly
+db.kvSet(handRun ? 'incubator.lastHandRun' : 'incubator.lastRun', { ...(summary), finishedAt: Date.now() });
 out(`screen: ${summary.runs} runs, ${summary.passed} passed (${summary.new} new candidates), ${summary.silentSkipped} skipped as silent, ${summary.failed} failed${summary.truncated ? `, ${summary.truncated} scripts not reached (time budget)` : ''}`);
 out(`judge: ${report.admitted.length} admitted to shadow, ${report.proposed.length} proposed, ${report.retired.length} retired, ${report.demoteProposed.length} proposed for demotion, ${report.brewing} brewing, ${report.free} free slots`);
 for (const p of report.proposed) out(`  PROPOSED ${p}`);

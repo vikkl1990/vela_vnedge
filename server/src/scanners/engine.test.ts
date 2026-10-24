@@ -41,8 +41,11 @@ for (const change of ['none', 'disabled', 'removed', 'reenabled', 'timeframe'] a
       plots: [], shapes: [], labels: [], alerts: [{ type: 'alert', barIndex: 59, time: bars.at(-1)!.time,
         message: 'LONG | Entry: 100 | SL: 95 | TP1: 105 | TP2: 110 | TP3: 115' }] });
     await complete;
-    assert.equal(paper.openPositions().length, change === 'none' ? 1 : 0);
-    assert.equal(db.all('SELECT * FROM signals').length, change === 'none' ? 1 : 0);
+    // decision 184: the configuration is compared by value, so a scanner disabled and re-enabled unchanged while its run
+    // was in flight trades its result; a scanner left disabled, removed, or on another timeframe does not
+    const trades = change === 'none' || change === 'reenabled' ? 1 : 0;
+    assert.equal(paper.openPositions().length, trades);
+    assert.equal(db.all('SELECT * FROM signals').length, trades);
   });
 }
 

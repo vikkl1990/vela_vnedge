@@ -338,6 +338,8 @@ export class CandleStore extends EventEmitter {
    */
   announceDueCloses(now = Date.now()): number {
     let n = 0;
+    // decision 184: with the feed down the bar in hand is a fragment; its close is announced by the resync that completes it
+    if (this.feed.connected === false) return 0;
     for (const s of this.series.values()) {
       if (!s.loaded || s.backfilling) continue;
       const last = s.bars.at(-1);
@@ -407,7 +409,9 @@ export class CandleStore extends EventEmitter {
     const last = bars.at(-1);
     if (!last || bar.time > last.time) {
       // new bar started → previous bar is closed; a jump of more than one timeframe means bars are missing in between
-      const announce = Boolean(last) && !quiet && s.loaded && source === 'ws';
+      // decision 184: announced only once the local clock agrees the bar is over; otherwise the clock ticker announces it,
+      // so a run never reads the series with the announced bar filtered out as still forming
+      const announce = Boolean(last) && !quiet && s.loaded && source === 'ws' && this.isClosed(s.tf, last!.time);
       const jumped = Boolean(last) && s.loaded && bar.time - last!.time > TF_SECONDS[s.tf] * 1500;
       if (announce) this.emitClosed(s, last!);
       bars.push(bar);

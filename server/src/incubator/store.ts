@@ -76,11 +76,16 @@ export class IncubatorStore {
   marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut') ?? {}; }
   setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut', rec); }
 
-  marketsToday(): Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null }> {
-    const kv = this.db.kvGet<{ enabled?: boolean; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[]; turnoverUsd?: number | null }> }>('risk.marketsToday');
-    const out = new Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null }>();
+  /** Decision 184: how old the market gate's verdicts may be before the incubator treats them as stale (three refreshes). */
+  marketStaleMs = 3 * 3600_000;
+  marketsToday(now = Date.now(), maxAgeMs = this.marketStaleMs): Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null; stale?: boolean }> {
+    const kv = this.db.kvGet<{ enabled?: boolean; at?: number; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[]; turnoverUsd?: number | null }> }>('risk.marketsToday');
+    const out = new Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null; stale?: boolean }>();
     if (!kv || kv.enabled === false) return out;
-    for (const m of kv.markets ?? []) out.set(m.symbol, { allowed: Boolean(m.allowed), reasons: m.reasons ?? [], turnoverUsd: typeof m.turnoverUsd === 'number' ? m.turnoverUsd : null });
+    // decision 184: verdicts older than three refreshes are stale; the account's own gate already refuses on them, and
+    // the incubator's proposals and admissions wait as well (the screen's universe keeps the last verdicts)
+    const stale = typeof kv.at === 'number' && now - kv.at > maxAgeMs;
+    for (const m of kv.markets ?? []) out.set(m.symbol, { allowed: Boolean(m.allowed), reasons: m.reasons ?? [], turnoverUsd: typeof m.turnoverUsd === 'number' ? m.turnoverUsd : null, ...(stale ? { stale: true } : {}) });
     return out;
   }
 
@@ -155,8 +160,11 @@ export class IncubatorStore {
    * demotion proposal that preceded it; the reason is null for the operator's own demotion. Null if never demoted.
    */
   lastDemotion(pairId: number): { at: number; reason: string | null } | null {
-    const d = this.db.get<{ at: number }>("SELECT at FROM incubator_events WHERE pair_id=? AND from_stage IN ('live','demote_proposed') AND to_stage='shadow' ORDER BY at DESC, id DESC LIMIT 1", pairId);
+    const d = this.db.get<{ at: number; from_stage: string; evidence: string | null }>("SELECT at, from_stage, evidence FROM incubator_events WHERE pair_id=? AND from_stage IN ('live','demote_proposed') AND to_stage='shadow' ORDER BY at DESC, id DESC LIMIT 1", pairId);
     if (!d) return null;
+    // decision 184: a demotion straight from live (the operator's) carries its own reason in its event; only one that
+    // went through a proposal reads the proposal's (a rejected, older proposal is not this demotion's reason)
+    if (d.from_stage !== 'demote_proposed') { let own: string | null = null; try { own = d.evidence ? (JSON.parse(d.evidence)?.reason ?? null) : null; } catch { own = null; } return { at: d.at, reason: own }; }
     const p = this.db.get<{ evidence: string | null }>("SELECT evidence FROM incubator_events WHERE pair_id=? AND to_stage='demote_proposed' AND at<=? ORDER BY at DESC, id DESC LIMIT 1", pairId, d.at);
     let reason: string | null = null;
     try { reason = p?.evidence ? (JSON.parse(p.evidence)?.reason ?? null) : null; } catch { reason = null; }

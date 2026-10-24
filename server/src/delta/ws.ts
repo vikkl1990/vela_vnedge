@@ -69,8 +69,12 @@ export class DeltaFeed extends EventEmitter {
     this.hbTimer = setInterval(() => {
       if (!this.connected) return;
       if (Date.now() - this.lastMessageAt > 60_000) {
+        // decision 184: a dead TCP connection never completes a close handshake; drop it and reconnect now
         log.warn('no messages for 60s, reconnecting');
-        this.ws?.close();
+        const dead = this.ws; this.ws = null;
+        this.connected = false; this.emit('status', { connected: false });
+        try { (dead as any)?.terminate?.(); dead?.close?.(); } catch { /* already gone */ }
+        this.scheduleReconnect();
       } else {
         try { this.ws?.send(JSON.stringify({ type: 'heartbeat' })); } catch { /* ignore */ }
       }

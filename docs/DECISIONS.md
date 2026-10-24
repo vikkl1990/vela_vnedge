@@ -5468,3 +5468,17 @@ score under the same per-scanner caps, an active pair counting against the first
 of a 15m pair's runs, so the reserved pool adds about thirteen 15m-equivalents of load, most of it at the 4h closes.
 Nothing on 1h or 15m for the majors; the cost rule stays; the gate (t ≥ 2) and the live turnover floor are unchanged.
 The nightly screen walks the timeframes in turn, so the 4h reservations fill over the coming nights, not at once.
+
+## 184. The loop review: fourteen gaps closed in the scan loop, the incubator and the pool (24 October 2026)
+
+`docs/SCANNER-LOOP-REVIEW-2026-10-24.md` has the table. The one that was live and biting: pairs running under the
+4h reservation (decision 182) counted against `maxShadow`, so with 1,010 pairs in the book the general pool had no free
+slot and no 15m/1h candidate could be admitted — a reservation is capacity over the cap, and now counts that way. The
+rest: a returning pair's retirement clocks (stale, `maxDays`) run from its demotion while its evidence window stays
+(132) and its `minDays` does not restart (171); hand screens keep their own finish marker (`incubator.lastHandRun`);
+an operator's demotion carries its own reason; the silent/cost-starved answer falls back to the shadow record when the
+mirror is off; the last hunted run is persisted; account positions keep their 1m feed across a restart; no close is
+announced from a clock while the feed is down, nor from the websocket before the local clock agrees; a run's config is
+compared by value; queue deadlines hold without a ready worker and a worker that never exits is replaced after 30 s;
+a dead socket is dropped and reconnected; the incubator treats gate verdicts older than three refreshes as stale; the
+memory guard reads anonymous memory. Tests: 381.

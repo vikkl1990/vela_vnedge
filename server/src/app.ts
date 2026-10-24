@@ -235,6 +235,11 @@ export class App {
     // positions of removed scanners keep running to their levels (the engine manages exits regardless of scanner state)
     await this.resolveUniverse();
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
+    // decision 184: a position outlives its pair (a demoted cell, a retired shadow pair, a narrowed universe); after a
+    // restart its symbol may be in no tracked set, and without 1m bars its stop, trail and targets are never evaluated
+    const held = [...new Set([...this.paper.openPositions(), ...this.shadow.openPositions()].map(p => p.symbol))];
+    for (const s of held) if (!this.candles.has(s, '1m')) await this.candles.track(s, '1m', 300);
+    if (held.length) this.feed.subscribe('v2/ticker', held);
     subscribeRealtime(this);
     if (this.executor) await this.executor.start();
     // markets today: judged now and every refreshMinutes, over the fleet's and the incubator's markets
@@ -246,10 +251,12 @@ export class App {
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
     // the daily screen runs in its own process; when it finishes, the hunt runs here so promotions land in the live config
-    this.huntSeenAt = this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
+    // decision 184: the last hunted run is remembered across restarts, so a nightly that finished while the bot was down
+    // (a deploy during the screen) still gets its hunt — and its promotions — at the first tick
+    this.huntSeenAt = this.db.kvGet<number>('incubator.huntSeenAt') ?? this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
     this.huntTimer = setInterval(() => {
       const at = this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
-      if (at > this.huntSeenAt) { this.huntSeenAt = at; this.incubatorEvaluate('hunter').catch(e => log.warn(`hunt failed: ${e?.message ?? e}`)); }
+      if (at > this.huntSeenAt) { this.huntSeenAt = at; this.db.kvSet('incubator.huntSeenAt', at); this.incubatorEvaluate('hunter').catch(e => log.warn(`hunt failed: ${e?.message ?? e}`)); }
       // decision 157: between hunts, free slots are filled as soon as a candidate can take one (a slot freed, a re-screen landed)
       else this.incubatorAdmit('timer').catch(e => log.warn(`admission failed: ${e?.message ?? e}`));
     }, 10 * 60_000);

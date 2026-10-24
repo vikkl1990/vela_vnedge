@@ -65,6 +65,7 @@ test('slices are stable and cover every slice', () => {
 function world() {
   const db = new Db(':memory:');
   const store = new IncubatorStore(db);
+  store.marketStaleMs = Infinity;   // these scenarios set the gate's verdicts once and walk the clock for weeks
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
   cfg.scanners = { live1: { enabled: true, symbols: ['BTCUSD'], timeframes: null, exitMode: 'both' } as any };
   const insertTrade = (book: number, scanner: string, symbol: string, t: TradeR) => db.run(
@@ -636,6 +637,7 @@ test('decision 171: a freshly promoted cell is judged on its own live period, an
   const { db, store, cfg, insertTrade, screen } = world();
   cfg.incubator.gate.pool = 'pair';
   cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 0, costStarvedRefusals: 5, costStarvedDays: 14 };
+  cfg.incubator.mirror = { enabled: true };   // decision 184: the signal-funnel answer is a mirror-on rule; off, the shadow record decides
   recordScreen(store, { scannerId: 'p', symbol: 'p1', tf: '15m' }, screen(), cfg.incubator, T0);
   evaluate(store, cfg, T0);
   for (const t of series(40, 20, 2, 2, T0 + 1000)) insertTrade(2, 'p', 'p1', t);

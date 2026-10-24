@@ -415,7 +415,8 @@ export class ScannerEngine extends EventEmitter {
       return;
     }
     this.inFlight.add(key);
-    const scannerConfigAtStart = this.cfgRef().scanners[s.id];
+    // decision 184: compared by value — a config write that rebuilds an unchanged object must not discard the run's events
+    const scannerConfigAtStart = JSON.stringify(this.cfgRef().scanners[s.id] ?? null);
     const at = Date.now();
     try {
       const cfg = this.cfgRef();
@@ -464,7 +465,7 @@ export class ScannerEngine extends EventEmitter {
         log.info(`backtest ${key}: ${bt.stats.trades} trades, win ${bt.stats.winRatePct.toFixed(0)}%, pnl ${bt.stats.pnl.toFixed(0)} (${res.ms}ms)`);
       }
       // A pending job cannot trade after disable/removal or a configuration change.
-      if (mode.live && this.isActive(s) && this.cfgRef().scanners[s.id] === scannerConfigAtStart
+      if (mode.live && this.isActive(s) && JSON.stringify(this.cfgRef().scanners[s.id] ?? null) === scannerConfigAtStart
           && this.runsOn(s.id, symbol, tf)) {
         const lastBar = bars.at(-1)!;
         if (!liveRes.ok) { log.warn(`${key} live run error: ${liveRes.error}`); return; }

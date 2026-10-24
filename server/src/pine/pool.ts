@@ -9,6 +9,8 @@ import { SCRIPTS_DIR } from '../config.ts';
 import type { WorkerJob, WorkerResult } from './worker.ts';
 
 const log = logger.scoped('pool');
+/** Decision 184: how long a terminated worker may take to exit before its slot is replaced regardless. */
+const RETIRE_GRACE_MS = 30_000;
 const WORKER_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker.ts');
 /** Heap ceiling per worker thread (MB); override with VNEDGE_WORKER_HEAP_MB. */
 export const WORKER_HEAP_MB = Number(process.env.VNEDGE_WORKER_HEAP_MB) || 1024;
@@ -40,7 +42,11 @@ export function memoryLimitBytes(): number {
 export function memoryUsedBytes(): number {
   try {
     const own = fs.readFileSync('/proc/self/cgroup', 'utf8').split('\n').find(l => l.startsWith('0::'))?.slice(3).trim();
-    if (own) { const v = Number(fs.readFileSync(`/sys/fs/cgroup${own}/memory.current`, 'utf8').trim()); if (v > 0) return v; }
+    if (own) {
+      // decision 184: `memory.current` counts the page cache; the guard means the heaps, so anonymous memory is read first
+      try { const anon = /^anon (\d+)/m.exec(fs.readFileSync(`/sys/fs/cgroup${own}/memory.stat`, 'utf8'))?.[1]; if (anon && Number(anon) > 0) return Number(anon); } catch { /* fall through */ }
+      const v = Number(fs.readFileSync(`/sys/fs/cgroup${own}/memory.current`, 'utf8').trim()); if (v > 0) return v;
+    }
   } catch { /* no cgroup */ }
   return process.memoryUsage().rss;
 }
@@ -226,6 +232,13 @@ export class PinePool {
     if (slot.busy) { this.fail(slot.busy, error); slot.busy = null; }
     // The eventual exit event replaces this slot exactly once.
     void slot.w.terminate().catch(e => log.error(`worker ${slot.index} termination failed: ${String(e)}`));
+    // decision 184: a worker wedged in native code may never exit; after a grace the slot is replaced anyway
+    const t = setTimeout(() => {
+      if (this.stopped || this.workers[slot.index] !== slot) return;
+      log.error(`worker ${slot.index} did not exit ${RETIRE_GRACE_MS / 1000}s after termination; replacing it`);
+      this.spawn(slot.index);
+    }, RETIRE_GRACE_MS);
+    t.unref?.();
   }
 
   private spawn(index: number) {
@@ -253,7 +266,11 @@ export class PinePool {
       if (this.workers[index] !== slot) return;
       slot.ready = false; slot.retiring = true;
       if (slot.busy) { this.fail(slot.busy, `worker exited with ${code}`); slot.busy = null; }
-      if (!this.stopped) this.spawn(index);
+      if (!this.stopped) {
+        // decision 184: a spawn that fails (EAGAIN, ENOMEM) is retried rather than thrown out of the exit listener
+        try { this.spawn(index); }
+        catch (e) { log.error(`worker ${index} could not be respawned: ${String(e)}; retrying in ${RETIRE_GRACE_MS / 1000}s`); const t = setTimeout(() => { if (!this.stopped && this.workers[index] === slot) { try { this.spawn(index); } catch (e2) { log.error(`worker ${index} respawn failed again: ${String(e2)}`); } } }, RETIRE_GRACE_MS); t.unref?.(); }
+      }
     });
   }
 
@@ -324,6 +341,20 @@ export class PinePool {
         this.retire(slot, `timeout after ${this.timeoutMs}ms`);
       }
     }
+    this.sweepExpired(now);
+  }
+
+  /** Decision 184: a queued job's deadline holds even when no worker is ready to pull it (every worker retiring or wedged). */
+  private sweepExpired(now = Date.now()) {
+    const drop = (q: Pending[], count: () => void, why: string) => {
+      for (let i = q.length - 1; i >= 0; i--) {
+        const p = q[i];
+        if (p.deadline !== undefined && now > p.deadline) { q.splice(i, 1); count(); this.fail(p, `${why} after ${Math.round((now - p.queuedAt) / 1000)}s in the queue`); }
+      }
+    };
+    drop(this.live, () => this.expiredLive++, 'expired');
+    drop(this.mirror, () => this.expiredMirror++, 'dropped');
+    drop(this.queue, () => this.expiredBackground++, 'dropped');
   }
 
   async stop() {

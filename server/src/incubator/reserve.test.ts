@@ -51,3 +51,19 @@ test('decision 182: without reservations a full book admits nothing', () => {
   evaluate(store, cfg, T0);
   assert.equal(store.find('m1', 'BTCUSD', '4h')!.stage, 'candidate');
 });
+
+test('decision 184: pairs running under a reservation do not consume the book\'s own capacity', () => {
+  const { store, cfg, screen } = world([{ tfs: ['4h'], slots: 5 }]);
+  cfg.incubator.maxShadow = 3;
+  // three 15m pairs fill the book; five 4h pairs fill the reservation
+  for (const s of ['a', 'b', 'c']) recordScreen(store, { scannerId: s, symbol: 'ZECUSD', tf: '15m' }, screen(3), cfg.incubator, T0);
+  for (const s of ['h1', 'h2', 'h3', 'h4', 'h5']) recordScreen(store, { scannerId: s, symbol: 'AKEUSD', tf: '4h' }, screen(2), cfg.incubator, T0);
+  evaluate(store, cfg, T0);
+  assert.equal(store.list(['shadow']).length, 8, 'the book (3) and the reservation (5) both filled');
+  // one 15m pair retires; a new 15m candidate must get its slot back even though eight pairs are active
+  store.move(store.find('a', 'ZECUSD', '15m')!, 'retired', 'test', null, 'gone', T0 + 1000);
+  recordScreen(store, { scannerId: 'd', symbol: 'ZECUSD', tf: '15m' }, screen(2.5), cfg.incubator, T0 + 2000);
+  const rep = evaluate(store, cfg, T0 + 3000);
+  assert.equal(store.find('d', 'ZECUSD', '15m')!.stage, 'shadow', 'the reserved 4h pairs did not count against maxShadow');
+  assert.equal(rep.free, 0);
+});
