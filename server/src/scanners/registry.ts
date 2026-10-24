@@ -34,6 +34,13 @@ export interface LoadedScanner extends ScannerMeta {
   source: string;
   patched: string;
   patches: string[];
+  /** Decision 195: a variant is the same source read another way (scripts/variants.json); this is the id it was made from. */
+  variantOf?: string;
+}
+
+/** Decision 195: scanner variants — one source, a second id with its own reading (its contract lives in specs.json). */
+export function loadVariants(): Array<{ id: string; base: string; name: string; why?: string }> {
+  try { const v = JSON.parse(fs.readFileSync(path.join(SCRIPTS_DIR, 'variants.json'), 'utf8')); return Array.isArray(v) ? v : []; } catch { return []; }
 }
 
 const CATEGORY_RULES: Array<[RegExp, string]> = [
@@ -111,6 +118,11 @@ export class ScannerRegistry {
         family: familyFor(m), origin: originOf(m.url), license: m.license ?? null,
         source, patched, patches: applied,
       });
+    }
+    for (const v of loadVariants()) {
+      const b = this.map.get(v.base);
+      if (!b || this.map.has(v.id)) continue;
+      this.map.set(v.id, { ...b, id: v.id, name: v.name, variantOf: v.base });
     }
   }
 

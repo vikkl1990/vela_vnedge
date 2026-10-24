@@ -20,6 +20,7 @@ import { logger } from './log.ts';
 import { MarketStructureTrail, type StructureLevel } from './paper/luxExits.ts';
 import { configFingerprint, sourceHash } from './paper/fingerprint.ts';
 import { bookPaperConfig, scannerExitPolicy } from './paper/policy.ts';
+import { readingOf } from './scanners/reading.ts';
 import { PaperEngine } from './paper/engine.ts';
 import { PinePool } from './pine/pool.ts';
 import { ScannerEngine } from './scanners/engine.ts';
@@ -513,8 +514,9 @@ export class App {
       const inputs = c?.inputs && Object.keys(c.inputs).length ? c.inputs : undefined;
       const res = await this.pool.run({ scannerId: id, source: s.patched, symbol: market, tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs, timezone: c?.timezone }, { priority: 'background' });
       if (!res.ok) { out.push({ scannerId: id, market, tf, at, ...brokenRun(res.error ?? 'failed', res.ms) }); continue; }
-      const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: c?.rule ?? null, bars, mode: 'backtest' });
-      const events = extractEvents(res.alerts, res.shapes, { derived, sources: c?.sources, edge: c?.edge });
+      const READ = readingOf(c, id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
+      const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: c?.rule ?? null, bars, mode: 'backtest', ...READ.rule });
+      const events = extractEvents(res.alerts, res.shapes, { derived, drawn: res.labels, ...READ.extract });
       out.push({ scannerId: id, market, tf, at, ...classifyRun(res, events) });
     }
     for (const r of out) this.profiles.save(r);

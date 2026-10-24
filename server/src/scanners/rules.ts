@@ -10,6 +10,8 @@
  */
 import type { WorkerAlert, WorkerLabel, WorkerPlot, WorkerShape } from '../pine/worker.ts';
 import type { ScanEvent, Side } from './extractor.ts';
+import { NUM_SRC, numOf } from './extractor.ts';
+import { logger } from '../log.ts';
 import type { Bar } from '../data/candleStore.ts';
 import type { GenericRule } from '../config.ts';
 
@@ -26,14 +28,25 @@ export interface RuleContext {
   plots?: WorkerPlot[];
   /** Generic rule selected per scanner in config (`scanners.<id>.rule`); replaces the per-scanner rule. */
   rule?: GenericRule | null;
+  /** Decision 195: the scanner's Pine input overrides, so a rule's delay follows the script's own settings. */
+  inputs?: Record<string, number | string | boolean>;
+  /**
+   * Decision 195: the plot (and, for an oscillator, the mode and levels) a generic rule reads, fixed per scanner.
+   * Without it the selector picks from the whole window, which changes as bars are added; a live run then refuses to
+   * trade the rule rather than read a choice made with hindsight.
+   */
+  pin?: { plot: string; mode?: 'zero' | 'obos'; ob?: number; os?: number } | null;
+  /** Decision 195: the id whose per-scanner rule applies — a variant reads with its base's rule. */
+  ruleFor?: string;
 }
 
 export type Rule = (ctx: RuleContext) => ScanEvent[];
 
 export const labelKey = (l: WorkerLabel) => `${l.text}@${l.time}@${Math.round(l.y * 100)}`;
 
-const NUMRE = /-?\d+(?:[.,]\d+)?/;
-const numIn = (s: string) => { const m = s.match(NUMRE); return m ? Number(m[0].replace(/,/g, '')) : undefined; };
+const NUMRE = new RegExp(NUM_SRC);
+const numIn = (s: string) => numOf(s.match(NUMRE)?.[0]);
+const log = logger.scoped('rules');
 
 function mk(ctx: RuleContext, barTime: number, side: Side, label: string, message: string, extra: Partial<ScanEvent> = {}): ScanEvent {
   return { kind: 'entry', side, tp: [], label, message, source: 'derived', barTime, barIndex: -1, ...extra };
@@ -64,7 +77,7 @@ function alertRule(opts: { match: RegExp; side: (msg: string) => Side | undefine
       if (a.type !== 'alert' || !opts.match.test(a.message)) continue;
       const side = opts.side(a.message);
       if (!side) continue;
-      const price = numIn((a.message.match(/Price:\s*(-?\d+(?:[.,]\d+)?)/i) ?? [])[1] ?? '') ?? closeAt(ctx, a.time);
+      const price = numIn((a.message.match(new RegExp(String.raw`Price:\s*(${NUM_SRC})`, 'i')) ?? [])[1] ?? '') ?? closeAt(ctx, a.time);
       out.push(mk(ctx, a.time, side, opts.label(a.message), a.message.slice(0, 500), { price, tp: opts.tp?.(a.message) ?? [], sl: opts.sl?.(a.message) }));
     }
     return out;
@@ -72,11 +85,13 @@ function alertRule(opts: { match: RegExp; side: (msg: string) => Side | undefine
 }
 
 /** Labels whose text matches → entries; live: only labels that just appeared; backtest: anchor + delay. */
-function labelRule(opts: { match: RegExp; side: (text: string, l: WorkerLabel) => Side | undefined; delayBars: number; label: (text: string) => string; target?: (ctx: RuleContext, l: WorkerLabel, side: Side) => number[] }): Rule {
+function labelRule(opts: { match: RegExp; side: (text: string, l: WorkerLabel) => Side | undefined; delayBars: number; /** Decision 195: the Pine input that sets the delay, when the script lets it be changed. */ delayInput?: string; label: (text: string) => string; target?: (ctx: RuleContext, l: WorkerLabel, side: Side) => number[] }): Rule {
   return (ctx) => {
     const out: ScanEvent[] = [];
     const lastTime = ctx.bars.at(-1)?.time ?? 0;
     const tfMs = ctx.bars.length > 1 ? ctx.bars[1].time - ctx.bars[0].time : 900_000;
+    const fromInput = opts.delayInput ? Number(ctx.inputs?.[opts.delayInput]) : NaN;
+    const delay = Number.isFinite(fromInput) && fromInput >= 0 ? fromInput : opts.delayBars;
     for (const l of ctx.labels) {
       if (!opts.match.test(l.text)) continue;
       const side = opts.side(l.text, l);
@@ -84,10 +99,12 @@ function labelRule(opts: { match: RegExp; side: (text: string, l: WorkerLabel) =
       let barTime: number | null;
       if (ctx.mode === 'live') {
         if (!ctx.newLabelKeys?.has(labelKey(l))) continue;          // only labels that appeared on this run
-        if (lastTime - l.time > tfMs * 40) continue;                 // ignore ancient labels on the first run
+        // decision 195: a label appears `delay` bars after the bar it is anchored to; the cut-off for ancient labels is
+        // counted from there (40 bars flat discarded every 55-bar pivot the moment it was confirmed)
+        if (lastTime - l.time > tfMs * (delay + 5)) continue;
         barTime = lastTime;
       } else {
-        barTime = confirmedBarTime(ctx, l.time, Number(process.env.LABEL_DELAY_OVERRIDE ?? opts.delayBars));   // override is for measurement only
+        barTime = confirmedBarTime(ctx, l.time, Number(process.env.LABEL_DELAY_OVERRIDE ?? delay));   // override is for measurement only
       }
       if (barTime === null) continue;
       const tp = opts.target ? opts.target(ctx, l, side) : [];
@@ -157,6 +174,7 @@ export const RULES: Record<string, Rule> = {
     match: /^(HL|LH)$/,
     side: (t) => (t === 'HL' ? 'long' : 'short'),
     delayBars: 55,
+    delayInput: 'pivRInput',
     label: (t) => (t === 'HL' ? 'Structure HL (higher low)' : 'Structure LH (lower high)'),
   }),
 
@@ -180,10 +198,20 @@ export const RULES: Record<string, Rule> = {
 };
 
 export function applyRules(ctx: RuleContext): ScanEvent[] {
-  const rule = ctx.rule ? GENERIC_RULES[ctx.rule] : RULES[ctx.scannerId];
+  const rule = ctx.rule ? GENERIC_RULES[ctx.rule] : RULES[ctx.ruleFor ?? ctx.scannerId];
   if (!rule) return [];
-  try { return rule(ctx); } catch { return []; }
+  try { return rule(ctx); } catch (e: any) {
+    // decision 195: a broken rule is not a quiet bar — it is counted and logged once per scanner and message
+    const msg = String(e?.message ?? e).slice(0, 200);
+    const k = `${ctx.scannerId}|${msg}`;
+    ruleErrors.set(k, { scannerId: ctx.scannerId, error: msg, count: (ruleErrors.get(k)?.count ?? 0) + 1, at: Date.now() });
+    if (ruleErrors.get(k)!.count === 1) log.warn(`rule for ${ctx.scannerId} failed: ${msg}`);
+    return [];
+  }
 }
+
+/** Decision 195: rule failures since the process started, by scanner and message. */
+export const ruleErrors = new Map<string, { scannerId: string; error: string; count: number; at: number }>();
 
 // ---------------------------------------------------------------------------------------------
 // Generic rules for silent-but-tradeable scripts (enabled per scanner via `scanners.<id>.rule`)
@@ -248,7 +276,8 @@ export function selectTrail(plots: WorkerPlot[] | undefined, bars: Bar[]): Trail
 
 /** Trailing-stop / SuperTrend rule: entry when the close flips to the other side of the trail; the trail is the stop. */
 export const trailingRule: Rule = (ctx) => {
-  const sel = selectTrail(ctx.plots, ctx.bars);
+  if (ctx.mode === 'live' && !ctx.pin?.plot) throw new Error('generic trailing rule: no pinned plot (scanners.<id>.rulePin) — a live run will not trade a plot chosen from the whole window');
+  const sel = ctx.pin?.plot ? pinnedTrail(ctx.plots, ctx.bars, ctx.pin.plot) : selectTrail(ctx.plots, ctx.bars);
   if (!sel) return [];
   const out: ScanEvent[] = [];
   let prev: Side | null = null;
@@ -313,7 +342,8 @@ function countObOs(values: Array<number | null>, ob: number, os: number): number
 
 /** Oscillator rule: zero-line crosses, or leaving oversold (long) / overbought (short); stops/targets from ATR. */
 export const oscillatorRule: Rule = (ctx) => {
-  const sel = selectOscillator(ctx.plots, ctx.bars);
+  if (ctx.mode === 'live' && !(ctx.pin?.plot && ctx.pin.mode)) throw new Error('generic oscillator rule: no pinned plot and mode (scanners.<id>.rulePin) — a live run will not trade a series or mode chosen from the whole window');
+  const sel = ctx.pin?.plot && ctx.pin.mode ? pinnedOscillator(ctx.plots, ctx.bars, ctx.pin) : selectOscillator(ctx.plots, ctx.bars);
   if (!sel) return [];
   const out: ScanEvent[] = [];
   let prev: number | null = null;
@@ -335,3 +365,19 @@ export const oscillatorRule: Rule = (ctx) => {
 };
 
 export const GENERIC_RULES: Record<GenericRule, Rule> = { trailing: trailingRule, oscillator: oscillatorRule };
+
+/** Decision 195: the trail plot named by the scanner's pin, read as is — no ranking over the window. */
+export function pinnedTrail(plots: WorkerPlot[] | undefined, bars: Bar[], title: string): TrailSelection | null {
+  const p = plots?.find(x => x.title === title);
+  if (!p) return null;
+  const values = alignPlot(p, bars);
+  return { title: p.title, values, flips: 0, merged: false };
+}
+
+/** Decision 195: the oscillator, mode and levels named by the scanner's pin. */
+export function pinnedOscillator(plots: WorkerPlot[] | undefined, bars: Bar[], pin: { plot: string; mode?: OscMode; ob?: number; os?: number }): OscSelection | null {
+  const p = plots?.find(x => x.title === pin.plot);
+  if (!p || !pin.mode) return null;
+  const ob = pin.ob ?? (pin.mode === 'zero' ? 0 : 70), os = pin.os ?? (pin.mode === 'zero' ? 0 : 30);
+  return { title: p.title, values: alignPlot(p, bars), mode: pin.mode, ob, os, crosses: 0 };
+}

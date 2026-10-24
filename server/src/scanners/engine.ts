@@ -26,6 +26,7 @@ import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 import { ScriptHealth } from './health.ts';
 import { BarWatermark, MAX_CATCHUP_BARS } from './watermark.ts';
 import { backtestPolicy } from '../paper/policy.ts';
+import { readingOf } from './reading.ts';
 
 const log = logger.scoped('scanner');
 
@@ -438,6 +439,7 @@ export class ScannerEngine extends EventEmitter {
       const runJob = (b: Bar[], tailBars: number | 'all') => this.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars: b, tailBars, plotTail: rule ? b.length : 400, inputs, timezone: sc.timezone },
         { priority: mode.live && tailBars !== 'all' ? 'live' : 'background' });
       // decision 193: the live job returns every bar back to the watermark (capped), so a stall's exits are still there to read
+      const READ = readingOf(cfg.scanners[s.id], s.id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
       const win = this.marks.window(key, bars.at(-1)!.time, tf);
       const res = await runJob(mode.backtest ? btBars : bars, mode.backtest ? 'all' : win.tailBars);
       // a deep backtest run does not see the last bars the way the live run does → separate live run
@@ -462,8 +464,8 @@ export class ScannerEngine extends EventEmitter {
       const newLabelKeys = prevLabels ? new Set([...currentLabels].filter(k => !prevLabels.has(k))) : new Set<string>();
       this.seenLabels.set(key, currentLabels);
       if (mode.backtest) {
-        const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: btBars, mode: 'backtest' });
-        const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert });
+        const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: btBars, mode: 'backtest', ...READ.rule });
+        const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
         // decision 191: the account's own policy — entry model, exit rules with script protection, trend and chop gates
         const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, events, ...backtestPolicy(this.cfgRef(), s.id, tf, 'account', { executor: this.executorAttached?.() }), exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
         this.backtests.set(key, bt);
@@ -484,8 +486,8 @@ export class ScannerEngine extends EventEmitter {
         const barAge = PaperEngine.signalAgeSec({ barTime: lastBar.time }, tf, Date.now());
         if (maxAge > 0 && barAge > maxAge) {
           // decision 193: entries on an old bar are stale, but an exit raised since the watermark still reduces risk
-          const staleDerived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
-          const exits = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: win.since, derived: staleDerived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert })
+          const staleDerived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys, ...READ.rule });
+          const exits = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: win.since, derived: staleDerived, ...READ.extract })
             .filter(ev => ev.kind === 'exit');
           for (const ev of exits) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
           this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: 0, exits: 0, info: 0 }, {}, [], `bar ${barAge.toFixed(0)}s old (max ${maxAge}s): stats only, no live signals`);
@@ -494,11 +496,11 @@ export class ScannerEngine extends EventEmitter {
           this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });
           return;
         }
-        const derived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
+        const derived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys, ...READ.rule });
         const drops: Record<string, number> = {};
         // decision 125: read from the bar after the last one this pair acted on, so an exit on a deferred or skipped bar is seen
         const since = win.since;
-        const events = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: since, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert, drops })
+        const events = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: since, derived, ...READ.extract, drops })
           .filter(ev => { if (ev.kind === 'entry' && ev.barTime < lastBar.time) { drops['entry: superseded bar'] = (drops['entry: superseded bar'] ?? 0) + 1; return false; } return true; });
         if (since < lastBar.time && events.some(ev => ev.barTime < lastBar.time)) log.info(`${key}: ${events.filter(ev => ev.barTime < lastBar.time).length} event(s) from a superseded bar read on this run`);
         for (const ev of events) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);

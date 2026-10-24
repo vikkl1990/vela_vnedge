@@ -281,13 +281,21 @@ export interface ScannerConfig {
    * titles, its plotted shapes, or a derived rule. Unset means all of them, which over-reads scripts
    * that draw a marker on every bar of a trend as well as calling a trade (decision 48).
    */
-  sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived'>;
+  sources?: Array<'alert' | 'alertcondition' | 'shape' | 'derived' | 'label'>;
   /** Only entries whose label starts with one of these may open a trade (decision 67); unset: every label. */
   labels?: string[];
   /** Explicit (market, timeframe) pairs this scanner trades (decision 70). When set, replaces the symbols × timeframes product. */
   pairs?: Array<{ symbol: string; tf: string }>;
   /** Read every entry the other way (decision 67). */
   invert?: boolean;
+  /**
+   * Decision 195: the scanner's explicit contract for its titles — an alertcondition() title, a shape title or a label
+   * text (whole, case-insensitive) → `long`, `short`, or `none` (not an entry). It overrides the word and geometry
+   * inference, which is a guess.
+   */
+  sides?: Record<string, 'long' | 'short' | 'none'>;
+  /** Decision 195: the plot (and oscillator mode/levels) a generic rule reads; a live run will not trade an unpinned generic rule. */
+  rulePin?: { plot: string; mode?: 'zero' | 'obos'; ob?: number; os?: number } | null;
   /** Rising edge only: a condition or shape true on consecutive bars is one entry, on its first bar (decision 57). */
   edge?: boolean;
   /** IANA timezone the script's sessions and clock functions run in (default Etc/UTC; session scripts usually mean America/New_York). */
@@ -1039,7 +1047,8 @@ export function validateExtendedConfig(c: AppConfig): string[] {
   }
   for (const [id, sc] of Object.entries(c.scanners ?? {})) {
     if (sc?.rule != null && !GENERIC_RULES.includes(sc.rule)) errs.push(`scanners.${id}.rule must be ${GENERIC_RULES.join('|')}`);
-    if (sc?.sources != null && (!Array.isArray(sc.sources) || sc.sources.some(x => !['alert', 'alertcondition', 'shape', 'derived'].includes(x)))) errs.push(`scanners.${id}.sources must list alert|alertcondition|shape|derived`);
+    if (sc?.sources != null && (!Array.isArray(sc.sources) || sc.sources.some(x => !['alert', 'alertcondition', 'shape', 'derived', 'label'].includes(x)))) errs.push(`scanners.${id}.sources must list alert|alertcondition|shape|derived|label`);
+    if (sc?.sides != null && (typeof sc.sides !== 'object' || Object.values(sc.sides).some(v => !['long', 'short', 'none'].includes(v as string)))) errs.push(`scanners.${id}.sides must map titles to long|short|none`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
   }

@@ -1,5 +1,5 @@
 {
-  "_comment": "How each script is read (decision 48): which channel may open a trade, the timezone its sessions run in, input overrides, rising-edge signals (decision 57). Defaults only \u2014 data/config.json wins per field. Fleet scanners keep their measured reading until edge is measured for them. labels (decision 67): only entries whose label starts with one of these may open a trade \u2014 from the scanner test, the channel of a script that pays while its siblings lose.",
+  "_comment": "How each script is read (decision 48): which channel may open a trade, the timezone its sessions run in, input overrides, rising-edge signals (decision 57). Defaults only — data/config.json wins per field. Fleet scanners keep their measured reading until edge is measured for them. labels (decision 67): only entries whose label starts with one of these may open a trade — from the scanner test, the channel of a script that pays while its siblings lose.",
   "abcd-harmonic-projection": {
     "sources": [
       "alert"
@@ -41,7 +41,7 @@
       "alert"
     ],
     "labels": [
-      "\ud83d\udfe2 LONG"
+      "🟢 LONG"
     ]
   },
   "precision-sniper": {
@@ -90,7 +90,7 @@
       "alert"
     ],
     "labels": [
-      "\ud83d\udfe2 BREAK UP"
+      "🟢 BREAK UP"
     ]
   },
   "adaptive-ichimoku-nexus": {
@@ -365,6 +365,77 @@
       "MSS Sweeps:",
       "Higher Low MSS Sweep",
       "Lower High MSS Sweep"
+    ]
+  },
+  "trend-impulse-channels-zeiierman": {
+    "sides": {
+      "upper retest": "long",
+      "lower retest": "short"
+    }
+  },
+  "trend-impulse-channels-zeiierman-native": {
+    "sides": {
+      "lower retest": "long",
+      "upper retest": "short"
+    }
+  },
+  "pivot-channel-breaks": {
+    "sides": {
+      "break up": "long",
+      "break dn": "none"
+    }
+  },
+  "pivot-channel-breaks-two-sided": {
+    "sides": {
+      "break up": "long",
+      "break dn": "short"
+    }
+  },
+  "structure-anchored-vwap": {
+    "sources": [
+      "alert",
+      "shape"
+    ]
+  },
+  "structure-anchored-vwap-pivots": {
+    "sources": [
+      "derived"
+    ]
+  },
+  "woodie-pivots": {
+    "sources": [
+      "alert",
+      "alertcondition",
+      "shape",
+      "derived",
+      "label"
+    ]
+  },
+  "smart-money-engine": {
+    "sources": [
+      "alert",
+      "alertcondition",
+      "shape",
+      "derived",
+      "label"
+    ]
+  },
+  "ema200-regime-bos-choch-2x-fvg-strategy": {
+    "sources": [
+      "alert",
+      "alertcondition",
+      "shape",
+      "derived",
+      "label"
+    ]
+  },
+  "re-accumulation": {
+    "sources": [
+      "alert",
+      "alertcondition",
+      "shape",
+      "derived",
+      "label"
     ]
   }
 }

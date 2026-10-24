@@ -32,6 +32,7 @@ import { compareRepaint, REPAINT_CUT } from '../scanners/repaint.ts';
 import { ConfigStore, TF_SECONDS, type PaperConfig } from '../config.ts';
 import { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
+import { readingOf } from '../scanners/reading.ts';
 
 const cfg = new ConfigStore().get();
 if (process.env.PAPER) Object.assign(cfg.paper, JSON.parse(fs.readFileSync(process.env.PAPER, 'utf8')));
@@ -221,8 +222,9 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
     if (repaint) { const share = repaint.prefix ? repaint.changed / repaint.prefix : 0; row(id, tf, sym, 'repaint', { ...empty, trades: repaint.prefix }, `${repaint.changed} of ${repaint.prefix} earlier entries changed when the last ${REPAINT_CUT} bars were hidden (${(share * 100).toFixed(0)}%)`); }
     return { id, tf, sym, variants: { base: empty }, labels: [], verdict: repaint ? 'repaint checked' : 'repaint not checked', fix: '', repaint };
   }
-  const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest' });
-  const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
+  const READ = readingOf(sc, id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
+  const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars: b, mode: 'backtest', ...READ.rule });
+  const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
   const tfMs = TF_SECONDS[tf] * 1000;
   if (!events.some(e => e.kind === 'entry')) {
     // a zero-entry cell is a result, not a hole: say what came out of the run and where the funnel emptied

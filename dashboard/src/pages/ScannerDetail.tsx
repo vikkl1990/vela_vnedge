@@ -314,7 +314,7 @@ function SourceViewer({ id }: { id: string }) {
 
 
 const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', exits: 'muted', levels: 'muted', silent: 'warn', broken: 'danger' }
-const SOURCES: EntrySource[] = ['alert', 'alertcondition', 'shape', 'derived']
+const SOURCES: EntrySource[] = ['alert', 'alertcondition', 'shape', 'derived', 'label']
 
 /**
  * How this script is read, and what it produced when last profiled (decision 48). The entry

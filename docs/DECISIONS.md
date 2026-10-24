@@ -5741,3 +5741,51 @@ crossed 23 hours earlier. A resting exchange stop would have filled when the pri
 about its slippage. The tape audit now marks a stop as `unobserved` when the process saw no print for the symbol before
 the cross, keeps the row, and leaves it out of the averages (an "Unwatched" column on the Exchange page). And
 `/api/scanners/duplicates` is registered before `/api/scanners/:id`, which had taken "duplicates" for a scanner id.
+
+## 195. Scanner contracts: explicit sides, variants, and the shared signal reader
+
+**Why.** A replay of every scanner on 24 October (an outside check, verified against the sources and the code before
+any change) found the reader trading some scripts differently from what they draw, and shared parsing that drops or
+misreads actions:
+
+- Trend Impulse Channels draws "Lower Retest" as a green up-triangle below the bar in an uptrend (its long) and "Upper
+  Retest" as its short. The reader took the words lower/upper for the side and traded both the other way. That reading
+  is not a loss — Upper Retest as a long made +26R at PF 1.22 on 1h and +34R at PF 1.38 on 4h in today's grid — but it
+  is a breakout-continuation strategy, not the script's.
+- Pivot Channel Breaks publishes "Break Up" and "Break Dn"; the reader knew "down" but not "dn", so it only ever went long.
+- Structure-Anchored VWAP's derived HL/LH entries (55-bar pivots) never fired live: a flat 40-bar cut-off discarded each
+  pivot the moment it was confirmed, while the backtest counted them.
+- Three shadow pairs (two of l-l-htf-trend-cloud-strategy-joe-freedom, one of tjr-v4-strategy) sat in "shadow" on
+  scripts whose source is not published; the runner skips them, so they never traded.
+- Shared reading: a structured packet with a stop and a new entry kept one of them; pretty-printed JSON was not
+  recognised; FVG Precision's own schema (event_type ENTRY / TP_HIT / SL_HIT / FVG_BROKEN) was read as information; a
+  price printed as `1e-7` became 1 and `78,777.5` lost its fraction; an alert() entry or an excluded condition channel
+  silenced an exit condition on the same bar; inversion flipped entries but not exits; the account's live path did
+  not pass the bar length the shadow path did; a later entry anywhere in the window erased an earlier label signal;
+  generic rules picked their plot from the whole window; a rule that threw was indistinguishable from a quiet bar.
+
+**What.**
+
+- **Contracts.** `scanners.<id>.sides` maps a title (alertcondition, shape or label text) to `long`, `short` or `none`,
+  overriding the word and geometry guess. Defaults live in `scripts/specs.json`. The base ids keep the reading their
+  record was earned on, now written down: Trend Impulse Channels Upper Retest long / Lower Retest short; Pivot Channel
+  Breaks Break Up long / Break Dn none; Structure-Anchored VWAP native alerts only (`sources: alert, shape`).
+- **Variants.** `scripts/variants.json` adds a second id over the same source with its own contract:
+  `trend-impulse-channels-zeiierman-native` (retests as drawn), `pivot-channel-breaks-two-sided` (both breaks),
+  `structure-anchored-vwap-pivots` (confirmed HL/LH only; a variant reads with its base's rule). They start disabled
+  and earn their way through the screen and the shadow book like any script; the base ids' evidence is untouched.
+- **The reader.** `parseAlertAll` returns every action in a packet, in its order (`parseAlert` keeps returning the
+  primary one); JSON is parsed once and routed on its fields; an FVG Precision adapter; numbers are whole tokens with
+  thousands groups and exponents; an exit condition is read regardless of entry filters and bar ownership; inversion
+  turns exits over too (their price dropped, as the stop and targets are); labels are read by what the source declares
+  (`declaredChannels`) or when `sources` names `label`, never by what else appears in the window. The four shadow
+  scanners whose forward record includes label entries (woodie-pivots, smart-money-engine,
+  ema200-regime-bos-choch-2x-fvg-strategy, re-accumulation) name `label` in their specs so they keep trading them.
+- **One reading for every path.** `scanners/reading.ts` returns a scanner's full reading — channels, edge, allow-list,
+  inversion, contract, declared channels, bar length, rule inputs, pin, base rule — for the account (live and
+  backtest), the shadow book, the screen, validation, the repaint check, diagnose and profiles.
+- **Rules.** The VWAP pivot rule's live cut-off counts from the confirmation (delay + 5 bars) and its delay follows
+  the script's `pivRInput`; a failing rule is logged and counted (`ruleErrors`); a generic trailing or oscillator rule
+  will not trade live without `scanners.<id>.rulePin`.
+- **Library.** The nightly judge retires a shadow, proposed or tracked pair whose scanner cannot run, with the
+  library's reason (actor `library`).

@@ -199,10 +199,24 @@ function marketRefusal(markets: Map<string, { allowed: boolean; reasons: string[
 }
 
 /** `needsRescreen`: scanners whose screens from before decision 134 cannot be trusted (strategy scripts); their candidates wait for a fresh screen. */
-export interface EvaluateOptions { needsRescreen?: (scannerId: string) => boolean }
+export interface EvaluateOptions {
+  needsRescreen?: (scannerId: string) => boolean;
+  /** Decision 195: why a scanner cannot run (not in the library, source unavailable, incompatible); null when it can. */
+  unavailable?: (scannerId: string) => string | null;
+}
 export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): CycleReport {
   const inc = cfg.incubator;
   const rep: CycleReport = { proposed: [], retired: [], brewing: 0, demoteProposed: [], admitted: [], free: 0 };
+  // decision 195: a shadow, proposed or tracked pair whose scanner cannot run never trades; it held its slot while its
+  // stage said otherwise. It is retired with the library's reason, and returns through the screen if the script does.
+  if (opts.unavailable) {
+    for (const r of store.list(['shadow', 'proposed', 'tracked'])) {
+      const why0 = opts.unavailable(r.scannerId);
+      if (!why0) continue;
+      const why = `scanner unavailable: ${why0}`;
+      store.move(r, 'retired', 'library', { reasons: [why] }, why, now); rep.retired.push(name(r));
+    }
+  }
   const active = store.list(['shadow', 'proposed']);
   // decision 104: a pair on a market the account's gate refuses today is never proposed; one already proposed goes back to brewing
   const markets = store.marketsToday(now);

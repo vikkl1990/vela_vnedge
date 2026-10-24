@@ -217,7 +217,7 @@ export interface Scanner {
   books?: { account: string[]; shadow: string[]; proposed: string[] }
 }
 
-export type EntrySource = 'alert' | 'alertcondition' | 'shape' | 'derived'
+export type EntrySource = 'alert' | 'alertcondition' | 'shape' | 'derived' | 'label'
 export type ProfileKind = 'plan' | 'signal' | 'exits' | 'levels' | 'silent' | 'broken'
 export interface ProfileRow {
   scannerId: string; market: string; tf: string; at: number; kind: ProfileKind; ms: number

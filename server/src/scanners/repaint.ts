@@ -8,6 +8,7 @@ import type { Bar } from '../data/candleStore.ts';
 import type { ScannerConfig } from '../config.ts';
 import { applyRules } from './rules.ts';
 import { extractEvents } from './extractor.ts';
+import { readingOf } from './reading.ts';
 
 export const REPAINT_CUT = Number(process.env.REPAINT_CUT ?? 60);
 export const REPAINT_MAX_SHARE = 0.10;
@@ -16,8 +17,9 @@ export interface RepaintCheck { prefix: number; changed: number; share: number; 
 
 /** Entries up to `cutAt`, as "barTime:side" keys, read the way the scanner's config reads them. */
 function entryKeys(res: WorkerResult, bars: Bar[], scannerId: string, sc: Partial<ScannerConfig>, cutAt: number): Set<string> {
-  const derived = applyRules({ scannerId, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars, mode: 'backtest' });
-  const events = extractEvents(res.alerts, res.shapes, { barMs: bars.length > 1 ? bars[1].time - bars[0].time : undefined, drawn: res.labels, scannerId, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
+  const READ = readingOf(sc, scannerId, bars.length > 1 ? bars[1].time - bars[0].time : undefined);   // decision 195
+  const derived = applyRules({ scannerId, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: sc.rule ?? null, bars, mode: 'backtest', ...READ.rule });
+  const events = extractEvents(res.alerts, res.shapes, { barMs: bars.length > 1 ? bars[1].time - bars[0].time : undefined, drawn: res.labels, scannerId, derived, ...READ.extract });
   return new Set(events.filter(e => e.kind === 'entry' && e.barTime <= cutAt).map(e => `${e.barTime}:${e.side}`));
 }
 

@@ -35,6 +35,7 @@ import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.
 import { sliceOf } from '../incubator/gate.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 import { aliasMap, duplicateGroups } from '../scanners/identity.ts';
+import { readingOf } from '../scanners/reading.ts';
 
 const started = Date.now();
 const cfg = new ConfigStore().get();
@@ -260,10 +261,11 @@ while (sliceArg !== 'none') {
           continue;
         }
         health.clear(s.id);
-        const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest' });
+        const READ = readingOf(cfg.scanners[s.id], s.id, (TF_SECONDS[TF] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
+        const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest', ...READ.rule });
         // decision 110: the screen reads a script the way the shadow book and the account would (its sources, edge, labels, inversion)
         const rd = cfg.scanners[s.id] ?? {};
-        const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[TF] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: rd.sources, edge: rd.edge, labels: rd.labels, invert: rd.invert });
+        const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[TF] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
         if (!events.some(e => e.kind === 'entry')) continue;
         sawEntry = true;
         // decision 191: the screen trades the scanner the way the shadow book it admits to will — the entry model (a maker
@@ -315,7 +317,11 @@ while (sliceArg !== 'none') {
 
 // ---- judge ----
 const judgeRegistry = new ScannerRegistry();
-const report = evaluate(store, cfg, Date.now(), { needsRescreen: id => judgeRegistry.get(id)?.scriptType === 'strategy' });
+const report = evaluate(store, cfg, Date.now(), {
+  needsRescreen: id => judgeRegistry.get(id)?.scriptType === 'strategy',
+  // decision 195: pairs on scripts that cannot run give their slot back
+  unavailable: id => { const s = judgeRegistry.get(id); return !s ? 'not in the library' : s.status !== 'ok' ? `${s.status}${s.reason ? ` (${s.reason})` : ''}` : null; },
+});
 summary.report = report;
 summary.ms = Date.now() - started;
 // decision 184: the nightly's finish marker is the nightly's; a hand run (decision 176) keeps its own, so the died check,

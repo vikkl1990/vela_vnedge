@@ -1,0 +1,20 @@
+[
+  {
+    "id": "trend-impulse-channels-zeiierman-native",
+    "base": "trend-impulse-channels-zeiierman",
+    "name": "Trend Impulse Channels | Zeiierman (retests as drawn)",
+    "why": "Decision 195: Lower Retest is the script's long (an up-triangle below the bar, in an uptrend) and Upper Retest its short. The base id keeps the reading it was measured and promoted on (Upper Retest long), which is a breakout-continuation reading, now explicit."
+  },
+  {
+    "id": "pivot-channel-breaks-two-sided",
+    "base": "pivot-channel-breaks",
+    "name": "Pivot Channel Breaks | BigBeluga (both breaks)",
+    "why": "Decision 195: Break Dn is the script's short breakout. The reader never read 'Dn', so the base id has only ever traded Break Up; it keeps that long-only reading, now explicit."
+  },
+  {
+    "id": "structure-anchored-vwap-pivots",
+    "base": "structure-anchored-vwap",
+    "name": "Structure-Anchored VWAP | confirmed HL/LH pivots",
+    "why": "Decision 195: the derived HL/LH entries (55-bar pivots, entered on confirmation) are a different strategy from the script's own LONG/SHORT alerts. They never fired live (a 40-bar cut-off threw every confirmed pivot away) while the backtest counted them; the base id now reads only the native alerts."
+  }
+]

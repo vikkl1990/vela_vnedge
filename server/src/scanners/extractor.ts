@@ -32,7 +32,19 @@ export interface ScanEvent {
   barIndex: number;
 }
 
-const NUM = String.raw`(-?\d+(?:[.,]\d+)?)`;
+/**
+ * Decision 195: a number is a whole token — digits with optional thousands groups ("78,777.5"), an optional decimal
+ * part and an optional exponent ("1e-7", which is how the strategy ledger prints a tiny price). A number that stops in
+ * the middle of a token ("78,77") does not match at all rather than matching its first part.
+ */
+export const NUM_SRC = String.raw`-?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\d.,]*\d)`;
+const NUM = `(${NUM_SRC})`;
+/** A token matched by NUM as a number (thousands commas removed); undefined unless finite. */
+export function numOf(s: string | undefined): number | undefined {
+  if (s === undefined) return undefined;
+  const v = Number(s.replace(/,/g, ''));
+  return Number.isFinite(v) ? v : undefined;
+}
 
 function num(re: RegExp, s: string): number | undefined {
   const m = s.match(re);
@@ -51,26 +63,25 @@ const INFO_ONLY = /\b(PATTERN DETECTED|ENTRY ZONE|SQUEEZE STARTED|RANGE LOCKED|V
  * One alert can carry several events for the bar (a stop and a new entry); the first entry wins,
  * exits are all kept. Returns null when nothing in it is actionable.
  */
-function parseSatsPacket(msg: string, base: Pick<ScanEvent, 'message' | 'source' | 'barTime' | 'barIndex' | 'tp' | 'label'>): ScanEvent | null {
-  let pkt: any;
-  try { pkt = JSON.parse(msg); } catch { return null; }
+function parseSatsPacket(pkt: any, base: Pick<ScanEvent, 'message' | 'source' | 'barTime' | 'barIndex' | 'tp' | 'label'>): ScanEvent[] {
+  // decision 195: every action in the packet, in its own order — a stop and a new entry on one bar are two events, and
+  // the close must not depend on the replacement being admitted
   const events: any[] = Array.isArray(pkt?.events) ? pkt.events : [];
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const out: ScanEvent[] = [];
   for (const e of events) {
     const side: Side | undefined = e.side === 'long' ? 'long' : e.side === 'short' ? 'short' : undefined;
     if (e.event === 'buy' || e.event === 'sell') {
       const tp = [n(e.tp1), n(e.tp2), n(e.tp3)].filter((v): v is number => v !== undefined);
-      return { ...base, kind: 'entry', side: side ?? (e.event === 'buy' ? 'long' : 'short'), price: n(e.fill_price) ?? n(e.close_price), sl: n(e.sl), tp, label: `${(side ?? (e.event === 'buy' ? 'long' : 'short')).toUpperCase()} (SATS)`, message: `SATS ${e.event} ${e.reason ?? ''}`.trim().slice(0, 500) };
+      out.push({ ...base, kind: 'entry', side: side ?? (e.event === 'buy' ? 'long' : 'short'), price: n(e.fill_price) ?? n(e.close_price), sl: n(e.sl), tp, label: `${(side ?? (e.event === 'buy' ? 'long' : 'short')).toUpperCase()} (SATS)`, message: `SATS ${e.event} ${e.reason ?? ''}`.trim().slice(0, 500) });
+      continue;
     }
-  }
-  for (const e of events) {
     const m = String(e.event ?? '').match(/^(tp[123])_hit$|^(sl)_hit$|^(flip)_exit$|^(timeout)_exit$|^trade_(closed)$/);
     if (!m) continue;
     const exitType: ExitType = (m[1] as ExitType) ?? (m[2] === 'sl' ? 'sl' : m[3] === 'flip' ? 'flip' : 'close');
-    const side: Side | undefined = e.side === 'long' ? 'long' : e.side === 'short' ? 'short' : undefined;
-    return { ...base, kind: 'exit', side, exitType, price: n(e.fill_price), label: `${exitType.toUpperCase()} (SATS)`, message: `SATS ${e.event} ${e.reason ?? ''}`.trim().slice(0, 500) };
+    out.push({ ...base, kind: 'exit', side, exitType, price: n(e.fill_price), label: `${exitType.toUpperCase()} (SATS)`, message: `SATS ${e.event} ${e.reason ?? ''}`.trim().slice(0, 500) });
   }
-  return null;
+  return out;
 }
 
 /**
@@ -78,25 +89,39 @@ function parseSatsPacket(msg: string, base: Pick<ScanEvent, 'message' | 'source'
  * entry, stop, target, trigger, state}, …]}`. `buy`/`sell` open a plan (stop and target from the script); `target`
  * and `invalidated` close it; `expired` closes it flat; `replaced` and anything else are information.
  */
-function parseFsePacket(msg: string, base: Pick<ScanEvent, 'message' | 'source' | 'barTime' | 'barIndex' | 'tp' | 'label'>): ScanEvent | null {
-  let pkt: any;
-  try { pkt = JSON.parse(msg); } catch { return null; }
+function parseFsePacket(pkt: any, base: Pick<ScanEvent, 'message' | 'source' | 'barTime' | 'barIndex' | 'tp' | 'label'>): ScanEvent[] {
   const events: any[] = Array.isArray(pkt?.events) ? pkt.events : [];
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
   const sideOf = (e: any): Side | undefined => (e.direction === 1 ? 'long' : e.direction === -1 ? 'short' : undefined);
+  const out: ScanEvent[] = [];
   for (const e of events) {
     if (e.type === 'buy' || e.type === 'sell') {
       const side = sideOf(e) ?? (e.type === 'buy' ? 'long' : 'short');
       const tp = [n(e.target)].filter((v): v is number => v !== undefined);
-      return { ...base, kind: 'entry', side, price: n(e.entry) ?? n(e.level), sl: n(e.stop) ?? n(e.invalidation), tp, label: `${side.toUpperCase()} ${String(e.trigger ?? 'FSE')}`.slice(0, 60), message: `FSE ${e.type} ${e.trigger ?? ''} E ${e.entry ?? ''} SL ${e.stop ?? ''} TP ${e.target ?? ''}`.trim().slice(0, 500) };
+      out.push({ ...base, kind: 'entry', side, price: n(e.entry) ?? n(e.level), sl: n(e.stop) ?? n(e.invalidation), tp, label: `${side.toUpperCase()} ${String(e.trigger ?? 'FSE')}`.slice(0, 60), message: `FSE ${e.type} ${e.trigger ?? ''} E ${e.entry ?? ''} SL ${e.stop ?? ''} TP ${e.target ?? ''}`.trim().slice(0, 500) });
+      continue;
     }
-  }
-  for (const e of events) {
     const exitType: ExitType | null = e.type === 'target' ? 'tp1' : e.type === 'invalidated' ? 'sl' : e.type === 'expired' ? 'close' : null;
     if (!exitType) continue;
-    return { ...base, kind: 'exit', side: sideOf(e), exitType, price: n(e.level), label: `${exitType.toUpperCase()} (FSE)`, message: `FSE ${e.type} ${e.trigger ?? ''}`.trim().slice(0, 500) };
+    out.push({ ...base, kind: 'exit', side: sideOf(e), exitType, price: n(e.level), label: `${exitType.toUpperCase()} (FSE)`, message: `FSE ${e.type} ${e.trigger ?? ''}`.trim().slice(0, 500) });
   }
-  return null;
+  return out;
+}
+
+/**
+ * Decision 195: FVG Precision | Exact Labels | 2R | Webhook (`schema_version: 1`): ENTRY carries the trade's entry, stop
+ * and 2R target; TP_HIT and SL_HIT close it at their level; FVG_BROKEN (the gap failed) and WEEKEND_RESET close it at
+ * the market. Any other event type is information, never an order.
+ */
+function parseFvgPacket(j: any, base: Pick<ScanEvent, 'message' | 'source' | 'barTime' | 'barIndex' | 'tp' | 'label'>): ScanEvent[] {
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const side: Side | undefined = /^buy$/i.test(String(j.side ?? '')) ? 'long' : /^sell$/i.test(String(j.side ?? '')) ? 'short' : undefined;
+  const type = String(j.event_type ?? '').toUpperCase();
+  const label = `FVG ${type}${side ? ` ${side.toUpperCase()}` : ''}`.slice(0, 60);
+  if (type === 'ENTRY' && side) return [{ ...base, kind: 'entry', side, price: n(j.entry), sl: n(j.stop_loss), tp: [n(j.take_profit)].filter((v): v is number => v !== undefined), label }];
+  const exitType: ExitType | null = type === 'TP_HIT' ? 'tp1' : type === 'SL_HIT' ? 'sl' : type === 'FVG_BROKEN' || type === 'WEEKEND_RESET' ? 'close' : null;
+  if (exitType) return [{ ...base, kind: 'exit', side, exitType, price: n(j.exit_price), label }];
+  return [{ ...base, kind: 'info', side, label }];
 }
 
 /** Leading direction cue: 🟢 = long, 🔴 = short. */
@@ -107,16 +132,49 @@ function emojiSide(msg: string): Side | undefined {
   return undefined;
 }
 
+/** The one event an alert stands for: its entry if it has one, else its first exit, else its information (null: nothing). */
 export function parseAlert(a: WorkerAlert): ScanEvent | null {
-  const msg = a.message.replace(/\s+/g, ' ').trim();
-  if (!msg) return null;
-  const head = msg.split('|')[0].trim();
-  const upper = msg.toUpperCase();
-  const base: ScanEvent = { kind: 'info', tp: [], label: head.slice(0, 60), message: msg.slice(0, 500), source: 'alert', barTime: a.time, barIndex: a.barIndex };
+  const all = parseAlertAll(a);
+  return all.find(e => e.kind === 'entry') ?? all.find(e => e.kind === 'exit') ?? all[0] ?? null;
+}
 
-  // ----- Self-Aware Trend System webhook packet: every event with the trade's own entry, stop and targets -----
-  if (msg.startsWith('{') && msg.includes('"schema":"sats.events.v2"')) return parseSatsPacket(msg, base);
-  if (msg.startsWith('{') && msg.includes('"schema_version":2') && msg.includes('"events":[')) return parseFsePacket(msg, base);
+/**
+ * Every action an alert carries (decision 195): a structured packet can close one trade and open another on one bar.
+ * JSON is parsed once and routed on its fields, so formatting (pretty-printed or compact) never changes the meaning.
+ */
+export function parseAlertAll(a: WorkerAlert): ScanEvent[] {
+  const msg = a.message.replace(/\s+/g, ' ').trim();
+  if (!msg) return [];
+  const head = msg.split('|')[0].trim();
+  const base: ScanEvent = { kind: 'info', tp: [], label: head.slice(0, 60), message: msg.slice(0, 500), source: 'alert', barTime: a.time, barIndex: a.barIndex };
+  if (msg.startsWith('{') && msg.endsWith('}')) {
+    let j: any = null;
+    try { j = JSON.parse(msg); } catch { j = null; }
+    if (j && typeof j === 'object' && !Array.isArray(j)) {
+      if (j.schema === 'sats.events.v2') return parseSatsPacket(j, base);
+      if (Number(j.schema_version) === 2 && Array.isArray(j.events)) return parseFsePacket(j, base);
+      if (Number(j.schema_version) === 1 && typeof j.event_type === 'string') return parseFvgPacket(j, base);
+    }
+  }
+  // ----- SATS machine text: every verb in the message, in its order -----
+  if (/^SATS\b/.test(msg)) {
+    const out: ScanEvent[] = [];
+    for (const part of msg.split('|').map(s => s.trim()).slice(1)) {
+      const m = part.match(new RegExp(String.raw`^(buy|sell|tp\d_hit|sl_hit|flip_exit|trade_closed)\s+(LONG|SHORT)\s+@\s+${NUM}`, 'i'));
+      if (!m) continue;
+      const verb = m[1].toLowerCase(); const side = m[2].toLowerCase() as Side; const price = numOf(m[3]);
+      if (verb === 'buy' || verb === 'sell') { out.push({ ...base, kind: 'entry', side, price, label: `${side.toUpperCase()} (SATS)` }); continue; }
+      const exitType: ExitType = verb.startsWith('tp') ? (verb.slice(0, 3) as ExitType) : verb === 'sl_hit' ? 'sl' : verb === 'flip_exit' ? 'flip' : 'close';
+      out.push({ ...base, kind: 'exit', side, exitType, price, label: `${verb.toUpperCase()} ${side.toUpperCase()}` });
+    }
+    return out.length ? out : [{ ...base, kind: 'info' }];
+  }
+  const one = parseAlertOne(msg, head, base);
+  return one ? [one] : [];
+}
+
+function parseAlertOne(msg: string, head: string, base: ScanEvent): ScanEvent | null {
+  const upper = msg.toUpperCase();
   // ----- JSON webhook payloads (STRAT Trap & VWAP Engine: {"ind":"STRAT","action":"trigger_bull",...}) -----
   if (msg.startsWith('{') && msg.endsWith('}')) {
     let j: any = null;
@@ -140,30 +198,15 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
   // ----- strategy() orders, as the worker reports them from the runtime's trade ledger -----
   const st = msg.match(new RegExp(String.raw`^STRATEGY (entry|exit) (long|short) @ ${NUM}`));
   if (st) {
-    const side = st[2] as Side; const price = Number(st[3]);
+    const side = st[2] as Side; const price = numOf(st[3]);
+    if (!(price !== undefined && price > 0)) return { ...base, kind: 'info', label: 'strategy order without a usable price' };
     if (st[1] !== 'entry') return { ...base, kind: 'exit', side, exitType: 'close', price, label: `EXIT ${side.toUpperCase()} (strategy)` };
     // decision 111: a last-bar fill may carry the strategy's own resting stop and limits
-    const slM = msg.match(/\bsl=(\d+(?:\.\d+)?)/), tpM = msg.match(/\btp=([\d.,]+)/);
-    const sl = slM ? Number(slM[1]) : undefined;
+    const slM = msg.match(new RegExp(String.raw`\bsl=(${NUM_SRC})`)), tpM = msg.match(/\btp=([\d.eE+-]+(?:,[\d.eE+-]+)*)/);
+    const slV = numOf(slM?.[1]);
+    const sl = slV !== undefined && slV > 0 ? slV : undefined;
     const tp = tpM ? tpM[1].split(',').map(Number).filter(v => Number.isFinite(v) && v > 0) : [];
     return { ...base, kind: 'entry', side, price, sl, tp, label: `${side.toUpperCase()} (strategy)` };
-  }
-
-  // ----- Self-Aware Trend System (SATS) machine format -----
-  if (/^SATS\b/.test(msg)) {
-    const parts = msg.split('|').map(s => s.trim());
-    let ev: ScanEvent | null = null;
-    for (const part of parts.slice(1)) {
-      const m = part.match(new RegExp(String.raw`^(buy|sell|tp\d_hit|sl_hit|flip_exit|trade_closed)\s+(LONG|SHORT)\s+@\s+${NUM}`, 'i'));
-      if (!m) continue;
-      const verb = m[1].toLowerCase(); const side = m[2].toLowerCase() as Side; const price = Number(m[3]);
-      if (verb === 'buy' || verb === 'sell') { ev = { ...base, kind: 'entry', side, price, label: `${side.toUpperCase()} (SATS)` }; }
-      else if (!ev) {
-        const exitType: ExitType = verb.startsWith('tp') ? (verb.slice(0, 3) as ExitType) : verb === 'sl_hit' ? 'sl' : verb === 'flip_exit' ? 'flip' : 'close';
-        ev = { ...base, kind: 'exit', side, exitType, price, label: `${verb.toUpperCase()} ${side.toUpperCase()}` };
-      }
-    }
-    return ev ?? { ...base, kind: 'info' };
   }
 
   const price = num(new RegExp(String.raw`(?:Price|Entry|Level|@)\s*:?\s*\$?\s*${NUM}`, 'i'), msg) ?? num(new RegExp(String.raw`\|\s*\$${NUM}`), msg);
@@ -319,6 +362,28 @@ export interface ExtractOptions {
   invert?: boolean;
   /** Filled with a count per reason for every output that did not become an event (the funnel, decision 77). */
   drops?: Record<string, number>;
+  /**
+   * Decision 195: the scanner's explicit reading of its titles — an `alertcondition()` title, a shape title or a label
+   * text (whole, case-insensitive) → the side it trades, or `none` for an output that is not an entry. It overrides the
+   * word and geometry inference, which is a guess; this is the documented contract.
+   */
+  sides?: Record<string, 'long' | 'short' | 'none'>;
+  /**
+   * Decision 195: which entry channels the script's source declares (`declaredChannels`). Labels are the last resort:
+   * read only when the source declares no alert(), alertcondition() or shape outputs, or when `sources` names 'label'.
+   * Without it the older rule applies — labels read when no other entry appears in the window — which lets a later
+   * entry erase an earlier label signal from the history.
+   */
+  declared?: ReadonlySet<'alert' | 'alertcondition' | 'shape'>;
+}
+
+/** Decision 195: the entry channels a Pine source declares, read from the source text once. */
+export function declaredChannels(source: string): Set<'alert' | 'alertcondition' | 'shape'> {
+  const out = new Set<'alert' | 'alertcondition' | 'shape'>();
+  if (/\balert\s*\(/.test(source)) out.add('alert');
+  if (/\balertcondition\s*\(/.test(source)) out.add('alertcondition');
+  if (/\bplot(?:shape|char|arrow)\s*\(/.test(source)) out.add('shape');
+  return out;
 }
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
@@ -334,11 +399,13 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   const allowLabels = (opts.labels ?? []).map(l => l.trim().toLowerCase()).filter(Boolean);
   const labelOk = (label: string | undefined) => !allowLabels.length || allowLabels.some(a => String(label ?? '').toLowerCase().startsWith(a));
   const drop = (why: string) => { if (opts.drops) opts.drops[why] = (opts.drops[why] ?? 0) + 1; };
+  const contract = new Map(Object.entries(opts.sides ?? {}).map(([k, v]) => [k.trim().toLowerCase(), v]));
+  /** The contract's side for a title: a side, 'none', or undefined when the contract does not name it. */
+  const sideByContract = (title: string) => contract.get(String(title ?? '').trim().toLowerCase());
   for (const a of alerts) {
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     if (a.type === 'alertcondition') continue; // handled below, at lower priority than alert()
-    const ev = parseAlert(a);
-    if (!ev) continue;
+    for (const ev of parseAlertAll(a)) {
     if (ev.kind === 'entry' && !allow('alert')) { drop('alert(): channel excluded'); continue; }
     if (ev.kind === 'entry' && !labelOk(ev.label)) { drop('alert(): label not in allow-list'); continue; }
     // an alert() entry that is actually kept owns its bar (its alertcondition twin would be a duplicate);
@@ -348,16 +415,19 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     if (ev.kind !== 'info' && seenEntry.has(key)) { drop('alert(): same-bar duplicate'); continue; }
     seenEntry.add(key);
     events.push(ev);
+    }
   }
   // alertcondition() titles (LuxAlgo style: "Bullish Internal OB Breakout", "Upward Breakout") — only when no alert() fired that bar
   const lastCondBar = new Map<string, number>();
   for (const a of alerts) {
-    if (!allow('alertcondition')) { drop('condition: channel excluded'); break; }
     if (a.type !== 'alertcondition') continue;
-    if (alertBars.has(a.time)) { drop('condition: an alert() entry owned the bar'); continue; }
     // PineTS can hand back a non-string title (e.g. a Series or number) — coerce before parsing
     const title = String(a.title ?? a.message ?? '').trim();
+    // decision 195: an exit condition protects an open trade whatever the entry filters say — neither an excluded
+    // condition channel nor an alert() entry owning the bar may silence the close of the previous trade
     const exit = conditionExit(title);
+    if (!exit && !allow('alertcondition')) { drop('condition: channel excluded'); continue; }
+    if (!exit && alertBars.has(a.time)) { drop('condition: an alert() entry owned the bar'); continue; }
     if (exit) {
       if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
       const key = `exit:${exit.side}:${a.time}:${exit.exitType}`;
@@ -366,11 +436,13 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       events.push({ kind: 'exit', side: exit.side, exitType: exit.exitType, tp: [], label: title.slice(0, 60), message: `alertcondition "${title}"`.slice(0, 500), source: 'alertcondition', barTime: a.time, barIndex: a.barIndex });
       continue;
     }
-    const side = directionalTitle(title, !legacy);
+    const named = sideByContract(title);
+    if (named === 'none') { drop('condition: not an entry by the scanner contract'); continue; }
+    const side = named ?? directionalTitle(title, !legacy);
     if (!side) { drop('condition: no direction in title'); continue; }
     // the same word means the same thing on every channel: a BOS or CHoCH condition is context, like a BOS alert() —
-    // unless the operator's allow-list names it, which is the explicit opt-in
-    if (INFO_ONLY.test(title) && !(allowLabels.length && labelOk(title))) { drop('condition: context title (BOS, CHoCH, divergence…)'); continue; }
+    // unless the operator's allow-list names it, which is the explicit opt-in (or the scanner contract names it)
+    if (!named && INFO_ONLY.test(title) && !(allowLabels.length && labelOk(title))) { drop('condition: context title (BOS, CHoCH, divergence…)'); continue; }
     if (!labelOk(title)) { drop('condition: label not in allow-list'); continue; }
     if (opts.edge) {
       // consecutive bars of the same condition are one signal: keep the first bar of the run
@@ -395,7 +467,9 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   }
   for (const s of shapes) {
     if (!allow('shape')) break;
-    const side = shapeSide(s.title) ?? (legacy ? undefined : geometrySide(s));
+    const named = sideByContract(s.title);
+    if (named === 'none') { drop('shape: not an entry by the scanner contract'); continue; }
+    const side = named ?? shapeSide(s.title) ?? (legacy ? undefined : geometrySide(s));
     if (!side) { drop('shape: no direction in title'); continue; }
     // a shape drawn on every bar of a state is one signal per run: the bar spacing is the smallest
     // gap between its own prints, and a print one spacing after the previous one continues the run
@@ -415,10 +489,15 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       events.push({ kind: 'entry', side, tp: [], label: s.title, message: `plotshape ${s.title}`, source: 'shape', barTime: t, barIndex: -1 });
     }
   }
-  // decision 172: labels are the last resort, read only when nothing else produced an entry
-  if (!legacy && opts.drawn?.length && allow('label') && !events.some(e => e.kind === 'entry')) {
+  // decision 172: labels are the last resort. Decision 195: decided by what the script declares, not by whether some
+  // other entry happens to appear in this window — a later alert must not erase an earlier label signal
+  const declaresOther = opts.declared ? [...opts.declared].some(c => allow(c)) : null;
+  const readLabels = opts.sources?.includes('label') || (declaresOther === null ? !events.some(e => e.kind === 'entry') : !declaresOther);
+  if (!legacy && opts.drawn?.length && allow('label') && readLabels) {
     for (const l of opts.drawn) {
-      const side = labelSide(l.text, l.style);
+      const named = sideByContract(l.text);
+      if (named === 'none') { drop('label: not an entry by the scanner contract'); continue; }
+      const side = named ?? labelSide(l.text, l.style);
       if (!side) { drop('label: no direction in text'); continue; }
       // a label can be drawn at a past bar; the signal is the bar it appeared on, and without that bar it is not read
       if (l.createdAt === undefined) { drop('label: creation bar unknown'); continue; }
@@ -432,7 +511,11 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     }
   }
   const kept = events;
-  const read = opts.invert ? kept.map(e => (e.kind === 'entry' && e.side ? { ...e, side: e.side === 'long' ? 'short' as const : 'long' as const, sl: undefined, tp: [], label: `${e.label ?? ''} (inverted)`.trim() } : e)) : kept;
+  // decision 195: inverted, the whole contract turns over — an exit the script raises for its long closes the short
+  // this reading holds; the script's own stop and targets belong to the other side and are dropped
+  const flip = (s: Side) => (s === 'long' ? 'short' as const : 'long' as const);
+  const read = opts.invert ? kept.map(e => (e.kind === 'entry' && e.side ? { ...e, side: flip(e.side), sl: undefined, tp: [], label: `${e.label ?? ''} (inverted)`.trim() }
+    : e.kind === 'exit' && e.side ? { ...e, side: flip(e.side), price: undefined, label: `${e.label ?? ''} (inverted)`.trim() } : e)) : kept;
   read.sort((a, b) => a.barTime - b.barTime || (a.kind === 'exit' ? -1 : 1));
   return read;
 }

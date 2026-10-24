@@ -16,7 +16,7 @@ export function strategyIdentity(patched: string, cfg: AppConfig, scannerId: str
   const sc = cfg.scanners[scannerId];
   // a scanner with no settings reads its script the default way, as one whose settings are all defaults does
   const empty = (v: unknown) => v == null || (typeof v === 'object' && Object.keys(v as object).length === 0) ? null : v;
-  const read = { sources: empty(sc?.sources), edge: sc?.edge ?? null, labels: empty(sc?.labels), invert: Boolean(sc?.invert), rule: sc?.rule ?? null, inputs: empty(sc?.inputs), timezone: sc?.timezone ?? null, exitMode: sc?.exitMode ?? 'both', exit: empty(sc?.exit), trendGate: sc?.trendGate ?? null };
+  const read = { sources: empty(sc?.sources), edge: sc?.edge ?? null, labels: empty(sc?.labels), invert: Boolean(sc?.invert), rule: sc?.rule ?? null, inputs: empty(sc?.inputs), timezone: sc?.timezone ?? null, exitMode: sc?.exitMode ?? 'both', exit: empty(sc?.exit), trendGate: sc?.trendGate ?? null, sides: empty(sc?.sides), rulePin: sc?.rulePin ?? null };
   return createHash('sha1').update(patched).update('\u0000').update(stable(read)).digest('hex').slice(0, 16);
 }
 

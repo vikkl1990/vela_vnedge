@@ -16,6 +16,7 @@ import type { LoadedScanner, ScannerRegistry } from '../scanners/registry.ts';
 import { applyRules } from '../scanners/rules.ts';
 import { oosSummary, passesRule, walkForward, type OosSummary, type WalkForwardResult } from './walkForward.ts';
 import { backtestPolicy } from '../paper/policy.ts';
+import { readingOf } from '../scanners/reading.ts';
 
 const log = logger.scoped('validation');
 
@@ -160,9 +161,10 @@ export class ValidationService {
       const rule = sc.rule ?? null;
       const res = await this.deps.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: rule ? bars.length : 10, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
       if (!res.ok) { this.fail(key, res.error ?? 'script error'); return; }
-      const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars, mode: 'backtest' });
+      const READ = readingOf(sc, s.id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
+      const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars, mode: 'backtest', ...READ.rule });
       // decision 85: validation reads the scanner exactly as the live path does — the same channels, edge, labels and inversion
-      const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
+      const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
       const wf = cfg.validation.walkForward;
       // decision 191: validated under the account's own policy (entry model, exit rules with script protection, gates)
       const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, ...backtestPolicy(cfg, s.id, tf, 'account', { executor: this.deps.scanners.executorAttached?.() }), exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
