@@ -58,10 +58,13 @@ const rest = new DeltaRest();
 const htfCache = new Map<string, { at: number; bars: ProviderBar[] }>();
 
 async function fetchOther(symbol: string, deltaTf: string, bars: number, endMs: number): Promise<ProviderBar[]> {
-  const key = `${symbol}:${deltaTf}`;
   const secs = TF_SECONDS[deltaTf] ?? (deltaTf === '1w' ? 604800 : 2592000);
+  // decision 184: keyed by the window's end as well — a cut window (the repaint check, the screen's holdout) and the full
+  // window must not share higher-timeframe bars, or the result depends on which ran first on this worker
+  const key = `${symbol}:${deltaTf}:${Math.floor(endMs / (secs * 1000))}`;
   const cached = htfCache.get(key);
   if (cached && Date.now() - cached.at < secs * 1000 * 0.5 && cached.bars.length >= bars) return cached.bars;
+  if (htfCache.size > 64) htfCache.delete(htfCache.keys().next().value!);
   const endSec = Math.floor(endMs / 1000);
   let list: Awaited<ReturnType<typeof rest.candles>> = [];
   try { list = await rest.candles(symbol, deltaTf, endSec - secs * (bars + 2), endSec + secs, bars + 10); } catch (e) { console.warn(`[worker] HTF fetch ${symbol} ${deltaTf} failed: ${(e as Error).message}`); list = []; }

@@ -5482,3 +5482,11 @@ announced from a clock while the feed is down, nor from the websocket before the
 compared by value; queue deadlines hold without a ready worker and a worker that never exits is replaced after 30 s;
 a dead socket is dropped and reconnected; the incubator treats gate verdicts older than three refreshes as stale; the
 memory guard reads anonymous memory. Tests: 381.
+
+**The worker's higher-timeframe cache (found while reconciling two studies).** `fetchOther` cached `request.security`
+bars by symbol and timeframe only; a cut window (the repaint check, the screen's holdout) and the full window shared the
+entry, so a script using a higher timeframe read whichever window had run first on that worker. The same cell gave 142
+trades one day and 157 the next; scripts without a higher timeframe reproduced exactly. Keyed by the window's end bar
+now; two runs give the same rows. Every earlier study's events for HTF scripts carried this noise (the variants within a
+cell still compare on the same events); the screen's holdout for HTF scripts was not clean. The 4h entry study was re-run
+on the fixed tree before being read.
