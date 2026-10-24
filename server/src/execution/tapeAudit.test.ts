@@ -88,3 +88,18 @@ test('decision 187: a resting limit records the volume at its price before price
   const lim = audit.summary(0).limits[0];
   assert.deepEqual([lim.n, lim.filled, lim.touched, lim.through], [2, 1, 1, 1]);
 });
+
+test('decision 187: prints that arrive on the tick the grace runs out are written once', () => {
+  const db = new Db(':memory:');
+  const eng = fakeEngine();
+  const audit = new TapeAudit(db, [{ engine: eng, book: 0 }]);
+  const t0 = 1_800_000_000_000;
+  eng.emit('order', { at: t0, positionId: 3, symbol: 'DUSD', side: 'buy', qty: 1, price: 5, reason: 'entry' });
+  (audit as any).tick(t0 + 10_000);
+  audit.onTrade(trade('DUSD', 5.01, 1, t0 + 29_000));
+  (audit as any).tick(t0 + 31_000);
+  (audit as any).tick(t0 + 32_000);
+  const rows = db.all<any>('SELECT * FROM tape_audit');
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].slip_bps > 19 && rows[0].slip_bps < 21);
+});

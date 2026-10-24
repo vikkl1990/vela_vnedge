@@ -103,8 +103,8 @@ export class TapeAudit {
     const keep: Open[] = [];
     for (const o of this.open) {
       if (now < o.due) { keep.push(o); continue; }
-      if (!this.finishFill(o) && now < o.giveUpAt) { keep.push(o); continue; }
-      if (now >= o.giveUpAt) this.finishFill(o, true);
+      // one write per fill: priced if prints have come, recorded as print-less once the grace is out, else retried
+      if (!this.finishFill(o, now >= o.giveUpAt)) keep.push(o);
     }
     this.open = keep;
   }
