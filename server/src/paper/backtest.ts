@@ -84,7 +84,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
   // a backtest is one market, so its exit rules are resolved once (decision 34)
   // decision 113: under exit mode `script` the script's exits are the exits
-  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit);
+  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit, inp.tf);
   const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: (cfg0.slippageBps ?? 0) + inp.spreadPct * 50 } : cfg0;
   const atr = atrSeries(bars, 14);
   const idxByTime = new Map<number, number>();

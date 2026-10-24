@@ -835,3 +835,11 @@ export interface OverlapCluster {
   sharedTrades: number
   links: Array<{ a: string; b: string; symbol: string; tf: string; shared: number; aTrades: number; bTrades: number; share: number }>
 }
+
+/** Decision 197: the early profit lock replayed on the books' own trades (a counterfactual on recorded paths). */
+export interface LockStudyView {
+  at: number; since: number; atR: number; keepR: number
+  rows: Array<{ book: 'account' | 'shadow'; tf: string; trades: number; withPath: number; covered: number; armed: number; fired: number; baseR: number; lockR: number; deltaR: number; rescued: number; rescuedR: number; cutShort: number; cutShortR: number }>
+  daily: Array<{ day: string; book: 'account' | 'shadow'; tf: string; trades: number; fired: number; deltaR: number }>
+  assumptions: string[]
+}

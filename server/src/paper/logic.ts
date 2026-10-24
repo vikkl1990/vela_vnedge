@@ -234,9 +234,12 @@ export function scriptModeProtection(cfg: PaperConfig): ExitOverride {
   };
 }
 
-export function exitConfigFor(cfg: PaperConfig, symbol: string, scannerOverride?: ExitOverride | null): PaperConfig {
+export function exitConfigFor(cfg: PaperConfig, symbol: string, scannerOverride?: ExitOverride | null, tf?: string): PaperConfig {
   const bySymbol = cfg.exitBySymbol?.[symbol];
-  const layers = [bySymbol, scannerOverride].filter((x): x is ExitOverride => !!x && Object.keys(x).length > 0);
+  // decision 197: the timeframe's own exit rules (e.g. an early profit lock on 15m only) sit between the fleet's and the
+  // market's; the scanner's own rules still win
+  const byTf = tf ? cfg.exitByTf?.[tf] : undefined;
+  const layers = [byTf, bySymbol, scannerOverride].filter((x): x is ExitOverride => !!x && Object.keys(x).length > 0);
   return layers.length ? Object.assign({ ...cfg }, ...layers) : cfg;
 }
 

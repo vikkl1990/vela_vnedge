@@ -292,7 +292,7 @@ export class PaperEngine extends EventEmitter {
   onEntry(ev: ScanEvent, ctx: { scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number }): EntryDecision {
     // the market's and the scanner's own rules, so a stop width they ask for is used at entry and
     // then carried on the position for the rest of the trade (decision 43)
-    const cfg = exitConfigFor(this.paper, ctx.symbol, this.scannerExit?.(ctx.scannerId, ctx.at));
+    const cfg = exitConfigFor(this.paper, ctx.symbol, this.scannerExit?.(ctx.scannerId, ctx.at), ctx.tf);
     // A signal acted on long after its bar closed could not have been taken at these prices
     // (restarts and deep queues used to replay bar-old signals straight into the book).
     const maxAge = cfg.maxSignalAgeSec ?? 0;
@@ -439,7 +439,7 @@ export class PaperEngine extends EventEmitter {
   private fillLimit(pe: PendingEntry, at: number, eventAt = at): Position | null {
     this.pending.delete(pe.id);
     // the scanner's and the market's own stop and exit rules, as at entry (decision 190: the global ones were used)
-    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at)), L = pe.limit!;
+    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at), pe.tf), L = pe.limit!;
     const cancel = (reason: string) => {
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
       if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
@@ -476,7 +476,7 @@ export class PaperEngine extends EventEmitter {
   private fillPending(pe: PendingEntry, priceIn: number, at: number, source: 'tape' | 'candle', receivedAt = Date.now()): Position | null {
     let price = priceIn;
     this.pending.delete(pe.id);
-    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at));
+    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at), pe.tf);
     const cancel = (reason: string) => {
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
       if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
@@ -568,7 +568,7 @@ export class PaperEngine extends EventEmitter {
       if (pos.symbol !== symbol || filled.has(pos.id)) continue;
       const slBefore = pos.sl, offBefore = pos.trailOff;
       const atr = (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined;
-      const fills = applyTrade(pos, { time, price, qty }, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt)), mark, atr);
+      const fills = applyTrade(pos, { time, price, qty }, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf), mark, atr);
       if (fills.length) this.applyFills(pos, fills);
       else if (pos.sl !== slBefore || pos.trailOff !== offBefore) { this.persist(pos); this.emit('position', { type: 'updated', position: pos }); }
     }
@@ -612,7 +612,7 @@ export class PaperEngine extends EventEmitter {
     // decision 135: the exit is acted on now, at the market; only a target hit keeps its level (a resting limit fills at it).
     // The script's price is a level its bar passed before it closed, which no order placed now can get.
     const fallback = this.marks.get(symbol) ?? price ?? pos.entryPrice;
-    const fills = applyScriptExit(pos, exitType, /^tp\d$/.test(exitType) ? price : undefined, at, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt)), exitMode, fallback);
+    const fills = applyScriptExit(pos, exitType, /^tp\d$/.test(exitType) ? price : undefined, at, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf), exitMode, fallback);
     if (fills.length) this.applyFills(pos, fills);
     return pos;
   }
@@ -653,7 +653,7 @@ export class PaperEngine extends EventEmitter {
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
-      const pcfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt));
+      const pcfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
       const slBefore = pos.sl;
       const fills = applyLiveBar(pos, bar, pcfg, eventAt, (pcfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       if (fills.length) this.applyFills(pos, fills);
@@ -692,7 +692,7 @@ export class PaperEngine extends EventEmitter {
     const entry = pos.fills[0];
     if (pos.qtyOpen !== pos.qty) { log.error(`adoptEntryFill #${id}: position already partly exited; entry not restated`); return pos; }
     const price = f.price ?? entry.price;
-    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt));
+    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
     const fee = f.fee ?? (f.qty === pos.qty ? entry.fee : entry.fee * f.qty / pos.qty);
     pos.entryPrice = price; pos.qty = f.qty; pos.qtyOpen = f.qty;
     pos.legs = splitLegs(f.qty, cfg.tpSplit, pos.tp.length);
@@ -730,7 +730,7 @@ export class PaperEngine extends EventEmitter {
   adoptExitFill(id: number, f: { price: number; qty: number; fee: number | null; reason: string; at: number }): Position | undefined {
     const pos = this.open.get(id);
     if (!pos || !(f.qty > 0)) return undefined;
-    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt));
+    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
     const leg = Number(f.reason.match(/^tp(\d)$/)?.[1] ?? 0);
     if (leg > 0 && pos.tpHit[leg - 1] !== undefined) pos.tpHit[leg - 1] = true;
     const fill = fillExit(pos, f.price, f.qty, f.reason, f.at, cfg, false);

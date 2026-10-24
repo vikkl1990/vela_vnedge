@@ -5811,3 +5811,30 @@ misreads actions:
   bar's equity also counts open positions. The sizing comparison was fixed to a 20 October trial whose decision is
   made (margin sizing is on); it is now the last 14 days' margin re-weighting, described as a counterfactual on closed
   trades, with the sizing mode in force beside it.
+
+## 197. A per-timeframe exit layer, and the early profit lock measured daily while it stays off
+
+**Why.** An outside study (25 October) proposed raising the stop to +0.1R once a trade reaches +0.3R. On 101 later
+account trades it cut the loss from −12.7R to −1.9R. Replayed on both books' recorded paths since 1 September (about
+4,400 trades), it helps on 15m (account +9.3R, shadow +7.3R with each hypothetical exit paying its own taker fee and
+slippage) and hurts on 1h and 4h (shadow −9.5R and −38.9R: slower trades often dip to +0.1R and go on to their
+targets). The operator's decision: build the option per timeframe, keep it off, and collect two more weeks before
+switching it on for 15m; 1h and 4h stay as they are.
+
+**What.**
+
+- `paper.exitByTf` — exit overrides per timeframe, layered fleet < timeframe < market < scanner (`exitConfigFor` takes
+  the trade's timeframe in every path: entry, limit and latency fills, trades, bars, script exits, the backtest).
+  Empty by default; validated (known timeframe, `floorKeepR` not above `floorAtR`). Switching the lock on for 15m is
+  `exitByTf: { "15m": { floorAtR: 0.3, floorKeepR: 0.1 } }`.
+- `analytics/lockStudy.ts` and `GET /api/research/lock?days=N` (cached ten minutes): every closed trade in both books,
+  unchanged unless its path reached `atR` and later fell to `keepR`; then the size still open is closed at the lock
+  level as a stop-market order with the paper's taker slippage and fee, while the entry and any earlier partial exits
+  keep their recorded prices and fees. Reported by book and timeframe: trades, fires, losses rescued, winners cut
+  short, R now and with the lock, the change, and path coverage; by closing day; with its assumptions spelled out.
+  The Daily page shows it as "Early profit lock — off".
+- The stop-width filter from the same study is not part of this; it is a separate entry-admission experiment.
+
+**Limits.** Paths are sampled about once a minute: a touch between samples is missed and a fire can be late. The
+spread at the lock is unknown and not added; funding is ignored on both sides. Coverage (paths with no gap over three
+minutes) is high in the account (271 of 276 on 15m) and lower in the shadow book (1,430 of 1,878 on 15m).

@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useConfig } from '../api/queries'
+import { LockStudyPanel } from '../components/LockStudyPanel'
 import type { DailyRow } from '../api/types'
 import { PageTitle, Panel, QueryState } from '../components/ui'
 import { fmtPnl } from '../lib/format'
@@ -68,6 +69,7 @@ export function Daily() {
                   </tr>))}</tbody>
               </table></div>
             </Panel>
+            <LockStudyPanel />
             <Panel title="Shadow book and incubator" pad={false}>
               <div className="table-wrap"><table className="table small daily-table">
                 <thead><tr><th>Day</th><th>Trades</th><th>R a trade</th><th>Sum R</th><th>If sized by margin</th><th>15m</th><th>1h</th><th>4h</th><th>Trail kept</th><th>Admitted</th><th>Proposed</th><th>Promoted</th><th>Retired</th><th>Demoted</th></tr></thead>

@@ -14,6 +14,7 @@ import { EXTENSIONS } from './extensions.ts';
 import { aggregateMonthly } from '../pine/provider.ts';
 import { duplicateGroups } from '../scanners/identity.ts';
 import { overlapClusters } from '../incubator/overlap.ts';
+import { lockStudy } from '../analytics/lockStudy.ts';
 
 const log = logger.scoped('api');
 
@@ -398,6 +399,18 @@ export class ApiServer {
     this.add('GET', '/api/incubator', () => a.incubatorView());
     // decision 194: one strategy under several ids, and shadow pairs that trade the same moves
     this.add('GET', '/api/incubator/overlap', (_r, _s, _p, url) => overlapClusters(a.db, { since: Date.now() - Math.min(180, Math.max(1, Number(url.searchParams.get('days') ?? 30))) * 86_400_000 }));
+    // decision 197: the early profit lock, measured on the books' own trades while it stays off
+    const lockCache = new Map<string, { at: number; v: unknown }>();
+    this.add('GET', '/api/research/lock', (_r, _s, _p, url) => {
+      const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14)));
+      const atR = Number(url.searchParams.get('at') ?? 0.3), keepR = Number(url.searchParams.get('keep') ?? 0.1);
+      if (!(atR > 0 && keepR >= 0 && keepR < atR)) throw new HttpError(400, 'need 0 ≤ keep < at');
+      const k = `${days}|${atR}|${keepR}`, hit = lockCache.get(k);
+      if (hit && Date.now() - hit.at < 10 * 60_000) return hit.v;
+      const v = lockStudy(a.db, a.config.get().paper, { since: Date.now() - days * 86_400_000, atR, keepR });
+      lockCache.set(k, { at: Date.now(), v });
+      return v;
+    });
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     this.add('GET', '/api/radar', (_r, _s, _p, url) => a.radarView(Math.min(168, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));
     this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));

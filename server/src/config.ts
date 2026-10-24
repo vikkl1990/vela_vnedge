@@ -147,6 +147,11 @@ export interface PaperConfig {
    */
   exitBySymbol?: Record<string, ExitOverride>;
   /**
+   * Decision 197: per-timeframe exit overrides, applied between the fleet's policy and the market's. A 15m trade and a
+   * 4h trade travel differently: an early profit lock that pays on 15m cut 4h winners short. Empty by default.
+   */
+  exitByTf?: Record<string, ExitOverride>;
+  /**
    * Give back less of the peak as a trade grows: `[[2, 30], [4, 20]]` keeps the flat
    * `trailGiveBackPct` until +2R, then gives back 30%, then 20% past +4R. A runner needs room early
    * and deserves tighter protection once it is large. Empty means one flat percentage at every size.
@@ -760,6 +765,12 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (p.feeTaxPct !== undefined && !(p.feeTaxPct >= 0 && p.feeTaxPct <= 100)) errs.push('paper.feeTaxPct must be 0..100');
   if (p.trendExit && !(p.trendExit.emaLen >= 2 && p.trendExit.minR >= 0)) errs.push('paper.trendExit needs emaLen ≥ 2 and minR ≥ 0');
+  for (const [tf, o] of Object.entries(p.exitByTf ?? {})) {
+    if (!(tf in TF_SECONDS)) errs.push(`paper.exitByTf.${tf}: unknown timeframe`);
+    if (o.floorAtR !== undefined && !(o.floorAtR >= 0)) errs.push(`paper.exitByTf.${tf}.floorAtR must be ≥ 0`);
+    if (o.floorKeepR !== undefined && !(o.floorKeepR >= 0 && (o.floorAtR === undefined || o.floorKeepR <= o.floorAtR))) errs.push(`paper.exitByTf.${tf}.floorKeepR must be ≥ 0 and not above floorAtR`);
+    if (o.trailAfterR !== undefined && !(o.trailAfterR >= 0)) errs.push(`paper.exitByTf.${tf}.trailAfterR must be ≥ 0`);
+  }
   for (const [sym, o] of Object.entries(p.exitBySymbol ?? {})) {
     if (o.floorAtR !== undefined && !(o.floorAtR >= 0)) errs.push(`paper.exitBySymbol.${sym}.floorAtR must be ≥ 0`);
     if (o.floorKeepR !== undefined && !(o.floorKeepR >= 0)) errs.push(`paper.exitBySymbol.${sym}.floorKeepR must be ≥ 0`);
