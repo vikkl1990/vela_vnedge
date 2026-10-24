@@ -180,3 +180,19 @@ test('decision 190: as wired, the print that fills a tape limit is counted as th
   const x = JSON.parse(db.get<any>("SELECT extra FROM tape_audit WHERE kind='resting limit'").extra);
   assert.deepEqual([x.filled, x.through, x.throughAt], [true, true, at + 500]);
 });
+
+test('decision 194: a stop filled on catching up after a restart is kept but marked unwatched and left out of the averages', () => {
+  const db = new Db(':memory:');
+  const eng = fakeEngine();
+  const audit = new TapeAudit(db, [{ engine: eng, book: 0 }]);
+  const t0 = 1_800_000_000_000;
+  eng.positions.set(5, { entryPrice: 0.0377, slOriginal: 0.0361, tf: '15m' });
+  // the process has just started: its first print for the symbol comes after the stop was filled
+  eng.emit('order', { at: t0, positionId: 5, symbol: 'AKEUSD', side: 'sell', qty: 1, price: 0.03609, reason: 'sl' });
+  audit.onTrade(trade('AKEUSD', 0.03077, 5, t0 + 500));
+  (audit as any).tick(t0 + 5000);
+  const row = db.get<any>('SELECT * FROM tape_audit');
+  assert.equal(JSON.parse(row.extra).unobserved, true);
+  const f = audit.summary(0).fills[0];
+  assert.deepEqual([f.n, f.unobserved, f.medianBps], [1, 1, null]);
+});

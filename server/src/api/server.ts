@@ -252,6 +252,8 @@ export class ApiServer {
       await a.onConfigChanged();
       return { tuned: report.length, disabled: report.filter(r => r.disabled).length, report };
     });
+    // decision 194: before /api/scanners/:id, which would take 'duplicates' for an id
+    this.add('GET', '/api/scanners/duplicates', () => { const withPairs = new Set(a.incubatorStore.list().map(p => p.scannerId)); return duplicateGroups(a.registry.all(), a.config.get(), id => withPairs.has(id)); });
     this.add('GET', '/api/scanners/:id', (_r, _s, p) => { const v = a.scannerView(p.id); if (!v) throw new HttpError(404, 'unknown scanner'); return v; });
     this.add('POST', '/api/scanners/:id', async (_r, _s, p, _u, body) => {
       const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner');
@@ -395,7 +397,6 @@ export class ApiServer {
     // incubator: reading is open to every account; deciding needs trade access (default-deny POST)
     this.add('GET', '/api/incubator', () => a.incubatorView());
     // decision 194: one strategy under several ids, and shadow pairs that trade the same moves
-    this.add('GET', '/api/scanners/duplicates', () => { const withPairs = new Set(a.incubatorStore.list().map(p => p.scannerId)); return duplicateGroups(a.registry.all(), a.config.get(), id => withPairs.has(id)); });
     this.add('GET', '/api/incubator/overlap', (_r, _s, _p, url) => overlapClusters(a.db, { since: Date.now() - Math.min(180, Math.max(1, Number(url.searchParams.get('days') ?? 30))) * 86_400_000 }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     this.add('GET', '/api/radar', (_r, _s, _p, url) => a.radarView(Math.min(168, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));

@@ -5734,3 +5734,10 @@ their own ids; nothing is migrated or deleted. `incubator/overlap.ts` clusters s
 within 5 seconds at least 5 times and in half the smaller pair's trades. Both are read-only reports
 (`/api/scanners/duplicates`, `/api/incubator/overlap`) and an "Overlapping evidence" panel on the Incubator page; neither
 judges or retires a pair.
+
+**Found while checking 190–194 locally.** A stop the paper fills on catching up after a restart (the price crossed it
+while the bot was down) was priced against the prints after the restart: 1,476 bps on a local AKEUSD stop that had been
+crossed 23 hours earlier. A resting exchange stop would have filled when the price crossed, so those prints say nothing
+about its slippage. The tape audit now marks a stop as `unobserved` when the process saw no print for the symbol before
+the cross, keeps the row, and leaves it out of the averages (an "Unwatched" column on the Exchange page). And
+`/api/scanners/duplicates` is registered before `/api/scanners/:id`, which had taken "duplicates" for a scanner id.
