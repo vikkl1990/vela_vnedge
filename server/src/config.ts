@@ -235,6 +235,15 @@ export interface PaperConfig {
   fillSource: 'candles' | 'tape';
   /** Resting take-profit limits (tape mode): `through` needs a print beyond the level, `touch` fills on a print at the level. */
   limitFill: 'touch' | 'through';
+  /**
+   * Decision 185: the entry as a resting maker limit instead of a market order at the close. On the timeframes named,
+   * the order rests `atr` ATR of the signal bar back from the signal price for `bars` bars of the signal's timeframe, fills
+   * at its own price as a maker the first time price trades through it (or touches it, per `limitFill`), and lapses
+   * otherwise. The stop is measured from the fill. Measured on 4h across the fleet's scanners: the market entry at the
+   * close −79.5R over 5,060 trades, the limit 0.3 ATR back +153.5R over 4,246, both halves positive. Paper only while an
+   * exchange executor is attached (its entries are market orders).
+   */
+  limitEntry?: { enabled: boolean; tfs: string[]; atr: number; bars: number; books: Array<'account' | 'shadow'> };
   /** Book-depth assumption: USD notional that moves the price 1 bp; market fills add notional / depthUsdPerBp bps of slippage (0 = fixed slippageBps only). */
   depthUsdPerBp: number;
   /** Tape mode: a signal's entry fills at the first print after signal time + latencyMs (candles mode fills immediately). */
@@ -619,6 +628,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     maxOpenPositions: 20,
     fillSource: 'candles',
     limitFill: 'through',
+    limitEntry: { enabled: true, tfs: ['4h'], atr: 0.3, bars: 2, books: ['account', 'shadow'] },
     depthUsdPerBp: 0,
     latencyMs: 1500,
     tapeFallbackMs: 5000,

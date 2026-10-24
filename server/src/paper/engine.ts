@@ -45,6 +45,8 @@ export const QUIET_FILL_MS = 1000;
 export interface PendingEntry {
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; signalPrice: number; levels: LevelResult;
   market: MarketInfo; at: number; dueAt: number; signalId: number | null; features?: Record<string, number>; mlProb: number | null; score?: number; leverageMult: number;
+  /** Decision 185: a resting maker limit — its price, when it lapses, and what the levels are resolved from at the fill. */
+  limit?: { price: number; expiresAt: number; atr: number; sl?: number; tp?: number[]; bars: number };
 }
 
 /**
@@ -97,6 +99,8 @@ export class PaperEngine extends EventEmitter {
   trendFor?: (symbol: string, tf: string) => 1 | -1 | undefined;
   /** Decision 178: the market-structure stop of a market and timeframe as of its last closed bar; null while the structure has not spoken. */
   structureFor?: (symbol: string, tf: string) => StructureLevel | null;
+  /** Decision 185: whether a resting limit entry may be used (false while an exchange executor mirrors this book with market orders). */
+  limitEntryAllowed?: () => boolean;
 
   constructor(db: Db, cfgRef: () => AppConfig, opts: { book?: number } = {}) {
     super();
@@ -107,8 +111,12 @@ export class PaperEngine extends EventEmitter {
     for (const row of db.all<any>(`SELECT * FROM positions WHERE status='open' AND bt=${this.book}`)) {
       const p = rowToPosition(row); this.open.set(p.id, p);
     }
-    // pending tape entries do not survive a restart (their signal is seconds old at most)
-    for (const row of db.all<any>(`SELECT id, signal_id FROM positions WHERE status='pending' AND bt=${this.book}`)) {
+    // pending tape entries do not survive a restart (their signal is seconds old at most); a resting limit (decision 185)
+    // does, until it lapses — it can rest for hours, and a deploy must not cancel it
+    for (const row of db.all<any>(`SELECT id, signal_id, fills FROM positions WHERE status='pending' AND bt=${this.book}`)) {
+      let kept: PendingEntry | null = null;
+      try { const j = JSON.parse(row.fills ?? 'null'); if (j?.limitEntry?.limit && j.limitEntry.limit.expiresAt > Date.now()) kept = { ...j.limitEntry, id: row.id }; } catch { kept = null; }
+      if (kept) { this.pending.set(kept.id, kept); continue; }
       db.run('DELETE FROM positions WHERE id=?', row.id);
       if (row.signal_id) db.updateSignalAction(row.signal_id, 'rejected:pending entry dropped on restart', null);
     }
@@ -333,6 +341,20 @@ export class PaperEngine extends EventEmitter {
       if (!this.applyFills(replacing, [fillExit(replacing, exitQuote.price, replacing.qtyOpen, 'reversal', ctx.at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref, source: exitQuote.source })) return refused('the position to be replaced could not be closed (write failed)');
       closed = replacing;
     }
+    // decision 185: on the timeframes named, the entry rests as a maker limit back from the signal price
+    const le = cfg.limitEntry, tfMs = (TF_SECONDS[ctx.tf] ?? 0) * 1000;
+    if (le?.enabled && !replacing && le.tfs.includes(ctx.tf) && le.books.includes(this.book === 0 ? 'account' : 'shadow') && (ctx.atr ?? 0) > 0 && tfMs > 0 && (this.limitEntryAllowed?.() ?? true)) {
+      const tick = ctx.market.tickSize > 0 ? ctx.market.tickSize : 0;
+      const raw = ev.side === 'long' ? reference - le.atr * ctx.atr! : reference + le.atr * ctx.atr!;
+      const limitPrice = tick ? Math.round(raw / tick) * tick : raw;
+      const id = this.nextId();
+      const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult,
+        limit: { price: limitPrice, expiresAt: ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
+      this.pending.set(id, pe);
+      this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, limitPrice, pe.at, pe.signalId, JSON.stringify({ limitEntry: pe }), id);
+      log.info(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${le.atr} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
+      return { action: 'pending', reason: `resting limit at ${limitPrice}, ${le.atr} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
+    }
     if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
       // first price after that — a tape print, or in candles mode the next 1m candle update, or the mark once the feed is quiet
@@ -386,6 +408,44 @@ export class PaperEngine extends EventEmitter {
     this.recordEquity(true);
     log.info(`${this.book ? 'INCUBATOR ' : ''}OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} ${pos.leverage.toFixed(1)}x sl ${pos.sl} tp ${pos.tp.join('/')} liq ${pos.liqPrice?.toFixed(1) ?? '-'} [${p.scannerTag}]`);
     return pos;
+  }
+
+  /** Decision 185: whether prices between `low` and `high` filled a resting limit (through it, or touching it, per `limitFill`). */
+  private limitTouched(pe: PendingEntry, low: number, high: number): boolean {
+    const L = pe.limit!.price, through = (this.paper.limitFill ?? 'through') === 'through';
+    return pe.side === 'long' ? (through ? low < L : low <= L) : (through ? high > L : high >= L);
+  }
+
+  /** Decision 185: fill a resting limit at its own price as a maker; levels from the fill, every gate asked again. */
+  private fillLimit(pe: PendingEntry, at: number): Position | null {
+    this.pending.delete(pe.id);
+    const cfg = this.paper, L = pe.limit!;
+    const cancel = (reason: string) => {
+      this.db.run('DELETE FROM positions WHERE id=?', pe.id);
+      if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
+      log.info(`LIMIT ${pe.symbol} cancelled: ${reason} [${pe.scannerId}]`);
+      this.emit('pending', { type: 'cancelled', id: pe.id, reason });
+      return null;
+    };
+    const levels = resolveLevels({ side: pe.side, price: L.price, sl: L.sl, tp: L.tp, atr: L.atr }, cfg, pe.market.tickSize);
+    if ('error' in levels) return cancel(`limit filled past its levels (${levels.error})`);
+    // a maker entry crosses no spread; the exit still pays it, as checkRiskVsFees counts
+    const feeErr = checkRiskVsFees(L.price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, at));
+    if (feeErr) return cancel(feeErr);
+    if (this.open.size >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
+    let leverageMult = pe.leverageMult;
+    if (this.risk) {
+      const g = this.risk.gate({ scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, side: pe.side, price: L.price, sl: levels.sl, at });
+      if (g.reject) return cancel(`risk ${g.reject}`);
+      leverageMult = g.leverageMult;
+    }
+    const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at });
+    if (size.qty < 1) return cancel(size.reason ?? 'size');
+    if (this.risk) {
+      const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * L.price });
+      if (x) return cancel(`risk ${x}`);
+    }
+    return this.openAt(pe.id, { scannerId: pe.scannerId, maker: true, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: L.price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} limit +${Math.round((at - pe.at) / 60_000)}m` }, cfg, { ref: L.price, source: 'quote' });
   }
 
   /** Fill a pending entry at `price` (first print after the latency window, or the 1m close when the tape is silent). */
@@ -451,6 +511,7 @@ export class PaperEngine extends EventEmitter {
   /** Expire pending entries that neither the tape nor a candle could fill within a minute past their due time. */
   housekeeping(now = Date.now()): void {
     for (const pe of [...this.pending.values()]) {
+      if (pe.limit) { if (now > pe.limit.expiresAt) this.cancelPending(pe.id, `no fill: price did not come back to ${pe.limit.price} within ${pe.limit.bars} ${pe.tf} bars`); continue; }
       if (now > pe.dueAt + PENDING_EXPIRY_MS) { this.cancelPending(pe.id, `no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`); continue; }
       // candles mode: the window has closed and no candle update has come for the symbol — fill at the mark
       if (!this.tapeMode && now >= pe.dueAt + QUIET_FILL_MS) { const m = this.marks.get(pe.symbol); if (m && m > 0) this.fillPending(pe, m, now, 'candle', now); }
@@ -468,6 +529,7 @@ export class PaperEngine extends EventEmitter {
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
       if (pe.symbol !== symbol || time < pe.dueAt) continue;
+      if (pe.limit) { if (this.limitTouched(pe, price, price)) { const pos = this.fillLimit(pe, time); if (pos) filled.add(pos.id); } continue; }
       const pos = this.fillPending(pe, price, time, 'tape', observedAt);
       if (pos) filled.add(pos.id);
     }
@@ -548,7 +610,12 @@ export class PaperEngine extends EventEmitter {
     if (!historical) this.marks.set(symbol, bar.close);
     if (!historical) {
       // tape mode: the candle is the fallback while the tape is silent; candles mode: the candle update is the price
-      for (const pe of [...this.pending.values()]) if (pe.symbol === symbol && observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle', observedAt);
+      for (const pe of [...this.pending.values()]) {
+        if (pe.symbol !== symbol) continue;
+        // decision 185: a resting limit fills on a minute that ended after the signal and traded through its price
+        if (pe.limit) { if (bar.time + 60_000 > pe.at && this.limitTouched(pe, bar.low, bar.high)) this.fillLimit(pe, observedAt); continue; }
+        if (observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle', observedAt);
+      }
     }
     this.housekeeping(observedAt);
     for (const pos of [...this.open.values()]) {

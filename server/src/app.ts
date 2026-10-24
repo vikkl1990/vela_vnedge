@@ -143,6 +143,9 @@ export class App {
     this.candles.on('closed', (e: { symbol: string; tf: string; bar: { time: number; open: number; high: number; low: number; close: number; volume: number } }) => { structures.get(`${e.symbol}|${e.tf}`)?.push(e.bar); });
     this.paper.structureFor = structureFor;
     this.shadow.structureFor = structureFor;
+    // decision 185: the account rests limit entries only while no exchange executor mirrors it with market orders
+    this.paper.limitEntryAllowed = () => !this.executor;
+    this.shadow.limitEntryAllowed = () => true;
     this.incubatorStore = new IncubatorStore(this.db);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.ml.excluded = () => this.scanners.health.quarantined();

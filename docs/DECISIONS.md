@@ -5490,3 +5490,37 @@ trades one day and 157 the next; scripts without a higher timeframe reproduced e
 now; two runs give the same rows. Every earlier study's events for HTF scripts carried this noise (the variants within a
 cell still compare on the same events); the screen's holdout for HTF scripts was not clean. The 4h entry study was re-run
 on the fixed tree before being read.
+
+## 185. The 1h/4h studies were measured on the coarse bar; on the full 15m path the 4h entry should be a resting limit (24 October 2026)
+
+**The tool.** `diagnose` kept one candle series per market and timeframe, first come, first served. In a run covering
+15m and 1h/4h, the 15m *signal* series (4,000 bars, 42 days) was cached first, and the 1h/4h *exit path*, which asks for
+15m bars across 167 or 666 days, got the same 4,000. So 1h and 4h exits were resolved on 15m only for the last 42 days
+and on the coarse bar before that — optimistic for a trail that ratchets at the bar's close. Found by reconciling two
+runs of one cell: rerun with exits on the 4h bar alone (`NOSUB=1`) it reproduces the old rows to the decimal (ZEC gross
+0.465R, ETH spread 0.206R); on the full path, 0.177R and 0.079R. Fixed (series kept at the longest length asked for).
+**Affected:** the 1h and 4h numbers in decisions 175 (trail width), 178 (the Vela exits, already reversed), 180 (the
+regime floor), 182 (the majors' 4h evidence) and the 4h ICT results. **Not affected:** every 15m number, every journal
+and live-shadow figure (the shadow book's own 4h record, PF 1.43 on 326 trades, is the live engine's 1m path), and the
+4h-only runs. The 1h/4h evidence is being re-run on the fixed tool.
+
+**The entry.** On 4h, across the fleet's 15 scanners and six markets, full 15m exit path, spread paid
+(`_research/entry-4h-20261024/`):
+
+| entry | trades | total R | halves | cells better / worse than the market entry |
+|---|---|---|---|---|
+| market at the close (current) | 5,060 | −79.5 | +16.7 / −96.3 | — |
+| maker limit at the signal price | 5,040 | +67.7 | +101 / −33 | 69 / 10 · 15 of 15 scanners · 6 of 6 markets |
+| **limit 0.3 ATR back, 2 bars** | 4,246 | **+153.5** | **+122.7 / +30.4** | 57 / 29 · 13 of 15 · 6 of 6 |
+| hybrid break 0.25 ATR | 2,832 | +88.3 | +42.1 / +47.0 | 55 / 30 |
+
+The round trip's taker fee and half-spread are the difference between a fleet that loses on 4h and one that pays; the
+pullback limit is the largest and the only one positive in both halves.
+
+**Built.** `paper.limitEntry` — `{ enabled: true, tfs: ['4h'], atr: 0.3, bars: 2, books: ['account', 'shadow'] }`.
+An entry on a named timeframe rests as a limit `atr` ATR of the signal bar back from the signal price for `bars` bars of
+its timeframe; it fills at its own price as a maker the first time a minute trades through it (`limitFill: through`;
+a touch alone is not a fill, more conservative than the study's touch), with the stop measured from the fill and every
+gate asked again at the fill; otherwise it lapses ("no fill: price did not come back"). It survives a restart until it
+lapses. The account rests limits only while no exchange executor mirrors it (its entries are market orders, and the
+production rule refuses resting orders); reversals keep the market path. 1h joins only if the re-run supports it.
