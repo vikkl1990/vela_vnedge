@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { lastAtr } from './data/indicators.ts';
-import { scriptModeExit, scriptModeProtection, trendSide } from './paper/logic.ts';
+import { trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ScreenQueue } from './incubator/screenQueue.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
@@ -19,6 +19,7 @@ import { DeltaFeed, type WsTicker } from './delta/ws.ts';
 import { logger } from './log.ts';
 import { MarketStructureTrail, type StructureLevel } from './paper/luxExits.ts';
 import { configFingerprint, sourceHash } from './paper/fingerprint.ts';
+import { bookPaperConfig, scannerExitPolicy } from './paper/policy.ts';
 import { PaperEngine } from './paper/engine.ts';
 import { PinePool } from './pine/pool.ts';
 import { ScannerEngine } from './scanners/engine.ts';
@@ -104,20 +105,17 @@ export class App {
     let shadowBase: AppConfig | null = null, shadowCfg: AppConfig | null = null;
     const shadowRef = () => {
       const c = cfg();
-      if (c !== shadowBase) { shadowBase = c; shadowCfg = { ...c, paper: { ...c.paper, initialEquity: 10_000_000, maxOpenPositions: 100_000, sizingMode: c.paper.sizingMode === 'margin' ? 'risk' : c.paper.sizingMode } }; }
+      if (c !== shadowBase) { shadowBase = c; shadowCfg = { ...c, paper: bookPaperConfig(c, 'shadow') }; }   // decision 191: one definition
       return shadowCfg!;
     };
     this.shadow = new PaperEngine(this.db, shadowRef, { book: 2 });
     this.shadow.atrFor = this.paper.atrFor;
     // a scanner's own exit rules reach both books the same way (decision 38)
     // decision 113: a scanner on exit mode `script` trades its own exits; the bot's targets and trail are off for it
-    const scannerExit = (id: string) => { const c = cfg(); const sc = c.scanners[id]; return sc?.exitMode === 'script' ? { ...(sc.exit ?? {}), ...scriptModeExit(c.paper) } : sc?.exit; };
     // decision 159: script-exit trades add the bot's trail and floor from `scriptExitTrailFrom`; decision 160: a trade
-    // already open then is protected too, its trail starting from that moment (trailStop); decision 161: both books
-    const protectedExit = (id: string) => {
-      const o = scannerExit(id); const c = cfg(); const from = c.paper.scriptExitTrailFrom;
-      return c.scanners[id]?.exitMode === 'script' && from !== undefined && Date.now() >= from ? { ...o, ...scriptModeProtection(c.paper) } : o;
-    };
+    // already open then is protected too, its trail starting from that moment (trailStop); decision 161: both books.
+    // Decision 191: resolved by the shared policy, which the screen and the backtests ask too
+    const protectedExit = (id: string) => scannerExitPolicy(cfg(), id);
     this.paper.scannerExit = protectedExit;
     this.shadow.scannerExit = protectedExit;
     this.paper.sourceHashFor = this.shadow.sourceHashFor = (sid: string) => this.sourceHashFor(sid);
@@ -155,6 +153,7 @@ export class App {
     this.ml.excluded = () => this.scanners.health.quarantined();
     this.enricher = new FeatureEnricher(this.db, this.candles);
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
+    this.scanners.executorAttached = () => Boolean(this.executor);
     this.resolvedSymbols = cfg().symbols;
     this.incubator = new ShadowRunner({
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,

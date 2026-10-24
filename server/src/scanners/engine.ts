@@ -25,6 +25,7 @@ import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 import { ScriptHealth } from './health.ts';
 import { BarWatermark } from './watermark.ts';
+import { backtestPolicy } from '../paper/policy.ts';
 
 const log = logger.scoped('scanner');
 
@@ -68,6 +69,8 @@ export interface AutoTuneReport {
 interface Overlay { at: number; plots: WorkerResult['plots']; shapes: WorkerResult['shapes']; labels: WorkerResult['labels'] }
 
 export class ScannerEngine extends EventEmitter {
+  /** Decision 191: an exchange-mirrored account enters at market, so its backtests do too. */
+  executorAttached?: () => boolean;
   private registry: ScannerRegistry;
   readonly health: ScriptHealth;
   private cfgRef: () => AppConfig;
@@ -458,7 +461,8 @@ export class ScannerEngine extends EventEmitter {
       if (mode.backtest) {
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: btBars, mode: 'backtest' });
         const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert });
-        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, events, cfg: this.cfgRef().paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize, trendGate: sc.trendGate, scannerExit: cfg.scanners[s.id]?.exit, chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr } : undefined });
+        // decision 191: the account's own policy — entry model, exit rules with script protection, trend and chop gates
+        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, events, ...backtestPolicy(this.cfgRef(), s.id, tf, 'account', { executor: this.executorAttached?.() }), exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
         this.backtests.set(key, bt);
         if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? '') })));
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));

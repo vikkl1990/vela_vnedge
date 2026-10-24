@@ -5670,3 +5670,26 @@ checked against the code before fixing; each fix has a test that fails on the ol
 - **The journal filters on the server.** The Trades page fetched the newest 300 and filtered the exit reason in the
   browser, so older matches were missing and the totals covered only the page. `GET /api/trades/page` applies every
   filter first and returns the count and totals of all matches; the page has Newer/Older paging.
+
+## 191. One trading policy for the books, the screen, the scanner backtest and validation
+
+**Why.** The 24 October audit found the paths that judge a scanner trading a different strategy from the books that
+trade it. The daily screen admitted 1h and 4h pairs on market entries at the signal close while both books rested a
+maker limit (decision 185); it also left out the scanner's own exit rules, its trend gate and the regime's chop gate.
+No backtest applied the trail and floor a script-exit trade gets in the books (decision 159). The backtest filled a
+resting limit on a touch where the books need price through it (`limitFill: 'through'`), rested a limit on a reversal
+where the books enter at market, and closed the held trade before checking that the replacement could be admitted where
+the books (decision 77) check first and keep the held trade when the replacement is refused.
+
+**What.** `paper/policy.ts` resolves the policy once: `bookPaperConfig` (the shadow purse and caps), `scannerExitPolicy`
+(the scanner's override, script mode, script protection), `entryPolicy` (the limit on its timeframes and books; market
+for an exchange-mirrored account) and `backtestPolicy`, which bundles them with the trend and chop gates. The books take
+their exit overrides and the shadow settings from it; the screen backtests under the shadow book's policy (the book it
+admits to), the scanner backtest and walk-forward validation under the account's. The backtest honours `limitFill`, keeps
+a reversal at market under the live policy (`limitWhenFlatOnly`; research variants without it are unchanged), and asks
+whether the replacement is admissible before closing the held trade. A resolved override (`scannerExitResolved`) is not
+layered with script mode a second time, which would have zeroed the protection. `SIMULATION_VERSION` 5 retires cached
+backtests and walk-forward results.
+
+**Consequence.** Decision 185's case for the 1h/4h limit was measured with touch fills, which are kinder than the
+books' rule. It is re-measured under `through` before the next change to the entry model.

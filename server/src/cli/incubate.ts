@@ -33,6 +33,7 @@ import { IncubatorStore } from '../incubator/store.ts';
 import { tooQuietForTf, evaluate, recordScreen, screenTf, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
 import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
+import { backtestPolicy } from '../paper/policy.ts';
 
 const started = Date.now();
 const cfg = new ConfigStore().get();
@@ -253,13 +254,17 @@ while (sliceArg !== 'none') {
         const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[TF] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: rd.sources, edge: rd.edge, labels: rd.labels, invert: rd.invert });
         if (!events.some(e => e.kind === 'entry')) continue;
         sawEntry = true;
-        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, cfg: cfg.paper, exitMode: cfg.scanners[s.id]?.exitMode ?? 'both', contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: bookCost.get(symbol) } as const;
+        // decision 191: the screen trades the scanner the way the shadow book it admits to will — the entry model (a maker
+        // limit on 1h/4h), the scanner's exit rules with the script-exit protection, its trend gate and the regime's chop gate
+        const policy = backtestPolicy(cfg, s.id, TF, 'shadow');
+        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, ...policy, contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: bookCost.get(symbol) } as const;
         const bt = runBacktest(base);
-        const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps } });
+        const stressed = runBacktest({ ...base, cfg: { ...policy.cfg, slippageBps: inc.screen.stressBps } });
         const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);
         // decision 114: a strategy is also screened on its own exits, so the gate can say which exit mode its evidence prefers
         if (s.scriptType === 'strategy') {
-          const sc = runBacktest({ ...base, exitMode: 'script' });
+          const asScript = backtestPolicy({ ...cfg, scanners: { ...cfg.scanners, [s.id]: { ...(cfg.scanners[s.id] ?? { enabled: false, symbols: null, timeframes: null }), exitMode: 'script' } as any } }, s.id, TF, 'shadow');
+          const sc = runBacktest({ ...base, ...asScript });
           const rs = screenVerdict(sc.trades as any[], sc.trades as any[], d.bars, inc, Date.now());
           r.scriptExit = { trades: rs.trades, avgR: rs.avgR, avgR1: rs.avgR1 ?? 0, avgR2: rs.avgR2 ?? 0, sumR: rs.avgR * rs.trades };
         }

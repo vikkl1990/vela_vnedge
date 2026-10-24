@@ -15,6 +15,7 @@ import { extractEvents } from '../scanners/extractor.ts';
 import type { LoadedScanner, ScannerRegistry } from '../scanners/registry.ts';
 import { applyRules } from '../scanners/rules.ts';
 import { oosSummary, passesRule, walkForward, type OosSummary, type WalkForwardResult } from './walkForward.ts';
+import { backtestPolicy } from '../paper/policy.ts';
 
 const log = logger.scoped('validation');
 
@@ -163,7 +164,8 @@ export class ValidationService {
       // decision 85: validation reads the scanner exactly as the live path does — the same channels, edge, labels and inversion
       const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, sources: sc.sources, edge: sc.edge, labels: sc.labels, invert: sc.invert });
       const wf = cfg.validation.walkForward;
-      const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize, trendGate: sc.trendGate, scannerExit: sc.exit, chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr } : undefined,
+      // decision 191: validated under the account's own policy (entry model, exit rules with script protection, gates)
+      const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, ...backtestPolicy(cfg, s.id, tf, 'account', { executor: this.deps.scanners.executorAttached?.() }), exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
         opts: { trainDays: wf.trainDays, testDays: wf.testDays, stepDays: wf.stepDays, minTrades: cfg.autoTune.minTrades, minProfitFactor: cfg.autoTune.minProfitFactor } });
       this.results.set(key, r);
       this.deps.db.run('INSERT INTO walk_forward(scanner_id, symbol, tf, at, bars, from_ms, to_ms, result) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, from_ms=excluded.from_ms, to_ms=excluded.to_ms, result=excluded.result', s.id, symbol, tf, r.at, r.bars, r.from, r.to, JSON.stringify(r));

@@ -31,6 +31,8 @@ export interface BacktestInput {
   chopGate?: { minEr?: number; maxChop?: number; len?: number };
   /** This scanner's own exit rules, applied over the market's and the fleet's. */
   scannerExit?: ExitOverride;
+  /** Decision 191: `scannerExit` is already the books' effective override (from `backtestPolicy`), script-mode layers included. */
+  scannerExitResolved?: boolean;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
   subBars?: Bar[];
   /**
@@ -40,6 +42,8 @@ export interface BacktestInput {
    * a maker, or not at all. The stop is then measured from the fill, not from the impulse top.
    */
   entry?: { maxSignalBarAtr?: number; pullbackAtr?: number; pullbackBars?: number;
+    /** Decision 191: as the books do, a reversal enters at market; only an entry from flat rests as a limit. */
+    limitWhenFlatOnly?: boolean;
     /**
      * The hybrid entry (decision 133): the signal comes from this timeframe, the execution from the one below. A stop
      * order rests `breakAtr` ATR beyond the signal bar's extreme in the trade's direction and fills on the first lower
@@ -80,7 +84,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
   // a backtest is one market, so its exit rules are resolved once (decision 34)
   // decision 113: under exit mode `script` the script's exits are the exits
-  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit);
+  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit);
   const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: (cfg0.slippageBps ?? 0) + inp.spreadPct * 50 } : cfg0;
   const atr = atrSeries(bars, 14);
   const idxByTime = new Map<number, number>();
@@ -118,6 +122,16 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   let si = 0;   // cursor into `sub`, only ever moves forward
 
   const refuse = (why: string) => { rejected[why] = (rejected[why] ?? 0) + 1; };
+  // decision 191: the books' limit fill rule — `through` needs a price beyond the limit, `touch` the limit itself
+  const through = (cfg.limitFill ?? 'through') === 'through';
+  const limitHit = (side: string, limit: number, b: { high: number; low: number }) => side === 'long' ? (through ? b.low < limit : b.low <= limit) : (through ? b.high > limit : b.high >= limit);
+  /** Whether a market entry at `price` would be admitted (levels, fees, size), without opening it: a reversal asks before it closes the held trade. */
+  const admissible = (price: number, ev: ScanEvent, sigI: number): boolean => {
+    const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
+    if ('error' in lv) return false;
+    if (checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0)) return false;
+    return sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score).qty >= 1;
+  };
   /** Open a position at `price` for signal `ev` raised on bar `sigI`; false when sizing or fees refuse it. */
   const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean): boolean => {
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
@@ -142,9 +156,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     // 0. a resting pullback limit: filled on the first minute that touches it, dropped when its bars run out
     if (pending && !open) {
       if (i > pending.expires) { refuse('no pullback'); pending = null; }
-      else if (pending.kind === 'stop' ? (pending.ev.side === 'long' ? bar.high >= pending.limit : bar.low <= pending.limit) : (pending.ev.side === 'long' ? bar.low <= pending.limit : bar.high >= pending.limit)) {
+      else if (pending.kind === 'stop' ? (pending.ev.side === 'long' ? bar.high >= pending.limit : bar.low <= pending.limit) : limitHit(pending.ev.side!, pending.limit, bar)) {
         const { ev, limit, sigI } = pending; const isStop = pending.kind === 'stop'; pending = null;
-        const touched = (b: { high: number; low: number }) => isStop ? (ev.side === 'long' ? b.high >= limit : b.low <= limit) : (ev.side === 'long' ? b.low <= limit : b.high >= limit);
+        const touched = (b: { high: number; low: number }) => isStop ? (ev.side === 'long' ? b.high >= limit : b.low <= limit) : limitHit(ev.side!, limit, b);
         if (sub) {
           while (si < sub.length && sub[si].time < bar.time) si++;
           let j = si;
@@ -224,8 +238,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         // hold a losing position through an opposite signal when reversalMinR asks us to
         // decision 135: the reversal is acted on after the close and fills there, as the live engine fills it at the quote
         if (!reversalAllowed(open, bar.close, cfg)) { rejected['reversal_below_min'] = (rejected['reversal_below_min'] ?? 0) + 1; continue; }
+        // decision 191: as the books do (decision 77), the replacement must be admissible before the held trade is closed;
+        // one that is not leaves the held trade as it was
+        if (!admissible(bar.close, ev, i)) { refuse('reversal refused: replacement not admissible'); continue; }
         fillExit(open, bar.close, open.qtyOpen, 'reversal', bar.time, cfg, true);
         finish(open);
+        // a reversal enters at market in the books, whatever the entry model; a research variant without
+        // `limitWhenFlatOnly` keeps applying its entry model to reversals, as the earlier studies measured
+        if (!inp.entry || inp.entry.limitWhenFlatOnly) { openAt(bar.close, bar.time, ev, i, false); continue; }
       }
       // decision 134: a market entry fills at the signal bar's close, as the live engine fills at the market when it acts
       // after the close. The event's own price is a reference: a strategy's stop-order fill at the breakout level, read
