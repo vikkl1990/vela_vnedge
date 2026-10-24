@@ -642,7 +642,7 @@ export interface IncubatorPair {
   gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats; marketOutDays?: number; cohort?: string; market?: { symbol: string; trades: number; netR: number; avgR: number } | null; strategyComparison?: { preferred: 'script' | 'both'; reason: string } } | null
   stats: IncubatorStats | null; openShadow: number
   /** Decision 112: what became of the cell's entry signals in the last 14 days — opened, or which gate refused them. */
-  funnel?: { entries: number; opened: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null
+  funnel?: { entries: number; opened: number; pending?: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null
   /** When the cell's last trade in its book was entered. */
   lastTradeAt?: number | null
 }
@@ -820,4 +820,14 @@ export interface TapeAuditView {
   fills: Array<{ book: string; kind: string; n: number; noPrints: number; late?: number; medianBps: number | null; meanBps: number | null; p90Bps: number | null; meanR: number | null }>
   limits: Array<{ book: string; n: number; filled: number; touched: number; through: number; medianVolBeforeThrough: number | null }>
   recent: Array<{ id: number; at: number; book: number; symbol: string; tf: string | null; kind: string; side: string | null; paper_price: number | null; tape_price: number | null; worst_print: number | null; prints: number | null; slip_bps: number | null; slip_r: number | null; extra: Record<string, unknown> | null }>
+}
+
+/** Decision 194: one strategy under several library ids. */
+export interface DuplicateGroup { identity: string; canonical: string; aliases: string[] }
+/** Decision 194: shadow pairs (scanner|symbol|tf) whose entries coincide. */
+export interface OverlapCluster {
+  members: string[]
+  trades: number
+  sharedTrades: number
+  links: Array<{ a: string; b: string; symbol: string; tf: string; shared: number; aTrades: number; bTrades: number; share: number }>
 }

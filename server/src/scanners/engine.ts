@@ -24,7 +24,7 @@ import type { MlService } from '../ml/service.ts';
 import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 import { ScriptHealth } from './health.ts';
-import { BarWatermark } from './watermark.ts';
+import { BarWatermark, MAX_CATCHUP_BARS } from './watermark.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 
 const log = logger.scoped('scanner');
@@ -437,9 +437,12 @@ export class ScannerEngine extends EventEmitter {
       const inputs = sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined;
       const runJob = (b: Bar[], tailBars: number | 'all') => this.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars: b, tailBars, plotTail: rule ? b.length : 400, inputs, timezone: sc.timezone },
         { priority: mode.live && tailBars !== 'all' ? 'live' : 'background' });
-      const res = await runJob(mode.backtest ? btBars : bars, mode.backtest ? 'all' : 3);
+      // decision 193: the live job returns every bar back to the watermark (capped), so a stall's exits are still there to read
+      const win = this.marks.window(key, bars.at(-1)!.time, tf);
+      const res = await runJob(mode.backtest ? btBars : bars, mode.backtest ? 'all' : win.tailBars);
       // a deep backtest run does not see the last bars the way the live run does → separate live run
-      const liveRes = mode.live && btBars !== bars ? await runJob(bars, 3) : res;
+      const liveRes = mode.live && btBars !== bars ? await runJob(bars, win.tailBars) : res;
+      if (mode.live && win.missed > 0) log.warn(`${key}: ${win.missed} bar(s) since the last acted-on bar are beyond the ${MAX_CATCHUP_BARS}-bar catch-up; exits raised there were not read`);
       const info: RunInfo = { at, ms: res.ms + (liveRes === res ? 0 : liveRes.ms), symbol, tf, error: res.ok ? null : res.error ?? 'unknown', barTime: bars.at(-1)!.time };
       this.lastRun.set(key, info);
       this.db.run('INSERT INTO scanner_runs(scanner_id, symbol, tf, at, ms, error, bar_time) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, ms=excluded.ms, error=excluded.error, bar_time=excluded.bar_time', s.id, symbol, tf, at, res.ms, info.error, info.barTime);
@@ -464,7 +467,7 @@ export class ScannerEngine extends EventEmitter {
         // decision 191: the account's own policy — entry model, exit rules with script protection, trend and chop gates
         const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, events, ...backtestPolicy(this.cfgRef(), s.id, tf, 'account', { executor: this.executorAttached?.() }), exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
         this.backtests.set(key, bt);
-        if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? '') })));
+        if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? ''), resolvedAt: t.exitAt ?? null })));
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));
         log.info(`backtest ${key}: ${bt.stats.trades} trades, win ${bt.stats.winRatePct.toFixed(0)}%, pnl ${bt.stats.pnl.toFixed(0)} (${res.ms}ms)`);
       }
@@ -480,6 +483,11 @@ export class ScannerEngine extends EventEmitter {
         const maxAge = cfg.paper.maxSignalAgeSec ?? 0;
         const barAge = PaperEngine.signalAgeSec({ barTime: lastBar.time }, tf, Date.now());
         if (maxAge > 0 && barAge > maxAge) {
+          // decision 193: entries on an old bar are stale, but an exit raised since the watermark still reduces risk
+          const staleDerived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
+          const exits = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: win.since, derived: staleDerived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert })
+            .filter(ev => ev.kind === 'exit');
+          for (const ev of exits) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
           this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: 0, exits: 0, info: 0 }, {}, [], `bar ${barAge.toFixed(0)}s old (max ${maxAge}s): stats only, no live signals`);
           this.marks.advance(key, lastBar.time);
           log.debug(`${key}: last closed bar is ${barAge.toFixed(0)}s old (max ${maxAge}s) — stats only, no live signals`);
@@ -489,7 +497,7 @@ export class ScannerEngine extends EventEmitter {
         const derived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys });
         const drops: Record<string, number> = {};
         // decision 125: read from the bar after the last one this pair acted on, so an exit on a deferred or skipped bar is seen
-        const since = this.marks.since(key, lastBar.time, tf);
+        const since = win.since;
         const events = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: since, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert, drops })
           .filter(ev => { if (ev.kind === 'entry' && ev.barTime < lastBar.time) { drops['entry: superseded bar'] = (drops['entry: superseded bar'] ?? 0) + 1; return false; } return true; });
         if (since < lastBar.time && events.some(ev => ev.barTime < lastBar.time)) log.info(`${key}: ${events.filter(ev => ev.barTime < lastBar.time).length} event(s) from a superseded bar read on this run`);

@@ -26,3 +26,16 @@ test('the watermark persists through its store and never moves backwards', () =>
   const again = new BarWatermark({ load: () => saved, save: () => {} });
   assert.equal(again.since('a:BTCUSD:15m', T0 + 2 * 15 * M, '15m'), T0 + 15 * M);
 });
+
+test('decision 193: the job returns output back to the watermark after a stall, capped, and reports what lies beyond', async () => {
+  const { liveWindow, MAX_CATCHUP_BARS } = await import('./watermark.ts');
+  const H = 3600_000, last = 1_800_000_000_000 - (1_800_000_000_000 % H);
+  assert.deepEqual(liveWindow(undefined, last, '1h'), { since: last, tailBars: 3, missed: 0 }, 'no mark: the last bar');
+  assert.deepEqual(liveWindow(last - H, last, '1h'), { since: last, tailBars: 3, missed: 0 }, 'the usual run: one new bar');
+  const ten = liveWindow(last - 10 * H, last, '1h');
+  assert.deepEqual(ten, { since: last - 9 * H, tailBars: 10, missed: 0 }, 'ten bars behind: nine skipped bars and the new one, all returned');
+  const far = liveWindow(last - (MAX_CATCHUP_BARS + 11) * H, last, '1h');
+  assert.equal(far.tailBars, MAX_CATCHUP_BARS + 1);
+  assert.equal(far.since, last - MAX_CATCHUP_BARS * H);
+  assert.equal(far.missed, 10, 'the bars beyond the cap are reported, not silently skipped');
+});

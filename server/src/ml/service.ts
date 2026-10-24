@@ -47,6 +47,8 @@ export class MlService {
       features TEXT NOT NULL, win INTEGER NOT NULL, r REAL NOT NULL, pnl REAL NOT NULL, exit_reason TEXT NOT NULL, bt INTEGER NOT NULL DEFAULT 1,
       UNIQUE(scanner_id, symbol, tf, at, bt)
     ); CREATE INDEX IF NOT EXISTS idx_ml_scanner ON ml_samples(scanner_id);`);
+    // decision 192: when each sample's outcome became known, so a time split can purge what was still open at its boundary
+    try { db.db.exec('ALTER TABLE ml_samples ADD COLUMN resolved_at INTEGER'); } catch { /* already there */ }
     if (db.kvGet<number>('ml.simulationVersion') !== SIMULATION_VERSION) {
       // Old backtests contain obsolete fill results; preserve recorded live history.
       db.transaction(() => {
@@ -66,16 +68,16 @@ export class MlService {
   features(inp: FeatureInputs): Features { return computeFeatures(inp); }
 
   /** Replace the backtest samples of one scanner×symbol×tf with a fresh set. */
-  replaceBacktestSamples(scannerId: string, symbol: string, tf: string, rows: Array<{ at: number; features: Features; win: boolean; r: number; pnl: number; exitReason: string }>) {
+  replaceBacktestSamples(scannerId: string, symbol: string, tf: string, rows: Array<{ at: number; features: Features; win: boolean; r: number; pnl: number; exitReason: string; resolvedAt?: number | null }>) {
     this.db.transaction(() => {
       this.db.run('DELETE FROM ml_samples WHERE scanner_id=? AND symbol=? AND tf=? AND bt=1', scannerId, symbol, tf);
-      for (const r of rows) this.db.run('INSERT OR IGNORE INTO ml_samples(scanner_id, symbol, tf, at, features, win, r, pnl, exit_reason, bt) VALUES (?,?,?,?,?,?,?,?,?,1)', scannerId, symbol, tf, r.at, JSON.stringify(r.features), r.win ? 1 : 0, r.r, r.pnl, r.exitReason);
+      for (const r of rows) this.db.run('INSERT OR IGNORE INTO ml_samples(scanner_id, symbol, tf, at, features, win, r, pnl, exit_reason, bt, resolved_at) VALUES (?,?,?,?,?,?,?,?,?,1,?)', scannerId, symbol, tf, r.at, JSON.stringify(r.features), r.win ? 1 : 0, r.r, r.pnl, r.exitReason, r.resolvedAt ?? null);
     });
     this.scheduleTrain();
   }
 
-  addLiveSample(scannerId: string, symbol: string, tf: string, at: number, features: Features, win: boolean, r: number, pnl: number, exitReason: string) {
-    this.db.run('INSERT OR IGNORE INTO ml_samples(scanner_id, symbol, tf, at, features, win, r, pnl, exit_reason, bt) VALUES (?,?,?,?,?,?,?,?,?,0)', scannerId, symbol, tf, at, JSON.stringify(features), win ? 1 : 0, r, pnl, exitReason);
+  addLiveSample(scannerId: string, symbol: string, tf: string, at: number, features: Features, win: boolean, r: number, pnl: number, exitReason: string, resolvedAt = Date.now()) {
+    this.db.run('INSERT OR IGNORE INTO ml_samples(scanner_id, symbol, tf, at, features, win, r, pnl, exit_reason, bt, resolved_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)', scannerId, symbol, tf, at, JSON.stringify(features), win ? 1 : 0, r, pnl, exitReason, resolvedAt);
     this.scheduleTrain();
   }
 
@@ -90,7 +92,7 @@ export class MlService {
     const rows = scannerId
       ? this.db.all<any>('SELECT * FROM ml_samples WHERE scanner_id=? ORDER BY at DESC LIMIT ?', scannerId, limit)
       : this.db.all<any>('SELECT * FROM ml_samples ORDER BY at DESC LIMIT ?', limit);
-    return rows.map(r => ({ scannerId: r.scanner_id, symbol: r.symbol, tf: r.tf, at: r.at, features: JSON.parse(r.features), win: r.win, r: r.r, pnl: r.pnl, exitReason: r.exit_reason, bt: Boolean(r.bt) }));
+    return rows.map(r => ({ scannerId: r.scanner_id, symbol: r.symbol, tf: r.tf, at: r.at, features: JSON.parse(r.features), win: r.win, r: r.r, pnl: r.pnl, exitReason: r.exit_reason, bt: Boolean(r.bt), resolvedAt: r.resolved_at ?? null }));
   }
 
   count(): { total: number; live: number } {

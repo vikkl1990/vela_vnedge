@@ -34,6 +34,7 @@ import { tooQuietForTf, evaluate, recordScreen, screenTf, screenVerdict, syncLiv
 import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
 import { backtestPolicy } from '../paper/policy.ts';
+import { aliasMap, duplicateGroups } from '../scanners/identity.ts';
 
 const started = Date.now();
 const cfg = new ConfigStore().get();
@@ -124,6 +125,17 @@ while (sliceArg !== 'none') {
   // IDS=file: screen just these scripts, whatever slice they fall in (a fresh import, judged on every market tonight)
   const only = process.env.IDS ? new Set(fs.readFileSync(process.env.IDS, 'utf8').split(/\s+/).filter(Boolean)) : null;
   let scripts = registry.all().filter(s => s.status === 'ok' && (only ? only.has(s.id) : sliceOf(s.id, inc.screen.slices) === slice));
+  // decision 194: a byte-identical copy of another script, read the same way, is the same strategy under another id —
+  // screen it once, under its canonical id (an explicit IDS list still screens what it names)
+  if (!only) {
+    const withPairs = new Set(store.list().map(p => p.scannerId));
+    const aliases = aliasMap(duplicateGroups(registry.all(), cfg, id => withPairs.has(id)));
+    const copies = scripts.filter(s => aliases.has(s.id));
+    if (copies.length) {
+      scripts = scripts.filter(s => !aliases.has(s.id));
+      out(`${copies.length} script(s) skipped as copies: ${copies.slice(0, 8).map(s => `${s.id} = ${aliases.get(s.id)}`).join(', ')}${copies.length > 8 ? ', …' : ''}`);
+    }
+  }
   if (Number(process.env.LIMIT) > 0) scripts = scripts.slice(0, Number(process.env.LIMIT));
   // decision 108: a slice starts with one more screen for scripts quarantined by a runtime verdict a week or more ago
   // (a timeout, a hang, a runtime gap, memory) — the process workers and the budgets changed under them. A script that

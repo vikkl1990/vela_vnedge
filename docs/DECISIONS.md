@@ -5693,3 +5693,44 @@ backtests and walk-forward results.
 
 **Consequence.** Decision 185's case for the 1h/4h limit was measured with touch fills, which are kinder than the
 books' rule. It is re-measured under `through` before the next change to the entry model.
+
+## 192. The ML calibration is scored on trades it never saw
+
+**Why.** `trainLogReg` fitted the Platt scaling on the holdout's logits and labels, then reported the calibrated Brier
+score, log-loss and reliability on that same holdout: a calibration fit, presented as an out-of-sample measurement. A
+sample also carried only its entry time, so a trade still open at the split could sit in the training block with an
+outcome nobody could have known at that point.
+
+**What.** Three blocks in time: the oldest 80% fit the model, the next 10% fit the calibration, the newest 10% score
+both, raw and calibrated. Each sample now records when its outcome became known (`ml_samples.resolved_at`; the exit for
+backtest trades, the close for live ones), and a sample still open at a block's boundary is purged from that block's fit
+(`walkForward.purged`). The test block is half the old holdout, so its scores are noisier and honest.
+
+## 193. A queued shadow run re-checks its pair, and a stalled run reads every bar back to its watermark
+
+**Why.** The account's engine re-checks a scanner's activation and settings after the worker returns; the shadow runner
+did not, so a pair retired, re-staged or re-configured while its run waited could still place or mirror an entry. And
+every live and shadow job returned the last three bars of output while the watermark (decision 125) promised to read
+every bar after the last one acted on: after a long stall an exit further back had already been dropped by the worker.
+The stale-bar branch advanced the watermark without reading the exits at all.
+
+**What.** After the worker returns, the shadow run re-reads its pair from the store and acts only if the pair is still
+active, the incubator is on, the scanner's settings and patched source are unchanged — on the pair's current stage,
+which decides mirroring (`stats.superseded` counts the dropped runs). `liveWindow` sizes each job's output tail from the
+watermark, up to `MAX_CATCHUP_BARS` (48); a gap beyond that is logged as missing history. On the stale-bar branch the
+entries are still dropped and the exits since the watermark are now handled before it advances.
+
+## 194. One strategy under several ids, and shadow pairs that trade the same moves
+
+**Why.** The VM library held 14 groups of byte-identical scripts under 30 ids (a TradingView mirror beside the original,
+re-imports with suffixes). Each copy was screened and could be admitted on its own, so one strategy's evidence counted
+twice. Separately, different scripts can trade the same moves: two Donchian scanners had 20 shadow trades on the same
+market, timeframe and side within five seconds of each other.
+
+**What.** `scanners/identity.ts`: a strategy's identity is its patched source plus every setting that changes how it is
+read and traded (absent settings count as defaults). Copies are aliases of one canonical id — an enabled scanner first,
+then one with incubator pairs, then the shortest id — and the screen runs only the canonical one. Admitted pairs keep
+their own ids; nothing is migrated or deleted. `incubator/overlap.ts` clusters shadow pairs whose same-side entries land
+within 5 seconds at least 5 times and in half the smaller pair's trades. Both are read-only reports
+(`/api/scanners/duplicates`, `/api/incubator/overlap`) and an "Overlapping evidence" panel on the Incubator page; neither
+judges or retires a pair.

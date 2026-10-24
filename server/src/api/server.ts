@@ -12,6 +12,8 @@ import { positionView } from '../paper/engine.ts';
 import { LibraryService } from '../library/library.ts';
 import { EXTENSIONS } from './extensions.ts';
 import { aggregateMonthly } from '../pine/provider.ts';
+import { duplicateGroups } from '../scanners/identity.ts';
+import { overlapClusters } from '../incubator/overlap.ts';
 
 const log = logger.scoped('api');
 
@@ -392,6 +394,9 @@ export class ApiServer {
     // Fill quality: what the cost assumption was worth against the book actually quoted.
     // incubator: reading is open to every account; deciding needs trade access (default-deny POST)
     this.add('GET', '/api/incubator', () => a.incubatorView());
+    // decision 194: one strategy under several ids, and shadow pairs that trade the same moves
+    this.add('GET', '/api/scanners/duplicates', () => { const withPairs = new Set(a.incubatorStore.list().map(p => p.scannerId)); return duplicateGroups(a.registry.all(), a.config.get(), id => withPairs.has(id)); });
+    this.add('GET', '/api/incubator/overlap', (_r, _s, _p, url) => overlapClusters(a.db, { since: Date.now() - Math.min(180, Math.max(1, Number(url.searchParams.get('days') ?? 30))) * 86_400_000 }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     this.add('GET', '/api/radar', (_r, _s, _p, url) => a.radarView(Math.min(168, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));
     this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));

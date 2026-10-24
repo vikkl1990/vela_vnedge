@@ -65,7 +65,7 @@ export class ShadowRunner {
     if (!this.marketsCache || Date.now() - this.marketsCache.at > 60_000) this.marketsCache = { at: Date.now(), map: this.deps.store.marketsToday() };
     return this.marketsCache.map.get(symbol)?.turnoverUsd ?? null;
   }
-  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, /** Decision 177: entries the account was not offered because the pair had no record yet or the market is thin. */ mirrorHeld: 0, lastBarAt: 0,
+  readonly stats = { runs: 0, skipped: 0, expired: 0, errors: 0, entries: 0, refused: 0, mirrored: 0, /** Decision 193: runs dropped because the pair, its stage or its scanner changed while they queued. */ superseded: 0, /** Decision 177: entries the account was not offered because the pair had no record yet or the market is thin. */ mirrorHeld: 0, lastBarAt: 0,
     /** The last error per scanner, so a script failing on every bar is visible rather than a bare count. */
     lastErrors: {} as Record<string, { error: string; at: number; count: number; symbol: string; tf: string }> };
   /** Decision 112: per shadow pair, what became of its signals — [at, class], newest last. */
@@ -225,10 +225,12 @@ export class ShadowRunner {
     if (keys.length > 60) delete this.stats.lastErrors[keys.sort((a, b) => this.stats.lastErrors[a].at - this.stats.lastErrors[b].at)[0]];
   }
 
-  private async run(r: PairRow, barAt = Date.now(), live = false, seenAt = Date.now()): Promise<void> {
+  private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now()): Promise<void> {
+    let r = rAtStart;
     const s = this.deps.registry.get(r.scannerId);
     if (!s || s.status !== 'ok') return;
     const cfg = this.deps.cfgRef();
+    const scannerCfgAtStart = JSON.stringify(cfg.scanners[s.id] ?? null);
     const bars = this.deps.candles.get(r.symbol, r.tf, { closedOnly: true, limit: cfg.historyBars });
     if (bars.length < 50) return;
     const market = await this.deps.marketInfo(r.symbol);
@@ -237,12 +239,25 @@ export class ShadowRunner {
     const budget = this.budgetMs(cfg, barAt);
     if (budget <= 0) { this.stats.expired++; return; }
     const tPool = Date.now();
+    // decision 193: output back to the watermark (capped), so a stall's exits are still there to read
+    const win = this.marks.window(`${r.scannerId}:${r.symbol}:${r.tf}`, bars.at(-1)!.time, r.tf);
     const res = await this.deps.pool.run(
-      { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: 3, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
+      { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: win.tailBars, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
       { deadlineMs: budget, priority: live ? 'mirror' : 'background' });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (live) this.noteWave(r.tf, barAt, seenAt, tPool, Date.now(), res.ms ?? 0);
     if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
+    // decision 193: the run waited in the queue; the pair may have been retired or re-staged, the scanner re-configured
+    // or its source replaced meanwhile. As the account's engine does, act only if all of that still holds — and on the
+    // pair's current stage, which decides whether the account is offered the event
+    const cur = this.deps.store.get(r.id);
+    const cfgNow = this.deps.cfgRef();
+    if (!cur || !([...ACTIVE_STAGES, 'tracked'] as string[]).includes(cur.stage) || !cfgNow.incubator?.enabled
+        || JSON.stringify(cfgNow.scanners[s.id] ?? null) !== scannerCfgAtStart || this.deps.registry.get(s.id)?.patched !== s.patched) {
+      this.stats.superseded++;
+      return;
+    }
+    r = cur;
     const key = `${r.scannerId}:${r.symbol}:${r.tf}`;
     const prev = this.labels.get(key);
     const current = new Set(res.labels.map(labelKey));
@@ -251,7 +266,7 @@ export class ShadowRunner {
     const lastBar = bars.at(-1)!;
     const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars, mode: 'live', newLabelKeys });
     // decision 125: read from the bar after the last one this pair acted on; entries on a superseded bar are stale and dropped
-    const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: this.marks.since(key, lastBar.time, r.tf), derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert })
+    const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[r.tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, sinceBarTime: win.since, derived, sources: cfg.scanners[s.id]?.sources, edge: cfg.scanners[s.id]?.edge, labels: cfg.scanners[s.id]?.labels, invert: cfg.scanners[s.id]?.invert })
       .filter(ev => !(ev.kind === 'entry' && ev.barTime < lastBar.time));
     this.marks.advance(key, lastBar.time);
     const exitMode = cfg.scanners[s.id]?.exitMode ?? 'both';

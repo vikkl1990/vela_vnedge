@@ -9,15 +9,21 @@ import { FEATURE_NAMES, FEATURE_LABELS, type FeatureName, type Features, feature
 export interface Sample {
   scannerId: string; symbol: string; tf: string; at: number;
   features: Features; win: number; r: number; pnl: number; exitReason: string; bt: boolean;
+  /** Decision 192: when the outcome became known (the trade's exit); a sample still open at a split's boundary is purged from the side before it. */
+  resolvedAt?: number | null;
 }
 
 export interface ReliabilityBucket { lo: number; hi: number; n: number; predicted: number; observed: number }
 
 export interface ModelMetrics {
   holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number;
-  /** Walk-forward split: the model is fitted on the oldest samples and every metric below comes from the newest `holdout` samples. */
-  walkForward: { trainN: number; testN: number; trainTo: number; testFrom: number; testTo: number };
-  /** Brier score of the raw and the Platt-calibrated probabilities on the holdout. */
+  /**
+   * Walk-forward split (decision 192): fitted on the oldest samples, Platt-calibrated on the next block, and every metric
+   * below comes from the newest `testN` samples, which neither step saw. `purged`: samples left out of a fit because
+   * their outcome was not known until after that step's boundary.
+   */
+  walkForward: { trainN: number; testN: number; trainTo: number; testFrom: number; testTo: number; calibrationN?: number; purged?: number };
+  /** Brier score of the raw and the Platt-calibrated probabilities on the test block. */
   brier: number; brierCalibrated: number;
   logLossCalibrated: number;
   /** Reliability (calibration) buckets on the holdout: predicted vs observed win rate, raw and calibrated. */
@@ -70,37 +76,50 @@ export function trainLogReg(samples: Sample[], opts: { epochs?: number; lr?: num
   const X = sorted.map(s => featureVector(s.features));
   const y = sorted.map(s => s.win);
   const d = FEATURE_NAMES.length;
-  const holdout = Math.max(10, Math.floor(n * (opts.holdoutFrac ?? 0.2)));
+  // decision 192: three blocks in time — fit, calibrate, test — so the calibrated scores are measured on samples the
+  // calibration never saw; a sample whose outcome was still unknown at a block's boundary is purged from that block's fit
+  const holdout = Math.max(20, Math.floor(n * (opts.holdoutFrac ?? 0.2)));
   const trainN = n - holdout;
+  const calN = Math.floor(holdout / 2), testStart = trainN + calN;
+  const known = (i: number, boundary: number) => sorted[i].resolvedAt == null || sorted[i].resolvedAt! <= boundary;
+  const fitIdx: number[] = [];
+  for (let i = 0; i < trainN; i++) if (known(i, sorted[trainN].at)) fitIdx.push(i);
+  let purged = trainN - fitIdx.length;
+  if (fitIdx.length < 10) return null;
   const mean = new Array(d).fill(0), std = new Array(d).fill(0);
-  for (let j = 0; j < d; j++) { let s = 0; for (let i = 0; i < trainN; i++) s += X[i][j]; mean[j] = s / trainN; let v = 0; for (let i = 0; i < trainN; i++) v += (X[i][j] - mean[j]) ** 2; std[j] = Math.sqrt(v / trainN) || 1; }
+  const fN = fitIdx.length;
+  for (let j = 0; j < d; j++) { let s = 0; for (const i of fitIdx) s += X[i][j]; mean[j] = s / fN; let v = 0; for (const i of fitIdx) v += (X[i][j] - mean[j]) ** 2; std[j] = Math.sqrt(v / fN) || 1; }
   const Z = X.map(row => row.map((v, j) => (v - mean[j]) / std[j]));
   const w = new Array(d).fill(0); let b = 0;
   const lr = opts.lr ?? 0.05, l2 = opts.l2 ?? 0.01, epochs = opts.epochs ?? 300;
   for (let ep = 0; ep < epochs; ep++) {
     const gw = new Array(d).fill(0); let gb = 0;
-    for (let i = 0; i < trainN; i++) {
+    for (const i of fitIdx) {
       let z = b; for (let j = 0; j < d; j++) z += w[j] * Z[i][j];
       const err = sigmoid(z) - y[i];
       for (let j = 0; j < d; j++) gw[j] += err * Z[i][j];
       gb += err;
     }
-    for (let j = 0; j < d; j++) w[j] -= lr * (gw[j] / trainN + l2 * w[j]);
-    b -= lr * (gb / trainN);
+    for (let j = 0; j < d; j++) w[j] -= lr * (gw[j] / fN + l2 * w[j]);
+    b -= lr * (gb / fN);
   }
-  // walk-forward holdout: the newest 20 % by time, never seen during fitting
+  const logitOf = (i: number) => { let z = b; for (let j = 0; j < d; j++) z += w[j] * Z[i][j]; return z; };
+  // the calibration block: Platt scaling is fitted here, on outcomes known before the test block starts
+  const calLogits: number[] = [], calYs: number[] = [];
+  for (let i = trainN; i < testStart; i++) { if (!known(i, sorted[testStart].at)) { purged++; continue; } calLogits.push(logitOf(i)); calYs.push(y[i]); }
+  // the test block: the newest samples, seen by neither the fit nor the calibration
   const probs: number[] = [], ys: number[] = [], logits: number[] = [];
-  for (let i = trainN; i < n; i++) { let z = b; for (let j = 0; j < d; j++) z += w[j] * Z[i][j]; logits.push(z); probs.push(sigmoid(z)); ys.push(y[i]); }
+  for (let i = testStart; i < n; i++) { const z = logitOf(i); logits.push(z); probs.push(sigmoid(z)); ys.push(y[i]); }
   let correct = 0;
   for (let i = 0; i < probs.length; i++) if ((probs[i] >= 0.5 ? 1 : 0) === ys[i]) correct++;
   const auc = rankAuc(probs, ys);
   const base = ys.reduce((a, v) => a + v, 0) / Math.max(1, ys.length);
   const importance = FEATURE_NAMES.map((f, j) => ({ feature: f, label: FEATURE_LABELS[f], weight: Number(w[j].toFixed(4)) })).sort((a, c) => Math.abs(c.weight) - Math.abs(a.weight));
-  const calibration = fitPlatt(logits, ys);
+  const calibration = calLogits.length >= 5 ? fitPlatt(calLogits, calYs) : { a: 1, b: 0 };
   const calProbs = logits.map(z => sigmoid(calibration.a * z + calibration.b));
   const metrics: ModelMetrics = {
     holdout: probs.length, accuracy: correct / Math.max(1, probs.length), auc, logLoss: logLoss(probs, ys), baseWinRate: base,
-    walkForward: { trainN, testN: probs.length, trainTo: sorted[trainN - 1]?.at ?? 0, testFrom: sorted[trainN]?.at ?? 0, testTo: sorted[n - 1]?.at ?? 0 },
+    walkForward: { trainN: fN, testN: probs.length, trainTo: sorted[trainN - 1]?.at ?? 0, testFrom: sorted[testStart]?.at ?? 0, testTo: sorted[n - 1]?.at ?? 0, calibrationN: calLogits.length, purged },
     brier: brier(probs, ys), brierCalibrated: brier(calProbs, ys), logLossCalibrated: logLoss(calProbs, ys),
     reliability: reliability(probs, ys), reliabilityCalibrated: reliability(calProbs, ys),
   };

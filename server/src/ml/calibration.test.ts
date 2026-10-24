@@ -26,12 +26,13 @@ test('Platt scaling fixes over-confident logits and reliability buckets report p
   assert.equal(rawR.length, 5); assert.equal(rawR.reduce((a, b) => a + b.n, 0), 2000);
 });
 
-test('trainLogReg evaluates on the newest 20% by time, stores calibration, and predict() applies it', () => {
+test('trainLogReg fits on the oldest 80%, calibrates on the next 10% and scores on the newest 10%, and predict() applies it', () => {
   const samples: Sample[] = [];
   for (let i = 0; i < 300; i++) { const score = (i * 37) % 100; const win = score > 60 ? ((i % 10) < 8 ? 1 : 0) : ((i % 10) < 3 ? 1 : 0); samples.push(mk(i, win, score)); }
   const m = trainLogReg(samples)!;
-  assert.equal(m.metrics.walkForward.trainN + m.metrics.walkForward.testN, 300);
-  assert.equal(m.metrics.walkForward.testN, 60);
+  assert.equal(m.metrics.walkForward.trainN + (m.metrics.walkForward.calibrationN ?? 0) + m.metrics.walkForward.testN, 300);
+  assert.equal(m.metrics.walkForward.testN, 30);
+  assert.equal(m.metrics.walkForward.calibrationN, 30);
   assert.ok(m.metrics.walkForward.trainTo < m.metrics.walkForward.testFrom, 'test set is strictly newer than the training set');
   assert.ok(m.calibration && Number.isFinite(m.calibration.a) && Number.isFinite(m.calibration.b));
   assert.equal(m.metrics.reliability.length, 5); assert.equal(m.metrics.reliabilityCalibrated.length, 5);
@@ -66,4 +67,18 @@ test('MlService.score returns calibrated probabilities and feeds the drift monit
   // persisted across restarts
   const ml2 = new MlService(db, () => ({}));
   assert.equal(ml2.drift().n, 40);
+});
+
+test('decision 192: the calibration never sees the test block — flipping the newest labels leaves it unchanged — and open outcomes are purged', () => {
+  const samples: Sample[] = [];
+  for (let i = 0; i < 300; i++) { const score = (i * 37) % 100; const win = score > 60 ? ((i % 10) < 8 ? 1 : 0) : ((i % 10) < 3 ? 1 : 0); samples.push(mk(i, win, score)); }
+  const a = trainLogReg(samples)!;
+  const flipped = samples.map((s, i) => (i >= 270 ? { ...s, win: 1 - s.win } : s));
+  const b = trainLogReg(flipped)!;
+  assert.deepEqual(b.calibration, a.calibration, 'the test labels do not reach the calibration');
+  assert.notEqual(b.metrics.brierCalibrated, a.metrics.brierCalibrated, 'but they are what the calibrated score is measured on');
+  // a training sample whose trade only closed after the calibration block began is left out of the fit
+  const sorted = [...samples].sort((x, y) => x.at - y.at);
+  const late = sorted.map((s, i) => (i === 100 ? { ...s, resolvedAt: sorted[280].at } : { ...s, resolvedAt: s.at }));
+  assert.equal(trainLogReg(late)!.metrics.walkForward.purged, 1);
 });
