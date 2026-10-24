@@ -353,6 +353,13 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   // today's journal (19 Oct): no armed trade stopped out; every stop-out came from a trade that never reached +0.5R.
   // Two answers, measured: a stop to break even once the trade shows +0.25R, and a time stop that closes a trade the
   // trail has not armed after N bars of its own timeframe.
+  // the pasted 4h rule set (24 October): a 1.5R or 2R target alone, a 2–3 bar time stop, break-even at +1R
+  if (want('p-tp1.5')) variants['p-tp1.5'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 1.5, 1.5], tpSplit: [1, 0, 0], trailAfterR: 99, floorAtR: 99 } as any), b, tfMs);
+  if (want('p-tp2')) variants['p-tp2'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 2, 2], tpSplit: [1, 0, 0], trailAfterR: 99, floorAtR: 99 } as any), b, tfMs);
+  if (want('p-stale2')) variants['p-stale2'] = stat(run({ spreadPct }, { staleBars: 2, staleMinR: 0.25 }), b, tfMs);
+  if (want('p-stale3')) variants['p-stale3'] = stat(run({ spreadPct }, { staleBars: 3, staleMinR: 0.25 }), b, tfMs);
+  if (want('p-be1')) variants['p-be1'] = stat(run({ spreadPct }, { floorAtR: 1, floorKeepR: 0, trailAfterR: 99 }), b, tfMs);
+  if (want('p-tp1.5+stale3')) variants['p-tp1.5+stale3'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 1.5, 1.5], tpSplit: [1, 0, 0], trailAfterR: 99, floorAtR: 99, staleBars: 3, staleMinR: 0.25 } as any), b, tfMs);
   if (want('t-be0.25')) variants['t-be0.25'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0 }), b, tfMs);
   if (want('t-be0.25k0.06')) variants['t-be0.25k0.06'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0.06 }), b, tfMs);
   if (want('t-be0.35')) variants['t-be0.35'] = stat(run({ spreadPct }, { floorAtR: 0.35, floorKeepR: 0 }), b, tfMs);

@@ -13,3 +13,19 @@ Four readings of the pasted ICT scripts, each run through the bot's own path (Pi
 
 OPERATOR07 and 09 are in the manifest as `ok`: the nightly screen judges them on every market, and the 4h reservation
 (decision 182) gives a passing 4h cell a slot. Nothing is promoted by hand.
+
+## The pasted 4h exit rules, measured on operator 09 at 4h (six markets, 96 trades, spread paid)
+
+| exits | trades | sum R | R/trade | win | halves |
+|---|---|---|---|---|---|
+| current (trail from +0.5R, TP3 at 6R) | 96 | +4.7 | +0.049 | 73% | +4.7 / 0.0 |
+| target 1.5R, no trail | 93 | −0.1 | −0.001 | 42% | +2.2 / −2.3 |
+| target 2R, no trail | 91 | −5.3 | −0.058 | 33% | +4.5 / −9.9 |
+| break-even at +1R | 83 | +1.1 | +0.013 | 8% | +17.7 / −16.5 |
+| time stop 2 bars under +0.25R | 97 | +6.4 | +0.066 | 57% | +4.2 / +2.3 |
+| time stop 3 bars | 97 | +6.0 | +0.062 | 64% | +5.8 / +0.2 |
+| 1.5R target + 3-bar time stop | 94 | +6.7 | +0.071 | 40% | +5.7 / +1.0 |
+
+Fixed targets and break-even at +1R are worse than the trail; the time stops are within 2R of it over 96 trades —
+noise, and the broad journal (decisions 128, 141) says time stops lose. The scanner's live runner is the bot itself (a
+tracker, decision 139), not a polling script; the polling script's logic is the relaxed reading, which measured flat.
