@@ -8,6 +8,7 @@
     "dev": "node --watch --no-warnings=ExperimentalWarning src/index.ts",
     "start": "node --no-warnings=ExperimentalWarning src/index.ts",
     "backtest": "node --no-warnings=ExperimentalWarning src/cli/backtest.ts",
+    "ictlab": "node --no-warnings=ExperimentalWarning src/cli/ictlab.ts",
     "silent-survey": "node --no-warnings=ExperimentalWarning src/cli/silent-survey.ts",
     "compat": "node --no-warnings=ExperimentalWarning src/cli/compat.ts",
     "verdict": "node --no-warnings=ExperimentalWarning src/cli/verdict.ts",
