@@ -40,7 +40,7 @@ test('decision 187: a long stop is priced at the prints after the first trade th
   assert.equal(s.fills[0].n, 1);
 });
 
-test('decision 187: a market entry waits for prints, and a fill with none in 30 s is recorded as such', () => {
+test('decision 187: a market entry waits for prints, and a fill with none in 2 min is recorded as such', () => {
   const db = new Db(':memory:');
   const eng = fakeEngine();
   const audit = new TapeAudit(db, [{ engine: eng, book: 2 }]);
@@ -53,6 +53,8 @@ test('decision 187: a market entry waits for prints, and a fill with none in 30 
   audit.onTrade(trade('AUSD', 49.9, 3, t0 + 6000));   // a short entry: selling at 49.9 is worse than paper's 50
   (audit as any).tick(t0 + 7000);
   (audit as any).tick(t0 + 31_000);
+  assert.equal(db.all('SELECT * FROM tape_audit').length, 1, 'the print-less fill still waits at 31 s');
+  (audit as any).tick(t0 + 121_000);
   const rows = db.all<any>('SELECT * FROM tape_audit ORDER BY position_id');
   assert.equal(rows.length, 2);
   assert.equal(rows[0].kind, 'market entry');
@@ -96,10 +98,29 @@ test('decision 187: prints that arrive on the tick the grace runs out are writte
   const t0 = 1_800_000_000_000;
   eng.emit('order', { at: t0, positionId: 3, symbol: 'DUSD', side: 'buy', qty: 1, price: 5, reason: 'entry' });
   (audit as any).tick(t0 + 10_000);
-  audit.onTrade(trade('DUSD', 5.01, 1, t0 + 29_000));
-  (audit as any).tick(t0 + 31_000);
-  (audit as any).tick(t0 + 32_000);
+  audit.onTrade(trade('DUSD', 5.01, 1, t0 + 5_000));
+  (audit as any).tick(t0 + 119_500);
+  (audit as any).tick(t0 + 120_000);
+  (audit as any).tick(t0 + 121_000);
   const rows = db.all<any>('SELECT * FROM tape_audit');
   assert.equal(rows.length, 1);
   assert.ok(rows[0].slip_bps > 19 && rows[0].slip_bps < 21);
+});
+
+test('decision 187: a first print more than 10 s after the fill is kept but left out of the slippage averages', () => {
+  const db = new Db(':memory:');
+  const eng = fakeEngine();
+  const audit = new TapeAudit(db, [{ engine: eng, book: 2 }]);
+  const t0 = 1_800_000_000_000;
+  eng.emit('order', { at: t0, positionId: 1, symbol: 'EUSD', side: 'buy', qty: 1, price: 10, reason: 'entry' });
+  eng.emit('order', { at: t0, positionId: 2, symbol: 'FUSD', side: 'buy', qty: 1, price: 10, reason: 'entry' });
+  audit.onTrade(trade('EUSD', 10.01, 1, t0 + 1_000));    // in the window: 10 bps
+  audit.onTrade(trade('FUSD', 10.5, 1, t0 + 60_000));    // a minute later: drift
+  (audit as any).tick(t0 + 61_000);
+  const rows = db.all<any>('SELECT * FROM tape_audit ORDER BY position_id');
+  assert.equal(rows.length, 2);
+  assert.equal(JSON.parse(rows[1].extra).lateSec, 60);
+  const f = audit.summary(0).fills[0];
+  assert.deepEqual([f.n, f.late, f.noPrints], [2, 1, 0]);
+  assert.ok(Math.abs(f.meanBps! - 10) < 1e-6);
 });

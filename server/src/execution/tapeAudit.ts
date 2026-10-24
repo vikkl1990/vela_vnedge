@@ -18,7 +18,9 @@ import type { WsTrade } from '../delta/ws.ts';
 import { logger } from '../log.ts';
 
 const log = logger.scoped('tape-audit');
-const BEFORE_MS = 3000, AFTER_MS = 3000, GRACE_MS = 30_000, KEEP_MS = 15_000;
+// thin alts on Delta India often go minutes without a trade (STRK, PEPE: a median 13–21 s between prints, gaps up to
+// 7 min), so a fill waits up to 2 min for its first print; a price that late is drift, not slippage, and stays out of the averages
+const BEFORE_MS = 3000, AFTER_MS = 3000, GRACE_MS = 120_000, KEEP_MS = 15_000, LATE_MS = 10_000;
 const STOP_REASONS = new Set(['sl', 'trail', 'be']);
 
 type Print = { t: number; p: number; q: number };
@@ -28,7 +30,7 @@ type Limit = { book: number; id: number; symbol: string; tf: string; side: 'long
 
 export interface TapeAuditSummary {
   since: number | null;
-  fills: Array<{ book: string; kind: string; n: number; noPrints: number; medianBps: number | null; meanBps: number | null; p90Bps: number | null; meanR: number | null }>;
+  fills: Array<{ book: string; kind: string; n: number; noPrints: number; late: number; medianBps: number | null; meanBps: number | null; p90Bps: number | null; meanR: number | null }>;
   limits: Array<{ book: string; n: number; filled: number; touched: number; through: number; medianVolBeforeThrough: number | null }>;
   recent: Array<Record<string, unknown>>;
 }
@@ -123,13 +125,14 @@ export class TapeAudit {
     const after = win.length ? win : arr.filter(x => x.t >= from).slice(0, 5);
     if (!after.length) {
       if (!final) return false;
-      this.insert(o, null, null, null, 0, { note: 'no print within 30 s' });
+      this.insert(o, null, null, null, 0, { note: 'no print within 2 min' });
       return true;
     }
     const vol = after.reduce((a, x) => a + x.q, 0) || after.length;
     const vwap = after.reduce((a, x) => a + x.p * (x.q || 1), 0) / vol;
     const worst = sell ? Math.min(...after.map(x => x.p)) : Math.max(...after.map(x => x.p));
-    this.insert(o, vwap, after[0].p, worst, after.length, win.length ? undefined : { note: 'first prints after the window' });
+    const lateSec = win.length ? 0 : Math.round((after[0].t - from) / 1000);
+    this.insert(o, vwap, after[0].p, worst, after.length, win.length ? undefined : { note: `first print ${lateSec} s after`, lateSec });
     return true;
   }
 
@@ -157,11 +160,16 @@ export class TapeAudit {
     const bookName = (b: number) => (b === 0 ? 'account' : 'shadow');
     const q = (xs: number[], p: number) => (xs.length ? xs[Math.min(xs.length - 1, Math.floor(xs.length * p))] : null);
     const groups = new Map<string, any[]>();
+    const lateOf = (r: any) => { try { return (r.extra ? JSON.parse(r.extra).lateSec : 0) ?? 0; } catch { return 0; } };
     for (const r of rows.filter(r => r.kind !== 'resting limit')) { const k = `${r.book}|${r.kind}`; const g = groups.get(k) ?? []; g.push(r); groups.set(k, g); }
-    const fills = [...groups].map(([k, g]) => {
-      const [b, kind] = k.split('|'); const bps = g.map(r => r.slip_bps).filter((x): x is number => typeof x === 'number').sort((a, c) => a - c);
+    const fills = [...groups].map(([k, g0]) => {
+      let g = g0;
+      const [b, kind] = k.split('|');
+      const late = g.filter(r => r.slip_bps !== null && lateOf(r) * 1000 > LATE_MS).length;
+      g = g.filter(r => !(lateOf(r) * 1000 > LATE_MS));   // the averages read only prints within 10 s of the fill
+      const bps = g.map(r => r.slip_bps).filter((x): x is number => typeof x === 'number').sort((a, c) => a - c);
       const rs = g.map(r => r.slip_r).filter((x): x is number => typeof x === 'number');
-      return { book: bookName(Number(b)), kind, n: g.length, noPrints: g.filter(r => r.slip_bps === null).length, medianBps: q(bps, 0.5), meanBps: bps.length ? bps.reduce((a, c) => a + c, 0) / bps.length : null, p90Bps: q(bps, 0.9), meanR: rs.length ? rs.reduce((a, c) => a + c, 0) / rs.length : null };
+      return { book: bookName(Number(b)), kind, n: g.length + late, noPrints: g.filter(r => r.slip_bps === null).length, late, medianBps: q(bps, 0.5), meanBps: bps.length ? bps.reduce((a, c) => a + c, 0) / bps.length : null, p90Bps: q(bps, 0.9), meanR: rs.length ? rs.reduce((a, c) => a + c, 0) / rs.length : null };
     }).sort((a, c) => c.n - a.n);
     const limits = [0, 2].map(b => {
       const g = rows.filter(r => r.kind === 'resting limit' && r.book === b).map(r => { try { return JSON.parse(r.extra ?? '{}'); } catch { return {}; } });

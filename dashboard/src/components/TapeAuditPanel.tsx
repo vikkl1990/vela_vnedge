@@ -30,14 +30,14 @@ export function TapeAuditPanel() {
         <Empty label="No fills audited yet." hint="Each paper fill is compared with the next few seconds of Delta trades; rows appear after the first fill." />
       ) : (
         <>
-          <p className="muted small">Slippage in basis points of price and in R of each trade's stop; positive means the real prints were worse than the paper fill.</p>
+          <p className="muted small">Slippage in basis points of price and in R of each trade's stop; positive means the real prints were worse than the paper fill. Averages use only trades within 10 s of the fill; thin coins often go longer without one.</p>
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>Book</th><th>Fill</th><th className="num">Fills</th><th className="num">No prints</th><th className="num">Median bps</th><th className="num">Mean bps</th><th className="num">p90 bps</th><th className="num">Mean R</th></tr></thead>
+              <thead><tr><th>Book</th><th>Fill</th><th className="num">Fills</th><th className="num" title="No trade on Delta within 2 minutes of the fill">No trade</th><th className="num" title="The first trade came more than 10 s after the fill: kept in the rows, left out of the averages">Late</th><th className="num">Median bps</th><th className="num">Mean bps</th><th className="num">p90 bps</th><th className="num">Mean R</th></tr></thead>
               <tbody>
                 {d.fills.map((f) => (
                   <tr key={f.book + f.kind}>
-                    <td>{f.book}</td><td>{f.kind}</td><td className="num mono">{f.n}</td><td className="num mono">{f.noPrints}</td>
+                    <td>{f.book}</td><td>{f.kind}</td><td className="num mono">{f.n}</td><td className="num mono">{f.noPrints}</td><td className="num mono">{f.late ?? 0}</td>
                     <td className={`num mono ${tone(f.medianBps)}`}>{n1(f.medianBps)}</td><td className={`num mono ${tone(f.meanBps)}`}>{n1(f.meanBps)}</td>
                     <td className="num mono">{n1(f.p90Bps)}</td><td className="num mono">{n1(f.meanR, 3)}</td>
                   </tr>

@@ -813,7 +813,7 @@ export interface RadarView {
 /** Decision 187: the paper fills set beside Delta's real prints. Slippage is positive when the tape was worse than paper. */
 export interface TapeAuditView {
   since: number | null
-  fills: Array<{ book: string; kind: string; n: number; noPrints: number; medianBps: number | null; meanBps: number | null; p90Bps: number | null; meanR: number | null }>
+  fills: Array<{ book: string; kind: string; n: number; noPrints: number; late?: number; medianBps: number | null; meanBps: number | null; p90Bps: number | null; meanR: number | null }>
   limits: Array<{ book: string; n: number; filled: number; touched: number; through: number; medianVolBeforeThrough: number | null }>
   recent: Array<{ id: number; at: number; book: number; symbol: string; tf: string | null; kind: string; side: string | null; paper_price: number | null; tape_price: number | null; worst_print: number | null; prints: number | null; slip_bps: number | null; slip_r: number | null; extra: Record<string, unknown> | null }>
 }
