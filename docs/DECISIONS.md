@@ -5584,3 +5584,27 @@ loser in R, the share that reached +1R), shown on the Incubator page as `W/L` an
 path); the account has no live 4h cells yet, and the reservations and the corrected screen are how it gets them. Exchange
 keys, the demo stage, the production rule for resting orders and the Telegram token remain the operator's. The stall
 rule is left as it is: trail exits come a median 0–7 minutes after the peak, so 45 minutes rarely pass (0–3% of exits).
+
+## 187. The paper's fills against the tape, and the drawdown sizing out of the warning banner
+
+**Why.** The paper engine fills stops at the stop price plus 2 bps and half the spread, market orders at the last price
+with the same costs, and a resting limit as soon as a minute trades through it. None of that has been checked against
+what Delta's book actually printed at those moments, and a demo account cannot answer it: its prices are not the real
+market's. The real `all_trades` stream is already subscribed for every symbol either book holds.
+
+**What.** `execution/tapeAudit.ts` keeps the last 45 s of prints per symbol and listens to both books' fills:
+
+- a stop (`sl`, `trail`, `be`) is priced at the volume-weighted prints in the 3 s after the first print through the stop
+  level (looking back 3 s, since the paper reacts to minute updates), with the worst print kept;
+- any other market fill (entries, reversals, script and manual exits) at the volume-weighted prints in the 3 s after it;
+- a resting limit, from placement to fill or lapse: the volume traded at its own price before the first print through
+  it (the queue a real order at the back would have waited behind), whether price touched and whether it went through.
+
+Rows land in a new `tape_audit` table. Slippage is signed so that positive is worse than paper, in bps and in R of the
+trade's original stop. `GET /api/tape-audit?days=N` summarises by book and fill kind; the Exchange page shows it as
+"Paper fills against the tape". Take-profit limits are not audited: they fill at their level or not at all.
+
+**Banner.** "Position size scaled to 50% after a 19.9% drawdown" was the `risk.ddScale` rule doing its job, shown as a
+warning on every page. It is now a quiet "Size 50%" stat in the top bar with the explanation on hover; the rule itself is
+unchanged. The ticker's "markets unavailable" came from a single failed load during a restart that then waited five
+minutes; the markets query now retries three times and re-polls every 30 s while it is failing.

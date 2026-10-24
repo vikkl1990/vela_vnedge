@@ -4,6 +4,7 @@ import type { LedgerRow } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
 import { BookBadge, ConfirmDialog, Empty, Loading, Panel, Pill, StatusDot, Time } from '../components/ui'
 import { fmtMoney, fmtPrice, fmtUtc } from '../lib/format'
+import { TapeAuditPanel } from '../components/TapeAuditPanel'
 
 /**
  * The exchange side of the book: what the executor believes the exchange holds, the last time it
@@ -72,6 +73,8 @@ export function Exchange() {
           )}
         </Panel>
       </div>
+
+      <TapeAuditPanel />
 
       <Panel title="Start-up recovery" right={<span className="muted small">what the ledger said was in flight, settled against the exchange</span>}>
         {!e.lastRecovery ? (

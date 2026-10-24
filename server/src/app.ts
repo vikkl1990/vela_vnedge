@@ -25,6 +25,7 @@ import { ScannerEngine } from './scanners/engine.ts';
 import { ScannerRegistry } from './scanners/registry.ts';
 import { createExecutor, type ExchangeExecutor } from './execution/testnet.ts';
 import { subscribeRealtime, wireRealtime } from './execution/wiring.ts';
+import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
 import { MarketGate } from './risk/marketGate.ts';
 import { ProfileStore, brokenRun, classifyRun, summarizeKind, type ProfileRow } from './scanners/profile.ts';
@@ -74,6 +75,8 @@ export class App {
   private huntSeenAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
+  /** Decision 187: every paper fill set beside the real prints on the tape. */
+  tapeAudit!: TapeAudit;
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
   readonly ops: OpsService;
@@ -189,6 +192,8 @@ export class App {
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
+    this.tapeAudit = new TapeAudit(this.db, [{ engine: this.paper, book: 0 }, { engine: this.shadow, book: 2 }]);
+    this.tapeAudit.start();
     wireRealtime(this);
     // flow intelligence from public data, once an hour (decision 101)
     this.context = new ContextCollector({ db: this.db, rest: this.rest, symbols: () => [...new Set([...this.resolvedSymbols, ...this.incubator.symbols()])] });

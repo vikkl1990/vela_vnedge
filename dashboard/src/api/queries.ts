@@ -70,7 +70,8 @@ export const useGates = () => useQuery({ queryKey: ['gates'], queryFn: api.gates
 export const useConfig = () => useQuery({ queryKey: qk.config, queryFn: api.config, staleTime: 60_000, retry: 1 })
 export const useConfigDefaults = () => useQuery({ queryKey: ['config', 'defaults'], queryFn: api.configDefaults, staleTime: 3_600_000, retry: 1 })
 export const useMarkets = () =>
-  useQuery({ queryKey: qk.markets, queryFn: api.markets, staleTime: 5 * 60_000, refetchInterval: 5 * 60_000, retry: 1 })
+  // a failed load (a restart, a Delta hiccup) retries every 30 s instead of waiting out the 5-minute refresh
+  useQuery({ queryKey: qk.markets, queryFn: api.markets, staleTime: 5 * 60_000, refetchInterval: q => (q.state.status === 'error' ? 30_000 : 5 * 60_000), retry: 3, retryDelay: n => Math.min(30_000, 2_000 * 2 ** n) })
 export const useScanners = (opts?: Opts<Awaited<ReturnType<typeof api.scanners>>>) =>
   useQuery({ queryKey: qk.scanners, queryFn: api.scanners, staleTime: LIVE_STALE, retry: 1, ...opts })
 /**
@@ -280,6 +281,11 @@ export function useOpsMetricsHistory(hours = 24) {
 /** Decision 174: the on-demand screen queue, polled while something runs. */
 export function useRadar(hours: number) {
   return useQuery({ queryKey: ['radar', hours], queryFn: () => api.radar(hours), refetchInterval: 60_000 })
+}
+
+/** Decision 187: the paper fills against the tape. */
+export function useTapeAudit(days: number) {
+  return useQuery({ queryKey: ['tape-audit', days], queryFn: () => api.tapeAudit(days), refetchInterval: 60_000 })
 }
 
 export function useScreenQueue() {

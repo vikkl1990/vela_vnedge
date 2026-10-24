@@ -301,6 +301,12 @@ export function Layout() {
               <span className="topstat-label">Open</span>
               <span className="mono">{s ? openCount : '–'}</span>
             </span>
+            {risk.data && risk.data.leverageMult !== undefined && risk.data.leverageMult < 1 && (
+              <span className="topstat" title={`New positions are sized at ${Math.round(risk.data.leverageMult * 100)}% while the account is ${risk.data.drawdownPct.toFixed(1)}% below its peak equity. Full size returns once the drawdown recovers below the threshold (risk.ddScale in Settings).`}>
+                <span className="topstat-label">Size</span>
+                <span className="mono">{Math.round(risk.data.leverageMult * 100)}%</span>
+              </span>
+            )}
             <span className="topstat hide-mid" title="Worker queue (queued / busy / size)">
               <span className="topstat-label">Queue</span>
               <span className="mono">{h ? `${h.worker.queued}/${h.worker.busy}/${h.worker.size}` : '–'}</span>
