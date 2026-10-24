@@ -60,11 +60,18 @@ const md: string[] = [];
 
 const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
 const series = new Map<string, Bar[]>();
+// decision 185: a series is kept at the longest length asked for. The signal bars of one timeframe and the exit path of
+// another share a key (15m is both the 15m study's signal series and the 1h/4h exit path): first come, first served
+// left 1h and 4h exits resolved on 15m for only the last 42 days of a 167- or 666-day window, and on the coarse bar
+// before that — optimistic for a trail that ratchets at the bar's close.
+const fetched = new Map<string, number>();
 async function bars(symbol: string, tf: string, n: number): Promise<Bar[]> {
   const k = `${symbol}:${tf}`;
-  if (!series.has(k)) series.set(k, toBars(await rest.recentCandles(symbol, tf, n, TF_SECONDS[tf])));
+  if (!series.has(k) || (fetched.get(k) ?? 0) < n) { series.set(k, toBars(await rest.recentCandles(symbol, tf, n, TF_SECONDS[tf]))); fetched.set(k, n); }
   return series.get(k)!;
 }
+/** The last `n` bars of a series that may hold more (a signal series read from an exit-path fetch). */
+const tail = (b: Bar[], n: number) => (b.length > n ? b.slice(-n) : b);
 const market = new Map<string, ReturnType<typeof marketSpec>>();
 // the market gate's last reading of each book (round-trip cost in %), so the honest variants pay the spread the account pays
 const bookCost = new Map<string, number>();
@@ -99,7 +106,7 @@ for (const s of MARKETS) {
 console.error(`context: BTC bias from ${btcBias.length} 4h bars · funding ${[...fundingSeries.values()].filter(m => m.size).length} markets · ratio ${[...ratioSeries.values()].filter(m => m.size).length} markets`);
 const lastHour = (t: number) => Math.floor(t / H) * H - H;   // the last fully closed hour before t
 const FUND_BAND = 0.005;   // percent per interval: inside the band nobody is crowded
-for (const s of MARKETS) for (const tf of TFS) { const b = await bars(s, tf, BARS[tf]); await bars(s, SUB[tf], Math.min(60_000, Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]))); }
+for (const s of MARKETS) for (const tf of TFS) { const b = tail(await bars(s, tf, BARS[tf]), BARS[tf]); await bars(s, SUB[tf], Math.min(60_000, Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]))); }
 console.error('candles ready');
 
 type Stat = { trades: number; avgR: number; sumR: number; win: number; t1: number; r1: number; t2: number; r2: number; both: boolean; mfe05: number; mfe1: number; mfe2: number; firstBar: number };
@@ -195,7 +202,8 @@ const want = (k: string) => !ONLY || ONLY.has(k);
 interface CellResult { id: string; tf: string; sym: string; variants: Record<string, Stat>; labels: Array<[string, Stat]>; verdict: string; fix: string; repaint?: { prefix: number; changed: number } }
 async function cell(id: string, tf: string, sym: string): Promise<CellResult | null> {
   const s = registry.get(id); if (!s || s.status !== 'ok') return null;
-  const b = await bars(sym, tf, BARS[tf]); const sub = series.get(`${sym}:${SUB[tf]}`); const m = market.get(sym)!;
+  // NOSUB=1 resolves exits on the signal bars alone (no lower-timeframe path): the coarse reading, for comparison
+  const b = tail(await bars(sym, tf, BARS[tf]), BARS[tf]); const sub = process.env.NOSUB ? undefined : series.get(`${sym}:${SUB[tf]}`); const m = market.get(sym)!;
   const sc = cfg.scanners[id] ?? {};
   const res = await pool.run({ scannerId: id, source: s.patched, symbol: sym, tf, tickSize: m.tickSize, bars: b, tailBars: 'all', plotTail: b.length, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
   if (!res.ok) { md.push(`- ${id} · ${sym} ${tf}: **did not run** — ${res.error}`); return null; }
