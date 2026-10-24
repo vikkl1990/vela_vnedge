@@ -345,15 +345,16 @@ export class PaperEngine extends EventEmitter {
     const le = cfg.limitEntry, tfMs = (TF_SECONDS[ctx.tf] ?? 0) * 1000;
     if (le?.enabled && !replacing && le.tfs.includes(ctx.tf) && le.books.includes(this.book === 0 ? 'account' : 'shadow') && (ctx.atr ?? 0) > 0 && tfMs > 0 && (this.limitEntryAllowed?.() ?? true)) {
       const tick = ctx.market.tickSize > 0 ? ctx.market.tickSize : 0;
-      const raw = ev.side === 'long' ? reference - le.atr * ctx.atr! : reference + le.atr * ctx.atr!;
+      const off = le.atrByTf?.[ctx.tf] ?? le.atr;
+      const raw = ev.side === 'long' ? reference - off * ctx.atr! : reference + off * ctx.atr!;
       const limitPrice = tick ? Math.round(raw / tick) * tick : raw;
       const id = this.nextId();
       const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult,
         limit: { price: limitPrice, expiresAt: ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
       this.pending.set(id, pe);
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, limitPrice, pe.at, pe.signalId, JSON.stringify({ limitEntry: pe }), id);
-      log.info(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${le.atr} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
-      return { action: 'pending', reason: `resting limit at ${limitPrice}, ${le.atr} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
+      log.info(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
+      return { action: 'pending', reason: `resting limit at ${limitPrice}, ${off} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
     }
     if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the

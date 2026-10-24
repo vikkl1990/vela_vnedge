@@ -5546,3 +5546,16 @@ majors' evidence behind the 4h reservation (182) does not hold: majors lose at 1
 and at 4h (−137.1R, −0.033, both halves); with the limit entry, 4h majors are flat (−3.0R, halves +50.9 / −53.7). Alts
 pay at both (1h +0.119R a trade, 4h +0.082, both halves). The reserved majors pairs are judged by the shadow book like
 any other; the mirror floor keeps the account out of them until they have a record.
+
+**The offset, measured fairly (spread paid in every row).** Fleet's 15 scanners × six markets, full 15m exit path
+(`_research/entry-fair-20261024/`):
+
+| | market | limit at the signal price | 0.1 ATR back | 0.2 ATR back | 0.3 ATR back |
+|---|---|---|---|---|---|
+| 1h | +88.7R | +145.2R | **+185.5R** (halves +102.7 / +82.3) | +163.1R | +170.4R |
+| 4h | −73.9R | **+70.9R** (halves +99.1 / −28.0) | +64.7R | +92.8R (halves +90.7 / +2.2) | +62.9R |
+
+Against the limit at the signal price, cell by cell: at 1h, 0.1 ATR back is better in 50 cells and worse in 30 (11 of
+15 scanners); 0.2 and 0.3 lose breadth. At 4h nothing beats the signal price on breadth (0.1: 39 better / 44 worse;
+0.2: 46 / 36 but 9 of 15 scanners and a second half of +2.2R; 0.3: 40 / 44). `limitEntry.atrByTf` `{ '1h': 0.1 }`;
+4h stays at the signal price.

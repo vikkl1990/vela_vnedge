@@ -11,7 +11,7 @@ function setup(tf = '4h', over: Partial<AppConfig['paper']> = {}) {
   Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0.05, makerFeeRatePct: 0.02, liquidation: false, latencyMs: 0, minRiskFeeRatio: 0, limitFill: 'through', limitEntry: { enabled: true, tfs: ['4h'], atr: 0.3, bars: 2, books: ['account', 'shadow'] } }, over);
   const engine = new PaperEngine(db, () => cfg);
   const at = Date.UTC(2026, 9, 24, 8, 0, 1);
-  const enter = (side: 'long' | 'short' = 'long') => engine.onEntry({ kind: 'entry', side, price: 100, tp: [], label: 'entry', message: '', source: 'alert', barTime: at - 4 * H, barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'ETHUSD', tf, market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at, signalId: null, exitMode: 'both', atr: 2 } as any);
+  const enter = (side: 'long' | 'short' = 'long') => engine.onEntry({ kind: 'entry', side, price: 100, tp: [], label: 'entry', message: '', source: 'alert', barTime: at - ({ '15m': H / 4, '1h': H, '4h': 4 * H } as Record<string, number>)[tf], barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'ETHUSD', tf, market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at, signalId: null, exitMode: 'both', atr: 2 } as any);
   return { db, cfg, engine, at, enter };
 }
 
@@ -49,6 +49,10 @@ test('decision 185: a resting limit survives a restart; 15m entries and executor
   again.onBar('ETHUSD', { time: a.at + 60_000, high: 100, low: 99.3, close: 99.5 }, a.at + 2 * 60_000);
   assert.equal(again.openPositions().length, 1, 'and fills after the restart');
 
+  const h = setup('1h', { limitEntry: { enabled: true, tfs: ['1h', '4h'], atr: 0, atrByTf: { '1h': 0.1 }, bars: 2, books: ['account', 'shadow'] } } as any);
+  assert.match(h.enter('long').reason ?? '', /resting limit at 99.8, 0.1 ATR back/, 'the 1h offset from atrByTf');
+  const f = setup('4h', { limitEntry: { enabled: true, tfs: ['1h', '4h'], atr: 0, atrByTf: { '1h': 0.1 }, bars: 2, books: ['account', 'shadow'] } } as any);
+  assert.match(f.enter('long').reason ?? '', /resting limit at 100, 0 ATR back/, '4h at the signal price');
   const b = setup('15m');
   assert.notEqual(b.enter('long').action, 'pending', '15m is not in limitEntry.tfs: the market entry');
   const c = setup();

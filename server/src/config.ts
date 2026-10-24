@@ -243,7 +243,9 @@ export interface PaperConfig {
    * the signal price against the market entry, 1h +133.4R vs +77.5R and 4h +66.3R vs −71.7R. Paper only while an
    * exchange executor is attached (its entries are market orders).
    */
-  limitEntry?: { enabled: boolean; tfs: string[]; atr: number; bars: number; books: Array<'account' | 'shadow'> };
+  limitEntry?: { enabled: boolean; tfs: string[]; atr: number; bars: number; books: Array<'account' | 'shadow'>;
+    /** The offset per timeframe, over `atr`. Measured with the spread paid: 1h 0.1 ATR back +185.5R against +145.2R at the signal price (50 cells better, 30 worse); 4h nothing beats the signal price on breadth. */
+    atrByTf?: Record<string, number> };
   /** Book-depth assumption: USD notional that moves the price 1 bp; market fills add notional / depthUsdPerBp bps of slippage (0 = fixed slippageBps only). */
   depthUsdPerBp: number;
   /** Tape mode: a signal's entry fills at the first print after signal time + latencyMs (candles mode fills immediately). */
@@ -628,7 +630,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     maxOpenPositions: 20,
     fillSource: 'candles',
     limitFill: 'through',
-    limitEntry: { enabled: true, tfs: ['1h', '4h'], atr: 0, bars: 2, books: ['account', 'shadow'] },
+    limitEntry: { enabled: true, tfs: ['1h', '4h'], atr: 0, atrByTf: { '1h': 0.1 }, bars: 2, books: ['account', 'shadow'] },
     depthUsdPerBp: 0,
     latencyMs: 1500,
     tapeFallbackMs: 5000,
