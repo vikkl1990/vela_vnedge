@@ -1596,3 +1596,9 @@ body { overflow-x: clip; }
 .radar-down { background: var(--loss); }
 .radar-line { font-size: 11px; white-space: nowrap; }
 .radar-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; align-items: center; }
+
+/* Research filters wrap independently of the dense evidence tables. */
+.incubator-filters, .incubator-paging { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.incubator-filters label { display: grid; gap: 6px; font-size: 12px; flex: 1 1 180px; }
+.incubator-filters .input { width: 100%; min-width: 0; }
+.incubator-paging { align-items: center; margin-top: 12px; }
