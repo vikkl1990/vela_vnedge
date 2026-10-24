@@ -381,6 +381,11 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   if (want('q-stall1bar')) variants['q-stall1bar'] = stat(run({ spreadPct }, { trailStall: { minutes: (TF_SECONDS[tf] ?? 900) / 60, factor: 0.6 } }), b, tfMs);
   if (want('q-nostall')) variants['q-nostall'] = stat(run({ spreadPct }, { trailStall: { minutes: 0, factor: 1 } }), b, tfMs);
   for (const n of [3, 6]) if (want(`q-stale${n}`)) variants[`q-stale${n}`] = stat(run({ spreadPct }, { staleBars: n, staleMinR: 0.25 }), b, tfMs);
+  // the partial-and-target pairs proposed on 24 October: a larger partial early, the rest to +3R; or one closer target
+  if (want('q-part50@0.8+tp3')) variants['q-part50@0.8+tp3'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [0.8, 2, 3], tpSplit: [0.5, 0, 0.5] } as any), b, tfMs);
+  if (want('q-part40@1+tp3')) variants['q-part40@1+tp3'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1, 2, 3], tpSplit: [0.4, 0, 0.6] } as any), b, tfMs);
+  if (want('q-tp3')) variants['q-tp3'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [2, 2.5, 3], tpSplit: [0, 0, 1] } as any), b, tfMs);
+  if (want('q-tp2.5')) variants['q-tp2.5'] = stat(run({ spreadPct }, { scriptTargets: 'ignore', fallbackRR: [1.5, 2, 2.5], tpSplit: [0, 0, 1] } as any), b, tfMs);
   if (want('t-be0.25')) variants['t-be0.25'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0 }), b, tfMs);
   if (want('t-be0.25k0.06')) variants['t-be0.25k0.06'] = stat(run({ spreadPct }, { floorAtR: 0.25, floorKeepR: 0.06 }), b, tfMs);
   if (want('t-be0.35')) variants['t-be0.35'] = stat(run({ spreadPct }, { floorAtR: 0.35, floorKeepR: 0 }), b, tfMs);
