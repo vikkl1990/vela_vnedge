@@ -448,7 +448,7 @@ test('decision 112: a cost-starved live cell is proposed for demotion; one that 
   sig('ETHUSD', now - 2 * DAY + 60_000, 'opened'); // its own bar: the signals table keys on bar, side and label
   sig('BTCUSD', now - 20 * DAY, 'opened'); // outside the window
   const f = store.signalFunnel('s1', 'BTCUSD', '15m', now - 14 * DAY);
-  assert.deepEqual(f, { entries: 6, opened: 0, regime: 1, cost: 5, market: 0, quote: 0, other: 0, lastOpenAt: null });
+  assert.deepEqual(f, { entries: 6, opened: 0, pending: 0, regime: 1, cost: 5, market: 0, quote: 0, other: 0, lastOpenAt: null });
   const rep = evaluate(store, cfg, now);
   assert.deepEqual(rep.demoteProposed, ['s1 BTCUSD 15m']);
   assert.match(store.find('s1', 'BTCUSD', '15m')!.gate?.reasons?.[0] ?? '', /cost-starved: 5 of 6 signals refused by the cost rule and none opened in 14 days/);

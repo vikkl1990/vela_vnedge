@@ -124,3 +124,59 @@ test('decision 187: a first print more than 10 s after the fill is kept but left
   assert.deepEqual([f.n, f.late, f.noPrints], [2, 1, 0]);
   assert.ok(Math.abs(f.meanBps! - 10) < 1e-6);
 });
+
+test('decision 190: a limit placed and filled between two ticks is still recorded as a resting limit, with its exact placement', () => {
+  const db = new Db(':memory:');
+  const eng = fakeEngine();
+  const audit = new TapeAudit(db, [{ engine: eng, book: 0 }]);
+  const t0 = 1_800_000_000_000;
+  const pe = { id: 11, symbol: 'GUSD', tf: '1h', side: 'long', at: t0, market: { tickSize: 0.01 }, limit: { price: 20, expiresAt: t0 + 7_200_000 } };
+  eng.emit('pending', { type: 'placed', entry: pe });
+  audit.onTrade(trade('GUSD', 19.99, 2, t0 + 500));
+  eng.emit('order', { at: t0 + 600, positionId: 11, symbol: 'GUSD', side: 'buy', qty: 1, price: 20, reason: 'entry' });
+  const rows = db.all<any>('SELECT * FROM tape_audit');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, 'resting limit');
+  const x = JSON.parse(rows[0].extra);
+  assert.deepEqual([x.outcome, x.placedAt, x.expiresAt, x.throughAt], ['filled', t0, t0 + 7_200_000, t0 + 500]);
+  const lc = db.get<any>('SELECT * FROM limit_lifecycle WHERE position_id=11');
+  assert.deepEqual([lc.outcome, lc.placed_at, lc.through_at, lc.ended_at], ['filled', t0, t0 + 500, t0 + 600]);
+});
+
+test('decision 190: an unfinished limit resumes after a restart and is closed by its cancel event, marked as recovered', () => {
+  const db = new Db(':memory:');
+  const t0 = 1_800_000_000_000;
+  const first = fakeEngine();
+  new TapeAudit(db, [{ engine: first, book: 2 }]);
+  first.emit('pending', { type: 'placed', entry: { id: 12, symbol: 'HUSD', tf: '4h', side: 'short', at: t0, market: { tickSize: 0.1 }, limit: { price: 50, expiresAt: t0 + 28_800_000 } } });
+  const second = fakeEngine();
+  second.pending = [{ id: 12, symbol: 'HUSD', tf: '4h', side: 'short', at: t0, market: { tickSize: 0.1 }, limit: { price: 50, expiresAt: t0 + 28_800_000 } }];
+  new TapeAudit(db, [{ engine: second, book: 2 }]);
+  second.emit('pending', { type: 'cancelled', id: 12, reason: 'no fill: price did not come back' });
+  const x = JSON.parse(db.get<any>('SELECT extra FROM tape_audit').extra);
+  assert.deepEqual([x.outcome, x.recovered, x.placedAt], ['cancelled', true, t0]);
+  assert.equal(db.get<any>('SELECT restarts FROM limit_lifecycle WHERE position_id=12').restarts, 1);
+});
+
+test('decision 190: as wired, the print that fills a tape limit is counted as the limit\'s through', async () => {
+  const { EventEmitter: EE } = await import('node:events');
+  const { DEFAULT_CONFIG } = await import('../config.ts');
+  const { PaperEngine } = await import('../paper/engine.ts');
+  const { wireRealtime } = await import('./wiring.ts');
+  const db = new Db(':memory:');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0.05, makerFeeRatePct: 0.02, liquidation: false, latencyMs: 0, minRiskFeeRatio: 0, fillSource: 'tape', limitFill: 'through', limitEntry: { enabled: true, tfs: ['4h'], atr: 0.3, bars: 2, books: ['account', 'shadow'] } });
+  const paper = new PaperEngine(db, () => cfg);
+  const shadow = new PaperEngine(db, () => cfg, { book: 2 });
+  const audit = new TapeAudit(db, [{ engine: paper, book: 0 }, { engine: shadow, book: 2 }]);
+  const feed = new EE();
+  wireRealtime({ feed, paper, shadow, tapeAudit: audit, marks: { onWsMark() {}, onWsFunding() {}, dueFunding: () => [], executable: () => null, spreadPct: () => null }, risk: { tick() {} } } as any);
+  const at = Date.now() - 1000;
+  const d = paper.onEntry({ kind: 'entry', side: 'long', price: 100, tp: [], label: 'entry', message: '', source: 'alert', barTime: at - 4 * 3600_000, barIndex: 0 } as any,
+    { scannerId: 's', scannerName: 's', symbol: 'ETHUSD', tf: '4h', market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at, signalId: null, exitMode: 'both', atr: 2 } as any);
+  assert.equal(d.action, 'pending');
+  feed.emit('trade', { symbol: 'ETHUSD', price: 99.3, qty: 1, timeMs: at + 500, aggressor: 'sell' });
+  assert.equal(paper.openPositions().length, 1, 'the print filled the limit');
+  const x = JSON.parse(db.get<any>("SELECT extra FROM tape_audit WHERE kind='resting limit'").extra);
+  assert.deepEqual([x.filled, x.through, x.throughAt], [true, true, at + 500]);
+});

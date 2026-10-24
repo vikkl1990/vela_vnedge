@@ -18,7 +18,7 @@ import { DeltaRest } from './delta/rest.ts';
 import { DeltaFeed, type WsTicker } from './delta/ws.ts';
 import { logger } from './log.ts';
 import { MarketStructureTrail, type StructureLevel } from './paper/luxExits.ts';
-import { configFingerprint } from './paper/fingerprint.ts';
+import { configFingerprint, sourceHash } from './paper/fingerprint.ts';
 import { PaperEngine } from './paper/engine.ts';
 import { PinePool } from './pine/pool.ts';
 import { ScannerEngine } from './scanners/engine.ts';
@@ -120,6 +120,7 @@ export class App {
     };
     this.paper.scannerExit = protectedExit;
     this.shadow.scannerExit = protectedExit;
+    this.paper.sourceHashFor = this.shadow.sourceHashFor = (sid: string) => this.sourceHashFor(sid);
     // the same trend both books and the backtest use: closes of the position's own timeframe
     const trendFor = (symbol: string, tf: string) => {
       const len = cfg().paper.trendExit?.emaLen ?? 20;
@@ -633,7 +634,7 @@ export class App {
     const live = learnBook(liveAll);
     // the book under the settings that are live now (decision 90): the only part of the journal a change today can be judged on
     const fpCache = new Map<string, string>();
-    const fpFor = (sid: string, tf: string) => { const k = `${sid}|${tf}`; let v = fpCache.get(k); if (!v) { v = configFingerprint(this.config.get(), sid, tf).fp; fpCache.set(k, v); } return v; };
+    const fpFor = (sid: string, tf: string) => { const k = `${sid}|${tf}`; let v = fpCache.get(k); if (!v) { v = configFingerprint(this.config.get(), sid, tf, { source: this.sourceHashFor(sid), book: this.paper.book }).fp; fpCache.set(k, v); } return v; };
     const current = learnBook(liveAll.filter(t => t.configFp && t.configFp === fpFor(t.scannerId, t.tf)));
     const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => (t.exitAt ?? 0) >= since).map(toLearn(this.shadow.book)));
     this.enricher.flush();
@@ -731,6 +732,17 @@ export class App {
    * `hours` produced (signals as the account saw them, entries and stops in both books, net R) in `bins` time slices,
    * and the one refusal that explains a quiet cell. The page draws it as a grid.
    */
+  private srcHashCache = new Map<string, { src: string; hash: string | null }>();
+  /** Decision 190: the hash of a scanner's patched source, cached until the source changes. */
+  sourceHashFor(sid: string): string | null {
+    const src = this.registry.get(sid)?.patched ?? '';
+    const c = this.srcHashCache.get(sid);
+    if (c && c.src === src) return c.hash;
+    const hash = sourceHash(src);
+    this.srcHashCache.set(sid, { src, hash });
+    return hash;
+  }
+
   radarView(hours = 24, bins = 6) {
     const cfg = this.config.get();
     const now = Date.now(), since = now - hours * 3600_000, binMs = (hours * 3600_000) / bins;

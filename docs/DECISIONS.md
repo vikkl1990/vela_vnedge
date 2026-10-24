@@ -5634,3 +5634,39 @@ draft of this entry said only thin coins were affected; that was wrong.)
 trade stream are unchanged: each trade carries its own time and is compared with the placement. This matches the backtest
 and `diagnose`, which start a limit's life at the signal bar's close. Paper limit fills before this change can't be
 counted after the fact (a filled position keeps no placement time); the tape audit records each one from here on.
+
+## 190. The 24 October audit: the paper engine, the tape audit, the fingerprint, the shadow funnel, the journal
+
+**Why.** An outside audit of the code and the journal (24 October) reproduced bugs the suite did not cover. Each was
+checked against the code before fixing; each fix has a test that fails on the old code.
+
+**What.**
+
+- **A limit fill keeps the scanner's own rules.** `fillLimit` and `fillPending` resolved the stop and exit policy from the
+  global paper settings; placement used the scanner's (`exitConfigFor` with `scannerExit`). A scanner with
+  `fallbackAtrSl: 3` filled at 99.4 got a 96.4 stop instead of 93.4. Both now resolve the scanner's and the market's
+  settings, as current at the fill, which is how an open position already re-reads them.
+- **Expiry is part of the fill.** A lapsed limit could fill on a candle that arrived before the housekeeping tick. The
+  candle path now requires the minute to begin inside the order's life; `fillLimit` refuses an event at or after
+  `expiresAt` and a print received more than 3 minutes after it happened (`LIMIT_LATE_MS`).
+- **A restart keeps a trade's excursion.** `rowToPosition` read `peakR` from the JSON blob and dropped `peak_at`,
+  `worst_r`, `worst_at`; the next save wrote them back as NULL. It now reads the columns, and the peak tracker is seeded
+  so a restart does not re-stamp an old peak as new.
+- **The tape audit sees each print before the books.** The print that filled a tape limit used to reach the audit after
+  the fill had closed the limit's record. The engine now announces a limit the moment it is placed (`pending` event,
+  `placed`), so a limit placed and filled between two polls is no longer classed as a market entry. A new
+  `limit_lifecycle` table records each limit's placement, expiry, first touch, first through, end, outcome and reason as
+  they happen; a restart resumes unfinished ones (marked `recovered`, counting restarts). Market-fill windows of a few
+  seconds are still held in memory and a restart loses the ones in flight.
+- **The fingerprint covers the whole strategy.** It hashed a hand-picked list that left out the limit entry, fees, margin
+  sizing, trail steps, stall, structure trail and the drawdown size rule. It now hashes every `paper` and `risk`
+  setting, the scanner's settings, the hash of its patched Pine source, the book and `SIM_VERSION` (190: the change in
+  fill mechanics from decisions 189 and 190 that no setting shows). Each fingerprint's full settings are stored once in
+  `config_fingerprints`. Every trade opened from this deploy on carries a new fingerprint, which is the cutoff between
+  the old fill rules and the new.
+- **A resting order is pending, not opened.** The shadow and account signal funnels counted `pending` as `opened`, which
+  could clear a cost-starved pair or satisfy "opened since demotion" with a limit that later lapsed. `pending` is now its
+  own count; a shadow limit is rewritten to `opened` when it fills and `other` when it lapses or is cancelled.
+- **The journal filters on the server.** The Trades page fetched the newest 300 and filtered the exit reason in the
+  browser, so older matches were missing and the totals covered only the page. `GET /api/trades/page` applies every
+  filter first and returns the count and totals of all matches; the page has Newer/Older paging.

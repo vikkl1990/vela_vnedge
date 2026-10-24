@@ -28,10 +28,12 @@ const toPair = (r: any): PairRow => ({
   screen: r.screen ? JSON.parse(r.screen) : null, gate: r.gate ? JSON.parse(r.gate) : null, note: r.note,
 });
 
-export interface SignalFunnel { entries: number; opened: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
+/** Decision 190: `pending` is an order resting or waiting to fill; it is not an opened trade until it fills, and a lapsed one counts as `other`. */
+export interface SignalFunnel { entries: number; opened: number; pending: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
 /** The gate an entry signal's recorded action names (decision 112); the same words the Signals page shows. */
-export function funnelClass(action: string): 'opened' | 'regime' | 'cost' | 'market' | 'quote' | 'other' {
-  if (action === 'opened' || action === 'reversed' || action.startsWith('pending')) return 'opened';
+export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | 'cost' | 'market' | 'quote' | 'other' {
+  if (action === 'opened' || action === 'reversed') return 'opened';
+  if (action.startsWith('pending')) return 'pending';
   if (action.startsWith('rejected:risk regime')) return 'regime';
   if (action.startsWith('rejected:stop too tight')) return 'cost';
   if (action.startsWith('rejected:risk market')) return 'market';
@@ -55,7 +57,7 @@ export class IncubatorStore {
    */
   signalFunnel(scannerId: string, symbol: string, tf: string, since: number): SignalFunnel {
     const rows = this.db.all<{ action: string; at: number }>("SELECT action, at FROM signals WHERE kind='entry' AND scanner_id=? AND symbol=? AND tf=? AND at>=?", scannerId, symbol, tf, since);
-    const f: SignalFunnel = { entries: 0, opened: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
+    const f: SignalFunnel = { entries: 0, opened: 0, pending: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
     for (const r of rows) { f.entries++; const k = funnelClass(r.action); f[k]++; if (k === 'opened') f.lastOpenAt = Math.max(f.lastOpenAt ?? 0, r.at); }
     return f;
   }

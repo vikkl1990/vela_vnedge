@@ -25,7 +25,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery, MlSnapshot,
+  TradeQuery, TradePage, MlSnapshot,
   MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
   LibraryDetail,
   LibraryList, ScreenJob, ScreenQueueView, RadarView, TapeAuditView } from './types'
@@ -166,6 +166,7 @@ export const api = {
   closePosition: (id: number) => post<unknown>(`/positions/${id}/close`),
   closeAll: () => post<unknown>('/paper/close-all'),
   trades: (q: TradeQuery = {}) => get<Trade[]>(`/trades${qs(q)}`),
+  tradesPage: (q: TradeQuery = {}) => get<TradePage>(`/trades/page${qs(q)}`),
   positionPath: (id: number) => get<{ position: PathLevels; path: PathPoint[] }>(`/positions/${id}/path`),
   orders: (limit = 200) => get<Order[]>(`/orders${qs({ limit })}`),
   stats: () => get<Stats>('/stats'),

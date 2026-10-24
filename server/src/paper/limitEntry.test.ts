@@ -69,3 +69,35 @@ test('decision 189: the minute the limit was placed in cannot fill it — its lo
   engine.onBar('ETHUSD', { time: placingMinute + 60_000, high: 99.9, low: 99.3, close: 99.5 }, placingMinute + 2 * 60_000);
   assert.equal(engine.openPositions().length, 1, 'a later minute through the limit fills it');
 });
+
+test('decision 190: a limit fill keeps the scanner\'s own stop rule (fallbackAtrSl 3 → stop 3 ATR under the fill)', () => {
+  const { engine, at, enter } = setup();
+  engine.scannerExit = () => ({ fallbackAtrSl: 3 });
+  const d = enter('long');
+  assert.equal(d.action, 'pending');
+  engine.onBar('ETHUSD', { time: at + 60_000, high: 99.9, low: 99.3, close: 99.5 }, at + 2 * 60_000);
+  const [p] = engine.openPositions();
+  assert.ok(p, 'filled');
+  assert.ok(Math.abs((p.slOriginal ?? 0) - (99.4 - 3 * 2)) < 1e-6, `scanner stop 93.4, got ${p.slOriginal}`);
+});
+
+test('decision 190: a lapsed limit cannot fill, even before housekeeping runs, and a fill arriving minutes late is refused', () => {
+  const { engine, at, enter } = setup();
+  enter('long');
+  const expires = engine.pendingEntries()[0].limit!.expiresAt;
+  engine.onBar('ETHUSD', { time: expires + 1000, high: 99.9, low: 99.0, close: 99.5 }, expires + 61_000);
+  assert.equal(engine.openPositions().length, 0, 'a minute that began after expiry cannot fill');
+  const late = setup();
+  late.enter('long');
+  late.engine.onBar('ETHUSD', { time: late.at + 60_000, high: 99.9, low: 99.0, close: 99.5 }, late.at + 60_000 + 4 * 60_000);
+  assert.equal(late.engine.openPositions().length, 0, 'a candle received 4 min after its minute began is history, not a fill');
+  // the trade stream: a print through the limit that reaches the engine 4 minutes after it happened is refused
+  const tape = setup('4h', { fillSource: 'tape' } as any);
+  tape.enter('long');
+  tape.engine.onTrade('ETHUSD', 99.3, 1, tape.at + 60_000, tape.at + 60_000 + 4 * 60_000);
+  assert.equal(tape.engine.openPositions().length, 0, 'a print delivered 4 min late cannot fill');
+  const fresh = setup('4h', { fillSource: 'tape' } as any);
+  fresh.enter('long');
+  fresh.engine.onTrade('ETHUSD', 99.3, 1, fresh.at + 60_000, fresh.at + 61_000);
+  assert.equal(fresh.engine.openPositions().length, 1, 'the same print on time fills');
+});

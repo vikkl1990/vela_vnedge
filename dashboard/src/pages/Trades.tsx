@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useCloseAll, useExecution, useMarkets, useOrders, usePositions, useScannerIndex, useTrades } from '../api/queries'
+import { useCloseAll, useExecution, useMarkets, useOrders, usePositions, useScannerIndex, useTradesPage } from '../api/queries'
 import type { Order, Trade } from '../api/types'
 import { TradePath } from '../components/TradePath'
 import { DataTable, type Column } from '../components/DataTable'
@@ -27,15 +27,21 @@ export function Trades() {
   const [scannerSearch, setScannerSearch] = useState('')
   const [symbol, setSymbol] = useState('')
   const [reason, setReason] = useState('')
-  const q = useMemo(() => ({ limit: 300, scanner: scanner || undefined, symbol: symbol || undefined }), [scanner, symbol])
-  const trades = useTrades(q)
+  const [page, setPage] = useState(0)
+  const PAGE = 300
+  // decision 190: every filter runs on the server, so the count and totals cover all matching trades, not the newest 300
+  const q = useMemo(() => ({ limit: PAGE, offset: page * PAGE, scanner: scanner || undefined, symbol: symbol || undefined, reason: reason || undefined }), [scanner, symbol, reason, page])
+  const pageQ = useTradesPage(q)
+  const trades = { ...pageQ, data: pageQ.data?.trades }
   const orders = useOrders(200)
   // the closed-trades table needs ~1300px for every column; below that, shed the derived ones
   const narrow = useMediaQuery('(max-width: 1440px)')
   const veryNarrow = useMediaQuery('(max-width: 1180px)')
 
-  const rows = useMemo(() => (trades.data ?? []).filter((t) => !reason || t.exitReason === reason), [trades.data, reason])
-  const totals = useMemo(() => rows.reduce((a, t) => ({ pnl: a.pnl + t.pnl, fees: a.fees + (t.fees ?? 0) }), { pnl: 0, fees: 0 }), [rows])
+  const rows = useMemo(() => trades.data ?? [], [trades.data])
+  const totals = { pnl: pageQ.data?.pnl ?? 0, fees: pageQ.data?.fees ?? 0 }
+  const total = pageQ.data?.total ?? 0
+  const pages = Math.max(1, Math.ceil(total / PAGE))
   const symbolOptions = useMemo(() => {
     const set = new Set<string>((markets.data ?? []).map((m) => m.symbol))
     for (const t of trades.data ?? []) set.add(t.symbol)
@@ -153,7 +159,7 @@ export function Trades() {
       <Panel
         title={
           <span>
-            Closed trades <span className="muted small">({rows.length})</span>{' '}
+            Closed trades <span className="muted small" title="Count, net and fees cover every trade matching the filters">({fmtInt(total)}{total > rows.length ? `, showing ${fmtInt(page * PAGE + 1)}–${fmtInt(page * PAGE + rows.length)}` : ''})</span>{' '}
             <span className={`mono small ${totals.pnl >= 0 ? 'gain' : 'loss'}`}>· net {fmtPnl(totals.pnl)}</span>{' '}
             <span className="muted small">· fees {fmtMoney(totals.fees)}</span>
           </span>
@@ -161,7 +167,7 @@ export function Trades() {
         right={
           <div className="row gap filters">
             <input className="input scanner-search" type="search" aria-label="Search scanner options" placeholder="Search scanners…" value={scannerSearch} onChange={(e) => setScannerSearch(e.target.value)} />
-            <select className="select select-sm" value={scanner} onChange={(e) => setScanner(e.target.value)} aria-label="Scanner">
+            <select className="select select-sm" value={scanner} onChange={(e) => { setScanner(e.target.value); setPage(0) }} aria-label="Scanner">
               <option value="">All scanners</option>
               {(scanners.data ?? []).filter((s) => s.id === scanner || `${s.name} ${s.id}`.toLowerCase().includes(scannerSearch.toLowerCase())).map((s) => (
                 <option key={s.id} value={s.id}>
@@ -169,7 +175,7 @@ export function Trades() {
                 </option>
               ))}
             </select>
-            <select className="select select-sm" value={symbol} onChange={(e) => setSymbol(e.target.value)} aria-label="Symbol">
+            <select className="select select-sm" value={symbol} onChange={(e) => { setSymbol(e.target.value); setPage(0) }} aria-label="Symbol">
               <option value="">All symbols</option>
               {symbolOptions.map((s) => (
                 <option key={s} value={s}>
@@ -177,7 +183,7 @@ export function Trades() {
                 </option>
               ))}
             </select>
-            <select className="select select-sm" value={reason} onChange={(e) => setReason(e.target.value)} aria-label="Exit reason">
+            <select className="select select-sm" value={reason} onChange={(e) => { setReason(e.target.value); setPage(0) }} aria-label="Exit reason">
               <option value="">All exits</option>
               {Array.from(new Set([...Object.keys(EXIT_REASONS), ...(trades.data ?? []).map((t) => t.exitReason)])).map((r) => (
                 <option key={r} value={r}>
@@ -185,6 +191,13 @@ export function Trades() {
                 </option>
               ))}
             </select>
+            {pages > 1 && (
+              <span className="row gap">
+                <button className="btn btn-sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} aria-label="Newer trades">Newer</button>
+                <span className="muted small mono">{page + 1}/{pages}</span>
+                <button className="btn btn-sm" onClick={() => setPage((p) => Math.min(pages - 1, p + 1))} disabled={page >= pages - 1} aria-label="Older trades">Older</button>
+              </span>
+            )}
           </div>
         }
         pad={false}

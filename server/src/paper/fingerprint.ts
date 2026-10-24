@@ -24,16 +24,32 @@ export function repoSha(): string {
 
 const stable = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x));
 
-/** What decided this trade: a short hash plus the parts, so the hash can be explained. */
-export function configFingerprint(cfg: AppConfig, scannerId: string, tf: string): { fp: string; parts: Record<string, unknown> } {
-  const sc = cfg.scanners[scannerId] ?? {};
-  const p = cfg.paper, r = cfg.risk;
+/**
+ * Decision 190: the simulation's own version. Bump it whenever the paper's fill or exit mechanics change in a way the
+ * settings do not show (190: limits no longer fill on their placing minute, expiry is checked at the fill, a limit fill
+ * keeps the scanner's stop rule), so trades before and after the change fall into different cohorts.
+ */
+export const SIM_VERSION = 190;
+
+/** A short, stable hash of a scanner's patched Pine source: library imports change outside the commit. */
+export function sourceHash(patched: string | undefined | null): string | null {
+  return patched ? createHash('sha1').update(patched).digest('hex').slice(0, 12) : null;
+}
+
+/**
+ * What decided this trade: a short hash plus the parts, so the hash can be explained.
+ *
+ * Decision 190: every setting of the paper engine and the risk manager is hashed, not a hand-picked list. The old list
+ * left out the limit entry, fees, margin sizing, the trail steps and stall, the drawdown size rule and more, so trades
+ * under different strategies shared one fingerprint. The scanner's patched source, the book and the simulation version
+ * are in it too.
+ */
+export function configFingerprint(cfg: AppConfig, scannerId: string, tf: string, opts: { source?: string | null; book?: number } = {}): { fp: string; parts: Record<string, unknown> } {
   const parts = {
-    sha: repoSha(), scanner: scannerId, tf,
-    read: { sources: sc.sources ?? null, labels: sc.labels ?? null, invert: Boolean(sc.invert), edge: sc.edge ?? null, rule: sc.rule ?? null, inputs: sc.inputs ?? null, timezone: sc.timezone ?? null, exitMode: sc.exitMode ?? null, exit: sc.exit ?? null, trendGate: sc.trendGate ?? null },
-    stops: { fallbackAtrSl: p.fallbackAtrSl, fallbackRR: p.fallbackRR, tpSplit: p.tpSplit, trailAfterR: p.trailAfterR, trailGiveBackPct: p.trailGiveBackPct, floorAtR: p.floorAtR, floorKeepR: p.floorKeepR, breakEvenAfterTp1: p.breakEvenAfterTp1, maxStopLossPct: p.maxStopLossPct },
-    fills: { fillSource: p.fillSource, latencyMs: p.latencyMs, slippageBps: p.slippageBps, useSpread: p.useSpread, minRiskFeeRatio: p.minRiskFeeRatio, sizingMode: p.sizingMode, riskPerTradePct: p.riskPerTradePct },
-    gates: { regime: r.regime ?? null, market: r.marketGate ? { minTurnoverUsd: r.marketGate.minTurnoverUsd, maxBookCostPct: r.marketGate.maxBookCostPct, minAtrFeeMult: r.marketGate.minAtrFeeMult, minTrades: r.marketGate.minTrades, minPf: r.marketGate.minPf } : null, reentryCooldownMinutes: r.reentryCooldownMinutes ?? null, burstWindowSec: r.burstWindowSec ?? null },
+    sim: SIM_VERSION, sha: repoSha(), scanner: scannerId, tf, book: opts.book ?? null, source: opts.source ?? null,
+    read: cfg.scanners[scannerId] ?? {},
+    paper: cfg.paper,
+    risk: cfg.risk,
   };
-  return { fp: createHash('sha1').update(stable(parts)).digest('hex').slice(0, 12), parts };
+  return { fp: createHash('sha1').update(stable(parts)).digest('hex').slice(0, 12), parts: JSON.parse(stable(parts)) };
 }

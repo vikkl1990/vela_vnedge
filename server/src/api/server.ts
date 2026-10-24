@@ -345,7 +345,12 @@ export class ApiServer {
       if (a.executor && !a.executor.transport.dryRun && a.executor.hasExposure()) throw new HttpError(409, 'the exchange still holds positions or resting orders for this book: flatten the exchange account first (Exchange page), then reset');
       a.paper.reset(); return a.paper.stats();
     });
-    this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined }));
+    const tradeFilter = (url: URL) => {
+      const g = (k: string) => url.searchParams.get(k) || undefined, n = (k: string) => (url.searchParams.get(k) ? Number(url.searchParams.get(k)) : undefined);
+      return { scanner: g('scanner'), symbol: g('symbol'), reason: g('reason'), tf: g('tf'), side: g('side'), from: n('from'), to: n('to') };
+    };
+    this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), ...tradeFilter(url) }));
+    this.add('GET', '/api/trades/page', (_r, _s, _p, url) => a.paper.tradesPage({ limit: Number(url.searchParams.get('limit') ?? 300), offset: Number(url.searchParams.get('offset') ?? 0), ...tradeFilter(url) }));
     this.add('GET', '/api/orders', (_r, _s, _p, url) => a.paper.orders(Number(url.searchParams.get('limit') ?? 200)));
     this.add('GET', '/api/stats', () => a.paper.stats());
     this.add('GET', '/api/equity', (_r, _s, _p, url) => a.paper.equityCurve(url.searchParams.get('scanner'), Number(url.searchParams.get('limit') ?? 2000)));

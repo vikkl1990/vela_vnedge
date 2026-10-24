@@ -38,6 +38,8 @@ export interface RiskGate {
 
 /** A pending entry is abandoned this long after its latency window closes. */
 export const PENDING_EXPIRY_MS = 60_000;
+/** Decision 190: a candle or print received this long after its event can no longer fill a resting limit (a candle's event is its minute's start). */
+export const LIMIT_LATE_MS = 3 * 60_000;
 /** Candles mode: a due entry with no price update since the window closed fills at the mark after this long (the order is on the book; a quiet tape is not a reason not to fill). */
 export const QUIET_FILL_MS = 1000;
 
@@ -96,6 +98,9 @@ export class PaperEngine extends EventEmitter {
   atrFor?: (symbol: string, tf: string) => number | undefined;
   /** A scanner's own exit override, supplied by the app so the engine needs no config knowledge. */
   scannerExit?: (scannerId: string, entryAt?: number) => ExitOverride | undefined;
+  /** Decision 190: the hash of a scanner's patched source, for the trade's fingerprint. */
+  sourceHashFor?: (scannerId: string) => string | null | undefined;
+  private fpSeen = new Set<string>();
 
   /** The position timeframe's trend, +1 or −1, for the trend exit (set by the composition root). */
   trendFor?: (symbol: string, tf: string) => 1 | -1 | undefined;
@@ -109,9 +114,12 @@ export class PaperEngine extends EventEmitter {
     this.db = db; this.cfgRef = cfgRef;
     this.book = opts.book ?? 0;
     this.kvPrefix = this.book === 0 ? 'paper' : `book${this.book}`;
+    this.db.run('CREATE TABLE IF NOT EXISTS config_fingerprints (fp TEXT PRIMARY KEY, parts TEXT NOT NULL, first_at INTEGER NOT NULL)');
     this.loadPeak();
     for (const row of db.all<any>(`SELECT * FROM positions WHERE status='open' AND bt=${this.book}`)) {
       const p = rowToPosition(row); this.open.set(p.id, p);
+      // the peak already recorded is the one to beat: a restart must not re-stamp it as newly observed
+      if (p.peakR !== undefined) this.peakSeen.set(p.id, p.peakR);
     }
     // pending tape entries do not survive a restart (their signal is seconds old at most); a resting limit (decision 185)
     // does, until it lapses — it can rest for hours, and a deploy must not cancel it
@@ -355,6 +363,7 @@ export class PaperEngine extends EventEmitter {
       const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult,
         limit: { price: limitPrice, expiresAt: ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
       this.pending.set(id, pe);
+      this.emit('pending', { type: 'placed', entry: pe });   // decision 190: the tape audit registers the order at once
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, limitPrice, pe.at, pe.signalId, JSON.stringify({ limitEntry: pe }), id);
       log.info(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
       return { action: 'pending', reason: `resting limit at ${limitPrice}, ${off} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
@@ -399,7 +408,12 @@ export class PaperEngine extends EventEmitter {
   private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig, context: FillContext): Position {
     // `quoted` entries already crossed the real spread; openPosition adds depth impact only
     const pos = openPosition({ ...p, id, cfg, bt: false, lastPriceBar: this.priceBars.get(p.symbol) });
-    try { pos.configFp = configFingerprint(this.cfgRef(), pos.scannerId, pos.tf).fp; } catch { /* a trade without a fingerprint is still a trade */ }
+    try {
+      const f = configFingerprint(this.cfgRef(), pos.scannerId, pos.tf, { source: this.sourceHashFor?.(pos.scannerId) ?? null, book: this.book });
+      pos.configFp = f.fp;
+      // decision 190: the full settings behind a fingerprint, kept once, so a hash can always be explained
+      if (!this.fpSeen.has(f.fp)) { this.fpSeen.add(f.fp); this.db.run('INSERT OR IGNORE INTO config_fingerprints(fp, parts, first_at) VALUES (?,?,?)', f.fp, JSON.stringify(f.parts), Date.now()); }
+    } catch { /* a trade without a fingerprint is still a trade */ }
     // the position, its entry fill and the signal's outcome commit together; events go out only after the commit
     // (decision 77: a crash between the writes used to leave a position without its order, or a signal pointing nowhere)
     this.db.transaction(() => {
@@ -422,9 +436,10 @@ export class PaperEngine extends EventEmitter {
   }
 
   /** Decision 185: fill a resting limit at its own price as a maker; levels from the fill, every gate asked again. */
-  private fillLimit(pe: PendingEntry, at: number): Position | null {
+  private fillLimit(pe: PendingEntry, at: number, eventAt = at): Position | null {
     this.pending.delete(pe.id);
-    const cfg = this.paper, L = pe.limit!;
+    // the scanner's and the market's own stop and exit rules, as at entry (decision 190: the global ones were used)
+    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at)), L = pe.limit!;
     const cancel = (reason: string) => {
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
       if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
@@ -432,6 +447,10 @@ export class PaperEngine extends EventEmitter {
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
+    // decision 190: expiry is part of the fill, judged on the exchange's event time; a message that arrives more than
+    // LIMIT_LATE_MS after its event is too late to act on, whatever the scheduler did in between
+    if (eventAt >= L.expiresAt) return cancel(`no fill: the limit lapsed at ${new Date(L.expiresAt).toISOString()} before price came back to ${L.price}`);
+    if (at - eventAt > LIMIT_LATE_MS) return cancel(`no fill: the price update arrived ${Math.round((at - eventAt) / 1000)}s after its event`);
     const levels = resolveLevels({ side: pe.side, price: L.price, sl: L.sl, tp: L.tp, atr: L.atr }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`limit filled past its levels (${levels.error})`);
     // a maker entry crosses no spread; the exit still pays it, as checkRiskVsFees counts
@@ -457,7 +476,7 @@ export class PaperEngine extends EventEmitter {
   private fillPending(pe: PendingEntry, priceIn: number, at: number, source: 'tape' | 'candle', receivedAt = Date.now()): Position | null {
     let price = priceIn;
     this.pending.delete(pe.id);
-    const cfg = this.paper;
+    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at));
     const cancel = (reason: string) => {
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
       if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
@@ -540,7 +559,7 @@ export class PaperEngine extends EventEmitter {
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
       if (pe.symbol !== symbol || time < pe.dueAt) continue;
-      if (pe.limit) { if (this.limitTouched(pe, price, price)) { const pos = this.fillLimit(pe, time); if (pos) filled.add(pos.id); } continue; }
+      if (pe.limit) { if (time >= pe.at && this.limitTouched(pe, price, price)) { const pos = this.fillLimit(pe, observedAt, time); if (pos) filled.add(pos.id); } continue; }
       const pos = this.fillPending(pe, price, time, 'tape', observedAt);
       if (pos) filled.add(pos.id);
     }
@@ -626,7 +645,7 @@ export class PaperEngine extends EventEmitter {
         // decision 185: a resting limit fills on a minute that traded through its price. Decision 189: only a minute that
         // began after the order was placed — the placing minute's low may have printed before the order existed, and the
         // tape audit showed limits filled that no trade after placement ever reached (thin coins, where this fallback runs)
-        if (pe.limit) { if (bar.time >= pe.at && this.limitTouched(pe, bar.low, bar.high)) this.fillLimit(pe, observedAt); continue; }
+        if (pe.limit) { if (bar.time >= pe.at && bar.time < pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) this.fillLimit(pe, observedAt, bar.time); continue; }
         if (observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle', observedAt);
       }
     }
@@ -969,23 +988,45 @@ export class PaperEngine extends EventEmitter {
     return this.db.all<any>(`SELECT id, at, position_id positionId, scanner_id scannerId, symbol, side, qty, price, fee, reason, price_source priceSource FROM orders WHERE bt=${this.book} ORDER BY at DESC, id DESC LIMIT ?`, limit);
   }
 
-  trades(opts: { limit?: number; scanner?: string; symbol?: string } = {}) {
+  trades(opts: TradeFilter & { limit?: number } = {}) {
+    return this.filterClosed(opts).slice(0, opts.limit ?? 200).map(tradeOf);
+  }
+
+  /** Decision 190: one page of the journal, every filter applied before paging, with the count and totals of all matches. */
+  tradesPage(opts: TradeFilter & { limit?: number; offset?: number } = {}) {
+    const all = this.filterClosed(opts);
+    const limit = Math.max(1, Math.min(2000, opts.limit ?? 300)), offset = Math.max(0, opts.offset ?? 0);
+    const trades = all.slice(offset, offset + limit).map(tradeOf);
+    let pnl = 0, fees = 0;
+    for (const p of all) { const t = tradeOf(p); pnl += t.pnl; fees += t.fees ?? 0; }
+    return { total: all.length, offset, limit, pnl, fees, from: all.length ? all[all.length - 1].exitAt : null, to: all.length ? all[0].exitAt : null, trades };
+  }
+
+  /** Closed positions matching the filter, newest first. */
+  private filterClosed(o: TradeFilter): Position[] {
     let list = this.closedPositions();
-    if (opts.scanner) list = list.filter(p => p.scannerId === opts.scanner);
-    if (opts.symbol) list = list.filter(p => p.symbol === opts.symbol);
-    return list.slice().reverse().slice(0, opts.limit ?? 200).map(tradeOf);
+    if (o.scanner) list = list.filter(p => p.scannerId === o.scanner);
+    if (o.symbol) list = list.filter(p => p.symbol === o.symbol);
+    if (o.reason) list = list.filter(p => p.exitReason === o.reason);
+    if (o.tf) list = list.filter(p => p.tf === o.tf);
+    if (o.side) list = list.filter(p => p.side === o.side);
+    if (o.from) list = list.filter(p => (p.exitAt ?? 0) >= o.from!);
+    if (o.to) list = list.filter(p => (p.exitAt ?? 0) < o.to!);
+    return list.slice().reverse();
   }
 }
 
 function fin(v: number | null): number | null { return v === null || !Number.isFinite(v) ? (v === Infinity ? 999 : null) : v; }
 function mapFin<T extends Record<string, any>>(o: T): T { for (const k of Object.keys(o)) o[k].profitFactor = fin(o[k].profitFactor); return o; }
 
+export interface TradeFilter { scanner?: string; symbol?: string; reason?: string; tf?: string; side?: string; from?: number; to?: number }
+
 export function rowToPosition(r: any): Position {
   const extra = safe(r.fills, { fills: [], legs: [] });
   return {
     id: r.id, status: r.status, scannerId: r.scanner_id, scannerName: r.scanner_name, symbol: r.symbol, tf: r.tf, side: r.side, qty: r.qty, qtyOpen: r.qty_open,
     contractValue: r.contract_value, entryPrice: r.entry_price, entryAt: r.entry_at, sl: r.sl, slOriginal: r.sl_original, tp: safe(r.tp, []), tpHit: safe(r.tp_hit, []),
-    legs: extra.legs ?? [], leverage: extra.leverage ?? 0, marginLeverage: extra.marginLeverage ?? extra.leverage ?? 0, maintenanceMarginPct: extra.maintenanceMarginPct ?? undefined, liqPrice: extra.liqPrice ?? null, features: extra.features, mlProb: extra.mlProb ?? null, lastPriceBar: extra.lastPriceBar, peakR: extra.peakR, trailOff: extra.trailOff, trailArmedAt: extra.trailArmedAt, trailPeakR: extra.trailPeakR, trailPeakAt: extra.trailPeakAt, breakEven: Boolean(r.break_even), realizedPnl: r.realized_pnl, fees: r.fees, riskAmount: r.risk_amount, levelsSource: r.levels_source ?? 'script',
+    legs: extra.legs ?? [], leverage: extra.leverage ?? 0, marginLeverage: extra.marginLeverage ?? extra.leverage ?? 0, maintenanceMarginPct: extra.maintenanceMarginPct ?? undefined, liqPrice: extra.liqPrice ?? null, features: extra.features, mlProb: extra.mlProb ?? null, lastPriceBar: extra.lastPriceBar, peakR: r.peak_r ?? extra.peakR ?? undefined, peakAt: r.peak_at ?? undefined, worstR: r.worst_r ?? undefined, worstAt: r.worst_at ?? undefined, trailOff: extra.trailOff, trailArmedAt: extra.trailArmedAt, trailPeakR: extra.trailPeakR, trailPeakAt: extra.trailPeakAt, breakEven: Boolean(r.break_even), realizedPnl: r.realized_pnl, fees: r.fees, riskAmount: r.risk_amount, levelsSource: r.levels_source ?? 'script',
     exitAt: r.exit_at, exitPrice: r.exit_price, exitReason: r.exit_reason, signalId: r.signal_id, fills: extra.fills ?? [], bt: Boolean(r.bt),
     configFp: r.config_fp ?? undefined,
   };

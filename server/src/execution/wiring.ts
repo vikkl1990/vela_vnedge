@@ -16,7 +16,8 @@ export function wireRealtime(app: App): void {
   // describes the same fills, liquidation and funding a promoted pair would see.
   const books = [app.paper, app.shadow];
   for (const b of books) b.quotes = app.marks;   // spread-crossing fills (paper.useSpread)
-  app.feed.on('trade', (t: WsTrade) => { for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs); app.tapeAudit.onTrade(t); });
+  // decision 190: the audit sees each print before the books do, so the print that fills a limit is counted as its through
+  app.feed.on('trade', (t: WsTrade) => { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs); });
   app.feed.on('mark', (m: WsMark) => { app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
   app.feed.on('funding', (f: WsFunding) => app.marks.onWsFunding(f));
   const timer = setInterval(() => {

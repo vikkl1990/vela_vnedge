@@ -36,7 +36,7 @@ const FUNNEL_MS = 14 * 86_400_000;
 const FUNNEL_CAP = 120;
 const FUNNEL_SAVE_MS = 10_000;
 
-export type FunnelKind = 'opened' | 'regime' | 'cost' | 'market' | 'quote' | 'other';
+export type FunnelKind = 'opened' | 'pending' | 'regime' | 'cost' | 'market' | 'quote' | 'other';
 
 /**
  * The cell-intrinsic gates the account applies, asked of a shadow entry (decision 112): the market gate and the
@@ -79,6 +79,19 @@ export class ShadowRunner {
     this.marks = new BarWatermark({ load: () => deps.store.liveMarks(), save: rec => deps.store.setLiveMarks(rec) });
     this.deps = deps;
     this.funnel = new Map(Object.entries(deps.store.shadowFunnel()));
+    // decision 190: a resting order is `pending` until the book fills or cancels it; then its funnel entry is rewritten
+    deps.paper.on?.('order', (o: { positionId: number; reason: string }) => { if (o.reason === 'entry') this.resolvePending(o.positionId, 'opened'); });
+    deps.paper.on?.('pending', (ev: { type: string; id?: number }) => { if (ev.type === 'cancelled' && ev.id !== undefined) this.resolvePending(ev.id, 'other'); });
+  }
+
+  private pendingFunnel = new Map<number, { key: string; at: number }>();
+  private resolvePending(id: number, kind: FunnelKind): void {
+    const p = this.pendingFunnel.get(id);
+    if (!p) return;
+    this.pendingFunnel.delete(id);
+    const list = this.funnel.get(p.key);
+    const i = list?.findIndex(x => x[0] === p.at && x[1] === 'pending') ?? -1;
+    if (list && i >= 0) { list[i] = [p.at, kind]; this.funnelDirty = true; this.saveFunnelSoon(); }
   }
 
   /** Record what became of one signal on a pair. */
@@ -89,6 +102,10 @@ export class ShadowRunner {
     const kept = list.filter(x => x[0] >= cut).slice(-FUNNEL_CAP);
     this.funnel.set(key, kept);
     this.funnelDirty = true;
+    this.saveFunnelSoon();
+  }
+
+  private saveFunnelSoon(): void {
     if (!this.funnelTimer) { this.funnelTimer = setTimeout(() => { this.funnelTimer = null; this.saveFunnel(); }, FUNNEL_SAVE_MS); this.funnelTimer.unref(); }
   }
 
@@ -99,7 +116,7 @@ export class ShadowRunner {
 
   /** What became of a pair's signals since `since`, in the shape the live cells' record has. */
   funnelOf(key: string, since: number): SignalFunnel {
-    const f: SignalFunnel = { entries: 0, opened: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
+    const f: SignalFunnel = { entries: 0, opened: 0, pending: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
     for (const [at, k] of this.funnel.get(key) ?? []) {
       if (at < since) continue;
       f.entries++; const kk = (k in f ? k : 'other') as FunnelKind; f[kk]++;
@@ -284,7 +301,9 @@ export class ShadowRunner {
         }
         const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
-        this.note(fkey, d.action === 'opened' || d.action === 'reversed' ? 'opened' : funnelClass(`${d.action}:${d.reason ?? ''}`), now);
+        const kind: FunnelKind = d.action === 'opened' || d.action === 'reversed' ? 'opened' : funnelClass(`${d.action}:${d.reason ?? ''}`);
+        this.note(fkey, kind, now);
+        if (kind === 'pending' && d.pendingId !== undefined) this.pendingFunnel.set(d.pendingId, { key: fkey, at: now });
       } else if (ev.kind === 'exit') {
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
       }

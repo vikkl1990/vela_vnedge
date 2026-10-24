@@ -26,7 +26,8 @@ const STOP_REASONS = new Set(['sl', 'trail', 'be']);
 type Print = { t: number; p: number; q: number };
 type Fill = { at: number; positionId: number; symbol: string; side: 'buy' | 'sell'; qty: number; price: number; reason: string };
 type Open = { book: number; fill: Fill; kind: string; level: number; riskUnit: number | null; tf: string; due: number; giveUpAt: number };
-type Limit = { book: number; id: number; symbol: string; tf: string; side: 'long' | 'short'; price: number; since: number; tick: number; volAt: number; volBeforeThrough: number | null; throughAt: number | null; touchAt: number | null };
+type Limit = { book: number; id: number; symbol: string; tf: string; side: 'long' | 'short'; price: number; since: number; expiresAt: number | null; tick: number; volAt: number; volBeforeThrough: number | null; throughAt: number | null; touchAt: number | null; dirty?: boolean; recovered?: boolean };
+type PendingLike = { id: number; symbol: string; tf: string; side: 'long' | 'short'; at: number; market: { tickSize: number }; limit?: { price: number; expiresAt: number } };
 
 export interface TapeAuditSummary {
   since: number | null;
@@ -50,7 +51,36 @@ export class TapeAudit {
       kind TEXT NOT NULL, side TEXT, paper_price REAL, tape_price REAL, first_print REAL, worst_print REAL, prints INTEGER,
       risk_unit REAL, slip_bps REAL, slip_r REAL, extra TEXT)`);
     db.run('CREATE INDEX IF NOT EXISTS idx_tape_audit_at ON tape_audit(at DESC)');
-    for (const { engine, book } of books) engine.on('order', (o: Fill) => this.onFill(book, engine, o));
+    // decision 190: each resting limit's life, written as it happens, so a restart resumes it instead of losing it
+    db.run(`CREATE TABLE IF NOT EXISTS limit_lifecycle (
+      book INTEGER NOT NULL, position_id INTEGER NOT NULL, symbol TEXT NOT NULL, tf TEXT, side TEXT, price REAL, tick REAL,
+      placed_at INTEGER, expires_at INTEGER, touched_at INTEGER, through_at INTEGER, vol_at REAL, vol_before_through REAL,
+      ended_at INTEGER, outcome TEXT, reason TEXT, restarts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (book, position_id))`);
+    for (const r of db.all<any>('SELECT * FROM limit_lifecycle WHERE ended_at IS NULL')) {
+      // prints during the downtime were not seen: the queue figures for this limit are a lower bound from here on
+      this.limits.set(`${r.book}:${r.position_id}`, { book: r.book, id: r.position_id, symbol: r.symbol, tf: r.tf, side: r.side, price: r.price, since: r.placed_at, expiresAt: r.expires_at, tick: r.tick ?? 0, volAt: r.vol_at ?? 0, volBeforeThrough: r.vol_before_through ?? null, throughAt: r.through_at ?? null, touchAt: r.touched_at ?? null, recovered: true });
+      db.run('UPDATE limit_lifecycle SET restarts = restarts + 1 WHERE book=? AND position_id=?', r.book, r.position_id);
+    }
+    for (const { engine, book } of books) {
+      engine.on('order', (o: Fill) => this.onFill(book, engine, o));
+      engine.on('pending', (ev: { type: string; entry?: PendingLike; id?: number; reason?: string }) => {
+        try {
+          if (ev.type === 'placed' && ev.entry?.limit) this.track(book, ev.entry);
+          else if (ev.type === 'cancelled' && ev.id !== undefined) {
+            const key = `${book}:${ev.id}`, L = this.limits.get(key);
+            if (L) { this.finishLimit(L, 'cancelled', Date.now(), ev.reason ?? null); this.limits.delete(key); }
+          }
+        } catch (e: any) { log.warn(`limit event not audited: ${e?.message ?? e}`); }
+      });
+    }
+  }
+
+  private track(book: number, pe: PendingLike) {
+    const key = `${book}:${pe.id}`;
+    if (this.limits.has(key) || !pe.limit) return;
+    const L: Limit = { book, id: pe.id, symbol: pe.symbol, tf: pe.tf, side: pe.side, price: pe.limit.price, since: pe.at, expiresAt: pe.limit.expiresAt ?? null, tick: pe.market.tickSize || 0, volAt: 0, volBeforeThrough: null, throughAt: null, touchAt: null };
+    this.limits.set(key, L);
+    this.db.run('INSERT OR IGNORE INTO limit_lifecycle(book, position_id, symbol, tf, side, price, tick, placed_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)', book, pe.id, pe.symbol, pe.tf, pe.side, L.price, L.tick, pe.at, L.expiresAt);
   }
 
   start() { this.timer = setInterval(() => this.tick(), 1000); this.timer.unref?.(); }
@@ -68,8 +98,8 @@ export class TapeAudit {
       if (L.symbol !== t.symbol || t.timeMs < L.since) continue;
       const at = Math.abs(t.price - L.price) <= L.tick / 2;
       const through = L.side === 'long' ? t.price < L.price - L.tick / 2 : t.price > L.price + L.tick / 2;
-      if (at && L.throughAt === null) { L.volAt += t.qty; L.touchAt ??= t.timeMs; }
-      if (through && L.throughAt === null) { L.throughAt = t.timeMs; L.volBeforeThrough = L.volAt; }
+      if (at && L.throughAt === null) { L.volAt += t.qty; L.touchAt ??= t.timeMs; L.dirty = true; }
+      if (through && L.throughAt === null) { L.throughAt = t.timeMs; L.volBeforeThrough = L.volAt; L.dirty = true; }
     }
   }
 
@@ -80,7 +110,7 @@ export class TapeAudit {
       const key = `${book}:${o.positionId}`;
       const lim = this.limits.get(key);
       if (o.reason === 'entry' && lim) {
-        this.finishLimit(lim, true, o.at);
+        this.finishLimit(lim, 'filled', o.at, null);
         this.limits.delete(key);
         return;   // a maker fill at its own price: the queue is the question, recorded with the limit
       }
@@ -97,10 +127,16 @@ export class TapeAudit {
       for (const pe of engine.pendingEntries()) {
         if (!pe.limit) continue;
         const key = `${book}:${pe.id}`; seen.add(key);
-        if (!this.limits.has(key)) this.limits.set(key, { book, id: pe.id, symbol: pe.symbol, tf: pe.tf, side: pe.side, price: pe.limit.price, since: pe.at, tick: pe.market.tickSize || 0, volAt: 0, volBeforeThrough: null, throughAt: null, touchAt: null });
+        if (!this.limits.has(key)) this.track(book, pe);   // a safety net: placement events register limits as they happen
       }
     }
-    for (const [key, L] of this.limits) if (!seen.has(key)) { this.finishLimit(L, false, now); this.limits.delete(key); }
+    for (const [key, L] of this.limits) {
+      if (!seen.has(key)) { this.finishLimit(L, 'gone', now, 'no longer resting; no fill or cancel event was seen'); this.limits.delete(key); continue; }
+      if (L.dirty) {
+        L.dirty = false;
+        this.db.run('UPDATE limit_lifecycle SET touched_at=?, through_at=?, vol_at=?, vol_before_through=? WHERE book=? AND position_id=?', L.touchAt, L.throughAt, L.volAt, L.volBeforeThrough, L.book, L.id);
+      }
+    }
     // fills whose window has passed
     const keep: Open[] = [];
     for (const o of this.open) {
@@ -147,11 +183,14 @@ export class TapeAudit {
     } catch (e: any) { log.warn(`tape audit row not written: ${e?.message ?? e}`); }
   }
 
-  private finishLimit(L: Limit, filled: boolean, at: number) {
+  private finishLimit(L: Limit, outcome: 'filled' | 'cancelled' | 'gone', at: number, reason: string | null) {
+    const filled = outcome === 'filled';
     try {
+      this.db.run('UPDATE limit_lifecycle SET touched_at=?, through_at=?, vol_at=?, vol_before_through=?, ended_at=?, outcome=?, reason=? WHERE book=? AND position_id=?',
+        L.touchAt, L.throughAt, L.volAt, L.volBeforeThrough, at, outcome, reason, L.book, L.id);
       this.db.run('INSERT INTO tape_audit(at, book, position_id, symbol, tf, kind, side, paper_price, tape_price, first_print, worst_print, prints, risk_unit, slip_bps, slip_r, extra) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         at, L.book, L.id, L.symbol, L.tf, 'resting limit', L.side === 'long' ? 'buy' : 'sell', L.price, null, null, null, null, null, null, null,
-        JSON.stringify({ filled, touched: L.touchAt !== null, through: L.throughAt !== null, volAtLimit: L.volAt, volBeforeThrough: L.volBeforeThrough, restedMin: Math.round((at - L.since) / 60_000), touchToThroughSec: L.touchAt !== null && L.throughAt !== null ? Math.round((L.throughAt - L.touchAt) / 1000) : null }));
+        JSON.stringify({ filled, outcome, reason, touched: L.touchAt !== null, through: L.throughAt !== null, volAtLimit: L.volAt, volBeforeThrough: L.volBeforeThrough, placedAt: L.since, expiresAt: L.expiresAt, touchedAt: L.touchAt, throughAt: L.throughAt, endedAt: at, restedMin: Math.round((at - L.since) / 60_000), touchToThroughSec: L.touchAt !== null && L.throughAt !== null ? Math.round((L.throughAt - L.touchAt) / 1000) : null, ...(L.recovered ? { recovered: true } : {}) }));
     } catch (e: any) { log.warn(`limit audit row not written: ${e?.message ?? e}`); }
   }
 

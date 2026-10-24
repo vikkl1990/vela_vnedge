@@ -392,3 +392,28 @@ test('decision 170: the drawdown multiplier halves the margin posted per trade u
   mult = 0.5;
   assert.equal(entry('scaled').qty, 3, '$75 at the base 5x: half the size, the same leverage');
 });
+
+test('decision 190: a restart reloads the saved peak and worst excursion and their times, and the next save keeps them', t => {
+  const { db, cfg, engine, open } = setup(t);
+  const p = open('long');
+  db.run('UPDATE positions SET peak_r=?, peak_at=?, worst_r=?, worst_at=? WHERE id=?', 0.9, 12_345, -0.8, 23_456, p.id);
+  const again = new PaperEngine(db, () => cfg);
+  const q = again.position(p.id)!;
+  assert.deepEqual([q.peakR, q.peakAt, q.worstR, q.worstAt], [0.9, 12_345, -0.8, 23_456]);
+  // a bar inside the old range: neither a new peak nor a new worst, so the saved ones and their times stay
+  again.onBar('BTCUSD', { time: 120_000, open: 100, high: 101, low: 99, close: 100.5 } as any, 180_000);
+  const row = db.get<any>('SELECT peak_r, peak_at, worst_r, worst_at FROM positions WHERE id=?', p.id);
+  assert.deepEqual([row.peak_r, row.peak_at, row.worst_r, row.worst_at], [0.9, 12_345, -0.8, 23_456]);
+});
+
+test('decision 190: the journal page filters on the server, so counts and totals cover every match, past the page size', t => {
+  const { engine, open } = setup(t);
+  for (let i = 0; i < 5; i++) { const p = open('long'); engine.closeManual(p.id, i % 2 ? 'tp1' : 'sl'); }
+  const sl = engine.tradesPage({ reason: 'sl', limit: 2 });
+  assert.equal(sl.total, 3);
+  assert.equal(sl.trades.length, 2);
+  assert.ok(sl.trades.every(x => x.exitReason === 'sl'));
+  const all = engine.tradesPage({ reason: 'sl', limit: 50 });
+  assert.ok(Math.abs(sl.pnl - all.trades.reduce((a, x) => a + x.pnl, 0)) < 1e-9, 'totals span all matches, not the page');
+  assert.equal(engine.tradesPage({ reason: 'sl', limit: 2, offset: 2 }).trades.length, 1);
+});
