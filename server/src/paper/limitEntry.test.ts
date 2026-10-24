@@ -59,3 +59,13 @@ test('decision 185: a resting limit survives a restart; 15m entries and executor
   c.engine.limitEntryAllowed = () => false;
   assert.notEqual(c.enter('long').action, 'pending', 'an executor attached: the market entry');
 });
+
+test('decision 189: the minute the limit was placed in cannot fill it — its low may have printed before the order existed', () => {
+  const { engine, at, enter } = setup();
+  enter('long');                                       // placed 1 s into a minute (at = minute + 1 s)
+  const placingMinute = at - 1000;
+  engine.onBar('ETHUSD', { time: placingMinute, high: 100.2, low: 99.0, close: 99.9 }, placingMinute + 60_000);
+  assert.equal(engine.openPositions().length, 0, 'the placing minute traded through the limit, but maybe before the order');
+  engine.onBar('ETHUSD', { time: placingMinute + 60_000, high: 99.9, low: 99.3, close: 99.5 }, placingMinute + 2 * 60_000);
+  assert.equal(engine.openPositions().length, 1, 'a later minute through the limit fills it');
+});

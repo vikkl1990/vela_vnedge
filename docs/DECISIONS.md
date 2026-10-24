@@ -5620,3 +5620,16 @@ only when the account is below the capital it started with, otherwise trade at f
 full size, and a `ddPct` of 0 means any amount below the start. The default ladder is now `[{ ddPct: 0, leverageMult:
 0.5 }]`: half size from the first dollar below $1,000. The risk view carries `sizing { from, drawdownPct, startEquity }`
 and the top bar's Size stat explains whichever basis is in force. The VM's persisted `risk.ddScale` is set to match.
+
+## 189. A resting limit cannot fill on the minute it was placed in
+
+**Why.** The tape audit's first resting limits (24 October, 17:01–17:02 UTC): LABUSD and ONDOUSD 1h limits filled on paper
+while no trade after their placement went through the limit price. LABUSD's limit was placed at 17:01:32 and filled at
+17:02:00 on the 17:01 minute candle. That candle's low may have printed in the 32 seconds before the order existed. The
+fill rule accepted any minute that *ended* after placement. On thin coins the trade stream is often silent, and the candle
+is the fallback that decides the fill, so this was where the paper was optimistic.
+
+**What.** The candle fallback now fills a resting limit only on a minute that *began* at or after placement. Fills from the
+trade stream are unchanged: each trade carries its own time and is compared with the placement. This matches the backtest
+and `diagnose`, which start a limit's life at the signal bar's close. Paper limit fills before this change can't be
+counted after the fact (a filled position keeps no placement time); the tape audit records each one from here on.

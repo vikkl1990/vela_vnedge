@@ -623,8 +623,10 @@ export class PaperEngine extends EventEmitter {
       // tape mode: the candle is the fallback while the tape is silent; candles mode: the candle update is the price
       for (const pe of [...this.pending.values()]) {
         if (pe.symbol !== symbol) continue;
-        // decision 185: a resting limit fills on a minute that ended after the signal and traded through its price
-        if (pe.limit) { if (bar.time + 60_000 > pe.at && this.limitTouched(pe, bar.low, bar.high)) this.fillLimit(pe, observedAt); continue; }
+        // decision 185: a resting limit fills on a minute that traded through its price. Decision 189: only a minute that
+        // began after the order was placed — the placing minute's low may have printed before the order existed, and the
+        // tape audit showed limits filled that no trade after placement ever reached (thin coins, where this fallback runs)
+        if (pe.limit) { if (bar.time >= pe.at && this.limitTouched(pe, bar.low, bar.high)) this.fillLimit(pe, observedAt); continue; }
         if (observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle', observedAt);
       }
     }
