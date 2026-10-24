@@ -55,7 +55,7 @@ const registry = new ScannerRegistry();
 }
 const pool = new PinePool(CONC, 120_000, processWorker);
 const out = fs.createWriteStream(process.env.OUT ?? '/tmp/diagnose.tsv');
-out.write(['scanner', 'tf', 'symbol', 'variant', 'trades', 'avgR', 'sumR', 'win', 't1', 'r1', 't2', 'r2', 'both', 'mfe05', 'mfe1', 'mfe2', 'firstBarStops', 'note'].join('\t') + '\n');
+out.write(['scanner', 'tf', 'symbol', 'variant', 'trades', 'avgR', 'sumR', 'win', 't1', 'r1', 't2', 'r2', 'both', 'mfe05', 'mfe1', 'mfe2', 'firstBarStops', 'note', 'grossWinR', 'grossLossR'].join('\t') + '\n');
 const md: string[] = [];
 
 const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
@@ -109,16 +109,18 @@ const FUND_BAND = 0.005;   // percent per interval: inside the band nobody is cr
 for (const s of MARKETS) for (const tf of TFS) { const b = tail(await bars(s, tf, BARS[tf]), BARS[tf]); await bars(s, SUB[tf], Math.min(60_000, Math.ceil((b.length + 2) * TF_SECONDS[tf] / TF_SECONDS[SUB[tf]]))); }
 console.error('candles ready');
 
-type Stat = { trades: number; avgR: number; sumR: number; win: number; t1: number; r1: number; t2: number; r2: number; both: boolean; mfe05: number; mfe1: number; mfe2: number; firstBar: number };
+type Stat = { trades: number; avgR: number; sumR: number; win: number; t1: number; r1: number; t2: number; r2: number; both: boolean; mfe05: number; mfe1: number; mfe2: number; firstBar: number; gw?: number; gl?: number };
 function stat(trades: any[], b: Bar[], tfMs: number): Stat {
   const R = (xs: any[]) => (xs.length ? xs.reduce((a, x) => a + (x.rMultiple ?? 0), 0) / xs.length : 0);
   const split = b[Math.floor(b.length / 2)].time;
   const h1 = trades.filter(x => x.entryAt < split), h2 = trades.filter(x => x.entryAt >= split);
   const pk = (t: number) => (trades.length ? trades.filter(x => (x.peakR ?? 0) >= t).length / trades.length : 0);
   const fb = trades.filter(x => x.exitReason === 'sl' && x.exitAt - x.entryAt <= tfMs * 2).length;
-  return { trades: trades.length, avgR: R(trades), sumR: R(trades) * trades.length, win: trades.length ? trades.filter(x => x.pnl > 0).length / trades.length : 0, t1: h1.length, r1: R(h1), t2: h2.length, r2: R(h2), both: h1.length >= 5 && h2.length >= 5 && R(h1) > 0 && R(h2) > 0, mfe05: pk(0.5), mfe1: pk(1), mfe2: pk(2), firstBar: trades.length ? fb / trades.length : 0 };
+  // the profit factor's two sides, in R (gross of nothing: these are the net R of winning and losing trades)
+  const gw = trades.reduce((a, x) => a + Math.max(0, x.rMultiple ?? 0), 0), gl = -trades.reduce((a, x) => a + Math.min(0, x.rMultiple ?? 0), 0);
+  return { gw, gl, trades: trades.length, avgR: R(trades), sumR: R(trades) * trades.length, win: trades.length ? trades.filter(x => x.pnl > 0).length / trades.length : 0, t1: h1.length, r1: R(h1), t2: h2.length, r2: R(h2), both: h1.length >= 5 && h2.length >= 5 && R(h1) > 0 && R(h2) > 0, mfe05: pk(0.5), mfe1: pk(1), mfe2: pk(2), firstBar: trades.length ? fb / trades.length : 0 };
 }
-const row = (id: string, tf: string, sym: string, v: string, s: Stat, note = '') => out.write([id, tf, sym, v, s.trades, s.avgR.toFixed(3), s.sumR.toFixed(1), s.win.toFixed(2), s.t1, s.r1.toFixed(3), s.t2, s.r2.toFixed(3), s.both ? 1 : 0, s.mfe05.toFixed(2), s.mfe1.toFixed(2), s.mfe2.toFixed(2), s.firstBar.toFixed(2), note].join('\t') + '\n');
+const row = (id: string, tf: string, sym: string, v: string, s: Stat, note = '') => out.write([id, tf, sym, v, s.trades, s.avgR.toFixed(3), s.sumR.toFixed(1), s.win.toFixed(2), s.t1, s.r1.toFixed(3), s.t2, s.r2.toFixed(3), s.both ? 1 : 0, s.mfe05.toFixed(2), s.mfe1.toFixed(2), s.mfe2.toFixed(2), s.firstBar.toFixed(2), note, (s.gw ?? 0).toFixed(2), (s.gl ?? 0).toFixed(2)].join('\t') + '\n');
 
 const flip = (evs: ScanEvent[]): ScanEvent[] => evs.map(e => (e.side ? { ...e, side: e.side === 'long' ? 'short' : 'long', sl: undefined, tp: [] } : e));
 /**
