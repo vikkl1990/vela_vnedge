@@ -5524,3 +5524,25 @@ a touch alone is not a fill, more conservative than the study's touch), with the
 gate asked again at the fill; otherwise it lapses ("no fill: price did not come back"). It survives a restart until it
 lapses. The account rests limits only while no exchange executor mirrors it (its entries are market orders, and the
 production rule refuses resting orders); reversals keep the market path. 1h joins only if the re-run supports it.
+
+**Corrected the same day, before the deploy.** The `pull0.3` row was not like-for-like: in `diagnose` the bare `pull*`
+variants pay no spread (they were written to compare with `base`), so their cost rule asks for a stop of ≈0.71% where the
+spread-paid rows ask ≈1.4%, and they took entries the honest rows refuse — at 1h, 1,549 more trades than the market
+entry, which no limit can do. The +153.5R is withdrawn. `limit0` (a limit at the signal price) pays the spread on the
+exit like `spread` and is the fair comparison. On the fixed tool, fleet's 15 scanners × six markets:
+
+| | market entry (`spread`) | limit at the signal price (`limit0`) | cells better / worse |
+|---|---|---|---|
+| 1h | +77.5R, 2,509 trades, halves +49.2 / +28.3 | **+133.4R**, 2,477, halves +74.5 / +59.2 | 58 / 25 · 10 of 15 scanners |
+| 4h | −71.7R, 4,956, halves +15.9 / −87.8 | **+66.3R**, 4,935, halves +96.2 / −29.7 | 67 / 12 · 15 of 15 scanners |
+
+The default is now `{ tfs: ['1h', '4h'], atr: 0, bars: 2 }`. Pullbacks of 0.1/0.2/0.3 ATR with the spread paid
+(`spread+pull*`) are being measured; the offset moves only if one beats `limit0` on the same terms.
+
+**What the fixed re-run says about the earlier decisions (1h/4h, market entry, spread paid).** The trail (175) holds:
+giving back 20% loses at both (1h +19.5R vs +77.5R; 4h −159.1R vs −71.7R). The regime floor at 0.1 (180) holds at 1h
+(+98.6R vs +77.5R none, +69.4R at 0.25); at 4h every floor is negative under the market entry (0.25 loses least). The
+majors' evidence behind the 4h reservation (182) does not hold: majors lose at 1h (−76.9R, −0.063 a trade, both halves)
+and at 4h (−137.1R, −0.033, both halves); with the limit entry, 4h majors are flat (−3.0R, halves +50.9 / −53.7). Alts
+pay at both (1h +0.119R a trade, 4h +0.082, both halves). The reserved majors pairs are judged by the shadow book like
+any other; the mirror floor keeps the account out of them until they have a record.

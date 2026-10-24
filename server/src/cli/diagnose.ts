@@ -259,6 +259,9 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   const spreadPct = bookCost.get(sym) ?? 0;
   variants.spread = stat(run({ spreadPct }), b, tfMs);
   if (want('limit0')) variants['limit0'] = stat(run({ spreadPct, entry: { pullbackAtr: 0, pullbackBars: 2 } }), b, tfMs);
+  // decision 185: the pullback limits with the spread paid, so they compare with `spread` and `limit0` (the bare `pull*`
+  // rows above pay no spread and face a laxer cost rule: they compare with `base` only)
+  for (const a of [0.1, 0.2, 0.3]) if (want(`spread+pull${a}`)) variants[`spread+pull${a}`] = stat(run({ spreadPct, entry: { pullbackAtr: a, pullbackBars: 2 } }), b, tfMs);
   if (want('limit0.1')) variants['limit0.1'] = stat(run({ spreadPct, entry: { pullbackAtr: 0.1, pullbackBars: 2 } }), b, tfMs);
   // the cost rule: with the real book paid, only take a trade whose stop is many times the round trip's cost
   // decision 178: the Vela library's exit models, replacing the account's trail (`lux-*`) or layered over it (`+ours`)
