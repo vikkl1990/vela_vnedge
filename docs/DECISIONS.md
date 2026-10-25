@@ -5862,3 +5862,16 @@ experiment runs and the data is collected; the account trades scanners that have
 **What.** `incubator.mirror.enabled` is false on the VM (25 October, 13:14 UTC; the previous config is kept as
 `config.json.bak-mirror-off-*`). The account trades the 14 enabled scanners on their 21 live pairs; shadow pairs reach
 it only through the promotion gate. Positions already open from mirrored pairs run to their own exits.
+
+## 200. A failed re-screen retires a shadow pair only when its own record agrees
+
+**Why.** The dry re-screen of the 1h/4h shadow book (decision 198, 25 October) failed 519 of 617 pairs. Most of that
+is selection: the pairs were admitted for looking best under the old, looser screen, and a stricter re-test drops
+many of them whatever their worth. On 1h the limit entries found about 58% of the admission trade count (92 pairs under
+the 20-trade minimum); on 4h, 170 pairs fell under PF 1.2. Against the forward record: 35 failing pairs were up 83.8R
+in the shadow book, 40 were down 44.9R, and 444 had fewer than three shadow trades.
+
+**What.** The decision-186 rule retires a re-screened, failing shadow pair only when it has at least three shadow trades
+since admission (`RESCREEN_RETIRE_MIN_TRADES`) and their total is zero R or less. A failing pair that is winning keeps
+trading; one with too little record keeps collecting it, and the stale cap retires it if it falls silent (30 days on 1h,
+60 on 4h). The shadow book is where the experiments run (decision 199), so a backtest alone does not end one.

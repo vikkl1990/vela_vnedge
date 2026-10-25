@@ -68,17 +68,27 @@ test('decision 184: pairs running under a reservation do not consume the book\'s
   assert.equal(rep.free, 0);
 });
 
-test('decision 186: a shadow pair whose re-screen fails after its admission gives its slot back; one re-screened and passing stays', () => {
+test('decisions 186/200: a failed re-screen retires a shadow pair only when its own record agrees; a passing one, a winning one or one still collecting stays', () => {
   const { store, cfg, screen } = world([]);
   cfg.incubator.maxShadow = 10;
-  recordScreen(store, { scannerId: 'a', symbol: 'ZECUSD', tf: '4h' }, screen(2), cfg.incubator, T0);
-  recordScreen(store, { scannerId: 'b', symbol: 'AKEUSD', tf: '4h' }, screen(2), cfg.incubator, T0);
+  const pairs = [['a', 'ZECUSD'], ['b', 'AKEUSD'], ['c', 'SOLUSD'], ['d', 'ETHUSD']] as const;
+  for (const [s, m] of pairs) recordScreen(store, { scannerId: s, symbol: m, tf: '4h' }, screen(2), cfg.incubator, T0);
   evaluate(store, cfg, T0);
-  assert.equal(store.find('a', 'ZECUSD', '4h')!.stage, 'shadow');
-  recordScreen(store, { scannerId: 'a', symbol: 'ZECUSD', tf: '4h' }, { ...screen(0.9), pass: false, at: T0 + 2000, reason: 'PF 0.90' }, cfg.incubator, T0 + 2000);
+  for (const [s, m] of pairs) assert.equal(store.find(s, m, '4h')!.stage, 'shadow');
+  // shadow records since admission: a loses over 3 trades, c wins over 3, d has only 2 (losing)
+  const db = (store as any).db;
+  let id = 1000;
+  const trade = (s: string, m: string, r: number) => db.run("INSERT INTO positions(id, status, scanner_id, scanner_name, symbol, tf, side, qty, qty_open, contract_value, entry_price, entry_at, exit_at, realized_pnl, fees, risk_amount, bt) VALUES (?,'closed',?,?,?,'4h','long',1,0,1,100,?,?,?,0,10,2)", id++, s, s, m, T0 + 100, T0 + 200, r * 10);
+  for (const r of [-1, -1, 0.5]) trade('a', 'ZECUSD', r);
+  for (const r of [1, -1, 2]) trade('c', 'SOLUSD', r);
+  for (const r of [-1, -1]) trade('d', 'ETHUSD', r);
+  const fail = { ...screen(0.9), pass: false, at: T0 + 2000, reason: 'PF 0.90' };
+  for (const [s, m] of [['a', 'ZECUSD'], ['c', 'SOLUSD'], ['d', 'ETHUSD']] as const) recordScreen(store, { scannerId: s, symbol: m, tf: '4h' }, fail, cfg.incubator, T0 + 2000);
   recordScreen(store, { scannerId: 'b', symbol: 'AKEUSD', tf: '4h' }, { ...screen(1.8), at: T0 + 2000 }, cfg.incubator, T0 + 2000);
   const rep = evaluate(store, cfg, T0 + 3000);
   assert.ok(rep.retired.includes('a ZECUSD 4h'), rep.retired.join(', '));
-  assert.match(store.find('a', 'ZECUSD', '4h')!.note ?? '', /screen no longer passes/);
+  assert.match(store.find('a', 'ZECUSD', '4h')!.note ?? '', /screen no longer passes .* and the shadow record agrees \(3 trades, -1\.50R\)/);
   assert.equal(store.find('b', 'AKEUSD', '4h')!.stage, 'shadow', 're-screened and still passing: kept');
+  assert.equal(store.find('c', 'SOLUSD', '4h')!.stage, 'shadow', 'failed the re-screen but winning in the shadow book: kept');
+  assert.equal(store.find('d', 'ETHUSD', '4h')!.stage, 'shadow', 'failed with only 2 shadow trades: still collecting');
 });

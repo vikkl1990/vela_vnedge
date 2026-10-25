@@ -204,6 +204,9 @@ export interface EvaluateOptions {
   /** Decision 195: why a scanner cannot run (not in the library, source unavailable, incompatible); null when it can. */
   unavailable?: (scannerId: string) => string | null;
 }
+/** Decision 200: a failed re-screen retires a shadow pair only once its own record has this many trades and is not positive. */
+export const RESCREEN_RETIRE_MIN_TRADES = 3;
+
 export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): CycleReport {
   const inc = cfg.incubator;
   const rep: CycleReport = { proposed: [], retired: [], brewing: 0, demoteProposed: [], admitted: [], free: 0 };
@@ -272,12 +275,17 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   }
 
   // decision 186: a shadow pair re-screened after its admission whose screen no longer passes was admitted on evidence
-  // that did not hold (the 1h/4h screens before decision 186 were resolved mostly on the coarse bar); it gives its slot
-  // back. A pair whose own shadow record has earned a proposal is judged by that record instead.
+  // that did not hold; it gives its slot back. Decision 200: only when its own forward record agrees — at least
+  // RESCREEN_RETIRE_MIN_TRADES shadow trades since admission and a total of zero R or less. A re-test of pairs chosen for
+  // looking best fails most of them by selection alone (519 of 617 on 25 October); 35 of those failures were up 83.8R in
+  // the shadow book. A failing pair with too little record yet keeps collecting it; the stale cap retires the silent ones.
   for (const r of store.list(['shadow'])) {
     const sc = r.screen as any;
     if (!sc || sc.pass !== false || !(typeof sc.at === 'number' && sc.at > r.since)) continue;
-    const why = `screen no longer passes (re-screened ${new Date(sc.at).toISOString().slice(0, 10)}: ${sc.reason ?? `PF ${Number(sc.profitFactor ?? 0).toFixed(2)}, ${sc.trades ?? 0} trades`})`;
+    const fwd = store.trades(r.scannerId, r.symbol, r.tf, 2).filter(t => t.entryAt >= r.since);
+    const fwdR = fwd.reduce((a, t) => a + t.r, 0);
+    if (fwd.length < RESCREEN_RETIRE_MIN_TRADES || fwdR > 0) continue;
+    const why = `screen no longer passes (re-screened ${new Date(sc.at).toISOString().slice(0, 10)}: ${sc.reason ?? `PF ${Number(sc.profitFactor ?? 0).toFixed(2)}, ${sc.trades ?? 0} trades`}) and the shadow record agrees (${fwd.length} trades, ${fwdR >= 0 ? '+' : ''}${fwdR.toFixed(2)}R)`;
     store.move(r, 'retired', 'screen', { screen: sc, reasons: [why] }, why, now); rep.retired.push(name(r));
   }
 
