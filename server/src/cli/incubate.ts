@@ -65,7 +65,7 @@ const handRun = Boolean(process.env.SLICE || process.env.TF || process.env.IDS |
 const shadowOnly = process.env.RESCREEN_SHADOW === '1';
 const dry = process.env.DRY === '1';
 const verdicts: Array<{ scannerId: string; symbol: string; tf: string; pass: boolean; reason: string; pf: number; trades: number; avgR: number }> = [];
-if (/\blive\b/.test(process.env.RESCREEN_STAGES ?? '') && !dry) { console.error('RESCREEN_STAGES=live only runs with DRY=1: a live pair keeps its original screen'); process.exit(2); }
+if (/\b(live|retired)\b/.test(process.env.RESCREEN_STAGES ?? '') && !dry) { console.error('RESCREEN_STAGES=live or retired only runs with DRY=1: those pairs keep their recorded screens'); process.exit(2); }
 /** `retry`: the quarantined scripts released for one more screen at the head of this slice (decision 108), kept in the cursor so a resumed slice sees the same list. */
 type Cursor = { tfIdx: number; slice: number; scriptIdx: number; retry?: string[] };
 let cursor: Cursor = handRun
@@ -243,7 +243,7 @@ while (sliceArg !== 'none') {
       const cur = store.find(s.id, symbol, TF);
       if (cur && skipStages.has(cur.stage)) continue;
       if (shadowOnly && !cur) continue;   // only the book's own cells
-      if (cur?.stage === 'retired' && Date.now() - cur.since < inc.cooldownDays * DAY) { summary.cooldown++; continue; }
+      if (cur?.stage === 'retired' && Date.now() - cur.since < inc.cooldownDays * DAY && !(shadowOnly && rescreenStages.has('retired'))) { summary.cooldown++; continue; }
       probed++; // counts markets actually run, not ones skipped above
       const d = data.get(symbol)!;
       summary.runs++;
