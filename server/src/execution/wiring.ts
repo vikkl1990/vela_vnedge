@@ -3,6 +3,8 @@
  * feed channels → paper engine (tape, mark, funding), the funding scheduler, risk ticks and
  * pending-entry housekeeping.
  */
+import { TradingStatus } from '../delta/tradingStatus.ts';
+import { toMs } from '../delta/ws.ts';
 import type { App } from '../app.ts';
 import type { WsFunding, WsMark, WsTrade } from '../delta/ws.ts';
 import { logger } from '../log.ts';
@@ -15,6 +17,29 @@ export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
   // describes the same fills, liquidation and funding a promoted pair would see.
   const books = [app.paper, app.shadow];
+  const status = app.exchangeStatus ?? new TradingStatus();
+  for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
+  let refreshing = false;
+  const refresh = async () => {
+    if (refreshing) return;
+    refreshing = true;
+    const at = Date.now();
+    try {
+      for (const p of (await app.rest.products(true)).values()) status.product(p.symbol, p.trading_status ?? 'unknown', at);
+    } catch (e: any) { log.warn(`exchange product-status refresh failed: ${e?.message ?? e}`); }
+    finally { refreshing = false; }
+  };
+  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); if (connected) void refresh(); });
+  app.feed.on('system_status', (m: any) => {
+    status.systemUpdate(String(m.status ?? ''), toMs(m.timestamp ?? m.ts));
+    log.info(`exchange system status ${m.status} (${m.event ?? 'update'})`);
+  });
+  app.feed.on('product_updates', (m: any) => {
+    status.product(String(m.product?.symbol ?? ''), String(m.product?.trading_status ?? ''), toMs(m.timestamp ?? m.ts));
+    log.info(`exchange product ${m.product?.symbol} status ${m.product?.trading_status}`);
+  });
+  const statusTimer = setInterval(() => { if (app.feed.connected) void refresh(); }, 60_000);
+  statusTimer.unref();
   for (const b of books) b.quotes = app.marks;   // spread-crossing fills (paper.useSpread)
   // decision 190: the audit sees each print before the books do, so the print that fills a limit is counted as its through
   app.feed.on('trade', (t: WsTrade) => { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs); });

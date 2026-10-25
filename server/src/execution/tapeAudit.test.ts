@@ -170,7 +170,10 @@ test('decision 190: as wired, the print that fills a tape limit is counted as th
   const shadow = new PaperEngine(db, () => cfg, { book: 2 });
   const audit = new TapeAudit(db, [{ engine: paper, book: 0 }, { engine: shadow, book: 2 }]);
   const feed = new EE();
-  wireRealtime({ feed, paper, shadow, tapeAudit: audit, marks: { onWsMark() {}, onWsFunding() {}, dueFunding: () => [], executable: () => null, spreadPct: () => null }, risk: { tick() {} } } as any);
+  wireRealtime({ feed, paper, shadow, rest: { products: async () => new Map([['ETHUSD', { symbol: 'ETHUSD', trading_status: 'operational' }]]) }, tapeAudit: audit, marks: { onWsMark() {}, onWsFunding() {}, dueFunding: () => [], executable: () => null, spreadPct: () => null }, risk: { tick() {} } } as any);
+  feed.emit('status', { connected: true });
+  feed.emit('system_status', { status: 'live', event: 'snapshot', timestamp: Date.now() * 1000 });
+  feed.emit('product_updates', { product: { symbol: 'ETHUSD', trading_status: 'operational' }, timestamp: Date.now() * 1000 });
   const at = Date.now() - 1000;
   const d = paper.onEntry({ kind: 'entry', side: 'long', price: 100, tp: [], label: 'entry', message: '', source: 'alert', barTime: at - 4 * 3600_000, barIndex: 0 } as any,
     { scannerId: 's', scannerName: 's', symbol: 'ETHUSD', tf: '4h', market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at, signalId: null, exitMode: 'both', atr: 2 } as any);

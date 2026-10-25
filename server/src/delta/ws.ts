@@ -3,7 +3,9 @@ import { logger } from '../log.ts';
 
 const log = logger.scoped('delta.ws');
 
-export const DELTA_INDIA_WS = 'wss://socket.india.delta.exchange';
+export const DELTA_INDIA_WS = 'wss://public-socket.india.delta.exchange';
+export const DELTA_INDIA_LEGACY_WS = 'wss://socket.india.delta.exchange';
+const GLOBAL_CHANNELS = new Set(['product_updates', 'system_status']);
 
 export interface WsCandle {
   symbol: string;
@@ -53,7 +55,10 @@ export class DeltaFeed extends EventEmitter {
   constructor(url = DELTA_INDIA_WS) {
     super();
     this.url = url;
+    for (const channel of GLOBAL_CHANNELS) this.subs.set(channel, new Set());
   }
+
+  get endpoint(): string { return this.url; }
 
   get lastTickAt(): number { return this.lastMessageAt; }
 
@@ -76,7 +81,7 @@ export class DeltaFeed extends EventEmitter {
         try { (dead as any)?.terminate?.(); dead?.close?.(); } catch { /* already gone */ }
         this.scheduleReconnect();
       } else {
-        try { this.ws?.send(JSON.stringify({ type: 'heartbeat' })); } catch { /* ignore */ }
+        try { this.ws?.send(JSON.stringify({ type: 'ping' })); } catch { /* ignore */ }
       }
     }, 20_000);
   }
@@ -88,18 +93,19 @@ export class DeltaFeed extends EventEmitter {
   }
 
   subscribe(channel: string, symbols: string[]): void {
+    const isNew = !this.subs.has(channel);
     const set = this.subs.get(channel) ?? new Set<string>();
     const fresh = symbols.filter(s => !set.has(s));
     for (const s of symbols) set.add(s);
     this.subs.set(channel, set);
-    if (fresh.length && this.connected) this.send({ type: 'subscribe', payload: { channels: [{ name: channel, symbols: toWire(channel, fresh) }] } });
+    if ((fresh.length || (isNew && GLOBAL_CHANNELS.has(channel))) && this.connected) this.send({ type: 'subscribe', payload: { channels: [this.wireChannel(channel, fresh)] } });
   }
 
   unsubscribe(channel: string, symbols: string[]): void {
     const set = this.subs.get(channel);
     if (!set) return;
     for (const s of symbols) set.delete(s);
-    if (this.connected) this.send({ type: 'unsubscribe', payload: { channels: [{ name: channel, symbols: toWire(channel, symbols) }] } });
+    if (this.connected) this.send({ type: 'unsubscribe', payload: { channels: [this.wireChannel(channel, symbols)] } });
   }
 
   /** Replace all subscriptions so exactly `wanted` (channel → symbols) remain. */
@@ -110,6 +116,11 @@ export class DeltaFeed extends EventEmitter {
       if (drop.length) this.unsubscribe(ch, drop);
     }
     for (const [ch, syms] of Object.entries(wanted)) this.subscribe(ch, syms);
+  }
+
+  private wireChannel(name: string, symbols: string[]) {
+    const wireName = this.url.includes('public-socket') ? ({ 'v2/ticker': 'ticker', all_trades: 'trades' }[name] ?? name) : name;
+    return GLOBAL_CHANNELS.has(name) ? { name: wireName } : { name: wireName, symbols: toWire(name, symbols) };
   }
 
   private send(obj: unknown) {
@@ -123,21 +134,24 @@ export class DeltaFeed extends EventEmitter {
     try { ws = new WebSocket(this.url); } catch (e) { log.error('ws ctor failed', String(e)); this.scheduleReconnect(); return; }
     this.ws = ws;
     ws.onopen = () => {
+      if (this.ws !== ws || this.closed) return;
       this.connected = true; this.reconnectDelay = 1000; this.lastMessageAt = Date.now();
       log.info('connected');
       this.emit('status', { connected: true });
-      const channels = [...this.subs.entries()].filter(([, s]) => s.size).map(([name, s]) => ({ name, symbols: toWire(name, [...s]) }));
+      const channels = [...this.subs.entries()].filter(([name, s]) => s.size || GLOBAL_CHANNELS.has(name)).map(([name, s]) => this.wireChannel(name, [...s]));
       if (channels.length) this.send({ type: 'subscribe', payload: { channels } });
       this.send({ type: 'enable_heartbeat' });
     };
     ws.onmessage = (ev) => {
+      if (this.ws !== ws || this.closed) return;
       this.lastMessageAt = Date.now();
       let msg: any;
       try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data)); } catch { return; }
-      this.handle(msg);
+      for (const normalized of normalizePublicMessage(msg)) this.handle(normalized);
     };
     ws.onerror = (ev: any) => { log.warn('socket error', ev?.message ?? ''); };
     ws.onclose = () => {
+      if (this.ws !== ws) return;
       const was = this.connected;
       this.connected = false;
       if (was) { log.warn('disconnected'); this.emit('status', { connected: false }); }
@@ -198,6 +212,7 @@ export class DeltaFeed extends EventEmitter {
       if (f.symbol && Number.isFinite(f.ratePct)) this.emit('funding', f);
       return;
     }
+    if (type === 'product_updates' || type === 'system_status') { this.emit(type, msg); return; }
     if (type === 'subscriptions') { log.debug('subscriptions ack', msg.channels); return; }
     if (type === 'error') { log.warn('feed error', msg); }
   }
@@ -211,4 +226,24 @@ export function parseTrade(symbol: string, x: any): WsTrade | null {
   if (!symbol || !Number.isFinite(price) || price <= 0) return null;
   const aggressor: WsTrade['aggressor'] = x?.buyer_role === 'taker' ? 'buy' : x?.seller_role === 'taker' ? 'sell' : null;
   return { symbol: String(symbol), price, qty: Number.isFinite(qty) ? qty : 0, timeMs: toMs(x?.timestamp), aggressor };
+}
+
+
+/** Normalize the public compact schemas to the existing internal events; legacy payloads remain supported. */
+export function normalizePublicMessage(m: any): any[] {
+  if (!m || typeof m !== 'object') return [];
+  if (m.type === 'ticker' && Array.isArray(m.d)) return m.d.map((t: any) => ({
+    type: 'v2/ticker', symbol: t.s ?? m.sy, close: t.ohlc?.[3] ?? t.m, mark_price: t.m,
+    timestamp: m.ts, quotes: { best_ask: t.q?.[0], best_bid: t.q?.[2] },
+  }));
+  if (m.type === 'trades') return [{ type: 'all_trades', symbol: m.sy, price: m.p, size: m.s,
+    timestamp: m.t ?? m.ts, buyer_role: m.r === 't' ? 'taker' : 'maker', seller_role: m.r === 'm' ? 'taker' : 'maker' }];
+  if (String(m.type).startsWith('candlestick_') && m.sy !== undefined) return [{
+    type: m.type, symbol: m.sy, resolution: m.res, candle_start_time: m.cst,
+    open: m.o, high: m.h, low: m.l, close: m.c, volume: m.v ?? 0, timestamp: m.ts,
+  }];
+  if (m.type === 'mark_price' && m.sy !== undefined) return [{ type: m.type, symbol: m.sy, price: m.p, timestamp: m.ts }];
+  if (m.type === 'funding_rate' && m.sy !== undefined) return [{ type: m.type, symbol: m.sy, funding_rate: m.fr,
+    funding_interval: m.fi, next_funding_realization: m.nfr, predicted_funding_rate: m.pfr, timestamp: m.ts }];
+  return [m];
 }

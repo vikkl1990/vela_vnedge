@@ -65,6 +65,8 @@ export class PaperEngine extends EventEmitter {
    * never see each other's positions. (1 is the in-memory backtest and never reaches the table.)
    */
   readonly book: number;
+  /** Live exchange status veto, also rechecked when a pending order fills. */
+  entryBlock?: (symbol: string, at: number) => string | null;
   private readonly kvPrefix: string;
   private db: Db;
   private cfgRef: () => AppConfig;
@@ -295,6 +297,8 @@ export class PaperEngine extends EventEmitter {
     // the market's and the scanner's own rules, so a stop width they ask for is used at entry and
     // then carried on the position for the rest of the trade (decision 43)
     const cfg = exitConfigFor(this.paper, ctx.symbol, this.scannerExit?.(ctx.scannerId, ctx.at), ctx.tf);
+    const exchangeBlock = this.entryBlock?.(ctx.symbol, ctx.at);
+    if (exchangeBlock) return { action: 'rejected', reason: exchangeBlock };
     // A signal acted on long after its bar closed could not have been taken at these prices
     // (restarts and deep queues used to replay bar-old signals straight into the book).
     const maxAge = cfg.maxSignalAgeSec ?? 0;
@@ -450,6 +454,8 @@ export class PaperEngine extends EventEmitter {
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
+    const exchangeBlock = this.entryBlock?.(pe.symbol, at);
+    if (exchangeBlock) return cancel(exchangeBlock);
     // decision 190: expiry is part of the fill, judged on the exchange's event time; a message that arrives more than
     // LIMIT_LATE_MS after its event is too late to act on, whatever the scheduler did in between
     if (eventAt >= L.expiresAt) return cancel(`no fill: the limit lapsed at ${new Date(L.expiresAt).toISOString()} before price came back to ${L.price}`);
@@ -487,6 +493,8 @@ export class PaperEngine extends EventEmitter {
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
+    const exchangeBlock = this.entryBlock?.(pe.symbol, receivedAt);
+    if (exchangeBlock) return cancel(exchangeBlock);
     // expiry belongs in the fill path, not only in housekeeping: a print can arrive past the
     // deadline before the next housekeeping tick and would otherwise still be filled
     if (receivedAt > pe.dueAt + PENDING_EXPIRY_MS) return cancel(`no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
@@ -544,6 +552,8 @@ export class PaperEngine extends EventEmitter {
   /** Expire pending entries that neither the tape nor a candle could fill within a minute past their due time. */
   housekeeping(now = Date.now()): void {
     for (const pe of [...this.pending.values()]) {
+      const exchangeBlock = this.entryBlock?.(pe.symbol, now);
+      if (exchangeBlock) { this.cancelPending(pe.id, exchangeBlock); continue; }
       if (pe.limit) { if (now > pe.limit.expiresAt) this.cancelPending(pe.id, `no fill: price did not come back to ${pe.limit.price} within ${pe.limit.bars} ${pe.tf} bars`); continue; }
       if (now > pe.dueAt + PENDING_EXPIRY_MS) { this.cancelPending(pe.id, `no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`); continue; }
       // candles mode: the window has closed and no candle update has come for the symbol — fill at the mark

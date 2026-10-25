@@ -11,6 +11,7 @@ export interface DeltaProduct {
   id: number; symbol: string; description: string; contract_type: string; state: string;
   tick_size: string; contract_value: string; underlying_asset?: { symbol: string }; quoting_asset?: { symbol: string };
   /** Percent of notional: initial margin sets the maximum leverage (100 / initial), maintenance sets the liquidation distance. */
+  trading_status?: string;
   initial_margin?: string; maintenance_margin?: string; max_leverage_notional?: string;
 }
 

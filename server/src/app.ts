@@ -1,3 +1,4 @@
+import { TradingStatus } from './delta/tradingStatus.ts';
 import path from 'node:path';
 import { lastAtr } from './data/indicators.ts';
 import { trendSide } from './paper/logic.ts';
@@ -77,6 +78,7 @@ export class App {
   private huntSeenAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
+  readonly exchangeStatus = new TradingStatus();
   /** Decision 187: every paper fill set beside the real prints on the tape. */
   tapeAudit!: TapeAudit;
   readonly risk: RiskManager;
@@ -326,7 +328,8 @@ export class App {
     const all = this.registry.all();
     return {
       status: 'ok', uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000), mode: cfg.execution.mode, now: Date.now(),
-      feed: { connected: this.feed.connected, lastTickAt: this.feed.lastTickAt, subscriptions: this.feed.subscriptions },
+      exchangeStatus: this.exchangeStatus.snapshot(),
+      feed: { endpoint: this.feed.endpoint, connected: this.feed.connected, lastTickAt: this.feed.lastTickAt, subscriptions: this.feed.subscriptions },
       candles: this.candles.tracked(),
       scanners: { total: all.length, runnable: all.filter(s => s.status === 'ok').length, enabled: all.filter(s => this.scanners.isActive(s)).length },
       universe: { mode: cfg.universe?.mode ?? 'list', symbols: this.resolvedSymbols.length, list: this.resolvedSymbols.slice(0, 50) },

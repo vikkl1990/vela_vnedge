@@ -63,7 +63,7 @@ const rest1m = new Map(history1m.map(c => [c.time, c]));
 
 class FakeRest extends DeltaRest {
   calls: string[] = [];
-  override async products() { return new Map([['BTCUSD', { id: 1, symbol: 'BTCUSD', description: 'Bitcoin Perpetual', contract_type: 'perpetual_futures', state: 'live', tick_size: '0.5', contract_value: '0.001' }]]); }
+  override async products() { return new Map([['BTCUSD', { id: 1, symbol: 'BTCUSD', description: 'Bitcoin Perpetual', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', tick_size: '0.5', contract_value: '0.001' }]]); }
   override async product(symbol: string) { return (await this.products()).get(symbol); }
   override async tickers() { return [{ symbol: 'BTCUSD', product_id: 1, close: 50_470, mark_price: '50470', timestamp: NOW * 1000, contract_type: 'perpetual_futures', tick_size: '0.5', contract_value: '0.001' }]; }
   override async ticker() { return { symbol: 'BTCUSD', product_id: 1, close: 50_470, mark_price: '50470', timestamp: NOW * 1000 }; }
@@ -80,11 +80,12 @@ class FakeRest extends DeltaRest {
 
 class FakeFeed extends DeltaFeed {
   subs = new Set<string>();
-  override start() { this.connected = true; this.emit('status', { connected: true }); }
+  override start() { this.connected = true; this.emit('status', { connected: true }); this.emit('system_status', { status: 'live', event: 'snapshot', timestamp: NOW * 1000 }); }
   override stop() { this.connected = false; }
   override subscribe(channel: string, symbols: string[]) { for (const s of symbols) this.subs.add(`${s}:${channel}`); }
   override unsubscribe(channel: string, symbols: string[]) { for (const s of symbols) this.subs.delete(`${s}:${channel}`); }
   push(resolution: string, c: C) {
+    this.emit('product_updates', { product: { symbol: 'BTCUSD', trading_status: 'operational' }, timestamp: NOW * 1000 });
     (this as any).lastMessageAt = NOW;
     this.emit('candle', { symbol: 'BTCUSD', resolution, candleStartMs: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, updatedMs: NOW });
   }

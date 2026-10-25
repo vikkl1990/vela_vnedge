@@ -441,3 +441,24 @@ test('short script close buys at ask without adding fallback spread twice', t =>
   engine.onScriptExit('s', 'BTCUSD', '15m', 'close', 90, 70_000, 'both');
   assert.equal(p.exitPrice, 99);
 });
+
+
+test('exchange halt vetoes new entries and cancels already pending entries', t => {
+  const { engine, cfg, open } = setup(t);
+  let halt: string | null = null;
+  engine.entryBlock = () => halt;
+  cfg.paper.latencyMs = 1500;
+  open(); assert.equal(engine.pendingEntries().length, 1);
+  halt = 'exchange product disrupted_cancel_only';
+  engine.housekeeping(63000);
+  assert.equal(engine.pendingEntries().length, 0); assert.equal(engine.openPositions().length, 0);
+  open(); assert.equal(engine.pendingEntries().length, 0);
+});
+
+test('entry status gate does not veto risk-reducing script exits', t => {
+  const { engine, open } = setup(t);
+  const p = open();
+  engine.entryBlock = () => 'exchange system maintenance';
+  engine.onScriptExit('s', 'BTCUSD', '15m', 'close', undefined, 70000, 'both');
+  assert.equal(p.status, 'closed');
+});
