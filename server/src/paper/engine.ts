@@ -611,11 +611,13 @@ export class PaperEngine extends EventEmitter {
     const pos = this.findOpen(scannerId, symbol, tf);
     if (!pos) return undefined;
     if (side && pos.side !== side) return undefined;
-    // decision 135: the exit is acted on now, at the market; only a target hit keeps its level (a resting limit fills at it).
-    // The script's price is a level its bar passed before it closed, which no order placed now can get.
-    const fallback = this.marks.get(symbol) ?? price ?? pos.entryPrice;
-    const fills = applyScriptExit(pos, exitType, /^tp\d$/.test(exitType) ? price : undefined, at, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf), exitMode, fallback);
-    if (fills.length) this.applyFills(pos, fills);
+    // A script notification is a market instruction received now, including TP labels.
+    // Resting targets are filled independently by the tape/candle path; a label cannot backdate one.
+    const fallback = this.marks.get(symbol) ?? pos.lastPriceBar?.close ?? pos.entryPrice;
+    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
+    const quote = this.marketPrice(symbol, pos.side === 'long' ? 'sell' : 'buy', fallback, cfg, at);
+    const fills = applyScriptExit(pos, exitType, undefined, at, cfg, exitMode, fallback, { marketPrice: quote.price, quoted: quote.source === 'quote' });
+    if (fills.length) this.applyFills(pos, fills, { ref: fallback, source: quote.source });
     return pos;
   }
 

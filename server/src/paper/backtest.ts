@@ -231,9 +231,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if (!evs) continue;
     for (const ev of evs) {
       if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
-        // decision 135: a script's exit is acted on after the close, so it fills there; only a target hit keeps its level (a resting limit fills at it)
+        // Script messages are market instructions after the close; resting targets already had their chance in the price path.
         const type = ev.exitType ?? 'close';
-        applyScriptExit(open, type, /^tp\d$/.test(type) ? ev.price : undefined, bar.time, cfg, inp.exitMode, bar.close);
+        applyScriptExit(open, type, undefined, bar.time, cfg, inp.exitMode, bar.close, { marketPrice: bar.close, quoted: false });
         if (open.status === 'closed') finish(open);
       }
     }

@@ -888,7 +888,7 @@ export function applyFunding(pos: Position, ratePct: number, markPrice: number, 
 }
 
 /** Script-emitted exit event applied according to the scanner's exit mode. */
-export function applyScriptExit(pos: Position, exitType: ExitType, price: number | undefined, at: number, cfg: PaperConfig, mode: ExitMode, fallbackPrice: number): Fill[] {
+export function applyScriptExit(pos: Position, exitType: ExitType, price: number | undefined, at: number, cfg: PaperConfig, mode: ExitMode, fallbackPrice: number, execution?: { marketPrice: number; quoted: boolean }): Fill[] {
   if (pos.status !== 'open' || mode === 'levels') return [];
   const px = price && Number.isFinite(price) && price > 0 ? price : fallbackPrice;
   const m = exitType.match(/^tp(\d)$/);
@@ -903,13 +903,13 @@ export function applyScriptExit(pos: Position, exitType: ExitType, price: number
       if (pos.legs[k] <= 0) continue;
       const isLast = k === pos.tp.length - 1;
       const q = isLast ? pos.qtyOpen : Math.min(pos.legs[k], pos.qtyOpen);
-      fills.push(fillExit(pos, k === i ? px : pos.tp[k], q, `tp${k + 1}`, at, cfg, false));
+      fills.push(fillExit(pos, execution ? execution.marketPrice : k === i ? px : pos.tp[k], q, `tp${k + 1}`, at, cfg, execution ? execution.quoted ? 'quoted' : true : false));
       if (k === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven && pos.status === 'open') { pos.sl = pos.entryPrice; pos.breakEven = true; }
     }
     return fills;
   }
   const reason = exitType === 'sl' ? 'sl' : exitType === 'be' ? 'be' : exitType === 'flip' ? 'script_flip' : 'script_exit';
-  return [fillExit(pos, px, pos.qtyOpen, reason, at, cfg, true)];
+  return [fillExit(pos, execution?.marketPrice ?? px, pos.qtyOpen, reason, at, cfg, execution?.quoted ? 'quoted' : true)];
 }
 
 export function rMultiple(pos: Position): number | null {

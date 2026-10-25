@@ -417,3 +417,27 @@ test('decision 190: the journal page filters on the server, so counts and totals
   assert.ok(Math.abs(sl.pnl - all.trades.reduce((a, x) => a + x.pnl, 0)) < 1e-9, 'totals span all matches, not the page');
   assert.equal(engine.tradesPage({ reason: 'sl', limit: 2, offset: 2 }).trades.length, 1);
 });
+
+
+test('script TP notification executes now at bid/ask with taker fees, not the historical target', t => {
+  const { engine, cfg, open } = setup(t);
+  Object.assign(cfg.paper, { useSpread: true, requireQuote: false, feeRatePct: .05, makerFeeRatePct: .02, feeTaxPct: 18, slippageBps: 50, quotedSlippageBps: 0, minRiskFeeRatio: 0 });
+  cfg.paper.scalperOffer = { ...cfg.paper.scalperOffer!, enabled: false };
+  cfg.paper.tpSplit = [0, 0, 1];
+  const p = open();
+  engine.quotes = { executable: (_symbol, side) => side === 'sell' ? 101 : 102 };
+  engine.onScriptExit('s', 'BTCUSD', '15m', 'tp3', 115, 70_000, 'both');
+  assert.equal(p.exitPrice, 101);
+  const fill = p.fills.at(-1)!;
+  assert.equal(fill.reason, 'tp3');
+  assert.ok(Math.abs(fill.fee - 101 * fill.qty * p.contractValue * .00059) < 1e-9);
+});
+
+test('short script close buys at ask without adding fallback spread twice', t => {
+  const { engine, cfg, open } = setup(t);
+  const p = open('short');
+  Object.assign(cfg.paper, { useSpread: true, slippageBps: 50, quotedSlippageBps: 0 });
+  engine.quotes = { executable: (_symbol, side) => side === 'buy' ? 99 : 98 };
+  engine.onScriptExit('s', 'BTCUSD', '15m', 'close', 90, 70_000, 'both');
+  assert.equal(p.exitPrice, 99);
+});

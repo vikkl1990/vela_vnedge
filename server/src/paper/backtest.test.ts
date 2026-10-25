@@ -101,3 +101,16 @@ test('decision 113: exit mode script trades the script\'s own exits — no bot t
   const o = scriptModeExit({ ...c, scriptDisasterStopAtr: 2.5 });
   assert.deepEqual([o.fallbackAtrSl, o.fallbackRR, o.trailAfterR, o.floorAtR, o.staleBars], [2.5, [0, 0, 0], 0, 0, 0]);
 });
+
+test('script TP labels use the current close and taker fee when no resting target was reached', () => {
+  const quiet = Array.from({ length: 32 }, (_, i) => bar(i, 100, 100.1, 99.9, 100));
+  quiet[31] = bar(31, 100, 101, 99.9, 101);
+  const entry = { ...events[0], barTime: 30 * M15, barIndex: 30, tp: [110, 120, 130] };
+  const exit = { kind: 'exit', exitType: 'tp3', side: 'long', price: 130, barTime: 31 * M15, barIndex: 31, source: 'alert', label: 'tp3', message: '' };
+  const paper = { ...cfg, minRiskFeeRatio: 0, feeRatePct: .05, makerFeeRatePct: .02, feeTaxPct: 0, scalperOffer: { ...cfg.scalperOffer!, enabled: false } };
+  const bt = runBacktest({ ...base, bars: quiet, events: [entry, exit] as any, cfg: paper, exitMode: 'both' });
+  assert.equal(bt.trades.length, 1);
+  const fill = bt.trades[0].fills.at(-1)!;
+  assert.equal(fill.price, 101);
+  assert.ok(Math.abs(fill.fee - 101 * fill.qty * .0005) < 1e-9);
+});
