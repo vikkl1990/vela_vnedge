@@ -104,10 +104,10 @@ export function Learn() {
             <KpiTile label="Trained" value={d.trainedAt ? <Time t={d.trainedAt} mode="datetime" /> : 'never'} sub={d.config ? `gate ${d.config.minProb > 0 ? pct(d.config.minProb) : 'off'} · as score ${d.config.useAsScore ? 'on' : 'off'}` : ''} />
           </div>
           <div className="row gap">
-            <button className="btn btn-cta" onClick={() => train.mutate()} disabled={train.isPending || d.samples < 30}>
+            <button className="btn btn-cta" onClick={() => train.mutate()} disabled={train.isPending || (d.counts?.total ?? d.samples) < 30}>
               {train.isPending ? 'Training…' : 'Train now'}
             </button>
-            <span className="muted small">Models retrain automatically 30 s after new samples arrive. Gate and score usage live in Settings → Machine learning.</span>
+            <span className="muted small">Models retrain automatically within two minutes after new samples arrive. Gate and score usage live in Settings → Machine learning.</span>
           </div>
 
           <Yardstick />
