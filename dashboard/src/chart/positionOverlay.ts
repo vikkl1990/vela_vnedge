@@ -31,7 +31,7 @@ export function positionOverlay(p: Position, peakR?: number | null): ChartScript
 
   const levels: Level[] = [{ price: p.entryPrice, label: 'entry', role: 'entry' }]
   if (p.slOriginal != null) levels.push({ price: p.slOriginal, label: 'stop −1R', role: 'stop', dashed: true })
-  if (p.sl != null && p.slOriginal != null && Math.abs(p.sl - p.slOriginal) > 1e-12)
+  if (p.sl != null && (p.slOriginal == null || Math.abs(p.sl - p.slOriginal) > 1e-12))
     levels.push({ price: p.sl, label: `stop now ${rOf(p.sl) >= 0 ? '+' : ''}${rOf(p.sl).toFixed(2)}R`, role: 'stop' })
   p.tp?.forEach((tp, i) => {
     if (tp == null) return

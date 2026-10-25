@@ -76,7 +76,9 @@ export function ChartPage() {
   // the open position on this market: its levels are drawn as an overlay, and the scanner that
   // opened it is selected automatically, so the chart shows the indicator that made the decision
   const positions = usePositions()
-  const position = useMemo(() => (positions.data ?? []).find((p) => p.symbol === symbol && p.tf === tf) ?? (positions.data ?? []).find((p) => p.symbol === symbol), [positions.data, symbol, tf])
+  const [positionId, setPositionId] = useState<number | null>(null)
+  const symbolPositions = useMemo(() => (positions.data ?? []).filter(p => p.symbol === symbol), [positions.data, symbol])
+  const position = useMemo(() => symbolPositions.find(p => p.id === positionId) ?? symbolPositions.find(p => p.tf === tf) ?? symbolPositions[0], [symbolPositions, positionId, tf])
   // the scanner that opened the position is always overlaid while that position is on screen
   const autoScannerId = position?.scannerId ?? null
   const heldScanner = useMemo(() => (scanners.data ?? []).find((s) => s.id === autoScannerId && s.status === 'ok'), [autoScannerId, scanners.data])
@@ -132,6 +134,16 @@ export function ChartPage() {
     [positionSignals.data, position],
   )
   const marks = useMemo(() => decisionMarks(signals.data ?? []), [signals.data])
+  const positionBadge = showPosition && position ? (
+    <div className="chart-position-badge" style={{ position: 'absolute', left: 64, top: 38, zIndex: 5, maxWidth: 'calc(100% - 90px)', padding: '8px 12px', background: 'rgba(15, 17, 24, .92)', border: '1px solid #55516c', borderRadius: 8, fontSize: 12, pointerEvents: 'none' }}>
+      <strong>OPEN #{position.id} · {position.side.toUpperCase()} · {position.tf}</strong>
+      <div>{position.scannerName}{heldScanner && !heldScanner.enabled ? ' · disabled for new entries' : ''}</div>
+      <div className="mono">Entry {fmtPrice(position.entryPrice, markets.data?.find(m => m.symbol === symbol)?.tickSize)} · SL {fmtPrice(position.sl, markets.data?.find(m => m.symbol === symbol)?.tickSize)}</div>
+      <div className="mono">{position.tp.map((price, i) => price == null ? null : `TP${i + 1} ${fmtPrice(price, markets.data?.find(m => m.symbol === symbol)?.tickSize)}${position.tpHit[i] ? ' ✓' : ''}`).filter(Boolean).join(' · ')}</div>
+      <div>ML entry P(win): {entrySignal?.mlProb != null ? `${(entrySignal.mlProb * 100).toFixed(1)}%` : positionSignals.isLoading ? 'loading…' : 'unavailable at entry'}</div>
+      <div className="muted">Recorded entry prediction · no live price forecast</div>
+    </div>
+  ) : null
   const market = markets.data?.find((m) => m.symbol === symbol)
   const live = useLivePrice(symbol, market?.markPrice)
 
@@ -139,6 +151,7 @@ export function ChartPage() {
     <div className="page page-chart">
       <p className="muted small">Indicator plots are a live preview; timeline marks and the decision feed come from the bot journal. {heldScanner && !heldScanner.enabled ? `Held scanner ${heldScanner.name} is displayed read-only (disabled for entries).` : ''}</p>
       {scripts.length > 0 && <details className="small"><summary>Bot script inputs and source versions</summary>{scripts.map(s => <p key={s.id} className="mono">{s.title} · source {s.sourceHash ?? 'unknown'} · bot timezone {s.timezone ?? 'UTC'} · inputs {JSON.stringify(s.inputs ?? {})}{s.timezone && s.timezone !== 'UTC' ? ' · Chart metadata uses UTC; this custom timezone is not reproduced.' : ''}</p>)}</details>}
+      {(positions.data?.length ?? 0) > 0 && <div className="row gap" style={{ flexWrap: 'wrap' }}><span className="chips-label">Open positions</span>{positions.data?.map(p => <button key={p.id} className={`btn btn-xs ${position?.id === p.id ? 'btn-on' : ''}`} onClick={() => { setSymbol(p.symbol); setPositionId(p.id); setTf(p.tf); setShowPosition(true) }}>#{p.id} {p.symbol} · {p.tf} · {p.side}</button>)}</div>}
       <div className="toolbar">
         <label className="field-inline">
           <span className="chips-label">Symbol</span>
@@ -176,6 +189,7 @@ export function ChartPage() {
             <span className="muted small">{market.description}</span>
           </span>
         )}
+        {symbolPositions.length > 0 && <label className="field-inline"><span className="chips-label">Open position</span><select className="select" aria-label="Open position" value={position?.id ?? ''} onChange={e => setPositionId(Number(e.target.value))}>{symbolPositions.map(p => <option key={p.id} value={p.id}>#{p.id} · {p.side} · {p.tf} · {p.scannerName}</option>)}</select></label>}
         {position && (
           <label className="field-inline" title="Draw this position's entry, stop and targets on the chart">
             <input type="checkbox" checked={showPosition} onChange={(e) => setShowPosition(e.target.checked)} />
@@ -183,7 +197,7 @@ export function ChartPage() {
               Position #{position.id} · {position.side} · {position.scannerName}
               {peakR != null && <span className="muted small"> · peak {peakR >= 0 ? '+' : ''}{peakR.toFixed(2)}R</span>}
               {entrySignal?.mlProb != null && (
-                <span className="muted small" title="The learned model's win probability for this entry. It is off as a filter (decision 37) and trained mostly on scripts this fleet does not trade.">
+                <span className="muted small" title="Recorded model probability when the entry was evaluated; this is not a current price forecast.">
                   {' '}· model {(entrySignal.mlProb * 100).toFixed(0)}%
                 </span>
               )}
@@ -214,12 +228,14 @@ export function ChartPage() {
       </div>
 
       <div className={`chart-layout ${view === 'frames' ? 'chart-layout-frames' : ''}`}>
-        <div className="chart-main">
+        <div className="chart-main" style={{ position: 'relative' }}>
+          {view === 'single' && positionBadge}
           {symbol && view === 'frames' ? (
             <ChartFrames
               marks={marks}
               symbol={symbol}
               tfs={frames}
+              positionBadge={positionBadge}
               scripts={allScripts}
               tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
