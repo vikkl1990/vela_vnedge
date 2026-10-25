@@ -73,6 +73,9 @@ export class DeltaRest {
     const qs = opts.query ? '?' + new URLSearchParams(Object.entries(opts.query).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])).toString() : '';
     const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
     const headers: Record<string, string> = { 'User-Agent': this.ua, 'Content-Type': 'application/json', Accept: 'application/json' };
+    const retries = opts.retries ?? 2;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
     if (opts.auth) {
       if (!this.hasAuth) throw new Error('Delta API key/secret not configured');
       const ts = String(Math.floor(Date.now() / 1000));
@@ -80,9 +83,6 @@ export class DeltaRest {
       headers['timestamp'] = ts;
       headers['signature'] = this.sign(method, path, qs, bodyStr, ts);
     }
-    const retries = opts.retries ?? 2;
-    let lastErr: unknown;
-    for (let attempt = 0; attempt <= retries; attempt++) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
       try {
@@ -90,7 +90,14 @@ export class DeltaRest {
         const text = await res.text();
         let json: any;
         try { json = JSON.parse(text); } catch { json = { success: false, error: { code: 'bad_json', message: text.slice(0, 200) } }; }
-        if (res.status === 429) { lastErr = new Error('rate limited'); await sleep(1000 * (attempt + 1)); continue; }
+        if (res.status === 429) {
+          lastErr = new Error('Delta rate limited');
+          if (attempt >= retries) throw lastErr;
+          const header = res.headers.get('X-RATE-LIMIT-RESET');
+          const resetMs = header === null ? NaN : Number(header);
+          await sleep(Number.isFinite(resetMs) && resetMs >= 0 ? resetMs : 1000 * (attempt + 1));
+          continue;
+        }
         if (!res.ok || json?.success === false) {
           const msg = `Delta ${method} ${path} → ${res.status} ${JSON.stringify(json?.error ?? json).slice(0, 300)}`;
           if (res.status >= 500 && attempt < retries) { lastErr = new Error(msg); await sleep(500 * (attempt + 1)); continue; }
@@ -151,7 +158,7 @@ export class DeltaRest {
 
   /**
    * Historical candles, ascending by time. `start`/`end` in epoch **seconds**.
-   * Delta returns at most ~4000 candles per call and newest-first; this pages backwards until `start`.
+   * Delta documents at most 2000 candles per call and newest-first; this pages backwards until `start`.
    */
   async candles(symbol: string, resolution: string, startSec: number, endSec: number, maxBars = 20_000): Promise<DeltaCandle[]> {
     const out: DeltaCandle[] = [];
@@ -161,12 +168,12 @@ export class DeltaRest {
       if (!Array.isArray(res) || res.length === 0) break;
       out.push(...res);
       const oldest = Math.min(...res.map(c => c.time));
-      if (res.length < 100 || oldest <= startSec || out.length >= maxBars) break;
+      if (oldest <= startSec || oldest >= end || out.length >= maxBars) break;
       end = oldest - 1;
     }
     const seen = new Set<number>();
     const nowSec = Math.floor(Date.now() / 1000);
-    const list = out.filter(c => c.time <= nowSec && (seen.has(c.time) ? false : (seen.add(c.time), true))).sort((a, b) => a.time - b.time);
+    const list = out.filter(c => c.time >= startSec && c.time <= Math.min(endSec, nowSec) && (seen.has(c.time) ? false : (seen.add(c.time), true))).sort((a, b) => a.time - b.time);
     log.debug(`candles ${symbol} ${resolution}: ${list.length} bars`);
     return list;
   }
@@ -190,7 +197,20 @@ export class DeltaRest {
   }
   async cancelAll(product_id: number): Promise<any> { return this.request('DELETE', '/v2/orders/all', { auth: true, body: { product_id }, retries: 0 }); }
   /** Open (resting / untriggered) orders, optionally for one product. */
-  async openOrders(product_id?: number): Promise<any> { return this.request('GET', '/v2/orders', { auth: true, query: { states: 'open,pending', product_ids: product_id, page_size: 200 } }); }
+  async openOrders(product_id?: number): Promise<any[]> {
+    const orders: any[] = [], cursors = new Set<string>();
+    let after: string | undefined;
+    for (let page = 0; page < 100; page++) {
+      const env = await this.request<any>('GET', '/v2/orders', { auth: true, raw: true, query: { states: 'open,pending', product_ids: product_id, page_size: 200, after } });
+      if (!Array.isArray(env?.result)) throw new Error('Delta open orders: invalid response');
+      orders.push(...env.result);
+      const next = env.meta?.after;
+      if (!next) return orders;
+      if (cursors.has(String(next))) throw new Error('Delta open orders: repeated pagination cursor');
+      cursors.add(String(next)); after = String(next);
+    }
+    throw new Error('Delta open orders: pagination limit exceeded');
+  }
   async cancelOrder(id: number | string, product_id: number): Promise<any> { return this.request('DELETE', '/v2/orders', { auth: true, body: { id, product_id }, retries: 0 }); }
   /** One order by exchange id — its state, unfilled size, average fill price and paid commission. */
   async order(id: number | string): Promise<any> { return this.request('GET', `/v2/orders/${id}`, { auth: true }); }

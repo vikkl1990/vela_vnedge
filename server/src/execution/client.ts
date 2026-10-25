@@ -99,8 +99,7 @@ export class RestTransport implements ExchangeTransport {
     return list.map(p => ({ symbol: String(p.product_symbol ?? p.symbol ?? p.product?.symbol ?? ''), product_id: Number(p.product_id ?? p.product?.id), size: Number(p.size ?? 0), entry_price: Number(p.entry_price ?? 0), raw: p }));
   }
   async openOrders(product_id?: number): Promise<ExchangeOrder[]> {
-    const res = await this.rest.openOrders(product_id);
-    const list: any[] = Array.isArray(res) ? res : res?.result ?? [];
+    const list = await this.rest.openOrders(product_id);
     return list.map(parseOrder);
   }
   async order(id: number | string): Promise<ExchangeOrder | null> {
