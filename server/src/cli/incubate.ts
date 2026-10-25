@@ -52,6 +52,10 @@ const rest = new DeltaRest();
 const TFS = inc.tfs?.length ? inc.tfs : [inc.tf];
 const SLICES = inc.screen.slices;
 const handRun = Boolean(process.env.SLICE || process.env.TF || process.env.IDS || process.env.MARKETS);
+// decision 198: see the screen loop — re-screen the shadow book's own cells; DRY=1 records nothing and skips the judge
+const shadowOnly = process.env.RESCREEN_SHADOW === '1';
+const dry = process.env.DRY === '1';
+const verdicts: Array<{ scannerId: string; symbol: string; tf: string; pass: boolean; reason: string; pf: number; trades: number; avgR: number }> = [];
 /** `retry`: the quarantined scripts released for one more screen at the head of this slice (decision 108), kept in the cursor so a resumed slice sees the same list. */
 type Cursor = { tfIdx: number; slice: number; scriptIdx: number; retry?: string[] };
 let cursor: Cursor = handRun
@@ -192,7 +196,11 @@ while (sliceArg !== 'none') {
   // ---- screen ----
   // workers as processes (decision 98): a recycled one gives its memory back, a runaway one dies at once
   const pool = new PinePool(Number(process.env.WORKERS) || 4, 120_000, processWorker);
-  const skipStages = new Set(['live', 'demote_proposed', 'shadow', 'proposed', 'tracked']);
+  // decision 198: RESCREEN_SHADOW=1 re-screens the pairs already in the shadow book (and proposed) on their own markets,
+  // nothing else — the ordinary screen skips them, so a re-screen under a corrected policy never reached them and the
+  // decision-186 rule (a re-screen that no longer passes retires the pair) had nothing to act on. DRY=1 records nothing
+  // and skips the judge: it prints each pair's verdict so the retirements can be read before they happen.
+  const skipStages = new Set(shadowOnly ? ['live', 'demote_proposed', 'tracked', 'candidate', 'retired'] : ['live', 'demote_proposed', 'shadow', 'proposed', 'tracked']);
   const markets = [...data.keys()];
   let stopped = false;
   for (const [idx, s] of scripts.entries()) {
@@ -217,9 +225,10 @@ while (sliceArg !== 'none') {
     let probed = 0, sawEntry = false;
     for (const symbol of markets) {
       // a script that produced no entry on its first three markets is not going to on the rest
-      if (probed >= 3 && !sawEntry) { summary.silentSkipped += markets.length - probed; break; }
+      if (!shadowOnly && probed >= 3 && !sawEntry) { summary.silentSkipped += markets.length - probed; break; }
       const cur = store.find(s.id, symbol, TF);
       if (cur && skipStages.has(cur.stage)) continue;
+      if (shadowOnly && !cur) continue;   // only the book's own cells
       if (cur?.stage === 'retired' && Date.now() - cur.since < inc.cooldownDays * DAY) { summary.cooldown++; continue; }
       probed++; // counts markets actually run, not ones skipped above
       const d = data.get(symbol)!;
@@ -292,11 +301,13 @@ while (sliceArg !== 'none') {
           const r2 = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: cutBars, tailBars: 'all', plotTail: cutBars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone });
           if (r2.ok) {
             const rc = compareRepaint(res, d.bars, r2, cutBars, s.id, cfg.scanners[s.id] ?? {});
-            if (rc.repaints) { r.pass = false; summary.repaint = (summary.repaint ?? 0) + 1; health.quarantine(s.id, repaintReason(rc)); out(`  ${s.id}: quarantined — ${repaintReason(rc)}`); recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc); break; }
+            if (rc.repaints) { r.pass = false; summary.repaint = (summary.repaint ?? 0) + 1; health.quarantine(s.id, repaintReason(rc)); out(`  ${s.id}: quarantined — ${repaintReason(rc)}`); if (!dry) recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc); else verdicts.push({ scannerId: s.id, symbol, tf: TF, pass: false, reason: repaintReason(rc), pf: r.profitFactor, trades: r.trades, avgR: r.avgR }); break; }
           }
         }
         if (r.pass) summary.passed++;
         r.fill = 'close';   // decision 134: entries filled at the signal bar's close
+        if (shadowOnly) verdicts.push({ scannerId: s.id, symbol, tf: TF, pass: r.pass, reason: `PF ${r.profitFactor.toFixed(2)}, ${r.trades} trades, ${r.avgR.toFixed(2)}R, ${r.windowsUp}/8 windows up, at stress ${r.netAtStress.toFixed(0)}${r.holdoutPass === false ? ', holdout failed' : ''}${coarse.has(symbol) ? ', too coarse to size' : ''}`, pf: r.profitFactor, trades: r.trades, avgR: r.avgR });
+        if (dry) continue;
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);
         if (k === 'new' || k === 'updated' || k === 'cooldown') summary[k]++;
       } catch (e: any) { summary.failed++; }
@@ -315,6 +326,13 @@ while (sliceArg !== 'none') {
   out(`slice done with budget left: continuing with ${TFS[cursor.tfIdx]} slice ${cursor.slice}`);
 }
 
+if (shadowOnly) {
+  const fail = verdicts.filter(v => !v.pass);
+  out(`re-screen of the shadow book: ${verdicts.length} pairs, ${verdicts.length - fail.length} pass, ${fail.length} fail${dry ? ' (dry run: nothing recorded)' : ''}`);
+  for (const v of fail) out(`  fails: ${v.scannerId} ${v.symbol} ${v.tf} — ${v.reason || `PF ${v.pf.toFixed(2)}, ${v.trades} trades, ${v.avgR.toFixed(2)}R`}`);
+  if (process.env.OUT) fs.writeFileSync(process.env.OUT, JSON.stringify(verdicts, null, 1));
+}
+if (dry) { out('dry run: no screen recorded, no judge'); process.exit(0); }
 // ---- judge ----
 const judgeRegistry = new ScannerRegistry();
 const report = evaluate(store, cfg, Date.now(), {

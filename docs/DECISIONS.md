@@ -5838,3 +5838,15 @@ switching it on for 15m; 1h and 4h stay as they are.
 **Limits.** Paths are sampled about once a minute: a touch between samples is missed and a fire can be late. The
 spread at the lock is unknown and not added; funding is ignored on both sides. Coverage (paths with no gap over three
 minutes) is high in the account (271 of 276 on 15m) and lower in the shadow book (1,430 of 1,878 on 15m).
+
+## 198. Re-screening the shadow book itself
+
+**Why.** The overnight 1h/4h re-screen under the corrected policy (decision 191) ran 10,742 backtests and re-judged
+three of the 725 shadow pairs it was meant to re-judge. The screen skips every market where a scanner already has a
+shadow, proposed, live or tracked pair, so it screened those scanners' other markets — 196 new candidates — and the
+decision-186 rule (a shadow pair whose re-screen no longer passes is retired) had nothing to act on. The rule also
+cleared out the three pairs on scripts that are not in the library (decision 195).
+
+**What.** `RESCREEN_SHADOW=1` makes a screen run re-screen only the pairs already in the shadow book or proposed, on
+their own markets, without the silent-script shortcut; `DRY=1` records nothing, skips the judge, and prints each
+pair's verdict (and writes them to `OUT` when set), so the retirements can be read before a real run makes them.
