@@ -82,6 +82,7 @@ export class PaperEngine extends EventEmitter {
   private markPrices = new Map<string, { price: number; at: number }>();
   /** Wall-clock time of the last tape print per symbol (decides the 1m-candle fallback). */
   private lastTradeAt = new Map<string, number>();
+  private lastTradeTime = new Map<string, number>();
   private pending = new Map<number, PendingEntry>();
   /** Portfolio risk layer; set by the composition root (app.ts). */
   risk: RiskGate | null = null;
@@ -489,11 +490,11 @@ export class PaperEngine extends EventEmitter {
     // expiry belongs in the fill path, not only in housekeeping: a print can arrive past the
     // deadline before the next housekeeping tick and would otherwise still be filled
     if (receivedAt > pe.dueAt + PENDING_EXPIRY_MS) return cancel(`no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
-    // a candle-sourced fill is a market order against the book at that moment: it pays the spread through the
-    // live quote when one is fresh, otherwise the slippage assumption (the same pricing the immediate fill used)
+    // A tape print wakes the order; it is not an executable market quote. Every deferred market
+    // entry rechecks the current book and requireQuote policy, just like an immediate entry.
     let quoted = false;
     const context: FillContext = { ref: priceIn, source: 'slippage' };
-    if (source === 'candle') {
+    {
       const q = this.entryPrice(pe.symbol, pe.side === 'long' ? 'buy' : 'sell', price, cfg, receivedAt);
       if ('reject' in q) return cancel(`unpriceable: ${q.reject}`);
       context.source = q.quoted ? 'quote' : 'slippage';
@@ -502,7 +503,7 @@ export class PaperEngine extends EventEmitter {
     // the signal's levels are absolute; the fill price must still sit on the right side of them
     const levels = resolveLevels({ side: pe.side, price, sl: pe.levels.sl, tp: pe.levels.tp }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
-    const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, at));
+    const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, receivedAt));
     if (feeErr) return cancel(feeErr);
     // decision 186: a reversal's held position is still open; it is closed only if this entry fills
     const held = pe.replacingId !== undefined ? this.open.get(pe.replacingId) : undefined;
@@ -523,9 +524,9 @@ export class PaperEngine extends EventEmitter {
     }
     if (held && held.status === 'open') {
       const exitQuote = this.marketPrice(held.symbol, held.side === 'long' ? 'sell' : 'buy', priceIn, cfg, receivedAt);
-      if (!this.applyFills(held, [fillExit(held, exitQuote.price, held.qtyOpen, 'reversal', at, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref: priceIn, source: exitQuote.source })) return cancel('reversal: the held position could not be closed');
+      if (!this.applyFills(held, [fillExit(held, exitQuote.price, held.qtyOpen, 'reversal', receivedAt, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref: priceIn, source: exitQuote.source })) return cancel('reversal: the held position could not be closed');
     }
-    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg, context);
+    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: price, at: receivedAt, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg, context);
     return pos;
   }
 
@@ -554,7 +555,8 @@ export class PaperEngine extends EventEmitter {
 
   /** One print from the tape. Fills due pending entries, then checks liquidation (on mark), stop and resting targets. */
   onTrade(symbol: string, price: number, qty: number, time: number, observedAt = Date.now()): void {
-    if (!(price > 0)) return;
+    if (!(price > 0) || !Number.isFinite(time) || time < (this.lastTradeTime.get(symbol) ?? -Infinity)) return;
+    this.lastTradeTime.set(symbol, time);
     this.lastTradeAt.set(symbol, observedAt);
     this.marks.set(symbol, price);
     if (!this.tapeMode) return;
@@ -567,12 +569,14 @@ export class PaperEngine extends EventEmitter {
     }
     const mark = this.markPrices.get(symbol)?.price;
     for (const pos of [...this.open.values()]) {
-      if (pos.symbol !== symbol || filled.has(pos.id)) continue;
+      if (pos.symbol !== symbol || filled.has(pos.id) || time < pos.entryAt) continue;
       const slBefore = pos.sl, offBefore = pos.trailOff;
       const atr = (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined;
       const fills = applyTrade(pos, { time, price, qty }, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf), mark, atr);
-      if (fills.length) this.applyFills(pos, fills);
-      else if (pos.sl !== slBefore || pos.trailOff !== offBefore) { this.persist(pos); this.emit('position', { type: 'updated', position: pos }); }
+      const committed = fills.length ? this.applyFills(pos, fills) : true;
+      if (!fills.length && (pos.sl !== slBefore || pos.trailOff !== offBefore)) { this.persist(pos); this.emit('position', { type: 'updated', position: pos }); }
+      if (committed) for (const f of fills) this.recordPath(pos, f.price, time, f.reason, `${f.qty} at ${f.price} (tape)`);
+      if (pos.status === 'open') this.recordPath(pos, price, time, pos.sl !== slBefore ? 'stop moved' : undefined);
     }
     this.recordEquity(false);
   }

@@ -277,3 +277,32 @@ test('a trade records its path and its peak, so a loss can be read back without 
   assert.ok(row.peak_r >= 1.5 && row.peak_at === peakAt, 'the peak is on the position itself');
   assert.ok(row.worst_r <= row.peak_r, 'the worst excursion observed is never above the peak');
 });
+
+
+test('pending tape entry rechecks fresh quote and cannot bypass requireQuote', t => {
+  const { engine } = setup(t, { useSpread: true, requireQuote: true, quoteMaxAgeMs: 1000 });
+  let executable: number | null = 100;
+  engine.quotes = { executable: () => executable };
+  const ev = { kind: 'entry' as const, side: 'long' as const, price: 100, sl: 95, tp: [105,110,115], label: 'buy', message: '', source: 'alert' as const, barTime: 0, barIndex: 0 };
+  const d = engine.onEntry(ev, { scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', market: { tickSize: .25, contractValue: 1 }, refPrice: 100, at: 60000, signalId: null, exitMode: 'both' });
+  assert.equal(d.action, 'pending');
+  executable = null;
+  engine.onTrade('BTCUSD', 100, 1, 62000, 62000);
+  assert.equal(engine.openPositions().length, 0);
+  assert.equal(engine.pendingEntries().length, 0);
+});
+
+test('tape market entry buys current ask and timestamps receipt, then journals tape paths', t => {
+  const { engine, signal, db } = setup(t, { useSpread: true, requireQuote: false });
+  signal('long', 60000);
+  engine.quotes = { executable: () => 102 };
+  engine.onTrade('BTCUSD', 101, 1, 62000, 63000);
+  const p = engine.openPositions()[0];
+  assert.equal(p.entryPrice, 102);
+  assert.equal(p.entryAt, 63000);
+  engine.onTrade('BTCUSD', 103, 1, 64000, 64000);
+  assert.equal(db.get<{ n: number }>('SELECT COUNT(*) n FROM position_path WHERE position_id=?', p.id)?.n, 1);
+  engine.onTrade('BTCUSD', 90, 1, 63500, 65000);
+  assert.equal(p.status, 'open', 'out-of-order tape cannot stop the position or rewind its mark');
+  assert.equal(engine.mark('BTCUSD'), 103);
+});
