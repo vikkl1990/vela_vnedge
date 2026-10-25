@@ -173,3 +173,12 @@ export function walkBook(book: { bids: Array<[number, number]>; asks: Array<[num
   if (!Number.isFinite(crossPct)) return null;
   return { spreadPct: (asks[0][0] - bids[0][0]) / mid * 100, crossPct, deep: buy.full && sell.full, levels: Math.max(bids.length, asks.length) };
 }
+
+/**
+ * Decision 202: the market gate's `bookCostPct` is the cost of crossing the book *plus* the fee round trip. A backtest
+ * charges the fees itself, so the spread it is handed must be the crossing part only; handing it the whole book cost
+ * charged the fees twice (BTCUSD 1h: every stop under ~1.4% refused, zero trades).
+ */
+export function crossingPct(bookCostPct: number, paper: { feeRatePct: number; feeTaxPct?: number }): number {
+  return Math.max(0, bookCostPct - paper.feeRatePct * (1 + (paper.feeTaxPct ?? 0) / 100) * 2);
+}

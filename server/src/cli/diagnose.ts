@@ -33,6 +33,7 @@ import { ConfigStore, TF_SECONDS, type PaperConfig } from '../config.ts';
 import { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { readingOf } from '../scanners/reading.ts';
+import { crossingPct } from '../risk/marketGate.ts';
 
 const cfg = new ConfigStore().get();
 if (process.env.PAPER) Object.assign(cfg.paper, JSON.parse(fs.readFileSync(process.env.PAPER, 'utf8')));
@@ -76,7 +77,7 @@ const tail = (b: Bar[], n: number) => (b.length > n ? b.slice(-n) : b);
 const market = new Map<string, ReturnType<typeof marketSpec>>();
 // the market gate's last reading of each book (round-trip cost in %), so the honest variants pay the spread the account pays
 const bookCost = new Map<string, number>();
-try { for (const m of (new Db().kvGet<{ markets: Array<{ symbol: string; bookCostPct: number | null }> }>('risk.marketsToday')?.markets ?? [])) if (m.bookCostPct != null) bookCost.set(m.symbol, m.bookCostPct); } catch { /* no gate reading: the spread variants then equal base */ }
+try { for (const m of (new Db().kvGet<{ markets: Array<{ symbol: string; bookCostPct: number | null }> }>('risk.marketsToday')?.markets ?? [])) if (m.bookCostPct != null) bookCost.set(m.symbol, crossingPct(m.bookCostPct, cfg.paper)); /* decision 202: crossing only, the backtest charges the fees */ } catch { /* no gate reading: the spread variants then equal base */ }
 for (const s of MARKETS) { const p = await rest.product(s); market.set(s, marketSpec(p)); }
 
 // ---- context series for the regime test (decision 102): the majors' bias, each market's funding, the top traders' ratio ----

@@ -67,3 +67,15 @@ test('decision 191: a script-exit scanner gets the books\' trail and floor in th
   assert.ok(prot.trades[0].pnl > 0, `protected: ${prot.trades[0]?.pnl}`);
   assert.ok((bare.trades[0]?.pnl ?? -1) < prot.trades[0].pnl, 'without the protection the trade keeps less');
 });
+
+test('decision 202: the backtest is charged the book crossing only — the market gate\'s book cost already holds the fees', async () => {
+  const { crossingPct } = await import('../risk/marketGate.ts');
+  const { checkRiskVsFees } = await import('./logic.ts');
+  const paper = { ...structuredClone(DEFAULT_CONFIG.paper), feeRatePct: 0.05, feeTaxPct: 18, minRiskFeeRatio: 6 };
+  const btcBookCost = 0.1186227212295008;   // the gate's reading for BTCUSD on 25 October: 0.118% fees + 0.0006% spread
+  const cross = crossingPct(btcBookCost, paper);
+  assert.ok(Math.abs(cross - 0.0006227212295008) < 1e-9, `crossing ${cross}`);
+  // a 1h BTC stop of 0.75% clears six times the real round trip; charged the book cost on top of the fees it did not
+  assert.equal(checkRiskVsFees(80_000, 80_000 * (1 - 0.0075), paper, 'BTCUSD', cross), null);
+  assert.notEqual(checkRiskVsFees(80_000, 80_000 * (1 - 0.0075), paper, 'BTCUSD', btcBookCost), null);
+});

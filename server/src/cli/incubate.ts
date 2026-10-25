@@ -39,6 +39,7 @@ import { readingOf } from '../scanners/reading.ts';
 import { createHash } from 'node:crypto';
 import { sourceHash } from '../paper/fingerprint.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
+import { crossingPct } from '../risk/marketGate.ts';
 /** Decision 201: the hashes a screen result carries, so a later reader can tell what strategy it measured. */
 function screenProvenance(patched: string, read: { extract: Record<string, unknown>; rule: Record<string, unknown> }, policy: Record<string, unknown>) {
   const h = (v: unknown) => createHash('sha1').update(JSON.stringify(v, (_k, x) => (x instanceof Set ? [...x].sort() : x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x))).digest('hex').slice(0, 12);
@@ -116,6 +117,8 @@ while (sliceArg !== 'none') {
   // decision 109: the screen pays each market's measured round-trip book cost, as the account does (decision 96's honest
   // base), so a cell whose stop the live cost rule would refuse is not admitted on a backtest that never paid the book
   const bookCost = new Map((today?.markets ?? []).filter(m => typeof m.bookCostPct === 'number' && m.bookCostPct! > 0).map(m => [m.symbol, m.bookCostPct as number]));
+  // decision 202: what the backtest is charged on top of its own fees — the book crossing only
+  const crossing = new Map([...bookCost].map(([s, c]) => [s, crossingPct(c, cfg.paper)]));
   const allowed = today?.enabled ? today.markets.filter(m => m.allowed && /USD$/.test(m.symbol)).map(m => m.symbol) : [];
   // MARKETS=BTCUSD,ETHUSD: a hand run on just these markets (a 4h screen of the whole universe pulls a million 1m bars per market)
   const onlyMarkets = process.env.MARKETS ? new Set(process.env.MARKETS.split(',').map(x => x.trim()).filter(Boolean)) : null;
@@ -291,7 +294,7 @@ while (sliceArg !== 'none') {
         // decision 191: the screen trades the scanner the way the shadow book it admits to will — the entry model (a maker
         // limit on 1h/4h), the scanner's exit rules with the script-exit protection, its trend gate and the regime's chop gate
         const policy = backtestPolicy(cfg, s.id, TF, 'shadow');
-        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, ...policy, contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: bookCost.get(symbol) } as const;
+        const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, ...policy, contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: crossing.get(symbol) } as const;
         const bt = runBacktest(base);
         const stressed = runBacktest({ ...base, cfg: { ...policy.cfg, slippageBps: inc.screen.stressBps } });
         const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);

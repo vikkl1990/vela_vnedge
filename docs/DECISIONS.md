@@ -5903,3 +5903,23 @@ trading; one with too little record keeps collecting it, and the stale cap retir
   without touching their original screen (a non-dry live re-screen is refused).
 - Each scanner page shows its reading contract and the id it is a variant of.
 - The drawdown alert says it is an alert only and names what does cut size (the drawdown rule, from the capital).
+
+## 202. The screen charged the fees twice
+
+**Why.** The dry revalidation of the live pairs (decision 201) failed all 18 it re-tested, two of them with zero trades
+on BTCUSD 1h — scanners that signal there live (ai-predictive-flow and structure-anchored-vwap, five entries each since
+early October). `diagnose` showed ai-predictive-flow BTCUSD 1h at 27 trades and +6.4R without the market's cost and zero
+trades with it. The market gate's `bookCostPct` is the book crossing *plus* the fee round trip (BTCUSD 0.1186% =
+0.118% fees + 0.0006% spread); the screen handed it to the backtest as `spreadPct`, and the backtest charged the fees
+again — in the cost rule (a stop had to clear six times twice the fees: ~1.4% on BTCUSD, wider than a 1h stop) and in
+every fill.
+
+**What.** `crossingPct` (risk/marketGate.ts) takes the fees back out; the screen, `diagnose` and `conjunction` hand the
+backtest the crossing only. The "too quiet" check keeps the whole book cost, which is what it means there.
+
+**Consequences.** Every screen since 17 October (decision 109) and every `diagnose` variant that paid the market's cost
+since 14 October understated trades and R, most of all on liquid markets with tight stops. Admissions since then were
+stricter than intended; the decision-191 comparisons of market and limit entries paid the same doubled cost on both
+sides, so their ordering stands but their absolute R does not. The 40 shadow pairs retired on 25 October (decision 200)
+were retired because their own shadow records were flat or losing as well, which stands on its own. The live
+revalidation and the shadow re-screen are re-run on the corrected screen.

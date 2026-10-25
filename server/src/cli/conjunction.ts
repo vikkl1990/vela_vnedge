@@ -24,6 +24,7 @@ import { screenVerdict, type ScreenResult } from '../incubator/cycle.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 import { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
+import { crossingPct } from '../risk/marketGate.ts';
 
 const cfg = new ConfigStore().get();
 const inc = cfg.incubator;
@@ -39,7 +40,7 @@ const series = new Map<string, Bar[]>();
 async function bars(symbol: string, tf: string, n: number): Promise<Bar[]> { const k = `${symbol}:${tf}`; if (!series.has(k)) series.set(k, toBars(await rest.recentCandles(symbol, tf, n, TF_SECONDS[tf]))); return series.get(k)!; }
 const market = new Map<string, ReturnType<typeof marketSpec>>();
 const bookCost = new Map<string, number>();
-try { for (const m of (new Db().kvGet<{ markets: Array<{ symbol: string; bookCostPct: number | null }> }>('risk.marketsToday')?.markets ?? [])) if (m.bookCostPct != null) bookCost.set(m.symbol, m.bookCostPct); } catch { /* no reading: no spread */ }
+try { for (const m of (new Db().kvGet<{ markets: Array<{ symbol: string; bookCostPct: number | null }> }>('risk.marketsToday')?.markets ?? [])) if (m.bookCostPct != null) bookCost.set(m.symbol, crossingPct(m.bookCostPct, cfg.paper)); /* decision 202: crossing only, the backtest charges the fees */ } catch { /* no reading: no spread */ }
 
 const eventCache = new Map<string, ScanEvent[] | null>();
 async function eventsFor(id: string, symbol: string, tf: string, b: Bar[]): Promise<ScanEvent[] | null> {
