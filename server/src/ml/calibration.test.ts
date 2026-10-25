@@ -47,7 +47,7 @@ test('MlService.score returns calibrated probabilities and feeds the drift monit
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const db = new Db(':memory:'); t.after(() => db.db.close());
   const ml = new MlService(db, () => ({ s: 'S' }));
-  for (let i = 0; i < 300; i++) { const score = (i * 37) % 100; const win = score > 60 ? ((i % 10) < 8 ? 1 : 0) : ((i % 10) < 3 ? 1 : 0); const smp = mk(i, win, score); db.run('INSERT INTO ml_samples(scanner_id,symbol,tf,at,features,win,r,pnl,exit_reason,bt) VALUES (?,?,?,?,?,?,?,?,?,1)', 's', 'BTCUSD', '15m', smp.at, JSON.stringify(smp.features), win, smp.r, smp.pnl, smp.exitReason); }
+  for (let i = 0; i < 300; i++) { const score = (i * 37) % 100; const win = score > 60 ? ((i % 10) < 8 ? 1 : 0) : ((i % 10) < 3 ? 1 : 0); const smp = mk(i, win, score); db.run('INSERT INTO ml_samples(scanner_id,symbol,tf,at,features,win,r,pnl,exit_reason,bt,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,1,?)', 's', 'BTCUSD', '15m', smp.at, JSON.stringify(smp.features), win, smp.r, smp.pnl, smp.exitReason, smp.at); }
   const snap = ml.train();
   assert.ok(snap.global?.model?.reliabilityCalibrated.length === 5);
   assert.ok(snap.global?.calibration);

@@ -10,6 +10,7 @@ import { deriveRules, predict, trainLogReg, type LogRegModel, type Rule, type Sa
 
 const log = logger.scoped('ml');
 const MIN_SCANNER_SAMPLES = 40;
+const TRAINING_VERSION = 2;
 /** Live feature vectors kept for drift monitoring. */
 const DRIFT_WINDOW = 200;
 
@@ -35,6 +36,7 @@ export class MlService {
   private db: Db;
   private globalModel: LogRegModel | null = null;
   private models = new Map<string, LogRegModel>();
+  private timeframeModels = new Map<string, LogRegModel>();
   private snapshot: MlSnapshot | null = null;
   private names: () => Record<string, string>;
   private trainTimer: ReturnType<typeof setTimeout> | null = null;
@@ -58,8 +60,9 @@ export class MlService {
       });
       this.scheduleTrain();
     }
-    const saved = db.kvGet<{ global: LogRegModel | null; models: Record<string, LogRegModel>; snapshot: MlSnapshot }>('ml.model');
-    if (saved) { this.globalModel = saved.global; for (const [k, v] of Object.entries(saved.models ?? {})) this.models.set(k, v); this.snapshot = saved.snapshot; log.info(`loaded ML models: global ${saved.global ? 'yes' : 'no'}, ${this.models.size} scanner models`); }
+    const saved = db.kvGet<{ global: LogRegModel | null; models: Record<string, LogRegModel>; snapshot: MlSnapshot; version?: number; timeframeModels?: Record<string, LogRegModel> }>('ml.model');
+    if (saved?.version === TRAINING_VERSION) { for (const [k, v] of Object.entries(saved.timeframeModels ?? {})) this.timeframeModels.set(k, v); this.globalModel = saved.global; for (const [k, v] of Object.entries(saved.models ?? {})) this.models.set(k, v); this.snapshot = saved.snapshot; log.info(`loaded ML models: global ${saved.global ? 'yes' : 'no'}, ${this.models.size} scanner models`); }
+    if (saved && saved.version !== TRAINING_VERSION) this.scheduleTrain();
     this.liveFeatures = db.kvGet<Array<{ at: number; f: Features }>>('ml.liveFeatures') ?? [];
     // a model trained before the feature set grew predicts without the new columns until it is retrained
     if (this.globalModel && this.globalModel.weights.length !== FEATURE_NAMES.length) { log.info(`feature set moved (${this.globalModel.weights.length} → ${FEATURE_NAMES.length}); retraining`); this.scheduleTrain(); }
@@ -108,28 +111,38 @@ export class MlService {
   train(): MlSnapshot {
     const t0 = Date.now();
     const ex = this.excluded();
-    const all = this.samples(undefined, 100_000).filter(s => !ex.has(s.scannerId));
+    const all = this.samples(undefined, 100_000).filter(s => !ex.has(s.scannerId) && s.resolvedAt != null && Number.isFinite(s.resolvedAt) && s.resolvedAt >= s.at);
     const names = this.names();
     const byScanner = new Map<string, Sample[]>();
     for (const s of all) { const l = byScanner.get(s.scannerId) ?? []; l.push(s); byScanner.set(s.scannerId, l); }
     this.globalModel = trainLogReg(all);
+    this.timeframeModels.clear();
+    for (const tf of new Set(all.map(s => s.tf))) {
+      const model = trainLogReg(all.filter(s => s.tf === tf));
+      if (model) this.timeframeModels.set(tf, model);
+    }
     const gRules = deriveRules(all, { minN: 50 });
     const scanners: ScannerInsight[] = [];
     this.models.clear();
     for (const [id, list] of byScanner) {
       const m = list.length >= MIN_SCANNER_SAMPLES ? trainLogReg(list) : null;
       if (m) this.models.set(id, m);
+      for (const tf of new Set(list.map(s => s.tf))) {
+        const rows = list.filter(s => s.tf === tf);
+        const cell = rows.length >= MIN_SCANNER_SAMPLES ? trainLogReg(rows) : null;
+        if (cell) this.models.set(JSON.stringify([id, tf]), cell);
+      }
       const { baseline, rules } = deriveRules(list);
       scanners.push({ scannerId: id, scannerName: names[id] ?? id, samples: list.length, liveSamples: list.filter(s => !s.bt).length, baseline, model: m?.metrics ?? null, calibration: m?.calibration ?? null, importance: m?.importance.slice(0, 8) ?? [], rules });
     }
     scanners.sort((a, b) => b.samples - a.samples);
     const resetAt = this.db.kvGet<number>('paper.resetAt') ?? 0;
     this.snapshot = {
-      trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, liveSinceReset: all.filter(s => !s.bt && s.at >= resetAt).length, scannersWithModel: this.models.size,
+      trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, liveSinceReset: all.filter(s => !s.bt && s.at >= resetAt).length, scannersWithModel: scanners.filter(s => s.model !== null).length,
       global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
       scanners,
     };
-    this.db.kvSet('ml.model', { global: this.globalModel, models: Object.fromEntries(this.models), snapshot: this.snapshot });
+    this.db.kvSet('ml.model', { version: TRAINING_VERSION, timeframeModels: Object.fromEntries(this.timeframeModels), global: this.globalModel, models: Object.fromEntries(this.models), snapshot: this.snapshot });
     log.info(`trained on ${all.length} samples (${this.models.size} scanner models, global AUC ${this.globalModel ? this.globalModel.metrics.auc.toFixed(2) : '-'}) in ${Date.now() - t0}ms`);
     return this.snapshot;
   }
@@ -138,11 +151,13 @@ export class MlService {
    * Calibrated P(win) for a live entry; scanner model when available, else global; null when
    * nothing is trained. Every scored feature vector feeds the drift monitor.
    */
-  score(scannerId: string, f: Features, opts: { record?: boolean } = {}): { prob: number; raw: number; model: 'scanner' | 'global'; calibrated: boolean } | null {
+  score(scannerId: string, f: Features, opts: { record?: boolean; tf?: string } = {}): { prob: number; raw: number; model: 'scanner' | 'global'; calibrated: boolean } | null {
     if (opts.record !== false) this.recordLive(f);
-    const m = this.models.get(scannerId) ?? this.globalModel;
+    // A timeframe-aware caller never falls back to a model trained on another horizon.
+    const scannerKey = opts.tf ? JSON.stringify([scannerId, opts.tf]) : scannerId;
+    const m = this.models.get(scannerKey) ?? (opts.tf ? this.timeframeModels.get(opts.tf) : this.globalModel);
     if (!m) return null;
-    return { prob: predict(m, f, true), raw: predict(m, f, false), model: this.models.has(scannerId) ? 'scanner' : 'global', calibrated: Boolean(m.calibration) };
+    return { prob: predict(m, f, true), raw: predict(m, f, false), model: this.models.has(scannerKey) ? 'scanner' : 'global', calibrated: Boolean(m.calibration) };
   }
 
   private recordLive(f: Features) {

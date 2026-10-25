@@ -679,7 +679,7 @@ export class App {
         const r = t.rMultiple as number;
         if (typeof t.mlProb === 'number' && Number.isFinite(t.mlProb)) return { r, prob: t.mlProb, scored: 'entry' as const };
         const f = this.featuresOf(engine.book, t);
-        const prob = f ? this.ml.score(t.scannerId, f as any, { record: false })?.prob ?? null : null;
+        const prob = f ? this.ml.score(t.scannerId, f as any, { record: false, tf: t.tf })?.prob ?? null : null;
         return { r, prob, scored: prob === null ? null : ('later' as const) };
       });
     const live = yardstick(collect(this.paper)), shadow = yardstick(collect(this.shadow));
