@@ -5850,3 +5850,15 @@ cleared out the three pairs on scripts that are not in the library (decision 195
 **What.** `RESCREEN_SHADOW=1` makes a screen run re-screen only the pairs already in the shadow book or proposed, on
 their own markets, without the silent-script shortcut; `DRY=1` records nothing, skips the judge, and prints each
 pair's verdict (and writes them to `OUT` when set), so the retirements can be read before a real run makes them.
+
+## 199. The shadow book is for experiments; the account trades only proven pairs
+
+**Why.** From 22 to 25 October the account lost 22.1R. Copied shadow pairs — the decision-116 mirror, which offered a
+shadow pair's entries to the account once it had 5 closed trades with a positive total — made 159 of the 172 trades
+and lost 21.1R (−$254); the live pairs lost 1.0R (+$18). Over the eleven days from 15 October the mirror took 85% of
+the account's trades and netted −14.1R; the live pairs made +2.2R. The operator's rule: the shadow book is where every
+experiment runs and the data is collected; the account trades scanners that have proven themselves.
+
+**What.** `incubator.mirror.enabled` is false on the VM (25 October, 13:14 UTC; the previous config is kept as
+`config.json.bak-mirror-off-*`). The account trades the 14 enabled scanners on their 21 live pairs; shadow pairs reach
+it only through the promotion gate. Positions already open from mirrored pairs run to their own exits.
