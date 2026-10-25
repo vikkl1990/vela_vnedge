@@ -1,3 +1,4 @@
+import { admissionCostPct } from '../paper/costs.ts';
 /**
  * Markets today: which pairs the fleet may trade right now, decided from the market itself rather
  * than from any scanner (decision 56). A market is allowed unless one of three things is true:
@@ -86,7 +87,7 @@ export class MarketGate {
     let tickers = new Map<string, { volume24h: number; price: number; description?: string }>();
     try { tickers = new Map((await this.deps.markets()).map(m => [m.symbol, { volume24h: m.volume24h, price: m.price, description: m.description }])); }
     catch (e: any) { log.warn(`tickers unavailable: ${e?.message ?? e}; turnover not judged`); }
-    const feeRoundTripPct = paper.feeRatePct * (1 + (paper.feeTaxPct ?? 0) / 100) * 2;
+    const feeRoundTripPct = admissionCostPct(paper);
     const since = now - c.lookbackDays * 86_400_000;
     const list = [...new Set(symbols)].sort();
     const books = await this.readBooks(list.filter(s => !(c.exempt ?? []).includes(s)));
@@ -180,5 +181,5 @@ export function walkBook(book: { bids: Array<[number, number]>; asks: Array<[num
  * charged the fees twice (BTCUSD 1h: every stop under ~1.4% refused, zero trades).
  */
 export function crossingPct(bookCostPct: number, paper: { feeRatePct: number; feeTaxPct?: number }): number {
-  return Math.max(0, bookCostPct - paper.feeRatePct * (1 + (paper.feeTaxPct ?? 0) / 100) * 2);
+  return Math.max(0, bookCostPct - admissionCostPct(paper));
 }

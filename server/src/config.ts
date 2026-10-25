@@ -76,8 +76,10 @@ export interface PaperConfig {
    * of opening (30 min BTCUSD/ETHUSD, 15 min others; partial closes qualify; liquidations and the
    * listed contracts do not). The account must opt in on Delta ("Join Now"), so it is off by default.
    */
-  scalperOffer?: { enabled: boolean; majors: string[]; majorsMinutes: number; othersMinutes: number; excluded: string[] };
+  scalperOffer?: { enabled: boolean; majors: string[]; majorsMinutes: number; othersMinutes: number; excluded: string[]; /** Account enrollment time; earlier trades cannot use the waiver. */ joinedAt?: number };
   slippageBps: number;
+  /** Additional impact/latency beyond a real quote or observed book crossing; fallback slippage is replaced. */
+  quotedSlippageBps?: number;
   tpSplit: [number, number, number];
   breakEvenAfterTp1: boolean;
   /**
@@ -622,6 +624,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     feeTaxPct: 18,
     scalperOffer: { enabled: false, majors: ['BTCUSD', 'ETHUSD'], majorsMinutes: 30, othersMinutes: 15, excluded: ['PAXGUSD', 'SLVONUSD', 'XAUTUSD'] },
     slippageBps: 2,
+    quotedSlippageBps: 0,
     tpSplit: [0.4, 0.3, 0.3],
     breakEvenAfterTp1: true,
     trailAfterR: 0,
@@ -801,6 +804,8 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.scriptTargets !== undefined && !['use', 'widen', 'ignore'].includes(p.scriptTargets)) errs.push('paper.scriptTargets must be use|widen|ignore');
   if (p.minSizeShare !== undefined && !(Number.isFinite(p.minSizeShare) && p.minSizeShare >= 0 && p.minSizeShare <= 1)) errs.push('paper.minSizeShare must be 0..1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
+  if (p.scalperOffer?.joinedAt !== undefined && !(Number.isFinite(p.scalperOffer.joinedAt) && p.scalperOffer.joinedAt >= 0)) errs.push('paper.scalperOffer.joinedAt must be an epoch timestamp in milliseconds');
+  if (p.quotedSlippageBps !== undefined && !(Number.isFinite(p.quotedSlippageBps) && p.quotedSlippageBps >= 0 && p.quotedSlippageBps < 10_000)) errs.push('paper.quotedSlippageBps must be 0..10000');
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
   if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');
   if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');

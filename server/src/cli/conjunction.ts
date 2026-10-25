@@ -84,7 +84,7 @@ function gateByPosition(ltf: ScanEvent[], htfTrades: any[], htfMs: number, ltfMs
 function judge(id: string, symbol: string, tf: string, b: Bar[], events: ScanEvent[]): Cell {
   const m = market.get(symbol)!; const sc = cfg.scanners[id] ?? {};
   const base: BacktestInput = { scannerId: id, scannerName: id, symbol, tf, bars: b, events, cfg: cfg.paper, exitMode: sc.exitMode ?? 'both', trendGate: sc.trendGate, scannerExit: sc.exit, contractValue: m.contractValue, tickSize: m.tickSize, maintenanceMarginPct: m.maintenanceMarginPct, maxLeverage: m.maxLeverage, subBars: series.get(`${symbol}:${SUB[tf]}`), spreadPct: bookCost.get(symbol) ?? 0, chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr } : undefined } as any;
-  const bt = runBacktest(base); const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps } });
+  const bt = runBacktest(base); const stressed = runBacktest({ ...base, cfg: { ...cfg.paper, slippageBps: inc.screen.stressBps, quotedSlippageBps: inc.screen.stressBps } });
   const r: ScreenResult = screenVerdict(bt.trades as any[], stressed.trades as any[], b, inc, Date.now(), events.filter(e => e.kind === 'entry').length);
   const t = bt.trades as any[]; const rs = t.map(x => x.rMultiple ?? 0);
   return { trades: t.length, avgR: t.length ? rs.reduce((a, x) => a + x, 0) / t.length : 0, sumR: rs.reduce((a, x) => a + x, 0), pf: r.profitFactor, windowsUp: r.windowsUp, r1: r.avgR1 ?? 0, r2: r.avgR2 ?? 0, holdR: r.holdoutAvgR ?? null, pass: r.pass && r.holdoutPass !== false, sl: t.length ? t.filter(x => x.exitReason === 'sl').length / t.length : 0, peak: t.length ? t.reduce((a, x) => a + (x.peakR ?? 0), 0) / t.length : 0, density: r.entryDensity ?? 0 };

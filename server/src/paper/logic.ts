@@ -1,3 +1,4 @@
+import { commissionRatePct, admissionCostPct, type EntryExecution } from './costs.ts';
 /**
  * Pure paper-trading position logic shared by the live engine and the backtester.
  * No I/O, no timers: every function takes explicit inputs and returns explicit results.
@@ -100,6 +101,7 @@ export interface SizingInputs {
   maxLeverage?: number;
   /** Margin sizing: the leverage the cell's record asks for (recordLeverage); the config's base when absent. */
   wantedLeverage?: number;
+  entryExecution?: EntryExecution;
 }
 
 /**
@@ -176,12 +178,12 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
  * Stop distance versus round-trip taker fees. Returns an error string when the stop is so
  * tight that fees would consume more than 1/minRiskFeeRatio of the risk (0 disables).
  */
-export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig, symbol?: string, spreadPct = 0): string | null {
+export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig, symbol?: string, spreadPct = 0, execution: EntryExecution = {}): string | null {
   const ratio = (symbol ? cfg.minRiskFeeRatioBySymbol?.[symbol] : undefined) ?? cfg.minRiskFeeRatio ?? 0;
   if (!(ratio > 0)) return null;
   const risk = Math.abs(entry - sl);
   // the round trip's cost: both fees, and the book crossed twice when its cost is known (the market gate's reading)
-  const costRoundTrip = entry * (cfg.feeRatePct / 100) * (1 + (cfg.feeTaxPct ?? 0) / 100) * 2 + entry * Math.max(0, spreadPct) / 100;
+  const costRoundTrip = entry * admissionCostPct(cfg, spreadPct, execution) / 100;
   if (risk < costRoundTrip * ratio) return `stop too tight for fees (${(risk / entry * 100).toFixed(2)}% stop vs ${(costRoundTrip / entry * 100).toFixed(2)}% round-trip cost; need ≥ ${ratio}×)`;
   return null;
 }
@@ -287,9 +289,11 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   if (![entry, sl, s.equity, s.contractValue, marginLeverage].every(v => Number.isFinite(v) && v > 0) || entry === sl) return rejected('invalid sizing inputs');
   if (s.cfg.liquidation && 1 / marginLeverage <= maint / 100) return rejected('initial margin must exceed maintenance margin');
   const long = sl < entry;
-  const fillEntry = slip(entry, long ? 'buy' : 'sell', s.cfg);
+  const execution = s.entryExecution ?? {};
+  const entryFill = (price: number, n = 0) => execution.maker ? price : execution.quoted ? impactOnly(price, long ? 'buy' : 'sell', s.cfg, n) : slip(price, long ? 'buy' : 'sell', s.cfg, n);
+  const fillEntry = entryFill(entry);
   const fillStop = slip(sl, long ? 'sell' : 'buy', s.cfg);
-  const entryFee = feeFor(fillEntry, 1, s.contractValue, s.cfg);
+  const entryFee = feeFor(fillEntry, 1, s.contractValue, s.cfg, execution.maker);
   const perContractRisk = Math.abs(fillEntry - fillStop) * s.contractValue + entryFee + feeFor(fillStop, 1, s.contractValue, s.cfg);
   const notional = fillEntry * s.contractValue;
   const availableMargin = s.availableMargin ?? (s.equity - openNotional / maxLeverage);
@@ -324,9 +328,9 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   if ((s.cfg.depthUsdPerBp ?? 0) > 0) {
     const budget = Math.min(s.cfg.sizingMode === 'risk' ? s.equity * (s.cfg.riskPerTradePct / 100) : Infinity, stopCapPct > 0 ? s.equity * stopCapPct / 100 : Infinity);
     const lossAt = (n: number) => {
-      const fe = slip(entry, long ? 'buy' : 'sell', s.cfg, entry * n * s.contractValue);
+      const fe = entryFill(entry, entry * n * s.contractValue);
       const fs = slip(sl, long ? 'sell' : 'buy', s.cfg, sl * n * s.contractValue);
-      return Math.abs(fe - fs) * n * s.contractValue + feeFor(fe, n, s.contractValue, s.cfg) + feeFor(fs, n, s.contractValue, s.cfg);
+      return Math.abs(fe - fs) * n * s.contractValue + feeFor(fe, n, s.contractValue, s.cfg, execution.maker) + feeFor(fs, n, s.contractValue, s.cfg);
     };
     if (Number.isFinite(budget)) for (let i = 0; i < 60 && qty >= 1 && lossAt(qty) > budget; i++) qty = Math.min(qty - 1, Math.floor(qty * budget / lossAt(qty)));
     if (qty < 1) return rejected('risk budget too small once depth impact is included');
@@ -355,8 +359,7 @@ export function splitLegs(qty: number, split: number[], tpCount: number): number
 }
 
 export function feeFor(price: number, qty: number, contractValue: number, cfg: PaperConfig, maker = false): number {
-  const rate = maker ? (cfg.makerFeeRatePct ?? cfg.feeRatePct) : cfg.feeRatePct;
-  return price * qty * contractValue * (rate / 100) * (1 + (cfg.feeTaxPct ?? 0) / 100);
+  return price * qty * contractValue * commissionRatePct(cfg, maker) / 100;
 }
 
 /**
@@ -381,7 +384,7 @@ export function slippageBpsFor(cfg: PaperConfig, notionalUsd = 0): number {
  */
 export function impactOnly(price: number, side: 'buy' | 'sell', cfg: PaperConfig, notionalUsd = 0): number {
   const depth = cfg.depthUsdPerBp ?? 0;
-  const f = (depth > 0 && notionalUsd > 0 ? notionalUsd / depth : 0) / 10_000;
+  const f = ((cfg.quotedSlippageBps ?? 0) + (depth > 0 && notionalUsd > 0 ? notionalUsd / depth : 0)) / 10_000;
   return side === 'buy' ? price * (1 + f) : price * (1 - f);
 }
 
@@ -423,6 +426,8 @@ export interface OpenParams {
 export function closingFeeWaived(pos: Position, at: number, reason: string, cfg: PaperConfig): boolean {
   const o = cfg.scalperOffer;
   if (!o?.enabled || reason === 'liquidation' || o.excluded?.includes(pos.symbol)) return false;
+  const opened = pos.openedAt ?? pos.entryAt;
+  if (at < opened || (o.joinedAt !== undefined && opened < o.joinedAt)) return false;
   const minutes = o.majors.includes(pos.symbol) ? o.majorsMinutes : o.othersMinutes;
   return at - (pos.openedAt ?? pos.entryAt) <= minutes * 60_000;
 }
@@ -871,7 +876,9 @@ export function applyMark(pos: Position, markPrice: number, at: number, cfg: Pap
  * fill with reason `funding`; the amount flows through realizedPnl (fees untouched).
  */
 export function applyFunding(pos: Position, ratePct: number, markPrice: number, at: number): Fill | null {
-  if (pos.status !== 'open' || pos.qtyOpen <= 0 || !Number.isFinite(ratePct) || ratePct === 0 || !(markPrice > 0) || at < pos.entryAt) return null;
+  if (pos.status !== 'open' || pos.qtyOpen <= 0 || !Number.isFinite(ratePct) || ratePct === 0 || !(markPrice > 0) || at < (pos.openedAt ?? pos.entryAt)) return null;
+  // The persisted fills are the settlement ledger: a replay/restart cannot charge a slot twice.
+  if (pos.fills.some(f => f.reason === 'funding' && f.at === at)) return null;
   const notional = pos.qtyOpen * pos.contractValue * markPrice;
   const pnl = -(ratePct / 100) * notional * (pos.side === 'long' ? 1 : -1);
   pos.realizedPnl += pnl;

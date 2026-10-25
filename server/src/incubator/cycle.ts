@@ -1,3 +1,4 @@
+import { admissionCostPct, type EntryExecution } from '../paper/costs.ts';
 /**
  * One incubator cycle, and the owner's approve/reject actions. Shared by the daily job and the API.
  */
@@ -110,14 +111,15 @@ type PairKey = { scannerId: string; symbol: string; tf: string };
  * √3 times the 15m reading. Returns the 15m ATR% the market needs, or null when nothing is known.
  */
 export const TF_ATR_SCALE: Record<string, number> = { '1m': 3.9, '3m': 2.2, '5m': 1.73, '15m': 1, '30m': 0.71, '1h': 0.5, '2h': 0.35, '4h': 0.25 };
-export function atrNeededPct(bookCostPct: number | null | undefined, tf: string, paper: { minRiskFeeRatio?: number; fallbackAtrSl: number; feeRatePct: number; feeTaxPct?: number }): number | null {
+export function atrNeededPct(bookCostPct: number | null | undefined, tf: string, paper: { minRiskFeeRatio?: number; fallbackAtrSl: number; feeRatePct: number; makerFeeRatePct?: number; feeTaxPct?: number }, execution: EntryExecution = {}): number | null {
   const ratio = paper.minRiskFeeRatio ?? 0;
   if (!(ratio > 0) || !(paper.fallbackAtrSl > 0)) return null;
-  const cost = bookCostPct ?? paper.feeRatePct * (1 + (paper.feeTaxPct ?? 0) / 100) * 2;
+  const crossing = Math.max(0, (bookCostPct ?? admissionCostPct(paper)) - admissionCostPct(paper));
+  const cost = admissionCostPct(paper, crossing, execution);
   return cost * ratio / paper.fallbackAtrSl * (TF_ATR_SCALE[tf] ?? 1);
 }
-export function tooQuietForTf(atrPct: number | null | undefined, bookCostPct: number | null | undefined, tf: string, paper: Parameters<typeof atrNeededPct>[2]): string | null {
-  const need = atrNeededPct(bookCostPct, tf, paper);
+export function tooQuietForTf(atrPct: number | null | undefined, bookCostPct: number | null | undefined, tf: string, paper: Parameters<typeof atrNeededPct>[2], execution: EntryExecution = {}): string | null {
+  const need = atrNeededPct(bookCostPct, tf, paper, execution);
   if (need === null || atrPct === null || atrPct === undefined) return null;
   return atrPct < need ? `too quiet for ${tf}: 15m ATR ${atrPct.toFixed(2)}% < ${need.toFixed(2)}% needed for a ${paper.fallbackAtrSl}×ATR stop to cover ${paper.minRiskFeeRatio}× the round trip` : null;
 }

@@ -1,3 +1,4 @@
+import { crossingSlippageBps } from './costs.ts';
 /**
  * In-memory backtest of one scanner over a candle history using the exact same fill logic
  * as the live paper engine (bar-level fills: SL before TP on the same bar).
@@ -12,7 +13,7 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { scriptModeExit, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor, modelTrail, type TrailModel } from './logic.ts';
+import { scriptModeExit, applyFunding, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor, modelTrail, type TrailModel } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -52,13 +53,15 @@ export interface BacktestInput {
      */
     breakAtr?: number; breakBars?: number };
   /**
-   * The market's round-trip book cost in percent (the market gate's `bookCostPct`): every market-style
-   * leg pays half of it on top of the configured slippage, as the account does when it crosses a real
+   * The market's round-trip book crossing in percent, excluding commissions (`crossingPct(bookCostPct)`): every market-style
+   * leg pays half of it instead of fallback slippage (plus explicit quotedSlippageBps), as the account does when it crosses a real
    * quote. A resting limit (`entry.pullbackAtr`) pays none of it on the entry.
    */
   spreadPct?: number;
   /** Under test: the stop must be at least this many times the round trip's cost (fees plus the book), overriding `minRiskFeeRatio`. */
   costRatio?: number;
+  /** Exact historical settlements, not OHLC or predicted funding rates. Explicit mark prices avoid repricing old funding at today's mark. */
+  funding?: Array<{ at: number; ratePct: number; markPrice: number }>;
   /** Decision 178: an exit model under measurement, asked once per signal bar (index into `bars`); applied on that bar's close after the bar's fills, as the trail is. */
   trailModel?: (i: number) => TrailModel | null;
   /**
@@ -78,6 +81,7 @@ export interface BacktestResult {
   trades: ReturnType<typeof tradeOf>[];
   equity: Array<{ at: number; equity: number }>;
   rejected: Record<string, number>;
+  costCoverage: { crossing: 'observed' | 'fallback'; funding: 'provided' | 'not-modelled' | 'disabled'; depthImpact: 'modelled' | 'not-modelled'; feeWaiver: 'disabled' | 'enrollment-dated' | 'legacy-unverified' };
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
@@ -85,7 +89,17 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   // a backtest is one market, so its exit rules are resolved once (decision 34)
   // decision 113: under exit mode `script` the script's exits are the exits
   const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit, inp.tf);
-  const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: (cfg0.slippageBps ?? 0) + inp.spreadPct * 50 } : cfg0;
+  const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: crossingSlippageBps(cfg0, inp.spreadPct) } : cfg0;
+  const funding = [...(inp.funding ?? [])].sort((a, b) => a.at - b.at);
+  if (funding.some(f => !Number.isFinite(f.at) || !Number.isFinite(f.ratePct) || !Number.isFinite(f.markPrice) || f.markPrice <= 0)) throw new Error('invalid historical funding settlement');
+  let fi = 0;
+  const applyPriceBar: typeof applyBar = (pos, bar, config, ...args) => {
+    while (fi < funding.length && funding[fi].at <= bar.time) {
+      const f = funding[fi++];
+      if ((config.fundingCharges ?? true) && f.at >= (pos.openedAt ?? pos.entryAt)) applyFunding(pos, f.ratePct, f.markPrice, f.at);
+    }
+    return applyBar(pos, bar, config, ...args);
+  };
   const atr = atrSeries(bars, 14);
   const idxByTime = new Map<number, number>();
   bars.forEach((b, i) => idxByTime.set(b.time, i));
@@ -136,9 +150,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean): boolean => {
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) { refuse(lv.error); return false; }
-    const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0);
+    const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0, { maker });
     if (feeErr) { refuse('stop too tight for fees'); return false; }
-    const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
+    const sz = sizeContracts(price, lv.sl, { entryExecution: { maker }, equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
     if (sz.qty < 1) { refuse(sz.reason ?? 'size'); return false; }
     const features = computeFeatures({ bars, i: sigI, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[sigI], levelsSource: lv.source });
     open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side!, qty: sz.qty, contractValue: inp.contractValue, maintenanceMarginPct: inp.maintenanceMarginPct, entryPrice: price, at, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: at + (maker ? 0 : tfMs), leverage: sz.leverage, marginLeverage: sz.marginLeverage, features, maker });
@@ -169,7 +183,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
             const o = open as unknown as Position;
             const atrKnown = atr[i - 1] ?? atr[i];
             for (let k = j + 1; o.status === 'open' && k < sub.length && sub[k].time < bar.time + tfMs; k++) {
-              applyBar(o, sub[k], cfg, atrKnown);
+              applyPriceBar(o, sub[k], cfg, atrKnown);
               if (o.status === 'open' && te?.enabled) trendExit(o, trend[i - 1], sub[k].close, sub[k].time, cfg);
               if (o.status === 'open') earlyStallExit(o, sub[k].close, sub[k].time, cfg);
               if (o.status === 'open') earlyCutExit(o, sub[k].close, sub[k].time, cfg);
@@ -178,7 +192,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
           }
         } else if (openAt(limit, bar.time, ev, sigI, !isStop)) {
           const o = open as unknown as Position;
-          applyBar(o, bar, cfg, atr[i], model);
+          applyPriceBar(o, bar, cfg, atr[i], model);
           if (o.status === 'closed') finish(o);
         }
       }
@@ -191,9 +205,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         // no 1m data for this bar (gap in the feed): fall back to the bar itself
         // live only knows the ATR of the last closed signal bar, so the 1m path uses that too
         const atrKnown = atr[i - 1] ?? atr[i];
-        if (si >= sub.length || sub[si].time >= bar.time + tfMs) applyBar(open, bar, cfg, atrKnown);
+        if (si >= sub.length || sub[si].time >= bar.time + tfMs) applyPriceBar(open, bar, cfg, atrKnown);
         for (let j = start; open && open.status === 'open' && j < sub.length && sub[j].time < bar.time + tfMs; j++) {
-          applyBar(open, sub[j], cfg, atrKnown);
+          applyPriceBar(open, sub[j], cfg, atrKnown);
           // live checks the trend on every 1m bar, so the 1m path must too, not once per signal bar
           if (open.status === 'open' && te?.enabled) trendExit(open, trend[i - 1], sub[j].close, sub[j].time, cfg);
           if (open.status === 'open') earlyStallExit(open, sub[j].close, sub[j].time, cfg);
@@ -201,7 +215,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         }
         // the model reads the signal timeframe, once per bar, however many 1m bars resolved the exits
         if (model && open && (open as Position).status === 'open') modelTrail(open, bar, model);
-      } else applyBar(open, bar, cfg, atr[i], model);
+      } else applyPriceBar(open, bar, cfg, atr[i], model);
       if (open.status === 'closed') finish(open);
       // a profitable trade whose timeframe turned against it is closed at this bar's close
       if (open && (open as Position).status === 'open' && te?.enabled && !sub) {
@@ -272,7 +286,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   stats.open = open ? 1 : 0;
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
-    version: SIMULATION_VERSION, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
+    version: SIMULATION_VERSION, costCoverage: { crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: !cfg.scalperOffer?.enabled ? 'disabled' : cfg.scalperOffer.joinedAt === undefined ? 'legacy-unverified' : 'enrollment-dated' }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
     stats, trades: closed.map(tradeOf).reverse(), equity: curve, rejected,
   };
 }

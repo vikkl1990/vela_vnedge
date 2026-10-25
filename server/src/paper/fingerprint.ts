@@ -29,7 +29,8 @@ const stable = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof
  * settings do not show (190: limits no longer fill on their placing minute, expiry is checked at the fill, a limit fill
  * keeps the scanner's stop rule), so trades before and after the change fall into different cohorts.
  */
-export const SIM_VERSION = 190;
+// 203: maker-aware budgets/sizing, measured crossing replaces fallback, funding settlement replay.
+export const SIM_VERSION = 203;
 
 /** A short, stable hash of a scanner's patched Pine source: library imports change outside the commit. */
 export function sourceHash(patched: string | undefined | null): string | null {

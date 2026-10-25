@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 /**
  * Standalone backtest: npm run backtest -- <scanner-id> [SYMBOL] [TF] [BARS]
  * Runs the script through PineTS on real Delta history and replays the paper engine.
@@ -28,8 +29,10 @@ await pool.stop();
 if (!res.ok) { console.error('script error:', res.error); process.exit(1); }
 const events = extractEvents(res.alerts, res.shapes, { derived: applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, bars, mode: 'backtest' }) });
 const exitMode = cfg.scanners[id]?.exitMode ?? 'both';
-const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
+const funding = process.env.FUNDING_FILE ? JSON.parse(fs.readFileSync(process.env.FUNDING_FILE, 'utf8')) : undefined;
+const bt = runBacktest({ funding, scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
 console.log(`\n${s.name} — ${symbol} ${tf}, ${bars.length} bars (${new Date(bt.from).toISOString().slice(0, 10)} → ${new Date(bt.to).toISOString().slice(0, 10)}), script ${res.ms} ms`);
+console.log(`cost coverage: ${JSON.stringify(bt.costCoverage)}`);
 console.log(`events: ${events.length} (entries ${events.filter(e => e.kind === 'entry').length}, exits ${events.filter(e => e.kind === 'exit').length})  rejected: ${JSON.stringify(bt.rejected)}`);
 const st = bt.stats;
 console.log(`trades ${st.trades}  win ${st.winRatePct.toFixed(1)}%  pnl ${st.pnl.toFixed(2)} (${st.pnlPct.toFixed(2)}%)  fees ${st.fees.toFixed(2)}  PF ${st.profitFactor === null ? '-' : st.profitFactor.toFixed(2)}  avgR ${st.avgR?.toFixed(2) ?? '-'}  maxDD ${st.maxDrawdownPct.toFixed(2)}%`);

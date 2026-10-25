@@ -1,3 +1,4 @@
+import type { EntryExecution } from './costs.ts';
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
 import { TF_SECONDS, type AppConfig, type ExitMode, type ExitOverride, type PaperConfig } from '../config.ts';
@@ -320,6 +321,8 @@ export class PaperEngine extends EventEmitter {
     if (this.open.size + this.pending.size - (replacing ? 1 : 0) >= cfg.maxOpenPositions) return refused(`max open positions (${cfg.maxOpenPositions})`);
     // A market entry pays the spread: buy at the ask, sell at the bid when a fresh quote exists.
     // The script's own price is only a reference and is often minutes old by the time we act.
+    const le = cfg.limitEntry, tfMs = (TF_SECONDS[ctx.tf] ?? 0) * 1000;
+    const willRestLimit = !!(le?.enabled && !replacing && le.tfs.includes(ctx.tf) && le.books.includes(this.book === 0 ? 'account' : 'shadow') && (ctx.atr ?? 0) > 0 && tfMs > 0 && (this.limitEntryAllowed?.() ?? true));
     const reference = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
     const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
     if ('reject' in quoted) return refused(`unpriceable: ${quoted.reject}`);
@@ -330,7 +333,7 @@ export class PaperEngine extends EventEmitter {
     // decision 146: a stop the scanner placed itself (source script or mixed) loses in both books and both halves of
     // decision 145's sample; the account takes only entries on the engine's own ATR stop. The shadow book keeps them.
     if (this.book === 0 && cfg.skipScriptStops && levels.source !== 'atr-fallback') return refused("the scanner's own stop: the account takes only the ATR stop (decision 146)");
-    const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol, this.spreadPct(ctx.symbol, cfg, ctx.at));
+    const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol, this.spreadPct(ctx.symbol, cfg, ctx.at), { maker: willRestLimit });
     if (feeErr) return refused(feeErr);
     // portfolio risk layer: kill switches, position caps, cooldowns, regime filter, drawdown scaling
     let leverageMult = 1;
@@ -339,7 +342,7 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return refused(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at });
+    const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted });
     if (size.qty < 1) return refused(size.reason ?? 'size');
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price, replacing: replacing?.id });
@@ -353,8 +356,7 @@ export class PaperEngine extends EventEmitter {
       closed = replacing;
     }
     // decision 185: on the timeframes named, the entry rests as a maker limit back from the signal price
-    const le = cfg.limitEntry, tfMs = (TF_SECONDS[ctx.tf] ?? 0) * 1000;
-    if (le?.enabled && !replacing && le.tfs.includes(ctx.tf) && le.books.includes(this.book === 0 ? 'account' : 'shadow') && (ctx.atr ?? 0) > 0 && tfMs > 0 && (this.limitEntryAllowed?.() ?? true)) {
+    if (willRestLimit && le) {
       const tick = ctx.market.tickSize > 0 ? ctx.market.tickSize : 0;
       const off = le.atrByTf?.[ctx.tf] ?? le.atr;
       const raw = ev.side === 'long' ? reference - off * ctx.atr! : reference + off * ctx.atr!;
@@ -395,14 +397,14 @@ export class PaperEngine extends EventEmitter {
     return recordLeverage(rows.map(x => x.r), m);
   }
 
-  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number, cell?: { scannerId: string; symbol: string; tf: string; at: number }) {
+  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number, cell?: { scannerId: string; symbol: string; tf: string; at: number }, entryExecution?: EntryExecution) {
     const cfg = this.scaledCfg(leverageMult);
     const wantedLeverage = cfg.sizingMode === 'margin' && cell ? this.cellLeverage(cell, cfg).leverage : undefined;
     const others = [...this.open.values()].filter(p => p.id !== replacing);
     const openNotional = others.reduce((a, p) => a + notionalOf(p), 0);
     const reservedMargin = others.reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0);
     const wallet = this.book === 0 ? this.initialEquity + this.realizedPnl() : this.initialEquity;
-    return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, maintenanceMarginPct: market.maintenanceMarginPct, maxLeverage: market.maxLeverage, cfg, wantedLeverage }, openNotional, score);
+    return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, maintenanceMarginPct: market.maintenanceMarginPct, maxLeverage: market.maxLeverage, cfg, wantedLeverage, entryExecution }, openNotional, score);
   }
 
   private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig, context: FillContext): Position {
@@ -454,7 +456,7 @@ export class PaperEngine extends EventEmitter {
     const levels = resolveLevels({ side: pe.side, price: L.price, sl: L.sl, tp: L.tp, atr: L.atr }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`limit filled past its levels (${levels.error})`);
     // a maker entry crosses no spread; the exit still pays it, as checkRiskVsFees counts
-    const feeErr = checkRiskVsFees(L.price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, at));
+    const feeErr = checkRiskVsFees(L.price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, at), { maker: true });
     if (feeErr) return cancel(feeErr);
     if (this.open.size >= cfg.maxOpenPositions) return cancel(`max open positions (${cfg.maxOpenPositions})`);
     let leverageMult = pe.leverageMult;
@@ -463,7 +465,7 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return cancel(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at });
+    const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at }, { maker: true });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * L.price });
@@ -513,7 +515,7 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return cancel(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt });
+    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt }, { quoted });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price, replacing: held?.id });
