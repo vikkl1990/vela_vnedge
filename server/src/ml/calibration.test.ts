@@ -32,6 +32,10 @@ test('trainLogReg fits on the oldest 80%, calibrates on the next 10% and scores 
   const m = trainLogReg(samples)!;
   assert.equal(m.metrics.walkForward.trainN + (m.metrics.walkForward.calibrationN ?? 0) + m.metrics.walkForward.testN, 300);
   assert.equal(m.metrics.walkForward.testN, 30);
+  const economic = m.metrics.economic!;
+  assert.equal(economic.testNetR, samples.slice(270).reduce((sum, s) => sum + s.r, 0));
+  assert.ok(Math.abs(economic.selectedNetR + economic.rejectedNetR - economic.testNetR) < 1e-9);
+  assert.ok(Number.isFinite(economic.calibratedBrierSkill));
   assert.equal(m.metrics.walkForward.calibrationN, 30);
   assert.ok(m.metrics.walkForward.trainTo < m.metrics.walkForward.testFrom, 'test set is strictly newer than the training set');
   assert.ok(m.calibration && Number.isFinite(m.calibration.a) && Number.isFinite(m.calibration.b));

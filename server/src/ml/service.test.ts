@@ -38,3 +38,15 @@ test('timeframe scoring isolates opposing horizons, survives reload and abstains
   const reloaded = new MlService(db, () => ({}));
   assert.deepEqual(reloaded.score('s', {} as any, { tf: '1h', record: false }), short);
 });
+
+
+test('legacy outcome recovery requires one exact closed account position', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const db = new Db(':memory:'); t.after(() => db.db.close());
+  new MlService(db, () => ({}));
+  for (const at of [10, 20, 30, 40]) db.run("INSERT INTO ml_samples(scanner_id,symbol,tf,at,features,win,r,pnl,exit_reason,bt) VALUES ('s','BTCUSD','1h',?,'{}',1,1,1,'tp',0)", at);
+  const insert = (at: number, book: number) => db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,exit_at,bt) VALUES ('closed','s','S','BTCUSD','1h','long',1,0,1,100,?,?,?)", at, at + 5, book);
+  insert(10, 0); insert(20, 0); insert(20, 0); insert(30, 2);
+  new MlService(db, () => ({}));
+  assert.deepEqual(db.all<{ resolved_at: number | null }>('SELECT resolved_at FROM ml_samples ORDER BY at').map(r => r.resolved_at), [15, null, null, null]);
+});

@@ -117,7 +117,7 @@ export class ScannerEngine extends EventEmitter {
     this.ml = deps.ml ?? null;
     this.cfgStore = deps.cfgStore ?? null;
     // every closed live trade becomes a learning sample
-    this.paper.on('trade', (t: any) => { if (this.ml && t.features) this.ml.addLiveSample(t.scannerId, t.symbol, t.tf, t.entryAt, t.features, t.pnl > 0, t.rMultiple ?? 0, t.pnl, String(t.exitReason ?? '')); });
+    this.paper.on('trade', (t: any) => { if (this.ml && t.features) this.ml.addLiveSample(t.scannerId, t.symbol, t.tf, t.entryAt, t.features, t.pnl > 0, t.rMultiple ?? 0, t.pnl, String(t.exitReason ?? ''), t.exitAt); });
     for (const r of this.db.all<any>('SELECT * FROM scanner_runs')) this.lastRun.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, { at: r.at, ms: r.ms, symbol: r.symbol, tf: r.tf, error: r.error, barTime: r.bar_time });
     for (const r of this.db.all<any>('SELECT * FROM backtests')) { try { const result = JSON.parse(r.result); if (result.version === SIMULATION_VERSION) this.backtests.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, result); } catch { /* ignore */ } }
     this.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar }) => this.onBarClosed(e.symbol, e.tf, e.bar));

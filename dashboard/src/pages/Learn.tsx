@@ -91,6 +91,11 @@ export function Learn() {
       {ml.isError && !d && <ErrorState error={ml.error} onRetry={() => ml.refetch()} />}
       {d && (
         <>
+          {d.eligibility && <p className="small muted">Training eligibility: {d.eligibility.eligible} of {d.eligibility.stored} stored samples; {d.eligibility.excluded} excluded or outside the training limit. Outcomes need a recorded resolution time.</p>}
+          {!!d.timeframeModels?.length && <Panel title="Timeframe models used for entry scoring">
+            <p className="small muted">Each horizon uses its own model. The fixed 55% cutoff below is diagnostic only. Net R comes from untouched test trades; it does not model portfolio reuse. Positive probability skill beats a constant training-period win rate.</p>
+            <div className="table-scroll"><table><thead><tr><th>Scanner</th><th>TF</th><th>Test trades</th><th>AUC</th><th>Probability skill</th><th>All net R</th><th>55% kept</th><th>Kept net R</th><th>Rejected net R</th></tr></thead><tbody>{d.timeframeModels.map(m => <tr key={`${m.scannerId}:${m.tf}`}><td>{m.scannerId ? scanners.find(s => s.scannerId === m.scannerId)?.scannerName ?? m.scannerId : 'Timeframe fallback'}</td><td>{m.tf}</td><td>{m.model.holdout}</td><td>{m.model.auc.toFixed(2)}</td><td>{pct(m.model.economic?.calibratedBrierSkill)}</td><td>{r(m.model.economic?.testNetR)}</td><td>{m.model.economic?.selectedN ?? '–'}</td><td>{r(m.model.economic?.selectedNetR)}</td><td>{r(m.model.economic?.rejectedNetR)}</td></tr>)}</tbody></table></div>
+          </Panel>}
           <div className="kpi-grid">
             <KpiTile label="Samples" value={String(d.samples)} sub={`${d.liveSinceReset} account since the reset · ${d.liveSamples - d.liveSinceReset} from earlier accounts · ${d.samples - d.liveSamples} backtest`} />
             <KpiTile label="Scanner models" value={String(d.scannersWithModel)} sub="≥ 40 trades each" />

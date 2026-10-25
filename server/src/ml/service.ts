@@ -10,7 +10,7 @@ import { deriveRules, predict, trainLogReg, type LogRegModel, type Rule, type Sa
 
 const log = logger.scoped('ml');
 const MIN_SCANNER_SAMPLES = 40;
-const TRAINING_VERSION = 2;
+const TRAINING_VERSION = 3;
 /** Live feature vectors kept for drift monitoring. */
 const DRIFT_WINDOW = 200;
 
@@ -27,6 +27,8 @@ export interface ScannerInsight {
 }
 
 export interface MlSnapshot {
+  timeframeModels?: Array<{ scannerId: string | null; tf: string; model: LogRegModel['metrics'] }>;
+  eligibility?: { stored: number; eligible: number; excluded: number };
   trainedAt: number | null; samples: number; liveSamples: number; liveSinceReset: number; scannersWithModel: number;
   global: { model: LogRegModel['metrics'] | null; calibration: LogRegModel['calibration']; importance: LogRegModel['importance']; rules: Rule[]; baseline: { n: number; winRate: number; avgR: number } } | null;
   scanners: ScannerInsight[];
@@ -51,6 +53,14 @@ export class MlService {
     ); CREATE INDEX IF NOT EXISTS idx_ml_scanner ON ml_samples(scanner_id);`);
     // decision 192: when each sample's outcome became known, so a time split can purge what was still open at its boundary
     try { db.db.exec('ALTER TABLE ml_samples ADD COLUMN resolved_at INTEGER'); } catch { /* already there */ }
+    // Recover only exact, unique closed account trades. Never infer an exit from entry time.
+    db.run(`UPDATE ml_samples AS s SET resolved_at=(
+      SELECT MIN(p.exit_at) FROM positions p WHERE p.bt=0 AND p.status='closed'
+        AND p.scanner_id=s.scanner_id AND p.symbol=s.symbol AND p.tf=s.tf AND p.entry_at=s.at AND p.exit_at>=s.at
+    ) WHERE s.bt=0 AND s.resolved_at IS NULL AND 1=(
+      SELECT COUNT(*) FROM positions p WHERE p.bt=0 AND p.status='closed'
+        AND p.scanner_id=s.scanner_id AND p.symbol=s.symbol AND p.tf=s.tf AND p.entry_at=s.at AND p.exit_at>=s.at
+    )`);
     if (db.kvGet<number>('ml.simulationVersion') !== SIMULATION_VERSION) {
       // Old backtests contain obsolete fill results; preserve recorded live history.
       db.transaction(() => {
@@ -115,11 +125,12 @@ export class MlService {
     const names = this.names();
     const byScanner = new Map<string, Sample[]>();
     for (const s of all) { const l = byScanner.get(s.scannerId) ?? []; l.push(s); byScanner.set(s.scannerId, l); }
+    const timeframeModels: NonNullable<MlSnapshot['timeframeModels']> = [];
     this.globalModel = trainLogReg(all);
     this.timeframeModels.clear();
     for (const tf of new Set(all.map(s => s.tf))) {
       const model = trainLogReg(all.filter(s => s.tf === tf));
-      if (model) this.timeframeModels.set(tf, model);
+      if (model) { this.timeframeModels.set(tf, model); timeframeModels.push({ scannerId: null, tf, model: model.metrics }); }
     }
     const gRules = deriveRules(all, { minN: 50 });
     const scanners: ScannerInsight[] = [];
@@ -130,7 +141,7 @@ export class MlService {
       for (const tf of new Set(list.map(s => s.tf))) {
         const rows = list.filter(s => s.tf === tf);
         const cell = rows.length >= MIN_SCANNER_SAMPLES ? trainLogReg(rows) : null;
-        if (cell) this.models.set(JSON.stringify([id, tf]), cell);
+        if (cell) { this.models.set(JSON.stringify([id, tf]), cell); timeframeModels.push({ scannerId: id, tf, model: cell.metrics }); }
       }
       const { baseline, rules } = deriveRules(list);
       scanners.push({ scannerId: id, scannerName: names[id] ?? id, samples: list.length, liveSamples: list.filter(s => !s.bt).length, baseline, model: m?.metrics ?? null, calibration: m?.calibration ?? null, importance: m?.importance.slice(0, 8) ?? [], rules });
@@ -138,6 +149,7 @@ export class MlService {
     scanners.sort((a, b) => b.samples - a.samples);
     const resetAt = this.db.kvGet<number>('paper.resetAt') ?? 0;
     this.snapshot = {
+      timeframeModels, eligibility: { stored: this.count().total, eligible: all.length, excluded: this.count().total - all.length },
       trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, liveSinceReset: all.filter(s => !s.bt && s.at >= resetAt).length, scannersWithModel: scanners.filter(s => s.model !== null).length,
       global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
       scanners,

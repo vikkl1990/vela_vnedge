@@ -514,10 +514,12 @@ export interface CandleQuery {
 
 // ---- machine learning ----
 export interface MlRule { feature: string; label: string; kind: 'prefer' | 'avoid'; condition: string; n: number; coverage: number; winRate: number; avgR: number; baselineAvgR: number; lift: number; text: string }
-export interface MlMetrics { holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number }
+export interface MlMetrics { economic?: { baselineBrier: number; calibratedBrierSkill: number; testNetR: number; selectedN: number; selectedNetR: number; rejectedNetR: number; threshold: number }; holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number }
 export interface MlImportance { feature: string; label: string; weight: number }
 export interface MlScannerInsight { scannerId: string; scannerName: string; samples: number; liveSamples: number; baseline: { n: number; winRate: number; avgR: number }; model: MlMetrics | null; importance: MlImportance[]; rules: MlRule[] }
 export interface MlSnapshot {
+  timeframeModels?: Array<{ scannerId: string | null; tf: string; model: MlMetrics }>
+  eligibility?: { stored: number; eligible: number; excluded: number }
   trainedAt: number | null; samples: number; liveSamples: number; liveSinceReset: number; scannersWithModel: number
   global: { model: MlMetrics | null; importance: MlImportance[]; rules: MlRule[]; baseline: { n: number; winRate: number; avgR: number } } | null
   scanners: MlScannerInsight[]

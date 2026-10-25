@@ -16,6 +16,8 @@ export interface Sample {
 export interface ReliabilityBucket { lo: number; hi: number; n: number; predicted: number; observed: number }
 
 export interface ModelMetrics {
+  /** Untouched test block: a constant fit-period win rate and a fixed, unoptimized .55 gate. */
+  economic?: { baselineBrier: number; calibratedBrierSkill: number; testNetR: number; selectedN: number; selectedNetR: number; rejectedNetR: number; threshold: number };
   holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number;
   /**
    * Walk-forward split (decision 192): fitted on the oldest samples, Platt-calibrated on the next block, and every metric
@@ -117,7 +119,15 @@ export function trainLogReg(samples: Sample[], opts: { epochs?: number; lr?: num
   const importance = FEATURE_NAMES.map((f, j) => ({ feature: f, label: FEATURE_LABELS[f], weight: Number(w[j].toFixed(4)) })).sort((a, c) => Math.abs(c.weight) - Math.abs(a.weight));
   const calibration = calLogits.length >= 5 ? fitPlatt(calLogits, calYs) : { a: 1, b: 0 };
   const calProbs = logits.map(z => sigmoid(calibration.a * z + calibration.b));
+  const fitPrior = fitIdx.reduce((sum, i) => sum + y[i], 0) / fN;
+  const baselineBrier = brier(ys.map(() => fitPrior), ys);
+  const testRows = sorted.slice(testStart);
+  const selected = testRows.filter((_, i) => calProbs[i] >= .55);
+  const testNetR = testRows.reduce((sum, s) => sum + s.r, 0);
+  const selectedNetR = selected.reduce((sum, s) => sum + s.r, 0);
   const metrics: ModelMetrics = {
+    economic: { baselineBrier, calibratedBrierSkill: baselineBrier > 0 ? 1 - brier(calProbs, ys) / baselineBrier : 0,
+      testNetR, selectedN: selected.length, selectedNetR, rejectedNetR: testNetR - selectedNetR, threshold: .55 },
     holdout: probs.length, accuracy: correct / Math.max(1, probs.length), auc, logLoss: logLoss(probs, ys), baseWinRate: base,
     walkForward: { trainN: fN, testN: probs.length, trainTo: sorted[trainN - 1]?.at ?? 0, testFrom: sorted[testStart]?.at ?? 0, testTo: sorted[n - 1]?.at ?? 0, calibrationN: calLogits.length, purged },
     brier: brier(probs, ys), brierCalibrated: brier(calProbs, ys), logLossCalibrated: logLoss(calProbs, ys),
