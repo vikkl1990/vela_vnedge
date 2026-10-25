@@ -282,6 +282,13 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
     if (want('lux-ms+ours')) variants['lux-ms+ours'] = stat(run({ spreadPct, trailModel: lux.ms }), b, tfMs);
   }
   if (want('spread+ratio6')) variants['spread+ratio6'] = stat(run({ spreadPct, costRatio: 6 }), b, tfMs);
+  // any ratio by name: spread+ratioN, and spread+pull0.1+ratioN with the account's 1h limit entry (VARIANTS lists them)
+  for (const v of ONLY ?? []) {
+    const m = /^spread(\+pull([\d.]+))?\+ratio([\d.]+)$/.exec(v);
+    if (!m || variants[v]) continue;
+    const entry = m[2] ? { pullbackAtr: Number(m[2]), pullbackBars: 2 } : undefined;
+    variants[v] = stat(run({ spreadPct, costRatio: Number(m[3]), ...(entry ? { entry } : {}) }), b, tfMs);
+  }
   if (want('spread+ratio10')) variants['spread+ratio10'] = stat(run({ spreadPct, costRatio: 10 }), b, tfMs);
   if (want('spread+er0.25')) variants['spread+er0.25'] = stat(run({ spreadPct, chopGate: { minEr: 0.25 } }), b, tfMs);
   // decision 155: the fair benchmark (LuxAlgo's "random-entry baseline"). The scanner's own entries with the bot's exits
