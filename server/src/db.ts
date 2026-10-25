@@ -240,10 +240,12 @@ export class Db {
     return Boolean(this.get('SELECT 1 FROM signals WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time=? AND kind=? AND side IS ? AND label=?', scannerId, symbol, tf, barTime, kind, side, label));
   }
   updateSignalAction(id: number, action: string, positionId: number | null) { this.run('UPDATE signals SET action=?, position_id=? WHERE id=?', action, positionId, id); }
-  signals(opts: { limit?: number; scanner?: string; symbol?: string; kind?: string; since?: number } = {}): SignalRow[] {
+  signals(opts: { limit?: number; scanner?: string; symbol?: string; tf?: string; positionId?: number; kind?: string; since?: number } = {}): SignalRow[] {
     const where: string[] = []; const params: any[] = [];
     if (opts.scanner) { where.push('scanner_id = ?'); params.push(opts.scanner); }
     if (opts.symbol) { where.push('symbol = ?'); params.push(opts.symbol); }
+    if (opts.tf) { where.push('tf = ?'); params.push(opts.tf); }
+    if (opts.positionId !== undefined) { where.push('position_id = ?'); params.push(opts.positionId); }
     if (opts.kind) { where.push('kind = ?'); params.push(opts.kind); }
     if (opts.since) { where.push('at >= ?'); params.push(opts.since); }
     const sql = `SELECT * FROM signals ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY at DESC, id DESC LIMIT ?`;

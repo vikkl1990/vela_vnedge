@@ -28,18 +28,19 @@ const EVENT_LABEL: Record<string, string> = { tp1: 'target 1 hit', tp2: 'target 
 
 export function TradeReplay() {
   const { id } = useParams()
+  const [resolution, setResolution] = useState<'strategy' | 'execution'>('execution')
   const q = usePositionPath(id ? Number(id) : null)
   return (
     <div className="page replay-page">
       <QueryState {...q} data={q.data} skeleton="chart" empty="No such trade." onRetry={() => q.refetch()}>
-        {(d) => <ReplayBody lv={d.position} path={d.path} />}
+        {(d) => <ReplayBody key={`${id}:${resolution}`} lv={d.position} path={d.path} execution={resolution === 'execution'} onResolution={setResolution} />}
       </QueryState>
     </div>
   )
 }
 
-function ReplayBody({ lv, path }: { lv: NonNullable<ReturnType<typeof usePositionPath>['data']>['position']; path: PathPoint[] }) {
-  const tf = lv.tf ?? '15m'
+function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean; onResolution: (value: 'strategy' | 'execution') => void; lv: NonNullable<ReturnType<typeof usePositionPath>['data']>['position']; path: PathPoint[] }) {
+  const tf = execution ? '1m' : lv.tf ?? '15m'
   const barMs = tfToMs(tf)
   const barOf = (t: number) => Math.floor(t / barMs) * barMs
   const entryBar = barOf(lv.entryAt)
@@ -127,6 +128,8 @@ function ReplayBody({ lv, path }: { lv: NonNullable<ReturnType<typeof usePositio
         <Link className="btn btn-sm" to="/trades">Trades</Link>
       </div>
 
+      <p className="muted small">Trade timeframe {lv.tf ?? '15m'} · replay {tf}. Recorded path samples and candle bars cannot establish tick ordering or exact hypothetical fills.</p>
+      <label className="field-inline">Replay detail <select className="select" aria-label="Replay detail" value={execution ? 'execution' : 'strategy'} onChange={(e) => onResolution(e.target.value as 'strategy' | 'execution')}><option value="execution">Execution · 1m</option><option value="strategy">Strategy candle overview</option></select></label>
       <div className="replay-grid">
         <div className="replay-chart">
           <VelaChart symbol={lv.symbol} tf={tf} height="100%" scripts={scripts} onChartReady={setChart} />

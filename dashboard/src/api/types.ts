@@ -242,6 +242,9 @@ export interface ScannerUpdate {
 }
 
 export interface ScannerSource {
+  inputs?: Record<string, number | string | boolean>
+  timezone?: string
+  sourceHash?: string | null
   id: string
   source: string
   patched: string
@@ -484,6 +487,8 @@ export type SSEEventName = keyof SSEEventMap
 // ---------- Query params ----------
 
 export interface SignalQuery {
+  tf?: string
+  positionId?: number
   limit?: number
   scanner?: string
   symbol?: string

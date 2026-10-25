@@ -5,11 +5,13 @@ import { api } from '../api/client'
 import { qk, useConfig, useMarkets, usePositionPath, usePositions, useScannerIndex, useSignals } from '../api/queries'
 import { VelaChart, type ChartScript } from '../chart/VelaChart'
 import { ChartFrames, FramePicker } from '../chart/ChartFrames'
+import { decisionMarks } from '../chart/decisionMarks'
 import { positionOverlay } from '../chart/positionOverlay'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { ChipSelect, Panel, Pill, QueryState } from '../components/ui'
 import { fmtPct, fmtPrice, pnlClass } from '../lib/format'
 import { DELTA_TIMEFRAMES, FRAME_PRESET } from '../lib/timeframes'
+import { useNow } from '../lib/useNow'
 import { useLivePrice } from '../sse/prices'
 
 const LS_KEY = 'vnedge.chart'
@@ -77,14 +79,16 @@ export function ChartPage() {
   const position = useMemo(() => (positions.data ?? []).find((p) => p.symbol === symbol && p.tf === tf) ?? (positions.data ?? []).find((p) => p.symbol === symbol), [positions.data, symbol, tf])
   // the scanner that opened the position is always overlaid while that position is on screen
   const autoScannerId = position?.scannerId ?? null
-  const autoName = useMemo(() => (autoScannerId ? enabledScanners.find((s) => s.id === autoScannerId)?.name ?? null : null), [autoScannerId, enabledScanners])
+  const heldScanner = useMemo(() => (scanners.data ?? []).find((s) => s.id === autoScannerId && s.status === 'ok'), [autoScannerId, scanners.data])
+  const autoName = heldScanner?.name ?? null
   const shownSelection = useMemo(() => (autoName && !selected.includes(autoName) ? [...selected, autoName] : selected), [selected, autoName])
   const addedScanners = useMemo(() => addedIds.map((id) => (scanners.data ?? []).find((s) => s.id === id)).filter((s): s is NonNullable<typeof s> => Boolean(s && s.status === 'ok')), [addedIds, scanners.data])
   const selectedIds = useMemo(() => {
     const ids = enabledScanners.filter((s) => shownSelection.includes(s.name)).map((s) => s.id)
+    if (heldScanner && !ids.includes(heldScanner.id)) ids.push(heldScanner.id)
     for (const s of addedScanners) if (!ids.includes(s.id)) ids.push(s.id)
     return ids
-  }, [enabledScanners, shownSelection, addedScanners])
+  }, [enabledScanners, shownSelection, addedScanners, heldScanner])
 
   const sources = useQueries({
     queries: selectedIds.map((id) => ({
@@ -99,11 +103,11 @@ export function ChartPage() {
     const out: ChartScript[] = []
     selectedIds.forEach((id, i) => {
       const src = sources[i]?.data
-      const sc = enabledScanners.find((s) => s.id === id) ?? addedScanners.find((s) => s.id === id)
-      if (src?.patched && sc) out.push({ id, title: sc.name, source: src.patched, overlay: sc.overlay })
+      const sc = (scanners.data ?? []).find((s) => s.id === id)
+      if (src?.patched && sc) out.push({ id, title: sc.name, source: src.patched, overlay: sc.overlay, inputs: src.inputs, sourceHash: src.sourceHash, timezone: src.timezone })
     })
     return out
-  }, [selectedIds, sources, enabledScanners, addedScanners])
+  }, [selectedIds, sources, scanners.data])
 
 
   const path = usePositionPath(showPosition && position ? position.id : null)
@@ -117,17 +121,24 @@ export function ChartPage() {
     [scripts, showPosition, position, peakR],
   )
 
-  const signals = useSignals({ symbol: symbol || undefined, limit: 30 })
+  const [allSignalFrames, setAllSignalFrames] = useState(false)
+  const [signalHistory, setSignalHistory] = useState(false)
+  const now = useNow(60_000)
+  const signals = useSignals({ symbol: symbol || undefined, tf: allSignalFrames || view === 'frames' ? undefined : tf, since: signalHistory ? undefined : now - 86_400_000, limit: 100 })
+  const positionSignals = useSignals({ positionId: position?.id ?? -1, kind: 'entry', limit: 1 })
   // the model's score for the entry that opened this position, when the model had an opinion at all
   const entrySignal = useMemo(
-    () => (position ? (signals.data ?? []).find((sg) => sg.positionId === position.id) : undefined),
-    [signals.data, position],
+    () => (position ? positionSignals.data?.[0] : undefined),
+    [positionSignals.data, position],
   )
+  const marks = useMemo(() => decisionMarks(signals.data ?? []), [signals.data])
   const market = markets.data?.find((m) => m.symbol === symbol)
   const live = useLivePrice(symbol, market?.markPrice)
 
   return (
     <div className="page page-chart">
+      <p className="muted small">Indicator plots are a live preview; timeline marks and the decision feed come from the bot journal. {heldScanner && !heldScanner.enabled ? `Held scanner ${heldScanner.name} is displayed read-only (disabled for entries).` : ''}</p>
+      {scripts.length > 0 && <details className="small"><summary>Bot script inputs and source versions</summary>{scripts.map(s => <p key={s.id} className="mono">{s.title} · source {s.sourceHash ?? 'unknown'} · bot timezone {s.timezone ?? 'UTC'} · inputs {JSON.stringify(s.inputs ?? {})}{s.timezone && s.timezone !== 'UTC' ? ' · Chart metadata uses UTC; this custom timezone is not reproduced.' : ''}</p>)}</details>}
       <div className="toolbar">
         <label className="field-inline">
           <span className="chips-label">Symbol</span>
@@ -206,6 +217,7 @@ export function ChartPage() {
         <div className="chart-main">
           {symbol && view === 'frames' ? (
             <ChartFrames
+              marks={marks}
               symbol={symbol}
               tfs={frames}
               scripts={allScripts}
@@ -222,6 +234,7 @@ export function ChartPage() {
             />
           ) : symbol ? (
             <VelaChart
+              marks={marks}
               symbol={symbol}
               tf={tf}
               height="100%"
@@ -241,9 +254,9 @@ export function ChartPage() {
             <div className="state muted">Pick a symbol to start.</div>
           )}
         </div>
-        <Panel title={`Latest signals · ${symbol || '–'}`} className="chart-side" pad={false}>
+        <Panel title={`Bot decisions · ${symbol || '–'} · ${allSignalFrames || view === 'frames' ? 'all frames' : tf}`} right={<span><label className="small"><input type="checkbox" checked={signalHistory} onChange={(e) => setSignalHistory(e.target.checked)} /> Include older records</label>{' '}<label className="small"><input type="checkbox" checked={allSignalFrames} onChange={(e) => setAllSignalFrames(e.target.checked)} /> All timeframes</label></span>} className="chart-side" pad={false}>
           <QueryState {...signals} data={signals.data} empty="No signals for this symbol." hint="Pick another symbol or enable a scanner on it." skeleton="cards" skeletonRows={4} onRetry={() => signals.refetch()}>
-            {(d) => <AlertsFeed signals={d} limit={30} title="VNEdge Bot" />}
+            {(d) => <AlertsFeed signals={d} limit={100} title="Recorded bot decisions" showActions />}
           </QueryState>
         </Panel>
       </div>

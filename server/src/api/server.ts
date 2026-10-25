@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { sourceHash } from '../paper/fingerprint.ts';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import path from 'node:path';
@@ -305,7 +306,7 @@ export class ApiServer {
       if (!body || typeof body.id !== 'string') throw new HttpError(400, 'id required');
       try { return { favorites: library.setFavorite(u.id, body.id, body.on !== false) }; } catch (e: any) { throw new HttpError(404, String(e?.message ?? e)); }
     });
-    this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches }; });
+    this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); const read = a.config.get().scanners[p.id]; return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches, sourceHash: sourceHash(s.patched), inputs: read?.inputs ?? {}, timezone: read?.timezone ?? 'UTC' }; });
     this.add('GET', '/api/scanners/:id/overlay', (_r, _s, p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.scanners.symbolsFor(p.id)[0];
       const tf = url.searchParams.get('tf') ?? a.scanners.timeframesFor(p.id)[0];
@@ -315,7 +316,7 @@ export class ApiServer {
     this.add('GET', '/api/signals', (_r, _s, _p, url) => {
       const rows = a.db.signals({
         limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined,
-        kind: url.searchParams.get('kind') ?? undefined, since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
+        kind: url.searchParams.get('kind') ?? undefined, tf: url.searchParams.get('tf') ?? undefined, positionId: url.searchParams.has('positionId') ? Number(url.searchParams.get('positionId')) : undefined, since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
       });
       // Most scripts signal through a bare alertcondition, which carries a direction and nothing
       // else; the levels are derived from ATR when the position opens. Showing blank columns hides

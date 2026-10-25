@@ -6,7 +6,7 @@ import { useSSE } from '../sse/SSEProvider'
 import { ScoreBadge, SidePill, StatusDot, Time } from './ui'
 
 /** Telegram-bot-style alerts feed: one card per signal. */
-export function AlertsFeed({ signals, limit = 15, title = 'VNEdge Bot' }: { signals: Signal[]; limit?: number; title?: string }) {
+export function AlertsFeed({ signals, limit = 15, title = 'VNEdge Bot', showActions = false }: { signals: Signal[]; limit?: number; title?: string; showActions?: boolean }) {
   const { status } = useSSE()
   const { data: markets } = useMarkets()
   const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
@@ -57,6 +57,7 @@ export function AlertsFeed({ signals, limit = 15, title = 'VNEdge Bot' }: { sign
                 {truncate(s.summary || s.message, 110)}
               </div>
             )}
+            {showActions && <details className="small"><summary>{s.action}</summary><div className="muted">Signal bar: {new Date(s.barTime).toISOString()}<br />Decision: {new Date(s.at).toISOString()}<br />{s.message}</div></details>}
             <div className="alert-foot">
               <Time t={s.at} mode="ago" />
               <Link to={`/scanners/${s.scannerId}`} className="link">

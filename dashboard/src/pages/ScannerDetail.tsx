@@ -40,7 +40,7 @@ export function ScannerDetail() {
   const source = useScannerSource(showScript ? id : undefined)
   const scripts = useMemo<ChartScript[]>(() => {
     if (!showScript || !s || !source.data?.patched) return []
-    return [{ id: s.id, title: s.name, source: source.data.patched, overlay: s.overlay }]
+    return [{ id: s.id, title: s.name, source: source.data.patched, overlay: s.overlay, inputs: source.data.inputs, sourceHash: source.data.sourceHash, timezone: source.data.timezone }]
   }, [showScript, s, source.data])
 
   const signals = useSignals({ scanner: id, limit: 100 })

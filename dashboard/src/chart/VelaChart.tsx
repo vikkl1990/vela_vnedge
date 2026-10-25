@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { IndicatorHandle, Vela as VelaType } from '@luxalgo/vela'
+import type { IndicatorHandle, TimelineMark, Vela as VelaType } from '@luxalgo/vela'
+import { scriptInputs } from './scriptInputs'
 import { deltaProvider } from './deltaProvider'
 import { FallbackChart } from './FallbackChart'
 import { deltaToVelaTf } from '../lib/timeframes'
@@ -13,6 +14,9 @@ export interface ChartScript {
   /** Executable Pine source (the `patched` field from /api/scanners/:id/source). */
   source: string
   overlay?: boolean
+  inputs?: Record<string, number | string | boolean>
+  sourceHash?: string | null
+  timezone?: string
 }
 
 interface Props {
@@ -27,6 +31,7 @@ interface Props {
   /** Market tick size — used by the fallback chart's price axis. */
   tickSize?: number
   /** decision 156: the chart instance once it is ready (null when it goes away), for pages that drive it, e.g. replay. */
+  marks?: TimelineMark[]
   onChartReady?: (chart: VelaType | null) => void
 }
 
@@ -51,10 +56,10 @@ function loadLibs() {
  * Vela chart wrapper. Every call into Vela is guarded; on an unrecoverable
  * failure the component swaps to `FallbackChart` so the page never breaks.
  */
-export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptError, onScriptReady, tickSize, onChartReady }: Props) {
+export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptError, onScriptReady, tickSize, onChartReady, marks }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<VelaType | null>(null)
-  const handlesRef = useRef(new Map<string, { handle: IndicatorHandle; source: string; offs: (() => void)[] }>())
+  const handlesRef = useRef(new Map<string, { handle: IndicatorHandle; source: string; inputs: string; offs: (() => void)[] }>())
   const [failed, setFailed] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -94,7 +99,7 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
             throw new Error(`registerProvider failed: ${(e as Error).message}`)
           }
           try {
-            chart.registerEngine('pine', new pine.PineEngine({ props: 'none' }))
+            chart.registerEngine('pine', new pine.PineWorkerEngine({ props: 'none' }))
           } catch (e) {
             console.warn('[vela] registerEngine failed', e)
             toastExternal('warn', 'Pine engine unavailable', (e as Error).message)
@@ -215,6 +220,11 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
     for (const s of want.values()) {
       const existing = have.get(s.id)
       if (existing) {
+        const inputKey = JSON.stringify(s.inputs ?? {})
+        if (existing.inputs !== inputKey) {
+          existing.handle.setInputs(scriptInputs(existing.handle.inputs, s.inputs) as Parameters<IndicatorHandle['setInputs']>[0])
+          existing.inputs = inputKey
+        }
         if (existing.source !== s.source) {
           // Vela 0.8.2+: updateCode resolves to { ok, error } and keeps the previous code when the new one fails
           const prevSource = existing.source
@@ -222,17 +232,23 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
           Promise.resolve(existing.handle.updateCode(s.source) as unknown)
             .then((res) => {
               const r = res as { ok?: boolean; error?: unknown } | undefined
+              if (r?.ok) {
+                existing.handle.setInputs(scriptInputs(existing.handle.inputs, s.inputs) as Parameters<IndicatorHandle['setInputs']>[0])
+                cbRef.current.onScriptReady?.(s.id)
+              }
               if (r && r.ok === false) {
                 existing.source = prevSource
                 const msg = r.error instanceof Error ? r.error.message : String(r.error ?? 'unknown error')
                 console.warn('[vela] updateCode failed', r.error)
                 toastExternal('error', `Script update failed: ${s.title}`, msg)
+                cbRef.current.onScriptError?.(s.id, new Error(msg))
               }
             })
             .catch((e: unknown) => {
               existing.source = prevSource
               console.warn('[vela] updateCode failed', e)
               toastExternal('error', `Script update failed: ${s.title}`, (e as Error)?.message)
+              cbRef.current.onScriptError?.(s.id, e instanceof Error ? e : new Error(String(e)))
             })
         }
         continue
@@ -242,6 +258,7 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
           id: `vn:${s.id}`,
           language: 'pine',
           overlay: s.overlay ?? true,
+          inputs: s.inputs,
           title: s.title,
         })
         const offs: (() => void)[] = []
@@ -253,11 +270,22 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
               cbRef.current.onScriptError?.(s.id, error)
             }),
           )
-          offs.push(handle.on('ready', () => cbRef.current.onScriptReady?.(s.id)))
+          let normalized = false
+          offs.push(handle.on('ready', () => {
+            if (!normalized) {
+              normalized = true
+              const desired = scriptInputs(handle.inputs, s.inputs)
+              const current = handle.inputValues()
+              if (Object.entries(desired).some(([key, value]) => JSON.stringify(current[key]) !== JSON.stringify(value))) {
+                handle.setInputs(desired as Parameters<IndicatorHandle['setInputs']>[0])
+              }
+            }
+            cbRef.current.onScriptReady?.(s.id)
+          }))
         } catch (e) {
           console.warn('[vela] handle.on failed', e)
         }
-        have.set(s.id, { handle, source: s.source, offs })
+        have.set(s.id, { handle, source: s.source, inputs: JSON.stringify(s.inputs ?? {}), offs })
       } catch (e) {
         console.error('[vela] addIndicator failed', e)
         const err = e instanceof Error ? e : new Error(String(e))
@@ -266,6 +294,12 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
       }
     }
   }, [scripts, ready])
+
+  useEffect(() => {
+    if (!ready || !chartRef.current) return
+    chartRef.current.marks.defineGroup({ id: 'bot-decisions', label: 'Bot journal decisions' })
+    chartRef.current.marks.set(marks ?? [])
+  }, [marks, ready, symbol, tf])
 
   if (failed) return <FallbackChart symbol={symbol} tf={tf} height={height} reason={failed} tickSize={tickSize} />
 

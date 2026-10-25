@@ -1,6 +1,8 @@
 import type { DataProvider } from '@luxalgo/vela'
 import { api } from '../api/client'
 import type { Candle, Market } from '../api/types'
+import { CandleStream } from './candleStream'
+import { tfMs } from '../lib/timeframes'
 import { velaToDeltaTf } from '../lib/timeframes'
 import { sseBus } from '../sse/bus'
 
@@ -119,24 +121,12 @@ export const deltaProvider: DataProvider = {
 
   subscribe(ticker, timeframe, onBar) {
     const tf = velaToDeltaTf(timeframe)
-    let forming: ReturnType<typeof toOHLCV> | null = null
-
+    const stream = new CandleStream(tfMs(tf), onBar)
     const offCandle = sseBus.on('candle', (e) => {
-      if (e.symbol !== ticker || e.tf !== tf || !e.bar) return
-      forming = toOHLCV(e.bar)
-      onBar(forming)
+      if (e.symbol === ticker && e.tf === tf && e.bar) stream.candle(e.bar, e.closed)
     })
     const offTick = sseBus.on('tick', (t) => {
-      if (t.symbol !== ticker || !forming || !Number.isFinite(t.price)) return
-      // nudge the forming bar's close between candle events
-      const next = {
-        ...forming,
-        close: t.price,
-        high: Math.max(forming.high, t.price),
-        low: Math.min(forming.low, t.price),
-      }
-      forming = next
-      onBar(next)
+      if (t.symbol === ticker) stream.tick(t.price, t.time)
     })
     return () => {
       offCandle()
