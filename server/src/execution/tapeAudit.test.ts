@@ -196,3 +196,16 @@ test('decision 194: a stop filled on catching up after a restart is kept but mar
   const f = audit.summary(0).fills[0];
   assert.deepEqual([f.n, f.unobserved, f.medianBps], [1, 1, null]);
 });
+
+test('decision 201: funding is not audited against the tape, and old funding rows leave the summary', () => {
+  const db = new Db(':memory:');
+  const eng = fakeEngine();
+  const audit = new TapeAudit(db, [{ engine: eng, book: 0 }]);
+  const t0 = 1_800_000_000_000;
+  eng.emit('order', { at: t0, positionId: 1, symbol: 'XUSD', side: 'sell', qty: 1, price: 0, reason: 'funding' });
+  audit.onTrade(trade('XUSD', 100, 1, t0 + 500));
+  (audit as any).tick(t0 + 200_000);
+  assert.equal(db.all('SELECT * FROM tape_audit').length, 0);
+  db.run("INSERT INTO tape_audit(at, book, symbol, kind) VALUES (?, 0, 'XUSD', 'market exit (funding)')", t0);
+  assert.equal(audit.summary(0).fills.length, 0);
+});

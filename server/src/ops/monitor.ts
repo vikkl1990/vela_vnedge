@@ -126,7 +126,12 @@ export class Monitor {
       }
       if (stats.equity > st.equityPeak) { st.equityPeak = stats.equity; try { this.d.db.kvSet('ops.equityPeak', st.equityPeak); } catch { /* ignore */ } }
       st.drawdownPct = st.equityPeak > 0 ? (st.equityPeak - stats.equity) / st.equityPeak * 100 : 0;
-      if (st.drawdownPct >= cfg.alerts.drawdownPct) await a.raise('paper.drawdown', `🔴 Equity drawdown ${st.drawdownPct.toFixed(1)}% from peak ${fmtMoney(st.equityPeak)} → ${fmtMoney(stats.equity)} (limit ${cfg.alerts.drawdownPct}%)`, now);
+      // decision 201: the alert is a warning about the peak; it does not size anything. Position size follows risk.ddScale,
+      // measured from risk.ddFrom (decision 188: the starting capital), and the daily and weekly loss limits halt entries
+      if (st.drawdownPct >= cfg.alerts.drawdownPct) {
+        const from = cfg.risk?.ddFrom === 'peak' ? 'the peak' : `the starting capital (${fmtMoney(cfg.paper.initialEquity)})`;
+        await a.raise('paper.drawdown', `🔴 Equity drawdown ${st.drawdownPct.toFixed(1)}% from peak ${fmtMoney(st.equityPeak)} → ${fmtMoney(stats.equity)} (alert at ${cfg.alerts.drawdownPct}%). Alert only: position size is cut by the drawdown rule measured from ${from}, and the daily/weekly loss limits halt entries.`, now);
+      }
       else if (st.drawdownPct < cfg.alerts.drawdownPct * 0.8) await a.clear('paper.drawdown', undefined, now);
     }
 

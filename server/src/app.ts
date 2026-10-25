@@ -161,6 +161,7 @@ export class App {
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
       mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
       subscribe: symbols => { this.feed.subscribe('v2/ticker', symbols); subscribeRealtime(this); },
+      accountHolds: (scannerId, symbol, tf) => this.paper.openPositions().some(p => p.scannerId === scannerId && p.symbol === symbol && p.tf === tf),
       accountFocus: () => {
         const open = this.paper.openPositions(); const c = cfg();
         const cap = Math.min(c.paper.maxOpenPositions || Infinity, c.risk?.maxPositionsTotal || Infinity);
@@ -480,7 +481,7 @@ export class App {
       overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, updated: s.updated, patches: s.patches,
       symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), pairs: c.pairs ?? null, exitMode: c.exitMode,
       // how the script is read (decision 48): its entry channel, timezone, derivation rule, input overrides and exit overrides
-      reads: { sources: c.sources ?? null, timezone: c.timezone ?? null, rule: c.rule ?? null, inputs: c.inputs ?? null, exit: c.exit ?? null, labels: c.labels ?? null, edge: c.edge ?? null, invert: Boolean(c.invert) },
+      reads: { sources: c.sources ?? null, timezone: c.timezone ?? null, rule: c.rule ?? null, inputs: c.inputs ?? null, exit: c.exit ?? null, labels: c.labels ?? null, edge: c.edge ?? null, invert: Boolean(c.invert), sides: c.sides ?? null, variantOf: s.variantOf ?? null },
       // what it produced when last profiled, and whether the runtime has given up on it
       kind: prof?.kind ?? null, profiledAt: prof?.at ?? null, health: health ? { fails: health.fails, lastAt: health.lastAt, lastError: health.lastError, reason: health.reason, quarantined: health.quarantined } : null,
       lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,

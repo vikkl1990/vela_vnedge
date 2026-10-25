@@ -359,6 +359,13 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
         </div>
       }
     >
+      {(s.reads?.sides || s.reads?.variantOf) && (
+        <div className="callout small" role="note">
+          <b>Reading contract.</b>{' '}
+          {s.reads?.variantOf && <>A variant of <a className="link" href={`/scanners/${s.reads.variantOf}`}>{s.reads.variantOf}</a>: the same Pine source, read its own way, with its own record. </>}
+          {s.reads?.sides && <>The account reads these outputs as written here, not as the chart's wording or arrows suggest: {Object.entries(s.reads.sides).map(([t, v], i) => <span key={t}>{i ? ' · ' : ''}<span className="mono">{t}</span> → <b>{v === 'none' ? 'not an entry' : v}</b></span>)}.</>}
+        </div>
+      )}
       <div className="grid-2">
         <div>
           <ChipSelect label="Entry channel" options={SOURCES} value={sources} onChange={(v) => setSources(v as EntrySource[])} emptyLabel="all channels" disabled={!auth.canTrade} />

@@ -117,6 +117,8 @@ export class TapeAudit {
         this.limits.delete(key);
         return;   // a maker fill at its own price: the queue is the question, recorded with the limit
       }
+      // decision 201: funding is a cash adjustment, not an order — nothing on the tape to compare it with
+      if (o.reason === 'funding') return;
       const kind = o.reason === 'entry' ? 'market entry' : STOP_REASONS.has(o.reason) ? `stop (${o.reason})` : /^tp\d$/.test(o.reason) ? 'target' : `market exit (${o.reason})`;
       if (kind === 'target') return;   // a resting take-profit fills at its level or not at all; nothing to compare
       this.open.push({ book, fill: o, kind, level: o.price, riskUnit, tf: pos?.tf ?? '', due: o.at + AFTER_MS + 500, giveUpAt: o.at + GRACE_MS });
@@ -205,7 +207,8 @@ export class TapeAudit {
   }
 
   summary(since = Date.now() - 14 * 86_400_000): TapeAuditSummary {
-    const rows = this.db.all<any>('SELECT * FROM tape_audit WHERE at >= ? ORDER BY at DESC', since);
+    // decision 201: rows written for funding before it was excluded are left out of every count
+    const rows = this.db.all<any>("SELECT * FROM tape_audit WHERE at >= ? AND kind != 'market exit (funding)' ORDER BY at DESC", since);
     const bookName = (b: number) => (b === 0 ? 'account' : 'shadow');
     const q = (xs: number[], p: number) => (xs.length ? xs[Math.min(xs.length - 1, Math.floor(xs.length * p))] : null);
     const groups = new Map<string, any[]>();

@@ -88,7 +88,7 @@ export interface PoolWorker {
 export { readingLegacy as legacyConditionTitles } from '../scanners/legacy.ts';
 import { readingLegacy } from '../scanners/legacy.ts';
 
-interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number; live: boolean }
+interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedAt?: number; queuedAt: number; deadline?: number; live: boolean; /** Decision 201: the tier it was queued in, so the memory guard can spare the account's own runs. */ priority?: JobPriority }
 /**
  * `live` is a current bar's evaluation, which can open or close a trade; `background` is
  * everything that can wait: backtests, warm-ups, the incubator's shadow runs and research.
@@ -175,9 +175,14 @@ export class PinePool {
     // several, the resident size is the process's and no single script can be blamed, so the kill is recorded as shared
     // and quarantines nobody (four live scanners were quarantined on 19 October for a bar-close burst)
     const busy = this.workers.filter(w => w.busy).length;
+    // decision 201: the guard takes the least urgent work first — background (screens, shadow scans), then the mirror
+    // tier (the shadow book's positions), and only then the account's own live runs. It used to retire every busy worker
+    // at once, so a burst of shadow work cost the account its bar-close scans (46 memory-shared aborts in one log).
+    const tier = (s: (typeof this.workers)[number]) => (s.busy?.priority === 'live' ? 2 : s.busy?.priority === 'mirror' ? 1 : 0);
+    const lowest = Math.min(...this.workers.filter(w => w.busy).map(tier));
     for (const slot of this.workers) {
       const p = slot.busy;
-      if (!p) continue;
+      if (!p || tier(slot) !== lowest) continue;
       this.memoryRetirements++;
       log.warn(`job ${p.job.scannerId} on ${p.job.symbol}: resident ${mb} MB over the ${Math.round(this.memoryGuardBytes / 1048576)} MB guard while it ran with ${busy} busy; terminating worker ${slot.index}`);
       this.retire(slot, busy === 1 ? `memory: resident ${mb} MB over the guard while it ran` : `memory-shared: resident ${mb} MB over the guard with ${busy} runs in progress`);
@@ -285,7 +290,7 @@ export class PinePool {
       const now = Date.now();
       const live = (opts.priority ?? 'background') === 'live';
       const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
-      const p: Pending = { job: { legacyConditionTitles: readingLegacy().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror' };
+      const p: Pending = { job: { legacyConditionTitles: readingLegacy().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror', priority: opts.priority ?? 'background' };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
       (live ? this.live : opts.priority === 'mirror' ? this.mirror : this.queue).push(p);
       this.pump();

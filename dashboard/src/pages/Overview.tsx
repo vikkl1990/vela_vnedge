@@ -9,6 +9,7 @@ import { PositionsTable } from '../components/PositionsTable'
 import { TickerTape } from '../components/TickerTape'
 import { ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, QueryState } from '../components/ui'
 import { fmtInt, fmtMoney, fmtProfitFactor, fmtPct, fmtPnl, fmtR, pnlClass } from '../lib/format'
+import { RunHealthPanel } from '../components/RunHealthPanel'
 
 export function Overview() {
   const stats = useStats()
@@ -124,6 +125,7 @@ export function Overview() {
         </Panel>
         <AlertsStatusLine />
         <SystemPanel />
+        <RunHealthPanel />
         <MarketsTodayPanel />
         <Panel title="Scanner fleet">
           <QueryState {...scanners} data={scanners.data} empty="No scanners loaded." hint="Drop .pine files into the scanners folder and restart the server." onRetry={() => scanners.refetch()}>

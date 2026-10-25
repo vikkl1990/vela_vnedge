@@ -36,6 +36,14 @@ import { sliceOf } from '../incubator/gate.ts';
 import { backtestPolicy } from '../paper/policy.ts';
 import { aliasMap, duplicateGroups } from '../scanners/identity.ts';
 import { readingOf } from '../scanners/reading.ts';
+import { createHash } from 'node:crypto';
+import { sourceHash } from '../paper/fingerprint.ts';
+import { SIMULATION_VERSION } from '../paper/version.ts';
+/** Decision 201: the hashes a screen result carries, so a later reader can tell what strategy it measured. */
+function screenProvenance(patched: string, read: { extract: Record<string, unknown>; rule: Record<string, unknown> }, policy: Record<string, unknown>) {
+  const h = (v: unknown) => createHash('sha1').update(JSON.stringify(v, (_k, x) => (x instanceof Set ? [...x].sort() : x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x))).digest('hex').slice(0, 12);
+  return { source: sourceHash(patched), reading: h(read), sim: SIMULATION_VERSION, policy: h(policy) };
+}
 
 const started = Date.now();
 const cfg = new ConfigStore().get();
@@ -56,6 +64,7 @@ const handRun = Boolean(process.env.SLICE || process.env.TF || process.env.IDS |
 const shadowOnly = process.env.RESCREEN_SHADOW === '1';
 const dry = process.env.DRY === '1';
 const verdicts: Array<{ scannerId: string; symbol: string; tf: string; pass: boolean; reason: string; pf: number; trades: number; avgR: number }> = [];
+if (/\blive\b/.test(process.env.RESCREEN_STAGES ?? '') && !dry) { console.error('RESCREEN_STAGES=live only runs with DRY=1: a live pair keeps its original screen'); process.exit(2); }
 /** `retry`: the quarantined scripts released for one more screen at the head of this slice (decision 108), kept in the cursor so a resumed slice sees the same list. */
 type Cursor = { tfIdx: number; slice: number; scriptIdx: number; retry?: string[] };
 let cursor: Cursor = handRun
@@ -200,7 +209,9 @@ while (sliceArg !== 'none') {
   // nothing else — the ordinary screen skips them, so a re-screen under a corrected policy never reached them and the
   // decision-186 rule (a re-screen that no longer passes retires the pair) had nothing to act on. DRY=1 records nothing
   // and skips the judge: it prints each pair's verdict so the retirements can be read before they happen.
-  const skipStages = new Set(shadowOnly ? ['live', 'demote_proposed', 'tracked', 'candidate', 'retired'] : ['live', 'demote_proposed', 'shadow', 'proposed', 'tracked']);
+  // decision 201: RESCREEN_STAGES=live (with RESCREEN_SHADOW=1 and DRY=1) revalidates the live pairs under today's policy
+  const rescreenStages = new Set((process.env.RESCREEN_STAGES ?? 'shadow,proposed').split(',').map(x => x.trim()));
+  const skipStages = new Set(shadowOnly ? ['live', 'demote_proposed', 'tracked', 'candidate', 'retired', 'shadow', 'proposed'].filter(x => !rescreenStages.has(x)) : ['live', 'demote_proposed', 'shadow', 'proposed', 'tracked']);
   const markets = [...data.keys()];
   let stopped = false;
   for (const [idx, s] of scripts.entries()) {
@@ -306,6 +317,7 @@ while (sliceArg !== 'none') {
         }
         if (r.pass) summary.passed++;
         r.fill = 'close';   // decision 134: entries filled at the signal bar's close
+        r.provenance = screenProvenance(s.patched, READ, policy);
         if (shadowOnly) verdicts.push({ scannerId: s.id, symbol, tf: TF, pass: r.pass, reason: `PF ${r.profitFactor.toFixed(2)}, ${r.trades} trades, ${r.avgR.toFixed(2)}R, ${r.windowsUp}/8 windows up, at stress ${r.netAtStress.toFixed(0)}${r.holdoutPass === false ? ', holdout failed' : ''}${coarse.has(symbol) ? ', too coarse to size' : ''}`, pf: r.profitFactor, trades: r.trades, avgR: r.avgR });
         if (dry) continue;
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);

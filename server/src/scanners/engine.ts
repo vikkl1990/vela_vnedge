@@ -109,6 +109,10 @@ export class ScannerEngine extends EventEmitter {
     super();
     this.registry = deps.registry; this.health = new ScriptHealth(deps.db); this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
     this.marks = new BarWatermark({ load: () => this.db.kvGet<Record<string, number>>('scanner.liveMarks'), save: rec => this.db.kvSet('scanner.liveMarks', rec) });
+    // decision 201: every account run, kept for 14 days — scanner_runs holds only the latest row per cell, so a recovered
+    // cell hid the failures before it
+    this.db.run('CREATE TABLE IF NOT EXISTS scanner_run_log (scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL, bar_time INTEGER, ms INTEGER, outcome TEXT NOT NULL, error TEXT)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_scanner_run_log ON scanner_run_log(at)');
     this.symbolsRef = deps.symbolsRef ?? (() => this.cfgRef().symbols);
     this.ml = deps.ml ?? null;
     this.cfgStore = deps.cfgStore ?? null;
@@ -388,9 +392,26 @@ export class ScannerEngine extends EventEmitter {
     if (!active.length) return;
     // backpressure: if the worker queue is already deep (warm-up or an earlier bar still running), skip this bar for this symbol
     // only live work counts here: background jobs queue behind live ones and cannot delay them
-    if (this.pool.stats.queuedLive > 500) { log.warn(`bar closed ${symbol} ${tf}: ${this.pool.stats.queuedLive} live runs already queued — skipping live runs for this bar (reduce scanners × symbols)`); return; }
+    if (this.pool.stats.queuedLive > 500) { for (const s of active) this.logRun(s.id, symbol, tf, bar.time, null, 'skipped', `live queue ${this.pool.stats.queuedLive} deep`); log.warn(`bar closed ${symbol} ${tf}: ${this.pool.stats.queuedLive} live runs already queued — skipping live runs for this bar (reduce scanners × symbols)`); return; }
     log.info(`bar closed ${symbol} ${tf} @ ${new Date(bar.time).toISOString().slice(11, 16)} → running ${active.length} scanners`);
     for (const s of active) this.runOnce(s, symbol, tf, { backtest: false, live: true }).catch(e => log.error(`run ${s.id} ${symbol} ${tf} failed: ${e?.message ?? e}`));
+  }
+
+  private lastPrune = 0;
+  /** Decision 201: one row per account run (ok, failed or skipped), pruned to 14 days. */
+  private logRun(scannerId: string, symbol: string, tf: string, barTime: number | null, ms: number | null, outcome: 'ok' | 'failed' | 'skipped', error: string | null) {
+    try {
+      const now = Date.now();
+      this.db.run('INSERT INTO scanner_run_log(scanner_id, symbol, tf, at, bar_time, ms, outcome, error) VALUES (?,?,?,?,?,?,?,?)', scannerId, symbol, tf, now, barTime, ms, outcome, error ? error.slice(0, 300) : null);
+      if (now - this.lastPrune > 3600_000) { this.lastPrune = now; this.db.run('DELETE FROM scanner_run_log WHERE at < ?', now - 14 * 86_400_000); }
+    } catch (e: any) { log.warn(`run log not written: ${e?.message ?? e}`); }
+  }
+
+  /** Decision 201: each account cell's runs over the last `hours` — the record the latest-row status hides. */
+  runHealth(hours = 24): Array<{ scannerId: string; symbol: string; tf: string; ok: number; failed: number; skipped: number; lastFailAt: number | null; lastError: string | null }> {
+    return this.db.all<any>(`SELECT scanner_id scannerId, symbol, tf, SUM(outcome='ok') ok, SUM(outcome='failed') failed, SUM(outcome='skipped') skipped,
+      MAX(CASE WHEN outcome!='ok' THEN at END) lastFailAt, (SELECT error FROM scanner_run_log l2 WHERE l2.scanner_id=l.scanner_id AND l2.symbol=l.symbol AND l2.tf=l.tf AND l2.outcome!='ok' ORDER BY at DESC LIMIT 1) lastError
+      FROM scanner_run_log l WHERE at >= ? GROUP BY scanner_id, symbol, tf ORDER BY (SUM(outcome!='ok')) DESC, scanner_id`, Date.now() - hours * 3600_000);
   }
 
   /** Store what this run produced and where it emptied, on the run record and in the row the Scanners page reads. */
@@ -448,6 +469,7 @@ export class ScannerEngine extends EventEmitter {
       const info: RunInfo = { at, ms: res.ms + (liveRes === res ? 0 : liveRes.ms), symbol, tf, error: res.ok ? null : res.error ?? 'unknown', barTime: bars.at(-1)!.time };
       this.lastRun.set(key, info);
       this.db.run('INSERT INTO scanner_runs(scanner_id, symbol, tf, at, ms, error, bar_time) VALUES (?,?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, ms=excluded.ms, error=excluded.error, bar_time=excluded.bar_time', s.id, symbol, tf, at, res.ms, info.error, info.barTime);
+      if (mode.live) { const err = res.ok && liveRes.ok ? null : (liveRes.ok ? res.error : liveRes.error) ?? 'unknown'; this.logRun(s.id, symbol, tf, info.barTime, res.ms + (liveRes === res ? 0 : liveRes.ms), err ? 'failed' : 'ok', err); }
       if (!res.ok) {
         log.warn(`${key} error: ${res.error}`);
         if (this.health.record(s.id, res.error)) log.warn(`${s.id} quarantined: ${res.error} — it will not be scheduled again until released`);

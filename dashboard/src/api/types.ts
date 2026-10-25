@@ -206,7 +206,9 @@ export interface Scanner {
   lastRun: LastRun | null
   stats: ScannerStats
   /** How the script is read (decision 48): entry channels, timezone, derivation rule, overrides. */
-  reads?: { sources: EntrySource[] | null; timezone: string | null; rule: 'trailing' | 'oscillator' | null; inputs: Record<string, number | string | boolean> | null; exit: Record<string, unknown> | null; labels?: string[] | null; edge?: boolean | null; invert?: boolean }
+  reads?: { sources: EntrySource[] | null; timezone: string | null; rule: 'trailing' | 'oscillator' | null; inputs: Record<string, number | string | boolean> | null; exit: Record<string, unknown> | null; labels?: string[] | null; edge?: boolean | null; invert?: boolean
+    /** Decision 195/201: the scanner's explicit title contract, and the id it is a variant of. */
+    sides?: Record<string, 'long' | 'short' | 'none'> | null; variantOf?: string | null }
   /** What it produced when last profiled: the author's plan, a direction, information, nothing. */
   kind?: ProfileKind | null
   profiledAt?: number | null
@@ -633,7 +635,11 @@ export interface IncubatorStats {
 export interface IncubatorScreen {
   pass: boolean; at: number; trades: number; profitFactor: number; netPnl: number; netAtStress: number
   windowsUp: number; winRatePct: number; avgR: number; bars: number; days: number
+  /** Decision 201: what the screen measured; absent on screens from before it (legacy). */
+  provenance?: { source: string | null; reading: string; sim: number; policy: string }
 }
+/** Decision 201: each account cell's runs, failures and skips over a window. */
+export interface RunHealthRow { scannerId: string; symbol: string; tf: string; ok: number; failed: number; skipped: number; lastFailAt: number | null; lastError: string | null }
 export interface IncubatorPair {
   /** The market gate's verdict on this pair's market today; null when the gate has not judged it. */
   market?: { allowed: boolean; reasons: string[] } | null

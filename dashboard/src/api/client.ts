@@ -28,7 +28,7 @@ import type {
   TradeQuery, TradePage, MlSnapshot,
   MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
   LibraryDetail,
-  LibraryList, ScreenJob, ScreenQueueView, RadarView, TapeAuditView, DuplicateGroup, OverlapCluster, LockStudyView } from './types'
+  LibraryList, ScreenJob, ScreenQueueView, RadarView, TapeAuditView, DuplicateGroup, OverlapCluster, LockStudyView, RunHealthRow } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -132,6 +132,7 @@ export const api = {
   tapeAudit: (days: number) => get<TapeAuditView>(`/tape-audit?days=${days}`),
   scannerDuplicates: () => get<DuplicateGroup[]>('/scanners/duplicates'),
   lockStudy: (days: number) => get<LockStudyView>(`/research/lock?days=${days}`),
+  runHealth: (hours: number) => get<RunHealthRow[]>(`/scanners/run-health?hours=${hours}`),
   incubatorOverlap: (days: number) => get<OverlapCluster[]>(`/incubator/overlap?days=${days}`),
   incubatorDecide: (v: { id: number; action: 'approve' | 'reject' | 'demote'; note?: string }) => post<IncubatorPair>(`/incubator/${v.id}/${v.action}`, v.note ? { note: v.note } : {}),
   incubatorEvaluate: () => post<{ report: unknown }>('/incubator/evaluate'),

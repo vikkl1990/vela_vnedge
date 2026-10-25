@@ -18,6 +18,11 @@ export interface ScreenResult {
   scriptExit?: { trades: number; avgR: number; avgR1: number; avgR2: number; sumR: number };
   /** Decision 134: set on screens whose entries were filled at the signal bar's close; a strategy screen without it was flattered and must be re-run. */
   fill?: 'close';
+  /**
+   * Decision 201: what this screen measured — the patched source's hash, the reading contract's, the simulation version
+   * and the trading policy's (entry model, exits, gates). A screen without it predates decision 201 and is shown as legacy.
+   */
+  provenance?: { source: string | null; reading: string; sim: number; policy: string };
 }
 
 // ---- decision 114: a strategy cohort judged on its own exits ----

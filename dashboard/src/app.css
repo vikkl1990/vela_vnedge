@@ -1602,3 +1602,6 @@ body { overflow-x: clip; }
 .incubator-filters label { display: grid; gap: 6px; font-size: 12px; flex: 1 1 180px; }
 .incubator-filters .input { width: 100%; min-width: 0; }
 .incubator-paging { align-items: center; margin-top: 12px; }
+
+/* decision 201: a note that explains how the bot reads a script (its contract, its variant) */
+.callout { border: 1px solid var(--border); border-left: 3px solid var(--accent, #7c6cf0); border-radius: 6px; padding: 8px 12px; margin: 0 0 12px; line-height: 1.5; }

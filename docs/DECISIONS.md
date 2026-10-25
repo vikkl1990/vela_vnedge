@@ -5875,3 +5875,31 @@ in the shadow book, 40 were down 44.9R, and 444 had fewer than three shadow trad
 since admission (`RESCREEN_RETIRE_MIN_TRADES`) and their total is zero R or less. A failing pair that is winning keeps
 trading; one with too little record keeps collecting it, and the stale cap retires it if it falls silent (30 days on 1h,
 60 on 4h). The shadow book is where the experiments run (decision 199), so a backtest alone does not end one.
+
+## 201. Exits for held positions, the account's runs protected, run history, clean audit, screen provenance
+
+**Why.** An outside audit of the degradation (25 October) found, and the code confirmed:
+- switching copying off (decision 199) also cut the scanner exits of the account positions copying had opened (the same
+  `mirror.enabled` test wrapped entries and exits; #4968 woodie-pivots BTWUSD 15m and #5002 swing-traces SOLUSD 4h);
+- the pool's memory guard retired every busy worker at once, so shadow load cost the account its own bar-close scans
+  (46 "memory-shared" aborts in one log, live cells among them), and with copying off no shadow scan of a held pair had
+  priority over the queue-depth drop;
+- `scanner_runs` keeps one row per cell, so a recovered cell hid its earlier failures;
+- funding was audited against the tape as a "market exit";
+- live pairs' screens carry no record of the source, reading or policy they measured;
+- the drawdown alert, measured from the peak, read as if it de-risked the account, while sizing follows the capital rule.
+
+**What.**
+- An exit raised by a shadow pair reaches the account whenever the account holds that scanner, market and timeframe,
+  copying on or off (`accountHolds`); entries are never copied while copying is off. Pairs holding a position in either
+  book are scanned in the mirror tier and are never dropped under backpressure.
+- The memory guard retires the least urgent tier first (background, then mirror, then the account's live runs).
+  Background shadow scans are skipped while the process is above 85% of the guard (`stats.memorySkipped`).
+- `scanner_run_log` keeps every account run as ok, failed or skipped for 14 days; `/api/scanners/run-health` and an
+  Overview panel show each cell's failures and skips.
+- Funding is not audited; earlier funding rows are left out of the summary.
+- Screens carry `provenance` (source hash, reading hash, simulation version, policy hash). A live pair whose screen has
+  none shows a "legacy screen" pill. `RESCREEN_STAGES=live` with `DRY=1` revalidates live pairs under today's policy
+  without touching their original screen (a non-dry live re-screen is refused).
+- Each scanner page shows its reading contract and the id it is a variant of.
+- The drawdown alert says it is an alert only and names what does cut size (the drawdown rule, from the capital).
