@@ -186,6 +186,7 @@ export const api = {
   // logs
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
   autoTune: () => post<{ tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
+  fundingGuard: () => get<{at:number;executionSupported:boolean;settings?:{enabled:boolean;leadMinutes:number;scalpMaxR:number;swingMaxR:number};positions:Array<{id:number;book:string;symbol:string;tf:string;side:string;fresh:boolean;cost:number|null;costR:number|null;limitR:number;nextAt:number|null;ratePct:number|null;near:boolean;trigger:boolean;enabled:boolean}>}>('/funding-guard'),
   allocationAudit: () => get<AllocationAudit>('/analytics/allocations'),
   analytics: () => get<Analytics>('/analytics'),
   dailyReport: (days = 30) => get<DailyRow[]>(`/reports/daily?days=${days}`),

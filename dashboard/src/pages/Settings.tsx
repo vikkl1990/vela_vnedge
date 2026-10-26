@@ -21,6 +21,12 @@ interface Section { key: string; title: string; risk: Risk; intro: string; field
 
 const num = (lo: number, hi: number) => (v: unknown) => (typeof v === 'number' && v >= lo && v <= hi ? null : `${lo} – ${hi}`)
 const SECTIONS: Section[] = [
+ { key:'funding',title:'Funding protection · paper',risk:'high',intro:'Experimental budgets, not an optimized strategy. Uses fresh current funding estimates and fresh exit quotes. Blocks costly entries and closes paying positions before settlement. Off by default pending forward evaluation. Exchange execution is not supported.',fields:[
+ {path:'paper.fundingGuard.enabled',label:'Enable funding protection',kind:'bool'},
+ {path:'paper.fundingGuard.leadMinutes',label:'Minutes before settlement',kind:'number',validate:num(1,60)},
+ {path:'paper.fundingGuard.maxAgeSec',label:'Maximum funding age (seconds)',kind:'number',validate:num(10,600)},
+ {path:'paper.fundingGuard.scalpMaxR',label:'Scalp funding budget (R)',kind:'number',step:'0.01',validate:num(0.01,2)},
+ {path:'paper.fundingGuard.swingMaxR',label:'Swing funding budget (R)',kind:'number',step:'0.01',validate:num(0.01,2)}]},
   {
     key: 'sizing', title: 'Account and sizing', risk: 'high', intro: 'What one trade can lose and how many can be open. The risk per trade is what every R is measured against.',
     fields: [

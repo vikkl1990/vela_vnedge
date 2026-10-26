@@ -474,3 +474,19 @@ test('entry execution observation persists the actual entry fee and quote proven
  assert.ok(row.entry_fee>0);assert.ok(Math.abs(row.expected_exit_fee-p.entryPrice*p.qty*p.contractValue*.00059)<1e-9);
  assert.ok(row.spread_bps>0);
 });
+
+test('funding exits require executable quote and persist actual quote with a distinct reason', t => {
+ const {engine,open,db}=setup(t); const p=open();
+ assert.equal(engine.closeForFunding(p.id,60020),false);
+ engine.quotes={executable:()=>99,spreadPct:()=>0} as any;
+ assert.equal(engine.closeForFunding(p.id,60030),true);
+ assert.equal(p.exitReason,'funding-avoid'); assert.equal(p.exitPrice,99);
+ const row=db.get<any>("SELECT * FROM orders WHERE position_id=? AND reason='funding-avoid'",p.id);
+ assert.equal(row.price_source,'quote'); assert.equal(row.price,99);
+});
+
+test('funding admission veto happens before position creation', t => {
+ const {engine,open}=setup(t);
+ engine.fundingEntryBlock=()=> 'funding guard: over budget';
+ assert.equal(open(),undefined); assert.equal(engine.openPositions().length,0);
+});

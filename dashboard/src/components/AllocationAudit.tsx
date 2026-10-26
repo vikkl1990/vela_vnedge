@@ -1,11 +1,19 @@
-import { useAllocationAudit } from '../api/queries'
+import { useAllocationAudit, useFundingGuard } from '../api/queries'
 import { Panel, ErrorState, Loading, Time } from './ui'
 import { fmtMoney } from '../lib/format'
 const r = (v: number) => `${v>=0?'+':''}${v.toFixed(2)}R`
 const n = (v: number | null, suffix='') => v==null?'–':`${v.toFixed(1)}${suffix}`
 export function AllocationAuditPanel() {
  const q=useAllocationAudit(),d=q.data
+ const funding=useFundingGuard(),f=funding.data
  return <>
+ <Panel title="Upcoming funding · paper protection">
+ <p className="small muted">{f?.settings?.enabled?'Protection enabled':'Protection off · observation only'} · Budgets: scalp {f?.settings?.scalpMaxR??0.1}R, swing {f?.settings?.swingMaxR??0.2}R. Configure in Settings → Funding protection. Estimates use the current rate, not a guaranteed settlement rate. Receiving positions show zero payment. Exits require fresh quotes; protection cannot guarantee avoiding a charge during feed or execution failures.</p>
+ {f&&!f.executionSupported&&<p className="loss">Automatic funding exits unavailable with exchange execution attached.</p>}
+ {funding.isError&&<ErrorState error={funding.error} onRetry={()=>funding.refetch()}/>}
+ {funding.isLoading&&<Loading rows={2}/>}
+ {f&&<div className="table-wrap"><table className="table table-dense"><thead><tr><th>Position / book</th><th>Market</th><th>Settlement</th><th>Rate</th><th>Expected payment</th><th>Budget</th><th>Status</th></tr></thead><tbody>{f.positions.map(p=><tr key={`${p.book}:${p.id}`}><td>#{p.id} · {p.book}</td><td>{p.symbol} {p.tf} · {p.side}</td><td>{p.nextAt?<Time t={p.nextAt}/>: 'Unknown'}</td><td>{p.ratePct==null?'–':`${p.ratePct.toFixed(4)}%`}</td><td>{p.cost==null?'–':fmtMoney(p.cost)} / {p.costR==null?'–':r(p.costR)}</td><td>{r(p.limitR)}</td><td>{!p.fresh?'Funding missing / stale':!p.enabled?'Observe only':p.trigger?'Exit due · awaiting fresh quote / scheduler':p.near?'Within settlement window':'Monitoring'}</td></tr>)}</tbody></table>{!f.positions.length&&<p className="muted">No open paper positions.</p>}</div>}
+ </Panel>
  <Panel title="Current 1h allocations · entry audit">
  <p className="small muted">Exact currently scheduled scanner + pair + timeframe. Recent seven days versus the preceding seven, grouped by entry date. Account and shadow are separate. Historical settings may differ; small samples do not justify disabling a scanner. Gross R includes recorded funding before fees.</p>
  {q.isLoading&&!d&&<Loading rows={3}/>}{q.isError&&<ErrorState error={q.error} onRetry={()=>q.refetch()}/>}

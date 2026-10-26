@@ -261,6 +261,7 @@ export interface PaperConfig {
   tapeFallbackMs: number;
   /** Charge Delta funding (rate × notional, sign by side) to open positions at every funding timestamp. */
   fundingCharges: boolean;
+  fundingGuard?: { enabled: boolean; leadMinutes: number; maxAgeSec: number; scalpMaxR: number; swingMaxR: number };
 }
 
 /**
@@ -657,6 +658,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     latencyMs: 1500,
     tapeFallbackMs: 5000,
     fundingCharges: true,
+    fundingGuard: { enabled: false, leadMinutes: 5, maxAgeSec: 120, scalpMaxR: 0.1, swingMaxR: 0.2 },
   },
   execution: { mode: 'paper', bracket: true, reconcileSec: 60, allowProduction: false, confirmSec: 15, sweepSec: 10 },
   risk: {
@@ -744,6 +746,8 @@ export function validateConfig(c: AppConfig): string[] {
   for (const tf of c.timeframes || []) if (!(tf in TF_SECONDS)) errs.push(`unsupported timeframe ${tf}`);
   if (!(c.historyBars >= 200 && c.historyBars <= 4000)) errs.push('historyBars must be 200..4000');
   const p = c.paper;
+  const fg = p.fundingGuard;
+  if (fg && (typeof fg.enabled !== "boolean" || !Number.isFinite(fg.leadMinutes) || fg.leadMinutes < 1 || fg.leadMinutes > 60 || !Number.isFinite(fg.maxAgeSec) || fg.maxAgeSec < 10 || fg.maxAgeSec > 600 || !Number.isFinite(fg.scalpMaxR) || fg.scalpMaxR <= 0 || fg.scalpMaxR > 2 || !Number.isFinite(fg.swingMaxR) || fg.swingMaxR <= 0 || fg.swingMaxR > 2)) errs.push("invalid paper.fundingGuard settings");
   if (!(p.initialEquity > 0)) errs.push('paper.initialEquity must be > 0');
   if (!(p.riskPerTradePct > 0 && p.riskPerTradePct <= 20)) errs.push('paper.riskPerTradePct must be 0..20');
   if (!(p.maxLeverage >= 1 && p.maxLeverage <= 200)) errs.push('paper.maxLeverage must be 1..200');

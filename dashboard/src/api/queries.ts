@@ -303,4 +303,5 @@ export function useScreenCancel() {
   return useMutation({ mutationFn: api.screenCancel, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['screen-queue'] }) } })
 }
 
+export const useFundingGuard = () => useQuery({queryKey:['funding-guard'],queryFn:api.fundingGuard,refetchInterval:5000,retry:1})
 export const useAllocationAudit = () => useQuery({queryKey:['allocation-audit'],queryFn:api.allocationAudit,staleTime:30_000,refetchInterval:60_000,retry:1})

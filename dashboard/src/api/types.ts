@@ -27,6 +27,7 @@ export interface Health {
 }
 
 export interface PaperConfig {
+  fundingGuard?: { enabled: boolean; leadMinutes: number; maxAgeSec: number; scalpMaxR: number; swingMaxR: number }
   initialEquity: number
   riskPerTradePct: number
   maxLeverage: number

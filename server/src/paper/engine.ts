@@ -67,6 +67,7 @@ export class PaperEngine extends EventEmitter {
    */
   readonly book: number;
   /** Live exchange status veto, also rechecked when a pending order fills. */
+  fundingEntryBlock?: (symbol: string, side: Side, tf: string, notional: number, risk: number, at: number) => string | null;
   entryBlock?: (symbol: string, at: number) => string | null;
   private readonly kvPrefix: string;
   private db: Db;
@@ -351,6 +352,8 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted });
     if (size.qty < 1) return refused(size.reason ?? 'size');
+    const fundingBlock = this.fundingEntryBlock?.(ctx.symbol, ev.side!, ctx.tf, size.qty * ctx.market.contractValue * price, size.riskAmount, ctx.at);
+    if (fundingBlock) return refused(fundingBlock);
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price, replacing: replacing?.id });
       if (x) return refused(`risk ${x}`);
@@ -477,6 +480,8 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at }, { maker: true });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
+    const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * L.price, size.riskAmount, at);
+    if (fundingBlock) return cancel(fundingBlock);
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * L.price });
       if (x) return cancel(`risk ${x}`);
@@ -529,6 +534,8 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt }, { quoted });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
+    const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * price, size.riskAmount, receivedAt);
+    if (fundingBlock) return cancel(fundingBlock);
     if (this.risk) {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * price, replacing: held?.id });
       if (x) return cancel(`risk ${x}`);
@@ -781,6 +788,14 @@ export class PaperEngine extends EventEmitter {
     this.recordEquity(true);
     log.info(`FILL RESTATED #${pos.id} ${pos.symbol} ${reason}: ${fill.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
     return pos;
+  }
+
+  closeForFunding(id: number, at: number): boolean {
+    const pos=this.open.get(id); if (!pos) return false;
+    const cfg=exitConfigFor(this.paper,pos.symbol,this.scannerExit?.(pos.scannerId,pos.entryAt),pos.tf);
+    const px=this.quotes?.executable(pos.symbol,pos.side==='long'?'sell':'buy',cfg.quoteMaxAgeMs,at);
+    if (!(px && px>0)) return false;
+    return this.applyFills(pos,[fillExit(pos,px,pos.qtyOpen,'funding-avoid',at,cfg,'quoted')],{ref:px,source:'quote'});
   }
 
   closeManual(id: number, reason = 'manual', at = Date.now()): Position | undefined {

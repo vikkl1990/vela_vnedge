@@ -1,3 +1,4 @@
+import { fundingAssessment } from '../paper/fundingGuard.ts';
 import { depthFill } from '../paper/entryExecution.ts';
 /**
  * Composition helpers for the phase 2/3/5 modules so app.ts only needs a couple of calls:
@@ -20,6 +21,13 @@ export function wireRealtime(app: App): void {
   const books = [app.paper, app.shadow];
   const status = app.exchangeStatus ?? new TradingStatus();
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
+  app.db.run('CREATE TABLE IF NOT EXISTS funding_guard_blocks (symbol TEXT PRIMARY KEY, until_at INTEGER NOT NULL)');
+  for (const b of books) b.fundingEntryBlock = (symbol,side,tf,notional,risk,at) => {
+    if (!app.config.get().paper.fundingGuard?.enabled) return null;
+    if ((app.db.get<{until_at:number}>('SELECT until_at FROM funding_guard_blocks WHERE symbol=?',symbol)?.until_at??0)>at) return 'funding guard: awaiting settlement after protective exit';
+    const a=fundingAssessment(app.marks.funding(symbol),app.config.get().paper,side,tf,notional,risk,at);
+    return a.trigger?`funding guard: next payment ${a.costR!.toFixed(3)}R exceeds ${a.limitR}R budget`:null;
+  };
   let refreshing = false;
   const refresh = async () => {
     if (refreshing) return;
@@ -72,6 +80,13 @@ export function wireRealtime(app: App): void {
     const now = Date.now();
     try {
       for (const c of app.marks.dueFunding(now)) for (const b of books) b.chargeFunding(c.symbol, c.ratePct, c.at);
+      // Settle overdue charges first: never backdate an avoidance exit after settlement.
+      if (!app.executor) for (const b of books) for (const p of b.openPositions()) {
+        const mark=app.marks.mark(p.symbol);
+        if (!(mark && mark>0)) continue;
+        const a=fundingAssessment(app.marks.funding(p.symbol),app.config.get().paper,p.side,p.tf,p.qtyOpen*p.contractValue*mark,p.riskAmount,now);
+        if (a.trigger && b.closeForFunding(p.id,now)) app.db.run('INSERT INTO funding_guard_blocks(symbol,until_at) VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET until_at=max(until_at,excluded.until_at)',p.symbol,a.nextAt!+1000);
+      }
       for (const b of books) b.housekeeping(now);
       app.risk.tick(now);
     } catch (e: any) { log.warn(`scheduler step failed: ${e?.message ?? e}`); }
