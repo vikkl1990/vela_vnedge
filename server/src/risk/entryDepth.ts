@@ -28,7 +28,7 @@ export function freshDepthGate(inp:{now:number;deadlineAt?:number;receivedAt:num
 import type {AppConfig} from '../config.ts';
 import {toMs} from '../delta/ws.ts';
 export interface EntryDepthRequest {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number}
-type RawBook={buy:Array<{price:string|number;size:string|number}>;sell:Array<{price:string|number;size:string|number}>;timestamp?:unknown};
+type RawBook={buy:Array<{price:string|number;size:string|number}>;sell:Array<{price:string|number;size:string|number}>;timestamp?:unknown;last_updated_at?:unknown};
 /** Bounded public reads, coalesced per symbol; checks always use the final sized quantity. */
 export class EntryDepthGate {
  private cache=new Map<string,{receivedAt:number;exchangeAt:number;book:RawBook}>();
@@ -51,7 +51,7 @@ export class EntryDepthGate {
    this.active++;if(!job.urgent)this.background++;this.counts.requests++;
    void Promise.resolve().then(()=>this.deps.book(symbol)).then(book=>{
     if(!book||!Array.isArray(book.buy)||!Array.isArray(book.sell))throw Error('malformed depth response');
-    this.cache.set(symbol,{book,receivedAt:this.now(),exchangeAt:toMs(book.timestamp,0)});
+    this.cache.set(symbol,{book,receivedAt:this.now(),exchangeAt:toMs(book.timestamp??book.last_updated_at,0)});
    }).catch(()=>{this.cache.delete(symbol);this.counts.errors++;}).finally(()=>{this.active--;if(!job.urgent)this.background--;this.pending.delete(symbol);resolve();this.drain();});
   }};this.queue.push(job);});
   this.pending.set(symbol,task);this.drain();return task;
