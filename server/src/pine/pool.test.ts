@@ -231,3 +231,9 @@ test('decision 165: queued work runs live first, then mirror, then background; m
   await Promise.all(all);
   assert.deepEqual(order, ['live-1', 'live-2', 'mirror-1', 'mirror-2', 'bg']);
 });
+
+test('fresh shadow scans beat research while preserving reserved account capacity',()=>{
+ const {pool,workers}=setup();
+ void pool.run({...job,scannerId:'research'});void pool.run({...job,scannerId:'shadow'},{priority:'shadow'});void pool.run({...job,scannerId:'live'},{priority:'live'});
+ workers[0].ready();assert.equal(workers[0].jobs[0].scannerId,'live');workers[0].finish();assert.equal(workers[0].jobs[1].scannerId,'shadow');workers[0].finish();assert.equal(workers[0].jobs[2].scannerId,'research');workers[0].finish();void pool.stop();
+});

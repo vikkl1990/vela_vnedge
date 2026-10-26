@@ -8,7 +8,7 @@ export const riskRoutes: Extension = (add, app) => {
     const now=Date.now(),cfg=app.config.get().paper;
     return {at:now,settings:cfg.fundingGuard,executionSupported:!app.executor,positions:[app.paper,app.shadow].flatMap((b,book)=>b.openPositions().map(p=>({id:p.id,book:book===0?'account':'shadow',symbol:p.symbol,tf:p.tf,side:p.side,...fundingAssessment(app.marks.funding(p.symbol),cfg,p.side,p.tf,p.qtyOpen*p.contractValue*(app.marks.mark(p.symbol)??p.entryPrice),p.riskAmount,now)})))};
   });
-  add('GET', '/api/scanner-pipeline', () => ({...scannerPipeline(app.db,app.registry.all().filter(s=>app.scanners.isActive(s)).flatMap(s=>app.scanners.pairsFor(s.id).map(p=>({scannerId:s.id,...p})))),queue:app.pool.stats}));
+  add('GET', '/api/scanner-pipeline', () => ({...scannerPipeline(app.db,app.registry.all().filter(s=>app.scanners.isActive(s)).flatMap(s=>app.scanners.pairsFor(s.id).map(p=>({scannerId:s.id,...p})))),queue:app.pool.stats,shadowDispatch:app.incubator.dispatchStats,unallocated:app.registry.all().filter(s=>app.scanners.isActive(s)&&app.scanners.pairsFor(s.id).length===0).map(s=>({id:s.id,name:s.name}))}));
   add('GET', '/api/risk', () => app.risk.state());
   add('POST', '/api/risk/reset', () => { app.risk.reset(); return app.risk.state(); });
   add('POST', '/api/risk/kill', (_p, _u, body) => { app.risk.kill(String(body?.reason ?? 'manual'), body?.closeAll === true); return app.risk.state(); });

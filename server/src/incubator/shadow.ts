@@ -1,3 +1,4 @@
+import { ShadowDispatch } from './dispatch.ts';
 /**
  * Runs the incubator's shadow pairs on live data and trades them in the shadow book.
  *
@@ -50,7 +51,6 @@ export function shadowRefusal(inp: { regime: RiskConfig['regime'] | undefined; s
   return regime ? { kind: 'regime', reason: regime } : null;
 }
 const DELAY_MS = 20_000;
-const MAX_QUEUE = 300;
 /** Decision 201: background shadow scans stop above this share of the pool's memory guard. */
 const SHADOW_MEMORY_SHARE = 0.85;
 /** Time a scan is assumed to need once it starts, kept aside from the staleness budget. */
@@ -58,6 +58,10 @@ const RUN_ALLOWANCE_MS = 5_000;
 
 export class ShadowRunner {
   private pairs: PairRow[] = [];
+  private dispatch: ShadowDispatch<{r:PairRow;barAt:number;seenAt:number}>;
+  private dispatchTimer: NodeJS.Timeout | null = null;
+  private nextDispatchSave=0;
+  get dispatchStats(){return this.dispatch.stats;}
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
@@ -81,6 +85,12 @@ export class ShadowRunner {
   constructor(deps: ShadowRunner['deps']) {
     this.marks = new BarWatermark({ load: () => deps.store.liveMarks(), save: rec => deps.store.setLiveMarks(rec) });
     this.deps = deps;
+    this.dispatch=new ShadowDispatch({
+      limit:()=>Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
+      ready:()=>!deps.pool.stats.queuedLive && deps.pool.rssReader()<deps.pool.memoryGuardBytes*SHADOW_MEMORY_SHARE,
+      run:({r,barAt,seenAt})=>this.run(r,barAt,false,seenAt),
+      error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
+    });
     this.funnel = new Map(Object.entries(deps.store.shadowFunnel()));
     // decision 190: a resting order is `pending` until the book fills or cancels it; then its funnel entry is rewritten
     deps.paper.on?.('order', (o: { positionId: number; reason: string }) => { if (o.reason === 'entry') this.resolvePending(o.positionId, 'opened'); });
@@ -138,18 +148,20 @@ export class ShadowRunner {
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
       if (!e.historical && this.pairs.some(r => r.tf === e.tf)) this.onBarClosed(e.symbol, e.tf, e.bar.time + TF_SECONDS[e.tf] * 1000);
     });
+    this.dispatchTimer=setInterval(()=>{this.dispatch.drain();if(Date.now()>=this.nextDispatchSave){this.deps.store.setDispatchStats?.({...this.dispatchStats,at:Date.now()});this.nextDispatchSave=Date.now()+5000;}},100);this.dispatchTimer.unref();
     void this.sync();
     this.timer = setInterval(() => void this.sync(), SYNC_MS);
     this.timer.unref();
   }
 
-  stop() { if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
+  stop() { this.dispatch.stop();if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
 
   /** Pick up stage changes made by the daily job or the API, and make sure their candles are live. */
   async sync(): Promise<void> {
     const cfg = this.deps.cfgRef();
-    if (!cfg.incubator?.enabled) { this.pairs = []; return; }
+    if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
     this.pairs = this.deps.store.list([...ACTIVE_STAGES, 'tracked']).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
+    this.dispatch.prune(new Set(this.pairs.map(r=>`${r.scannerId}:${r.symbol}:${r.tf}`)));
     // symbols of open shadow positions keep their 1m feed until those positions close
     const symbols = new Set(this.symbols());
     this.deps.subscribe?.([...symbols]);
@@ -180,15 +192,18 @@ export class ShadowRunner {
     const focus = this.deps.accountFocus?.();
     const canEnter = (r: PairRow) => !!focus && !focus.full && !focus.held.has(r.symbol) && this.deps.marketVerdict?.(r.symbol)?.allowed !== false;
     const rank = (r: PairRow) => (r.stage === 'live' || focus?.held.has(r.symbol) ? 0 : canEnter(r) ? 1 : 2);
-    const urgent = mirror ? due.filter(r => r.stage !== 'tracked' || holds(r)).sort((a, b) => rank(a) - rank(b)) : due.filter(holds);
+    // In copy mode, unqualified research cells must not consume the urgent lane.
+    const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !mirrorRefusal(this.deps.cfgRef().incubator.mirror,this.deps.store.trades(r.scannerId,r.symbol,r.tf,2),this.turnoverOf(r.symbol)));
+    const urgent=due.filter(r=>holds(r)||(mirror&&copyable(r))).sort((a,b)=>rank(a)-rank(b));
     const later = due.filter(r => !urgent.includes(r));
     const launch = (rows: PairRow[], live: boolean) => {
       if (!rows.length) return;
-      if (!live && this.deps.pool.stats.queued > MAX_QUEUE) { this.stats.skipped += rows.length; log.warn(`shadow: worker queue ${this.deps.pool.stats.queued} deep, skipping ${rows.length} runs on ${symbol}`); return; }
-      // decision 201: research yields before the memory guard has to fire — background shadow scans are skipped while the
-      // process is above 85% of the guard, so the account's runs never share the last of the memory with them
-      const pool = this.deps.pool;
-      if (!live && pool.rssReader() > pool.memoryGuardBytes * SHADOW_MEMORY_SHARE) { this.stats.skipped += rows.length; this.stats.memorySkipped += rows.length; log.warn(`shadow: memory ${Math.round(pool.rssReader() / 1048576)} MB near the guard, skipping ${rows.length} runs on ${symbol}`); return; }
+      if (!live) {
+        const cfg=this.deps.cfgRef();
+        const deadline=barAt+(cfg.paper.maxSignalAgeSec>0?cfg.paper.maxSignalAgeSec*1000:300000)-RUN_ALLOWANCE_MS;
+        for(const r of rows)this.dispatch.enqueue(`${r.scannerId}:${r.symbol}:${r.tf}`,{r,barAt,seenAt},deadline);
+        this.dispatch.drain();return;
+      }
       for (const r of rows) this.run(r, barAt, live, seenAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
     };
     launch(urgent, true);
@@ -254,7 +269,7 @@ export class ShadowRunner {
     const win = this.marks.window(`${r.scannerId}:${r.symbol}:${r.tf}`, bars.at(-1)!.time, r.tf);
     const res = await this.deps.pool.run(
       { scannerId: s.id, source: s.patched, symbol: r.symbol, tf: r.tf, tickSize: market.tickSize, bars, tailBars: win.tailBars, plotTail: 400, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone },
-      { deadlineMs: budget, priority: live ? 'mirror' : 'background' });
+      { deadlineMs: budget, priority: live ? 'mirror' : 'shadow' });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (live) this.noteWave(r.tf, barAt, seenAt, tPool, Date.now(), res.ms ?? 0);
     if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }

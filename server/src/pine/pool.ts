@@ -98,7 +98,7 @@ interface Pending { job: WorkerJob; resolve: (r: WorkerResult) => void; startedA
  * background job, and it is not counted by the live backlog guard, so a bar close's wave of shadow scans can never
  * hold up or crowd out the account's own scans.
  */
-export type JobPriority = 'live' | 'mirror' | 'background';
+export type JobPriority = 'live' | 'mirror' | 'shadow' | 'background';
 /** A live job still waiting after this long would act on a signal too old to trade: drop it. */
 export const LIVE_QUEUE_DEADLINE_MS = 240_000;
 interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: boolean; retiring: boolean   /** Jobs completed by this worker; it is recycled after `WORKER_MAX_RUNS` (decision 68). */
@@ -114,6 +114,8 @@ export class PinePool {
   private workers: Slot[] = [];
   private live: Pending[] = [];
   private mirror: Pending[] = [];
+  private shadow: Pending[] = [];
+  private expiredShadow = 0;
   private queue: Pending[] = [];
   private nextId = 1;
   readonly size: number;
@@ -178,7 +180,7 @@ export class PinePool {
     // decision 201: the guard takes the least urgent work first — background (screens, shadow scans), then the mirror
     // tier (the shadow book's positions), and only then the account's own live runs. It used to retire every busy worker
     // at once, so a burst of shadow work cost the account its bar-close scans (46 memory-shared aborts in one log).
-    const tier = (s: (typeof this.workers)[number]) => (s.busy?.priority === 'live' ? 2 : s.busy?.priority === 'mirror' ? 1 : 0);
+    const tier = (s: (typeof this.workers)[number]) => (s.busy?.priority === 'live' ? 3 : s.busy?.priority === 'mirror' ? 2 : s.busy?.priority === 'shadow' ? 1 : 0);
     const lowest = Math.min(...this.workers.filter(w => w.busy).map(tier));
     for (const slot of this.workers) {
       const p = slot.busy;
@@ -193,7 +195,7 @@ export class PinePool {
   completed = 0;
   get stats() {
     return {
-      size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length + this.mirror.length, queuedLive: this.live.length, queuedMirror: this.mirror.length, completed: this.completed,
+      size: this.size, reserved: this.reserved, queued: this.queue.length + this.live.length + this.mirror.length + this.shadow.length, queuedLive: this.live.length, queuedMirror: this.mirror.length, queuedShadow:this.shadow.length, expiredShadow:this.expiredShadow, completed: this.completed,
       busy: this.workers.filter(w => w.busy).length, expiredLive: this.expiredLive, expiredMirror: this.expiredMirror, expiredBackground: this.expiredBackground, recycled: this.recycled, maxRuns: this.maxRuns,
     };
   }
@@ -292,7 +294,7 @@ export class PinePool {
       const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
       const p: Pending = { job: { legacyConditionTitles: readingLegacy().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror', priority: opts.priority ?? 'background' };
       if (this.stopped) { this.fail(p, 'worker pool stopped'); return; }
-      (live ? this.live : opts.priority === 'mirror' ? this.mirror : this.queue).push(p);
+      (live ? this.live : opts.priority === 'mirror' ? this.mirror : opts.priority === 'shadow' ? this.shadow : this.queue).push(p);
       this.pump();
     });
   }
@@ -316,6 +318,11 @@ export class PinePool {
       return p;
     }
     if (!canTakeReserved) return undefined;
+    while(this.shadow.length){
+      const p=this.shadow.shift()!;
+      if(expired(p)){this.expiredShadow++;this.fail(p,`dropped after ${Math.round((now-p.queuedAt)/1000)}s queued: too late to be useful`);continue;}
+      return p;
+    }
     while (this.queue.length) {
       const p = this.queue.shift()!;
       if (expired(p)) { this.expiredBackground++; this.fail(p, `dropped after ${Math.round((now - p.queuedAt) / 1000)}s queued: too late to be useful`); continue; }
@@ -327,7 +334,7 @@ export class PinePool {
   private pump() {
     if (this.stopped) return;
     for (const slot of this.workers) {
-      if (!slot.ready || slot.retiring || slot.busy || (this.queue.length === 0 && this.live.length === 0 && this.mirror.length === 0)) continue;
+      if (!slot.ready || slot.retiring || slot.busy || (this.queue.length === 0 && this.live.length === 0 && this.mirror.length === 0 && this.shadow.length === 0)) continue;
       const busyOnBackground = this.workers.filter(w => w.busy && !w.busy.live).length;
       const p = this.next(busyOnBackground < this.size - this.reserved);
       if (!p) continue;
@@ -359,6 +366,7 @@ export class PinePool {
     };
     drop(this.live, () => this.expiredLive++, 'expired');
     drop(this.mirror, () => this.expiredMirror++, 'dropped');
+    drop(this.shadow, () => this.expiredShadow++, 'dropped');
     drop(this.queue, () => this.expiredBackground++, 'dropped');
   }
 
@@ -366,7 +374,7 @@ export class PinePool {
     this.stopped = true;
     clearInterval(this.timeoutTimer);
     clearInterval(this.memoryTimer);
-    for (const p of [...this.live.splice(0), ...this.mirror.splice(0), ...this.queue.splice(0)]) this.fail(p, 'worker pool stopped');
+    for (const p of [...this.live.splice(0), ...this.mirror.splice(0), ...this.shadow.splice(0), ...this.queue.splice(0)]) this.fail(p, 'worker pool stopped');
     for (const slot of this.workers) {
       slot.retiring = true; slot.ready = false;
       if (slot.busy) { this.fail(slot.busy, 'worker pool stopped'); slot.busy = null; }

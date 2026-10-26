@@ -815,7 +815,7 @@ export class App {
     return {
       enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),
       fleet: livePairs(cfg).length, promotionsThisWeek: this.incubatorStore.promotionsSince(now - 7 * 86400_000),
-      lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastStart: this.db.kvGet('incubator.lastStart') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length },
+      lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastStart: this.db.kvGet('incubator.lastStart') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length, dispatch:this.incubator.dispatchStats },
       pairs, events: this.incubatorStore.events(100),
       // decision 157: why the candidates that passed their screen are not in the shadow book, right now
       candidates: candidateBlockers(this.incubatorStore, cfg, now, { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' }),

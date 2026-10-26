@@ -69,6 +69,7 @@ export class IncubatorStore {
   /** Decision 109: since when each live pair's market has been out (refused or not judged), by pair key; cleared the day it is allowed again. */
   /** Decision 125: the last bar each shadow pair acted on. */
   liveMarks(): Record<string, number> | undefined { return this.db.kvGet<Record<string, number>>('incubator.liveMarks'); }
+  setDispatchStats(rec: Record<string,number>): void { this.db.kvSet('incubator.dispatch',rec); }
   setLiveMarks(rec: Record<string, number>): void { this.db.kvSet('incubator.liveMarks', rec); }
   /** Decision 132: when this cell was last admitted to the shadow book by the screen, so a cell returning from the account keeps that evidence window. */
   admittedAt(pairId: number): number | null {

@@ -186,7 +186,7 @@ export const api = {
   // logs
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
   autoTune: () => post<{ tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
-  scannerPipeline: () => get<{at:number;since:number;queue:{queued:number;queuedLive:number;queuedMirror:number};cells:Array<{scannerId:string;symbol:string;tf:string;lastRun:number|null;error:string|null;runs:number;failures:number;entries24h:number;actions:Array<{action:string;n:number}>;latest:{at:number;action:string;label:string}|null}>}>('/scanner-pipeline'),
+  scannerPipeline: () => get<{at:number;since:number;unallocated:Array<{id:string;name:string}>;shadowDispatch:{pending:number;inFlight:number;offered:number;replaced:number;expired:number;finished:number;maxWaitMs:number};queue:{queued:number;queuedLive:number;queuedMirror:number;queuedShadow:number};cells:Array<{scannerId:string;symbol:string;tf:string;lastRun:number|null;error:string|null;runs:number;failures:number;entries24h:number;actions:Array<{action:string;n:number}>;latest:{at:number;action:string;label:string}|null}>}>('/scanner-pipeline'),
   fundingGuard: () => get<{at:number;executionSupported:boolean;settings?:{enabled:boolean;leadMinutes:number;scalpMaxR:number;swingMaxR:number};positions:Array<{id:number;book:string;symbol:string;tf:string;side:string;fresh:boolean;cost:number|null;costR:number|null;limitR:number;nextAt:number|null;ratePct:number|null;near:boolean;trigger:boolean;enabled:boolean}>}>('/funding-guard'),
   allocationAudit: () => get<AllocationAudit>('/analytics/allocations'),
   analytics: () => get<Analytics>('/analytics'),

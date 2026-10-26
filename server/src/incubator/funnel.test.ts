@@ -1,3 +1,4 @@
+import { DEFAULT_CONFIG } from '../config.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -105,4 +106,25 @@ test('decision 201: the memory guard retires background work first and spares th
   const busy = pool.workers.filter((w: any) => w?.busy).map((w: any) => w.busy.job.scannerId).sort();
   assert.deepEqual(busy, ['live', 'mirror'], 'the account and the mirror tier keep running');
   pool.stop?.(); void r1; void r2;
+});
+
+test('shadow waves wait fairly instead of dropping whole symbols behind a research backlog',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.enabled=true;cfg.incubator.mirror={enabled:false};
+ const runner=new ShadowRunner({store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{}},cfgRef:()=>cfg,paper:{openPositions:()=>[]},pool:{size:8,reserved:2,stats:{queued:500,queuedLive:0},rssReader:()=>0,memoryGuardBytes:1}}as any)as any;
+ runner.pairs=Array.from({length:500},(_,i)=>({id:i,scannerId:'s'+i,symbol:i<250?'AAAUSD':'BBBUSD',tf:'15m',stage:'shadow'}));
+ const seen=new Set<number>();const releases:Array<()=>void>=[];
+ runner.run=async(r:any)=>{seen.add(r.id);await new Promise<void>(resolve=>releases.push(resolve));};
+ runner.onBarClosed('AAAUSD','15m',Date.now());runner.onBarClosed('BBBUSD','15m',Date.now());t.mock.timers.tick(20_000);
+ await new Promise<void>(r=>setImmediate(r));assert.equal(runner.dispatchStats.inFlight,6);assert.equal(runner.dispatchStats.pending,494);assert.equal(runner.stats.skipped,0);
+ while(runner.dispatchStats.pending||runner.dispatchStats.inFlight){releases.splice(0).forEach(r=>r());await new Promise<void>(r=>setImmediate(r));}
+ assert.equal(seen.size,500);runner.stop();
+});
+
+test('held positions stay urgent; unqualified mirror cells use bounded shadow scheduling',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.enabled=true;cfg.incubator.mirror={enabled:true,minTrades:5,minNetR:0,minTurnoverUsd:0};
+ const runner=new ShadowRunner({store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},trades:()=>[],marketsToday:()=>new Map()},cfgRef:()=>cfg,paper:{openPositions:()=>[{scannerId:'held',symbol:'BTCUSD',tf:'15m'}]},mirror:()=>{},pool:{size:8,reserved:2,stats:{queued:0,queuedLive:0},rssReader:()=>0,memoryGuardBytes:1}}as any)as any;
+ runner.pairs=['held','research'].map((scannerId,id)=>({id,scannerId,symbol:'BTCUSD',tf:'15m',stage:'shadow'}));
+ const got:Array<[string,boolean]>=[];runner.run=async(r:any,_bar:any,live:boolean)=>{got.push([r.scannerId,live]);};runner.onBarClosed('BTCUSD','15m',Date.now());assert.deepEqual(got,[['held',true]]);
+ t.mock.timers.tick(20_000);await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['held',true],['research',false]]);runner.stop();
 });
