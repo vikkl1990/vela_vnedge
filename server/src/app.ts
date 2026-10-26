@@ -1,4 +1,4 @@
-import {EntryDepthGate} from './risk/entryDepth.ts';
+import {EntryDepthGate,wireEntryDepth} from './risk/entryDepth.ts';
 import { TradingStatus } from './delta/tradingStatus.ts';
 import path from 'node:path';
 import { lastAtr } from './data/indicators.ts';
@@ -196,9 +196,7 @@ export class App {
       },
     });
     this.entryDepth=new EntryDepthGate({cfg,book:async symbol=>await this.rest.orderbook(symbol,25),save:state=>this.db.kvSet('risk.entryDepth',state)});
-    this.paper.prepareEntryDepth=symbol=>this.entryDepth.prepare(symbol,true);
-    this.shadow.prepareEntryDepth=symbol=>this.entryDepth.prepare(symbol);
-    for(const b of [this.paper,this.shadow])b.entryDepthGate=req=>this.entryDepth.check(req);
+    wireEntryDepth(this.paper,this.shadow,this.entryDepth);
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
@@ -378,7 +376,7 @@ export class App {
     const tracked = (mt?.markets ?? []).filter(m => m.tracked !== false), allowed = tracked.filter(m => this.marketGate.verdict(m.symbol,now)?.allowed);
     const stale = mt ? now - mt.at > 2 * 3600_000 : true;
     g.push({ key: 'market', group: 'Market', name: 'Markets today', state: !rc.marketGate?.enabled ? 'off' : stale ? 'attention' : allowed.length ? 'armed' : 'blocking', value: mt ? `${allowed.length} of ${tracked.length} scanned markets allowed${stale ? ' · judgement stale' : ''}` : 'no judgement yet', rule: `Book under ${rc.marketGate?.maxBookCostPct ?? '?'}% round trip, turnover over $${((rc.marketGate?.minTurnoverUsd ?? 0) / 1e6).toFixed(2)}M, ATR over ${rc.regime?.minAtrPct ?? '?'}%`, next: stale ? 'Re-judge on the Overview' : 'The Overview lists every market and its reason', href: '/' });
-    g.push({key:'entry-depth',group:'Trade',name:'Fresh depth at actual size',state:this.entryDepth.enabled()?'armed':'off',value:`${this.entryDepth.counts.checks} checks · ${this.entryDepth.counts.blocked} blocked · ${cfg.paper.quoteMaxAgeMs/1000}s max age`,rule:'Final contract quantity checked before entry and pending fills; stale or unavailable depth refuses entry',next:'Signals shows depth-read counters and entry decisions',href:'/signals'});
+    g.push({key:'entry-depth',group:'Trade',name:'Fresh depth at actual size',state:this.entryDepth.enabled()?'armed':'off',value:`${this.entryDepth.counts.checks} checks · ${this.entryDepth.counts.blocked} blocked · ${cfg.paper.quoteMaxAgeMs/1000}s max age`,rule:'Account quantity and deployable shadow-equivalent quantity checked before entry and pending fills; stale or unavailable depth refuses entry',next:'Signals shows depth-read counters and entry decisions',href:'/signals'});
     g.push({ key: 'regime', group: 'Market', name: 'Regime', state: rc.regime?.enabled ? 'armed' : 'off', value: `ATR ≥ ${rc.regime?.minAtrPct ?? 0}%${(rc.regime as any)?.minEr ? ` · efficiency ≥ ${(rc.regime as any).minEr}` : ''}${rc.regime?.noWeekend ? ' · no weekend entries' : ''}`, rule: 'No entries in dead or choppy markets', next: 'Settings → risk → regime', href: '/settings' });
     // --- the trade ---
     const ratio = cfg.paper.minRiskFeeRatio ?? 0;

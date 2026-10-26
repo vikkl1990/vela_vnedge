@@ -27,7 +27,7 @@ export function freshDepthGate(inp:{now:number;deadlineAt?:number;receivedAt:num
 
 import type {AppConfig} from '../config.ts';
 import {toMs} from '../delta/ws.ts';
-export interface EntryDepthRequest {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number}
+export interface EntryDepthRequest {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;book?:number;virtualQty?:number}
 type RawBook={buy:Array<{price:string|number;size:string|number}>;sell:Array<{price:string|number;size:string|number}>;timestamp?:unknown;last_updated_at?:unknown};
 /** Bounded public reads, coalesced per symbol; checks always use the final sized quantity. */
 export class EntryDepthGate {
@@ -63,8 +63,17 @@ export class EntryDepthGate {
   const side=(ls:RawBook['buy'])=>ls.map(l=>[Number(l.price),Number(l.size)*req.contractValue]as[number,number]);
   const result=freshDepthGate({now:at,receivedAt:snapshot?.receivedAt??0,exchangeAt:snapshot?.exchangeAt??0,maxAgeMs:c.paper.quoteMaxAgeMs,qty:req.qty,contractValue:req.contractValue,maker:req.maker,book:snapshot?{bids:side(snapshot.book.buy??[]),asks:side(snapshot.book.sell??[])}:null,maxCostPct:c.risk.marketGate!.maxBookCostPct!,fees:{...c.paper,feeTaxPct:c.paper.feeTaxPct??0}});
   this.counts.checks++;if(!result.allowed)this.counts.blocked++;
-  this.last=[{at,symbol:req.symbol,qty:req.qty,maker:!!req.maker,...result},...this.last].slice(0,30);
+  this.last=[{at,symbol:req.symbol,qty:req.qty,book:req.book??null,virtualQty:req.virtualQty??null,maker:!!req.maker,...result},...this.last].slice(0,30);
   try{this.deps.save?.(this.stats);}catch{/* advisory telemetry cannot affect entry eligibility */}
   return result.allowed&&'crossingPct'in result?{crossingPct:result.crossingPct}:{reject:`risk market: fresh depth ${result.reason}${result.costPct!==null?` (${result.costPct.toFixed(3)}% for $${result.notional!.toFixed(0)})`:''}`};
  }
+}
+
+import type {PaperEngine} from '../paper/engine.ts';
+/** Shadow dollars are synthetic. Test depth at a deployable account-equivalent quantity, never its research purse. */
+export function wireEntryDepth(account:PaperEngine,shadow:PaperEngine,gate:EntryDepthGate){
+ account.prepareEntryDepth=symbol=>gate.prepare(symbol,true);
+ shadow.prepareEntryDepth=symbol=>gate.prepare(symbol);
+ account.entryDepthGate=req=>gate.check({...req,book:0});
+ shadow.entryDepthGate=req=>gate.check({...req,qty:account.previewDepthQuantity(req),virtualQty:req.qty,book:2});
 }

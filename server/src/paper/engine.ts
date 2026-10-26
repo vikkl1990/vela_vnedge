@@ -32,6 +32,7 @@ export interface RiskEntryRequest { scannerId: string; symbol: string; tf: strin
   replacing?: number }
 /** Portfolio risk layer hook (implemented by risk/manager.ts; optional so the engine and tests work without it). */
 export interface RiskGate {
+  leverageMult?: () => number;
   /** Veto (`reject`) or scale (`leverageMult` ≤ 1 from drawdown scaling) an entry before sizing. */
   gate(req: RiskEntryRequest): { reject?: string; leverageMult: number };
   /** Correlation / exposure cap once the candidate's notional is known; returns a rejection reason or null. */
@@ -98,9 +99,9 @@ export class PaperEngine extends EventEmitter {
   readonly priceSource = { quote: 0, slippage: 0, rejectedNoQuote: 0 };
 
   prepareEntryDepth?: (symbol: string) => Promise<void>;
-  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number}) => {reject?:string;crossingPct?:number};
-  private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker=false):string|null {
-    const d=this.entryDepthGate?.({symbol,qty,contractValue:cv,maker,at});
+  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number}) => {reject?:string;crossingPct?:number};
+  private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker:boolean,cell:{scannerId:string;tf:string;market:MarketInfo;score?:number}):string|null {
+    const d=this.entryDepthGate?.({symbol,qty,contractValue:cv,maker,at,price,sl,...cell});
     if(d?.reject)return d.reject;
     return d?.crossingPct!==undefined?checkRiskVsFees(price,sl,cfg,symbol,d.crossingPct,{maker}):null;
   }
@@ -360,7 +361,7 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted });
     if (size.qty < 1) return refused(size.reason ?? 'size');
-    const depthBlock=this.depthRefusal(ctx.symbol,size.qty,ctx.market.contractValue,price,levels.sl,cfg,ctx.at,willRestLimit);
+    const depthBlock=this.depthRefusal(ctx.symbol,size.qty,ctx.market.contractValue,price,levels.sl,cfg,ctx.at,willRestLimit,{...ctx,score:ev.score??ctx.scoreOverride});
     if(depthBlock)return refused(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(ctx.symbol, ev.side!, ctx.tf, size.qty * ctx.market.contractValue * price, size.riskAmount, ctx.at);
     if (fundingBlock) return refused(fundingBlock);
@@ -412,9 +413,17 @@ export class PaperEngine extends EventEmitter {
   cellLeverage(cell: { scannerId: string; symbol: string; tf: string; at: number }, cfg: PaperConfig): { leverage: number; avgR: number | null; n: number } {
     const m = cfg.marginLeverage ?? { base: 5, strong: 20, weak: 5, strongAboveR: 0.05, weakBelowR: -0.05, minTrades: 5, lookback: 30 };
     const rows = this.db.all<{ r: number }>(
-      "SELECT (realized_pnl - fees) / risk_amount r FROM positions WHERE bt=2 AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND exit_at<=? AND risk_amount>0 ORDER BY exit_at DESC LIMIT ?",
+      "SELECT (realized_pnl - fees) / risk_amount r FROM positions WHERE bt=2 AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND exit_at<=? AND risk_amount>0 AND NOT EXISTS (SELECT 1 FROM evidence_flags f WHERE f.position_id=positions.id AND f.entry_at=positions.entry_at AND f.status='quarantined') ORDER BY exit_at DESC LIMIT ?",
       cell.scannerId, cell.symbol, cell.tf, cell.at, m.lookback);
     return recordLeverage(rows.map(x => x.r), m);
+  }
+
+  /** Deployable single-entry size for shadow liquidity checks, independent of occupied account slots. */
+  previewDepthQuantity(req:{symbol:string;tf:string;scannerId:string;price:number;sl:number;market:MarketInfo;score?:number;at:number;maker?:boolean}):number {
+    const cfg=this.scaledCfg(this.risk?.leverageMult?.()??1);
+    const equity=this.equity();
+    const wantedLeverage=cfg.sizingMode==='margin'?this.cellLeverage(req,cfg).leverage:undefined;
+    return sizeContracts(req.price,req.sl,{equity,availableMargin:equity,contractValue:req.market.contractValue,tickSize:req.market.tickSize,maintenanceMarginPct:req.market.maintenanceMarginPct,maxLeverage:req.market.maxLeverage,cfg,wantedLeverage,entryExecution:{maker:req.maker}},0,req.score).qty;
   }
 
   private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number, cell?: { scannerId: string; symbol: string; tf: string; at: number }, entryExecution?: EntryExecution) {
@@ -490,7 +499,7 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at }, { maker: true });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
-    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,L.price,levels.sl,cfg,at,true);
+    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,L.price,levels.sl,cfg,at,true,pe);
     if(depthBlock)return cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * L.price, size.riskAmount, at);
     if (fundingBlock) return cancel(fundingBlock);
@@ -546,7 +555,7 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt }, { quoted });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
-    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,price,levels.sl,cfg,receivedAt);
+    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,price,levels.sl,cfg,receivedAt,false,pe);
     if(depthBlock)return cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * price, size.riskAmount, receivedAt);
     if (fundingBlock) return cancel(fundingBlock);
