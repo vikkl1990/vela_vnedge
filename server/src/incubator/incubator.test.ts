@@ -775,3 +775,20 @@ test('an active filled account position is not mistaken for a silent or cost-sta
  db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,bt) VALUES('open','live1','s','BTCUSD','15m','long',1,1,1,100,?,0)",T0);
  assert.deepEqual(evaluate(store,cfg,T0+20*DAY).demoteProposed,[]);
 });
+
+test('major coverage tracker adds watch-only cells without promoting candidates or changing live cells', async () => {
+  const { saveTracker } = await import('./tracker.ts');
+  const db = new Db(':memory:'); const store = new IncubatorStore(db);
+  try {
+    store.move({scannerId:'s0',symbol:'BTCUSD',tf:'15m'},'live','test',{},'allocated',1000);
+    store.move({scannerId:'s1',symbol:'ETHUSD',tf:'1h'},'candidate','test',{},'not qualified',1000);
+    const def={id:'enabled-major-coverage',name:'Major coverage',scanners:Array.from({length:14},(_,i)=>`s${i}`),symbols:['BTCUSD','ETHUSD','SOLUSD','XRPUSD','BNBUSD','DOGEUSD','ADAUSD','AVAXUSD','LINKUSD','SUIUSD'],tfs:['15m','1h','4h']};
+    const result=saveTracker(db,store,def,2000);
+    assert.equal(result.added,419); assert.equal(result.kept,1);
+    assert.equal(store.find('s0','BTCUSD','15m')!.stage,'live');
+    assert.equal(store.find('s1','ETHUSD','1h')!.stage,'tracked');
+    assert.equal(store.list(['live']).length,1);
+    assert.equal(store.list(['tracked']).length,419);
+    assert.equal(saveTracker(db,store,def,3000).added,0,'re-running cannot duplicate cells');
+  } finally { db.db.close(); }
+});
