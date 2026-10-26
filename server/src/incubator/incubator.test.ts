@@ -101,12 +101,13 @@ test('lifecycle: screen → shadow → proposed → approved into the config', (
 });
 
 test('approval refuses past the weekly limit and when the fleet is full', () => {
-  const { store, cfg, screen } = world();
+  const { store, cfg, screen, insertTrade } = world();
   cfg.incubator.promote.maxPerWeek = 1;
   for (const s of ['a', 'b']) { recordScreen(store, { scannerId: s, symbol: 'SOLUSD', tf: '15m' }, screen(), cfg.incubator, T0); store.move({ scannerId: s, symbol: 'SOLUSD', tf: '15m' }, 'proposed', 'test', null, null, T0); }
   const [a, b] = ['a', 'b'].map(s => store.find(s, 'SOLUSD', '15m')!);
-  approve(store, cfg, a.id, 'admin', () => {}, T0);
-  assert.throws(() => approve(store, cfg, b.id, 'admin', () => {}, T0 + DAY), /weekly promotion limit/);
+  for (const t of series(40,20,2,2,T0+1000)) insertTrade(2,'a','SOLUSD',t);
+  approve(store, cfg, a.id, 'admin', () => {}, T0 + 21 * DAY);
+  assert.throws(() => approve(store, cfg, b.id, 'admin', () => {}, T0 + 22 * DAY), /weekly promotion limit/);
   cfg.incubator.promote.maxPerWeek = 5; cfg.incubator.promote.maxFleet = 1;
   assert.throws(() => approve(store, cfg, b.id, 'admin', () => {}, T0 + DAY), /fleet is full/);
 });
@@ -665,4 +666,64 @@ test('decision 171: a freshly promoted cell is judged on its own live period, an
   assert.deepEqual(evaluate(store, cfg, demoteAt + 3 * DAY).proposed, [], 'still refused by the cost rule: not proposed, however long ago');
   sig(demoteAt + 4 * DAY, 'opened');
   assert.deepEqual(evaluate(store, cfg, demoteAt + 4 * DAY + 60_000).proposed, ['p p1 15m'], 'the account opened one of its signals: the demotion is answered');
+});
+
+test('approval rechecks current pair evidence after losses or quarantine without changing allocation', () => {
+ const {db,store,cfg,insertTrade}=world();cfg.incubator.gate.pool='pair';
+ const k={scannerId:'recheck',symbol:'SOLUSD',tf:'15m'};
+ store.move(k,'shadow','test',null,null,T0);
+ for(const t of series(40,20,2,2,T0+1000))insertTrade(2,k.scannerId,k.symbol,t);
+ const now=T0+21*DAY;evaluate(store,cfg,now);
+ const row=store.find(k.scannerId,k.symbol,k.tf)!;assert.equal(row.stage,'proposed');
+ db.run("INSERT INTO evidence_flags SELECT id,entry_at,'quarantined','invalid historical fill','test',? FROM positions WHERE scanner_id=? AND realized_pnl>0",now,k.scannerId);
+ let patched=false;
+ assert.throws(()=>approve(store,cfg,row.id,'admin',()=>{patched=true;},now),/no longer qualifies/);
+ assert.equal(patched,false);assert.equal(store.get(row.id)!.stage,'proposed');
+});
+
+test('approval rechecks market eligibility instead of trusting a cached proposal',()=>{
+ const {db,store,cfg,insertTrade}=world();cfg.incubator.gate.pool='pair';
+ const k={scannerId:'recheck',symbol:'SOLUSD',tf:'15m'};store.move(k,'shadow','test',null,null,T0);
+ for(const t of series(40,20,2,2,T0+1000))insertTrade(2,k.scannerId,k.symbol,t);
+ const now=T0+21*DAY;evaluate(store,cfg,now);const row=store.find(k.scannerId,k.symbol,k.tf)!;
+ db.kvSet('risk.marketsToday',{enabled:true,at:now,markets:[{symbol:'SOLUSD',allowed:false,reasons:['costly book'],turnoverUsd:10000000}]});
+ assert.throws(()=>approve(store,cfg,row.id,'admin',()=>assert.fail('must not allocate'),now),/costly book/);
+});
+
+test('approval refreshes cohort evidence and requires the individual market to remain positive',()=>{
+ for(const weakened of [false,true]){
+  const {store,cfg,insertTrade}=world();cfg.incubator.gate.pool='cohort';
+  for(const symbol of ['SOLUSD','XRPUSD','ETHUSD']){
+   store.move({scannerId:'group',symbol,tf:'15m'},'shadow','test',null,null,T0);
+   for(const t of series(40,20,2,2,T0+1000))insertTrade(2,'group',symbol,t);
+  }
+  const now=T0+21*DAY;evaluate(store,cfg,now);const row=store.find('group','SOLUSD','15m')!;assert.equal(row.stage,'proposed');
+  if(weakened)for(const t of series(30,1,-1,2,now))insertTrade(2,'group','SOLUSD',t);
+  let patched=false;const run=()=>approve(store,cfg,row.id,'admin',()=>{patched=true;},now+DAY);
+  if(weakened){assert.throws(run,/no longer qualifies/);assert.equal(patched,false);}
+  else {assert.equal(run().stage,'live');assert.equal(patched,true);}
+ }
+});
+
+test('shadow admission uses the research turnover floor while promotion retains its higher floor',()=>{
+ const {db,store,cfg,insertTrade,screen}=world();cfg.incubator.gate.pool='pair';cfg.incubator.minTurnoverUsd=1000000;cfg.incubator.gate.minTurnoverUsd=5000000;
+ const markets=[{symbol:'SOLUSD',allowed:true,reasons:[],turnoverUsd:2000000},{symbol:'TINYUSD',allowed:true,reasons:[],turnoverUsd:500000}];
+ db.kvSet('risk.marketsToday',{enabled:true,at:T0,markets});
+ for(const symbol of ['SOLUSD','TINYUSD'])recordScreen(store,{scannerId:'research',symbol,tf:'15m'},screen(),cfg.incubator,T0);
+ const b=candidateBlockers(store,cfg,T0);assert.equal(b.counts.admissible,1);assert.equal(b.counts.refused,1);
+ assert.deepEqual(admitOnly(store,cfg,T0),['research SOLUSD 15m']);
+ for(const t of series(40,20,2,2,T0+1000))insertTrade(2,'research','SOLUSD',t);
+ const now=T0+21*DAY;assert.deepEqual(evaluate(store,cfg,now).proposed,[]);
+ assert.equal(store.find('research','SOLUSD','15m')!.stage,'shadow');
+ assert.match(store.find('research','SOLUSD','15m')!.gate.reasons.join(';'),/thin market/);
+ assert.equal(cfg.incubator.mirror?.enabled,false);
+});
+
+test('promoting another pair preserves a scanner existing legacy symbol allocation',()=>{
+ const {store,cfg,insertTrade}=world();cfg.incubator.gate.pool='pair';
+ const k={scannerId:'live1',symbol:'ETHUSD',tf:'15m'};store.move(k,'shadow','test',null,null,T0);
+ for(const t of series(40,20,2,2,T0+1000))insertTrade(2,k.scannerId,k.symbol,t);
+ const now=T0+21*DAY;evaluate(store,cfg,now);const row=store.find(k.scannerId,k.symbol,k.tf)!;
+ let patch:any;approve(store,cfg,row.id,'admin',(_id,p)=>{patch=p;},now);
+ assert.deepEqual(patch.pairs,[{symbol:'BTCUSD',tf:'15m'},{symbol:'ETHUSD',tf:'15m'}]);
 });

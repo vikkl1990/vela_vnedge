@@ -422,9 +422,9 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   const inc = cfg.incubator;
   const active = store.list(['shadow', 'proposed']);
   const markets = store.marketsToday(now);
-  // a candidate on a market the gate refuses today would hold a shadow slot the account can never use (decision 104)
+  // Shadow observation uses the screen universe's floor. Promotion keeps the higher account floor.
   const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
-  let fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd)
+  let fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.minTurnoverUsd)
     && !(opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close'));
   const admitted = new Set<number>();
   const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); admitted.add(r.id); slots--; };
@@ -518,7 +518,7 @@ export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = D
   const passed = store.list(['candidate']).filter(r => r.screen?.pass);
   const fresh: PairRow[] = [];
   for (const r of passed) {
-    const why = marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd);
+    const why = marketRefusal(markets, r.symbol, inc.minTurnoverUsd);
     if (r.screen?.expiredAt) counts.expired++;
     else if (now - (r.screen?.at ?? 0) > maxAge) counts.stale++;
     else if (why) (markets.get(r.symbol) ? counts.refused++ : counts.outside++);
@@ -540,6 +540,38 @@ export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = D
 }
 
 export class IncubatorError extends Error { status = 409; }
+
+/** Recheck a proposal using today's eligible evidence, not the gate snapshot saved days ago. */
+function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now: number): string | null {
+  const inc = cfg.incubator;
+  const markets = store.marketsToday(now, Math.max(1, cfg.risk.marketGate?.refreshMinutes ?? 60) * 3 * 60_000);
+  if (cfg.risk.marketGate?.enabled && !markets.size) return 'market eligibility has not been judged';
+  const market = marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd);
+  if (market) return market;
+  const cooling = demotionAnswered(store, cfg, r, now);
+  if (cooling) return cooling;
+  if (inc.gate.pool !== 'cohort') {
+    const trades = store.trades(r.scannerId, r.symbol, r.tf, 2);
+    const stats = pairStats(trades, r.since, now);
+    const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
+    const v = gateVerdict(stats, returningGate(store, gateFor(inc, r.tf), [r]), overlap);
+    return v.decision === 'propose' ? null : v.reasons.join('; ');
+  }
+  // Match cohort evaluation: failed-delivery shadow members no longer support the group.
+  const rows = store.list(['shadow', 'proposed']).filter(p => p.scannerId === r.scannerId && p.tf === r.tf)
+    .filter(p => p.stage !== 'shadow' || !deliveryVerdict(p.screen, pairStats(store.trades(p.scannerId, p.symbol, p.tf, 2), p.since, now)).retire);
+  const members = rows.map(p => ({ symbol: p.symbol, since: p.since, trades: store.trades(p.scannerId, p.symbol, p.tf, 2) }));
+  const stats = cohortStats(members, now, inc.gate.minMarketTrades);
+  let n = 0, hit = 0;
+  for (const m of members) {
+    const t = m.trades.filter(x => x.entryAt >= m.since);
+    n += t.length; hit += overlapPct(t, store.liveTradesOn(m.symbol, r.scannerId)) / 100 * t.length;
+  }
+  const v = cohortVerdict(stats, returningGate(store, gateFor(inc, r.tf), rows), n ? hit / n * 100 : 0);
+  if (v.decision !== 'propose') return v.reasons.join('; ');
+  const own = stats.perMarket.find(p => p.symbol === r.symbol);
+  return own && own.trades >= inc.gate.minMarketTrades && own.avgR > 0 ? null : 'this market no longer has the required positive trade sample';
+}
 
 /** Take one (market, timeframe) off a scanner: from its explicit pairs when it has them, else from its symbol list; the scanner is switched off when it was the last. */
 function removePair(sc: ScannerConfig | undefined, r: { scannerId: string; symbol: string; tf: string }, setScanner: (id: string, patch: Partial<ScannerConfig>) => void) {
@@ -569,8 +601,12 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
     if (fleet >= inc.promote.maxFleet) throw new IncubatorError(`the live fleet is full (${fleet}/${inc.promote.maxFleet} pairs); demote one first or raise incubator.promote.maxFleet`);
     const crowded = diversityRefusal(cfg, r.scannerId, r.symbol);
     if (crowded) throw new IncubatorError(crowded);
+    const refusal = promotionRefusal(store, cfg, r, now);
+    if (refusal) throw new IncubatorError(`proposal no longer qualifies: ${refusal}`);
     const stats = pairStats(store.trades(r.scannerId, r.symbol, r.tf, 2), r.since, now);
-    setScanner(r.scannerId, { enabled: true, hidden: false, pairs: [...(sc?.pairs ?? []).filter(p => !(p.symbol === r.symbol && p.tf === r.tf)), { symbol: r.symbol, tf: r.tf }] });
+    // Converting a running legacy symbol list to explicit pairs must retain its current allocation.
+    const existing = sc?.pairs?.length ? sc.pairs : livePairs(cfg).filter(p => p.scannerId === r.scannerId).map(({symbol, tf}) => ({symbol, tf}));
+    setScanner(r.scannerId, { enabled: true, hidden: false, pairs: [...existing.filter(p => !(p.symbol === r.symbol && p.tf === r.tf)), { symbol: r.symbol, tf: r.tf }] });
     return store.move(r, 'live', actor, { shadow: stats, gate: r.gate }, 'promoted from the shadow book', now);
   }
   if (r.stage === 'demote_proposed') {
