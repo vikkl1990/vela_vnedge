@@ -20,6 +20,10 @@ const ADDED_COLUMNS: Array<[string, string]> = [
 ];
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS evidence_flags (
+ position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,status TEXT NOT NULL CHECK(status IN ('quarantined','cleared')),
+ reason TEXT NOT NULL,source TEXT NOT NULL,checked_at INTEGER NOT NULL,PRIMARY KEY(position_id,entry_at)
+);
 CREATE TABLE IF NOT EXISTS signals (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, bar_time INTEGER NOT NULL, scanner_id TEXT NOT NULL, scanner_name TEXT NOT NULL,
   symbol TEXT NOT NULL, tf TEXT NOT NULL, kind TEXT NOT NULL, side TEXT, price REAL, sl REAL, tp TEXT NOT NULL DEFAULT '[]', score REAL,

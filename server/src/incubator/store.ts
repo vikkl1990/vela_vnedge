@@ -181,12 +181,12 @@ export class IncubatorStore {
 
   /** Closed trades of one pair in one book (0 live, 2 shadow), in R. */
   trades(scannerId: string, symbol: string, tf: string, book: number): TradeR[] {
-    return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount, peak_r FROM positions WHERE bt=? AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND risk_amount > 0 ORDER BY exit_at`, book, scannerId, symbol, tf)
+    return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount, peak_r FROM positions WHERE bt=? AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND risk_amount > 0 AND NOT EXISTS (SELECT 1 FROM evidence_flags f WHERE f.position_id=positions.id AND f.entry_at=positions.entry_at AND f.status='quarantined') ORDER BY exit_at`, book, scannerId, symbol, tf)
       .map(r => ({ entryAt: r.entry_at, exitAt: r.exit_at, r: (r.realized_pnl - r.fees) / r.risk_amount, side: r.side, peakR: r.peak_r ?? undefined }));
   }
   /** Closed live trades on a market, any scanner: the overlap check compares against these. */
   liveTradesOn(symbol: string, excludeScanner?: string): TradeR[] {
-    return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount, scanner_id FROM positions WHERE bt=0 AND status='closed' AND symbol=? AND risk_amount > 0`, symbol)
+    return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount, scanner_id FROM positions WHERE bt=0 AND status='closed' AND symbol=? AND risk_amount > 0 AND NOT EXISTS (SELECT 1 FROM evidence_flags f WHERE f.position_id=positions.id AND f.entry_at=positions.entry_at AND f.status='quarantined')`, symbol)
       .filter(r => r.scanner_id !== excludeScanner)
       .map(r => ({ entryAt: r.entry_at, exitAt: r.exit_at, r: (r.realized_pnl - r.fees) / r.risk_amount, side: r.side }));
   }

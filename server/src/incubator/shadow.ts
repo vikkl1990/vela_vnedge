@@ -148,7 +148,7 @@ export class ShadowRunner {
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
       if (!e.historical && this.pairs.some(r => r.tf === e.tf)) this.onBarClosed(e.symbol, e.tf, e.bar.time + TF_SECONDS[e.tf] * 1000);
     });
-    this.dispatchTimer=setInterval(()=>{this.dispatch.drain();if(Date.now()>=this.nextDispatchSave){this.deps.store.setDispatchStats?.({...this.dispatchStats,at:Date.now()});this.nextDispatchSave=Date.now()+5000;}},100);this.dispatchTimer.unref();
+    this.dispatchTimer=setInterval(()=>{this.dispatch.drain();if(Date.now()>=this.nextDispatchSave){try{this.deps.store.setDispatchStats?.({...this.dispatchStats,at:Date.now()});}catch(e){log.warn(`shadow dispatch metrics save failed: ${String(e)}`);}this.nextDispatchSave=Date.now()+5000;}},100);this.dispatchTimer.unref();
     void this.sync();
     this.timer = setInterval(() => void this.sync(), SYNC_MS);
     this.timer.unref();
