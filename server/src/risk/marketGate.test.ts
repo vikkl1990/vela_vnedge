@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Db } from '../db.ts';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { MarketGate } from './marketGate.ts';
+import { MarketGate, walkBook } from './marketGate.ts';
 
 function bars(n: number, price: number, rangePct: number) {
   const out = [];
@@ -51,4 +51,20 @@ test('markets today: dead, costly-book, thin-book, too quiet and losing markets 
   assert.equal(gate.verdict('GOODUSD', now)?.allowed, true, 'fresh and judged: the real verdict');
   cfg.risk.marketGate.enabled = false;
   assert.equal(gate.verdict('THINUSD'), null, 'off → no opinion');
+});
+
+
+test('smaller probe admits supported size; setting changes invalidate cached decisions until refresh',async t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+ cfg.risk.marketGate={...cfg.risk.marketGate!,enabled:true,minTurnoverUsd:0,minAtrFeeMult:0,minTrades:100000,probeNotionalUsd:2500};
+ const gate=new MarketGate({db,cfgRef:()=>cfg,candles:null,markets:async()=>[{symbol:'BTCUSD',volume24h:1e6,price:100}],book:async()=>({bids:[[99.99,10]],asks:[[100.01,10]]})});
+ await gate.refresh(['BTCUSD']);assert.equal(gate.verdict('BTCUSD')?.allowed,false);
+ cfg.risk.marketGate.probeNotionalUsd=750;
+ assert.match(gate.verdict('BTCUSD')!.reasons[0],/settings changed/);
+ await gate.refresh(['BTCUSD']);assert.equal(gate.verdict('BTCUSD')?.allowed,true);assert.equal(gate.today.probeNotionalUsd,750);
+ cfg.risk.marketGate.maxBookCostPct=.1;assert.equal(gate.needsRefresh(),true);
+ await gate.refresh(['BTCUSD']);assert.equal(gate.verdict('BTCUSD')?.allowed,false);
+});
+test('crossed books cannot provide a negative trading-cost estimate',()=>{
+ assert.equal(walkBook({bids:[[101,100]],asks:[[100,100]]},750),null);
 });

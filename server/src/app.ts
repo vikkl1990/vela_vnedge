@@ -321,6 +321,10 @@ export class App {
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
     subscribeRealtime(this);
     await this.scanners.refresh();
+    if (cfg.risk.marketGate?.enabled && this.marketGate.needsRefresh()) {
+      const own=[...new Set([...this.resolvedSymbols,...this.incubator.symbols()])];
+      await this.marketGate.refresh(await this.marketGate.universe(own),undefined,own);
+    }
   }
 
   health() {

@@ -30,7 +30,7 @@ export const NOT_CRYPTO = /xStock|bStocks?|Gold Token|Silver|\bETF\b/i;
 export const isCrypto = (description: string | undefined) => !NOT_CRYPTO.test(description ?? '');
 
 export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; spreadPct: number | null; bookCostPct: number | null; trades: number; pf: number | null; netUsd: number }
-export interface MarketsToday { at: number; enabled: boolean; markets: MarketVerdict[] }
+export interface MarketsToday { probeNotionalUsd?: number; policyKey?: string; at: number; enabled: boolean; markets: MarketVerdict[] }
 
 export interface MarketGateDeps {
   db: Db;
@@ -52,6 +52,11 @@ export class MarketGate {
   }
 
   get today(): MarketsToday { return this.state; }
+  private policyKey(): string {
+    const p=this.deps.cfgRef().paper;
+    return JSON.stringify([this.cfg,p.feeRatePct,p.makerFeeRatePct,p.feeTaxPct]);
+  }
+  needsRefresh(): boolean { return this.state.policyKey !== this.policyKey(); }
   private get cfg() { return this.deps.cfgRef().risk.marketGate; }
 
   /** The verdict for one market, or null when the gate is off or has no opinion yet. */
@@ -63,6 +68,7 @@ export class MarketGate {
   verdict(symbol: string, now = Date.now()): MarketVerdict | null {
     if (!this.cfg?.enabled) return null;
     const refuse = (reason: string): MarketVerdict => ({ symbol, allowed: false, tracked: false, reasons: [reason], atrPct: null, turnoverUsd: null, spreadPct: null, bookCostPct: null, trades: 0, pf: null, netUsd: 0 });
+    if (this.state.at > 0 && this.needsRefresh()) return refuse('market cost settings changed; awaiting refreshed depth verdicts');
     const maxAgeMs = Math.max(1, this.cfg.refreshMinutes) * 3 * 60_000;
     if (this.state.at > 0 && now - this.state.at > maxAgeMs) return refuse(`market verdicts are ${Math.round((now - this.state.at) / 60_000)} min old (refresh every ${this.cfg.refreshMinutes} min)`);
     const m = this.state.markets.find(m => m.symbol === symbol);
@@ -83,6 +89,7 @@ export class MarketGate {
     const own = new Set(tracked);
     const c = this.cfg;
     const paper = this.deps.cfgRef().paper;
+    const policyKey = this.policyKey();
     if (!c?.enabled) { this.state = { at: now, enabled: false, markets: [] }; this.deps.db.kvSet(KV_KEY, this.state); return this.state; }
     let tickers = new Map<string, { volume24h: number; price: number; description?: string }>();
     try { tickers = new Map((await this.deps.markets()).map(m => [m.symbol, { volume24h: m.volume24h, price: m.price, description: m.description }])); }
@@ -90,7 +97,7 @@ export class MarketGate {
     const feeRoundTripPct = admissionCostPct(paper);
     const since = now - c.lookbackDays * 86_400_000;
     const list = [...new Set(symbols)].sort();
-    const books = await this.readBooks(list.filter(s => !(c.exempt ?? []).includes(s)));
+    const books = await this.readBooks(list.filter(s => !(c.exempt ?? []).includes(s)), c.probeNotionalUsd ?? 0);
     const markets: MarketVerdict[] = [];
     for (const symbol of list) {
       if ((c.exempt ?? []).includes(symbol)) { markets.push({ symbol, allowed: true, tracked: own.has(symbol), reasons: ['exempt'], atrPct: null, turnoverUsd: null, spreadPct: null, bookCostPct: null, trades: 0, pf: null, netUsd: 0 }); continue; }
@@ -125,7 +132,7 @@ export class MarketGate {
       if (rows.length >= c.minTrades && pf !== null && pf < c.minPf) reasons.push(`not paying: PF ${pf.toFixed(2)} over ${rows.length} trades in ${c.lookbackDays}d`);
       markets.push({ symbol, allowed: reasons.length === 0, tracked: own.has(symbol), reasons, atrPct, turnoverUsd, spreadPct, bookCostPct, trades: rows.length, pf, netUsd: gp - gl });
     }
-    this.state = { at: now, enabled: true, markets };
+    this.state = { at: now, enabled: true, markets, probeNotionalUsd:c.probeNotionalUsd, policyKey };
     this.deps.db.kvSet(KV_KEY, this.state);
     const blocked = markets.filter(m => !m.allowed);
     log.info(`markets today: ${markets.length - blocked.length} allowed, ${blocked.length} blocked${blocked.length ? ` (${blocked.map(m => m.symbol).join(', ')})` : ''}`);
@@ -133,9 +140,8 @@ export class MarketGate {
   }
 
   /** Read every book a few at a time; a market whose book cannot be read simply gets no book opinion. */
-  private async readBooks(symbols: string[]): Promise<Map<string, BookCost>> {
+  private async readBooks(symbols: string[], notional: number): Promise<Map<string, BookCost>> {
     const out = new Map<string, BookCost>();
-    const c = this.cfg; const notional = c?.probeNotionalUsd ?? 0;
     if (!this.deps.book || notional <= 0) return out;
     const queue = [...symbols]; let failed = 0;
     const worker = async () => {
@@ -160,7 +166,7 @@ interface BookCost { spreadPct: number; crossPct: number; deep: boolean; levels:
 export function walkBook(book: { bids: Array<[number, number]>; asks: Array<[number, number]> }, notional: number): BookCost | null {
   const bids = book.bids.filter(l => l[0] > 0 && l[1] > 0).sort((a, b) => b[0] - a[0]);
   const asks = book.asks.filter(l => l[0] > 0 && l[1] > 0).sort((a, b) => a[0] - b[0]);
-  if (!bids.length || !asks.length) return null;
+  if (!bids.length || !asks.length || bids[0][0] > asks[0][0]) return null;
   const mid = (bids[0][0] + asks[0][0]) / 2;
   if (!(mid > 0)) return null;
   const qty = notional / mid;

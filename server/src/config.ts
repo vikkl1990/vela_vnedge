@@ -679,7 +679,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     perScannerMaxPositions: 4,
     perScannerDailyLossPct: 0,
     regime: { enabled: true, minAtrPct: 0.30, noWeekend: true, exempt: [] },
-    marketGate: { enabled: false, tf: '15m', cryptoOnly: true, minTurnoverUsd: 250_000, probeNotionalUsd: 2_500, maxBookCostPct: 0.25, minAtrFeeMult: 4, lookbackDays: 14, minTrades: 5, minPf: 1.0, refreshMinutes: 60, exempt: [] },
+    marketGate: { enabled: false, tf: '15m', cryptoOnly: true, minTurnoverUsd: 250_000, probeNotionalUsd: 750, maxBookCostPct: 0.25, minAtrFeeMult: 4, lookbackDays: 14, minTrades: 5, minPf: 1.0, refreshMinutes: 60, exempt: [] },
   },
   scanners: {},
   validation: {

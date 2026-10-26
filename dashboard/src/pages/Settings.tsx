@@ -71,7 +71,7 @@ const SECTIONS: Section[] = [
       { path: 'risk.marketGate.enabled', label: 'Market gate on', kind: 'bool' },
       { path: 'risk.marketGate.minTurnoverUsd', label: 'Turnover floor (USD, 24 h)', kind: 'number', step: '10000', validate: num(0, 1e9) },
       { path: 'risk.marketGate.maxBookCostPct', label: 'Max book cost (% round trip)', kind: 'number', step: '0.01', validate: num(0, 5) },
-      { path: 'risk.marketGate.probeNotionalUsd', label: 'Probe notional (USD)', kind: 'number', step: '500', hint: 'the order the book is costed for', validate: num(100, 1e6) },
+      { path: 'risk.marketGate.probeNotionalUsd', label: 'Probe notional (USD)', kind: 'number', step: '50', hint: 'Base order: $150 margin × 5 leverage = $750; larger orders need a larger depth check', validate: num(100, 1e6) },
     ],
   },
   {
