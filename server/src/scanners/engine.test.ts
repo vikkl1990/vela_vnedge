@@ -127,7 +127,7 @@ test('explicit pairs replace the symbols × timeframes product (decision 70)', (
 test('decision 116: a mirrored shadow event goes down the live path — signal row, gates, paper engine — with its label marked', async t => {
   const db = new Db(':memory:');
   t.after(() => db.db.close());
-  const cfg = structuredClone(DEFAULT_CONFIG);
+  const cfg = structuredClone(DEFAULT_CONFIG); cfg.incubator.mirror!.enabled = true;
   cfg.symbols = ['BTCUSD']; cfg.timeframes = ['1m'];
   cfg.paper.latencyMs = 0; cfg.paper.requireQuote = false; cfg.paper.minRiskFeeRatio = 0;
   cfg.risk.regime = { ...cfg.risk.regime, enabled: false }; cfg.paper.trendGate = { enabled: false, emaLen: 50, tf: '', mode: 'follow' };
@@ -153,7 +153,7 @@ test('decision 116: a mirrored shadow event goes down the live path — signal r
 });
 
 test('depth preparation completes before entry gates and expiry are rechecked',async t=>{
- const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.mirror!.enabled=true;
  Object.assign(cfg.paper,{latencyMs:0,requireQuote:false,useSpread:false,minRiskFeeRatio:0,skipScriptStops:false,trendGate:{enabled:false,emaLen:50,tf:'',mode:'follow'},maxSignalAgeSec:60});
  cfg.risk.regime.enabled=false;
  const now=Date.now(),lastClose=Math.floor(now/60000)*60000;

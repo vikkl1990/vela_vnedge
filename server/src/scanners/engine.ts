@@ -563,10 +563,11 @@ export class ScannerEngine extends EventEmitter {
    * its label marked so the Signals page says where it came from. The shadow book keeps its own copy.
    */
   async ingestEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar): Promise<void> {
-    await this.handleLiveEvent(s, symbol, tf, { ...ev, label: `${ev.label} (shadow mirror)`.slice(0, 80) }, bars, market, exitMode, lastBar);
+    await this.handleLiveEvent(s, symbol, tf, { ...ev, label: `${ev.label} (shadow mirror)`.slice(0, 80) }, bars, market, exitMode, lastBar, true);
   }
 
-  private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) {
+  private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false) {
+    const pilotRequested = copied && !(this.isActive(s) && this.runsOn(s.id,symbol,tf)) && Boolean(this.cfgRef().incubator.mirror?.pilot);
     if(ev.kind==='entry' && this.paper.prepareEntryDepth)await this.paper.prepareEntryDepth(symbol);
     if (this.db.signalExists(s.id, symbol, tf, ev.barTime, ev.kind, ev.side ?? null, ev.label)) return;
     const refPrice = this.paper.mark(symbol) ?? lastBar.close;
@@ -592,14 +593,24 @@ export class ScannerEngine extends EventEmitter {
       const scoreOverride = mlCfg.useAsScore && ev.score === undefined && mlProb !== null ? mlProb * 100 : undefined;
       const trendBlock = this.trendGateBlock(s.id, symbol, tf, ev.side);
       const gate = trendBlock ? null : this.entryFilter ? this.entryFilter({ scannerId: s.id, scannerName: s.name, symbol, tf, side: ev.side, barTime: ev.barTime, price: ev.price && ev.price > 0 ? ev.price : refPrice, at: now }) : null;
-      if (trendBlock) {
+      const configNow = this.cfgRef();
+      const pilot = copied && !(this.isActive(s) && this.runsOn(s.id, symbol, tf)) ? configNow.incubator.mirror?.pilot : undefined;
+      const pilotDay = Math.floor(now / 86400_000);
+      const savedPilot = this.db.kvGet<{day:number;entries:number}>('incubator.copyPilot');
+      const pilotEntries = savedPilot?.day === pilotDay ? savedPilot.entries : 0;
+      const pilotOpen = [...this.paper.openPositions(), ...this.paper.pendingEntries()].filter(p => p.features?.copy_pilot === 1).length;
+      const pilotBlock = copied && (!configNow.incubator.mirror?.enabled || (pilotRequested && !pilot)) ? 'copy pilot disabled' : pilot ? configNow.execution.mode !== 'paper' || !configNow.incubator.mirror?.enabled ? 'copy pilot disabled' : pilotEntries >= pilot.maxDailyEntries ? 'copy pilot daily entry limit' : pilotOpen >= pilot.maxOpenPositions ? 'copy pilot open position limit' : null : null;
+      if (pilotBlock) {
+        action = `rejected:${pilotBlock}`;
+      } else if (trendBlock) {
         action = `rejected:${trendBlock}`;
       } else if (gate && !gate.ok) {
         action = `rejected:${gate.reason ?? 'filter'}`;
       } else if (mlCfg.minProb > 0 && mlProb !== null && mlProb < mlCfg.minProb) {
         action = `rejected:ml ${(mlProb * 100).toFixed(0)}% < ${(mlCfg.minProb * 100).toFixed(0)}%`;
       } else {
-        const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, atr, refPrice, at: now, signalId: sigId, exitMode, features, mlProb, scoreOverride });
+        const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, atr, refPrice, at: now, signalId: sigId, exitMode, features: pilot ? {...features,copy_pilot:1} : features, mlProb, scoreOverride, sizeScale: pilot?.sizeScale });
+        if (pilot && ['opened','reversed','pending'].includes(d.action)) this.db.kvSet('incubator.copyPilot',{day:pilotDay,entries:pilotEntries+1});
         action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
         positionId = d.position?.id ?? null;
       }

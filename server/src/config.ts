@@ -443,7 +443,9 @@ export interface IncubatorConfig {
     /** Decision 177: the account copies a pair's entries only once it has this many shadow closes with a net R above `minNetR`; it was copying pairs from the day they entered shadow, before any record, and those trades lost. */
     minTrades?: number; minNetR?: number;
     /** Decision 177: no copy on a market under this 24h turnover (0 turns it off). */
-    minTurnoverUsd?: number };
+    minTurnoverUsd?: number;
+    /** Bounded exploration in the paper account only; normal allocations retain normal sizing. */
+    pilot?: { sizeScale: number; maxDailyEntries: number; maxOpenPositions: number } };
   /**
    * Largest share of the risk budget one contract may consume before a market is skipped: contracts
    * are indivisible, so above this the bot can only take one contract or none and position sizing
@@ -795,6 +797,12 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.scriptExitTrailFrom !== undefined && !(Number.isFinite(p.scriptExitTrailFrom) && p.scriptExitTrailFrom >= 0)) errs.push('paper.scriptExitTrailFrom must be an epoch time in ms');
   if (p.scriptDisasterStopAtr !== undefined && !(p.scriptDisasterStopAtr >= 0.5 && p.scriptDisasterStopAtr <= 10)) errs.push('paper.scriptDisasterStopAtr must be 0.5..10');
   if (p.earlyStall && !(p.earlyStall.minutes >= 0 && p.earlyStall.minR >= 0 && p.earlyStall.maxR >= p.earlyStall.minR)) errs.push('paper.earlyStall needs minutes ≥ 0 and 0 ≤ minR ≤ maxR');
+  const copyPilot = c.incubator?.mirror?.pilot;
+  if (copyPilot) {
+    if (c.execution.mode !== 'paper') errs.push('incubator.mirror.pilot requires paper execution');
+    if (!(Number.isFinite(copyPilot.sizeScale) && copyPilot.sizeScale > 0 && copyPilot.sizeScale <= 1)) errs.push('copy pilot sizeScale must be >0 and <=1');
+    for (const n of [copyPilot.maxDailyEntries, copyPilot.maxOpenPositions]) if (!Number.isInteger(n) || n < 1) errs.push('copy pilot limits must be positive integers');
+  }
   if (p.trendGate) {
     if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');
     if (!['follow', 'fade', 'off'].includes(p.trendGate.mode)) errs.push('paper.trendGate.mode must be follow|fade|off');
