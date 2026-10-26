@@ -183,7 +183,10 @@ export function walkBook(book: { bids: Array<[number, number]>; asks: Array<[num
   const walk = (side: Array<[number, number]>) => {
     let got = 0, cost = 0;
     for (const [p, q] of side) { const take = Math.min(q, qty - got); cost += take * p; got += take; if (got >= qty) break; }
-    return { avg: got > 0 ? cost / got : NaN, full: got >= qty * 0.999 };
+    // Only arithmetic round-off may be forgiven, never a percentage of the order.
+    // A 0.1% allowance accepted missing whole contracts on larger positions.
+    const roundoff = Number.EPSILON * Math.max(qty, got) * (side.length + 1) * 8;
+    return { avg: got > 0 ? cost / got : NaN, full: qty - got <= roundoff };
   };
   const buy = walk(asks), sell = walk(bids);
   const crossPct = Number.isFinite(buy.avg) && Number.isFinite(sell.avg) ? (buy.avg - sell.avg) / mid * 100 : NaN;

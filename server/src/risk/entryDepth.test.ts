@@ -19,3 +19,15 @@ test('disabling the feature or exempting a symbol performs no depth reads and no
 test('maker fees differ but stale depth and insufficient exit capacity still refuse',()=>{const m=freshDepthGate({...base,maker:true});assert.ok(m.costPct!<freshDepthGate(base).costPct!);assert.equal(freshDepthGate({...base,maker:true,qty:1000}).allowed,false);});
 
 test('Delta REST last_updated_at is normalized from microseconds and missing timestamps still refuse',async()=>{const c=configuration();const g=new EntryDepthGate({cfg:()=>c,now:()=>now,book:async()=>{const b=raw(now);return {buy:b.buy,sell:b.sell,last_updated_at:b.timestamp};}});await g.prepare('BTCUSD');assert.equal(g.check({symbol:'BTCUSD',qty:7,contractValue:1,at:now}).reject,undefined);});
+
+for (const side of ['bids', 'asks'] as const) test(`one missing contract on ${side} cannot count as full depth`, () => {
+ const book: {bids: Array<[number, number]>; asks: Array<[number, number]>} = {bids: [[99.99, 2000]], asks: [[100.01, 2000]]};
+ book[side] = [[side === 'bids' ? 99.99 : 100.01, 1999]];
+ const result = freshDepthGate({...base, qty: 2000, book});
+ assert.equal(result.allowed, false);
+ assert.equal(result.reason, 'insufficient depth');
+});
+test('decimal base units with full depth survive floating point rounding', () => {
+ const book: {bids: Array<[number, number]>; asks: Array<[number, number]>} = {bids: [[99.99, .1], [99.99, .2]], asks: [[100.01, .1], [100.01, .2]]};
+ assert.equal(freshDepthGate({...base, qty: 3, contractValue: .1, book}).allowed, true);
+});
