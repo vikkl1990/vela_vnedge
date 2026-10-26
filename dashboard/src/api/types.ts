@@ -73,7 +73,7 @@ export interface IncubatorConfig {
   maxShadow: number
   promote: { maxPerWeek: number; maxFleet: number; maxPerMarket?: number; maxPerScanner?: number; [k: string]: unknown }
   gate: { minTrades: number; minDays: number; minPfR: number; minAvgR: number; minPositiveWeeksPct: number; minWeeks?: number; staleDays?: number; [k: string]: unknown }
-  demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
+  demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; silentDaysByTf?: Record<string, number>; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
   mirror?: { enabled: boolean }
   [k: string]: unknown
 }
@@ -659,6 +659,7 @@ export interface IncubatorPair {
   funnel?: { entries: number; opened: number; pending?: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null
   /** When the cell's last trade in its book was entered. */
   lastTradeAt?: number | null
+  accountHolding?: boolean
 }
 export interface IncubatorEvent { id: number; at: number; pairId: number; scannerId: string; symbol: string; tf: string; from: IncubatorStage | null; to: IncubatorStage; actor: string; evidence: unknown }
 /** Decision 157: why the candidates that passed their screen are not in the shadow book, right now. */
@@ -679,7 +680,7 @@ export interface IncubatorView {
       pool?: 'cohort' | 'pair'; minTradesByTf?: Record<string, number>; minDaysByTf?: Record<string, number>; maxDaysByTf?: Record<string, number>
     }
     promote: { maxPerWeek: number; maxFleet: number }
-    demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
+    demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; silentDaysByTf?: Record<string, number>; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
   }
   counts: Partial<Record<IncubatorStage, number>>
   fleet: number; promotionsThisWeek: number

@@ -407,7 +407,7 @@ test('decision 108: the positive-weeks share is judged only from minWeeks weeks,
   db.db.close(); fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('decision 109: a live cell on a market the gate refuses for marketOutDays in a row is proposed for demotion; an unjudged market counts as out', () => {
+test('decision 109: a live cell with a known market refusal for marketOutDays is proposed for demotion; unknown data does not prove poor execution', () => {
   const { db, store, cfg } = world();
   cfg.incubator.demote = { ...cfg.incubator.demote, silentDays: 0, marketOutDays: 3 };
   cfg.scanners = {
@@ -423,9 +423,9 @@ test('decision 109: a live cell on a market the gate refuses for marketOutDays i
   assert.equal(store.find('s1', 'BTCUSD', '1h')!.gate?.reasons?.[0]?.startsWith('last '), true);
   assert.deepEqual(evaluate(store, cfg, T0 + 2 * DAY).demoteProposed, []);
   const r3 = evaluate(store, cfg, T0 + 3 * DAY);
-  assert.deepEqual(r3.demoteProposed.sort(), ['s1 BTCUSD 1h', 's1 ZZZUSD 1h']);
+  assert.deepEqual(r3.demoteProposed.sort(), ['s1 BTCUSD 1h']);
   assert.match(store.find('s1', 'BTCUSD', '1h')!.gate?.reasons?.[0] ?? '', /market out: the market gate refuses BTCUSD today: dead.*3 days in a row/);
-  assert.match(store.find('s1', 'ZZZUSD', '1h')!.gate?.reasons?.[0] ?? '', /does not judge ZZZUSD today/);
+  assert.equal(store.find('s1', 'ZZZUSD', '1h')!.stage, 'live');
   assert.equal(store.find('s1', 'ETHUSD', '1h')!.stage, 'live');
   // the market comes back: the counter clears and the days start over
   reject(store, store.find('s1', 'BTCUSD', '1h')!.id, 'op', null, T0 + 3 * DAY + 1);
@@ -726,4 +726,52 @@ test('promoting another pair preserves a scanner existing legacy symbol allocati
  const now=T0+21*DAY;evaluate(store,cfg,now);const row=store.find(k.scannerId,k.symbol,k.tf)!;
  let patch:any;approve(store,cfg,row.id,'admin',(_id,p)=>{patch=p;},now);
  assert.deepEqual(patch.pairs,[{symbol:'BTCUSD',tf:'15m'},{symbol:'ETHUSD',tf:'15m'}]);
+});
+
+test('a positive live pair below the promotion turnover floor is not demoted when execution gate allows it',()=>{
+ const {db,store,cfg,insertTrade}=world();cfg.incubator.demote={...cfg.incubator.demote,silentDays:0,marketOutDays:3};syncLive(store,cfg,T0);
+ db.kvSet('risk.marketsToday',{enabled:true,at:T0,markets:[{symbol:'BTCUSD',allowed:true,reasons:[],turnoverUsd:200000}]});
+ for(const t of series(4,4,2,2,T0))insertTrade(0,'live1','BTCUSD',t);
+ evaluate(store,cfg,T0);assert.deepEqual(evaluate(store,cfg,T0+4*DAY).demoteProposed,[]);
+ assert.equal(store.find('live1','BTCUSD','15m')!.stage,'live');
+});
+
+test('pending demotion is rejudged, recovers to live without resetting its evidence clock, and cannot be approved stale',()=>{
+ const {db,store,cfg}=world();cfg.incubator.demote={...cfg.incubator.demote,silentDays:0,marketOutDays:3};syncLive(store,cfg,T0);
+ const market=(allowed:boolean)=>db.kvSet('risk.marketsToday',{enabled:true,at:T0,markets:[{symbol:'BTCUSD',allowed,reasons:allowed?[]:['costly book'],turnoverUsd:10000000}]});
+ market(false);evaluate(store,cfg,T0);evaluate(store,cfg,T0+4*DAY);const row=store.find('live1','BTCUSD','15m')!;assert.equal(row.stage,'demote_proposed');
+ market(true);assert.throws(()=>approve(store,cfg,row.id,'op',()=>assert.fail('must not change allocation'),T0+4*DAY+1000),/no longer qualifies/);
+ evaluate(store,cfg,T0+5*DAY);assert.equal(store.get(row.id)!.stage,'live');assert.equal(store.get(row.id)!.since,T0);
+ assert.equal(store.get(row.id)!.gate.decision,'keep');assert.equal(store.marketOut()['live1|BTCUSD|15m'],undefined);
+});
+
+test('pending demotion refreshes a missing reason and retains an independent full-sample loss reason',()=>{
+ const {store,cfg,insertTrade}=world();cfg.incubator.demote={...cfg.incubator.demote,silentDays:0,marketOutDays:0};syncLive(store,cfg,T0);
+ for(const t of series(40,20,.5,2,T0+1000))insertTrade(0,'live1','BTCUSD',t);
+ evaluate(store,cfg,T0+21*DAY);const row=store.find('live1','BTCUSD','15m')!;store.setGate(row.id,null);
+ evaluate(store,cfg,T0+22*DAY);assert.equal(store.get(row.id)!.stage,'demote_proposed');assert.match(store.get(row.id)!.gate.reasons[0],/last 40 live trades/);
+ assert.equal(store.get(row.id)!.gate.stats.days<30,true,'sample age must not be counted from 1970');
+});
+
+test('unavailable, stale or missing market data does not establish persistent poor execution',()=>{
+ const {db,store,cfg}=world();cfg.incubator.demote={...cfg.incubator.demote,silentDays:0,marketOutDays:3};syncLive(store,cfg,T0);
+ for(const [at,markets]of [[T0,[{symbol:'BTCUSD',allowed:false,reasons:['unavailable: order book not read']}]], [T0+4*DAY,[]]] as Array<[number,any[]]>){
+  db.kvSet('risk.marketsToday',{enabled:true,at,markets});assert.deepEqual(evaluate(store,cfg,at).demoteProposed,[]);
+ }
+ assert.deepEqual(store.marketOut(),{});
+});
+
+test('stale depth and legacy turnover clocks cannot manufacture three days of execution refusal',()=>{
+ const {db,store,cfg}=world();cfg.incubator.demote={...cfg.incubator.demote,silentDays:0,marketOutDays:3};syncLive(store,cfg,T0);
+ db.kvSet('incubator.marketOut',{'live1|BTCUSD|15m':T0-10*DAY});
+ db.kvSet('risk.marketsToday',{enabled:true,at:T0,markets:[{symbol:'BTCUSD',allowed:false,reasons:['costly book'],turnoverUsd:10000000}]});
+ assert.deepEqual(evaluate(store,cfg,T0).demoteProposed,[]);assert.equal(store.marketOut()['live1|BTCUSD|15m'],T0);
+ store.marketStaleMs=3600000;
+ assert.deepEqual(evaluate(store,cfg,T0+4*DAY).demoteProposed,[]);assert.deepEqual(store.marketOut(),{});
+});
+
+test('an active filled account position is not mistaken for a silent or cost-starved scanner',()=>{
+ const {db,store,cfg}=world();cfg.incubator.demote={...cfg.incubator.demote,silentDays:1,marketOutDays:0,costStarvedRefusals:5};syncLive(store,cfg,T0);
+ db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,bt) VALUES('open','live1','s','BTCUSD','15m','long',1,1,1,100,?,0)",T0);
+ assert.deepEqual(evaluate(store,cfg,T0+20*DAY).demoteProposed,[]);
 });

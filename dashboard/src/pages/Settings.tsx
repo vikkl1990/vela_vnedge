@@ -104,7 +104,7 @@ const SECTIONS: Section[] = [
       { path: 'incubator.gate.minWeeks', label: 'Gate: positive weeks judged from (weeks)', kind: 'number', step: '1', validate: num(0, 12) },
       { path: 'incubator.gate.staleDays', label: 'Stale shadow pair after (days, 15m)', kind: 'number', step: '1', validate: num(1, 365) },
       { path: 'incubator.demote.silentDays', label: 'Silent live cell after (days)', kind: 'number', step: '1', validate: num(0, 365) },
-      { path: 'incubator.demote.marketOutDays', label: 'Market out for (days) proposes demotion', kind: 'number', step: '1', validate: num(1, 60) },
+      { path: 'incubator.demote.marketOutDays', label: 'Execution market refused for (days)', hint: 'Existing pairs use the execution market gate, not the promotion turnover floor. Missing or stale data does not establish an execution-refusal streak.', kind: 'number', step: '1', validate: num(1, 60) },
       { path: 'incubator.demote.costStarvedRefusals', label: 'Cost-rule refusals that propose demotion', kind: 'number', step: '1', validate: num(0, 1000) },
     ],
   },

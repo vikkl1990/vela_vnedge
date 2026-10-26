@@ -205,6 +205,43 @@ function marketRefusal(markets: Map<string, { allowed: boolean; reasons: string[
   return thin ? `${symbol} is ${thin}` : null;
 }
 
+
+/** Current allocation health, shared by the judge and demotion approval. Mutates only the supplied clock map. */
+function liveAssessment(store: IncubatorStore, cfg: AppConfig, r: PairRow, now: number, out: Record<string, number>) {
+  const inc = cfg.incubator, markets = store.marketsToday(now), outDays = inc.demote.marketOutDays ?? 0;
+  const trades = store.trades(r.scannerId, r.symbol, r.tf, 0).filter(t => t.entryAt >= r.since);
+  const d = demoteVerdict(trades, inc.demote);
+  // decision 106: a live cell that has not traded for `silentDays` holds a fleet slot and does nothing
+  // decision 179: the cap follows the timeframe, as the shadow stale cap does (decision 108)
+  const silentDays = inc.demote.silentDaysByTf?.[r.tf] ?? inc.demote.silentDays ?? 0;
+  const lastEntry = store.lastAccountEntryAt(r.scannerId, r.symbol, r.tf, r.since);
+  const lastAt = Math.max(r.since, lastEntry ?? 0);
+  const holding = store.accountHolds(r.scannerId, r.symbol, r.tf);
+  const silent = !holding && silentDays > 0 && now - lastAt > silentDays * DAY;
+  const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
+  // Existing allocations are judged on execution eligibility, not the stricter promotion turnover floor.
+  // Unknown data blocks entries at the risk gate but is not evidence of persistently poor execution.
+  const market = markets.get(r.symbol);
+  const knownRefusal = market && !market.stale && !market.allowed && market.reasons.some(x => !x.startsWith('unavailable:'));
+  const why = knownRefusal ? marketRefusal(markets, r.symbol) : null;
+  if (why) out[key] ??= now; else delete out[key];
+  const outFor = why ? (now - out[key]) / DAY : 0;
+  const marketOut = outDays > 0 && why !== null && outFor >= outDays;
+  // decision 112: a cell whose stops cannot cover the cost rule on its market will never trade; it gives its slot back
+  // decision 171: judged on the pair's own live period, and only once that period is a full window long. Counting
+  // the 14 days before promotion read the shadow mirror's refusals (decision 116) and demoted a pair within hours.
+  const csN = inc.demote.costStarvedRefusals ?? 0, csDays = inc.demote.costStarvedDays ?? 14;
+  const liveLongEnough = now - r.since >= csDays * DAY;
+  const funnel = csN > 0 && liveLongEnough ? store.signalFunnel(r.scannerId, r.symbol, r.tf, Math.max(r.since, now - csDays * DAY)) : null;
+  const costStarved = funnel !== null && funnel.cost >= csN && funnel.opened === 0 && (lastEntry === null || lastEntry < Math.max(r.since, now - csDays * DAY)) && !holding;
+  const reason = marketOut ? `market out: ${why} — ${Math.round(outFor)} days in a row (cap ${outDays})`
+    : costStarved ? `cost-starved: ${funnel!.cost} of ${funnel!.entries} signals refused by the cost rule and none opened in ${csDays} days`
+    : silent ? `silent: no account trade in ${Math.round((now - lastAt) / DAY)} days (cap ${silentDays})`
+    : d.stats.trades < inc.demote.minTrades ? `${d.reason}; collecting evidence (need ${inc.demote.minTrades} closes for performance demotion)` : d.reason;
+  const demote = d.demote || silent || marketOut || costStarved;
+  return { at: now, stats: d.stats, reason, reasons: [reason], decision: demote ? 'demote' : 'keep', marketOutDays: why ? outFor : 0 };
+}
+
 /** `needsRescreen`: scanners whose screens from before decision 134 cannot be trusted (strategy scripts); their candidates wait for a fresh screen. */
 export interface EvaluateOptions {
   needsRescreen?: (scannerId: string) => boolean;
@@ -227,7 +264,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
       store.move(r, 'retired', 'library', { reasons: [why] }, why, now); rep.retired.push(name(r));
     }
   }
-  const active = store.list(['shadow', 'proposed']);
+  let active = store.list(['shadow', 'proposed']);
   // decision 104: a pair on a market the account's gate refuses today is never proposed; one already proposed goes back to brewing
   const markets = store.marketsToday(now);
   for (const r of active) {
@@ -235,37 +272,21 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (why && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { reasons: [why] }, why, now, { keepSince: true }); rep.brewing++; }
   }
 
+  active = store.list(['shadow', 'proposed']); // stage changes above must reach the judge
   if (inc.gate.pool === 'cohort') judgeCohorts(store, cfg, active, rep, now);
   else for (const r of active) judgePair(store, cfg, r, rep, now);
 
-  // decision 109: a live cell on a market the gate refuses cannot trade; after `marketOutDays` in a row it gives its slot back
-  const out = store.marketOut(); const outDays = inc.demote.marketOutDays ?? 0; const liveKeys = new Set<string>();
-  for (const r of store.list(['live'])) {
-    const trades = store.trades(r.scannerId, r.symbol, r.tf, 0).filter(t => t.entryAt >= r.since);
-    const d = demoteVerdict(trades, inc.demote);
-    // decision 106: a live cell that has not traded for `silentDays` holds a fleet slot and does nothing
-    // decision 179: the cap follows the timeframe, as the shadow stale cap does (decision 108)
-    const silentDays = inc.demote.silentDaysByTf?.[r.tf] ?? inc.demote.silentDays ?? 0;
-    const lastAt = Math.max(r.since, ...trades.map(t => t.entryAt));
-    const silent = silentDays > 0 && now - lastAt > silentDays * DAY;
-    const key = `${r.scannerId}|${r.symbol}|${r.tf}`; liveKeys.add(key);
-    const why = markets.size ? marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd) : null;
-    if (why) out[key] ??= now; else delete out[key];
-    const outFor = why ? (now - out[key]) / DAY : 0;
-    const marketOut = outDays > 0 && why !== null && outFor >= outDays;
-    // decision 112: a cell whose stops cannot cover the cost rule on its market will never trade; it gives its slot back
-    // decision 171: judged on the pair's own live period, and only once that period is a full window long. Counting
-    // the 14 days before promotion read the shadow mirror's refusals (decision 116) and demoted a pair within hours.
-    const csN = inc.demote.costStarvedRefusals ?? 0, csDays = inc.demote.costStarvedDays ?? 14;
-    const liveLongEnough = now - r.since >= csDays * DAY;
-    const funnel = csN > 0 && liveLongEnough ? store.signalFunnel(r.scannerId, r.symbol, r.tf, Math.max(r.since, now - csDays * DAY)) : null;
-    const costStarved = funnel !== null && funnel.cost >= csN && funnel.opened === 0;
-    const reason = marketOut ? `market out: ${why} — ${Math.round(outFor)} days in a row (cap ${outDays})`
-      : costStarved ? `cost-starved: ${funnel!.cost} of ${funnel!.entries} signals refused by the cost rule and none opened in ${csDays} days`
-      : silent ? `silent: no account trade in ${Math.round((now - lastAt) / DAY)} days (cap ${silentDays})` : d.reason;
-    const demote = d.demote || silent || marketOut || costStarved;
-    store.setGate(r.id, { at: now, stats: d.stats, reasons: [reason], decision: demote ? 'demote' : 'keep', marketOutDays: why ? outFor : 0 }, now);
-    if (demote) { store.move(r, 'demote_proposed', 'gate', { stats: d.stats, reason }, reason, now, { keepSince: true }); rep.demoteProposed.push(name(r)); }
+  // Pending proposals remain allocated and must be rejudged alongside live cells.
+  const out = store.marketOut(), liveKeys = new Set<string>();
+  for (const r of store.list(['live', 'demote_proposed'])) {
+    liveKeys.add(`${r.scannerId}|${r.symbol}|${r.tf}`);
+    const assessment = liveAssessment(store, cfg, r, now, out);
+    store.setGate(r.id, assessment, now);
+    if (assessment.decision === 'demote' && r.stage === 'live') {
+      store.move(r, 'demote_proposed', 'gate', assessment, assessment.reason, now, { keepSince: true }); rep.demoteProposed.push(name(r));
+    } else if (assessment.decision === 'keep' && r.stage === 'demote_proposed') {
+      store.move(r, 'live', 'gate', assessment, 'demotion withdrawn: current checks no longer call for removal', now, { keepSince: true });
+    }
   }
   for (const k of Object.keys(out)) if (!liveKeys.has(k)) delete out[k];
   store.setMarketOut(out);
@@ -610,8 +631,10 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
     return store.move(r, 'live', actor, { shadow: stats, gate: r.gate }, 'promoted from the shadow book', now);
   }
   if (r.stage === 'demote_proposed') {
+    const assessment = liveAssessment(store, cfg, r, now, { ...store.marketOut() });
+    if (assessment.decision !== 'demote') throw new IncubatorError('demotion no longer qualifies: re-judge the pair before deciding');
     removePair(sc, r, setScanner);
-    return store.move(r, 'shadow', actor, { live: r.gate?.stats ?? null, reason: r.gate?.reason ?? 'demoted' }, 'demoted: back to the shadow book', now, { since: store.admittedAt(r.id) ?? undefined });
+    return store.move(r, 'shadow', actor, { live: assessment.stats, reason: assessment.reason }, 'demoted: back to the shadow book', now, { since: store.admittedAt(r.id) ?? undefined });
   }
   throw new IncubatorError(`nothing to approve: the pair is ${r.stage}`);
 }

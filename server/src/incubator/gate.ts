@@ -127,7 +127,7 @@ export function cohortVerdict(s: CohortStats, g: IncubatorConfig['gate'], overla
 /** Live → proposed for demotion, judged on its most recent `window` trades. */
 export function demoteVerdict(trades: TradeR[], d: IncubatorConfig['demote']): { demote: boolean; stats: PairStats; reason: string } {
   const recent = [...trades].sort((a, b) => a.exitAt - b.exitAt).slice(-d.window);
-  const stats = pairStats(recent, 0, recent.at(-1)?.exitAt ?? Date.now());
+  const stats = pairStats(recent, recent.length ? Math.min(...recent.map(t => t.entryAt)) : 0, recent.at(-1)?.exitAt ?? 0);
   const pf = stats.pfR ?? Infinity;
   const demote = stats.trades >= d.minTrades && pf < d.maxPfR;
   return { demote, stats, reason: `last ${stats.trades} live trades: PF ${fmtPf(stats.pfR)}, ${stats.netR.toFixed(1)}R${demote ? ` (below ${d.maxPfR})` : ''}` };

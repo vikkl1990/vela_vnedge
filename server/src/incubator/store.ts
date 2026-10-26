@@ -62,11 +62,19 @@ export class IncubatorStore {
     return f;
   }
 
+  /** Filled entries, including still-open positions, keep allocation activity separate from closed outcome evidence. */
+  lastAccountEntryAt(scannerId: string, symbol: string, tf: string, since: number): number | null {
+    return this.db.get<{at:number|null}>("SELECT max(entry_at) at FROM positions WHERE bt=0 AND status IN ('open','closed') AND scanner_id=? AND symbol=? AND tf=? AND entry_at>=? AND qty>0", scannerId, symbol, tf, since)?.at ?? null;
+  }
+  accountHolds(scannerId: string, symbol: string, tf: string): boolean {
+    return !!this.db.get("SELECT 1 FROM positions WHERE bt=0 AND status='open' AND scanner_id=? AND symbol=? AND tf=? AND qty_open>0 LIMIT 1", scannerId, symbol, tf);
+  }
+
   /** Decision 112: the shadow runner's record of what became of each shadow pair's signals, by pair key: [at, class] pairs, newest last. */
   shadowFunnel(): Record<string, Array<[number, string]>> { return this.db.kvGet<Record<string, Array<[number, string]>>>('incubator.shadowFunnel') ?? {}; }
   setShadowFunnel(rec: Record<string, Array<[number, string]>>): void { this.db.kvSet('incubator.shadowFunnel', rec); }
 
-  /** Decision 109: since when each live pair's market has been out (refused or not judged), by pair key; cleared the day it is allowed again. */
+  /** Execution-refusal clocks are separate from the legacy clocks that also counted the promotion turnover floor. */
   /** Decision 125: the last bar each shadow pair acted on. */
   liveMarks(): Record<string, number> | undefined { return this.db.kvGet<Record<string, number>>('incubator.liveMarks'); }
   setDispatchStats(rec: Record<string,number>): void { this.db.kvSet('incubator.dispatch',rec); }
@@ -76,8 +84,8 @@ export class IncubatorStore {
     const r = this.db.get<{ at: number }>("SELECT at FROM incubator_events WHERE pair_id=? AND to_stage='shadow' AND actor='screen' ORDER BY at DESC LIMIT 1", pairId);
     return r?.at ?? null;
   }
-  marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut') ?? {}; }
-  setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut', rec); }
+  marketOut(): Record<string, number> { return this.db.kvGet<Record<string, number>>('incubator.marketOut.execution') ?? {}; }
+  setMarketOut(rec: Record<string, number>): void { this.db.kvSet('incubator.marketOut.execution', rec); }
 
   /** Decision 184: how old the market gate's verdicts may be before the incubator treats them as stale (three refreshes). */
   marketStaleMs = 3 * 3600_000;

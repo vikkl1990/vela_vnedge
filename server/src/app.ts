@@ -809,7 +809,8 @@ export class App {
         market: markets.get(r.symbol) ?? null,
         // decision 112: what became of the cell's signals in the last 14 days, from the account's record or the shadow runner's
         funnel: book === 0 ? this.incubatorStore.signalFunnel(r.scannerId, r.symbol, r.tf, since14) : judged ? this.incubator.funnelOf(key, since14) : null,
-        lastTradeAt: trades.length ? Math.max(...trades.map(t => t.entryAt)) : null,
+        lastTradeAt: book === 0 ? this.incubatorStore.lastAccountEntryAt(r.scannerId, r.symbol, r.tf, r.since) : trades.length ? Math.max(...trades.map(t => t.entryAt)) : null,
+        accountHolding: book === 0 && this.incubatorStore.accountHolds(r.scannerId, r.symbol, r.tf),
       };
     });
     return {
