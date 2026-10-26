@@ -1,3 +1,4 @@
+import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
 import type { EntryExecution } from './costs.ts';
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
@@ -117,6 +118,7 @@ export class PaperEngine extends EventEmitter {
     super();
     this.db = db; this.cfgRef = cfgRef;
     this.book = opts.book ?? 0;
+    initEntryExecution(db);
     this.kvPrefix = this.book === 0 ? 'paper' : `book${this.book}`;
     this.db.run('CREATE TABLE IF NOT EXISTS config_fingerprints (fp TEXT PRIMARY KEY, parts TEXT NOT NULL, first_at INTEGER NOT NULL)');
     this.loadPeak();
@@ -212,7 +214,7 @@ export class PaperEngine extends EventEmitter {
   /** Live top-of-book source (set by the realtime wiring); enables spread-crossing fills. */
   quotes: {
     executable(symbol: string, side: 'buy' | 'sell', maxAgeMs: number, now?: number): number | null;
-    markState?(symbol: string): { bestBid: number | null; bestAsk: number | null; at: number; quoteAt?: number | null } | undefined;
+    markState?(symbol: string): { bestBid: number | null; bestAsk: number | null; at: number; quoteAt?: number | null; quoteExchangeAt?: number | null } | undefined;
   } | null = null;
 
   /**
@@ -426,6 +428,7 @@ export class PaperEngine extends EventEmitter {
     this.db.transaction(() => {
       this.persist(pos);
       this.persistFill(pos, pos.fills[0], context);
+      recordEntryExecution(this.db, pos, this.book, cfg, context.source, this.quotes?.markState?.(pos.symbol));
       if (pos.signalId) this.db.updateSignalAction(pos.signalId, 'opened', pos.id);
     });
     this.open.set(id, pos);

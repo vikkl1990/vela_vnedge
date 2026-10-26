@@ -1,3 +1,4 @@
+import { allocationAudit } from '../analytics/allocationAudit.ts';
 import http from 'node:http';
 import { sourceHash } from '../paper/fingerprint.ts';
 import fs from 'node:fs';
@@ -382,6 +383,7 @@ export class ApiServer {
       fs.writeFileSync(file, JSON.stringify(body.list, null, 1));
       return { file, n: body.list.length };
     });
+    this.add('GET', '/api/analytics/allocations', () => allocationAudit(a.db, a.registry.all().filter(s => a.scanners.isActive(s)).flatMap(s => a.scanners.pairsFor(s.id).map(p => ({ scannerId: s.id, scannerName: s.name, ...p })))));
     this.add('GET', '/api/analytics', () => a.analytics());
     this.add('GET', '/api/trackers', () => a.trackers());
     this.add('POST', '/api/trackers', (_r, _s, _p, _u, body) => { try { return a.saveTracker(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); } });

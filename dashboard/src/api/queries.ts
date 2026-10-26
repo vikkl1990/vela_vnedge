@@ -302,3 +302,5 @@ export function useScreenCancel() {
   const qc = useQueryClient()
   return useMutation({ mutationFn: api.screenCancel, onSuccess: () => { void qc.invalidateQueries({ queryKey: ['screen-queue'] }) } })
 }
+
+export const useAllocationAudit = () => useQuery({queryKey:['allocation-audit'],queryFn:api.allocationAudit,staleTime:30_000,refetchInterval:60_000,retry:1})

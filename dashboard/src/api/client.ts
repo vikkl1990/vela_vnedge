@@ -26,7 +26,7 @@ import type {
   Ticker,
   Trade,
   TradeQuery, TradePage, MlSnapshot,
-  MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
+  AllocationAudit, MlYardstick, ShareLink, MlScannerInsight, Analytics, Learning, AuthStatus, Me, Session, Role, RoleOption, PathPoint, PathLevels, ProfileRow, MarketsToday, OpsMetricRow, GatesView, ContextView, DailyRow, TrackerView,
   LibraryDetail,
   LibraryList, ScreenJob, ScreenQueueView, RadarView, TapeAuditView, DuplicateGroup, OverlapCluster, LockStudyView, RunHealthRow } from './types'
 
@@ -186,6 +186,7 @@ export const api = {
   // logs
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
   autoTune: () => post<{ tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
+  allocationAudit: () => get<AllocationAudit>('/analytics/allocations'),
   analytics: () => get<Analytics>('/analytics'),
   dailyReport: (days = 30) => get<DailyRow[]>(`/reports/daily?days=${days}`),
   trackers: () => get<TrackerView[]>('/trackers'),

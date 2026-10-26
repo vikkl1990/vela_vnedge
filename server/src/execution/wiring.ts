@@ -1,3 +1,4 @@
+import { depthFill } from '../paper/entryExecution.ts';
 /**
  * Composition helpers for the phase 2/3/5 modules so app.ts only needs a couple of calls:
  * feed channels → paper engine (tape, mark, funding), the funding scheduler, risk ticks and
@@ -40,6 +41,28 @@ export function wireRealtime(app: App): void {
   });
   const statusTimer = setInterval(() => { if (app.feed.connected) void refresh(); }, 60_000);
   statusTimer.unref();
+  // Depth observation is deliberately asynchronous and labelled post-entry; it never changes an entry.
+  const queue: Array<{ id: number; symbol: string; side: 'long' | 'short'; qty: number; entryAt: number }> = [];
+  let busy = 0;
+  const drain = () => {
+    while (busy < 2 && queue.length) {
+      const p = queue.shift()!; busy++;
+      void (async () => {
+        try {
+          const book = await app.rest.orderbook(p.symbol, 25), at = Date.now();
+          const d = depthFill(p.side === 'long' ? book.sell : book.buy, p.qty, p.side);
+          app.db.run('UPDATE entry_execution SET depth_state=?,depth_at=?,depth_lag_ms=?,depth_vwap=?,depth_impact_bps=?,depth_coverage=? WHERE position_id=?',d.coverage>=1?'complete':'incomplete',at,at-p.entryAt,d.vwap,d.impactBps,d.coverage,p.id);
+        } catch (e: any) { app.db.run('UPDATE entry_execution SET depth_state=?,depth_error=? WHERE position_id=?','error',String(e?.message??e).slice(0,200),p.id); }
+        finally { busy--; drain(); }
+      })().catch(e => log.warn(`entry depth audit failed: ${e?.message??e}`));
+    }
+  };
+  for (const engine of books) engine.on('position', (e: any) => {
+    if (e.type !== 'opened') return;
+    if (queue.length >= 100) { app.db.run('UPDATE entry_execution SET depth_state=? WHERE position_id=?','skipped queue full',e.position.id); return; }
+    const p = e.position;
+    queue.push({ id: p.id, symbol: p.symbol, side: p.side, qty: p.qty, entryAt: p.entryAt }); drain();
+  });
   for (const b of books) b.quotes = app.marks;   // spread-crossing fills (paper.useSpread)
   // decision 190: the audit sees each print before the books do, so the print that fills a limit is counted as its through
   app.feed.on('trade', (t: WsTrade) => { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs); });

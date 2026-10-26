@@ -856,3 +856,11 @@ export interface LockStudyView {
   daily: Array<{ day: string; book: 'account' | 'shadow'; tf: string; trades: number; fired: number; deltaR: number }>
   assumptions: string[]
 }
+
+
+export interface AllocationStats { n: number; netR: number; grossR: number; feeR: number; avgR: number | null; stops: number; firstBarStops: number; cohorts: number; missingCohort: number }
+export interface AllocationAudit {
+ at: number; since: number; split: number; note: string;
+ rows: Array<{ scannerId: string; scannerName: string; symbol: string; tf: string; verdict: string; account: {recent: AllocationStats;prior: AllocationStats}; shadow: {recent: AllocationStats;prior: AllocationStats} }>;
+ execution: Array<{position_id:number;book:number;symbol:string;tf:string;entry_at:number;source:string|null;spread_bps:number|null;quote_at:number|null;quote_exchange_at:number|null;entry_fee:number;expected_exit_fee:number;signal_delay_ms:number|null;depth_state:string;depth_lag_ms:number|null;depth_vwap:number|null;depth_impact_bps:number|null;depth_coverage:number|null}>;
+}

@@ -462,3 +462,15 @@ test('entry status gate does not veto risk-reducing script exits', t => {
   engine.onScriptExit('s', 'BTCUSD', '15m', 'close', undefined, 70000, 'both');
   assert.equal(p.status, 'closed');
 });
+
+test('entry execution observation persists the actual entry fee and quote provenance',t=>{
+ const {engine,cfg,db,open}=setup(t);
+ engine.quotes={executable:()=>100,markState:()=>({bestBid:99,bestAsk:100,at:60000,quoteAt:60000,quoteExchangeAt:59900})};
+ Object.assign(cfg.paper,{useSpread:true,minRiskFeeRatio:0,feeRatePct:.05,feeTaxPct:18});
+ const p=open();
+ const row=db.get<any>('SELECT * FROM entry_execution WHERE position_id=?',p.id)!;
+ assert.equal(row.entry_price,p.entryPrice);assert.equal(row.entry_fee,p.fills[0].fee);assert.equal(row.quote_at,60000);assert.equal(row.quote_exchange_at,59900);
+ assert.equal(row.source,'quote');assert.equal(row.depth_state,'waiting');
+ assert.ok(row.entry_fee>0);assert.ok(Math.abs(row.expected_exit_fee-p.entryPrice*p.qty*p.contractValue*.00059)<1e-9);
+ assert.ok(row.spread_bps>0);
+});

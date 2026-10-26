@@ -1,3 +1,4 @@
+import { AllocationAuditPanel } from '../components/AllocationAudit';
 import { useMemo } from 'react'
 import { useAnalytics } from '../api/queries'
 import type { Analytics as AnalyticsData } from '../api/types'
@@ -38,6 +39,7 @@ export function Analytics() {
   return (
     <div className="page">
       <PageTitle pre="Where the edge," accent="lives." sub="The journal in R for the account and the shadow book: expectancy with a band, where the R goes at exit, edge by scanner, pair and timeframe, and R by hold time, hour, regime and session. One table in dollars: the account's exits, where the fees are." />
+      <AllocationAuditPanel />
       <LearningSection />
       {q.isLoading && !d && <Loading kind="table" rows={4} cols={6} />}
       {q.isError && !d && <ErrorState error={q.error} onRetry={() => q.refetch()} />}

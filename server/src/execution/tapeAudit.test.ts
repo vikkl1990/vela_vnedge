@@ -170,7 +170,7 @@ test('decision 190: as wired, the print that fills a tape limit is counted as th
   const shadow = new PaperEngine(db, () => cfg, { book: 2 });
   const audit = new TapeAudit(db, [{ engine: paper, book: 0 }, { engine: shadow, book: 2 }]);
   const feed = new EE();
-  wireRealtime({ feed, paper, shadow, rest: { products: async () => new Map([['ETHUSD', { symbol: 'ETHUSD', trading_status: 'operational' }]]) }, tapeAudit: audit, marks: { onWsMark() {}, onWsFunding() {}, dueFunding: () => [], executable: () => null, spreadPct: () => null }, risk: { tick() {} } } as any);
+  wireRealtime({ db, feed, paper, shadow, rest: { orderbook: async () => ({ buy: [{price: "99",size:1000}],sell:[{price:"100",size:1000}] }), products: async () => new Map([['ETHUSD', { symbol: 'ETHUSD', trading_status: 'operational' }]]) }, tapeAudit: audit, marks: { onWsMark() {}, onWsFunding() {}, dueFunding: () => [], executable: () => null, spreadPct: () => null }, risk: { tick() {} } } as any);
   feed.emit('status', { connected: true });
   feed.emit('system_status', { status: 'live', event: 'snapshot', timestamp: Date.now() * 1000 });
   feed.emit('product_updates', { product: { symbol: 'ETHUSD', trading_status: 'operational' }, timestamp: Date.now() * 1000 });
