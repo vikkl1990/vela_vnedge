@@ -151,3 +151,23 @@ test('decision 116: a mirrored shadow event goes down the live path — signal r
   engine.ingestEvent(scanner as any, 'BTCUSD', '1m', ev, bars as any, { contractValue: 1, tickSize: 0.25 }, 'both', bars.at(-1)! as any);
   assert.equal(db.all<any>('SELECT 1 FROM signals').length, 1);
 });
+
+test('depth preparation completes before entry gates and expiry are rechecked',async t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+ Object.assign(cfg.paper,{latencyMs:0,requireQuote:false,useSpread:false,minRiskFeeRatio:0,skipScriptStops:false,trendGate:{enabled:false,emaLen:50,tf:'',mode:'follow'},maxSignalAgeSec:60});
+ cfg.risk.regime.enabled=false;
+ const now=Date.now(),lastClose=Math.floor(now/60000)*60000;
+ const bars=Array.from({length:60},(_,i)=>({time:lastClose-(60-i)*60000,open:100,high:101,low:99,close:100,volume:100}));
+ const paper=new PaperEngine(db,()=>cfg);paper.setMark('BTCUSD',100);
+ let finish!:()=>void,halted=false;paper.prepareEntryDepth=()=>new Promise<void>(r=>finish=r);
+ paper.risk={gate:()=>halted?{reject:'manual halt',leverageMult:1}:{leverageMult:1},exposureCheck:()=>null};
+ const scanner={id:'s',name:'s',status:'ok',patched:''};
+ const engine=new ScannerEngine({db,cfgRef:()=>cfg,paper,candles:Object.assign(new EventEmitter(),{get:()=>bars})as any,pool:{}as any,registry:{all:()=>[scanner],get:()=>scanner}as any,rest:{}as any});
+ const ev={kind:'entry',side:'long',price:100,sl:98,tp:[102,104,106],barTime:bars.at(-1)!.time,barIndex:59,source:'alert',label:'LONG',message:'long'}as any;
+ const task=engine.ingestEvent(scanner as any,'BTCUSD','1m',ev,bars as any,{contractValue:1,tickSize:.25},'both',bars.at(-1)!as any);
+ assert.equal(paper.openPositions().length,0);halted=true;finish();await task;
+ assert.equal(paper.openPositions().length,0);assert.match(db.get<any>('SELECT action FROM signals')!.action,/manual halt/);
+ // A signal that was already old when depth arrived must not be revived by the new quote.
+ paper.prepareEntryDepth=async()=>{};halted=false;await engine.ingestEvent(scanner as any,'BTCUSD','1m',{...ev,label:'old',barTime:ev.barTime-300000},bars as any,{contractValue:1,tickSize:.25},'both',bars.at(-1)!as any);
+ assert.match(db.get<any>("SELECT action FROM signals WHERE label LIKE 'old%'")!.action,/stale signal/);
+});

@@ -30,7 +30,14 @@ export const NOT_CRYPTO = /xStock|bStocks?|Gold Token|Silver|\bETF\b/i;
 export const isCrypto = (description: string | undefined) => !NOT_CRYPTO.test(description ?? '');
 
 export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; spreadPct: number | null; bookCostPct: number | null; trades: number; pf: number | null; netUsd: number }
-export interface MarketsToday { probeNotionalUsd?: number; policyKey?: string; at: number; enabled: boolean; markets: MarketVerdict[] }
+export interface MarketsToday { freshDepth?: boolean; probeNotionalUsd?: number; policyKey?: string; at: number; enabled: boolean; markets: MarketVerdict[] }
+
+/** Cached depth is screening context when final entry quantity has its own mandatory check. */
+export function withoutCachedBookVeto<T extends {allowed:boolean;reasons:string[]}>(m:T):T {
+  if(m.allowed)return m;
+  const reasons=m.reasons.filter(r=>!/^costly book:|^thin book:|^unavailable: order book/.test(r));
+  return {...m,allowed:reasons.length===0,reasons};
+}
 
 export interface MarketGateDeps {
   db: Db;
@@ -73,6 +80,9 @@ export class MarketGate {
     if (this.state.at > 0 && now - this.state.at > maxAgeMs) return refuse(`market verdicts are ${Math.round((now - this.state.at) / 60_000)} min old (refresh every ${this.cfg.refreshMinutes} min)`);
     const m = this.state.markets.find(m => m.symbol === symbol);
     if (!m) return refuse(this.state.at > 0 ? 'market not judged (outside the universe or below the turnover floor)' : 'markets not judged yet');
+    if(this.cfg.freshDepth && !(this.cfg.exempt??[]).includes(symbol) && (this.cfg.maxBookCostPct??0)>0){
+      return withoutCachedBookVeto(m);
+    }
     return m;
   }
 
@@ -132,7 +142,7 @@ export class MarketGate {
       if (rows.length >= c.minTrades && pf !== null && pf < c.minPf) reasons.push(`not paying: PF ${pf.toFixed(2)} over ${rows.length} trades in ${c.lookbackDays}d`);
       markets.push({ symbol, allowed: reasons.length === 0, tracked: own.has(symbol), reasons, atrPct, turnoverUsd, spreadPct, bookCostPct, trades: rows.length, pf, netUsd: gp - gl });
     }
-    this.state = { at: now, enabled: true, markets, probeNotionalUsd:c.probeNotionalUsd, policyKey };
+    this.state = { at: now, enabled: true, markets, probeNotionalUsd:c.probeNotionalUsd, freshDepth:!!c.freshDepth && (c.maxBookCostPct??0)>0, policyKey };
     this.deps.db.kvSet(KV_KEY, this.state);
     const blocked = markets.filter(m => !m.allowed);
     log.info(`markets today: ${markets.length - blocked.length} allowed, ${blocked.length} blocked${blocked.length ? ` (${blocked.map(m => m.symbol).join(', ')})` : ''}`);

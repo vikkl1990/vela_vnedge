@@ -511,7 +511,7 @@ export class ScannerEngine extends EventEmitter {
           const staleDerived = applyRules({ scannerId: s.id, alerts: liveRes.alerts, shapes: liveRes.shapes, labels: liveRes.labels, plots: liveRes.plots, rule, bars, mode: 'live', newLabelKeys, ...READ.rule });
           const exits = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: win.since, derived: staleDerived, ...READ.extract })
             .filter(ev => ev.kind === 'exit');
-          for (const ev of exits) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
+          for (const ev of exits) await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
           this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: 0, exits: 0, info: 0 }, {}, [], `bar ${barAge.toFixed(0)}s old (max ${maxAge}s): stats only, no live signals`);
           this.marks.advance(key, lastBar.time);
           log.debug(`${key}: last closed bar is ${barAge.toFixed(0)}s old (max ${maxAge}s) — stats only, no live signals`);
@@ -525,7 +525,7 @@ export class ScannerEngine extends EventEmitter {
         const events = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: since, derived, ...READ.extract, drops })
           .filter(ev => { if (ev.kind === 'entry' && ev.barTime < lastBar.time) { drops['entry: superseded bar'] = (drops['entry: superseded bar'] ?? 0) + 1; return false; } return true; });
         if (since < lastBar.time && events.some(ev => ev.barTime < lastBar.time)) log.info(`${key}: ${events.filter(ev => ev.barTime < lastBar.time).length} event(s) from a superseded bar read on this run`);
-        for (const ev of events) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
+        for (const ev of events) await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
         this.marks.advance(key, lastBar.time);
         const acts = this.db.all<{ action: string }>('SELECT action FROM signals WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time=?', s.id, symbol, tf, lastBar.time).map(r => r.action);
         this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: events.filter(e => e.kind === 'entry').length, exits: events.filter(e => e.kind === 'exit').length, info: events.filter(e => e.kind === 'info').length }, drops, acts);
@@ -562,11 +562,12 @@ export class ScannerEngine extends EventEmitter {
    * the signal row, the trend gate, the risk manager's gates and caps, the probability, the paper engine — with
    * its label marked so the Signals page says where it came from. The shadow book keeps its own copy.
    */
-  ingestEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar): void {
-    this.handleLiveEvent(s, symbol, tf, { ...ev, label: `${ev.label} (shadow mirror)`.slice(0, 80) }, bars, market, exitMode, lastBar);
+  async ingestEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar): Promise<void> {
+    await this.handleLiveEvent(s, symbol, tf, { ...ev, label: `${ev.label} (shadow mirror)`.slice(0, 80) }, bars, market, exitMode, lastBar);
   }
 
-  private handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) {
+  private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) {
+    if(ev.kind==='entry' && this.paper.prepareEntryDepth)await this.paper.prepareEntryDepth(symbol);
     if (this.db.signalExists(s.id, symbol, tf, ev.barTime, ev.kind, ev.side ?? null, ev.label)) return;
     const refPrice = this.paper.mark(symbol) ?? lastBar.close;
     const now = Date.now();

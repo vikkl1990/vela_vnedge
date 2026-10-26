@@ -558,6 +558,8 @@ export interface RiskConfig {
     minTurnoverUsd: number;
     /** Book rule (decision 56b): walk the level-2 book for this notional both ways; the round-trip cost (spread + slippage + fee) must stay under `maxBookCostPct` (either 0 = off). */
     probeNotionalUsd?: number; maxBookCostPct?: number;
+    /** Fresh depth at final entry quantity replaces the cached fixed-size book veto. */
+    freshDepth?: boolean;
     /** ATR as a share of price must be at least this many round-trip costs (the market's own book cost when known, else the fee; 0 = off). */
     minAtrFeeMult: number;
     /** The book's recent record on the market: at least `minTrades` closed trades in `lookbackDays` with PF below `minPf` blocks it. */
@@ -679,7 +681,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     perScannerMaxPositions: 4,
     perScannerDailyLossPct: 0,
     regime: { enabled: true, minAtrPct: 0.30, noWeekend: true, exempt: [] },
-    marketGate: { enabled: false, tf: '15m', cryptoOnly: true, minTurnoverUsd: 250_000, probeNotionalUsd: 750, maxBookCostPct: 0.25, minAtrFeeMult: 4, lookbackDays: 14, minTrades: 5, minPf: 1.0, refreshMinutes: 60, exempt: [] },
+    marketGate: { enabled: false, tf: '15m', cryptoOnly: true, minTurnoverUsd: 250_000, probeNotionalUsd: 750, maxBookCostPct: 0.25, freshDepth: false, minAtrFeeMult: 4, lookbackDays: 14, minTrades: 5, minPf: 1.0, refreshMinutes: 60, exempt: [] },
   },
   scanners: {},
   validation: {
@@ -765,6 +767,8 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Number.isFinite(p.maxSignalAgeSec) && p.maxSignalAgeSec >= 0)) errs.push('paper.maxSignalAgeSec must be ≥ 0');
   if (p.earlyCut && !(p.earlyCut.r < 0 && p.earlyCut.r > -1 && p.earlyCut.minutes > 0)) errs.push('paper.earlyCut needs r between −1 and 0 and minutes > 0');
   if (typeof p.useSpread !== 'boolean') errs.push('paper.useSpread must be boolean');
+  if(c.risk.marketGate?.freshDepth!==undefined && typeof c.risk.marketGate.freshDepth!=='boolean') errs.push('risk.marketGate.freshDepth must be boolean');
+  if (c.risk.marketGate?.freshDepth && !(p.quoteMaxAgeMs>0)) errs.push('fresh depth requires paper.quoteMaxAgeMs > 0');
   if (!(Number.isFinite(p.quoteMaxAgeMs) && p.quoteMaxAgeMs >= 0)) errs.push('paper.quoteMaxAgeMs must be ≥ 0');
   if (p.requireQuote && !p.useSpread) errs.push('paper.requireQuote needs paper.useSpread');
   if (p.requireQuote && !(p.quoteMaxAgeMs > 0)) errs.push('paper.requireQuote needs paper.quoteMaxAgeMs > 0');

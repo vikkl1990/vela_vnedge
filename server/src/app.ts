@@ -1,3 +1,4 @@
+import {EntryDepthGate} from './risk/entryDepth.ts';
 import { TradingStatus } from './delta/tradingStatus.ts';
 import path from 'node:path';
 import { lastAtr } from './data/indicators.ts';
@@ -92,6 +93,7 @@ export class App {
   /** Symbols actually scanned after resolving the universe (list / top N / all). */
   resolvedSymbols: string[] = [];
 
+  readonly entryDepth: EntryDepthGate;
   constructor(deps: AppDeps = {}) {
     const cfg = () => this.config.get();
     this.rest = deps.rest ?? new DeltaRest();
@@ -193,6 +195,10 @@ export class App {
         return { bids: side(ob.buy), asks: side(ob.sell) };
       },
     });
+    this.entryDepth=new EntryDepthGate({cfg,book:async symbol=>await this.rest.orderbook(symbol,25),save:state=>this.db.kvSet('risk.entryDepth',state)});
+    this.paper.prepareEntryDepth=symbol=>this.entryDepth.prepare(symbol,true);
+    this.shadow.prepareEntryDepth=symbol=>this.entryDepth.prepare(symbol);
+    for(const b of [this.paper,this.shadow])b.entryDepthGate=req=>this.entryDepth.check(req);
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
@@ -369,13 +375,14 @@ export class App {
     g.push({ key: 'reentry', group: 'Account', name: 'Re-entry and burst', state: (rc.reentryCooldownMinutes ?? 0) > 0 || (rc.burstWindowSec ?? 0) > 0 ? 'armed' : 'off', value: `${rc.reentryCooldownMinutes ?? 0} min after a stop on the same market · one entry per side per ${rc.burstWindowSec ?? 0}s`, rule: 'No immediate re-entry after a stop, no bursts of the same side', next: 'Settings → risk', href: '/settings' });
     // --- the market ---
     const mt = this.db.kvGet<{ at: number; enabled: boolean; markets: Array<{ symbol: string; allowed: boolean; tracked: boolean }> }>('risk.marketsToday');
-    const tracked = (mt?.markets ?? []).filter(m => m.tracked !== false), allowed = tracked.filter(m => m.allowed);
+    const tracked = (mt?.markets ?? []).filter(m => m.tracked !== false), allowed = tracked.filter(m => this.marketGate.verdict(m.symbol,now)?.allowed);
     const stale = mt ? now - mt.at > 2 * 3600_000 : true;
     g.push({ key: 'market', group: 'Market', name: 'Markets today', state: !rc.marketGate?.enabled ? 'off' : stale ? 'attention' : allowed.length ? 'armed' : 'blocking', value: mt ? `${allowed.length} of ${tracked.length} scanned markets allowed${stale ? ' · judgement stale' : ''}` : 'no judgement yet', rule: `Book under ${rc.marketGate?.maxBookCostPct ?? '?'}% round trip, turnover over $${((rc.marketGate?.minTurnoverUsd ?? 0) / 1e6).toFixed(2)}M, ATR over ${rc.regime?.minAtrPct ?? '?'}%`, next: stale ? 'Re-judge on the Overview' : 'The Overview lists every market and its reason', href: '/' });
+    g.push({key:'entry-depth',group:'Trade',name:'Fresh depth at actual size',state:this.entryDepth.enabled()?'armed':'off',value:`${this.entryDepth.counts.checks} checks · ${this.entryDepth.counts.blocked} blocked · ${cfg.paper.quoteMaxAgeMs/1000}s max age`,rule:'Final contract quantity checked before entry and pending fills; stale or unavailable depth refuses entry',next:'Signals shows depth-read counters and entry decisions',href:'/signals'});
     g.push({ key: 'regime', group: 'Market', name: 'Regime', state: rc.regime?.enabled ? 'armed' : 'off', value: `ATR ≥ ${rc.regime?.minAtrPct ?? 0}%${(rc.regime as any)?.minEr ? ` · efficiency ≥ ${(rc.regime as any).minEr}` : ''}${rc.regime?.noWeekend ? ' · no weekend entries' : ''}`, rule: 'No entries in dead or choppy markets', next: 'Settings → risk → regime', href: '/settings' });
     // --- the trade ---
     const ratio = cfg.paper.minRiskFeeRatio ?? 0;
-    g.push({ key: 'cost', group: 'Trade', name: 'Stop versus round-trip cost', state: ratio >= 6 ? 'armed' : ratio > 0 ? 'attention' : 'off', value: `stop ≥ ${ratio}× fees plus the live spread`, rule: 'A stop that cannot pay the round trip is refused before it loses (decision 96)', next: ratio < 6 ? 'Settings → Paper account → minimum stop over round-trip fee: 6 (measured in decision 96)' : 'As measured', href: '/settings' });
+    g.push({ key: 'cost', group: 'Trade', name: 'Stop versus round-trip cost', state: ratio >= 6 ? 'armed' : ratio > 0 ? 'attention' : 'off', value: `stop ≥ ${ratio}× fees plus ${this.entryDepth.enabled()?'actual-size depth cost':'the live spread'}`, rule: 'A stop that cannot pay the round trip is refused before it loses (decision 96)', next: ratio < 6 ? 'Settings → Paper account → minimum stop over round-trip fee: 6 (measured in decision 96)' : 'As measured', href: '/settings' });
     g.push({ key: 'liq', group: 'Trade', name: 'Liquidation headroom', state: cfg.paper.liquidation ? 'armed' : 'off', value: `leverage capped so the stop sits inside liquidation by 25% of the stop, on each market's maintenance margin`, rule: 'The stop must trade before the exchange liquidates (decision 94)', next: 'Automatic per market', href: '/trades' });
     g.push({ key: 'size', group: 'Trade', name: 'Risk per trade and size caps', state: 'armed', value: `${cfg.paper.riskPerTradePct}% of equity · stop ≤ ${cfg.paper.maxStopLossPct}% · leverage ≤ ${cfg.paper.maxLeverage}× or the market's own`, rule: 'Lots from the stop distance; never more than the caps allow', next: 'Settings → Paper account', href: '/settings' });
     // --- the pipeline ---

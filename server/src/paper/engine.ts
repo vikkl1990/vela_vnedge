@@ -97,6 +97,14 @@ export class PaperEngine extends EventEmitter {
    */
   readonly priceSource = { quote: 0, slippage: 0, rejectedNoQuote: 0 };
 
+  prepareEntryDepth?: (symbol: string) => Promise<void>;
+  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number}) => {reject?:string;crossingPct?:number};
+  private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker=false):string|null {
+    const d=this.entryDepthGate?.({symbol,qty,contractValue:cv,maker,at});
+    if(d?.reject)return d.reject;
+    return d?.crossingPct!==undefined?checkRiskVsFees(price,sl,cfg,symbol,d.crossingPct,{maker}):null;
+  }
+
   /**
    * Current ATR of a position's own timeframe (last closed bars), for the ATR trail. Without it the
    * trail falls back to a fixed R distance, which is not the rule the backtest measured.
@@ -352,6 +360,8 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted });
     if (size.qty < 1) return refused(size.reason ?? 'size');
+    const depthBlock=this.depthRefusal(ctx.symbol,size.qty,ctx.market.contractValue,price,levels.sl,cfg,ctx.at,willRestLimit);
+    if(depthBlock)return refused(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(ctx.symbol, ev.side!, ctx.tf, size.qty * ctx.market.contractValue * price, size.riskAmount, ctx.at);
     if (fundingBlock) return refused(fundingBlock);
     if (this.risk) {
@@ -480,6 +490,8 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at }, { maker: true });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
+    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,L.price,levels.sl,cfg,at,true);
+    if(depthBlock)return cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * L.price, size.riskAmount, at);
     if (fundingBlock) return cancel(fundingBlock);
     if (this.risk) {
@@ -534,6 +546,8 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt }, { quoted });
     if (size.qty < 1) return cancel(size.reason ?? 'size');
+    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,price,levels.sl,cfg,receivedAt);
+    if(depthBlock)return cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * price, size.riskAmount, receivedAt);
     if (fundingBlock) return cancel(fundingBlock);
     if (this.risk) {

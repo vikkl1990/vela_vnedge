@@ -87,6 +87,7 @@ export function wireRealtime(app: App): void {
         const a=fundingAssessment(app.marks.funding(p.symbol),app.config.get().paper,p.side,p.tf,p.qtyOpen*p.contractValue*mark,p.riskAmount,now);
         if (a.trigger && b.closeForFunding(p.id,now)) app.db.run('INSERT INTO funding_guard_blocks(symbol,until_at) VALUES(?,?) ON CONFLICT(symbol) DO UPDATE SET until_at=max(until_at,excluded.until_at)',p.symbol,a.nextAt!+1000);
       }
+      for(const b of books)for(const symbol of new Set(b.pendingEntries().map(p=>p.symbol)))void b.prepareEntryDepth?.(symbol);
       for (const b of books) b.housekeeping(now);
       app.risk.tick(now);
     } catch (e: any) { log.warn(`scheduler step failed: ${e?.message ?? e}`); }

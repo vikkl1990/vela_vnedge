@@ -71,7 +71,8 @@ const SECTIONS: Section[] = [
       { path: 'risk.marketGate.enabled', label: 'Market gate on', kind: 'bool' },
       { path: 'risk.marketGate.minTurnoverUsd', label: 'Turnover floor (USD, 24 h)', kind: 'number', step: '10000', validate: num(0, 1e9) },
       { path: 'risk.marketGate.maxBookCostPct', label: 'Max book cost (% round trip)', kind: 'number', step: '0.01', validate: num(0, 5) },
-      { path: 'risk.marketGate.probeNotionalUsd', label: 'Probe notional (USD)', kind: 'number', step: '50', hint: 'Base order: $150 margin × 5 leverage = $750; larger orders need a larger depth check', validate: num(100, 1e6) },
+      { path: 'risk.marketGate.freshDepth', label: 'Fresh depth at actual entry quantity', kind: 'bool', hint: 'Rechecks integer contract size before admission and pending fills. Stale or missing depth blocks entry.' },
+      { path: 'risk.marketGate.probeNotionalUsd', label: 'Probe notional (USD)', kind: 'number', step: '50', hint: 'Cached screening probe. When fresh depth is enabled, entry checks use actual contract quantity.', validate: num(100, 1e6) },
     ],
   },
   {

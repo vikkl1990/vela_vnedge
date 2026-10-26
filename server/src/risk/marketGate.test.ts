@@ -68,3 +68,10 @@ test('smaller probe admits supported size; setting changes invalidate cached dec
 test('crossed books cannot provide a negative trading-cost estimate',()=>{
  assert.equal(walkBook({bids:[[101,100]],asks:[[100,100]]},750),null);
 });
+
+test('fresh actual-size checking replaces only cached book vetoes, not turnover or metadata gates',async t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+ cfg.risk.marketGate={...cfg.risk.marketGate!,enabled:true,freshDepth:true,minTurnoverUsd:50000,minAtrFeeMult:0,minTrades:100000,exempt:[]};
+ const gate=new MarketGate({db,cfgRef:()=>cfg,candles:null,markets:async()=>[{symbol:'BTCUSD',volume24h:10000000,price:100},{symbol:'THINUSD',volume24h:100,price:100}],book:async()=>({bids:[[99,100]],asks:[[101,100]]})});
+ await gate.refresh(['BTCUSD','THINUSD']);assert.equal(gate.today.markets.find(m=>m.symbol==='BTCUSD')!.allowed,false,'screen retains measured cached cost');assert.equal(gate.verdict('BTCUSD')!.allowed,true,'actual entry cost must be checked separately');assert.equal(gate.verdict('THINUSD')!.allowed,false);assert.match(gate.verdict('THINUSD')!.reasons.join(';'),/dead:/);
+});

@@ -212,7 +212,8 @@ function MarketsTodayPanel() {
   const liquidElsewhere = elsewhere.filter((m) => m.allowed), outElsewhere = elsewhere.filter((m) => !m.allowed)
   const tip = (m: MarketVerdict) => [m.bookCostPct != null ? `book ${m.bookCostPct.toFixed(3)}% round trip (spread ${(m.spreadPct ?? 0).toFixed(3)}%)` : 'book not read', m.atrPct != null ? `15m ATR ${m.atrPct.toFixed(2)}%` : 'no candles — not scanned', m.turnoverUsd != null ? `$${(m.turnoverUsd / 1e6).toFixed(2)}M 24h` : '', `${m.trades} trades${m.pf != null ? ` PF ${m.pf.toFixed(2)}` : ''} in 14d`].filter(Boolean).join(' · ')
   return (
-    <Panel title={`Markets today · ${allowed.length} of ${tracked.length} scanned allowed, ${blocked.length} out`} right={<div className="row gap"><span className="muted small">{d.at ? `judged ${new Date(d.at).toISOString().slice(11, 16)} UTC` : ''}</span><button className="btn btn-xs" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? 'Judging…' : 'Re-judge'}</button></div>}>
+    <Panel title={`${d.freshDepth?'Cached market screen':'Markets today'} · ${allowed.length} of ${tracked.length} scanned allowed, ${blocked.length} out`} right={<div className="row gap"><span className="muted small">{d.at ? `judged ${new Date(d.at).toISOString().slice(11, 16)} UTC` : ''}</span><button className="btn btn-xs" onClick={() => refresh.mutate()} disabled={refresh.isPending}>{refresh.isPending ? 'Judging…' : 'Re-judge'}</button></div>}>
+      {d.freshDepth&&<p className="muted small">These are cached screening costs. Every entry and pending fill is checked again at its actual contract quantity using fresh depth; a cached cost result is not entry permission.</p>}
       <div className="chips">
         {allowed.map((m) => <Pill key={m.symbol} tone="ok" title={tip(m)}>{m.symbol.replace(/USD$/, '')}</Pill>)}
       </div>

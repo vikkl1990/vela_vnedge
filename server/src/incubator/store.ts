@@ -1,3 +1,4 @@
+import {withoutCachedBookVeto} from '../risk/marketGate.ts';
 /**
  * Incubator state: which stage each scanner/market pair is in, and an audit trail of every move.
  *
@@ -90,13 +91,13 @@ export class IncubatorStore {
   /** Decision 184: how old the market gate's verdicts may be before the incubator treats them as stale (three refreshes). */
   marketStaleMs = 3 * 3600_000;
   marketsToday(now = Date.now(), maxAgeMs = this.marketStaleMs): Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null; stale?: boolean }> {
-    const kv = this.db.kvGet<{ enabled?: boolean; at?: number; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[]; turnoverUsd?: number | null }> }>('risk.marketsToday');
+    const kv = this.db.kvGet<{ enabled?: boolean; freshDepth?: boolean; at?: number; markets?: Array<{ symbol: string; allowed: boolean; reasons?: string[]; turnoverUsd?: number | null }> }>('risk.marketsToday');
     const out = new Map<string, { allowed: boolean; reasons: string[]; turnoverUsd: number | null; stale?: boolean }>();
     if (!kv || kv.enabled === false) return out;
     // decision 184: verdicts older than three refreshes are stale; the account's own gate already refuses on them, and
     // the incubator's proposals and admissions wait as well (the screen's universe keeps the last verdicts)
     const stale = typeof kv.at === 'number' && now - kv.at > maxAgeMs;
-    for (const m of kv.markets ?? []) out.set(m.symbol, { allowed: Boolean(m.allowed), reasons: m.reasons ?? [], turnoverUsd: typeof m.turnoverUsd === 'number' ? m.turnoverUsd : null, ...(stale ? { stale: true } : {}) });
+    for (const m of kv.markets ?? []) out.set(m.symbol, { ...(kv.freshDepth ? withoutCachedBookVeto({allowed:Boolean(m.allowed),reasons:m.reasons??[]}) : {allowed:Boolean(m.allowed),reasons:m.reasons??[]}), turnoverUsd: typeof m.turnoverUsd === 'number' ? m.turnoverUsd : null, ...(stale ? { stale: true } : {}) });
     return out;
   }
 
