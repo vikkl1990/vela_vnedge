@@ -1,0 +1,11 @@
+import {useScannerPipeline} from '../api/queries'
+import {Panel,Time,ErrorState,Loading} from './ui'
+export function ScannerPipelinePanel(){
+ const q=useScannerPipeline(),d=q.data
+ return <Panel title="Scanner pipeline · current allocations">
+ <p className="small muted">A historical chart arrow is not a fresh entry. This view separates successful scans, generated entry events and admission decisions over 24 hours. Filters and gate refusals remain visible in the decision journal.</p>
+ {q.isLoading&&<Loading rows={2}/>}{q.isError&&<ErrorState error={q.error} onRetry={()=>q.refetch()}/>}
+ {d&&<><p className="small">Worker queue: {d.queue.queuedLive} account · {d.queue.queuedMirror} priority shadow · {Math.max(0,d.queue.queued-d.queue.queuedLive-d.queue.queuedMirror)} background</p>
+ <div className="table-wrap"><table className="table table-dense"><thead><tr><th>Scanner / allocation</th><th>Last scan</th><th>Runs / failed · 24h</th><th>Entry events · 24h</th><th>Last entry / decision</th></tr></thead><tbody>{d.cells.map(c=><tr key={`${c.scannerId}:${c.symbol}:${c.tf}`}><td>{c.scannerId}<div>{c.symbol} · {c.tf}</div></td><td>{c.lastRun?<Time t={c.lastRun}/>:'Never scanned'}{c.error&&<div className="loss">{c.error}</div>}</td><td>{c.runs} / {c.failures}</td><td>{c.entries24h}<div className="small muted">{c.actions.map(a=>`${a.action} ×${a.n}`).join(' · ')||'No fresh entry event in this window'}</div></td><td>{c.latest?<><Time t={c.latest.at}/><div>{c.latest.label}</div><div className="small">{c.latest.action}</div></>:'No recorded entry'}</td></tr>)}</tbody></table></div></>}
+ </Panel>
+}

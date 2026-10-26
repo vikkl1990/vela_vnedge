@@ -1,3 +1,4 @@
+import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMarkets, useScannerIndex, useSignals } from '../api/queries'
@@ -159,6 +160,7 @@ export function Signals() {
 
   return (
     <div className="page">
+      <ScannerPipelinePanel/>
       <div className="banner small" role="note"><b>View only.</b> A signal is the record of a decision the gates already made; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
       <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Every alert the account's scanners raised and what the account did with it. Shadow-book runs are judged in the Incubator, not here." />
       {outcomes.total > 0 && (
@@ -224,7 +226,7 @@ function summarizeOutcomes(rows: Signal[]) {
   const defs: Array<{ key: string; label: string; tone: 'ok' | 'danger' | 'warn' | 'muted' | 'accent'; hint: string; test: (a: string, s: Signal) => boolean }> = [
     { key: 'opened', label: 'opened', tone: 'ok', hint: 'became a position', test: (a) => a === 'opened' },
     { key: 'market', label: 'market not suitable', tone: 'warn', hint: 'the markets-today gate: illiquid, too quiet to pay the round trip, or not paying recently (decision 56)', test: (a) => a.startsWith('rejected:market') },
-    { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'the stop is closer than 4× the round-trip fee; taking the trade loses money', test: (a) => /stop too tight/.test(a) },
+    { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'the stop is closer than the configured multiple of round-trip costs; taking the trade loses money', test: (a) => /stop too tight/.test(a) },
     { key: 'capacity', label: 'margin / position cap', tone: 'warn', hint: 'no room in the account: margin, position limits, or a scrap-sized fill refused (decision 53)', test: (a) => /margin|max positions|position cap|intended size|budget/.test(a) },
     { key: 'stale', label: 'stale (scan too late)', tone: 'danger', hint: 'the scan finished after the signal aged out', test: (a) => /stale/.test(a) },
     { key: 'halted', label: 'halted / loss limit', tone: 'danger', hint: 'kill switch, daily or weekly loss limit, cooldown', test: (a) => /halt|loss limit|cooldown/.test(a) },

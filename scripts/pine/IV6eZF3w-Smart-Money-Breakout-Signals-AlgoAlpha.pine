@@ -124,28 +124,27 @@ if lowBroken
     TPs2.unshift(line.new(prevLowIndex, TP2, bar_index, TP2, color=color.new(BEAR, 30), width=1, force_overlay=true, style=line.style_dashed))
     linefill.new(TPs.first(), TPs1.first(), color.new(BEAR, 90))
 
-if active == 1 and high > TP
-    tp1s += 1
-if active1 == 1 and high > TP1
-    tp2s += 1
-    active1 := 0
-if active2 == 1 and high > TP2
-    tp3s += 1
-    active2 := 0
-
-if active == -1 and low < TP
-    tp1s += 1
-if active1 == -1 and low < TP1
-    tp2s += 1
-    active1 := 0
-if active2 == -1 and low < TP2
-    tp3s += 1
-    active2 := 0
-
-
-
-if ((active == 1 and high > TP) or (active == 1 and low < SL) or (active == -1 and low < TP) or (active == -1 and high > SL)) and not (trigger != 0 and trigger[1] == 0)
-    active := 0
+// Bot audit: closed-bar signal; never score pre-entry movement on the breakout bar.
+// TP2 is the nearest price, TP1 the middle, TP the farthest in the author's variables.
+// Stop first when a later candle touches both stop and target: order is unknown.
+if trigger == 0 and active != 0
+    stopped = active == 1 ? low <= SL : high >= SL
+    if stopped
+        active := 0
+        active1 := 0
+        active2 := 0
+    else
+        if active2 != 0 and (active == 1 ? high >= TP2 : low <= TP2)
+            tp1s += 1
+            active2 := 0
+        if active1 != 0 and (active == 1 ? high >= TP1 : low <= TP1)
+            tp2s += 1
+            active1 := 0
+        if active == 1 ? high >= TP : low <= TP
+            tp3s += 1
+            active := 0
+            active1 := 0
+            active2 := 0
 
 if TPs.size() > 0
     if active == 0 or (active != 0 and active[1] != 0 and trigger == 1)
@@ -233,7 +232,7 @@ if barstate.islast
          data_table,
          column   = 0,
          row      = 2,
-         text     = "TP1 Win Rate",
+         text     = "TP1 Reach · gross",
          text_size= size.tiny,
          text_color = chart.fg_color
      )
@@ -251,7 +250,7 @@ if barstate.islast
          data_table,
          column   = 0,
          row      = 3,
-         text     = "TP2 Win Rate",
+         text     = "TP2 Reach · gross",
          text_size= size.tiny,
          text_color = chart.fg_color
      )
@@ -270,7 +269,7 @@ if barstate.islast
          data_table,
          column   = 0,
          row      = 4,
-         text     = "TP3 Win Rate",
+         text     = "TP3 Reach · gross",
          text_size= size.tiny,
          text_color = chart.fg_color
      )

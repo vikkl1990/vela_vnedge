@@ -305,3 +305,5 @@ export function useScreenCancel() {
 
 export const useFundingGuard = () => useQuery({queryKey:['funding-guard'],queryFn:api.fundingGuard,refetchInterval:5000,retry:1})
 export const useAllocationAudit = () => useQuery({queryKey:['allocation-audit'],queryFn:api.allocationAudit,staleTime:30_000,refetchInterval:60_000,retry:1})
+
+export const useScannerPipeline = () => useQuery({queryKey:['scanner-pipeline'],queryFn:api.scannerPipeline,refetchInterval:30000,retry:1})
