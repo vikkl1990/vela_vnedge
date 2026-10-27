@@ -171,6 +171,7 @@ export class ScannerEngine extends EventEmitter {
   /** All (symbol, tf) pairs any active scanner needs. */
   requiredSeries(): Array<{ symbol: string; tf: string }> {
     const set = new Map<string, { symbol: string; tf: string }>();
+    for(const r of this.cfgRef().paper.entryAlignments??[])set.set(`${r.symbol}:${r.contextTf}`,{symbol:r.symbol,tf:r.contextTf});
     for (const s of this.registry.all()) {
       if (!this.isActive(s)) continue;
       for (const { symbol, tf } of this.pairsFor(s.id)) set.set(`${symbol}:${tf}`, { symbol, tf });

@@ -35,7 +35,7 @@ export interface SignalFunnel { entries: number; opened: number; pending: number
 export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | 'cost' | 'market' | 'quote' | 'other' {
   if (action === 'opened' || action === 'reversed') return 'opened';
   if (action.startsWith('pending')) return 'pending';
-  if (action.startsWith('rejected:risk regime')) return 'regime';
+  if (action.startsWith('rejected:risk regime') || action.startsWith('rejected:entry alignment')) return 'regime';
   if (action.startsWith('rejected:stop too tight')) return 'cost';
   if (action.startsWith('rejected:risk market')) return 'market';
   if (action.startsWith('rejected:unpriceable')) return 'quote';

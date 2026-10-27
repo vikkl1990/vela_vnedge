@@ -1,0 +1,44 @@
+AINUSD / Trend Impulse 15m confirmed 1h alignment, 27 October 2026
+
+Authorized after reviewing repeated AIN shorts. One explicit rule is added
+under paper.entryAlignments for trend-impulse-channels-zeiierman, AINUSD,
+15m; context 1h, EMA21. Long requires the latest closed 1h close above a
+rising EMA; short requires below a falling EMA. Flat, missing, stale or
+gapped context refuses entry. Forming/future context bars are excluded.
+No per-day two-stop rule is enabled. Other scanner/market/timeframe tuples,
+including the source's ETH/DOGE allocations, do not match this rule.
+
+The same pure rule gates account and shadow entry intent and deferred
+market/limit fills, including orders pending across restart. A refused
+reversal keeps the held position. Existing position exits are not gated.
+Context series are explicitly included in scanner candle dependencies.
+Account/Shadow refusal reporting classifies alignment as a regime refusal.
+Missing context is fail-closed, so a data outage cannot admit an entry.
+
+runBacktest applies the rule on signal and fill, using explicit context
+candles when provided or only complete higher-frame buckets otherwise.
+Entry decision time is no earlier than the signal close. A reversal asks
+before closing the position it replaces. Partial aggregation buckets are
+excluded and bars not yet closed at decision time cannot supply direction.
+
+Parity: the original 28-day study, with a chronological 14/14-day split,
+was rerun through the production rule. Both actual context history and
+entry-frame aggregation match the original 1h alignment exactly:
+  lower crossing: early 18 trades/+4.8086R; later 22/+6.2007R, four SLs.
+  higher crossing: early 16/+5.7611R; later 19/+7.1710R, two SLs.
+Current baseline later low-crossing result was 61 trades/+10.2640R and
+18 SLs. The filter reduces trade count and sometimes total R; these
+retrospective results are not a promise of forward profit. Historical
+funding/depth and account portfolio competition were not reconstructed.
+
+Regression coverage: confirmed direction, future/forming bar exclusion,
+stale/missing/flat/gapped context, exact tuple scope, config validation,
+account/shadow entry and exit behavior, held reversal preservation,
+deferred market/limit fill rechecks and backtest aggregation. 572 tests
+and server TypeScript checks passed before deployment.
+
+Configuration is limited to one entryAlignments rule; the prior 3% equity
+modeled stop-risk cap, current 6x cost rule, fees, stop prices, existing
+allocations and daily directional policy are retained. Runtime trade
+fingerprints include the paper configuration, so the new rule creates a
+separate settings cohort. No historical trade is reclassified or removed.

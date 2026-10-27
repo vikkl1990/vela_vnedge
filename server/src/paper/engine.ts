@@ -1,4 +1,5 @@
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
+import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
 import type { EntryExecution } from './costs.ts';
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
@@ -91,6 +92,11 @@ export class PaperEngine extends EventEmitter {
   private pending = new Map<number, PendingEntry>();
   /** Portfolio risk layer; set by the composition root (app.ts). */
   risk: RiskGate | null = null;
+  alignmentBars?: (symbol:string,tf:string)=>import('../data/candleStore.ts').Bar[];
+  private alignmentBlock(cell:{scannerId:string;symbol:string;tf:string},side:Side,at:number):string|null {
+    const rule=alignmentRule(this.paper,cell.scannerId,cell.symbol,cell.tf);
+    return rule?alignmentRefusal(rule,side,this.alignmentBars?.(cell.symbol,rule.contextTf)??[],at):null;
+  }
   /**
    * How entry prices were obtained since start. `slippage` means no fresh top-of-book was
    * available and the configured slippage model priced the fill; a high share of those means
@@ -309,6 +315,8 @@ export class PaperEngine extends EventEmitter {
     // the market's and the scanner's own rules, so a stop width they ask for is used at entry and
     // then carried on the position for the rest of the trade (decision 43)
     const cfg = exitConfigFor(this.paper, ctx.symbol, this.scannerExit?.(ctx.scannerId, ctx.at), ctx.tf);
+    const alignment=this.alignmentBlock(ctx,ev.side!,ctx.at);
+    if(alignment)return {action:'rejected',reason:alignment};
     if (ctx.sizeScale !== undefined && !(Number.isFinite(ctx.sizeScale) && ctx.sizeScale > 0 && ctx.sizeScale <= 1)) return {action:'rejected',reason:'invalid entry size scale'};
     const exchangeBlock = this.entryBlock?.(ctx.symbol, ctx.at);
     if (exchangeBlock) return { action: 'rejected', reason: exchangeBlock };
@@ -485,6 +493,8 @@ export class PaperEngine extends EventEmitter {
       return null;
     };
     if (pe.features?.copy_pilot && (!this.cfgRef().incubator.mirror?.enabled || !this.cfgRef().incubator.mirror?.pilot || this.cfgRef().execution.mode !== 'paper')) return cancel('copy pilot disabled');
+    const alignment=this.alignmentBlock(pe,pe.side,at);
+    if(alignment)return cancel(alignment);
     const exchangeBlock = this.entryBlock?.(pe.symbol, at);
     if (exchangeBlock) return cancel(exchangeBlock);
     // decision 190: expiry is part of the fill, judged on the exchange's event time; a message that arrives more than
@@ -528,6 +538,8 @@ export class PaperEngine extends EventEmitter {
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
+    const alignment=this.alignmentBlock(pe,pe.side,receivedAt);
+    if(alignment)return cancel(alignment);
     if (pe.features?.copy_pilot && (!this.cfgRef().incubator.mirror?.enabled || !this.cfgRef().incubator.mirror?.pilot || this.cfgRef().execution.mode !== 'paper')) return cancel('copy pilot disabled');
     const exchangeBlock = this.entryBlock?.(pe.symbol, receivedAt);
     if (exchangeBlock) return cancel(exchangeBlock);

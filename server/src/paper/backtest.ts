@@ -1,4 +1,5 @@
 import { crossingSlippageBps } from './costs.ts';
+import {alignmentRule,alignmentRefusal,aggregateContext} from './entryAlignment.ts';
 /**
  * In-memory backtest of one scanner over a candle history using the exact same fill logic
  * as the live paper engine (bar-level fills: SL before TP on the same bar).
@@ -36,6 +37,8 @@ export interface BacktestInput {
   scannerExitResolved?: boolean;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
   subBars?: Bar[];
+  /** Optional actual context-frame candles; complete entry-frame aggregation is the fallback. */
+  alignmentBars?: Record<string, Bar[]>;
   /**
    * Entry model under test (decision 95). `maxSignalBarAtr`: refuse a signal whose bar already ran
    * that many ATRs (the impulse is spent). `pullbackAtr`: do not enter at the signal bar's close;
@@ -101,6 +104,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     return applyBar(pos, bar, config, ...args);
   };
   const atr = atrSeries(bars, 14);
+  const align=alignmentRule(cfg,inp.scannerId,inp.symbol,inp.tf);
+  const alignBars=align?(inp.alignmentBars?.[align.contextTf]??aggregateContext(bars,inp.tf,align.contextTf)):[];
+  const alignmentBlock=(side:'long'|'short',at:number)=>align?alignmentRefusal(align,side,alignBars,at):null;
   const idxByTime = new Map<number, number>();
   bars.forEach((b, i) => idxByTime.set(b.time, i));
   const byBar = new Map<number, ScanEvent[]>();
@@ -141,6 +147,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const limitHit = (side: string, limit: number, b: { high: number; low: number }) => side === 'long' ? (through ? b.low < limit : b.low <= limit) : (through ? b.high > limit : b.high >= limit);
   /** Whether a market entry at `price` would be admitted (levels, fees, size), without opening it: a reversal asks before it closes the held trade. */
   const admissible = (price: number, ev: ScanEvent, sigI: number): boolean => {
+    if(alignmentBlock(ev.side!,bars[sigI].time+tfMs))return false;
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) return false;
     if (checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0)) return false;
@@ -148,6 +155,8 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   };
   /** Open a position at `price` for signal `ev` raised on bar `sigI`; false when sizing or fees refuse it. */
   const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean): boolean => {
+    const aligned=alignmentBlock(ev.side!,Math.max(at,bars[sigI].time+tfMs));
+    if(aligned){refuse(aligned);return false;}
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) { refuse(lv.error); return false; }
     const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0, { maker });
@@ -239,6 +248,8 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     }
     for (const ev of evs) {
       if (ev.kind !== 'entry' || !ev.side) continue;
+      const aligned=alignmentBlock(ev.side,bar.time+tfMs);
+      if(aligned){refuse(aligned);continue;}
       const blocked = gateMode === 'off' ? null : trendGateReason(ev.side, gateTrend[i], gateMode);
       if (blocked) { rejected['against the trend'] = (rejected['against the trend'] ?? 0) + 1; continue; }
       if (inp.chopGate && chopBlocked(bars, i, inp.chopGate)) { rejected['choppy'] = (rejected['choppy'] ?? 0) + 1; continue; }

@@ -197,6 +197,7 @@ export class App {
     });
     this.entryDepth=new EntryDepthGate({cfg,book:async symbol=>await this.rest.orderbook(symbol,25),save:state=>this.db.kvSet('risk.entryDepth',state)});
     wireEntryDepth(this.paper,this.shadow,this.entryDepth);
+    for(const book of [this.paper,this.shadow])book.alignmentBars=(symbol,tf)=>this.candles.get(symbol,tf,{closedOnly:true});
     this.risk = new RiskManager({ db: this.db, paper: this.paper, candles: this.candles, cfgRef: cfg, marketGate: this.marketGate });
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
@@ -775,7 +776,7 @@ export class App {
       if (r.stage === 'live' || r.stage === 'demote_proposed') c.live++; else if (r.stage === 'shadow' || r.stage === 'proposed') c.shadow++; else if (r.stage === 'candidate') c.candidate++; else if (r.stage === 'tracked') c.tracked++;
     }
     const refusals = new Map<string, Map<string, number>>();
-    const classify = (a: string) => /stop too tight|cost rule|round trip/i.test(a) ? 'cost rule' : /regime/i.test(a) ? 'regime gate' : /market gate|dead:|thin|costly book|not paying/i.test(a) ? 'market gate' : /max .*positions|burst|cooldown|one at a time/i.test(a) ? 'position caps' : /daily loss|halt|kill/i.test(a) ? 'halt' : /own stop/i.test(a) ? 'script stop' : /unpriceable/i.test(a) ? 'no quote' : 'other';
+    const classify = (a: string) => /stop too tight|cost rule|round trip/i.test(a) ? 'cost rule' : /regime|entry alignment/i.test(a) ? 'regime gate' : /market gate|dead:|thin|costly book|not paying/i.test(a) ? 'market gate' : /max .*positions|burst|cooldown|one at a time/i.test(a) ? 'position caps' : /daily loss|halt|kill/i.test(a) ? 'halt' : /own stop/i.test(a) ? 'script stop' : /unpriceable/i.test(a) ? 'no quote' : 'other';
     for (const s of this.db.all<{ symbol: string; tf: string; action: string | null }>('SELECT symbol, tf, action FROM signals WHERE at >= ? AND kind = ?', since, 'entry')) {
       if (!tfs.includes(s.tf)) continue;
       const c = cell(s.symbol, s.tf); c.signals++;
