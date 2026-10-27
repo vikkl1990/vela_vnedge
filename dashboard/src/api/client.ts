@@ -1,4 +1,5 @@
 import type {
+  ReclaimTrialsView,
   ExecutionStatus,
   RiskState,
   IncubatorPair,
@@ -191,6 +192,7 @@ export const api = {
   allocationAudit: () => get<AllocationAudit>('/analytics/allocations'),
   analytics: () => get<Analytics>('/analytics'),
   dailyReport: (days = 30) => get<DailyRow[]>(`/reports/daily?days=${days}`),
+  reclaimTrials: () => get<ReclaimTrialsView>('/reclaim-trials'),
   trackers: () => get<TrackerView[]>('/trackers'),
   learning: () => get<Learning>('/learning'),
   ml: () => get<MlSnapshot>('/ml'),

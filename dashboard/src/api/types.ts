@@ -866,3 +866,15 @@ export interface AllocationAudit {
  rows: Array<{ scannerId: string; scannerName: string; symbol: string; tf: string; verdict: string; account: {recent: AllocationStats;prior: AllocationStats}; shadow: {recent: AllocationStats;prior: AllocationStats} }>;
  execution: Array<{position_id:number;book:number;symbol:string;tf:string;entry_at:number;source:string|null;spread_bps:number|null;quote_at:number|null;quote_exchange_at:number|null;entry_fee:number;expected_exit_fee:number;signal_delay_ms:number|null;depth_state:string;depth_lag_ms:number|null;depth_vwap:number|null;depth_impact_bps:number|null;depth_coverage:number|null}>;
 }
+
+export interface ReclaimTrialsView {
+  at: number; auditStartedAt: number | null;
+  trials: Array<{
+    rule: { scannerId: string; symbol: string; tf: string; sizeScale: number; maxDailyEntries: number };
+    active: boolean; state: string; counts: Record<string, number>;
+    pending: Array<{id: number; phase: string; expiresAt: number | null; price: number | null}>;
+    open: number; usedToday: number; closed: number; net: number; sumR: number;
+    events: Array<{at: number; event: string; reason: string | null; signal_id: number | null}>;
+    lastScan: {at: number; barTime: number; note: string | null} | null;
+  }>;
+}

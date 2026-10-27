@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {Db} from '../db.ts';
 import {DEFAULT_CONFIG,validateConfig} from '../config.ts';
 import {PaperEngine} from './engine.ts';
+import {reclaimStatus} from './reclaimAudit.ts';
 import type {Bar} from '../data/candleStore.ts';
 const ID='smart-money-breakout-signals', M=60_000;
 function setup(t:any,scale=1/3,book=0){
@@ -65,4 +66,31 @@ test('reclaim is scoped to one account cell and validates bounded settings',t=>{
   const shadow=setup(t,1/3,2);assert.equal(shadow.e.onEntry(shadow.ev,shadow.ctx).reason,'awaiting tape fill');
   assert.ok(!validateConfig(a.cfg).some(x=>x.includes('reclaimTrials')));
   a.cfg.paper.reclaimTrials![0].sizeScale=2;assert.ok(validateConfig(a.cfg).some(x=>x.includes('reclaimTrials')));
+});
+
+test('reclaim audit persists the funnel and reports only filled trial outcomes for the current settings',t=>{
+  const a=setup(t), status=()=>reclaimStatus(a.db,a.cfg,a.e,a.ctx.at).trials[0];
+  assert.equal(status().state,'Waiting for a fresh setup');
+  a.e.onEntry(a.ev,a.ctx);assert.equal(status().counts.setup,1);
+  assert.equal(status().state,'Waiting for pullback');
+  a.confirm();assert.equal(status().state,'Maker order resting');
+  assert.equal(status().counts.pullback,1);assert.equal(status().counts.confirmed,1);assert.equal(status().counts.ordered,1);
+  const order=a.e.pendingEntries()[0];a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
+  assert.equal(status().counts.filled,1);assert.equal(status().open,1);
+  a.e.onScriptExit(ID,'SOLUSD','15m','close',101,order.at+2000,'both','long');
+  const row=a.db.get<{realized_pnl:number;fees:number;risk_amount:number}>('SELECT realized_pnl,fees,risk_amount FROM positions WHERE id=?',order.id)!;
+  assert.equal(status().closed,1);assert.equal(status().net,row.realized_pnl-row.fees);
+  assert.equal(status().sumR,(row.realized_pnl-row.fees)/row.risk_amount);
+  a.cfg.paper.reclaimTrials![0].pullbackAtr=.2;
+  assert.equal(status().closed,0);assert.equal(status().counts.filled,undefined);
+});
+test('reclaim audit retains cancellation reasons after restart and refuses blocked confirmations',t=>{
+  const a=setup(t);a.e.onEntry(a.ev,a.ctx);a.confirm();
+  const e=new PaperEngine(a.db,()=>a.cfg);
+  const v=reclaimStatus(a.db,a.cfg,e,a.ctx.at).trials[0];
+  assert.equal(v.counts.cancelled,1);assert.match(v.events[0].reason!,/restart/);
+  assert.equal(v.usedToday,1);assert.equal(v.pending.length,0);
+  const b=setup(t);b.e.onEntry(b.ev,b.ctx);b.e.risk={gate:()=>({reject:'paused',leverageMult:1}),exposureCheck:()=>null};b.confirm();
+  const rejected=reclaimStatus(b.db,b.cfg,b.e,b.ctx.at).trials[0];
+  assert.equal(rejected.counts.refused,1);assert.match(rejected.events[0].reason!,/paused/);
 });

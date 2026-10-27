@@ -80,11 +80,28 @@ function Tracker({ v }: { v: TrackerView }) {
   )
 }
 
+function ReclaimTrials() {
+  const q = useQuery({ queryKey: ['reclaim-trials'], queryFn: api.reclaimTrials, refetchInterval: 15_000 })
+  return <QueryState {...q} data={q.data} empty="No paper trials configured." onRetry={() => q.refetch()}>
+    {(data) => <>{data.trials.map((t) => <Panel key={`${t.rule.scannerId}|${t.rule.symbol}|${t.rule.tf}`} title={`Paper account trial · ${t.rule.symbol} · ${t.rule.tf}`}>
+      <p><Link to={`/scanners/${t.rule.scannerId}`}>{t.rule.scannerId}</Link> · <strong>{t.state}</strong></p>
+      <p className="muted small">{Math.round(t.rule.sizeScale * 100)}% of normal size · {t.usedToday}/{t.rule.maxDailyEntries} daily order placements used (UTC) · {t.open} open</p>
+      <div className="stat-strip">{[['setup','Setups'],['pullback','Pullbacks'],['confirmed','Confirmed'],['ordered','Orders'],['filled','Fills'],['cancelled','Cancelled'],['refused','Refused']].map(([key,label]) => <span key={key}><span className="stat-k">{label}</span> <span className="mono">{t.counts[key] ?? 0}</span></span>)}</div>
+      <p>{t.closed ? `${t.closed} closed · ${r(t.net, 2)} USD net · ${r(t.sumR, 2)}R` : 'No closed trial trades yet.'}</p>
+      <p className="muted small">Last scan: {t.lastScan ? `${timeAgo(t.lastScan.at)} · ${t.lastScan.note ?? 'scan completed'}` : 'not recorded yet'}</p>
+      {t.pending.map((p) => <p className="small" key={p.id}>{p.phase === 'order' ? `Maker limit ${p.price}` : 'Setup pending'} · expires {p.expiresAt ? new Date(p.expiresAt).toLocaleString() : '–'}</p>)}
+      <details><summary>Recent trial events</summary>{t.events.length ? <ul>{t.events.map((e,i) => <li key={i}>{new Date(e.at).toLocaleString()} · {e.event}{e.reason ? ` · ${e.reason}` : ''}</li>)}</ul> : <p className="muted small">No recorded events yet.</p>}</details>
+      <p className="muted small">Counts and closed results use the current trial settings, from audit start {data.auditStartedAt ? new Date(data.auditStartedAt).toLocaleString() : 'pending'}. Earlier activity is not reconstructed. Cancelled includes setups and orders.</p>
+    </Panel>)}</>}
+  </QueryState>
+}
+
 export function Trackers() {
   const q = useQuery({ queryKey: ['trackers'], queryFn: api.trackers, refetchInterval: 60_000, staleTime: 30_000 })
   return (
     <div className="page">
       <PageTitle pre="Watched," accent="not judged." sub="Shadow-paper results for each named set of scanners, markets and timeframes, counted from its start date. Direct paper-account allocations are identified below and managed in Incubator and Scanners." />
+      <ReclaimTrials />
       <QueryState {...q} data={q.data} empty="No tracker yet." onRetry={() => q.refetch()}>
         {(list) => list.length === 0 ? <Empty label="No tracker yet." /> : <>{[...list].sort((a, b) => b.tracker.createdAt - a.tracker.createdAt).map((v) => <Tracker key={v.tracker.id} v={v} />)}</>}
       </QueryState>
