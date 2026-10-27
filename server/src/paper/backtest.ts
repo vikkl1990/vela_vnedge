@@ -280,7 +280,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const em = inp.entry;
       if (em?.maxSignalBarAtr && atr[i] > 0 && (bar.high - bar.low) / atr[i] > em.maxSignalBarAtr) { refuse('chased'); continue; }
       if (em?.pullbackAtr != null && em.pullbackAtr >= 0 && atr[i] > 0) {
-        const limit = roundTick(ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i], inp.tickSize);
+        const raw = ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i];
+        // Match passive live planning; historical candles have no contemporaneous bid/ask.
+        const limit = inp.tickSize > 0 ? Number(((ev.side === 'long' ? Math.floor(raw / inp.tickSize + 1e-9) : Math.ceil(raw / inp.tickSize - 1e-9)) * inp.tickSize).toPrecision(14)) : raw;
         pending = { ev, limit, sigI: i, expires: i + Math.max(1, em.pullbackBars ?? 3) };
         continue;
       }

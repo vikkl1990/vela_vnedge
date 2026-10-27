@@ -1,0 +1,17 @@
+Scalping execution correction, 27 October 2026
+
+Problem: a planned resting maker limit was admitted at the executable market quote before its actual price was calculated. Stop levels, fee viability, size, depth and exposure therefore described a different order. A signal reference already across the book could also be recorded as a maker order.
+
+Correction: retain fresh-quote validation, calculate the passive tick-aligned intended limit first, then run all admission calculations at that price. Long limits round down, short limits round up. A crossing signal reference is moved behind the current opposite quote. Fill-time checks remain mandatory. The backtest uses the same directional rounding; historical candles cannot reconstruct contemporaneous quotes or queue position. Existing positions, configured timeframe enrollment, fees, caps and alignment rules are unchanged.
+
+Scalp research protocol: BTC/ETH/SOL, 15m confirmed events from Trend Impulse Channels, Smart Money Breakout Signals and Structure-Anchored VWAP. Compare market entry, 0.1 and 0.25 ATR maker pullbacks expiring after one signal bar, and 0.1 ATR maker with 1/1.5/2R partial exits (50/25/25). Use cached 56-day exchange histories ending 25 October, 28/28 chronological split, current source and reading rules, account-compatible ATR stops, existing regime and 6x cost policy, full modeled commissions, 0.02/0.08 percent round-trip crossing assumptions and extra 3bp stress. These scenarios are independent strategies, not a capital-constrained portfolio. Previously studied history is not pristine out-of-sample evidence. Historical depth, exact funding and maker queue position are unavailable.
+
+Next algorithm to implement and validate, rather than relaxing a global gate:
+1. Keep the scanner's confirmed 15m setup as a time-limited directional opportunity, not an immediate entry.
+2. Observe completed 1m/3m bars after that setup. Require a pullback and then a reclaim/rejection trigger; use only information available when the trigger closes. Expire an opportunity after its defined setup window. Do not synthesize historical account fills.
+3. Place a passive order at the executable trigger price with a short TTL and explicit cancellation when setup structure invalidates. No automatic market chase on expiry. Size from that trigger's structural stop and modeled risk cap.
+4. Choose a reachable target from local structure and observed volatility, then evaluate expected net payoff including entry, exit and likely funding. A high stop-distance/fee ratio alone does not establish expected profit. Never widen a stop just to pass it.
+5. Test the exit policy as a whole: partial targets, trail activation and a time-based no-progress exit. A tighter target has little effect if the existing trail exits before it. Keep swing exits separate.
+6. Compare paired opportunities, fills, missed winners, adverse excursion, net R, drawdown, cost, holding time and throughput, chronologically and under extra crossing costs. Forward-paper validation must precede broad account enrollment.
+
+This commit repairs the existing execution path. It does not claim that a new scalp strategy is profitable or activate unvalidated 15m maker enrollment.

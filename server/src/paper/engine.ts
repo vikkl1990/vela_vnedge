@@ -352,7 +352,19 @@ export class PaperEngine extends EventEmitter {
     const reference = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
     const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
     if ('reject' in quoted) return refused(`unpriceable: ${quoted.reject}`);
-    const price = quoted.price;
+    // Admit a resting order at its intended price, not at a market price it will never pay.
+    const limitOffset = le?.atrByTf?.[ctx.tf] ?? le?.atr ?? 0;
+    let limitPrice: number | undefined;
+    if (willRestLimit) {
+      const tick = ctx.market.tickSize;
+      if (!(tick > 0)) return refused('maker entry requires a positive tick size');
+      const raw = ev.side === 'long' ? reference - limitOffset * ctx.atr! : reference + limitOffset * ctx.atr!;
+      // A stale signal reference can cross the current quote. Keep the order passive.
+      const passive = quoted.quoted ? (ev.side === 'long' ? Math.min(raw, quoted.price - tick) : Math.max(raw, quoted.price + tick)) : raw;
+      limitPrice = Number(((ev.side === 'long' ? Math.floor(passive / tick + 1e-9) : Math.ceil(passive / tick - 1e-9)) * tick).toPrecision(14));
+      if (!(limitPrice > 0 && Number.isFinite(limitPrice))) return refused('invalid maker entry price');
+    }
+    const price = limitPrice ?? quoted.price;
     const entryContext: FillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return refused(levels.error);
@@ -387,13 +399,10 @@ export class PaperEngine extends EventEmitter {
     }
     // decision 185: on the timeframes named, the entry rests as a maker limit back from the signal price
     if (willRestLimit && le) {
-      const tick = ctx.market.tickSize > 0 ? ctx.market.tickSize : 0;
-      const off = le.atrByTf?.[ctx.tf] ?? le.atr;
-      const raw = ev.side === 'long' ? reference - off * ctx.atr! : reference + off * ctx.atr!;
-      const limitPrice = tick ? Math.round(raw / tick) * tick : raw;
+      const off = limitOffset;
       const id = this.nextId();
       const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
-        limit: { price: limitPrice, expiresAt: ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
+        limit: { price: limitPrice!, expiresAt: ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
       this.pending.set(id, pe);
       this.emit('pending', { type: 'placed', entry: pe });   // decision 190: the tape audit registers the order at once
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, limitPrice, pe.at, pe.signalId, JSON.stringify({ limitEntry: pe }), id);

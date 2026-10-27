@@ -101,3 +101,37 @@ test('decision 190: a lapsed limit cannot fill, even before housekeeping runs, a
   fresh.engine.onTrade('ETHUSD', 99.3, 1, fresh.at + 60_000, fresh.at + 61_000);
   assert.equal(fresh.engine.openPositions().length, 1, 'the same print on time fills');
 });
+
+test('maker admission uses the intended limit for fees, levels and depth, rather than the ask', () => {
+  const {engine, enter} = setup('4h', {useSpread: true, requireQuote: true, minRiskFeeRatio: 32});
+  engine.quotes = {executable: () => 120};
+  let request: any;
+  engine.entryDepthGate = r => {request = r; return {};};
+  const d = enter();
+  assert.equal(d.action, 'pending', d.reason);
+  assert.equal(request.price, 99.4);
+  assert.equal(request.sl, 96.4);
+  assert.equal(request.maker, true);
+  assert.equal(engine.pendingEntries()[0].limit?.price, 99.4);
+});
+
+test('maker planning stays passive after the market moves across the signal and rounds away from crossing', () => {
+  for (const side of ['long','short'] as const) {
+    const {engine, enter} = setup();
+    const quote = side === 'long' ? 98.007 : 102.003;
+    engine.quotes = {executable: () => quote};
+    assert.equal(enter(side).action, 'pending');
+    const limit = engine.pendingEntries()[0].limit!.price;
+    assert.equal(limit, side === 'long' ? 97.99 : 102.02);
+    assert.ok(side === 'long' ? limit < quote : limit > quote);
+  }
+});
+
+test('maker planning still requires a fresh quote when configured', () => {
+  const {engine, enter} = setup('4h', {useSpread: true, requireQuote: true});
+  engine.quotes = {executable: () => null};
+  const d = enter();
+  assert.equal(d.action, 'rejected');
+  assert.match(d.reason!, /no executable/);
+  assert.equal(engine.pendingEntries().length, 0);
+});
