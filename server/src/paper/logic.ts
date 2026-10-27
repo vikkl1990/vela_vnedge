@@ -305,11 +305,9 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
     : s.cfg.sizingMode === 'quality'
       ? Math.floor(s.equity * marginLeverage / notional)
       : Math.floor(s.equity * (s.cfg.riskPerTradePct / 100) / perContractRisk);
-  // Hard cap in EVERY mode: the loss at the stop may never exceed maxStopLossPct of equity.
-  // Quality sizing targets a notional, so without this a wide (ATR-fallback) stop can cost most of the account.
-  // Margin sizing (decision 144) is the exception: leverageForStop keeps liquidation beyond the stop, so a stop-out
-  // costs less than the margin put up, and the equity cap would shrink exactly the wide-stop trades that carry the book.
-  const stopCapPct = margin ? 0 : s.cfg.maxStopLossPct ?? 0;
+  // Margin funds a position; it does not define the loss budget. Apply the configured equity
+  // stop-risk ceiling in every sizing mode, independently of liquidation clearance.
+  const stopCapPct = s.cfg.maxStopLossPct ?? 0;
   const stopCapQty = stopCapPct > 0 ? Math.floor((s.equity * stopCapPct / 100) / perContractRisk) : Infinity;
   let qty = Math.min(desired, maxQty, stopCapQty);
   if (!Number.isFinite(qty) || qty < 1) {

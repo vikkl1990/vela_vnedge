@@ -698,15 +698,14 @@ test('decision 144: recordLeverage picks the tier from the cell record, and the 
   assert.equal(recordLeverage([...Array(30).fill(-1), ...Array(100).fill(5)], m).leverage, 5);
 });
 
-test('decision 144: margin sizing puts up marginPerTrade at the wanted leverage, capped by the market and the stop guard', () => {
+test('margin sizing respects the equity risk cap as well as margin, market leverage and liquidation clearance', () => {
   const c = { ...cfg, sizingMode: 'margin' as const, marginPerTrade: 150, maxLeverage: 50, maxStopLossPct: 2, minSizeShare: 0 };
   const base = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: c });
   assert.equal(base.qty, 7, '$150 at the base 5x is $750, 7 contracts at 100');
   assert.equal(base.marginLeverage, 5);
   const strong = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: c, wantedLeverage: 20 });
-  assert.equal(strong.qty, 30, '$150 at 20x is $3,000');
-  // the 2% equity stop cap would allow only 13 contracts at a 1.5% stop; margin sizing is bounded by the margin instead
-  assert.ok(strong.riskAmount > 1000 * 0.02);
+  assert.equal(strong.qty, 13, 'the 2% equity risk cap limits the requested 30 contracts');
+  assert.ok(strong.riskAmount <= 1000 * 0.02);
   const capped = sizeContracts(100, 98.5, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: c, wantedLeverage: 20, maxLeverage: 10 });
   assert.equal(capped.marginLeverage, 10, "Delta's ceiling caps the record's ask");
   const guarded = sizeContracts(100, 90, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: { ...c, liquidation: true }, wantedLeverage: 20, maintenanceMarginPct: 2.5 });
@@ -748,4 +747,24 @@ test('decision 160: a trail switched on mid-trade measures from that moment, not
   const fresh = openPosition({ id: 2, scannerId: 's', scannerName: 's', symbol: 'ARIAUSD', tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 90, tp: [], riskAmount: 100, levelsSource: 'atr-fallback', signalId: null, cfg: guarded, bt: false });
   trailStop(fresh, 113.3, guarded, undefined, 60_000);
   assert.equal(fresh.trailArmedAt, undefined, 'a trade that trailed from entry is untouched');
+});
+
+test('margin sizing enforces the equity stop-risk ceiling on a wide AIN-style short', () => {
+  const c = { ...DEFAULT_CONFIG.paper, sizingMode: 'margin' as const, marginPerTrade: 150, maxStopLossPct: 3, maxLeverage: 50, liquidation: true, slippageBps: 2, feeRatePct: 0.05, makerFeeRatePct: 0.02, feeTaxPct: 18, minSizeShare: 0, depthUsdPerBp: 0 };
+  const input = { equity: 1356.99, availableMargin: 1356.99, contractValue: 100, tickSize: 0.00001, maintenanceMarginPct: 2.5, maxLeverage: 20, wantedLeverage: 10, entryExecution: {quoted:true}, cfg: c };
+  const capped = sizeContracts(0.07495, 0.08137, input);
+  const uncapped = sizeContracts(0.07495, 0.08137, {...input,cfg:{...c,maxStopLossPct:0}});
+  assert.equal(uncapped.qty,151);
+  assert.ok(capped.qty>0 && capped.qty<uncapped.qty);
+  assert.ok(capped.riskAmount<=input.equity*0.03);
+  assert.equal(capped.marginLeverage,uncapped.marginLeverage,'stop/liquidation clearance is unchanged');
+  const perContract=uncapped.riskAmount/uncapped.qty;
+  assert.ok(capped.riskAmount+perContract>input.equity*0.03,'round down to the largest allowed integer quantity');
+});
+
+test('margin risk ceiling refuses an unaffordable contract and includes depth impact', () => {
+ const c={...cfg,sizingMode:'margin' as const,marginPerTrade:150,maxLeverage:10,maxStopLossPct:1,minSizeShare:0};
+ assert.equal(sizeContracts(100,90,{equity:100,contractValue:1,tickSize:0.01,cfg:c}).qty,0);
+ const sized=sizeContracts(100,95,{equity:1000,contractValue:0.01,tickSize:0.01,cfg:{...c,depthUsdPerBp:100}});
+ assert.ok(sized.qty>0);assert.ok(sized.riskAmount<=10);
 });

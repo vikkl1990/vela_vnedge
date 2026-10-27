@@ -1,0 +1,48 @@
+Major-pair account expansion and margin risk cap, 27 October 2026
+
+The top-pair observation grid did not allocate those pairs to the account.
+BTC/ETH native jobs ran successfully without new entry signals; SOL opened
+one copied 4h trade and two other copied opportunities hit the pilot cap.
+The new direct account cells are:
+  XRPUSD 1h: Pivot Channel Breaks; AI Predictive Flow (Zeiierman)
+  BNBUSD 1h: SuperTrend Cluster (Zeiierman)
+  BNBUSD 4h: Machine Learning RSI / AI Classification & Ranking (Zeiierman)
+  DOGEUSD 1h: Machine Learning RSI / AI Classification & Ranking (Zeiierman);
+               Trend Impulse Channels (Zeiierman)
+
+These are paper experiments, manually requested; they do not change the
+automatic promotion turnover floor, 6x cost policy, regime gates, final-size
+fresh depth gate, margin-per-trade or portfolio slot limits. BNB is below
+the automatic promotion floor at this snapshot; its small account notionals
+passed actual depth. No old signal is inserted to manufacture a trade.
+
+Evaluation: 28 complete days ending 27 October 00:00 UTC, chronological
+14/14 split, 14 enabled scanners x 3 pairs x 3 TFs, 252 crossing scenarios
+plus stressed reruns. Current source/reading, min ATR and regime gates,
+account stop-source restriction and configured entry/exit policy. Minute
+exits, warmup and independent-cell shadow risk sizing; not a portfolio
+return. Selected candidates have positive early and late R; six selected
+cells have zero changed events in prefix checks. Selection is retrospective
+and sample sizes are small. Historical funding/depth unavailable.
+
+Later-period low-crossing result / additional-friction result:
+  XRP Pivot 1h: 4 trades +1.47R / +1.35R
+  XRP AI Flow 1h: 3 trades +1.33R / +1.23R
+  BNB Cluster 1h: 5 trades +2.00R / +1.74R
+  BNB ML RSI 4h: 5 trades +1.11R / +0.99R
+  DOGE ML RSI 1h: 11 trades +4.79R / +4.46R
+  DOGE Trend Impulse 1h: 8 trades +2.46R / +2.24R
+The high-crossing BNB Cluster scenario refuses all entries, rather than
+trading through its fee gate. Other selected cells retain positive later
+results under the higher crossing scenario. These are not trade forecasts.
+
+Margin-mode risk gap: sizeContracts previously assigned stopCapPct=0 in
+margin mode. The configured maxStopLossPct now applies in every sizing
+mode, including depth-impact sizing and pending-fill recalculation through
+the shared function. Quantity rounds down; stop location and liquidation
+clearance are preserved. Existing positions are not resized by this change.
+The AIN regression reproduces the requested 151-contract uncapped order,
+then verifies capped risk <=3% of $1,356.99 equity. Tests also cover a risk
+budget below one contract and impact-inclusive risk. The old margin test
+now asserts the equity ceiling instead of expecting it to be bypassed.
+This caps modeled stop risk; price gaps and unmodeled costs can exceed it.

@@ -18,7 +18,7 @@ export interface PaperConfig {
   /**
    * `risk`: size so the stop loses riskPerTradePct of equity. `quality`: notional = equity × leverage, leverage scaled
    * from minLeverage (no/low score) to maxLeverage (score 100). `margin` (decision 144): a fixed `marginPerTrade` at a
-   * leverage chosen from the cell's own shadow record (`marginLeverage`); the margin, not maxStopLossPct, bounds the loss.
+   * leverage chosen from the cell's own shadow record (`marginLeverage`). maxStopLossPct caps modeled stop risk in all modes.
    */
   sizingMode: 'risk' | 'quality' | 'margin';
   /** Decision 146: the account refuses entries whose stop the scanner placed itself (levels source script or mixed). */
