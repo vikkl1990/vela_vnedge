@@ -24,10 +24,11 @@ function Tracker({ v }: { v: TrackerView }) {
   }).sort((a, b) => b.all.sumR - a.all.sumR), [v, t])
   const traded = useMemo(() => v.cells.filter((c) => c.trades > 0).sort((a, b) => b.sumR - a.sumR), [v])
   const silent = v.cells.length - traded.length
+  const allocated = v.cells.filter((c) => c.stage === 'live' || c.stage === 'demote_proposed').length
   return (
     <>
       <h2>{t.name}</h2>
-      <p className="muted small">Watch-only paper tracking · account copying off</p>
+      <p className="muted small">Forward paper results · {allocated ? `${allocated} ${allocated === 1 ? 'cell allocated' : 'cells allocated'} to the paper account` : 'No direct account allocation'}</p>
       <div className="stat-strip" role="list">
         <span role="listitem"><span className="stat-k">Cells</span> <span className="mono">{v.totals.cells}</span> <span className="muted">· {v.totals.trading} have traded</span></span>
         <span role="listitem"><span className="stat-k">Trades</span> <span className="mono">{v.totals.trades}</span> <span className="muted">· {v.totals.open} open</span></span>
@@ -83,7 +84,7 @@ export function Trackers() {
   const q = useQuery({ queryKey: ['trackers'], queryFn: api.trackers, refetchInterval: 60_000, staleTime: 30_000 })
   return (
     <div className="page">
-      <PageTitle pre="Watched," accent="not judged." sub="Sets of scanners, markets and timeframes the shadow book trades for you to follow, with the fleet's engine, gates and costs. The incubator never promotes or retires them and the account never copies them." />
+      <PageTitle pre="Watched," accent="not judged." sub="Shadow-paper results for each named set of scanners, markets and timeframes, counted from its start date. Direct paper-account allocations are identified below and managed in Incubator and Scanners." />
       <QueryState {...q} data={q.data} empty="No tracker yet." onRetry={() => q.refetch()}>
         {(list) => list.length === 0 ? <Empty label="No tracker yet." /> : <>{[...list].sort((a, b) => b.tracker.createdAt - a.tracker.createdAt).map((v) => <Tracker key={v.tracker.id} v={v} />)}</>}
       </QueryState>
