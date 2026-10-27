@@ -773,6 +773,8 @@ export class PaperEngine extends EventEmitter {
   }
 
   onScriptExit(scannerId: string, symbol: string, tf: string, exitType: ExitType, price: number | undefined, at: number, exitMode: ExitMode, side?: Side): Position | undefined {
+    // Level-only scanners ignore script exits for both pending setups and held positions.
+    if (exitMode === 'levels') return undefined;
     for (const pe of [...this.pending.values()]) if (pe.features?.reclaim_trial && pe.scannerId===scannerId && pe.symbol===symbol && pe.tf===tf && (!side||pe.side===side)) this.cancelPending(pe.id,'script cancelled reclaim');
     const pos = this.findOpen(scannerId, symbol, tf);
     if (!pos) return undefined;

@@ -92,3 +92,20 @@ test('common conservative maker control charges a fill-minute stop too', () => {
   assert.equal(r.trades[0].exitAt,r.trades[0].entryAt);
   assert.ok(r.trades[0].rMultiple!<0);
 });
+
+test('reclaim replay respects level-only exits while script and both modes cancel pending setups', () => {
+  const inp=replay();
+  const entry=inp.events[0];
+  // Keep the setup alive across a signal bar so the next bar's exit can cancel it.
+  inp.entry.reclaim.setupMinutes=30;
+  for(let j=21*15;j<22*15;j++)inp.subBars[j]=candle(j,100,100.1,99.9,100);
+  inp.subBars[22*15]={...pullback,time:T+22*15*M};
+  inp.subBars[22*15+1]={...reclaim,time:T+(22*15+1)*M};
+  inp.subBars[22*15+2]={...fill,time:T+(22*15+2)*M};
+  const exit={...entry,barTime:inp.bars[21].time,barIndex:21,kind:'exit' as const,exitType:'close' as const};
+  for(const exitMode of ['levels','script','both'] as const){
+    const r=runBacktest({...inp,exitMode,events:[entry,exit]});
+    assert.equal(r.entries,exitMode==='levels'?1:0,exitMode);
+    assert.equal(r.entryFlow?.['script cancelled setup']??0,exitMode==='levels'?0:1,exitMode);
+  }
+});

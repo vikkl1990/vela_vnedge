@@ -94,3 +94,22 @@ test('reclaim audit retains cancellation reasons after restart and refuses block
   const rejected=reclaimStatus(b.db,b.cfg,b.e,b.ctx.at).trials[0];
   assert.equal(rejected.counts.refused,1);assert.match(rejected.events[0].reason!,/paused/);
 });
+
+test('level-only exits preserve reclaim setups, resting orders and positions; script exits still cancel',t=>{
+  for(const mode of ['levels','script','both'] as const){
+    for(const phase of ['setup','order'] as const){
+      const a=setup(t);a.e.onEntry(a.ev,{...a.ctx,exitMode:mode});
+      if(phase==='order')a.confirm();
+      a.e.onScriptExit(ID,'SOLUSD','15m','close',100,a.ctx.at+1000,mode,'short');
+      assert.equal(a.e.pendingEntries().length,1,'opposite side is ignored');
+      a.e.onScriptExit(ID,'SOLUSD','15m','close',100,a.ctx.at+2000,mode,'long');
+      assert.equal(a.e.pendingEntries().length,mode==='levels'?1:0,`${mode} ${phase}`);
+      const audit=reclaimStatus(a.db,a.cfg,a.e,a.ctx.at).trials[0];
+      assert.equal(audit.counts.cancelled??0,mode==='levels'?0:1);
+    }
+  }
+  const a=setup(t);a.e.onEntry(a.ev,a.ctx);a.confirm();const order=a.e.pendingEntries()[0];
+  a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
+  assert.equal(a.e.onScriptExit(ID,'SOLUSD','15m','close',100,order.at+2000,'levels','long'),undefined);
+  assert.equal(a.e.openPositions().length,1);
+});

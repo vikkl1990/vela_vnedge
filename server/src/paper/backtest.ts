@@ -299,7 +299,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     const evs = byBar.get(bar.time);
     if (!evs) continue;
     for (const ev of evs) {
-      if (ev.kind === 'exit' && reclaim && (!ev.side || ev.side === reclaim.ev.side)) { flow('script cancelled setup'); reclaim = null; }
+      if (ev.kind === 'exit' && inp.exitMode !== 'levels' && reclaim && (!ev.side || ev.side === reclaim.ev.side)) { flow('script cancelled setup'); reclaim = null; }
       if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
         // Script messages are market instructions after the close; resting targets already had their chance in the price path.
         const type = ev.exitType ?? 'close';
