@@ -48,6 +48,8 @@ export interface PaperConfig {
   maxStopLossPct: number;
   /** Explicit scanner/market/entry-frame rules; context must agree on closed bars. */
   entryAlignments?: Array<{ scannerId: string; symbol: string; tf: string; contextTf: string; emaLen: number }>;
+  /** Small account-only paper trials of the completed-minute reclaim entry. */
+  reclaimTrials?: Array<{enabled: boolean; scannerId: string; symbol: string; tf: '15m'; pullbackAtr: number; setupMinutes: number; orderMinutes: number; sizeScale: number; maxDailyEntries: number}>;
   /**
    * Reject entries whose signal bar closed more than this many seconds ago (0 = off).
    * Measured bar-close lag on this feed: median 11 s, p90 71 s, worst 234 s on thin symbols
@@ -781,6 +783,20 @@ export function validateConfig(c: AppConfig): string[] {
     }
   }
   if (!(Number.isFinite(p.maxSignalAgeSec) && p.maxSignalAgeSec >= 0)) errs.push('paper.maxSignalAgeSec must be ≥ 0');
+  if (p.reclaimTrials !== undefined) {
+    const keys = new Set<string>();
+    if (!Array.isArray(p.reclaimTrials)) errs.push('paper.reclaimTrials must be an array');
+    else for (const r of p.reclaimTrials) {
+      if (!r || typeof r.enabled !== 'boolean' || !r.scannerId || !/^[A-Z0-9]+USD$/.test(r.symbol) || r.tf !== '15m'
+        || !Number.isFinite(r.pullbackAtr) || r.pullbackAtr < 0 || r.pullbackAtr > 2
+        || !Number.isInteger(r.setupMinutes) || r.setupMinutes < 2 || r.setupMinutes > 30
+        || !Number.isInteger(r.orderMinutes) || r.orderMinutes < 1 || r.orderMinutes > 5
+        || !(r.sizeScale > 0 && r.sizeScale <= 1) || !Number.isInteger(r.maxDailyEntries) || r.maxDailyEntries < 1 || r.maxDailyEntries > 10) errs.push('invalid paper.reclaimTrials rule');
+      const key = `${r?.scannerId}|${r?.symbol}|${r?.tf}`;
+      if (keys.has(key)) errs.push('duplicate paper.reclaimTrials rule');
+      keys.add(key);
+    }
+  }
   if (p.earlyCut && !(p.earlyCut.r < 0 && p.earlyCut.r > -1 && p.earlyCut.minutes > 0)) errs.push('paper.earlyCut needs r between −1 and 0 and minutes > 0');
   if (typeof p.useSpread !== 'boolean') errs.push('paper.useSpread must be boolean');
   if(c.risk.marketGate?.freshDepth!==undefined && typeof c.risk.marketGate.freshDepth!=='boolean') errs.push('risk.marketGate.freshDepth must be boolean');

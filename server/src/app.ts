@@ -182,6 +182,9 @@ export class App {
     };
     this.candles.on('bar', onMinute);
     this.candles.on('closed', onMinute);
+    this.candles.on('closed', (e: {symbol:string;tf:string;bar:import('./data/candleStore.ts').Bar;historical?:boolean}) => {
+      if(e.tf==='1m') this.paper.onClosedMinute(e.symbol,e.bar,Date.now(),e.historical===true);
+    });
     this.feed.on('ticker', (t: WsTicker) => { this.paper.setMark(t.symbol, t.price); this.shadow.setMark(t.symbol, t.price); this.marks.onWsTicker(t); });
     this.feed.on('status', async (s: { connected: boolean }) => {
       if (s.connected) for (const t of this.candles.tracked()) { try { const n = await this.candles.resync(t.symbol, t.tf); if (n) log.info(`resynced ${t.symbol} ${t.tf}: ${n} bars`); } catch (e: any) { log.warn(`resync failed ${t.symbol} ${t.tf}: ${e?.message}`); } }

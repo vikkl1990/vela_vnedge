@@ -1,5 +1,7 @@
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
 import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
+import {createReclaim, advanceReclaim, type ReclaimState} from './reclaim.ts';
+import type {Bar} from '../data/candleStore.ts';
 import type { EntryExecution } from './costs.ts';
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
@@ -17,6 +19,9 @@ const log = logger.scoped('paper');
 interface FillContext { ref?: number; source?: 'quote' | 'slippage' | 'exchange' }
 
 export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number }
+type EntryContext = {scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
+type ReclaimTrial = NonNullable<PaperConfig['reclaimTrials']>[number];
+type PlannedReclaim = {price: number; expiresAt: number; ruleKey: string};
 
 export interface EntryDecision {
   action: 'opened' | 'ignored' | 'rejected' | 'reversed' | 'pending';
@@ -55,6 +60,8 @@ export interface PendingEntry {
   limit?: { price: number; expiresAt: number; atr: number; sl?: number; tp?: number[]; bars: number };
   /** Decision 186: a reversal's held position, closed only when this entry fills (a cancelled reversal keeps it). */
   replacingId?: number;
+  reclaim?: {state: ReclaimState; event: ScanEvent; context: EntryContext; ruleKey: string};
+  reclaimRuleKey?: string;
 }
 
 /**
@@ -148,7 +155,8 @@ export class PaperEngine extends EventEmitter {
     for (const row of db.all<any>(`SELECT id, signal_id, fills FROM positions WHERE status='pending' AND bt=${this.book}`)) {
       let kept: PendingEntry | null = null;
       try { const j = JSON.parse(row.fills ?? 'null'); if (j?.limitEntry?.limit && j.limitEntry.limit.expiresAt > Date.now()) kept = { ...j.limitEntry, id: row.id }; } catch { kept = null; }
-      if (kept) { this.pending.set(kept.id, kept); continue; }
+      // A short reclaim order cannot assume continuity through missed tape during downtime.
+      if (kept && !kept.features?.reclaim_trial) { this.pending.set(kept.id, kept); continue; }
       db.run('DELETE FROM positions WHERE id=?', row.id);
       if (row.signal_id) db.updateSignalAction(row.signal_id, 'rejected:pending entry dropped on restart', null);
     }
@@ -311,7 +319,67 @@ export class PaperEngine extends EventEmitter {
     return (at - (ev.barTime + tfSec * 1000)) / 1000;
   }
 
-  onEntry(ev: ScanEvent, ctx: { scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number }): EntryDecision {
+  private reclaimRule(cell: {scannerId:string;symbol:string;tf:string}): ReclaimTrial | undefined {
+    return this.paper.reclaimTrials?.find(r=>r.enabled && r.scannerId===cell.scannerId && r.symbol===cell.symbol && r.tf===cell.tf);
+  }
+  private reclaimAvailable(cell: {scannerId:string;symbol:string;tf:string}, key?: string): boolean {
+    const c=this.cfgRef(), rule=this.reclaimRule(cell), sc=c.scanners[cell.scannerId];
+    return this.book===0 && c.execution.mode==='paper' && (this.limitEntryAllowed?.()??true) && !!rule
+      && (!key || key===JSON.stringify(rule)) && !!sc?.enabled && !!sc.pairs?.some(p=>p.symbol===cell.symbol&&p.tf===cell.tf);
+  }
+  private reclaimCount(cell: {scannerId:string;symbol:string;tf:string}, at: number) {
+    const key=`paper.reclaim.${cell.scannerId}|${cell.symbol}|${cell.tf}`, day=Math.floor(at/86_400_000);
+    const saved=this.db.kvGet<{day:number;entries:number}>(key);
+    return {key,day,entries:saved?.day===day?saved.entries:0};
+  }
+  onEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
+    if (this.book===0 && this.paper.reclaimTrials?.some(r=>!r.enabled&&r.scannerId===ctx.scannerId&&r.symbol===ctx.symbol&&r.tf===ctx.tf)) return {action:'rejected',reason:'reclaim trial disabled'};
+    const rule=this.book===0?this.reclaimRule(ctx):undefined;
+    if (!rule) return this.executeEntry(ev,ctx);
+    if (!this.reclaimAvailable(ctx)) return {action:'rejected',reason:'reclaim trial requires an allocated paper-only cell'};
+    if (this.findOpen(ctx.scannerId,ctx.symbol,ctx.tf)) return {action:'ignored',reason:'reclaim trial already holds a position'};
+    const previous=this.findPending(ctx.scannerId,ctx.symbol,ctx.tf);
+    if (previous) this.cancelPending(previous.id,'reclaim setup replaced by fresh signal');
+    if (this.open.size+this.pending.size>=this.paper.maxOpenPositions) return {action:'rejected',reason:'max open positions'};
+    const age=PaperEngine.signalAgeSec(ev,ctx.tf,ctx.at);
+    if (this.paper.maxSignalAgeSec>0 && age>this.paper.maxSignalAgeSec) return {action:'rejected',reason:'stale reclaim signal'};
+    if (!(ctx.atr && ctx.atr>0)) return {action:'rejected',reason:'reclaim setup needs ATR'};
+    if (this.reclaimCount(ctx,ctx.at).entries>=rule.maxDailyEntries) return {action:'rejected',reason:'reclaim trial daily order limit'};
+    const cfg=exitConfigFor(this.paper,ctx.symbol,this.scannerExit?.(ctx.scannerId,ctx.at),ctx.tf);
+    const levels=resolveLevels({side:ev.side!,price:ctx.refPrice,sl:ev.sl,tp:ev.tp,atr:ctx.atr},cfg,ctx.market.tickSize);
+    if ('error' in levels) return {action:'rejected',reason:levels.error};
+    if (cfg.skipScriptStops && levels.source!=='atr-fallback') return {action:'rejected',reason:"the scanner's own stop: reclaim trial uses ATR stops"};
+    const block=this.entryBlock?.(ctx.symbol,ctx.at)??this.alignmentBlock(ctx,ev.side!,ctx.at)
+      ??this.risk?.gate({...ctx,side:ev.side!,price:ctx.refPrice,sl:levels.sl}).reject;
+    if (block) return {action:'rejected',reason:block};
+    const state=createReclaim({side:ev.side!,at:ctx.at,reference:ctx.refPrice,atr:ctx.atr,stop:levels.sl,tick:ctx.market.tickSize},rule);
+    const id=this.nextId(), ruleKey=JSON.stringify(rule);
+    const pe:PendingEntry={id,...ctx,side:ev.side!,signalPrice:ctx.refPrice,levels,dueAt:ctx.at,mlProb:ctx.mlProb??null,leverageMult:1,
+      features:{...ctx.features,reclaim_trial:1},sizeScale:Math.min(ctx.sizeScale??1,rule.sizeScale),reclaim:{state,event:ev,context:ctx,ruleKey}};
+    this.pending.set(id,pe);
+    this.db.run("UPDATE positions SET scanner_id=?,scanner_name=?,symbol=?,tf=?,side=?,entry_price=?,entry_at=?,signal_id=?,fills=? WHERE id=?",ctx.scannerId,ctx.scannerName,ctx.symbol,ctx.tf,ev.side,ctx.refPrice,ctx.at,ctx.signalId,JSON.stringify({reclaimSetup:pe}),id);
+    return {action:'pending',reason:'reclaim trial: waiting for completed 1m pullback and reclaim',pendingId:id};
+  }
+  /** Only closed live minutes may advance a setup; tape/partial candles only fill its later order. */
+  onClosedMinute(symbol: string, bar: Bar, at=Date.now(), historical=false): void {
+    if (historical || at<bar.time+60_000 || at>bar.time+90_000) return;
+    for (const pe of [...this.pending.values()]) {
+      if (pe.symbol!==symbol || !pe.reclaim) continue;
+      if (!this.reclaimAvailable(pe,pe.reclaim.ruleKey)) {this.cancelPending(pe.id,'reclaim trial disabled or changed');continue;}
+      const r=pe.reclaim, step=advanceReclaim(r.state,bar,at,this.paper.limitFill==='through');
+      if (step.kind==='cancelled') {this.cancelPending(pe.id,`reclaim ${step.reason}`);continue;}
+      if (step.kind!=='placed') continue;
+      const rule=this.reclaimRule(pe)!, count=this.reclaimCount(pe,at);
+      if (count.entries>=rule.maxDailyEntries) {this.cancelPending(pe.id,'reclaim trial daily order limit');continue;}
+      // The unfilled setup is replaced synchronously by an ordinary audited limit.
+      this.pending.delete(pe.id);this.db.run('DELETE FROM positions WHERE id=?',pe.id);
+      const d=this.executeEntry(r.event,{...r.context,at,features:pe.features,sizeScale:pe.sizeScale},
+        {price:r.state.limit!,expiresAt:at+rule.orderMinutes*60_000,ruleKey:r.ruleKey});
+      if (d.action==='pending') this.db.kvSet(count.key,{day:count.day,entries:count.entries+1});
+      if (pe.signalId) this.db.updateSignalAction(pe.signalId,`${d.action}:${d.reason??''}`,null);
+    }
+  }
+  private executeEntry(ev: ScanEvent, ctx: EntryContext, planned?: PlannedReclaim): EntryDecision {
     // the market's and the scanner's own rules, so a stop width they ask for is used at entry and
     // then carried on the position for the rest of the trade (decision 43)
     const cfg = exitConfigFor(this.paper, ctx.symbol, this.scannerExit?.(ctx.scannerId, ctx.at), ctx.tf);
@@ -323,11 +391,12 @@ export class PaperEngine extends EventEmitter {
     // A signal acted on long after its bar closed could not have been taken at these prices
     // (restarts and deep queues used to replay bar-old signals straight into the book).
     const maxAge = cfg.maxSignalAgeSec ?? 0;
-    if (maxAge > 0) {
+    if (maxAge > 0 && !planned) {
       const age = PaperEngine.signalAgeSec(ev, ctx.tf, ctx.at);
       if (age > maxAge) return { action: 'rejected', reason: `stale signal: bar closed ${age.toFixed(0)}s ago (max ${maxAge}s)` };
     }
     const existing = this.findOpen(ctx.scannerId, ctx.symbol, ctx.tf);
+    if (planned && existing) return {action:'ignored',reason:'reclaim trial already holds a position'};
     // Reversal policy (decision 77): the replacement must pass every admission check — price, levels, fees,
     // risk gate, size, exposure — with the existing position counted as gone; only then is the existing
     // position closed. A replacement that cannot be admitted leaves the position as it was.
@@ -347,7 +416,7 @@ export class PaperEngine extends EventEmitter {
     if (this.open.size + this.pending.size - (replacing ? 1 : 0) >= cfg.maxOpenPositions) return refused(`max open positions (${cfg.maxOpenPositions})`);
     // A market entry pays the spread: buy at the ask, sell at the bid when a fresh quote exists.
     // The script's own price is only a reference and is often minutes old by the time we act.
-    const le = cfg.limitEntry, tfMs = (TF_SECONDS[ctx.tf] ?? 0) * 1000;
+    const le = planned?{enabled:true,tfs:[ctx.tf],books:['account'] as Array<'account'|'shadow'>,atr:0,bars:(planned.expiresAt-ctx.at)/((TF_SECONDS[ctx.tf]??1)*1000),atrByTf:undefined}:cfg.limitEntry, tfMs = (TF_SECONDS[ctx.tf] ?? 0) * 1000;
     const willRestLimit = !!(le?.enabled && !replacing && le.tfs.includes(ctx.tf) && le.books.includes(this.book === 0 ? 'account' : 'shadow') && (ctx.atr ?? 0) > 0 && tfMs > 0 && (this.limitEntryAllowed?.() ?? true));
     const reference = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
     const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
@@ -358,7 +427,7 @@ export class PaperEngine extends EventEmitter {
     if (willRestLimit) {
       const tick = ctx.market.tickSize;
       if (!(tick > 0)) return refused('maker entry requires a positive tick size');
-      const raw = ev.side === 'long' ? reference - limitOffset * ctx.atr! : reference + limitOffset * ctx.atr!;
+      const raw = planned?.price ?? (ev.side === 'long' ? reference - limitOffset * ctx.atr! : reference + limitOffset * ctx.atr!);
       // A stale signal reference can cross the current quote. Keep the order passive.
       const passive = quoted.quoted ? (ev.side === 'long' ? Math.min(raw, quoted.price - tick) : Math.max(raw, quoted.price + tick)) : raw;
       limitPrice = Number(((ev.side === 'long' ? Math.floor(passive / tick + 1e-9) : Math.ceil(passive / tick - 1e-9)) * tick).toPrecision(14));
@@ -402,12 +471,12 @@ export class PaperEngine extends EventEmitter {
       const off = limitOffset;
       const id = this.nextId();
       const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
-        limit: { price: limitPrice!, expiresAt: ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
+        reclaimRuleKey:planned?.ruleKey,limit: { price: limitPrice!, expiresAt: planned?.expiresAt ?? ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
       this.pending.set(id, pe);
       this.emit('pending', { type: 'placed', entry: pe });   // decision 190: the tape audit registers the order at once
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, limitPrice, pe.at, pe.signalId, JSON.stringify({ limitEntry: pe }), id);
       log.info(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
-      return { action: 'pending', reason: `resting limit at ${limitPrice}, ${off} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
+      return { action: 'pending', reason: planned ? `reclaim trial: maker limit at ${limitPrice}, expires in ${Math.round((planned.expiresAt-ctx.at)/60_000)} minutes` : `resting limit at ${limitPrice}, ${off} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
     }
     if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
@@ -502,6 +571,7 @@ export class PaperEngine extends EventEmitter {
       return null;
     };
     if (pe.features?.copy_pilot && (!this.cfgRef().incubator.mirror?.enabled || !this.cfgRef().incubator.mirror?.pilot || this.cfgRef().execution.mode !== 'paper')) return cancel('copy pilot disabled');
+    if (pe.features?.reclaim_trial && !this.reclaimAvailable(pe,pe.reclaimRuleKey)) return cancel('reclaim trial disabled or changed');
     const alignment=this.alignmentBlock(pe,pe.side,at);
     if(alignment)return cancel(alignment);
     const exchangeBlock = this.entryBlock?.(pe.symbol, at);
@@ -613,6 +683,11 @@ export class PaperEngine extends EventEmitter {
   /** Expire pending entries that neither the tape nor a candle could fill within a minute past their due time. */
   housekeeping(now = Date.now()): void {
     for (const pe of [...this.pending.values()]) {
+      if (pe.features?.reclaim_trial && !this.reclaimAvailable(pe,pe.reclaim?.ruleKey??pe.reclaimRuleKey)) {this.cancelPending(pe.id,'reclaim trial disabled or changed');continue;}
+      if (pe.reclaim) {
+        if (now>=pe.reclaim.state.at+pe.reclaim.state.options.setupMinutes*60_000+30_000) this.cancelPending(pe.id,'reclaim setup expired');
+        continue;
+      }
       const exchangeBlock = this.entryBlock?.(pe.symbol, now);
       if (exchangeBlock) { this.cancelPending(pe.id, exchangeBlock); continue; }
       if (pe.limit) { if (now > pe.limit.expiresAt) this.cancelPending(pe.id, `no fill: price did not come back to ${pe.limit.price} within ${pe.limit.bars} ${pe.tf} bars`); continue; }
@@ -633,7 +708,7 @@ export class PaperEngine extends EventEmitter {
     if (!this.tapeMode) return;
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
-      if (pe.symbol !== symbol || time < pe.dueAt) continue;
+      if (pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
       if (pe.limit) { if (time >= pe.at && this.limitTouched(pe, price, price)) { const pos = this.fillLimit(pe, observedAt, time); if (pos) filled.add(pos.id); } continue; }
       const pos = this.fillPending(pe, price, time, 'tape', observedAt);
       if (pos) filled.add(pos.id);
@@ -683,6 +758,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   onScriptExit(scannerId: string, symbol: string, tf: string, exitType: ExitType, price: number | undefined, at: number, exitMode: ExitMode, side?: Side): Position | undefined {
+    for (const pe of [...this.pending.values()]) if (pe.features?.reclaim_trial && pe.scannerId===scannerId && pe.symbol===symbol && pe.tf===tf && (!side||pe.side===side)) this.cancelPending(pe.id,'script cancelled reclaim');
     const pos = this.findOpen(scannerId, symbol, tf);
     if (!pos) return undefined;
     if (side && pos.side !== side) return undefined;
@@ -720,7 +796,7 @@ export class PaperEngine extends EventEmitter {
     if (!historical) {
       // tape mode: the candle is the fallback while the tape is silent; candles mode: the candle update is the price
       for (const pe of [...this.pending.values()]) {
-        if (pe.symbol !== symbol) continue;
+        if (pe.reclaim || pe.symbol !== symbol) continue;
         // decision 185: a resting limit fills on a minute that traded through its price. Decision 189: only a minute that
         // began after the order was placed — the placing minute's low may have printed before the order existed, and the
         // tape audit showed limits filled that no trade after placement ever reached (thin coins, where this fallback runs)
