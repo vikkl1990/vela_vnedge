@@ -437,5 +437,28 @@
       "derived",
       "label"
     ]
+  },
+  "signal-charge-momentum-buy-sell-signals": {
+    "sources": [
+      "alertcondition"
+    ],
+    "sides": {
+      "Buy locked (confirmed at bar close)": "long",
+      "Sell locked (confirmed at bar close)": "short",
+      "Buy live (intrabar)": "none",
+      "Sell live (intrabar)": "none",
+      "Buy charge 80% (live)": "none",
+      "Sell charge 80% (live)": "none",
+      "Thrust faded (confirmed at bar close)": "none"
+    }
+  },
+  "efficient-trend-step-noise-detection": {
+    "sources": [
+      "alertcondition"
+    ],
+    "sides": {
+      "Trend Step buy confirmed": "long",
+      "Trend Step sell confirmed": "short"
+    }
   }
 }

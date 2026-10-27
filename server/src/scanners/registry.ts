@@ -7,6 +7,13 @@ import { familyFor, originOf } from '../library/families.ts';
 /** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
 
+/** Successful compilation cannot clear an explicit source/data correctness hold. */
+export function reviewedStatus(meta: { status: ScannerStatus; reason?: string | null; quarantine?: string }, report?: { ok: boolean; error?: string }): { status: ScannerStatus; reason: string | null } {
+  if (meta.quarantine) return { status: 'incompatible', reason: meta.quarantine };
+  if (meta.status !== 'unavailable' && report) return { status: report.ok ? 'ok' : 'incompatible', reason: report.ok ? null : `PineTS runtime: ${report.error}` };
+  return { status: meta.status, reason: meta.reason ?? null };
+}
+
 export interface ScannerMeta {
   id: string;
   name: string;
@@ -104,12 +111,7 @@ export class ScannerRegistry {
       const file = path.join(m.__dir, m.file);
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       const { source: patched, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
-      let status: ScannerStatus = m.status;
-      let reason: string | null = m.reason ?? null;
-      if (status !== 'unavailable' && report[m.id]) {
-        status = report[m.id].ok ? 'ok' : 'incompatible';
-        reason = report[m.id].ok ? null : `PineTS runtime: ${report[m.id].error}`;
-      }
+      let { status, reason } = reviewedStatus(m, report[m.id]);
       if (!source.trim() || source.trim().length < 100) { status = 'unavailable'; reason = reason ?? 'source not published'; }
       this.map.set(m.id, {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,

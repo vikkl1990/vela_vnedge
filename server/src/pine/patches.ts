@@ -20,6 +20,12 @@ export interface PatchRule {
 const TA_LIBRARY_OWN = ['ao', 'aroon', 'atr2', 'cagr', 'chandelier', 'chandelier2', 'changePercent', 'coppock', 'dema', 'dema2', 'dm', 'donchian', 'ema2', 'eom', 'er', 'frama', 'ft', 'highestSince', 'ht', 'ichimoku', 'ift', 'kama', 'kvo', 'lowestSince', 'macd2', 'pmo', 'ppo', 'ppo2', 'pzo', 'relativeVolume', 'requestUpAndDownVolume', 'requestVolumeDelta', 'rma2', 'rms', 'rwi', 'specialK', 'stc', 'stochFull', 'stochRsi', 'supertrend2', 'szo', 't3', 't3Alt', 'tema', 'tema2', 'trima', 'trix', 'ulcerIndex', 'uo', 'vStop', 'vStop2', 'vhf', 'vi', 'vzo', 'williamsFractal', 'wpo'];
 
 export const PATCH_RULES: PatchRule[] = [
+  {
+    id: 'trend-step-confirmed-signals',
+    description: 'Expose Efficient Trend Step’s existing direction-flip booleans as confirmed conditions; its numeric price labels cannot safely express trade direction.',
+    only: ['ihf781Bu-Efficient-Trend-Step-Noise-Detection'],
+    apply: (src) => src.includes('"Trend Step buy confirmed"') ? src : src + '\nalertcondition(barstate.isconfirmed and buySignal, "Trend Step buy confirmed", "Trend Step buy confirmed")\nalertcondition(barstate.isconfirmed and sellSignal, "Trend Step sell confirmed", "Trend Step sell confirmed")\n',
+  },
   // decision 126: generic lowerings for what the PineTS parser and runtime cannot take, applied before the specific rules
   { id: 'v4-to-v5', description: 'Pine v4 (v3, v2) lifted to v5 by the published migration table: study → indicator, security → request.security, ta.* and math.* prefixes, typed inputs, str.*; transp and iff lowered.', apply: liftV4 },
   { id: 'statement-comma', description: "A comma that ends a statement with every bracket closed (Pine's statement separator) is dropped; PineTS and the continuation joiner read it as a continuation (decision 163).", apply: dropStatementCommas },

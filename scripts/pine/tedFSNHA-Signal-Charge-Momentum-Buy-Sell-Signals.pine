@@ -1,0 +1,378 @@
+//@version=6
+// Signal Charge: Momentum Buy Sell Signals
+// Independent implementation. Open-source under the Mozilla Public License 2.0.
+// Concept: an EMA-weighted "thrust charge" (ATR-scaled moves weighted by path efficiency).
+// A live LED-ladder gauge shows the real prices where the open bar's close would lock a Buy/Sell.
+// Signals lock only at bar close. Live (unconfirmed) states are drawn as ghosts.
+
+indicator("Signal Charge: Momentum Buy Sell Signals", shorttitle = "Signal Charge", overlay = true,
+     max_boxes_count = 100, max_lines_count = 100, max_labels_count = 100)
+
+// ── Helpers (no built-in ta.* calls, so they are safe to call conditionally) ──────────
+// Charge if the open bar closed at c, given the previous bar's smoothed state.
+chargeAt(float c, float cPrev, float atrPrev, float eD1, float eA1, float alpha, float norm, float lock) =>
+    float dd  = (c - cPrev) / atrPrev
+    float ed  = alpha * dd + (1.0 - alpha) * eD1
+    float ea  = alpha * math.abs(dd) + (1.0 - alpha) * eA1
+    float eff = ea > 0.000000001 ? math.abs(ed) / ea : 0.0
+    ed / norm * (0.5 + 0.5 * eff) / lock
+
+// Bisection: close price at which charge equals `target` (na if not within +/- 8 ATR).
+solveClose(float target, float cPrev, float atrPrev, float eD1, float eA1, float alpha, float norm, float lock) =>
+    float lo  = cPrev - 8.0 * atrPrev
+    float hi  = cPrev + 8.0 * atrPrev
+    float fLo = chargeAt(lo, cPrev, atrPrev, eD1, eA1, alpha, norm, lock) - target
+    float fHi = chargeAt(hi, cPrev, atrPrev, eD1, eA1, alpha, norm, lock) - target
+    float res = na
+    if fLo * fHi <= 0.0
+        for i = 1 to 30
+            float cm   = (lo + hi) / 2.0
+            float fMid = chargeAt(cm, cPrev, atrPrev, eD1, eA1, alpha, norm, lock) - target
+            if fLo * fMid <= 0.0
+                hi := cm
+            else
+                lo  := cm
+                fLo := fMid
+        res := (lo + hi) / 2.0
+    res
+
+// Signed number with one decimal, e.g. "+1.3" / "-0.4".
+fmtSigned(float x) =>
+    float r = math.round(x, 1) + 0.0
+    (r >= 0.0 ? "+" : "") + str.tostring(r, "0.0")
+
+// Seconds -> "m:ss" or "h:mm:ss".
+fmtClock(int secs) =>
+    int h = int(math.floor(secs / 3600.0))
+    int m = int(math.floor((secs % 3600) / 60.0))
+    int s = secs % 60
+    string mm = (h > 0 and m < 10) ? "0" + str.tostring(m) : str.tostring(m)
+    string ss = s < 10 ? "0" + str.tostring(s) : str.tostring(s)
+    h > 0 ? str.tostring(h) + ":" + mm + ":" + ss : mm + ":" + ss
+
+// Readable text color for a badge filled with color c (dark text on light fills, white on dark fills).
+onColor(color c) =>
+    float lum = 0.299 * color.r(c) + 0.587 * color.g(c) + 0.114 * color.b(c)
+    lum > 125.0 ? #0B0E14 : #FFFFFF
+
+// ── Inputs ──────────────────────────────────────────────────────────────
+GRP_CORE = "Core Logic"
+GRP_DISP = "Display"
+GRP_ADV  = "Advanced"
+
+sens = input.string("Smooth", "Sensitivity", options = ["Fast", "Balanced", "Smooth"], group = GRP_CORE,
+     tooltip = "EMA length of the thrust: Fast = 8 bars, Balanced = 13, Smooth = 21. A longer window gives fewer, later locks.")
+
+theme        = input.string("Aurora", "Theme", options = ["Aurora", "Classic", "Ice", "Mono"], group = GRP_DISP,
+     tooltip = "Mono works best on dark charts.")
+showGauge    = input.bool(true, "Live gauge next to last bar", group = GRP_DISP)
+showWake     = input.bool(true, "Charge wake", group = GRP_DISP)
+showMarks    = input.bool(true, "Signal marks (orbs)", group = GRP_DISP)
+showStrip    = input.bool(true, "Stance strip (bottom dots)", group = GRP_DISP)
+showEntry    = input.bool(true, "Entry rail", group = GRP_DISP)
+colorCandles = input.bool(true, "Color candles by charge", group = GRP_DISP)
+
+lockLevel   = input.float(1.0, "Lock level", minval = 0.3, step = 0.1, group = GRP_ADV,
+     tooltip = "Charge needed for a Buy/Sell to lock at bar close. Higher = fewer, later locks.")
+fadeLevel   = input.float(0.15, "Fade level", minval = 0.0, maxval = 0.9, step = 0.05, group = GRP_ADV,
+     tooltip = "Fraction of the lock level below which a long/short stance returns to flat at bar close.")
+gaugeOffset = input.int(3, "Gauge distance (bars)", minval = 1, maxval = 30, group = GRP_ADV,
+     tooltip = "How many bars right of the last bar the gauge sits. Keep free space on the right of the chart.")
+
+// ── Theme ───────────────────────────────────────────────────────────────
+color bullColor = switch theme
+    "Classic" => #26A69A
+    "Ice"     => #4FC3F7
+    "Mono"    => #F2F4F8
+    => #00E5A8
+color bearColor = switch theme
+    "Classic" => #EF5350
+    "Ice"     => #FF8A65
+    "Mono"    => #7C869A
+    => #FF4D6D
+color neutralCol = color.new(#8A93A6, 25)
+color fadeColor  = #FFB300
+color pillColor  = color.new(#10131A, 8)
+
+// ── Core calculation ────────────────────────────────────────────────────
+int L = sens == "Fast" ? 8 : sens == "Balanced" ? 13 : 21
+
+float atrVal   = ta.atr(14)
+float atrPrevS = math.max(atrVal[1], syminfo.mintick)
+float d        = (close - close[1]) / atrPrevS               // move in units of the previous bar's ATR
+float emaD     = ta.ema(d, L)
+float emaA     = ta.ema(math.abs(d), L)
+float sdD      = ta.stdev(d, 100)
+float alpha    = 2.0 / (L + 1)
+float norm     = math.sqrt(alpha / (2.0 - alpha)) * math.max(nz(sdD[1], 0.8), 0.2)
+bool  ready    = bar_index >= 120 and not na(atrPrevS) and not na(emaD[1]) and not na(emaA[1])
+
+// 1.0 = lock level; sign = direction. Recomputed from the latest price on the open bar.
+float charge = ready ? chargeAt(close, close[1], atrPrevS, emaD[1], emaA[1], alpha, norm, lockLevel) : 0.0
+bool  crossUp = ta.crossover(charge, 0.8)
+bool  crossDn = ta.crossunder(charge, -0.8)
+
+// ── Stance state machine ────────────────────────────────────────────────
+// var values roll back on every realtime tick, so each tick starts from the last closed bar.
+var int   stance     = 0
+var int   entryBar   = na
+var float entryPrice = na
+var float entryAtr   = na
+var int   entryDir   = 0
+var float peakAtr    = 0.0
+var line  entryRail  = na
+
+int  prevStance = stance
+bool confirmed  = barstate.isconfirmed   // true on every historical bar and on the closing tick of a live bar
+
+bool wantBuy   = ready and charge >= 1.0  and prevStance != 1
+bool wantSell  = ready and charge <= -1.0 and prevStance != -1
+bool fadeLong  = ready and prevStance == 1  and charge < fadeLevel  and not wantSell
+bool fadeShort = ready and prevStance == -1 and charge > -fadeLevel and not wantBuy
+int  newStance = wantBuy ? 1 : wantSell ? -1 : (fadeLong or fadeShort) ? 0 : prevStance
+
+if confirmed and (wantBuy or wantSell)
+    entryBar   := bar_index
+    entryPrice := close
+    entryAtr   := atrVal
+    entryDir   := wantBuy ? 1 : -1
+    peakAtr    := 0.0
+    if showEntry
+        line.delete(entryRail)
+        entryRail := line.new(bar_index, close, bar_index, close, xloc = xloc.bar_index, color = wantBuy ? bullColor : bearColor, width = 1, style = line.style_dotted)
+stance := newStance
+
+// Move since the lock in ATR at the lock (signed by stance direction), and its best confirmed value
+float sinceNow = (na(entryPrice) or na(entryAtr) or entryDir == 0) ? 0.0 : entryDir * (close - entryPrice) / math.max(entryAtr, syminfo.mintick)
+if confirmed and newStance != 0
+    peakAtr := math.max(peakAtr, sinceNow)
+
+if showEntry and confirmed and not na(entryRail)
+    if newStance != 0
+        line.set_x2(entryRail, bar_index)
+    line.set_color(entryRail, newStance == 0 ? color.new(neutralCol, 70) : (entryDir == 1 ? bullColor : bearColor))
+
+// Locked stance only changes at bar close
+int lockedStance = confirmed ? newStance : prevStance
+
+bool buyLock  = wantBuy and confirmed
+bool sellLock = wantSell and confirmed
+bool buyLive  = wantBuy and not confirmed
+bool sellLive = wantSell and not confirmed
+bool fadeLock = confirmed and (fadeLong or fadeShort)
+bool buyApproach  = ready and prevStance != 1  and crossUp and not wantBuy
+bool sellApproach = ready and prevStance != -1 and crossDn and not wantSell
+
+// ── Candle heat ─────────────────────────────────────────────────────────
+color tint = na
+if charge >= 0
+    tint := color.from_gradient(math.min(charge, 1.0), 0.0, 1.0, neutralCol, bullColor)
+else
+    tint := color.from_gradient(math.min(-charge, 1.0), 0.0, 1.0, neutralCol, bearColor)
+barcolor(colorCandles and ready ? tint : na)
+
+// ── Stance strip: bottom dots show the locked stance, changing only at bar close ──
+plotshape(showStrip and lockedStance == 1, "Stance strip (long)", shape.square, location.bottom,
+     color = color.new(bullColor, 35), size = size.tiny)
+plotshape(showStrip and lockedStance == -1, "Stance strip (short)", shape.square, location.bottom,
+     color = color.new(bearColor, 35), size = size.tiny)
+
+// ── Charge wake: two-layer aura on the charging side of each candle ─────
+float mUp = showWake and ready and charge > 0.12  ? math.min(charge, 1.25)  : na
+float mDn = showWake and ready and charge < -0.12 ? math.min(-charge, 1.25) : na
+float kUp = math.min(nz(mUp), 1.0)
+float kDn = math.min(nz(mDn), 1.0)
+color upCore = color.new(bullColor, 86 - 28 * kUp)
+color upGlow = color.new(bullColor, 95 - 10 * kUp)
+color dnCore = color.new(bearColor, 86 - 28 * kDn)
+color dnGlow = color.new(bearColor, 95 - 10 * kDn)
+
+pUpA = plot(na(mUp) ? na : low, "Wake base (up)", color = na, display = display.pane, editable = false)
+pUpB = plot(na(mUp) ? na : low - atrVal * 0.45 * mUp, "Wake core edge (up)", color = na, display = display.pane, editable = false)
+pUpC = plot(na(mUp) ? na : low - atrVal * 1.05 * mUp, "Wake glow edge (up)", color = na, display = display.pane, editable = false)
+fill(pUpA, pUpB, color = upCore, title = "Wake core (up)")
+fill(pUpB, pUpC, color = upGlow, title = "Wake glow (up)")
+
+pDnA = plot(na(mDn) ? na : high, "Wake base (down)", color = na, display = display.pane, editable = false)
+pDnB = plot(na(mDn) ? na : high + atrVal * 0.45 * mDn, "Wake core edge (down)", color = na, display = display.pane, editable = false)
+pDnC = plot(na(mDn) ? na : high + atrVal * 1.05 * mDn, "Wake glow edge (down)", color = na, display = display.pane, editable = false)
+fill(pDnA, pDnB, color = dnCore, title = "Wake core (down)")
+fill(pDnB, pDnC, color = dnGlow, title = "Wake glow (down)")
+
+// ── Charge orbs (signal marks): solid = locked at close, ghost = live ───
+float orbOff = 0.55 * atrVal
+float buyY   = low - orbOff
+float sellY  = high + orbOff
+
+plot(showMarks and buyLock ? buyY : na, "Buy bloom", color = color.new(bullColor, 90), style = plot.style_circles, linewidth = 16, display = display.pane)
+plot(showMarks and buyLock ? buyY : na, "Buy halo", color = color.new(bullColor, 68), style = plot.style_circles, linewidth = 11, display = display.pane)
+plot(showMarks and buyLock ? buyY : na, "Buy (locked)", color = bullColor, style = plot.style_circles, linewidth = 6, display = display.pane)
+plot(showMarks and buyLive ? buyY : na, "Buy ghost halo", color = color.new(bullColor, 82), style = plot.style_circles, linewidth = 11, display = display.pane)
+plot(showMarks and buyLive ? buyY : na, "Buy (live)", color = color.new(bullColor, 45), style = plot.style_circles, linewidth = 6, display = display.pane)
+
+plot(showMarks and sellLock ? sellY : na, "Sell bloom", color = color.new(bearColor, 90), style = plot.style_circles, linewidth = 16, display = display.pane)
+plot(showMarks and sellLock ? sellY : na, "Sell halo", color = color.new(bearColor, 68), style = plot.style_circles, linewidth = 11, display = display.pane)
+plot(showMarks and sellLock ? sellY : na, "Sell (locked)", color = bearColor, style = plot.style_circles, linewidth = 6, display = display.pane)
+plot(showMarks and sellLive ? sellY : na, "Sell ghost halo", color = color.new(bearColor, 82), style = plot.style_circles, linewidth = 11, display = display.pane)
+plot(showMarks and sellLive ? sellY : na, "Sell (live)", color = color.new(bearColor, 45), style = plot.style_circles, linewidth = 6, display = display.pane)
+
+plot(showMarks and fadeLock ? close : na, "Thrust faded", color = fadeColor, style = plot.style_circles, linewidth = 4, display = display.pane)
+
+// ── Live gauge: LED ladder in real prices (redrawn on the last bar) ─────
+var array<box>   gBoxes  = array.new<box>()
+var array<line>  gLines  = array.new<line>()
+var array<label> gLabels = array.new<label>()
+
+if barstate.islast
+    for bxObj in gBoxes
+        box.delete(bxObj)
+    for lnObj in gLines
+        line.delete(lnObj)
+    for lbObj in gLabels
+        label.delete(lbObj)
+    gBoxes.clear()
+    gLines.clear()
+    gLabels.clear()
+
+if barstate.islast and showGauge and ready
+    // If the last bar is already closed, the levels refer to the next bar's close.
+    bool  useNext = confirmed
+    float cP   = useNext ? close : close[1]
+    float aP   = math.max(useNext ? atrVal : atrVal[1], syminfo.mintick)
+    float eD1  = nz(useNext ? emaD : emaD[1])
+    float eA1  = nz(useNext ? emaA : emaA[1])
+    float nrm  = math.sqrt(alpha / (2.0 - alpha)) * math.max(nz(useNext ? sdD : sdD[1], 0.8), 0.2)
+    float gC   = chargeAt(close, cP, aP, eD1, eA1, alpha, nrm, lockLevel)   // equals `charge` while the bar is open
+
+    // Price ladder: prices at 0, 25, 50, 75, 100% of the lock level (rails further than 4 ATR are dropped)
+    array<float> upP = array.new<float>(5, na)
+    array<float> dnP = array.new<float>(5, na)
+    float reach = 4.0 * atrVal
+    for k = 0 to 4
+        float lv = k * 0.25
+        float pu = solveClose(lv, cP, aP, eD1, eA1, alpha, nrm, lockLevel)
+        float pd = solveClose(-lv, cP, aP, eD1, eA1, alpha, nrm, lockLevel)
+        upP.set(k, (na(pu) or math.abs(pu - close) > reach) ? na : pu)
+        dnP.set(k, (na(pd) or math.abs(pd - close) > reach) ? na : pd)
+
+    float topP = na
+    float botP = na
+    for k = 0 to 4
+        float pu = upP.get(k)
+        float pd = dnP.get(k)
+        if not na(pu)
+            topP := na(topP) ? pu : math.max(topP, pu)
+        if not na(pd)
+            botP := na(botP) ? pd : math.min(botP, pd)
+    topP := na(topP) ? close + 2.0 * atrVal : math.max(topP, close + 0.25 * atrVal)
+    botP := na(botP) ? close - 2.0 * atrVal : math.min(botP, close - 0.25 * atrVal)
+
+    bool  atLock   = math.abs(gC) >= 1.0
+    color stateCol = gC > 0.05 ? bullColor : gC < -0.05 ? bearColor : neutralCol
+    int   x0 = bar_index + gaugeOffset
+    int   x1 = x0 + 2
+
+    // Glow and track
+    gBoxes.push(box.new(x0 - 1, topP + 0.15 * atrVal, x1 + 1, botP - 0.15 * atrVal, xloc = xloc.bar_index, border_color = na, bgcolor = color.new(stateCol, atLock ? 80 : 94)))
+    gBoxes.push(box.new(x0, topP, x1, botP, xloc = xloc.bar_index, border_color = color.new(stateCol, atLock ? 15 : 65), border_width = 1, bgcolor = color.new(neutralCol, 92)))
+
+    // LED segments (each side: four segments between the 0/25/50/75/100% prices)
+    for k = 0 to 3
+        float u0 = upP.get(k)
+        float u1 = upP.get(k + 1)
+        if not na(u0) and not na(u1)
+            float fUp = gC > 0 ? math.max(0.0, math.min(1.0, (gC - k * 0.25) / 0.25)) : 0.0
+            gBoxes.push(box.new(x0, u1, x1, u0, xloc = xloc.bar_index, border_color = color.new(neutralCol, 70), border_width = 1, bgcolor = color.new(bullColor, 90 - 78 * fUp)))
+        float d0 = dnP.get(k)
+        float d1 = dnP.get(k + 1)
+        if not na(d0) and not na(d1)
+            float fDn = gC < 0 ? math.max(0.0, math.min(1.0, (-gC - k * 0.25) / 0.25)) : 0.0
+            gBoxes.push(box.new(x0, d0, x1, d1, xloc = xloc.bar_index, border_color = color.new(neutralCol, 70), border_width = 1, bgcolor = color.new(bearColor, 90 - 78 * fDn)))
+
+    // Cap: price already beyond a lock price
+    float rUp = upP.get(4)
+    float rDn = dnP.get(4)
+    if not na(rUp) and close > rUp
+        gBoxes.push(box.new(x0, topP, x1, rUp, xloc = xloc.bar_index, border_color = na, bgcolor = color.new(bullColor, 15)))
+    if not na(rDn) and close < rDn
+        gBoxes.push(box.new(x0, rDn, x1, botP, xloc = xloc.bar_index, border_color = na, bgcolor = color.new(bearColor, 15)))
+
+    // Zero line and needle
+    float zeroP = upP.get(0)
+    if not na(zeroP)
+        gLines.push(line.new(x0 - 1, zeroP, x1 + 1, zeroP, xloc = xloc.bar_index, color = color.new(neutralCol, 20), width = 1, style = line.style_dotted))
+    gLines.push(line.new(x0 - 1, close, x1 + 1, close, xloc = xloc.bar_index, color = stateCol, width = 3))
+
+    // Entry rail runs into the gauge while a stance is active
+    if showEntry and lockedStance != 0 and not na(entryRail)
+        line.set_x2(entryRail, x0 - 1)
+
+    // Lock rails and tags: solid color-filled badges (the rail for the side already held is not shown)
+    if lockedStance != 1 and not na(rUp)
+        gLines.push(line.new(bar_index, rUp, x1, rUp, xloc = xloc.bar_index, color = color.new(bullColor, 25), width = 1, style = line.style_dashed))
+        gLabels.push(label.new(x1 + 1, rUp, "BUY ≥ " + str.tostring(rUp, format.mintick) + "\n" + fmtSigned((rUp - close) / atrVal) + " ATR", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(bullColor, 6), textcolor = onColor(bullColor), size = size.small))
+    if lockedStance != -1 and not na(rDn)
+        gLines.push(line.new(bar_index, rDn, x1, rDn, xloc = xloc.bar_index, color = color.new(bearColor, 25), width = 1, style = line.style_dashed))
+        gLabels.push(label.new(x1 + 1, rDn, "SELL ≤ " + str.tostring(rDn, format.mintick) + "\n" + fmtSigned((rDn - close) / atrVal) + " ATR", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(bearColor, 6), textcolor = onColor(bearColor), size = size.small))
+
+    // Fade level while a stance is active
+    float fadeP = lockedStance == 1 ? solveClose(fadeLevel, cP, aP, eD1, eA1, alpha, nrm, lockLevel) : lockedStance == -1 ? solveClose(-fadeLevel, cP, aP, eD1, eA1, alpha, nrm, lockLevel) : na
+    if not na(fadeP) and math.abs(fadeP - close) <= reach
+        gLines.push(line.new(bar_index, fadeP, x1, fadeP, xloc = xloc.bar_index, color = color.new(fadeColor, 25), width = 1, style = line.style_dashed))
+        gLabels.push(label.new(x1 + 1, fadeP, (lockedStance == 1 ? "FADES < " : "FADES > ") + str.tostring(fadeP, format.mintick) + "\n" + fmtSigned((fadeP - close) / atrVal) + " ATR", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(fadeColor, 6), textcolor = onColor(fadeColor), size = size.small))
+
+    // Status badge (large): only shown when it adds information.
+    // Solid fill = locked or live signal; amber = fading; charging is white text on a dark chip below 50%
+    // and dark text on a solid color fill from 50% up.
+    float peakNow = math.max(peakAtr, sinceNow)
+    string head = ""
+    string sub  = ""
+    color headBg = color.new(#1B2130, 4)
+    color headTx = #FFFFFF
+    if buyLive or sellLive
+        color acc = buyLive ? bullColor : bearColor
+        head := (buyLive ? "BUY" : "SELL") + " · LIVE"
+        sub  := "locks only at bar close"
+        headBg := color.new(acc, 22)
+        headTx := onColor(acc)
+    else if lockedStance != 0
+        color acc = lockedStance == 1 ? bullColor : bearColor
+        bool fading = lockedStance == 1 ? gC < fadeLevel : gC > -fadeLevel
+        int held = na(entryBar) ? 0 : bar_index - entryBar
+        head := (lockedStance == 1 ? "LONG" : "SHORT") + " · " + str.tostring(held) + (held == 1 ? " bar" : " bars") + (fading ? " · FADING" : "")
+        sub  := fmtSigned(sinceNow) + " ATR · peak " + fmtSigned(peakNow)
+        headBg := color.new(fading ? fadeColor : acc, 6)
+        headTx := onColor(fading ? fadeColor : acc)
+    else if math.abs(gC) >= 0.15
+        head := (gC > 0 ? "▲ " : "▼ ") + str.tostring(math.round(math.min(math.abs(gC), 1.0) * 100)) + "% CHARGE"
+        if math.abs(gC) >= 0.5
+            headBg := color.new(stateCol, 12)
+            headTx := onColor(stateCol)
+    if head != ""
+        string statusTxt = sub == "" ? head : head + "\n" + sub
+        gLabels.push(label.new(x0 + 1, topP + 0.15 * atrVal, statusTxt, xloc = xloc.bar_index, style = label.style_label_down, color = headBg, textcolor = headTx, size = size.normal))
+
+    // Footer chip (large): countdown while a live bar is open (turns amber in the last 10 seconds),
+    // or a note when the levels refer to the next bar
+    string foot = ""
+    color footBg = color.new(#26324A, 4)
+    color footTx = #FFFFFF
+    if barstate.isrealtime and not confirmed and not na(time_close)
+        int remain = int(math.max(0.0, (time_close - timenow) / 1000.0))
+        foot := "CLOSES IN " + fmtClock(remain)
+        if remain <= 10
+            footBg := color.new(fadeColor, 4)
+            footTx := onColor(fadeColor)
+    else if useNext
+        foot := "LEVELS APPLY TO NEXT BAR"
+    if foot != ""
+        gLabels.push(label.new(x0 + 1, botP - 0.15 * atrVal, foot, xloc = xloc.bar_index, style = label.style_label_up, color = footBg, textcolor = footTx, size = size.normal))
+
+// ── Alerts ──────────────────────────────────────────────────────────────
+alertcondition(buyLock,  "Buy locked (confirmed at bar close)",  "Buy locked at bar close. {{ticker}} {{interval}} @ {{close}}")
+alertcondition(sellLock, "Sell locked (confirmed at bar close)", "Sell locked at bar close. {{ticker}} {{interval}} @ {{close}}")
+alertcondition(buyLive,  "Buy live (intrabar)",  "Live buy: charge reached the lock level on the open bar. Not locked yet. {{ticker}} {{interval}} @ {{close}}")
+alertcondition(sellLive, "Sell live (intrabar)", "Live sell: charge reached the lock level on the open bar. Not locked yet. {{ticker}} {{interval}} @ {{close}}")
+alertcondition(buyApproach,  "Buy charge 80% (live)",  "Buy charge crossed 80% of the lock level on the open bar. {{ticker}} {{interval}} @ {{close}}")
+alertcondition(sellApproach, "Sell charge 80% (live)", "Sell charge crossed 80% of the lock level on the open bar. {{ticker}} {{interval}} @ {{close}}")
+alertcondition(fadeLock, "Thrust faded (confirmed at bar close)", "Thrust faded: stance returned to flat at bar close. {{ticker}} {{interval}} @ {{close}}")

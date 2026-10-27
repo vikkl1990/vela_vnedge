@@ -1,0 +1,166 @@
+
+ //@version=6
+indicator("Efficient Trend Step [Noise Detection]", overlay=true)
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+
+// Trend Settings
+groupTrend = "Trend Settings"
+
+length    = input.int(100, "Efficiency Length", minval=1, group=groupTrend)
+fast      = input.int(50, "Fast Volatility Length", minval=1, group=groupTrend)
+slow      = input.int(200, "Slow Volatility Length", minval=1, group=groupTrend)
+src       = input.source(close, "Source", group=groupTrend)
+
+// Noise Detection
+groupNoise = "Noise Detection"
+
+atrLength     = input.int(14, "ATR Length", minval=1, group=groupNoise)
+atrMult       = input.float(1.0, "ATR Step Multiplier", minval=0.0, step=0.1, group=groupNoise)
+spikeMult     = input.float(2.5, "Spike Detection Multiplier", minval=0.1, step=0.1, group=groupNoise)
+minEfficiency = input.float(0.15, "Minimum Efficiency", minval=0.0, maxval=1.0, step=0.05, group=groupNoise)
+
+// Trend Confirmation
+groupConfirm = "Trend Confirmation"
+
+confirmATR = input.float(0.25, "Reversal Confirmation (ATR)", minval=0.0, step=0.05, group=groupConfirm)
+
+// Bar Strength
+groupGradient = "Bar Strength"
+
+smoothness = input.int(5, "Gradient Smoothness", minval=1, maxval=20, group=groupGradient)
+
+// Appearance
+advancedGroup = "Appearance"
+
+Green = input.color(color.new(color.teal, 0), "Colors", inline="1", group=advancedGroup, display=display.none)
+Red   = input.color(color.new(color.red, 0), "", inline="1", group=advancedGroup, display=display.none)
+Range = input.color(color.new(color.gray, 0), "", inline="1", group=advancedGroup, display=display.none)
+
+// Buy / Sell Signals
+groupSignals = "Buy / Sell Signals"
+
+showSignals = input.bool(true, "Show Buy / Sell Labels", group=groupSignals)
+// ─────────────────────────────────────────────
+// Functions
+// ─────────────────────────────────────────────
+getEfficiency(float source, int len) =>
+    float movement = math.abs(ta.change(source, len))
+    float volatility = math.sum(math.abs(ta.change(source)), len)
+    volatility > 0 ? movement / volatility : 0.0
+
+getDeviation(float source, int erLen, int fastLen, int slowLen) =>
+    float er = getEfficiency(source, erLen)
+    float fastDev = ta.stdev(source * 2.0, fastLen)
+    float slowDev = ta.stdev(source * 2.0, slowLen)
+    er * fastDev + (1.0 - er) * slowDev
+
+getATRNoise(int len, float mult) =>
+    ta.atr(len) * mult
+
+// ─────────────────────────────────────────────
+// Noise Detection
+// ─────────────────────────────────────────────
+er = getEfficiency(src, length)
+atr = ta.atr(atrLength)
+dev = getDeviation(src, length, fast, slow)
+
+stepSize = math.max(dev, getATRNoise(atrLength, atrMult))
+
+// Detect unusually large single-bar movement.
+barMove = math.abs(close - close[1])
+normalMove = ta.ema(math.abs(close - close[1]), atrLength)
+spike = barMove > atr * spikeMult and barMove > normalMove
+
+// Low efficiency means the market is moving without
+// much net directional progress.
+choppy = er < minEfficiency
+
+// ─────────────────────────────────────────────
+// Confirmed Trend Step
+// ─────────────────────────────────────────────
+var float step = na
+var int direction = 0
+
+previous = nz(step[1], src)
+previousDirection = nz(direction[1], 0)
+
+upper = previous + stepSize + atr * confirmATR
+lower = previous - stepSize - atr * confirmATR
+
+// Hold the previous step during a detected spike.
+// Otherwise, require a confirmed threshold break.
+if not na(atr) and not na(dev)
+    if spike
+        step := previous
+        direction := previousDirection
+    else if src > upper
+        if not choppy or previousDirection <= 0
+            step := src
+            direction := 1
+        else
+            step := previous
+            direction := previousDirection
+    else if src < lower
+        if not choppy or previousDirection >= 0
+            step := src
+            direction := -1
+        else
+            step := previous
+            direction := previousDirection
+    else
+        step := previous
+        direction := previousDirection
+
+// ─────────────────────────────────────────────
+// Colors
+// ─────────────────────────────────────────────
+trendColor = direction == 1 ? Green :
+     direction == -1 ? Red :
+     Range
+
+plot(step, "Filtered Trend Step", color=trendColor, linewidth=1, style=plot.style_stepline)
+
+s = plot(step, "Filtered Trend Step", color=trendColor, linewidth=3, display=display.none)
+p = plot(close, "Price Reference", display=display.none)
+
+fillColor = direction == 1 ? color.new(Green, 50) :
+     direction == -1 ? color.new(Red, 50) :
+     color.new(Range, 100)
+
+fill(s, p, step, close, chart.bg_color,fillColor, editable=false)
+
+
+// Trend strength based on price distance from step
+atrValue = math.max(ta.atr(atrLength), syminfo.mintick)
+
+trendStrength = (src - step) / atrValue
+
+// Normalize gradient
+rawGradient = math.max(-1.0, math.min(1.0, trendStrength))
+
+// Smooth gradient using EMA
+smoothedGradient = ta.ema(rawGradient, smoothness)
+
+// Red → Gray → Green
+barGradient = direction == 1 ?
+     color.from_gradient(smoothedGradient, 0.0, 1.0, Range, Green) :
+     color.from_gradient(smoothedGradient, -1.0, 0.0, Red, Range)
+
+// Apply candle colors
+barcolor(barGradient, title="Smooth Trend Gradient Bars")
+
+// ────────────────────────────────────────
+// BUY / SELL LABELS
+// ────────────────────────────────────────
+
+buySignal  = showSignals and direction == 1 and direction[1] == -1
+sellSignal = showSignals and direction == -1 and direction[1] == 1
+
+dropY = low  - (ta.atr(30) * 6)
+riseY = high + (ta.atr(30) * 6)
+
+buyLbl  = buySignal  ? label.new(bar_index, dropY,  str.tostring(step,format.volume),  xloc.bar_index, yloc.price, Green, label.style_label_up,   color.white) : na
+sellLbl = sellSignal ? label.new(bar_index, riseY, str.tostring(step,format.volume), xloc.bar_index, yloc.price, Red,  label.style_label_down, color.white) : na

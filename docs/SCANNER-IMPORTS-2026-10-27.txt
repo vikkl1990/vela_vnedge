@@ -1,0 +1,43 @@
+Three user-requested TradingView imports, 27 October 2026
+
+Sources retained verbatim, including author/license text:
+  wMcOiPoG — blitz_locked — Absorption Reversal [Delta Trap]
+  tedFSNHA — a.b — Signal Charge: Momentum Buy Sell Signals
+  ihf781Bu — NeuraAlgo — Efficient Trend Step [Noise Detection]
+
+Signal Charge contract reads only confirmed buy/sell locks. Live locks,
+80% approaches, stance strips and decorative labels cannot open trades.
+Thrust faded remains informational; the fleet's existing exits are used.
+
+Efficient Trend Step has numeric labels rather than directional alerts.
+A filename-scoped runtime adapter exposes the existing buySignal and
+sellSignal booleans as bar-confirmed alertconditions. Original calculations
+and source are unchanged. The specs select those conditions only.
+
+Absorption remains incompatible with an explicit correctness quarantine.
+Its published `absRaw and (na(lastAbs)) or bar_index - lastAbs > absGap`
+permits the gap branch without fresh absorption after the first setup.
+Lower-timeframe delta history also needs coverage/parity validation.
+No strategy orders were emitted in the nine runtime tests. A future
+runtime pass cannot clear the correctness hold; remove it only following
+source and data validation. It receives no watch-only or account cells.
+
+Engineering evaluation: BTCUSD/ETHUSD/SOLUSD × 15m/1h/4h, ~1,200 closed
+bars each, entries limited to 20–26 October UTC. Seven complete days of
+1m exits (10,080 bars per symbol, no missing minutes); shared shadow
+policy including current fees/GST/slippage, 6× risk/cost, regime gates,
+and configured 1h/4h maker pullbacks. Independent cells, not a portfolio.
+No historical depth/spread or funding settlement data supplied.
+
+Signal Charge: 62 signals, 17 closed trades, -5.873R.
+Trend Step: 24 signals, 7 closed trades, -1.202R.
+Most 15m signals refused because their stop is too tight for fees.
+Neither result supports account activation. No gates relaxed.
+Prefix checks (last 60 bars removed) showed zero changed events among
+257 historical indicator entries. This is a limited check, not proof
+against every kind of repainting.
+
+Live evaluation uses a watch-only tracker: the two working indicators ×
+three tested pairs × three tested TFs = 18 cells. Native account scanners
+remain disabled for these imports; tracked cells cannot enter the copy
+pilot. Forward results will determine whether further research is justified.

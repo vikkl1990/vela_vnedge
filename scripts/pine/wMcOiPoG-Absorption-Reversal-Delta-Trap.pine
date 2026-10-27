@@ -1,0 +1,249 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © blitz_locked
+
+//@version=6
+strategy("Absorption Reversal", shorttitle = "Absorption Strat", overlay = true,
+     max_boxes_count = 500, max_labels_count = 500,
+     default_qty_type = strategy.percent_of_equity, default_qty_value = 30,
+     initial_capital = 10000, commission_type = strategy.commission.percent, commission_value = 0.02,
+     slippage = 1, pyramiding = 0, calc_on_every_tick = false)
+
+// ═════════════════════════ SETTINGS ═════════════════════════
+grpA = "Absorption detection"
+absSens = input.string("Medium", "Sensitivity", options = ["Low", "Medium", "High"], group = grpA,
+     tooltip = "High = more signals. Low = fewer, cleaner signals.")
+absGap  = input.int(10, "Min bars between signals", minval = 1, group = grpA)
+usePrf  = input.bool(true, "Require dominance filter", group = grpA,
+     tooltip = "Absorption bar's |delta| must be at least the dominance % of its volume (one-sided aggression).")
+domPct  = input.float(20.0, "Min dominance (%)", minval = 0.0, maxval = 100.0, group = grpA)
+
+grpE = "Entry"
+confMode = input.string("Close beyond body", "Confirmation", options = ["None", "Close beyond body"], group = grpE,
+     tooltip = "None = enter on the absorption bar close. Close beyond body = wait for a later candle to close back through the absorption candle's body (the aggressive side is trapped).")
+confWait = input.int(3, "Confirmation window (bars)", minval = 1, maxval = 20, group = grpE,
+     tooltip = "Signal is cancelled if not confirmed in this many bars, or if price takes out the absorption extreme first.")
+allowLong  = input.bool(true, "Allow longs", inline = "dir", group = grpE)
+allowShort = input.bool(true, "Allow shorts", inline = "dir", group = grpE)
+trendMode  = input.string("Off", "Trend filter", options = ["Off", "With EMA trend", "Against EMA trend"], group = grpE)
+trendLen   = input.int(200, "Trend EMA length", minval = 5, group = grpE)
+useSess    = input.bool(false, "Session filter", inline = "ses", group = grpE)
+sessStr    = input.session("0930-1600", "", inline = "ses", group = grpE)
+
+grpX = "Exit / risk"
+slBuf   = input.float(0.25, "Stop buffer beyond extreme (x ATR)", minval = 0.0, step = 0.05, group = grpX)
+rr      = input.float(2.0, "Take profit (R multiple)", minval = 0.5, step = 0.25, group = grpX)
+maxRisk = input.float(3.0, "Skip if stop wider than (x ATR)", minval = 0.5, step = 0.25, group = grpX)
+minRisk = input.float(0.3, "Skip if stop tighter than (x ATR)", minval = 0.0, step = 0.05, group = grpX)
+useBE   = input.bool(true, "Move stop to break-even", inline = "be", group = grpX)
+beR     = input.float(1.0, "after (R)", minval = 0.25, step = 0.25, inline = "be", group = grpX)
+maxHold = input.int(30, "Time stop (bars)", minval = 1, group = grpX)
+
+grpV = "Visuals"
+showAbs   = input.bool(true, "Show absorption markers", group = grpV)
+absStyle  = input.string("White Border", "Marker style", options = ["White Border", "Square"], group = grpV)
+showZones = input.bool(true, "Show absorption zones", group = grpV,
+     tooltip = "Wick zone projected to the right until a candle closes through it.")
+keepZones = input.bool(true, "Keep broken zones", group = grpV)
+showLvls  = input.bool(true, "Show stop / target lines", group = grpV)
+showTbl   = input.bool(true, "Show stats table", group = grpV)
+bullCol   = input.color(#00D6A3, "Colors", inline = "col", group = grpV)
+bearCol   = input.color(#FF4D6D, "", inline = "col", group = grpV)
+
+// ═════════════════════════ FIXED PARAMETERS ═════════════════════════
+LOOKBACK = 500
+MAX_ZONES = 40
+
+float absPct  = absSens == "High" ? 90.0 : absSens == "Low" ? 97.5 : 95.0
+float absBody = absSens == "High" ? 0.35 : absSens == "Low" ? 0.20 : 0.25
+int   absLook = absSens == "High" ? 10   : absSens == "Low" ? 40   : 20
+float absWick = absSens == "High" ? 0.15 : absSens == "Low" ? 0.30 : 0.20
+
+// ═════════════════════════ DELTA ═════════════════════════
+int tfSec = timeframe.in_seconds()
+string ltf = tfSec <= 60 ? timeframe.period : tfSec <= 3600 ? "1" : tfSec <= 14400 ? "5" : tfSec <= 86400 ? "15" : "60"
+
+f_ibDelta() =>
+    float v = nz(volume)
+    float d = close > open ? v : close < open ? -v : close > nz(close[1]) ? v : close < nz(close[1]) ? -v : 0.0
+    d
+
+float[] ibArr    = request.security_lower_tf(syminfo.tickerid, ltf, f_ibDelta(), ignore_invalid_timeframe = true)
+float   ltfDelta = ibArr.size() > 0 ? ibArr.sum() : na
+
+float rng = high - low
+float estDelta = rng > 0 ? nz(volume) * (2*close-high-low) / rng : 0.0
+float delta = na(ltfDelta) ? estDelta : ltfDelta
+float absD = math.abs(delta)
+float dom = nz(volume) > 0 ? absD/volume * 100 : 0.0
+
+float pAbs = ta.percentile_nearest_rank(absD, LOOKBACK, absPct)
+float atr  = ta.atr(14)
+float hiN  = ta.highest(high, absLook)
+float loN  = ta.lowest(low, absLook)
+float trendEma = ta.ema(close, trendLen)
+
+float cumV = ta.cum(nz(volume))
+if barstate.islast and cumV == 0
+    runtime.error("This symbol has no volume data, delta can't be calculated.")
+
+bool  dirAgree = (delta > 0 and close > open) or (delta < 0 and close < open)
+float bTop     = math.max(open, close)
+float bBot     = math.min(open, close)
+
+// ═════════════════════════ ABSORPTION ═════════════════════════
+// 1) strong delta  2) no price progress  3) at swing extreme  4) rejection wick
+bool c1 = absD >= nz(pAbs, 1e300)
+bool  c2    = math.abs(close - open) <= absBody * nz(atr, rng) or not dirAgree
+bool  c3    = delta > 0 ? high >= hiN : low <= loN
+float wickR = rng > 0 ? (delta > 0 ? (high - bTop) / rng : (bBot - low) / rng) : 0.0
+bool  c4    = wickR >= absWick
+bool  c5    = not usePrf or dom >= domPct
+bool  absRaw = delta != 0 and c1 and c2 and c3 and c4 and c5
+
+var int lastAbs = na
+bool isAbs = absRaw and (na(lastAbs)) or bar_index - lastAbs > absGap
+lastAbs := isAbs ? bar_index : lastAbs
+
+int   absDir = delta > 0 ? -1 : 1      // buyers absorbed -> short, sellers absorbed -> long
+float yAbs   = delta > 0 ? high : low
+color bc     = absDir == 1 ? bullCol : bearCol
+float yA     = showAbs and isAbs ? yAbs : na
+
+plotshape(yA, "Absorption Glow", absStyle == "Square" ? shape.square : shape.circle, location.absolute, color.new(bc, 86), size = size.large, display = display.pane, editable = false)
+plotshape(absStyle == "White Border" ? yA : na, "Absorption Border", shape.circle, location.absolute, color.new(color.white, 10), size = size.normal, display = display.pane, editable = false)
+plotshape(absStyle == "White Border" ? yA : na, "Absorption Core", shape.circle, location.absolute, color.new(bc, 0), size = size.small, display = display.pane, editable = false)
+plotshape(absStyle == "Square" ? yA : na, "Absorption Square", shape.square, location.absolute, color.new(bc, 0), size = size.small, display = display.pane, editable = false)
+
+// ═════════════════════════ ZONES ═════════════════════════
+
+type Zone
+    box  bx
+    int  dir
+    bool active
+    color col
+
+var array<Zone> zones = array.new<Zone>()
+
+if barstate.isconfirmed and zones.size() > 0
+    for i = zones.size() - 1 to 0
+        Zone z = zones.get(i)
+        if z.active and bar_index > z.bx.get_left()
+            // long zone (support) breaks below, short zone (resistance) breaks above
+            bool broken = z.dir == 1 ? close < z.bx.get_bottom() : close > z.bx.get_top()
+            if broken
+                z.active := false
+                if keepZones
+                    z.bx.set_extend(extend.none)
+                    z.bx.set_right(bar_index)
+                    z.bx.set_bgcolor(color.new(z.col, 94))
+                    z.bx.set_border_color(color.new(z.col, 90))
+                else
+                    z.bx.delete()
+                    zones.remove(i)
+
+if barstate.isconfirmed and showZones and isAbs
+    if zones.size() >= MAX_ZONES
+        Zone old = zones.shift()
+        old.bx.delete()
+    float zTop = delta > 0 ? high : bBot
+    float zBot = delta > 0 ? bTop : low
+    box b = box.new(bar_index, zTop, bar_index + 1, zBot, border_color = color.new(bc, 70), border_width = 1, bgcolor = color.new(bc, 85), extend = extend.right)
+    zones.push(Zone.new(b, absDir, true, bc))
+
+// ═════════════════════════ SIGNAL STATE MACHINE ═════════════════════════
+var int   pDir = 0
+var float pExt = na
+var float pLvl = na
+var int   pBar = na
+
+int   sigDir = 0
+float sigSL  = na
+
+if isAbs
+    pDir := absDir
+    pExt := yAbs
+    pLvl := absDir == 1 ? bTop : bBot
+    pBar := bar_index
+    if confMode == "None"
+        sigDir := pDir
+        sigSL  := pDir == 1 ? pExt - nz(atr, rng) * slBuf : pExt + nz(atr, rng) * slBuf
+        pDir   := 0
+else if pDir != 0
+    bool invalid = pDir == 1 ? low < pExt : high > pExt
+    bool expired = bar_index - pBar > confWait
+    if invalid or expired
+        pDir := 0
+    else if (pDir == 1 and close > pLvl) or (pDir == -1 and close < pLvl)
+        sigDir := pDir
+        sigSL  := pDir == 1 ? pExt - nz(atr, rng) * slBuf : pExt + nz(atr, rng) * slBuf
+        pDir   := 0
+
+// ═════════════════════════ FILTERS ═════════════════════════
+bool inSess  = not useSess or not na(time(timeframe.period, sessStr, syminfo.timezone))
+bool trendOK = trendMode == "Off" or
+     (trendMode == "With EMA trend"    and ((sigDir == 1 and close > trendEma) or (sigDir == -1 and close < trendEma))) or
+     (trendMode == "Against EMA trend" and ((sigDir == 1 and close < trendEma) or (sigDir == -1 and close > trendEma)))
+bool dirOK   = (sigDir == 1 and allowLong) or (sigDir == -1 and allowShort)
+
+float riskDist = math.abs(close - nz(sigSL, close))
+bool  riskOK   = riskDist >= minRisk * nz(atr, rng) and riskDist <= maxRisk * nz(atr, rng)
+bool  slSide   = sigDir == 1 ? sigSL < close : sigDir == -1 ? sigSL > close : false
+
+// ═════════════════════════ ENTRIES ═════════════════════════
+var float tradeSL = na
+var bool  beHit   = false
+var int   entryBar = na
+
+if sigDir != 0 and dirOK and trendOK and inSess and riskOK and slSide and strategy.position_size == 0
+    tradeSL := sigSL
+    beHit   := false
+    if sigDir == 1
+        strategy.entry("Long", strategy.long, comment = "Abs Long")
+    else
+        strategy.entry("Short", strategy.short, comment = "Abs Short")
+
+if strategy.position_size != 0 and nz(strategy.position_size[1]) == 0
+    entryBar := bar_index
+
+// ═════════════════════════ EXITS ═════════════════════════
+float curStop = na
+float curTp   = na
+
+if strategy.position_size != 0 and not na(tradeSL)
+    float avg  = strategy.position_avg_price
+    bool  isL  = strategy.position_size > 0
+    float risk = math.abs(avg - tradeSL)
+    if useBE and not beHit and risk > 0
+        if isL ? high >= avg + risk * beR : low <= avg - risk * beR
+            beHit := true
+    curStop := beHit ? avg : tradeSL
+    curTp   := isL ? avg + risk * rr : avg - risk * rr
+    if isL
+        strategy.exit("Exit L", "Long", stop = curStop, limit = curTp)
+    else
+        strategy.exit("Exit S", "Short", stop = curStop, limit = curTp)
+    if not na(entryBar) and bar_index - entryBar >= maxHold
+        strategy.close_all(comment = "Time stop")
+
+plot(showLvls ? curStop : na, "Stop", color = color.new(bearCol, 20), style = plot.style_linebr, linewidth = 1)
+plot(showLvls ? curTp : na,   "Target", color = color.new(bullCol, 20), style = plot.style_linebr, linewidth = 1)
+
+// ═════════════════════════ STATS TABLE ═════════════════════════
+var table tbl = table.new(position.top_right, 2, 6, bgcolor = color.new(#0b0e14, 15), frame_color = color.new(#787b86, 70), frame_width = 1)
+
+f_row(row, key, val, col) =>
+    table.cell(tbl, 0, row, key, text_color = #787b86, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, row, val, text_color = col, text_size = size.small, text_halign = text.align_right)
+
+if showTbl and barstate.islast
+    int   nT = strategy.closedtrades
+    float wr = nT > 0 ? 100.0 * strategy.wintrades / nT : na
+    float gp = strategy.grossprofit
+    float gl = strategy.grossloss
+    table.cell(tbl, 0, 0, "ABSORPTION REVERSAL", text_color = bullCol, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 0, syminfo.ticker + " " + timeframe.period, text_color = #e1e4ea, text_size = size.small, text_halign = text.align_right)
+    f_row(1, "Delta source", na(ltfDelta) ? "bar shape (est.)" : ltf + " intrabar", #e1e4ea)
+    f_row(2, "Closed trades", str.tostring(nT), #e1e4ea)
+    f_row(3, "Win rate", na(wr) ? "–" : str.tostring(wr, "#.0") + "%", #e1e4ea)
+    f_row(4, "Profit factor", gl != 0 ? str.tostring(gp / math.abs(gl), "#.00") : "–", #e1e4ea)
+    f_row(5, "Net profit", str.tostring(strategy.netprofit, "#,###.00"), strategy.netprofit >= 0 ? bullCol : bearCol)
