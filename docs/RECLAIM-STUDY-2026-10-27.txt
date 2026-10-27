@@ -1,0 +1,32 @@
+Completed-minute reclaim entry study — 27 October 2026
+
+Reclaim research v1. Three sources x BTC/ETH/SOL 15m. Cached 56-day histories ending 25 Oct 2026; chronological 28/28 split. Full fees and GST, 6x stop/cost policy, account-compatible source stops and existing regime; reversals disabled in every variant. Common conservative maker fill-minute stop handling. Market entry and one-bar 0.1 ATR maker controls; completed 1m reclaim with 10m/2m or 30m/3m setup/order TTL; optional structural stop; separate 30m time exit. Crossing scenarios 0.02/0.08 percent round trip plus extra 3bp stress. Historical funding/depth/queue unavailable; prior-used history is exploratory, not pristine holdout.
+
+Implementation and validation
+The research module waits for a completed minute pullback, then a later minute close beyond the previous minute high (long) or low (short). It places a passive limit at that reclaimed level, first eligible to fill in the following minute. New signals replace a pending setup; source exits cancel it; gaps and invalidation cancel it. It never infers pullback and reclaim inside one candle.
+Tests cover forming/pre-signal exclusion, long/short symmetry, touch/through fills, expiry, gaps, invalidation, fill-minute stop before profit, time exit and missing data. Full server suite: 582 passed, zero failed; TypeScript check passed.
+All variants disable reversals for comparability. The ATR reclaim control retains the baseline ATR stop distance; the structural variant uses the observed pullback extreme plus a 0.05 setup-ATR buffer (at least one tick). Historical entry quotes and queue positions are absent. Both resting-entry models receive conservative fill-minute stop handling; no fill-minute target is credited.
+No live paper configuration or positions were changed. Research feature is not wired into live entry handling.
+
+Later 28 days at 0.02% round-trip crossing, excluding commissions from that crossing assumption but including modeled commissions in net R:
+Symbol / scanner | simple maker trades, R | reclaim-10m trades, R | reclaim+30m exit trades, R
+BTCUSD / trend-impulse-channels-zeiierman | 15, -1.67R | 6, -1.94R | 6, -2.00R
+BTCUSD / smart-money-breakout-signals | 0, +0.00R | 0, +0.00R | 0, +0.00R
+ETHUSD / trend-impulse-channels-zeiierman | 32, -6.83R | 20, -6.17R | 20, -4.91R
+ETHUSD / smart-money-breakout-signals | 2, -0.65R | 1, +0.55R | 1, -0.22R
+SOLUSD / trend-impulse-channels-zeiierman | 52, -1.88R | 23, -0.90R | 23, -3.37R
+SOLUSD / smart-money-breakout-signals | 9, +0.85R | 6, -2.13R | 6, -1.78R
+
+SOL Smart Money diagnosis
+Simple maker: 9 trades, +0.85R. Reclaim: 6 trades, -2.13R. Reclaim omitted 3 winners and 0 losers; omitted setups contributed +1.51R. On common setups the simple maker earned -0.66R versus reclaim -2.13R. Thus both opportunity loss and worse outcomes after later entry mattered. This comparison does not prove an exchange execution would have followed either candle path.
+A longer 30-minute setup window did not repair SOL Smart Money. The 30-minute forced exit reduced full stops but still returned -1.78R. Counting fewer stops alone would have hidden that loss.
+The tight structural variant produced almost no trades under the existing 6x stop/cost rule. This implementation therefore cannot demonstrate that structural stops improve the current account.
+No tested candidate was positive in both chronological halves under both crossing assumptions. Prior-used histories, nine cells and small samples do not justify broad activation.
+
+Next correction indicated by this evidence
+Keep the simple maker setup as the control. Test taking a confirmed reclaim once, without requiring a second pullback to a new limit, priced as a taker at the next executable minute/open and with full costs. This is a new hypothesis, not a validated upgrade. Measure the three missed winners and all losing control opportunities, not only the favorable subset. Do not optimize toward fewer SL labels or widen stops to manufacture fee eligibility.
+Separately, a true short-hold structural scalper needs a net-payoff cost policy validated on its own opportunity set; the current 6x stop-distance policy was retained here and blocks most such entries. A change to that policy cannot be justified from the few surviving trades.
+
+Coverage and limitations
+108 scenario/cell results; 0 execution errors. All supplied candle series had zero adjacent gaps. BTC prefix checks for the three source scripts matched the corresponding pre-cutoff events in the full-history run. This checks those prefixes, not all possible repaint behavior. Structure-Anchored VWAP generated no account-compatible completed trades in these variants.
+Closed trades only; early-half trades still held past the split are excluded from early-half totals. Shadow-sized isolated strategy results do not model account capacity, cross-scanner collisions or live depth. Exact funding settlements are missing. Additional slippage stress is in the JSON. These are exploratory historical results, not post-deployment profit.

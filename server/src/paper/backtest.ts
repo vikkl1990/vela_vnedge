@@ -1,4 +1,5 @@
 import { crossingSlippageBps } from './costs.ts';
+import {createReclaim, advanceReclaim, type ReclaimOptions, type ReclaimState} from './reclaim.ts';
 import {alignmentRule,alignmentRefusal,aggregateContext} from './entryAlignment.ts';
 /**
  * In-memory backtest of one scanner over a candle history using the exact same fill logic
@@ -37,6 +38,8 @@ export interface BacktestInput {
   scannerExitResolved?: boolean;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
   subBars?: Bar[];
+  /** Research sensitivity: charge fill-minute stop/gap before profits for resting entries. */
+  conservativeEntryMinute?: boolean;
   /** Optional actual context-frame candles; complete entry-frame aggregation is the fallback. */
   alignmentBars?: Record<string, Bar[]>;
   /**
@@ -54,7 +57,9 @@ export interface BacktestInput {
      * bar that crosses it (a taker fill at the trigger), or lapses after `breakBars` signal bars. A signal whose move
      * never continues on the lower timeframe is never taken.
      */
-    breakAtr?: number; breakBars?: number };
+    breakAtr?: number; breakBars?: number;
+    /** Research only: confirmed setup -> minute pullback/reclaim -> short-lived maker order. */
+    reclaim?: ReclaimOptions };
   /**
    * The market's round-trip book crossing in percent, excluding commissions (`crossingPct(bookCostPct)`): every market-style
    * leg pays half of it instead of fallback slippage (plus explicit quotedSlippageBps), as the account does when it crosses a real
@@ -81,14 +86,17 @@ export interface BacktestResult {
   version: number;
   at: number; bars: number; from: number; to: number; signals: number; entries: number;
   stats: ReturnType<typeof computeStats> & { pnlPct: number; open: number };
-  trades: ReturnType<typeof tradeOf>[];
+  trades: Array<ReturnType<typeof tradeOf> & {setupAt: number}>;
   equity: Array<{ at: number; equity: number }>;
   rejected: Record<string, number>;
+  entryFlow?: Record<string, number>;
   costCoverage: { crossing: 'observed' | 'fallback'; funding: 'provided' | 'not-modelled' | 'disabled'; depthImpact: 'modelled' | 'not-modelled'; feeWaiver: 'disabled' | 'enrollment-dated' | 'legacy-unverified' };
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
+  if (inp.entry?.reclaim && (!inp.subBars?.length || (TF_SECONDS[inp.tf] ?? 0) <= 60)) throw Error('reclaim research requires minute subBars and a higher signal timeframe');
+  if (inp.entry?.reclaim && (inp.entry.pullbackAtr !== undefined || inp.entry.breakAtr !== undefined)) throw Error('reclaim cannot be combined with another entry model');
   // a backtest is one market, so its exit rules are resolved once (decision 34)
   // decision 113: under exit mode `script` the script's exits are the exits
   const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit, inp.tf);
@@ -101,7 +109,12 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const f = funding[fi++];
       if ((config.fundingCharges ?? true) && f.at >= (pos.openedAt ?? pos.entryAt)) applyFunding(pos, f.ratePct, f.markPrice, f.at);
     }
-    return applyBar(pos, bar, config, ...args);
+    const fills = applyBar(pos, bar, config, ...args);
+    const maxHold = inp.entry?.reclaim?.maxHoldMinutes;
+    if (maxHold && pos.status === 'open' && bar.time + 60_000 >= (pos.openedAt ?? pos.entryAt) + maxHold * 60_000) {
+      fills.push(fillExit(pos, bar.close, pos.qtyOpen, 'scalp_time', bar.time + 60_000, config, true));
+    }
+    return fills;
   };
   const atr = atrSeries(bars, 14);
   const align=alignmentRule(cfg,inp.scannerId,inp.symbol,inp.tf);
@@ -123,8 +136,11 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   let equity = cfg.initialEquity;
   let open = null as Position | null;   // assigned inside closures below, so the declared type must survive the initialiser
   const closed: Position[] = [];
+  const setupTimes = new Map<number, number>();
   const curve: Array<{ at: number; equity: number }> = [{ at: bars[0]?.time ?? 0, equity }];
   const rejected: Record<string, number> = {};
+  const entryFlow: Record<string, number> = {};
+  const flow = (key: string) => { entryFlow[key] = (entryFlow[key] ?? 0) + 1; };
   let nextId = 1, entries = 0;
 
   const finish = (p: Position) => { closed.push(p); equity += p.realizedPnl - p.fees; curve.push({ at: p.exitAt!, equity }); open = null; };
@@ -165,17 +181,54 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if (sz.qty < 1) { refuse(sz.reason ?? 'size'); return false; }
     const features = computeFeatures({ bars, i: sigI, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[sigI], levelsSource: lv.source });
     open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side!, qty: sz.qty, contractValue: inp.contractValue, maintenanceMarginPct: inp.maintenanceMarginPct, entryPrice: price, at, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: at + (maker ? 0 : tfMs), leverage: sz.leverage, marginLeverage: sz.marginLeverage, features, maker });
+    setupTimes.set(open.id, bars[sigI].time + tfMs);
     entries++;
     return true;
   };
   // a limit resting back from a signal price (the pullback entry model); the latest signal replaces an earlier one
   let pending: { ev: ScanEvent; limit: number; sigI: number; expires: number; kind?: 'limit' | 'stop' } | null = null;
+  let reclaim: {ev: ScanEvent; sigI: number; state: ReclaimState} | null = null;
 
   let busted = false;
   for (let i = 0; i < bars.length && !busted; i++) {
     const model = inp.trailModel?.(i) ?? null;
     const bar = bars[i];
     if (equity <= Math.max(0, cfg.initialEquity * 0.02)) { busted = true; rejected['purse_wiped'] = (rejected['purse_wiped'] ?? 0) + 1; break; }
+    if (reclaim && !open && sub) {
+      while (si < sub.length && sub[si].time < bar.time) si++;
+      if (si >= sub.length || sub[si].time >= bar.time + tfMs) {
+        flow('minute data gap'); reclaim = null;
+      }
+      for (let j = si; reclaim && j < sub.length && sub[j].time < bar.time + tfMs; j++) {
+        const step = advanceReclaim(reclaim.state, sub[j], sub[j].time + 60_000, through);
+        if (step.kind === 'placed') flow('orders');
+        if (step.kind === 'cancelled') { flow(step.reason); reclaim = null; break; }
+        if (step.kind !== 'filled') continue;
+        const r = reclaim; reclaim = null;
+        // The ATR control keeps the normal scanner levels and stop distance, so
+        // entry timing is tested independently of the optional structural stop.
+        const entryEvent = inp.entry!.reclaim!.structuralStop ? {...r.ev, sl: step.stop, tp: []} : r.ev;
+        if (!openAt(step.price, step.at, entryEvent, r.sigI, true)) { flow('fill refused'); break; }
+        flow('fills');
+        const o = open as unknown as Position;
+        const minute = sub[j], hitStop = o.side === 'long' ? minute.low <= o.sl! : minute.high >= o.sl!;
+        if (hitStop) {
+          // No OHLC ordering assumption in our favor: charge a gap at the worse
+          // opening price, otherwise the stop. Never award fill-minute targets.
+          const stopPrice = o.side === 'long' ? Math.min(o.sl!, minute.open) : Math.max(o.sl!, minute.open);
+          fillExit(o, stopPrice, o.qtyOpen, 'sl', minute.time, cfg, true);
+          flow('fill minute stop');
+        }
+        for (let k = j + 1; o.status === 'open' && k < sub.length && sub[k].time < bar.time + tfMs; k++) {
+          applyPriceBar(o, sub[k], cfg, atr[i - 1] ?? atr[i]);
+          if (o.status === 'open' && te?.enabled) trendExit(o, trend[i - 1], sub[k].close, sub[k].time, cfg);
+          if (o.status === 'open') earlyStallExit(o, sub[k].close, sub[k].time, cfg);
+          if (o.status === 'open') earlyCutExit(o, sub[k].close, sub[k].time, cfg);
+        }
+        if (o.status === 'closed') finish(o);
+        break;
+      }
+    }
     // 0. a resting pullback limit: filled on the first minute that touches it, dropped when its bars run out
     if (pending && !open) {
       if (i > pending.expires) { refuse('no pullback'); pending = null; }
@@ -190,6 +243,13 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
           if (openAt(limit, fillAt, ev, sigI, !isStop)) {
             // `openAt` assigned the closure's `open`; the narrowing above does not see that
             const o = open as unknown as Position;
+            if (inp.conservativeEntryMinute && !isStop && j < sub.length && sub[j].time < bar.time + tfMs) {
+              const minute = sub[j];
+              if (o.side === 'long' ? minute.low <= o.sl! : minute.high >= o.sl!) {
+                const stopPrice = o.side === 'long' ? Math.min(o.sl!, minute.open) : Math.max(o.sl!, minute.open);
+                fillExit(o, stopPrice, o.qtyOpen, 'sl', minute.time, cfg, true);
+              }
+            }
             const atrKnown = atr[i - 1] ?? atr[i];
             for (let k = j + 1; o.status === 'open' && k < sub.length && sub[k].time < bar.time + tfMs; k++) {
               applyPriceBar(o, sub[k], cfg, atrKnown);
@@ -239,6 +299,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     const evs = byBar.get(bar.time);
     if (!evs) continue;
     for (const ev of evs) {
+      if (ev.kind === 'exit' && reclaim && (!ev.side || ev.side === reclaim.ev.side)) { flow('script cancelled setup'); reclaim = null; }
       if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
         // Script messages are market instructions after the close; resting targets already had their chance in the price path.
         const type = ev.exitType ?? 'close';
@@ -279,6 +340,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const price = bar.close;
       const em = inp.entry;
       if (em?.maxSignalBarAtr && atr[i] > 0 && (bar.high - bar.low) / atr[i] > em.maxSignalBarAtr) { refuse('chased'); continue; }
+      if (em?.reclaim) {
+        const lv = resolveLevels({side: ev.side, price, sl: ev.sl, tp: ev.tp, atr: atr[i]}, cfg, inp.tickSize);
+        if ('error' in lv) { refuse(lv.error); continue; }
+        if (reclaim) flow('setup replaced');
+        reclaim = {ev, sigI: i, state: createReclaim({side: ev.side, at: bar.time + tfMs, reference: price, atr: atr[i], stop: lv.sl, tick: inp.tickSize}, em.reclaim)};
+        flow('setups');
+        continue;
+      }
       if (em?.pullbackAtr != null && em.pullbackAtr >= 0 && atr[i] > 0) {
         const raw = ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i];
         // Match passive live planning; historical candles have no contemporaneous bid/ask.
@@ -300,7 +369,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
     version: SIMULATION_VERSION, costCoverage: { crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: !cfg.scalperOffer?.enabled ? 'disabled' : cfg.scalperOffer.joinedAt === undefined ? 'legacy-unverified' : 'enrollment-dated' }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
-    stats, trades: closed.map(tradeOf).reverse(), equity: curve, rejected,
+    stats, trades: closed.map(p => ({...tradeOf(p), setupAt: setupTimes.get(p.id)!})).reverse(), equity: curve, rejected, ...(inp.entry?.reclaim ? {entryFlow: {...entryFlow, pendingAtEnd: reclaim ? 1 : 0}} : {}),
   };
 }
 
