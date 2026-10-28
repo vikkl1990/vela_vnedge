@@ -135,3 +135,18 @@ test('maker planning still requires a fresh quote when configured', () => {
   assert.match(d.reason!, /no executable/);
   assert.equal(engine.pendingEntries().length, 0);
 });
+
+test('a tape print that fills a maker entry beyond its stop must book the gap loss immediately', () => {
+  for(const side of ['long','short'] as const){
+    const {engine,at,enter,db}=setup('4h',{fillSource:'tape',scalperOffer:{enabled:false,majors:[],majorsMinutes:30,othersMinutes:15}});
+    enter(side);
+    const px=side==='long'?95:105;
+    engine.onTrade('ETHUSD',px,1,at+1000,at+1100);
+    assert.equal(engine.pendingEntries().length,0);
+    assert.equal(engine.openPositions().length,0,'the fill print already crossed the stop');
+    const row=db.get<{exit_reason:string;exit_price:number;entry_at:number;exit_at:number}>("SELECT exit_reason,exit_price,entry_at,exit_at FROM positions WHERE status='closed'")!;
+    assert.equal(row.exit_reason,'sl');assert.equal(row.exit_price,px);
+    assert.ok(row.exit_at>=row.entry_at);
+    db.db.close();
+  }
+});

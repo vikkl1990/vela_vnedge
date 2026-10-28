@@ -724,7 +724,23 @@ export class PaperEngine extends EventEmitter {
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
       if (pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
-      if (pe.limit) { if (time >= pe.at && this.limitTouched(pe, price, price)) { const pos = this.fillLimit(pe, observedAt, time); if (pos) filled.add(pos.id); } continue; }
+      if (pe.limit) {
+        if (time >= pe.at && this.limitTouched(pe, price, price)) {
+          const pos = this.fillLimit(pe, observedAt, time);
+          if (pos) {
+            filled.add(pos.id);
+            // A gap can cross both the resting entry and its stop. Do not give the
+            // new position a free recovery until the next print. Only adverse stops
+            // are evaluated here; this print cannot earn a same-fill target/trail.
+            if (pos.sl !== null && (pos.side === 'long' ? price <= pos.sl : price >= pos.sl)) {
+              const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
+              const exits = applyTrade(pos, {time: observedAt, price, qty}, cfg, this.markPrices.get(symbol)?.price);
+              if (exits.length && this.applyFills(pos, exits)) for (const f of exits) this.recordPath(pos, f.price, observedAt, f.reason, 'entry print crossed stop (tape)');
+            }
+          }
+        }
+        continue;
+      }
       const pos = this.fillPending(pe, price, time, 'tape', observedAt);
       if (pos) filled.add(pos.id);
     }
