@@ -138,7 +138,7 @@ test('maker planning still requires a fresh quote when configured', () => {
 
 test('a tape print that fills a maker entry beyond its stop must book the gap loss immediately', () => {
   for(const side of ['long','short'] as const){
-    const {engine,at,enter,db}=setup('4h',{fillSource:'tape',scalperOffer:{enabled:false,majors:[],majorsMinutes:30,othersMinutes:15}});
+    const {engine,at,enter,db}=setup('4h',{fillSource:'tape',scalperOffer:{enabled:false,majors:[],majorsMinutes:30,othersMinutes:15,excluded:[]}});
     enter(side);
     const px=side==='long'?95:105;
     engine.onTrade('ETHUSD',px,1,at+1000,at+1100);
