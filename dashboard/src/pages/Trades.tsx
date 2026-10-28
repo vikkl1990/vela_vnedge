@@ -110,7 +110,7 @@ export function Trades() {
       { key: 'qty', header: 'Qty', numeric: true, value: (o) => o.qty, render: (o) => <span className="mono">{fmtInt(o.qty)}</span> },
       {
         key: 'price', header: 'Price', numeric: true, value: (o) => o.price, title: 'exch = restated from the exchange\'s own fill; quote = crossed the live spread; otherwise modelled slippage',
-        render: (o) => <span className="mono">{fmtPrice(o.price, tick(o.symbol))}{o.priceSource === 'exchange' ? <Pill tone="ok" className="ml">exch</Pill> : o.priceSource === 'quote' ? <span className="muted small"> q</span> : null}</span>,
+        render: (o) => <span className="mono">{fmtPrice(o.price, tick(o.symbol))}{o.priceSource === 'exchange' ? <Pill tone="ok" className="ml">exch</Pill> : o.priceSource === 'depth' ? <span className="muted small"> depth</span> : o.priceSource === 'quote' ? <span className="muted small"> q</span> : null}</span>,
       },
       { key: 'fee', header: 'Fee (USD)', numeric: true, value: (o) => o.fee, render: (o) => <span className="mono muted">{fmtMoney(o.fee)}</span> },
       { key: 'reason', header: 'Reason', value: (o) => o.reason, render: (o) => <ExitReasonPill reason={o.reason} /> },

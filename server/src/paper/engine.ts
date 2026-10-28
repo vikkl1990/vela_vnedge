@@ -1,3 +1,4 @@
+import {depthPlan} from './depthPlan.ts';
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
 import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
 import {createReclaim, advanceReclaim, type ReclaimState} from './reclaim.ts';
@@ -17,7 +18,7 @@ import type { StructureLevel } from './luxExits.ts';
 const log = logger.scoped('paper');
 
 /** Pricing provenance belongs to one fill, never to an engine-wide pending context. */
-interface FillContext { ref?: number; source?: 'quote' | 'slippage' | 'exchange' }
+interface FillContext { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' }
 
 export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number }
 type EntryContext = {scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
@@ -112,6 +113,7 @@ export class PaperEngine extends EventEmitter {
    */
   readonly priceSource = { quote: 0, slippage: 0, rejectedNoQuote: 0 };
 
+  marketDepthPrice?: (symbol:string,side:Side,qty:number)=>{price?:number;reject?:string}|undefined;
   prepareEntryDepth?: (symbol: string) => Promise<void>;
   entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number}) => {reject?:string;crossingPct?:number};
   private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker:boolean,cell:{scannerId:string;tf:string;market:MarketInfo;score?:number}):string|null {
@@ -445,7 +447,7 @@ export class PaperEngine extends EventEmitter {
       limitPrice = Number(((ev.side === 'long' ? Math.floor(passive / tick + 1e-9) : Math.ceil(passive / tick - 1e-9)) * tick).toPrecision(14));
       if (!(limitPrice > 0 && Number.isFinite(limitPrice))) return refused('invalid maker entry price');
     }
-    const price = limitPrice ?? quoted.price;
+    let price = limitPrice ?? quoted.price;
     const entryContext: FillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return refused(levels.error);
@@ -461,8 +463,18 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return refused(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted }, ctx.sizeScale);
+    let size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted }, ctx.sizeScale);
     if (size.qty < 1) return refused(size.reason ?? 'size');
+    if(!willRestLimit&&this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&this.marketDepthPrice?.(ctx.symbol,ev.side!,size.qty)!==undefined){
+      const plan=depthPlan(size,price,ev.side!,n=>this.marketDepthPrice!(ctx.symbol,ev.side!,n)!,p=>this.size(p,levels.sl,ctx.market,ev.score??ctx.scoreOverride,leverageMult,replacing?.id,{scannerId:ctx.scannerId,symbol:ctx.symbol,tf:ctx.tf,at:ctx.at},{quoted:true},ctx.sizeScale));
+      if('reject'in plan)return refused(plan.reject);
+      price=plan.price;size=plan.size;quoted.quoted=true;entryContext.source='depth';
+      if(levels.tp.some(tp=>ev.side==='long'?price>=tp:price<=tp))return refused('depth price moved past target');
+      const valid=resolveLevels({side:ev.side!,price,sl:levels.sl,tp:levels.tp},cfg,ctx.market.tickSize);
+      if('error'in valid)return refused(`depth price moved past levels (${valid.error})`);
+      const g=this.risk?.gate({scannerId:ctx.scannerId,symbol:ctx.symbol,tf:ctx.tf,side:ev.side!,price,sl:levels.sl,atr:ctx.atr,at:ctx.at,replacing:replacing?.id});
+      if(g?.reject)return refused(`risk ${g.reject}`);
+    }
     const depthBlock=this.depthRefusal(ctx.symbol,size.qty,ctx.market.contractValue,price,levels.sl,cfg,ctx.at,willRestLimit,{...ctx,score:ev.score??ctx.scoreOverride});
     if(depthBlock)return refused(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(ctx.symbol, ev.side!, ctx.tf, size.qty * ctx.market.contractValue * price, size.riskAmount, ctx.at);
@@ -665,8 +677,18 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return cancel(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt }, { quoted }, pe.sizeScale);
+    let size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt }, { quoted }, pe.sizeScale);
     if (size.qty < 1) return cancel(size.reason ?? 'size');
+    if(this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&this.marketDepthPrice?.(pe.symbol,pe.side,size.qty)!==undefined){
+      const plan=depthPlan(size,price,pe.side,n=>this.marketDepthPrice!(pe.symbol,pe.side,n)!,p=>this.size(p,levels.sl,pe.market,pe.score,leverageMult,held?.id,{scannerId:pe.scannerId,symbol:pe.symbol,tf:pe.tf,at:receivedAt},{quoted:true},pe.sizeScale));
+      if('reject'in plan)return cancel(plan.reject);
+      price=plan.price;size=plan.size;quoted=true;context.source='depth';
+      if(levels.tp.some(tp=>pe.side==='long'?price>=tp:price<=tp))return cancel('depth price moved past target');
+      const valid=resolveLevels({side:pe.side,price,sl:levels.sl,tp:levels.tp},cfg,pe.market.tickSize);
+      if('error'in valid)return cancel(`depth price moved past levels (${valid.error})`);
+      const g=this.risk?.gate({scannerId:pe.scannerId,symbol:pe.symbol,tf:pe.tf,side:pe.side,price,sl:levels.sl,at:receivedAt,replacing:held?.id});
+      if(g?.reject)return cancel(`risk ${g.reject}`);
+    }
     const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,price,levels.sl,cfg,receivedAt,false,pe);
     if(depthBlock)return cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * price, size.riskAmount, receivedAt);

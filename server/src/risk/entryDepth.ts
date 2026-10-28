@@ -1,3 +1,4 @@
+import {depthFill} from '../paper/entryExecution.ts';
 import {walkBook} from './marketGate.ts';
 import {admissionCostPct} from '../paper/costs.ts';
 /** Cost eligibility of an actual integer contract quantity on timestamped depth. */
@@ -57,6 +58,15 @@ export class EntryDepthGate {
   this.pending.set(symbol,task);this.drain();return task;
  }
  private drain(){while(this.active<4&&this.queue.length){let i=this.queue.findIndex(j=>j.urgent);if(i<0){if(this.background>=2)break;i=0;}this.queue.splice(i,1)[0].run();}}
+ executionPrice(symbol:string,side:'long'|'short',qty:number):{price?:number;reject?:string}{
+  const snapshot=this.cache.get(symbol),now=this.now(),maxAge=this.deps.cfg().paper.quoteMaxAgeMs;
+  if(!snapshot||!(maxAge>0)||[snapshot.receivedAt,snapshot.exchangeAt].some(t=>!Number.isFinite(t)||t<=0||t>now+2000||now-t>maxAge))return {reject:'fresh execution depth unavailable'};
+  const b=snapshot.book;
+  if(!b.buy.length||!b.sell.length||[...b.buy,...b.sell].some(l=>!Number.isFinite(Number(l.price))||Number(l.price)<=0||!Number.isFinite(Number(l.size))||Number(l.size)<=0))return {reject:'malformed execution depth'};
+  if(Math.max(...b.buy.map(l=>Number(l.price)))>Math.min(...b.sell.map(l=>Number(l.price))))return {reject:'crossed execution depth'};
+  const f=depthFill(side==='long'?b.sell:b.buy,qty,side);
+  return f.coverage>=1&&f.vwap!==null?{price:f.vwap}:{reject:'insufficient execution depth'};
+ }
  check(req:EntryDepthRequest):{reject?:string;crossingPct?:number}{
   if(!this.enabled(req.symbol))return {};
   const c=this.deps.cfg(),snapshot=this.cache.get(req.symbol),at=this.now();
@@ -75,5 +85,6 @@ export function wireEntryDepth(account:PaperEngine,shadow:PaperEngine,gate:Entry
  account.prepareEntryDepth=symbol=>gate.prepare(symbol,true);
  shadow.prepareEntryDepth=symbol=>gate.prepare(symbol);
  account.entryDepthGate=req=>gate.check({...req,book:0});
+ account.marketDepthPrice=(symbol,side,qty)=>gate.enabled(symbol)?gate.executionPrice(symbol,side,qty):undefined;
  shadow.entryDepthGate=req=>gate.check({...req,qty:account.previewDepthQuantity(req),virtualQty:req.qty,book:2});
 }

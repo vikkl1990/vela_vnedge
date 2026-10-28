@@ -17,3 +17,35 @@ test('production wiring checks shadow synthetic purse at deployable size and use
  c.paper.marginPerTrade=300;await shadow.prepareEntryDepth!('ETHUSD');assert.equal(shadow.onEntry(event()as any,{...ctx,symbol:'ETHUSD'}).action,'rejected');assert.equal(gate.stats.last[0].qty,15);
 });
 test('quarantined shadow wins cannot raise the account leverage tier',t=>{const{db,c,e}=setup(t);c.paper.marginLeverage={base:5,strong:10,weak:5,strongAboveR:.05,weakBelowR:-.05,minTrades:1,lookback:30};db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,exit_at,realized_pnl,fees,risk_amount,bt) VALUES('closed','s','s','BTCUSD','1m','long',1,0,1,100,100,200,50,0,10,2)");const p=db.get<any>('SELECT id FROM positions')!;assert.equal(e.cellLeverage({scannerId:'s',symbol:'BTCUSD',tf:'1m',at:1000},c.paper).leverage,10);db.run("INSERT INTO evidence_flags VALUES(?,100,'quarantined','invalid fill','test',1000)",p.id);assert.equal(e.cellLeverage({scannerId:'s',symbol:'BTCUSD',tf:'1m',at:1000},c.paper).leverage,5);});
+test('account market entry pays depth VWAP, keeps risk sizing and records its price source',t=>{
+ const{e,event,ctx,db}=setup(t);e.marketDepthPrice=(_s,side)=>({price:side==='long'?101:99});
+ const d=e.onEntry(event()as any,ctx);assert.equal(d.action,'opened');assert.equal(d.position!.entryPrice,101);
+ assert.equal(db.get<any>("SELECT price_source FROM orders WHERE reason='entry'")!.price_source,'depth');
+ assert.equal(d.position!.riskAmount,(101-95)*d.position!.qty);
+});
+test('deferred market fill reprices depth and refuses invalidated levels before closing a reversal',t=>{
+ const{c,e,event,ctx}=setup(t);c.paper.fillSource='tape';let price=101;e.marketDepthPrice=()=>({price});
+ assert.equal(e.onEntry(event()as any,ctx).action,'pending');price=102;e.onTrade('BTCUSD',100,1,2000,2000);
+ assert.equal(e.openPositions()[0].entryPrice,102);
+ const b=setup(t);b.c.paper.fillSource='tape';b.e.marketDepthPrice=()=>({price:101});b.e.onEntry(b.event()as any,b.ctx);
+ b.e.marketDepthPrice=()=>({price:140});b.e.onTrade('BTCUSD',100,1,2000,2000);assert.equal(b.e.openPositions().length,0);assert.equal(b.e.pendingEntries().length,0);
+});
+test('depth VWAP uses contract quantity and rejects stale or incomplete books',async t=>{
+ const{c}=setup(t);let now=1793034800000;c.risk.marketGate={...c.risk.marketGate!,enabled:true,freshDepth:true,maxBookCostPct:.25};c.paper.quoteMaxAgeMs=10000;
+ const g=new EntryDepthGate({cfg:()=>c,now:()=>now,book:async()=>({timestamp:now*1000,buy:[{price:99,size:2},{price:98,size:3}],sell:[{price:101,size:2},{price:102,size:3}]})});
+ await g.prepare('BTCUSD');assert.equal(g.executionPrice('BTCUSD','long',4).price,101.5);assert.equal(g.executionPrice('BTCUSD','short',4).price,98.5);
+ assert.match(g.executionPrice('BTCUSD','long',6).reject!,/insufficient/);now+=10001;assert.match(g.executionPrice('BTCUSD','long',4).reject!,/unavailable/);
+});
+test('depth repricing respects the stop-risk ceiling and does not reprice resting makers',t=>{
+ const a=setup(t);a.c.paper.maxStopLossPct=1;a.e.marketDepthPrice=()=>({price:104});
+ const d=a.e.onEntry(a.event()as any,a.ctx);assert.equal(d.action,'opened');assert.ok(d.position!.riskAmount<=a.c.paper.initialEquity*.01+1e-8);
+ const b=setup(t);b.c.paper.fillSource='tape';b.c.paper.limitEntry={enabled:true,atr:.1,bars:2,tfs:['1m'],books:['account']};
+ b.e.marketDepthPrice=()=>{throw Error('maker must keep its own price');};
+ assert.equal(b.e.onEntry(b.event()as any,b.ctx).action,'pending');b.e.onTrade('BTCUSD',98,1,2000,2000);assert.equal(b.e.openPositions()[0].entryPrice,99);
+});
+test('depth invalidation of a deferred reversal keeps the existing position',t=>{
+ const a=setup(t);a.c.paper.allowReversal=true;a.c.paper.reversalMinR=0;
+ const held=a.e.onEntry(a.event()as any,a.ctx).position!;a.e.setMark('BTCUSD',102);a.c.paper.fillSource='tape';
+ let price=99;a.e.marketDepthPrice=()=>({price});assert.equal(a.e.onEntry(a.event('short')as any,{...a.ctx,at:1100}).action,'pending');
+ price=60;a.e.onTrade('BTCUSD',100,1,2000,2000);assert.equal(held.status,'open');assert.equal(a.e.openPositions().length,1);assert.equal(a.e.openPositions()[0].id,held.id);
+});

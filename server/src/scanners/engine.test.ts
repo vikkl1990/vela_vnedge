@@ -171,3 +171,20 @@ test('depth preparation completes before entry gates and expiry are rechecked',a
  paper.prepareEntryDepth=async()=>{};halted=false;await engine.ingestEvent(scanner as any,'BTCUSD','1m',{...ev,label:'old',barTime:ev.barTime-300000},bars as any,{contractValue:1,tickSize:.25},'both',bars.at(-1)!as any);
  assert.match(db.get<any>("SELECT action FROM signals WHERE label LIKE 'old%'")!.action,/stale signal/);
 });
+
+test('a recovered account scan emits its signal once and logs both attempts',async t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+ cfg.symbols=['BTCUSD'];cfg.timeframes=['1m'];cfg.paper.latencyMs=0;
+ cfg.scanners.s={enabled:true,symbols:null,timeframes:null,exitMode:'both',pairs:[{symbol:'BTCUSD',tf:'1m'}]};
+ const close=Math.floor(Date.now()/60000)*60000;
+ const bars=Array.from({length:60},(_,i)=>({time:close-(60-i)*60000,open:100,high:101,low:99,close:100,volume:100}));
+ const candles=Object.assign(new EventEmitter(),{get:()=>bars});let n=0;
+ const pool={stats:{queued:0},rssReader:()=>0,memoryGuardBytes:100,run:async()=>{
+ n++;return {id:n,ok:n>1,error:n===1?'memory-shared: test pressure':undefined,ms:1,bars:60,lastBarTime:bars.at(-1)!.time,warnings:0,plots:[],shapes:[],labels:[],alerts:n===1?[]:[{type:'alert',barIndex:59,time:bars.at(-1)!.time,message:'LONG | Entry: 100 | SL: 95 | TP1: 105 | TP2: 110 | TP3: 115'}]};}};
+ const scanner={id:'s',name:'Test',status:'ok',patched:''};const paper=new PaperEngine(db,()=>cfg);
+ const engine=new ScannerEngine({db,cfgRef:()=>cfg,paper,candles:candles as any,pool:pool as any,registry:{all:()=>[scanner]}as any,rest:{product:async()=>({tick_size:'.25',contract_value:'1'})}as any});
+ const done=once(engine,'scanner');candles.emit('closed',{symbol:'BTCUSD',tf:'1m',bar:bars.at(-1)!});await done;
+ assert.equal(n,2);assert.equal(engine.recovery.counts.recovered,1);assert.equal(paper.openPositions().length,1);
+ assert.equal(db.get<any>('SELECT count(*) n FROM signals')!.n,1);
+ assert.deepEqual(db.all<any>('SELECT outcome FROM scanner_run_log').map(r=>r.outcome),['failed','ok']);
+});

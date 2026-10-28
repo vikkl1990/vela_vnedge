@@ -1,3 +1,4 @@
+import {ScanRecovery} from './recovery.ts';
 /**
  * Orchestrator: for every (scanner × symbol × timeframe) runs the Pine script on bar close,
  * extracts events, records signals, and hands entries/exits to the paper engine.
@@ -398,6 +399,7 @@ export class ScannerEngine extends EventEmitter {
     for (const s of active) this.runOnce(s, symbol, tf, { backtest: false, live: true }).catch(e => log.error(`run ${s.id} ${symbol} ${tf} failed: ${e?.message ?? e}`));
   }
 
+  readonly recovery = new ScanRecovery();
   private lastPrune = 0;
   /** Decision 201: one row per account run (ok, failed or skipped), pruned to 14 days. */
   private logRun(scannerId: string, symbol: string, tf: string, barTime: number | null, ms: number | null, outcome: 'ok' | 'failed' | 'skipped', error: string | null) {
@@ -458,8 +460,22 @@ export class ScannerEngine extends EventEmitter {
       }
       const rule = sc.rule ?? null;
       const inputs = sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined;
-      const runJob = (b: Bar[], tailBars: number | 'all') => this.pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars: b, tailBars, plotTail: rule ? b.length : 400, inputs, timezone: sc.timezone },
-        { priority: mode.live && tailBars !== 'all' ? 'live' : 'background' });
+      const runJob = async (b: Bar[], tailBars: number | 'all') => {
+        const live=mode.live && tailBars!=='all';
+        const deadline=b.at(-1)!.time+(TF_SECONDS[tf]??0)*1000+Math.min(cfg.paper.maxSignalAgeSec||300,300)*1000;
+        const execute=(retry=false)=>this.pool.run({scannerId:s.id,source:s.patched,symbol,tf,tickSize:market.tickSize,bars:b,tailBars,plotTail:rule?b.length:400,inputs,timezone:sc.timezone},
+          {priority:live?'live':'background',...(retry?{deadlineMs:Math.max(1,deadline-Date.now())}:{})});
+        const first=await execute();
+        if(!live||first.ok||!first.error?.startsWith('memory-shared:'))return first;
+        return this.recovery.recover(first,()=>{
+          this.logRun(s.id,symbol,tf,b.at(-1)!.time,first.ms,'failed',first.error??null);
+          log.info(`${key}: retrying current bar after shared memory pressure`);
+          return execute(true);
+        },
+          ()=>this.isActive(s)&&this.runsOn(s.id,symbol,tf)&&JSON.stringify(this.cfgRef().scanners[s.id]??null)===scannerConfigAtStart
+            &&this.candles.get(symbol,tf,{closedOnly:true,limit:1}).at(-1)?.time===b.at(-1)!.time,
+          ()=>this.pool.rssReader()<this.pool.memoryGuardBytes*.9,deadline);
+      };
       // decision 193: the live job returns every bar back to the watermark (capped), so a stall's exits are still there to read
       const READ = readingOf(cfg.scanners[s.id], s.id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
       const win = this.marks.window(key, bars.at(-1)!.time, tf);
