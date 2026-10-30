@@ -47,7 +47,7 @@ export function Clocks({ p, cfg, now }: { p: IncubatorPair; cfg: IncubatorView['
   if (!p.accountHolding && silentDays) {
     const last = p.lastTradeAt ?? p.since
     const days = Math.floor((now - last) / 86_400_000)
-    if (days >= Math.max(1, Math.floor(silentDays / 2))) items.push({ text: `silent ${days}/${silentDays} d`, tone: days >= silentDays ? 'danger' : 'warn' })
+    if (days >= Math.max(1, Math.floor(silentDays / 2))) items.push({ text: `no account trade ${days}/${silentDays} d`, tone: days >= silentDays ? 'danger' : 'warn' })
   }
   if (!p.accountHolding && now - p.since >= (cfg.costStarvedDays ?? 14) * 86_400_000 && (p.lastTradeAt ?? 0) < now - (cfg.costStarvedDays ?? 14) * 86_400_000 && cfg.costStarvedRefusals && p.funnel && p.funnel.opened === 0 && p.funnel.cost > 0) items.push({ text: `cost-starved ${p.funnel.cost}/${cfg.costStarvedRefusals}`, tone: p.funnel.cost >= cfg.costStarvedRefusals ? 'danger' : 'warn' })
   if (!items.length) return <span className="muted">none</span>

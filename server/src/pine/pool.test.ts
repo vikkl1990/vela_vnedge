@@ -163,7 +163,7 @@ test('decision 78: the worker count fits 60% of the memory limit at the heap cap
   assert.equal(workerBudget(10 * G, 1536, 8).workers, 4, 'a bigger heap means fewer workers, not a bigger sum');
 });
 
-test('memory watchdog: resident size over the guard while a job runs retires the busy worker with a memory verdict', async t => {
+test('memory watchdog: aggregate pressure with one busy worker retires it without blaming its script', async t => {
   const { pool, workers } = setup(); t.after(() => pool.stop());
   pool.memoryGuardBytes = 1000;
   let rss = 500;
@@ -176,7 +176,13 @@ test('memory watchdog: resident size over the guard while a job runs retires the
   pool.reapMemory();
   const r = await p;
   assert.equal(r.ok, false);
-  assert.match(r.error ?? '', /^memory: resident 0 MB over the guard/);
+  assert.match(r.error ?? '', /^memory-shared: resident 0 MB over the guard/);
+  const { ScriptHealth } = await import('../scanners/health.ts');
+  const { Db } = await import('../db.ts');
+  const db = new Db(':memory:'); t.after(()=>db.db.close());
+  const health = new ScriptHealth(db);
+  assert.equal(health.record('s',r.error),false);
+  assert.equal(health.isQuarantined('s'),false);
   assert.equal(workers[0].terminated, 1);
   assert.equal(pool.memoryRetirements, 1);
   rss = 500; pool.reapMemory();
@@ -199,7 +205,7 @@ test('decision 140: a guard kill with several runs in progress is shared and qua
   const h = new ScriptHealth(new Db(':memory:'));
   assert.equal(h.record('s', 'memory-shared: resident 6678 MB over the guard with 6 runs in progress'), false);
   assert.equal(h.isQuarantined('s'), false, 'a shared kill quarantines nobody');
-  assert.equal(h.record('s', 'memory: resident 6678 MB over the guard while it ran'), true, 'a sole run is still the culprit');
+  assert.equal(h.record('s', 'memory: resident 6678 MB over the guard while it ran'), true, 'explicit attributed memory verdicts remain supported');
 });
 
 test('a process worker becomes ready, runs a Pine job, and dies at once when retired', { timeout: 30_000 }, async t => {

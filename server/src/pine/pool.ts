@@ -159,8 +159,8 @@ export class PinePool {
    * The memory watchdog (decision 98). A worker's heap cap bounds V8 objects only; a script that
    * fills typed arrays grows the process outside every cap until the kernel kills it, and one did
    * at 8 GB with nothing logged. While any job runs, the process's resident size is sampled every
-   * second; past `memoryGuardBytes` (60% of the memory limit by default) every busy worker is
-   * retired with a `memory:` error, which the health check treats as a verdict.
+   * second; past `memoryGuardBytes` the lowest-priority busy workers are retired.
+   * Aggregate pressure is transient, not a permanent verdict against a scanner.
    */
   // decision 140: 72% of the limit (7.2 GB of the service's 10 GB), under its 8 GB throttle; 60% tripped on a busy bar close
   memoryGuardBytes = Math.round(memoryLimitBytes() * 0.72);
@@ -173,9 +173,9 @@ export class PinePool {
     const rss = this.rssReader();
     if (!(rss > this.memoryGuardBytes)) return;
     const mb = Math.round(rss / 1048576);
-    // decision 140: with one run in progress, that run took the process over the guard and the verdict is its own; with
-    // several, the resident size is the process's and no single script can be blamed, so the kill is recorded as shared
-    // and quarantines nobody (four live scanners were quarantined on 19 October for a bar-close burst)
+    // This is aggregate service memory, including idle workers and retained allocations.
+    // Even one busy worker is not evidence that its script caused the pressure.
+    // Retire work for safety, but reserve permanent memory verdicts for attributable failures.
     const busy = this.workers.filter(w => w.busy).length;
     // decision 201: the guard takes the least urgent work first — background (screens, shadow scans), then the mirror
     // tier (the shadow book's positions), and only then the account's own live runs. It used to retire every busy worker
@@ -187,7 +187,7 @@ export class PinePool {
       if (!p || tier(slot) !== lowest) continue;
       this.memoryRetirements++;
       log.warn(`job ${p.job.scannerId} on ${p.job.symbol}: resident ${mb} MB over the ${Math.round(this.memoryGuardBytes / 1048576)} MB guard while it ran with ${busy} busy; terminating worker ${slot.index}`);
-      this.retire(slot, busy === 1 ? `memory: resident ${mb} MB over the guard while it ran` : `memory-shared: resident ${mb} MB over the guard with ${busy} runs in progress`);
+      this.retire(slot, `memory-shared: resident ${mb} MB over the guard with ${busy} runs in progress`);
     }
   }
 

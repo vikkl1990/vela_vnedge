@@ -99,7 +99,8 @@ export function Decisions() {
               )}
             </Panel>
 
-            <Panel title={`Live cells on a clock (${cards.clocks.length})`} right={<span className="muted small">market out {v.config.demote.marketOutDays ?? '–'} d · silent {v.config.demote.silentDays ?? '–'} d · cost-starved {v.config.demote.costStarvedRefusals ?? '–'} refusals</span>}>
+            <Panel title={`Live cells on a clock (${cards.clocks.length})`} right={<span className="muted small">market out {v.config.demote.marketOutDays ?? '–'} d · no account trade {v.config.demote.silentDays ?? '–'} d · cost-starved {v.config.demote.costStarvedRefusals ?? '–'} refusals</span>}>
+              <p className="small muted">These clocks measure time without an account trade, not time without signals. Cost, regime and execution refusals are shown below. Scanner runtime faults are separate and need recovery before judging signal quality.</p>
               {cards.clocks.length === 0 ? <p className="muted small">No live cell is near a demotion.</p> : (
                 <div className="decision-cards">
                   {cards.clocks.map(({ p, rank }) => (
