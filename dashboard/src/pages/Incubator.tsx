@@ -44,7 +44,7 @@ export default function Incubator() {
           const by = (st: IncubatorPair['stage']) => d.pairs.filter((p) => p.stage === st)
           const decisions = [...by('proposed'), ...by('demote_proposed')]
           const shadow = by('shadow').sort((a, b) => (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
-          const candidates = by('candidate').filter((p) => p.screen?.pass).sort((a, b) => (b.screen!.profitFactor - 1) * Math.sqrt(b.screen!.trades) - (a.screen!.profitFactor - 1) * Math.sqrt(a.screen!.trades))
+          const candidates = by('candidate').filter((p) => p.screen?.pass).sort((a, b) => (b.admissionEvidence?.score ?? 0) - (a.admissionEvidence?.score ?? 0) || a.id-b.id)
           const live = by('live').sort((a, b) => clockRank(b, d.config.demote, now) - clockRank(a, d.config.demote, now) || (b.stats?.trades ?? 0) - (a.stats?.trades ?? 0))
           const g = d.config.gate
           // grouped the way the gate judges: by cohort (scanner × timeframe) in cohort mode, one pair at a time in pair mode
@@ -206,11 +206,12 @@ export default function Incubator() {
               </Panel>
 
               <Panel title={`Candidates from the screen (${candidates.length})`}>
+                <p className="small muted">Admission ranks screen quality with a bounded discount for slow evidence collection. Estimated days use historical trade frequency, not a promise of future fills. Promotion standards and reserved slots are unchanged.</p>
                 {matchingCandidates.length === 0 ? <Empty label={candidates.length ? "No candidates match these filters." : "No candidates waiting."} hint={candidates.length ? "Clear the search or choose another timeframe." : `The screen passes a pair with ≥${d.config.screen.minTrades} backtest trades, PF ≥ ${d.config.screen.minProfitFactor}, ≥${d.config.screen.minWindowsUp}/8 windows up and a profit at ${d.config.screen.stressBps} bps of cost. It is a filter only: luck passes it too, which is why candidates must still prove themselves in the shadow book.`} /> : (
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Pairs that passed the backtest screen</caption>
-                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Trades</th><th scope="col">PF</th><th scope="col">Windows up</th><th scope="col">Avg R</th><th scope="col">Screened</th></tr></thead>
+                      <thead><tr><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Trades</th><th scope="col">PF</th><th scope="col">Windows up</th><th scope="col">Avg R</th><th scope="col">Evidence estimate / rank score</th><th scope="col">Screened</th></tr></thead>
                       <tbody>
                         {matchingCandidates.slice(0, candidateLimit).map((p) => (
                           <tr key={p.id}>
@@ -220,6 +221,7 @@ export default function Incubator() {
                             <td className="mono">{fmtNum(p.screen!.profitFactor)}</td>
                             <td className="mono">{p.screen!.windowsUp}/8</td>
                             <td className="mono">{r(p.screen!.avgR)}</td>
+                            <td className="mono small">{p.admissionEvidence?.estimatedDays != null ? `${p.admissionEvidence.estimatedDays.toFixed(0)} d for ${p.admissionEvidence.requiredTrades} trades` : 'Unknown frequency'}<div>{p.admissionEvidence?.score.toFixed(2) ?? '—'}</div></td>
                             <td className="muted small">{timeAgo(p.screen!.at)}</td>
                           </tr>
                         ))}

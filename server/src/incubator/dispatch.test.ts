@@ -23,3 +23,11 @@ test('least-recently served fairness and no simultaneous runs for one cell',asyn
  const d=new ShadowDispatch<string>({limit:()=>1,ready:()=>true,now:()=>0,run:async v=>{seen.push(v);await new Promise<void>(r=>releases.push(r));}});
  d.enqueue('a','a1',100);d.drain();await flush();d.enqueue('a','a2',100);d.enqueue('b','b1',100);releases.shift()!();await flush();assert.deepEqual(seen,['a1','b1']);releases.shift()!();await flush();assert.deepEqual(seen,['a1','b1','a2']);releases.shift()!();await flush();
 });
+test('evidence priority preserves an exploration turn under repeated priority arrivals',async()=>{
+ const releases:Array<()=>void>=[];const seen:string[]=[];
+ const d=new ShadowDispatch<string>({limit:()=>1,ready:()=>true,now:()=>0,priority:v=>v.startsWith('high')?1:0,run:async v=>{seen.push(v);await new Promise<void>(r=>releases.push(r));}});
+ d.enqueue('low','low',10000);for(let i=0;i<6;i++)d.enqueue('h'+i,'high'+i,10000);
+ d.drain();await flush();for(let i=0;i<3;i++){releases.shift()!();await flush();}
+ assert.deepEqual(seen,['high0','high1','high2','low']);assert.equal(d.stats.fairTurns,1);
+ d.stop();releases.shift()!();await flush();
+});

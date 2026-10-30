@@ -1,3 +1,4 @@
+import {evidencePriority} from './evidencePriority.ts';
 import { ShadowDispatch } from './dispatch.ts';
 /**
  * Runs the incubator's shadow pairs on live data and trades them in the shadow book.
@@ -88,6 +89,7 @@ export class ShadowRunner {
     this.dispatch=new ShadowDispatch({
       limit:()=>Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
       ready:()=>!deps.pool.stats.queuedLive && deps.pool.rssReader()<deps.pool.memoryGuardBytes*SHADOW_MEMORY_SHARE,
+      priority:({r})=>evidencePriority(r,this.deps.cfgRef().incubator),
       run:({r,barAt,seenAt})=>this.run(r,barAt,false,seenAt),
       error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
     });

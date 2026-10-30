@@ -649,6 +649,7 @@ export interface IncubatorScreen {
 /** Decision 201: each account cell's runs, failures and skips over a window. */
 export interface RunHealthRow { scannerId: string; symbol: string; tf: string; ok: number; failed: number; skipped: number; lastFailAt: number | null; lastError: string | null }
 export interface IncubatorPair {
+  admissionEvidence?: {score:number;qualityScore:number;estimatedDays:number|null;factor:number;requiredTrades:number;horizonDays:number} | null
   /** The market gate's verdict on this pair's market today; null when the gate has not judged it. */
   market?: { allowed: boolean; reasons: string[] } | null
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; stage: IncubatorStage

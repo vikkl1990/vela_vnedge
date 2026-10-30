@@ -5,8 +5,8 @@ export class ShadowDispatch<T> {
  private served=new Map<string,number>();
  private stopped=false;
  private serial=0;
- readonly counts={offered:0,replaced:0,expired:0,removed:0,started:0,finished:0,failed:0,maxPending:0,lastWaitMs:0,maxWaitMs:0};
- private opts:{limit:()=>number;ready:()=>boolean;run:(v:T)=>Promise<void>;now?:()=>number;error?:(e:unknown,v:T)=>void};
+ readonly counts={offered:0,replaced:0,expired:0,removed:0,started:0,finished:0,failed:0,maxPending:0,lastWaitMs:0,maxWaitMs:0,evidenceTurns:0,fairTurns:0};
+ private opts:{limit:()=>number;ready:()=>boolean;run:(v:T)=>Promise<void>;now?:()=>number;error?:(e:unknown,v:T)=>void;priority?:(v:T)=>number};
  constructor(opts:ShadowDispatch<T>['opts']){this.opts=opts;}
  private now(){return this.opts.now?.()??Date.now();}
  get stats(){return {...this.counts,pending:this.pending.size,inFlight:this.busy.size};}
@@ -24,11 +24,18 @@ export class ShadowDispatch<T> {
   for(const [key,p]of this.pending)if(p.deadline<=now){this.pending.delete(key);this.counts.expired++;}
   const limit=Math.max(1,this.opts.limit());
   while(this.pending.size>0&&this.busy.size<limit&&this.opts.ready()){
-   // Least-recently served first prevents the same first-arriving symbols winning every wave.
-   let chosen:string|undefined,rank=Infinity;
-   for(const key of this.pending.keys())if(!this.busy.has(key)){const r=this.served.get(key)??0;if(r<rank){chosen=key;rank=r;}}
+   // Every fourth turn is least-recently-served exploration, even under a continual
+   // stream of high-priority evidence. Priority ties also use least-recently-served.
+   const evidenceTurn=!!this.opts.priority && this.counts.started%4!==3;
+   let chosen:string|undefined,rank=Infinity,best=-Infinity;
+   for(const [key,p] of this.pending)if(!this.busy.has(key)){
+    const r=this.served.get(key)??0;
+    const raw=evidenceTurn?this.opts.priority!(p.value):0;
+    const score=Number.isFinite(raw)?raw:0;
+    if(score>best || (score===best && r<rank)){chosen=key;rank=r;best=score;}
+   }
    if(chosen===undefined)break;
-   const p=this.pending.get(chosen)!;this.pending.delete(chosen);this.busy.add(chosen);this.served.set(chosen,++this.serial);this.counts.started++;
+   const p=this.pending.get(chosen)!;this.pending.delete(chosen);this.busy.add(chosen);this.served.set(chosen,++this.serial);this.counts.started++;if(evidenceTurn)this.counts.evidenceTurns++;else this.counts.fairTurns++;
    this.counts.lastWaitMs=now-p.at;this.counts.maxWaitMs=Math.max(this.counts.maxWaitMs,now-p.at);
    const key=chosen;
    void Promise.resolve().then(()=>this.opts.run(p.value)).then(()=>this.counts.finished++,e=>{this.counts.failed++;this.opts.error?.(e,p.value);}).finally(()=>{this.busy.delete(key);this.drain();});

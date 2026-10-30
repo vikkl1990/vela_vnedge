@@ -1,3 +1,4 @@
+import {admissionEvidence} from './evidencePriority.ts';
 import { admissionCostPct, type EntryExecution } from '../paper/costs.ts';
 /**
  * One incubator cycle, and the owner's approve/reject actions. Shared by the daily job and the API.
@@ -448,7 +449,7 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   let fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.minTurnoverUsd)
     && !(opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close'));
   const admitted = new Set<number>();
-  const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); admitted.add(r.id); slots--; };
+  const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen), admissionEvidence: admissionEvidence(r,inc) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); admitted.add(r.id); slots--; };
 
   // decision 182: the reservations first — capacity over and above `maxShadow` for what the score starves (4h, the
   // majors), each filled from its own matching candidates by score, under the same per-scanner caps
@@ -461,7 +462,7 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   for (const r of active) for (const x of reserves) if (!counted.has(r.id) && x.matches(r) && x.n < x.res.slots) { counted.add(r.id); x.n++; break; }
   let slots = Math.max(0, inc.maxShadow - (active.length - counted.size));
   for (const x of reserves) {
-    for (const r of fresh.filter(c => !admitted.has(c.id) && x.matches(c)).sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
+    for (const r of fresh.filter(c => !admitted.has(c.id) && x.matches(c)).sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id)) {
       if (x.n >= x.res.slots) break;
       const k = `${r.scannerId}|${r.tf}`;
       if ((held.get(k) ?? 0) >= capFor(r.tf)) continue;
@@ -473,7 +474,7 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
 
   if (inc.gate.pool !== 'cohort') {
     // decision 132: each pair is admitted on its own score, but one scanner may not fill the book at a timeframe
-    for (const r of fresh.sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
+    for (const r of fresh.sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id)) {
       if (slots <= 0) break;
       const k = `${r.scannerId}|${r.tf}`;
       if ((held.get(k) ?? 0) >= capFor(r.tf)) continue;
@@ -487,8 +488,8 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   for (const r of fresh) { const k = `${r.scannerId}|${r.tf}`; const g = byCohort.get(k); g ? g.push(r) : byCohort.set(k, [r]); }
 
   const cohorts = [...byCohort.entries()].map(([k, rows]) => ({
-    k, rows: rows.sort((a, b) => screenScore(b.screen) - screenScore(a.screen)),
-    score: Math.max(...rows.map(r => screenScore(r.screen))), running: held.get(k) ?? 0,
+    k, rows: rows.sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id),
+    score: Math.max(...rows.map(r => admissionEvidence(r,inc).score)), running: held.get(k) ?? 0,
   }));
   // top up what is already brewing before starting anything new: those markets are already earning days
   const fillable = (c: { rows: PairRow[] }) => Number(c.rows.length >= inc.admit.minCohortMarkets);
@@ -549,7 +550,7 @@ export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = D
   if (inc.gate.pool === 'cohort') { counts.cohort = fresh.length; return { passed: passed.length, free, counts }; }
   const held = new Map<string, number>();
   for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
-  for (const r of fresh.sort((a, b) => screenScore(b.screen) - screenScore(a.screen))) {
+  for (const r of fresh.sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id)) {
     const k = `${r.scannerId}|${r.tf}`; const cap = inc.admit.maxPerScannerTf?.[r.tf] ?? marketsFor(inc, r.tf);
     if ((held.get(k) ?? 0) >= cap) { counts.capped++; continue; }
     const res = reserves.find(x => x.matches(r) && x.room > 0);

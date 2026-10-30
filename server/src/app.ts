@@ -1,3 +1,4 @@
+import {admissionEvidence} from './incubator/evidencePriority.ts';
 import {EntryDepthGate,wireEntryDepth} from './risk/entryDepth.ts';
 import { TradingStatus } from './delta/tradingStatus.ts';
 import path from 'node:path';
@@ -832,6 +833,7 @@ export class App {
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       return {
         ...r, scannerName: names.get(r.scannerId) ?? r.scannerId,
+        admissionEvidence: r.screen ? admissionEvidence(r,cfg.incubator) : null,
         stats: judged ? pairStats(trades, r.since, now) : null,
         openShadow: openShadow.get(key) ?? 0,
         // decision 104: whether the account could trade this market today, and why not

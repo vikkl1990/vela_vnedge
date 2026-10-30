@@ -92,3 +92,15 @@ test('decisions 186/200: a failed re-screen retires a shadow pair only when its 
   assert.equal(store.find('c', 'SOLUSD', '4h')!.stage, 'shadow', 'failed the re-screen but winning in the shadow book: kept');
   assert.equal(store.find('d', 'ETHUSD', '4h')!.stage, 'shadow', 'failed with only 2 shadow trades: still collecting');
 });
+
+test('admission prefers a judgeable sample over a slower higher backtest score without enlarging capacity',()=>{
+ const {store,cfg,screen}=world([]);cfg.incubator.maxShadow=1;
+ recordScreen(store,{scannerId:'slow',symbol:'BTCUSD',tf:'15m'},{...screen(3),days:400},cfg.incubator,T0);
+ recordScreen(store,{scannerId:'fast',symbol:'ETHUSD',tf:'15m'},{...screen(1.8),days:20},cfg.incubator,T0);
+ evaluate(store,cfg,T0);
+ assert.equal(store.find('fast','ETHUSD','15m')!.stage,'shadow');
+ assert.equal(store.find('slow','BTCUSD','15m')!.stage,'candidate');
+ assert.equal(store.list(['shadow']).length,1);
+ const e=store.events(10).find(e=>e.to==='shadow')!;
+ assert.ok(e.evidence.admissionEvidence.estimatedDays>0);
+});
