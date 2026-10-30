@@ -315,6 +315,8 @@ export class ApiServer {
       return a.scanners.getOverlay(p.id, symbol, tf) ?? { at: null, plots: [], shapes: [], labels: [] };
     });
 
+    this.add('GET', '/api/decision-trace', () => a.db.all<any>(
+      'SELECT * FROM decision_trace WHERE book=0 ORDER BY id DESC LIMIT 100').map(r=>({...r,snapshot:JSON.parse(r.snapshot)})));
     this.add('GET', '/api/signals', (_r, _s, _p, url) => {
       const rows = a.db.signals({
         limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined,

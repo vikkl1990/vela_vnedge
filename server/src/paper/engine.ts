@@ -1,3 +1,4 @@
+import {recordFillBudget} from './decisionTrace.ts';
 import {depthPlan} from './depthPlan.ts';
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
 import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
@@ -342,6 +343,29 @@ export class PaperEngine extends EventEmitter {
     return {key,day,entries:saved?.day===day?saved.entries:0};
   }
   onEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
+    const auditConfig = configFingerprint(this.cfgRef(),ctx.scannerId,ctx.tf,{source:this.sourceHashFor?.(ctx.scannerId)??null,book:this.book});
+    this.db.run('INSERT OR IGNORE INTO config_fingerprints(fp,parts,first_at) VALUES(?,?,?)',auditConfig.fp,JSON.stringify(auditConfig.parts),Date.now());
+    const write = (stage: string, reason: string | null, positionId: number | null = null) => this.db.run(
+      'INSERT INTO decision_trace(at,book,signal_id,position_id,scanner_id,symbol,tf,stage,reason,snapshot) VALUES(?,?,?,?,?,?,?,?,?,?)',
+      Date.now(),this.book,ctx.signalId,positionId,ctx.scannerId,ctx.symbol,ctx.tf,stage,reason,
+      JSON.stringify({version:1,configFp:auditConfig.fp,signalAt:ctx.at,reference:ctx.refPrice,side:ev.side,atr:ctx.atr??null,
+        scannerStop:ev.sl??null,scannerTargets:ev.tp??[],quote:this.quotes?.markState?.(ctx.symbol)??null,
+        market:ctx.market,sizeScale:ctx.sizeScale??1,feeRatePct:this.paper.feeRatePct,
+        makerFeeRatePct:this.paper.makerFeeRatePct,feeTaxPct:this.paper.feeTaxPct,
+        minRiskFeeRatio:this.paper.minRiskFeeRatio,offerConfigured:!!this.paper.scalperOffer?.enabled,
+        offerEligibility:'unverified',sourceHash:this.sourceHashFor?.(ctx.scannerId)??null}));
+    write('received',null);
+    try {
+      const decision = this.decideEntry(ev,ctx);
+      write(decision.action,decision.reason??null,decision.position?.id??null);
+      return decision;
+    } catch (error) {
+      write('error','entry processing failed; inspect service log');
+      throw error;
+    }
+  }
+
+  private decideEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
     if (this.book===0 && this.paper.reclaimTrials?.some(r=>!r.enabled&&r.scannerId===ctx.scannerId&&r.symbol===ctx.symbol&&r.tf===ctx.tf)) return {action:'rejected',reason:'reclaim trial disabled'};
     const rule=this.book===0?this.reclaimRule(ctx):undefined;
     if (!rule) return this.executeEntry(ev,ctx);
@@ -565,6 +589,7 @@ export class PaperEngine extends EventEmitter {
     this.db.transaction(() => {
       this.persist(pos);
       this.persistFill(pos, pos.fills[0], context);
+      recordFillBudget(this.db,pos,this.book,cfg);
       recordEntryExecution(this.db, pos, this.book, cfg, context.source, this.quotes?.markState?.(pos.symbol));
       if(pos.features?.reclaim_trial)recordReclaimEvent(this.db,pos,JSON.stringify(this.reclaimRule(pos)),'filled',pos.entryAt);
       if (pos.signalId) this.db.updateSignalAction(pos.signalId, 'opened', pos.id);

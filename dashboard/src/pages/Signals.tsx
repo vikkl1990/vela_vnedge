@@ -1,3 +1,4 @@
+import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -160,6 +161,7 @@ export function Signals() {
 
   return (
     <div className="page">
+      <DecisionTrace/>
       <ScannerPipelinePanel/>
       <div className="banner small" role="note"><b>View only.</b> A signal is the record of a decision the gates already made; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
       <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Every alert the account's scanners raised and what the account did with it. Shadow-book runs are judged in the Incubator, not here." />

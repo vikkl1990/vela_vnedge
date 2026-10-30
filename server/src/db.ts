@@ -20,6 +20,14 @@ const ADDED_COLUMNS: Array<[string, string]> = [
 ];
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS decision_trace (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, book INTEGER NOT NULL,
+ signal_id INTEGER, position_id INTEGER, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,
+ stage TEXT NOT NULL, reason TEXT, snapshot TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_decision_trace_book_id ON decision_trace(book,id DESC);
+CREATE INDEX IF NOT EXISTS idx_decision_trace_signal ON decision_trace(signal_id,id);
+
 CREATE TABLE IF NOT EXISTS evidence_flags (
  position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,status TEXT NOT NULL CHECK(status IN ('quarantined','cleared')),
  reason TEXT NOT NULL,source TEXT NOT NULL,checked_at INTEGER NOT NULL,PRIMARY KEY(position_id,entry_at)
@@ -41,6 +49,19 @@ CREATE TABLE IF NOT EXISTS positions (
   exit_at INTEGER, exit_price REAL, exit_reason TEXT, signal_id INTEGER, fills TEXT NOT NULL DEFAULT '[]', bt INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status, bt);
+CREATE TRIGGER IF NOT EXISTS trace_position_status AFTER UPDATE OF status ON positions
+WHEN OLD.status != NEW.status
+BEGIN
+ INSERT INTO decision_trace(at,book,signal_id,position_id,scanner_id,symbol,tf,stage,reason)
+ VALUES(CAST(unixepoch('subsec')*1000 AS INTEGER),NEW.bt,NEW.signal_id,NEW.id,NEW.scanner_id,NEW.symbol,NEW.tf,NEW.status,NEW.exit_reason);
+END;
+CREATE TRIGGER IF NOT EXISTS trace_pending_delete AFTER DELETE ON positions
+WHEN OLD.status='pending'
+BEGIN
+ INSERT INTO decision_trace(at,book,signal_id,position_id,scanner_id,symbol,tf,stage,reason)
+ VALUES(CAST(unixepoch('subsec')*1000 AS INTEGER),OLD.bt,OLD.signal_id,OLD.id,OLD.scanner_id,OLD.symbol,OLD.tf,'cancelled','pending record removed; see signal decision');
+END;
+
 
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, position_id INTEGER NOT NULL, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL,
