@@ -1,0 +1,298 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Trend Volume Profile and Rolling POC [BigBeluga]', "TVP & Rolling POC & [BigBeluga]", overlay = true, max_polylines_count = 100, max_boxes_count = 500, max_bars_back = 5000)
+
+// ＩＮＰＵＴＳ ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{{
+maTypeInput      = input.string('SMA', title = 'MA Type', options = ['SMA', 'EMA', 'WMA', 'HMA', 'RMA', 'VWMA'], tooltip = 'Selects the Moving Average type used to calculate the central basis line.')
+maLengthInput    = input.int(25, title = 'MA Length', tooltip = 'Sets the lookback period for the selected Moving Average.')
+atrLengthInput   = input.int(50, title = 'ATR Length', tooltip = 'Sets the lookback period for the Average True Range volatility calculation.')
+atrMultInput     = input.float(1.0, title = 'ATR Multiplier', step = 0.1, tooltip = 'Controls the width of the upper and lower envelope bands relative to the ATR.')
+minBarsRequired  = 1
+
+binSizeMultInput = input.float(0.2, title = 'Bin Size Multiplier', minval = 0.01, step = 0.01, tooltip = 'Controls resolution/height of each volume profile bin relative to ATR. Lower = smaller bins.')
+showVolumeProfile = input.bool(true, title = 'Show Anchored Dynamic Volume Profile', tooltip = 'Toggles the visibility of the anchored dynamic volume profile boxes.')
+showPocLine      = input.bool(true, title = 'Show Rolling POC Polyline', tooltip = 'Toggles the visibility of the rolling Point of Control polyline, glow effect, and volume label.')
+showInfoTable    = input.bool(true, title = 'Show Trend Progression Table', tooltip = 'Toggles the visibility of the trend progression and volume metrics table in the top right.')
+
+// Label size inputs
+anchorLabelSizeInput = input.string('normal', title = 'Trend Anchor Label Size', options = ['tiny', 'small', 'normal', 'large', 'huge'], tooltip = 'Size of the "BULL"/"BEAR" anchor label drawn at the trend start.')
+pocLabelSizeInput    = input.string('large',  title = 'POC Label Size', options = ['tiny', 'small', 'normal', 'large', 'huge'], tooltip = 'Size of the "< POC: value" label drawn at the POC level.')
+
+bullProfileBaseColor = input.color(#2E3192, title = 'Base',  inline = 'Bullish Profile')
+bullProfileTopColor  = input.color(#1BFFFF, title = 'Top',   inline = 'Bullish Profile', tooltip = 'Bottom atmospheric gradient color for the volume profile during bullish trends.\nTop luminous gradient color for the volume profile during bullish trends.')
+bearProfileBaseColor = input.color(#3A0815, title = 'Base',  inline = 'Bearish Profile')
+bearProfileTopColor  = input.color(#FF5858, title = 'Top',   inline = 'Bearish Profile', tooltip = 'Bottom atmospheric gradient color for the volume profile during bearish trends.\nTop luminous gradient color for the volume profile during bearish trends.')
+pocHighlightColor    = input.color(#FFD700, title = 'Rolling POC Color', tooltip = 'Sets the highlight color for the rolling Point of Control polyline, glow, and volume text.')
+
+bullTrendColor = input.color(#00F2FE, title = 'Up Trend Color', tooltip = 'Sets the primary color used for bullish trend lines, shapes, and metrics.')
+bearTrendColor = input.color(#FF5858, title = 'Down Trend Color', tooltip = 'Sets the primary color used for bearish trend lines, shapes, and metrics.')
+
+type DrawingSet
+    box      b
+    polyline p
+    label    l
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+basisLine = switch maTypeInput
+    'SMA'  => ta.sma(close, maLengthInput)
+    'EMA'  => ta.ema(close, maLengthInput)
+    'WMA'  => ta.wma(close, maLengthInput)
+    'HMA'  => ta.hma(close, maLengthInput)
+    'RMA'  => ta.rma(close, maLengthInput)
+    'VWMA' => ta.vwma(close, maLengthInput)
+    => ta.sma(close, maLengthInput)
+
+bandAtrValue = ta.atr(atrLengthInput)
+upperBand    = basisLine + bandAtrValue * atrMultInput
+lowerBand    = basisLine - bandAtrValue * atrMultInput
+
+var int pendingDirection = 0
+if ta.crossover(close, upperBand)
+    pendingDirection := 1
+else if close < lowerBand and pendingDirection > 0
+    pendingDirection := -1
+
+var int pendingBarCount = 0
+var int activeDirection = 0
+var int trendStartBar = bar_index
+
+var array<chart.point> trendBoundaryPoints = array.new<chart.point>()
+var array<chart.point> pocLinePoints = array.new<chart.point>()
+
+bool pendingDirectionChanged = ta.change(pendingDirection) != 0
+
+if pendingDirectionChanged
+    pendingBarCount := 1
+    array.clear(trendBoundaryPoints)
+    array.push(trendBoundaryPoints, chart.point.from_index(bar_index, pendingDirection == 1 ? lowerBand : upperBand))
+else
+    pendingBarCount += 1
+    array.push(trendBoundaryPoints, chart.point.from_index(bar_index, pendingDirection == 1 ? lowerBand : upperBand))
+
+bool trendDirectionChanged = false
+if activeDirection == 0 and pendingDirection != 0
+    activeDirection := pendingDirection
+    trendStartBar := bar_index - pendingBarCount + 1
+    trendDirectionChanged := true
+else if pendingBarCount >= minBarsRequired and pendingDirection != activeDirection
+    activeDirection := pendingDirection
+    trendStartBar := bar_index - pendingBarCount + 1
+    trendDirectionChanged := true
+else if activeDirection != 0
+    array.push(trendBoundaryPoints, chart.point.from_index(bar_index, activeDirection == 1 ? lowerBand : upperBand))
+
+if trendDirectionChanged
+    array.clear(pocLinePoints)
+
+if activeDirection != 0
+    int barsSinceTrendStart = math.max(bar_index - trendStartBar, 0)
+    float rangeLow = low
+    float rangeHigh = high
+    
+    for i = 0 to barsSinceTrendStart
+        rangeLow  := math.min(rangeLow, low[i])
+        rangeHigh := math.max(rangeHigh, high[i])
+
+    float totalRangeSpan = math.max(rangeHigh - rangeLow, bandAtrValue * 0.1)
+    float binHeight = math.max(bandAtrValue * binSizeMultInput, 0.0001)
+    int binCount = math.min(math.max(math.round(totalRangeSpan / binHeight), 2), 100)
+    binHeight := totalRangeSpan / binCount
+
+    array<float> volumeByBin = array.new_float(binCount, 0.0)
+    for i = 0 to barsSinceTrendStart
+        float barLowPrice  = low[i]
+        float barHighPrice = high[i]
+        float barVolume    = volume[i]
+        float barPriceRange = barHighPrice - barLowPrice
+        if barPriceRange <= 0
+            int targetBin = math.min(math.max(math.floor((barLowPrice - rangeLow) / binHeight), 0), binCount - 1)
+            array.set(volumeByBin, targetBin, array.get(volumeByBin, targetBin) + barVolume)
+        else
+            int firstTouchedBin = math.max(math.floor((barLowPrice - rangeLow) / binHeight), 0)
+            int lastTouchedBin  = math.min(math.floor((barHighPrice - rangeLow) / binHeight), binCount - 1)
+            for b = firstTouchedBin to lastTouchedBin
+                float binLowerEdge = rangeLow + float(b) * binHeight
+                float binUpperEdge = binLowerEdge + binHeight
+                float overlapAmount = math.min(barHighPrice, binUpperEdge) - math.max(barLowPrice, binLowerEdge)
+                if overlapAmount > 0
+                    array.set(volumeByBin, b, array.get(volumeByBin, b) + barVolume * (overlapAmount / barPriceRange))
+
+    int pocBinIndex = 0
+    float pocBinVolume = -1.0
+    for i = 0 to binCount - 1
+        float currentBinVolume = array.get(volumeByBin, i)
+        if currentBinVolume > pocBinVolume
+            pocBinVolume := currentBinVolume
+            pocBinIndex := i
+
+    float pocPriceLevel = rangeLow + (float(pocBinIndex) + 0.5) * binHeight
+    array.push(pocLinePoints, chart.point.from_index(bar_index, pocPriceLevel))
+
+var array<DrawingSet> activeDrawings = array.new<DrawingSet>()
+var table statsTable = table.new(position = position.top_right, columns = 2, rows = 5, bgcolor = color.new(#0D1117, 10), border_color = color.new(#30363D, 50), border_width = 1)
+
+if barstate.islast
+    if array.size(activeDrawings) > 0
+        for i = 0 to array.size(activeDrawings) - 1
+            DrawingSet currentDrawing = array.get(activeDrawings, i)
+            if not na(currentDrawing.b)
+                box.delete(currentDrawing.b)
+            if not na(currentDrawing.p)
+                polyline.delete(currentDrawing.p)
+            if not na(currentDrawing.l)
+                label.delete(currentDrawing.l)
+        array.clear(activeDrawings)
+
+    if array.size(trendBoundaryPoints) > 0
+        polyline trendBoundaryPolyline = polyline.new(trendBoundaryPoints, line_color = activeDirection == 1 ? bullTrendColor : bearTrendColor, line_width = 2)
+        array.push(activeDrawings, DrawingSet.new(b = na, p = trendBoundaryPolyline, l = na))
+
+    if showPocLine and array.size(pocLinePoints) > 0
+        polyline pocGlowPolyline = polyline.new(pocLinePoints, line_color = color.new(pocHighlightColor, 90), line_width = 6, line_style = line.style_solid)
+        array.push(activeDrawings, DrawingSet.new(b = na, p = pocGlowPolyline, l = na))
+
+        polyline pocMainPolyline = polyline.new(pocLinePoints, line_color = pocHighlightColor, line_width = 2, line_style = line.style_dotted)
+        array.push(activeDrawings, DrawingSet.new(b = na, p = pocMainPolyline, l = na))
+
+    if activeDirection != 0
+        int barsBackToAnchor = math.max(bar_index - trendStartBar, 0)
+        float anchorYPrice = activeDirection == 1 ? lowerBand[barsBackToAnchor] : upperBand[barsBackToAnchor]
+        label trendAnchorLabel = label.new(x = trendStartBar, y = anchorYPrice, xloc = xloc.bar_index, text = activeDirection == 1 ? "BULL" : "BEAR", color = activeDirection == 1 ? color.new(bullTrendColor, 30) : color.new(bearTrendColor, 30), textcolor = chart.fg_color, style = activeDirection == 1 ? label.style_label_up : label.style_label_down, size = anchorLabelSizeInput)
+        array.push(activeDrawings, DrawingSet.new(b = na, p = na, l = trendAnchorLabel))
+
+    int barsSinceTrendStart = math.max(bar_index - trendStartBar, 0)
+    if activeDirection != 0
+        float rangeLow = low
+        float rangeHigh = high
+        for i = 0 to barsSinceTrendStart
+            rangeLow  := math.min(rangeLow, low[i])
+            rangeHigh := math.max(rangeHigh, high[i])
+
+        float totalRangeSpan = math.max(rangeHigh - rangeLow, bandAtrValue * 0.1)
+        float binHeight = math.max(bandAtrValue * binSizeMultInput, 0.0001)
+        int binCount = math.min(math.max(math.round(totalRangeSpan / binHeight), 2), 100)
+        binHeight := totalRangeSpan / binCount
+
+        array<float> volumeByBin = array.new_float(binCount, 0.0)
+        for i = 0 to barsSinceTrendStart
+            float barLowPrice  = low[i]
+            float barHighPrice = high[i]
+            float barVolume    = volume[i]
+            float barPriceRange = barHighPrice - barLowPrice
+            if barPriceRange <= 0
+                int targetBin = math.min(math.max(math.floor((barLowPrice - rangeLow) / binHeight), 0), binCount - 1)
+                array.set(volumeByBin, targetBin, array.get(volumeByBin, targetBin) + barVolume)
+            else
+                int firstTouchedBin = math.max(math.floor((barLowPrice - rangeLow) / binHeight), 0)
+                int lastTouchedBin  = math.min(math.floor((barHighPrice - rangeLow) / binHeight), binCount - 1)
+                for b = firstTouchedBin to lastTouchedBin
+                    float binLowerEdge = rangeLow + float(b) * binHeight
+                    float binUpperEdge = binLowerEdge + binHeight
+                    float overlapAmount = math.min(barHighPrice, binUpperEdge) - math.max(barLowPrice, binLowerEdge)
+                    if overlapAmount > 0
+                        array.set(volumeByBin, b, array.get(volumeByBin, b) + barVolume * (overlapAmount / barPriceRange))
+
+        float highestBinVolume = 0.0
+        int pocBinIndex = 0
+        for i = 0 to binCount - 1
+            float currentBinVolume = array.get(volumeByBin, i)
+            if currentBinVolume > highestBinVolume
+                highestBinVolume := currentBinVolume
+                pocBinIndex := i
+
+        float pocPriceLevel = rangeLow + (float(pocBinIndex) + 0.5) * binHeight
+
+        if showVolumeProfile
+            color profileBaseColor = activeDirection == 1 ? bullProfileBaseColor : bearProfileBaseColor
+            color profileTopColor  = activeDirection == 1 ? bullProfileTopColor  : bearProfileTopColor
+
+            float maxProfileBarWidth = 15.0
+            if highestBinVolume > 0
+                for i = 0 to binCount - 1
+                    float currentBinVolume = array.get(volumeByBin, i)
+                    if currentBinVolume > 0
+                        float binLowerEdge = rangeLow + float(i) * binHeight
+                        float binUpperEdge = binLowerEdge + binHeight
+                        float profileBarLength = currentBinVolume / highestBinVolume * maxProfileBarWidth
+
+                        // Gradient color by bin position (base -> top)
+                        color binFillColor = color.from_gradient(i, 0, binCount - 1, profileBaseColor, profileTopColor)
+
+                        // Transparency by volume: small bins -> more transparent, big bins -> more intense
+                        float relativeVolume = currentBinVolume / highestBinVolume
+                        int   fillTransparency = int(math.round(90 - relativeVolume * 65))
+
+                        box profileBox = box.new(left = trendStartBar, top = binUpperEdge, right = int(math.round(float(trendStartBar) + profileBarLength)), bottom = binLowerEdge, bgcolor = color.new(binFillColor, fillTransparency), border_color = chart.bg_color)
+                        array.push(activeDrawings, DrawingSet.new(b = profileBox, p = na, l = na))
+        if showPocLine
+            label pocValueLabel = label.new(x = bar_index, y = pocPriceLevel, text = "< POC: " + str.tostring(highestBinVolume, format.volume), color = color.new(color.black, 100), textcolor = chart.fg_color, style = label.style_label_left, size = pocLabelSizeInput)
+            array.push(activeDrawings, DrawingSet.new(b = na, p = na, l = pocValueLabel))
+
+    if showInfoTable and activeDirection != 0
+        float trendTotalVolume = 0.0
+        float trendBuyVolume = 0.0
+        float trendSellVolume = 0.0
+
+        for i = 0 to barsSinceTrendStart
+            float barVolume = volume[i]
+            float barHighPrice = high[i]
+            float barLowPrice = low[i]
+            float barClosePrice = close[i]
+            float barPriceRange = barHighPrice - barLowPrice
+            float buyVolumeFraction = barPriceRange > 0 ? (barClosePrice - barLowPrice) / barPriceRange : (barClosePrice >= open[i] ? 1.0 : 0.0)
+
+            float barBuyVolume  = barVolume * buyVolumeFraction
+            float barSellVolume = barVolume * (1.0 - buyVolumeFraction)
+
+            trendTotalVolume += barVolume
+            trendBuyVolume   += barBuyVolume
+            trendSellVolume  += barSellVolume
+
+        float buyPercentage   = trendTotalVolume > 0 ? (trendBuyVolume / trendTotalVolume) * 100 : 50.0
+        float sellPercentage  = trendTotalVolume > 0 ? (trendSellVolume / trendTotalVolume) * 100 : 50.0
+        float volumeDelta = trendBuyVolume - trendSellVolume
+
+        table.cell_set_text(statsTable, 0, 0, "Trend Status")
+        table.cell_set_text_color(statsTable, 0, 0, color.new(chart.fg_color, 20))
+        table.cell_set_text(statsTable, 1, 0, activeDirection == 1 ? "BULLISH" : "BEARISH")
+        table.cell_set_text_color(statsTable, 1, 0, activeDirection == 1 ? bullTrendColor : bearTrendColor)
+
+        table.cell_set_text(statsTable, 0, 1, "Duration (Bars)")
+        table.cell_set_text_color(statsTable, 0, 1, color.new(chart.fg_color, 20))
+        table.cell_set_text(statsTable, 1, 1, str.tostring(barsSinceTrendStart + 1))
+        table.cell_set_text_color(statsTable, 1, 1, chart.fg_color)
+
+        table.cell_set_text(statsTable, 0, 2, "Trend Volume")
+        table.cell_set_text_color(statsTable, 0, 2, color.new(chart.fg_color, 20))
+        table.cell_set_text(statsTable, 1, 2, str.tostring(trendTotalVolume, "#.##"))
+        table.cell_set_text_color(statsTable, 1, 2, chart.fg_color)
+
+        table.cell_set_text(statsTable, 0, 3, "Volume Delta")
+        table.cell_set_text_color(statsTable, 0, 3, color.new(chart.fg_color, 20))
+        table.cell_set_text(statsTable, 1, 3, str.tostring(volumeDelta, "#.##"))
+        table.cell_set_text_color(statsTable, 1, 3, volumeDelta >= 0 ? bullTrendColor : bearTrendColor)
+
+        table.cell_set_text(statsTable, 0, 4, "Buy / Sell %")
+        table.cell_set_text_color(statsTable, 0, 4, color.new(chart.fg_color, 20))
+        table.cell_set_text(statsTable, 1, 4, str.tostring(buyPercentage, "#.#") + "% / " + str.tostring(sellPercentage, "#.#") + "%")
+        table.cell_set_text_color(statsTable, 1, 4, chart.fg_color)
+        
+        for r = 0 to 4
+            table.cell_set_bgcolor(statsTable, 0, r, color.new(#161B22, 20))
+            table.cell_set_bgcolor(statsTable, 1, r, color.new(#161B22, 20))
+    else
+        table.clear(statsTable, 0, 0, 1, 4)
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plotshape(trendDirectionChanged and activeDirection == 1, title = 'Bullish Trend Change', style = shape.triangleup, location = location.belowbar, color = bullTrendColor, size = size.small, force_overlay = true)
+plotshape(trendDirectionChanged and activeDirection == -1, title = 'Bearish Trend Change', style = shape.triangledown, location = location.abovebar, color = bearTrendColor, size = size.small, force_overlay = true)
+
+plot(upperBand, title = 'Upper Band', color = color.new(bearTrendColor, 70))
+plot(lowerBand, title = 'Lower Band', color = color.new(bullTrendColor, 70))
+plot(basisLine, title = 'Basis', color = color.new(color.gray, 80))
+// }

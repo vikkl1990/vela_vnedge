@@ -1,0 +1,51 @@
+SCANNER FAMILY INCORPORATION — 30 October 2026
+
+Scope: five new publications and three upstream revisions. All are disabled for account trading. Revisions receive independent IDs and evidence; previous sources/configurations remain untouched. Smart Money Breakout’s local accounting fixes remain untouched.
+
+Validation: 48/48 new-version runtime cells passed (8 sources × BTCUSD/ETHUSD/SOLUSD × 15m/1h), each on 999 closed Delta India candles. The three older versions also passed 18/18 cells. Four entry-producing versions emitted 573 entries. Two prefix cuts (60 and 200 bars) per entry-producing cell showed zero changed earlier entry events. Zero-entry cases provide no repaint evidence; this is a finite prefix check, not a proof against all repainting.
+
+One-minute replay: 59,940 contiguous minutes per symbol, covering the full 1h window; 24 entry-producing cells re-run with those exit paths. Fee waiver disabled; current $150 margin, 3% margin stop-loss budget, 6× cost policy, exchange product specifications, 0.05% taker fee plus 18% fee tax, 2bp fallback slippage. Entries use market execution and the shared levels exit engine, not a complete account/pilot/limit/regime replay. Script stops are ignored per current fleet configuration. Historical funding and actual historical order-book impact are unavailable; results exclude those costs. One-minute candles still have intraminute ordering ambiguity. No threshold tuning or parameter optimization was performed.
+
+Results: totals below sum independent cells and are NOT portfolio P&L. Dollar results are after modelled commissions/tax/slippage, before unmodelled funding/depth impact.
+
+Version | Entries | Closed trades | Timeframe-candle P&L | Minute-path P&L
+Mirage Liquidity Sweep Pro [WillyAlgoTrader] [mirage-liquidity-sweep-pro-upstream-2-0] | 0 | 0 | $+0.00 | not applicable: no entry events
+Precision Sniper [WillyAlgoTrader] [precision-sniper-upstream-6-0] | 211 | 107 | $-88.54 | $-189.81
+Trend Volume Profile and Rolling POC [BigBeluga] [trend-volume-profile-and-rolling-poc] | 171 | 82 | $-64.50 | $-125.57
+Fear and Greed Index [BigBeluga] [fear-and-greed-index] | 0 | 0 | $+0.00 | not applicable: no entry events
+Volume Delta Pivot Matrix [BigBeluga] [volume-delta-pivot-matrix-upstream-3-0] | 0 | 0 | $+0.00 | not applicable: no entry events
+Anchored Orderflow VWAP Signals [AlgoAlpha] [anchored-orderflow-vwap-signals] | 165 | 60 | $+39.29 | $-31.96
+VWAP Range Breakout (Zeiierman) [vwap-range-breakout] | 26 | 17 | $-41.23 | $-51.19
+Trend Fair Value Gap Delta [ChartPrime] [trend-fair-value-gap-delta] | 0 | 0 | $+0.00 | not applicable: no entry events
+
+Interpretation and incorporation:
+- Anchored Orderflow VWAP’s aggregate +$39.29 on coarse candles becomes -$31.96 on minute paths. BTC 1h remains +$5.64 over 14 closes, SOL 15m +$9.25 over 4 closes: useful leads for forward research, too few to activate an account allocation.
+- Precision Sniper, Trend Volume Profile and VWAP Range Breakout also worsen on minute paths. These are library research candidates, not proven profitable upgrades.
+- Mirage old and new both produced zero entries in this window. Its sweep annotations are not confirmed entries. Do not manufacture trades from those labels.
+- Fear and Greed, Trend FVG Delta and Volume Delta Pivot Matrix are incorporated as context-only sources with an explicit correctness hold and empty entry channels. A runtime pass cannot lift that hold. Delta in these sources is an OHLCV proxy, not exchange aggressor-trade delta.
+- The Range Breakout reading accepts confirmed breakout up/down only. Range states, fakeouts, recoveries, retests and trend context are not mixed into that strategy. They would need separate readings and evidence.
+- Precision Sniper uses only the basic confirmed Buy/Sell conditions; A+/A/B duplicates, Any Signal, exit notifications and chart labels cannot open entries.
+- Trend Volume Profile reads current-bar direction-change shapes, never its historical anchor labels. Production closed-bar scanning is required.
+- All five entry-capable versions are available to research screening; the three context-only sources are held out of automated entry screening. No direct shadow or account allocations were created.
+
+Old-version comparison (coarse candles only): Precision Sniper old: 230 entries, 168 closes, -$94.30; new: 211 entries, 107 closes, -$88.54. This is not evidence the rewrite improved profitability: source and reading contracts differ, and new minute-path P&L is -$189.81. Mirage and Pivot Matrix have zero extracted entries in both revisions.
+
+Next useful experiment: forward-track Anchored Orderflow VWAP BTC 1h and SOL 15m through normal screening, then evaluate exit timing on held-out data. Keep the fee/risk policy intact. Do not pick the best cells from this short sample and call them validated.
+
+Historical windows (UTC):
+BTCUSD:15m: 2026-10-20T07:00:00+00:00 to 2026-10-30T16:30:00+00:00
+BTCUSD:1h: 2026-09-19T01:00:00+00:00 to 2026-10-30T15:00:00+00:00
+ETHUSD:15m: 2026-10-20T07:00:00+00:00 to 2026-10-30T16:30:00+00:00
+ETHUSD:1h: 2026-09-19T01:00:00+00:00 to 2026-10-30T15:00:00+00:00
+SOLUSD:15m: 2026-10-20T07:00:00+00:00 to 2026-10-30T16:30:00+00:00
+SOLUSD:1h: 2026-09-19T01:00:00+00:00 to 2026-10-30T15:00:00+00:00
+
+Upstream publications:
+Mirage Liquidity Sweep Pro [WillyAlgoTrader] https://www.tradingview.com/script/qBUHu6aW-Mirage-Liquidity-Sweep-Pro-WillyAlgoTrader/
+Precision Sniper [WillyAlgoTrader] https://www.tradingview.com/script/IZj18oYZ-Precision-Sniper-WillyAlgoTrader/
+Trend Volume Profile and Rolling POC [BigBeluga] https://www.tradingview.com/script/srh0K2hS-Trend-Volume-Profile-and-Rolling-POC-BigBeluga/
+Fear and Greed Index [BigBeluga] https://www.tradingview.com/script/AO8IiV8S-Fear-and-Greed-Index-BigBeluga/
+Volume Delta Pivot Matrix [BigBeluga] https://www.tradingview.com/script/0p0kXntP-Volume-Delta-Pivot-Matrix-BigBeluga/
+Anchored Orderflow VWAP Signals [AlgoAlpha] https://www.tradingview.com/script/2lxxivm3-Anchored-Orderflow-VWAP-Signals-AlgoAlpha/
+VWAP Range Breakout (Zeiierman) https://www.tradingview.com/script/6W1FuMlT-VWAP-Range-Breakout-Zeiierman/
+Trend Fair Value Gap Delta [ChartPrime] https://www.tradingview.com/script/oM444F7G-Trend-Fair-Value-Gap-Delta-ChartPrime/

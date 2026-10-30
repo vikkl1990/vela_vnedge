@@ -1,0 +1,444 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Anchored Orderflow VWAP Signals [AlgoAlpha]", "AlgoAlpha - Anchored Orderflow VWAP", overlay = true, max_boxes_count = 500, max_lines_count = 100, max_labels_count = 10, max_bars_back = 1000, explicit_plot_zorder = true, behind_chart = false)
+
+// Inputs
+
+GROUP_FEATURES = "Features"
+GROUP_VWAP = "VWAP Settings"
+GROUP_BANDS = "Deviation Bands"
+GROUP_PROFILE = "Volume Profile"
+GROUP_TABLE = "Table"
+GROUP_APPEARANCE = "Appearance"
+
+show_signals = input.bool(true, "Signal Labels", group = GROUP_FEATURES, tooltip = "Shows Buy labels when price crosses above Rolling POC and closes below VWAP, and Sell labels when price crosses below Rolling POC and closes above VWAP. Signals confirm at candle close. This toggle controls labels only; alert conditions remain available.")
+show_candles = input.bool(true, "VWAP Candles", group = GROUP_FEATURES, tooltip = "Colors candle bodies, wicks, and borders by the closing price's distance from VWAP. Above VWAP uses the bearish color; below uses the bullish color. Colors blend from the chart foreground near VWAP to full bullish or bearish color at the outer bands. Includes a faint price line. Original candles remain when deviation is unavailable or zero.")
+show_volume = input.bool(true, "Volume Bars", inline = "volume", group = GROUP_FEATURES)
+show_split = input.bool(true, "Buy / Sell Split", inline = "volume", group = GROUP_FEATURES, tooltip = "Splits each volume row into bullish volume below and bearish volume above. Candle direction estimates the split: close below open is bearish; all other candles are bullish.")
+show_delta = input.bool(true, "Delta", inline = "delta", group = GROUP_FEATURES)
+show_heatmap = input.bool(true, "Delta Heat Map", inline = "delta", group = GROUP_FEATURES, tooltip = "Shows estimated delta percentages on the current profile and colors its rows by buying or selling pressure. Delta is calculated from candle direction, not bid/ask trades.")
+show_poc = input.bool(true, "Anchor POC", inline = "poc", group = GROUP_FEATURES)
+show_rolling_poc = input.bool(true, "Rolling POC", inline = "poc", group = GROUP_FEATURES, tooltip = "Anchor POC marks the current anchored profile's highest-volume row. Rolling POC uses a separate 40-bar volume profile with 15 rows and 6-bar smoothing. The two values can differ. Past anchored profiles are cleared.")
+show_table = input.bool(true, "Table", group = GROUP_FEATURES, tooltip = "Shows price location, volume direction, nearby levels, and relative volume. Disable it to remove the entire table.")
+
+anchor_period = input.string("Session", "Anchor Period", options = ["Session", "Week", "Month", "Quarter", "Year"], group = GROUP_VWAP, tooltip = "Sets when VWAP, its volume-weighted deviation bands, and the volume profile restart together. Uses all available chart bars since that reset.")
+source = input.source(hlc3, "Source", group = GROUP_VWAP, tooltip = "Price source used for VWAP and its deviation bands. The volume profile assigns each candle's volume to its closing price.")
+hide_on_dwm = input.bool(false, "Hide on 1D or Above", group = GROUP_VWAP, tooltip = "Hides all plots and drawings on daily or higher chart timeframes.")
+
+band_multiplier_1 = input.float(2.56, "Band 1", minval = 0.01, step = 0.01, inline = "multipliers", group = GROUP_BANDS)
+band_multiplier_2 = input.float(4.02, "Band 2", minval = 0.01, step = 0.01, inline = "multipliers", group = GROUP_BANDS, tooltip = "Band 1 controls the inner levels. Band 2 controls the outer levels and must exceed Band 1. Profiles show only volume at closing prices inside the outer bands.")
+
+profile_rows = input.int(60, "Rows", minval = 10, maxval = 100, inline = "profile", group = GROUP_PROFILE)
+profile_width = input.int(30, "Width", minval = 10, maxval = 100, inline = "profile", group = GROUP_PROFILE)
+profile_offset = input.int(40, "Offset", minval = 10, maxval = 300, inline = "profile", group = GROUP_PROFILE, tooltip = "Rows sets the price detail. Width sets the maximum profile width in chart bars. Offset sets the gap from the current candle to the start of the profile. Guide lines stop before the profile.")
+
+table_location = input.bool(true, "Price Location", inline = "table_rows_1", group = GROUP_TABLE)
+table_pocs = input.bool(true, "POC Levels", inline = "table_rows_1", group = GROUP_TABLE, tooltip = "Shows price location within the VWAP bands, distance from VWAP in standard deviations, and both POC prices with their distance from the current price.")
+table_delta = input.bool(true, "Volume Delta", inline = "table_rows_2", group = GROUP_TABLE)
+table_levels = input.bool(true, "Nearby Levels", inline = "table_rows_2", group = GROUP_TABLE, tooltip = "Shows estimated candle-volume delta for the full anchor and recent bars, plus the closest indicator levels above and below price. These levels are references, not confirmed support or resistance.")
+table_volume = input.bool(true, "Relative Volume", group = GROUP_TABLE, tooltip = "Compares the last completed candle's volume with the average of the candles before it. The measured candle is excluded from its baseline.")
+table_position_input = input.string("Top Right", "Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], inline = "table_layout", group = GROUP_TABLE)
+table_size_input = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal", "Large"], inline = "table_layout", group = GROUP_TABLE, tooltip = "Sets the table's chart position and text size.")
+table_transparency = input.int(15, "Background Transparency", minval = 0, maxval = 100, group = GROUP_TABLE, tooltip = "Zero is opaque. One hundred is transparent.")
+table_distance = input.string("ATR", "Distance Units", options = ["ATR", "Percent", "Ticks", "Price"], inline = "table_distance", group = GROUP_TABLE)
+table_atr_length = input.int(14, "ATR Length", minval = 1, maxval = 200, inline = "table_distance", group = GROUP_TABLE, tooltip = "Selects the units for gaps between the current price and indicator levels. ATR Length applies only to ATR units. Percent gaps use the current price.")
+table_recent_length = input.int(40, "Recent Delta Bars", minval = 1, maxval = 500, inline = "table_periods", group = GROUP_TABLE)
+table_volume_length = input.int(20, "Volume Baseline", minval = 1, maxval = 500, inline = "table_periods", group = GROUP_TABLE, tooltip = "Recent Delta Bars sets the recent flow window, which can cross VWAP resets. Volume Baseline sets the number of earlier candles used for the relative-volume average.")
+
+bearish_color = input.color(#ff1100, "Bearish Color", inline = "colors", group = GROUP_APPEARANCE)
+bullish_color = input.color(#00ffbb, "Bullish Color", inline = "colors", group = GROUP_APPEARANCE, tooltip = "Controls the VWAP bands, candle gradient, signal labels, bullish and bearish volume, and delta colors.")
+
+// VWAP bands
+
+if barstate.isfirst and band_multiplier_2 <= band_multiplier_1
+    runtime.error("Band 2 must be greater than Band 1.")
+
+volume_value = math.max(nz(volume), 0.0)
+flow_value = close < open ? -volume_value : volume_value
+cumulative_volume = ta.cum(volume_value)
+
+if barstate.islast and cumulative_volume == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+is_new_period = switch anchor_period
+    "Session" => timeframe.change("D")
+    "Week" => timeframe.change("W")
+    "Month" => timeframe.change("M")
+    "Quarter" => timeframe.change("3M")
+    "Year" => timeframe.change("12M")
+    => false
+
+if barstate.isfirst or na(source[1])
+    is_new_period := true
+
+is_visible = not (hide_on_dwm and timeframe.isdwm)
+[anchored_vwap, stdev_upper, _] = ta.vwap(source, is_new_period, 1.0)
+
+vwap_value = is_visible ? anchored_vwap : na
+stdev_value = is_visible ? math.max(stdev_upper - anchored_vwap, 0.0) : na
+
+upper_band_1 = vwap_value + stdev_value * band_multiplier_1
+upper_band_2 = vwap_value + stdev_value * band_multiplier_2
+lower_band_1 = vwap_value - stdev_value * band_multiplier_1
+lower_band_2 = vwap_value - stdev_value * band_multiplier_2
+
+table_enabled = show_table and is_visible and (table_location or table_pocs or table_delta or table_levels or table_volume)
+
+// Rolling POC
+
+rolling_high = ta.highest(high, 40)
+rolling_low = ta.lowest(low, 40)
+rolling_range = rolling_high - rolling_low
+rolling_bins = array.new_float(15, 0.0)
+rolling_volume = 0.0
+raw_rolling_poc = float(na)
+
+if is_visible
+    for i = 0 to math.min(39, bar_index)
+        bar_volume = math.max(nz(volume[i]), 0.0)
+
+        if bar_volume > 0 and not na(close[i])
+            row = rolling_range > 0 ? math.min(14, math.max(0, int(math.floor((close[i] - rolling_low) / rolling_range * 15)))) : 0
+            array.set(rolling_bins, row, array.get(rolling_bins, row) + bar_volume)
+            rolling_volume += bar_volume
+
+    if rolling_volume > 0
+        rolling_row = array.indexof(rolling_bins, array.max(rolling_bins))
+        raw_rolling_poc := rolling_range > 0 ? rolling_low + rolling_range / 15 * (rolling_row + 0.5) : rolling_low
+
+smoothed_rolling_poc = ta.sma(raw_rolling_poc, 6)
+rolling_poc = is_visible and rolling_volume > 0 ? smoothed_rolling_poc : na
+rolling_color = close >= rolling_poc ? bullish_color : bearish_color
+
+// Signals
+
+cross_above_poc = ta.crossover(close, rolling_poc)
+cross_below_poc = ta.crossunder(close, rolling_poc)
+buy_signal = is_visible and barstate.isconfirmed and cross_above_poc and close < vwap_value
+sell_signal = is_visible and barstate.isconfirmed and cross_below_poc and close > vwap_value
+signal_gap = math.max(nz(ta.atr(14), high - low) * 0.35, syminfo.mintick * 2)
+
+// Flow and distance
+
+var anchor_total_volume = 0.0
+var anchor_total_flow = 0.0
+var anchor_bars = 0
+
+if is_new_period
+    anchor_total_volume := 0.0
+    anchor_total_flow := 0.0
+    anchor_bars := 0
+
+anchor_total_volume += volume_value
+anchor_total_flow += flow_value
+anchor_bars += 1
+
+anchor_delta = anchor_total_volume > 0 ? anchor_total_flow / anchor_total_volume * 100.0 : na
+cumulative_flow = ta.cum(flow_value)
+recent_volume = cumulative_volume - nz(cumulative_volume[table_recent_length])
+recent_flow = cumulative_flow - nz(cumulative_flow[table_recent_length])
+recent_delta = recent_volume > 0 ? recent_flow / recent_volume * 100.0 : na
+recent_bars = math.min(table_recent_length, bar_index + 1)
+
+distance_atr = ta.atr(table_atr_length)
+volume_average = ta.sma(volume_value, table_volume_length)
+volume_validity = ta.sma(na(volume) ? 0.0 : 1.0, table_volume_length)
+closed_volume = barstate.isconfirmed ? volume : volume[1]
+closed_baseline = barstate.isconfirmed ? volume_average[1] : volume_average[2]
+baseline_complete = barstate.isconfirmed ? volume_validity[1] == 1.0 : volume_validity[2] == 1.0
+relative_volume = not na(closed_volume) and baseline_complete and closed_baseline > 0 ? math.max(closed_volume, 0.0) / closed_baseline : na
+
+// Profile storage
+
+var anchor_prices = array.new_float()
+var anchor_flows = array.new_float()
+
+var current_boxes = array.new_box()
+var current_lines = array.new_line()
+var current_labels = array.new_label()
+profile_enabled = show_volume or show_heatmap or show_delta or show_poc
+profile_needed = profile_enabled or (table_enabled and (table_pocs or table_levels))
+
+// Profile drawing
+
+draw_profile(profile_low, profile_high) =>
+    buy_bins = array.new_float(profile_rows, 0.0)
+    sell_bins = array.new_float(profile_rows, 0.0)
+    total_bins = array.new_float(profile_rows, 0.0)
+    row_height = (profile_high - profile_low) / profile_rows
+    anchor_volume = 0.0
+    poc_price = float(na)
+
+    for i = 0 to array.size(anchor_prices) - 1
+        price = array.get(anchor_prices, i)
+        flow = array.get(anchor_flows, i)
+        bar_volume = math.abs(flow)
+        anchor_volume += bar_volume
+
+        if price >= profile_low and price <= profile_high
+            row = math.min(profile_rows - 1, math.max(0, int(math.floor((price - profile_low) / row_height))))
+            array.set(total_bins, row, array.get(total_bins, row) + bar_volume)
+
+            if flow >= 0
+                array.set(buy_bins, row, array.get(buy_bins, row) + bar_volume)
+            else
+                array.set(sell_bins, row, array.get(sell_bins, row) + bar_volume)
+
+    maximum_volume = array.max(total_bins)
+    right_edge = bar_index + profile_offset + profile_width
+
+    if maximum_volume > 0
+        poc_row = array.indexof(total_bins, maximum_volume)
+        poc_price := profile_low + row_height * (poc_row + 0.5)
+
+        for i = 0 to profile_rows - 1
+            row_volume = array.get(total_bins, i)
+
+            if row_volume > 0
+                buy_volume = array.get(buy_bins, i)
+                sell_volume = array.get(sell_bins, i)
+                delta_percent = (buy_volume - sell_volume) / row_volume * 100.0
+                delta_color = color.from_gradient(delta_percent, -100, 100, bearish_color, bullish_color)
+                strength = row_volume / maximum_volume
+                row_low = profile_low + row_height * i + row_height * 0.04
+                row_high = profile_low + row_height * (i + 1) - row_height * 0.04
+                row_mid = math.avg(row_low, row_high)
+                is_poc = show_poc and i == poc_row
+                border_color = is_poc ? chart.fg_color : color.new(chart.bg_color, 100)
+                border_width = is_poc ? 1 : 0
+
+                if show_heatmap
+                    array.push(current_boxes, box.new(right_edge - profile_width, row_high, right_edge, row_low, border_color = border_color, border_width = border_width, bgcolor = color.new(delta_color, 94 - int(strength * 16))))
+
+                if show_volume
+                    if show_split
+                        if buy_volume > 0
+                            buy_width = math.max(1, int(math.round(buy_volume / maximum_volume * profile_width)))
+                            array.push(current_boxes, box.new(right_edge - buy_width, row_mid, right_edge, row_low, border_color = color.new(chart.bg_color, 100), border_width = 0, bgcolor = color.new(bullish_color, 15)))
+
+                        if sell_volume > 0
+                            sell_width = math.max(1, int(math.round(sell_volume / maximum_volume * profile_width)))
+                            array.push(current_boxes, box.new(right_edge - sell_width, row_high, right_edge, row_mid, border_color = color.new(chart.bg_color, 100), border_width = 0, bgcolor = color.new(bearish_color, 15)))
+                    else
+                        row_width = math.max(1, int(math.round(strength * profile_width)))
+                        array.push(current_boxes, box.new(right_edge - row_width, row_high, right_edge, row_low, border_color = border_color, border_width = border_width, bgcolor = color.new(delta_color, 25)))
+
+                if show_delta
+                    delta_text = (delta_percent > 0 ? "+" : "") + str.tostring(delta_percent, "#") + "%"
+                    array.push(current_boxes, box.new(right_edge + 1, row_high, right_edge + 13, row_low, border_color = border_color, border_width = border_width, bgcolor = color.new(delta_color, 85), text = delta_text, text_color = chart.fg_color, text_size = size.tiny, text_halign = text.align_center))
+
+        if show_poc
+            guide_end = bar_index + profile_offset - 3
+            label_edge = right_edge + (show_delta ? 14 : 1)
+            array.push(current_lines, line.new(bar_index, poc_price, guide_end, poc_price, color = color.new(chart.fg_color, 55), style = line.style_dotted))
+            array.push(current_labels, label.new(label_edge, poc_price, "Anchor POC " + str.tostring(poc_price, format.mintick), color = color.new(chart.bg_color, 100), style = label.style_label_left, textcolor = chart.fg_color, size = size.small, tooltip = "Highest-volume row inside the outer VWAP bands since the current VWAP reset.\nRow volume: " + str.tostring(maximum_volume, format.volume)))
+
+        included_volume = array.sum(total_bins)
+        profile_tooltip = "Anchor: " + anchor_period + "\nIn-band volume: " + str.tostring(included_volume, format.volume) + "\nAnchor volume: " + str.tostring(anchor_volume, format.volume) + "\nRow width shows volume at that price.\nDelta is estimated from candle direction."
+
+        if show_volume or show_heatmap
+            title_x = right_edge - int(math.round(profile_width * 0.5))
+            title_text = str.upper(anchor_period) + " VOLUME\n" + str.tostring(included_volume, format.volume)
+            array.push(current_labels, label.new(title_x, profile_high, title_text, color = color.new(chart.bg_color, 100), style = label.style_label_down, textcolor = chart.fg_color, size = size.small, tooltip = profile_tooltip))
+
+        if show_volume and show_split
+            buy_x = right_edge - int(math.round(profile_width * 0.75))
+            sell_x = right_edge - int(math.round(profile_width * 0.25))
+            array.push(current_labels, label.new(buy_x, profile_low, "BUY VOLUME\nLower half", color = color.new(chart.bg_color, 100), style = label.style_label_up, textcolor = bullish_color, size = size.tiny))
+            array.push(current_labels, label.new(sell_x, profile_low, "SELL VOLUME\nUpper half", color = color.new(chart.bg_color, 100), style = label.style_label_up, textcolor = bearish_color, size = size.tiny))
+
+        if show_delta
+            included_delta = (array.sum(buy_bins) - array.sum(sell_bins)) / included_volume * 100.0
+            total_color = included_delta >= 0 ? bullish_color : bearish_color
+            total_text = "PROFILE Δ\n" + (included_delta > 0 ? "+" : "") + str.tostring(included_delta, "#.0") + "%"
+            array.push(current_labels, label.new(right_edge + 7, profile_high, total_text, color = color.new(chart.bg_color, 100), style = label.style_label_down, textcolor = total_color, size = size.small, tooltip = profile_tooltip))
+
+    poc_price
+
+// Anchored profiles
+
+if is_new_period or barstate.islast
+    while array.size(current_boxes) > 0
+        box.delete(array.pop(current_boxes))
+
+    while array.size(current_lines) > 0
+        line.delete(array.pop(current_lines))
+
+    while array.size(current_labels) > 0
+        label.delete(array.pop(current_labels))
+
+if is_new_period
+    array.clear(anchor_prices)
+    array.clear(anchor_flows)
+
+if is_visible and profile_needed and volume_value > 0 and not na(close) and not na(source)
+    if array.size(anchor_prices) >= 100000
+        runtime.error("This anchor contains too many bars. Use a shorter anchor or a higher chart timeframe.")
+
+    array.push(anchor_prices, close)
+    array.push(anchor_flows, flow_value)
+
+anchor_poc = float(na)
+
+if barstate.islast and is_visible and profile_needed and array.size(anchor_prices) > 0 and upper_band_2 > lower_band_2
+    anchor_poc := draw_profile(lower_band_2, upper_band_2)
+
+    if profile_enabled
+        projection_end = bar_index + profile_offset - 3
+        array.push(current_lines, line.new(bar_index, upper_band_2, projection_end, upper_band_2, color = color.new(bearish_color, 75)))
+        array.push(current_lines, line.new(bar_index, upper_band_1, projection_end, upper_band_1, color = color.new(bearish_color, 85), style = line.style_dotted))
+        array.push(current_lines, line.new(bar_index, vwap_value, projection_end, vwap_value, color = color.new(chart.fg_color, 75)))
+        array.push(current_lines, line.new(bar_index, lower_band_1, projection_end, lower_band_1, color = color.new(bullish_color, 85), style = line.style_dotted))
+        array.push(current_lines, line.new(bar_index, lower_band_2, projection_end, lower_band_2, color = color.new(bullish_color, 75)))
+
+if barstate.islast and show_rolling_poc and not na(rolling_poc)
+    array.push(current_labels, label.new(bar_index + 2, rolling_poc, "Rolling POC " + str.tostring(rolling_poc, format.mintick), color = color.new(chart.bg_color, 100), style = label.style_label_left, textcolor = rolling_color, size = size.small, tooltip = "Smoothed point of control from the latest 40 chart bars. This window is independent of the VWAP anchor."))
+
+// Visuals
+
+body_midpoint = math.avg(open, close)
+candle_deviation = stdev_value > 0 ? (close - vwap_value) / stdev_value : na
+candle_enabled = show_candles and is_visible and not na(candle_deviation)
+candle_color = candle_enabled ? color.from_gradient(math.abs(candle_deviation), 0, band_multiplier_2, chart.fg_color, candle_deviation > 0 ? bearish_color : bullish_color) : na
+
+vwap_plot = plot(vwap_value, "VWAP", color = color.new(chart.fg_color, 65), linewidth = 2)
+upper_band_1_plot = plot(upper_band_1, "Upper Band 1", color = color.new(bearish_color, 80), linewidth = 1)
+upper_band_2_plot = plot(upper_band_2, "Upper Band 2", color = color.new(bearish_color, 65), linewidth = 2)
+lower_band_1_plot = plot(lower_band_1, "Lower Band 1", color = color.new(bullish_color, 80), linewidth = 1)
+lower_band_2_plot = plot(lower_band_2, "Lower Band 2", color = color.new(bullish_color, 65), linewidth = 2)
+body_midpoint_plot = plot(is_visible ? body_midpoint : na, "Candle Body Midpoint", display = display.none)
+
+fill(vwap_plot, upper_band_2_plot, upper_band_2, vwap_value, color.new(bearish_color, 99), color.new(bearish_color, 94), title = "Upper VWAP Gradient", fillgaps = false)
+fill(vwap_plot, lower_band_2_plot, vwap_value, lower_band_2, color.new(bullish_color, 94), color.new(bullish_color, 99), title = "Lower VWAP Gradient", fillgaps = false)
+
+fill(body_midpoint_plot, upper_band_2_plot, color = body_midpoint > upper_band_2 ? color.new(bearish_color, 85) : na, title = "Upper Extreme Fill", fillgaps = false)
+fill(body_midpoint_plot, lower_band_2_plot, color = body_midpoint < lower_band_2 ? color.new(bullish_color, 85) : na, title = "Lower Extreme Fill", fillgaps = false)
+
+plotcandle(candle_enabled ? open : na, candle_enabled ? high : na, candle_enabled ? low : na, candle_enabled ? close : na, "VWAP Deviation Candles", color = candle_color, wickcolor = candle_color, bordercolor = candle_color, display = display.pane)
+plot(show_candles and is_visible ? close : na, "Price Tracking Line", color = color.new(chart.fg_color, 85), style = plot.style_linebr, display = display.pane)
+
+plot(show_rolling_poc ? rolling_poc : na, "Rolling POC", color = color.new(rolling_color, 0), linewidth = 3, style = plot.style_linebr)
+
+plotshape(show_signals and buy_signal ? low - signal_gap : na, title = "Buy Signal", style = shape.labelup, location = location.absolute, color = bullish_color, text = "▲", textcolor = chart.fg_color, size = size.small, display = display.pane)
+plotshape(show_signals and sell_signal ? high + signal_gap : na, title = "Sell Signal", style = shape.labeldown, location = location.absolute, color = bearish_color, text = "▼", textcolor = chart.fg_color, size = size.small, display = display.pane)
+
+// Table settings
+
+table_position = switch table_position_input
+    "Top Left" => position.top_left
+    "Top Center" => position.top_center
+    "Top Right" => position.top_right
+    "Middle Left" => position.middle_left
+    "Middle Center" => position.middle_center
+    "Middle Right" => position.middle_right
+    "Bottom Left" => position.bottom_left
+    "Bottom Center" => position.bottom_center
+    => position.bottom_right
+
+table_text_size = switch table_size_input
+    "Tiny" => size.tiny
+    "Small" => size.small
+    "Normal" => size.normal
+    => size.large
+
+table_rows = 1 + (table_location ? 1 : 0) + (table_pocs ? 2 : 0) + (table_delta ? 2 : 0) + (table_levels ? 2 : 0) + (table_volume ? 1 : 0)
+
+signed_text(value) =>
+    na(value) ? "N/A" : (value > 0 ? "+" : "") + str.tostring(value, "#.00")
+
+distance_text(level) =>
+    gap = math.abs(close - level)
+    result = "N/A"
+
+    if not na(level)
+        result := switch table_distance
+            "ATR" => distance_atr > 0 ? str.tostring(gap / distance_atr, "#.00") + " ATR" : "N/A"
+            "Percent" => math.abs(close) > 0 ? str.tostring(gap / math.abs(close) * 100.0, "#.00") + "%" : "N/A"
+            "Ticks" => str.tostring(gap / syminfo.mintick, "#.0") + " ticks"
+            => str.tostring(gap, format.mintick)
+
+    result
+
+price_position(level) =>
+    na(level) ? "Unavailable" : math.abs(close - level) <= syminfo.mintick * 0.5 ? "At level" : (close > level ? "Price above | " : "Price below | ") + distance_text(level)
+
+add_table_row(panel, row, name, value, context, value_color, help_text) =>
+    table.cell(panel, 0, row, name, text_color = chart.fg_color, text_halign = text.align_left, text_size = table_text_size, tooltip = help_text)
+    table.cell(panel, 1, row, value, text_color = value_color, text_halign = text.align_right, text_size = table_text_size, tooltip = help_text)
+    table.cell(panel, 2, row, context, text_color = color.new(chart.fg_color, 20), text_halign = text.align_left, text_size = table_text_size, tooltip = help_text)
+    row + 1
+
+// Trading table
+
+var trading_table = table(na)
+
+if barstate.islast
+    if table_enabled
+        if na(trading_table)
+            trading_table := table.new(table_position, 3, table_rows, bgcolor = color.new(chart.bg_color, table_transparency), frame_color = color.new(chart.fg_color, 80), frame_width = 1, border_color = color.new(chart.fg_color, 92), border_width = 1)
+
+        table.cell(trading_table, 0, 0, "METRIC", text_color = chart.fg_color, text_halign = text.align_left, text_size = table_text_size, bgcolor = color.new(chart.fg_color, 90))
+        table.cell(trading_table, 1, 0, "VALUE", text_color = chart.fg_color, text_halign = text.align_right, text_size = table_text_size, bgcolor = color.new(chart.fg_color, 90))
+        table.cell(trading_table, 2, 0, barstate.isconfirmed ? "BAR CLOSED" : "LIVE BAR", text_color = chart.fg_color, text_halign = text.align_left, text_size = table_text_size, bgcolor = color.new(chart.fg_color, 90), tooltip = "Most values update with the current candle. Relative volume always uses the last completed candle.")
+        row = 1
+
+        if table_location
+            stretch = stdev_value > 0 ? (close - vwap_value) / stdev_value : na
+            zone = na(vwap_value) ? "Unavailable" : stdev_value <= 0 ? "Range forming" : close > upper_band_2 ? "Above upper 2" : close > upper_band_1 ? "Upper band zone" : close < lower_band_2 ? "Below lower 2" : close < lower_band_1 ? "Lower band zone" : close > vwap_value ? "Above VWAP" : close < vwap_value ? "Below VWAP" : "At VWAP"
+            zone_color = close > upper_band_1 ? bearish_color : close < lower_band_1 ? bullish_color : chart.fg_color
+            stretch_text = na(stretch) ? "Deviation N/A" : signed_text(stretch) + "σ from VWAP"
+            row := add_table_row(trading_table, row, "VWAP position", zone, stretch_text, zone_color, "Current close relative to the anchored VWAP bands. Sigma measures distance in volume-weighted standard deviations; it is not a reversal probability.")
+
+        if table_pocs
+            row := add_table_row(trading_table, row, "Anchor POC", na(anchor_poc) ? "N/A" : str.tostring(anchor_poc, format.mintick), price_position(anchor_poc), chart.fg_color, "Highest-volume row inside the current outer VWAP bands. Uses all available bars since the current anchor reset.")
+            row := add_table_row(trading_table, row, "Rolling POC", na(rolling_poc) ? "N/A" : str.tostring(rolling_poc, format.mintick), price_position(rolling_poc), chart.fg_color, "Point of control from the latest 40 chart bars, smoothed over 6 bars. This window is independent of the VWAP anchor.")
+
+        if table_delta
+            anchor_color = na(anchor_delta) or anchor_delta == 0 ? chart.fg_color : anchor_delta > 0 ? bullish_color : bearish_color
+            recent_color = na(recent_delta) or recent_delta == 0 ? chart.fg_color : recent_delta > 0 ? bullish_color : bearish_color
+            anchor_text = na(anchor_delta) ? "N/A" : signed_text(anchor_delta) + "%"
+            recent_text = na(recent_delta) ? "N/A" : signed_text(recent_delta) + "%"
+            row := add_table_row(trading_table, row, "Anchor delta (est.)", anchor_text, anchor_period + " | " + str.tostring(anchor_bars) + " bars", anchor_color, "Signed candle volume divided by total volume since the VWAP reset. Includes prices outside the visible profile bands. Candle direction estimates delta; this is not measured bid/ask flow.")
+            row := add_table_row(trading_table, row, "Recent delta (est.)", recent_text, str.tostring(recent_bars) + " bars", recent_color, "Signed candle volume divided by total volume over the selected recent window. This window can cross the VWAP reset. Compare it with anchor delta to see whether recent volume direction differs.")
+
+        if table_levels
+            level_prices = array.from(vwap_value, anchor_poc, rolling_poc, upper_band_1, lower_band_1, upper_band_2, lower_band_2)
+            level_names = array.from("VWAP", "Anchor POC", "Rolling POC", "Upper 1", "Lower 1", "Upper 2", "Lower 2")
+            above_price = float(na)
+            below_price = float(na)
+            above_name = ""
+            below_name = ""
+
+            for i = 0 to array.size(level_prices) - 1
+                level = array.get(level_prices, i)
+
+                if not na(level)
+                    if level > close + syminfo.mintick * 0.5 and (na(above_price) or level < above_price)
+                        above_price := level
+                        above_name := array.get(level_names, i)
+
+                    if level < close - syminfo.mintick * 0.5 and (na(below_price) or level > below_price)
+                        below_price := level
+                        below_name := array.get(level_names, i)
+
+            above_text = na(above_price) ? "None" : str.tostring(above_price, format.mintick)
+            below_text = na(below_price) ? "None" : str.tostring(below_price, format.mintick)
+            above_detail = na(above_price) ? "No higher level" : above_name + " | " + distance_text(above_price)
+            below_detail = na(below_price) ? "No lower level" : below_name + " | " + distance_text(below_price)
+            row := add_table_row(trading_table, row, "Nearest above", above_text, above_detail, chart.fg_color, "Closest VWAP, band, or POC above price. Levels within half a tick of the current close are treated as the current price. This does not confirm resistance.")
+            row := add_table_row(trading_table, row, "Nearest below", below_text, below_detail, chart.fg_color, "Closest VWAP, band, or POC below price. Levels within half a tick of the current close are treated as the current price. This does not confirm support.")
+
+        if table_volume
+            volume_text = na(relative_volume) ? "N/A" : str.tostring(relative_volume, "#.00") + "×"
+            row := add_table_row(trading_table, row, "Relative volume", volume_text, "Closed bar | " + str.tostring(table_volume_length) + " avg", chart.fg_color, "Last completed candle's volume divided by the average of the preceding selected number of candles. The measured candle is excluded. This is a trailing-bar comparison, not a time-of-day adjustment.")
+
+    else if not na(trading_table)
+        table.delete(trading_table)
+        trading_table := table(na)
+
+// Alerts
+
+alertcondition(buy_signal, title = "Buy Signal")
+alertcondition(sell_signal, title = "Sell Signal")

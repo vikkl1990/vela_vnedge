@@ -1,0 +1,346 @@
+//@version=6
+indicator('Fear and Greed Index [BigBeluga]', overlay = false, max_labels_count = 500, max_lines_count = 500, max_polylines_count = 100)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+int rsiLen   = input.int(14, 'Momentum (RSI) Length', minval = 1, group = 'Factor Settings')
+int trdLen = input.int(50, 'Trend (SMA) Length', minval = 1, group = 'Factor Settings')
+int flowLen  = input.int(20, 'Volume Flow Length', minval = 1, group = 'Factor Settings')
+
+// New Overbought & Oversold inputs
+int obLvl     = input.int(70, 'Overbought (Extreme Greed) Level', minval = 50, maxval = 100, group = 'Factor Settings')
+int osLvl     = input.int(30, 'Oversold (Extreme Fear) Level', minval = 0, maxval = 50, group = 'Factor Settings')
+
+bool shwGauge    = input.bool(true, 'Show Arc Gauge at Last Bar', group = 'Gauge Display')
+string gType     = input.string('Arc', 'Gauge Type', options = ['Arc', 'Vertical'], group = 'Gauge Display')
+int gOffset   = input.int(35, 'Gauge Right Offset (Bars)', minval = 5, maxval = 100, group = 'Gauge Display')
+float gRadius = input.float(30.0, 'Gauge Size (Radius)', minval = 5.0, maxval = 100.0, step = 1.0, group = 'Gauge Display')
+int vBoxes    = input.int(20, 'Vertical Scale Box Count', minval = 5, maxval = 50, group = 'Gauge Display')
+
+color exGrdCol = input.color(#00e676, 'Extreme Greed Color', group = 'Color Palette')
+color grdCol        = input.color(color.green, 'Greed Color', group = 'Color Palette')
+color neuCol      = input.color(color.yellow, 'Neutral Color', group = 'Color Palette')
+color fearCol         = input.color(#f12232, 'Fear Color', group = 'Color Palette')
+color exFerCol  = input.color(#d50000, 'Extreme Fear Color', group = 'Color Palette')
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// 1. Momentum Factor (RSI 0 - 100)
+float rsiVal = ta.rsi(close, rsiLen)
+float fMom = na(rsiVal) ? 50.0 : rsiVal
+
+// 2. Trend Factor (Distance from SMA normalized)
+float smaVal = ta.sma(close, trdLen)
+float tDist = (close - smaVal) / smaVal * 100.0
+float fTrd = math.max(0.0, math.min(100.0, 50.0 + (tDist * 4.0)))
+
+// 3. Volume Flow Factor (Buying/Selling Volume Pressure)
+float totVol   = ta.sma(volume, flowLen)
+float bVol    = ta.sma(close >= open ? volume : 0.0, flowLen)
+float fVol    = totVol > 0 ? (bVol / totVol) * 100.0 : 50.0
+
+//  Composite Fear & Greed Index
+float fgIdx = (fMom + fTrd + fVol) / 3.0
+
+string stStr = ''
+color  stCol = neuCol
+
+// State logic uses obLvl and osLvl
+if fgIdx >= obLvl
+    stStr := 'EXTREME GREED'
+    stCol := exGrdCol
+else if fgIdx >= 55.0
+    stStr := 'GREED'
+    stCol := grdCol
+else if fgIdx <= osLvl
+    stStr := 'EXTREME FEAR'
+    stCol := exFerCol
+else if fgIdx <= 45.0
+    stStr := 'FEAR'
+    stCol := fearCol
+else
+    stStr := 'NEUTRAL'
+    stCol := neuCol
+
+//  Custom Function to properly map all 5 colors into the gradient
+getGradCol(float val) =>
+    color c = color(na)
+    if val <= osLvl
+        c := color.from_gradient(val, 0.0, osLvl, exFerCol, fearCol)
+    else if val <= 50.0
+        c := color.from_gradient(val, osLvl, 50.0, fearCol, neuCol)
+    else if val <= obLvl
+        c := color.from_gradient(val, 50.0, obLvl, neuCol, grdCol)
+    else
+        c := color.from_gradient(val, obLvl, 100.0, grdCol, exGrdCol)
+    c
+
+// Calculate smooth gradient color for the oscillator line
+float fgSf = nz(fgIdx, 50.0)
+float fgClmp = math.max(0.0, math.min(100.0, fgSf))
+color lnCol = getGradCol(fgClmp)
+
+type GaugeUI
+    array<polyline> arcPls
+    array<polyline> inArcPls
+    array<box> vBoxes
+    array<label> vLbls
+    line ptrLn
+    label scLbl
+    label stLbl
+    label hubLbl
+    label vPtrLbl
+
+var GaugeUI actGauge = na
+
+delGauge(GaugeUI g) =>
+    if not na(g)
+        if not na(g.arcPls)
+            for p in g.arcPls
+                polyline.delete(p)
+        if not na(g.inArcPls)
+            for p in g.inArcPls
+                polyline.delete(p)
+        if not na(g.vBoxes)
+            for b in g.vBoxes
+                box.delete(b)
+        if not na(g.vLbls)
+            for l in g.vLbls
+                label.delete(l)
+        line.delete(g.ptrLn)
+        label.delete(g.scLbl)
+        label.delete(g.stLbl)
+        label.delete(g.hubLbl)
+        label.delete(g.vPtrLbl)
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+//  Historical Sentiment Curve & Gradient Fills 
+p_ob = plot(obLvl, title="Overbought Level", color=color(na), editable=false)
+p_os = plot(osLvl, title="Oversold Level", color=color(na), editable=false)
+
+float fg_ob = fgIdx >= obLvl ? fgIdx : obLvl
+float fg_os = fgIdx <= osLvl ? fgIdx : osLvl
+
+p_fg_ob = plot(fg_ob, title="Overbought Area", color=color(na), editable=false)
+p_fg_os = plot(fg_os, title="Oversold Area", color=color(na), editable=false)
+
+fill(p_fg_ob, p_ob, color=color.new(exGrdCol, 85), title="Overbought Fill")
+fill(p_fg_os, p_os, color=color.new(exFerCol, 85), title="Oversold Fill")
+
+//  Plot the main oscillator line with the fixed 5-color gradient
+plot(fgIdx, 'Fear & Greed Index', color = lnCol, linewidth = 3)
+
+//  Signal Gap Logic (5 bars) & Confirmed Bar Check
+var int lsSigBar = na
+
+if ta.crossover(fgIdx, obLvl) and barstate.isconfirmed and (na(lsSigBar) or (bar_index - lsSigBar > 5))
+    lsSigBar := bar_index
+    
+    // Oscillator Pane Labels
+    label.new(bar_index, fgIdx, color=color.new(exGrdCol, 50), style=label.style_circle, size=size.tiny)
+    label.new(bar_index, fgIdx + 3, text="Greed: " + str.tostring(math.round(fgIdx)), style=label.style_none, textcolor=exGrdCol, size=size.small)
+    
+    //  Main Chart Overlay Labels (Circle + Floating Text matching oscillator)
+    label.new(bar_index, high, color=color.new(exGrdCol, 50), style=label.style_circle, size=size.tiny, force_overlay=true)
+    label.new(bar_index, high, text="Greed: " + str.tostring(math.round(fgIdx)), style=label.style_label_down, color = na, textcolor=exGrdCol, size=size.small, force_overlay=true)
+
+if ta.crossunder(fgIdx, osLvl) and barstate.isconfirmed and (na(lsSigBar) or (bar_index - lsSigBar > 5))
+    lsSigBar := bar_index
+    
+    // Oscillator Pane Labels
+    label.new(bar_index, fgIdx, color=color.new(exFerCol, 50), style=label.style_circle, size=size.tiny)
+    label.new(bar_index, fgIdx - 3, text="Fear: " + str.tostring(math.round(fgIdx)), style=label.style_none, textcolor=exFerCol, size=size.small)
+    
+    //  Main Chart Overlay Labels (Circle + Floating Text matching oscillator)
+    label.new(bar_index, low, color=color.new(exFerCol, 50), style=label.style_circle, size=size.tiny, force_overlay=true)
+    label.new(bar_index, low, text="Fear: " + str.tostring(math.round(fgIdx)), style=label.style_label_up, color = na, textcolor=exFerCol, size=size.small, force_overlay=true)
+
+// Hlines
+hline(obLvl, 'Extreme Greed', color = color.new(exGrdCol, 60), linestyle = hline.style_dashed)
+hline(55, 'Greed', color = color.new(grdCol, 60), linestyle = hline.style_dotted)
+hline(50, 'Neutral', color = color.new(neuCol, 50), linestyle = hline.style_solid)
+hline(45, 'Fear', color = color.new(fearCol, 60), linestyle = hline.style_dotted)
+hline(osLvl, 'Extreme Fear', color = color.new(exFerCol, 60), linestyle = hline.style_dashed)
+
+//  Custom Gauge at Last Bar 
+if barstate.islast and shwGauge
+    delGauge(actGauge)
+
+    if gType == 'Arc'
+        //  Custom Dual-Track Polyline Gauge at Last Bar 
+        array<polyline> lnArr = array.new<polyline>()
+        array<polyline> inLnArr = array.new<polyline>()
+
+        int barDur = nz(time - time[1], 60000) 
+        int cTime  = time + gOffset * barDur
+        float cY   = 50.0
+        float inRad = gRadius * 0.82
+
+        // 1. Draw Inner Scale Line (High Resolution)
+        array<chart.point> inPts = array.new<chart.point>()
+        int inStps = 120
+        for i = 0 to inStps
+            float a = math.toradians(179.0 - (i * 178.0 / inStps))
+            int x = cTime + int(inRad * barDur * math.cos(a))
+            float y = cY + inRad * math.sin(a)
+            array.push(inPts, chart.point.from_time(x, y))
+        
+        polyline inPl = polyline.new(inPts, curved = false, xloc = xloc.bar_time, line_color = color.new(neuCol, 40), line_width = 1)
+        array.push(inLnArr, inPl)
+
+        // 2. Draw Outer Thick Line (High Resolution)
+        int totSegs = 50
+        int stpPerSeg = 12
+        for i = 0 to totSegs - 1
+            float pctSt = (i / float(totSegs)) * 100.0
+            float pctEn   = ((i + 1) / float(totSegs)) * 100.0
+            
+            float angSt = 179.0 - (pctSt * 1.78)
+            float angEn   = 179.0 - (pctEn * 1.78)
+            
+            float midPct = (pctSt + pctEn) / 2.0
+            
+            // Apply the new 5-color gradient function to the Gauge Arc
+            color segCol = getGradCol(midPct)
+            
+            array<chart.point> pts = array.new<chart.point>()
+            for j = 0 to stpPerSeg
+                float a = math.toradians(angSt + (angEn - angSt) * (j / float(stpPerSeg)))
+                int x = cTime + int(gRadius * barDur * math.cos(a))
+                float y = cY + gRadius * math.sin(a)
+                array.push(pts, chart.point.from_time(x, y))
+            
+            polyline pl = polyline.new(pts, curved = false, xloc = xloc.bar_time, line_color = segCol, line_width = 5)
+            array.push(lnArr, pl)
+
+        // 3. Draw Needle & Labels
+        float ptrAng = math.toradians(180.0 - (fgIdx / 100.0 * 180.0))
+        int tipX   = cTime + int(gRadius * 0.90 * barDur * math.cos(ptrAng))
+        float tipY = cY + (gRadius * 0.90) * math.sin(ptrAng)
+
+        line ndl = line.new(x1 = cTime, y1 = cY, x2 = tipX, y2 = tipY, xloc = xloc.bar_time, color = lnCol, width = 2, style = line.style_arrow_right)
+
+        label sLbl = label.new(
+             x = cTime,
+             y = cY - (gRadius * 0.3),
+             text = str.tostring(math.round(fgIdx)),
+             style = label.style_none,
+             textcolor = lnCol,
+             size = size.large,
+             xloc = xloc.bar_time
+          )
+
+        label tLbl = label.new(
+             x = cTime,
+             y = cY - (gRadius * 0.4),
+             text = stStr,
+             style = label.style_none,
+             textcolor = lnCol,
+             size = size.normal,
+             xloc = xloc.bar_time
+          )
+
+        label hbLbl = label.new(
+             x = cTime,
+             y = cY,
+             text = '',
+             style = label.style_circle,
+             color = lnCol,
+             size = size.tiny,
+             xloc = xloc.bar_time
+          )
+
+        actGauge := GaugeUI.new(lnArr, inLnArr, array.new<box>(), array.new<label>(), ndl, sLbl, tLbl, hbLbl, na)
+
+    else
+        //  Vertical Gradient Box Scale Gauge
+        array<box> bxArr = array.new<box>()
+        array<label> lbArr = array.new<label>()
+
+        int barDur = nz(time - time[1], 60000) 
+        int vTime  = time + gOffset * barDur
+        
+        // Scale geometry: bottom at 0, top at 100
+        float scaleH = gRadius * 1.6   // total height in price units
+        float botY   = 50.0 - scaleH / 2.0
+        float topY   = 50.0 + scaleH / 2.0
+        float boxW   = gRadius * 0.25  // width in bars (converted to time)
+        
+        // 1. Draw gradient boxes (bottom = fear, top = greed)
+        float boxH = scaleH / vBoxes
+        for i = 0 to vBoxes - 1
+            float yBot = botY + i * boxH
+            float yTop = yBot + boxH
+            float midPct = ((i + 0.5) / vBoxes) * 100.0
+            color segCol = getGradCol(midPct)
+            
+            box b = box.new(
+                 left      = vTime,
+                 top       = yTop,
+                 right     = vTime + int(boxW * barDur),
+                 bottom    = yBot,
+                 xloc      = xloc.bar_time,
+                 border_color = color.new(color.black, 100),
+                 bgcolor   = segCol
+              )
+            array.push(bxArr, b)
+
+        // 2. Tick labels at key levels (0, osLvl, 50, obLvl, 100)
+        array<float> tickVals = array.from(0.0, float(osLvl), 50.0, float(obLvl), 100.0)
+        array<string> tickTxt = array.from('0', str.tostring(osLvl), '50', str.tostring(obLvl), '100')
+        for i = 0 to array.size(tickVals) - 1
+            float v = array.get(tickVals, i)
+            float yPos = botY + (v / 100.0) * scaleH
+            label tl = label.new(
+                 x = vTime + int(boxW * barDur * 1.15),
+                 y = yPos,
+                 text = array.get(tickTxt, i),
+                 style = label.style_none,
+                 textcolor = color.new(color.gray, 0),
+                 size = size.small,
+                 xloc = xloc.bar_time
+              )
+            array.push(lbArr, tl)
+
+        // 3. Current-value pointer (arrow marker + value text)
+        float ptrY = botY + (fgClmp / 100.0) * scaleH
+        label ptrLbl = label.new(
+             x = vTime - int(boxW * barDur * 0.1),
+             y = ptrY,
+             text = str.tostring(math.round(fgIdx)),
+             style = label.style_label_right,
+             color = lnCol,
+             textcolor = color.white,
+             size = size.normal,
+             xloc = xloc.bar_time
+          )
+
+        // Pointer line from label to the scale
+        line ptrLn = line.new(
+             x1 = vTime,
+             y1 = ptrY,
+             x2 = vTime + int(boxW * barDur),
+             y2 = ptrY,
+             xloc = xloc.bar_time,
+             color = lnCol,
+             width = 2,
+             style = line.style_solid
+          )
+
+        // 4. Status text above/below the scale
+        label stLbl = label.new(
+             x = vTime + int(boxW * barDur * 0.5),
+             y = topY + boxH * 0.8,
+             text = stStr,
+             style = label.style_none,
+             textcolor = lnCol,
+             size = size.normal,
+             xloc = xloc.bar_time
+          )
+
+        actGauge := GaugeUI.new(array.new<polyline>(), array.new<polyline>(), bxArr, lbArr, ptrLn, na, stLbl, na, ptrLbl)
+
+// }

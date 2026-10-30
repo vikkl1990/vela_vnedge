@@ -1,0 +1,312 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © ChartPrime
+
+//@version=6
+indicator("Trend Fair Value Gap Delta [ChartPrime]", overlay=true, max_boxes_count=500, max_lines_count=500, calc_bars_count=3000)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙐𝙎𝙀𝙍 𝙄𝙉𝙋𝙐𝙏𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+//  Tooltip Strings 
+string tt_length          = "Period length for calculating the Simple Moving Average (SMA)."
+string tt_src             = "Source price series used for calculating the SMA basis."
+string tt_atrLen          = "Period length for calculating Average True Range (ATR) band offsets."
+string tt_atrMult         = "Multiplier applied to ATR value to set upper and lower band distances."
+string tt_showFvg         = "Toggle display of trend-aligned Fair Value Gap (FVG) zones."
+string tt_bullFvgCol      = "Background fill color for active bullish Fair Value Gap zones."
+string tt_bearFvgCol      = "Background fill color for active bearish Fair Value Gap zones."
+string tt_mitFvgCol       = "Background fill color applied to FVG zones once mitigated by price action."
+string tt_bullLineCol     = "Border line color for active bullish Fair Value Gap zones."
+string tt_bearLineCol     = "Border line color for active bearish Fair Value Gap zones."
+string tt_mitLineCol      = "Border line color applied to Fair Value Gap zones after mitigation."
+string tt_buyBoxCol       = "Fill color for the buy volume percentage indicator box within FVGs."
+string tt_sellBoxCol      = "Fill color for the sell volume percentage indicator box within FVGs."
+string tt_boxTextColor    = "Text color used for percentage labels in volume boxes and summary stats."
+string tt_bullColor       = "Primary color theme for bullish trend state and lower active band."
+string tt_bearColor       = "Primary color theme for bearish trend state and upper active band."
+string tt_upperBandCol    = "Line color for the upper ATR band reference."
+string tt_lowerBandCol    = "Line color for the lower ATR band reference."
+string tt_showGradient    = "Enable dynamic gradient background fill between price and the active trend band."
+string tt_gradPriceTransp = "Transparency level of the gradient fill near the active trend band."
+string tt_gradBandTransp  = "Transparency level of the gradient fill near price close."
+string tt_showStatsLabel  = "Display active trend FVG detection and mitigation stats on the latest bar."
+
+//  SMA Inputs 
+length          = input.int(20, title="SMA Length", group="SMA Settings", tooltip=tt_length)
+src             = input.source(close, title="Source", group="SMA Settings", tooltip=tt_src)
+
+//  Band Inputs 
+atrLen          = input.int(50, title="ATR Length", group="Band Settings", tooltip=tt_atrLen)
+atrMult         = input.float(2.0, title="Band Multiplier", group="Band Settings", tooltip=tt_atrMult)
+
+//  FVG Inputs 
+showFvg         = input.bool(true, title="Show Trend-Aligned FVGs", group="FVG Settings", tooltip=tt_showFvg)
+maxFvgsPerSide  = 500
+bullFvgCol      = input.color(color.new(color.teal, 85), title="Bullish FVG Fill Color", group="FVG Settings", tooltip=tt_bullFvgCol)
+bearFvgCol      = input.color(color.new(color.blue, 85), title="Bearish FVG Fill Color", group="FVG Settings", tooltip=tt_bearFvgCol)
+bullLineCol     = input.color(color.new(color.teal, 50), title="Bullish FVG Line Color", group="FVG Settings", tooltip=tt_bullLineCol)
+bearLineCol     = input.color(color.new(color.blue, 50), title="Bearish FVG Line Color", group="FVG Settings", tooltip=tt_bearLineCol)
+mitLineCol      = input.color(color.new(color.gray, 60), title="Mitigated FVG Line Color", group="FVG Settings", tooltip=tt_mitLineCol)
+mitFvgCol       = input.color(color.new(color.gray, 85), title="Mitigated FVG Fill Color", group="FVG Settings", tooltip=tt_mitFvgCol)
+
+//  Delta Volume Inputs 
+buyBoxCol       = input.color(color.new(color.teal, 40), title="Buy Volume Box Color", group="Delta Volume", tooltip=tt_buyBoxCol)
+sellBoxCol      = input.color(color.new(color.blue, 40), title="Sell Volume Box Color", group="Delta Volume", tooltip=tt_sellBoxCol)
+boxTextColor    = input.color(color.white, title="Box & Label Text Color", group="Delta Volume", tooltip=tt_boxTextColor)
+
+//  Style Inputs 
+bullColor       = input.color(color.teal, title="Bullish Color", group="Style", tooltip=tt_bullColor)
+bearColor       = input.color(color.blue, title="Bearish Color", group="Style", tooltip=tt_bearColor)
+upperBandCol    = input.color(color.new(color.blue, 50), title="Upper Band Reference Color", group="Style", tooltip=tt_upperBandCol)
+lowerBandCol    = input.color(color.new(color.teal, 50), title="Lower Band Reference Color", group="Style", tooltip=tt_lowerBandCol)
+showGradient    = input.bool(true, title="Show Price-Band Gradient Fill", group="Style", tooltip=tt_showGradient)
+gradPriceTransp = input.int(80, title="Gradient Band Transparency", minval=0, maxval=100, group="Style", tooltip=tt_gradPriceTransp)
+gradBandTransp  = input.int(100, title="Gradient Price Transparency", minval=0, maxval=100, group="Style", tooltip=tt_gradBandTransp)
+showStatsLabel  = input.bool(true, title="Show Last Bar FVG Stats Label", group="Style", tooltip=tt_showStatsLabel)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙄𝙉𝘿𝙄𝘾𝘼𝙏𝙊𝙍 𝘾𝘼𝙇𝘾𝙐𝙇𝘼𝙏𝙄𝙊𝙉𝙎
+// --------------------------------------------------------------------------------------------------------------------{
+
+//  Core Calculations 
+basis     = ta.sma(src, length)
+atr       = ta.atr(atrLen)
+upperBand = basis + (atr * atrMult)
+lowerBand = basis - (atr * atrMult)
+
+//  State Machine 
+var int trend = 1
+
+if close > upperBand and close[1] < upperBand and barstate.isconfirmed
+    trend := 1
+else if close < lowerBand and close[1] > lowerBand and barstate.isconfirmed
+    trend := -1
+
+//  Trend Statistics 
+var int trendFvgCount = 0
+var int trendMitCount = 0
+
+if ta.change(trend) != 0
+    trendFvgCount := 0
+    trendMitCount := 0
+
+//  Custom Type for FVG Zones 
+type FvgLineZone
+    line     topLine
+    line     botLine
+    linefill fill
+    box      buyBox
+    box      sellBox
+    int      startBar
+    float    topY
+    float    botY
+    float    buyRatio
+    float    sellRatio
+    bool     isLocked
+    bool     isMitigated
+
+var array<FvgLineZone> bullZones = array.new<FvgLineZone>()
+var array<FvgLineZone> bearZones = array.new<FvgLineZone>()
+
+// Conditions for new FVGs
+bool isBullFvg = (trend == 1) and (low > high[2]) and barstate.isconfirmed
+bool isBearFvg = (trend == -1) and (high < low[2]) and barstate.isconfirmed
+
+if showFvg
+    //  Bullish FVG Creation 
+    if isBullFvg
+        trendFvgCount += 1
+        float rng   = high[1] - low[1]
+        float bVol  = volume[1] * (close[1] - low[1]) / rng
+        float sVol  = volume[1] * (high[1] - close[1]) / rng
+        float totalV = nz(bVol + sVol, 1)
+        float bRatio = bVol / totalV
+        float sRatio = sVol / totalV
+
+        int startIdx = bar_index - 2
+        float topY   = low
+        float botY   = high[2]
+        float midY   = botY + ((topY - botY) / 2)
+
+        line topL = line.new(startIdx, topY, bar_index, topY, xloc=xloc.bar_index, extend=extend.none, color=bullLineCol)
+        line botL = line.new(startIdx, botY, bar_index, botY, xloc=xloc.bar_index, extend=extend.none, color=bullLineCol)
+        linefill fFill = linefill.new(topL, botL, color=bullFvgCol)
+
+        int initialLen     = math.max(1, int(2 * bRatio))
+        int initialSellLen = math.max(1, int(2 * sRatio))
+
+        string buyTxt  = str.tostring(bRatio * 100, "#.#") + "%"
+        string sellTxt = str.tostring(sRatio * 100, "#.#") + "%"
+
+        box bBox = box.new(left=startIdx, top=topY, right=startIdx + initialLen, bottom=midY, bgcolor=buyBoxCol, border_color=na, text=buyTxt, text_color=boxTextColor, text_size=size.tiny, text_valign=text.align_center, text_halign=text.align_center)
+        box sBox = box.new(left=startIdx, top=midY, right=startIdx + initialSellLen, bottom=botY, bgcolor=sellBoxCol, border_color=na, text=sellTxt, text_color=boxTextColor, text_size=size.tiny, text_valign=text.align_center, text_halign=text.align_center)
+
+        array.push(bullZones, FvgLineZone.new(topL, botL, fFill, bBox, sBox, startIdx, topY, botY, bRatio, sRatio, false, false))
+
+        // Cull oldest if exceeding capacity
+        if array.size(bullZones) > maxFvgsPerSide
+            FvgLineZone oldest = array.shift(bullZones)
+            line.delete(oldest.topLine), line.delete(oldest.botLine), linefill.delete(oldest.fill)
+            box.delete(oldest.buyBox), box.delete(oldest.sellBox)
+
+    //  Bearish FVG Creation 
+    if isBearFvg
+        trendFvgCount += 1
+        float rng   = high[1] - low[1]
+        float bVol  = rng == 0 ? volume[1] / 2 : volume[1] * (close[1] - low[1]) / rng
+        float sVol  = rng == 0 ? volume[1] / 2 : volume[1] * (high[1] - close[1]) / rng
+        float totalV = nz(bVol + sVol, 1)
+        float bRatio = bVol / totalV
+        float sRatio = sVol / totalV
+
+        int startIdx = bar_index - 2
+        float topY   = low[2]
+        float botY   = high
+        float midY   = botY + ((topY - botY) / 2)
+
+        line topL = line.new(startIdx, topY, bar_index, topY, xloc=xloc.bar_index, extend=extend.none, color=bearLineCol)
+        line botL = line.new(startIdx, botY, bar_index, botY, xloc=xloc.bar_index, extend=extend.none, color=bearLineCol)
+        linefill fFill = linefill.new(topL, botL, color=bearFvgCol)
+
+        int initialLen     = math.max(1, int(2 * bRatio))
+        int initialSellLen = math.max(1, int(2 * sRatio))
+
+        string buyTxt  = str.tostring(bRatio * 100, "#.#") + "%"
+        string sellTxt = str.tostring(sRatio * 100, "#.#") + "%"
+
+        box bBox = box.new(left=startIdx, top=topY, right=startIdx + initialLen, bottom=midY, bgcolor=buyBoxCol, border_color=na, text=buyTxt, text_color=boxTextColor, text_size=size.tiny, text_valign=text.align_center, text_halign=text.align_center)
+        box sBox = box.new(left=startIdx, top=midY, right=startIdx + initialSellLen, bottom=botY, bgcolor=sellBoxCol, border_color=na, text=sellTxt, text_color=boxTextColor, text_size=size.tiny, text_valign=text.align_center, text_halign=text.align_center)
+
+        array.push(bearZones, FvgLineZone.new(topL, botL, fFill, bBox, sBox, startIdx, topY, botY, bRatio, sRatio, false, false))
+
+        // Cull oldest if exceeding capacity
+        if array.size(bearZones) > maxFvgsPerSide
+            FvgLineZone oldest = array.shift(bearZones)
+            line.delete(oldest.topLine), line.delete(oldest.botLine), linefill.delete(oldest.fill)
+            box.delete(oldest.buyBox), box.delete(oldest.sellBox)
+
+//  Manage Historical Bullish FVGs 
+if array.size(bullZones) > 0
+    for i = array.size(bullZones) - 1 to 0
+        FvgLineZone z = array.get(bullZones, i)
+
+        bool isMitigated  = low < z.botY
+        bool isBandLocked = lowerBand >= z.botY
+        bool isTooOld     = (bar_index - z.startBar > 3000)
+
+        if isTooOld
+            line.delete(z.topLine), line.delete(z.botLine), linefill.delete(z.fill)
+            box.delete(z.buyBox), box.delete(z.sellBox)
+            array.remove(bullZones, i)
+        else
+            if isMitigated and not z.isMitigated and not z.isLocked
+                z.isMitigated := true
+                z.isLocked    := true
+                trendMitCount += 1
+                line.set_color(z.topLine, mitLineCol)
+                line.set_color(z.botLine, mitLineCol)
+                linefill.set_color(z.fill, mitFvgCol)
+                box.set_bgcolor(z.buyBox, color(na))
+                box.set_bgcolor(z.sellBox, color(na))
+                box.set_text(z.buyBox, "")
+                box.set_text(z.sellBox, "")
+            else if isBandLocked
+                z.isLocked := true
+
+            if not z.isLocked
+                line.set_x2(z.topLine, bar_index)
+                line.set_x2(z.botLine, bar_index)
+
+                int currentLen = bar_index - z.startBar
+                int buyLen     = math.max(1, int(currentLen * z.buyRatio))
+                int sellLen    = math.max(1, int(currentLen * z.sellRatio))
+
+                box.set_right(z.buyBox, z.startBar + buyLen)
+                box.set_right(z.sellBox, z.startBar + sellLen)
+
+//  Manage Historical Bearish FVGs 
+if array.size(bearZones) > 0
+    for i = array.size(bearZones) - 1 to 0
+        FvgLineZone z = array.get(bearZones, i)
+
+        bool isMitigated  = high > z.topY
+        bool isBandLocked = upperBand <= z.topY
+        bool isTooOld     = (bar_index - z.startBar > 3000)
+
+        if isTooOld
+            line.delete(z.topLine), line.delete(z.botLine), linefill.delete(z.fill)
+            box.delete(z.buyBox), box.delete(z.sellBox)
+            array.remove(bearZones, i)
+        else
+            if isMitigated and not z.isMitigated and not z.isLocked
+                z.isMitigated := true
+                z.isLocked    := true
+                trendMitCount += 1
+                line.set_color(z.topLine, mitLineCol)
+                line.set_color(z.botLine, mitLineCol)
+                linefill.set_color(z.fill, mitFvgCol)
+                box.set_bgcolor(z.buyBox, color(na))
+                box.set_bgcolor(z.sellBox, color(na))
+                box.set_text(z.buyBox, "")
+                box.set_text(z.sellBox, "")
+            else if isBandLocked
+                z.isLocked := true
+
+            if not z.isLocked
+                line.set_x2(z.topLine, bar_index)
+                line.set_x2(z.botLine, bar_index)
+
+                int currentLen = bar_index - z.startBar
+                int buyLen     = math.max(1, int(currentLen * z.buyRatio))
+                int sellLen    = math.max(1, int(currentLen * z.sellRatio))
+
+                box.set_right(z.buyBox, z.startBar + buyLen)
+                box.set_right(z.sellBox, z.startBar + sellLen)
+
+// --------------------------------------------------------------------------------------------------------------------}
+// 📌 𝙑𝙄𝙎𝙐𝘼𝙇𝙄𝙕𝘼𝙏𝙄𝙊𝙉
+// --------------------------------------------------------------------------------------------------------------------{
+
+//  Dynamic Trend Band Plots 
+activePlot = trend == 1 ? lowerBand : (trend == -1 ? upperBand : na)
+plotColor  = trend == 1 ? bullColor : bearColor
+
+pClose  = plot(close, title="Close Handle (Invisible)", display=display.none)
+pActive = plot(trend != trend[1] ? na : activePlot, title="Active Trend Band", color=plotColor, linewidth=2, style=plot.style_linebr)
+plot(upperBand, title="Upper Band (Ref)", color=upperBandCol, linewidth=1, linestyle = plot.linestyle_dashed)
+plot(lowerBand, title="Lower Band (Ref)", color=lowerBandCol, linewidth=1, linestyle = plot.linestyle_dashed)
+
+//  Gradient Fill 
+topVal = math.max(close, activePlot)
+botVal = math.min(close, activePlot)
+
+topCol = showGradient ? (trend == 1 ? color.new(bullColor, gradBandTransp)  : color.new(bearColor, gradPriceTransp)) : color.new(bullColor, 100)
+botCol = showGradient ? (trend == 1 ? color.new(bullColor, gradPriceTransp) : color.new(bearColor, gradBandTransp))  : color.new(bearColor, 100)
+
+fill(pClose, pActive, topVal, botVal, topCol, botCol, title="Price to Active Band Gradient Fill")
+
+//  Stats Label at Last Bar 
+var label statsLabel = na
+
+if showStatsLabel and barstate.islast
+    label.delete(statsLabel)
+    string trendName = trend == 1 ? "Bullish" : "Bearish"
+    string labelTxt  = "Current " + trendName + " Trend Stats\n" +
+                       "FVGs Detected: " + str.tostring(trendFvgCount) + "\n" +
+                       "FVGs Mitigated: " + str.tostring(trendMitCount)
+    color  lblColor  = trend == 1 ? bullColor : bearColor
+
+    statsLabel := label.new(
+         x         = bar_index,
+         y         = activePlot,
+         text      = labelTxt,
+         xloc      = xloc.bar_index,
+         yloc      = yloc.price,
+         color     = lblColor,
+         textcolor = boxTextColor,
+         style     = label.style_label_left,
+         size      = size.normal
+     )
+
+// --}

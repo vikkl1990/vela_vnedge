@@ -460,5 +460,71 @@
       "Trend Step buy confirmed": "long",
       "Trend Step sell confirmed": "short"
     }
+  },
+  "mirage-liquidity-sweep-pro-upstream-2-0": {
+    "sources": [
+      "alert"
+    ],
+    "enabled": false,
+    "exitMode": "levels"
+  },
+  "precision-sniper-upstream-6-0": {
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Buy Signal",
+      "Sell Signal"
+    ],
+    "enabled": false,
+    "exitMode": "levels"
+  },
+  "trend-volume-profile-and-rolling-poc": {
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Bullish Trend Change",
+      "Bearish Trend Change"
+    ],
+    "enabled": false,
+    "exitMode": "levels"
+  },
+  "fear-and-greed-index": {
+    "sources": [],
+    "enabled": false,
+    "exitMode": "levels"
+  },
+  "volume-delta-pivot-matrix-upstream-3-0": {
+    "sources": [],
+    "enabled": false,
+    "exitMode": "levels"
+  },
+  "anchored-orderflow-vwap-signals": {
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Buy Signal",
+      "Sell Signal"
+    ],
+    "enabled": false,
+    "exitMode": "levels"
+  },
+  "vwap-range-breakout": {
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Zeiierman VWAP Range | Breakout Up",
+      "Zeiierman VWAP Range | Breakout Down"
+    ],
+    "enabled": false,
+    "exitMode": "levels"
+  },
+  "trend-fair-value-gap-delta": {
+    "sources": [],
+    "enabled": false,
+    "exitMode": "levels"
   }
 }

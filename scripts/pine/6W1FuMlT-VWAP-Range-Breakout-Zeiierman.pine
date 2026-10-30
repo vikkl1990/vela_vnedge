@@ -1,0 +1,388 @@
+
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// (c) Zeiierman {
+indicator("VWAP Range Breakout (Zeiierman)", overlay=true, max_labels_count=500)
+//}
+
+// ~~ Tooltips {
+const string ttSeed="Bars used to calculate the volume-weighted center whenever a new horizontal range forms. Its boundaries remain fixed until a confirmed full-candle breakout."
+const string ttEq="Rolling VWAP period used to determine the equilibrium reference for the range dispersion calculation."
+const string ttDev="Number of candles measured when calculating VWAP-relative price dispersion."
+const string ttWidth="Multiplier for the VWAP-based range width. Higher values create wider ranges and generally fewer resets."
+const string ttMarks="Show arrows when price recovers through the lower internal boundary or rejects through the upper internal boundary."
+const string ttXs="Show X markers when price returns through an outer range boundary, indicating a failed excursion."
+const string ttDots="Show circles when an entire confirmed candle breaks beyond a horizontal range."
+const string ttBack="Place confirmed arrows, X markers and circles on the preceding candle for historical visual alignment. Alerts fire on the actual detection candle, never on the backdated candle."
+const string ttBaseUp="Color of bullish arrows, upward breakout circles and lower-boundary X markers. Also used for the upper band when locked range colors are disabled."
+const string ttBaseDn="Color of bearish arrows, downward breakout circles and upper-boundary X markers. Also used for the lower band when locked range colors are disabled."
+const string ttLock="Each new range inherits the Smart Trend classification at formation. Its colors cannot change during that same range."
+const string ttZoneUp="Color used for BOTH bands of a range classified bullish at its formation."
+const string ttZoneDn="Color used for BOTH bands of a range classified bearish at its formation."
+const string ttZoneNUp="Color of the upper band when a range is neutral at formation."
+const string ttZoneNDn="Color of the lower band when a range is neutral at formation."
+const string ttGrad="Fade each colored range band toward the channel interior."
+const string ttFade="Transparency at the colored band edges. Higher values create less prominent shading."
+const string ttMid="Enabled: draw the range center using alternating candles for a dashed appearance. Disabled: draw a continuous centerline."
+const string ttVW="Show the cumulative, 34-candle-seeded VWAP, which resets whenever a new range forms."
+const string ttMode="Trend: internal Smart Trend state. Slope: rising or falling anchored VWAP. Price: close above or below VWAP. Value Transfer: experimental volume-coupled VWAP migration memory."
+const string ttVUp="Color used when the selected VWAP color mode is bullish."
+const string ttVDn="Color used when the selected VWAP color mode is bearish."
+const string ttVFlat="Color used when the selected VWAP color mode is neutral."
+const string ttLine="Width of the visible range-anchored VWAP line."
+const string ttTrendLen="Length of the rolling VWAP used by the internal volatility-adaptive trend structure. Higher values respond more slowly."
+const string ttSens="Distance multiplier used for structural transitions. Higher values require a larger movement before structure changes."
+const string ttFilter="When enabled, bullish arrows require bullish Smart Trend, and bearish arrows require bearish Smart Trend. Range geometry and X markers are unaffected."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+gR="Range"
+gS="Signals"
+gC="Range Colors"
+gV="Range VWAP"
+gT="Smart Trend"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+// Range
+seedLen=input.int(3, "Re-anchor", minval=1, maxval=30, group=gR, inline="rng1")
+eqLen=input.int(20, "Equilibrium", minval=2, maxval=100, group=gR, inline="rng1", tooltip=ttSeed+"\n\n"+ttEq)
+devLen=input.int(100, "Deviation memory", minval=20, maxval=400, group=gR, inline="rng2")
+chMult=input.float(4.0, "Width", minval=0.5, maxval=15.0, step=0.1, group=gR, inline="rng2", tooltip=ttDev+"\n\n"+ttWidth)
+
+// Signals
+arrOn=input.bool(true, "Arrows", group=gS, inline="marks")
+xOn=input.bool(true, "X markers", group=gS, inline="marks", tooltip=ttMarks+"\n\n"+ttXs)
+dotOn=input.bool(true, "Breakout circles", group=gS, inline="extra")
+backOn=input.bool(true, "Backdate marks", group=gS, inline="extra", active=arrOn or xOn or dotOn, tooltip=ttDots+"\n\n"+ttBack)
+
+// Range colors and style
+upCol=input.color(#1dac70, "Up", group=gC, inline="base")
+dnCol=input.color(#df3a79, "Down", group=gC, inline="base", tooltip=ttBaseUp+"\n\n"+ttBaseDn)
+lockOn=input.bool(true, "Color by locked trend", group=gC, tooltip=ttLock)
+zoneUp=input.color(#1dac70, "Bullish range", group=gC, inline="states", active=lockOn)
+zoneDn=input.color(#df3a79, "Bearish", group=gC, inline="states", active=lockOn, tooltip=ttZoneUp+"\n\n"+ttZoneDn)
+zoneNUp=input.color(#1d5dac, "Neutral upper", group=gC, inline="neutral", active=lockOn)
+zoneNDn=input.color(#df613a, "Lower", group=gC, inline="neutral", active=lockOn, tooltip=ttZoneNUp+"\n\n"+ttZoneNDn)
+gradOn=input.bool(true, "Gradient", group=gC, inline="fill")
+fade=input.int(80, "Transparency", minval=0, maxval=100, group=gC, inline="fill", tooltip=ttGrad+"\n\n"+ttFade)
+midOn=input.bool(true, "Dashed center", group=gC, tooltip=ttMid)
+
+// Visible range-anchored VWAP
+vOn=input.bool(true, "Show range VWAP", group=gV, tooltip=ttVW)
+vMode=input.string("Value Transfer", "Color mode", options=["Trend", "Slope", "Price", "Value Transfer"], group=gV, inline="c", active=vOn, tooltip=ttMode)
+vUp=input.color(#1dac70, "Up", group=gV, inline="vcols", active=vOn)
+vDn=input.color(#df3a79, "Down", group=gV, inline="vcols", active=vOn)
+vFlat=input.color(#B0B6C2, "Neutral", group=gV, inline="vcols", active=vOn, tooltip=ttVUp+"\n\n"+ttVDn+"\n\n"+ttVFlat)
+vSize=input.int(2, "Line width", minval=1, maxval=6, group=gV, inline="l",active=vOn, tooltip=ttLine)
+
+// Smart trend: two tunable numeric inputs plus the arrow filter
+trLen=input.int(200, "VWAP length", minval=20, maxval=500, group=gT, inline="trend")
+trMult=input.float(1.5, "Sensitivity", minval=0.1, maxval=6.0, step=0.1, group=gT, inline="trend", tooltip=ttTrendLen+"\n\n"+ttSens)
+trFilter=input.bool(false, "Filter arrows by smart trend", group=gT, tooltip=ttFilter)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Internal Alert Defaults {
+const int RETEST_BARS=12
+const float RETEST_ATR=0.15
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+clamp(x, lo, hi) => math.max(lo, math.min(hi, x))
+safeDiv(n, d) => n / math.max(d, 0.00000001)
+weighted(src, wt, len) => safeDiv(math.sum(src * wt, len), math.sum(wt, len))
+stateCol(state, pos, neg, flat) => state == 1 ? pos : state == -1 ? neg : flat
+zoneCol(state, upperBand, bCol, sCol, nUp, nDn) => state == 1 ? bCol : state == -1 ? sCol : upperBand ? nUp : nDn
+volStep(volRatio, z) =>
+    x = 4.0 * (volRatio - 1.0) + 0.75 * clamp(z, -3.0, 3.0)
+    0.5 + 1.5 / (1.0 + math.exp(-x))
+makeMark(x, y, txt, col, sty, sz, tip) =>
+    label.new(x, y, txt, textcolor=col, color=color.new(col, 100), style=sty, size=sz, tooltip=tip)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ VWAP Range Engine {
+wt=na(volume) or volume <= 0 ? 1.0 : volume
+seedPV=math.sum(hlc3 * wt, 34)
+seedV=math.sum(wt, 34)
+baseVW=weighted(hlc3, wt, seedLen)
+eqVW=weighted(hlc3, wt, eqLen)
+devV=math.sum(wt, devLen)
+res=hlc3 - eqVW
+dev=math.sqrt(math.max(0.0, safeDiv(math.sum(wt * res * res, devLen), devV)))
+wBase=math.max(dev * chMult, syminfo.mintick * 2.0)
+wCover=math.max(math.abs(high - baseVW), math.abs(low - baseVW)) + syminfo.mintick
+width=math.max(wBase, wCover)
+ready=bar_index >= math.max(math.max(seedLen, eqLen), devLen) and not na(width) and not na(baseVW)
+
+var mid=float(na)
+var hi=float(na)
+var lo=float(na)
+var hiMid=float(na)
+var loMid=float(na)
+var sumPV=float(na)
+var sumV=float(na)
+var array<label> marks=array.new<label>()
+
+brUp=ta.crossover(low, hi) and barstate.isconfirmed
+brDn=ta.crossunder(high, lo) and barstate.isconfirmed
+brAny=brUp or brDn
+init=na(mid) and ready
+rngNew=barstate.isconfirmed and ready and (init or brAny)
+
+if rngNew
+    mid := baseVW
+    hi := baseVW + width
+    lo := baseVW - width
+    hiMid := math.avg(mid, hi)
+    loMid := math.avg(mid, lo)
+    sumPV := seedPV
+    sumV := seedV
+else if barstate.isconfirmed and not na(sumPV)
+    sumPV += hlc3 * wt
+    sumV += wt
+
+rngVW=na(sumPV) ? na : safeDiv(sumPV, sumV)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Volatility-Driven Trend Structure {
+trVW=weighted(hlc3, wt, trLen)
+aFast=ta.atr(14)
+aSlow=ta.atr(56)
+aMean=ta.sma(aFast, 120)
+aDev=ta.stdev(aFast, 120)
+aZ=not na(aDev) and aDev > 0.0 ? (aFast - aMean) / aDev : 0.0
+vRatio=not na(aSlow) and aSlow > 0.0 ? aFast / aSlow : 1.0
+step=aFast * trMult * volStep(vRatio, aZ)
+trReady=not na(trVW) and not na(aMean) and not na(step) and step > 0.0
+
+var tHi=float(na)
+var tLo=float(na)
+var dir=0
+
+if barstate.isconfirmed and trReady
+    if na(tHi)
+        tHi := trVW
+        tLo := trVW - step
+        dir := 1
+    else
+        expandUp=trVW > tHi + step
+        expandDn=trVW < tLo - step
+        nextDir=expandUp ? 1 : expandDn ? -1 : dir
+        if expandUp or expandDn
+            ref=nextDir == 1 ? tHi : tLo
+            steps=math.max(1, int(math.floor(math.abs(trVW - ref) / step)))
+            if nextDir == 1
+                tLo := tHi + (steps - 1) * step
+                tHi := tHi + steps * step
+            else
+                tHi := tLo - (steps - 1) * step
+                tLo := tLo - steps * step
+            dir := nextDir
+
+trFlip=barstate.isconfirmed and dir != 0 and dir[1] != 0 and dir != dir[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Internal Reversal VWAP & Smart Trend {
+var revPV=float(na)
+var revV=float(na)
+
+if barstate.isconfirmed and trReady
+    if trFlip or na(revPV)
+        revPV := hlc3 * wt
+        revV := wt
+    else
+        revPV += hlc3 * wt
+        revV += wt
+
+revVW=not na(revV) and revV > 0.0 ? safeDiv(revPV, revV) : na
+atr=math.max(nz(aFast, syminfo.mintick), syminfo.mintick)
+anchReady=trReady and not na(rngVW) and not na(revVW)
+upAgree=anchReady and dir == 1 and close > rngVW and close > revVW + atr * 0.05
+dnAgree=anchReady and dir == -1 and close < rngVW and close < revVW - atr * 0.05
+
+var upStreak=0
+var dnStreak=0
+var trend=0
+
+if barstate.isconfirmed
+    upStreak := upAgree ? upStreak + 1 : 0
+    dnStreak := dnAgree ? dnStreak + 1 : 0
+    if trFlip
+        trend := 0
+    if upStreak >= 2
+        trend := 1
+    else if dnStreak >= 2
+        trend := -1
+    else if trend == 1 and (dir != 1 or close < revVW - atr * 0.15)
+        trend := 0
+    else if trend == -1 and (dir != -1 or close > revVW + atr * 0.15)
+        trend := 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Locked Range Colors {
+var rngState=0
+
+if rngNew
+    rngState := trend
+
+upperCol=lockOn ? zoneCol(rngState, true, zoneUp, zoneDn, zoneNUp, zoneNDn) : upCol
+lowerCol=lockOn ? zoneCol(rngState, false, zoneUp, zoneDn, zoneNUp, zoneNDn) : dnCol
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Signal Engine {
+steady=not na(mid) and not na(mid[1]) and mid == mid[1]
+lowCross=ta.crossover(low, loMid)
+highCross=ta.crossunder(high, hiMid)
+xHigh=ta.crossunder(high, hi)
+xLow=ta.crossover(low, lo)
+
+buy=steady and barstate.isconfirmed and lowCross
+sell=steady and barstate.isconfirmed and highCross
+
+buy := buy and (not trFilter or trend == 1)
+sell := sell and (not trFilter or trend == -1)
+
+failUp=steady and barstate.isconfirmed and xHigh
+failDn=steady and barstate.isconfirmed and xLow
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Range Rendering {
+newSeg=na(mid[1]) or mid != mid[1]
+topP=newSeg ? na : hi
+topI=newSeg ? na : hiMid
+botI=newSeg ? na : loMid
+botP=newSeg ? na : lo
+midP=newSeg ? na : mid
+
+pHi=plot(topP, "Range Upper", color=upperCol, style=plot.style_linebr)
+pHiI=plot(topI, "Range Upper Interior", color=color.new(chart.fg_color, 50), style=plot.style_linebr)
+pLoI=plot(botI, "Range Lower Interior", color=color.new(chart.fg_color, 50), style=plot.style_linebr)
+pLo=plot(botP, "Range Lower", color=lowerCol, style=plot.style_linebr)
+plot(not midOn or bar_index % 2 == 0 ? midP : na, "Range Center", color=chart.fg_color, style=plot.style_linebr)
+
+fill(pHi, pHiI, hi, mid, color.new(upperCol, fade), color.new(upperCol, gradOn ? 100 : fade), title="Upper Range Fill")
+fill(pLoI, pLo, mid, lo, color.new(lowerCol, gradOn ? 100 : fade), color.new(lowerCol, fade), title="Lower Range Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Range VWAP Color Engine {
+dv=rngNew ? 0.0 : nz(rngVW - rngVW[1], 0.0)
+stepAvg=ta.ema(math.abs(dv), 12)
+volAvg=ta.sma(wt, 20)
+relVol=clamp(wt / math.max(volAvg, 0.00000001), 0.25, 3.0)
+exc=not na(rngVW) ? (hlc3 - rngVW) / atr : 0.0
+move=math.min(2.5, math.abs(dv) / math.max(nz(stepAvg), syminfo.mintick * 0.1))
+aligned=exc * dv > 0.0
+impulse=aligned ? math.sign(dv) * move * math.sqrt(relVol) * math.min(2.0, math.abs(exc)) : 0.0
+
+var memory=0.0
+var vwState=0
+
+if barstate.isconfirmed
+    memory := rngNew ? 0.0 : 0.85 * memory + 0.15 * impulse
+    if na(rngVW)
+        vwState := 0
+    else
+        vwState := switch vMode
+            "Trend" => trend
+            "Slope" => rngNew or na(rngVW[1]) ? 0 : dv > math.max(atr * 0.0005, syminfo.mintick * 0.1) ? 1 : dv < -math.max(atr * 0.0005, syminfo.mintick * 0.1) ? -1 : 0
+            "Price" => close > rngVW ? 1 : close < rngVW ? -1 : 0
+            => memory > 0.25 ? 1 : memory < -0.25 ? -1 : 0
+
+vCol=stateCol(vwState, vUp, vDn, vFlat)
+plot(vOn and not rngNew ? rngVW : na, "Range-Anchored VWAP", color=vCol, linewidth=vSize, style=plot.style_linebr)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Confirmed Retest Events {
+var brDir=0
+var brLvl=float(na)
+var brBar=int(na)
+retUp=false
+retDn=false
+
+if barstate.isconfirmed
+    if brUp or brDn
+        brDir := brUp ? 1 : -1
+        brLvl := brUp ? hi[1] : lo[1]
+        brBar := bar_index
+    else if brDir != 0
+        age=bar_index - brBar
+        tol=atr * RETEST_ATR
+        if age > RETEST_BARS
+            brDir := 0
+        else
+            retUp := brDir == 1 and low >= brLvl - tol and low <= brLvl + tol and close > brLvl and close > open
+            retDn := brDir == -1 and high >= brLvl - tol and high <= brLvl + tol and close < brLvl and close < open
+            if retUp or retDn
+                brDir := 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Markers {
+if barstate.isconfirmed
+    x=backOn ? bar_index - 1 : bar_index
+    yLo=backOn ? low[1] : low
+    yHi=backOn ? high[1] : high
+    if dotOn and brUp
+        array.push(marks, makeMark(x, hi[1], "◉", upCol, label.style_label_center, size.large, "Confirmed upward range breakout"))
+    if dotOn and brDn
+        array.push(marks, makeMark(x, lo[1], "◉", dnCol, label.style_label_center, size.large, "Confirmed downward range breakout"))
+    if arrOn and buy
+        array.push(marks, makeMark(x, yLo, "▲", upCol, label.style_label_up, size.normal, "Lower-band recovery"))
+    if arrOn and sell
+        array.push(marks, makeMark(x, yHi, "▼", dnCol, label.style_label_down, size.normal, "Upper-band rejection"))
+    if xOn and failUp
+        array.push(marks, makeMark(x, yHi, "X", dnCol, label.style_label_down, size.normal, "Failed upper boundary"))
+    if xOn and failDn
+        array.push(marks, makeMark(x, yLo, "X", upCol, label.style_label_up, size.normal, "Failed lower boundary"))
+    while array.size(marks) > 480
+        label.delete(array.shift(marks))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert Events {
+canVW=barstate.isconfirmed and not rngNew and not na(rngVW) and not na(rngVW[1])
+pxCrossUp=ta.crossover(close, rngVW)
+pxCrossDn=ta.crossunder(close, rngVW)
+midCrossUp=ta.crossover(close, mid)
+midCrossDn=ta.crossunder(close, mid)
+slopeTol=math.max(atr * 0.0005, syminfo.mintick * 0.1)
+rise=canVW and dv > slopeTol
+fall=canVW and dv < -slopeTol
+slopeTurnUp=rise and not rise[1]
+slopeTurnDn=fall and not fall[1]
+colTurnUp=canVW and vwState == 1 and vwState[1] != 1
+colTurnDn=canVW and vwState == -1 and vwState[1] != -1
+colTurnFlat=canVW and vwState == 0 and vwState[1] != 0
+trUp=barstate.isconfirmed and trend == 1 and trend[1] != 1
+trDn=barstate.isconfirmed and trend == -1 and trend[1] != -1
+trFlat=barstate.isconfirmed and trend == 0 and nz(trend[1]) != 0
+rngBull=rngNew and rngState == 1
+rngBear=rngNew and rngState == -1
+rngFlat=rngNew and rngState == 0
+
+alertcondition(rngNew, "Zeiierman VWAP Range | New Range", "VWAP Range Breakout (Zeiierman): new range confirmed on {{ticker}} {{interval}}.")
+alertcondition(rngBull, "Zeiierman VWAP Range | Bullish Range", "VWAP Range Breakout (Zeiierman): new range classified bullish on {{ticker}} {{interval}}.")
+alertcondition(rngBear, "Zeiierman VWAP Range | Bearish Range", "VWAP Range Breakout (Zeiierman): new range classified bearish on {{ticker}} {{interval}}.")
+alertcondition(rngFlat, "Zeiierman VWAP Range | Neutral Range", "VWAP Range Breakout (Zeiierman): new range classified neutral on {{ticker}} {{interval}}.")
+alertcondition(brUp, "Zeiierman VWAP Range | Breakout Up", "VWAP Range Breakout (Zeiierman): confirmed bullish breakout on {{ticker}} {{interval}} at {{close}}.")
+alertcondition(brDn, "Zeiierman VWAP Range | Breakout Down", "VWAP Range Breakout (Zeiierman): confirmed bearish breakout on {{ticker}} {{interval}} at {{close}}.")
+alertcondition(buy, "Zeiierman VWAP Range | Lower Recovery", "VWAP Range Breakout (Zeiierman): lower-band recovery on {{ticker}} {{interval}}.")
+alertcondition(sell, "Zeiierman VWAP Range | Upper Rejection", "VWAP Range Breakout (Zeiierman): upper-band rejection on {{ticker}} {{interval}}.")
+alertcondition(failUp, "Zeiierman VWAP Range | Upper Fakeout", "VWAP Range Breakout (Zeiierman): upper boundary fakeout on {{ticker}} {{interval}}.")
+alertcondition(failDn, "Zeiierman VWAP Range | Lower Fakeout", "VWAP Range Breakout (Zeiierman): lower boundary fakeout on {{ticker}} {{interval}}.")
+alertcondition(retUp, "Zeiierman VWAP Range | Bullish Retest", "VWAP Range Breakout (Zeiierman): first bullish breakout-boundary retest on {{ticker}} {{interval}}.")
+alertcondition(retDn, "Zeiierman VWAP Range | Bearish Retest", "VWAP Range Breakout (Zeiierman): first bearish breakout-boundary retest on {{ticker}} {{interval}}.")
+alertcondition(canVW and pxCrossUp, "Zeiierman VWAP Range | Price Above VWAP", "VWAP Range Breakout (Zeiierman): price crossed above the range-anchored VWAP on {{ticker}} {{interval}}.")
+alertcondition(canVW and pxCrossDn, "Zeiierman VWAP Range | Price Below VWAP", "VWAP Range Breakout (Zeiierman): price crossed below the range-anchored VWAP on {{ticker}} {{interval}}.")
+alertcondition(slopeTurnUp, "Zeiierman VWAP Range | VWAP Turns Up", "VWAP Range Breakout (Zeiierman): range-anchored VWAP slope turned up on {{ticker}} {{interval}}.")
+alertcondition(slopeTurnDn, "Zeiierman VWAP Range | VWAP Turns Down", "VWAP Range Breakout (Zeiierman): range-anchored VWAP slope turned down on {{ticker}} {{interval}}.")
+alertcondition(colTurnUp, "Zeiierman VWAP Range | VWAP Green", "VWAP Range Breakout (Zeiierman): selected VWAP coloring changed to bullish on {{ticker}} {{interval}}.")
+alertcondition(colTurnDn, "Zeiierman VWAP Range | VWAP Red", "VWAP Range Breakout (Zeiierman): selected VWAP coloring changed to bearish on {{ticker}} {{interval}}.")
+alertcondition(colTurnFlat, "Zeiierman VWAP Range | VWAP Neutral", "VWAP Range Breakout (Zeiierman): selected VWAP coloring changed to neutral on {{ticker}} {{interval}}.")
+alertcondition(steady and barstate.isconfirmed and midCrossUp, "Zeiierman VWAP Range | Center Cross Up", "VWAP Range Breakout (Zeiierman): close crossed above range center on {{ticker}} {{interval}}.")
+alertcondition(steady and barstate.isconfirmed and midCrossDn, "Zeiierman VWAP Range | Center Cross Down", "VWAP Range Breakout (Zeiierman): close crossed below range center on {{ticker}} {{interval}}.")
+alertcondition(trFlip and dir == 1, "Zeiierman VWAP Range | Structure Bullish", "VWAP Range Breakout (Zeiierman): internal VWAP structure turned bullish on {{ticker}} {{interval}}.")
+alertcondition(trFlip and dir == -1, "Zeiierman VWAP Range | Structure Bearish", "VWAP Range Breakout (Zeiierman): internal VWAP structure turned bearish on {{ticker}} {{interval}}.")
+alertcondition(trUp, "Zeiierman VWAP Range | Smart Trend Bullish", "VWAP Range Breakout (Zeiierman): smart trend became bullish on {{ticker}} {{interval}}.")
+alertcondition(trDn, "Zeiierman VWAP Range | Smart Trend Bearish", "VWAP Range Breakout (Zeiierman): smart trend became bearish on {{ticker}} {{interval}}.")
+alertcondition(trFlat, "Zeiierman VWAP Range | Smart Trend Neutral", "VWAP Range Breakout (Zeiierman): smart trend returned to neutral on {{ticker}} {{interval}}.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
