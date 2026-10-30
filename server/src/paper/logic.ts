@@ -885,6 +885,19 @@ export function applyFunding(pos: Position, ratePct: number, markPrice: number, 
   return fill;
 }
 
+/** Reconcile a known settlement against exposure AT that time, including later-closed positions. */
+export function applyFundingSettlement(pos: Position, ratePct: number, markPrice: number, at: number): Fill | null {
+  if (!Number.isFinite(ratePct) || !Number.isFinite(markPrice) || markPrice <= 0 || !Number.isFinite(at)
+      || at < (pos.openedAt ?? pos.entryAt) || (pos.exitAt !== null && pos.exitAt !== undefined && at >= pos.exitAt)
+      || pos.fills.some(f => f.reason === 'funding' && f.at === at)) return null;
+  const exited = pos.fills.filter(f => f.at <= at && f.reason !== 'entry' && f.reason !== 'funding').reduce((n,f)=>n+f.qty,0);
+  const qty = Math.max(0,pos.qty-exited);
+  if (!(qty>0)) return null;
+  const pnl=-(ratePct/100)*qty*pos.contractValue*markPrice*(pos.side==='long'?1:-1);
+  const fill: Fill={at,price:markPrice,qty:0,reason:'funding',fee:0,pnl};
+  pos.realizedPnl+=pnl;pos.fills.push(fill);return fill;
+}
+
 /** Script-emitted exit event applied according to the scanner's exit mode. */
 export function applyScriptExit(pos: Position, exitType: ExitType, price: number | undefined, at: number, cfg: PaperConfig, mode: ExitMode, fallbackPrice: number, execution?: { marketPrice: number; quoted: boolean }): Fill[] {
   if (pos.status !== 'open' || mode === 'levels') return [];

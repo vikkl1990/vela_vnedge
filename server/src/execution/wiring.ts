@@ -1,3 +1,6 @@
+import { FundingJournal } from './fundingJournal.ts';
+import { AccountAudit } from './accountAudit.ts';
+import { DepthRecorder } from './depthRecorder.ts';
 import { fundingAssessment } from '../paper/fundingGuard.ts';
 import { depthFill } from '../paper/entryExecution.ts';
 /**
@@ -19,6 +22,28 @@ export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
   // describes the same fills, liquidation and funding a promoted pair would see.
   const books = [app.paper, app.shadow];
+  const funding = app.fundingJournal = new FundingJournal(app.db);
+  const audit = app.accountAudit = new AccountAudit(app.db);
+  const depth = app.depthRecorder = new DepthRecorder(app.db, undefined, symbol => {
+    app.feed.unsubscribe('ob_updates', [symbol]); app.feed.subscribe('ob_updates', [symbol]);
+  });
+  depth.disconnect();
+  app.feed.on('depth', (m:unknown) => depth.onDepth(m));
+  let auditing=false, staging=false;
+  const auditTimer=setInterval(() => {
+    if (auditing || !app.executor) return;
+    auditing=true;
+    void audit.sync(app.executor.transport).catch(e=>log.warn(`account history audit: ${e.message}`)).finally(()=>{auditing=false;});
+  },60_000);
+  const historyTimer=setInterval(() => {
+    if(staging)return; staging=true;
+    void funding.stageHistory(app.rest).catch(e=>log.warn(`funding history audit: ${e.message}`)).finally(()=>{staging=false;});
+    // Periodic snapshots keep the bounded diagnostic ring replayable after pruning.
+    app.feed.unsubscribe('ob_updates',depth.symbols); app.feed.subscribe('ob_updates',depth.symbols);
+  },600_000);
+  const depthTimer=setInterval(()=>{try{depth.flush();}catch(e:any){log.warn(`depth audit: ${e.message}`);}},5000);
+  for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
+  app.stopExecutionAudit=()=>{for(const t of [auditTimer,historyTimer,depthTimer,statusTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();}catch(e:any){log.warn(`depth shutdown flush: ${e.message}`);}};
   const status = app.exchangeStatus ?? new TradingStatus();
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
   app.db.run('CREATE TABLE IF NOT EXISTS funding_guard_blocks (symbol TEXT PRIMARY KEY, until_at INTEGER NOT NULL)');
@@ -38,7 +63,7 @@ export function wireRealtime(app: App): void {
     } catch (e: any) { log.warn(`exchange product-status refresh failed: ${e?.message ?? e}`); }
     finally { refreshing = false; }
   };
-  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); if (connected) void refresh(); });
+  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); if (!connected) depth.disconnect(); if (connected) void refresh(); });
   app.feed.on('system_status', (m: any) => {
     status.systemUpdate(String(m.status ?? ''), toMs(m.timestamp ?? m.ts));
     log.info(`exchange system status ${m.status} (${m.event ?? 'update'})`);
@@ -73,13 +98,13 @@ export function wireRealtime(app: App): void {
   });
   for (const b of books) b.quotes = app.marks;   // spread-crossing fills (paper.useSpread)
   // decision 190: the audit sees each print before the books do, so the print that fills a limit is counted as its through
-  app.feed.on('trade', (t: WsTrade) => { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs); });
-  app.feed.on('mark', (m: WsMark) => { app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
-  app.feed.on('funding', (f: WsFunding) => app.marks.onWsFunding(f));
+  app.feed.on('trade', (t: WsTrade) => { depth.onTrade(t); app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs); });
+  app.feed.on('mark', (m: WsMark) => { funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
+  app.feed.on('funding', (f: WsFunding) => { funding.observe(f); app.marks.onWsFunding(f); });
   const timer = setInterval(() => {
     const now = Date.now();
     try {
-      for (const c of app.marks.dueFunding(now)) for (const b of books) b.chargeFunding(c.symbol, c.ratePct, c.at);
+      funding.settle(now,(symbol,rate,mark,at)=>{for(const b of books)b.reconcileFunding(symbol,rate,mark,at);});
       // Settle overdue charges first: never backdate an avoidance exit after settlement.
       if (!app.executor) for (const b of books) for (const p of b.openPositions()) {
         const mark=app.marks.mark(p.symbol);
@@ -98,6 +123,7 @@ export function wireRealtime(app: App): void {
 /** Subscribe the tape / mark / funding channels for the scanned symbols plus anything with an open position. */
 export function subscribeRealtime(app: App): void {
   const symbols = [...new Set([...app.resolvedSymbols, ...app.paper.openPositions().map(p => p.symbol), ...app.incubator.symbols()])];
+  app.feed.subscribe('ob_updates', app.depthRecorder.symbols);
   if (!symbols.length) return;
   app.feed.subscribe('all_trades', symbols);
   app.feed.subscribe('mark_price', symbols);

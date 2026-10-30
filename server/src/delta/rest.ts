@@ -191,9 +191,24 @@ export class DeltaRest {
 
   // ---- authenticated (only used by the optional testnet executor) ----
 
+  /** Complete bounded windows only. A truncated/repeating page must never advance reconciliation. */
+  async accountHistory(kind:'fills'|'wallet',startMs:number,endMs:number):Promise<any[]> {
+    if(!Number.isSafeInteger(startMs)||!Number.isSafeInteger(endMs)||startMs<0||endMs<=startMs||endMs-startMs>86400000)throw Error('history window must be positive and at most one day');
+    const path=kind==='fills'?'/v2/fills':'/v2/wallet/transactions';
+    const out:any[]=[],seen=new Set<string>(),cursors=new Set<string>();let after:string|undefined;
+    for(let page=0;page<100;page++){
+      const env=await this.request<any>('GET',path,{auth:true,raw:true,query:{start_time:startMs*1000,end_time:endMs*1000,page_size:50,after}});
+      if(!Array.isArray(env?.result))throw Error('invalid history response');
+      for(const row of env.result){if(row?.id===undefined||row.id===null)throw Error('history row missing id');const key=String(row.id);if(!seen.has(key)){seen.add(key);out.push(row);}}
+      const next=env.meta?.after;if(!next)return out;
+      if(cursors.has(String(next)))throw Error('repeated history cursor');cursors.add(String(next));after=String(next);
+    }
+    throw Error('history pagination limit exceeded; shorten the window');
+  }
+
   async wallet(): Promise<any> { return this.request('GET', '/v2/wallet/balances', { auth: true }); }
   async positions(): Promise<any> { return this.request('GET', '/v2/positions/margined', { auth: true }); }
-  async placeOrder(order: { product_id: number; size: number; side: 'buy' | 'sell'; order_type: 'market_order' | 'limit_order'; limit_price?: string; reduce_only?: boolean; client_order_id?: string; stop_order_type?: string; stop_price?: string; time_in_force?: string }): Promise<any> {
+  async placeOrder(order: { product_id: number; size: number; side: 'buy' | 'sell'; order_type: 'market_order' | 'limit_order'; limit_price?: string; reduce_only?: boolean; client_order_id?: string; stop_order_type?: string; stop_price?: string; time_in_force?: string; post_only?: boolean }): Promise<any> {
     return this.request('POST', '/v2/orders', { auth: true, body: order, retries: 0 });
   }
   async cancelAll(product_id: number): Promise<any> { return this.request('DELETE', '/v2/orders/all', { auth: true, body: { product_id }, retries: 0 }); }

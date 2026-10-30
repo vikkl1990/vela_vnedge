@@ -490,3 +490,19 @@ test('funding admission veto happens before position creation', t => {
  engine.fundingEntryBlock=()=> 'funding guard: over budget';
  assert.equal(open(),undefined); assert.equal(engine.openPositions().length,0);
 });
+
+
+test('late settlement persists once after close without duplicate execution events',t=>{
+ const {db,cfg,engine,open}=setup(t);cfg.paper.fundingCharges=true;const p=open();
+ engine.onBar('BTCUSD',{time:60000,high:106,low:94,close:94},60030);
+ assert.equal(p.status,'closed');const before=p.realizedPnl;let events=0;
+ for(const event of ['order','trade','position'])engine.on(event,()=>events++);
+ assert.equal(engine.reconcileFunding('BTCUSD',.01,100,60020),1);
+ assert.equal(engine.reconcileFunding('BTCUSD',.01,100,60020),0);
+ assert.equal(events,0);
+ const row=db.get<any>('SELECT * FROM positions WHERE id=?',p.id)!;
+ assert.ok(Math.abs(row.realized_pnl-(before-.0001*p.qty*100))<1e-9);
+ const resumed=new PaperEngine(db,()=>cfg);
+ assert.equal(resumed.reconcileFunding('BTCUSD',.01,100,60020),0);
+ assert.equal(db.get<any>("SELECT count(*) n FROM orders WHERE position_id=? AND reason='funding'",p.id)!.n,1);
+});

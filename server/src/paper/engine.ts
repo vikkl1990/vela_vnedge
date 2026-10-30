@@ -1,3 +1,4 @@
+import {applyFundingSettlement} from './logic.ts';
 import {recordFillBudget} from './decisionTrace.ts';
 import {depthPlan} from './depthPlan.ts';
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
@@ -832,6 +833,22 @@ export class PaperEngine extends EventEmitter {
       n++;
     }
     if (n) { log.info(`FUNDING ${symbol} ${ratePct}% charged to ${n} position(s)`); this.recordEquity(true); }
+    return n;
+  }
+
+  /** Late funding is an accounting correction, never another trade-close/executor event. */
+  reconcileFunding(symbol:string,rate:number,mark:number,at:number): number {
+    if (!(this.paper.fundingCharges ?? true)) return 0;
+    let n=0;
+    const rows=this.db.all<any>(`SELECT * FROM positions WHERE bt=? AND symbol=? AND status IN ('open','closed') AND entry_at<=? AND (exit_at IS NULL OR exit_at>?)`,this.book,symbol,at,at);
+    for(const row of rows){
+      const pos=rowToPosition(row),fill=applyFundingSettlement(pos,rate,mark,at);
+      if(!fill)continue;
+      this.db.transaction(()=>{this.persistFill(pos,fill);this.persist(pos);});
+      if(this.open.has(pos.id))Object.assign(this.open.get(pos.id)!,pos);
+      this.closedCache=null;n++;
+    }
+    if(n){this.recordEquity(true);this.emit('stats',this.stats());}
     return n;
   }
 

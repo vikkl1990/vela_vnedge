@@ -420,6 +420,7 @@ export class ApiServer {
       lockCache.set(k, { at: Date.now(), v });
       return v;
     });
+    this.add('GET', '/api/execution-quality', () => ({ funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), account: a.accountAudit.summary() }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     this.add('GET', '/api/radar', (_r, _s, _p, url) => a.radarView(Math.min(168, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));
     this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));

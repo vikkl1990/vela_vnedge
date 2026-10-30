@@ -74,7 +74,7 @@ export class ExchangeExecutor {
     this.paper = paper; this.cfgRef = cfgRef; this.transport = transport; this.opts = opts;
     this.now = opts.now ?? (() => Date.now());
     this.sleep = opts.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
-    this.ledger = new OrderLedger(paper.store, this.now);
+    this.ledger = new OrderLedger(paper.store, this.now, transport.host);
     this.mode = cfgRef().execution.mode;
     this.bracketEnabled = cfgRef().execution.bracket !== false;
   }

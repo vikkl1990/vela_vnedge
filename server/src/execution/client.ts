@@ -28,6 +28,7 @@ export interface OrderPayload {
   stop_price?: string;
   stop_trigger_method?: 'mark_price' | 'last_traded_price';
   time_in_force?: 'gtc' | 'ioc' | 'fok';
+  post_only?: boolean;
   /** Executor annotation (stripped before sending): what this order is for. */
   purpose?: 'entry' | 'exit' | 'stop' | 'tp' | 'close-all';
 }
@@ -48,6 +49,7 @@ export interface ExchangeTransport {
   cancelOrder(id: number | string, product_id: number): Promise<unknown>;
   cancelAll(product_id: number): Promise<unknown>;
   wallet(): Promise<unknown>;
+  accountHistory?(kind: 'fills'|'wallet', startMs:number,endMs:number): Promise<any[]>;
   /** One order by exchange id; null when the exchange does not know it. */
   order(id: number | string): Promise<ExchangeOrder | null>;
   /** One order by the client id this bot stamped on it; null when the exchange never received it. */
@@ -74,7 +76,12 @@ export function parseOrder(o: any): ExchangeOrder {
   return { id: o.id, product_id: Number(o.product_id), symbol: o.product_symbol ?? o.symbol, side: o.side, size: Number(o.size ?? 0), unfilled_size: Number(o.unfilled_size ?? o.size ?? 0), order_type: o.order_type, stop_order_type: o.stop_order_type ?? null, limit_price: o.limit_price ?? null, stop_price: o.stop_price ?? null, reduce_only: Boolean(o.reduce_only), client_order_id: o.client_order_id ?? null, state: o.state, average_fill_price: o.average_fill_price != null ? Number(o.average_fill_price) : null, paid_commission: o.paid_commission != null ? Number(o.paid_commission) : null, raw: o };
 }
 
+export function validatePostOnly(o: OrderPayload): void {
+  if(o.post_only && (o.order_type!=='limit_order' || !(Number.isFinite(Number(o.limit_price)) && Number(o.limit_price)>0) || (o.time_in_force && o.time_in_force!=='gtc')))throw Error('post-only requires a positive-priced GTC limit');
+}
+
 export function wirePayload(o: OrderPayload): Record<string, unknown> {
+  validatePostOnly(o);
   const { purpose: _p, ...rest } = o;
   return rest;
 }
@@ -113,6 +120,7 @@ export class RestTransport implements ExchangeTransport {
   async editOrder(e: EditOrder) { const res = await this.rest.editOrder(e); return { id: res?.id ?? e.id, state: res?.state }; }
   async setLeverage(product_id: number, leverage: number) { const res = await this.rest.setLeverage(product_id, leverage); return { leverage: Number(res?.leverage ?? res?.result?.leverage ?? NaN) }; }
   async placeOrder(o: OrderPayload) {
+    validatePostOnly(o);
     if (this.host === 'production') assertProductionSafe(o);
     const res = await this.rest.placeOrder(wirePayload(o) as any);
     return { id: res?.id ?? '?', state: res?.state };
@@ -120,6 +128,7 @@ export class RestTransport implements ExchangeTransport {
   cancelOrder(id: number | string, product_id: number) { return this.rest.cancelOrder(id, product_id); }
   cancelAll(product_id: number) { return this.rest.cancelAll(product_id); }
   wallet() { return this.rest.wallet(); }
+  accountHistory(kind: 'fills'|'wallet', startMs:number,endMs:number) {return this.rest.accountHistory(kind,startMs,endMs);}
 }
 
 /** Records every write instead of sending it; reads go to `reader` when one with keys is available. */

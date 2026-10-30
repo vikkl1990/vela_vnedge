@@ -30,6 +30,9 @@ import { ScannerEngine } from './scanners/engine.ts';
 import { ScannerRegistry } from './scanners/registry.ts';
 import { createExecutor, type ExchangeExecutor } from './execution/testnet.ts';
 import { subscribeRealtime, wireRealtime } from './execution/wiring.ts';
+import type { FundingJournal } from './execution/fundingJournal.ts';
+import type { AccountAudit } from './execution/accountAudit.ts';
+import type { DepthRecorder } from './execution/depthRecorder.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
 import { MarketGate } from './risk/marketGate.ts';
@@ -83,6 +86,10 @@ export class App {
   readonly exchangeStatus = new TradingStatus();
   /** Decision 187: every paper fill set beside the real prints on the tape. */
   tapeAudit!: TapeAudit;
+  fundingJournal!: FundingJournal;
+  accountAudit!: AccountAudit;
+  depthRecorder!: DepthRecorder;
+  stopExecutionAudit?: () => void;
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
   readonly ops: OpsService;
@@ -906,6 +913,7 @@ export class App {
   }
 
   async stop() {
+    this.stopExecutionAudit?.();
     this.screenQueue.stop();
     this.incubator.stop();
     this.executor?.stop();

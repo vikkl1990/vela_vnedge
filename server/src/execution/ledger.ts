@@ -22,15 +22,16 @@ const OPEN_STATES: LedgerState[] = ['submitted', 'acknowledged', 'unknown'];
 export class OrderLedger {
   private db: Db;
   private now: () => number;
-  constructor(db: Db, now: () => number = () => Date.now()) { this.db = db; this.now = now; }
+  private host:string;
+  constructor(db: Db, now: () => number = () => Date.now(), host = 'unknown') { this.db = db; this.now = now; this.host=host; }
 
   /** Record the intent to send an order. Returns the row; the caller sends it and reports what happened. */
   intent(o: OrderPayload, positionId: number, symbol: string, leg: number | null = null, reason: string | null = null): LedgerRow {
     const at = this.now();
     const r = this.db.run(
-      'INSERT INTO exchange_orders(position_id, purpose, reason, leg, client_order_id, product_id, symbol, side, size, order_type, stop_price, limit_price, state, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO exchange_orders(position_id, purpose, reason, leg, client_order_id, product_id, symbol, side, size, order_type, stop_price, limit_price, state, created_at, updated_at, host) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       positionId, o.purpose ?? 'exit', reason, leg, o.client_order_id ?? `vnedge-${positionId}-${at.toString(36)}`, o.product_id, symbol, o.side, o.size, o.stop_order_type ?? o.order_type,
-      o.stop_price !== undefined ? Number(o.stop_price) : null, o.limit_price !== undefined ? Number(o.limit_price) : null, 'intent', at, at,
+      o.stop_price !== undefined ? Number(o.stop_price) : null, o.limit_price !== undefined ? Number(o.limit_price) : null, 'intent', at, at, this.host,
     );
     return this.get(Number(r.lastInsertRowid))!;
   }

@@ -168,6 +168,7 @@ export class DeltaFeed extends EventEmitter {
 
   private handle(msg: any) {
     const type: string = msg?.type ?? '';
+    if (type === 'ob_updates') { this.emit('depth', msg); return; }
     if (type.startsWith('candlestick_')) {
       const c: WsCandle = {
         symbol: msg.symbol,
