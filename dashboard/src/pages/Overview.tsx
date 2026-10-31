@@ -48,7 +48,7 @@ export function Overview() {
   const mt = markets.data
   const tracked = (mt?.markets ?? []).filter((m) => m.tracked !== false)
   const allowedN = tracked.filter((m) => m.allowed).length
-  // the risk the open positions carry right now, as a share of equity: what a run of stops would cost
+  // Stored initial stop-risk budgets; current stops may already have moved.
   const openRisk = (positions.data ?? []).reduce((a, p) => a + (p.riskAmount ?? 0), 0)
   const openRiskPct = s && s.equity > 0 ? (openRisk / s.equity) * 100 : 0
   const activity = useSignalActivity()
@@ -76,7 +76,7 @@ export function Overview() {
               value={fmtPnl(s.openPnl)}
               tone={pnlClass(s.openPnl) as 'gain' | 'loss' | 'neutral'}
               hint="Open positions: banked legs, fees and mark"
-              sub={<span className="muted">{s.openPositions} open · {fmtPct(openRiskPct)} of equity at risk if every stop fills{s.openFees ? ` · fees so far ${fmtMoney(s.openFees)}` : ''}</span>}
+              sub={<span className="muted">{s.openPositions} open · {fmtPct(openRiskPct)} of equity in initial stop-risk budgets{s.openFees ? ` · fees so far ${fmtMoney(s.openFees)}` : ''}</span>}
             />
             <KpiTile
               label="Markets the gate allows today"
@@ -97,6 +97,20 @@ export function Overview() {
           </div>
         </>
       )}
+
+      <Panel
+        title="Open positions"
+        right={<div className="row gap"><Link to="/trades?period=today&reason=sl" className="btn btn-xs">Today's stops</Link><Link to="/trades" className="btn btn-xs">Open trade journal →</Link></div>}
+        pad={false}
+      >
+        {positions.isLoading && !positions.data ? (
+          <Loading kind="table" rows={3} cols={10} />
+        ) : positions.isError && !positions.data ? (
+          <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
+        ) : (
+          <PositionsTable positions={positions.data ?? []} compact />
+        )}
+      </Panel>
 
       <div className="grid-2-1">
         <Panel title="Equity curve" right={<span className="muted small mono">USD · simulated equity</span>}>
@@ -173,24 +187,6 @@ export function Overview() {
           </QueryState>
         </Panel>
       </div>
-
-      <Panel
-        title="Open positions"
-        right={
-          <Link to="/trades" className="btn btn-xs">
-            Positions & trades →
-          </Link>
-        }
-        pad={false}
-      >
-        {positions.isLoading && !positions.data ? (
-          <Loading kind="table" rows={3} cols={10} />
-        ) : positions.isError && !positions.data ? (
-          <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
-        ) : (
-          <PositionsTable positions={positions.data ?? []} compact />
-        )}
-      </Panel>
     </div>
   )
 }

@@ -250,7 +250,10 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               })}
             </div>
             <p className="small muted">{protectionText(p)}</p>
-            <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>
+            <div className="position-card-actions">
+              <button className="btn" onClick={() => setPathOf({id:p.id,title:`${p.symbol} ${p.side} · ${p.scannerName}`})}>View trade path</button>
+              <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>
+            </div>
           </article>
         })}
       </div>

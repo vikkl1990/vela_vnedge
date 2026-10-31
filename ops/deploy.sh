@@ -9,6 +9,7 @@ test -z "$(git status --porcelain --untracked-files=no)" || { echo "working tree
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || { echo "deploy from main only"; exit 1; }
 SHA=$(git rev-parse HEAD)
 echo "== local checks on $SHA"; (cd server && npm test 2>&1 | grep -E "^ℹ (pass|fail)" | tr '\n' ' '; echo); (cd server && npm test 2>&1 | grep -q "^ℹ fail 0") || { echo "tests failed"; exit 1; }
+node --no-warnings=ExperimentalWarning --test 'dashboard/test/*.test.ts'
 (cd dashboard && npm run lint >/dev/null && npm run build 2>&1 | grep "✓ built")
 git push -q origin main
 LAST=$(ssh -i "$KEY" "$VM" 'systemctl show vnedge -p ActiveEnterTimestampMonotonic --value; cat /proc/uptime' | awk 'NR==1{s=$1/1e6} NR==2{print int($1 - s)}')

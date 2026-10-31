@@ -1,21 +1,16 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useCloseAll, useExecution, useMarkets, useOrders, usePositions, useScannerIndex, useTradesPage } from '../api/queries'
-import type { Order, Trade } from '../api/types'
-import { TradePath } from '../components/TradePath'
+import { TradeJournal } from '../components/TradeJournal'
+import { useCloseAll, useExecution, useMarkets, useOrders, usePositions } from '../api/queries'
+import type { Order } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
-import { BookBadge, ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pill, Pnl, QueryState, SidePill, StatusDot, Time } from '../components/ui'
-import { fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtR, fmtTime } from '../lib/format'
-import { useMediaQuery } from '../lib/useMediaQuery'
+import { BookBadge, ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pill, Pnl, QueryState, Time } from '../components/ui'
+import { fmtInt, fmtMoney, fmtPrice } from '../lib/format'
 import { useToast } from '../lib/toast'
 
-const EXIT_REASONS: Record<string, string> = { tp1: 'Take profit 1', tp2: 'Take profit 2', tp3: 'Take profit 3', sl: 'Stop loss', be: 'Break-even', script_exit: 'Script exit', reversal: 'Reversal', manual: 'Manual close', tp_partial: 'Partial take profit', liquidation: 'Liquidation', removed: 'Scanner removed' }
-
 export function Trades() {
-  const [pathOf, setPathOf] = useState<{ id: number; title: string } | null>(null)
   const positions = usePositions()
-  const scanners = useScannerIndex()
   const markets = useMarkets()
   const closeAll = useCloseAll()
   const exec = useExecution()
@@ -23,83 +18,7 @@ export function Trades() {
   const mirrored = mode !== 'paper' && !exec.data?.dryRun
   const toast = useToast()
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
-  const [scanner, setScanner] = useState('')
-  const [scannerSearch, setScannerSearch] = useState('')
-  const [symbol, setSymbol] = useState('')
-  const [reason, setReason] = useState('')
-  const [page, setPage] = useState(0)
-  const PAGE = 300
-  // decision 190: every filter runs on the server, so the count and totals cover all matching trades, not the newest 300
-  const q = useMemo(() => ({ limit: PAGE, offset: page * PAGE, scanner: scanner || undefined, symbol: symbol || undefined, reason: reason || undefined }), [scanner, symbol, reason, page])
-  const pageQ = useTradesPage(q)
-  const trades = { ...pageQ, data: pageQ.data?.trades }
   const orders = useOrders(200)
-  // the closed-trades table needs ~1300px for every column; below that, shed the derived ones
-  const narrow = useMediaQuery('(max-width: 1440px)')
-  const veryNarrow = useMediaQuery('(max-width: 1180px)')
-
-  const rows = useMemo(() => trades.data ?? [], [trades.data])
-  const totals = { pnl: pageQ.data?.pnl ?? 0, fees: pageQ.data?.fees ?? 0 }
-  const total = pageQ.data?.total ?? 0
-  const pages = Math.max(1, Math.ceil(total / PAGE))
-  const symbolOptions = useMemo(() => {
-    const set = new Set<string>((markets.data ?? []).map((m) => m.symbol))
-    for (const t of trades.data ?? []) set.add(t.symbol)
-    return Array.from(set)
-  }, [markets.data, trades.data])
-
-  const tradeCols = useMemo<Column<Trade>[]>(() => {
-    const tick = (sym: string) => markets.data?.find((m) => m.symbol === sym)?.tickSize
-    return [
-      { key: 'exitAt', header: 'Closed', value: (t) => t.exitAt, render: (t) => <Time t={t.exitAt} mode="datetime" className="small" /> },
-      {
-        key: 'symbol',
-        header: 'Symbol',
-        value: (t) => t.symbol,
-        render: (t) => (
-          <span className="cell-sym">
-            <StatusDot tone={t.pnl >= 0 ? 'ok' : 'danger'} />
-            <span>
-              <b>{t.symbol}</b> <span className="muted small mono">{t.tf}</span>
-              <div className="muted small">
-                <Link to={`/scanners/${t.scannerId}`} className="link">
-                  {t.scannerName}
-                </Link>
-              </div>
-            </span>
-          </span>
-        ),
-      },
-      { key: 'side', header: 'Side', value: (t) => t.side, render: (t) => <SidePill side={t.side} /> },
-      { key: 'qty', header: 'Qty', numeric: true, value: (t) => t.qty, render: (t) => <span className="mono">{fmtInt(t.qty)}</span> },
-      { key: 'entry', header: 'Entry', numeric: true, value: (t) => t.entryPrice, render: (t) => <span className="mono">{fmtPrice(t.entryPrice, tick(t.symbol))}</span> },
-      { key: 'exit', header: 'Exit price', numeric: true, value: (t) => t.exitPrice, render: (t) => <span className="mono">{fmtPrice(t.exitPrice, tick(t.symbol))}</span> },
-      ...(veryNarrow
-        ? []
-        : ([{ key: 'dur', header: 'Held', numeric: true, value: (t) => t.exitAt - t.entryAt, render: (t) => <span className="mono muted small">{fmtDuration(t.exitAt - t.entryAt)}</span> }] as Column<Trade>[])),
-      { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <details className="pnl-breakdown"><summary><Pnl value={t.pnl} /></summary><span className="small">Trading {fmtPnl(t.grossTradingPnl ?? (t.pnl + t.fees - (t.funding ?? 0)))} − commission {fmtMoney(t.fees)} + funding {fmtPnl(t.funding ?? 0)} = net {fmtPnl(t.pnl)}</span></details> },
-      // return % and fees restate what PnL already says, so they are the first to go when narrow
-      ...(narrow
-        ? []
-        : ([
-            { key: 'pnlPct', header: 'Return %', title: 'Net P&L divided by initial entry notional, after fees', numeric: true, value: (t) => t.pnlPct, render: (t) => <span className={`mono ${t.pnlPct >= 0 ? 'gain' : 'loss'}`}>{fmtPct(t.pnlPct, 1, true)}</span> },
-            { key: 'fees', header: 'Fees (USD)', numeric: true, value: (t) => t.fees, render: (t) => <span className="mono muted">{fmtMoney(t.fees)}</span> },
-          ] as Column<Trade>[])),
-      { key: 'r', header: 'R', numeric: true, value: (t) => t.rMultiple, render: (t) => <span className={`mono ${t.rMultiple >= 0 ? 'gain' : 'loss'}`}>{fmtR(t.rMultiple)}</span> },
-      { key: 'reason', header: 'Exit reason', value: (t) => t.exitReason, render: (t) => <ExitReasonPill reason={t.exitReason} /> },
-      {
-        key: 'fills',
-        header: 'Fills',
-        numeric: true,
-        value: (t) => t.fills?.length ?? 0,
-        render: (t) => (
-          <span className="mono small muted" title={(t.fills ?? []).map((f) => `${fmtTime(f.at)} ${f.reason} ${f.qty}@${fmtPrice(f.price, tick(t.symbol))}`).join('\n')}>
-            {t.fills?.length ?? 0}
-          </span>
-        ),
-      },
-    ]
-  }, [markets.data, narrow, veryNarrow])
 
   const orderCols = useMemo<Column<Order>[]>(() => {
     const tick = (sym: string) => markets.data?.find((m) => m.symbol === sym)?.tickSize
@@ -157,73 +76,9 @@ export function Trades() {
         )}
       </Panel>
 
-      <Panel
-        title={
-          <span>
-            Closed trades <span className="muted small" title="Count, net and fees cover every trade matching the filters">({fmtInt(total)}{total > rows.length ? `, showing ${fmtInt(page * PAGE + 1)}–${fmtInt(page * PAGE + rows.length)}` : ''})</span>{' '}
-            <span className={`mono small ${totals.pnl >= 0 ? 'gain' : 'loss'}`}>· net {fmtPnl(totals.pnl)}</span>{' '}
-            <span className="muted small">· fees {fmtMoney(totals.fees)}</span>
-          </span>
-        }
-        right={
-          <div className="row gap filters">
-            <input className="input scanner-search" type="search" aria-label="Search scanner options" placeholder="Search scanners…" value={scannerSearch} onChange={(e) => setScannerSearch(e.target.value)} />
-            <select className="select select-sm" value={scanner} onChange={(e) => { setScanner(e.target.value); setPage(0) }} aria-label="Scanner">
-              <option value="">All scanners</option>
-              {(scanners.data ?? []).filter((s) => s.id === scanner || `${s.name} ${s.id}`.toLowerCase().includes(scannerSearch.toLowerCase())).map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-            <select className="select select-sm" value={symbol} onChange={(e) => { setSymbol(e.target.value); setPage(0) }} aria-label="Symbol">
-              <option value="">All symbols</option>
-              {symbolOptions.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-            <select className="select select-sm" value={reason} onChange={(e) => { setReason(e.target.value); setPage(0) }} aria-label="Exit reason">
-              <option value="">All exits</option>
-              {Array.from(new Set([...Object.keys(EXIT_REASONS), ...(trades.data ?? []).map((t) => t.exitReason)])).map((r) => (
-                <option key={r} value={r}>
-                  {EXIT_REASONS[r] ?? r}
-                </option>
-              ))}
-            </select>
-            {pages > 1 && (
-              <span className="row gap">
-                <button className="btn btn-sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} aria-label="Newer trades">Newer</button>
-                <span className="muted small mono">{page + 1}/{pages}</span>
-                <button className="btn btn-sm" onClick={() => setPage((p) => Math.min(pages - 1, p + 1))} disabled={page >= pages - 1} aria-label="Older trades">Older</button>
-              </span>
-            )}
-          </div>
-        }
-        pad={false}
-      >
-        {trades.isLoading && !trades.data && <Loading kind="table" rows={8} cols={12} />}
-        {trades.isError && !trades.data && <ErrorState error={trades.error} onRetry={() => trades.refetch()} />}
-        {trades.data && (
-          <DataTable
-            columns={tradeCols}
-            rows={rows}
-            rowKey={(t) => t.id}
-            onRowClick={(t) => setPathOf({ id: t.positionId, title: `${t.symbol} ${t.side} · ${t.scannerName}` })}
-            defaultSort={{ key: 'exitAt', dir: 'desc' }}
-            emptyLabel={
-              <span>
-                No closed trades
-                <span className="empty-hint">Trades land here once a TP, SL or script exit fires on an open position.</span>
-              </span>
-            }
-            caption="Closed trades"
-          />
-        )}
-      </Panel>
+      <TradeJournal />
 
-      <Panel title="Orders / fills" pad={false}>
+      <Panel title="Orders / fills" right={<span className="small muted">Latest 200 · all markets · independent of journal filters</span>} pad={false}>
         <QueryState {...orders} data={orders.data} empty="No fills yet." hint="Every paper fill (entry, partial TP, exit) is logged here." skeleton="table" skeletonRows={5} skeletonCols={9} onRetry={() => orders.refetch()}>
           {(d) => <DataTable columns={orderCols} rows={d} rowKey={(o) => o.id} defaultSort={{ key: 'at', dir: 'desc' }} caption="Orders and fills" />}
         </QueryState>
@@ -247,7 +102,6 @@ export function Trades() {
           })
         }
       />
-      <TradePath id={pathOf?.id ?? null} title={pathOf?.title} onClose={() => setPathOf(null)} />
     </div>
   )
 }

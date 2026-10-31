@@ -120,8 +120,8 @@ export const usePositions = () =>
 export const useTrades = (q: TradeQuery = {}) =>
   useQuery({ queryKey: qk.trades(q), queryFn: () => api.trades(q), staleTime: LIVE_STALE, retry: 1 })
 /** Decision 190: the journal's page, filtered on the server. */
-export const useTradesPage = (q: TradeQuery = {}) =>
-  useQuery({ queryKey: ['trades', 'page', q], queryFn: () => api.tradesPage(q), staleTime: LIVE_STALE, retry: 1, placeholderData: (prev) => prev })
+export const useTradesPage = (q: TradeQuery = {}, enabled = true) =>
+  useQuery({ queryKey: ['trades', 'page', q], queryFn: () => api.tradesPage(q), enabled, staleTime: LIVE_STALE, retry: 1 })
 export const useOrders = (limit = 200) =>
   useQuery({ queryKey: qk.orders, queryFn: () => api.orders(limit), staleTime: LIVE_STALE, retry: 1 })
 export const useStats = () => useQuery({ queryKey: qk.stats, queryFn: api.stats, staleTime: LIVE_STALE, refetchInterval: 60_000, retry: 1 })
