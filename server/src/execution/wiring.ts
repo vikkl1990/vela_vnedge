@@ -124,9 +124,12 @@ export function wireRealtime(app: App): void {
 
 /** Subscribe the tape / mark / funding channels for the scanned symbols plus anything with an open position. */
 export function subscribeRealtime(app: App): void {
-  const symbols = [...new Set([...app.resolvedSymbols, ...app.paper.openPositions().map(p => p.symbol), ...app.shadow.openPositions().map(p => p.symbol), ...app.paper.pendingEntries().map(p => p.symbol), ...app.shadow.pendingEntries().map(p => p.symbol), ...app.incubator.symbols()])];
+  // A paper allocation can be outside the global universe and the shadow runner.
+  // Subscribe before its first order: candles alone cannot price a quoted entry.
+  const symbols = [...new Set([...app.resolvedSymbols, ...app.scanners.requiredSeries().map(p => p.symbol), ...app.paper.openPositions().map(p => p.symbol), ...app.shadow.openPositions().map(p => p.symbol), ...app.paper.pendingEntries().map(p => p.symbol), ...app.shadow.pendingEntries().map(p => p.symbol), ...app.incubator.symbols()])];
   app.feed.subscribe('ob_updates', app.depthRecorder.symbols);
   if (!symbols.length) return;
+  app.feed.subscribe('v2/ticker', symbols);
   app.feed.subscribe('ob_l1', symbols);
   app.feed.subscribe('all_trades', symbols);
   app.feed.subscribe('mark_price', symbols);

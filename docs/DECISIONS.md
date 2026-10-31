@@ -6309,3 +6309,38 @@ protection. A fifth test retains fee, indivisible-lot and missing-quote refusals
 existing account margin-reuse and real-sized depth tests protect the other book.
 This restores prospective evidence collection; it does not establish profitability
 or make native-stop cells automatically eligible for the account.
+
+## 212. Paper allocations own their execution feeds (1 November 2026)
+
+Activating explicit paper pairs exposed a missing feed dependency. PARTIUSD and
+LTCUSD were scheduled and had candle subscriptions, but neither belonged to the
+fixed global market list or the shadow runner. Live account rows are intentionally
+outside that runner. The realtime subscriber therefore omitted their ticker, L1,
+trade, mark and funding channels until an order existed. With required fresh quotes,
+that could prevent the first paper entry from ever opening.
+
+Realtime subscriptions now include the active scanner engine's required series,
+along with the global universe, shadow markets and both books' open/pending orders.
+Ticker subscriptions use the same union. The bounded full-depth audit subscription
+is unchanged. Startup and configuration refresh use this shared function. Regression
+tests cover a paper-only pair with no orders and a pair added after startup; both
+failed before the fix. The existing removed-scanner holdings test still passes.
+
+Operator-authorized paper expansion adds eight allocations across six markets:
+EVAA 15m (Trend Impulse Channels and SuperTrend Cluster), LINK 1h (Trend Impulse
+Channels), AAVE 15m/1h (SuperTrend Cluster), BLESS 1h (AI Predictive Flow), PARTI 1h
+(Trend Impulse Channels), and LTC 1h (SuperTrend Cluster). At selection time this
+increases coverage from 10 to 16 of Delta's top 20 crypto perpetuals by turnover.
+The existing $150 target margin, 3% stop-risk cap, 6x fee floor and portfolio caps
+are preserved. These are explicit operator paper trials, not automatic gate passes.
+
+Selection used 66 account-policy replays over 28 days, with minute execution,
+full commission, two chronological halves and higher crossing-cost scenarios.
+Each selected setup was positive in both halves and cost stress, passed a prefix
+comparison, and matched recent signals with the runtime's 1,000-bar history.
+PARTI 15m failed that history-window comparison and was excluded. AIOT and SOPH
+lacked consistent results in the tested candidates; HANA weakened under cost stress;
+ESPORTS failed fresh deployable-size depth checks. All six added markets passed
+fresh $750/$1,500 depth probes. Historical funding and depth, concurrent portfolio
+effects and selection bias are not resolved by this study; samples are small for
+several cells, so the next evidence must come from forward paper execution.
