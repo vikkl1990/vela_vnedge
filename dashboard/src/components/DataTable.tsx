@@ -78,12 +78,16 @@ function RowInner<T>({ row, columns, className, onRowClick, height }: RowProps<T
   return (
     <tr
       className={className}
-      onClick={onRowClick ? () => onRowClick(row) : undefined}
+      onClick={onRowClick ? (e) => {
+        if ((e.target as HTMLElement).closest('a, button, input, select, textarea, summary, [role="button"]')) return
+        onRowClick(row)
+      } : undefined}
       style={height ? { height } : undefined}
       tabIndex={onRowClick ? 0 : undefined}
       onKeyDown={
         onRowClick
           ? (e) => {
+              if (e.target !== e.currentTarget) return
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 onRowClick(row)
