@@ -666,6 +666,27 @@ test('open-order snapshots trigger durable observation of a partially filled tar
   await ex.sweepNow();assert.equal(ex.status().exposure[p.id],160,'a repeated cumulative snapshot cannot subtract twice');
 });
 
+test('a working partial stop is not resized as though its total quantity were its remainder',async t=>{
+  const {ex,open,fake}=await setup(t);const p=open();await ex.flush();fake.fill(2,94,.1,50);
+  await ex.sweepNow();await ex.recover();await ex.flush();
+  assert.equal(ex.status().exposure[p.id],150);assert.equal(ex.ledger.get(2)?.filledSize,50);
+  assert.equal(fake.edited.filter(e=>String(e.id)==='2').length,0);
+  assert.equal(fake.orders.get('2')?.unfilled_size,150);
+});
+
+test('interrupted native fill adoption resumes once but historical unlinked fills are not replayed',async t=>{
+  const {ex,open,paper,fake,db}=await setup(t);const p=open();await ex.flush();fake.fill(3,105,.1);
+  // Simulate termination after the exchange fill committed, before creating its journal fill.
+  ex.ledger.filled(3,{filledSize:80,avgPrice:105,fee:.1});assert.equal(ex.ledger.get(3)?.adoptionPending,true);ex.stop();
+  const second=await setup(t,{},fake,db);assert.equal(second.paper.position(p.id)?.qtyOpen,120);
+  assert.equal(second.ex.ledger.get(3)?.adoptionPending,false);assert.ok(second.ex.ledger.get(3)?.sourceOrderId);
+  await second.ex.recover();assert.equal(second.paper.position(p.id)?.qtyOpen,120);second.ex.stop();
+  // Old terminal rows had no source link and no pending-adoption marker. Never infer work from them.
+  db.run('UPDATE exchange_orders SET source_order_id=NULL,adoption_pending=0 WHERE id=3');
+  const third=await setup(t,{},fake,db);await third.ex.sweepNow();
+  assert.equal(third.paper.position(p.id)?.qtyOpen,120);assert.equal(paper.orders().filter(o=>o.reason==='tp1').length,1);
+});
+
 test('partial exits keep retrying with brackets disabled and aggregate the entire exit',async t=>{
   const {ex,open,paper,fake}=await setup(t,{bracket:false});const p=open();await ex.flush();
   fake.queue=[{size:120,price:99,fee:.12},{size:80,price:98,fee:.08}];paper.closeManual(p.id);await ex.flush();

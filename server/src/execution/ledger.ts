@@ -12,6 +12,7 @@ export type Purpose = 'entry' | 'exit' | 'stop' | 'tp' | 'close-all';
 
 export interface LedgerRow {
   sourceOrderId: number | null;
+  adoptionPending: boolean;
   id: number; positionId: number; purpose: Purpose; reason: string | null; leg: number | null; clientOrderId: string;
   productId: number; symbol: string; side: 'buy' | 'sell'; size: number; orderType: string; stopPrice: number | null; limitPrice: number | null;
   state: LedgerState; exchangeId: string | null; filledSize: number; avgPrice: number | null; fee: number | null; error: string | null;
@@ -40,7 +41,11 @@ export class OrderLedger {
 
   submitted(id: number, exchangeId: number | string | null, state: LedgerState = 'submitted') { this.set(id, { state, exchange_id: exchangeId === null ? null : String(exchangeId) }); }
   acknowledged(id: number, exchangeId?: number | string) { this.set(id, { state: 'acknowledged', ...(exchangeId !== undefined ? { exchange_id: String(exchangeId) } : {}) }); }
-  filled(id: number, f: { filledSize: number; avgPrice: number | null; fee: number | null }) { this.set(id, { state: 'filled', filled_size: f.filledSize, avg_price: f.avgPrice, fee: f.fee }); }
+  filled(id: number, f: { filledSize: number; avgPrice: number | null; fee: number | null }) {
+    const r=this.get(id);
+    this.set(id, { state: 'filled', filled_size: f.filledSize, avg_price: f.avgPrice, fee: f.fee,
+      adoption_pending:r && r.sourceOrderId===null && (r.purpose==='stop'||r.purpose==='tp') && f.filledSize>0?1:0 });
+  }
   /** Cumulative snapshots, never incremental charges. An older quantity cannot erase a fill. */
   observed(id: number, f: { filledSize: number; avgPrice: number | null; fee: number | null }): void {
     const r=this.get(id);
@@ -51,7 +56,7 @@ export class OrderLedger {
   link(id:number, sourceOrderId:number):void {
     const r=this.get(id), source=this.db.get<any>('SELECT position_id,side FROM orders WHERE id=? AND bt=0',sourceOrderId);
     if(!r || !source || source.position_id!==r.positionId || source.side!==r.side || (r.sourceOrderId!==null && r.sourceOrderId!==sourceOrderId))throw new Error('exchange fill source mismatch');
-    this.set(id,{source_order_id:sourceOrderId});
+    this.set(id,{source_order_id:sourceOrderId,adoption_pending:0});
   }
   cancelled(id: number, note?: string) { this.set(id, { state: 'cancelled', ...(note ? { error: note } : {}) }); }
   rejected(id: number, error: string) { this.set(id, { state: 'rejected', error: error.slice(0, 300) }); }
@@ -68,6 +73,7 @@ export class OrderLedger {
   unsettled(): LedgerRow[] { return this.db.all<any>(`SELECT * FROM exchange_orders WHERE host=? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ORDER BY id ASC`, this.host, ...OPEN_STATES).map(row); }
   /** Resting protection (stops and targets) believed to be on the exchange for one position. */
   restingFor(positionId: number): LedgerRow[] { return this.forPosition(positionId).filter(r => (r.purpose === 'stop' || r.purpose === 'tp') && r.state === 'acknowledged'); }
+  pendingAdoptions(): LedgerRow[] { return this.db.all<any>("SELECT * FROM exchange_orders WHERE host=? AND state='filled' AND adoption_pending=1 ORDER BY id",this.host).map(row); }
   recent(limit = 100): LedgerRow[] { return this.db.all<any>('SELECT * FROM exchange_orders WHERE host=? ORDER BY id DESC LIMIT ?', this.host, limit).map(row); }
   /** Exposure recovery must not lose old entries when recent history exceeds a display limit. */
   filledExposure(): Array<{ positionId: number; qty: number }> {
@@ -86,6 +92,7 @@ export class OrderLedger {
 function row(r: any): LedgerRow {
   return {
     sourceOrderId: r.source_order_id ?? null,
+    adoptionPending: Boolean(r.adoption_pending),
     id: r.id, positionId: r.position_id, purpose: r.purpose, reason: r.reason ?? null, leg: r.leg ?? null, clientOrderId: r.client_order_id, productId: r.product_id, symbol: r.symbol, side: r.side, size: r.size,
     orderType: r.order_type, stopPrice: r.stop_price ?? null, limitPrice: r.limit_price ?? null, state: r.state, exchangeId: r.exchange_id ?? null, filledSize: r.filled_size ?? 0,
     avgPrice: r.avg_price ?? null, fee: r.fee ?? null, error: r.error ?? null, createdAt: r.created_at, updatedAt: r.updated_at,

@@ -6242,11 +6242,15 @@ Missing cash fields are refreshed in bounded batches. A still-open partial order
 remains unsettled. Cash records remain scoped to the executor's environment,
 including a separate dry-run scope. Existing explicitly mirrored outbox commands
 can gain accounting records on upgrade; historical paper trades are not imported.
+Native stop/TP fills record a pending-adoption marker before journal adoption.
+Recovery can resume those fills without replaying historical unlinked terminal rows.
 
 Residual exits now run with brackets on or off. A partially filled TP on an open
 position retries only its attributable remaining quantity, after checking for
 unresolved submissions. Resting stop edits use confirmed exposure, including an
-exit remainder, rather than the paper quantity alone.
+exit remainder, rather than the paper quantity alone. An already triggered partial
+stop is allowed to settle through confirmation/cancellation; its total size is not
+edited as though it were remaining size.
 
 Exchange shows quantity coverage, weighted price, commission and accounting state.
 Journal rows and filtered totals explicitly identify incomplete accounting as
@@ -6268,6 +6272,6 @@ closed can retain a quantity mismatch; it remains provisional rather than being
 presented as exchange-confirmed P&L. These tests cover process termination, not
 machine power loss or real exchange execution.
 
-Checks passed: 778 server tests (15 added, including three new SIGKILL cases),
+Checks passed: 780 server tests (17 added, including three new SIGKILL cases),
 three dashboard tests, nine accounting component render assertions, server type
 check, dashboard lint and production build.

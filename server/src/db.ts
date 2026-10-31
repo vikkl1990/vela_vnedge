@@ -13,6 +13,7 @@ export interface SignalRow {
 const ADDED_COLUMNS: Array<[string, string]> = [
   ['exchange_orders', "host TEXT NOT NULL DEFAULT 'unknown'"],
   ['exchange_orders', 'source_order_id INTEGER'],
+  ['exchange_orders', 'adoption_pending INTEGER NOT NULL DEFAULT 0'],
   ['positions', 'config_fp TEXT'],
   ['positions', 'evidence_scope TEXT'],
   ['scanner_runs', 'funnel TEXT'],

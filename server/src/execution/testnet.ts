@@ -420,7 +420,7 @@ export class ExchangeExecutor {
     const exitSide = p.side === 'long' ? 'sell' : 'buy';
     if (!this.stranded.has(p.id)) this.stranded.set(p.id, { symbol: p.symbol, product_id, exitSide, since: this.now(), attempts: 0 });
     const b = this.brackets.get(p.id);
-    if (b?.stop && b.stop.size !== left) {
+    if (b?.stop && b.stop.size !== left && !(this.ledger.get(b.stop.ledgerId)?.filledSize)) {
       try { await this.transport.editOrder({ id: b.stop.exchangeId, product_id, size: left }); this.ledger.edited(b.stop.ledgerId, { size: left }); b.stop.size = left; }
       catch (e: any) { log.warn(`resize stop #${p.id} to ${left} failed: ${e?.message ?? e}`); }
     }
@@ -499,6 +499,10 @@ export class ExchangeExecutor {
   /** The paper stop moved or the open size changed: edit the resting stop in place; failing that, place the new one before cancelling the old. */
   private async moveStop(p: Position, b: Bracket) {
     if (p.status !== 'open' || p.sl === null || p.qtyOpen <= 0) return;
+    // An already triggered partial stop is a working exit. Editing its total size
+    // as though it were remaining size can under-protect or reset cumulative evidence.
+    // Let confirmation/cancellation and the residual-exit path settle it first.
+    if(b.stop && (this.ledger.get(b.stop.ledgerId)?.filledSize??0)>0)return;
     if (this.ledger.unsettled().some(r => r.positionId === p.id && r.purpose === 'stop' && r.state !== 'acknowledged')) return;
     const size = Math.round(this.exposure.get(p.id)??p.qtyOpen);
     if (b.stop) {
@@ -541,7 +545,7 @@ export class ExchangeExecutor {
     for(const row of this.accounting.missing(this.ledger))await this.confirmOnce(row);
     this.syncAccounting();
     if(this.outbox.pending().some(c=>!this.productId(c.symbol)))await this.loadProducts();
-    if (this.recoveryPending || this.outbox.pending().length || this.ledger.unsettled().some(r => r.purpose==='exit' || ((r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged'))) await this.recover();
+    if (this.recoveryPending || this.outbox.pending().length || this.ledger.pendingAdoptions().length || this.ledger.unsettled().some(r => r.purpose==='exit' || ((r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged'))) await this.recover();
     await this.drainOutbox();
     // A partial TP can leave a residual while the position stays open. Closing-only
     // recovery cannot see that gap. Retry one attributable remainder per sweep.
@@ -676,7 +680,7 @@ export class ExchangeExecutor {
       const product_id = this.productId(p.symbol);
       if (!product_id) continue;
       const b: Bracket = { positionId: p.id, symbol: p.symbol, product_id, stop: null, tps: [] };
-      for (const r of rows.filter(x => (x.purpose === 'stop' || x.purpose === 'tp') && (x.state === 'acknowledged' || (x.state==='filled' && x.sourceOrderId===null)) && x.exchangeId)) {
+      for (const r of rows.filter(x => (x.purpose === 'stop' || x.purpose === 'tp') && (x.state === 'acknowledged' || (x.state==='filled' && x.adoptionPending)) && x.exchangeId)) {
         const leg: Leg = { ledgerId: r.id, exchangeId: String(r.exchangeId), price: r.stopPrice ?? r.limitPrice ?? 0, size: r.size, leg: r.purpose === 'stop' ? 0 : (r.leg ?? 0) };
         if (r.purpose === 'stop') b.stop = leg; else b.tps.push(leg);
         ours.add(leg.exchangeId);
