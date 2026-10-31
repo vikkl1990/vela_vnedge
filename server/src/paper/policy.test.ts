@@ -13,6 +13,26 @@ function cfgWith(f: (c: AppConfig) => void = () => {}): AppConfig { const c = st
 const run = (c: AppConfig, bars: any[], events: any[], book: 'account' | 'shadow' = 'shadow', tf = '1h') =>
   runBacktest({ scannerId: 's', scannerName: 's', symbol: 'XUSD', tf, bars, events, ...backtestPolicy(c, 's', tf, book), contractValue: 1, tickSize: 0.01 });
 
+test('account backtests reject native and mixed plans; shadow keeps measuring them', () => {
+  const c = cfgWith(c => { c.paper.skipScriptStops = true; c.paper.limitEntry!.enabled = false; c.paper.trendGate!.enabled = false; });
+  for (const plan of [{sl:95,tp:[110]}, {sl:95}]) {
+    const events = [entry(30, 'long', plan)];
+    const account = run(c, flat(60), events, 'account');
+    assert.equal(account.entries, 0);
+    assert.equal(account.rejected['account requires ATR stop'], 1);
+    assert.equal(run(c, flat(60), events, 'shadow').entries, 1);
+  }
+  assert.equal(run(c, flat(60), [entry(30,'long')], 'account').entries, 1);
+});
+
+test('an account-native reversal cannot close the held ATR trade', () => {
+  const c = cfgWith(c => { c.paper.skipScriptStops=true;c.paper.allowReversal=true;c.paper.reversalMinR=-Infinity;c.paper.limitEntry!.enabled=false;c.paper.trendGate!.enabled=false; });
+  const result=run(c,flat(60),[entry(30,'long'),entry(40,'short',{sl:105,tp:[90]})],'account');
+  assert.equal(result.entries,1);
+  assert.equal(result.rejected['reversal refused: replacement not admissible'],1);
+  assert.ok(!result.trades.some(t=>t.exitReason==='reversal'));
+});
+
 test('decision 191: the entry policy is the books\' — a limit on the configured timeframes and books, market otherwise', () => {
   const c = cfgWith(x => { x.paper.limitEntry = { enabled: true, tfs: ['1h', '4h'], atr: 0, atrByTf: { '1h': 0.1 }, bars: 2, books: ['account', 'shadow'] } as any; });
   assert.deepEqual(entryPolicy(c, '1h', 'shadow'), { pullbackAtr: 0.1, pullbackBars: 2, limitWhenFlatOnly: true });

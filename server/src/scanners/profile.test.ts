@@ -6,7 +6,7 @@ import {sourceFacts} from './sourceFacts.ts';
 import type {WorkerResult} from '../pine/worker.ts';
 
 const s={id:'probe',patched:'indicator("Probe")\nplotshape(close > open, title="Buy Signal")'};
-const res:WorkerResult={id:1,ok:true,ms:4,warnings:0,alerts:[],shapes:[{title:'Buy Signal',times:[1000]}],labels:[],plots:[]};
+const res:WorkerResult={id:1,ok:true,ms:4,bars:1,lastBarTime:1000,warnings:0,alerts:[],shapes:[{title:'Buy Signal',times:[1000]}],labels:[],plots:[]};
 test('profiling honors the production reading, inversion and disabled channels',()=>{
   assert.equal(observeHistoricalRun(s,{sources:['shape'],invert:true},'ETHUSD','15m',[],res,'test').events[0].side,'short');
   assert.equal(observeHistoricalRun(s,{sources:[]},'ETHUSD','15m',[],res,'test').profile.entries,0);

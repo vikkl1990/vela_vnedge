@@ -76,7 +76,7 @@ export default function Incubator() {
             <>
               <div className="kpi-grid">
                 <KpiTile label="Waiting for you" value={decisions.length} tone={decisions.length ? 'accent' : 'neutral'} sub="proposals to approve or reject" />
-                <KpiTile label="Shadow book" value={`${shadow.length + by('proposed').length}`} sub={`cap ${d.config.maxShadow} · ${d.runner.entries} shadow entries since restart`} hint={shadow.length + by('proposed').length > d.config.maxShadow ? 'Over the cap: pairs admitted by hand or carried over from the live fleet stay until they are judged' : undefined} />
+                <KpiTile label="Shadow book" value={`${shadow.length + by('proposed').length} / ${d.capacity?.total ?? d.config.maxShadow}`} sub={`${d.capacity?.general.slots ?? d.config.maxShadow} general + ${d.capacity?.reserves.reduce((n,r)=>n+r.slots,0) ?? 0} reserved · ${d.runner.entries} entries since restart`} hint={d.capacity ? [`General: ${d.capacity.general.used}/${d.capacity.general.slots}`, ...d.capacity.reserves.map(r=>`${r.tfs?.join(', ') ?? 'All frames'} · ${r.markets?.join(', ') ?? 'all markets'}: ${r.used}/${r.slots}`), `${d.capacity.free} free slots`, ...(d.capacity.overflow ? [`${d.capacity.overflow} allocations exceed general capacity; held positions stay protected.`] : [])].join('\n') : undefined} />
                 <KpiTile label="Candidates" value={candidates.length} sub={candidateLine(d.candidates, d.lastAdmit)} hint={candidateHint(d.candidates)} />
                 <KpiTile label="In the account" value={`${d.fleet}/${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} />
                 {(() => {
@@ -207,6 +207,7 @@ export default function Incubator() {
                 {matchingCohorts.length > 0 && <div className="incubator-paging"><span className="muted small">Showing {Math.min(shadowLimit, matchingCohorts.length)} of {matchingCohorts.length} {byCohort ? 'cohorts' : 'pairs'}</span>{shadowLimit < matchingCohorts.length && <button className="btn btn-sm" onClick={() => setShadowLimit((n) => n + 50)}>Show 50 more shadow groups</button>}{shadowLimit > 50 && <button className="btn btn-sm" onClick={() => setShadowLimit(50)}>Show fewer shadow groups</button>}</div>}
               </Panel>
 
+              {d.rotation && <Panel title="Research rotation"><p className="small muted">{d.rotation.enabled ? `${d.rotation.usedToday}/${d.rotation.maxPerDay} slots rotated today (UTC).` : 'Rotation is off.'} Only cells with no filled trade and recent successful scans can rotate. Open positions, pending orders and forward trade evidence are protected. Rotation returns a cell to candidates with a cooldown; it is not a losing verdict.</p>{d.rotation.last.length > 0 && <div className="small">{d.rotation.last.slice(-5).reverse().map(x => {const old=d.pairs.find(p=>p.id===x.out), next=d.pairs.find(p=>p.id===x.in);return <p key={`${x.at}-${x.out}`}><span className="muted">{timeAgo(x.at)}</span> · {old ? `${old.scannerName} ${old.symbol} ${old.tf}` : `Cell ${x.out}`} → {next ? `${next.scannerName} ${next.symbol} ${next.tf}` : `Cell ${x.in}`}</p>})}</div>}</Panel>}
               <Panel title={`Candidates from the screen (${candidates.length})`}>
                 <p className="small muted">Admission ranks screen quality with a bounded discount for slow evidence collection. Estimated days use historical trade frequency, not a promise of future fills. Promotion standards and reserved slots are unchanged.</p>
                 {matchingCandidates.length === 0 ? <Empty label={candidates.length ? "No candidates match these filters." : "No candidates waiting."} hint={candidates.length ? "Clear the search or choose another timeframe." : `The screen passes a pair with ≥${d.config.screen.minTrades} backtest trades, PF ≥ ${d.config.screen.minProfitFactor}, ≥${d.config.screen.minWindowsUp}/8 windows up and a profit at ${d.config.screen.stressBps} bps of cost. It is a filter only: luck passes it too, which is why candidates must still prove themselves in the shadow book.`} /> : (
@@ -224,7 +225,7 @@ export default function Incubator() {
                             <td className="mono">{p.screen!.windowsUp}/8</td>
                             <td className="mono">{r(p.screen!.avgR)}</td>
                             <td className="mono small">{p.admissionEvidence?.estimatedDays != null ? `${p.admissionEvidence.estimatedDays.toFixed(0)} d for ${p.admissionEvidence.requiredTrades} trades` : 'Unknown frequency'}<div>{p.admissionEvidence?.score.toFixed(2) ?? '—'}</div></td>
-                            <td className="muted small">{timeAgo(p.screen!.at)}</td>
+                            <td className="muted small">{timeAgo(p.screen!.at)}{p.rotationUntil && p.rotationUntil > now && <div><Pill tone="muted">Rotation cooldown</Pill> until {new Date(p.rotationUntil).toLocaleString()}</div>}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -296,6 +297,8 @@ function candidateLine(c: IncubatorView['candidates'], last: IncubatorView['last
   if (!c) return 'passed the screen'
   const k = c.counts
   const parts = [
+    k.cooldown ? `${k.cooldown} rotation cooldown` : null,
+    k.unavailable ? `${k.unavailable} scanner unavailable` : null,
     k.admissible ? `${k.admissible} enter at the next admission` : null,
     k.outside + k.refused ? `${k.outside + k.refused} market out today` : null,
     k.expired + k.rescreen ? `${k.expired + k.rescreen} await a re-screen` : null,

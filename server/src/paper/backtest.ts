@@ -26,6 +26,8 @@ export interface BacktestInput {
   bars: Bar[];                // closed bars, ascending — the same bars the script ran on
   events: ScanEvent[];        // extracted from the script run (all bars)
   cfg: PaperConfig; exitMode: ExitMode; contractValue: number; tickSize: number;
+  /** Account-only plan restriction. Shadow may measure native plans without making them account eligible. */
+  requireAtrStop?: boolean;
   /** The market's maintenance margin and leverage ceiling (Delta's product record); the config's figures when absent. */
   maintenanceMarginPct?: number; maxLeverage?: number;
   /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
@@ -166,6 +168,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if(alignmentBlock(ev.side!,bars[sigI].time+tfMs))return false;
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) return false;
+    if (inp.requireAtrStop && lv.source !== 'atr-fallback') return false;
     if (checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0)) return false;
     return sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score).qty >= 1;
   };
@@ -175,6 +178,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if(aligned){refuse(aligned);return false;}
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) { refuse(lv.error); return false; }
+    if (inp.requireAtrStop && lv.source !== 'atr-fallback') { refuse('account requires ATR stop'); return false; }
     const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0, { maker });
     if (feeErr) { refuse('stop too tight for fees'); return false; }
     const sz = sizeContracts(price, lv.sl, { entryExecution: { maker }, equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);

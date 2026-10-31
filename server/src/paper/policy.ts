@@ -47,6 +47,7 @@ export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, bo
   const sc = cfg.scanners[scannerId] ?? {};
   return {
     cfg: bookPaperConfig(cfg, book),
+    requireAtrStop: book === 'account' && Boolean(cfg.paper.skipScriptStops),
     exitMode: sc.exitMode ?? 'both',
     scannerExit: scannerExitPolicy(cfg, scannerId, opts.now),
     scannerExitResolved: true as const,

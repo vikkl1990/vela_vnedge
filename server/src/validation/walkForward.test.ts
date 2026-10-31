@@ -64,3 +64,11 @@ test('walk-forward: in-sample selection gates out-of-sample aggregation; overlap
   const s = oosSummary(r);
   assert.equal(s.trades, r.outOfSample.trades); assert.equal(s.windows, r.windows.length);
 });
+
+test('walk-forward preserves the account native-stop restriction in every window',()=>{
+ const bars=synth(16,()=>true),events:ScanEvent[]=[];
+ for(let i=100;i<bars.length;i+=8)events.push({kind:'entry',side:'long',price:bars[i].close,sl:bars[i].close-10,tp:[bars[i].close+10],label:'L',message:'',source:'alert',barTime:bars[i].time,barIndex:i});
+ const inp={scannerId:'s',scannerName:'S',symbol:'BTCUSD',tf:'15m',bars,events,cfg:{...DEFAULT_CONFIG.paper,minRiskFeeRatio:0},exitMode:'levels' as const,contractValue:.001,tickSize:.5,opts:{trainDays:10,testDays:3,stepDays:1,minTrades:3,minProfitFactor:1}};
+ assert.ok(walkForward(inp).outOfSampleAll.trades>0);
+ const restricted=walkForward({...inp,requireAtrStop:true});assert.equal(restricted.inSample.trades,0);assert.equal(restricted.outOfSampleAll.trades,0);
+});

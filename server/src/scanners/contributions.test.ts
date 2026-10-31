@@ -9,12 +9,12 @@ import {recordScreen,screenVerdict} from '../incubator/cycle.ts';
 
 test('ledger separates source evidence, matching profiles, pending orders, tracker history and allocation',async()=>{
  const db=new Db(':memory:');try{
-  const cfg=structuredClone(DEFAULT_CONFIG);cfg.scanners={s:{enabled:true,symbols:['ETHUSD'],timeframes:['15m']},context:{enabled:false,symbols:null,timeframes:null,sources:[]}};
+  const cfg=structuredClone(DEFAULT_CONFIG);cfg.scanners={s:{enabled:true,symbols:['ETHUSD'],timeframes:['15m'],exitMode:'both'},context:{enabled:false,symbols:null,timeframes:null,sources:[],exitMode:'both'}};
   const base={id:'s',name:'Scanner',author:'LuxAlgo',patched:'indicator("s")\nplotshape(close > open, title="Buy Signal")',source:'',status:'ok',reason:null};
   const other={...base,id:'context',name:'Context',author:'ChartPrime',patched:'indicator("context")\nplot(close)'};
   const registry={all:()=>[base,other],get:(id:string)=>[base,other].find(s=>s.id===id)};
   const profiles=new ProfileStore(db),store=new IncubatorStore(db),now=1_000_000_000;
-  const p=observeHistoricalRun(base,cfg.scanners.s,'ETHUSD','15m',[],{id:1,ok:true,ms:2,warnings:0,alerts:[],shapes:[{title:'Buy Signal',times:[1000]}],labels:[],plots:[]},'test',now-1).profile;
+  const p=observeHistoricalRun(base,cfg.scanners.s,'ETHUSD','15m',[],{id:1,ok:true,ms:2,bars:1,lastBarTime:1000,warnings:0,alerts:[],shapes:[{title:'Buy Signal',times:[1000]}],labels:[],plots:[]},'test',now-1).profile;
   profiles.save(p);profiles.save({...p,market:'BTCUSD',signature:null});profiles.save({...p,market:'SOLUSD',signature:'changed'});
   store.move({scannerId:'s',symbol:'ETHUSD',tf:'15m'},'shadow','test');store.move({scannerId:'s',symbol:'BTCUSD',tf:'15m'},'tracked','test');
   store.setShadowFunnel({'s|ETHUSD|15m':[[now-1,'pending','pending:limit'],[now-2,'opened','opened']],'s|BTCUSD|15m':[[now-1,'opened','opened']]});

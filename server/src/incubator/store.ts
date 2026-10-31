@@ -1,3 +1,4 @@
+import {emptyRotation, type RotationState} from './rotation.ts';
 import {withoutCachedBookVeto} from '../risk/marketGate.ts';
 /**
  * Incubator state: which stage each scanner/market pair is in, and an audit trail of every move.
@@ -72,6 +73,30 @@ export class IncubatorStore {
     return !!this.db.get("SELECT 1 FROM positions WHERE bt=0 AND status='open' AND scanner_id=? AND symbol=? AND tf=? AND qty_open>0 LIMIT 1", scannerId, symbol, tf);
   }
 
+  shadowHolds(p: Pick<PairRow, 'scannerId' | 'symbol' | 'tf'>): boolean {
+    return !!this.db.get("SELECT 1 FROM positions WHERE bt=2 AND scanner_id=? AND symbol=? AND tf=? AND ((status='open' AND qty_open>0) OR status='pending') LIMIT 1", p.scannerId, p.symbol, p.tf);
+  }
+  shadowLastEntryAt(p: Pick<PairRow, 'scannerId' | 'symbol' | 'tf'>, since: number): number | null {
+    return this.db.get<{at:number|null}>("SELECT max(entry_at) at FROM positions WHERE bt=2 AND status IN ('open','closed') AND qty>0 AND scanner_id=? AND symbol=? AND tf=? AND entry_at>=?", p.scannerId,p.symbol,p.tf,since)?.at ?? null;
+  }
+  quarantineReason(id: string): string | null {
+    const row = this.db.get<{reason:string|null}>('SELECT reason FROM script_health WHERE scanner_id=? AND quarantined=1',id);
+    return row ? row.reason ?? 'scanner quarantined' : null;
+  }
+  rotationState(): RotationState { return this.db.kvGet<RotationState>('incubator.rotation') ?? emptyRotation(); }
+  rotate(old: PairRow, next: PairRow, state: RotationState, now: number): PairRow {
+    return this.db.transaction(() => {
+      if (this.get(old.id)?.stage !== 'shadow' || this.get(next.id)?.stage !== 'candidate' || this.shadowHolds(old) || this.shadowLastEntryAt(old, old.since) !== null) throw new Error('rotation state changed');
+      const budget = this.rotationState();
+      if ((budget.day === state.day ? budget.used : 0) !== state.used - 1) throw new Error('rotation budget changed');
+      const evidence = { replacementId: next.id, until: state.paused[old.id].until, since: old.since, reason: 'no filled shadow trade during observation; research slot rotated, not a performance rejection' };
+      this.moveInside(old, 'candidate', 'rotation', evidence, evidence.reason, now, {keepSince: true});
+      const result = this.moveInside(next, 'shadow', 'screen', {rotationFrom: old.id, screen: next.screen}, 'admitted through research rotation', now);
+      this.db.kvSet('incubator.rotation', state);
+      return result;
+    });
+  }
+
   /** Decision 112: the shadow runner's record of what became of each shadow pair's signals, by pair key: [at, class] pairs, newest last. */
   shadowFunnel(): Record<string, Array<[number, string, string?]>> { return this.db.kvGet<Record<string, Array<[number, string, string?]>>>('incubator.shadowFunnel') ?? {}; }
   setShadowFunnel(rec: Record<string, Array<[number, string, string?]>>): void { this.db.kvSet('incubator.shadowFunnel', rec); }
@@ -118,7 +143,10 @@ export class IncubatorStore {
 
   /** Create the pair in `stage`, or move it there, and log the move with its evidence. */
   move(p: { scannerId: string; symbol: string; tf: string }, to: Stage, actor: string, evidence: any = null, note: string | null = null, at = Date.now(), opts: { keepSince?: boolean; since?: number } = {}): PairRow {
-    return this.db.transaction(() => {
+    return this.db.transaction(() => this.moveInside(p, to, actor, evidence, note, at, opts));
+  }
+
+  private moveInside(p: { scannerId: string; symbol: string; tf: string }, to: Stage, actor: string, evidence: any, note: string | null, at: number, opts: {keepSince?: boolean; since?: number} = {}): PairRow {
       const cur = this.find(p.scannerId, p.symbol, p.tf);
       if (cur && cur.stage === to) {
         this.db.run('UPDATE incubator_pairs SET updated=?, note=COALESCE(?, note) WHERE id=?', at, note, cur.id);
@@ -131,7 +159,6 @@ export class IncubatorStore {
       this.db.run('INSERT INTO incubator_events(at, pair_id, scanner_id, symbol, tf, from_stage, to_stage, actor, evidence) VALUES (?,?,?,?,?,?,?,?,?)',
         at, id, p.scannerId, p.symbol, p.tf, cur?.stage ?? null, to, actor, evidence === null ? null : JSON.stringify(evidence));
       return this.get(id)!;
-    });
   }
 
   /**

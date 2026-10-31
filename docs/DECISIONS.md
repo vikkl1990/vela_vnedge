@@ -5923,3 +5923,34 @@ stricter than intended; the decision-191 comparisons of market and limit entries
 sides, so their ordering stands but their absolute R does not. The 40 shadow pairs retired on 25 October (decision 200)
 were retired because their own shadow records were flat or losing as well, which stands on its own. The live
 revalidation and the shadow re-screen are re-run on the corrected screen.
+
+## 203. Research capacity and account-plan parity (31 October 2026)
+
+Capacity is additive: the deployed 800 general slots plus 80 reserved 4h-major slots and
+200 further 4h slots allow 1,080 allocations. Admission and blocker explanations now share
+one deterministic allocation plan, including reservation precedence over per-scanner caps.
+The UI shows general/reserved usage and genuine overflow separately.
+
+An optional bounded rotation exchanges idle, never-filled shadow cells for eligible waiting
+candidates. The deployment uses at most 12 swaps per UTC day, after 7/14/28 observation days
+on 15m/1h/4h, with a three-day candidate cooldown. Successful recent scan watermarks are
+required; downtime is not silence. Filled evidence, open positions and pending orders are
+protected. A swap, both audit events and its quota are atomic. Rotation is not a losing
+verdict; history remains, while a later readmission starts a new observation clock. Open
+and pending positions also defer automatic retirement. Quarantine prevents new admission.
+
+Account backtests previously accepted native/mixed stops even when paper execution refused
+them. The shared policy now carries `requireAtrStop` through ordinary and walk-forward
+replays, including reversal admission; shadow still measures native plans. Simulation
+version 8 invalidates cached results. Margin sizing and account risk/exit rules are unchanged.
+
+The paired LTM study used 778 entry signals in 11 cells from 1 September to 31 October,
+200 warm-up bars and a 70/30 temporal split. Native, ATR and trailing-structure plans share
+signal events and account costs/sizing. Experiments use level exits, never retained native
+TP alerts against replacement stops. Prefix checks compared the full entry plan, including
+SL/TP; minute coverage was 99.99–100%. ETH 15m native levels returned +$29.82 over 12 holdout
+closes (+$23.42 with 5bp extra slippage), versus -$17.54 for ATR. AIOT/ONDO failed to generalize.
+No experiment met the predeclared 20-close holdout and robustness requirements; no account
+plan exception is enabled. Historical funding/depth and portfolio interactions are not
+reconstructed. `server/src/cli/planstudy.ts` reproduces the study using an explicit sanitized
+snapshot, local candle cache and output path; it never writes to the bot database/config.

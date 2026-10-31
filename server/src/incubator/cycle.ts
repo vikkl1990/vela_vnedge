@@ -1,3 +1,5 @@
+import {shadowCapacity, selectAdmissions} from './capacity.ts';
+import {rotateIdleCells} from './rotation.ts';
 import {admissionEvidence} from './evidencePriority.ts';
 import { admissionCostPct, type EntryExecution } from '../paper/costs.ts';
 /**
@@ -130,7 +132,6 @@ const DAY = 86400_000;
 /** The gate for one timeframe: a 4h pair cannot produce in 45 days what a 15m pair produces in 8. */
 export const gateFor = (inc: IncubatorConfig, tf: string) => ({ ...inc.gate, maxDays: inc.gate.maxDaysByTf?.[tf] ?? inc.gate.maxDays, minTrades: inc.gate.minTradesByTf?.[tf] ?? inc.gate.minTrades, minDays: inc.gate.minDaysByTf?.[tf] ?? inc.gate.minDays });
 /** How many markets one scanner is admitted on at this timeframe. */
-const marketsFor = (inc: IncubatorConfig, tf: string) => inc.admit.cohortMarkets[tf] ?? inc.admit.cohortMarkets.default ?? 5;
 
 /** The live fleet as the config describes it: enabled, not hidden, one row per scanner × market. */
 /** The screen's timeframe for a given night (decision 106): the list rotates day by day, so with 7 slices and 3 timeframes every (slice, timeframe) comes round once in 21 nights. */
@@ -261,7 +262,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   if (opts.unavailable) {
     for (const r of store.list(['shadow', 'proposed', 'tracked'])) {
       const why0 = opts.unavailable(r.scannerId);
-      if (!why0) continue;
+      if (!why0 || store.shadowHolds(r)) continue;
       const why = `scanner unavailable: ${why0}`;
       store.move(r, 'retired', 'library', { reasons: [why] }, why, now); rep.retired.push(name(r));
     }
@@ -295,6 +296,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // decision 106: a shadow pair with no shadow trade for `gate.staleDays` proves nothing and gives its slot back
   // decision 108: the cap follows the timeframe — 21 days is three weeks of 15m bars and five 4h trades at best
   for (const r of store.list(['shadow'])) {
+    if (store.shadowHolds(r)) continue;
     const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
     if (!(staleDays > 0)) continue;
     const t = store.trades(r.scannerId, r.symbol, r.tf, 2).filter(x => x.entryAt >= r.since);
@@ -310,6 +312,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   // looking best fails most of them by selection alone (519 of 617 on 25 October); 35 of those failures were up 83.8R in
   // the shadow book. A failing pair with too little record yet keeps collecting it; the stale cap retires the silent ones.
   for (const r of store.list(['shadow'])) {
+    if (store.shadowHolds(r)) continue;
     const sc = r.screen as any;
     if (!sc || sc.pass !== false || !(typeof sc.at === 'number' && sc.at > r.since)) continue;
     const fwd = store.trades(r.scannerId, r.symbol, r.tf, 2).filter(t => t.entryAt >= r.since);
@@ -366,15 +369,16 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
   const trades = store.trades(r.scannerId, r.symbol, r.tf, 2);
   const stats = pairStats(trades, r.since, now);
   const dv = deliveryVerdict(r.screen, stats);
-  if (dv.retire && r.stage === 'shadow') { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
+  if (dv.retire && r.stage === 'shadow' && !store.shadowHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
   const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
-  const v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap);
+  let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap);
+  if (v.decision === 'retire' && store.shadowHolds(r)) v = {...v, decision:'brewing', reasons:['retirement deferred: shadow position or order still active', ...v.reasons]};
   store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v }, now);
   if (v.decision === 'propose' && r.stage === 'shadow' && marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)!] }, now); rep.brewing++; }
   else if (v.decision === 'propose' && r.stage === 'shadow' && demotionAnswered(store, cfg, r, now)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [demotionAnswered(store, cfg, r, now)!] }, now); rep.brewing++; }
   else if (v.decision === 'propose' && r.stage === 'shadow') { store.move(r, 'proposed', 'gate', { stats, overlap, reasons: v.reasons }, 'passed the promotion gate', now, { keepSince: true }); rep.proposed.push(name(r)); }
   else if (v.decision === 'brewing' && r.stage === 'proposed') { store.move(r, 'shadow', 'gate', { stats, reasons: v.reasons }, 'no longer passes the gate', now, { keepSince: true }); rep.brewing++; }
-  else if (v.decision === 'retire') { store.move(r, 'retired', 'gate', { stats, reasons: v.reasons }, v.reasons[0], now); rep.retired.push(name(r)); }
+  else if (v.decision === 'retire' && !store.shadowHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: v.reasons }, v.reasons[0], now); rep.retired.push(name(r)); }
   else if (v.decision === 'brewing') rep.brewing++;
 }
 
@@ -395,7 +399,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
     const rows = rowsAll.filter(r => {
       if (r.stage !== 'shadow') return true;
       const dv = deliveryVerdict(r.screen, pairStats(store.trades(r.scannerId, r.symbol, r.tf, 2), r.since, now));
-      if (!dv.retire) return true;
+      if (!dv.retire || store.shadowHolds(r)) return true;
       store.move(r, 'retired', 'gate', { reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return false;
     });
     if (!rows.length) continue;
@@ -414,7 +418,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
     for (const m of members) store.setGate(m.row.id, { at: now, cohort, stats, overlapPct: overlap, market: stats.perMarket.find(p => p.symbol === m.symbol) ?? null, ...v, ...(strategyComparison ? { strategyComparison } : {}) }, now);
 
     if (v.decision === 'retire') {
-      for (const m of members) { store.move(m.row, 'retired', 'gate', { cohort, stats, reasons: v.reasons }, `${cohort}: ${v.reasons[0]}`, now); rep.retired.push(name(m.row)); }
+      for (const m of members) { if (store.shadowHolds(m.row)) { store.setGate(m.row.id, {at:now, cohort, stats, overlapPct:overlap, ...v, decision:'brewing', reasons:['retirement deferred: shadow position or order still active', ...v.reasons]}, now); continue; } store.move(m.row, 'retired', 'gate', { cohort, stats, reasons: v.reasons }, `${cohort}: ${v.reasons[0]}`, now); rep.retired.push(name(m.row)); }
       continue;
     }
     // only markets the account can trade today are picked for the fleet (decision 104); the rest keep brewing as evidence
@@ -447,63 +451,19 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
   const markets = store.marketsToday(now);
   // Shadow observation uses the screen universe's floor. Promotion keeps the higher account floor.
   const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
-  let fresh = store.list(['candidate']).filter(r => r.screen?.pass && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.minTurnoverUsd)
+  const rotation = store.rotationState();
+  const unavailable = (id: string) => opts.unavailable?.(id) ?? store.quarantineReason(id);
+  const fresh = store.list(['candidate']).filter(r => r.screen?.pass && !r.screen.expiredAt && !unavailable(r.scannerId) && (rotation.paused[r.id]?.until ?? 0) <= now && now - (r.screen?.at ?? 0) <= maxAge && !marketRefusal(markets, r.symbol, inc.minTurnoverUsd)
     && !(opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close'));
-  const admitted = new Set<number>();
-  const take = (r: PairRow) => { store.move(r, 'shadow', 'screen', { screen: r.screen, score: screenScore(r.screen), admissionEvidence: admissionEvidence(r,inc) }, 'admitted to the shadow book', now); rep.admitted.push(name(r)); admitted.add(r.id); slots--; };
-
-  // decision 182: the reservations first — capacity over and above `maxShadow` for what the score starves (4h, the
-  // majors), each filled from its own matching candidates by score, under the same per-scanner caps
-  const held = new Map<string, number>();
-  for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
-  const capFor = (tf: string) => inc.admit.maxPerScannerTf?.[tf] ?? marketsFor(inc, tf);
-  const reserves = (inc.admit.reserve ?? []).filter(res => res.slots > 0).map(res => ({ res, matches: (r: PairRow) => (!res.tfs?.length || res.tfs.includes(r.tf)) && (!res.markets?.length || res.markets.includes(r.symbol)), n: 0 }));
-  // an active pair counts against the first reservation it matches, while that reservation has room; the rest are the book's
-  const counted = new Set<number>();
-  for (const r of active) for (const x of reserves) if (!counted.has(r.id) && x.matches(r) && x.n < x.res.slots) { counted.add(r.id); x.n++; break; }
-  let slots = Math.max(0, inc.maxShadow - (active.length - counted.size));
-  for (const x of reserves) {
-    for (const r of fresh.filter(c => !admitted.has(c.id) && x.matches(c)).sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id)) {
-      if (x.n >= x.res.slots) break;
-      const k = `${r.scannerId}|${r.tf}`;
-      if ((held.get(k) ?? 0) >= capFor(r.tf)) continue;
-      take(r); slots++;   // `take` spends a book slot; a reserved admission gives it back
-      held.set(k, (held.get(k) ?? 0) + 1); x.n++;
-    }
+  const plan = selectAdmissions(active, fresh, inc);
+  for (const r of plan.selected) {
+    store.move(r, 'shadow', 'screen', {screen:r.screen, score:screenScore(r.screen), admissionEvidence:admissionEvidence(r,inc)}, 'admitted to the shadow book', now);
+    rep.admitted.push(name(r));
   }
-  fresh = fresh.filter(r => !admitted.has(r.id));
-
-  if (inc.gate.pool !== 'cohort') {
-    // decision 132: each pair is admitted on its own score, but one scanner may not fill the book at a timeframe
-    for (const r of fresh.sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id)) {
-      if (slots <= 0) break;
-      const k = `${r.scannerId}|${r.tf}`;
-      if ((held.get(k) ?? 0) >= capFor(r.tf)) continue;
-      take(r); held.set(k, (held.get(k) ?? 0) + 1);
-    }
-    rep.free = slots;
-    return;
-  }
-
-  const byCohort = new Map<string, PairRow[]>();
-  for (const r of fresh) { const k = `${r.scannerId}|${r.tf}`; const g = byCohort.get(k); g ? g.push(r) : byCohort.set(k, [r]); }
-
-  const cohorts = [...byCohort.entries()].map(([k, rows]) => ({
-    k, rows: rows.sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id),
-    score: Math.max(...rows.map(r => admissionEvidence(r,inc).score)), running: held.get(k) ?? 0,
-  }));
-  // top up what is already brewing before starting anything new: those markets are already earning days
-  const fillable = (c: { rows: PairRow[] }) => Number(c.rows.length >= inc.admit.minCohortMarkets);
-  cohorts.sort((a, b) => Number(b.running > 0) - Number(a.running > 0) || fillable(b) - fillable(a) || b.score - a.score);
-
-  for (const c of cohorts) {
-    if (slots <= 0) break;
-    const room = Math.min(marketsFor(inc, c.rows[0].tf) - c.running, c.rows.length, slots);
-    if (room <= 0) continue;
-    if (!c.running && room < Math.min(inc.admit.minCohortMarkets, c.rows.length)) continue;
-    for (const r of c.rows.slice(0, room)) take(r);
-  }
-  rep.free = slots;
+  const selected = new Set(plan.selected.map(r=>r.id));
+  const replacements = rotateIdleCells(store, cfg, fresh.filter(r=>!selected.has(r.id)), now, unavailable);
+  rep.admitted.push(...replacements.map(name));
+  rep.free = shadowCapacity(store.list(['shadow','proposed']), inc).free;
 }
 
 /**
@@ -518,7 +478,7 @@ export function admitOnly(store: IncubatorStore, cfg: AppConfig, now = Date.now(
   return rep.admitted;
 }
 
-export type CandidateBlocker = 'expired' | 'stale' | 'outside' | 'refused' | 'rescreen' | 'capped' | 'noSlot' | 'cohort' | 'admissible';
+export type CandidateBlocker = 'cooldown' | 'unavailable' | 'expired' | 'stale' | 'outside' | 'refused' | 'rescreen' | 'capped' | 'noSlot' | 'cohort' | 'admissible';
 /**
  * Decision 157: why each candidate that passed its screen is not in the shadow book, by the rules `admit` applies and in
  * its order: a screen expired by an engine change, a screen past its age, the market gate (outside its universe, or
@@ -527,38 +487,30 @@ export type CandidateBlocker = 'expired' | 'stale' | 'outside' | 'refused' | 're
  */
 export function candidateBlockers(store: IncubatorStore, cfg: AppConfig, now = Date.now(), opts: EvaluateOptions = {}): { passed: number; free: number; counts: Record<CandidateBlocker, number> } {
   const inc = cfg.incubator;
-  const counts: Record<CandidateBlocker, number> = { expired: 0, stale: 0, outside: 0, refused: 0, rescreen: 0, capped: 0, noSlot: 0, cohort: 0, admissible: 0 };
+  const counts: Record<CandidateBlocker, number> = { cooldown: 0, unavailable: 0, expired: 0, stale: 0, outside: 0, refused: 0, rescreen: 0, capped: 0, noSlot: 0, cohort: 0, admissible: 0 };
   const active = store.list(['shadow', 'proposed']);
   // decision 186: the reservations as `admit` counts them — an active pair fills the first reservation it matches while
   // that has room, and only the rest consume the book's own slots
-  const reserves = (inc.admit.reserve ?? []).filter(res => res.slots > 0).map(res => ({ matches: (r: PairRow) => (!res.tfs?.length || res.tfs.includes(r.tf)) && (!res.markets?.length || res.markets.includes(r.symbol)), room: res.slots }));
-  let inReserve = 0;
-  for (const r of active) for (const x of reserves) if (x.matches(r) && x.room > 0) { x.room--; inReserve++; break; }
-  let slots = Math.max(0, inc.maxShadow - (active.length - inReserve));
-  const free = slots + reserves.reduce((a, x) => a + x.room, 0);
+  const capacity = shadowCapacity(active, inc);
+  const free = capacity.free;
   const markets = store.marketsToday(now);
   const maxAge = (inc.admit.candidateMaxAgeDays ?? 30) * DAY;
   const passed = store.list(['candidate']).filter(r => r.screen?.pass);
   const fresh: PairRow[] = [];
+  const rotation = store.rotationState();
   for (const r of passed) {
     const why = marketRefusal(markets, r.symbol, inc.minTurnoverUsd);
-    if (r.screen?.expiredAt) counts.expired++;
+    if ((rotation.paused[r.id]?.until ?? 0) > now) counts.cooldown++;
+    else if (opts.unavailable?.(r.scannerId) || store.quarantineReason(r.scannerId)) counts.unavailable++;
+    else if (r.screen?.expiredAt) counts.expired++;
     else if (now - (r.screen?.at ?? 0) > maxAge) counts.stale++;
     else if (why) (markets.get(r.symbol) ? counts.refused++ : counts.outside++);
     else if (opts.needsRescreen?.(r.scannerId) && r.screen?.fill !== 'close') counts.rescreen++;
     else fresh.push(r);
   }
-  if (inc.gate.pool === 'cohort') { counts.cohort = fresh.length; return { passed: passed.length, free, counts }; }
-  const held = new Map<string, number>();
-  for (const r of active) { const k = `${r.scannerId}|${r.tf}`; held.set(k, (held.get(k) ?? 0) + 1); }
-  for (const r of fresh.sort((a, b) => admissionEvidence(b,inc).score - admissionEvidence(a,inc).score || a.id-b.id)) {
-    const k = `${r.scannerId}|${r.tf}`; const cap = inc.admit.maxPerScannerTf?.[r.tf] ?? marketsFor(inc, r.tf);
-    if ((held.get(k) ?? 0) >= cap) { counts.capped++; continue; }
-    const res = reserves.find(x => x.matches(r) && x.room > 0);
-    if (res) { res.room--; counts.admissible++; held.set(k, (held.get(k) ?? 0) + 1); continue; }
-    if (slots <= 0) { counts.noSlot++; continue; }
-    counts.admissible++; slots--; held.set(k, (held.get(k) ?? 0) + 1);
-  }
+  const plan = selectAdmissions(active, fresh, inc);
+  counts.admissible = plan.selected.length;
+  for (const why of plan.blockers.values()) counts[why]++;
   return { passed: passed.length, free, counts };
 }
 

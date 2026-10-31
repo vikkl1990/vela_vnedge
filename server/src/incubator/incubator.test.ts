@@ -213,6 +213,7 @@ test('a cohort that fails on a full pooled sample retires together', () => {
 
 test('slots are filled by cohort, and running cohorts are topped up first', () => {
   const { store, cfg, screen } = world();
+  cfg.incubator.admit.reserve = []; // This fixture exercises general cohort capacity only.
   cfg.incubator.maxShadow = 6;
   for (const m of ['x1', 'x2']) recordScreen(store, { scannerId: 'x', symbol: m, tf: '15m' }, screen(), cfg.incubator, T0);
   assert.equal(evaluate(store, cfg, T0).admitted.length, 2);
@@ -624,7 +625,7 @@ test('decision 157: candidateBlockers names what holds each passed candidate; ad
   const opts = { needsRescreen: (id: string) => id === 'f' };
   const b = candidateBlockers(store, cfg, T, opts);
   assert.equal(b.passed, 8);
-  assert.deepEqual(b.counts, { expired: 1, stale: 1, outside: 1, refused: 1, rescreen: 1, capped: 1, noSlot: 0, cohort: 0, admissible: 2 });
+  assert.deepEqual(b.counts, { cooldown: 0, unavailable: 0, expired: 1, stale: 1, outside: 1, refused: 1, rescreen: 1, capped: 1, noSlot: 0, cohort: 0, admissible: 2 });
   const admitted = admitOnly(store, cfg, T, opts);
   assert.equal(admitted.length, 2, 'what the classifier calls admissible is what admission takes');
   assert.ok(store.list(['shadow']).some(r => r.id === ex.id));

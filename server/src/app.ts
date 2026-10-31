@@ -1,3 +1,4 @@
+import {shadowCapacity} from './incubator/capacity.ts';
 import {admissionEvidence} from './incubator/evidencePriority.ts';
 import {EntryDepthGate,wireEntryDepth} from './risk/entryDepth.ts';
 import { TradingStatus } from './delta/tradingStatus.ts';
@@ -822,6 +823,12 @@ export class App {
     return { at: now, hours, bins, tfs, markets, totals, shadowHistoryCapped: [...cells.values()].some(c => c.shadowHistoryCapped), reserve: cfg.incubator.admit.reserve ?? [], maxShadow: cfg.incubator.maxShadow };
   }
 
+  private incubatorUnavailable(id: string): string | null {
+    const s = this.registry.get(id);
+    if (!s || s.status !== 'ok') return s?.reason ?? 'scanner cannot run';
+    return null; // Hidden library rows may still be intentionally allocated to research.
+  }
+
   incubatorView() {
     const cfg = this.config.get();
     const now = Date.now();
@@ -831,13 +838,14 @@ export class App {
     const markets = this.incubatorStore.marketsToday();
     const since14 = now - 14 * 86400_000;
     const proposedAt = proposalTimes(this.db);
+    const rotation = this.incubatorStore.rotationState();
     const pairs = this.incubatorStore.list().map(r => {
       const book = r.stage === 'live' || r.stage === 'demote_proposed' ? 0 : 2;
       const judged = r.stage !== 'candidate' && r.stage !== 'retired';
       const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       return {
-        ...r, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
+        ...r, rotationUntil: r.stage === 'candidate' ? rotation.paused[r.id]?.until ?? null : null, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
         admissionEvidence: r.screen ? admissionEvidence(r,cfg.incubator) : null,
         stats: judged ? pairStats(trades, r.since, now) : null,
         openShadow: openShadow.get(key) ?? 0,
@@ -850,12 +858,14 @@ export class App {
       };
     });
     return {
+      capacity: shadowCapacity(pairs.filter(r => r.stage === 'shadow' || r.stage === 'proposed'), cfg.incubator),
+      rotation: { enabled: cfg.incubator.admit.rotation?.enabled ?? false, maxPerDay: cfg.incubator.admit.rotation?.maxPerDay ?? 0, usedToday: rotation.day === Math.floor(now / 86400_000) ? rotation.used : 0, last: rotation.last },
       enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),
       fleet: livePairs(cfg).length, promotionsThisWeek: this.incubatorStore.promotionsSince(now - 7 * 86400_000),
       lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastStart: this.db.kvGet('incubator.lastStart') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, entries: filledEntries(this.db, 2, this.startedAt, now), startedAt: this.startedAt, active: this.incubator.active.length, dispatch:this.incubator.dispatchStats },
       pairs, events: this.incubatorStore.events(100),
       // decision 157: why the candidates that passed their screen are not in the shadow book, right now
-      candidates: candidateBlockers(this.incubatorStore, cfg, now, { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' }),
+      candidates: candidateBlockers(this.incubatorStore, cfg, now, { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) }),
       lastAdmit: this.db.kvGet<any>('incubator.lastAdmit') ?? null,
     };
   }
@@ -878,7 +888,7 @@ export class App {
    */
   /** Decision 157: admission alone, as often as the market gate and the timer allow; judging stays with the hunt. */
   async incubatorAdmit(actor: string): Promise<string[]> {
-    const admitted = incubatorAdmitOnly(this.incubatorStore, this.config.get(), Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' });
+    const admitted = incubatorAdmitOnly(this.incubatorStore, this.config.get(), Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) });
     if (admitted.length) {
       await this.incubator.sync();
       this.db.kvSet('incubator.lastAdmit', { at: Date.now(), actor, admitted });
@@ -890,7 +900,7 @@ export class App {
   async incubatorEvaluate(actor: string) {
     const cfg = this.config.get();
     const synced = incubatorSyncLive(this.incubatorStore, cfg);
-    const report = incubatorEvaluate(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' });
+    const report = incubatorEvaluate(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) });
     let promoted: string[] = [], blocked: string[] = [];
     if (cfg.incubator.promote.auto && report.proposed.length) {
       ({ promoted, blocked } = incubatorAutoPromote(this.incubatorStore, cfg, (sid, patch) => { this.config.setScanner(sid, patch); }));

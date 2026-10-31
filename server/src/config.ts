@@ -416,6 +416,8 @@ export interface IncubatorConfig {
   admit: { cohortMarkets: Record<string, number>; minCohortMarkets: number
     /** Decision 132: how long a passing screen keeps a candidate eligible for a slot (the nightly walk re-screens it in time). Was 8 days, which stranded candidates while the book was full. */
     candidateMaxAgeDays?: number;
+    /** Bounded research rotation, only for idle cells without a filled trade or working position. */
+    rotation?: { enabled: boolean; maxPerDay: number; idleDaysByTf: Record<string, number>; cooldownDays: number };
     /** Decision 132: in `pool: 'pair'` mode, the most shadow cells one scanner may hold at a timeframe (`cohortMarkets` is the fallback). */
     maxPerScannerTf?: Record<string, number>;
     /**
@@ -600,7 +602,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       pool: 'cohort', minPositiveMarketsPct: 50, minMarketTrades: 3, maxDaysByTf: { '1h': 60, '4h': 90 }, minTradesByTf: {}, minDaysByTf: {},
       staleDays: 21, staleDaysByTf: { '1h': 30, '4h': 45 }, minWeeks: 3,
     },
-    admit: { cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
+    admit: { rotation: { enabled: false, maxPerDay: 12, idleDaysByTf: { '15m': 7, '1h': 14, '4h': 28 }, cooldownDays: 3 }, cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
       reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
     promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, silentDaysByTf: { '1h': 30, '4h': 60 }, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
@@ -873,6 +875,10 @@ export function validateConfig(c: AppConfig): string[] {
     if (inc.demote?.costStarvedDays !== undefined && !(inc.demote.costStarvedDays >= 1 && inc.demote.costStarvedDays <= 60)) errs.push('incubator.demote.costStarvedDays must be 1..60');
     if (inc.demote?.marketOutDays !== undefined && !(inc.demote.marketOutDays >= 1 && inc.demote.marketOutDays <= 60)) errs.push('incubator.demote.marketOutDays must be 1..60');
     if (inc.gate?.minWeeks !== undefined && !(Number.isInteger(inc.gate.minWeeks) && inc.gate.minWeeks >= 0 && inc.gate.minWeeks <= 12)) errs.push('incubator.gate.minWeeks must be 0..12');
+    const rotation = inc.admit?.rotation;
+    if (rotation && (typeof rotation.enabled !== 'boolean' || !Number.isInteger(rotation.maxPerDay) || rotation.maxPerDay < 0 || rotation.maxPerDay > 50
+      || !Number.isFinite(rotation.cooldownDays) || rotation.cooldownDays < 1 || rotation.cooldownDays > 30
+      || !rotation.idleDaysByTf || !Object.values(rotation.idleDaysByTf).every(v => Number.isFinite(v) && v >= 7 && v <= 365))) errs.push('incubator.admit.rotation needs maxPerDay 0..50, cooldownDays 1..30 and idle days 7..365');
     if (inc.gate?.staleDaysByTf !== undefined && !Object.values(inc.gate.staleDaysByTf).every(v => v > 0 && v <= 365)) errs.push('incubator.gate.staleDaysByTf values must be 1..365 days');
     if (inc.screen?.retryPerNight !== undefined && !(Number.isInteger(inc.screen.retryPerNight) && inc.screen.retryPerNight >= 0 && inc.screen.retryPerNight <= 200)) errs.push('incubator.screen.retryPerNight must be 0..200');
     if (!(inc.promote?.maxPerWeek >= 0 && inc.promote?.maxFleet >= 1)) errs.push('incubator.promote needs maxPerWeek ≥ 0 and maxFleet ≥ 1');

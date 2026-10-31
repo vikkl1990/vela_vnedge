@@ -1,4 +1,4 @@
-import type { Position } from '../api/types'
+import type { Position } from '../api/types.ts'
 /** Explanation of the engine-resolved policy; never infer a policy from global defaults. */
 export function protectionText(p: Position): string {
   const r=p.protection;

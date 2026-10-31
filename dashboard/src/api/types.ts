@@ -665,6 +665,7 @@ export interface IncubatorScreen {
 /** Decision 201: each account cell's runs, failures and skips over a window. */
 export interface RunHealthRow { scannerId: string; symbol: string; tf: string; ok: number; failed: number; skipped: number; lastFailAt: number | null; lastError: string | null }
 export interface IncubatorPair {
+  rotationUntil?: number | null
   admissionEvidence?: {score:number;qualityScore:number;estimatedDays:number|null;factor:number;requiredTrades:number;horizonDays:number} | null
   /** The market gate's verdict on this pair's market today; null when the gate has not judged it. */
   market?: { allowed: boolean; reasons: string[] } | null
@@ -682,9 +683,11 @@ export interface IncubatorEvent { id: number; at: number; pairId: number; scanne
 /** Decision 157: why the candidates that passed their screen are not in the shadow book, right now. */
 export interface CandidateBlockers {
   passed: number; free: number
-  counts: { expired: number; stale: number; outside: number; refused: number; rescreen: number; capped: number; noSlot: number; cohort: number; admissible: number }
+  counts: { cooldown?: number; unavailable?: number; expired: number; stale: number; outside: number; refused: number; rescreen: number; capped: number; noSlot: number; cohort: number; admissible: number }
 }
 export interface IncubatorView {
+  capacity?: {total:number; used:number; free:number; overflow:number; general:{slots:number;used:number;free:number}; reserves:Array<{slots:number;used:number;free:number;tfs?:string[];markets?:string[]}>}
+  rotation?: {enabled:boolean;maxPerDay:number;usedToday:number;last:Array<{at:number;out:number;in:number}>}
   candidates?: CandidateBlockers
   lastAdmit?: { at: number; actor: string; admitted: string[] } | null
   enabled: boolean
