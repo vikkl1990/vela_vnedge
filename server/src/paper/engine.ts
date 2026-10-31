@@ -620,7 +620,10 @@ export class PaperEngine extends EventEmitter {
     const cfg = this.scaledCfg(leverageMult,cell?.executionPlan?.paper ?? this.paper);
     if(cell?.executionPlan) return sizeContracts(price,sl,{equity:cell.executionPlan.referenceEquity,availableMargin:cell.executionPlan.referenceEquity,contractValue:market.contractValue,tickSize:market.tickSize,maintenanceMarginPct:market.maintenanceMarginPct,maxLeverage:market.maxLeverage,cfg,wantedLeverage:cfg.marginLeverage?.base,entryExecution},0,score);
     const wantedLeverage = cfg.sizingMode === 'margin' && cell ? this.cellLeverage(cell, cfg).leverage : undefined;
-    const others = [...this.open.values()].filter(p => p.id !== replacing);
+    // Shadow cells are independent experiments with a fixed reference purse. Summing their
+    // synthetic positions lets one market consume another's margin/leverage ceiling and
+    // starves both new entries and deferred fills. Only the account shares portfolio capital.
+    const others = this.book === 2 ? [] : [...this.open.values()].filter(p => p.id !== replacing);
     const openNotional = others.reduce((a, p) => a + notionalOf(p), 0);
     const reservedMargin = others.reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0);
     const wallet = this.book === 0 ? this.initialEquity + this.realizedPnl() : this.initialEquity;

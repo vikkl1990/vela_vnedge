@@ -6275,3 +6275,37 @@ machine power loss or real exchange execution.
 Checks passed: 780 server tests (17 added, including three new SIGKILL cases),
 three dashboard tests, nine accounting component render assertions, server type
 check, dashboard lint and production build.
+
+## 211. Independent shadow capital restores the signal evidence flow (31 October 2026)
+
+The live investigation at approximately 18:10 UTC found 558 shadow entry events in
+six hours. Of those, 152 were refused as `margin or leverage cap exhausted` (90 on
+15m and 62 on 1h). The account was still processing signals: 23 entry signals and
+five openings in the initial six-hour snapshot, with eight fee-width refusals and
+six native-stop refusals. Successful account run logs showed no scan failures.
+
+Ordinary shadow sizing used the fixed $10M research purse, but subtracted every
+other shadow position's margin and notional from it. The 64 open research positions
+held about $223.48M synthetic notional and $8.79M synthetic margin. In particular,
+the aggregate notional exceeded a 20x product's $200M ceiling, even though those
+positions belonged to unrelated experiments. Low-leverage markets therefore
+stopped collecting evidence. A larger starting purse would not fix the coupling:
+risk-sized positions grow with that purse too.
+
+Book 2 now sizes each ordinary cell independently. Only book 0 subtracts the shared
+portfolio's occupied capital. Both the initial decision and deferred/maker fill
+use this rule. Versioned execution plans already had independent reference purses.
+Fixed shadow sizing, duplicate-position protection, per-trade leverage/lot/stop
+limits, costs and deployable-quantity depth checks remain in force. The account's
+$150 margin sizing, 3% stop-risk cap, 6x fee floor and allocation policy are unchanged.
+Historical trades and refused signals are preserved; old entries are not replayed.
+Paper fingerprint simulation version 205 identifies the new observation cohort.
+Single-cell backtest semantics have not changed, so their cache version is unchanged.
+
+Four regression scenarios fail with the old sizing: aggregate leverage exhaustion,
+aggregate margin exhaustion, deferred market fills and resting maker fills. They
+pass with independent shadow capital, including restart recovery and repeat-signal
+protection. A fifth test retains fee, indivisible-lot and missing-quote refusals;
+existing account margin-reuse and real-sized depth tests protect the other book.
+This restores prospective evidence collection; it does not establish profitability
+or make native-stop cells automatically eligible for the account.

@@ -30,7 +30,8 @@ const stable = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof
  * keeps the scanner's stop rule), so trades before and after the change fall into different cohorts.
  */
 // 203: maker-aware budgets/sizing, measured crossing replaces fallback, funding settlement replay.
-export const SIM_VERSION = 204;
+// 205: ordinary shadow cells no longer consume each other's synthetic margin/leverage budget.
+export const SIM_VERSION = 205;
 
 /** A short, stable hash of a scanner's patched Pine source: library imports change outside the commit. */
 export function sourceHash(patched: string | undefined | null): string | null {
