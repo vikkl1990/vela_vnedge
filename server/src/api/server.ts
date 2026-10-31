@@ -25,7 +25,7 @@ const log = logger.scoped('api');
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, params: Record<string, string>, url: URL, body: any) => Promise<unknown> | unknown;
 interface Route { method: string; pattern: RegExp; keys: string[]; handler: Handler }
 
-const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.map': 'application/json', '.txt': 'text/plain' };
+const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.map': 'application/json', '.txt': 'text/plain' };
 
 class HttpError extends Error { status: number; constructor(status: number, msg: string) { super(msg); this.status = status; } }
 
@@ -135,7 +135,7 @@ export class ApiServer {
   }
 
   private serveStatic(pathname: string, res: http.ServerResponse, req?: http.IncomingMessage) {
-    if (!fs.existsSync(DASHBOARD_DIST)) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<h1>VNEdge server running</h1><p>Dashboard not built yet — run <code>npm run build</code> in the repo root, or use the Vite dev server on :5173.</p><p>API: <a href="/api/health">/api/health</a></p>'); return; }
+    if (!fs.existsSync(DASHBOARD_DIST)) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<h1>VN EDGE server running</h1><p>Dashboard not built yet — run <code>npm run build</code> in the repo root, or use the Vite dev server on :5173.</p><p>API: <a href="/api/health">/api/health</a></p>'); return; }
     let file = path.join(DASHBOARD_DIST, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
     if (!insideDir(file, DASHBOARD_DIST)) { res.writeHead(403); res.end(); return; }
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -147,7 +147,7 @@ export class ApiServer {
     // build assets carry a content hash in their name, so they can never change under the same URL
     const cache = ext === '.html' ? 'no-cache' : pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
     const head: Record<string, string> = { 'Content-Type': MIME[ext] ?? 'application/octet-stream', 'Cache-Control': cache, Vary: 'Accept-Encoding' };
-    const text = ['.html', '.js', '.css', '.svg', '.json', '.map', '.txt'].includes(ext);
+    const text = ['.html', '.js', '.css', '.svg', '.json', '.webmanifest', '.map', '.txt'].includes(ext);
     if (text && req && /\bgzip\b/i.test(String(req.headers['accept-encoding'] ?? '')) && fs.statSync(file).size >= COMPRESS_MIN_BYTES) {
       head['Content-Encoding'] = 'gzip';
       res.writeHead(200, head);

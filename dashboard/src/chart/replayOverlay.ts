@@ -42,11 +42,11 @@ var int k = 0
 while k < array.size(st) - 1 and array.get(st, k + 1) <= time + barMs - 1
     k += 1
 stopNow = inTrade ? array.get(sv, k) : na
-plot(inTrade ? ${num(lv.entryPrice)} : na, "Entry", color = #a89cff, style = plot.style_linebr, linewidth = 2)
+plot(inTrade ? ${num(lv.entryPrice)} : na, "Entry", color = #1878f2, style = plot.style_linebr, linewidth = 2)
 plot(inTrade ? ${num(orig)} : na, "Stop at entry −1R", color = color.new(#e5484d, 55), style = plot.style_linebr, linewidth = 1)
 plot(stopNow, "Stop", color = #e5484d, style = plot.style_stepline, linewidth = 2)
 ${tpLines}
-plotshape(time == entryT, "Entry", ${long ? 'shape.triangleup' : 'shape.triangledown'}, ${long ? 'location.belowbar' : 'location.abovebar'}, color = #a89cff, size = size.small, text = "${long ? 'long' : 'short'}")
+plotshape(time == entryT, "Entry", ${long ? 'shape.triangleup' : 'shape.triangledown'}, ${long ? 'location.belowbar' : 'location.abovebar'}, color = #1878f2, size = size.small, text = "${long ? 'long' : 'short'}")
 if not na(exitT) and time == exitT
     label.new(bar_index, ${num(lv.exitPrice ?? lv.entryPrice)}, "${exitText}", color = ${exitColor}, textcolor = color.white, style = ${long ? 'label.style_label_down' : 'label.style_label_up'}, size = size.small)
 `

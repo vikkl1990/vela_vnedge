@@ -220,7 +220,7 @@ export class Monitor {
     for (const t of trades) { const cur = byScanner.get(t.scannerId) ?? { name: t.scannerName ?? t.scannerId, pnl: 0, n: 0 }; cur.pnl += t.pnl ?? 0; cur.n++; byScanner.set(t.scannerId, cur); }
     const top = [...byScanner.values()].sort((x, y) => y.pnl - x.pnl).slice(0, 5);
     const lines = [
-      `📊 VNEdge daily summary (${new Date(now).toISOString().slice(0, 16)} UTC)`,
+      `📊 VN EDGE daily summary (${new Date(now).toISOString().slice(0, 16)} UTC)`,
       `Equity ${fmtMoney(stats.equity)} (${fmtSigned(stats.equity - stats.initialEquity)} total, ${fmtSigned(stats.openPnl)} in open positions)`,
       `24h: ${trades.length} trades, ${wins} wins (${trades.length ? Math.round(wins / trades.length * 100) : 0}%), pnl ${fmtSigned(pnl)}`,
       `Open positions: ${stats.openPositions}; drawdown from peak ${this.state.drawdownPct.toFixed(1)}%`,

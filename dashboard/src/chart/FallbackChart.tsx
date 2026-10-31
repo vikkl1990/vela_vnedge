@@ -73,7 +73,7 @@ export function FallbackChart({
       if (!ctx) return
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       const dark = theme === 'dark'
-      ctx.fillStyle = dark ? '#0b0b0f' : '#ffffff'
+      ctx.fillStyle = dark ? '#131d2e' : '#ffffff'
       ctx.fillRect(0, 0, w, h)
       if (!bars.length) return
       const padR = 64
@@ -96,7 +96,7 @@ export function FallbackChart({
       const y = (p: number) => padT + (1 - (p - lo) / range) * plotH
       // grid
       ctx.strokeStyle = dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'
-      ctx.fillStyle = dark ? '#8b8b93' : '#666'
+      ctx.fillStyle = dark ? '#a5b4c9' : '#666'
       ctx.font = '11px "JetBrains Mono", monospace'
       ctx.lineWidth = 1
       for (let i = 0; i <= 5; i++) {
@@ -127,7 +127,7 @@ export function FallbackChart({
         ctx.fillRect(x - bw / 2, top, bw, bh)
       }
       // time labels
-      ctx.fillStyle = dark ? '#8b8b93' : '#666'
+      ctx.fillStyle = dark ? '#a5b4c9' : '#666'
       const step = Math.max(1, Math.floor(n / 6))
       for (let i = 0; i < n; i += step) {
         ctx.fillText(fmtTime(bars[i].time), i * cw, h - 6)

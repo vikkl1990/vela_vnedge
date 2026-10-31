@@ -5,7 +5,7 @@ import type { ChartScript } from './VelaChart'
 type Level = { price: number; label: string; role: 'entry' | 'stop' | 'target' | 'peak'; dashed?: boolean }
 
 const ROLE_COLOR: Record<Level['role'], string> = {
-  entry: '#a89cff',
+  entry: '#1878f2',
   stop: '#e5484d',
   target: '#3fb950',
   peak: '#e0b04a',

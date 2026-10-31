@@ -6,10 +6,11 @@
  * offers, never what it is allowed to do: every route is checked again on the server, so a
  * disabled button is a courtesy rather than a control.
  */
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import type { Me, Permission, Role } from '../api/types'
+import { BrandLockup } from '../components/Brand'
 
 interface AuthValue {
   user: Me
@@ -67,6 +68,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
     }
   }, [me.data, qc, signOut])
 
+  useEffect(() => {
+    if (!value) document.title = `VN EDGE · ${status.data?.configured === false ? 'Setup' : 'Sign in'}`
+  }, [value, status.data?.configured])
+
   if (me.isLoading || status.isLoading) {
     return <Splash>Checking your session…</Splash>
   }
@@ -83,7 +88,7 @@ function Splash({ children }: { children: ReactNode }) {
   return (
     <div className="auth-shell">
       <div className="auth-card">
-        <div className="auth-brand">VNEdge</div>
+        <BrandLockup tagline />
         <p className="muted">{children}</p>
       </div>
     </div>
@@ -96,7 +101,13 @@ function SignInForm({ onDone }: { onDone: () => void }) {
   const login = useMutation({ mutationFn: api.login, onSuccess: onDone })
 
   return (
-    <div className="auth-shell">
+    <div className="auth-shell auth-signin">
+      <div className="auth-layout">
+      <section className="auth-identity" aria-label="VN EDGE — Trade with precision">
+        <img src="/brand/logo-white.svg" alt="VN EDGE" width="332" height="226" />
+        <p className="brand-tagline">Trade with precision</p>
+        <p className="auth-identity-note">Your scanners. Your evidence.<br />Your trading workspace.</p>
+      </section>
       <form
         className="auth-card"
         onSubmit={(e) => {
@@ -104,9 +115,9 @@ function SignInForm({ onDone }: { onDone: () => void }) {
           login.mutate({ username: username.trim(), password })
         }}
       >
-        <div className="auth-brand">VNEdge</div>
-        <h1 className="auth-title">Sign in</h1>
-        <p className="muted small">Paper-trading control panel. Access is per account.</p>
+        <div className="auth-brand">VN EDGE</div>
+        <h1 className="auth-title">Welcome back.</h1>
+        <p className="muted small">Sign in to your trading workspace.</p>
 
         <label className="auth-field">
           <span>Username</span>
@@ -123,6 +134,7 @@ function SignInForm({ onDone }: { onDone: () => void }) {
           {login.isPending ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
+      </div>
     </div>
   )
 }
@@ -152,7 +164,7 @@ function SetupForm({ canSetup, onDone }: { canSetup: boolean; onDone: () => void
           if (!mismatch) setup.mutate({ username: username.trim(), password })
         }}
       >
-        <div className="auth-brand">VNEdge</div>
+        <BrandLockup tagline />
         <h1 className="auth-title">Create the first administrator</h1>
         <p className="muted small">
           Nobody can sign in yet. This account will be able to trade and to manage every other account.

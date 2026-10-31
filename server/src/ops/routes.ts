@@ -41,7 +41,7 @@ export function opsRoutes(add: RouteAdder, app: App): void {
   add('POST', '/api/ops/alerts/test', async (_p, _u, body) => {
     if (body?.evaluate) { await ops.monitor.evaluate(); return { evaluated: true, ...ops.alerts.status() }; }
     if (body?.summary) { const text = ops.monitor.dailySummary(); const delivered = await ops.alerts.notify(text); return { delivered, text }; }
-    const delivered = await ops.alerts.notify(String(body?.text ?? `✅ VNEdge test alert (${new Date().toISOString()})`));
+    const delivered = await ops.alerts.notify(String(body?.text ?? `✅ VN EDGE test alert (${new Date().toISOString()})`));
     return { delivered, configured: ops.alerts.configured, lastSent: ops.alerts.lastSent };
   });
   add('POST', '/api/ops/logs/rotate', () => ({ rotated: logger.rotate(), ...logger.fileStats() }));

@@ -97,12 +97,6 @@ export const IconX = ({ size = 14, ...p }: P) => (
     <path d="M6 6l12 12M18 6L6 18" />
   </svg>
 )
-export const IconLogo = ({ size = 18, ...p }: P) => (
-  <svg {...base(size, p)} strokeWidth={2.4}>
-    <path d="M4 17L9 7l5 8 6-11" />
-  </svg>
-)
-
 // ---- navigation icons (decision 169: one per section, so the sidebar reads at a glance) ----
 export const IconBook = ({ size = 16, ...p }: P) => (
   <svg {...base(size, p)}>

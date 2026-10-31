@@ -1,4 +1,5 @@
 import { QueryFreshness } from './QueryFreshness'
+import { BrandMark } from './Brand'
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useBackendOnline, useHealth, useKill, usePositions, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
@@ -24,7 +25,6 @@ import {
   IconExchange,
   IconFlask,
   IconGraduation,
-  IconLogo,
   IconMenu,
   IconMoon,
   IconPanelLeft,
@@ -188,7 +188,7 @@ export function Layout() {
   const scannerName = scannerId ? scanners.data?.find((x) => x.id === decodeURIComponent(scannerId))?.name : undefined
   const meta = routeMeta(loc.pathname, scannerName)
   useEffect(() => {
-    document.title = `VNEdge · ${meta.title}`
+    document.title = `VN EDGE · ${meta.title}`
   }, [meta.title])
 
   // ---- connection state ----
@@ -225,10 +225,8 @@ export function Layout() {
       <div className="sidebar-backdrop" onClick={() => setDrawer(false)} aria-hidden />
       <aside className="sidebar" aria-label="Sections">
         <div className="sidebar-brand">
-          <span className="brand-tile" aria-hidden>
-            <IconLogo />
-          </span>
-          <span className="brand-name _lbl">VNEdge</span>
+          <BrandMark />
+          <span className="brand-name _lbl">VN EDGE</span>
           <button className="iconbtn sidebar-collapse" onClick={toggleSidebar} aria-label={collapsed ? 'Expand the sidebar' : 'Collapse the sidebar'} title={`${collapsed ? 'Expand' : 'Collapse'} ( [ )`} aria-expanded={!collapsed}>
             <IconPanelLeft />
           </button>
@@ -275,6 +273,7 @@ export function Layout() {
           <button className="iconbtn topbar-menu" onClick={() => setDrawer(true)} aria-label="Open the menu" aria-expanded={drawer}>
             <IconMenu />
           </button>
+          <span className="mobile-brand" aria-label="VN EDGE"><BrandMark /></span>
           <nav className="crumb" aria-label="Breadcrumb">
             {meta.section && <span className="muted">{meta.section}</span>}
             {meta.section && <span className="crumb-sep" aria-hidden>›</span>}

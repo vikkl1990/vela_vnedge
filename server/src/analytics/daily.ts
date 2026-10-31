@@ -77,14 +77,14 @@ export function dailyReport(db: Db, initialEquity: number, days = 30, now = Date
 
 /** The text of one day's report, for the daily Telegram message. */
 export function dailyText(rows: DailyRow[]): string {
-  const d = rows.find(r => !r.partial) ?? rows[0]; if (!d) return 'VNEdge: no data';
+  const d = rows.find(r => !r.partial) ?? rows[0]; if (!d) return 'VN EDGE: no data';
   const week = rows.filter(r => !r.partial).slice(0, 7);
   const sum = (f: (r: DailyRow) => number) => week.reduce((a, r) => a + f(r), 0);
   const wTrades = sum(r => r.account.trades), wR = sum(r => r.account.sumR), sTrades = sum(r => r.shadow.trades), sR = sum(r => r.shadow.sumR);
   const sign = (x: number, p = 2) => (x >= 0 ? '+' : '') + x.toFixed(p);
   const a = d.account, s = d.shadow, inc = d.incubator;
   return [
-    `📊 VNEdge daily report ${d.day} (UTC)`,
+    `📊 VN EDGE daily report ${d.day} (UTC)`,
     `Account: ${a.trades} trades, net ${sign(a.net)} (fees ${a.fees.toFixed(2)}), ${sign(a.avgR, 3)}R a trade, ${a.stops} stopped, ${a.trails} trailed${a.trailKeeps !== null ? `, trail kept ${Math.round(a.trailKeeps * 100)}% of the peak` : ''}. Equity ${d.equity.toFixed(2)}.`,
     `Shadow: ${s.trades} trades, ${sign(s.avgR, 3)}R a trade, sum ${sign(s.sumR, 1)}R · ${Object.entries(s.byTf).map(([tf, v]) => `${tf} ${sign(v.sumR, 1)}R/${v.trades}`).join(' · ')}`,
     `Incubator: ${inc.admitted} admitted, ${inc.proposed} proposed, ${inc.promoted} promoted, ${inc.retired} retired, ${inc.demoted} demoted.`,

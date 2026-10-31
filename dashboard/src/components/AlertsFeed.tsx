@@ -4,9 +4,10 @@ import type { Signal } from '../api/types'
 import { fmtPrice, truncate } from '../lib/format'
 import { useSSE } from '../sse/SSEProvider'
 import { ScoreBadge, SidePill, StatusDot, Time } from './ui'
+import { BrandMark } from './Brand'
 
 /** Telegram-bot-style alerts feed: one card per signal. */
-export function AlertsFeed({ signals, limit = 15, title = 'VNEdge Bot', showActions = false }: { signals: Signal[]; limit?: number; title?: string; showActions?: boolean }) {
+export function AlertsFeed({ signals, limit = 15, title = 'VN EDGE', showActions = false }: { signals: Signal[]; limit?: number; title?: string; showActions?: boolean }) {
   const { status } = useSSE()
   const { data: markets } = useMarkets()
   const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
@@ -15,7 +16,7 @@ export function AlertsFeed({ signals, limit = 15, title = 'VNEdge Bot', showActi
     <div className="alerts">
       <div className="alerts-head">
         <span className="alerts-avatar" aria-hidden>
-          V
+          <BrandMark />
         </span>
         <div>
           <div className="alerts-title">{title}</div>
