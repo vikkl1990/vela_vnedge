@@ -5954,3 +5954,11 @@ No experiment met the predeclared 20-close holdout and robustness requirements; 
 plan exception is enabled. Historical funding/depth and portfolio interactions are not
 reconstructed. `server/src/cli/planstudy.ts` reproduces the study using an explicit sanitized
 snapshot, local candle cache and output path; it never writes to the bot database/config.
+
+**Full-fee sensitivity.** The initial figures above used the deployed legacy scalper-waiver
+configuration, which has no verified enrollment date. Repeating the identical study with
+that waiver disabled gives ETH 15m native levels +$27.21 over the same 12 holdout closes,
++$21.24 with extra slippage, versus -$18.85 for ATR. No variant qualifies under the predeclared
+criteria. These conservative figures supersede the initial comparison for recommendations;
+the VM's fee configuration itself was not changed. Code deployed at dacc93d, with 12/12
+rotation swaps verified and no protected position/evidence violations.
