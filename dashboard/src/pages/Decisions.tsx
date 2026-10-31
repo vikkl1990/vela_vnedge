@@ -33,7 +33,7 @@ export function Decisions() {
 
   const cards = useMemo(() => {
     if (!d) return { proposals: [] as IncubatorPair[], clocks: [] as Array<{ p: IncubatorPair; rank: number }> }
-    const proposals = d.pairs.filter((p) => p.stage === 'proposed' || p.stage === 'demote_proposed').sort((a, b) => Number(b.stage === 'demote_proposed') - Number(a.stage === 'demote_proposed') || a.since - b.since)
+    const proposals = d.pairs.filter((p) => p.stage === 'proposed' || p.stage === 'demote_proposed').sort((a, b) => Number(b.stage === 'demote_proposed') - Number(a.stage === 'demote_proposed') || (a.proposedAt ?? Number.MAX_SAFE_INTEGER) - (b.proposedAt ?? Number.MAX_SAFE_INTEGER))
     const clocks = d.pairs.filter((p) => p.stage === 'live').map((p) => ({ p, rank: clockRank(p, d.config.demote, now) })).filter((x) => x.rank > 0).sort((a, b) => b.rank - a.rank || (b.p.funnel?.entries ?? 0) - (a.p.funnel?.entries ?? 0))
     return { proposals, clocks }
   }, [d, now])

@@ -102,7 +102,7 @@ export default function Incubator() {
                   <div className="table-wrap">
                     <table className="table">
                       <caption className="sr-only">Pairs waiting for approval</caption>
-                      <thead><tr><th scope="col">Proposal</th><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Evidence</th><th scope="col">Signals 14d</th><th scope="col">Since</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+                      <thead><tr><th scope="col">Proposal</th><th scope="col">Scanner</th><th scope="col">Market</th><th scope="col">Evidence</th><th scope="col">Signals 14d</th><th scope="col">Proposed</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
                       <tbody>
                         {decisions.map((p) => (
                           <tr key={p.id}>
@@ -111,7 +111,7 @@ export default function Incubator() {
                             <td className="mono">{p.symbol} · {p.tf}</td>
                             <td>{p.stage === 'proposed' ? <div className="small"><Evidence s={p.gate?.stats ?? p.stats} g={gateFor(g, p.tf)} />{p.gate?.cohort && <div className="muted">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}</div> : <div className="small">{p.gate?.reasons?.[0] ?? p.note ?? 'Re-judge to refresh the demotion evidence'}</div>}{p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={gateFor(g, p.tf)} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
                             <td className="small"><Funnel f={p.funnel} pair={p} /></td>
-                            <td className="muted small">{timeAgo(p.since)}</td>
+                            <td className="muted small">{p.proposedAt ? timeAgo(p.proposedAt) : 'unavailable'}<div>Evidence since {new Date(p.since).toISOString().slice(0, 10)}</div></td>
                             <td className="nowrap">
                               {auth.canTrade ? (
                                 <>
@@ -315,4 +315,3 @@ function candidateHint(c: IncubatorView['candidates']): string | undefined {
     `Screen older than the candidate window: ${k.stale}. Scanner at its per-timeframe cap: ${k.capped}. ${c.free} shadow slots free.`,
   ].join('\n')
 }
-
