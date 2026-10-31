@@ -77,6 +77,8 @@ export interface PendingEntry {
  * `position` ({type, position}), `trade` (closed position), `order` (fill) and `stats`.
  */
 export class PaperEngine extends EventEmitter {
+  /** Synchronous durable execution sink, called inside the fill transaction. */
+  executionIntent?: (orderId: number, order: ReturnType<typeof orderOf>) => void;
   private decisionActive = false;
   private logInfo(message:string){this.db.afterCommit(()=>log.info(message));}
   override emit(event: string | symbol, ...args: any[]): boolean {
@@ -1255,11 +1257,12 @@ export class PaperEngine extends EventEmitter {
     const side = fillSide(p, f);
     // Funding is a cash adjustment, not a market execution with a quote/spread.
     const q = f.reason === 'funding' ? undefined : this.quotes?.markState?.(p.symbol);
-    this.db.run(
+    const saved = this.db.run(
       'INSERT INTO orders(at, position_id, scanner_id, symbol, side, qty, price, fee, reason, bt, ref_price, bid, ask, quote_at, price_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason, this.book,
       ctx.ref ?? null, q?.bestBid ?? null, q?.bestAsk ?? null, q?.quoteAt ?? null, ctx.source ?? null,
     );
+    this.executionIntent?.(Number(saved.lastInsertRowid), orderOf(p, f));
   }
 
   private applyFills(pos: Position, fills: Fill[], context: FillContext = {}): boolean {

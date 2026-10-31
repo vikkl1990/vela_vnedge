@@ -443,6 +443,10 @@ export class App {
     const cfg = this.config.get();
     const now = Date.now();
     const items: Array<{ key: string; text: string; href: string }> = [];
+    const commands=this.executor?.outbox.status();
+    if(commands?.pending && commands.oldest!==null && now-commands.oldest>60_000) {
+      items.push({key:'execution-handoff',text:`${commands.pending} exchange command(s) are waiting for dispatch or reconciliation. Open Exchange to inspect the reason.`,href:'/exchange'});
+    }
     const recovery=this.scanners.inbox?.status();
     if(recovery?.pending&&(recovery.failed||(recovery.oldest!==null&&now-(recovery.oldest??now)>30_000))){
       items.push({key:'signal-recovery',text:`${recovery.pending} account signal decision(s) await recovery; ${recovery.failed} have a recorded retry error. Inspect the pending list.`,href:'/signals'});

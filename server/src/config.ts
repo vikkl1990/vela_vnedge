@@ -328,6 +328,8 @@ export interface ScannerConfig {
 }
 
 export interface ExecutionConfig {
+  /** Maximum age of an entry command that has never reached the order ledger. Exits do not expire. */
+  entryCommandMaxAgeSec?: number;
   /** `paper` runs the internal simulator. `dry-run` logs the exact exchange order payloads without sending. `testnet` sends them to Delta's demo account (needs API keys). */
   mode: 'paper' | 'dry-run' | 'testnet';
   /** Place exchange-side reduce-only stop + take-profit orders after each paper entry (cancel/replace on break-even). */
@@ -911,6 +913,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   const x = c.execution;
   if (!(Number.isFinite(x.reconcileSec) && x.reconcileSec >= 0)) errs.push('execution.reconcileSec must be ≥ 0');
   if (x.confirmSec !== undefined && !(Number.isFinite(x.confirmSec) && x.confirmSec >= 1 && x.confirmSec <= 120)) errs.push('execution.confirmSec must be 1..120');
+  if (x.entryCommandMaxAgeSec !== undefined && !(Number.isFinite(x.entryCommandMaxAgeSec) && x.entryCommandMaxAgeSec >= 1 && x.entryCommandMaxAgeSec <= 300)) errs.push('execution.entryCommandMaxAgeSec must be 1..300');
   if (x.sweepSec !== undefined && !(Number.isFinite(x.sweepSec) && x.sweepSec >= 0)) errs.push('execution.sweepSec must be ≥ 0');
   const r = c.risk;
   if (!r) return errs.concat('risk section missing');

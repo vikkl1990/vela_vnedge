@@ -6180,3 +6180,38 @@ Validation: 741 server tests pass (28 added), including three new SIGKILL tests;
 3 dashboard tests and 4 component-render checks pass. Server TypeScript,
 dashboard build/lint and whitespace checks pass. No orders were sent by the
 public-feed probe. This entry records a tested local build, not a VM deployment.
+
+## 209. Durable handoff from account fills to exchange execution (31 October 2026)
+
+The paper book committed fills before its order event entered the executor's
+in-memory queue. A crash between those steps produced an account position without
+an exchange intent. Ledger recovery could only report it as unmirrored.
+
+With an executor attached, the new execution_commands row and the account fill
+commit together. The event wakes the dispatcher; startup and sweeps recover the
+same durable command. Client IDs are allocated at capture, fit Delta's 32-character
+limit, and are retained across recovery. A ledger intent means a POST may have
+happened: it is looked up, never blindly submitted again, even when lookup is null.
+This intentionally does not promise exactly-once execution across the exchange.
+
+Only commands with no ledger intent may dispatch after recovery. Unsent entries
+expire after 60 seconds by default (execution.entryCommandMaxAgeSec, 1–300), are
+rechecked after the leverage await, and cannot reopen a closed/flattened trade.
+Exits retain their intent and reduce only the difference between confirmed exchange
+exposure and the paper remainder. Product metadata outages retain work for retry.
+Uncertain outcomes serialize follow-up exits on that position. A recovered TP
+already booked on paper is restated instead of subtracting its contracts again.
+
+New dry-run ledger and command rows use a distinct host scope. The feature creates
+no exchange commands in paper mode, imports no historical paper fills, and leaves
+shadow execution and sizing unchanged. Source row identity remains inspectable
+when a rejected entry is voided. The Exchange page shows waiting, cancelled,
+rejected and reconciled/ledger-owned commands; waiting work older than a minute
+appears in attention. Handoff completion is explicitly not a fill confirmation.
+
+Tests: 763 server tests passed (22 added), including eight new real SIGKILL cases;
+three dashboard tests, five handoff component render assertions, server type check,
+dashboard lint and production build passed. The full suite includes the existing
+partial-fill, rejection, protection, recovery and host-policy tests. Native live
+protection, account identity scoping, private fill streams and complete partial-fill
+cash accounting remain separate work; the deployment stays in paper mode.

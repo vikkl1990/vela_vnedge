@@ -44,3 +44,62 @@ for(const point of ['intent','accepted-before-ack','acknowledged'])test(`SIGKILL
   assert.equal(rows[0].state,point==='intent'?'unknown':'filled');
   if(point!=='intent'){assert.equal(paper.openPositions()[0].entryPrice,101);assert.ok(ex.hasExposure());}
 });
+
+for(const point of ['before-paper-commit','after-paper-commit','after-leverage','before-network','accepted-before-ack','filled-before-adoption','after-handoff','exit-before-event'])test(`SIGKILL at command ${point}: committed work survives without duplicate exchange submission`,async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'vnedge-command-crash-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const file=join(dir,'db.sqlite'),remote=join(dir,'exchange.json');
+  const child=spawnSync(process.execPath,['--no-warnings=ExperimentalWarning','--input-type=module','-e',`
+    import {writeFileSync} from 'node:fs';
+    import {Db} from ${JSON.stringify(new URL('../db.ts',import.meta.url).href)};
+    import {DEFAULT_CONFIG} from ${JSON.stringify(new URL('../config.ts',import.meta.url).href)};
+    import {PaperEngine} from ${JSON.stringify(new URL('../paper/engine.ts',import.meta.url).href)};
+    import {ExchangeExecutor} from ${JSON.stringify(new URL('./testnet.ts',import.meta.url).href)};
+    const [file,remote,point]=process.argv.slice(1),kill=()=>process.kill(process.pid,'SIGKILL');
+    const db=new Db(file),cfg=structuredClone(DEFAULT_CONFIG),orders=[];
+    Object.assign(cfg.paper,{feeRatePct:0,makerFeeRatePct:0,slippageBps:0,latencyMs:0,fillSource:'candles'});
+    Object.assign(cfg.execution,{mode:'testnet',bracket:false,reconcileSec:0,sweepSec:0});
+    const paper=new PaperEngine(db,()=>cfg),fake={host:'testnet',hasAuth:true,dryRun:false,
+      products:async()=>new Map([['BTCUSD',{id:27,symbol:'BTCUSD'}]]),wallet:async()=>[],openOrders:async()=>[],
+      setLeverage:async(_id,leverage)=>{if(point==='after-leverage')kill();return{leverage};},
+      placeOrder:async o=>{const x={...o,id:orders.length+1,unfilled_size:0,state:'closed',average_fill_price:101,paid_commission:.7};orders.push(x);writeFileSync(remote,JSON.stringify(orders));if(point==='accepted-before-ack')kill();return x;},
+      order:async id=>orders.find(o=>String(o.id)===String(id))??null,
+      orderByClientId:async id=>orders.find(o=>o.client_order_id===id)??null};
+    const ex=new ExchangeExecutor(paper,()=>cfg,fake,{confirmSec:0});await ex.start();
+    if(point==='before-paper-commit'){const record=ex.outbox.record.bind(ex.outbox);ex.outbox.record=(...a)=>{record(...a);kill();};}
+    if(point==='after-paper-commit'){const emit=paper.emit.bind(paper);paper.emit=(event,...a)=>{if(event==='order')db.afterCommit(kill);return emit(event,...a);};}
+    if(point==='before-network'){const intent=ex.ledger.intent.bind(ex.ledger);ex.ledger.intent=(...a)=>{const r=intent(...a);kill();return r;};}
+    if(point==='filled-before-adoption'){const filled=ex.ledger.filled.bind(ex.ledger);ex.ledger.filled=(...a)=>{filled(...a);kill();};}
+    if(point==='after-handoff'){const set=ex.outbox.set.bind(ex.outbox);ex.outbox.set=(...a)=>{set(...a);if(a[1]==='delivered')kill();};}
+    const p=paper.commitDecision(()=>paper.onEntry({kind:'entry',side:'long',price:100,sl:95,tp:[105,110,115],label:'entry',message:'',source:'alert',barTime:0,barIndex:0},{scannerId:'audit',scannerName:'audit',symbol:'BTCUSD',tf:'15m',market:{tickSize:.25,contractValue:1},refPrice:100,at:Date.now(),signalId:null,exitMode:'both'}).position);
+    await ex.flush();
+    if(point==='exit-before-event'){const emit=paper.emit.bind(paper);paper.emit=(event,...a)=>{if(event==='order')kill();return emit(event,...a);};paper.closeManual(p.id);}
+    throw Error('crash injection was not reached');
+  `,file,remote,point],{encoding:'utf8',timeout:10000});
+  assert.equal(child.signal,'SIGKILL',child.stderr);
+  const db=new Db(file);t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+  Object.assign(cfg.execution,{mode:'testnet',bracket:false,reconcileSec:0,sweepSec:0});
+  const orders:any[]=existsSync(remote)?JSON.parse(readFileSync(remote,'utf8')):[];
+  const initial=orders.length,paper=new PaperEngine(db,()=>cfg);
+  const fake:any={host:'testnet',hasAuth:true,dryRun:false,products:async()=>new Map([['BTCUSD',{id:27,symbol:'BTCUSD'}]]),wallet:async()=>[],openOrders:async()=>[],
+    setLeverage:async(_id:number,leverage:number)=>({leverage}),
+    order:async(id:number|string)=>orders.find(o=>String(o.id)===String(id))??null,
+    orderByClientId:async(id:string)=>orders.find(o=>o.client_order_id===id)??null,
+    placeOrder:async(o:any)=>{const r={...o,id:orders.length+1,state:'closed',unfilled_size:0,average_fill_price:101,paid_commission:.7};orders.push(r);return r;}};
+  const ex=new ExchangeExecutor(paper,()=>cfg,fake,{confirmSec:0});t.after(()=>ex.stop());
+  await ex.start();await ex.sweepNow();await ex.flush();await ex.recover();await ex.sweepNow();
+  const expectedNew=['after-paper-commit','after-leverage','exit-before-event'].includes(point)?1:0;
+  assert.equal(orders.length,initial+expectedNew);
+  assert.equal(new Set(orders.map(o=>o.client_order_id)).size,orders.length);
+  assert.equal(ex.outbox.status().pending,0);
+  if(point==='before-paper-commit'){
+    assert.equal(paper.openPositions().length,0);assert.equal(db.get<any>('SELECT count(*) n FROM orders').n,0);
+    assert.equal(ex.outbox.status().recent.length,0);
+  }else if(point==='exit-before-event'){
+    assert.equal(paper.openPositions().length,0);assert.equal(orders.filter(o=>o.purpose==='exit').length,1);assert.equal(ex.hasExposure(),false);
+  }else if(point==='before-network'){
+    assert.equal(ex.ledger.recent()[0].state,'unknown');assert.equal(orders.length,0);
+  }else{
+    assert.equal(paper.openPositions()[0].entryPrice,101);assert.equal(paper.openPositions()[0].fees,.7);
+    assert.equal(orders.filter(o=>o.purpose==='entry').length,1);
+  }
+});

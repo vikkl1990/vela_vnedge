@@ -6,6 +6,7 @@ import { BookBadge, ConfirmDialog, Empty, Loading, Panel, Pill, StatusDot, Time 
 import { fmtMoney, fmtPrice, fmtUtc } from '../lib/format'
 import { ExecutionQualityPanel } from '../components/ExecutionQuality'
 import { TapeAuditPanel } from '../components/TapeAuditPanel'
+import { ExecutionHandoffPanel } from '../components/ExecutionHandoff'
 
 /**
  * The exchange side of the book: what the executor believes the exchange holds, the last time it
@@ -77,6 +78,7 @@ export function Exchange() {
       </div>
 
       <TapeAuditPanel />
+      <ExecutionHandoffPanel handoff={e.outbox} />
 
       <Panel title="Start-up recovery" right={<span className="muted small">what the ledger said was in flight, settled against the exchange</span>}>
         {!e.lastRecovery ? (

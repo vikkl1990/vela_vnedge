@@ -122,6 +122,17 @@ CREATE TABLE IF NOT EXISTS exchange_orders (
 CREATE INDEX IF NOT EXISTS idx_exchange_orders_position ON exchange_orders(position_id);
 CREATE INDEX IF NOT EXISTS idx_exchange_orders_state ON exchange_orders(state);
 
+-- A paper fill and its exchange command commit together. Historical paper orders are
+-- deliberately not imported: attaching an executor must never replay the old book.
+CREATE TABLE IF NOT EXISTS execution_commands (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, source_order_id INTEGER NOT NULL UNIQUE,
+  scope TEXT NOT NULL, position_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+  side TEXT NOT NULL, qty REAL NOT NULL, reason TEXT NOT NULL,
+  client_order_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL DEFAULT 'pending',
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_execution_commands_pending ON execution_commands(scope,state,id);
+
 -- scripts that cannot run here: see scanners/health.ts
 CREATE TABLE IF NOT EXISTS script_health (
   scanner_id TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL,

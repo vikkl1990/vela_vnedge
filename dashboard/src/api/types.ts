@@ -734,6 +734,11 @@ export interface LedgerRow {
   filledSize: number; avgPrice: number | null; fee: number | null; error: string | null; createdAt: number; updatedAt: number
 }
 export interface RecoveryReport { at: number; settled: number; restored: number; replacedStops: number; adoptedFills: number; cancelledStray: number; unmirrored: number[]; notes: string[] }
+export interface ExecutionHandoff {
+  scope: string; pending: number; blocked: number; delivered: number; cancelled: number; oldest: number | null;
+  recent: Array<{id:number;sourceOrderId:number;positionId:number;symbol:string;side:string;qty:number;reason:string;
+    state:'pending'|'dispatching'|'delivered'|'cancelled'|'blocked';createdAt:number;updatedAt:number;note:string|null}>;
+}
 export interface ExecutionStatus {
   mode: string; host: string | null; hasKeys: boolean; dryRun: boolean; bracket: boolean
   brackets: Array<{ positionId: number; symbol: string; stop: (BracketOrder & { exchangeId?: string }) | null; tps: Array<BracketOrder & { exchangeId?: string }> }>
@@ -744,6 +749,7 @@ export interface ExecutionStatus {
   exposure?: Record<string, number>
   lastRecovery?: RecoveryReport | null
   ledger?: LedgerRow[]
+  outbox?: ExecutionHandoff
   products?: number
 }
 

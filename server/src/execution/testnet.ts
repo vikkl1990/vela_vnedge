@@ -30,6 +30,7 @@ import type { PaperEngine } from '../paper/engine.ts';
 import { stopReason, type Position } from '../paper/logic.ts';
 import { DryRunTransport, RestTransport, resolveHost, wirePayload, OrderValidationError, type ExchangeOrder, type ExchangeTransport, type OrderPayload } from './client.ts';
 import { OrderLedger, type LedgerRow } from './ledger.ts';
+import { ExecutionOutbox } from './outbox.ts';
 
 const log = logger.scoped('execution');
 
@@ -50,6 +51,7 @@ type Confirmation = { status: 'filled' | 'unfilled' | 'unknown'; filledSize: num
 export class ExchangeExecutor {
   readonly transport: ExchangeTransport;
   readonly ledger: OrderLedger;
+  readonly outbox: ExecutionOutbox;
   private paper: PaperEngine;
   private cfgRef: () => AppConfig;
   private products = new Map<string, DeltaProduct>();
@@ -78,7 +80,12 @@ export class ExchangeExecutor {
     this.paper = paper; this.cfgRef = cfgRef; this.transport = transport; this.opts = opts;
     this.now = opts.now ?? (() => Date.now());
     this.sleep = opts.sleep ?? (ms => new Promise(r => setTimeout(r, ms)));
-    this.ledger = new OrderLedger(paper.store, this.now, transport.host);
+    const scope = transport.dryRun ? `${transport.host}:dry-run` : transport.host;
+    this.ledger = new OrderLedger(paper.store, this.now, scope);
+    this.outbox = new ExecutionOutbox(paper.store, scope, this.now);
+    if (paper.book !== 0) throw new Error('exchange execution requires the account book');
+    // Install before start(): fills can arrive while products and recovery are loading.
+    paper.executionIntent = (id, o) => { if (!this.adopting.has(o.positionId)) this.outbox.record(id, o); };
     this.mode = cfgRef().execution.mode;
     this.bracketEnabled = cfgRef().execution.bracket !== false;
   }
@@ -87,8 +94,8 @@ export class ExchangeExecutor {
   strandedExposure(): Array<{ positionId: number; symbol: string; qty: number; since: number; attempts: number }> {
     return [...this.stranded].map(([id, s]) => ({ positionId: id, symbol: s.symbol, qty: this.exposure.get(id) ?? 0, since: s.since, attempts: s.attempts }));
   }
-  /** True while any confirmed exposure or resting protection exists on the exchange. */
-  hasExposure(): boolean { return this.brackets.size > 0 || this.stranded.size > 0 || [...this.exposure.values()].some(q => q > 0); }
+  /** Confirmed exposure, protection, or work that could still create exposure. */
+  hasExposure(): boolean { return this.outbox.pending().length > 0 || this.ledger.unsettled().length > 0 || this.brackets.size > 0 || this.stranded.size > 0 || [...this.exposure.values()].some(q => q > 0); }
   private addExposure(id: number, delta: number) { const q = Math.max(0, (this.exposure.get(id) ?? 0) + delta); if (q > 0) this.exposure.set(id, q); else this.exposure.delete(id); return q; }
 
   /** Frozen at construction: the transport cannot change at runtime, so neither may what the executor says it is (review finding 2). */
@@ -109,11 +116,12 @@ export class ExchangeExecutor {
       try { const w = await this.transport.wallet(); log.info(`${this.transport.host} connected (${this.transport.dryRun ? 'dry-run writes' : 'live writes'}): ${Array.isArray(w) ? w.length : 0} wallet entries`); }
       catch (e: any) { log.error(`exchange init failed: ${e?.message ?? e}`); }
     } else log.warn(`execution ${this.mode} on ${this.transport.host}: no API keys → ${this.transport.dryRun ? 'payloads are logged only' : 'nothing can be sent'}`);
-    await this.enqueue(() => this.recover().then(() => undefined));
-    this.orderListener = (o: any) => { const external = this.adopting.has(o.positionId); this.enqueue(() => (external ? Promise.resolve() : this.onFill(o))); };
+    await this.enqueue(async () => { await this.recover(); await this.drainOutbox(); });
+    this.orderListener = (o: any) => { if (!this.adopting.has(o.positionId)) void this.enqueue(() => this.drainOutbox()); };
     this.positionListener = (e: { type: string; position: Position }) => { this.enqueue(() => this.onPosition(e)); };
     this.paper.on('order', this.orderListener);
     this.paper.on('position', this.positionListener);
+    await this.enqueue(() => this.drainOutbox());
     const sec = this.opts.reconcileSec ?? this.cfgRef().execution.reconcileSec;
     if (sec > 0) this.timer = setInterval(() => { this.reconcile().catch(e => log.warn(`reconcile failed: ${e?.message ?? e}`)); }, sec * 1000);
     const sweep = this.opts.sweepSec ?? this.cfgRef().execution.sweepSec ?? 10;
@@ -203,20 +211,80 @@ export class ExchangeExecutor {
 
   // ---- paper → exchange ----
 
-  private async onFill(o: { symbol: string; side: string; qty: number; reason: string; positionId: number; price: number }) {
+  /** The queue only wakes the durable handoff. A missed event cannot lose a command. */
+  private async drainOutbox(): Promise<void> {
+    if (!this.transport.hasAuth && !this.transport.dryRun) return;
+    const waiting = new Set<number>();
+    for (const cmd of this.outbox.pending()) {
+      if (waiting.has(cmd.positionId)) continue;
+      try {
+        const existing = this.ledger.byClientId(cmd.clientOrderId);
+        if (existing) {
+          // An intent itself is ambiguous after a crash. The ledger reconciles it;
+          // even a null client-id lookup is never permission for another POST.
+          await this.recover();
+          const settled=this.ledger.get(existing.id)!;
+          this.outbox.set(cmd.id, settled.state === 'rejected' ? 'blocked' : 'delivered', settled.error);
+          continue;
+        }
+        const pos = this.paper.position(cmd.positionId);
+        if (!pos) { this.outbox.set(cmd.id,'cancelled','source position removed or archived'); continue; }
+        if (cmd.reason === 'entry' && (pos.status !== 'open' || this.now()-cmd.createdAt > (this.cfgRef().execution.entryCommandMaxAgeSec ?? 60)*1000)) {
+          this.outbox.set(cmd.id,'cancelled',pos.status !== 'open' ? 'position closed before dispatch' : 'unsent entry expired');
+          if (pos.status === 'open') this.adopt(pos.id,()=>this.paper.voidPosition(pos.id,'exchange-command-expired'));
+          continue;
+        }
+        if (!this.productId(cmd.symbol)) {
+          this.outbox.set(cmd.id,'pending','product unavailable; retry after catalog refresh'); waiting.add(cmd.positionId); continue;
+        }
+        let qty=cmd.qty;
+        if (cmd.reason !== 'entry') {
+          const unsettled=this.ledger.unsettled().some(r=>r.positionId===cmd.positionId && (r.purpose==='entry'||r.purpose==='exit'||r.state!=='acknowledged'));
+          if (unsettled) { this.outbox.set(cmd.id,'pending','earlier exchange outcome unresolved'); waiting.add(cmd.positionId); continue; }
+          // Recovery may already have adopted a resting stop/TP. Never close it twice.
+          const gap=Math.max(0,(this.exposure.get(cmd.positionId)??0)-(pos.status==='open'?pos.qtyOpen:0));
+          qty=Math.min(qty,gap);
+          if (!(qty>0)) { this.outbox.set(cmd.id,'delivered','no remaining confirmed exposure to reduce'); continue; }
+        }
+        this.outbox.set(cmd.id,'dispatching');
+        await this.onFill({...cmd,qty},cmd.clientOrderId);
+        const row=this.ledger.byClientId(cmd.clientOrderId);
+        if (row) this.outbox.set(cmd.id,row.state==='rejected'?'blocked':'delivered',row.error);
+        else if (cmd.reason==='entry') this.outbox.set(cmd.id,'cancelled','entry not sent; see recovery and leverage diagnostics');
+        else {
+          const p=this.paper.position(cmd.positionId);
+          const gap=Math.max(0,(this.exposure.get(cmd.positionId)??0)-(p?.status==='open'?p.qtyOpen:0));
+          this.outbox.set(cmd.id,gap<=0?'delivered':'pending',gap<=0?'settled by resting protection':'protection outcome unresolved');
+          if(gap>0)waiting.add(cmd.positionId);
+        }
+      } catch(e:any) {
+        this.outbox.set(cmd.id,'pending',String(e?.message??e)); waiting.add(cmd.positionId);
+        log.error(`command #${cmd.id} retained for recovery: ${e?.message??e}`);
+      }
+    }
+  }
+
+  private async onFill(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, clientOrderId?: string) {
     if (o.reason === 'funding' || !(o.qty > 0)) return;
     const product_id = this.productId(o.symbol);
     if (!product_id) { log.warn(`no ${this.transport.host} product for ${o.symbol}; fill not mirrored`); return; }
-    if (o.reason === 'entry') return this.enter(o, product_id);
-    if (this.bracketEnabled && LEVEL_EXITS.has(o.reason) && this.brackets.has(o.positionId)) return this.settleLevel(o, product_id);
-    await this.marketExit(o, product_id);
+    if (o.reason === 'entry') return this.enter(o, product_id, clientOrderId);
+    if (this.bracketEnabled && LEVEL_EXITS.has(o.reason) && this.brackets.has(o.positionId)) return this.settleLevel(o, product_id, clientOrderId);
+    await this.marketExit(o, product_id, clientOrderId);
   }
 
-  private async enter(o: { symbol: string; side: string; qty: number; positionId: number }, product_id: number) {
+  private async enter(o: { symbol: string; side: string; qty: number; positionId: number }, product_id: number, clientOrderId?: string) {
     // decision 165: the exchange trades at the leverage the paper position was sized and its liquidation checked at
     const lev = await this.ensureLeverage(o.positionId, o.symbol, product_id);
     if (lev !== null) { this.adopt(o.positionId, () => this.paper.voidPosition(o.positionId, `exchange-leverage: ${lev}`)); return; }
-    const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: false, client_order_id: cid(o.positionId, 'entry'), purpose: 'entry' };
+    // Leverage is a network await: price events may close the paper trade while it is in flight.
+    const source=this.paper.position(o.positionId);
+    const command=clientOrderId?this.outbox.pending().find(c=>c.clientOrderId===clientOrderId):undefined;
+    if(source?.status!=='open')return;
+    if(command && this.now()-command.createdAt>(this.cfgRef().execution.entryCommandMaxAgeSec??60)*1000) {
+      this.adopt(o.positionId,()=>this.paper.voidPosition(o.positionId,'exchange-command-expired'));return;
+    }
+    const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: false, client_order_id: clientOrderId ?? cid(o.positionId, 'entry'), purpose: 'entry' };
     const sent = await this.send(payload, o.positionId, o.symbol);
     if (!sent.ok && sent.row.state === 'rejected') { this.adopt(o.positionId, () => this.paper.voidPosition(o.positionId, `exchange-rejected: ${sent.error}`)); return; }
     const c = await this.confirm(sent.row);
@@ -261,8 +329,8 @@ export class ExchangeExecutor {
   }
 
   /** A discretionary exit (reversal, script, manual, risk) or one with no resting order to lean on: reduce-only market, then restate. */
-  private async marketExit(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, product_id: number) {
-    const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: true, client_order_id: cid(o.positionId, o.reason), purpose: 'exit' };
+  private async marketExit(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, product_id: number, clientOrderId?: string) {
+    const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: true, client_order_id: clientOrderId ?? cid(o.positionId, o.reason), purpose: 'exit' };
     const sent = await this.send(payload, o.positionId, o.symbol, null, o.reason);
     if (!sent.ok && sent.row.state === 'rejected') { log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}) rejected by the exchange; the paper book is closed but the exchange may still hold it — reconcile will report the drift`); return; }
     const c = await this.confirm(sent.row);
@@ -274,11 +342,11 @@ export class ExchangeExecutor {
   }
 
   /** The paper book saw a level hit. Did the exchange? If so its price stands; if not within confirmSec, take it at market. */
-  private async settleLevel(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, product_id: number) {
+  private async settleLevel(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, product_id: number, clientOrderId?: string) {
     const b = this.brackets.get(o.positionId)!;
     const legNo = Number(o.reason.match(/^tp(\d)$/)?.[1] ?? 0);
     const leg = o.reason === 'sl' || o.reason === 'be' || o.reason === 'trail' || o.reason === 'liquidation' ? b.stop : b.tps.find(t => t.leg === legNo) ?? null;
-    if (!leg) { log.warn(`${o.symbol} ${o.reason}: no acknowledged exchange order covers it; sending a market exit`); return this.marketExit(o, product_id); }
+    if (!leg) { log.warn(`${o.symbol} ${o.reason}: no acknowledged exchange order covers it; sending a market exit`); return this.marketExit(o, product_id, clientOrderId); }
     const row = this.ledger.get(leg.ledgerId)!;
     let c = await this.confirm(row);
     if (c.status === 'unknown') {
@@ -291,12 +359,12 @@ export class ExchangeExecutor {
       this.addExposure(o.positionId, -c.filledSize);
       this.adopt(o.positionId, () => this.paper.restateFill(o.positionId, o.reason, { price: c.avgPrice, fee: c.fee }));
       this.dropLeg(b, leg);
-      if (c.filledSize < Math.round(o.qty)) { log.warn(`${o.symbol} ${o.reason}: exchange filled ${c.filledSize} of ${Math.round(o.qty)}; closing the rest at market`); await this.marketExit({ ...o, qty: Math.round(o.qty) - c.filledSize, reason: `${o.reason}-rest` }, product_id); }
+      if (c.filledSize < Math.round(o.qty)) { log.warn(`${o.symbol} ${o.reason}: exchange filled ${c.filledSize} of ${Math.round(o.qty)}; closing the rest at market`); await this.marketExit({ ...o, qty: Math.round(o.qty) - c.filledSize, reason: `${o.reason}-rest` }, product_id, clientOrderId); }
       return;
     }
     // Terminal cancellation confirms no fill. Never infer that from an empty lookup.
     this.dropLeg(b, leg);
-    await this.marketExit(o, product_id);
+    await this.marketExit(o, product_id, clientOrderId);
   }
 
   private dropLeg(b: Bracket, leg: Leg) { if (b.stop === leg) b.stop = null; else b.tps = b.tps.filter(t => t !== leg); }
@@ -447,7 +515,9 @@ export class ExchangeExecutor {
 
   /** Check every resting order and unconfirmed entry against the exchange; book what filled. */
   private async sweep(): Promise<void> {
-    if (this.recoveryPending || this.ledger.unsettled().some(r => (r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged')) await this.recover();
+    if(this.outbox.pending().some(c=>!this.productId(c.symbol)))await this.loadProducts();
+    if (this.recoveryPending || this.outbox.pending().length || this.ledger.unsettled().some(r => r.purpose==='exit' || ((r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged'))) await this.recover();
+    await this.drainOutbox();
     if (!this.brackets.size && !this.unconfirmed.size && !this.stranded.size) return;
     if (!this.transport.hasAuth && !this.transport.dryRun) return;
     for (const id of [...this.stranded.keys()]) await this.closeStranded(id);
@@ -483,8 +553,12 @@ export class ExchangeExecutor {
       if (this.stranded.has(b.positionId) && rest <= 0) { this.stranded.delete(b.positionId); await this.cancelBracket(b.positionId, 'stranded exposure closed by the resting order'); return; }
       if (pos && pos.status === 'open') {
         const reason = isStop ? stopReason(pos) : `tp${leg.leg}`;
-        log.warn(`${b.symbol} ${reason}: the exchange filled ${filled} @ ${o!.average_fill_price ?? leg.price} before the paper book saw it; booking it`);
-        this.adopt(b.positionId, () => this.paper.adoptExitFill(b.positionId, { price: o!.average_fill_price ?? leg.price, qty: filled, fee: o!.paid_commission ?? null, reason, at: this.now() }));
+        const waiting=this.outbox.pending().find(c=>c.positionId===pos.id && c.reason===reason);
+        if(waiting) this.adopt(pos.id,()=>this.paper.restateFill(pos.id,reason,{price:o!.average_fill_price??leg.price,fee:o!.paid_commission??null}));
+        else {
+          log.warn(`${b.symbol} ${reason}: the exchange filled ${filled} @ ${o!.average_fill_price ?? leg.price} before the paper book saw it; booking it`);
+          this.adopt(b.positionId, () => this.paper.adoptExitFill(b.positionId, { price: o!.average_fill_price ?? leg.price, qty: filled, fee: o!.paid_commission ?? null, reason, at: this.now() }));
+        }
         onAdopt?.();
       }
       return;
@@ -513,20 +587,27 @@ export class ExchangeExecutor {
     }
     // 1. orders sent before the last stop: what became of them? (resting stops and targets are
     //    verified against the exchange's open orders in step 2, not polled here)
-    for (const row of this.ledger.unsettled().filter(r => r.purpose !== 'stop' && r.purpose !== 'tp')) {
+    const interrupted = this.outbox.pending().flatMap(c => { const r=this.ledger.byClientId(c.clientOrderId);return r?[r]:[]; });
+    const recoverRows=[...new Map([...this.ledger.unsettled(),...interrupted].map(r=>[r.id,r])).values()];
+    for (const row of recoverRows.filter(r => r.purpose !== 'stop' && r.purpose !== 'tp')) {
       const pos = this.paper.position(row.positionId);
-      const c = await this.confirmOnce(row);
+      const c:Confirmation = row.state==='filled' ? {status:'filled',filledSize:row.filledSize,avgPrice:row.avgPrice,fee:row.fee}
+        : row.state==='rejected'||row.state==='cancelled' ? {status:'unfilled',filledSize:0,avgPrice:null,fee:null} : await this.confirmOnce(row);
       rep.settled++;
       if (c.status === 'filled' && pos && pos.status === 'open') {
-        if (row.purpose === 'entry' && pos.qtyOpen === pos.qty && (pos.qty !== c.filledSize || (c.avgPrice !== null && c.avgPrice !== pos.entryPrice))) { this.adopt(pos.id, () => this.paper.adoptEntryFill(pos.id, { price: c.avgPrice, qty: c.filledSize, fee: c.fee, at: row.updatedAt })); rep.adoptedFills++; }
+        if (row.purpose === 'entry' && pos.qtyOpen === pos.qty) { this.adopt(pos.id, () => this.paper.adoptEntryFill(pos.id, { price: c.avgPrice, qty: c.filledSize, fee: c.fee, at: row.updatedAt })); rep.adoptedFills++; }
         if (row.purpose === 'stop' || row.purpose === 'tp') { const reason = row.purpose === 'stop' ? stopReason(pos) : `tp${row.leg ?? 1}`; this.adopt(pos.id, () => this.paper.adoptExitFill(pos.id, { price: c.avgPrice ?? row.stopPrice ?? row.limitPrice ?? pos.entryPrice, qty: c.filledSize, fee: c.fee, reason, at: row.updatedAt })); rep.adoptedFills++; }
-        if (row.purpose === 'exit' && row.reason) this.adopt(pos.id, () => this.paper.restateFill(pos.id, row.reason!, { price: c.avgPrice, fee: c.fee }));
       }
+      if(c.status==='filled' && pos && row.purpose==='exit' && row.reason)this.adopt(pos.id,()=>this.paper.restateFill(pos.id,row.reason!,{price:c.avgPrice,fee:c.fee}));
       if (c.status === 'unfilled' && row.purpose === 'entry' && pos && pos.status === 'open' && pos.qtyOpen === pos.qty && pos.fills.length === 1) { this.adopt(pos.id, () => this.paper.voidPosition(pos.id, 'exchange-unfilled (recovered)')); rep.notes.push(`#${pos.id} voided: entry never filled`); }
       if (c.status === 'unknown' && row.purpose === 'entry' && pos && pos.status === 'open') this.unconfirmed.set(pos.id, row.id);
       else if (row.purpose === 'entry') this.unconfirmed.delete(row.positionId);
     }
     // 1b. exposure from the ledger: entries filled minus exits, stops and targets filled, per position
+    for(const cmd of this.outbox.pending().filter(c=>LEVEL_EXITS.has(c.reason))) {
+      const r=this.ledger.forPosition(cmd.positionId).find(r=>r.state==='filled' && (r.purpose==='stop' && !cmd.reason.startsWith('tp') || r.purpose==='tp' && `tp${r.leg}`===cmd.reason));
+      if(r)this.adopt(cmd.positionId,()=>this.paper.restateFill(cmd.positionId,cmd.reason,{price:r.avgPrice,fee:r.fee}));
+    }
     const bySize = new Map(this.ledger.filledExposure().map(r => [r.positionId, r.qty]));
     this.exposure.clear();
     for (const [id, q] of bySize) if (q > 0) this.exposure.set(id, q);
@@ -541,7 +622,11 @@ export class ExchangeExecutor {
     const ours = new Set<string>();
     for (const p of this.paper.openPositions()) {
       const rows = this.ledger.forPosition(p.id);
-      if (!rows.length) { rep.unmirrored.push(p.id); log.error(`#${p.id} ${p.symbol} is open on paper with no exchange history: NOT mirrored, NOT protected on the exchange — close it or accept it as paper-only`); continue; }
+      if (!rows.length) {
+        if(this.outbox.pending().some(c=>c.positionId===p.id&&c.reason==='entry'))rep.notes.push(`#${p.id}: durable entry waiting for dispatch`);
+        else {rep.unmirrored.push(p.id); log.error(`#${p.id} ${p.symbol} is open on paper with no exchange history: NOT mirrored, NOT protected on the exchange — close it or accept it as paper-only`);}
+        continue;
+      }
       if (uncertainProtection.has(p.id)) { rep.notes.push(`#${p.id}: protection submission unresolved; no duplicate sent`); continue; }
       if (!this.bracketEnabled) continue;
       const product_id = this.productId(p.symbol);
@@ -569,7 +654,7 @@ export class ExchangeExecutor {
     for (const o of openOrders) {
       if (!o.client_order_id?.startsWith(CID_PREFIX) || ours.has(String(o.id))) continue;
       const pending = this.ledger.byClientId(o.client_order_id);
-      if (pending && ['intent', 'submitted', 'unknown'].includes(pending.state)) continue;
+      if (pending && ['intent', 'submitted', 'acknowledged', 'unknown'].includes(pending.state)) continue;
       const known = [...this.brackets.values()].some(b => b.stop?.exchangeId === String(o.id) || b.tps.some(t => t.exchangeId === String(o.id)));
       if (known) continue;
       try { await this.transport.cancelOrder(o.id, o.product_id); rep.cancelledStray++; const r = this.ledger.byClientId(o.client_order_id); if (r) this.ledger.cancelled(r.id, 'stray at start'); log.warn(`cancelled stray order ${o.id} (${o.client_order_id}) on ${this.symbolOf(o.product_id)}`); }
@@ -648,6 +733,11 @@ export class ExchangeExecutor {
   async closeAll(opts: { confirm?: boolean } = {}): Promise<{ closed: Array<{ symbol: string; size: number; order: unknown }>; cancelled: number[]; dryRun: boolean }> {
     if (opts.confirm !== true) throw new Error('close-all needs { "confirm": true }');
     if (!this.transport.hasAuth && !this.transport.dryRun) throw new Error('no API keys configured');
+    // Flattening must not leave an unsent entry that can reopen exposure next sweep.
+    for(const cmd of this.outbox.pending())if(cmd.reason==='entry'&&!this.ledger.byClientId(cmd.clientOrderId)) {
+      this.outbox.set(cmd.id,'cancelled','cancelled by flatten exchange');
+      this.adopt(cmd.positionId,()=>this.paper.voidPosition(cmd.positionId,'exchange-flatten-unsent'));
+    }
     const positions = await this.transport.positions();
     const cancelled: number[] = [];
     const seen = new Set<number>();
@@ -671,6 +761,7 @@ export class ExchangeExecutor {
       mode: this.mode, host: this.transport.host, baseUrl: this.transport.baseUrl, hasKeys: this.transport.hasAuth, dryRun: this.transport.dryRun,
       bracket: this.bracketEnabled, products: this.products.size, brackets: [...this.brackets.values()].map(b => ({ positionId: b.positionId, symbol: b.symbol, stop: b.stop, tps: b.tps })),
       unconfirmed: [...this.unconfirmed.keys()], stranded: this.strandedExposure(), exposure: Object.fromEntries(this.exposure), lastReconcile: this.lastReconcile, lastRecovery: this.lastRecovery, ledger: this.ledger.recent(50),
+      outbox: this.outbox.status(),
       dryRunLog: this.transport instanceof DryRunTransport ? this.transport.log.slice(-50) : undefined,
     };
   }
