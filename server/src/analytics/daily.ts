@@ -35,7 +35,7 @@ function marginWeight(x: { ep: number; sl: number | null; fills: string | null }
 
 function book(db: Db, bt: number, from: number, to: number): BookDay {
   const rows = db.all<{ scanner_name: string; tf: string; exit_reason: string; pnl: number; fees: number; risk: number; peak: number | null; ep: number; sl: number | null; fills: string | null }>(
-    'SELECT scanner_name, tf, exit_reason, realized_pnl pnl, fees, risk_amount risk, peak_r peak, entry_price ep, sl_original sl, fills FROM positions p WHERE bt=? AND status=\'closed\' AND exit_at>=? AND exit_at<? AND (p.bt=0 OR NOT EXISTS (SELECT 1 FROM incubator_pairs i WHERE i.stage=\'tracked\' AND i.scanner_id=p.scanner_id AND i.symbol=p.symbol AND i.tf=p.tf))', bt, from, to);   // decision 139: tracker cells are not the shadow book's evidence
+    'SELECT scanner_name, tf, exit_reason, realized_pnl pnl, fees, risk_amount risk, peak_r peak, entry_price ep, sl_original sl, fills FROM positions p WHERE p.scanner_id NOT LIKE \'plan:%\' AND bt=? AND status=\'closed\' AND exit_at>=? AND exit_at<? AND (p.bt=0 OR NOT EXISTS (SELECT 1 FROM incubator_pairs i WHERE i.stage=\'tracked\' AND i.scanner_id=p.scanner_id AND i.symbol=p.symbol AND i.tf=p.tf))', bt, from, to);   // decision 139: tracker cells are not the shadow book's evidence
   const r = (x: typeof rows[number]) => (x.risk > 0 ? (x.pnl - x.fees) / x.risk : 0);
   const trails = rows.filter(x => x.exit_reason === 'trail' && x.risk > 0 && (x.peak ?? 0) > 0);
   const byTf: BookDay['byTf'] = {}; const byScanner = new Map<string, number>();

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS decision_trace (
 );
 CREATE INDEX IF NOT EXISTS idx_decision_trace_book_id ON decision_trace(book,id DESC);
 CREATE INDEX IF NOT EXISTS idx_decision_trace_signal ON decision_trace(signal_id,id);
+CREATE INDEX IF NOT EXISTS idx_decision_trace_position ON decision_trace(position_id,stage,id);
 
 CREATE TABLE IF NOT EXISTS evidence_flags (
  position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,status TEXT NOT NULL CHECK(status IN ('quarantined','cleared')),

@@ -1,3 +1,4 @@
+import { PlanComparisons } from './paper/planComparisons.ts';
 import {shadowCapacity} from './incubator/capacity.ts';
 import {admissionEvidence} from './incubator/evidencePriority.ts';
 import {EntryDepthGate,wireEntryDepth} from './risk/entryDepth.ts';
@@ -103,6 +104,7 @@ export class App {
   /** Symbols actually scanned after resolving the universe (list / top N / all). */
   resolvedSymbols: string[] = [];
 
+  readonly planComparisons: PlanComparisons;
   readonly entryDepth: EntryDepthGate;
   constructor(deps: AppDeps = {}) {
     const cfg = () => this.config.get();
@@ -170,7 +172,9 @@ export class App {
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.scanners.executorAttached = () => Boolean(this.executor);
     this.resolvedSymbols = cfg().symbols;
+    this.planComparisons = new PlanComparisons(this.db,cfg,this.shadow,id=>this.sourceHashFor(id));
     this.incubator = new ShadowRunner({
+      compare: input=>this.planComparisons.observe(input),
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
       mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),
@@ -665,7 +669,7 @@ export class App {
     const fpCache = new Map<string, string>();
     const fpFor = (sid: string, tf: string) => { const k = `${sid}|${tf}`; let v = fpCache.get(k); if (!v) { v = configFingerprint(this.config.get(), sid, tf, { source: this.sourceHashFor(sid), book: this.paper.book }).fp; fpCache.set(k, v); } return v; };
     const current = learnBook(liveAll.filter(t => t.configFp && t.configFp === fpFor(t.scannerId, t.tf)));
-    const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => (t.exitAt ?? 0) >= since).map(toLearn(this.shadow.book)));
+    const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => !t.scannerId.startsWith('plan:') && (t.exitAt ?? 0) >= since).map(toLearn(this.shadow.book)));
     this.enricher.flush();
     const counts = this.incubatorStore.counts();
     const hunt = this.db.kvGet<any>('incubator.lastHunt') ?? null;
@@ -673,7 +677,7 @@ export class App {
     const funnel = { stages: counts, lastHunt: hunt, shadowAgeDays: { median: ages.length ? ages[ages.length >> 1] : null, over30: ages.filter(a => a > 30).length }, gate: this.config.get().incubator.gate ?? null };
     // the go-live rule (decision 65): the journal's R series through the fleet's own halts, plus the checks a rule can state
     const cfg = this.config.get();
-    const liveTrades = this.paper.trades({ limit: 5000 }).filter(t => Number.isFinite(t.exitAt));
+    const liveTrades = this.paper.trades({ limit: 5000 }).filter(t => !t.scannerId.startsWith('plan:') && Number.isFinite(t.exitAt));
     const span = liveTrades.length > 1 ? (Math.max(...liveTrades.map(t => t.exitAt!)) - Math.min(...liveTrades.map(t => t.entryAt))) / 86_400_000 : 1;
     const halts = this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM positions WHERE bt=0 AND status='closed' AND exit_reason='risk-kill' AND exit_at > ?", since)?.n ?? 0;
     const riskState = this.risk.state();
@@ -701,7 +705,7 @@ export class App {
   mlYardstick(days = 60) {
     const since = Date.now() - days * 86_400_000;
     const collect = (engine: PaperEngine): YardTrade[] => engine.trades({ limit: 20000 })
-      .filter(t => Number.isFinite(t.exitAt) && (t.exitAt ?? 0) >= since && Number.isFinite(t.rMultiple))
+      .filter(t => !t.scannerId.startsWith('plan:') && Number.isFinite(t.exitAt) && (t.exitAt ?? 0) >= since && Number.isFinite(t.rMultiple))
       .map(t => {
         const r = t.rMultiple as number;
         if (typeof t.mlProb === 'number' && Number.isFinite(t.mlProb)) return { r, prob: t.mlProb, scored: 'entry' as const };

@@ -15,7 +15,7 @@ export function DecisionTrace() {
         <td><Time t={r.at}/><div>{r.symbol} · {r.tf}</div><div className="small muted">{r.scanner_id}</div></td>
         <td>{r.stage}<div className="small">{r.reason}</div><div className="small muted">Signal {r.signal_id??'—'} · Position {r.position_id??'—'}</div></td>
         <td>{dollars(r.snapshot.notional)} / {dollars(r.snapshot.risk)}</td>
-        <td>{dollars(r.snapshot.entryFee)} / {dollars(r.snapshot.standardExitFeeAtEntry)}{r.snapshot.offerConfigured&&<div className="small muted">Fee offer configured · eligibility unverified</div>}</td>
+        <td>{dollars(r.snapshot.entryFee)} / {dollars(r.snapshot.standardExitFeeAtEntry)}{r.snapshot.offerConfigured&&<div className="small muted">{r.snapshot.offerEligibility==='enrollment-recorded'?'Enrollment recorded; timing checked per close':'Enrollment unverified · full fees apply'}</div>}</td>
       </tr>)}</tbody>
     </table>{q.data.length===0&&<p>No recorded events yet. Earlier trades are not backfilled.</p>}</div>}
   </Panel>

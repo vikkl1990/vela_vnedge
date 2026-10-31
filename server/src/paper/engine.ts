@@ -1,3 +1,4 @@
+import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import {applyFundingSettlement} from './logic.ts';
 import {recordFillBudget} from './decisionTrace.ts';
 import {depthPlan} from './depthPlan.ts';
@@ -6,7 +7,7 @@ import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
 import {createReclaim, advanceReclaim, type ReclaimState} from './reclaim.ts';
 import {initReclaimAudit,recordReclaimEvent} from './reclaimAudit.ts';
 import type {Bar} from '../data/candleStore.ts';
-import type { EntryExecution } from './costs.ts';
+import { offerStatus, type EntryExecution } from './costs.ts';
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
 import { TF_SECONDS, type AppConfig, type ExitMode, type ExitOverride, type PaperConfig } from '../config.ts';
@@ -23,7 +24,7 @@ const log = logger.scoped('paper');
 interface FillContext { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' }
 
 export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number }
-type EntryContext = {scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
+export type EntryContext = {executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
 type ReclaimTrial = NonNullable<PaperConfig['reclaimTrials']>[number];
 type PlannedReclaim = {price: number; expiresAt: number; ruleKey: string};
 
@@ -58,6 +59,7 @@ export const QUIET_FILL_MS = 1000;
 
 /** Tape-mode entry waiting for its first print after signal time + latency. */
 export interface PendingEntry {
+  executionPlan?: ExecutionPlanSnapshot;
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; signalPrice: number; levels: LevelResult;
   market: MarketInfo; at: number; dueAt: number; signalId: number | null; features?: Record<string, number>; mlProb: number | null; score?: number; leverageMult: number; sizeScale?: number;
   /** Decision 185: a resting maker limit — its price, when it lapses, and what the levels are resolved from at the fill. */
@@ -104,8 +106,8 @@ export class PaperEngine extends EventEmitter {
   /** Portfolio risk layer; set by the composition root (app.ts). */
   risk: RiskGate | null = null;
   alignmentBars?: (symbol:string,tf:string)=>import('../data/candleStore.ts').Bar[];
-  private alignmentBlock(cell:{scannerId:string;symbol:string;tf:string},side:Side,at:number):string|null {
-    const rule=alignmentRule(this.paper,cell.scannerId,cell.symbol,cell.tf);
+  private alignmentBlock(cell:{scannerId:string;symbol:string;tf:string;executionPlan?:ExecutionPlanSnapshot},side:Side,at:number):string|null {
+    const rule=alignmentRule(cell.executionPlan?.paper??this.paper,cell.executionPlan?.sourceScannerId??cell.scannerId,cell.symbol,cell.tf);
     return rule?alignmentRefusal(rule,side,this.alignmentBars?.(cell.symbol,rule.contextTf)??[],at):null;
   }
   /**
@@ -117,8 +119,8 @@ export class PaperEngine extends EventEmitter {
 
   marketDepthPrice?: (symbol:string,side:Side,qty:number)=>{price?:number;reject?:string}|undefined;
   prepareEntryDepth?: (symbol: string) => Promise<void>;
-  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number}) => {reject?:string;crossingPct?:number};
-  private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker:boolean,cell:{scannerId:string;tf:string;market:MarketInfo;score?:number}):string|null {
+  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number;executionPlan?:ExecutionPlanSnapshot}) => {reject?:string;crossingPct?:number};
+  private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker:boolean,cell:{scannerId:string;tf:string;market:MarketInfo;score?:number;executionPlan?:ExecutionPlanSnapshot}):string|null {
     const d=this.entryDepthGate?.({symbol,qty,contractValue:cv,maker,at,price,sl,...cell});
     if(d?.reject)return d.reject;
     return d?.crossingPct!==undefined?checkRiskVsFees(price,sl,cfg,symbol,d.crossingPct,{maker}):null;
@@ -169,6 +171,14 @@ export class PaperEngine extends EventEmitter {
       if (row.signal_id) db.updateSignalAction(row.signal_id, 'rejected:pending entry dropped on restart', null);
     }
     log.info(`loaded ${this.open.size} open ${this.book === 0 ? 'paper' : 'shadow'} positions`);
+  }
+
+
+  private configFor(cell: {scannerId:string;symbol:string;tf:string;entryAt?:number;at?:number;executionPlan?:ExecutionPlanSnapshot}): PaperConfig {
+    return cell.executionPlan?.paper ?? exitConfigFor(this.paper,cell.symbol,this.scannerExit?.(cell.scannerId,cell.entryAt ?? cell.at),cell.tf);
+  }
+  private planEnabled(p: ExecutionPlanSnapshot | undefined): boolean {
+    return !p || (this.book===2 && this.cfgRef().executionPlans?.some(x=>x.enabled&&x.id===p.id&&x.revision===p.revision)===true);
   }
 
   private get paper(): PaperConfig { return this.cfgRef().paper; }
@@ -239,7 +249,7 @@ export class PaperEngine extends EventEmitter {
 
   /** The same override resolution used by fills, including script-mode policy. */
   view(p: Position, exchangeMark?: number | null) {
-    return positionView(p, this.mark(p.symbol), exchangeMark, exitConfigFor(this.paper, p.symbol, this.scannerExit?.(p.scannerId, p.entryAt), p.tf));
+    return positionView(p, this.mark(p.symbol), exchangeMark, this.configFor(p));
   }
   openPositions(): Position[] { return [...this.open.values()]; }
   position(id: number): Position | undefined { return this.open.get(id) ?? (this.db.get<any>('SELECT * FROM positions WHERE id=?', id) ? rowToPosition(this.db.get<any>('SELECT * FROM positions WHERE id=?', id)) : undefined); }
@@ -314,8 +324,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   /** Paper config with drawdown scaling applied (risk % and leverage bounds multiplied by `mult`). */
-  private scaledCfg(mult: number): PaperConfig {
-    const cfg = this.paper;
+  private scaledCfg(mult: number, cfg = this.paper): PaperConfig {
     if (!(mult > 0) || mult >= 1) return cfg;
     const maxLeverage = Math.max(1, cfg.maxLeverage * mult);
     // decision 170: margin sizing reads neither riskPerTradePct nor maxLeverage (5× and 20× sit under it), so the drawdown
@@ -348,21 +357,22 @@ export class PaperEngine extends EventEmitter {
     return {key,day,entries:saved?.day===day?saved.entries:0};
   }
   onEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
-    const auditConfig = configFingerprint(this.cfgRef(),ctx.scannerId,ctx.tf,{source:this.sourceHashFor?.(ctx.scannerId)??null,book:this.book});
+    if (!this.planEnabled(ctx.executionPlan)) return {action:"rejected",reason:"research plan disabled or wrong book"};
+    const auditConfig = configFingerprint(this.cfgRef(),ctx.scannerId,ctx.tf,{source:this.sourceHashFor?.(ctx.scannerId)??null,book:this.book,plan:ctx.executionPlan});
     this.db.run('INSERT OR IGNORE INTO config_fingerprints(fp,parts,first_at) VALUES(?,?,?)',auditConfig.fp,JSON.stringify(auditConfig.parts),Date.now());
     const write = (stage: string, reason: string | null, positionId: number | null = null) => this.db.run(
       'INSERT INTO decision_trace(at,book,signal_id,position_id,scanner_id,symbol,tf,stage,reason,snapshot) VALUES(?,?,?,?,?,?,?,?,?,?)',
       Date.now(),this.book,ctx.signalId,positionId,ctx.scannerId,ctx.symbol,ctx.tf,stage,reason,
-      JSON.stringify({version:1,configFp:auditConfig.fp,signalAt:ctx.at,reference:ctx.refPrice,side:ev.side,atr:ctx.atr??null,
+      JSON.stringify({version:2,executionPlan:ctx.executionPlan ? {id:ctx.executionPlan.id,revision:ctx.executionPlan.revision,signature:ctx.executionPlan.signature} : null,configFp:auditConfig.fp,signalAt:ctx.at,reference:ctx.refPrice,side:ev.side,atr:ctx.atr??null,
         scannerStop:ev.sl??null,scannerTargets:ev.tp??[],quote:this.quotes?.markState?.(ctx.symbol)??null,
         market:ctx.market,sizeScale:ctx.sizeScale??1,feeRatePct:this.paper.feeRatePct,
         makerFeeRatePct:this.paper.makerFeeRatePct,feeTaxPct:this.paper.feeTaxPct,
         minRiskFeeRatio:this.paper.minRiskFeeRatio,offerConfigured:!!this.paper.scalperOffer?.enabled,
-        offerEligibility:'unverified',sourceHash:this.sourceHashFor?.(ctx.scannerId)??null}));
+        offerEligibility:offerStatus(this.paper),sourceHash:this.sourceHashFor?.(ctx.scannerId)??null}));
     write('received',null);
     try {
       const decision = this.decideEntry(ev,ctx);
-      write(decision.action,decision.reason??null,decision.position?.id??null);
+      write(decision.action,decision.reason??null,decision.position?.id??decision.pendingId??null);
       return decision;
     } catch (error) {
       write('error','entry processing failed; inspect service log');
@@ -384,7 +394,7 @@ export class PaperEngine extends EventEmitter {
     if (this.paper.maxSignalAgeSec>0 && age>this.paper.maxSignalAgeSec) return refuse('stale reclaim signal');
     if (!(ctx.atr && ctx.atr>0)) return refuse('reclaim setup needs ATR');
     if (this.reclaimCount(ctx,ctx.at).entries>=rule.maxDailyEntries) return refuse('reclaim trial daily order limit');
-    const cfg=exitConfigFor(this.paper,ctx.symbol,this.scannerExit?.(ctx.scannerId,ctx.at),ctx.tf);
+    const cfg=this.configFor(ctx);
     const levels=resolveLevels({side:ev.side!,price:ctx.refPrice,sl:ev.sl,tp:ev.tp,atr:ctx.atr},cfg,ctx.market.tickSize);
     if ('error' in levels) return refuse(levels.error);
     if (cfg.skipScriptStops && levels.source!=='atr-fallback') return refuse("the scanner's own stop: reclaim trial uses ATR stops");
@@ -425,7 +435,7 @@ export class PaperEngine extends EventEmitter {
   private executeEntry(ev: ScanEvent, ctx: EntryContext, planned?: PlannedReclaim): EntryDecision {
     // the market's and the scanner's own rules, so a stop width they ask for is used at entry and
     // then carried on the position for the rest of the trade (decision 43)
-    const cfg = exitConfigFor(this.paper, ctx.symbol, this.scannerExit?.(ctx.scannerId, ctx.at), ctx.tf);
+    const cfg = this.configFor(ctx);
     const alignment=this.alignmentBlock(ctx,ev.side!,ctx.at);
     if(alignment)return {action:'rejected',reason:alignment};
     if (ctx.sizeScale !== undefined && !(Number.isFinite(ctx.sizeScale) && ctx.sizeScale > 0 && ctx.sizeScale <= 1)) return {action:'rejected',reason:'invalid entry size scale'};
@@ -482,7 +492,7 @@ export class PaperEngine extends EventEmitter {
     if ('error' in levels) return refused(levels.error);
     // decision 146: a stop the scanner placed itself (source script or mixed) loses in both books and both halves of
     // decision 145's sample; the account takes only entries on the engine's own ATR stop. The shadow book keeps them.
-    if (this.book === 0 && cfg.skipScriptStops && levels.source !== 'atr-fallback') return refused("the scanner's own stop: the account takes only the ATR stop (decision 146)");
+    if ((this.book === 0 || ctx.executionPlan?.requireAtrStop) && cfg.skipScriptStops && levels.source !== 'atr-fallback') return refused("the scanner's own stop: the account takes only the ATR stop (decision 146)");
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol, this.spreadPct(ctx.symbol, cfg, ctx.at), { maker: willRestLimit });
     if (feeErr) return refused(feeErr);
     // portfolio risk layer: kill switches, position caps, cooldowns, regime filter, drawdown scaling
@@ -492,10 +502,10 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return refused(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    let size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted }, ctx.sizeScale);
+    let size = this.size(price, levels.sl, ctx.market, ev.score ?? ctx.scoreOverride, leverageMult, replacing?.id, { scannerId: ctx.scannerId, symbol: ctx.symbol, tf: ctx.tf, at: ctx.at, executionPlan:ctx.executionPlan }, { maker: willRestLimit, quoted: !willRestLimit && quoted.quoted }, ctx.sizeScale);
     if (size.qty < 1) return refused(size.reason ?? 'size');
-    if(!willRestLimit&&this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&this.marketDepthPrice?.(ctx.symbol,ev.side!,size.qty)!==undefined){
-      const plan=depthPlan(size,price,ev.side!,n=>this.marketDepthPrice!(ctx.symbol,ev.side!,n)!,p=>this.size(p,levels.sl,ctx.market,ev.score??ctx.scoreOverride,leverageMult,replacing?.id,{scannerId:ctx.scannerId,symbol:ctx.symbol,tf:ctx.tf,at:ctx.at},{quoted:true},ctx.sizeScale));
+    if(!willRestLimit&&this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&(this.book===0||!!ctx.executionPlan)&&this.marketDepthPrice?.(ctx.symbol,ev.side!,size.qty)!==undefined){
+      const plan=depthPlan(size,price,ev.side!,n=>this.marketDepthPrice!(ctx.symbol,ev.side!,n)!,p=>this.size(p,levels.sl,ctx.market,ev.score??ctx.scoreOverride,leverageMult,replacing?.id,{scannerId:ctx.scannerId,symbol:ctx.symbol,tf:ctx.tf,at:ctx.at,executionPlan:ctx.executionPlan},{quoted:true},ctx.sizeScale));
       if('reject'in plan)return refused(plan.reject);
       price=plan.price;size=plan.size;quoted.quoted=true;entryContext.source='depth';
       if(levels.tp.some(tp=>ev.side==='long'?price>=tp:price<=tp))return refused('depth price moved past target');
@@ -523,7 +533,7 @@ export class PaperEngine extends EventEmitter {
     if (willRestLimit && le) {
       const off = limitOffset;
       const id = this.nextId();
-      const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
+      const pe: PendingEntry = { id, executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
         reclaimRuleKey:planned?.ruleKey,limit: { price: limitPrice!, expiresAt: planned?.expiresAt ?? ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
       this.pending.set(id, pe);
       this.emit('pending', { type: 'placed', entry: pe });   // decision 190: the tape audit registers the order at once
@@ -535,14 +545,14 @@ export class PaperEngine extends EventEmitter {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
       // first price after that — a tape print, or in candles mode the next 1m candle update, or the mark once the feed is quiet
       const id = this.nextId();
-      const pe: PendingEntry = { id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
+      const pe: PendingEntry = { id, executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
         ...(deferReversal ? { replacingId: replacing!.id } : {}) };
       this.pending.set(id, pe);
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, price, pe.at, pe.signalId, JSON.stringify({ pending: { dueAt: pe.dueAt, levels } }), id);
       log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
       return { action: 'pending', reason: this.tapeMode ? 'awaiting tape fill' : 'awaiting fill after the latency window', pendingId: id, closed };
     }
-    const pos = this.openAt(this.nextId(), { scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, maintenanceMarginPct: ctx.market.maintenanceMarginPct, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg, entryContext);
+    const pos = this.openAt(this.nextId(), { executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, maintenanceMarginPct: ctx.market.maintenanceMarginPct, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg, entryContext);
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
   }
 
@@ -566,8 +576,9 @@ export class PaperEngine extends EventEmitter {
     return sizeContracts(req.price,req.sl,{equity,availableMargin:equity,contractValue:req.market.contractValue,tickSize:req.market.tickSize,maintenanceMarginPct:req.market.maintenanceMarginPct,maxLeverage:req.market.maxLeverage,cfg,wantedLeverage,entryExecution:{maker:req.maker}},0,req.score).qty;
   }
 
-  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number, cell?: { scannerId: string; symbol: string; tf: string; at: number }, entryExecution?: EntryExecution, sizeScale = 1) {
-    const cfg = this.scaledCfg(leverageMult);
+  private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number, cell?: { scannerId: string; symbol: string; tf: string; at: number; executionPlan?:ExecutionPlanSnapshot }, entryExecution?: EntryExecution, sizeScale = 1) {
+    const cfg = this.scaledCfg(leverageMult,cell?.executionPlan?.paper ?? this.paper);
+    if(cell?.executionPlan) return sizeContracts(price,sl,{equity:cell.executionPlan.referenceEquity,availableMargin:cell.executionPlan.referenceEquity,contractValue:market.contractValue,tickSize:market.tickSize,maintenanceMarginPct:market.maintenanceMarginPct,maxLeverage:market.maxLeverage,cfg,wantedLeverage:cfg.marginLeverage?.base,entryExecution},0,score);
     const wantedLeverage = cfg.sizingMode === 'margin' && cell ? this.cellLeverage(cell, cfg).leverage : undefined;
     const others = [...this.open.values()].filter(p => p.id !== replacing);
     const openNotional = others.reduce((a, p) => a + notionalOf(p), 0);
@@ -580,11 +591,12 @@ export class PaperEngine extends EventEmitter {
     return {...base,qty,riskAmount:base.riskAmount*fraction,leverage:base.leverage*fraction,...(qty<1?{reason:'copy pilot quantity below one contract'}:{})};
   }
 
-  private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string }, cfg: PaperConfig, context: FillContext): Position {
+  private openAt(id: number, p: Omit<Parameters<typeof openPosition>[0], 'id' | 'cfg' | 'bt' | 'lastPriceBar'> & { scannerTag: string; executionPlan?: ExecutionPlanSnapshot }, cfg: PaperConfig, context: FillContext): Position {
     // `quoted` entries already crossed the real spread; openPosition adds depth impact only
     const pos = openPosition({ ...p, id, cfg, bt: false, lastPriceBar: this.priceBars.get(p.symbol) });
+    pos.executionPlan = p.executionPlan;
     try {
-      const f = configFingerprint(this.cfgRef(), pos.scannerId, pos.tf, { source: this.sourceHashFor?.(pos.scannerId) ?? null, book: this.book });
+      const f = configFingerprint(this.cfgRef(), pos.scannerId, pos.tf, { source: this.sourceHashFor?.(pos.scannerId) ?? null, book: this.book, plan:p.executionPlan });
       pos.configFp = f.fp;
       // decision 190: the full settings behind a fingerprint, kept once, so a hash can always be explained
       if (!this.fpSeen.has(f.fp)) { this.fpSeen.add(f.fp); this.db.run('INSERT OR IGNORE INTO config_fingerprints(fp, parts, first_at) VALUES (?,?,?)', f.fp, JSON.stringify(f.parts), Date.now()); }
@@ -617,7 +629,7 @@ export class PaperEngine extends EventEmitter {
   private fillLimit(pe: PendingEntry, at: number, eventAt = at): Position | null {
     this.pending.delete(pe.id);
     // the scanner's and the market's own stop and exit rules, as at entry (decision 190: the global ones were used)
-    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at), pe.tf), L = pe.limit!;
+    const cfg = this.configFor(pe), L = pe.limit!;
     const cancel = (reason: string) => {
       this.auditReclaim(pe,'cancelled',at,reason);
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
@@ -628,6 +640,7 @@ export class PaperEngine extends EventEmitter {
     };
     if (pe.features?.copy_pilot && (!this.cfgRef().incubator.mirror?.enabled || !this.cfgRef().incubator.mirror?.pilot || this.cfgRef().execution.mode !== 'paper')) return cancel('copy pilot disabled');
     if (pe.features?.reclaim_trial && !this.reclaimAvailable(pe,pe.reclaimRuleKey)) return cancel('reclaim trial disabled or changed');
+    if(!this.planEnabled(pe.executionPlan))return cancel("research plan disabled");
     const alignment=this.alignmentBlock(pe,pe.side,at);
     if(alignment)return cancel(alignment);
     const exchangeBlock = this.entryBlock?.(pe.symbol, at);
@@ -648,7 +661,7 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return cancel(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at }, { maker: true }, pe.sizeScale);
+    const size = this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at, executionPlan:pe.executionPlan }, { maker: true }, pe.sizeScale);
     if (size.qty < 1) return cancel(size.reason ?? 'size');
     const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,L.price,levels.sl,cfg,at,true,pe);
     if(depthBlock)return cancel(depthBlock);
@@ -658,14 +671,14 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * L.price });
       if (x) return cancel(`risk ${x}`);
     }
-    return this.openAt(pe.id, { scannerId: pe.scannerId, maker: true, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: L.price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} limit +${Math.round((at - pe.at) / 60_000)}m` }, cfg, { ref: L.price, source: 'quote' });
+    return this.openAt(pe.id, { executionPlan:pe.executionPlan, scannerId: pe.scannerId, maker: true, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: L.price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} limit +${Math.round((at - pe.at) / 60_000)}m` }, cfg, { ref: L.price, source: 'quote' });
   }
 
   /** Fill a pending entry at `price` (first print after the latency window, or the 1m close when the tape is silent). */
   private fillPending(pe: PendingEntry, priceIn: number, at: number, source: 'tape' | 'candle', receivedAt = Date.now()): Position | null {
     let price = priceIn;
     this.pending.delete(pe.id);
-    const cfg = exitConfigFor(this.paper, pe.symbol, this.scannerExit?.(pe.scannerId, pe.at), pe.tf);
+    const cfg = this.configFor(pe);
     const cancel = (reason: string) => {
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
       if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
@@ -673,6 +686,7 @@ export class PaperEngine extends EventEmitter {
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
+    if(!this.planEnabled(pe.executionPlan))return cancel("research plan disabled");
     const alignment=this.alignmentBlock(pe,pe.side,receivedAt);
     if(alignment)return cancel(alignment);
     if (pe.features?.copy_pilot && (!this.cfgRef().incubator.mirror?.enabled || !this.cfgRef().incubator.mirror?.pilot || this.cfgRef().execution.mode !== 'paper')) return cancel('copy pilot disabled');
@@ -707,10 +721,10 @@ export class PaperEngine extends EventEmitter {
       if (g.reject) return cancel(`risk ${g.reject}`);
       leverageMult = g.leverageMult;
     }
-    let size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt }, { quoted }, pe.sizeScale);
+    let size = this.size(price, levels.sl, pe.market, pe.score, leverageMult, held?.id, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at: receivedAt, executionPlan:pe.executionPlan }, { quoted }, pe.sizeScale);
     if (size.qty < 1) return cancel(size.reason ?? 'size');
-    if(this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&this.marketDepthPrice?.(pe.symbol,pe.side,size.qty)!==undefined){
-      const plan=depthPlan(size,price,pe.side,n=>this.marketDepthPrice!(pe.symbol,pe.side,n)!,p=>this.size(p,levels.sl,pe.market,pe.score,leverageMult,held?.id,{scannerId:pe.scannerId,symbol:pe.symbol,tf:pe.tf,at:receivedAt},{quoted:true},pe.sizeScale));
+    if(this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&(this.book===0||!!pe.executionPlan)&&this.marketDepthPrice?.(pe.symbol,pe.side,size.qty)!==undefined){
+      const plan=depthPlan(size,price,pe.side,n=>this.marketDepthPrice!(pe.symbol,pe.side,n)!,p=>this.size(p,levels.sl,pe.market,pe.score,leverageMult,held?.id,{scannerId:pe.scannerId,symbol:pe.symbol,tf:pe.tf,at:receivedAt,executionPlan:pe.executionPlan},{quoted:true},pe.sizeScale));
       if('reject'in plan)return cancel(plan.reject);
       price=plan.price;size=plan.size;quoted=true;context.source='depth';
       if(levels.tp.some(tp=>pe.side==='long'?price>=tp:price<=tp))return cancel('depth price moved past target');
@@ -731,7 +745,7 @@ export class PaperEngine extends EventEmitter {
       const exitQuote = this.marketPrice(held.symbol, held.side === 'long' ? 'sell' : 'buy', priceIn, cfg, receivedAt);
       if (!this.applyFills(held, [fillExit(held, exitQuote.price, held.qtyOpen, 'reversal', receivedAt, cfg, exitQuote.source === 'quote' ? 'quoted' : true)], { ref: priceIn, source: exitQuote.source })) return cancel('reversal: the held position could not be closed');
     }
-    const pos = this.openAt(pe.id, { scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: price, at: receivedAt, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg, context);
+    const pos = this.openAt(pe.id, { executionPlan:pe.executionPlan, scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: price, at: receivedAt, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg, context);
     return pos;
   }
 
@@ -785,7 +799,7 @@ export class PaperEngine extends EventEmitter {
             // new position a free recovery until the next print. Only adverse stops
             // are evaluated here; this print cannot earn a same-fill target/trail.
             if (pos.sl !== null && (pos.side === 'long' ? price <= pos.sl : price >= pos.sl)) {
-              const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
+              const cfg = this.configFor(pos);
               const exits = applyTrade(pos, {time: observedAt, price, qty}, cfg, this.markPrices.get(symbol)?.price);
               if (exits.length && this.applyFills(pos, exits)) for (const f of exits) this.recordPath(pos, f.price, observedAt, f.reason, 'entry print crossed stop (tape)');
             }
@@ -800,8 +814,10 @@ export class PaperEngine extends EventEmitter {
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol || filled.has(pos.id) || time < pos.entryAt) continue;
       const slBefore = pos.sl, offBefore = pos.trailOff;
-      const atr = (this.paper.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined;
-      const fills = applyTrade(pos, { time, price, qty }, exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf), mark, atr);
+      const atr = (this.configFor(pos).trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined;
+      const fills = applyTrade(pos, { time, price, qty }, this.configFor(pos), mark, atr);
+      const maxHold=pos.executionPlan?.maxHoldMinutes;
+      if(pos.status==="open" && maxHold && time-pos.entryAt>=maxHold*60_000)fills.push(fillExit(pos,price,pos.qtyOpen,"plan_time",time,this.configFor(pos),true));
       const committed = fills.length ? this.applyFills(pos, fills) : true;
       if (!fills.length && (pos.sl !== slBefore || pos.trailOff !== offBefore)) { this.persist(pos); this.emit('position', { type: 'updated', position: pos }); }
       if (committed) for (const f of fills) this.recordPath(pos, f.price, time, f.reason, `${f.qty} at ${f.price} (tape)`);
@@ -819,7 +835,7 @@ export class PaperEngine extends EventEmitter {
     if (!this.tapeMode) return;
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
-      const fills = applyMark(pos, price, at, this.paper);
+      const fills = applyMark(pos, price, at, this.configFor(pos));
       if (fills.length) this.applyFills(pos, fills);
     }
   }
@@ -866,7 +882,7 @@ export class PaperEngine extends EventEmitter {
     // A script notification is a market instruction received now, including TP labels.
     // Resting targets are filled independently by the tape/candle path; a label cannot backdate one.
     const fallback = this.marks.get(symbol) ?? pos.lastPriceBar?.close ?? pos.entryPrice;
-    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
+    const cfg = this.configFor(pos);
     const quote = this.marketPrice(symbol, pos.side === 'long' ? 'sell' : 'buy', fallback, cfg, at);
     const fills = applyScriptExit(pos, exitType, undefined, at, cfg, exitMode, fallback, { marketPrice: quote.price, quoted: quote.source === 'quote' });
     if (fills.length) this.applyFills(pos, fills, { ref: fallback, source: quote.source });
@@ -909,12 +925,14 @@ export class PaperEngine extends EventEmitter {
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
-      const pcfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
+      const pcfg = this.configFor(pos);
       const slBefore = pos.sl;
       const fills = applyLiveBar(pos, bar, pcfg, eventAt, (pcfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
+      const maxHold=pos.executionPlan?.maxHoldMinutes;
+      if(!historical && pos.status==="open" && maxHold && eventAt-pos.entryAt>=maxHold*60_000)fills.push(fillExit(pos,bar.close,pos.qtyOpen,"plan_time",eventAt,pcfg,true));
       if (fills.length) this.applyFills(pos, fills);
       // decision 178: the structure stop of the last closed bar of the position's timeframe, over the trail, from the next minute on
-      const st = this.paper.structureTrail;
+      const st = pcfg.structureTrail;
       if (pos.status === 'open' && st?.enabled && this.structureFor && st.books.includes(this.book === 0 ? 'account' : 'shadow')) {
         const level = this.structureFor(pos.symbol, pos.tf);
         if (level) modelTrail(pos, bar, { level });
@@ -926,8 +944,8 @@ export class PaperEngine extends EventEmitter {
         const sf = earlyStallExit(pos, bar.close, eventAt, pcfg);
         if (sf) this.applyFills(pos, [sf]);
       }
-      if (pos.status === 'open' && this.paper.trendExit?.enabled && !historical) {
-        const f = trendExit(pos, this.trendFor?.(pos.symbol, pos.tf), bar.close, eventAt, this.paper);
+      if (pos.status === 'open' && pcfg.trendExit?.enabled && !historical) {
+        const f = trendExit(pos, this.trendFor?.(pos.symbol, pos.tf), bar.close, eventAt, pcfg);
         if (f) this.applyFills(pos, [f]);
       }
       else if (pos.lastPriceBar !== previous) this.persist(pos);
@@ -948,7 +966,7 @@ export class PaperEngine extends EventEmitter {
     const entry = pos.fills[0];
     if (pos.qtyOpen !== pos.qty) { log.error(`adoptEntryFill #${id}: position already partly exited; entry not restated`); return pos; }
     const price = f.price ?? entry.price;
-    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
+    const cfg = this.configFor(pos);
     const fee = f.fee ?? (f.qty === pos.qty ? entry.fee : entry.fee * f.qty / pos.qty);
     pos.entryPrice = price; pos.qty = f.qty; pos.qtyOpen = f.qty;
     pos.legs = splitLegs(f.qty, cfg.tpSplit, pos.tp.length);
@@ -986,7 +1004,7 @@ export class PaperEngine extends EventEmitter {
   adoptExitFill(id: number, f: { price: number; qty: number; fee: number | null; reason: string; at: number }): Position | undefined {
     const pos = this.open.get(id);
     if (!pos || !(f.qty > 0)) return undefined;
-    const cfg = exitConfigFor(this.paper, pos.symbol, this.scannerExit?.(pos.scannerId, pos.entryAt), pos.tf);
+    const cfg = this.configFor(pos);
     const leg = Number(f.reason.match(/^tp(\d)$/)?.[1] ?? 0);
     if (leg > 0 && pos.tpHit[leg - 1] !== undefined) pos.tpHit[leg - 1] = true;
     const fill = fillExit(pos, f.price, f.qty, f.reason, f.at, cfg, false);
@@ -1020,7 +1038,7 @@ export class PaperEngine extends EventEmitter {
 
   closeForFunding(id: number, at: number): boolean {
     const pos=this.open.get(id); if (!pos) return false;
-    const cfg=exitConfigFor(this.paper,pos.symbol,this.scannerExit?.(pos.scannerId,pos.entryAt),pos.tf);
+    const cfg=this.configFor(pos);
     const px=this.quotes?.executable(pos.symbol,pos.side==='long'?'sell':'buy',cfg.quoteMaxAgeMs,at);
     if (!(px && px>0)) return false;
     return this.applyFills(pos,[fillExit(pos,px,pos.qtyOpen,'funding-avoid',at,cfg,'quoted')],{ref:px,source:'quote'});
@@ -1030,7 +1048,7 @@ export class PaperEngine extends EventEmitter {
     const pos = this.open.get(id);
     if (!pos) return undefined;
     const px = this.marks.get(pos.symbol) ?? pos.entryPrice;
-    this.applyFills(pos, [fillExit(pos, px, pos.qtyOpen, reason, at, this.paper, true)]);
+    this.applyFills(pos, [fillExit(pos, px, pos.qtyOpen, reason, at, this.configFor(pos), true)]);
     return pos;
   }
 
@@ -1189,7 +1207,7 @@ export class PaperEngine extends EventEmitter {
       `UPDATE positions SET status=?, scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, qty=?, qty_open=?, contract_value=?, entry_price=?, entry_at=?, sl=?, sl_original=?, tp=?, tp_hit=?, break_even=?,
        realized_pnl=?, fees=?, risk_amount=?, levels_source=?, exit_at=?, exit_price=?, exit_reason=?, signal_id=?, fills=?, bt=? WHERE id=?`,
       p.status, p.scannerId, p.scannerName, p.symbol, p.tf, p.side, p.qty, p.qtyOpen, p.contractValue, p.entryPrice, p.entryAt, p.sl, p.slOriginal, JSON.stringify(p.tp), JSON.stringify(p.tpHit), p.breakEven ? 1 : 0,
-      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs, leverage: p.leverage, marginLeverage: p.marginLeverage, maintenanceMarginPct: p.maintenanceMarginPct, liqPrice: p.liqPrice, features: p.features, mlProb: p.mlProb, lastPriceBar: p.lastPriceBar, peakR: p.peakR, trailOff: p.trailOff, trailArmedAt: p.trailArmedAt, trailPeakR: p.trailPeakR, trailPeakAt: p.trailPeakAt }), this.book, p.id,
+      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ executionPlan:p.executionPlan, fills: p.fills, legs: p.legs, leverage: p.leverage, marginLeverage: p.marginLeverage, maintenanceMarginPct: p.maintenanceMarginPct, liqPrice: p.liqPrice, features: p.features, mlProb: p.mlProb, lastPriceBar: p.lastPriceBar, peakR: p.peakR, trailOff: p.trailOff, trailArmedAt: p.trailArmedAt, trailPeakR: p.trailPeakR, trailPeakAt: p.trailPeakAt }), this.book, p.id,
     );
     this.db.run('UPDATE positions SET peak_r=?, peak_at=?, worst_r=?, worst_at=?, config_fp=COALESCE(?, config_fp) WHERE id=?', p.peakR ?? null, p.peakAt ?? null, p.worstR ?? null, p.worstAt ?? null, p.configFp ?? null, p.id);
   }
@@ -1289,7 +1307,7 @@ export interface TradeFilter { scanner?: string; symbol?: string; reason?: strin
 export function rowToPosition(r: any): Position {
   const extra = safe(r.fills, { fills: [], legs: [] });
   return {
-    id: r.id, status: r.status, scannerId: r.scanner_id, scannerName: r.scanner_name, symbol: r.symbol, tf: r.tf, side: r.side, qty: r.qty, qtyOpen: r.qty_open,
+    executionPlan:extra.executionPlan, id: r.id, status: r.status, scannerId: r.scanner_id, scannerName: r.scanner_name, symbol: r.symbol, tf: r.tf, side: r.side, qty: r.qty, qtyOpen: r.qty_open,
     contractValue: r.contract_value, entryPrice: r.entry_price, entryAt: r.entry_at, sl: r.sl, slOriginal: r.sl_original, tp: safe(r.tp, []), tpHit: safe(r.tp_hit, []),
     legs: extra.legs ?? [], leverage: extra.leverage ?? 0, marginLeverage: extra.marginLeverage ?? extra.leverage ?? 0, maintenanceMarginPct: extra.maintenanceMarginPct ?? undefined, liqPrice: extra.liqPrice ?? null, features: extra.features, mlProb: extra.mlProb ?? null, lastPriceBar: extra.lastPriceBar, peakR: r.peak_r ?? extra.peakR ?? undefined, peakAt: r.peak_at ?? undefined, worstR: r.worst_r ?? undefined, worstAt: r.worst_at ?? undefined, trailOff: extra.trailOff, trailArmedAt: extra.trailArmedAt, trailPeakR: extra.trailPeakR, trailPeakAt: extra.trailPeakAt, breakEven: Boolean(r.break_even), realizedPnl: r.realized_pnl, fees: r.fees, riskAmount: r.risk_amount, levelsSource: r.levels_source ?? 'script',
     exitAt: r.exit_at, exitPrice: r.exit_price, exitReason: r.exit_reason, signalId: r.signal_id, fills: extra.fills ?? [], bt: Boolean(r.bt),

@@ -405,7 +405,7 @@ test('with depth impact, the loss at the stop stays within the risk budget and t
 });
 
 test('Scalper Offer: no closing fee inside the window (30 min BTC/ETH, 15 min others), never on liquidation', () => {
-  const on = { ...cfg, feeRatePct: 0.05, feeTaxPct: 18, scalperOffer: { enabled: true, majors: ['BTCUSD', 'ETHUSD'], majorsMinutes: 30, othersMinutes: 15, excluded: ['PAXGUSD'] } };
+  const on = { ...cfg, feeRatePct: 0.05, feeTaxPct: 18, scalperOffer: { enabled: true, joinedAt: 0, majors: ['BTCUSD', 'ETHUSD'], majorsMinutes: 30, othersMinutes: 15, excluded: ['PAXGUSD'] } };
   const pos = (symbol: string) => openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol, tf: '15m', side: 'long', qty: 10, contractValue: 1, entryPrice: 100, at: 0, sl: 95, tp: [300], riskAmount: 50, levelsSource: 'script', signalId: null, cfg: on, bt: false });
   const MIN = 60_000;
   assert.equal(fillExit(pos('BTCUSD'), 101, 10, 'be', 25 * MIN, on, false).fee, 0, 'BTC closed at 25 min: free');

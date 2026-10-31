@@ -77,3 +77,9 @@ test('performance does not truncate history at the old 5000-trade limit', () => 
   const r = performanceReport(db, {}, now);
   assert.equal(r.paper.trades, 5001); assert.equal(r.paper.net, 50010); assert.equal(r.paper.avgR, 1);
 });
+
+test('paired execution plans do not inflate ordinary shadow performance or daily evidence',()=>{
+ const db=new Db(':memory:');insert(db,{bt:2});insert(db,{bt:2,scanner:'plan:ltm:v1:hash',pnl:10000});
+ assert.equal(performanceReport(db,{},now).shadow.trades,1);
+ assert.equal(dailyReport(db,1000,2,now)[1].shadow.trades,1);db.db.close();
+});

@@ -1,3 +1,4 @@
+import type {ExecutionPlansView} from './executionPlans'
 import type {Contributions, ContributionDetail} from './contributions'
 import type {
   ReclaimTrialsView,
@@ -192,7 +193,8 @@ export const api = {
   // logs
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
   autoTune: () => post<{ tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
-  decisionTrace: () => get<Array<{id:number;at:number;symbol:string;tf:string;scanner_id:string;stage:string;reason:string|null;signal_id:number|null;position_id:number|null;snapshot:{risk?:number;notional?:number;entryFee?:number;standardExitFeeAtEntry?:number;offerConfigured?:boolean}}>>('/decision-trace'),
+  executionPlans: () => get<ExecutionPlansView>('/execution-plans'),
+  decisionTrace: () => get<Array<{id:number;at:number;symbol:string;tf:string;scanner_id:string;stage:string;reason:string|null;signal_id:number|null;position_id:number|null;snapshot:{risk?:number;notional?:number;entryFee?:number;standardExitFeeAtEntry?:number;offerConfigured?:boolean;offerEligibility?:string;breakEvenPrice?:number;entryLiquidity?:string}}>>('/decision-trace'),
   scannerPipeline: () => get<{at:number;since:number;entryDepth:{enabled:boolean;requests:number;checks:number;blocked:number;errors:number;inFlight:number;queued:number};quarantined:number;unallocated:Array<{id:string;name:string}>;shadowDispatch:{evidenceTurns?:number;fairTurns?:number;pending:number;inFlight:number;offered:number;replaced:number;expired:number;finished:number;maxWaitMs:number};queue:{queued:number;queuedLive:number;queuedMirror:number;queuedShadow:number};cells:Array<{scannerId:string;symbol:string;tf:string;lastRun:number|null;error:string|null;runs:number;failures:number;entries24h:number;actions:Array<{action:string;n:number}>;latest:{at:number;action:string;label:string}|null}>}>('/scanner-pipeline'),
   fundingGuard: () => get<{at:number;executionSupported:boolean;settings?:{enabled:boolean;leadMinutes:number;scalpMaxR:number;swingMaxR:number};positions:Array<{id:number;book:string;symbol:string;tf:string;side:string;fresh:boolean;cost:number|null;costR:number|null;limitR:number;nextAt:number|null;ratePct:number|null;near:boolean;trigger:boolean;enabled:boolean}>}>('/funding-guard'),
   allocationAudit: () => get<AllocationAudit>('/analytics/allocations'),

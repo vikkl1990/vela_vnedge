@@ -86,5 +86,6 @@ export function wireEntryDepth(account:PaperEngine,shadow:PaperEngine,gate:Entry
  shadow.prepareEntryDepth=symbol=>gate.prepare(symbol);
  account.entryDepthGate=req=>gate.check({...req,book:0});
  account.marketDepthPrice=(symbol,side,qty)=>gate.enabled(symbol)?gate.executionPrice(symbol,side,qty):undefined;
- shadow.entryDepthGate=req=>gate.check({...req,qty:account.previewDepthQuantity(req),virtualQty:req.qty,book:2});
+ shadow.entryDepthGate=req=>gate.check({...req,qty:req.executionPlan?req.qty:account.previewDepthQuantity(req),virtualQty:req.qty,book:2});
+ shadow.marketDepthPrice=(symbol,side,qty)=>gate.enabled(symbol)?gate.executionPrice(symbol,side,qty):undefined;
 }

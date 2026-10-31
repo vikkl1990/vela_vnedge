@@ -12,9 +12,12 @@ import { TF_SECONDS } from '../config.ts';
 import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../config.ts';
 import type { Side, ExitType } from '../scanners/extractor.ts';
 
-export interface Fill { at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
+import type { ExecutionPlanSnapshot } from './executionPlans.ts';
+
+export interface Fill { liquidity?: 'maker' | 'taker'; feeWaived?: boolean; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
 
 export interface Position {
+  executionPlan?: ExecutionPlanSnapshot;
   id: number;
   status: 'open' | 'closed';
   scannerId: string;
@@ -423,7 +426,7 @@ export interface OpenParams {
  */
 export function closingFeeWaived(pos: Position, at: number, reason: string, cfg: PaperConfig): boolean {
   const o = cfg.scalperOffer;
-  if (!o?.enabled || reason === 'liquidation' || o.excluded?.includes(pos.symbol)) return false;
+  if (!o?.enabled || !Number.isFinite(o.joinedAt) || o.joinedAt! < 0 || reason === 'liquidation' || o.excluded?.includes(pos.symbol)) return false;
   const opened = pos.openedAt ?? pos.entryAt;
   if (at < opened || (o.joinedAt !== undefined && opened < o.joinedAt)) return false;
   const minutes = o.majors.includes(pos.symbol) ? o.majorsMinutes : o.othersMinutes;
@@ -441,7 +444,7 @@ export function openPosition(p: OpenParams): Position {
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
     levelsSource: p.levelsSource, leverage: p.leverage ?? 0, marginLeverage: p.marginLeverage ?? p.leverage ?? 0, maintenanceMarginPct: p.maintenanceMarginPct, liqPrice: liquidationPrice(p.side, fillPrice, p.marginLeverage ?? p.leverage ?? 0, p.cfg, p.maintenanceMarginPct), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
-    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar, openedAt: p.openedAt ?? p.at,
+    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0, liquidity: p.maker ? 'maker' : 'taker', feeWaived: false }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar, openedAt: p.openedAt ?? p.at,
   };
 }
 
@@ -469,7 +472,7 @@ export function fillExit(pos: Position, price: number, qty: number, reason: stri
   pos.qtyOpen -= q;
   pos.realizedPnl += pnl;
   pos.fees += fee;
-  const fill: Fill = { at, price: px, qty: q, reason, fee, pnl };
+  const fill: Fill = { at, price: px, qty: q, reason, fee, pnl, liquidity: /^tp[123]$/.test(reason) && !withSlippage ? 'maker' : 'taker', feeWaived: closingFeeWaived(pos, at, reason, cfg) };
   pos.fills.push(fill);
   if (pos.qtyOpen <= 0) {
     pos.status = 'closed'; pos.exitAt = at; pos.exitPrice = px;

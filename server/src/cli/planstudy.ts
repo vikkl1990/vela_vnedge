@@ -1,3 +1,5 @@
+import {planSnapshot,planBacktest,planEvents} from '../paper/executionPlans.ts';
+import {sourceHash} from '../paper/fingerprint.ts';
 /** Paired plan study. Writes only an explicitly supplied local cache and report; no bot configuration/DB mutations.
  * SNAPSHOT=sanitized-vm.json CACHE=work/cache.db OUT=work/results.json node server/src/cli/planstudy.ts
  * Fixed calendar window; 70% development, later 30% holdout, each replay starts flat with indicators warmed up.
@@ -23,7 +25,8 @@ const registry=new ScannerRegistry(),s=registry.get(scannerId);if(!s||s.status!=
 const sc=cfg.scanners[scannerId],db=new Db(process.env.CACHE!),rest=new DeltaRest(),cache=new CandleCache(db,rest,{concurrency:2,now:()=>end}),pool=new PinePool(2,120000,processWorker);
 const markets=(process.env.MARKETS??'BTCUSD,ETHUSD,SOLUSD,AIOTUSD,ONDOUSD').split(',');
 const rows:any[]=[];
-const report:any={at:Date.now(),start,end,split,scannerId,rows,assumptions:{margin:cfg.paper.marginPerTrade,leverage:cfg.paper.marginLeverage?.base,stopRiskCapPct:cfg.paper.maxStopLossPct,feeRatio:cfg.paper.minRiskFeeRatio,entry:'current account pullback policy; through-price fills; conservative fill-minute stops',variants:'native levels / ATR fallback and regenerated targets / trailing 10 closed bars plus 0.25 ATR and regenerated targets; all experimental plans use bot level exits',costs:'configured maker/taker commissions, tax and slippage; stress adds 5bp per market leg; no historical depth or exact funding settlements available',scope:'isolated cell replays, not a portfolio replay; current product specs and base leverage, no hindsight leverage selection; closed trades only; remaining open positions reported and excluded from qualification',qualification:'at least 20 holdout closes, positive holdout net and stressed net, positive development net, no open holdout positions, stable prefix plans, minute coverage >=99.5%; this flags further paper testing, never automatic promotion'}};
+const report:any={at:Date.now(),start,end,split,scannerId,rows,assumptions:{margin:cfg.paper.marginPerTrade,leverage:cfg.paper.marginLeverage?.base,stopRiskCapPct:cfg.paper.maxStopLossPct,feeRatio:cfg.paper.minRiskFeeRatio,entry:'current account pullback policy; through-price fills; conservative fill-minute stops',variants:'native levels / ATR fallback and regenerated targets / trailing 10 closed bars plus 0.25 ATR and regenerated targets; all experimental plans use bot level exits',costs:'configured maker/taker commissions, tax and slippage; stress adds 5bp per market leg; no historical depth or exact funding settlements available',scope:'isolated cell replays, not a portfolio replay; current product specs and base leverage, no hindsight leverage selection; closed trades only; remaining open positions reported and excluded from qualification',qualification:'at least 20 holdout closes, positive holdout net and stressed net, positive development base and stressed net, no open holdout positions, stable prefix plans, minute coverage >=99.5%; this flags further paper testing, never automatic promotion'}};
+if(process.env.REGISTRY==='1')report.assumptions.registry='same versioned plan resolver and fixed reference equity as prospective shadow comparisons; source and policy hashes recorded per row';
 const save=()=>fs.writeFileSync(process.env.OUT!,JSON.stringify(report,null,2));
 function summary(r:ReturnType<typeof runBacktest>){
  const ts=r.trades;let pnl=0,peak=0,dd=0;for(const t of [...ts].sort((a,b)=>(a.exitAt??0)-(b.exitAt??0))){pnl+=t.pnl;peak=Math.max(peak,pnl);dd=Math.max(dd,peak-pnl);}
@@ -35,7 +38,7 @@ try{
   console.log(`${symbol}: loading closed minute history`);
   const minutes=await cache.getHistory(symbol,'1m',{from:start,to:end-60000});
   const minuteCoverage=minutes.length/Math.floor((end-start)/60000);
-  const tfs=['BTCUSD','ETHUSD','SOLUSD'].includes(symbol)?['15m','1h','4h']:['15m'];
+  const tfs=process.env.TFS?process.env.TFS.split(','):['BTCUSD','ETHUSD','SOLUSD'].includes(symbol)?['15m','1h','4h']:['15m'];
   for(const tf of tfs){
    try{
     const ms=TF_SECONDS[tf]*1000,bars=await cache.getHistory(symbol,tf,{from:start-200*ms,to:end-ms});
@@ -48,14 +51,17 @@ try{
      const b=bars.filter(b=>b.time+ms<=to),source=phase==='development'?prefix.events:full.events;
      const events=source.filter(e=>e.barTime+ms>=from&&e.barTime+ms<to);
      for(const variant of ['current','native','atr','structure'] as const){
-      const adapted=variant==='current'?events:adaptPlan(events,b,variant as PlanVariant);
-      const policy=backtestPolicy(cfg,scannerId,tf,'account');
+      const definition=cfg.executionPlans?.find(p=>p.enabled&&p.scannerId===scannerId&&p.symbol===symbol&&p.tf===tf&&p.variant===variant);
+      if(process.env.REGISTRY==='1'&&!definition)continue;
+      const plan=process.env.REGISTRY==='1'&&definition?planSnapshot(cfg,definition,sourceHash(s.patched)):undefined;
+      const adapted=plan?planEvents(events,b,plan):variant==='current'?events:adaptPlan(events,b,variant as PlanVariant);
+      const policy=plan?planBacktest(plan):backtestPolicy(cfg,scannerId,tf,'account');
       for(const stress of [0,5]){
        const result=runBacktest({scannerId,scannerName:s.name,symbol,tf,bars:b,events:adapted,...policy,...market,
         cfg:{...policy.cfg,slippageBps:policy.cfg.slippageBps+stress,quotedSlippageBps:(policy.cfg.quotedSlippageBps??0)+stress},
         requireAtrStop:variant==='current'?policy.requireAtrStop:false,exitMode:variant==='current'?policy.exitMode:'levels',
         subBars:minutes.filter(b=>b.time>=from&&b.time<to),conservativeEntryMinute:true});
-       rows.push({symbol,tf,phase,variant,stress,minuteCoverage,honesty,signature:full.profile.signature,nativeEntries,...summary(result)});
+       rows.push({plan:plan?{id:plan.id,revision:plan.revision,signature:plan.signature,referenceEquity:plan.referenceEquity}:null,symbol,tf,phase,variant,stress,minuteCoverage,honesty,signature:full.profile.signature,nativeEntries,...summary(result)});
       }
      }
     }
@@ -67,8 +73,8 @@ try{
 
 report.qualification=rows.filter(r=>r.phase==='holdout'&&r.stress===0&&r.variant!=='current').map(r=>{
  const same=(x:any)=>x.symbol===r.symbol&&x.tf===r.tf&&x.variant===r.variant;
- const stress=rows.find(x=>same(x)&&x.phase==='holdout'&&x.stress===5),dev=rows.find(x=>same(x)&&x.phase==='development'&&x.stress===0);
- const reasons=[r.trades<20?'fewer than 20 holdout closes':null,!(dev?.net>0)?'development net not positive':null,!(r.net>0)?'holdout net not positive':null,!(stress?.net>0)?'stressed holdout net not positive':null,r.open||stress?.open?'unresolved holdout position':null,r.honesty.changed?'prefix plans changed':null,r.minuteCoverage<.995?'incomplete minute coverage':null].filter(Boolean);
+ const stress=rows.find(x=>same(x)&&x.phase==='holdout'&&x.stress===5),dev=rows.find(x=>same(x)&&x.phase==='development'&&x.stress===0),devStress=rows.find(x=>same(x)&&x.phase==='development'&&x.stress===5);
+ const reasons=[r.trades<20?'fewer than 20 holdout closes':null,!(dev?.net>0)?'development net not positive':null,!(devStress?.net>0)?'stressed development net not positive':null,!(r.net>0)?'holdout net not positive':null,!(stress?.net>0)?'stressed holdout net not positive':null,r.open||stress?.open?'unresolved holdout position':null,r.honesty.changed?'prefix plans changed':null,r.minuteCoverage<.995?'incomplete minute coverage':null].filter(Boolean);
  return {symbol:r.symbol,tf:r.tf,variant:r.variant,qualifies:!reasons.length,reasons};
 });
 save();

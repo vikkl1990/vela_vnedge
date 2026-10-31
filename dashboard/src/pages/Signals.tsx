@@ -1,3 +1,4 @@
+import {CostAudit} from '../components/ExecutionPlans'
 import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
@@ -219,7 +220,7 @@ export function Signals() {
         {signals.isError && !signals.data && <ErrorState error={signals.error} onRetry={() => signals.refetch()} />}
         {signals.data && (view === 'flat' ? <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" /> : <GroupedSignals signals={rows} />)}
       </Panel>
-      <details className="panel diagnostics"><summary>Decision trace and scanner pipeline</summary><DecisionTrace/><ScannerPipelinePanel/></details>
+      <details className="panel diagnostics"><summary>Decision trace and scanner pipeline</summary><CostAudit/><DecisionTrace/><ScannerPipelinePanel/></details>
     </div>
   )
 }

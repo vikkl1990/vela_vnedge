@@ -5962,3 +5962,51 @@ that waiver disabled gives ETH 15m native levels +$27.21 over the same 12 holdou
 criteria. These conservative figures supersede the initial comparison for recommendations;
 the VM's fee configuration itself was not changed. Code deployed at dacc93d, with 12/12
 rotation swaps verified and no protected position/evidence violations.
+
+## 204. Versioned execution plans and conservative fee eligibility (31 October 2026)
+
+A configured Scalper Offer without an enrollment timestamp no longer waives closing fees.
+Delta's published eligibility requires consent before entry; configuration alone is not
+that evidence. Existing booked fills remain unchanged. New fills retain maker/taker and
+waiver attribution. Admission still budgets full commissions, with the existing 6x floor.
+See https://www.delta.exchange/support/solutions?articleId=80001172745 .
+
+`executionPlans` is an explicit, validated research registry: source scanner, pair, timeframe,
+revision and current/native/ATR variant. These plans can only enter book 2; they cannot
+enter the account or become promotion evidence for their source scanner. A source scan
+feeds experiments whose results are excluded from ordinary shadow performance, daily totals
+and the ML yardstick, preventing correlated plan variants from inflating those reports. It
+fans out into all configured plans on the same observed event, with persisted event
+uniqueness. Configured sources remain scheduled even without an ordinary incubator slot.
+Disabling a plan stops new orders and cancels pending fills; held positions retain their
+entry-time exit policy and source-exit subscription. Source, reading and resolved policy
+hashes identify cohorts, and older cohorts remain visible. Existing orders/positions block
+a new version of that same plan from overlapping them.
+
+Comparison plans use $150 target margin, fixed base leverage and a $1,000 reference purse,
+including the unchanged 3% stop-risk cap, lot rounding, fee floor, current entry model,
+source trend/regime/market checks and live quote/depth checks at the actual sized quantity.
+They pay full fees. Portfolio-state limits and adaptive leverage are deliberately excluded
+from these independent cell experiments; their sum is not an account return. Native/ATR
+experiments use level exits, without native script TP notifications against replaced levels.
+The regular account and ordinary shadow allocations keep their existing sizing policies.
+A full saved plan follows pending orders into fills and survives restart; backtests consume
+the same resolver/adapters. The optional maximum hold requires minute history in replay.
+
+The Incubator shows configured plans even before the first signal, source scan timestamps,
+cohort identity, signals/placements/fills/closes, pending/open positions, net results, fees,
+realized drawdown and decision reasons. The Signals diagnostic panel shows initial break-even
+excluding future funding/impact, estimated versus paid exit fees, recorded funding and price
+shortfall only where an execution reference exists. Shortfall is already in P&L. Historical
+rows without the new metadata say unknown rather than inventing maker status or break-even.
+Trend refusals previously skipped the shadow funnel entirely; they are now recorded.
+
+The shared-registry replay tested 293 LTM entries on ETH/BTC/SOL 15m, 1 September–31 October,
+with warmed indicators, a 70/30 temporal split, full fees, 0/5bp additional market-leg slippage,
+100% minute coverage and zero changed prefix plans. Across 36 runs, ETH native had 14 holdout
+closes, +$23.75 base and +$16.36 stressed; development was +$5.24 base and -$19.03 stressed.
+BTC native had only five holdout closes. SOL native failed the cost stress. None qualifies;
+the development stress is now also part of the study's qualification test. Nine prospective
+shadow comparisons are the deployment target, not nine account promotions. Historical depth,
+queue priority and exact funding still limit the replay. `REGISTRY=1 TFS=15m` in `planstudy.ts`
+reproduces this resolver-based study using explicit sanitized snapshot/cache/output paths.

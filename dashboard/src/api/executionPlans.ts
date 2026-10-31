@@ -1,0 +1,5 @@
+export interface ExecutionPlansView {
+  configured: Array<{id:string;revision:number;enabled:boolean;scannerId:string;symbol:string;tf:string;variant:string;signature:string;referenceEquity:number;maxHoldMinutes?:number;sourceStatus:string;lastSourceBar:number|null}>
+  cohorts: Array<{id:string;revision:number;signature:string;symbol:string;tf:string;variant:string;firstAt:number;referenceEquity:number;margin:number;leverage:number;signals:number;placed:number;filled:number;pending:number;open:number;closed:number;stops:number;net:number;fees:number;avgR:number|null;drawdown:number;positionIds:number[];reasons:Record<string,number>}>
+  costs: {offer:string;joinedAt:number|null;rows:Array<{id:number;scannerId:string;symbol:string;tf:string;status:string;entryAt:number;notional:number;net:number;entryLiquidity:string;entryFee:number|null;estimatedExitFee:number|null;exitFees:number;fundingCost:number;waivedCloses:number;breakEvenPrice:number|null;priceShortfall:number|null;priceCoverage:number}>}
+}

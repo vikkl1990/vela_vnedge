@@ -59,7 +59,7 @@ function stats(rows: Trade[]): PerformanceStats {
 export function performanceReport(db: Db, f: PerformanceFilter = {}, now = Date.now()): PerformanceReport {
   validatePerformanceFilter(f);
   const to = Math.min(f.to ?? now, now);
-  const where = ["p.status='closed'", 'p.bt IN (0,2)', 'p.exit_at < ?', "(p.bt=0 OR NOT EXISTS (SELECT 1 FROM incubator_pairs i WHERE i.stage='tracked' AND i.scanner_id=p.scanner_id AND i.symbol=p.symbol AND i.tf=p.tf))"];
+  const where = ["p.status='closed'", "p.scanner_id NOT LIKE 'plan:%'", 'p.bt IN (0,2)', 'p.exit_at < ?', "(p.bt=0 OR NOT EXISTS (SELECT 1 FROM incubator_pairs i WHERE i.stage='tracked' AND i.scanner_id=p.scanner_id AND i.symbol=p.symbol AND i.tf=p.tf))"];
   const args: (string | number)[] = [to];
   if (f.from !== undefined) { where.push('p.exit_at >= ?'); args.push(f.from); }
   for (const [column, value] of [['scanner_id', f.scanner], ['symbol', f.symbol], ['tf', f.tf], ['side', f.side], ['exit_reason', f.reason]]) {

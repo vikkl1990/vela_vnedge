@@ -1,3 +1,4 @@
+import {ExecutionPlans} from '../components/ExecutionPlans'
 import {ScannerContributions} from '../components/ScannerContributions'
 import { Fragment, useDeferredValue, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -41,6 +42,7 @@ export default function Incubator() {
     <>
       <PageTitle pre="From signals," accent="to evidence." sub="Screening finds candidates. Forward shadow results determine gate eligibility; review the evidence, blockers and account pairs below." />
       <ScannerContributions compact />
+      <ExecutionPlans />
       <QueryState {...q} data={q.data} empty="Incubator unavailable." onRetry={() => q.refetch()}>
         {(d) => {
           const by = (st: IncubatorPair['stage']) => d.pairs.filter((p) => p.stage === st)

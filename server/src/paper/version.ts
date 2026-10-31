@@ -3,4 +3,4 @@
 // 6: explicit fee/crossing cost semantics and optional exact funding settlements.
 // 7: script TP notifications execute at the current market with crossing costs, never at a retrospective target.
 // 8: account backtests enforce the same native/mixed-stop restriction as account execution.
-export const SIMULATION_VERSION = 8;
+export const SIMULATION_VERSION = 9;

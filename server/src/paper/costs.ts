@@ -13,3 +13,6 @@ export function admissionCostPct(cfg: FeeConfig, crossingPct = 0, entry: EntryEx
 export function crossingSlippageBps(cfg: PaperConfig, crossingPct: number): number {
   return Math.max(0, crossingPct) * 50 + (cfg.quotedSlippageBps ?? 0);
 }
+export function offerStatus(cfg: PaperConfig): 'disabled' | 'enrollment-recorded' | 'unverified-full-fees' {
+  return !cfg.scalperOffer?.enabled ? 'disabled' : Number.isFinite(cfg.scalperOffer.joinedAt) && cfg.scalperOffer.joinedAt! >= 0 ? 'enrollment-recorded' : 'unverified-full-fees';
+}

@@ -1,3 +1,4 @@
+import type { PlanComparisons } from '../paper/planComparisons.ts';
 import {evidencePriority} from './evidencePriority.ts';
 import { ShadowDispatch } from './dispatch.ts';
 /**
@@ -66,7 +67,7 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean; tf?: string }): { prob: number } | null }; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
+  private deps: { compare?: PlanComparisons['observe']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean; tf?: string }): { prob: number } | null }; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
   private marketsCache: { at: number; map: Map<string, { turnoverUsd: number | null }> } | null = null;
   /** The market gate's 24h turnover for a symbol (null when unjudged), read at most once a minute. */
   private turnoverOf(symbol: string): number | null {
@@ -161,11 +162,21 @@ export class ShadowRunner {
 
   stop() { this.dispatch.stop();if(this.dispatchTimer)clearInterval(this.dispatchTimer);this.dispatchTimer=null; if (this.timer) clearInterval(this.timer); this.timer = null; this.saveFunnel(); }
 
+  private planSources(): PairRow[] {
+    const cfg=this.deps.cfgRef(), cells=new Map<string,{scannerId:string;symbol:string;tf:string}>();
+    for(const p of cfg.executionPlans??[])if(p.enabled)cells.set(`${p.scannerId}|${p.symbol}|${p.tf}`,p);
+    for(const held of [...this.deps.paper.openPositions(),...this.deps.paper.pendingEntries()]) {
+      const p=held.executionPlan;if(p)cells.set(`${p.sourceScannerId}|${p.symbol}|${p.tf}`,{scannerId:p.sourceScannerId,symbol:p.symbol,tf:p.tf});
+    }
+    return [...cells.values()].map((p,i)=>({id:-i-1,scannerId:p.scannerId,symbol:p.symbol,tf:p.tf,stage:'tracked',since:0,updated:0,screen:null,gate:null,note:'execution plan source'}));
+  }
+
   /** Pick up stage changes made by the daily job or the API, and make sure their candles are live. */
   async sync(): Promise<void> {
     const cfg = this.deps.cfgRef();
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
     this.pairs = this.deps.store.list([...ACTIVE_STAGES, 'tracked']).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
+    for(const p of this.planSources())if(this.deps.registry.get(p.scannerId)?.status==='ok'&&!this.pairs.some(x=>x.scannerId===p.scannerId&&x.symbol===p.symbol&&x.tf===p.tf))this.pairs.push(p);
     this.dispatch.prune(new Set(this.pairs.map(r=>`${r.scannerId}:${r.symbol}:${r.tf}`)));
     // symbols of open shadow positions keep their 1m feed until those positions close
     const symbols = new Set(this.symbols());
@@ -190,7 +201,7 @@ export class ShadowRunner {
     const mirror = this.deps.cfgRef().incubator?.mirror?.enabled === true && Boolean(this.deps.mirror);
     // decision 201: a pair holding a position — in the account (copied before copying was switched off) or in the shadow
     // book itself — is scanned in the mirror tier and never dropped under backpressure: an exit there is a position's
-    const shadowHeld = new Set(this.deps.paper.openPositions().filter(p => p.symbol === symbol && p.tf === tf).map(p => p.scannerId));
+    const shadowHeld = new Set(this.deps.paper.openPositions().filter(p => p.symbol === symbol && p.tf === tf).map(p => p.executionPlan?.sourceScannerId ?? p.scannerId));
     const holds = (r: PairRow) => shadowHeld.has(r.scannerId) || this.deps.accountHolds?.(r.scannerId, r.symbol, r.tf) === true;
     // decision 166: what can change the account first — its live pairs and any pair on a symbol it holds (an exit there
     // is money), then pairs it could enter now (not full, symbol free, market allowed), then the rest of the book
@@ -281,7 +292,7 @@ export class ShadowRunner {
     // decision 193: the run waited in the queue; the pair may have been retired or re-staged, the scanner re-configured
     // or its source replaced meanwhile. As the account's engine does, act only if all of that still holds — and on the
     // pair's current stage, which decides whether the account is offered the event
-    const cur = this.deps.store.get(r.id);
+    const cur = r.id<0 ? this.planSources().find(p=>p.scannerId===r.scannerId&&p.symbol===r.symbol&&p.tf===r.tf) : this.deps.store.get(r.id);
     const cfgNow = this.deps.cfgRef();
     if (!cur || !([...ACTIVE_STAGES, 'tracked'] as string[]).includes(cur.stage) || !cfgNow.incubator?.enabled
         || JSON.stringify(cfgNow.scanners[s.id] ?? null) !== scannerCfgAtStart || this.deps.registry.get(s.id)?.patched !== s.patched) {
@@ -330,17 +341,21 @@ export class ShadowRunner {
         if(this.deps.paper.prepareEntryDepth){await this.deps.paper.prepareEntryDepth(r.symbol);now=Date.now();}
         // the shadow book is evidence for the live fleet, so it is gated exactly as the fleet is
         const g = cfg.paper.trendGate;
+        let trendReason:string|null=null;
         if (g?.enabled) {
           const mode = cfg.scanners[s.id]?.trendGate ?? g.mode;
           const trendTf = g.tf && g.tf !== r.tf ? g.tf : r.tf;
           const closes = this.deps.candles.get(r.symbol, trendTf, { closedOnly: true, limit: g.emaLen * 4 }).map(b => b.close);
-          if (trendGateReason(ev.side, trendNow(closes, g.emaLen), mode)) continue;
+          trendReason = trendGateReason(ev.side, trendNow(closes, g.emaLen), mode);
         }
         const atr = lastAtr(bars, 14);
         const refPrice = this.deps.paper.mark(r.symbol) ?? lastBar.close;
         // decision 112: the market and regime gates refuse a shadow entry exactly as they refuse a live one
         const fkey = `${s.id}|${r.symbol}|${r.tf}`;
         const refusal = shadowRefusal({ regime: cfg.risk?.regime, scannerId: s.id, symbol: r.symbol, at: now, price: ev.price && ev.price > 0 ? ev.price : refPrice, atr, bars, market: this.deps.marketVerdict?.(r.symbol) });
+        this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice,refusal:trendReason??refusal?.reason});
+        if(r.id<0)continue;
+        if(trendReason){this.stats.refused++;this.note(fkey,'regime',now,trendReason);continue;}
         if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now, refusal.reason); continue; }
         // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
         // judge the model out of sample; scored without feeding the drift monitor, which watches the account
@@ -359,6 +374,8 @@ export class ShadowRunner {
         this.note(fkey, kind, now, `${d.action}${d.reason ? ':'+d.reason : ''}`);
         if (kind === 'pending' && d.pendingId !== undefined) this.pendingFunnel.set(d.pendingId, { key: fkey, at: now });
       } else if (ev.kind === 'exit') {
+        this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice:this.deps.paper.mark(r.symbol)??lastBar.close});
+        if(r.id<0)continue;
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
       }
     }

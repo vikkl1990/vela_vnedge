@@ -1,3 +1,4 @@
+import { costAudit } from '../paper/costAudit.ts';
 import { allocationAudit } from '../analytics/allocationAudit.ts';
 import { performanceReport, validatePerformanceFilter } from '../analytics/performance.ts';
 import {reclaimStatus} from '../paper/reclaimAudit.ts';
@@ -322,6 +323,11 @@ export class ApiServer {
       return a.scanners.getOverlay(p.id, symbol, tf) ?? { at: null, plots: [], shapes: [], labels: [] };
     });
 
+    this.add('GET', '/api/execution-plans', () => {
+      const view=a.planComparisons.view(),marks=a.incubatorStore.liveMarks()??{};
+      return {...view,configured:view.configured.map(p=>({...p,sourceStatus:a.registry.get(p.scannerId)?.status??'missing',
+        lastSourceBar:marks[`${p.scannerId}:${p.symbol}:${p.tf}`]??null})),costs:costAudit(a.db,a.config.get())};
+    });
     this.add('GET', '/api/decision-trace', () => a.db.all<any>(
       'SELECT * FROM decision_trace WHERE book=0 ORDER BY id DESC LIMIT 100').map(r=>({...r,snapshot:JSON.parse(r.snapshot)})));
     this.add('GET', '/api/signals/activity', () => signalActivity(a.db));

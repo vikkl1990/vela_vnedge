@@ -1,3 +1,4 @@
+import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import { crossingSlippageBps } from './costs.ts';
 import {createReclaim, advanceReclaim, type ReclaimOptions, type ReclaimState} from './reclaim.ts';
 import {alignmentRule,alignmentRefusal,aggregateContext} from './entryAlignment.ts';
@@ -22,6 +23,7 @@ import { SIMULATION_VERSION } from './version.ts';
 import { computeFeatures } from '../ml/features.ts';
 
 export interface BacktestInput {
+  executionPlan?: ExecutionPlanSnapshot;
   scannerId: string; scannerName: string; symbol: string; tf: string;
   bars: Bar[];                // closed bars, ascending — the same bars the script ran on
   events: ScanEvent[];        // extracted from the script run (all bars)
@@ -92,11 +94,12 @@ export interface BacktestResult {
   equity: Array<{ at: number; equity: number }>;
   rejected: Record<string, number>;
   entryFlow?: Record<string, number>;
-  costCoverage: { crossing: 'observed' | 'fallback'; funding: 'provided' | 'not-modelled' | 'disabled'; depthImpact: 'modelled' | 'not-modelled'; feeWaiver: 'disabled' | 'enrollment-dated' | 'legacy-unverified' };
+  costCoverage: { crossing: 'observed' | 'fallback'; funding: 'provided' | 'not-modelled' | 'disabled'; depthImpact: 'modelled' | 'not-modelled'; feeWaiver: 'disabled' | 'enrollment-dated' | 'unverified-full-fees' };
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
+  if(inp.executionPlan?.maxHoldMinutes&&!inp.subBars?.length)throw Error('timed execution plans require minute subBars');
   if (inp.entry?.reclaim && (!inp.subBars?.length || (TF_SECONDS[inp.tf] ?? 0) <= 60)) throw Error('reclaim research requires minute subBars and a higher signal timeframe');
   if (inp.entry?.reclaim && (inp.entry.pullbackAtr !== undefined || inp.entry.breakAtr !== undefined)) throw Error('reclaim cannot be combined with another entry model');
   // a backtest is one market, so its exit rules are resolved once (decision 34)
@@ -112,14 +115,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       if ((config.fundingCharges ?? true) && f.at >= (pos.openedAt ?? pos.entryAt)) applyFunding(pos, f.ratePct, f.markPrice, f.at);
     }
     const fills = applyBar(pos, bar, config, ...args);
-    const maxHold = inp.entry?.reclaim?.maxHoldMinutes;
+    const maxHold = inp.executionPlan?.maxHoldMinutes ?? inp.entry?.reclaim?.maxHoldMinutes;
     if (maxHold && pos.status === 'open' && bar.time + 60_000 >= (pos.openedAt ?? pos.entryAt) + maxHold * 60_000) {
-      fills.push(fillExit(pos, bar.close, pos.qtyOpen, 'scalp_time', bar.time + 60_000, config, true));
+      fills.push(fillExit(pos, bar.close, pos.qtyOpen, inp.executionPlan ? 'plan_time' : 'scalp_time', bar.time + 60_000, config, true));
     }
     return fills;
   };
   const atr = atrSeries(bars, 14);
-  const align=alignmentRule(cfg,inp.scannerId,inp.symbol,inp.tf);
+  const align=alignmentRule(cfg,inp.executionPlan?.sourceScannerId??inp.scannerId,inp.symbol,inp.tf);
   const alignBars=align?(inp.alignmentBars?.[align.contextTf]??aggregateContext(bars,inp.tf,align.contextTf)):[];
   const alignmentBlock=(side:'long'|'short',at:number)=>align?alignmentRefusal(align,side,alignBars,at):null;
   const idxByTime = new Map<number, number>();
@@ -170,7 +173,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if ('error' in lv) return false;
     if (inp.requireAtrStop && lv.source !== 'atr-fallback') return false;
     if (checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0)) return false;
-    return sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score).qty >= 1;
+    return sizeContracts(price, lv.sl, { equity:inp.executionPlan?.referenceEquity??equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score).qty >= 1;
   };
   /** Open a position at `price` for signal `ev` raised on bar `sigI`; false when sizing or fees refuse it. */
   const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean): boolean => {
@@ -181,10 +184,11 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     if (inp.requireAtrStop && lv.source !== 'atr-fallback') { refuse('account requires ATR stop'); return false; }
     const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0, { maker });
     if (feeErr) { refuse('stop too tight for fees'); return false; }
-    const sz = sizeContracts(price, lv.sl, { entryExecution: { maker }, equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
+    const sz = sizeContracts(price, lv.sl, { entryExecution: { maker }, equity:inp.executionPlan?.referenceEquity??equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
     if (sz.qty < 1) { refuse(sz.reason ?? 'size'); return false; }
     const features = computeFeatures({ bars, i: sigI, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[sigI], levelsSource: lv.source });
     open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side!, qty: sz.qty, contractValue: inp.contractValue, maintenanceMarginPct: inp.maintenanceMarginPct, entryPrice: price, at, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: at + (maker ? 0 : tfMs), leverage: sz.leverage, marginLeverage: sz.marginLeverage, features, maker });
+    open.executionPlan=inp.executionPlan;
     setupTimes.set(open.id, bars[sigI].time + tfMs);
     entries++;
     return true;
@@ -372,7 +376,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   stats.open = open ? 1 : 0;
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
-    version: SIMULATION_VERSION, costCoverage: { crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: !cfg.scalperOffer?.enabled ? 'disabled' : cfg.scalperOffer.joinedAt === undefined ? 'legacy-unverified' : 'enrollment-dated' }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
+    version: SIMULATION_VERSION, costCoverage: { crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: !cfg.scalperOffer?.enabled ? 'disabled' : cfg.scalperOffer.joinedAt === undefined ? 'unverified-full-fees' : 'enrollment-dated' }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
     stats, trades: closed.map(p => ({...tradeOf(p), setupAt: setupTimes.get(p.id)!})).reverse(), equity: curve, rejected, ...(inp.entry?.reclaim ? {entryFlow: {...entryFlow, pendingAtEnd: reclaim ? 1 : 0}} : {}),
   };
 }
