@@ -261,8 +261,9 @@ export class ApiServer {
     this.add('GET', '/api/scanners/:id/contribution', (_r, _s, p) => { const detail=contributions.detail(p.id); if(!detail) throw new HttpError(404,'unknown scanner'); return detail; });
     this.add('POST', '/api/scanners/auto-tune', async (_r, _s, _p, _u, body) => {
       const report = a.scanners.autoTune({ minTrades: Number(body?.minTrades ?? 3), minProfitFactor: Number(body?.minProfitFactor ?? 1) });
-      await a.onConfigChanged();
-      return { tuned: report.length, disabled: report.filter(r => r.disabled).length, report };
+      const applied=!a.config.get().incubator.enabled;
+      if(applied)await a.onConfigChanged();
+      return { applied, tuned: report.length, disabled: applied?report.filter(r => r.disabled).length:0, report };
     });
     // decision 201: before /api/scanners/:id, which would take 'run-health' for an id
     this.add('GET', '/api/scanners/run-health', (_r, _s, _p, url) => a.scanners.runHealth(Math.min(336, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));

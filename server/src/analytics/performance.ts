@@ -1,4 +1,5 @@
 import type { Db } from '../db.ts';
+import { ACCOUNT_AND_SHADOW_EVIDENCE } from './scope.ts';
 
 export interface PerformanceFilter { from?: number; to?: number; scanner?: string; symbol?: string; tf?: string; side?: string; reason?: string }
 export interface PerformanceStats {
@@ -55,11 +56,11 @@ function stats(rows: Trade[]): PerformanceStats {
 }
 
 /** Same closing window and filters for both books. Closed-account totals reconcile to the journal;
- * shadow omits current tracker cells, matching Daily. This reports observations, not a paired experiment. */
+ * shadow omits watch-only orders using frozen membership, matching Daily. This reports observations, not a paired experiment. */
 export function performanceReport(db: Db, f: PerformanceFilter = {}, now = Date.now()): PerformanceReport {
   validatePerformanceFilter(f);
   const to = Math.min(f.to ?? now, now);
-  const where = ["p.status='closed'", "p.scanner_id NOT LIKE 'plan:%'", 'p.bt IN (0,2)', 'p.exit_at < ?', "(p.bt=0 OR NOT EXISTS (SELECT 1 FROM incubator_pairs i WHERE i.stage='tracked' AND i.scanner_id=p.scanner_id AND i.symbol=p.symbol AND i.tf=p.tf))"];
+  const where = ["p.status='closed'", "p.scanner_id NOT LIKE 'plan:%'", 'p.bt IN (0,2)', 'p.exit_at < ?', ACCOUNT_AND_SHADOW_EVIDENCE];
   const args: (string | number)[] = [to];
   if (f.from !== undefined) { where.push('p.exit_at >= ?'); args.push(f.from); }
   for (const [column, value] of [['scanner_id', f.scanner], ['symbol', f.symbol], ['tf', f.tf], ['side', f.side], ['exit_reason', f.reason]]) {

@@ -6051,3 +6051,48 @@ Six paired forward plans (baseline/candidate on each major) are added for observ
 Keep the existing nine LTM plans; no account exit override or promotion is authorized by
 these results. LTM and VWAP did not show a consistent improvement from the new ladder.
 The $150 target margin, 3% stop-risk cap and 6x cost floor remain unchanged.
+
+
+## 206. Shared workflow ownership, immutable reporting scope and duplicate delivery (31 October 2026)
+
+The architecture audit found real overlap behind the eight research/control surfaces. On the
+VM, seven trackers shared 43 cells. Tracker removal/narrowing previously released a tracked
+cell based on a single note owner even if another list still subscribed. Membership and
+stage changes now use one transaction (nested store moves use savepoints); remaining owners
+retain the cell and its evidence clock. Duplicate dimensions are normalized, and tracker
+statistics use grouped queries rather than two journal queries per cell.
+
+Incubator remains the automated allocator when enabled. Both Auto-tune APIs become advisory
+in that mode and scheduled tuning is skipped. Legacy explicit-pair tuning also stops
+retaining failed cells through a Cartesian product of passing symbols and timeframes.
+The UI calls this Review backtests and distinguishes recommendations from applied changes.
+Manual operator allocation controls remain explicit and available.
+
+The old validation ungated/ml-gated ledger used an independent fill path despite current
+execution plans. Archive it without deleting snapshots; leave current ML scoring/training
+intact. Move validation composition from HTTP registration into App, including an owned
+stop/unsubscribe path. Opening another API server cannot wire another trading ledger.
+
+Account ingress now deduplicates the original source event and the historical mirror-label
+form before acting. Both producer orderings and partial exits are tested. The 14-day VM
+audit found no matching duplicate source events: this fixes a latent correctness fault,
+not evidence that duplicate trading caused recent losses.
+
+Radar counts only filled open/closed ordinary positions. Daily and Performance now share a
+frozen evidence-scope predicate. Scope is recorded when the order receives its cell identity;
+watch-only/experimental orders never become ordinary historical evidence after promotion.
+Old rows retain the migration-time classification as legacy-shadow/legacy-tracker because
+actual entry-time membership cannot be reconstructed reliably. UI copy states this limit.
+
+A shared expandable module guide explains ownership and cohort differences. Decisions remains
+an Incubator action view; Trackers remain subscriptions, not separate balances. Three retired
+tracker members on the VM had explicit screen retirements and negative forward evidence;
+this change does not automatically reactivate them. No margin, fee floor, risk cap or account
+TP policy changes accompany this hardening.
+
+Validation: 693 server tests pass, including tracker ownership/rollback, direct/copied entry
+and partial-exit identity, advisory tuning, exact-cell retention, scope stability across
+stage changes/restarts and validation wiring without HTTP. Dashboard lint/build and server
+TypeScript checks pass. Remaining durable event recovery, evidence-version fingerprints,
+research CPU isolation, scheduler consolidation and full lifecycle work are recorded in
+ARCHITECTURE.md; this change does not claim those are complete.

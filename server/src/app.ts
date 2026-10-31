@@ -1,3 +1,4 @@
+import { createValidation, type ValidationModule } from './validation/runtime.ts';
 import { PlanComparisons } from './paper/planComparisons.ts';
 import {shadowCapacity} from './incubator/capacity.ts';
 import {admissionEvidence} from './incubator/evidencePriority.ts';
@@ -104,6 +105,7 @@ export class App {
   /** Symbols actually scanned after resolving the universe (list / top N / all). */
   resolvedSymbols: string[] = [];
 
+  readonly validation: ValidationModule;
   readonly planComparisons: PlanComparisons;
   readonly entryDepth: EntryDepthGate;
   constructor(deps: AppDeps = {}) {
@@ -235,6 +237,7 @@ export class App {
       },
       notify: text => { void this.ops.alerts.notify(text); },
     });
+    this.validation=createValidation(this);
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
     process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
   }
@@ -811,7 +814,7 @@ export class App {
       refusals.set(k, m);
     }
     for (const [k, m] of refusals) { const c = cells.get(k)!; const top = [...m].sort((a, b) => b[1] - a[1])[0]; if (top) c.refusal = `${top[0]} ×${top[1]}`; }
-    for (const p of this.db.all<{ symbol: string; tf: string; entry_at: number; exit_at: number | null; exit_reason: string | null; net: number; risk: number }>('SELECT symbol, tf, entry_at, exit_at, exit_reason, realized_pnl - fees AS net, risk_amount AS risk FROM positions WHERE bt IN (0, 2) AND (entry_at >= ? OR exit_at >= ?)', since, since)) {
+    for (const p of this.db.all<{ symbol: string; tf: string; entry_at: number; exit_at: number | null; exit_reason: string | null; net: number; risk: number }>(`SELECT symbol, tf, entry_at, exit_at, exit_reason, realized_pnl - fees AS net, risk_amount AS risk FROM positions WHERE bt IN (0, 2) AND scanner_id NOT LIKE 'plan:%' AND status IN ('open','closed') AND (entry_at >= ? OR exit_at >= ?)`, since, since)) {
       if (!tfs.includes(p.tf)) continue;
       const c = cell(p.symbol, p.tf);
       if (p.entry_at >= since) { c.opened++; c.bins[Math.min(bins - 1, Math.floor((p.entry_at - since) / binMs))].opened++; }
@@ -925,6 +928,7 @@ export class App {
   }
 
   async stop() {
+    this.validation.stop();
     this.stopExecutionAudit?.();
     this.screenQueue.stop();
     this.incubator.stop();

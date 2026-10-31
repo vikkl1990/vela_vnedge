@@ -65,7 +65,7 @@ export default function Radar() {
   const reserved = (tf: string) => (q.data?.reserve ?? []).filter((r) => !r.tfs?.length || r.tfs.includes(tf)).reduce((a, r) => a + r.slots, 0)
   return (
     <>
-      <PageTitle pre="Signal" accent="radar" sub={<>Where the scanners sit and what they produce, market × timeframe, last {hours} h. A cell's shade is entries per pair; bars are entries up and stops down; a quiet cell names what silenced it.</>} />
+      <PageTitle pre="Signal" accent="radar" sub={<>Where the scanners sit and what they produce, market × timeframe, last {hours} h. A cell's shade is entries per pair; bars are entries up and stops down; a quiet cell names what silenced it. Filled activity combines account and ordinary shadow trades; experimental plans and unfilled orders are excluded.</>} />
       <QueryState {...q} data={view ?? undefined} empty="No markets in the book." onRetry={() => q.refetch()}>
         {(v) => (
           <>

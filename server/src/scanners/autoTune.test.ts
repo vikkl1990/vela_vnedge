@@ -11,6 +11,7 @@ import type { OosSummary } from '../validation/walkForward.ts';
 function build(opts: { tfs?: string[] } = {}) {
   const db = new Db(':memory:');
   const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.incubator.enabled=false;
   cfg.symbols = ['BTCUSD', 'ETHUSD', 'SOLUSD']; cfg.timeframes = opts.tfs ?? ['15m'];
   cfg.scanners.s = { enabled: true, symbols: [...cfg.symbols], timeframes: null, exitMode: 'both' };
   const bt = (trades: number, pnl: number) => ({ version: SIMULATION_VERSION, at: Date.now(), trades: [], stats: { trades, pnl, grossProfit: pnl > 0 ? pnl : 0, grossLoss: pnl < 0 ? -pnl : 0 } });
@@ -27,6 +28,20 @@ function build(opts: { tfs?: string[] } = {}) {
 }
 
 const oos = (trades: number, pnl: number, pf: number | null, positiveWeeks: number): OosSummary => ({ at: 1, windows: 20, selectedWindows: 12, trades, pnl, profitFactor: pf, positiveWeeks, negativeWeeks: 1, weeks: positiveWeeks + 1, maxDrawdownPct: 2 });
+
+test('Incubator ownership makes backtest tuning advisory without rewriting account allocations',t=>{
+ const {db,cfg,engine}=build();t.after(()=>db.db.close());cfg.incubator.enabled=true;
+ const before=structuredClone(cfg.scanners);const report=engine.autoTune({minTrades:3,minProfitFactor:1});
+ assert.equal(report[0].applied,false);assert.ok(report[0].dropped.some(x=>x.symbol==='SOLUSD'));assert.deepEqual(cfg.scanners,before);
+});
+
+test('legacy tuner retains only passing explicit cells, not the product of passing symbols and timeframes',t=>{
+ const {db,cfg,engine}=build({tfs:['15m','1h']});t.after(()=>db.db.close());
+ cfg.scanners.s.pairs=[{symbol:'BTCUSD',tf:'15m'},{symbol:'BTCUSD',tf:'1h'},{symbol:'ETHUSD',tf:'15m'},{symbol:'ETHUSD',tf:'1h'}];
+ engine.setWalkForwardSource((_id,symbol,tf)=>oos(30,1,symbol==='BTCUSD'&&tf==='15m'||symbol==='ETHUSD'&&tf==='1h'?2:0.5,4));
+ engine.autoTune({oos:{enabled:true,minTrades:10,minProfitFactor:1.1,minPositiveWeeks:2},tuneTimeframes:true});
+ assert.deepEqual(cfg.scanners.s.pairs,[{symbol:'BTCUSD',tf:'15m'},{symbol:'ETHUSD',tf:'1h'}]);
+});
 
 test('in-sample rule (default) keeps profitable symbols and reports the rule', t => {
   const { db, cfg, engine } = build(); t.after(() => db.db.close());

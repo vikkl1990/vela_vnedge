@@ -1033,7 +1033,7 @@ export class ConfigStore {
     return next;
   }
 
-  onChange(l: (next: AppConfig, prev: AppConfig) => void) { this.listeners.push(l); }
+  onChange(l: (next: AppConfig, prev: AppConfig) => void) { this.listeners.push(l); return () => { this.listeners=this.listeners.filter(x=>x!==l); }; }
 
   /** Write atomically (temp file + rename), so another process never reads a half-written file. */
   private save() {

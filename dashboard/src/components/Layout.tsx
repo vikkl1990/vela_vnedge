@@ -1,4 +1,5 @@
 import { QueryFreshness } from './QueryFreshness'
+import { WorkflowGuide } from './WorkflowGuide'
 import { BrandMark } from './Brand'
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -358,6 +359,7 @@ export function Layout() {
         <main className="main" id="main" tabIndex={-1}>
           <QueryFreshness />
           <RiskBanner />
+          <WorkflowGuide />
           <RouteErrorBoundary>
             <Outlet />
           </RouteErrorBoundary>

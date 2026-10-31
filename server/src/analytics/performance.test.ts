@@ -46,14 +46,20 @@ test('net equals trading P&L minus commission plus signed funding; group totals 
   assert.equal(r.daily[1].shadow.avgR, null, 'no closes is not a 0R observation');
 });
 
-test('tracker exclusion affects shadow only; Daily retains every paper close too', () => {
+test('tracker exclusion is frozen at order creation; promotion cannot rewrite past reports', () => {
   const db = new Db(':memory:');
-  insert(db); insert(db, { bt: 2 });
   db.run("INSERT INTO incubator_pairs(scanner_id,symbol,tf,stage,since,updated) VALUES ('s','ETHUSD','15m','tracked',?,?)", start, start);
+  insert(db); insert(db, { bt: 2 });
+  db.run("UPDATE incubator_pairs SET stage='shadow'");
   const r = performanceReport(db, {}, now);
   assert.equal(r.paper.trades, 1); assert.equal(r.shadow.trades, 0);
   const d = dailyReport(db, 1000, 2, now)[1];
   assert.equal(d.account.net, r.paper.net); assert.equal(d.account.trades, 1); assert.equal(d.shadow.trades, 0);
+  insert(db, { bt: 2 });
+  db.run("UPDATE incubator_pairs SET stage='tracked'");
+  assert.equal(performanceReport(db, {}, now).shadow.trades, 1);
+  assert.equal(dailyReport(db, 1000, 2, now)[1].shadow.trades, 1);
+  db.db.close();
 });
 
 test('missing risk and corrupt fill data are explicit; empty and no-loss books are not zero-expectancy claims', () => {

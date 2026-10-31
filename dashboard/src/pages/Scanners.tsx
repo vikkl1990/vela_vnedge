@@ -96,8 +96,8 @@ export function Scanners() {
       void qc.invalidateQueries({ queryKey: qk.scanners })
       void qc.invalidateQueries({ queryKey: qk.config })
       toast.success(
-        `Auto-tuned ${r.tuned} scanners`,
-        `${r.disabled} disabled (no profitable symbol) · ${r.report
+        r.applied ? `Auto-tuned ${r.tuned} scanners` : `Reviewed ${r.tuned} scanners`,
+        !r.applied ? 'Recommendations only. Incubator and Decisions manage account allocations.' : `${r.disabled} disabled (no profitable symbol) · ${r.report
           .filter((x) => !x.disabled)
           .map((x) => `${x.name.slice(0, 18)}: ${x.after.length}/${x.before.length}`)
           .slice(0, 6)
@@ -282,8 +282,8 @@ export function Scanners() {
           <button className="btn" onClick={() => bulk(true)} disabled={busy || !scanners.data} title="Every runnable scanner on its own symbols: a fleet far above the cap, which the server refuses. Enable scanners one at a time or through the Incubator instead.">
             {bulkBusy ? 'Working…' : 'Enable all runnable'}
           </button>
-          <button className="btn" onClick={() => autoTune()} disabled={busy || !scanners.data} title="Keep each scanner only on symbols where its backtest is profitable (≥ 3 trades, PF ≥ 1); disable scanners with none">
-            Auto-tune symbols
+          <button className="btn" onClick={() => autoTune()} disabled={busy || !scanners.data} title="Review backtest recommendations. Advisory while Incubator is enabled; applies symbol allocations only when Incubator is off.">
+            Review backtests
           </button>
           <button className="btn" onClick={() => setShowHidden((v) => !v)} disabled={!scanners.data} title="Removed scanners stay disabled; restore any from here" aria-pressed={showHidden}>
             {showHidden ? 'Hide removed' : `Show removed (${hiddenCount})`}

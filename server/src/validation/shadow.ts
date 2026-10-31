@@ -47,6 +47,8 @@ interface Persisted {
 }
 
 export interface ShadowDeps {
+  /** Preserve the old counterfactual results without running a competing fill engine. */
+  archiveOnly?: boolean;
   cfgRef: () => AppConfig;
   candles: { get(symbol: string, tf: string, opts?: { limit?: number; closedOnly?: boolean }): Bar[]; on(event: string, l: (...a: any[]) => void): unknown };
   signals: { on(event: 'signal', l: (sig: SignalRow) => void): unknown };
@@ -81,6 +83,7 @@ export class ShadowLedger extends EventEmitter {
 
   /** Subscribe to live signals and 1m bars. */
   attach(): this {
+    if(this.deps.archiveOnly)return this;
     this.deps.signals.on('signal', (sig: SignalRow) => { this.queue = this.queue.then(() => this.onSignal(sig)).catch(e => log.warn(`signal failed: ${e?.message ?? e}`)); });
     const onBar = (e: { symbol: string; tf: string; bar: Bar }) => { if (e.tf === '1m') this.onBar(e.symbol, e.bar); };
     this.deps.candles.on('bar', onBar);
@@ -88,7 +91,7 @@ export class ShadowLedger extends EventEmitter {
     return this;
   }
 
-  get enabled(): boolean { return this.deps.cfgRef().validation?.shadow?.enabled ?? true; }
+  get enabled(): boolean { return !this.deps.archiveOnly && (this.deps.cfgRef().validation?.shadow?.enabled ?? true); }
   get minProb(): number { return this.deps.cfgRef().validation?.shadow?.minProb ?? 0.55; }
 
   reset() {
@@ -203,7 +206,7 @@ export class ShadowLedger extends EventEmitter {
     }
     const g = variants['ml-gated'], u = variants['ungated'];
     return {
-      enabled: this.enabled, since: this.since, initialEquity: this.initialEquity, minProb: this.minProb, at: this.now(),
+      archived:Boolean(this.deps.archiveOnly), purpose:'Legacy ML counterfactual; not Incubator evidence or account performance', enabled: this.enabled, since: this.since, initialEquity: this.initialEquity, minProb: this.minProb, at: this.now(),
       variants,
       comparison: { equityDelta: g.equity - u.equity, pnlDelta: g.realizedPnl - u.realizedPnl, tradesDelta: g.stats.trades - u.stats.trades, gatedEntries: g.gated, leader: g.equity > u.equity ? 'ml-gated' : g.equity < u.equity ? 'ungated' : 'tie' },
     };

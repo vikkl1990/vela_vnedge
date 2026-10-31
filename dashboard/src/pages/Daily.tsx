@@ -39,6 +39,7 @@ export function Daily() {
   return (
     <div className="page">
       <PageTitle pre="Every day," accent="as it happened." sub="One row per UTC day, newest first; today is partial. Trades count on the day they closed, R is net of fees, and the trail column is the share of the peak a trail exit kept. The realized balance is starting capital plus closed trades; the equity in the top bar also counts open positions." />
+      <p className="muted small">Shadow excludes watch-only orders and experimental plans. Categories stay fixed when scanners move; older categories were inferred once at the 31 October migration.</p>
       <QueryState {...q} data={q.data} empty="No trades yet." onRetry={() => q.refetch()}>
         {(rows) => (
           <>

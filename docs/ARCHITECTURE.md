@@ -1,4 +1,93 @@
-# VNEdge architecture
+# VN EDGE architecture
+
+Current ownership audit: 31 October 2026 (decision 206). The application is a modular
+monolith. Pages are views and controls over shared services, not independent bots.
+
+## Control and evidence boundaries
+
+| Surface | Responsibility | May change account allocation? |
+|---|---|---|
+| Library | Source discovery, versions, imports and favorites | No |
+| Scanners | Inputs, signal interpretation, explicit operator allocations | Yes, explicit operator changes; backtest review is advisory while Incubator is enabled |
+| Incubator | Candidate stages, screening, forward shadow evidence, promotion policy | Yes, the automated allocator and approval service |
+| Decisions | Ranked Incubator proposals, clocks and runtime faults | Calls the same Incubator actions; no second allocator |
+| Trackers | Named subscriptions to cells in the shared shadow runner | No; multiple lists share a cell and its trades |
+| Radar | Coverage, signal refusals, filled activity from account and shadow | No |
+| Performance / Daily | Closed account and ordinary shadow results after costs | No |
+| Learn | Model fitting, calibration, score and outcome diagnostics | No allocations; configured ML settings can influence entry admission |
+
+```mermaid
+flowchart TD
+  L[Library sources] --> S[Registry and scanner reading]
+  M[Delta market data] --> C[Candles, marks, depth and tape]
+  C --> A[Account scanner scheduler]
+  C --> H[Shadow scheduler]
+  S --> A
+  S --> H
+  I[Incubator stages and promotion service] --> A
+  I --> H
+  T[Trackers: shared subscriptions] --> H
+  D[Decisions: same Incubator actions] --> I
+  A --> E[Account event admission: persistent duplicate check]
+  H -->|eligible mirror or bounded pilot| E
+  E --> P[Account PaperEngine: bt 0]
+  H --> Q[Shadow PaperEngine: bt 2]
+  H --> X[Versioned execution-plan experiments: bt 2, plan prefix]
+  P --> J[SQLite signal, order, position and decision journals]
+  Q --> J
+  X --> J
+  J --> V[Radar, Performance, Daily, Trackers, Learn]
+```
+
+Account and shadow currently still have separate run schedulers. They share PinePool,
+market data and execution-policy primitives. A mirrored event must enter through the
+account's ordinary admission method, not through a second account fill path. Source event
+identity is independent of the mirror attribution label, including partial script exits.
+This prevents duplicate delivery; it does not yet deduplicate every Pine computation or
+provide a durable inbox for recovery between a signal write and its order decision.
+
+Trackers are many-to-many membership, not multiple balances. Membership/stage changes
+commit atomically; a shared tracked cell is released only after its last owner leaves.
+Account allocations and held positions are not released by tracker removal. Retired cells
+can remain visible in a watch list; membership does not automatically undo a screen's retirement.
+
+`positions.evidence_scope` freezes the reporting role when the order receives its cell
+identity, including pending orders. New roles are account, shadow, tracker, experiment or
+other. Pre-existing rows are classified once at migration; `legacy-shadow` and
+`legacy-tracker` explicitly mean inferred at migration, not reconstructed entry-time stage.
+Moving a cell later cannot rewrite Daily/Performance history. Trackers can include cells
+also present in ordinary shadow or the account: their views are not additive portfolios.
+Radar counts filled ordinary account/shadow positions (including watched cells), excluding
+pending/cancelled orders and plan variants. Learn includes watch-only outcomes and is a
+different cohort from Performance. These differences are intentional and explained in the UI.
+
+`App` composes `validation/runtime.ts` before HTTP registration. Routes only expose that
+instance. The historical `validation/shadow.ts` ungated/ml-gated ledger is read-only and no
+longer subscribes to prices/signals. Its old fill model was independent of current execution
+plans. Existing snapshots remain readable; the reset API returns 409. Current ML fitting and
+scores remain available. Incubator-enabled Auto-tune returns recommendations without writing
+scanner allocations. Explicit legacy pair tuning, when Incubator is off, keeps passing cells
+rather than a Cartesian product of passing symbols and timeframes.
+
+## Remaining production work
+
+These changes remove confirmed conflicts, but are not a production-readiness certification:
+
+1. Give every evaluation a durable source-event ID and decision state. Resume unfinished
+   decisions after a crash and expose scanner → admission → order → fill provenance in one
+   timeline. Acceptance: crash injection at each boundary gives at most one order and no lost
+   protective exit. Current ingress tests cover duplicate delivery, not every crash boundary.
+2. Key cached backtests/walk-forward evidence by source hash, inputs, signal reader, policy,
+   cost model and market-data window. Current simulation-version checks do not capture all
+   configuration changes. Promotion must cite the exact evidence version it used.
+3. Run ML fitting and large replays outside the market-data event loop. Measure close-to-scan,
+   signal-to-decision, queue age and feed lag under full research load; reserve execution capacity.
+   Pine workers alone do not isolate all synchronous post-processing/training.
+4. Unify execution scheduling for identical source/input/cell requests, then fan out the same
+   event to separately versioned books. Preserve held-position exits during any migration.
+5. Complete component lifecycle ownership: stop intake before draining work, cancel/await
+   research jobs, detach listeners and stop all timers. Validation now has an owned stop path;
+   the whole application's shutdown/restart-in-one-process contract is not yet complete.
 
 ```
 Delta Exchange India ──REST (history, products, tickers)──┐
@@ -56,12 +145,10 @@ Delta Exchange India ──REST (history, products, tickers)──┐
 | `data/candleCache.ts` | SQLite candle cache (`candles` table): pages Delta REST in 4,000-bar chunks, sequential per symbol with delays, serves 60–90 days without refetching; deep source for warm backtests (`validation.history.backtestBars`). |
 | `validation/walkForward.ts` | Rolling train/test windows over a long history, each replayed with `runBacktest`; in-sample selection → out-of-sample aggregation, positive weeks, de-duplicated trades. |
 | `validation/service.ts` | Runs walk-forward for every scanner×symbol×tf, persists `walk_forward`, feeds OOS summaries to the engine's auto-tune. |
-| `validation/shadow.ts` | Two in-memory paper ledgers (`ungated`, `ml-gated`) fed by the engine's `signal` events and 1m bars through the same `logic.ts` fills. |
+| `validation/runtime.ts` / `shadow.ts` | App-owned validation composition; legacy ML ledgers are archived read-only. |
 | `validation/consensus.ts` | Optional entry filter: N distinct scanners must agree on side/symbol/tf within a window. |
 | `pine/inputs.ts` | Parses `input.*()` declarations from Pine; validates per-scanner overrides that the worker applies through PineTS's `Indicator.input`. |
 | `ml/model.ts` / `ml/service.ts` | Logistic regression with a time-ordered holdout, Platt calibration, reliability buckets, and live feature-drift monitoring. |
-| `execution/testnet.ts` | Optional mirror of paper fills to the Delta **demo** account (off by default). |
-| `api/server.ts` | HTTP router, SSE broadcaster, static dashboard hosting. `api/extensions.ts` lists route modules (one line per phase). |
 | `log.ts` | Console (text or `LOG_FORMAT=json`), ring buffer for `/api/logs`, size-rotated `data/logs/vnedge.log`, per-level counters. |
 | `db.ts` | SQLite schema + helpers; Phase 4 adds `backup()` (`VACUUM INTO`), retention pruning, `integrityCheck()`, statement-error counters. |
 | `ops/service.ts` | Composition of the ops modules below; `status()` feeds `/api/health`; `shutdown()` drains in-flight script runs with a timeout. |
@@ -87,14 +174,14 @@ Delta Exchange India ──REST (history, products, tickers)──┐
   projection labels give stop and targets). Bitcoin Almanac (cycle timing) and Trade Strategy
   Calculator (a sizing tool) have nothing tradeable and stay informational.
 * Scripts that only draw `plotshape(Buy/Sell)` fall back to shape hits; missing levels use
-  ATR(14): SL = 1.5×ATR, TP = 1R/2R/3R (configurable).
+  the resolved scanner/timeframe policy and ATR fallback; defaults and overrides live in `config.ts` and `paper/policy.ts`.
 * One position per scanner×symbol×timeframe; an opposite signal reverses when `allowReversal`.
 
 ## Paper fills
 
-* Entry at signal price (or bar close) ± slippage; taker fee (0.05 % default) on every fill.
+* Entries use the resolved market/limit/reclaim plan, current quotes and explicit fill eligibility; maker/taker fees follow the actual modeled fill type. See `paper/policy.ts`, `entryPlan.ts` and `engine.ts`.
 * Every 1-minute candle update of the symbol is applied to open positions: SL first (worst case),
-  then sequential TP legs (40/30/30 % default), SL → entry after TP1 when `breakEvenAfterTp1`.
+  then the frozen target legs, break-even and trailing policy. Allocation and trail activation are scanner/timeframe/plan specific.
 * Script exits are honoured according to the scanner's `exitMode`: `levels` ignores the script's exit events and trades the bot's levels; `both` trades the bot's levels and closes on the script's exits too; `script` (decision 113) trades the script's own exits only — no bot target, trail, floor or time stop, and a disaster stop of `paper.scriptDisasterStopAtr` × ATR when the script publishes none.
 * **Dashboard payloads**: `GET /api/scanners` carries per-scanner statistics and symbol lists for every
   script on disk, which is what the scanner pages need and roughly a hundred times what a name lookup
@@ -129,14 +216,14 @@ CandleCache (SQLite, 60–90 d)  ──bars──▶  PinePool (one run per scan
                         walkForward(): windows [train 10 d | test 3 d] rolled daily
                                              │ per window: runBacktest(train) → selected?  runBacktest(test)
                                              ▼
-                 walk_forward table ──▶ ScannerEngine.autoTune({ oos })  ──▶ scanners.<id>.symbols / timeframes
+                 walk_forward table ──▶ Auto-tune recommendations (allocation changes only when Incubator is off)
 ```
 
 * **Honest numbers**: `outOfSample` only counts test windows whose preceding training window the tuner would have selected, so it is the return of *following the tuner*, not of the script. `outOfSampleAll` is the unconditional figure. Overlapping test windows are de-duplicated by entry time.
-* **Auto-tune skips unmeasured scanners**: a scanner with no backtest for any of its pairs is reported as `skipped` and left untouched. Enabling a scanner starts a background warm-up and then a tune; without this, a tune triggered by a later enable would see the earlier one at zero trades and disable it.
+* **Auto-tune is advisory while Incubator is enabled**, including both manual APIs; scheduled tuning is skipped. When Incubator is off, it still skips unmeasured scanners: a scanner with no backtest for any of its pairs is reported as `skipped` and left untouched. Enabling a scanner starts a background warm-up and then a tune; without this, a tune triggered by a later enable would see the earlier one at zero trades and disable it.
 * **Auto-tune rules**: in-sample (default, unchanged behaviour) or OOS (`autoTune.oos.enabled`): keep a pair when OOS trades ≥ min, PF ≥ min, positive weeks ≥ min and pnl > 0. Missing walk-forward data → in-sample fallback marked `provisional` in the report. `autoTune.tuneTimeframes` evaluates every (symbol, tf) pair and tunes both lists.
 * **Deep warm backtests**: `validation.history.backtestBars` > `historyBars` makes the engine run the *backtest* over cached history; the live run always uses the in-memory bars (a second, short script run when both are needed in one warm-up).
-* **Shadow accounts** subscribe to the engine's `signal` events and the candle store's 1m `bar`/`closed` events; nothing is written to the live tables (the ledger is snapshotted in `kv`).
+* **Legacy ML ledgers** in `kv` are archived. Current forward evidence runs through the Incubator PaperEngine and explicit versioned experiments.
 * **Consensus** is an `EntryFilter` the engine calls before the ML gate and the paper engine; off by default.
 
 ## Scanner quality (Phase 6)
@@ -179,8 +266,8 @@ CandleCache (SQLite, 60–90 d)  ──bars──▶  PinePool (one run per scan
 
 ## Data & persistence
 
-`data/vnedge.db` (WAL) holds signals, positions, orders, equity curve, last runs, backtests, the candle cache (`candles`), walk-forward results (`walk_forward`), ML samples and, in `kv`, the ML models, live feature ring and shadow ledgers.
-`data/config.json` holds user settings. Delete the DB to start clean, or use *Reset paper account*.
-`data/vnedge.db` (WAL) holds signals, positions, orders, equity curve, last runs and backtests.
-`data/config.json` holds user settings (including `ops` and `alerts`). Delete the DB to start clean, or use *Reset paper account*.
-`data/backups/` holds nightly snapshots, `data/logs/` the rotated application log (and supervisor stdout/stderr).
+`data/vnedge.db` (WAL) holds the journal, frozen evidence scopes, scanner runs, market-data
+cache, backtests, walk-forward results, Incubator stage/events, and model/watch-list state.
+`data/config.json` holds user settings. Account reset archives its book; deleting the database
+would also destroy research evidence and audit history and is not routine maintenance.
+`data/backups/` holds consistent snapshots and `data/logs/` the rotated application log.

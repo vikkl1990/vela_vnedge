@@ -95,7 +95,7 @@ re-subscribes the feed and re-warms scanners.
 
 `POST /api/scanners/:id` body `{ "enabled": true, "symbols": ["BTCUSD"], "timeframes": ["15m"], "exitMode": "levels", "hidden": false }` (all optional; `hidden: true` also disables) → updated scanner. Scanner objects carry `hidden`; the dashboard lists hidden ones only behind a "show removed" toggle.
 
-`POST /api/scanners/auto-tune` body `{ "minTrades": 3, "minProfitFactor": 1 }` → restricts every enabled scanner to the symbols where its backtest is profitable (pnl > 0, PF ≥ min, trades ≥ min); scanners with no qualifying symbol are disabled. Returns `{ tuned, disabled, report: [{ id, name, before, after, disabled, dropped: [{symbol, trades, pnl}] }] }`. Report entries also carry `rule`, `provisional`, `beforeTimeframes`, `afterTimeframes` and `decisions` (see `POST /api/validation/auto-tune`, which is the OOS-aware form).
+`POST /api/scanners/auto-tune` body `{ "minTrades": 3, "minProfitFactor": 1 }` → restricts every enabled scanner to the symbols where its backtest is profitable (pnl > 0, PF ≥ min, trades ≥ min); scanners with no qualifying symbol are disabled. With Incubator enabled this is advisory and writes no allocations; otherwise it applies the legacy rule. Returns `{ applied, tuned, disabled, report: [{ id, name, before, after, disabled, dropped: [{symbol, trades, pnl}] }] }`. Report entries also carry `rule`, `provisional`, `beforeTimeframes`, `afterTimeframes` and `decisions` (see `POST /api/validation/auto-tune`, which is the OOS-aware form).
 
 `GET /api/scanners/:id/inputs` → the script's `input.*` declarations and the current overrides:
 ```json
@@ -218,20 +218,20 @@ Semantics: the history is cut into rolling windows (`trainDays` in-sample, then 
 `GET /api/validation/history` → `{ config, requests, series: [...history entries as above] }` — coverage of the SQLite candle cache (`candles` table) and fetch progress.
 `POST /api/validation/history/fetch` body `{ "symbol"?, "tf"?, "days"? }` → pre-fetches deep history for the given (default: every tracked) series in 4,000-bar chunks, sequential per symbol; returns `{ started: [{ symbol, tf, bars }] }`.
 
-`GET /api/validation/shadow` → the two shadow paper accounts that mirror every live signal through the same fill logic on 1m bars:
+`GET /api/validation/shadow` → the archived legacy ML comparison, retained read-only. It no longer consumes prices or signals:
 ```json
-{ "enabled": true, "since": 1, "initialEquity": 100000, "minProb": 0.55, "at": 1,
+{ "archived": true, "enabled": false, "since": 1, "initialEquity": 100000, "minProb": 0.55, "at": 1,
   "variants": { "ungated": Variant, "ml-gated": Variant },
   "comparison": { "equityDelta": -120.5, "pnlDelta": -120.5, "tradesDelta": -3, "gatedEntries": 7, "leader": "ungated"|"ml-gated"|"tie" } }
 ```
-`Variant = { equity, realizedPnl, unrealizedPnl, openPositions, entries, gated, rejected: { reason: n }, stats: {…closed-trade stats…}, curve: [{ at, equity }], trades: [trade objects, newest first, ≤ 100], open: [{ id, scannerId, symbol, tf, side, qty, qtyOpen, entryPrice, entryAt, sl, tp, tpHit, mlProb, unrealizedPnl }] }`. `ml-gated` skips entries whose `mlProb < minProb` (signals without a probability are taken). Both variants ignore what the live account did with the signal and apply their own position limits, so the curves differ only by the gate.
-`POST /api/validation/shadow/reset` → restarts both ledgers at the current `paper.initialEquity`.
+`Variant = { equity, realizedPnl, unrealizedPnl, openPositions, entries, gated, rejected: { reason: n }, stats: {…closed-trade stats…}, curve: [{ at, equity }], trades: [trade objects, newest first, ≤ 100], open: [{ id, scannerId, symbol, tf, side, qty, qtyOpen, entryPrice, entryAt, sl, tp, tpHit, mlProb, unrealizedPnl }] }`. Historically, `ml-gated` skipped entries whose `mlProb < minProb` (signals without a probability are taken). Both variants used independent position limits and fills. These legacy curves are not current account or Incubator evidence.
+`POST /api/validation/shadow/reset` → HTTP 409; archived results cannot be reset through this endpoint.
 
 `GET /api/validation/consensus` → `{ enabled, minScanners, windowBars, votes, recent: [{ scannerId, scannerName, symbol, tf, side, barTime, at }] }`. When `validation.consensus.enabled`, a live entry is rejected (`action: "rejected:consensus k/N"`) until `minScanners` distinct scanners have called the same side on the same symbol×tf within `windowBars` bars; the N-th one passes.
 
 `GET /api/validation/auto-tune` → the last auto-tune report (any trigger): `{ at, reason: "warm-up"|"scheduled"|"refresh"|"api"|"manual", report: [{ id, name, before, after, beforeTimeframes, afterTimeframes, disabled, rule: "oos"|"in-sample", provisional, dropped, decisions: [{ symbol, tf: "15m"|null, keep, rule: "oos"|"in-sample"|"provisional", trades, pnl, profitFactor, positiveWeeks, reason }] }] }`.
 
-`POST /api/validation/auto-tune` body `{ "oos"?: true, "tuneTimeframes"?: false, "minTrades"?, "minProfitFactor"? }` (defaults from `autoTune`) → runs auto-tune now and returns `{ tuned, disabled, provisional, rule, report }`. With the OOS rule a scanner×symbol (×timeframe when `tuneTimeframes`) is kept only when its walk-forward **out-of-sample** result has ≥ `oos.minTrades` trades, PF ≥ `oos.minProfitFactor`, ≥ `oos.minPositiveWeeks` positive weeks and pnl > 0; pairs without walk-forward data fall back to the in-sample backtest rule and are marked `provisional`. The automatic runs (after warm-up and every `intervalHours`) use the same logic when `autoTune.oos.enabled`.
+`POST /api/validation/auto-tune` body `{ "oos"?: true, "tuneTimeframes"?: false, "minTrades"?, "minProfitFactor"? }` (defaults from `autoTune`) → runs auto-tune now and returns `{ applied, tuned, disabled, provisional, rule, report }`. With Incubator enabled, `applied=false`, `disabled=0`, and no allocation is written. With the OOS rule a scanner×symbol (×timeframe when `tuneTimeframes`) is kept only when its walk-forward **out-of-sample** result has ≥ `oos.minTrades` trades, PF ≥ `oos.minProfitFactor`, ≥ `oos.minPositiveWeeks` positive weeks and pnl > 0; pairs without walk-forward data fall back to the in-sample backtest rule and are marked `provisional`. The automatic runs (after warm-up and every `intervalHours`) use the same logic when Incubator is off and Auto-tune is enabled.
 
 `GET /api/logs?limit=200&level=info` → `[{ "at", "level": "debug|info|warn|error", "scope": "feed|scanner|paper|api", "msg", "data" }]`
 

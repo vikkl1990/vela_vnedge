@@ -48,6 +48,7 @@ export class ValidationService {
   private deps: ValidationDeps;
   private results = new Map<string, WalkForwardResult>();
   status: RunStatus = { running: false, startedAt: null, finishedAt: null, total: 0, done: 0, failed: 0, current: null, errors: [], lastMs: null };
+  private stopped=false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(deps: ValidationDeps) {
@@ -180,6 +181,7 @@ export class ValidationService {
 
   /** Optional periodic run (validation.walkForward.autoRun): first after 5 min, then every autoTune.intervalHours. */
   private schedule() {
+    if(this.stopped)return;
     if (this.timer) clearTimeout(this.timer);
     const cfg = this.deps.cfgRef();
     if (!cfg.validation?.walkForward?.autoRun) return;
@@ -194,4 +196,5 @@ export class ValidationService {
 
   /** Re-evaluate the schedule after a config change. */
   reschedule() { this.schedule(); }
+  stop() { this.stopped=true;if(this.timer)clearTimeout(this.timer);this.timer=null; }
 }

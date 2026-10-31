@@ -13,6 +13,7 @@ export interface SignalRow {
 const ADDED_COLUMNS: Array<[string, string]> = [
   ['exchange_orders', "host TEXT NOT NULL DEFAULT 'unknown'"],
   ['positions', 'config_fp TEXT'],
+  ['positions', 'evidence_scope TEXT'],
   ['scanner_runs', 'funnel TEXT'],
   ['orders', 'ref_price REAL'], ['orders', 'bid REAL'], ['orders', 'ask REAL'],
   ['orders', 'quote_at INTEGER'], ['orders', 'price_source TEXT'],
@@ -176,14 +177,37 @@ export class Db {
       const existing = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
       if (!existing.some(c => c.name === name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${decl}`);
     }
+    // Freeze reporting membership when an order receives its cell identity. Moving a cell
+    // between tracker/shadow/live must not rewrite history. Legacy membership is inferred
+    // once at migration, explicitly labelled; the old journal did not record entry-time stage.
+    const scope = (alias: string, legacy = false) => `CASE
+      WHEN ${alias}.bt=0 THEN 'account'
+      WHEN ${alias}.scanner_id LIKE 'plan:%' THEN 'experiment'
+      WHEN ${alias}.bt=2 THEN CASE WHEN EXISTS (SELECT 1 FROM incubator_pairs i
+        WHERE i.stage='tracked' AND i.scanner_id=${alias}.scanner_id AND i.symbol=${alias}.symbol AND i.tf=${alias}.tf)
+        THEN '${legacy ? 'legacy-' : ''}tracker' ELSE '${legacy ? 'legacy-' : ''}shadow' END
+      ELSE 'other' END`;
+    this.db.exec(`UPDATE positions AS p SET evidence_scope=${scope('p', true)}
+      WHERE evidence_scope IS NULL AND scanner_id!='';
+      CREATE TRIGGER IF NOT EXISTS position_scope_insert AFTER INSERT ON positions
+      WHEN NEW.evidence_scope IS NULL AND NEW.scanner_id!=''
+      BEGIN UPDATE positions SET evidence_scope=${scope('NEW')} WHERE id=NEW.id; END;
+      CREATE TRIGGER IF NOT EXISTS position_scope_identity AFTER UPDATE OF scanner_id ON positions
+      WHEN NEW.evidence_scope IS NULL AND NEW.scanner_id!=''
+      BEGIN UPDATE positions SET evidence_scope=${scope('NEW')} WHERE id=NEW.id; END;`);
   }
 
   run(sql: string, ...params: any[]) { try { return this.db.prepare(sql).run(...params); } catch (e) { this.noteError(e); throw e; } }
   all<T = any>(sql: string, ...params: any[]): T[] { try { return this.db.prepare(sql).all(...params) as T[]; } catch (e) { this.noteError(e); throw e; } }
   get<T = any>(sql: string, ...params: any[]): T | undefined { try { return this.db.prepare(sql).get(...params) as T | undefined; } catch (e) { this.noteError(e); throw e; } }
+  private transactionDepth = 0;
   transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN');
-    try { const r = fn(); this.db.exec('COMMIT'); return r; } catch (e) { this.db.exec('ROLLBACK'); this.noteError(e); throw e; }
+    const depth=this.transactionDepth++, savepoint=`nested_${depth}`;
+    try {
+      this.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN');
+      try { const r=fn();this.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');return r; }
+      catch(e){this.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');this.noteError(e);throw e;}
+    } finally { this.transactionDepth--; }
   }
 
   private noteError(e: unknown) {

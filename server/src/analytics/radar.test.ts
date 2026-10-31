@@ -23,3 +23,11 @@ test('bounded shadow history is marked as a lower bound',t=>{
  const now=Date.now();const {app}=setup(t,{'s|BTCUSD|15m':Array.from({length:120},(_,i)=>[now-1000-i,'regime'])});
  const v=App.prototype.radarView.call(app as any,24,6);assert.equal(v.shadowHistoryCapped,true);assert.equal(v.markets[0].cells['15m']!.shadowHistoryCapped,true);
 });
+test('radar counts fills, excludes pending/cancelled orders and isolated TP experiments',t=>{
+ const {app,db}=setup(t,{}),at=Date.now()-1000;
+ for(const [status,sid] of [['open','s'],['closed','s'],['pending','s'],['cancelled','s'],['open','plan:tp:v1:x'],['closed','plan:tp:v1:x']]){
+  db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,bt,exit_at,realized_pnl,risk_amount) VALUES(?,?,'S','BTCUSD','15m','long',1,1,1,100,?,2,?,10,10)",status,sid,at,status==='closed'?at:null);
+ }
+ const c=App.prototype.radarView.call(app as any,24,6).markets[0].cells['15m']!;
+ assert.equal(c.opened,2);assert.equal(c.closes,1);assert.equal(c.netR,1);
+});

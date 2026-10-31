@@ -1,47 +1,19 @@
 /**
- * Validation module wiring + REST routes (registered through api/extensions.ts):
+ * Validation REST routes; runtime wiring belongs to App (registered through api/extensions.ts):
  *   candle cache → walk-forward service → OOS-aware auto-tune, shadow ledgers, consensus
  *   filter, per-script input overrides and generic rules.
  * Every endpoint is documented in docs/API.md.
  */
-import type { App } from '../app.ts';
 import type { Extension } from '../api/extensions.ts';
 import { GENERIC_RULES, TF_SECONDS, type GenericRule } from '../config.ts';
-import { CandleCache } from '../data/candleCache.ts';
 import { logger } from '../log.ts';
 import { parseInputs, validateInputOverrides } from '../pine/inputs.ts';
 import { selectOscillator, selectTrail } from '../scanners/rules.ts';
-import { ConsensusFilter } from './consensus.ts';
-import { ValidationService } from './service.ts';
-import { ShadowLedger } from './shadow.ts';
 
 const log = logger.scoped('validation');
 
-export interface ValidationModule { cache: CandleCache; service: ValidationService; shadow: ShadowLedger; consensus: ConsensusFilter }
-
-const modules = new WeakMap<App, ValidationModule>();
-
-/** Build (once per App) and wire the validation components into the running engine. */
-export function attachValidation(app: App): ValidationModule {
-  let m = modules.get(app);
-  if (m) return m;
-  const cfg = () => app.config.get();
-  const h = cfg().validation.history;
-  const cache = new CandleCache(app.db, app.rest, { chunkBars: h.chunkBars, delayMs: h.delayMs });
-  if (h.enabled) app.scanners.setHistorySource(cache);
-  const service = new ValidationService({ db: app.db, cfgRef: cfg, registry: app.registry, pool: app.pool, cache, scanners: app.scanners });
-  const shadow = new ShadowLedger({ cfgRef: cfg, candles: app.candles, signals: app.scanners, marketInfo: s => app.scanners.marketInfo(s), db: app.db }).attach();
-  const consensus = new ConsensusFilter(() => cfg().validation.consensus);
-  app.scanners.setEntryFilter(c => consensus.shouldEnter(c));
-  app.config.onChange(next => { app.scanners.setHistorySource(next.validation.history.enabled ? cache : null); service.reschedule(); });
-  m = { cache, service, shadow, consensus };
-  modules.set(app, m);
-  log.info(`validation module ready (history ${h.enabled ? `${h.days}d cache` : 'off'}, shadow ${cfg().validation.shadow.enabled ? 'on' : 'off'}, consensus ${cfg().validation.consensus.enabled ? 'on' : 'off'}, oos auto-tune ${cfg().autoTune.oos.enabled ? 'on' : 'off'})`);
-  return m;
-}
-
 export const validationRoutes: Extension = (add, app) => {
-  const m = attachValidation(app);
+  const m = app.validation;
   const a = app;
 
   // ---- walk-forward validation ----
@@ -51,7 +23,7 @@ export const validationRoutes: Extension = (add, app) => {
     results: m.service.summaries(),
     history: m.cache.status(),
     consensus: m.consensus.status(),
-    autoTune: a.scanners.lastAutoTune ? { at: a.scanners.lastAutoTune.at, reason: a.scanners.lastAutoTune.reason, scanners: a.scanners.lastAutoTune.report.length, disabled: a.scanners.lastAutoTune.report.filter(r => r.disabled).length, provisional: a.scanners.lastAutoTune.report.filter(r => r.provisional).length, rule: a.scanners.lastAutoTune.report[0]?.rule ?? null } : null,
+    autoTune: a.scanners.lastAutoTune ? { at: a.scanners.lastAutoTune.at, reason: a.scanners.lastAutoTune.reason, scanners: a.scanners.lastAutoTune.report.length, applied: a.scanners.lastAutoTune.report.some(r => r.applied), disabled: a.scanners.lastAutoTune.report.filter(r => r.applied && r.disabled).length, provisional: a.scanners.lastAutoTune.report.filter(r => r.provisional).length, rule: a.scanners.lastAutoTune.report[0]?.rule ?? null } : null,
   }));
   add('POST', '/api/validation/run', async (_p, _u, body) => {
     const opts = { scanner: body?.scanner ? String(body.scanner) : undefined, symbol: body?.symbol ? String(body.symbol) : undefined, tf: body?.tf ? String(body.tf) : undefined, days: body?.days ? Number(body.days) : undefined };
@@ -77,15 +49,16 @@ export const validationRoutes: Extension = (add, app) => {
     return { started };
   });
   add('GET', '/api/validation/shadow', () => m.shadow.snapshot());
-  add('POST', '/api/validation/shadow/reset', () => { m.shadow.reset(); return m.shadow.snapshot(); });
+  add('POST', '/api/validation/shadow/reset', () => { throw Object.assign(new Error('Legacy ML comparison is archived; use Learn and versioned execution plans.'),{status:409}); });
   add('GET', '/api/validation/consensus', () => m.consensus.status());
   add('GET', '/api/validation/auto-tune', () => a.scanners.lastAutoTune ?? { at: null, reason: null, report: [] });
   add('POST', '/api/validation/auto-tune', async (_p, _u, body) => {
     const at = a.config.get().autoTune;
     const oos = { ...at.oos, enabled: typeof body?.oos === 'boolean' ? body.oos : at.oos.enabled };
     const report = a.scanners.autoTune({ minTrades: Number(body?.minTrades ?? at.minTrades), minProfitFactor: Number(body?.minProfitFactor ?? at.minProfitFactor), oos, tuneTimeframes: typeof body?.tuneTimeframes === 'boolean' ? body.tuneTimeframes : at.tuneTimeframes, reason: 'api' });
-    await a.onConfigChanged();
-    return { tuned: report.length, disabled: report.filter(r => r.disabled).length, provisional: report.filter(r => r.provisional).length, rule: oos.enabled ? 'oos' : 'in-sample', report };
+    const applied=!a.config.get().incubator.enabled;
+    if(applied)await a.onConfigChanged();
+    return { applied, tuned: report.length, disabled: applied?report.filter(r => r.disabled).length:0, provisional: report.filter(r => r.provisional).length, rule: oos.enabled ? 'oos' : 'in-sample', report };
   });
   add('GET', '/api/validation/:scanner', p => {
     if (!a.registry.get(p.scanner)) throw new Error('unknown scanner');

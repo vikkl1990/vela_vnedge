@@ -57,6 +57,8 @@ export interface AutoTuneDecision {
   trades: number; pnl: number; profitFactor: number | null; positiveWeeks: number | null; reason: string;
 }
 export interface AutoTuneReport {
+  /** Incubator owns allocation when enabled; backtests then produce recommendations only. */
+  applied?: boolean;
   id: string; name: string; before: string[]; after: string[]; beforeTimeframes: string[]; afterTimeframes: string[]; disabled: boolean;
   /** Rule requested for this run (`oos` when autoTune.oos.enabled). */
   rule: 'oos' | 'in-sample';
@@ -236,6 +238,7 @@ export class ScannerEngine extends EventEmitter {
    * Every decision in the report says which rule was applied.
    */
   autoTune(opts: { minTrades?: number; minProfitFactor?: number; oos?: OosTuneConfig | null; tuneTimeframes?: boolean; reason?: string } = {}): AutoTuneReport[] {
+    const apply=!this.cfgRef().incubator?.enabled;
     const minTrades = opts.minTrades ?? 3, minPf = opts.minProfitFactor ?? 1;
     const oos = opts.oos && opts.oos.enabled ? opts.oos : null;
     const byTf = Boolean(opts.tuneTimeframes);
@@ -261,7 +264,7 @@ export class ScannerEngine extends EventEmitter {
       // A scanner enabled moments ago has no backtest yet; disabling it for "0 trades" would
       // silently undo the operator's change, so leave unmeasured scanners alone until they warm.
       if (!before.some(sym => tfs.some(tf => this.backtests.has(`${s.id}:${sym}:${tf}`)))) {
-        report.push({ id: s.id, name: s.name, before, after: before, beforeTimeframes: tfs, afterTimeframes: tfs, disabled: false,
+        report.push({ id: s.id, name: s.name, applied:false, before, after: before, beforeTimeframes: tfs, afterTimeframes: tfs, disabled: false,
           rule: oos ? 'oos' : 'in-sample', provisional: false, dropped: [], decisions: [], skipped: true });
         log.info(`auto-tune ${s.id}: skipped, no backtest yet`);
         continue;
@@ -286,13 +289,13 @@ export class ScannerEngine extends EventEmitter {
       // store explicit lists (null would mean "follow the universe" and re-widen on the next universe change)
       // decision 82: a scanner scheduled by explicit pairs keeps the pairs that passed, never a rebuilt symbols × timeframes product
       const scPairs = this.scannerConfig(s.id).pairs;
-      if (scPairs?.length) {
-        const kept = scPairs.filter(p => keepSymbols.includes(p.symbol) && (!byTf || keepTfs.includes(p.tf)));
+      if (apply && scPairs?.length) {
+        const kept = scPairs.filter(p => decisions.some(d=>d.keep&&d.symbol===p.symbol&&(d.tf===null||d.tf===p.tf)));
         this.cfgStore?.setScanner(s.id, kept.length ? { pairs: kept } : { enabled: false });
-      } else this.cfgStore?.setScanner(s.id, disabled ? { enabled: false } : byTf ? { symbols: keepSymbols, timeframes: keepTfs } : { symbols: keepSymbols });
+      } else if(apply)this.cfgStore?.setScanner(s.id, disabled ? { enabled: false } : byTf ? { symbols: keepSymbols, timeframes: keepTfs } : { symbols: keepSymbols });
       const provisional = decisions.some(d => d.rule === 'provisional');
-      report.push({ id: s.id, name: s.name, before, after: keepSymbols, beforeTimeframes: tfs, afterTimeframes: disabled ? tfs : keepTfs, disabled, rule: oos ? 'oos' : 'in-sample', provisional, dropped, decisions });
-      log.info(`auto-tune ${s.id} [${oos ? 'oos' : 'in-sample'}${provisional ? ', provisional' : ''}]: ${before.length} → ${keepSymbols.length} symbols${byTf ? `, ${tfs.length} → ${keepTfs.length} tfs` : ''}${disabled ? ' (disabled: no profitable pair)' : ''}`);
+      report.push({ id: s.id, name: s.name, applied:apply, before, after: keepSymbols, beforeTimeframes: tfs, afterTimeframes: disabled ? tfs : keepTfs, disabled, rule: oos ? 'oos' : 'in-sample', provisional, dropped, decisions });
+      log.info(`${apply ? 'auto-tune applied' : 'backtest recommendation'} ${s.id} [${oos ? 'oos' : 'in-sample'}${provisional ? ', provisional' : ''}]: ${before.length} → ${keepSymbols.length} symbols${byTf ? `, ${tfs.length} → ${keepTfs.length} tfs` : ''}${disabled ? (apply ? ' (disabled: no profitable pair)' : ' (would disable: no profitable pair)') : ''}`);
     }
     this.lastAutoTune = { at: Date.now(), reason: opts.reason ?? 'manual', report };
     return report;
@@ -320,7 +323,7 @@ export class ScannerEngine extends EventEmitter {
   /** Apply auto-tune when enabled; emits scanner updates so the dashboard refreshes. */
   private maybeAutoTune(reason: string) {
     const at = this.cfgRef().autoTune;
-    if (!at?.enabled) return;
+    if (!at?.enabled || this.cfgRef().incubator?.enabled) return;
     const report = this.autoTune({ minTrades: at.minTrades, minProfitFactor: at.minProfitFactor, oos: at.oos ?? null, tuneTimeframes: at.tuneTimeframes ?? false, reason });
     const changed = report.filter(r => r.disabled || r.after.length !== r.before.length);
     const skipped = report.filter(r => r.skipped).length;
@@ -580,13 +583,17 @@ export class ScannerEngine extends EventEmitter {
    * its label marked so the Signals page says where it came from. The shadow book keeps its own copy.
    */
   async ingestEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar): Promise<void> {
-    await this.handleLiveEvent(s, symbol, tf, { ...ev, label: `${ev.label} (shadow mirror)`.slice(0, 80) }, bars, market, exitMode, lastBar, true);
+    await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar, true);
   }
 
   private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false) {
     const pilotRequested = copied && !(this.isActive(s) && this.runsOn(s.id,symbol,tf)) && Boolean(this.cfgRef().incubator.mirror?.pilot);
     if(ev.kind==='entry' && this.paper.prepareEntryDepth)await this.paper.prepareEntryDepth(symbol);
-    if (this.db.signalExists(s.id, symbol, tf, ev.barTime, ev.kind, ev.side ?? null, ev.label)) return;
+    // Transport is attribution, not event identity. Both producers may deliver the same
+    // entry or partial exit, including after a restart. Recognize historical mirror labels too.
+    const mirroredLabel=`${ev.label} (shadow mirror)`.slice(0,80);
+    if ([ev.label,mirroredLabel].some(label=>this.db.signalExists(s.id,symbol,tf,ev.barTime,ev.kind,ev.side??null,label))) return;
+    if(copied)ev={...ev,label:mirroredLabel};
     const refPrice = this.paper.mark(symbol) ?? lastBar.close;
     const now = Date.now();
     let action = 'none'; let positionId: number | null = null;
