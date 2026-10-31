@@ -77,7 +77,7 @@ export class ShadowRunner {
     /** The last error per scanner, so a script failing on every bar is visible rather than a bare count. */
     lastErrors: {} as Record<string, { error: string; at: number; count: number; symbol: string; tf: string }> };
   /** Decision 112: per shadow pair, what became of its signals — [at, class], newest last. */
-  private funnel: Map<string, Array<[number, string]>>;
+  private funnel: Map<string, Array<[number, string, string?]>>;
   private funnelDirty = false;
   private funnelTimer: NodeJS.Timeout | null = null;
 
@@ -104,15 +104,16 @@ export class ShadowRunner {
     const p = this.pendingFunnel.get(id);
     if (!p) return;
     this.pendingFunnel.delete(id);
+    if (kind === 'opened') this.stats.entries++;
     const list = this.funnel.get(p.key);
     const i = list?.findIndex(x => x[0] === p.at && x[1] === 'pending') ?? -1;
-    if (list && i >= 0) { list[i] = [p.at, kind]; this.funnelDirty = true; this.saveFunnelSoon(); }
+    if (list && i >= 0) { list[i] = list[i][2] ? [p.at, kind, kind === 'opened' ? 'opened:deferred fill' : 'cancelled:pending order did not fill'] : [p.at, kind]; this.funnelDirty = true; this.saveFunnelSoon(); }
   }
 
   /** Record what became of one signal on a pair. */
-  private note(key: string, kind: FunnelKind, at: number): void {
+  private note(key: string, kind: FunnelKind, at: number, reason?: string): void {
     const list = this.funnel.get(key) ?? [];
-    list.push([at, kind]);
+    list.push(reason ? [at, kind, reason] : [at, kind]);
     const cut = at - FUNNEL_MS;
     const kept = list.filter(x => x[0] >= cut).slice(-FUNNEL_CAP);
     this.funnel.set(key, kept);
@@ -132,9 +133,11 @@ export class ShadowRunner {
   /** What became of a pair's signals since `since`, in the shape the live cells' record has. */
   funnelOf(key: string, since: number): SignalFunnel {
     const f: SignalFunnel = { entries: 0, opened: 0, pending: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
-    for (const [at, k] of this.funnel.get(key) ?? []) {
+    f.reasons = {};
+    for (const [at, k, reason] of this.funnel.get(key) ?? []) {
       if (at < since) continue;
-      f.entries++; const kk = (k in f ? k : 'other') as FunnelKind; f[kk]++;
+      const detail=reason ?? `legacy:${k}`; f.reasons[detail]=(f.reasons[detail]??0)+1;
+      f.entries++; const kk = (['opened','pending','regime','cost','market','quote','other'].includes(k) ? k : 'other') as FunnelKind; f[kk]++;
       if (kk === 'opened') f.lastOpenAt = Math.max(f.lastOpenAt ?? 0, at);
     }
     return f;
@@ -338,7 +341,7 @@ export class ShadowRunner {
         // decision 112: the market and regime gates refuse a shadow entry exactly as they refuse a live one
         const fkey = `${s.id}|${r.symbol}|${r.tf}`;
         const refusal = shadowRefusal({ regime: cfg.risk?.regime, scannerId: s.id, symbol: r.symbol, at: now, price: ev.price && ev.price > 0 ? ev.price : refPrice, atr, bars, market: this.deps.marketVerdict?.(r.symbol) });
-        if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now); continue; }
+        if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now, refusal.reason); continue; }
         // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
         // judge the model out of sample; scored without feeding the drift monitor, which watches the account
         let features: Features | undefined; let mlProb: number | null = null;
@@ -353,7 +356,7 @@ export class ShadowRunner {
         const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
         const kind: FunnelKind = d.action === 'opened' || d.action === 'reversed' ? 'opened' : funnelClass(`${d.action}:${d.reason ?? ''}`);
-        this.note(fkey, kind, now);
+        this.note(fkey, kind, now, `${d.action}${d.reason ? ':'+d.reason : ''}`);
         if (kind === 'pending' && d.pendingId !== undefined) this.pendingFunnel.set(d.pendingId, { key: fkey, at: now });
       } else if (ev.kind === 'exit') {
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);

@@ -35,6 +35,7 @@ const Ctx = createContext<SSEState | null>(null)
 
 const EVENTS: SSEEventName[] = [
   'hello',
+  'accounting',
   'tick',
   'candle',
   'signal',
@@ -115,6 +116,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         qc.setQueryData(qk.health, d.health)
       }),
       sseBus.on('health', (h: Health) => qc.setQueryData(qk.health, h)),
+      sseBus.on('accounting', () => { for (const key of [['trades'], ['equity'], qk.positions, qk.orders, qk.stats, qk.analytics, ['daily'], ['execution-quality']]) invalidate(key) }),
       sseBus.on('stats', (s: Stats) => qc.setQueryData(qk.stats, s)),
       sseBus.on('tick', (t: TickEvent) => {
         pendingPrices.set(t.symbol, t)
@@ -127,7 +129,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }),
       sseBus.on('signal', (s: Signal) => {
         setLiveSignal(s)
-        invalidate(['signals'])
+        invalidate(['signals']); invalidate(['signal-activity'])
         invalidate(qk.scanners)
       }),
       sseBus.on('position', (e: PositionEvent) => {

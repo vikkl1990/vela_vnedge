@@ -1,7 +1,7 @@
 import type { MarketVerdict } from '../api/types'
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useEquity, useHealth, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignals, useStats } from '../api/queries'
+import { useEquity, useHealth, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignalActivity, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { EquityChart, Sparkline } from '../components/charts'
 import { ScannerPnlBoard, type ScannerPnlRow } from '../components/ScannerPnlBoard'
@@ -51,13 +51,13 @@ export function Overview() {
   // the risk the open positions carry right now, as a share of equity: what a run of stops would cost
   const openRisk = (positions.data ?? []).reduce((a, p) => a + (p.riskAmount ?? 0), 0)
   const openRiskPct = s && s.equity > 0 ? (openRisk / s.equity) * 100 : 0
-  const [renderedAt] = useState(() => Date.now())
-  const signals24 = (signals.data ?? []).filter((x) => x.kind === 'entry' && renderedAt - x.at < 86_400_000).length
+  const activity = useSignalActivity()
+  const signals24 = activity.data?.entries
 
   return (
     <div className="page">
       <TickerTape />
-      <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account: ${visibleScanners} Pine scanners on Delta India data, fills and P&L simulated. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
+      <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account on Delta India data; fills and P&L simulated. ${visibleScanners} scripts in the visible library, ${(scanners.data ?? []).filter(s => s.enabled).length} account-enabled. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
       <AttentionBanner />
 
       {stats.isLoading && !s && <Loading kind="kpi" rows={3} />}
@@ -83,7 +83,7 @@ export function Overview() {
               value={mt ? (mt.enabled ? `${allowedN} of ${tracked.length}` : 'gate off') : '–'}
               tone={mt?.enabled && allowedN === 0 ? 'loss' : 'neutral'}
               hint="The market gate's verdict: turnover, book cost and quote, judged every hour"
-              sub={<span className="muted">{signals24} entry signals in 24 h · <Link to="/gates">every gate</Link></span>}
+              sub={<span className="muted"><span title={activity.data ? `Journal count as of ${new Date(activity.data.at).toISOString()}` : 'Loading journal count'}>{signals24 ?? '–'} entry signals in 24 h</span> · <Link to="/gates">every gate</Link></span>}
             />
           </div>
           <EdgeVerdictLine />
@@ -130,9 +130,9 @@ export function Overview() {
         <Panel title="Scanner fleet">
           <QueryState {...scanners} data={scanners.data} empty="No scanners loaded." hint="Drop .pine files into the scanners folder and restart the server." onRetry={() => scanners.refetch()}>
             {(d) => {
-              const ok = d.filter((x) => x.status === 'ok').length
+              const ok = d.filter((x) => !x.hidden && x.status === 'ok').length
               const en = d.filter((x) => x.enabled).length
-              const err = d.filter((x) => x.lastRunError).length
+              const err = d.filter((x) => x.enabled && !x.hidden && x.lastRunError).length
               const removed = d.filter((x) => x.hidden).length
               return (
                 <div className="fleet">
@@ -145,23 +145,23 @@ export function Overview() {
                     <span className="mono muted">{removed}</span>
                   </div>
                   <div className="fleet-row">
-                    <span>Runnable</span>
+                    <span>Runnable in visible library</span>
                     <span className="mono gain">{ok}</span>
                   </div>
                   <div className="fleet-row">
-                    <span>Enabled</span>
+                    <span>Account-enabled scanners</span>
                     <span className="mono accent">{en}</span>
                   </div>
                   <div className="fleet-row">
-                    <span>Incompatible</span>
-                    <span className="mono loss">{d.filter((x) => x.status === 'incompatible').length}</span>
+                    <span>Incompatible in visible library</span>
+                    <span className="mono loss">{d.filter((x) => !x.hidden && x.status === 'incompatible').length}</span>
                   </div>
                   <div className="fleet-row">
-                    <span>Unavailable</span>
-                    <span className="mono warn">{d.filter((x) => x.status === 'unavailable').length}</span>
+                    <span>Unavailable in visible library</span>
+                    <span className="mono warn">{d.filter((x) => !x.hidden && x.status === 'unavailable').length}</span>
                   </div>
                   <div className="fleet-row">
-                    <span>Last-run errors</span>
+                    <span>Enabled scanners with last-run errors</span>
                     <span className={`mono ${err ? 'loss' : ''}`}>{err}</span>
                   </div>
                   <Link to="/scanners" className="btn btn-sm mt">

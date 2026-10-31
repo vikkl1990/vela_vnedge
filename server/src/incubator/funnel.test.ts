@@ -25,6 +25,8 @@ test('decision 190: a shadow limit counts as opened only when it fills; a lapsed
   paper.emit('pending', { type: 'cancelled', id: 8, reason: 'no fill' });
   f = runner.funnelOf(key, 0);
   assert.deepEqual([f.entries, f.opened, f.pending, f.other, f.lastOpenAt], [2, 1, 0, 1, 1000]);
+  paper.emit('order', {positionId:7,reason:'entry'});
+  assert.equal(runner.stats.entries,1,'delayed fill counts once; cancellation and duplicate events do not');
   runner.saveFunnel();
   assert.deepEqual(saved[key], [[1000, 'opened'], [2000, 'other']]);
 });

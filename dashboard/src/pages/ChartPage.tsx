@@ -1,3 +1,4 @@
+import { protectionText, quantityText } from '../lib/protection'
 import { useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -135,14 +136,15 @@ export function ChartPage() {
   )
   const marks = useMemo(() => decisionMarks(signals.data ?? []), [signals.data])
   const positionBadge = showPosition && position ? (
-    <div className="chart-position-badge" style={{ position: 'absolute', left: 64, top: 38, zIndex: 5, maxWidth: 'calc(100% - 90px)', padding: '8px 12px', background: 'rgba(15, 17, 24, .92)', border: '1px solid #55516c', borderRadius: 8, fontSize: 12, pointerEvents: 'none' }}>
-      <strong>OPEN #{position.id} · {position.side.toUpperCase()} · {position.tf}</strong>
+    <details className="panel chart-position-summary">
+      <summary><strong>OPEN #{position.id} · {position.side.toUpperCase()} {position.symbol} · {position.tf}</strong> · {quantityText(position.qtyOpen, position.contractValue)} {position.symbol.replace(/USD$/, '')} · SL {fmtPrice(position.sl)} · details</summary>
       <div>{position.scannerName}{heldScanner && !heldScanner.enabled ? ' · disabled for new entries' : ''}</div>
       <div className="mono">Entry {fmtPrice(position.entryPrice, markets.data?.find(m => m.symbol === symbol)?.tickSize)} · SL {fmtPrice(position.sl, markets.data?.find(m => m.symbol === symbol)?.tickSize)}</div>
-      <div className="mono">{position.tp.map((price, i) => price == null ? null : `TP${i + 1} ${fmtPrice(price, markets.data?.find(m => m.symbol === symbol)?.tickSize)}${position.tpHit[i] ? ' ✓' : ''}`).filter(Boolean).join(' · ')}</div>
+      <div className="mono">{position.tp.map((price, i) => price == null ? null : `TP${i + 1} ${fmtPrice(price, markets.data?.find(m => m.symbol === symbol)?.tickSize)}${position.tpHit[i] ? ' ✓' : (position.legs?.[i] ?? 0) <= 0 ? ' (no contracts)' : ` (${position.legs![i]} contracts)`}`).filter(Boolean).join(' · ')}</div>
       <div>ML entry P(win): {entrySignal?.mlProb != null ? `${(entrySignal.mlProb * 100).toFixed(1)}%` : positionSignals.isLoading ? 'loading…' : 'unavailable at entry'}</div>
       <div className="muted">Recorded entry prediction · no live price forecast</div>
-    </div>
+      <p className="small muted">{protectionText(position)}</p>
+    </details>
   ) : null
   const market = markets.data?.find((m) => m.symbol === symbol)
   const live = useLivePrice(symbol, market?.markPrice)
@@ -227,15 +229,14 @@ export function ChartPage() {
         ))}
       </div>
 
+      {positionBadge}
       <div className={`chart-layout ${view === 'frames' ? 'chart-layout-frames' : ''}`}>
         <div className="chart-main" style={{ position: 'relative' }}>
-          {view === 'single' && positionBadge}
           {symbol && view === 'frames' ? (
             <ChartFrames
               marks={marks}
               symbol={symbol}
               tfs={frames}
-              positionBadge={positionBadge}
               scripts={allScripts}
               tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}

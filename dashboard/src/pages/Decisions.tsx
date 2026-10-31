@@ -9,7 +9,7 @@ import { Clocks, Evidence, Funnel } from '../components/incubatorBits'
 import { clockRank } from '../lib/incubatorLogic'
 import { ConfirmDialog, Empty, PageTitle, Panel, Pill, QueryState } from '../components/ui'
 import { timeAgo } from '../lib/format'
-import { gateMinimums } from '../lib/incubatorLogic'
+import { gateFor, gateMinimums } from '../lib/incubatorLogic'
 
 /**
  * Decision 121: the operator's queue. Everything that waits for a decision, ranked, each with its evidence and its
@@ -78,12 +78,12 @@ export function Decisions() {
                         <span><Link to={`/scanners/${p.scannerId}`} className="strong">{p.scannerName}</Link> <span className="mono">{p.symbol} {p.tf}</span></span>
                         <Pill tone={p.stage === 'proposed' ? 'ok' : 'danger'}>{p.stage === 'proposed' ? 'promote?' : 'demote?'}</Pill>
                       </div>
-                      <div className="small">{p.stage === 'proposed' ? <Evidence s={p.gate?.stats ?? p.stats} g={v.config.gate} /> : <span>{p.gate?.reasons?.[0] ?? 'the gate proposes demotion'}</span>}</div>
+                      <div className="small">{p.stage === 'proposed' ? <Evidence s={p.gate?.stats ?? p.stats} g={gateFor(v.config.gate, p.tf)} /> : <span>{p.gate?.reasons?.[0] ?? 'the gate proposes demotion'}</span>}</div>
                       {p.gate?.cohort && <div className="muted small">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}
-                      <div className="small"><Funnel f={p.funnel} /></div>
+                      <div className="small"><Funnel f={p.funnel} pair={p} /></div>
                       {p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}
                       {p.market && !p.market.allowed && <div className="small"><Pill tone="danger">market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 120)}</span></div>}
-                      <div className="dc-head"><span className="muted small">waiting {timeAgo(p.since)}</span>
+                      <div className="dc-head"><span className="muted small">{p.proposedAt ? `proposed ${timeAgo(p.proposedAt)}` : 'proposal time unavailable'} · evidence since {new Date(p.since).toISOString().slice(0, 10)}</span>
                         <div className="dc-actions">
                           {auth.canTrade ? (
                             <>
@@ -110,7 +110,7 @@ export function Decisions() {
                         <span><Clocks p={p} cfg={v.config.demote} now={now} /></span>
                       </div>
                       <div className="small">{p.stats ? `${p.stats.trades} account trades · ${p.stats.netR >= 0 ? '+' : ''}${p.stats.netR.toFixed(1)}R` : 'no account trade yet'}{p.market && !p.market.allowed ? <span className="muted"> · {p.market.reasons.join(' · ').slice(0, 100)}</span> : null}</div>
-                      <div className="small"><Funnel f={p.funnel} /></div>
+                      <div className="small"><Funnel f={p.funnel} pair={p} /></div>
                       <div className="dc-actions">
                         {auth.isAdmin ? <button className="btn btn-sm" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow now</button> : <span className="muted small">the gate proposes it when the clock runs out</span>}
                       </div>

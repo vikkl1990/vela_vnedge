@@ -110,7 +110,7 @@ export default function Incubator() {
                             <td><Link to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link></td>
                             <td className="mono">{p.symbol} · {p.tf}</td>
                             <td>{p.stage === 'proposed' ? <div className="small"><Evidence s={p.gate?.stats ?? p.stats} g={gateFor(g, p.tf)} />{p.gate?.cohort && <div className="muted">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}</div> : <div className="small">{p.gate?.reasons?.[0] ?? p.note ?? 'Re-judge to refresh the demotion evidence'}</div>}{p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}{p.market && !p.market.allowed && <div className="small"><Pill tone="danger" title={p.market.reasons.join(' · ')}>market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 90)}</span></div>}<Evidence s={p.stats} g={gateFor(g, p.tf)} />{p.gate?.overlapPct !== undefined && <div className="muted small">{p.gate.overlapPct.toFixed(0)}% of entries overlap a live pair</div>}</td>
-                            <td className="small"><Funnel f={p.funnel} /></td>
+                            <td className="small"><Funnel f={p.funnel} pair={p} /></td>
                             <td className="muted small">{timeAgo(p.since)}</td>
                             <td className="nowrap">
                               {auth.canTrade ? (
@@ -143,7 +143,7 @@ export default function Incubator() {
                             <td className="mono">{p.symbol} · {p.tf}{p.market && !p.market.allowed && <> <Pill tone="warn">market out</Pill></>}{p.screen && !p.screen.provenance && <> <Pill tone="muted" title="Admitted on a screen from before decision 201: it records no source, reading or policy hash, so it cannot show it measured the strategy traded today. Its live record is the evidence.">legacy screen</Pill></>}</td>
                             <td className="small">{p.stats ? `${p.stats.trades} trades · PF ${pf(p.stats.pfR)} · ${r(p.stats.netR)} · win ${p.stats.winRatePct.toFixed(0)}%` : '—'}
                               {p.stats && p.stats.trades > 0 && p.stats.avgLossR ? <span className="muted" title="Decision 186: the payoff shape — average winner over average loser, and the share of trades that ever reached +1R"> · W/L {(p.stats.avgWinR! / p.stats.avgLossR).toFixed(2)}{p.stats.reached1RPct !== undefined ? ` · +1R ${p.stats.reached1RPct.toFixed(0)}%` : ''}</span> : null}</td>
-                            <td className="small"><Funnel f={p.funnel} /></td>
+                            <td className="small"><Funnel f={p.funnel} pair={p} /></td>
                             <td className="small"><Clocks p={p} cfg={d.config.demote} now={now} /></td>
                             <td className="small">{(p.stats?.trades ?? 0) < d.config.demote.minTrades ? <span className="muted">collecting ({p.stats?.trades ?? 0}/{d.config.demote.minTrades})</span> : <Pill tone="muted" title="Enough closed trades for the demotion check; this is not a promotion verdict">sample collected</Pill>}</td>
                             <td className="num">{auth.isAdmin && <button className="btn btn-xs" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow</button>}</td>
@@ -191,7 +191,7 @@ export default function Incubator() {
                               <tr key={p.id} className="cohort-member">
                                 <td className="mono">{p.symbol}{p.stage === 'proposed' && <> <Pill tone="ok">proposed</Pill></>}{p.market && !p.market.allowed && <> <Pill tone="warn" title={p.market.reasons.join(' · ')}>market out</Pill></>}</td>
                                 <td><Evidence s={p.stats} g={c.gg} /></td>
-                                <td className="small"><Funnel f={p.funnel} /></td>
+                                <td className="small"><Funnel f={p.funnel} pair={p} /></td>
                                 <td className="muted small">{p.gate?.market ? `${p.gate.market.trades} trades · ${r(p.gate.market.avgR)}` : ''}</td>
                                 <td className="mono">{p.openShadow || ''}</td>
                               </tr>

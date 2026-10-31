@@ -11,6 +11,7 @@ import { DEFAULT_CONFIG, DASHBOARD_DIST, DATA_DIR, SUPPORTED_TIMEFRAMES, TF_SECO
 import { logger } from '../log.ts';
 import { AuthStore, can, type User } from '../auth/store.ts';
 import { authRoutes, cookieHeader, createAuth, isSecureRequest, parseCookies, permissionFor, SESSION_COOKIE } from '../auth/routes.ts';
+import { signalActivity } from './uiMetrics.ts';
 import { positionView } from '../paper/engine.ts';
 import { LibraryService } from '../library/library.ts';
 import { EXTENSIONS } from './extensions.ts';
@@ -186,9 +187,10 @@ export class ApiServer {
     a.candles.on('closed', (e: any) => this.broadcast('candle', { symbol: e.symbol, tf: e.tf, bar: e.bar, closed: true }));
     a.scanners.on('signal', (s: any) => this.broadcast('signal', s));
     a.scanners.on('scanner', (s: any) => this.broadcast('scanner', s));
-    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: positionView(e.position, a.paper.mark(e.position.symbol), a.marks.mark(e.position.symbol) ?? null) }));
+    a.paper.on('position', (e: any) => this.broadcast('position', { type: e.type, position: a.paper.view(e.position, a.marks.mark(e.position.symbol) ?? null) }));
     a.paper.on('trade', (t: any) => this.broadcast('trade', t));
     a.paper.on('order', (o: any) => this.broadcast('order', o));
+    a.paper.on('accounting', (e: any) => this.broadcast('accounting', e));
     a.paper.on('stats', (s: any) => this.broadcast('stats', s));
     logger.on('entry', (e: any) => { if (e.level !== 'debug') this.broadcast('log', e); });
     setInterval(() => this.broadcast('stats', a.paper.stats()), 5_000).unref();
@@ -317,6 +319,7 @@ export class ApiServer {
 
     this.add('GET', '/api/decision-trace', () => a.db.all<any>(
       'SELECT * FROM decision_trace WHERE book=0 ORDER BY id DESC LIMIT 100').map(r=>({...r,snapshot:JSON.parse(r.snapshot)})));
+    this.add('GET', '/api/signals/activity', () => signalActivity(a.db));
     this.add('GET', '/api/signals', (_r, _s, _p, url) => {
       const rows = a.db.signals({
         limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined,
@@ -332,7 +335,7 @@ export class ApiServer {
         return { ...r, price: r.price ?? p.entryPrice, sl: r.sl ?? p.slOriginal ?? p.sl, tp: r.tp?.length ? r.tp : p.tp, levelsSource: r.levelsSource ?? p.levelsSource, derived: true };
       });
     });
-    this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => positionView(p, a.paper.mark(p.symbol), a.marks.mark(p.symbol) ?? null)));
+    this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => a.paper.view(p, a.marks.mark(p.symbol) ?? null)));
     this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return positionView(pos); });
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
     this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {
@@ -420,7 +423,7 @@ export class ApiServer {
       lockCache.set(k, { at: Date.now(), v });
       return v;
     });
-    this.add('GET', '/api/execution-quality', () => ({ funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), account: a.accountAudit.summary() }));
+    this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), account: a.accountAudit.summary() }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     this.add('GET', '/api/radar', (_r, _s, _p, url) => a.radarView(Math.min(168, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));
     this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));

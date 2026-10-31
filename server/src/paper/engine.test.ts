@@ -497,9 +497,13 @@ test('late settlement persists once after close without duplicate execution even
  engine.onBar('BTCUSD',{time:60000,high:106,low:94,close:94},60030);
  assert.equal(p.status,'closed');const before=p.realizedPnl;let events=0;
  for(const event of ['order','trade','position'])engine.on(event,()=>events++);
+ let corrections=0;engine.on('accounting',()=>corrections++);
  assert.equal(engine.reconcileFunding('BTCUSD',.01,100,60020),1);
  assert.equal(engine.reconcileFunding('BTCUSD',.01,100,60020),0);
- assert.equal(events,0);
+ assert.equal(events,0);assert.equal(corrections,1);
+ assert.equal(engine.orders().find(o=>o.reason==='funding')?.pnl,-.0001*p.qty*100);
+ const trade=engine.trades().find(t=>t.id===p.id)!;
+ assert.ok(Math.abs(trade.grossTradingPnl+trade.funding-trade.fees-trade.pnl)<1e-9);
  const row=db.get<any>('SELECT * FROM positions WHERE id=?',p.id)!;
  assert.ok(Math.abs(row.realized_pnl-(before-.0001*p.qty*100))<1e-9);
  const resumed=new PaperEngine(db,()=>cfg);

@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { useConfig, useConfigDefaults, useMarkets, useUpdateConfig } from '../api/queries'
+import { useConfig, useConfigDefaults, useMarkets, useStats, useUpdateConfig } from '../api/queries'
 import type { ConfigPatch } from '../api/types'
 import { ChipSelect, ConfirmDialog, ErrorState, Loading, PageTitle, Panel, Pill, SymbolPicker } from '../components/ui'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
@@ -28,8 +28,14 @@ const SECTIONS: Section[] = [
  {path:'paper.fundingGuard.scalpMaxR',label:'Scalp funding budget (R)',kind:'number',step:'0.01',validate:num(0.01,2)},
  {path:'paper.fundingGuard.swingMaxR',label:'Swing funding budget (R)',kind:'number',step:'0.01',validate:num(0.01,2)}]},
   {
-    key: 'sizing', title: 'Account and sizing', risk: 'high', intro: 'What one trade can lose and how many can be open. The risk per trade is what every R is measured against.',
+    key: 'sizing', title: 'Account and sizing', risk: 'high', intro: 'Size follows the selected mode. Margin funds exposure; the separate stop-risk cap limits modeled loss. R uses each trade’s actual initial modeled risk.',
     fields: [
+      { path: 'paper.sizingMode', label: 'Active sizing mode', kind: 'select', options: [['margin','Fixed margin'],['risk','Risk budget'],['quality','Quality-based leverage']] },
+      { path: 'paper.marginPerTrade', label: 'Margin budget per trade (USD)', kind: 'number', validate: num(0.01, 1e9) },
+      { path: 'paper.marginLeverage.base', label: 'Base margin leverage', kind: 'number', validate: num(1,200) },
+      { path: 'paper.marginLeverage.strong', label: 'Strong-record margin leverage', kind: 'number', validate: num(1,200) },
+      { path: 'paper.marginLeverage.weak', label: 'Weak-record margin leverage', kind: 'number', validate: num(1,200) },
+      { path: 'paper.maxStopLossPct', label: 'Modeled stop-risk cap (% of equity)', kind: 'number', hint: 'applies in every sizing mode; actual gap losses can exceed the model', validate: num(0,100) },
       { path: 'paper.initialEquity', label: 'Initial equity (USD)', kind: 'number', step: '100', validate: num(1, 1e9) },
       { path: 'paper.riskPerTradePct', label: 'Risk per trade (% of equity)', kind: 'number', step: '0.1', validate: num(0.01, 100) },
       { path: 'paper.maxLeverage', label: 'Max leverage', kind: 'number', step: '1', hint: 'or the market\'s own ceiling, whichever is lower', validate: num(1, 200) },
@@ -149,6 +155,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const show = (v: unknown) => (v === undefined || v === null ? 'unset' : Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'on' : 'off') : typeof v === 'number' ? (Math.abs(v) >= 10_000 ? v.toLocaleString() : String(v)) : String(v))
 
 export function Settings() {
+  const stats = useStats()
   const config = useConfig()
   const defaults = useConfigDefaults()
   const markets = useMarkets()
@@ -207,17 +214,18 @@ export function Settings() {
     const changed = !same(getPath(server, f.path), v)
     const offMeasured = m !== null && !same(m.value, v)
     const err = errors[f.path]
+    const inactive = f.path === 'paper.riskPerTradePct' && getPath(form,'paper.sizingMode') !== 'risk'
     const diff = (
       <span className="field-diff small">
         {changed && <span className="warn">was {show(getPath(server, f.path))} · </span>}
-        {m ? (offMeasured ? <span className={m.decision ? 'warn' : 'muted'} title={m.note}>measured {show(m.value)}{m.decision ? ` (decision ${m.decision})` : ''}</span> : <span className="muted" title={m.note}>as measured{m.decision ? ` · decision ${m.decision}` : ''}</span>) : null}
+        {m ? (offMeasured ? <span className={m.decision ? 'warn' : 'muted'} title={m.note}>{m.decision ? 'research reference' : 'default'} {show(m.value)}{m.decision ? ` (decision ${m.decision})` : ''}</span> : <span className="muted" title={m.note}>{m.decision ? 'matches research reference' : 'matches default'}{m.decision ? ` · decision ${m.decision}` : ''}</span>) : null}
       </span>
     )
     let control: ReactNode
     if (f.kind === 'bool') control = <input type="checkbox" checked={Boolean(v)} onChange={(e) => edit(f.path, e.target.checked)} />
     else if (f.kind === 'select') control = <select className="input" value={String(v ?? f.options?.[0]?.[0] ?? '')} onChange={(e) => edit(f.path, e.target.value)}>{f.options?.map(([val, label]) => <option key={val} value={val}>{label}</option>)}</select>
     else if (f.kind === 'tfs') control = <ChipSelect options={[...DELTA_TIMEFRAMES]} value={(v as string[] | undefined) ?? []} onChange={(x) => edit(f.path, x)} emptyLabel="none" />
-    else control = <input className="input mono" type="number" step={f.step ?? 'any'} value={typeof v === 'number' && Number.isFinite(v) ? String(v) : ''} onChange={(e) => edit(f.path, e.target.value === '' ? undefined : Number(e.target.value))} />
+    else control = <input className="input mono" type="number" disabled={inactive} step={f.step ?? 'any'} value={typeof v === 'number' && Number.isFinite(v) ? String(v) : ''} onChange={(e) => edit(f.path, e.target.value === '' ? undefined : Number(e.target.value))} />
     if (f.kind === 'bool') return (
       <label key={f.path} className={`check settings-row ${changed ? 'settings-changed' : ''}`}>
         {control} <span>{f.label}{f.hint && <span className="muted"> · {f.hint}</span>}</span> {diff}
@@ -225,7 +233,7 @@ export function Settings() {
     )
     return (
       <label key={f.path} className={`field settings-row ${err ? 'field-error' : ''} ${changed ? 'settings-changed' : ''}`}>
-        <span className="field-label">{f.label}{f.hint && <span className="muted"> · {f.hint}</span>}</span>
+        <span className="field-label">{f.label}{inactive && <span className="muted"> · inactive in this sizing mode</span>}{f.hint && <span className="muted"> · {f.hint}</span>}</span>
         {control}
         {err ? <span className="field-err">{err}</span> : diff}
       </label>
@@ -235,7 +243,7 @@ export function Settings() {
   return (
     <div className="page">
       <div className="page-head">
-        <PageTitle pre="Every number" accent="the system" post="runs on." sub="Grouped by what a change can cost. Each value is shown against what the decisions log measured; a change in a red section is read back to you before it is saved." />
+        <PageTitle pre="Every number" accent="the system" post="runs on." sub="Grouped by what a change can cost. Research references and code defaults are labeled separately; a change in a red section is read back to you before it is saved." />
         <div className="page-actions">
           <Pill tone="muted">execution: {config.data?.execution?.mode ?? 'paper'}</Pill>
           {dirty && <Pill tone="warn">{changes.length} unsaved change{changes.length === 1 ? '' : 's'}</Pill>}
@@ -248,8 +256,9 @@ export function Settings() {
         {SECTIONS.map((sec) => (
           <Panel key={sec.key} title={<span>{sec.title} <Pill tone={RISK_TONE[sec.risk]}>{RISK_LABEL[sec.risk]}</Pill></span>} right={changes.some((c) => c.section.key === sec.key) ? <Pill tone="warn">edited</Pill> : undefined}>
             <p className="muted small" style={{ marginTop: 0 }}>{sec.intro}</p>
+            {sec.key === 'sizing' && <p className="small" role="status">Active: {String(getPath(form,'paper.sizingMode') ?? 'risk')} · {(Number(getPath(form,'paper.maxStopLossPct')) > 0 && stats.data) ? `modeled stop-risk ceiling $${(stats.data.equity * Number(getPath(form,'paper.maxStopLossPct')) / 100).toFixed(2)} at current equity` : 'stop-risk cap unavailable or off'}. Margin budget can be reduced by caps and contract rounding.</p>}
             <div className="form form-2">
-              {sec.fields.filter((f) => !(f.path === 'universe.top' && (getPath(form, 'universe.mode') ?? 'list') !== 'top')).map(field)}
+              {sec.fields.filter((f) => !((f.path === 'paper.marginPerTrade' || f.path.startsWith('paper.marginLeverage.')) && getPath(form,'paper.sizingMode') !== 'margin') && !(f.path === 'universe.top' && (getPath(form, 'universe.mode') ?? 'list') !== 'top')).map(field)}
               {sec.key === 'data' && (
                 <div className={`field ${errors.symbols ? 'field-error' : ''}`} style={{ gridColumn: '1 / -1' }}>
                   <span className="field-label">Symbols{(getPath(form, 'universe.mode') ?? 'list') !== 'list' && <span className="muted"> · used when the universe is a fixed list</span>}</span>
@@ -273,13 +282,13 @@ export function Settings() {
         body={
           <div className="small">
             <table className="table small">
-              <thead><tr><th>setting</th><th>was</th><th>becomes</th><th>measured</th></tr></thead>
+              <thead><tr><th>setting</th><th>was</th><th>becomes</th><th>Reference</th></tr></thead>
               <tbody>
                 {changes.map((c) => { const m = measuredFor(c.path); return (
                   <tr key={c.path} className={c.section.risk === 'high' ? 'loss' : ''}>
                     <td>{c.field.label} <span className="muted">· {c.section.title}</span></td>
                     <td className="mono">{show(c.from)}</td><td className="mono">{show(c.to)}</td>
-                    <td className="muted">{m ? <>{show(m.value)}{m.decision ? ` (decision ${m.decision})` : ''}{m.decision && !same(m.value, c.to) ? ' — this overrides a measured value' : ''}</> : '—'}</td>
+                    <td className="muted">{m ? <>{m.decision ? 'Research: ' : 'Default: '}{show(m.value)}{m.decision ? ` (decision ${m.decision})` : ''}{m.decision && !same(m.value, c.to) ? ' — this overrides a measured value' : ''}</> : '—'}</td>
                   </tr>) })}
               </tbody>
             </table>

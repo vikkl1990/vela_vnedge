@@ -28,7 +28,7 @@ export function TradePath({ id, title, onClose }: { id: number | null; title?: s
     if (id == null && d.open) d.close()
   }, [id])
 
-  const path: PathPoint[] = q.data?.path ?? []
+  const path = useMemo<PathPoint[]>(() => q.data?.path ?? [], [q.data?.path])
   const lv: PathLevels | undefined = q.data?.position
   const chart = useMemo(() => {
     if (path.length < 2 || !lv) return null

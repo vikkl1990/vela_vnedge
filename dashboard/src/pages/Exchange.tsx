@@ -4,6 +4,7 @@ import type { LedgerRow } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
 import { BookBadge, ConfirmDialog, Empty, Loading, Panel, Pill, StatusDot, Time } from '../components/ui'
 import { fmtMoney, fmtPrice, fmtUtc } from '../lib/format'
+import { ExecutionQualityPanel } from '../components/ExecutionQuality'
 import { TapeAuditPanel } from '../components/TapeAuditPanel'
 
 /**
@@ -43,6 +44,7 @@ export function Exchange() {
         </div>
       </div>
 
+      <ExecutionQualityPanel />
       <div className="grid-2">
         <Panel title="Connection">
           <dl className="kv-list">

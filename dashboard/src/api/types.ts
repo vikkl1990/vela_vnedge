@@ -312,7 +312,15 @@ export interface Signal {
   positionId: number | null
 }
 
+export interface Protection {
+  floorAtR: number; floorKeepR: number; trailAfterR: number; keepPct: number;
+  trailAtrMult: number; trailDistanceR: number; trailGiveBackPct: number;
+  trailSteps: [number, number][]; trailStall: {minutes:number;factor:number} | null; peakR: number;
+}
 export interface Position {
+  protection?: Protection | null
+  funding?: number
+  grossTradingPnl?: number
   id: number
   scannerId: string
   scannerName: string
@@ -361,6 +369,8 @@ export interface Fill {
 export type ExitReason = 'tp3' | 'sl' | 'be' | 'trail' | 'script_exit' | 'reversal' | 'manual' | 'tp_partial' | string
 
 export interface Trade {
+  funding?: number
+  grossTradingPnl?: number
   id: number
   positionId: number
   /** Fingerprint of the settings that produced the trade (decision 90). */
@@ -384,6 +394,7 @@ export interface Trade {
 }
 
 export interface Order {
+  pnl?: number | null
   /** Where the fill price came from: 'exchange' (restated from the exchange's fill), 'quote' (crossed the live spread), 'slippage' (modelled), or null. */
   priceSource?: 'exchange' | 'quote' | 'depth' | 'slippage' | null
   id: number
@@ -471,6 +482,7 @@ export interface HelloEvent {
 }
 
 export interface SSEEventMap {
+  accounting: { at: number; reason: string; symbol?: string }
   hello: HelloEvent
   tick: TickEvent
   candle: CandleEvent
@@ -653,11 +665,11 @@ export interface IncubatorPair {
   /** The market gate's verdict on this pair's market today; null when the gate has not judged it. */
   market?: { allowed: boolean; reasons: string[] } | null
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; stage: IncubatorStage
-  since: number; updated: number; note: string | null; screen: IncubatorScreen | null
+  proposedAt?: number | null; since: number; updated: number; note: string | null; screen: IncubatorScreen | null
   gate: { at: number; decision: string; reasons: string[]; overlapPct?: number; stats?: IncubatorStats; marketOutDays?: number; cohort?: string; market?: { symbol: string; trades: number; netR: number; avgR: number } | null; strategyComparison?: { preferred: 'script' | 'both'; reason: string } } | null
   stats: IncubatorStats | null; openShadow: number
   /** Decision 112: what became of the cell's entry signals in the last 14 days — opened, or which gate refused them. */
-  funnel?: { entries: number; opened: number; pending?: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null
+  funnel?: { reasons?: Record<string, number>; entries: number; opened: number; pending?: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null } | null
   /** When the cell's last trade in its book was entered. */
   lastTradeAt?: number | null
   accountHolding?: boolean
@@ -690,7 +702,7 @@ export interface IncubatorView {
   lastStart?: { at: number; slice: string } | null
   /** The last hunt: judge + auto-promotion + digest, run when the daily screen finished or on a click. */
   lastHunt?: { at: number; actor: string; screen: { at: number; slice: string; runs: number; passed: number; newCandidates: number; quarantined: number; minutes: number } | null; admitted: string[]; proposed: string[]; promoted: string[]; blocked: string[]; retired: string[]; demoteProposed: string[]; brewing: number; free: number; auto: boolean } | null
-  runner: { runs: number; skipped: number; errors: number; entries: number; lastBarAt: number; active: number }
+  runner: { startedAt?: number; runs: number; skipped: number; errors: number; entries: number; lastBarAt: number; active: number }
   pairs: IncubatorPair[]; events: IncubatorEvent[]
 }
 
@@ -878,4 +890,11 @@ export interface ReclaimTrialsView {
     events: Array<{at: number; event: string; reason: string | null; signal_id: number | null}>;
     lastScan: {at: number; barTime: number; note: string | null} | null;
   }>;
+}
+
+export interface ExecutionQuality {
+  at: number; mode: string;
+  funding: {method:string;counts:{status:string;n:number}[]; recent:{symbol:string;at:number;status:string;source:string;rate:number|null;mark:number|null;error:string|null}[]};
+  depth: {books:{symbol:string;at:number|null;valid:boolean;fresh:boolean}[];gaps:{symbol:string;n:number;lastAt:number}[];symbols:string[];validBooks:string[];failures:number;queued:number;droppedPending:number;retention:string;stored:{n:number;oldest:number|null;newest:number|null;bytes:number|null}};
+  account: {cursors:{host:string;from_at:number;through_at:number;error:string|null}[];comparisons:{orderId:number;complete:boolean;quantityMatches:boolean|null}[];rows:{host:string;kind:string;n:number}[]};
 }

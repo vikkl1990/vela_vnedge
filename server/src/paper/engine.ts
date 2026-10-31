@@ -14,7 +14,7 @@ import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import { configFingerprint } from './fingerprint.ts';
 import {
-  type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
+  giveBackPct, type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
 import type { StructureLevel } from './luxExits.ts';
 
 const log = logger.scoped('paper');
@@ -237,6 +237,10 @@ export class PaperEngine extends EventEmitter {
   /** Deepest drawdown since the reset, on the same path. */
   maxDrawdownPct(): number { return Math.max(this.maxDd, this.drawdownPct()); }
 
+  /** The same override resolution used by fills, including script-mode policy. */
+  view(p: Position, exchangeMark?: number | null) {
+    return positionView(p, this.mark(p.symbol), exchangeMark, exitConfigFor(this.paper, p.symbol, this.scannerExit?.(p.scannerId, p.entryAt), p.tf));
+  }
   openPositions(): Position[] { return [...this.open.values()]; }
   position(id: number): Position | undefined { return this.open.get(id) ?? (this.db.get<any>('SELECT * FROM positions WHERE id=?', id) ? rowToPosition(this.db.get<any>('SELECT * FROM positions WHERE id=?', id)) : undefined); }
 
@@ -848,7 +852,7 @@ export class PaperEngine extends EventEmitter {
       if(this.open.has(pos.id))Object.assign(this.open.get(pos.id)!,pos);
       this.closedCache=null;n++;
     }
-    if(n){this.recordEquity(true);this.emit('stats',this.stats());}
+    if(n){this.recordEquity(true);this.emit('stats',this.stats());this.emit('accounting',{at:Date.now(),reason:'funding',symbol,settledAt:at});}
     return n;
   }
 
@@ -1245,7 +1249,8 @@ export class PaperEngine extends EventEmitter {
   }
 
   orders(limit = 200) {
-    return this.db.all<any>(`SELECT id, at, position_id positionId, scanner_id scannerId, symbol, side, qty, price, fee, reason, price_source priceSource FROM orders WHERE bt=${this.book} ORDER BY at DESC, id DESC LIMIT ?`, limit);
+    const rows = this.db.all<any>(`SELECT o.id, o.at, o.position_id positionId, o.scanner_id scannerId, o.symbol, o.side, o.qty, o.price, o.fee, o.reason, o.price_source priceSource, p.fills positionFills FROM orders o LEFT JOIN positions p ON p.id=o.position_id WHERE o.bt=${this.book} ORDER BY o.at DESC, o.id DESC LIMIT ?`, limit);
+    return rows.map(({positionFills,...o}) => ({...o, pnl: o.reason === 'funding' ? (safe(positionFills, {fills:[]}).fills as Fill[]).find(f=>f.reason==='funding' && f.at===o.at)?.pnl ?? null : null}));
   }
 
   trades(opts: TradeFilter & { limit?: number } = {}) {
@@ -1298,7 +1303,7 @@ function safe(s: string, d: any) { try { return JSON.parse(s); } catch { return 
  * mark price, the reference an exchange liquidates against. They are different numbers and the UI
  * must not present one as the other.
  */
-export function positionView(p: Position, mark?: number, exchangeMark?: number | null) {
+export function positionView(p: Position, mark?: number, exchangeMark?: number | null, cfg?: PaperConfig, now = Date.now()) {
   const m = mark ?? p.entryPrice;
   return {
     id: p.id, scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side, qty: p.qty, qtyOpen: p.qtyOpen, contractValue: p.contractValue,
@@ -1310,12 +1315,23 @@ export function positionView(p: Position, mark?: number, exchangeMark?: number |
     notional: p.qtyOpen * p.contractValue * m, notionalEntry: p.qty * p.contractValue * p.entryPrice, mlProb: p.mlProb ?? null,
     margin: (p.marginLeverage ?? p.leverage) > 0 ? notionalOf(p) / (p.marginLeverage ?? p.leverage) : null,
     exchangeMark: exchangeMark ?? null,
+    protection: cfg ? {
+      floorAtR: cfg.floorAtR ?? 0, floorKeepR: cfg.floorKeepR ?? 0,
+      trailAfterR: cfg.trailAfterR ?? 0, trailAtrMult: cfg.trailAtrMult ?? 0,
+      trailDistanceR: cfg.trailDistanceR || 1,
+      keepPct: 100 - giveBackPct((p.trailArmedAt !== undefined ? p.trailPeakR : p.peakR) ?? 0, cfg, Math.max(0, now - ((p.trailArmedAt !== undefined ? p.trailPeakAt : p.peakAt) ?? now)) / 60_000),
+      trailGiveBackPct: cfg.trailGiveBackPct ?? 0, trailSteps: cfg.trailSteps ?? [],
+      trailStall: cfg.trailStall ?? null, peakR: (p.trailArmedAt !== undefined ? p.trailPeakR : p.peakR) ?? 0,
+    } : null,
+    funding: p.fills.filter(f => f.reason === 'funding').reduce((n,f)=>n+f.pnl,0),
+    grossTradingPnl: p.realizedPnl - p.fills.filter(f => f.reason === 'funding').reduce((n,f)=>n+f.pnl,0),
   };
 }
 
 export function tradeOf(p: Position) {
   const net = p.realizedPnl - p.fees;
   return {
+    funding: p.fills.filter(f => f.reason === 'funding').reduce((n,f)=>n+f.pnl,0), grossTradingPnl: p.realizedPnl - p.fills.filter(f => f.reason === 'funding').reduce((n,f)=>n+f.pnl,0),
     id: p.id, positionId: p.id, scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side, qty: p.qty, entryPrice: p.entryPrice,
     exitPrice: p.exitPrice, entryAt: p.entryAt, exitAt: p.exitAt, pnl: net, pnlPct: p.entryPrice ? net / (p.entryPrice * p.qty * p.contractValue) * 100 : 0, fees: p.fees,
     rMultiple: rMultiple(p), exitReason: p.exitReason, levelsSource: p.levelsSource, leverage: p.leverage, mlProb: p.mlProb ?? null, features: p.features, sl: p.slOriginal, tp: p.tp, tpHit: p.tpHit, fills: p.fills, signalId: p.signalId,

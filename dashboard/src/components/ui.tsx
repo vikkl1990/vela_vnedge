@@ -226,7 +226,7 @@ export function QueryState<T>({
   if (isError && data === undefined) return <ErrorState error={error} onRetry={onRetry} />
   if (data === undefined) return <Empty label={empty} hint={hint} />
   if (Array.isArray(data) && data.length === 0) return <Empty label={empty} hint={hint} />
-  return <>{children(data)}</>
+  return <>{isError && <div role="alert" className="banner banner-warn small">Refresh failed; showing previously loaded data. <button className="btn btn-sm" onClick={onRetry}>Retry</button></div>}{children(data)}</>
 }
 
 // ---------- Panel / card ----------

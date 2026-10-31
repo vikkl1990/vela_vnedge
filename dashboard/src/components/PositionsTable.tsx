@@ -1,7 +1,8 @@
 import { memo, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useClosePosition, useConfig, useExecution, useMarkets } from '../api/queries'
-import type { Config, Position } from '../api/types'
+import { useClosePosition, useExecution, useMarkets } from '../api/queries'
+import { protectionText, quantityText, targetR } from '../lib/protection'
+import type { Position } from '../api/types'
 import { fmtAge, fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
 import { useToast } from '../lib/toast'
 import { useLivePrice, useLiveTick } from '../sse/prices'
@@ -43,51 +44,12 @@ const LiveDot = memo(function LiveDot({ p }: { p: Position }) {
   return <StatusDot tone={livePnl(p, price) >= 0 ? 'ok' : 'danger'} />
 })
 
-/**
- * How the exit is set up for this position: which target can actually fill, how far away it is, and
- * where the stop starts protecting. Targets carrying no contracts cannot fill whatever price does,
- * and the trail — not the target — is what usually ends these trades.
- */
-/** The exit rules in force, from the live config (decisions 34, 36, 50); the defaults are today's. */
-type ExitRules = { floorAtR: number; floorKeepR: number; trailAfterR: number; keepPct: number }
-function exitRules(cfg: Config | null | undefined): ExitRules {
-  const paper = (cfg?.paper ?? {}) as unknown as Partial<Record<'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct', number>>
-  return { floorAtR: paper.floorAtR ?? 0.5, floorKeepR: paper.floorKeepR ?? 0.25, trailAfterR: paper.trailAfterR ?? 1, keepPct: 100 - (paper.trailGiveBackPct ?? 40) }
-}
-
-function exitPlan(p: Position, rules: ExitRules) {
-  const dir = p.side === 'long' ? 1 : -1
-  const risk = Math.abs(p.entryPrice - (p.slOriginal ?? p.sl ?? p.entryPrice))
-  const live = [0, 1, 2].filter((i) => p.tp?.[i] != null && (p.legs?.[i] ?? 1) > 0 && !p.tpHit?.[i])
-  const active = live.length ? p.tp![live[0]] : null
-  const pct = active != null && p.entryPrice ? ((active - p.entryPrice) * dir) / p.entryPrice * 100 : null
-  const atR = (r: number) => p.entryPrice + dir * risk * r
-  return { active, pct, risk, lockAt: atR(rules.floorAtR), lockPrice: atR(rules.floorKeepR), trailAt: atR(rules.trailAfterR) }
-}
-
-/**
- * What the stop is actually doing, in R: locked by the floor, trailing the peak, at break-even, or
- * still at the original stop — and, for a trade in profit, where the peak is and when the trail arms.
- */
-function stopState(p: Position, rules: ExitRules): { badge: string | null; tone: 'muted' | 'ok'; title: string } {
-  if (p.sl == null) return { badge: null, tone: 'muted', title: '' }
-  const dir = p.side === 'long' ? 1 : -1
-  const risk = Math.abs(p.entryPrice - (p.slOriginal ?? p.sl))
-  const slR = risk > 0 ? ((p.sl - p.entryPrice) * dir) / risk : 0
-  const locked = (p.sl - p.entryPrice) * dir * p.qtyOpen * (p.contractValue || 1)
-  const peak = p.peakR ?? null
-  const peakNote = peak != null ? `peak so far ${fmtR(peak)}` : 'peak not recorded'
-  if (slR > 0.005) {
-    const trailing = peak != null && peak >= rules.trailAfterR
-    return {
-      badge: `${trailing ? 'TRAIL' : 'LOCKED'} ${fmtR(slR)}`, tone: 'ok',
-      title: trailing
-        ? `${peakNote} · trailing: the stop keeps ${rules.keepPct}% of the peak · about ${fmtMoney(locked)} protected before exit costs`
-        : `${peakNote} · the trail arms at ${fmtR(rules.trailAfterR)} and then keeps ${rules.keepPct}% of the peak · about ${fmtMoney(locked)} protected before exit costs`,
-    }
-  }
-  if (p.breakEven || Math.abs(slR) <= 0.005) return { badge: 'BE', tone: 'muted', title: `Stop is at entry · ${peakNote}` }
-  return { badge: null, tone: 'muted', title: peak != null && peak > 0 ? `${peakNote} · the stop locks ${fmtR(rules.floorKeepR)} once the trade shows ${fmtR(rules.floorAtR)}` : '' }
+function stopState(p: Position): { badge: string | null; tone: 'muted' | 'ok'; title: string } {
+  const r = p.sl == null ? null : targetR(p, p.sl);
+  if(r == null) return {badge:null,tone:'muted',title:protectionText(p)};
+  if(r>0.005) return {badge:`PROTECTED ${fmtR(r)}`,tone:'ok',title:protectionText(p)};
+  if(p.breakEven || Math.abs(r)<=0.005) return {badge:'BE',tone:'muted',title:'Stop is at entry, before costs. '+protectionText(p)};
+  return {badge:null,tone:'muted',title:protectionText(p)};
 }
 
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
@@ -96,7 +58,6 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
   // the reader scroll sideways: notional, margin and liquidation can all be inferred from the
   // rest, so they are the first to go, and the per-trade result figures follow.
   const exec = useExecution()
-  const rules = exitRules(useConfig().data)
   const mode = exec.data?.mode ?? 'paper'
   const mirrored = mode !== 'paper' && !exec.data?.dryRun
   const venue = {
@@ -177,9 +138,9 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         render: (p) => (
           <span className="mono">
             {fmtPrice(p.sl, tick(p.symbol))}
-            {stopState(p, rules).badge && (
-              <Pill tone={stopState(p, rules).tone} className="ml" title={stopState(p, rules).title}>
-                {stopState(p, rules).badge}
+            {stopState(p).badge && (
+              <Pill tone={stopState(p).tone} className="ml" title={stopState(p).title}>
+                {stopState(p).badge}
               </Pill>
             )}
           </span>
@@ -268,10 +229,12 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <div><dt>Liquidation (modelled{p.maintenanceMarginPct != null ? `, ${p.maintenanceMarginPct}% maintenance` : ''})</dt><dd>{fmtPrice(p.liqPrice, tick)}</dd></div>
               <div><dt>Entry price</dt><dd>{fmtPrice(p.entryPrice, tick)}</dd></div>
               <div><dt>Open / initial contracts</dt><dd>{fmtInt(p.qtyOpen)} / {fmtInt(p.qty)}</dd></div>
-              <div><dt>Size</dt><dd>{fmtInt(p.qty * p.contractValue)} {p.symbol.replace(/USD$/, '')} · {fmtMoney(p.qty * p.contractValue * p.entryPrice, 2)} notional</dd></div>
+              <div><dt>Remaining size</dt><dd>{quantityText(p.qtyOpen, p.contractValue)} {p.symbol.replace(/USD$/, '')} · <LiveNotional p={p} /> current notional</dd></div>
               <div><dt>Margin (USD)</dt><dd>{fmtMoney(p.margin)}</dd></div>
               <div><dt>Leverage</dt><dd>{(p.marginLeverage ?? p.leverage)?.toFixed(1) ?? '–'}×</dd></div>
-              <div><dt>Realized P&L (USD)</dt><dd><Pnl value={p.realizedPnl} /></dd></div>
+              <div><dt>Funding (USD)</dt><dd><Pnl value={p.funding ?? 0} /></dd></div>
+              <div><dt>Commission (USD)</dt><dd>{fmtMoney(p.fees)}</dd></div>
+              <div><dt>Realized P&L before commission (USD)</dt><dd><Pnl value={p.realizedPnl} /></dd></div>
               <div><dt>Risk (USD)</dt><dd>{fmtMoney(p.riskAmount)}</dd></div>
             </dl>
             <div className="small">
@@ -281,22 +244,12 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                 const funded = size === undefined ? true : size > 0
                 return (
                   <span key={i} className={`${p.tpHit?.[i] ? 'tp-hit' : ''} ${funded ? '' : 'tp-unfunded'}`} title={funded ? undefined : 'no contracts allocated to this target'}>
-                    {' '}{fmtPrice(p.tp?.[i], tick)}{p.tpHit?.[i] ? ' (hit)' : ''}{i < 2 ? ' /' : ''}
+                    {' '}{fmtPrice(p.tp?.[i], tick)}{p.tp?.[i] != null && targetR(p, p.tp[i]!) != null ? ` (${fmtR(targetR(p, p.tp[i]!)!)})` : ''}{p.tpHit?.[i] ? ' (hit)' : ''}{i < 2 ? ' /' : ''}
                   </span>
                 )
               })}
             </div>
-            {(() => {
-              const plan = exitPlan(p, rules)
-              return (
-                <div className="small muted">
-                  {plan.active != null && plan.pct != null && (
-                    <>Ceiling {fmtPrice(plan.active, tick)} (+6R, {plan.pct.toFixed(2)}% away) — rarely reached; the trail usually ends the trade. </>
-                  )}
-                  Protection: stop moves to {fmtPrice(plan.lockPrice, tick)} ({fmtR(rules.floorKeepR)}) once price reaches {fmtPrice(plan.lockAt, tick)} ({fmtR(rules.floorAtR)}); from {fmtPrice(plan.trailAt, tick)} ({fmtR(rules.trailAfterR)}) it trails, keeping {rules.keepPct}% of the best price{p.peakR != null ? ` — peak so far ${fmtR(p.peakR)}` : ''}.
-                </div>
-              )
-            })()}
+            <p className="small muted">{protectionText(p)}</p>
             <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>
           </article>
         })}

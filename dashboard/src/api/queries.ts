@@ -307,3 +307,6 @@ export const useFundingGuard = () => useQuery({queryKey:['funding-guard'],queryF
 export const useAllocationAudit = () => useQuery({queryKey:['allocation-audit'],queryFn:api.allocationAudit,staleTime:30_000,refetchInterval:60_000,retry:1})
 
 export const useScannerPipeline = () => useQuery({queryKey:['scanner-pipeline'],queryFn:api.scannerPipeline,refetchInterval:30000,retry:1})
+
+export const useSignalActivity = () => useQuery({queryKey:['signal-activity'], queryFn:api.signalActivity, refetchInterval:30_000});
+export const useExecutionQuality = () => useQuery({queryKey:['execution-quality'], queryFn:api.executionQuality, refetchInterval:30_000, retry:1});

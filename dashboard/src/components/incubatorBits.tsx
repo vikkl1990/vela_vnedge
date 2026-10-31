@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import type { IncubatorPair, IncubatorStats, IncubatorView } from '../api/types'
 import { Pill } from './ui'
 import { pf, r } from '../lib/incubatorLogic'
@@ -20,7 +21,7 @@ export function Evidence({ s, g }: { s: IncubatorStats | null; g: IncubatorView[
 
 
 /** Decision 112: the last 14 days of a cell's entry signals — opened, or the gate that refused them. */
-export function Funnel({ f }: { f: IncubatorPair['funnel'] }) {
+export function Funnel({ f, pair }: { f: IncubatorPair['funnel']; pair?: IncubatorPair }) {
   if (!f) return <span className="muted">—</span>
   if (!f.entries) return <span className="muted">no signals</span>
   const parts = [
@@ -33,7 +34,10 @@ export function Funnel({ f }: { f: IncubatorPair['funnel'] }) {
   return (
     <span>
       <span className="mono">{f.entries}</span> signals · <span className={f.opened ? 'gain' : 'loss'}>{f.opened} opened</span>
-      {parts.length > 0 && <span className="muted"> · refused: {parts.map(([k, n]) => `${n} ${k}`).join(', ')}</span>}
+      {(f.pending ?? 0) > 0 && <span className="warn"> · {f.pending} pending</span>}
+      {parts.length > 0 && <span className="muted"> · other outcomes: {parts.map(([k, n]) => `${n} ${k}`).join(', ')}</span>}
+      {f.reasons && Object.keys(f.reasons).length > 0 && <details className="funnel-reasons"><summary>Decision reasons</summary><ul>{Object.entries(f.reasons).sort((a,b)=>b[1]-a[1]).map(([reason,n])=><li key={reason}><b>{n}</b> {reason}</li>)}</ul></details>}
+      {pair && ['live','demote_proposed'].includes(pair.stage) && <Link className="link small" to={`/signals?scanner=${encodeURIComponent(pair.scannerId)}&symbol=${encodeURIComponent(pair.symbol)}&tf=${encodeURIComponent(pair.tf)}&kind=entry`}> View journal</Link>}
     </span>
   )
 }

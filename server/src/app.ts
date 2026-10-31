@@ -22,6 +22,7 @@ import { DeltaFeed, type WsTicker } from './delta/ws.ts';
 import { logger } from './log.ts';
 import { MarketStructureTrail, type StructureLevel } from './paper/luxExits.ts';
 import { configFingerprint, sourceHash } from './paper/fingerprint.ts';
+import { filledEntries, proposalTimes, sizingDescription } from './api/uiMetrics.ts';
 import { bookPaperConfig, scannerExitPolicy } from './paper/policy.ts';
 import { readingOf } from './scanners/reading.ts';
 import { PaperEngine } from './paper/engine.ts';
@@ -394,7 +395,7 @@ export class App {
     const ratio = cfg.paper.minRiskFeeRatio ?? 0;
     g.push({ key: 'cost', group: 'Trade', name: 'Stop versus round-trip cost', state: ratio >= 6 ? 'armed' : ratio > 0 ? 'attention' : 'off', value: `stop ≥ ${ratio}× fees plus ${this.entryDepth.enabled()?'actual-size depth cost':'the live spread'}`, rule: 'A stop that cannot pay the round trip is refused before it loses (decision 96)', next: ratio < 6 ? 'Settings → Paper account → minimum stop over round-trip fee: 6 (measured in decision 96)' : 'As measured', href: '/settings' });
     g.push({ key: 'liq', group: 'Trade', name: 'Liquidation headroom', state: cfg.paper.liquidation ? 'armed' : 'off', value: `leverage capped so the stop sits inside liquidation by 25% of the stop, on each market's maintenance margin`, rule: 'The stop must trade before the exchange liquidates (decision 94)', next: 'Automatic per market', href: '/trades' });
-    g.push({ key: 'size', group: 'Trade', name: 'Risk per trade and size caps', state: 'armed', value: `${cfg.paper.riskPerTradePct}% of equity · stop ≤ ${cfg.paper.maxStopLossPct}% · leverage ≤ ${cfg.paper.maxLeverage}× or the market's own`, rule: 'Lots from the stop distance; never more than the caps allow', next: 'Settings → Paper account', href: '/settings' });
+    g.push({ key: 'size', group: 'Trade', name: 'Risk per trade and size caps', state: 'armed', value: sizingDescription(cfg.paper), rule: 'Contract size follows the active sizing mode, then available margin, liquidation headroom and modeled stop-risk caps. Actual gap losses can exceed the model.', next: 'Settings → Paper account', href: '/settings' });
     // --- the pipeline ---
     const inc = cfg.incubator;
     const shadowN = this.incubatorStore.counts?.()?.shadow ?? null;
@@ -833,13 +834,14 @@ export class App {
     const names = new Map(this.registry.all().map(s => [s.id, s.name]));
     const markets = this.incubatorStore.marketsToday();
     const since14 = now - 14 * 86400_000;
+    const proposedAt = proposalTimes(this.db);
     const pairs = this.incubatorStore.list().map(r => {
       const book = r.stage === 'live' || r.stage === 'demote_proposed' ? 0 : 2;
       const judged = r.stage !== 'candidate' && r.stage !== 'retired';
       const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       return {
-        ...r, scannerName: names.get(r.scannerId) ?? r.scannerId,
+        ...r, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
         admissionEvidence: r.screen ? admissionEvidence(r,cfg.incubator) : null,
         stats: judged ? pairStats(trades, r.since, now) : null,
         openShadow: openShadow.get(key) ?? 0,
@@ -854,7 +856,7 @@ export class App {
     return {
       enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),
       fleet: livePairs(cfg).length, promotionsThisWeek: this.incubatorStore.promotionsSince(now - 7 * 86400_000),
-      lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastStart: this.db.kvGet('incubator.lastStart') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, active: this.incubator.active.length, dispatch:this.incubator.dispatchStats },
+      lastRun: this.db.kvGet('incubator.lastRun') ?? null, lastStart: this.db.kvGet('incubator.lastStart') ?? null, lastHunt: this.db.kvGet<any>('incubator.lastHunt') ?? null, runner: { ...this.incubator.stats, entries: filledEntries(this.db, 2, this.startedAt, now), startedAt: this.startedAt, active: this.incubator.active.length, dispatch:this.incubator.dispatchStats },
       pairs, events: this.incubatorStore.events(100),
       // decision 157: why the candidates that passed their screen are not in the shadow book, right now
       candidates: candidateBlockers(this.incubatorStore, cfg, now, { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy' }),

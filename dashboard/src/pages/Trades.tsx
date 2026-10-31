@@ -77,7 +77,7 @@ export function Trades() {
       ...(veryNarrow
         ? []
         : ([{ key: 'dur', header: 'Held', numeric: true, value: (t) => t.exitAt - t.entryAt, render: (t) => <span className="mono muted small">{fmtDuration(t.exitAt - t.entryAt)}</span> }] as Column<Trade>[])),
-      { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <Pnl value={t.pnl} /> },
+      { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <details className="pnl-breakdown"><summary><Pnl value={t.pnl} /></summary><span className="small">Trading {fmtPnl(t.grossTradingPnl ?? (t.pnl + t.fees - (t.funding ?? 0)))} − commission {fmtMoney(t.fees)} + funding {fmtPnl(t.funding ?? 0)} = net {fmtPnl(t.pnl)}</span></details> },
       // return % and fees restate what PnL already says, so they are the first to go when narrow
       ...(narrow
         ? []
@@ -112,7 +112,8 @@ export function Trades() {
         key: 'price', header: 'Price', numeric: true, value: (o) => o.price, title: 'exch = restated from the exchange\'s own fill; quote = crossed the live spread; otherwise modelled slippage',
         render: (o) => <span className="mono">{fmtPrice(o.price, tick(o.symbol))}{o.priceSource === 'exchange' ? <Pill tone="ok" className="ml">exch</Pill> : o.priceSource === 'depth' ? <span className="muted small"> depth</span> : o.priceSource === 'quote' ? <span className="muted small"> q</span> : null}</span>,
       },
-      { key: 'fee', header: 'Fee (USD)', numeric: true, value: (o) => o.fee, render: (o) => <span className="mono muted">{fmtMoney(o.fee)}</span> },
+      { key: 'funding', header: 'Funding (USD)', numeric: true, value: o => o.pnl, render: o => o.reason === 'funding' ? <span title="Paper settlement cashflow; source coverage is on Exchange">{o.pnl == null ? 'unavailable' : <Pnl value={o.pnl} />}</span> : <span className="muted">–</span> },
+      { key: 'fee', header: 'Commission (USD)', numeric: true, value: (o) => o.fee, render: (o) => <span className="mono muted">{fmtMoney(o.fee)}</span> },
       { key: 'reason', header: 'Reason', value: (o) => o.reason, render: (o) => <ExitReasonPill reason={o.reason} /> },
       { key: 'pos', header: 'Pos', numeric: true, value: (o) => o.positionId, render: (o) => <span className="mono muted">#{o.positionId}</span> },
       {

@@ -1,7 +1,7 @@
 import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMarkets, useScannerIndex, useSignals } from '../api/queries'
 import type { Signal, SignalKind, Side } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
@@ -142,12 +142,14 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
 export function Signals() {
   const scanners = useScannerIndex()
   const markets = useMarkets()
-  const [scanner, setScanner] = useState('')
-  const [symbol, setSymbol] = useState('')
-  const [kind, setKind] = useState<'' | SignalKind>('')
+  const [params] = useSearchParams()
+  const [scanner, setScanner] = useState(params.get('scanner') ?? '')
+  const [symbol, setSymbol] = useState(params.get('symbol') ?? '')
+  const [tf, setTf] = useState(params.get('tf') ?? '')
+  const [kind, setKind] = useState<'' | SignalKind>((params.get('kind') as SignalKind) || '')
   const [side, setSide] = useState<'' | Side>('')
   const [view, setView] = useState<'grouped' | 'flat'>('grouped')
-  const q = useMemo(() => ({ limit: 500, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined }), [scanner, symbol, kind])
+  const q = useMemo(() => ({ limit: 500, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined, tf: tf || undefined }), [scanner, symbol, kind, tf])
   const signals = useSignals(q)
 
   const rows = useMemo(() => (signals.data ?? []).filter((s) => !side || s.side === side), [signals.data, side])
@@ -161,8 +163,6 @@ export function Signals() {
 
   return (
     <div className="page">
-      <DecisionTrace/>
-      <ScannerPipelinePanel/>
       <div className="banner small" role="note"><b>View only.</b> A signal is the record of a decision the gates already made; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
       <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Every alert the account's scanners raised and what the account did with it. Shadow-book runs are judged in the Incubator, not here." />
       {outcomes.total > 0 && (
@@ -199,6 +199,7 @@ export function Signals() {
                 </option>
               ))}
             </select>
+            <input className="input input-sm" aria-label="Timeframe" placeholder="All timeframes" value={tf} onChange={e=>setTf(e.target.value)} style={{width:110}} />
             <select className="select select-sm" value={kind} onChange={(e) => setKind(e.target.value as '' | SignalKind)} aria-label="Kind">
               <option value="">All kinds</option>
               <option value="entry">entry</option>
@@ -218,6 +219,7 @@ export function Signals() {
         {signals.isError && !signals.data && <ErrorState error={signals.error} onRetry={() => signals.refetch()} />}
         {signals.data && (view === 'flat' ? <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" /> : <GroupedSignals signals={rows} />)}
       </Panel>
+      <details className="panel diagnostics"><summary>Decision trace and scanner pipeline</summary><DecisionTrace/><ScannerPipelinePanel/></details>
     </div>
   )
 }

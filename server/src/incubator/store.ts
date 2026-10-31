@@ -30,7 +30,7 @@ const toPair = (r: any): PairRow => ({
 });
 
 /** Decision 190: `pending` is an order resting or waiting to fill; it is not an opened trade until it fills, and a lapsed one counts as `other`. */
-export interface SignalFunnel { entries: number; opened: number; pending: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
+export interface SignalFunnel { reasons?: Record<string, number>; entries: number; opened: number; pending: number; regime: number; cost: number; market: number; quote: number; other: number; lastOpenAt: number | null }
 /** The gate an entry signal's recorded action names (decision 112); the same words the Signals page shows. */
 export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | 'cost' | 'market' | 'quote' | 'other' {
   if (action === 'opened' || action === 'reversed') return 'opened';
@@ -59,7 +59,8 @@ export class IncubatorStore {
   signalFunnel(scannerId: string, symbol: string, tf: string, since: number): SignalFunnel {
     const rows = this.db.all<{ action: string; at: number }>("SELECT action, at FROM signals WHERE kind='entry' AND scanner_id=? AND symbol=? AND tf=? AND at>=?", scannerId, symbol, tf, since);
     const f: SignalFunnel = { entries: 0, opened: 0, pending: 0, regime: 0, cost: 0, market: 0, quote: 0, other: 0, lastOpenAt: null };
-    for (const r of rows) { f.entries++; const k = funnelClass(r.action); f[k]++; if (k === 'opened') f.lastOpenAt = Math.max(f.lastOpenAt ?? 0, r.at); }
+    f.reasons = {};
+    for (const r of rows) { const reason = r.action || 'unclassified'; f.reasons[reason] = (f.reasons[reason] ?? 0) + 1; f.entries++; const k = funnelClass(r.action); f[k]++; if (k === 'opened') f.lastOpenAt = Math.max(f.lastOpenAt ?? 0, r.at); }
     return f;
   }
 
@@ -72,8 +73,8 @@ export class IncubatorStore {
   }
 
   /** Decision 112: the shadow runner's record of what became of each shadow pair's signals, by pair key: [at, class] pairs, newest last. */
-  shadowFunnel(): Record<string, Array<[number, string]>> { return this.db.kvGet<Record<string, Array<[number, string]>>>('incubator.shadowFunnel') ?? {}; }
-  setShadowFunnel(rec: Record<string, Array<[number, string]>>): void { this.db.kvSet('incubator.shadowFunnel', rec); }
+  shadowFunnel(): Record<string, Array<[number, string, string?]>> { return this.db.kvGet<Record<string, Array<[number, string, string?]>>>('incubator.shadowFunnel') ?? {}; }
+  setShadowFunnel(rec: Record<string, Array<[number, string, string?]>>): void { this.db.kvSet('incubator.shadowFunnel', rec); }
 
   /** Execution-refusal clocks are separate from the legacy clocks that also counted the promotion turnover floor. */
   /** Decision 125: the last bar each shadow pair acted on. */

@@ -1,3 +1,4 @@
+import { QueryFreshness } from './QueryFreshness'
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useBackendOnline, useHealth, useKill, usePositions, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
@@ -356,6 +357,7 @@ export function Layout() {
         )}
 
         <main className="main" id="main" tabIndex={-1}>
+          <QueryFreshness />
           <RiskBanner />
           <RouteErrorBoundary>
             <Outlet />
