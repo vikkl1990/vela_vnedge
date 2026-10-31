@@ -6215,3 +6215,59 @@ dashboard lint and production build passed. The full suite includes the existing
 partial-fill, rejection, protection, recovery and host-policy tests. Native live
 protection, account identity scoping, private fill streams and complete partial-fill
 cash accounting remain separate work; the deployment stays in paper mode.
+
+## 210. Account for split exchange fills by journal identity (31 October 2026)
+
+The executor restated an entire paper exit from the first terminal partial order.
+Its residual retry had a different reason (`stranded` or `sl-rest`), so that retry's
+price and commission never reached the original journal fill. An 80-contract
+take-profit partly executed at market could also leave a residual indefinitely
+while the paper position remained open. Disabling brackets disabled immediate
+residual recovery as well.
+
+Each mirrored journal fill now has an accounting record. Exchange orders carry
+its durable source order ID; retries and replacement exits retain that identity.
+The journal uses the quantity-weighted average price and the sum of each order's
+cumulative paid commission, once. It only replaces the complete paper fill when
+the quantities match, contributing orders are terminal, and price and commission
+are available. Missing commission is not treated as zero. Oversized totals remain
+unconfirmed. The accounting row and journal cash update commit together; failure
+restores the in-memory position too. Late entry prices recalculate closed trading
+P&L and initial risk, preserving separate funding cashflows.
+
+Open partial quantities are persisted and included in exposure recovery. Lookups
+validate order identity, quantity, price and commission; a regressing quantity
+cannot erase an observed fill. Repeated snapshots cannot subtract exposure twice.
+Missing cash fields are refreshed in bounded batches. A still-open partial order
+remains unsettled. Cash records remain scoped to the executor's environment,
+including a separate dry-run scope. Existing explicitly mirrored outbox commands
+can gain accounting records on upgrade; historical paper trades are not imported.
+
+Residual exits now run with brackets on or off. A partially filled TP on an open
+position retries only its attributable remaining quantity, after checking for
+unresolved submissions. Resting stop edits use confirmed exposure, including an
+exit remainder, rather than the paper quantity alone.
+
+Exchange shows quantity coverage, weighted price, commission and accounting state.
+Journal rows and filtered totals explicitly identify incomplete accounting as
+provisional, including on mobile. Pure paper fills retain their existing economics.
+The $150 margin, stop-risk cap, leverage policy and fee gate are unchanged.
+
+Validation includes split long/short exits, non-unit contracts, a restart between
+fills, partially open entries/targets, delayed prices and commissions, repeated
+lookups, exact source identities, environment isolation, database rollback, and
+three real SIGKILL cases before/during/after cash restatement. Existing entry,
+protection, handoff and recovery tests remain part of the full suite.
+
+This is cash-accounting hardening, not evidence of improved strategy returns.
+The deployment remains paper. Native protection during a still-working partial
+entry, emergency account-wide flatten allocation, historical unlinked fills,
+account/subaccount identity, fee revisions after a complete snapshot, and private
+fill streams require further work. An entry finalized after the simulator already
+closed can retain a quantity mismatch; it remains provisional rather than being
+presented as exchange-confirmed P&L. These tests cover process termination, not
+machine power loss or real exchange execution.
+
+Checks passed: 778 server tests (15 added, including three new SIGKILL cases),
+three dashboard tests, nine accounting component render assertions, server type
+check, dashboard lint and production build.

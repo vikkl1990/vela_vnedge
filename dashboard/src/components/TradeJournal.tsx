@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { AccountingBadge } from './ExecutionAccounting'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMarkets, useScannerIndex, useTradesPage } from '../api/queries'
 import type { Trade } from '../api/types'
@@ -72,7 +73,7 @@ export function TradeJournal() {
       ...(veryNarrow
         ? []
         : ([{ key: 'dur', header: 'Held', numeric: true, value: (t) => t.exitAt - t.entryAt, render: (t) => <span className="mono muted small">{fmtDuration(t.exitAt - t.entryAt)}</span> }] as Column<Trade>[])),
-      { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <details className="pnl-breakdown"><summary><Pnl value={t.pnl} /></summary><span className="small">Trading {fmtPnl(t.grossTradingPnl ?? (t.pnl + t.fees - (t.funding ?? 0)))} − commission {fmtMoney(t.fees)} + funding {fmtPnl(t.funding ?? 0)} = net {fmtPnl(t.pnl)}</span></details> },
+      { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <div><AccountingBadge pending={t.accountingPending} /><details className="pnl-breakdown"><summary><Pnl value={t.pnl} /></summary><span className="small">Trading {fmtPnl(t.grossTradingPnl ?? (t.pnl + t.fees - (t.funding ?? 0)))} − commission {fmtMoney(t.fees)} + funding {fmtPnl(t.funding ?? 0)} = net {fmtPnl(t.pnl)}</span></details></div> },
       // return % and fees restate what PnL already says, so they are the first to go when narrow
       ...(narrow
         ? []
@@ -134,6 +135,7 @@ export function TradeJournal() {
         </div>}
       </div>
       <p className="journal-scope muted small">Filters apply to closed trades only. Closing days use UTC, matching Daily; timestamps use your local zone. Filters stay in the URL.</p>
+      {!!pageQ.data?.accountingPending && <div className="banner banner-warn" role="status">{pageQ.data.accountingPending} matching trades have incomplete exchange accounting. Their P&amp;L and the totals below are provisional.</div>}
       {f.error ? <div className="banner banner-warn" role="alert">{f.error}</div> : <>
         <div className="journal-totals" aria-label="Filtered journal totals">
           <div><span>Matching trades</span><strong className="mono">{total === undefined ? '–' : fmtInt(total)}</strong></div>
@@ -151,6 +153,7 @@ export function TradeJournal() {
         </div> : trades.data && (mobile ? <div className="journal-cards">
           {rows.map(t => <article key={t.id} className="journal-card">
             <div className="journal-card-head"><div><b>{t.symbol}</b> <span className="mono muted small">{t.tf}</span> <SidePill side={t.side} /></div><Pnl value={t.pnl} /></div>
+            <AccountingBadge pending={t.accountingPending} />
             <Link to={`/scanners/${t.scannerId}`} className="link small">{t.scannerName}</Link>
             <div className="journal-card-meta"><Time t={t.exitAt} mode="datetime" className="small muted" /><ExitReasonPill reason={t.exitReason} /></div>
             <dl className="journal-card-metrics">

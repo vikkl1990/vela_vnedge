@@ -77,8 +77,8 @@ async function setup(t: { after: (fn: () => void) => void }, exec: Partial<AppCo
   const ex = new ExchangeExecutor(paper, () => cfg, fake, { now: () => clock.t, reconcileSec: 0, sweepSec: 0, pollMs: 100, sleep: async ms => { clock.t += ms; } });
   await ex.start();
   t.after(() => ex.stop());
-  const open = (side: 'long' | 'short' = 'long', symbol = 'BTCUSD') => paper.onEntry({ kind: 'entry', side, price: 100, sl: side === 'long' ? 95 : 105, tp: side === 'long' ? [105, 110, 115] : [95, 90, 85], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 },
-    { scannerId: 's', scannerName: 's', symbol, tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' }).position!;
+  const open = (side: 'long' | 'short' = 'long', symbol = 'BTCUSD',contractValue=1) => paper.onEntry({ kind: 'entry', side, price: 100, sl: side === 'long' ? 95 : 105, tp: side === 'long' ? [105, 110, 115] : [95, 90, 85], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 },
+    { scannerId: 's', scannerName: 's', symbol, tf: '15m', market: { tickSize: 0.25, contractValue }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' }).position!;
   return { cfg, db, paper, fake, ex, open, clock };
 }
 
@@ -335,11 +335,14 @@ test('stop/start detaches mirror listeners and cannot multiply submissions',asyn
 
 test('partial stop cancellation is confirmed before sending only the remaining market quantity',async t=>{
   const {ex,open,fake,paper}=await setup(t);
-  const p=open();await ex.flush();fake.fill(2,94.8,.1,50);
+  const p=open();await ex.flush();fake.fill(2,94.8,.1,50);fake.nextFill={price:94.4,fee:.3};
   paper.onBar('BTCUSD',{time:120000,high:100,low:94,close:94},120010);
   await ex.flush();
   const exits=fake.byPurpose('exit');assert.equal(exits.length,1);assert.equal(exits[0].p.size,150);
   assert.equal(ex.ledger.get(2)?.filledSize,50);assert.equal(ex.status().exposure[p.id],undefined);
+  const trade=paper.trades()[0];
+  assert.equal(trade.exitPrice,94.5);assert.equal(trade.fees,.4);assert.equal(trade.pnl,-1200.4);
+  assert.equal(trade.accountingPending,false);
 });
 
 test('failed stop cancellation cannot trigger a second exit while its outcome is unresolved',async t=>{
@@ -549,17 +552,139 @@ test('a partial exit leaves the residual on the exchange: stop resized to it, cl
   const p = open();
   await ex.flush();
   // 120 of 200 fill; the immediate retry for the rest is rejected, so 80 stay on the exchange
-  fake.queue = [{ price: 99.2, size: 120 }, { reject: 'insufficient_margin' }];
+  fake.queue = [{ price: 99.2, size: 120,fee:.12 }, { reject: 'insufficient_margin' }];
   paper.closeManual(p.id, 'manual');
   await ex.flush();
   const st = ex.status();
   assert.deepEqual(st.stranded.map(s => [s.positionId, s.qty]), [[p.id, 80]]);
   assert.ok(fake.edited.some(e => e.size === 80), 'the resting stop was resized to what the exchange still holds');
   assert.equal(fake.cancelled.length, 0);
-  fake.nextFill = { price: 99.0 };
+  assert.equal(paper.trades()[0].accountingPending,true);
+  assert.equal(paper.trades()[0].fees,0,'a partial commission cannot be presented as the whole exit fee');
+  fake.nextFill = { price: 99.0,fee:.08 };
   await ex.sweepNow();
   assert.equal(ex.status().stranded.length, 0); assert.equal(ex.status().brackets.length, 0);
   assert.ok(ex.ledger.forPosition(p.id).some(r => r.reason === 'stranded' && r.state === 'filled'));
+  const trade=paper.trades()[0];assert.equal(trade.exitPrice,99.12);assert.equal(trade.fees,.2);assert.ok(Math.abs(trade.pnl-(-276.2))<1e-8);
+  assert.equal(trade.accountingPending,false);
+  await ex.sweepNow();await ex.recover();assert.equal(paper.trades()[0].fees,.2,'repeated reconciliation cannot double-charge');
+});
+
+test('partial exit accounting survives a restart and respects short direction and contract value',async t=>{
+  const first=await setup(t);const {ex,open,paper,fake,db}=first;
+  fake.nextFill={price:100,fee:.2};const p=open('short','BTCUSD',.01);await ex.flush();
+  const part=p.qty*.6;
+  fake.queue=[{price:98,size:part,fee:.3},{reject:'retry_later'}];paper.closeManual(p.id);await ex.flush();ex.stop();
+  const second=await setup(t,{},fake,db);fake.nextFill={price:97,fee:.4};await second.ex.sweepNow();
+  const trade=second.paper.trades()[0];assert.equal(trade.exitPrice,97.6);assert.ok(Math.abs(trade.fees-.9)<1e-9);
+  assert.ok(Math.abs(trade.pnl-(2.4*p.qty*.01-.9))<1e-8);assert.equal(trade.accountingPending,false);
+  const before=fake.placed.length;await second.ex.recover();await second.ex.sweepNow();
+  assert.equal(fake.placed.length,before);assert.equal(second.paper.trades()[0].pnl,trade.pnl);
+});
+
+test('open partial entry quantities persist, survive restart and cannot regress on a stale lookup',async t=>{
+  const {ex,open,paper,fake,db}=await setup(t);fake.nextFill={pending:true};const p=open();await ex.flush();
+  fake.fill(1,101,.1,50);await ex.sweepNow();
+  assert.equal(ex.ledger.get(1)?.filledSize,50);assert.equal(ex.status().exposure[p.id],50);
+  ex.stop();const second=await setup(t,{},fake,db);assert.equal(second.ex.status().exposure[p.id],50);
+  fake.fill(1,100,.05,25);await second.ex.sweepNow();assert.equal(second.ex.ledger.get(1)?.filledSize,50);
+  assert.equal(second.ex.status().exposure[p.id],50);assert.equal(fake.byPurpose('entry').length,1);
+  fake.fill(1,102,.4);await second.ex.sweepNow();assert.equal(second.paper.position(p.id)?.fees,.4);
+  assert.equal(second.ex.status().accounting.incomplete,0);assert.equal(paper.orders()[0].price,102);
+});
+
+test('missing exit commission is provisional, then a late fee updates cash exactly once',async t=>{
+  const {ex,open,paper,fake}=await setup(t);const p=open();await ex.flush();
+  const place=fake.placeOrder.bind(fake);
+  fake.placeOrder=async o=>{const ack=await place(o);if(o.purpose==='exit')fake.orders.get(String(ack.id))!.paid_commission=null;return ack;};
+  fake.nextFill={price:99};paper.closeManual(p.id);await ex.flush();
+  assert.equal(paper.trades()[0].accountingPending,true);assert.equal(paper.tradesPage().accountingPending,1);
+  assert.equal(paper.orders()[0].accountingState,'missing-fee');
+  const exit=ex.ledger.forPosition(p.id).find(r=>r.purpose==='exit')!;
+  fake.orders.get(exit.exchangeId!)!.paid_commission=.25;await ex.sweepNow();
+  assert.equal(paper.trades()[0].fees,.25);assert.equal(paper.trades()[0].exitPrice,99);
+  assert.equal(paper.tradesPage().accountingPending,0);
+  await ex.sweepNow();await ex.recover();assert.equal(paper.trades()[0].fees,.25);
+});
+
+test('accounting update failure rolls back both journal cash and position, then retry succeeds',async t=>{
+  const {ex,open,paper,fake,db}=await setup(t);const p=open();await ex.flush();
+  db.db.exec("CREATE TRIGGER fail_accounting BEFORE UPDATE ON execution_accounting WHEN NEW.state='complete' AND NEW.source_order_id>1 BEGIN SELECT RAISE(ABORT,'injected accounting failure'); END");
+  fake.nextFill={price:99,fee:.6};paper.closeManual(p.id);await ex.flush();
+  assert.equal(paper.trades()[0].exitPrice,100.5);assert.equal(paper.orders()[0].fee,0);
+  assert.equal(paper.trades()[0].fees,0);assert.equal(paper.trades()[0].accountingPending,true);
+  db.db.exec('DROP TRIGGER fail_accounting');await ex.sweepNow();
+  assert.equal(paper.trades()[0].exitPrice,99);assert.equal(paper.orders()[0].fee,.6);
+  assert.equal(paper.trades()[0].accountingPending,false);
+});
+
+test('exact journal identity separates multiple exits with the same reason and rejects wrong-position links',async t=>{
+  const {ex,open,paper,fake}=await setup(t);const p=open();await ex.flush();
+  // An exchange observation can produce repeated partial exits with the same reason.
+  (ex as any).adopt(p.id,()=>paper.adoptExitFill(p.id,{price:101,qty:20,fee:0,reason:'manual',at:121000}));
+  (ex as any).adopt(p.id,()=>paper.adoptExitFill(p.id,{price:102,qty:20,fee:0,reason:'manual',at:121000}));
+  const fills=paper.orders().filter(o=>o.reason==='manual');
+  paper.restateOrderFill(fills[1].id,{price:103,fee:.2});
+  const ordered=paper.orders().filter(o=>o.reason==='manual');assert.equal(ordered[0].price,102);assert.equal(ordered[1].price,103);
+  const other=open('short','ETHUSD');await ex.flush();
+  assert.throws(()=>ex.ledger.link(ex.ledger.forPosition(other.id)[0].id,fills[1].id),/source mismatch/);
+  assert.equal(fake.byPurpose('exit').length,0,'cash restatements must not mirror back to the exchange');
+});
+
+test('accounting cannot consume another host or dry-run ledger and missing prices stay pending',async t=>{
+  const {ex,open,paper,fake,db}=await setup(t);const p=open();await ex.flush();
+  fake.nextFill={price:null,fee:.1};paper.closeManual(p.id);await ex.flush();
+  assert.equal(paper.orders()[0].accountingState,'missing-price');assert.equal(paper.trades()[0].accountingPending,true);
+  const source=paper.orders()[0].id;
+  db.run("INSERT INTO exchange_orders(position_id,purpose,source_order_id,client_order_id,product_id,symbol,side,size,order_type,state,filled_size,avg_price,fee,created_at,updated_at,host) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",p.id,'exit',source,'other-host',27,'BTCUSD','sell',200,'market_order','filled',200,999,100,1,1,'production');
+  await ex.sweepNow();assert.equal(paper.trades()[0].exitPrice,100.5);assert.equal(paper.trades()[0].fees,0);
+  const own=ex.ledger.forPosition(p.id).find(r=>r.purpose==='exit')!;fake.orders.get(own.exchangeId!)!.average_fill_price=99;
+  await ex.sweepNow();assert.equal(paper.trades()[0].exitPrice,99);assert.equal(paper.trades()[0].fees,.1);
+});
+
+test('vanished snapshot followed by still-open partial protection never books the entire exit',async t=>{
+  const {ex,open,paper,fake}=await setup(t);const p=open();await ex.flush();fake.fill(2,94,.1,50);
+  fake.openOrders=async()=>[];await ex.sweepNow();
+  assert.equal(ex.ledger.get(2)?.state,'acknowledged');assert.equal(ex.ledger.get(2)?.filledSize,50);
+  assert.equal(paper.position(p.id)?.qtyOpen,200);assert.equal(ex.status().exposure[p.id],150);
+  assert.equal(fake.byPurpose('exit').length,0);
+});
+
+test('late entry price corrects already closed trading PnL, risk basis and journal cash',async t=>{
+  const {ex,open,paper,fake}=await setup(t);fake.nextFill={price:null,fee:.1};const p=open();await ex.flush();
+  fake.nextFill={price:99,fee:.2};paper.closeManual(p.id);await ex.flush();
+  assert.equal(paper.trades()[0].accountingPending,true);assert.ok(Math.abs(paper.trades()[0].pnl-(-200.3))<1e-8);
+  fake.orders.get('1')!.average_fill_price=101;await ex.sweepNow();
+  const trade=paper.trades()[0];assert.equal(trade.entryPrice,101);assert.ok(Math.abs(trade.pnl-(-400.3))<1e-8);
+  assert.equal(paper.position(p.id)?.riskAmount,1200);assert.equal(trade.accountingPending,false);
+  assert.equal(paper.orders().find(o=>o.reason==='entry')?.price,101);
+});
+
+test('open-order snapshots trigger durable observation of a partially filled target',async t=>{
+  const {ex,open,fake}=await setup(t);const p=open();await ex.flush();fake.fill(3,105,.1,40);
+  await ex.sweepNow();assert.equal(ex.ledger.get(3)?.filledSize,40);assert.equal(ex.status().exposure[p.id],160);
+  await ex.sweepNow();assert.equal(ex.status().exposure[p.id],160,'a repeated cumulative snapshot cannot subtract twice');
+});
+
+test('partial exits keep retrying with brackets disabled and aggregate the entire exit',async t=>{
+  const {ex,open,paper,fake}=await setup(t,{bracket:false});const p=open();await ex.flush();
+  fake.queue=[{size:120,price:99,fee:.12},{size:80,price:98,fee:.08}];paper.closeManual(p.id);await ex.flush();
+  assert.equal(ex.status().stranded.length,0);assert.equal(ex.status().exposure[p.id],undefined);
+  assert.deepEqual(fake.byPurpose('exit').map(o=>o.p.size),[200,80]);
+  assert.equal(paper.trades()[0].exitPrice,98.6);assert.equal(paper.trades()[0].fees,.2);
+  assert.equal(paper.trades()[0].accountingPending,false);
+});
+
+test('a partial target exit retries its remainder while the position stays open and protects actual exposure',async t=>{
+  const {ex,open,paper,fake}=await setup(t);const p=open();await ex.flush();
+  fake.nextFill={size:50,price:105,fee:.1};
+  paper.onBar('BTCUSD',{time:120000,high:105.2,low:100,close:104},120010);await ex.flush();
+  assert.equal(p.qtyOpen,120);assert.equal(ex.status().exposure[p.id],150);assert.equal(ex.status().brackets[0].stop?.size,150);
+  assert.equal(paper.orders().find(o=>o.reason==='tp1')?.accountingState,'pending');
+  fake.nextFill={price:106,fee:.2};await ex.sweepNow();await ex.flush();
+  assert.equal(ex.status().exposure[p.id],120);assert.equal(ex.status().brackets[0].stop?.size,120);
+  const tp=paper.orders().find(o=>o.reason==='tp1')!;assert.equal(tp.price,105.375);assert.ok(Math.abs(tp.fee-.3)<1e-9);assert.equal(tp.accountingState,'complete');
+  assert.deepEqual(fake.byPurpose('exit').map(o=>o.p.size),[80,30]);
 });
 
 test('the executor reports the mode it was built with, not the config of the moment', async t => {

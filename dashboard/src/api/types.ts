@@ -370,6 +370,7 @@ export interface Fill {
 export type ExitReason = 'tp3' | 'sl' | 'be' | 'trail' | 'script_exit' | 'reversal' | 'manual' | 'tp_partial' | string
 
 export interface Trade {
+  accountingPending?: boolean
   funding?: number
   grossTradingPnl?: number
   id: number
@@ -395,6 +396,9 @@ export interface Trade {
 }
 
 export interface Order {
+  accountingState?: string | null
+  confirmedQty?: number | null
+  expectedQty?: number | null
   pnl?: number | null
   /** Where the fill price came from: 'exchange' (restated from the exchange's fill), 'quote' (crossed the live spread), 'slippage' (modelled), or null. */
   priceSource?: 'exchange' | 'quote' | 'depth' | 'slippage' | null
@@ -521,7 +525,7 @@ export interface TradeQuery {
   to?: number
 }
 /** Decision 190: one page of the journal; `total`, `pnl` and `fees` cover every matching trade, not only this page. */
-export interface TradePage { total: number; offset: number; limit: number; pnl: number; fees: number; from: number | null; to: number | null; trades: Trade[] }
+export interface TradePage { total: number; offset: number; limit: number; pnl: number; fees: number; accountingPending?: number; from: number | null; to: number | null; trades: Trade[] }
 export interface CandleQuery {
   symbol: string
   tf: string
@@ -728,6 +732,7 @@ export interface RiskState {
 }
 export interface BracketOrder { id: number | string; price: number; size: number; leg?: number }
 export interface LedgerRow {
+  sourceOrderId?: number | null
   id: number; positionId: number; purpose: string; reason: string | null; leg: number | null; clientOrderId: string
   productId: number; symbol: string; side: 'buy' | 'sell'; size: number; orderType: string; stopPrice: number | null; limitPrice: number | null
   state: 'intent' | 'submitted' | 'acknowledged' | 'filled' | 'cancelled' | 'rejected' | 'unknown'; exchangeId: string | null
@@ -750,6 +755,7 @@ export interface ExecutionStatus {
   lastRecovery?: RecoveryReport | null
   ledger?: LedgerRow[]
   outbox?: ExecutionHandoff
+  accounting?: { total: number; incomplete: number; rows: Array<{sourceOrderId:number;positionId:number;symbol:string;reason:string;expectedQty:number;confirmedQty:number;state:string;price:number|null;fee:number|null;updatedAt:number}> }
   products?: number
 }
 

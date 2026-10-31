@@ -644,8 +644,8 @@ export class PaperEngine extends EventEmitter {
     // the position, its entry fill and the signal's outcome commit together; events go out only after the commit
     // (decision 77: a crash between the writes used to leave a position without its order, or a signal pointing nowhere)
     this.db.transaction(() => {
-      this.persist(pos);
       this.persistFill(pos, pos.fills[0], context);
+      this.persist(pos);
       recordFillBudget(this.db,pos,this.book,cfg);
       recordEntryExecution(this.db, pos, this.book, cfg, context.source, this.quotes?.markState?.(pos.symbol));
       if(pos.features?.reclaim_trial)recordReclaimEvent(this.db,pos,JSON.stringify(this.reclaimRule(pos)),'filled',pos.entryAt);
@@ -1006,6 +1006,7 @@ export class PaperEngine extends EventEmitter {
     if (!(f.qty > 0)) { this.voidPosition(id, 'exchange-unfilled'); return undefined; }
     const entry = pos.fills[0];
     if (pos.qtyOpen !== pos.qty) { log.error(`adoptEntryFill #${id}: position already partly exited; entry not restated`); return pos; }
+    const before=structuredClone(pos);
     const price = f.price ?? entry.price;
     const cfg = this.configFor(pos);
     const fee = f.fee ?? (f.qty === pos.qty ? entry.fee : entry.fee * f.qty / pos.qty);
@@ -1015,8 +1016,10 @@ export class PaperEngine extends EventEmitter {
     Object.assign(entry, { price, qty: f.qty, fee, ...(f.at ? { at: f.at } : {}) });
     if (pos.sl !== null) pos.riskAmount = Math.abs(price - pos.sl) * f.qty * pos.contractValue;
     pos.liqPrice = liquidationPrice(pos.side, price, pos.marginLeverage ?? pos.leverage ?? 0, cfg, pos.maintenanceMarginPct);
-    this.db.run("UPDATE orders SET price=?, qty=?, fee=?, price_source='exchange' WHERE id=(SELECT id FROM orders WHERE position_id=? AND reason='entry' ORDER BY id ASC LIMIT 1)", price, f.qty, fee, pos.id);
-    this.persist(pos);
+    try {this.db.transaction(()=>{
+      this.db.run("UPDATE orders SET price=?, qty=?, fee=?, price_source='exchange' WHERE id=(SELECT id FROM orders WHERE position_id=? AND reason='entry' AND bt=? ORDER BY id ASC LIMIT 1)", price, f.qty, fee, pos.id,this.book);
+      this.persist(pos);
+    });}catch(e){Object.assign(pos,before);throw e;}
     this.emit('position', { type: 'updated', position: pos });
     this.recordEquity(true);
     this.logInfo(`ENTRY RESTATED #${pos.id} ${pos.symbol}: ${f.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
@@ -1058,18 +1061,40 @@ export class PaperEngine extends EventEmitter {
 
   /** Restate the price and fee of a fill the simulator already booked (its last fill with this reason) from the exchange's. */
   restateFill(id: number, reason: string, f: { price: number | null; fee: number | null }): Position | undefined {
-    const pos = this.open.get(id) ?? this.position(id);
+    const order=this.db.get<{id:number}>('SELECT id FROM orders WHERE position_id=? AND reason=? AND bt=? ORDER BY id DESC LIMIT 1',id,reason,this.book);
+    return order ? this.restateOrderFill(order.id,f) : this.position(id);
+  }
+
+  /** Exact journal identity prevents a retry from restating a different exit with the same reason. */
+  restateOrderFill(orderId:number, f:{price:number|null;fee:number|null}, commit?:()=>unknown):Position|undefined {
+    const order=this.db.get<any>('SELECT * FROM orders WHERE id=? AND bt=?',orderId,this.book);
+    if(!order)return undefined;
+    const pos = this.open.get(order.position_id) ?? this.position(order.position_id);
     if (!pos) return undefined;
-    const fill = [...pos.fills].reverse().find(x => x.reason === reason);
-    if (!fill) return pos;
+    const ids=this.db.all<{id:number}>('SELECT id FROM orders WHERE position_id=? AND bt=? ORDER BY id',pos.id,this.book);
+    const fill=pos.fills.find(x=>x.orderId===orderId) ?? pos.fills[ids.findIndex(x=>x.id===orderId)];
+    if(!fill || fill.reason!==order.reason || fill.qty!==order.qty || fill.reason==='funding')throw new Error('journal fill identity mismatch');
+    const reason=fill.reason;
     const price = f.price ?? fill.price, fee = f.fee ?? fill.fee;
-    if (price === fill.price && fee === fill.fee) return pos;
-    const pnl = reason === 'entry' ? 0 : pnlOf(pos, price, fill.qty);
-    pos.realizedPnl += pnl - fill.pnl; pos.fees += fee - fill.fee;
-    Object.assign(fill, { price, fee, pnl });
-    if (pos.status === 'closed' && pos.fills.at(-1) === fill) pos.exitPrice = price;
-    this.db.run("UPDATE orders SET price=?, fee=?, price_source='exchange' WHERE id=(SELECT id FROM orders WHERE position_id=? AND reason=? ORDER BY id DESC LIMIT 1)", price, fee, pos.id, reason);
-    this.persist(pos);
+    if(!(price>0) || !Number.isFinite(price) || !Number.isFinite(fee))throw new Error('invalid exchange cash accounting');
+    const before=structuredClone(pos);
+    try { this.db.transaction(()=>{
+      if(reason==='entry') {
+        pos.entryPrice=price;
+        if(pos.slOriginal!==null)pos.riskAmount=Math.abs(price-pos.slOriginal)*pos.qty*pos.contractValue;
+        pos.liqPrice=liquidationPrice(pos.side,price,pos.marginLeverage??pos.leverage??0,this.configFor(pos),pos.maintenanceMarginPct);
+        // Late entry prices affect every already booked exit; funding remains a separate cashflow.
+        for(const x of pos.fills.filter(x=>x.reason!=='entry' && x.reason!=='funding')) {
+          const pnl=pnlOf(pos,x.price,x.qty);pos.realizedPnl+=pnl-x.pnl;x.pnl=pnl;
+        }
+      }
+      const pnl = reason === 'entry' ? 0 : pnlOf(pos, price, fill.qty);
+      pos.realizedPnl += pnl - fill.pnl; pos.fees += fee - fill.fee;
+      Object.assign(fill, { orderId,price,fee,pnl });
+      if (pos.status === 'closed' && pos.fills.at(-1) === fill) pos.exitPrice = price;
+      this.db.run("UPDATE orders SET price=?, fee=?, price_source='exchange' WHERE id=? AND bt=?", price, fee, orderId,this.book);
+      this.persist(pos);commit?.();
+    }); } catch(e) {Object.assign(pos,before);this.closedCache=null;throw e;}
     if (pos.status === 'closed') { this.closedCache = null; this.emit('stats', this.stats()); }
     else this.emit('position', { type: 'updated', position: pos });
     this.recordEquity(true);
@@ -1262,6 +1287,7 @@ export class PaperEngine extends EventEmitter {
       f.at, p.id, p.scannerId, p.symbol, side, f.qty, f.price, f.fee, f.reason, this.book,
       ctx.ref ?? null, q?.bestBid ?? null, q?.bestAsk ?? null, q?.quoteAt ?? null, ctx.source ?? null,
     );
+    f.orderId=Number(saved.lastInsertRowid);
     this.executionIntent?.(Number(saved.lastInsertRowid), orderOf(p, f));
   }
 
@@ -1310,22 +1336,28 @@ export class PaperEngine extends EventEmitter {
   }
 
   orders(limit = 200) {
-    const rows = this.db.all<any>(`SELECT o.id, o.at, o.position_id positionId, o.scanner_id scannerId, o.symbol, o.side, o.qty, o.price, o.fee, o.reason, o.price_source priceSource, p.fills positionFills FROM orders o LEFT JOIN positions p ON p.id=o.position_id WHERE o.bt=${this.book} ORDER BY o.at DESC, o.id DESC LIMIT ?`, limit);
+    const rows = this.db.all<any>(`SELECT o.id, o.at, o.position_id positionId, o.scanner_id scannerId, o.symbol, o.side, o.qty, o.price, o.fee, o.reason, o.price_source priceSource, a.state accountingState,a.confirmed_qty confirmedQty,a.expected_qty expectedQty, p.fills positionFills FROM orders o LEFT JOIN positions p ON p.id=o.position_id LEFT JOIN execution_accounting a ON a.source_order_id=o.id WHERE o.bt=${this.book} ORDER BY o.at DESC, o.id DESC LIMIT ?`, limit);
     return rows.map(({positionFills,...o}) => ({...o, pnl: o.reason === 'funding' ? (safe(positionFills, {fills:[]}).fills as Fill[]).find(f=>f.reason==='funding' && f.at===o.at)?.pnl ?? null : null}));
   }
 
   trades(opts: TradeFilter & { limit?: number } = {}) {
-    return this.filterClosed(opts).slice(0, opts.limit ?? 200).map(tradeOf);
+    return this.journalTrades(this.filterClosed(opts).slice(0, opts.limit ?? 200));
+  }
+
+  private journalTrades(positions:Position[]) {
+    const pending=new Set(this.db.all<{id:number}>("SELECT DISTINCT position_id id FROM execution_accounting WHERE state!='complete'").map(r=>r.id));
+    return positions.map(p=>({...tradeOf(p),accountingPending:pending.has(p.id)}));
   }
 
   /** Decision 190: one page of the journal, every filter applied before paging, with the count and totals of all matches. */
   tradesPage(opts: TradeFilter & { limit?: number; offset?: number } = {}) {
     const all = this.filterClosed(opts);
     const limit = Math.max(1, Math.min(2000, opts.limit ?? 300)), offset = Math.max(0, opts.offset ?? 0);
-    const trades = all.slice(offset, offset + limit).map(tradeOf);
+    const trades = this.journalTrades(all.slice(offset, offset + limit));
+    const pending=new Set(this.db.all<{id:number}>("SELECT DISTINCT position_id id FROM execution_accounting WHERE state!='complete'").map(r=>r.id));
     let pnl = 0, fees = 0;
     for (const p of all) { const t = tradeOf(p); pnl += t.pnl; fees += t.fees ?? 0; }
-    return { total: all.length, offset, limit, pnl, fees, from: all.length ? all[all.length - 1].exitAt : null, to: all.length ? all[0].exitAt : null, trades };
+    return { total: all.length, offset, limit, pnl, fees, accountingPending:all.filter(p=>pending.has(p.id)).length, from: all.length ? all[all.length - 1].exitAt : null, to: all.length ? all[0].exitAt : null, trades };
   }
 
   /** Closed positions matching the filter, newest first. */

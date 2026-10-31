@@ -31,6 +31,7 @@ import { stopReason, type Position } from '../paper/logic.ts';
 import { DryRunTransport, RestTransport, resolveHost, wirePayload, OrderValidationError, type ExchangeOrder, type ExchangeTransport, type OrderPayload } from './client.ts';
 import { OrderLedger, type LedgerRow } from './ledger.ts';
 import { ExecutionOutbox } from './outbox.ts';
+import { ExecutionAccounting } from './accounting.ts';
 
 const log = logger.scoped('execution');
 
@@ -52,6 +53,7 @@ export class ExchangeExecutor {
   readonly transport: ExchangeTransport;
   readonly ledger: OrderLedger;
   readonly outbox: ExecutionOutbox;
+  readonly accounting: ExecutionAccounting;
   private paper: PaperEngine;
   private cfgRef: () => AppConfig;
   private products = new Map<string, DeltaProduct>();
@@ -63,6 +65,7 @@ export class ExchangeExecutor {
   private leverage = new Map<number, number>();
   /** Positions whose fills are being booked FROM the exchange: their 'order' events must not be mirrored back. */
   private adopting = new Set<number>();
+  private adoptingLedger: number | undefined;
   private timer: ReturnType<typeof setInterval> | null = null;
   private sweeper: ReturnType<typeof setInterval> | null = null;
   private now: () => number;
@@ -83,9 +86,14 @@ export class ExchangeExecutor {
     const scope = transport.dryRun ? `${transport.host}:dry-run` : transport.host;
     this.ledger = new OrderLedger(paper.store, this.now, scope);
     this.outbox = new ExecutionOutbox(paper.store, scope, this.now);
+    this.accounting = new ExecutionAccounting(paper.store, scope, this.now);
     if (paper.book !== 0) throw new Error('exchange execution requires the account book');
     // Install before start(): fills can arrive while products and recovery are loading.
-    paper.executionIntent = (id, o) => { if (!this.adopting.has(o.positionId)) this.outbox.record(id, o); };
+    paper.executionIntent = (id, o) => {
+      if(o.reason==='funding')return;
+      if (!this.adopting.has(o.positionId)) {this.outbox.record(id, o);this.accounting.register(id);}
+      else if(this.adoptingLedger!==undefined){this.ledger.link(this.adoptingLedger,id);this.accounting.register(id);}
+    };
     this.mode = cfgRef().execution.mode;
     this.bracketEnabled = cfgRef().execution.bracket !== false;
   }
@@ -96,7 +104,11 @@ export class ExchangeExecutor {
   }
   /** Confirmed exposure, protection, or work that could still create exposure. */
   hasExposure(): boolean { return this.outbox.pending().length > 0 || this.ledger.unsettled().length > 0 || this.brackets.size > 0 || this.stranded.size > 0 || [...this.exposure.values()].some(q => q > 0); }
-  private addExposure(id: number, delta: number) { const q = Math.max(0, (this.exposure.get(id) ?? 0) + delta); if (q > 0) this.exposure.set(id, q); else this.exposure.delete(id); return q; }
+  private refreshExposure(id: number) { const q = Math.max(0,this.ledger.filledExposure().find(r=>r.positionId===id)?.qty??0); if (q > 0) this.exposure.set(id, q); else this.exposure.delete(id); return q; }
+  private syncAccounting(){this.accounting.sync(this.paper,this.ledger);}
+  private sourceOf(clientOrderId?:string):number|undefined {
+    return clientOrderId ? this.paper.store.get<{id:number}>('SELECT source_order_id id FROM execution_commands WHERE client_order_id=? AND scope=?',clientOrderId,this.outbox.scope)?.id : undefined;
+  }
 
   /** Frozen at construction: the transport cannot change at runtime, so neither may what the executor says it is (review finding 2). */
   readonly mode: AppConfig['execution']['mode'];
@@ -159,9 +171,9 @@ export class ExchangeExecutor {
   // ---- sending and confirming ----
 
   /** Write the intent, send, record the outcome. A network failure leaves the row `unknown`: the exchange may have it. */
-  private async send(o: OrderPayload, positionId: number, symbol: string, leg: number | null = null, reason: string | null = null): Promise<{ row: LedgerRow; ok: boolean; error?: string }> {
+  private async send(o: OrderPayload, positionId: number, symbol: string, leg: number | null = null, reason: string | null = null, sourceOrderId?:number): Promise<{ row: LedgerRow; ok: boolean; error?: string }> {
     o = { ...o, client_order_id: o.client_order_id ?? cid(positionId, o.purpose ?? 'exit') };
-    const row = this.ledger.intent(o, positionId, symbol, leg, reason);
+    const row = this.ledger.intent(o, positionId, symbol, leg, reason, sourceOrderId);
     try {
       wirePayload(o);
       const res = await this.transport.placeOrder(o);
@@ -188,16 +200,21 @@ export class ExchangeExecutor {
       try {
         last = row.exchangeId ? await this.transport.order(row.exchangeId) : await this.transport.orderByClientId(row.clientOrderId);
         if (last) {
+          if(last.product_id!==row.productId || last.side!==row.side || (last.client_order_id && last.client_order_id!==row.clientOrderId) || (row.exchangeId && String(last.id)!==row.exchangeId))throw new Error('exchange order identity mismatch');
+          if(!Number.isSafeInteger(last.size) || !Number.isSafeInteger(last.unfilled_size) || last.unfilled_size!<0 || last.unfilled_size!>last.size)throw new Error('exchange order has invalid or missing cumulative quantities');
           if (!row.exchangeId) { this.ledger.submitted(row.id, last.id); row = this.ledger.get(row.id)!; }
           const filled = Math.max(0, last.size - (last.unfilled_size ?? 0));
+          this.ledger.observed(row.id,{filledSize:filled,avgPrice:last.average_fill_price??null,fee:last.paid_commission??null});
+          this.refreshExposure(row.positionId);
           const done = last.state === 'closed' || last.state === 'cancelled' || (last.unfilled_size !== undefined && last.unfilled_size <= 0);
           if (done) {
-            const c: Confirmation = { status: filled > 0 ? 'filled' : 'unfilled', filledSize: filled, avgPrice: last.average_fill_price ?? null, fee: last.paid_commission ?? null, order: last };
+            const snapshot=this.ledger.get(row.id)!;
+            const c: Confirmation = { status: filled > 0 ? 'filled' : 'unfilled', filledSize: filled, avgPrice: snapshot.avgPrice, fee: snapshot.fee, order: last };
             if (c.status === 'filled') this.ledger.filled(row.id, { filledSize: filled, avgPrice: c.avgPrice, fee: c.fee }); else this.ledger.cancelled(row.id, last.state ?? 'unfilled');
             return c;
           }
         }
-      } catch (e: any) { log.warn(`confirm order ${row.exchangeId ?? row.clientOrderId} failed: ${e?.message ?? e}`); }
+      } catch (e: any) { last=null;log.warn(`confirm order ${row.exchangeId ?? row.clientOrderId} failed: ${e?.message ?? e}`); }
       if (this.now() >= deadline) break;
       await this.sleep(this.pollMs);
     }
@@ -317,26 +334,28 @@ export class ExchangeExecutor {
   /** Apply what the exchange says about an entry: restate, void, or wait. */
   private async settleEntry(positionId: number, ledgerId: number, c: Confirmation) {
     if (c.status === 'unknown') {
+      this.syncAccounting();
       this.unconfirmed.set(positionId, ledgerId);
       log.error(`entry #${positionId} UNCONFIRMED after ${this.confirmMs / 1000}s: no bracket until the exchange answers; the sweep keeps asking`);
       return;
     }
     this.unconfirmed.delete(positionId);
     if (c.status === 'unfilled') { this.adopt(positionId, () => this.paper.voidPosition(positionId, 'exchange-unfilled')); return; }
-    this.exposure.set(positionId, c.filledSize);
+    this.refreshExposure(positionId);
     const pos = this.adopt(positionId, () => this.paper.adoptEntryFill(positionId, { price: c.avgPrice, qty: c.filledSize, fee: c.fee, at: this.now() }));
+    this.syncAccounting();
     if (pos && pos.status === 'open' && this.bracketEnabled) { this.lastSeen.set(pos.id, { sl: pos.sl, qtyOpen: pos.qtyOpen }); await this.placeBracket(pos); }
   }
 
   /** A discretionary exit (reversal, script, manual, risk) or one with no resting order to lean on: reduce-only market, then restate. */
-  private async marketExit(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, product_id: number, clientOrderId?: string) {
+  private async marketExit(o: { symbol: string; side: string; qty: number; reason: string; positionId: number }, product_id: number, clientOrderId?: string, sourceOrderId?:number) {
     const payload: OrderPayload = { product_id, size: Math.max(1, Math.round(o.qty)), side: o.side as 'buy' | 'sell', order_type: 'market_order', reduce_only: true, client_order_id: clientOrderId ?? cid(o.positionId, o.reason), purpose: 'exit' };
-    const sent = await this.send(payload, o.positionId, o.symbol, null, o.reason);
+    const sent = await this.send(payload, o.positionId, o.symbol, null, o.reason,sourceOrderId);
     if (!sent.ok && sent.row.state === 'rejected') { log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}) rejected by the exchange; the paper book is closed but the exchange may still hold it — reconcile will report the drift`); return; }
     const c = await this.confirm(sent.row);
+    this.syncAccounting();
     if (c.status === 'filled') {
-      this.addExposure(o.positionId, -c.filledSize);
-      this.adopt(o.positionId, () => this.paper.restateFill(o.positionId, o.reason, { price: c.avgPrice, fee: c.fee }));
+      this.refreshExposure(o.positionId);
       if (c.filledSize < payload.size) log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}): exchange filled ${c.filledSize} of ${payload.size}; ${payload.size - c.filledSize} still held — protection stays until it is closed`);
     } else log.error(`exit #${o.positionId} ${o.symbol} (${o.reason}) ${c.status}: the exchange still holds the position — protection stays until it is closed`);
   }
@@ -348,6 +367,7 @@ export class ExchangeExecutor {
     const leg = o.reason === 'sl' || o.reason === 'be' || o.reason === 'trail' || o.reason === 'liquidation' ? b.stop : b.tps.find(t => t.leg === legNo) ?? null;
     if (!leg) { log.warn(`${o.symbol} ${o.reason}: no acknowledged exchange order covers it; sending a market exit`); return this.marketExit(o, product_id, clientOrderId); }
     const row = this.ledger.get(leg.ledgerId)!;
+    const source=this.sourceOf(clientOrderId);if(source)this.ledger.link(row.id,source);
     let c = await this.confirm(row);
     if (c.status === 'unknown') {
       try { await this.transport.cancelOrder(leg.exchangeId, product_id); }
@@ -356,8 +376,7 @@ export class ExchangeExecutor {
       if (c.status === 'unknown') { this.ledger.unknown(row.id, 'cancel not yet confirmed; no replacement exit sent'); return; }
     }
     if (c.status === 'filled') {
-      this.addExposure(o.positionId, -c.filledSize);
-      this.adopt(o.positionId, () => this.paper.restateFill(o.positionId, o.reason, { price: c.avgPrice, fee: c.fee }));
+      this.refreshExposure(o.positionId);this.syncAccounting();
       this.dropLeg(b, leg);
       if (c.filledSize < Math.round(o.qty)) { log.warn(`${o.symbol} ${o.reason}: exchange filled ${c.filledSize} of ${Math.round(o.qty)}; closing the rest at market`); await this.marketExit({ ...o, qty: Math.round(o.qty) - c.filledSize, reason: `${o.reason}-rest` }, product_id, clientOrderId); }
       return;
@@ -371,7 +390,6 @@ export class ExchangeExecutor {
 
   private async onPosition(e: { type: string; position: Position; reason?: string }) {
     const p = e.position;
-    if (!this.bracketEnabled) return;
     if (e.type === 'closed' || e.type === 'voided') {
       this.lastSeen.delete(p.id); this.unconfirmed.delete(p.id);
       const left = this.exposure.get(p.id) ?? 0;
@@ -379,11 +397,12 @@ export class ExchangeExecutor {
       await this.cancelBracket(p.id, e.type === 'voided' ? `position voided (${e.reason ?? ''})` : 'position closed');
       return;
     }
+    if (!this.bracketEnabled) return;
     if (e.type === 'opened') return;   // the bracket follows the CONFIRMED entry, not the paper one
     const b = this.brackets.get(p.id);
     if (!b) return;
     const seen = this.lastSeen.get(p.id);
-    if (seen && seen.sl === p.sl && seen.qtyOpen === p.qtyOpen) return;
+    if (seen && seen.sl === p.sl && seen.qtyOpen === p.qtyOpen && (p.sl===null || b.stop?.size===Math.round(this.exposure.get(p.id)??p.qtyOpen))) return;
     this.lastSeen.set(p.id, { sl: p.sl, qtyOpen: p.qtyOpen });
     b.tps = b.tps.filter(t => !p.tpHit[t.leg - 1]);
     await this.moveStop(p, b);
@@ -421,20 +440,23 @@ export class ExchangeExecutor {
       }
       const c = await this.confirmOnce(row);
       if (c.status === 'unknown') { this.ledger.unknown(row.id, `${row.purpose === 'exit' ? 'exit' : 'cancel'} outcome unresolved; no second exit sent`); return; }
-      if (c.status === 'filled') this.addExposure(id, -c.filledSize);
+      if (c.status === 'filled') this.refreshExposure(id);
+      this.syncAccounting();
       const b = this.brackets.get(id), leg = b && [b.stop, ...b.tps].find(l => l?.ledgerId === row.id);
       if (b && leg) this.dropLeg(b, leg);
     }
     if (pending.length) return; // recompute remaining quantity on the next sweep
     if (left <= 0) { this.stranded.delete(id); await this.cancelBracket(id, 'stranded exposure closed'); log.info(`stranded #${id} ${s.symbol} resolved`); return; }
     s.attempts++;
-    const payload: OrderPayload = { product_id: s.product_id, size: left, side: s.exitSide, order_type: 'market_order', reduce_only: true, client_order_id: cid(id, 'stranded'), purpose: 'exit' };
-    const sent = await this.send(payload, id, s.symbol, null, 'stranded');
+    this.syncAccounting();
+    const remainder=this.accounting.remainder(id);
+    const payload: OrderPayload = { product_id: s.product_id, size: Math.min(left,remainder?.qty??left), side: s.exitSide, order_type: 'market_order', reduce_only: true, client_order_id: cid(id, 'stranded'), purpose: 'exit' };
+    const sent = await this.send(payload, id, s.symbol, null, 'stranded',remainder?.sourceOrderId);
     if (!sent.ok) return;
     const c = await this.confirm(sent.row);
+    this.syncAccounting();
     if (c.status === 'filled') {
-      const rest = this.addExposure(id, -c.filledSize);
-      this.adopt(id, () => this.paper.restateFill(id, 'stranded', { price: c.avgPrice, fee: c.fee }));
+      const rest = this.refreshExposure(id);
       if (rest <= 0) { this.stranded.delete(id); await this.cancelBracket(id, 'stranded exposure closed'); log.info(`stranded #${id} ${s.symbol} resolved after ${s.attempts} attempt(s)`); }
     }
   }
@@ -478,7 +500,7 @@ export class ExchangeExecutor {
   private async moveStop(p: Position, b: Bracket) {
     if (p.status !== 'open' || p.sl === null || p.qtyOpen <= 0) return;
     if (this.ledger.unsettled().some(r => r.positionId === p.id && r.purpose === 'stop' && r.state !== 'acknowledged')) return;
-    const size = Math.round(p.qtyOpen);
+    const size = Math.round(this.exposure.get(p.id)??p.qtyOpen);
     if (b.stop) {
       if (b.stop.price === p.sl && b.stop.size === size) return;
       try {
@@ -491,6 +513,7 @@ export class ExchangeExecutor {
     }
     const o = this.bracketPayloads(p, b.product_id).find(x => x.purpose === 'stop');
     if (!o) return;
+    o.size=size;
     const old = b.stop;
     const sent = await this.send(o, p.id, p.symbol);
     if (!sent.ok) { log.error(`replace stop #${p.id} failed; ${old ? `the old stop at ${old.price} x${old.size} stays` : 'the position has NO exchange stop'}; the next update retries`); this.lastSeen.delete(p.id); return; }
@@ -515,9 +538,20 @@ export class ExchangeExecutor {
 
   /** Check every resting order and unconfirmed entry against the exchange; book what filled. */
   private async sweep(): Promise<void> {
+    for(const row of this.accounting.missing(this.ledger))await this.confirmOnce(row);
+    this.syncAccounting();
     if(this.outbox.pending().some(c=>!this.productId(c.symbol)))await this.loadProducts();
     if (this.recoveryPending || this.outbox.pending().length || this.ledger.unsettled().some(r => r.purpose==='exit' || ((r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged'))) await this.recover();
     await this.drainOutbox();
+    // A partial TP can leave a residual while the position stays open. Closing-only
+    // recovery cannot see that gap. Retry one attributable remainder per sweep.
+    for(const p of this.paper.openPositions()) {
+      const remainder=this.accounting.remainder(p.id),product=this.productId(p.symbol);
+      const gap=(this.exposure.get(p.id)??0)-p.qtyOpen;
+      if(!remainder || !product || gap<=0 || this.outbox.pending().some(c=>c.positionId===p.id))continue;
+      if(this.ledger.unsettled().some(r=>r.positionId===p.id && (r.purpose==='entry'||r.purpose==='exit'||r.state!=='acknowledged'||r.sourceOrderId===remainder.sourceOrderId)))continue;
+      await this.marketExit({symbol:p.symbol,positionId:p.id,side:p.side==='long'?'sell':'buy',qty:Math.min(gap,remainder.qty),reason:'partial-rest'},product,undefined,remainder.sourceOrderId);
+    }
     if (!this.brackets.size && !this.unconfirmed.size && !this.stranded.size) return;
     if (!this.transport.hasAuth && !this.transport.dryRun) return;
     for (const id of [...this.stranded.keys()]) await this.closeStranded(id);
@@ -528,11 +562,12 @@ export class ExchangeExecutor {
       await this.settleEntry(positionId, ledgerId, c);
     }
     if (!this.brackets.size) return;
-    let open: Set<string>;
-    try { open = new Set((await this.transport.openOrders()).map(o => String(o.id))); } catch (e: any) { log.warn(`sweep: open orders failed: ${e?.message ?? e}`); return; }
+    let open: Map<string,ExchangeOrder>;
+    try { open = new Map((await this.transport.openOrders()).map(o => [String(o.id),o])); } catch (e: any) { log.warn(`sweep: open orders failed: ${e?.message ?? e}`); return; }
     for (const b of [...this.brackets.values()]) {
       for (const leg of [...(b.stop ? [b.stop] : []), ...b.tps]) {
-        if (open.has(leg.exchangeId)) continue;
+        const snapshot=open.get(leg.exchangeId);
+        if (snapshot && !(snapshot.size-(snapshot.unfilled_size??snapshot.size)>(this.ledger.get(leg.ledgerId)?.filledSize??0))) continue;
         await this.settleVanished(b, leg);
       }
     }
@@ -540,38 +575,47 @@ export class ExchangeExecutor {
 
   /** A resting order is no longer open: it filled, was cancelled, or the exchange lost it. */
   private async settleVanished(b: Bracket, leg: Leg, onAdopt?: () => void) {
-    let o: ExchangeOrder | null = null;
-    try { o = await this.transport.order(leg.exchangeId); } catch (e: any) { log.warn(`sweep: order ${leg.exchangeId} failed: ${e?.message ?? e}`); return; }
-    if (!o) { this.ledger.unknown(leg.ledgerId, 'resting order absent from lookup; outcome uncertain'); return; }
-    const filled = o ? Math.max(0, o.size - (o.unfilled_size ?? 0)) : 0;
+    const row=this.ledger.get(leg.ledgerId)!;
+    const c=await this.confirmOnce(row);
+    if(c.status==='unknown')return; // an open partial is still a working order
+    const filled=c.filledSize;
     const pos = this.paper.position(b.positionId);
     const isStop = b.stop === leg;
     if (filled > 0) {
-      this.ledger.filled(leg.ledgerId, { filledSize: filled, avgPrice: o!.average_fill_price ?? null, fee: o!.paid_commission ?? null });
       this.dropLeg(b, leg);
-      const rest = this.addExposure(b.positionId, -filled);
-      if (this.stranded.has(b.positionId) && rest <= 0) { this.stranded.delete(b.positionId); await this.cancelBracket(b.positionId, 'stranded exposure closed by the resting order'); return; }
-      if (pos && pos.status === 'open') {
+      const rest = this.refreshExposure(b.positionId);
+      if(pos && row.sourceOrderId===null) {
         const reason = isStop ? stopReason(pos) : `tp${leg.leg}`;
         const waiting=this.outbox.pending().find(c=>c.positionId===pos.id && c.reason===reason);
-        if(waiting) this.adopt(pos.id,()=>this.paper.restateFill(pos.id,reason,{price:o!.average_fill_price??leg.price,fee:o!.paid_commission??null}));
-        else {
-          log.warn(`${b.symbol} ${reason}: the exchange filled ${filled} @ ${o!.average_fill_price ?? leg.price} before the paper book saw it; booking it`);
-          this.adopt(b.positionId, () => this.paper.adoptExitFill(b.positionId, { price: o!.average_fill_price ?? leg.price, qty: filled, fee: o!.paid_commission ?? null, reason, at: this.now() }));
+        const remainder=pos.status==='closed'?this.accounting.remainder(pos.id):undefined;
+        if(waiting)this.ledger.link(row.id,waiting.sourceOrderId);
+        else if(remainder && filled<=remainder.qty)this.ledger.link(row.id,remainder.sourceOrderId);
+        else if(pos.status==='open') {
+          log.warn(`${b.symbol} ${reason}: the exchange filled ${filled} @ ${c.avgPrice ?? leg.price} before the paper book saw it; booking it`);
+          this.adoptingLedger=row.id;
+          try {this.adopt(b.positionId, () => this.paper.adoptExitFill(b.positionId, { price: c.avgPrice ?? leg.price, qty: filled, fee: c.fee, reason, at: this.now() }));}
+          finally{this.adoptingLedger=undefined;}
         }
         onAdopt?.();
       }
+      this.syncAccounting();
+      if (this.stranded.has(b.positionId) && rest <= 0) { this.stranded.delete(b.positionId); await this.cancelBracket(b.positionId, 'stranded exposure closed by the resting order'); }
       return;
     }
-    this.ledger.cancelled(leg.ledgerId, o ? `gone: ${o.state ?? 'cancelled'}` : 'gone: not found');
     this.dropLeg(b, leg);
-    if (isStop && pos && pos.status === 'open') { log.error(`${b.symbol} #${b.positionId}: the exchange STOP is gone (${o?.state ?? 'not found'}) while the position is open; re-placing it`); await this.moveStop(pos, b); }
+    if (isStop && pos && pos.status === 'open') { log.error(`${b.symbol} #${b.positionId}: the exchange STOP is gone while the position is open; re-placing it`); await this.moveStop(pos, b); }
   }
 
   // ---- start-up recovery ----
 
   /** Settle what the ledger says was in flight, rebuild brackets from it, and verify them against the exchange. */
   async recover(): Promise<RecoveryReport> {
+    // Upgrade only explicitly mirrored fills; never import historical paper activity.
+    for(const cmd of this.paper.store.all<any>('SELECT * FROM execution_commands WHERE scope=?',this.outbox.scope)) {
+      this.accounting.register(cmd.source_order_id);
+      const row=this.ledger.byClientId(cmd.client_order_id);
+      if(row && row.sourceOrderId===null && this.paper.store.get('SELECT id FROM orders WHERE id=? AND bt=0',cmd.source_order_id))this.ledger.link(row.id,cmd.source_order_id);
+    }
     this.recoveryPending = false;
     const rep: RecoveryReport = { at: this.now(), settled: 0, restored: 0, replacedStops: 0, adoptedFills: 0, cancelledStray: 0, unmirrored: [], notes: [] };
     const canAsk = this.transport.hasAuth || this.transport.dryRun;
@@ -598,7 +642,6 @@ export class ExchangeExecutor {
         if (row.purpose === 'entry' && pos.qtyOpen === pos.qty) { this.adopt(pos.id, () => this.paper.adoptEntryFill(pos.id, { price: c.avgPrice, qty: c.filledSize, fee: c.fee, at: row.updatedAt })); rep.adoptedFills++; }
         if (row.purpose === 'stop' || row.purpose === 'tp') { const reason = row.purpose === 'stop' ? stopReason(pos) : `tp${row.leg ?? 1}`; this.adopt(pos.id, () => this.paper.adoptExitFill(pos.id, { price: c.avgPrice ?? row.stopPrice ?? row.limitPrice ?? pos.entryPrice, qty: c.filledSize, fee: c.fee, reason, at: row.updatedAt })); rep.adoptedFills++; }
       }
-      if(c.status==='filled' && pos && row.purpose==='exit' && row.reason)this.adopt(pos.id,()=>this.paper.restateFill(pos.id,row.reason!,{price:c.avgPrice,fee:c.fee}));
       if (c.status === 'unfilled' && row.purpose === 'entry' && pos && pos.status === 'open' && pos.qtyOpen === pos.qty && pos.fills.length === 1) { this.adopt(pos.id, () => this.paper.voidPosition(pos.id, 'exchange-unfilled (recovered)')); rep.notes.push(`#${pos.id} voided: entry never filled`); }
       if (c.status === 'unknown' && row.purpose === 'entry' && pos && pos.status === 'open') this.unconfirmed.set(pos.id, row.id);
       else if (row.purpose === 'entry') this.unconfirmed.delete(row.positionId);
@@ -606,8 +649,9 @@ export class ExchangeExecutor {
     // 1b. exposure from the ledger: entries filled minus exits, stops and targets filled, per position
     for(const cmd of this.outbox.pending().filter(c=>LEVEL_EXITS.has(c.reason))) {
       const r=this.ledger.forPosition(cmd.positionId).find(r=>r.state==='filled' && (r.purpose==='stop' && !cmd.reason.startsWith('tp') || r.purpose==='tp' && `tp${r.leg}`===cmd.reason));
-      if(r)this.adopt(cmd.positionId,()=>this.paper.restateFill(cmd.positionId,cmd.reason,{price:r.avgPrice,fee:r.fee}));
+      if(r && (r.sourceOrderId===null || r.sourceOrderId===cmd.sourceOrderId))this.ledger.link(r.id,cmd.sourceOrderId);
     }
+    this.syncAccounting();
     const bySize = new Map(this.ledger.filledExposure().map(r => [r.positionId, r.qty]));
     this.exposure.clear();
     for (const [id, q] of bySize) if (q > 0) this.exposure.set(id, q);
@@ -632,7 +676,7 @@ export class ExchangeExecutor {
       const product_id = this.productId(p.symbol);
       if (!product_id) continue;
       const b: Bracket = { positionId: p.id, symbol: p.symbol, product_id, stop: null, tps: [] };
-      for (const r of rows.filter(x => (x.purpose === 'stop' || x.purpose === 'tp') && x.state === 'acknowledged' && x.exchangeId)) {
+      for (const r of rows.filter(x => (x.purpose === 'stop' || x.purpose === 'tp') && (x.state === 'acknowledged' || (x.state==='filled' && x.sourceOrderId===null)) && x.exchangeId)) {
         const leg: Leg = { ledgerId: r.id, exchangeId: String(r.exchangeId), price: r.stopPrice ?? r.limitPrice ?? 0, size: r.size, leg: r.purpose === 'stop' ? 0 : (r.leg ?? 0) };
         if (r.purpose === 'stop') b.stop = leg; else b.tps.push(leg);
         ours.add(leg.exchangeId);
@@ -645,7 +689,7 @@ export class ExchangeExecutor {
       const still = this.paper.position(p.id);
       if (still && still.status === 'open' && !this.unconfirmed.has(p.id)) {
         if (!b.stop && still.sl !== null) await this.moveStop(still, b);
-        else if (b.stop && (b.stop.price !== still.sl || b.stop.size !== Math.round(still.qtyOpen))) await this.moveStop(still, b);
+        else if (b.stop && (b.stop.price !== still.sl || b.stop.size !== Math.round(this.exposure.get(p.id)??still.qtyOpen))) await this.moveStop(still, b);
         if (!b.tps.length && still.tp.length) await this.placeBracket(still);
       }
       if (b.stop && b.stop.exchangeId !== stopBefore) rep.replacedStops++;
@@ -762,6 +806,7 @@ export class ExchangeExecutor {
       bracket: this.bracketEnabled, products: this.products.size, brackets: [...this.brackets.values()].map(b => ({ positionId: b.positionId, symbol: b.symbol, stop: b.stop, tps: b.tps })),
       unconfirmed: [...this.unconfirmed.keys()], stranded: this.strandedExposure(), exposure: Object.fromEntries(this.exposure), lastReconcile: this.lastReconcile, lastRecovery: this.lastRecovery, ledger: this.ledger.recent(50),
       outbox: this.outbox.status(),
+      accounting: this.accounting.status(),
       dryRunLog: this.transport instanceof DryRunTransport ? this.transport.log.slice(-50) : undefined,
     };
   }

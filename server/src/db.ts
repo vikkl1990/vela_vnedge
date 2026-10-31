@@ -12,6 +12,7 @@ export interface SignalRow {
 /** Columns added after the first release; SQLite has no IF NOT EXISTS for these. */
 const ADDED_COLUMNS: Array<[string, string]> = [
   ['exchange_orders', "host TEXT NOT NULL DEFAULT 'unknown'"],
+  ['exchange_orders', 'source_order_id INTEGER'],
   ['positions', 'config_fp TEXT'],
   ['positions', 'evidence_scope TEXT'],
   ['scanner_runs', 'funnel TEXT'],
@@ -132,6 +133,15 @@ CREATE TABLE IF NOT EXISTS execution_commands (
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_execution_commands_pending ON execution_commands(scope,state,id);
+
+-- One accounting result per paper fill, even when several exchange orders complete it.
+CREATE TABLE IF NOT EXISTS execution_accounting (
+  source_order_id INTEGER PRIMARY KEY, scope TEXT NOT NULL, position_id INTEGER NOT NULL,
+  expected_qty REAL NOT NULL, confirmed_qty REAL NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'pending', price REAL, fee REAL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_execution_accounting_position ON execution_accounting(position_id);
+CREATE INDEX IF NOT EXISTS idx_execution_accounting_state ON execution_accounting(scope,state);
 
 -- scripts that cannot run here: see scanners/health.ts
 CREATE TABLE IF NOT EXISTS script_health (

@@ -7,6 +7,7 @@ import { fmtMoney, fmtPrice, fmtUtc } from '../lib/format'
 import { ExecutionQualityPanel } from '../components/ExecutionQuality'
 import { TapeAuditPanel } from '../components/TapeAuditPanel'
 import { ExecutionHandoffPanel } from '../components/ExecutionHandoff'
+import { ExecutionAccountingPanel } from '../components/ExecutionAccounting'
 
 /**
  * The exchange side of the book: what the executor believes the exchange holds, the last time it
@@ -46,6 +47,7 @@ export function Exchange() {
       </div>
 
       <ExecutionQualityPanel />
+      <ExecutionAccountingPanel data={e.accounting} dryRun={e.dryRun} />
       <div className="grid-2">
         <Panel title="Connection">
           <dl className="kv-list">

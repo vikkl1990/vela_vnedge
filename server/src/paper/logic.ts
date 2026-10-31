@@ -14,7 +14,7 @@ import type { Side, ExitType } from '../scanners/extractor.ts';
 
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 
-export interface Fill { liquidity?: 'maker' | 'taker'; feeWaived?: boolean; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
+export interface Fill { orderId?: number; liquidity?: 'maker' | 'taker'; feeWaived?: boolean; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
 
 export interface Position {
   executionPlan?: ExecutionPlanSnapshot;

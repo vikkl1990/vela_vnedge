@@ -9,6 +9,44 @@ import { DEFAULT_CONFIG } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { ExchangeExecutor } from './testnet.ts';
 
+for(const point of ['before-cash','during-cash','after-cash'])test(`SIGKILL ${point}: split-exit cash and accounting coverage recover atomically`,async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'vnedge-cash-crash-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const file=join(dir,'db.sqlite');
+  const child=spawnSync(process.execPath,['--no-warnings=ExperimentalWarning','--input-type=module','-e',`
+    import {Db} from ${JSON.stringify(new URL('../db.ts',import.meta.url).href)};
+    import {DEFAULT_CONFIG} from ${JSON.stringify(new URL('../config.ts',import.meta.url).href)};
+    import {PaperEngine} from ${JSON.stringify(new URL('../paper/engine.ts',import.meta.url).href)};
+    import {ExchangeExecutor} from ${JSON.stringify(new URL('./testnet.ts',import.meta.url).href)};
+    const [file,point]=process.argv.slice(1),kill=()=>process.kill(process.pid,'SIGKILL'),db=new Db(file),cfg=structuredClone(DEFAULT_CONFIG);
+    Object.assign(cfg.paper,{feeRatePct:0,makerFeeRatePct:0,slippageBps:0,latencyMs:0,fillSource:'candles'});
+    Object.assign(cfg.execution,{mode:'testnet',bracket:false,reconcileSec:0,sweepSec:0});
+    const paper=new PaperEngine(db,()=>cfg),orders=[];
+    const fake={host:'testnet',hasAuth:true,dryRun:false,products:async()=>new Map([['BTCUSD',{id:27,symbol:'BTCUSD'}]]),wallet:async()=>[],openOrders:async()=>[],setLeverage:async(_id,leverage)=>({leverage}),
+      placeOrder:async o=>{const entry=o.purpose==='entry';const x={...o,id:orders.length+1,state:'closed',unfilled_size:entry?0:80,average_fill_price:entry?100:99.2,paid_commission:entry?.1:.12};orders.push(x);return x;},
+      order:async id=>orders.find(o=>String(o.id)===String(id))??null};
+    const ex=new ExchangeExecutor(paper,()=>cfg,fake,{confirmSec:0});await ex.start();
+    const p=paper.onEntry({kind:'entry',side:'long',price:100,sl:95,tp:[105,110,115],label:'entry',message:'',source:'alert',barTime:0,barIndex:0},{scannerId:'audit',scannerName:'audit',symbol:'BTCUSD',tf:'15m',market:{tickSize:.25,contractValue:1},refPrice:100,at:Date.now(),signalId:null,exitMode:'both'}).position;
+    await ex.flush();paper.closeManual(p.id);await ex.flush();
+    const source=paper.orders()[0].id;
+    const residual=ex.ledger.intent({product_id:27,side:'sell',size:80,order_type:'market_order',purpose:'exit',client_order_id:'vnedge-residual-crash'},p.id,'BTCUSD',null,'stranded',source);
+    ex.ledger.filled(residual.id,{filledSize:80,avgPrice:99,fee:.08});
+    if(point==='before-cash')kill();
+    if(point==='during-cash'){const run=db.run.bind(db);db.run=(sql,...args)=>{const result=run(sql,...args);if(sql.startsWith('UPDATE orders SET price='))kill();return result;};}
+    ex.accounting.sync(paper,ex.ledger);
+    if(point==='after-cash')kill();
+  `,file,point],{encoding:'utf8',timeout:10000});
+  assert.equal(child.signal,'SIGKILL',child.stderr);
+  const db=new Db(file);t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);
+  Object.assign(cfg.execution,{mode:'testnet',bracket:false,reconcileSec:0,sweepSec:0});
+  const paper=new PaperEngine(db,()=>cfg);let sends=0;
+  const fake:any={host:'testnet',hasAuth:true,dryRun:false,products:async()=>new Map([['BTCUSD',{id:27,symbol:'BTCUSD'}]]),wallet:async()=>[],openOrders:async()=>[],placeOrder:async()=>{sends++;throw Error('cash recovery must not send orders');}};
+  const ex=new ExchangeExecutor(paper,()=>cfg,fake,{confirmSec:0});t.after(()=>ex.stop());
+  await ex.start();await ex.sweepNow();await ex.recover();
+  const trade=paper.trades()[0];assert.equal(trade.exitPrice,99.12);assert.ok(Math.abs(trade.fees-.3)<1e-10);
+  assert.ok(Math.abs(trade.pnl-(-176.3))<1e-8);assert.equal(trade.accountingPending,false);
+  assert.equal(paper.orders()[0].fee,.2);assert.equal(sends,0);assert.equal(ex.status().accounting.incomplete,0);
+});
+
 for(const point of ['intent','accepted-before-ack','acknowledged'])test(`SIGKILL at exchange ${point}: durable recovery never resubmits the entry`,async t=>{
   const dir=mkdtempSync(join(tmpdir(),'vnedge-exchange-crash-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
   const file=join(dir,'db.sqlite'),remote=join(dir,'exchange.json');
