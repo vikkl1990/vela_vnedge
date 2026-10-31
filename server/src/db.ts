@@ -201,13 +201,29 @@ export class Db {
   all<T = any>(sql: string, ...params: any[]): T[] { try { return this.db.prepare(sql).all(...params) as T[]; } catch (e) { this.noteError(e); throw e; } }
   get<T = any>(sql: string, ...params: any[]): T | undefined { try { return this.db.prepare(sql).get(...params) as T | undefined; } catch (e) { this.noteError(e); throw e; } }
   private transactionDepth = 0;
+  private commitCallbacks: Array<Array<() => void>> = [];
+  get inTransaction(): boolean { return this.transactionDepth > 0; }
+  /** Observers must never see a fill that its enclosing decision can still roll back. */
+  afterCommit(fn: () => void): void {
+    if (this.inTransaction) this.commitCallbacks.at(-1)!.push(fn);
+    else fn();
+  }
   transaction<T>(fn: () => T): T {
     const depth=this.transactionDepth++, savepoint=`nested_${depth}`;
+    const callbacks: Array<() => void> = []; this.commitCallbacks.push(callbacks);
+    let committed = false;
     try {
       this.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN');
-      try { const r=fn();this.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');return r; }
+      try { const r=fn();this.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');committed=true;return r; }
       catch(e){this.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');this.noteError(e);throw e;}
-    } finally { this.transactionDepth--; }
+    } finally {
+      this.transactionDepth--; this.commitCallbacks.pop();
+      if (committed) {
+        if (depth) this.commitCallbacks.at(-1)!.push(...callbacks);
+        // A listener failure cannot turn an already committed transaction into a retry.
+        else for (const fn of callbacks) { try { fn(); } catch (e) { this.noteError(e); } }
+      }
+    }
   }
 
   private noteError(e: unknown) {

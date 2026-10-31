@@ -43,6 +43,8 @@ export interface RiskEntryRequest { scannerId: string; symbol: string; tf: strin
   replacing?: number }
 /** Portfolio risk layer hook (implemented by risk/manager.ts; optional so the engine and tests work without it). */
 export interface RiskGate {
+  /** Restore in-memory gate state if a synchronous account decision rolls back. */
+  checkpoint?: () => () => void;
   leverageMult?: () => number;
   /** Veto (`reject`) or scale (`leverageMult` ≤ 1 from drawdown scaling) an entry before sizing. */
   gate(req: RiskEntryRequest): { reject?: string; leverageMult: number };
@@ -75,6 +77,35 @@ export interface PendingEntry {
  * `position` ({type, position}), `trade` (closed position), `order` (fill) and `stats`.
  */
 export class PaperEngine extends EventEmitter {
+  private decisionActive = false;
+  private logInfo(message:string){this.db.afterCommit(()=>log.info(message));}
+  override emit(event: string | symbol, ...args: any[]): boolean {
+    if (this.db?.inTransaction) {
+      this.db.afterCommit(() => { super.emit(event, ...args); });
+      return this.listenerCount(event) > 0;
+    }
+    return super.emit(event, ...args);
+  }
+
+  /** The signal outcome, paper mutations and inbox completion share one commit.
+   * Keep original position identities on rollback; callers may still hold those objects. */
+  commitDecision<T>(fn: () => T): T {
+    if (this.db.inTransaction || this.decisionActive) throw new Error('account decision must own its transaction');
+    const open=[...this.open].map(([id,ref])=>({id,ref,saved:structuredClone(ref)}));
+    const pending=[...this.pending].map(([id,ref])=>({id,ref,saved:structuredClone(ref)}));
+    const state={peak:this.peak,maxDd:this.maxDd,lastEquityPoint:this.lastEquityPoint,lastEquityValue:this.lastEquityValue,
+      fpSeen:new Set(this.fpSeen),lastPathAt:new Map(this.lastPathAt),peakSeen:new Map(this.peakSeen),priceSource:{...this.priceSource}};
+    const restoreRisk=this.risk?.checkpoint?.();
+    this.decisionActive=true;
+    try { return this.db.transaction(fn); }
+    catch(e) {
+      this.open.clear();this.pending.clear();
+      for(const x of open){for(const k of Object.keys(x.ref))delete (x.ref as any)[k];Object.assign(x.ref,x.saved);this.open.set(x.id,x.ref);}
+      for(const x of pending){for(const k of Object.keys(x.ref))delete (x.ref as any)[k];Object.assign(x.ref,x.saved);this.pending.set(x.id,x.ref);}
+      const {priceSource,...rest}=state;Object.assign(this,rest);Object.assign(this.priceSource,priceSource);
+      this.closedCache=null;restoreRisk?.();throw e;
+    } finally { this.decisionActive=false; }
+  }
   /**
    * Which book this engine owns: 0 is the live paper account, 2 the incubator's shadow book.
    * Every row it writes carries this in `bt`, and every query it makes filters on it, so the books
@@ -90,6 +121,7 @@ export class PaperEngine extends EventEmitter {
   private open = new Map<number, Position>();
   private closedCache: Position[] | null = null;
   private marks = new Map<string, number>();
+  private markTimes = new Map<string, number>();
   private priceBars = new Map<string, PriceBar>();
   private lastEquityPoint = 0;
   private lastEquityValue = NaN;
@@ -170,7 +202,7 @@ export class PaperEngine extends EventEmitter {
       db.run('DELETE FROM positions WHERE id=?', row.id);
       if (row.signal_id) db.updateSignalAction(row.signal_id, 'rejected:pending entry dropped on restart', null);
     }
-    log.info(`loaded ${this.open.size} open ${this.book === 0 ? 'paper' : 'shadow'} positions`);
+    this.logInfo(`loaded ${this.open.size} open ${this.book === 0 ? 'paper' : 'shadow'} positions`);
   }
 
 
@@ -255,7 +287,13 @@ export class PaperEngine extends EventEmitter {
   position(id: number): Position | undefined { return this.open.get(id) ?? (this.db.get<any>('SELECT * FROM positions WHERE id=?', id) ? rowToPosition(this.db.get<any>('SELECT * FROM positions WHERE id=?', id)) : undefined); }
 
   /** Last traded price (ticker / tape / candle close): reference for unrealized P&L and market fills. */
-  setMark(symbol: string, price: number) { this.marks.set(symbol, price); }
+  setMark(symbol: string, price: number) { if(Number.isFinite(price)&&price>0){this.marks.set(symbol,price);this.markTimes.set(symbol,Date.now());} }
+  /** Recovery cannot execute against the pre-crash signal price. Wait for a current quote/ticker. */
+  hasFreshPrice(symbol:string,side:'buy'|'sell',at=Date.now()):boolean {
+    const age=this.paper.quoteMaxAgeMs>0?this.paper.quoteMaxAgeMs:10_000;
+    const quote=this.quotes?.executable(symbol,side,age,at);
+    return !!(quote&&Number.isFinite(quote)&&quote>0) || ((this.marks.get(symbol)??0)>0 && at-(this.markTimes.get(symbol)??0)<=age);
+  }
 
   /** Live top-of-book source (set by the realtime wiring); enables spread-crossing fills. */
   quotes: {
@@ -538,7 +576,7 @@ export class PaperEngine extends EventEmitter {
       this.pending.set(id, pe);
       this.emit('pending', { type: 'placed', entry: pe });   // decision 190: the tape audit registers the order at once
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, limitPrice, pe.at, pe.signalId, JSON.stringify({ limitEntry: pe }), id);
-      log.info(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
+      this.logInfo(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
       return { action: 'pending', reason: planned ? `reclaim trial: maker limit at ${limitPrice}, expires in ${Math.round((planned.expiresAt-ctx.at)/60_000)} minutes` : `resting limit at ${limitPrice}, ${off} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
     }
     if (this.tapeMode || (cfg.latencyMs ?? 0) > 0) {
@@ -549,7 +587,7 @@ export class PaperEngine extends EventEmitter {
         ...(deferReversal ? { replacingId: replacing!.id } : {}) };
       this.pending.set(id, pe);
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, price, pe.at, pe.signalId, JSON.stringify({ pending: { dueAt: pe.dueAt, levels } }), id);
-      log.info(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
+      this.logInfo(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
       return { action: 'pending', reason: this.tapeMode ? 'awaiting tape fill' : 'awaiting fill after the latency window', pendingId: id, closed };
     }
     const pos = this.openAt(this.nextId(), { executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, maintenanceMarginPct: ctx.market.maintenanceMarginPct, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg, entryContext);
@@ -615,7 +653,7 @@ export class PaperEngine extends EventEmitter {
     this.emit('order', orderOf(pos, pos.fills[0]));   // the fill precedes the open position (executor: entry before bracket)
     this.emit('position', { type: 'opened', position: pos });
     this.recordEquity(true);
-    log.info(`${this.book ? 'INCUBATOR ' : ''}OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} ${pos.leverage.toFixed(1)}x sl ${pos.sl} tp ${pos.tp.join('/')} liq ${pos.liqPrice?.toFixed(1) ?? '-'} [${p.scannerTag}]`);
+    this.logInfo(`${this.book ? 'INCUBATOR ' : ''}OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} ${pos.leverage.toFixed(1)}x sl ${pos.sl} tp ${pos.tp.join('/')} liq ${pos.liqPrice?.toFixed(1) ?? '-'} [${p.scannerTag}]`);
     return pos;
   }
 
@@ -634,7 +672,7 @@ export class PaperEngine extends EventEmitter {
       this.auditReclaim(pe,'cancelled',at,reason);
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
       if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
-      log.info(`LIMIT ${pe.symbol} cancelled: ${reason} [${pe.scannerId}]`);
+      this.logInfo(`LIMIT ${pe.symbol} cancelled: ${reason} [${pe.scannerId}]`);
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
@@ -682,7 +720,7 @@ export class PaperEngine extends EventEmitter {
     const cancel = (reason: string) => {
       this.db.run('DELETE FROM positions WHERE id=?', pe.id);
       if (pe.signalId) this.db.updateSignalAction(pe.signalId, `rejected:${reason}`, null);
-      log.info(`PENDING ${pe.symbol} cancelled: ${reason} [${pe.scannerId}]`);
+      this.logInfo(`PENDING ${pe.symbol} cancelled: ${reason} [${pe.scannerId}]`);
       this.emit('pending', { type: 'cancelled', id: pe.id, reason });
       return null;
     };
@@ -852,7 +890,7 @@ export class PaperEngine extends EventEmitter {
       this.applyFills(pos, [fill]);
       n++;
     }
-    if (n) { log.info(`FUNDING ${symbol} ${ratePct}% charged to ${n} position(s)`); this.recordEquity(true); }
+    if (n) { this.logInfo(`FUNDING ${symbol} ${ratePct}% charged to ${n} position(s)`); this.recordEquity(true); }
     return n;
   }
 
@@ -872,12 +910,13 @@ export class PaperEngine extends EventEmitter {
     return n;
   }
 
-  onScriptExit(scannerId: string, symbol: string, tf: string, exitType: ExitType, price: number | undefined, at: number, exitMode: ExitMode, side?: Side): Position | undefined {
+  onScriptExit(scannerId: string, symbol: string, tf: string, exitType: ExitType, price: number | undefined, at: number, exitMode: ExitMode, side?: Side, targets?:{positionId:number|null;pendingIds:number[]}): Position | undefined {
     // Level-only scanners ignore script exits for both pending setups and held positions.
     if (exitMode === 'levels') return undefined;
-    for (const pe of [...this.pending.values()]) if (pe.features?.reclaim_trial && pe.scannerId===scannerId && pe.symbol===symbol && pe.tf===tf && (!side||pe.side===side)) this.cancelPending(pe.id,'script cancelled reclaim');
+    for (const pe of [...this.pending.values()]) if ((!targets||targets.pendingIds.includes(pe.id)) && pe.features?.reclaim_trial && pe.scannerId===scannerId && pe.symbol===symbol && pe.tf===tf && (!side||pe.side===side)) this.cancelPending(pe.id,'script cancelled reclaim');
     const pos = this.findOpen(scannerId, symbol, tf);
     if (!pos) return undefined;
+    if(targets&&pos.id!==targets.positionId)return undefined;
     if (side && pos.side !== side) return undefined;
     // A script notification is a market instruction received now, including TP labels.
     // Resting targets are filled independently by the tape/candle path; a label cannot backdate one.
@@ -978,7 +1017,7 @@ export class PaperEngine extends EventEmitter {
     this.persist(pos);
     this.emit('position', { type: 'updated', position: pos });
     this.recordEquity(true);
-    log.info(`ENTRY RESTATED #${pos.id} ${pos.symbol}: ${f.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
+    this.logInfo(`ENTRY RESTATED #${pos.id} ${pos.symbol}: ${f.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
     return pos;
   }
 
@@ -1011,7 +1050,7 @@ export class PaperEngine extends EventEmitter {
     if (f.fee !== null) { pos.fees += f.fee - fill.fee; fill.fee = f.fee; }
     this.applyFills(pos, [fill], { source: 'exchange' });
     this.recordPath(pos, f.price, f.at, f.reason, `${f.qty} at ${f.price} (exchange)`);
-    log.info(`EXIT ADOPTED #${pos.id} ${pos.symbol} ${f.reason} ${f.qty} @ ${f.price} (exchange)`);
+    this.logInfo(`EXIT ADOPTED #${pos.id} ${pos.symbol} ${f.reason} ${f.qty} @ ${f.price} (exchange)`);
     return pos;
   }
 
@@ -1032,7 +1071,7 @@ export class PaperEngine extends EventEmitter {
     if (pos.status === 'closed') { this.closedCache = null; this.emit('stats', this.stats()); }
     else this.emit('position', { type: 'updated', position: pos });
     this.recordEquity(true);
-    log.info(`FILL RESTATED #${pos.id} ${pos.symbol} ${reason}: ${fill.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
+    this.logInfo(`FILL RESTATED #${pos.id} ${pos.symbol} ${reason}: ${fill.qty} @ ${price} fee ${fee.toFixed(4)} (exchange)`);
     return pos;
   }
 
@@ -1239,6 +1278,7 @@ export class PaperEngine extends EventEmitter {
         if (pos.status === 'open') this.open.set(pos.id, pos); else this.open.delete(pos.id);
       }
       log.error(`fills for #${pos.id} ${pos.symbol} were not persisted and were undone in memory: ${e?.message ?? e}`);
+      if(this.decisionActive)throw e;
       return false;
     }
     for (const f of fills) this.emit('order', orderOf(pos, f));
@@ -1247,7 +1287,7 @@ export class PaperEngine extends EventEmitter {
       this.closedCache = null;
       this.emit('position', { type: 'closed', position: pos });
       this.emit('trade', tradeOf(pos));
-      log.info(`${this.book ? 'INCUBATOR ' : ''}CLOSE ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} ${pos.exitReason} pnl ${(pos.realizedPnl - pos.fees).toFixed(2)} [${pos.scannerId}]`);
+      this.logInfo(`${this.book ? 'INCUBATOR ' : ''}CLOSE ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} ${pos.exitReason} pnl ${(pos.realizedPnl - pos.fees).toFixed(2)} [${pos.scannerId}]`);
       this.recordEquity(true);
       this.emit('stats', this.stats());
     } else {

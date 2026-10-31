@@ -362,6 +362,7 @@ export class App {
       candles: this.candles.tracked(),
       scanners: { total: all.length, runnable: all.filter(s => s.status === 'ok').length, enabled: all.filter(s => this.scanners.isActive(s)).length },
       universe: { mode: cfg.universe?.mode ?? 'list', symbols: this.resolvedSymbols.length, list: this.resolvedSymbols.slice(0, 50) },
+      signalRecovery:this.scanners.inbox.status(),
       worker: this.pool.stats, lastError: this.lastError,
       attention: this.attention(),
       ...this.ops.status(),
@@ -442,6 +443,10 @@ export class App {
     const cfg = this.config.get();
     const now = Date.now();
     const items: Array<{ key: string; text: string; href: string }> = [];
+    const recovery=this.scanners.inbox?.status();
+    if(recovery?.pending&&(recovery.failed||(recovery.oldest!==null&&now-(recovery.oldest??now)>30_000))){
+      items.push({key:'signal-recovery',text:`${recovery.pending} account signal decision(s) await recovery; ${recovery.failed} have a recorded retry error. Inspect the pending list.`,href:'/signals'});
+    }
     const names = new Map(this.registry.all().map(s => [s.id, s.name]));
     const sick = Object.entries(cfg.scanners).filter(([id, c]) => c.enabled && !c.hidden && this.scanners.health.isQuarantined(id));
     if (sick.length) {
@@ -928,6 +933,7 @@ export class App {
   }
 
   async stop() {
+    this.scanners.stop();
     this.validation.stop();
     this.stopExecutionAudit?.();
     this.screenQueue.stop();

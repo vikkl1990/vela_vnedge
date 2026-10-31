@@ -16,6 +16,7 @@ resolution strings: `1m 3m 5m 15m 30m 1h 2h 4h 6h 1d`.
   "scanners": { "total": 42, "runnable": 36, "enabled": 30 },
   "worker": { "size": 4, "queued": 0, "busy": 1 },
   "lastError": null,
+  "signalRecovery": { "pending": 0, "oldest": null, "failed": 0, "recent": [] },
   "integrity": { "gapsFound": 2, "gapsFilled": 2, "gapsUnfillable": 0, "barsBackfilled": 2, "backfillErrors": 0,
                  "driftMs": 412, "driftCheckedAt": 1789902184652, "driftWarnings": 0, "delisted": [], "tickSizeChanges": 0,
                  "symbolsCheckedAt": 1789902184652, "lastEvent": { "at": 1, "type": "gap-filled", "symbol": "BTCUSD", "tf": "15m", "filled": 2, "detail": "…" } },
@@ -29,6 +30,14 @@ resolution strings: `1m 3m 5m 15m 30m 1h 2h 4h 6h 1d`.
            "shuttingDown": false } }
 ```
 `candles` entries carry `lastBarTime`, `lastClosedAt` and `loadedAt` (ms) for staleness checks. `integrity.driftMs` is local clock minus exchange time (positive = local clock ahead).
+
+`signalRecovery` describes unfinished account decisions saved before asynchronous preparation.
+`oldest` is the oldest pending receipt time (ms); `failed` counts pending receipts with a retry
+error. `recent` contains up to ten oldest pending rows with `signal_id`, `kind`, `received_at`,
+`attempts`, `last_error`, `scanner_id`, `symbol` and `tf`. Signals initially have action
+`received:awaiting decision`; completion updates the signal and paper mutations atomically.
+Automatic recovery runs only in paper mode. Failed receipts or pending work older than 30 seconds
+also appear in `attention` with key `signal-recovery` and link `/signals`.
 
 `GET /api/config` → current config (shape below). `PUT /api/config` with a partial
 object merges and persists it; returns the full config. Changing `symbols`/`timeframes`

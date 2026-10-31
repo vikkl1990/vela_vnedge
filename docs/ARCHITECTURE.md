@@ -1,6 +1,6 @@
 # VN EDGE architecture
 
-Current ownership audit: 31 October 2026 (decision 206). The application is a modular
+Current ownership audit: 31 October 2026 (decisions 206–207). The application is a modular
 monolith. Pages are views and controls over shared services, not independent bots.
 
 ## Control and evidence boundaries
@@ -28,9 +28,9 @@ flowchart TD
   I --> H
   T[Trackers: shared subscriptions] --> H
   D[Decisions: same Incubator actions] --> I
-  A --> E[Account event admission: persistent duplicate check]
+  A --> E[Account signal inbox: durable receipt and event identity]
   H -->|eligible mirror or bounded pilot| E
-  E --> P[Account PaperEngine: bt 0]
+  E --> P[Account PaperEngine: bt 0, atomic decision]
   H --> Q[Shadow PaperEngine: bt 2]
   H --> X[Versioned execution-plan experiments: bt 2, plan prefix]
   P --> J[SQLite signal, order, position and decision journals]
@@ -43,8 +43,23 @@ Account and shadow currently still have separate run schedulers. They share Pine
 market data and execution-policy primitives. A mirrored event must enter through the
 account's ordinary admission method, not through a second account fill path. Source event
 identity is independent of the mirror attribution label, including partial script exits.
-This prevents duplicate delivery; it does not yet deduplicate every Pine computation or
-provide a durable inbox for recovery between a signal write and its order decision.
+This prevents duplicate delivery; it does not deduplicate every Pine computation.
+
+Account ingress saves a durable `signal_inbox` receipt before asynchronous depth preparation.
+The signal outcome, paper order/position changes, pilot counter and receipt completion share
+one SQLite transaction. Failure restores PaperEngine and admission risk state in memory;
+order/position notifications and success logs follow commit. Pending payloads retain source,
+policy, original position/pending IDs and the account reset generation, then are cleared on
+completion. Completed event identities remain available for duplicate detection.
+
+Startup and a five-second timer retry pending receipts, with exits first. Entries expire after
+at most 60 seconds, require unchanged source/policy/account reset generation, and recheck current
+admission against fresh prices. A recovered exit can touch only its original held position.
+Recovery pauses outside paper mode; live exchange reconciliation is a separate responsibility.
+Signals shows pending decisions and errors; Decisions flags failed or older pending work.
+Existing pre-inbox signals are not replayed because their original target bindings are unknown.
+Seven forced process kills cover receipt, entry/partial-exit/maker before and after commit;
+additional tests cover rollback, reversals, reset and price/policy/source changes.
 
 Trackers are many-to-many membership, not multiple balances. Membership/stage changes
 commit atomically; a shared tracked cell is released only after its last owner leaves.
@@ -73,10 +88,12 @@ rather than a Cartesian product of passing symbols and timeframes.
 
 These changes remove confirmed conflicts, but are not a production-readiness certification:
 
-1. Give every evaluation a durable source-event ID and decision state. Resume unfinished
-   decisions after a crash and expose scanner → admission → order → fill provenance in one
-   timeline. Acceptance: crash injection at each boundary gives at most one order and no lost
-   protective exit. Current ingress tests cover duplicate delivery, not every crash boundary.
+1. Extend durable event recovery to the shadow scheduler and post-commit consumers. The account
+   receipt/decision boundary now recovers without duplicate paper fills. Observer delivery to
+   learning, risk close bookkeeping, alerts and exchange commands is not yet a durable outbox:
+   a kill after commit can miss a callback. Recover those consumers from the committed journal
+   with independent cursors, and reconcile exchange state before any live replay. Pending
+   market/tape entries retain their existing cancel-on-restart policy; maker limits reload.
 2. Key cached backtests/walk-forward evidence by source hash, inputs, signal reader, policy,
    cost model and market-data window. Current simulation-version checks do not capture all
    configuration changes. Promotion must cite the exact evidence version it used.

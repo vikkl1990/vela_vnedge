@@ -78,6 +78,14 @@ export function regimeRefusal(r: RiskConfig['regime'] | undefined, scannerId: st
 }
 
 export class RiskManager extends EventEmitter implements RiskGate {
+  override emit(event: string | symbol, ...args: any[]): boolean {
+    if(this.db?.inTransaction){this.db.afterCommit(()=>{super.emit(event,...args);});return this.listenerCount(event)>0;}
+    return super.emit(event,...args);
+  }
+  checkpoint(): () => void {
+    const state=structuredClone(this.st),rejections=structuredClone(this.rejections);
+    return ()=>{this.st=state;this.rejections=rejections;};
+  }
   private deps: RiskDeps;
   private db: Db;
   private paper: PaperEngine;
@@ -290,7 +298,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
   kill(reason = 'manual', closeAll = false): void {
     this.st.manualHalt = { at: this.now(), reason };
     this.save();
-    log.error(`MANUAL HALT: ${reason}`);
+    this.db.afterCommit(()=>log.error(`MANUAL HALT: ${reason}`));
     this.emit('kill', { which: 'manual', reason, at: this.st.manualHalt.at });
     if (closeAll) { const n = this.paper.closeAll('risk-kill', this.now()); log.warn(`closed ${n} position(s) on manual halt`); }
   }

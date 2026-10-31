@@ -3,7 +3,7 @@ import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useMarkets, useScannerIndex, useSignals } from '../api/queries'
+import { useHealth, useMarkets, useScannerIndex, useSignals } from '../api/queries'
 import type { Signal, SignalKind, Side } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { ActionPill, ErrorState, Loading, PageTitle, Panel, Pill, ScoreBadge, Segmented, SidePill, StatusDot, Time } from '../components/ui'
@@ -141,6 +141,8 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
 }
 
 export function Signals() {
+  const health=useHealth()
+  const recovery=health.data?.signalRecovery
   const scanners = useScannerIndex()
   const markets = useMarkets()
   const [params] = useSearchParams()
@@ -164,8 +166,12 @@ export function Signals() {
 
   return (
     <div className="page">
-      <div className="banner small" role="note"><b>View only.</b> A signal is the record of a decision the gates already made; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
+      <div className="banner small" role="note"><b>View only.</b> Signals record received alerts and their decisions. An interrupted decision stays pending until recovery completes; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
       <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Every alert the account's scanners raised and what the account did with it. Shadow-book runs are judged in the Incubator, not here." />
+      {recovery&&<Panel title="Signal recovery" right={<Pill tone={recovery.pending?'warn':'ok'}>{recovery.pending?`${recovery.pending} awaiting decision`:'No pending decisions'}</Pill>}>
+        <p className="small muted">Interrupted paper decisions resume from their saved receipt. Completed decisions are not repeated. Entries expire after at most 60 seconds and recheck current admission rules; exits stay tied to their original position and wait for a fresh price.</p>
+        {recovery.pending>0&&<div className="table-wrap"><table className="table small"><thead><tr><th>Signal</th><th>Market</th><th>Received</th><th>Attempts</th><th>Waiting on</th></tr></thead><tbody>{recovery.recent.map(r=><tr key={r.signal_id}><td>#{r.signal_id} · {r.kind}</td><td>{r.symbol} · {r.tf}</td><td><Time t={r.received_at}/></td><td>{r.attempts}</td><td>{r.last_error??'Decision in progress'}</td></tr>)}</tbody></table></div>}
+      </Panel>}
       {outcomes.total > 0 && (
         <Panel title={`What became of the last ${outcomes.total} signals`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
           <div className="chips">
@@ -233,6 +239,7 @@ function summarizeOutcomes(rows: Signal[]) {
     { key: 'market', label: 'market not suitable', tone: 'warn', hint: 'the markets-today gate: illiquid, too quiet to pay the round trip, or not paying recently (decision 56)', test: (a) => a.startsWith('rejected:market') },
     { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'the stop is closer than the configured multiple of round-trip costs; taking the trade loses money', test: (a) => /stop too tight/.test(a) },
     { key: 'capacity', label: 'margin / position cap', tone: 'warn', hint: 'no room in the account: margin, position limits, or a scrap-sized fill refused (decision 53)', test: (a) => /margin|max positions|position cap|intended size|budget/.test(a) },
+    { key: 'received', label: 'awaiting decision', tone: 'warn', hint: 'Saved receipt waiting for processing or recovery', test: (a) => a.startsWith('received:') },
     { key: 'stale', label: 'stale (scan too late)', tone: 'danger', hint: 'the scan finished after the signal aged out', test: (a) => /stale/.test(a) },
     { key: 'halted', label: 'halted / loss limit', tone: 'danger', hint: 'kill switch, daily or weekly loss limit, cooldown', test: (a) => /halt|loss limit|cooldown/.test(a) },
     { key: 'regime', label: 'regime', tone: 'muted', hint: 'weekend or ATR floor', test: (a) => /regime/.test(a) },

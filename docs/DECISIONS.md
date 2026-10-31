@@ -6096,3 +6096,42 @@ stage changes/restarts and validation wiring without HTTP. Dashboard lint/build 
 TypeScript checks pass. Remaining durable event recovery, evidence-version fingerprints,
 research CPU isolation, scheduler consolidation and full lifecycle work are recorded in
 ARCHITECTURE.md; this change does not claim those are complete.
+
+## 207. Durable account signal decisions and bounded paper recovery (31 October 2026)
+
+Account ingress previously wrote a signal, changed paper orders/positions, then updated the
+signal action in separate commits. A crash after the first write could strand an unprocessed
+signal that duplicate detection would skip; retrying blindly could repeat a partial exit.
+The VM's read-only audit found no entry/exit rows with action `none` in the last 14 days.
+This is preventive correctness work, not a claim that this fault explains recent losses.
+
+Persist a source-event receipt before asynchronous depth preparation. Its stable identity
+ignores the copied transport label. Commit paper mutations, pilot accounting, the signal
+outcome and receipt completion together. SQLite rollback also restores in-memory positions,
+pending orders, equity caches and admission risk state. Observers and successful fill logs
+run after commit. A nested fill-write failure must propagate and leave the receipt pending.
+Clear the large context payload after completion; keep the small event identity and outcome.
+
+Recover pending decisions on startup and every five seconds, prioritizing exits. Recovery is
+paper-only: other execution modes pause for reconciliation. Entries have a maximum 60-second
+receipt lifetime and must retain the same source, policy and account reset generation. Current
+admission still applies and recovery waits for a fresh quote/ticker; an old signal price cannot
+price a recovered market fill. Exits bind to the original position and reclaim-order IDs, so
+they cannot close a replacement trade. The existing market/tape pending cancel-on-restart
+policy remains; committed resting maker orders reload without being placed twice. Legacy
+pre-receipt signals are preserved without automatic replay.
+
+Signals now shows pending decision count, age, attempts and retry errors. The Decisions
+attention list flags failed or aging receipts through the same health data. Scanner shutdown
+stops new intake and the recovery timer before worker shutdown. Incubator-enabled scheduled
+auto-tune is skipped as well as the allocation write, avoiding redundant backtest scheduling.
+
+Twenty tests cover seven actual SIGKILL/restart boundaries, committed maker reload, partial
+exit and reversal rollback, a nested SQL failure, risk rollback, duplicate-safe retry, account
+reset, non-paper pause, changed source/policy and fresh-price waits. Post-commit learning,
+risk close bookkeeping, alert and exchange-command callbacks still need durable journal cursors;
+the shadow scheduler also remains outside this inbox. This is not an exactly-once exchange
+execution claim. The $150 target margin, 3% stop-risk cap, 6x cost floor and all 15 prospective
+execution-plan comparisons remain unchanged.
+
+Validation: all 713 server tests pass; dashboard lint/build and server TypeScript checks pass.

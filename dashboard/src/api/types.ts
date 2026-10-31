@@ -24,6 +24,7 @@ export interface Health {
   attention?: Array<{ key: string; text: string; href: string }>
   worker: { size: number; queued: number; busy: number }
   lastError: string | null
+  signalRecovery?: { pending: number; oldest: number | null; failed: number; recent: Array<{signal_id:number;kind:string;received_at:number;attempts:number;last_error:string|null;scanner_id:string;symbol:string;tf:string}> }
 }
 
 export interface PaperConfig {

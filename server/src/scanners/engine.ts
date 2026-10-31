@@ -1,3 +1,5 @@
+import { SignalInbox, type Delivery, type InboxRow } from './inbox.ts';
+import { configFingerprint, sourceHash } from '../paper/fingerprint.ts';
 import {ScanRecovery} from './recovery.ts';
 /**
  * Orchestrator: for every (scanner × symbol × timeframe) runs the Pine script on bar close,
@@ -82,6 +84,10 @@ export class ScannerEngine extends EventEmitter {
   private pool: PinePool;
   private paper: PaperEngine;
   private db: Db;
+  readonly inbox: SignalInbox;
+  private inboxTimer: ReturnType<typeof setInterval> | null = null;
+  private processingReceipts = new Set<string>();
+  private stopping = false;
   /** Decision 125: the last bar each live pair acted on, so a deferred or skipped bar's exits are still read. */
   private marks: BarWatermark;
   private rest: DeltaRest;
@@ -111,6 +117,7 @@ export class ScannerEngine extends EventEmitter {
   constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[]; ml?: MlService; cfgStore?: { setScanner(id: string, patch: Partial<ScannerConfig>): ScannerConfig } }) {
     super();
     this.registry = deps.registry; this.health = new ScriptHealth(deps.db); this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
+    this.inbox = new SignalInbox(this.db);
     this.marks = new BarWatermark({ load: () => this.db.kvGet<Record<string, number>>('scanner.liveMarks'), save: rec => this.db.kvSet('scanner.liveMarks', rec) });
     // decision 201: every account run, kept for 14 days — scanner_runs holds only the latest row per cell, so a recovered
     // cell hid the failures before it
@@ -305,6 +312,9 @@ export class ScannerEngine extends EventEmitter {
 
   /** Track all needed candle series and warm every active scanner (backtest + first live run). */
   async start(): Promise<void> {
+    this.stopping=false;
+    await this.recoverSignals();
+    if(!this.inboxTimer){this.inboxTimer=setInterval(()=>void this.recoverSignals().catch(e=>log.error(`signal recovery failed: ${e?.message??e}`)),5000);this.inboxTimer.unref();}
     const cfg = this.cfgRef();
     const required = this.requiredSeries();
     await Promise.all(required.map(r => this.candles.track(r.symbol, r.tf, cfg.historyBars)));
@@ -335,7 +345,7 @@ export class ScannerEngine extends EventEmitter {
   private scheduleRetune() {
     if (this.retuneTimer) clearTimeout(this.retuneTimer);
     const at = this.cfgRef().autoTune;
-    if (!at?.enabled) return;
+    if (!at?.enabled || this.stopping || this.cfgRef().incubator?.enabled) return;
     this.retuneTimer = setTimeout(async () => {
       this.retuneTimer = null;
       try {
@@ -393,6 +403,7 @@ export class ScannerEngine extends EventEmitter {
   }
 
   private onBarClosed(symbol: string, tf: string, bar: Bar) {
+    if(this.stopping)return;
     const active = this.registry.all().filter(s => this.isActive(s) && this.runsOn(s.id, symbol, tf));
     if (!active.length) return;
     // backpressure: if the worker queue is already deep (warm-up or an earlier bar still running), skip this bar for this symbol
@@ -586,21 +597,86 @@ export class ScannerEngine extends EventEmitter {
     await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar, true);
   }
 
-  private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false) {
-    const pilotRequested = copied && !(this.isActive(s) && this.runsOn(s.id,symbol,tf)) && Boolean(this.cfgRef().incubator.mirror?.pilot);
-    if(ev.kind==='entry' && this.paper.prepareEntryDepth)await this.paper.prepareEntryDepth(symbol);
-    // Transport is attribution, not event identity. Both producers may deliver the same
-    // entry or partial exit, including after a restart. Recognize historical mirror labels too.
-    const mirroredLabel=`${ev.label} (shadow mirror)`.slice(0,80);
-    if ([ev.label,mirroredLabel].some(label=>this.db.signalExists(s.id,symbol,tf,ev.barTime,ev.kind,ev.side??null,label))) return;
-    if(copied)ev={...ev,label:mirroredLabel};
-    const refPrice = this.paper.mark(symbol) ?? lastBar.close;
-    const now = Date.now();
-    let action = 'none'; let positionId: number | null = null;
-    const levelsSource = ev.kind === 'entry' ? (ev.sl && ev.tp.length ? 'script' : ev.sl || ev.tp.length ? 'mixed' : 'atr-fallback') : null;
-    const sigId = this.db.insertSignal({ at: now, barTime: ev.barTime, scannerId: s.id, scannerName: s.name, symbol, tf, kind: ev.kind, side: ev.side ?? null, price: ev.price ?? null, sl: ev.sl ?? null, tp: ev.tp, score: ev.score ?? null, label: ev.label, message: ev.message, summary: describeEvent(ev), source: ev.source, levelsSource, action, positionId });
-    if (sigId === null) return;
+  /** Stop recovery and future scanner intake before worker shutdown. */
+  stop() {
+    this.stopping=true;
+    if(this.inboxTimer)clearInterval(this.inboxTimer);this.inboxTimer=null;
+    if(this.retuneTimer)clearTimeout(this.retuneTimer);this.retuneTimer=null;
+  }
 
+  async recoverSignals():Promise<void>{
+    if(this.stopping)return;
+    for(const row of this.inbox.pending()){
+      try{await this.processReceipt(row,true);}catch(e){log.warn(`signal #${row.signal_id} recovery pending: ${(e as Error).message}`);}
+    }
+  }
+
+  private deliveryFingerprint(s:LoadedScanner,tf:string):string {
+    return configFingerprint(this.cfgRef(),s.id,tf,{source:sourceHash(s.patched),book:0}).fp;
+  }
+
+  private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false) {
+    if(this.stopping)throw new Error('scanner is stopping before signal receipt');
+    const now=Date.now();
+    const delivery:Delivery={version:1,scannerId:s.id,scannerName:s.name,symbol,tf,ev,bars,market,exitMode,lastBar,copied,
+      pilotRequested:copied&&!(this.isActive(s)&&this.runsOn(s.id,symbol,tf))&&Boolean(this.cfgRef().incubator.mirror?.pilot),
+      fingerprint:this.deliveryFingerprint(s,tf),
+      accountResetAt:this.db.kvGet<number>('paper.resetAt')??null,
+      targetPositionId:this.paper.openPositions().find(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side))?.id??null,
+      targetPendingIds:this.paper.pendingEntries().filter(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side)).map(p=>p.id)};
+    const label=copied?`${ev.label} (shadow mirror)`.slice(0,80):ev.label;
+    const levelsSource=ev.kind==='entry'?(ev.sl&&ev.tp.length?'script':ev.sl||ev.tp.length?'mixed':'atr-fallback'):null;
+    const row=this.inbox.accept(delivery,{at:now,barTime:ev.barTime,scannerId:s.id,scannerName:s.name,symbol,tf,kind:ev.kind,side:ev.side??null,
+      price:ev.price??null,sl:ev.sl??null,tp:ev.tp,score:ev.score??null,label,message:ev.message,summary:describeEvent(ev),source:ev.source,levelsSource,
+      action:'received:awaiting decision',positionId:null});
+    if(row?.state==='pending')await this.processReceipt(row,row.attempts>0);
+  }
+
+  private async processReceipt(row:InboxRow,recovery:boolean):Promise<void>{
+    if(this.stopping||this.processingReceipts.has(row.event_key))return;
+    this.processingReceipts.add(row.event_key);
+    try{
+      const current=this.db.get<InboxRow>('SELECT * FROM signal_inbox WHERE event_key=?',row.event_key);
+      if(!current||current.state==='done'||!current.payload)return;
+      const delivery=JSON.parse(current.payload) as Delivery;
+      if(delivery.version!==1)throw new Error('unsupported signal receipt version');
+      this.inbox.attempt(row);
+      // Exchange command recovery needs its own reconciliation; never replay a paper receipt into it.
+      if(recovery&&this.cfgRef().execution.mode!=='paper')throw new Error('signal recovery paused outside paper mode; reconciliation required');
+      const loaded=this.registry.get?.(delivery.scannerId)??this.registry.all().find(s=>s.id===delivery.scannerId);
+      const scanner=loaded??({id:delivery.scannerId,name:delivery.scannerName} as LoadedScanner);
+      const invalidEntry=()=>{
+        if(delivery.ev.kind!=='entry')return null;
+        if(delivery.accountResetAt!==(this.db.kvGet<number>('paper.resetAt')??null))return 'rejected:account reset before signal decision';
+        const maxMs=Math.min(60_000,(this.cfgRef().paper.maxSignalAgeSec||60)*1000);
+        if(Date.now()-row.received_at>maxMs)return 'rejected:interrupted entry expired before recovery';
+        if(!loaded||this.deliveryFingerprint(loaded,delivery.tf)!==delivery.fingerprint)return 'rejected:source or policy changed before signal decision';
+        if(!delivery.copied&&(!this.isActive(loaded)||!this.runsOn(loaded.id,delivery.symbol,delivery.tf)))return 'rejected:scanner allocation no longer active';
+        return null;
+      };
+      if(!invalidEntry()&&delivery.ev.kind==='entry')await this.paper.prepareEntryDepth?.(delivery.symbol);
+      if(this.stopping)return;
+      const blocked=invalidEntry();
+      const target=this.paper.openPositions().find(p=>p.id===delivery.targetPositionId);
+      if(recovery&&!blocked&&(delivery.ev.kind==='entry'||(delivery.ev.kind==='exit'&&target&&delivery.exitMode!=='levels'))){
+        const side=delivery.ev.kind==='entry'?(delivery.ev.side==='long'?'buy':'sell'):(target?.side==='long'?'sell':'buy');
+        if(!this.paper.hasFreshPrice(delivery.symbol,side))throw new Error('waiting for fresh market price after interruption');
+      }
+      this.paper.commitDecision(()=>{
+        const result=blocked?{action:blocked,positionId:null}:this.applyDelivery(scanner,delivery,row.signal_id,recovery);
+        this.inbox.complete(row,result.action,result.positionId);
+      });
+      const sig=this.db.signalById(row.signal_id);
+      if(sig){this.emit('signal',sig);log.info(`SIGNAL ${sig.kind} ${sig.symbol} ${sig.tf} ${sig.label} → ${sig.action} [${sig.scannerId}]`);}
+    }catch(e){this.inbox.fail(row,e);throw e;}
+    finally{this.processingReceipts.delete(row.event_key);}
+  }
+
+  private applyDelivery(s:LoadedScanner,delivery:Delivery,sigId:number,recovery=false):{action:string;positionId:number|null}{
+    const {symbol,tf,bars,market,exitMode,lastBar,copied,pilotRequested}=delivery;
+    const ev=recovery&&delivery.ev.kind==='entry'?{...delivery.ev,price:this.paper.mark(symbol)??delivery.ev.price}:delivery.ev;
+    const refPrice=this.paper.mark(symbol)??lastBar.close,now=Date.now();
+    let action='none',positionId:number|null=null;
     if (ev.kind === 'entry' && ev.side) {
       const atr = lastAtr(bars, 14);
       // entry-time features + ML probability (levels are provisional here: script levels or ATR fallback)
@@ -636,18 +712,16 @@ export class ScannerEngine extends EventEmitter {
         const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, atr, refPrice, at: now, signalId: sigId, exitMode, features: pilot ? {...features,copy_pilot:1} : features, mlProb, scoreOverride, sizeScale: pilot?.sizeScale });
         if (pilot && ['opened','reversed','pending'].includes(d.action)) this.db.kvSet('incubator.copyPilot',{day:pilotDay,entries:pilotEntries+1});
         action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
-        positionId = d.position?.id ?? null;
+        positionId = d.position?.id ?? d.pendingId ?? null;
       }
       if (mlProb !== null) this.db.run('UPDATE signals SET ml_prob=? WHERE id=?', mlProb, sigId);
     } else if (ev.kind === 'exit') {
-      const pos = this.paper.onScriptExit(s.id, symbol, tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
+      const pos = this.paper.onScriptExit(s.id, symbol, tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side, {positionId:delivery.targetPositionId,pendingIds:delivery.targetPendingIds});
       action = pos ? (pos.status === 'closed' ? 'closed' : 'reduced') : 'ignored:no position';
       positionId = pos?.id ?? null;
     } else {
       action = 'info';
     }
-    this.db.updateSignalAction(sigId, action, positionId);
-    const sig = this.db.signalById(sigId);
-    if (sig) { this.emit('signal', sig); log.info(`SIGNAL ${ev.kind} ${ev.side ?? ''} ${symbol} ${tf} ${ev.label} → ${action} [${s.id}]`); }
+    return {action,positionId};
   }
 }

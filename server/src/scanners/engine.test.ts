@@ -140,7 +140,7 @@ test('decision 116: a mirrored shadow event goes down the live path — signal r
   paper.setMark('BTCUSD', 100);
   const engine = new ScannerEngine({ db, cfgRef: () => cfg, paper, candles: candles as any, pool: pool as any, registry: { all: () => [scanner], get: () => scanner } as any, rest: { product: async () => ({ tick_size: '0.25', contract_value: '1' }) } as any });
   const ev = { kind: 'entry', side: 'long', price: 100, sl: 98, tp: [102, 104, 106], barTime: bars.at(-1)!.time, barIndex: 59, source: 'alert', label: 'LONG', message: 'long' } as any;
-  engine.ingestEvent(scanner as any, 'BTCUSD', '1m', ev, bars as any, { contractValue: 1, tickSize: 0.25 }, 'both', bars.at(-1)! as any);
+  await engine.ingestEvent(scanner as any, 'BTCUSD', '1m', ev, bars as any, { contractValue: 1, tickSize: 0.25 }, 'both', bars.at(-1)! as any);
   const rows = db.all<any>('SELECT label, action, scanner_id FROM signals');
   assert.equal(rows.length, 1);
   assert.equal(rows[0].label, 'LONG (shadow mirror)');
@@ -148,7 +148,7 @@ test('decision 116: a mirrored shadow event goes down the live path — signal r
   assert.equal(rows[0].action, 'opened', `the account opened it: ${rows[0].action}`);
   assert.equal(paper.openPositions().length, 1);
   // the same event again is a duplicate on the signals table, not a second position
-  engine.ingestEvent(scanner as any, 'BTCUSD', '1m', ev, bars as any, { contractValue: 1, tickSize: 0.25 }, 'both', bars.at(-1)! as any);
+  await engine.ingestEvent(scanner as any, 'BTCUSD', '1m', ev, bars as any, { contractValue: 1, tickSize: 0.25 }, 'both', bars.at(-1)! as any);
   assert.equal(db.all<any>('SELECT 1 FROM signals').length, 1);
 });
 
