@@ -4,9 +4,11 @@
  * (`dueFunding`) hands out one charge per symbol per funding timestamp.
  */
 import { EventEmitter } from 'node:events';
-import type { WsFunding, WsMark, WsTicker } from '../delta/ws.ts';
+import type { WsFunding, WsMark, WsTicker, WsQuote } from '../delta/ws.ts';
 
-export interface MarkState { markPrice: number; at: number; bestBid: number | null; bestAsk: number | null; quoteAt?: number | null; quoteExchangeAt?: number | null }
+export interface MarkState { markPrice: number; at: number; bestBid: number | null; bestAsk: number | null; quoteAt?: number | null; quoteExchangeAt?: number | null; quoteSource?: QuoteSource | null; bidSize?: number | null; askSize?: number | null; bookAt?: number | null }
+type QuoteSource = 'ob_l1' | 'ticker' | 'mark' | 'manual';
+interface QuoteState { bid: number; ask: number; at: number; exchangeAt: number | null; source: QuoteSource; bidSize: number | null; askSize: number | null; bookAt: number | null }
 /** Allowance for clock skew between Delta and this host when judging a quote by its exchange time. */
 export const QUOTE_SKEW_MS = 2000;
 export interface FundingState {
@@ -33,22 +35,29 @@ export class MarkStore extends EventEmitter {
    * `v2/ticker`. Two clocks: `at` is local receipt, `exchangeAt` Delta's own timestamp. A quote
    * must be fresh on both: a message that sat in a buffer for an hour is fresh on receipt only.
    */
-  private quotes = new Map<string, { bid: number; ask: number; at: number; exchangeAt: number | null }>();
+  private quotes = new Map<string, QuoteState>();
   private fundingBySymbol = new Map<string, FundingState>();
 
   /** Record a top-of-book snapshot. Crossed, zero or out-of-order quotes are ignored. */
-  setQuotes(symbol: string, bid: number | null, ask: number | null, at = Date.now(), exchangeAt: number | null = null): void {
+  setQuotes(symbol: string, bid: number | null, ask: number | null, at = Date.now(), exchangeAt: number | null = null, source: QuoteSource = 'manual', size?: { bidSize: number; askSize: number; bookAt: number }): void {
     if (bid === null || ask === null) return;
-    if (!(bid > 0 && ask > 0 && bid <= ask)) return;
+    if (!(Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0 && bid <= ask)) return;
     const ex = exchangeAt !== null && Number.isFinite(exchangeAt) && exchangeAt > 0 ? exchangeAt : null;
+    if (ex !== null && ex > at + QUOTE_SKEW_MS) return;
     const prev = this.quotes.get(symbol);
+    // Slow summary messages must not overwrite a healthy L1 book. Fallback remains explicit.
+    if (prev?.source === 'ob_l1' && source !== 'ob_l1' && this.fresh(prev, 10_000, at)) return;
     // order by the exchange's clock when both have one: a late-delivered older quote must not win
     if (prev && (ex !== null && prev.exchangeAt !== null ? ex < prev.exchangeAt : at < prev.at)) return;
-    this.quotes.set(symbol, { bid, ask, at, exchangeAt: ex });
+    if (prev && at < prev.at) return;
+    this.quotes.set(symbol, { bid, ask, at, exchangeAt: ex, source, bidSize: size?.bidSize ?? null, askSize: size?.askSize ?? null, bookAt: size?.bookAt ?? null });
   }
 
+  onWsQuote(q: WsQuote): void { this.setQuotes(q.symbol, q.bestBid, q.bestAsk, q.receivedAt, q.timeMs, 'ob_l1', { bidSize: q.bidSize, askSize: q.askSize, bookAt: q.bookTimeMs }); }
+  invalidateQuotes(symbols?: string[]): void { if (symbols) for (const s of symbols) this.quotes.delete(s); else this.quotes.clear(); }
+
   /** `v2/ticker` is the channel that actually carries `quotes.best_bid` / `quotes.best_ask`. */
-  onWsTicker(t: WsTicker): void { this.setQuotes(t.symbol, t.bestBid, t.bestAsk, Date.now(), t.timeMs); }
+  onWsTicker(t: WsTicker): void { this.setQuotes(t.symbol, t.bestBid, t.bestAsk, Date.now(), t.timeMs, 'ticker'); }
 
   /** Symbols currently holding a quote no older than `maxAgeMs` (0 = any age). */
   quotedSymbols(maxAgeMs = 0, now = Date.now()): string[] {
@@ -60,7 +69,7 @@ export class MarkStore extends EventEmitter {
     const prev = this.marks.get(symbol);
     if (prev && at < prev.at) return;
     this.marks.set(symbol, { markPrice, at, bestBid, bestAsk });
-    this.setQuotes(symbol, bestBid, bestAsk, Date.now(), at);
+    this.setQuotes(symbol, bestBid, bestAsk, Date.now(), at, 'mark');
     this.emit('mark', { symbol, markPrice, at });
   }
   /**
@@ -76,8 +85,8 @@ export class MarkStore extends EventEmitter {
   }
 
   private fresh(q: { at: number; exchangeAt: number | null }, maxAgeMs: number, now: number): boolean {
-    if (now - q.at > maxAgeMs) return false;
-    return q.exchangeAt === null || now - q.exchangeAt <= maxAgeMs + QUOTE_SKEW_MS;
+    if (now - q.at > maxAgeMs || q.at > now + QUOTE_SKEW_MS) return false;
+    return q.exchangeAt === null || (q.exchangeAt <= now + QUOTE_SKEW_MS && now - q.exchangeAt <= maxAgeMs + QUOTE_SKEW_MS);
   }
 
   onWsMark(m: WsMark): void { this.setMark(m.symbol, m.markPrice, m.timeMs, m.bestBid, m.bestAsk); }
@@ -86,8 +95,13 @@ export class MarkStore extends EventEmitter {
     const m = this.marks.get(symbol);
     const q = this.quotes.get(symbol);
     // a quote from the ticker channel alone is still a quote: report it with its own timestamps
-    if (!m) return q ? { markPrice: (q.bid + q.ask) / 2, at: q.at, bestBid: q.bid, bestAsk: q.ask, quoteAt: q.at, quoteExchangeAt: q.exchangeAt } : undefined;
-    return q ? { ...m, bestBid: q.bid, bestAsk: q.ask, quoteAt: q.at, quoteExchangeAt: q.exchangeAt } : { ...m, quoteAt: null, quoteExchangeAt: null };
+    if (!m) return q ? { markPrice: (q.bid + q.ask) / 2, at: q.at, bestBid: q.bid, bestAsk: q.ask, quoteAt: q.at, quoteExchangeAt: q.exchangeAt, quoteSource: q.source, bidSize: q.bidSize, askSize: q.askSize, bookAt: q.bookAt } : undefined;
+    return q ? { ...m, bestBid: q.bid, bestAsk: q.ask, quoteAt: q.at, quoteExchangeAt: q.exchangeAt, quoteSource: q.source, bidSize: q.bidSize, askSize: q.askSize, bookAt: q.bookAt } : { ...m, bestBid: null, bestAsk: null, quoteAt: null, quoteExchangeAt: null, quoteSource: null };
+  }
+
+  quoteSummary(maxAgeMs = 10_000, now = Date.now()) {
+    const rows = [...this.quotes].map(([symbol, q]) => ({ symbol, source: q.source, bid: q.bid, ask: q.ask, bidSize: q.bidSize, askSize: q.askSize, receivedAt: q.at, exchangeAt: q.exchangeAt, bookAt: q.bookAt, ageMs: Math.max(now - q.at, q.exchangeAt === null ? 0 : now - q.exchangeAt, 0), fresh: this.fresh(q, maxAgeMs > 0 ? maxAgeMs : 10_000, now) }));
+    return { at: now, total: rows.length, fresh: rows.filter(q => q.fresh).length, l1: rows.filter(q => q.fresh && q.source === 'ob_l1').length, fallback: rows.filter(q => q.fresh && q.source !== 'ob_l1').length, rows };
   }
   /** Quoted spread in bps; null when no quotes. */
   spreadBps(symbol: string): number | null {

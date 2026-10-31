@@ -902,6 +902,8 @@ export interface ReclaimTrialsView {
 
 export interface ExecutionQuality {
   at: number; mode: string;
+  fillSource?: 'candles' | 'tape';
+  quotes?: {at:number;total:number;fresh:number;l1:number;fallback:number;rows:Array<{symbol:string;source:string;bid:number;ask:number;bidSize:number|null;askSize:number|null;receivedAt:number;exchangeAt:number|null;bookAt:number|null;ageMs:number;fresh:boolean}>};
   funding: {method:string;counts:{status:string;n:number}[]; recent:{symbol:string;at:number;status:string;source:string;rate:number|null;mark:number|null;error:string|null}[]};
   depth: {books:{symbol:string;at:number|null;valid:boolean;fresh:boolean}[];gaps:{symbol:string;n:number;lastAt:number}[];symbols:string[];validBooks:string[];failures:number;queued:number;droppedPending:number;retention:string;stored:{n:number;oldest:number|null;newest:number|null;bytes:number|null}};
   account: {cursors:{host:string;from_at:number;through_at:number;error:string|null}[];comparisons:{orderId:number;complete:boolean;quantityMatches:boolean|null}[];rows:{host:string;kind:string;n:number}[]};

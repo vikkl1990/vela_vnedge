@@ -67,9 +67,10 @@ export function resolveHost(cfg: Pick<ExecutionConfig, 'allowProduction'> | unde
 export function hostUrl(host: ExchangeHost): string { return host === 'production' ? DELTA_INDIA_PROD : DELTA_INDIA_TESTNET; }
 
 /** The one rule production must obey: market orders only, and everything that is not an entry is reduce-only. */
+export class OrderValidationError extends Error {}
 export function assertProductionSafe(o: OrderPayload): void {
-  if (o.order_type !== 'market_order' || o.stop_order_type || o.limit_price !== undefined || o.stop_price !== undefined) throw new Error(`production refuses ${o.stop_order_type ?? o.order_type}: only market orders are allowed`);
-  if (o.purpose !== 'entry' && o.reduce_only !== true) throw new Error('production refuses a non-entry order that is not reduce-only');
+  if (o.order_type !== 'market_order' || o.stop_order_type || o.limit_price !== undefined || o.stop_price !== undefined) throw new OrderValidationError(`production refuses ${o.stop_order_type ?? o.order_type}: only market orders are allowed`);
+  if (o.purpose !== 'entry' && o.reduce_only !== true) throw new OrderValidationError('production refuses a non-entry order that is not reduce-only');
 }
 
 export function parseOrder(o: any): ExchangeOrder {
@@ -77,11 +78,12 @@ export function parseOrder(o: any): ExchangeOrder {
 }
 
 export function validatePostOnly(o: OrderPayload): void {
-  if(o.post_only && (o.order_type!=='limit_order' || !(Number.isFinite(Number(o.limit_price)) && Number(o.limit_price)>0) || (o.time_in_force && o.time_in_force!=='gtc')))throw Error('post-only requires a positive-priced GTC limit');
+  if(o.post_only && (o.order_type!=='limit_order' || !(Number.isFinite(Number(o.limit_price)) && Number(o.limit_price)>0) || (o.time_in_force && o.time_in_force!=='gtc')))throw new OrderValidationError('post-only requires a positive-priced GTC limit');
 }
 
 export function wirePayload(o: OrderPayload): Record<string, unknown> {
   validatePostOnly(o);
+  if (o.client_order_id !== undefined && (!o.client_order_id.length || o.client_order_id.length > 32)) throw new OrderValidationError('client_order_id must be 1..32 characters');
   const { purpose: _p, ...rest } = o;
   return rest;
 }
@@ -123,7 +125,8 @@ export class RestTransport implements ExchangeTransport {
     validatePostOnly(o);
     if (this.host === 'production') assertProductionSafe(o);
     const res = await this.rest.placeOrder(wirePayload(o) as any);
-    return { id: res?.id ?? '?', state: res?.state };
+    if (res?.id === undefined || res.id === null || String(res.id).length === 0) throw new Error('order acknowledgement missing id; outcome unknown');
+    return { id: res.id, state: res?.state };
   }
   cancelOrder(id: number | string, product_id: number) { return this.rest.cancelOrder(id, product_id); }
   cancelAll(product_id: number) { return this.rest.cancelAll(product_id); }

@@ -10,7 +10,7 @@ import { DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from '../paper/engine.ts';
 import { ExchangeExecutor, createExecutor } from './testnet.ts';
 import { DryRunTransport, RestTransport, assertProductionSafe, resolveHost, type EditOrder, type ExchangeOrder, type ExchangePosition, type ExchangeTransport, type OrderPayload } from './client.ts';
-import { DELTA_INDIA_PROD, DELTA_INDIA_TESTNET, DeltaRest } from '../delta/rest.ts';
+import { DELTA_INDIA_PROD, DELTA_INDIA_TESTNET, DeltaRest, DeltaRequestError } from '../delta/rest.ts';
 
 /** A fake exchange that remembers its orders: market orders fill at once, resting orders stay open until the test says otherwise. */
 class FakeTransport implements ExchangeTransport {
@@ -221,7 +221,7 @@ test('discretionary exit: reduce-only market, fill restated from the exchange; b
   assert.equal(ex.ledger.forPosition(p.id).find(r => r.purpose === 'exit')!.reason, 'manual');
 });
 
-test('an unanswered entry is found again by client id once the exchange answers; never found by the deadline → voided', async t => {
+test('an unanswered entry is found by client id; an empty lookup stays uncertain until later evidence', async t => {
   const { fake, ex, open, paper } = await setup(t);
   fake.nextFill = { unanswered: true, price: 101 };
   fake.lagLookups = 3;
@@ -230,13 +230,137 @@ test('an unanswered entry is found again by client id once the exchange answers;
   assert.equal(p.entryPrice, 101, 'the order the exchange did receive is the one that counts');
   assert.equal(ex.ledger.forPosition(p.id)[0].state, 'filled');
   assert.equal(fake.byPurpose('stop').length, 1, 'bracket only after the entry was found');
-  // a second entry the exchange truly never received
+  // The exchange did receive this order, but its lookup is delayed beyond the deadline.
   fake.nextFill = { unanswered: true };
   fake.lagLookups = 1000;
   const q = open('short', 'ETHUSD');
   await ex.flush();
-  assert.equal(paper.position(q.id), undefined, 'voided: nothing on the exchange to protect');
-  assert.equal(ex.ledger.forPosition(q.id)[0].state, 'rejected');
+  assert.equal(paper.position(q.id)?.status, 'open', 'absence of lookup evidence cannot void an accepted entry');
+  assert.equal(ex.ledger.forPosition(q.id)[0].state, 'unknown');
+  const sent = fake.placed.length;
+  fake.lagLookups = 0;
+  await ex.sweepNow(); await ex.flush();
+  assert.equal(ex.ledger.forPosition(q.id)[0].state, 'filled');
+  assert.equal(fake.placed.length, sent + 4, 'only the recovered entry protection is sent');
+});
+
+for (const fault of ['502', 'malformed', 'missing-id']) test(`accepted entry with ${fault} response reconciles without a second submission`, async t => {
+  const fake = new FakeTransport(), place = fake.placeOrder.bind(fake);
+  fake.placeOrder = async o => {
+    const ack = await place(o);
+    if (o.purpose === 'entry') {
+      if (fault === 'missing-id') return {} as any;
+      throw new DeltaRequestError('ambiguous acknowledgement', fault === '502' ? 502 : 200, fault === '502' ? 'server_error' : 'bad_json');
+    }
+    return ack;
+  };
+  const { ex, open } = await setup(t, {}, fake);
+  const p = open(); await ex.flush();
+  assert.equal(fake.byPurpose('entry').length, 1);
+  assert.equal(ex.ledger.forPosition(p.id)[0].state, 'filled');
+  assert.equal(fake.byPurpose('stop').length, 1);
+});
+
+test('partial open entry stays unsettled until the exchange finalizes quantity', async t => {
+  const { fake, ex, open } = await setup(t);
+  fake.nextFill = { pending: true };
+  const p = open(); await ex.flush();
+  fake.fill(1, 101, .1, 50);
+  await ex.sweepNow();
+  assert.equal(ex.ledger.forPosition(p.id)[0].state, 'acknowledged');
+  assert.deepEqual(ex.status().unconfirmed, [p.id]);
+  fake.fill(1, 102, .4);
+  await ex.sweepNow(); await ex.flush();
+  assert.equal(ex.ledger.forPosition(p.id)[0].filledSize, 200);
+  assert.equal(fake.byPurpose('entry').length, 1);
+  assert.equal(fake.byPurpose('stop')[0].p.size, 200);
+});
+
+test('testnet ledger is never adopted or mutated by production recovery', async t => {
+  const db = new Db(':memory:'); t.after(() => db.db.close());
+  const a = await setup(t, {}, undefined, db), p = a.open(); await a.ex.flush(); a.ex.stop();
+  const before = db.all<any>('SELECT * FROM exchange_orders');
+  const prod = new FakeTransport(); prod.host = 'production';
+  const b = await setup(t, {}, prod, db);
+  assert.deepEqual(b.ex.ledger.recent(), []);
+  assert.deepEqual(b.ex.lastRecovery?.unmirrored, [p.id]);
+  assert.equal(prod.placed.length, 0);
+  assert.deepEqual(db.all<any>('SELECT * FROM exchange_orders'), before);
+});
+
+test('unanswered protection is not duplicated or cancelled during delayed lookup', async t => {
+  const fake = new FakeTransport(), place = fake.placeOrder.bind(fake);
+  fake.placeOrder = async o => { const ack = await place(o); if (o.purpose === 'stop') throw new DeltaRequestError('gateway failed', 502, null); return ack; };
+  const { ex, open } = await setup(t, {}, fake);
+  const p = open(); await ex.flush();
+  fake.lagLookups = 1000;
+  const before = fake.placed.length;
+  await ex.recover(); await ex.recover();
+  assert.equal(fake.placed.length, before); assert.equal(fake.cancelled.length, 0);
+  fake.lagLookups = 0;
+  await ex.sweepNow(); await ex.flush();
+  assert.equal(ex.status().brackets.find(b=>b.positionId===p.id)?.stop?.exchangeId, '2');
+  assert.equal(fake.placed.length, before);
+});
+
+test('failed open-order snapshot defers recovery without replacing protection, then retries', async t => {
+  const db = new Db(':memory:'); t.after(()=>db.db.close());
+  const fake = new FakeTransport(), a = await setup(t, {}, fake, db);
+  a.open(); await a.ex.flush(); a.ex.stop();
+  const before=fake.placed.length, list=fake.openOrders.bind(fake);
+  fake.openOrders=async()=>{throw Error('snapshot unavailable');};
+  const b=await setup(t,{},fake,db);
+  assert.match(b.ex.lastRecovery!.notes.join(' '),/deferred/);
+  assert.equal(fake.placed.length,before);
+  fake.openOrders=list;
+  await b.ex.sweepNow();
+  assert.equal(b.ex.status().brackets.length,1); assert.equal(fake.placed.length,before);
+});
+
+test('long exit reasons produce valid unique IDs and preserve the full ledger reason',async t=>{
+  const {fake,ex,open,paper}=await setup(t);
+  const p=open();await ex.flush();
+  paper.closeManual(p.id,'funding-avoid');await ex.flush();
+  const ids=fake.placed.map(o=>o.client_order_id!);
+  assert.ok(ids.every(id=>id.length<=32));assert.equal(new Set(ids).size,ids.length);
+  assert.equal(ex.ledger.forPosition(p.id).find(r=>r.purpose==='exit')?.reason,'funding-avoid');
+});
+
+test('stop/start detaches mirror listeners and cannot multiply submissions',async t=>{
+  const {ex,paper,open,fake}=await setup(t);
+  ex.stop();assert.equal(paper.listenerCount('order'),0);
+  await ex.start();await ex.start();assert.equal(paper.listenerCount('order'),1);
+  open();await ex.flush();assert.equal(fake.byPurpose('entry').length,1);
+});
+
+test('partial stop cancellation is confirmed before sending only the remaining market quantity',async t=>{
+  const {ex,open,fake,paper}=await setup(t);
+  const p=open();await ex.flush();fake.fill(2,94.8,.1,50);
+  paper.onBar('BTCUSD',{time:120000,high:100,low:94,close:94},120010);
+  await ex.flush();
+  const exits=fake.byPurpose('exit');assert.equal(exits.length,1);assert.equal(exits[0].p.size,150);
+  assert.equal(ex.ledger.get(2)?.filledSize,50);assert.equal(ex.status().exposure[p.id],undefined);
+});
+
+test('failed stop cancellation cannot trigger a second exit while its outcome is unresolved',async t=>{
+  const {ex,open,fake,paper}=await setup(t);
+  open();await ex.flush();const cancel=fake.cancelOrder.bind(fake);
+  fake.cancelOrder=async(id,pid)=>{if(String(id)==='2')throw Error('cancel timeout');return cancel(id,pid);};
+  paper.onBar('BTCUSD',{time:120000,high:100,low:94,close:94},120010);
+  await ex.flush();assert.equal(fake.byPurpose('exit').length,0);
+  assert.equal(ex.ledger.get(2)?.state,'unknown');
+  await ex.sweepNow();await ex.sweepNow();await ex.flush();
+  assert.equal(fake.byPurpose('exit').length,0,'recovery must retain unresolved cancellation across sweeps');
+});
+
+test('a delayed accepted market exit is looked up instead of resubmitted by stranded recovery',async t=>{
+  const {ex,open,fake,paper}=await setup(t);
+  const p=open();await ex.flush();const place=fake.placeOrder.bind(fake);
+  fake.placeOrder=async o=>{const ack=await place(o);if(o.purpose==='exit')throw new DeltaRequestError('gateway failed',502,null);return ack;};
+  fake.lagLookups=1000;paper.closeManual(p.id);await ex.flush();
+  await ex.sweepNow();assert.equal(fake.byPurpose('exit').length,1);
+  fake.lagLookups=0;await ex.sweepNow();await ex.sweepNow();await ex.flush();
+  assert.equal(fake.byPurpose('exit').length,1);assert.equal(ex.hasExposure(),false);
 });
 
 test('an entry still pending at the deadline stays unconfirmed with no bracket until the sweep sees it filled', async t => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DeltaRest } from './rest.ts';
+import { DeltaRest, DeltaRequestError } from './rest.ts';
 
 test('authenticated retries refresh signatures after server delays', async t => {
   let now = 100000, calls = 0; const timestamps: string[] = [];
@@ -42,4 +42,13 @@ test('thin candle pages continue backwards and respect the requested time window
   const bar = (time: number) => ({ time, open: 1, high: 1, low: 1, close: 1, volume: 1 });
   t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ result: ++calls === 1 ? [bar(300), bar(200)] : [bar(100), bar(50)] })));
   assert.deepEqual((await new DeltaRest().candles('BTCUSD', '1m', 100, 250)).map(b => b.time), [100, 200]);
+});
+
+test('order mutations preserve ambiguity on server errors and malformed acknowledgements without retrying',async t=>{
+  const rest=new DeltaRest({apiKey:'test',apiSecret:'test'});
+  for(const [status,body,definitive] of [[502,'{"success":false,"error":{"code":"gateway_error"}}',false],[200,'<html>upstream failed</html>',false],[400,'{"success":false,"error":{"code":"insufficient_margin"}}',true],[408,'{"error":{"code":"timeout"}}',false]] as const){
+    let calls=0;t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response(body,{status});});
+    await assert.rejects(rest.placeOrder({product_id:27,size:1,side:'buy',order_type:'market_order'}),e=>e instanceof DeltaRequestError&&e.definitive===definitive);
+    assert.equal(calls,1);
+  }
 });

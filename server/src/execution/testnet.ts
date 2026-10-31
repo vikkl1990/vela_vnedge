@@ -10,7 +10,7 @@
  *  - The bracket is a reduce-only stop-market (mark-price trigger) for the open size plus one
  *    reduce-only take-profit limit per leg. When the paper stop moves, the resting stop is EDITED in
  *    place; if the exchange refuses the edit, a new stop is placed before the old one is cancelled.
- *    There is never a moment with a position and no stop.
+ *    Protection remains policy- and acknowledgement-dependent; a failed placement is surfaced.
  *  - A level exit the paper book detects (stop, break-even, target) is settled against the resting
  *    order: if the exchange filled it, the paper fill is restated to the exchange price; if it did
  *    not within `confirmSec`, that order is cancelled and the exit goes out at market.
@@ -23,11 +23,12 @@
  *  - `closeAll()` flattens the exchange account with reduce-only market orders (requires `confirm: true`).
  */
 import type { AppConfig } from '../config.ts';
-import type { DeltaProduct } from '../delta/rest.ts';
+import { DeltaRequestError, type DeltaProduct } from '../delta/rest.ts';
+import { randomUUID } from 'node:crypto';
 import { logger } from '../log.ts';
 import type { PaperEngine } from '../paper/engine.ts';
 import { stopReason, type Position } from '../paper/logic.ts';
-import { DryRunTransport, RestTransport, resolveHost, type ExchangeOrder, type ExchangeTransport, type OrderPayload } from './client.ts';
+import { DryRunTransport, RestTransport, resolveHost, wirePayload, OrderValidationError, type ExchangeOrder, type ExchangeTransport, type OrderPayload } from './client.ts';
 import { OrderLedger, type LedgerRow } from './ledger.ts';
 
 const log = logger.scoped('execution');
@@ -69,6 +70,9 @@ export class ExchangeExecutor {
   lastRecovery: RecoveryReport | null = null;
   private queue: Promise<void> = Promise.resolve();
   private started = false;
+  private recoveryPending = false;
+  private orderListener?: (o: any) => void;
+  private positionListener?: (e: { type: string; position: Position }) => void;
 
   constructor(paper: PaperEngine, cfgRef: () => AppConfig, transport: ExchangeTransport, opts: ExecutorOptions = {}) {
     this.paper = paper; this.cfgRef = cfgRef; this.transport = transport; this.opts = opts;
@@ -106,15 +110,22 @@ export class ExchangeExecutor {
       catch (e: any) { log.error(`exchange init failed: ${e?.message ?? e}`); }
     } else log.warn(`execution ${this.mode} on ${this.transport.host}: no API keys → ${this.transport.dryRun ? 'payloads are logged only' : 'nothing can be sent'}`);
     await this.enqueue(() => this.recover().then(() => undefined));
-    this.paper.on('order', (o: any) => { const external = this.adopting.has(o.positionId); this.enqueue(() => (external ? Promise.resolve() : this.onFill(o))); });
-    this.paper.on('position', (e: { type: string; position: Position }) => this.enqueue(() => this.onPosition(e)));
+    this.orderListener = (o: any) => { const external = this.adopting.has(o.positionId); this.enqueue(() => (external ? Promise.resolve() : this.onFill(o))); };
+    this.positionListener = (e: { type: string; position: Position }) => { this.enqueue(() => this.onPosition(e)); };
+    this.paper.on('order', this.orderListener);
+    this.paper.on('position', this.positionListener);
     const sec = this.opts.reconcileSec ?? this.cfgRef().execution.reconcileSec;
     if (sec > 0) this.timer = setInterval(() => { this.reconcile().catch(e => log.warn(`reconcile failed: ${e?.message ?? e}`)); }, sec * 1000);
     const sweep = this.opts.sweepSec ?? this.cfgRef().execution.sweepSec ?? 10;
     if (sweep > 0) this.sweeper = setInterval(() => { this.enqueue(() => this.sweep()); }, sweep * 1000);
   }
 
-  stop(): void { if (this.timer) clearInterval(this.timer); if (this.sweeper) clearInterval(this.sweeper); this.timer = null; this.sweeper = null; }
+  stop(): void {
+    if (this.timer) clearInterval(this.timer); if (this.sweeper) clearInterval(this.sweeper); this.timer = null; this.sweeper = null;
+    if (this.orderListener) this.paper.off('order', this.orderListener);
+    if (this.positionListener) this.paper.off('position', this.positionListener);
+    this.orderListener = undefined; this.positionListener = undefined; this.started = false;
+  }
 
   private enqueue(fn: () => Promise<void>): Promise<void> {
     this.queue = this.queue.then(fn).catch(e => log.error(`execution step failed: ${e?.message ?? e}`));
@@ -141,17 +152,22 @@ export class ExchangeExecutor {
 
   /** Write the intent, send, record the outcome. A network failure leaves the row `unknown`: the exchange may have it. */
   private async send(o: OrderPayload, positionId: number, symbol: string, leg: number | null = null, reason: string | null = null): Promise<{ row: LedgerRow; ok: boolean; error?: string }> {
+    o = { ...o, client_order_id: o.client_order_id ?? cid(positionId, o.purpose ?? 'exit') };
     const row = this.ledger.intent(o, positionId, symbol, leg, reason);
     try {
+      wirePayload(o);
       const res = await this.transport.placeOrder(o);
+      if (res?.id === undefined || res.id === null || String(res.id).length === 0 || res.id === '?') throw new Error('order acknowledgement missing id; outcome unknown');
       const resting = Boolean(o.stop_order_type) || o.order_type === 'limit_order';
       if (resting) this.ledger.acknowledged(row.id, res.id); else this.ledger.submitted(row.id, res.id);
       log.info(`${this.transport.host} ${o.side} ${o.size} ${symbol} (${o.purpose}${leg ? ` leg ${leg}` : ''}) → order ${res.id} ${res.state ?? ''}`);
       return { row: this.ledger.get(row.id)!, ok: true };
     } catch (e: any) {
       const msg = String(e?.message ?? e);
-      if (/abort|timeout|fetch failed|ECONNRESET|ETIMEDOUT|rate limited/i.test(msg)) { this.ledger.unknown(row.id, msg); log.error(`${o.purpose} for #${positionId} ${symbol}: no answer from the exchange (${msg}); the order may exist and will be looked up by client id`); }
-      else { this.ledger.rejected(row.id, msg); log.error(`${o.purpose} for #${positionId} ${symbol} rejected: ${msg}`); }
+      // Unknown errors are ambiguous. Only local validation or a structured business rejection is definitive.
+      const rejected = e instanceof OrderValidationError || (e instanceof DeltaRequestError ? e.definitive : /^Delta POST \/v2\/orders → (400|401|403|422) \{.*"code":/.test(msg));
+      if (rejected) { this.ledger.rejected(row.id, msg); log.error(`${o.purpose} for #${positionId} ${symbol} rejected: ${msg}`); }
+      else { this.ledger.unknown(row.id, msg); log.error(`${o.purpose} for #${positionId} ${symbol}: outcome uncertain (${msg}); reconcile by client id before any retry`); }
       return { row: this.ledger.get(row.id)!, ok: false, error: msg };
     }
   }
@@ -172,19 +188,15 @@ export class ExchangeExecutor {
             if (c.status === 'filled') this.ledger.filled(row.id, { filledSize: filled, avgPrice: c.avgPrice, fee: c.fee }); else this.ledger.cancelled(row.id, last.state ?? 'unfilled');
             return c;
           }
-        } else if (!row.exchangeId && this.now() >= deadline) {
-          // asked by client id until the deadline and never seen: it did not reach the exchange
-          this.ledger.rejected(row.id, 'not found on the exchange');
-          return { status: 'unfilled', filledSize: 0, avgPrice: null, fee: null, order: null };
         }
       } catch (e: any) { log.warn(`confirm order ${row.exchangeId ?? row.clientOrderId} failed: ${e?.message ?? e}`); }
       if (this.now() >= deadline) break;
       await this.sleep(this.pollMs);
     }
     const filled = last ? Math.max(0, last.size - (last.unfilled_size ?? 0)) : 0;
-    if (filled > 0) { this.ledger.filled(row.id, { filledSize: filled, avgPrice: last!.average_fill_price ?? null, fee: last!.paid_commission ?? null }); return { status: 'filled', filledSize: filled, avgPrice: last!.average_fill_price ?? null, fee: last!.paid_commission ?? null, order: last }; }
+    // A still-open partial order can fill more. Keep it unsettled rather than freezing its exposure.
     // the exchange has the order and is still working it: that is known, only the fill is not
-    if (last) { if (row.state !== 'acknowledged') this.ledger.acknowledged(row.id, last.id); return { status: 'unknown', filledSize: 0, avgPrice: null, fee: null, order: last }; }
+    if (last) { if (row.state !== 'acknowledged') this.ledger.acknowledged(row.id, last.id); return { status: 'unknown', filledSize: filled, avgPrice: last.average_fill_price ?? null, fee: last.paid_commission ?? null, order: last }; }
     this.ledger.unknown(row.id, 'unconfirmed: the exchange did not answer');
     return { status: 'unknown', filledSize: 0, avgPrice: null, fee: null, order: null };
   }
@@ -268,7 +280,13 @@ export class ExchangeExecutor {
     const leg = o.reason === 'sl' || o.reason === 'be' || o.reason === 'trail' || o.reason === 'liquidation' ? b.stop : b.tps.find(t => t.leg === legNo) ?? null;
     if (!leg) { log.warn(`${o.symbol} ${o.reason}: no acknowledged exchange order covers it; sending a market exit`); return this.marketExit(o, product_id); }
     const row = this.ledger.get(leg.ledgerId)!;
-    const c = await this.confirm(row);
+    let c = await this.confirm(row);
+    if (c.status === 'unknown') {
+      try { await this.transport.cancelOrder(leg.exchangeId, product_id); }
+      catch (e: any) { this.ledger.unknown(row.id, `cancel outcome uncertain: ${e?.message ?? e}`); return; }
+      c = await this.confirmOnce(this.ledger.get(row.id)!);
+      if (c.status === 'unknown') { this.ledger.unknown(row.id, 'cancel not yet confirmed; no replacement exit sent'); return; }
+    }
     if (c.status === 'filled') {
       this.addExposure(o.positionId, -c.filledSize);
       this.adopt(o.positionId, () => this.paper.restateFill(o.positionId, o.reason, { price: c.avgPrice, fee: c.fee }));
@@ -276,9 +294,7 @@ export class ExchangeExecutor {
       if (c.filledSize < Math.round(o.qty)) { log.warn(`${o.symbol} ${o.reason}: exchange filled ${c.filledSize} of ${Math.round(o.qty)}; closing the rest at market`); await this.marketExit({ ...o, qty: Math.round(o.qty) - c.filledSize, reason: `${o.reason}-rest` }, product_id); }
       return;
     }
-    // the exchange did not take it: pull the resting order and exit at market
-    log.warn(`${o.symbol} ${o.reason}: exchange order ${leg.exchangeId} ${c.status}; cancelling it and exiting at market`);
-    try { await this.transport.cancelOrder(leg.exchangeId, product_id); this.ledger.cancelled(leg.ledgerId, 'not filled when the paper book exited'); } catch (e: any) { log.warn(`cancel ${leg.exchangeId} failed: ${e?.message ?? e}`); }
+    // Terminal cancellation confirms no fill. Never infer that from an empty lookup.
     this.dropLeg(b, leg);
     await this.marketExit(o, product_id);
   }
@@ -329,6 +345,19 @@ export class ExchangeExecutor {
     const s = this.stranded.get(id);
     const left = this.exposure.get(id) ?? 0;
     if (!s) return;
+    const pending = this.ledger.unsettled().filter(r => r.positionId === id && (r.purpose === 'exit' || ((r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged')));
+    for (const row of pending) {
+      if (row.purpose !== 'exit' && row.exchangeId) {
+        try { await this.transport.cancelOrder(row.exchangeId, row.productId); }
+        catch (e: any) { this.ledger.unknown(row.id, `cancel outcome uncertain: ${e?.message ?? e}`); return; }
+      }
+      const c = await this.confirmOnce(row);
+      if (c.status === 'unknown') { this.ledger.unknown(row.id, `${row.purpose === 'exit' ? 'exit' : 'cancel'} outcome unresolved; no second exit sent`); return; }
+      if (c.status === 'filled') this.addExposure(id, -c.filledSize);
+      const b = this.brackets.get(id), leg = b && [b.stop, ...b.tps].find(l => l?.ledgerId === row.id);
+      if (b && leg) this.dropLeg(b, leg);
+    }
+    if (pending.length) return; // recompute remaining quantity on the next sweep
     if (left <= 0) { this.stranded.delete(id); await this.cancelBracket(id, 'stranded exposure closed'); log.info(`stranded #${id} ${s.symbol} resolved`); return; }
     s.attempts++;
     const payload: OrderPayload = { product_id: s.product_id, size: left, side: s.exitSide, order_type: 'market_order', reduce_only: true, client_order_id: cid(id, 'stranded'), purpose: 'exit' };
@@ -367,6 +396,7 @@ export class ExchangeExecutor {
     for (const o of this.bracketPayloads(p, product_id)) {
       const legNo = o.purpose === 'stop' ? 0 : Number(o.client_order_id?.match(/tp(\d)/)?.[1] ?? 0);
       if (o.purpose === 'stop' ? b.stop : b.tps.some(t => t.leg === legNo)) continue;   // already resting (recovery)
+      if (this.ledger.unsettled().some(r => r.positionId === p.id && r.purpose === o.purpose && (o.purpose === 'stop' || r.leg === legNo))) continue;
       const sent = await this.send(o, p.id, p.symbol, o.purpose === 'tp' ? legNo : null);
       if (!sent.ok) continue;
       const leg: Leg = { ledgerId: sent.row.id, exchangeId: String(sent.row.exchangeId), price: Number(o.stop_price ?? o.limit_price), size: o.size, leg: legNo };
@@ -379,6 +409,7 @@ export class ExchangeExecutor {
   /** The paper stop moved or the open size changed: edit the resting stop in place; failing that, place the new one before cancelling the old. */
   private async moveStop(p: Position, b: Bracket) {
     if (p.status !== 'open' || p.sl === null || p.qtyOpen <= 0) return;
+    if (this.ledger.unsettled().some(r => r.positionId === p.id && r.purpose === 'stop' && r.state !== 'acknowledged')) return;
     const size = Math.round(p.qtyOpen);
     if (b.stop) {
       if (b.stop.price === p.sl && b.stop.size === size) return;
@@ -416,6 +447,7 @@ export class ExchangeExecutor {
 
   /** Check every resting order and unconfirmed entry against the exchange; book what filled. */
   private async sweep(): Promise<void> {
+    if (this.recoveryPending || this.ledger.unsettled().some(r => (r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged')) await this.recover();
     if (!this.brackets.size && !this.unconfirmed.size && !this.stranded.size) return;
     if (!this.transport.hasAuth && !this.transport.dryRun) return;
     for (const id of [...this.stranded.keys()]) await this.closeStranded(id);
@@ -440,6 +472,7 @@ export class ExchangeExecutor {
   private async settleVanished(b: Bracket, leg: Leg, onAdopt?: () => void) {
     let o: ExchangeOrder | null = null;
     try { o = await this.transport.order(leg.exchangeId); } catch (e: any) { log.warn(`sweep: order ${leg.exchangeId} failed: ${e?.message ?? e}`); return; }
+    if (!o) { this.ledger.unknown(leg.ledgerId, 'resting order absent from lookup; outcome uncertain'); return; }
     const filled = o ? Math.max(0, o.size - (o.unfilled_size ?? 0)) : 0;
     const pos = this.paper.position(b.positionId);
     const isStop = b.stop === leg;
@@ -465,9 +498,19 @@ export class ExchangeExecutor {
 
   /** Settle what the ledger says was in flight, rebuild brackets from it, and verify them against the exchange. */
   async recover(): Promise<RecoveryReport> {
+    this.recoveryPending = false;
     const rep: RecoveryReport = { at: this.now(), settled: 0, restored: 0, replacedStops: 0, adoptedFills: 0, cancelledStray: 0, unmirrored: [], notes: [] };
     const canAsk = this.transport.hasAuth || this.transport.dryRun;
     if (!canAsk) { rep.notes.push('no API keys: ledger not settled'); this.lastRecovery = rep; return rep; }
+    const uncertainProtection = new Set<number>();
+    for (const row of this.ledger.unsettled().filter(r => (r.purpose === 'stop' || r.purpose === 'tp') && r.state !== 'acknowledged')) {
+      try {
+        const o = row.exchangeId ? await this.transport.order(row.exchangeId) : await this.transport.orderByClientId(row.clientOrderId);
+        if (o && row.error?.startsWith('cancel') && o.state !== 'closed' && o.state !== 'cancelled') uncertainProtection.add(row.positionId);
+        else if (o) this.ledger.acknowledged(row.id, o.id); // step 2 settles terminal protection against open orders
+        else { this.ledger.unknown(row.id, 'protection outcome uncertain: no lookup result'); uncertainProtection.add(row.positionId); }
+      } catch (e: any) { this.ledger.unknown(row.id, String(e?.message ?? e)); uncertainProtection.add(row.positionId); }
+    }
     // 1. orders sent before the last stop: what became of them? (resting stops and targets are
     //    verified against the exchange's open orders in step 2, not polled here)
     for (const row of this.ledger.unsettled().filter(r => r.purpose !== 'stop' && r.purpose !== 'tp')) {
@@ -481,23 +524,25 @@ export class ExchangeExecutor {
       }
       if (c.status === 'unfilled' && row.purpose === 'entry' && pos && pos.status === 'open' && pos.qtyOpen === pos.qty && pos.fills.length === 1) { this.adopt(pos.id, () => this.paper.voidPosition(pos.id, 'exchange-unfilled (recovered)')); rep.notes.push(`#${pos.id} voided: entry never filled`); }
       if (c.status === 'unknown' && row.purpose === 'entry' && pos && pos.status === 'open') this.unconfirmed.set(pos.id, row.id);
+      else if (row.purpose === 'entry') this.unconfirmed.delete(row.positionId);
     }
     // 1b. exposure from the ledger: entries filled minus exits, stops and targets filled, per position
-    const bySize = new Map<number, number>();
-    for (const r of this.ledger.recent(5000)) {
-      if (r.state !== 'filled' || !r.positionId) continue;
-      bySize.set(r.positionId, (bySize.get(r.positionId) ?? 0) + (r.purpose === 'entry' ? r.filledSize : -r.filledSize));
-    }
+    const bySize = new Map(this.ledger.filledExposure().map(r => [r.positionId, r.qty]));
     this.exposure.clear();
     for (const [id, q] of bySize) if (q > 0) this.exposure.set(id, q);
     // 2. brackets from the ledger, verified against the exchange
     let openOrders: ExchangeOrder[] = [];
-    try { openOrders = await this.transport.openOrders(); } catch (e: any) { rep.notes.push(`open orders unavailable: ${e?.message ?? e}`); }
+    try { openOrders = await this.transport.openOrders(); } catch (e: any) {
+      rep.notes.push(`open orders unavailable: ${e?.message ?? e}; protection recovery deferred`);
+      this.recoveryPending = true;
+      this.lastRecovery = rep; return rep;
+    }
     const openById = new Map(openOrders.map(o => [String(o.id), o]));
     const ours = new Set<string>();
     for (const p of this.paper.openPositions()) {
       const rows = this.ledger.forPosition(p.id);
       if (!rows.length) { rep.unmirrored.push(p.id); log.error(`#${p.id} ${p.symbol} is open on paper with no exchange history: NOT mirrored, NOT protected on the exchange — close it or accept it as paper-only`); continue; }
+      if (uncertainProtection.has(p.id)) { rep.notes.push(`#${p.id}: protection submission unresolved; no duplicate sent`); continue; }
       if (!this.bracketEnabled) continue;
       const product_id = this.productId(p.symbol);
       if (!product_id) continue;
@@ -523,6 +568,8 @@ export class ExchangeExecutor {
     // 3. orders carrying this bot's prefix that no open position accounts for
     for (const o of openOrders) {
       if (!o.client_order_id?.startsWith(CID_PREFIX) || ours.has(String(o.id))) continue;
+      const pending = this.ledger.byClientId(o.client_order_id);
+      if (pending && ['intent', 'submitted', 'unknown'].includes(pending.state)) continue;
       const known = [...this.brackets.values()].some(b => b.stop?.exchangeId === String(o.id) || b.tps.some(t => t.exchangeId === String(o.id)));
       if (known) continue;
       try { await this.transport.cancelOrder(o.id, o.product_id); rep.cancelledStray++; const r = this.ledger.byClientId(o.client_order_id); if (r) this.ledger.cancelled(r.id, 'stray at start'); log.warn(`cancelled stray order ${o.id} (${o.client_order_id}) on ${this.symbolOf(o.product_id)}`); }
@@ -629,8 +676,7 @@ export class ExchangeExecutor {
   }
 }
 
-let cidSeq = 0;
-function cid(positionId: number, reason: string): string { return `${CID_PREFIX}${positionId}-${reason}-${Date.now().toString(36)}${(cidSeq++ % 1296).toString(36).padStart(2, '0')}`.slice(0, 40); }
+function cid(_positionId: number, reason: string): string { return `${CID_PREFIX}${reason.replace(/[^a-z0-9]/gi, '').slice(0, 4)}-${randomUUID().replaceAll('-', '').slice(0, 20)}`; }
 
 /** Build the executor for the configured mode; null in plain `paper` mode. Reads keys from the environment (demo keys only). */
 export function createExecutor(paper: PaperEngine, cfgRef: () => AppConfig, env: NodeJS.ProcessEnv = process.env): ExchangeExecutor | null {

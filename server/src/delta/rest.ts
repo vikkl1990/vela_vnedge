@@ -6,6 +6,18 @@ const log = logger.scoped('delta.rest');
 export const DELTA_INDIA_PROD = 'https://api.india.delta.exchange';
 export const DELTA_INDIA_TESTNET = 'https://cdn-ind.testnet.deltaex.org';
 
+/** Only an explicit business rejection proves an order was not accepted. */
+export class DeltaRequestError extends Error {
+  readonly definitive: boolean;
+  readonly status: number;
+  readonly code: string | null;
+  constructor(message: string, status: number, code: string | null) {
+    super(message); this.name = 'DeltaRequestError';
+    this.status = status; this.code = code;
+    this.definitive = status >= 400 && status < 500 && ![408, 429].includes(status) && !!code && code !== 'bad_json';
+  }
+}
+
 export interface DeltaCandle { time: number; open: number; high: number; low: number; close: number; volume: number }
 export interface DeltaProduct {
   id: number; symbol: string; description: string; contract_type: string; state: string;
@@ -92,7 +104,7 @@ export class DeltaRest {
         let json: any;
         try { json = JSON.parse(text); } catch { json = { success: false, error: { code: 'bad_json', message: text.slice(0, 200) } }; }
         if (res.status === 429) {
-          lastErr = new Error('Delta rate limited');
+          lastErr = new DeltaRequestError('Delta rate limited', 429, 'rate_limit');
           if (attempt >= retries) throw lastErr;
           const header = res.headers.get('X-RATE-LIMIT-RESET');
           const resetMs = header === null ? NaN : Number(header);
@@ -102,7 +114,7 @@ export class DeltaRest {
         if (!res.ok || json?.success === false) {
           const msg = `Delta ${method} ${path} → ${res.status} ${JSON.stringify(json?.error ?? json).slice(0, 300)}`;
           if (res.status >= 500 && attempt < retries) { lastErr = new Error(msg); await sleep(500 * (attempt + 1)); continue; }
-          throw new Error(msg);
+          throw new DeltaRequestError(msg, res.status, typeof json?.error?.code === 'string' ? json.error.code : null);
         }
         return (opts.raw ? json : json.result ?? json) as T;
       } catch (e: any) {

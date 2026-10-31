@@ -63,7 +63,9 @@ export function wireRealtime(app: App): void {
     } catch (e: any) { log.warn(`exchange product-status refresh failed: ${e?.message ?? e}`); }
     finally { refreshing = false; }
   };
-  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); if (!connected) depth.disconnect(); if (connected) void refresh(); });
+  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); if (!connected) { depth.disconnect(); app.marks.invalidateQuotes(); } if (connected) void refresh(); });
+  app.feed.on('quote', q => app.marks.onWsQuote(q));
+  app.feed.on('quoteGap', ({ symbols }: { symbols: string[] }) => app.marks.invalidateQuotes(symbols));
   app.feed.on('system_status', (m: any) => {
     status.systemUpdate(String(m.status ?? ''), toMs(m.timestamp ?? m.ts));
     log.info(`exchange system status ${m.status} (${m.event ?? 'update'})`);
@@ -122,9 +124,10 @@ export function wireRealtime(app: App): void {
 
 /** Subscribe the tape / mark / funding channels for the scanned symbols plus anything with an open position. */
 export function subscribeRealtime(app: App): void {
-  const symbols = [...new Set([...app.resolvedSymbols, ...app.paper.openPositions().map(p => p.symbol), ...app.incubator.symbols()])];
+  const symbols = [...new Set([...app.resolvedSymbols, ...app.paper.openPositions().map(p => p.symbol), ...app.shadow.openPositions().map(p => p.symbol), ...app.paper.pendingEntries().map(p => p.symbol), ...app.shadow.pendingEntries().map(p => p.symbol), ...app.incubator.symbols()])];
   app.feed.subscribe('ob_updates', app.depthRecorder.symbols);
   if (!symbols.length) return;
+  app.feed.subscribe('ob_l1', symbols);
   app.feed.subscribe('all_trades', symbols);
   app.feed.subscribe('mark_price', symbols);
   app.feed.subscribe('funding_rate', symbols);

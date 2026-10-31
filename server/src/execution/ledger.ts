@@ -17,7 +17,7 @@ export interface LedgerRow {
   createdAt: number; updatedAt: number;
 }
 
-const OPEN_STATES: LedgerState[] = ['submitted', 'acknowledged', 'unknown'];
+const OPEN_STATES: LedgerState[] = ['intent', 'submitted', 'acknowledged', 'unknown'];
 
 export class OrderLedger {
   private db: Db;
@@ -47,18 +47,22 @@ export class OrderLedger {
     this.set(id, { ...(e.stopPrice !== undefined ? { stop_price: e.stopPrice } : {}), ...(e.limitPrice !== undefined ? { limit_price: e.limitPrice } : {}), ...(e.size !== undefined ? { size: e.size } : {}) });
   }
 
-  get(id: number): LedgerRow | undefined { const r = this.db.get<any>('SELECT * FROM exchange_orders WHERE id=?', id); return r ? row(r) : undefined; }
-  byClientId(cid: string): LedgerRow | undefined { const r = this.db.get<any>('SELECT * FROM exchange_orders WHERE client_order_id=?', cid); return r ? row(r) : undefined; }
-  forPosition(positionId: number): LedgerRow[] { return this.db.all<any>('SELECT * FROM exchange_orders WHERE position_id=? ORDER BY id ASC', positionId).map(row); }
+  get(id: number): LedgerRow | undefined { const r = this.db.get<any>('SELECT * FROM exchange_orders WHERE id=? AND host=?', id, this.host); return r ? row(r) : undefined; }
+  byClientId(cid: string): LedgerRow | undefined { const r = this.db.get<any>('SELECT * FROM exchange_orders WHERE client_order_id=? AND host=?', cid, this.host); return r ? row(r) : undefined; }
+  forPosition(positionId: number): LedgerRow[] { return this.db.all<any>('SELECT * FROM exchange_orders WHERE position_id=? AND host=? ORDER BY id ASC', positionId, this.host).map(row); }
   /** Orders that may still be alive on the exchange: sent but not yet settled either way. */
-  unsettled(): LedgerRow[] { return this.db.all<any>(`SELECT * FROM exchange_orders WHERE state IN (${OPEN_STATES.map(() => '?').join(',')}) ORDER BY id ASC`, ...OPEN_STATES).map(row); }
+  unsettled(): LedgerRow[] { return this.db.all<any>(`SELECT * FROM exchange_orders WHERE host=? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ORDER BY id ASC`, this.host, ...OPEN_STATES).map(row); }
   /** Resting protection (stops and targets) believed to be on the exchange for one position. */
   restingFor(positionId: number): LedgerRow[] { return this.forPosition(positionId).filter(r => (r.purpose === 'stop' || r.purpose === 'tp') && r.state === 'acknowledged'); }
-  recent(limit = 100): LedgerRow[] { return this.db.all<any>('SELECT * FROM exchange_orders ORDER BY id DESC LIMIT ?', limit).map(row); }
+  recent(limit = 100): LedgerRow[] { return this.db.all<any>('SELECT * FROM exchange_orders WHERE host=? ORDER BY id DESC LIMIT ?', this.host, limit).map(row); }
+  /** Exposure recovery must not lose old entries when recent history exceeds a display limit. */
+  filledExposure(): Array<{ positionId: number; qty: number }> {
+    return this.db.all<{positionId:number;qty:number}>(`SELECT position_id AS positionId, SUM(CASE WHEN purpose='entry' THEN filled_size ELSE -filled_size END) AS qty FROM exchange_orders WHERE host=? AND state='filled' AND position_id>0 GROUP BY position_id`, this.host);
+  }
 
   private set(id: number, fields: Record<string, unknown>) {
     const keys = Object.keys(fields);
-    this.db.run(`UPDATE exchange_orders SET ${keys.map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=?`, ...keys.map(k => fields[k]), this.now(), id);
+    this.db.run(`UPDATE exchange_orders SET ${keys.map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=? AND host=?`, ...keys.map(k => fields[k]), this.now(), id, this.host);
   }
 }
 

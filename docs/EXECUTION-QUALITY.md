@@ -17,3 +17,20 @@ Authenticated non-dry-run executors retrieve individual fills and wallet transac
 BTC/ETH/SOL depth and trades are recorded separately from fill simulation. Sequence, timestamp, checksum and crossed-book checks detect invalid data and request a fresh snapshot. Storage is bounded to 24 hours, 50,000 events and 32 MiB of payload; dropped observations and disconnects create gaps. Replay requires a retained snapshot and all subsequent sequence updates. This does not prove queue priority or automatically change maker fills.
 
 Post-only payload support rejects market orders, invalid prices and non-GTC orders. Existing production market-only protection remains in force; this support does not enable production maker execution.
+
+L1 quotes now drive executable pricing when healthy. The quality endpoint includes
+`fillSource` and `quotes`: observed count, fresh L1/fallback counts, and rows with
+source, bid/ask sizes, publication/receive timestamps, last book change and age.
+An unchanged book's old change timestamp does not invalidate a fresh publication.
+Ticker fallback is explicit; the quote-age policy is unchanged. These counts cover
+observed quotes, not a guarantee that every subscribed market has delivered one.
+The UI displays the configured fill mode separately; faster quotes do not silently
+switch candle-based paper fills to tape mode.
+
+For isolated execution comparisons, import `compareExecution` from
+`server/src/paper/executionReplay.ts` with a config snapshot and receipt-ordered
+`ExecutionObservation[]`. Supported observations are entry, quote, trade, candle,
+disconnect and clock. The helper returns candle/tape decisions, fills, commissions,
+realized net and remaining open/pending counts. Only supplied signals are replayed;
+portfolio gates, exchange queue position, depth fills and actual funding cashflows
+are outside this helper. Never interpret an unclosed position as a zero-return trade.

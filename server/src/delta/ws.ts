@@ -5,6 +5,7 @@ const log = logger.scoped('delta.ws');
 
 export const DELTA_INDIA_WS = 'wss://public-socket.india.delta.exchange';
 export const DELTA_INDIA_LEGACY_WS = 'wss://socket.india.delta.exchange';
+export const DELTA_INDIA_PUBLIC_TESTNET_WS = 'wss://socket-ind-pub.testnet.deltaex.org';
 const GLOBAL_CHANNELS = new Set(['product_updates', 'system_status']);
 
 export interface WsCandle {
@@ -16,6 +17,8 @@ export interface WsCandle {
 }
 /** `v2/ticker` channel. Delta carries the top of book here (`quotes.best_bid` / `best_ask`), not on `mark_price`. */
 export interface WsTicker { symbol: string; price: number; markPrice: number; timeMs: number; bestBid: number | null; bestAsk: number | null }
+/** L1 publication time is freshness; bookTimeMs can remain unchanged on an unchanged book. */
+export interface WsQuote { symbol: string; bestBid: number; bestAsk: number; bidSize: number; askSize: number; timeMs: number; bookTimeMs: number; receivedAt: number }
 /** One print from the `all_trades` channel (the tape). `qty` is in contracts. */
 export interface WsTrade { symbol: string; price: number; qty: number; timeMs: number; aggressor: 'buy' | 'sell' | null }
 /** `mark_price` channel (Delta sends symbols as `MARK:BTCUSD`; `symbol` here is the bare product symbol). */
@@ -50,11 +53,15 @@ export class DeltaFeed extends EventEmitter {
   private reconnectDelay = 1000;
   private lastMessageAt = 0;
   private hbTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private quoteSeen = new Map<string, number>();
+  private protocol: 'compact' | 'legacy';
   connected = false;
 
-  constructor(url = DELTA_INDIA_WS) {
+  constructor(url = DELTA_INDIA_WS, protocol?: 'compact' | 'legacy') {
     super();
     this.url = url;
+    this.protocol = protocol ?? (url === DELTA_INDIA_LEGACY_WS || url === 'wss://socket-ind.testnet.deltaex.org' ? 'legacy' : 'compact');
     for (const channel of GLOBAL_CHANNELS) this.subs.set(channel, new Set());
   }
 
@@ -69,6 +76,7 @@ export class DeltaFeed extends EventEmitter {
   }
 
   start(): void {
+    if (this.hbTimer) return;
     this.closed = false;
     this.connect();
     this.hbTimer = setInterval(() => {
@@ -82,6 +90,7 @@ export class DeltaFeed extends EventEmitter {
         this.scheduleReconnect();
       } else {
         try { this.ws?.send(JSON.stringify({ type: 'ping' })); } catch { /* ignore */ }
+        this.refreshSilentQuotes();
       }
     }, 20_000);
   }
@@ -89,7 +98,13 @@ export class DeltaFeed extends EventEmitter {
   stop(): void {
     this.closed = true;
     if (this.hbTimer) clearInterval(this.hbTimer);
-    this.ws?.close();
+    this.hbTimer = null;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const ws = this.ws; this.ws = null;
+    this.connected = false; this.quoteSeen.clear();
+    ws?.close();
+    this.emit('status', { connected: false });
   }
 
   subscribe(channel: string, symbols: string[]): void {
@@ -97,6 +112,7 @@ export class DeltaFeed extends EventEmitter {
     const set = this.subs.get(channel) ?? new Set<string>();
     const fresh = symbols.filter(s => !set.has(s));
     for (const s of symbols) set.add(s);
+    if (channel === 'ob_l1') for (const s of fresh) this.quoteSeen.set(s, Date.now());
     this.subs.set(channel, set);
     if ((fresh.length || (isNew && GLOBAL_CHANNELS.has(channel))) && this.connected) this.send({ type: 'subscribe', payload: { channels: [this.wireChannel(channel, fresh)] } });
   }
@@ -105,6 +121,7 @@ export class DeltaFeed extends EventEmitter {
     const set = this.subs.get(channel);
     if (!set) return;
     for (const s of symbols) set.delete(s);
+    if (channel === 'ob_l1') for (const s of symbols) this.quoteSeen.delete(s);
     if (this.connected) this.send({ type: 'unsubscribe', payload: { channels: [this.wireChannel(channel, symbols)] } });
   }
 
@@ -119,7 +136,7 @@ export class DeltaFeed extends EventEmitter {
   }
 
   private wireChannel(name: string, symbols: string[]) {
-    const wireName = this.url.includes('public-socket') ? ({ 'v2/ticker': 'ticker', all_trades: 'trades' }[name] ?? name) : name;
+    const wireName = this.protocol === 'compact' ? ({ 'v2/ticker': 'ticker', all_trades: 'trades' }[name] ?? name) : name;
     return GLOBAL_CHANNELS.has(name) ? { name: wireName } : { name: wireName, symbols: toWire(name, symbols) };
   }
 
@@ -136,6 +153,7 @@ export class DeltaFeed extends EventEmitter {
     ws.onopen = () => {
       if (this.ws !== ws || this.closed) return;
       this.connected = true; this.reconnectDelay = 1000; this.lastMessageAt = Date.now();
+      for (const s of this.subs.get('ob_l1') ?? []) this.quoteSeen.set(s, Date.now());
       log.info('connected');
       this.emit('status', { connected: true });
       const channels = [...this.subs.entries()].filter(([name, s]) => s.size || GLOBAL_CHANNELS.has(name)).map(([name, s]) => this.wireChannel(name, [...s]));
@@ -152,6 +170,7 @@ export class DeltaFeed extends EventEmitter {
     ws.onerror = (ev: any) => { log.warn('socket error', ev?.message ?? ''); };
     ws.onclose = () => {
       if (this.ws !== ws) return;
+      this.ws = null;
       const was = this.connected;
       this.connected = false;
       if (was) { log.warn('disconnected'); this.emit('status', { connected: false }); }
@@ -160,14 +179,29 @@ export class DeltaFeed extends EventEmitter {
   }
 
   private scheduleReconnect() {
-    if (this.closed) return;
+    if (this.closed || this.reconnectTimer) return;
     const d = this.reconnectDelay;
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30_000);
-    setTimeout(() => this.connect(), d);
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; this.connect(); }, d);
+  }
+
+  /** A heartbeat on another channel must not hide a stalled L1 subscription. */
+  private refreshSilentQuotes(now = Date.now()) {
+    const stale = [...(this.subs.get('ob_l1') ?? [])].filter(s => now - (this.quoteSeen.get(s) ?? 0) > 15_000);
+    if (!stale.length) return;
+    this.emit('quoteGap', { symbols: stale, at: now });
+    this.send({ type: 'unsubscribe', payload: { channels: [this.wireChannel('ob_l1', stale)] } });
+    this.send({ type: 'subscribe', payload: { channels: [this.wireChannel('ob_l1', stale)] } });
+    for (const s of stale) this.quoteSeen.set(s, now);
   }
 
   private handle(msg: any) {
     const type: string = msg?.type ?? '';
+    if (type === 'ob_l1') {
+      const q = parseQuote(msg);
+      if (q) { if (q.receivedAt - q.timeMs <= 10_000) this.quoteSeen.set(q.symbol, q.receivedAt); this.emit('quote', q); }
+      return;
+    }
     if (type === 'ob_updates') { this.emit('depth', msg); return; }
     if (type.startsWith('candlestick_')) {
       const c: WsCandle = {
@@ -220,6 +254,16 @@ export class DeltaFeed extends EventEmitter {
 }
 
 function num(v: unknown): number | null { const n = Number(v); return v === null || v === undefined || v === '' || !Number.isFinite(n) ? null : n; }
+
+export function parseQuote(m: any, receivedAt = Date.now()): WsQuote | null {
+  const symbol = typeof m?.sy === 'string' ? m.sy : '';
+  const bid = num(m?.bp), ask = num(m?.ap), bidSize = num(m?.bs), askSize = num(m?.as);
+  const timeMs = toMs(m?.ts, 0), bookTimeMs = toMs(m?.lts, 0);
+  if (!symbol || bid === null || ask === null || bidSize === null || askSize === null ||
+      bid <= 0 || ask < bid || bidSize <= 0 || askSize <= 0 || timeMs <= 0 || bookTimeMs <= 0 ||
+      timeMs > receivedAt + 2000 || bookTimeMs > timeMs + 2000) return null;
+  return { symbol, bestBid: bid, bestAsk: ask, bidSize, askSize, timeMs, bookTimeMs, receivedAt };
+}
 
 /** Parse one `all_trades` print (`price` is a string, `size` in contracts, `timestamp` in µs). */
 export function parseTrade(symbol: string, x: any): WsTrade | null {

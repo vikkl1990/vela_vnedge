@@ -6135,3 +6135,48 @@ execution claim. The $150 target margin, 3% stop-risk cap, 6x cost floor and all
 execution-plan comparisons remain unchanged.
 
 Validation: all 713 server tests pass; dashboard lint/build and server TypeScript checks pass.
+
+## 208 — Delta L1 quotes and conservative exchange recovery (2026-10-31)
+
+Execution now subscribes to compact `ob_l1` for scanned, held and pending markets
+in both books. Quotes retain publication time, last book-change time, sizes and
+source. Healthy L1 outranks ticker fallback. Disconnects clear executable quotes;
+a silent L1 subscription is repaired independently of heartbeats. Demo public
+channel mapping is explicit and socket stop/restart cancels pending reconnects.
+Exchange → Execution quality reports L1/fallback/stale coverage, per-market age
+and size, and the configured candle/tape fill mode.
+
+Order-ledger reads and writes are scoped to the transport host; legacy unknown-host
+rows are not adopted automatically. Recovery includes pre-acknowledgement intent
+and aggregates all filled exposure rather than the last 5,000 display rows.
+Server/malformed acknowledgements and empty lookups remain uncertain. Native
+protection with an uncertain submission is looked up before any replacement;
+failed open-order snapshots defer recovery. Client IDs fit 32 characters and keep
+their semantic reason in the ledger. Listener cleanup prevents restart duplication.
+Open partial orders stay unsettled. A level exit confirms cancellation and any
+partial quantity before sending a market remainder; failed cancellation does not
+justify another exit.
+
+`compareExecution` replays supplied receipt-ordered signals and market observations
+through the real candle and tape engines in isolated memory databases. It preserves
+exchange event timestamps and reports fills, fees, open/pending counts and realized
+net without forcing remaining positions closed. It does not regenerate scanner
+signals, model queue priority, replay the portfolio admission layer or establish
+strategy profitability.
+
+Validation adds fault-injected transport/reconnect tests and three actual SIGKILL
+boundaries: durable intent, exchange acceptance before acknowledgement, and saved
+acknowledgement. A public-only 25-second probe of the new feed received 241 BTC and
+242 ETH L1 messages, with fresh quote ages of 77ms and 12ms at its final snapshot.
+
+This build does not enable live execution, native production stop/limit permissions,
+the scalper waiver, or tape mode. $150 margin and existing risk/economics settings
+are unchanged. Host isolation is not account-identity isolation: changing exchange
+accounts within the same host still requires explicit reconciliation. The durable
+paper-to-exchange command outbox, private-stream reconciliation, partial-fill cash
+accounting and production-native protection remain separate work before live use.
+
+Validation: 741 server tests pass (28 added), including three new SIGKILL tests;
+3 dashboard tests and 4 component-render checks pass. Server TypeScript,
+dashboard build/lint and whitespace checks pass. No orders were sent by the
+public-feed probe. This entry records a tested local build, not a VM deployment.
