@@ -124,7 +124,7 @@ export function Analytics() {
           <div className="performance-chart" role="img" aria-label={`Daily paper versus shadow ${chartMetric === 'avgR' ? 'net R per trade' : 'closed trade counts'}. Exact values are in the daily values table below.`}>
             <ResponsiveContainer width="100%" height={260}><BarChart data={d.daily} margin={{top:12,right:12,left:0,bottom:0}}>
               <CartesianGrid stroke="var(--border)" vertical={false} /><XAxis dataKey="key" tickFormatter={v => String(v).slice(5)} minTickGap={30} fontSize={11} stroke="var(--muted)" tickLine={false} axisLine={false} />
-              <YAxis width={58} fontSize={11} stroke="var(--muted)" tickLine={false} axisLine={false} allowDecimals={chartMetric === 'avgR'} tickFormatter={v => chartMetric === 'avgR' ? `${Number(v).toFixed(1)}R` : fmtInt(Number(v))} />
+              <YAxis width={58} fontSize={11} stroke="var(--muted)" tickLine={false} axisLine={false} allowDecimals={chartMetric === 'avgR'} tickFormatter={v => chartMetric === 'avgR' ? `${Number(v).toLocaleString(undefined, {maximumSignificantDigits: 3})}R` : fmtInt(Number(v))} />
               <ReferenceLine y={0} stroke="var(--muted-2)" /><Legend />
               <Tooltip contentStyle={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)'}} labelFormatter={v => `${v} · UTC`} formatter={(value,name) => [chartMetric === 'avgR' ? avgR(Number(value)) : fmtInt(Number(value)), String(name)]} />
               <Bar dataKey={`paper.${chartMetric}`} name="Paper" fill="var(--accent)" maxBarSize={28} isAnimationActive={false} />

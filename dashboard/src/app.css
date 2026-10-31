@@ -1724,6 +1724,7 @@ body { overflow-x: clip; }
   .performance-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .performance-filters > label:first-child { grid-column: 1 / -1; }
   .performance-books { grid-template-columns: minmax(0, 1fr); }
+  .performance-shadow .performance-metrics > div:first-child { grid-column: 1 / -1; }
   .performance-book { padding: 18px; }
   .performance-page .select, .performance-page .input, .performance-page .btn, .performance-page summary { min-height: 44px; }
   .performance-breakdown-controls label { flex: 1; min-width: 120px; }
