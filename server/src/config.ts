@@ -275,7 +275,7 @@ export interface PaperConfig {
  */
 export type ExitOverride = Partial<Pick<PaperConfig,
   'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'earlyCut' |
-  'fallbackRR' | 'tpSplit' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
+  'fallbackRR' | 'tpSplit' | 'scriptTargets' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
 
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
 export type TrendGateMode = 'follow' | 'fade' | 'off';
@@ -852,6 +852,15 @@ export function validateConfig(c: AppConfig): string[] {
   if (p.trailAfterR > 0 && !(p.trailGiveBackPct > 0) && !(Number.isFinite(p.trailDistanceR) && p.trailDistanceR > 0)) errs.push('paper.trailDistanceR must be > 0 when trailing is on without trailGiveBackPct');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');
   if (p.scriptTargets !== undefined && !['use', 'widen', 'ignore'].includes(p.scriptTargets)) errs.push('paper.scriptTargets must be use|widen|ignore');
+  // Target overrides must be validated at every supported scope, including scanner configuration.
+  const targetOverrides = [...Object.entries(p.exitByTf??{}).map(([k,v])=>[`paper.exitByTf.${k}`,v] as const),
+    ...Object.entries(p.exitBySymbol??{}).map(([k,v])=>[`paper.exitBySymbol.${k}`,v] as const),
+    ...Object.entries(c.scanners??{}).filter(([,v])=>v.exit!==undefined).map(([k,v])=>[`scanners.${k}.exit`,v.exit!] as const)];
+  for(const [name,o] of targetOverrides){
+    if(o.scriptTargets!==undefined&&!['use','widen','ignore'].includes(o.scriptTargets))errs.push(`${name}.scriptTargets must be use|widen|ignore`);
+    if(o.fallbackRR!==undefined&&(!Array.isArray(o.fallbackRR)||o.fallbackRR.length!==3||!o.fallbackRR.every((n,i,a)=>Number.isFinite(n)&&n>0&&(i===0||n>a[i-1]))))errs.push(`${name}.fallbackRR must be three increasing positive values`);
+    if(o.tpSplit!==undefined&&(!Array.isArray(o.tpSplit)||o.tpSplit.length!==3||!o.tpSplit.every(n=>Number.isFinite(n)&&n>=0&&n<=1)||Math.abs(o.tpSplit.reduce((a,b)=>a+b,0)-1)>1e-6))errs.push(`${name}.tpSplit must be three fractions summing to one`);
+  }
   if (p.minSizeShare !== undefined && !(Number.isFinite(p.minSizeShare) && p.minSizeShare >= 0 && p.minSizeShare <= 1)) errs.push('paper.minSizeShare must be 0..1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
   errs.push(...validateExecutionPlans(c.executionPlans, TF_SECONDS));

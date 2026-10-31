@@ -6010,3 +6010,44 @@ the development stress is now also part of the study's qualification test. Nine 
 shadow comparisons are the deployment target, not nine account promotions. Historical depth,
 queue priority and exact funding still limit the replay. `REGISTRY=1 TFS=15m` in `planstudy.ts`
 reproduces this resolver-based study using explicit sanitized snapshot/cache/output paths.
+
+## 205. Scanner-specific targets with explicit trailing coordination (31 October 2026)
+
+Targets are now a versioned part of a research execution plan: native price levels with an
+explicit contract split, or an increasing R ladder with its own split. An optional trail
+activation is recorded separately, so a TP-only experiment cannot silently change its trail.
+The original stop, sizing, fee floor and protective floor remain resolved from the same
+policy. Experiments use level exits; native TP notifications cannot close a replacement
+target plan. Held positions and pending fills retain their complete snapshot. The Incubator
+shows scanner names, stop policy, target ladder/allocation and trail activation, including
+configured plans before their first signal. Scanner exit overrides now explicitly support
+`scriptTargets`; target modes, splits and ladders are validated across supported scopes.
+
+The journal contained 6,346 closed account/shadow trades since 1 September. Only two of the
+627 account closes were target exits, versus 376 trail exits. Reach statistics end at the
+actual exit and are descriptive, not a replay of later recovery. Native targets already
+exist for some scanners: the 2/4/6R fallback is not a universal replacement of every script.
+Smart Money Breakout's chart targets are not numeric entry alerts, so its native-level
+comparison falls back to the engine's levels; chart target-hit statistics are not bot P&L.
+
+The study covered LTM, Structure-Anchored VWAP, Trend Impulse Channels and Smart Money
+Breakout on BTC/ETH/SOL, at 15m/1h/4h, with 200 warm-up bars and 1 September–31 October data.
+720 paired runs tested native allocations, 0.75R and 1.5R full exits, and 1/2/4R partials,
+holding trailing unchanged. Most differences were small because the 0.5R trail closed
+before targets acted. A further 432 exploratory runs tested 0.75R full exits/trailing and
+1/2/4R partials/trailing from 1R. This second hypothesis followed inspection of the first
+study; its later segment is not an untouched validation set. Both use the production plan
+resolver, full fees, base leverage, a fixed $1,000 reference purse, conservative minute
+fills and 0/5bp additional market-leg slippage. All runs completed without errors. Results
+are isolated cell comparisons, not portfolio returns; live regime/market/depth admission,
+historical funding and queue position are not completely reconstructed.
+
+Trend Impulse Channels 4h is the prospective candidate: 50% at 1R, 25% at 2R, 25% at 4R,
+trailing from 1R, preserving the 0.5R/0.25R floor. Across three majors, stressed development
+net rose from $27.74 to $41.71. Later base net rose from $28.28 (19 closes) to $34.48
+(18 closes), stressed net from $21.03 to $29.24. BTC improved but remained negative;
+ETH and SOL later results weakened. This is a small, mixed sample, not proof of an edge.
+Six paired forward plans (baseline/candidate on each major) are added for observation only.
+Keep the existing nine LTM plans; no account exit override or promotion is authorized by
+these results. LTM and VWAP did not show a consistent improvement from the new ladder.
+The $150 target margin, 3% stop-risk cap and 6x cost floor remain unchanged.

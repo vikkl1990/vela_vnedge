@@ -325,7 +325,8 @@ export class ApiServer {
 
     this.add('GET', '/api/execution-plans', () => {
       const view=a.planComparisons.view(),marks=a.incubatorStore.liveMarks()??{};
-      return {...view,configured:view.configured.map(p=>({...p,sourceStatus:a.registry.get(p.scannerId)?.status??'missing',
+      return {...view,cohorts:view.cohorts.map(p=>({...p,scannerName:a.registry.get(p.sourceScannerId)?.name??p.sourceScannerId})),
+        configured:view.configured.map(p=>({...p,scannerName:a.registry.get(p.scannerId)?.name??p.scannerId,sourceStatus:a.registry.get(p.scannerId)?.status??'missing',
         lastSourceBar:marks[`${p.scannerId}:${p.symbol}:${p.tf}`]??null})),costs:costAudit(a.db,a.config.get())};
     });
     this.add('GET', '/api/decision-trace', () => a.db.all<any>(

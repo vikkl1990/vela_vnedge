@@ -4,7 +4,7 @@ import type { Bar } from '../data/candleStore.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
 import type { PaperEngine, MarketInfo } from './engine.ts';
 import { lastAtr } from '../data/indicators.ts';
-import { planSnapshot, planScannerId, planEvents, type ExecutionPlanSnapshot } from './executionPlans.ts';
+import { planSnapshot, planScannerId, planEvents, takeProfitLabel, type ExecutionPlanSnapshot } from './executionPlans.ts';
 
 /** Fan-out of ONE live source run into isolated plans inside the existing shadow engine. */
 export class PlanComparisons {
@@ -72,7 +72,7 @@ export class PlanComparisons {
   }
 
   view() {
-    const configured=(this.cfg().executionPlans??[]).map(p=>({...p,signature:planSnapshot(this.cfg(),p,this.sourceHash(p.scannerId)).signature}));
+    const configured=(this.cfg().executionPlans??[]).map(p=>{const snapshot=planSnapshot(this.cfg(),p,this.sourceHash(p.scannerId));return {...p,signature:snapshot.signature,takeProfitLabel:takeProfitLabel(snapshot)};});
     const cohorts=this.db.all<any>('SELECT * FROM execution_plan_cohorts ORDER BY first_at DESC').map(row=>{
       const p=JSON.parse(row.snapshot) as ExecutionPlanSnapshot;
       const events=this.db.all<any>('SELECT e.*,p.status,p.realized_pnl,p.fees,p.risk_amount,p.exit_reason,p.exit_at FROM execution_plan_events e LEFT JOIN positions p ON p.id=e.position_id AND p.bt=2 WHERE e.scanner_id=? ORDER BY e.at',row.scanner_id);
@@ -81,7 +81,7 @@ export class PlanComparisons {
       for(const e of closed){balance+=e.realized_pnl-e.fees;peak=Math.max(peak,balance);drawdown=Math.max(drawdown,peak-balance);}
       const reasons:Record<string,number>={};
       for(const e of events)if(e.reason)reasons[e.reason]=(reasons[e.reason]??0)+1;
-      return {id:p.id,revision:p.revision,signature:p.signature,symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
+      return {id:p.id,revision:p.revision,signature:p.signature,sourceScannerId:p.sourceScannerId,takeProfitLabel:takeProfitLabel(p),symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
         referenceEquity:p.referenceEquity,margin:p.paper.marginPerTrade,leverage:p.paper.marginLeverage?.base,
         signals:events.length,placed:events.filter(e=>e.position_id!==null).length,
         filled:events.filter(e=>e.status==='open'||e.status==='closed').length,

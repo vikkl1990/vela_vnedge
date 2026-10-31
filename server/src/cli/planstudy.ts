@@ -1,4 +1,4 @@
-import {planSnapshot,planBacktest,planEvents} from '../paper/executionPlans.ts';
+import {planSnapshot,planBacktest,planEvents,takeProfitLabel} from '../paper/executionPlans.ts';
 import {sourceHash} from '../paper/fingerprint.ts';
 /** Paired plan study. Writes only an explicitly supplied local cache and report; no bot configuration/DB mutations.
  * SNAPSHOT=sanitized-vm.json CACHE=work/cache.db OUT=work/results.json node server/src/cli/planstudy.ts
@@ -26,7 +26,7 @@ const sc=cfg.scanners[scannerId],db=new Db(process.env.CACHE!),rest=new DeltaRes
 const markets=(process.env.MARKETS??'BTCUSD,ETHUSD,SOLUSD,AIOTUSD,ONDOUSD').split(',');
 const rows:any[]=[];
 const report:any={at:Date.now(),start,end,split,scannerId,rows,assumptions:{margin:cfg.paper.marginPerTrade,leverage:cfg.paper.marginLeverage?.base,stopRiskCapPct:cfg.paper.maxStopLossPct,feeRatio:cfg.paper.minRiskFeeRatio,entry:'current account pullback policy; through-price fills; conservative fill-minute stops',variants:'native levels / ATR fallback and regenerated targets / trailing 10 closed bars plus 0.25 ATR and regenerated targets; all experimental plans use bot level exits',costs:'configured maker/taker commissions, tax and slippage; stress adds 5bp per market leg; no historical depth or exact funding settlements available',scope:'isolated cell replays, not a portfolio replay; current product specs and base leverage, no hindsight leverage selection; closed trades only; remaining open positions reported and excluded from qualification',qualification:'at least 20 holdout closes, positive holdout net and stressed net, positive development base and stressed net, no open holdout positions, stable prefix plans, minute coverage >=99.5%; this flags further paper testing, never automatic promotion'}};
-if(process.env.REGISTRY==='1')report.assumptions.registry='same versioned plan resolver and fixed reference equity as prospective shadow comparisons; source and policy hashes recorded per row';
+if(process.env.REGISTRY==='1'){report.assumptions.variants='all configured versioned plans for this scanner/cell; target plans preserve stops and sizing; explicit trail changes are recorded per plan';report.assumptions.registry='same versioned plan resolver and fixed reference equity as prospective shadow comparisons; source and policy hashes recorded per row';}
 const save=()=>fs.writeFileSync(process.env.OUT!,JSON.stringify(report,null,2));
 function summary(r:ReturnType<typeof runBacktest>){
  const ts=r.trades;let pnl=0,peak=0,dd=0;for(const t of [...ts].sort((a,b)=>(a.exitAt??0)-(b.exitAt??0))){pnl+=t.pnl;peak=Math.max(peak,pnl);dd=Math.max(dd,peak-pnl);}
@@ -50,9 +50,8 @@ try{
      const from=phase==='development'?start:split,to=phase==='development'?split:end;
      const b=bars.filter(b=>b.time+ms<=to),source=phase==='development'?prefix.events:full.events;
      const events=source.filter(e=>e.barTime+ms>=from&&e.barTime+ms<to);
-     for(const variant of ['current','native','atr','structure'] as const){
-      const definition=cfg.executionPlans?.find(p=>p.enabled&&p.scannerId===scannerId&&p.symbol===symbol&&p.tf===tf&&p.variant===variant);
-      if(process.env.REGISTRY==='1'&&!definition)continue;
+     const candidates=process.env.REGISTRY==='1'?(cfg.executionPlans??[]).filter(p=>p.enabled&&p.scannerId===scannerId&&p.symbol===symbol&&p.tf===tf).map(definition=>({variant:definition.variant,definition})):['current','native','atr','structure'].map(variant=>({variant,definition:undefined}));
+     for(const {variant,definition} of candidates){
       const plan=process.env.REGISTRY==='1'&&definition?planSnapshot(cfg,definition,sourceHash(s.patched)):undefined;
       const adapted=plan?planEvents(events,b,plan):variant==='current'?events:adaptPlan(events,b,variant as PlanVariant);
       const policy=plan?planBacktest(plan):backtestPolicy(cfg,scannerId,tf,'account');
@@ -61,7 +60,7 @@ try{
         cfg:{...policy.cfg,slippageBps:policy.cfg.slippageBps+stress,quotedSlippageBps:(policy.cfg.quotedSlippageBps??0)+stress},
         requireAtrStop:variant==='current'?policy.requireAtrStop:false,exitMode:variant==='current'?policy.exitMode:'levels',
         subBars:minutes.filter(b=>b.time>=from&&b.time<to),conservativeEntryMinute:true});
-       rows.push({plan:plan?{id:plan.id,revision:plan.revision,signature:plan.signature,referenceEquity:plan.referenceEquity}:null,symbol,tf,phase,variant,stress,minuteCoverage,honesty,signature:full.profile.signature,nativeEntries,...summary(result)});
+       rows.push({plan:plan?{id:plan.id,revision:plan.revision,signature:plan.signature,referenceEquity:plan.referenceEquity,takeProfit:plan.takeProfit??null,takeProfitLabel:takeProfitLabel(plan)}:null,symbol,tf,phase,variant,stress,minuteCoverage,honesty,signature:full.profile.signature,nativeEntries,...summary(result)});
       }
      }
     }
@@ -72,9 +71,9 @@ try{
 }finally{await pool.stop();db.db.close();save();}
 
 report.qualification=rows.filter(r=>r.phase==='holdout'&&r.stress===0&&r.variant!=='current').map(r=>{
- const same=(x:any)=>x.symbol===r.symbol&&x.tf===r.tf&&x.variant===r.variant;
+ const same=(x:any)=>x.symbol===r.symbol&&x.tf===r.tf&&x.variant===r.variant&&x.plan?.id===r.plan?.id;
  const stress=rows.find(x=>same(x)&&x.phase==='holdout'&&x.stress===5),dev=rows.find(x=>same(x)&&x.phase==='development'&&x.stress===0),devStress=rows.find(x=>same(x)&&x.phase==='development'&&x.stress===5);
  const reasons=[r.trades<20?'fewer than 20 holdout closes':null,!(dev?.net>0)?'development net not positive':null,!(devStress?.net>0)?'stressed development net not positive':null,!(r.net>0)?'holdout net not positive':null,!(stress?.net>0)?'stressed holdout net not positive':null,r.open||stress?.open?'unresolved holdout position':null,r.honesty.changed?'prefix plans changed':null,r.minuteCoverage<.995?'incomplete minute coverage':null].filter(Boolean);
- return {symbol:r.symbol,tf:r.tf,variant:r.variant,qualifies:!reasons.length,reasons};
+ return {symbol:r.symbol,tf:r.tf,variant:r.variant,planId:r.plan?.id??null,qualifies:!reasons.length,reasons};
 });
 save();

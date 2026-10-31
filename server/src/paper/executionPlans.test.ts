@@ -134,3 +134,55 @@ test('timed plans close only on fresh post-deadline observations',t=>{
  assert.ok(!e.openPositions().some(p=>p.executionPlan?.variant==='native'));
  assert.ok(e.openPositions().some(p=>p.executionPlan?.variant==='atr'));
 });
+
+test('target-only plan changes TP prices and contract allocation without changing stop, size or trail',t=>{
+ const {c,e,service,ctx}=setup(t);
+ const control=structuredClone(c.executionPlans![1]);
+ c.executionPlans=[control,{...control,id:'eth-close-one',takeProfit:{mode:'r',rr:[1,2,3],split:[1,0,0]}},
+  {...control,id:'eth-partials',takeProfit:{mode:'r',rr:[1,2,4],split:[.5,.25,.25]}}];
+ service.observe(ctx);const ps=e.openPositions();assert.equal(ps.length,3);
+ const first=ps[0];for(const p of ps){assert.equal(p.slOriginal,first.slOriginal);assert.equal(p.qty,first.qty);assert.equal(p.riskAmount,first.riskAmount);assert.equal(p.executionPlan!.paper.trailAfterR,first.executionPlan!.paper.trailAfterR);}
+ assert.deepEqual(ps[1].tp,[102,104,106]);assert.deepEqual(ps[1].legs,[ps[1].qty,0,0]);
+ assert.deepEqual(ps[2].tp,[102,104,108]);assert.equal(ps[2].legs.reduce((a,b)=>a+b,0),ps[2].qty);
+ e.onBar('ETHUSD',{time:T+60000,high:102.2,low:100,close:102},T+120000);
+ assert.equal(e.position(ps[1].id)!.exitReason,'tp1');assert.ok(e.position(first.id)!.status==='open');
+ assert.ok(e.position(ps[2].id)!.qtyOpen>0&&e.position(ps[2].id)!.qtyOpen<ps[2].qty);
+ assert.ok(service.view().cohorts.some(x=>x.takeProfitLabel.includes('1/2/3R')));
+});
+test('TP overrides are versioned, isolated and validated; native targets can use their own split',t=>{
+ const {c}=setup(t);const d=c.executionPlans![1],before=planSnapshot(c,d);
+ d.takeProfit={mode:'native',split:[.4,.3,.3]};const after=planSnapshot(c,d);
+ assert.notEqual(before.signature,after.signature);assert.equal(after.paper.scriptTargets,'use');assert.deepEqual(after.paper.tpSplit,[.4,.3,.3]);assert.deepEqual(c.paper.tpSplit,DEFAULT_CONFIG.paper.tpSplit);
+ assert.deepEqual(validateConfig(c),[]);
+ d.takeProfit={mode:'r',rr:[2,1,3],split:[1.2,-.2,0]};assert.ok(validateConfig(c).some(x=>x.includes('TP R ladder')));assert.ok(validateConfig(c).some(x=>x.includes('TP split')));
+ d.takeProfit={mode:'r',rr:[1,2,3],split:[1,0,0]};d.variant='current';assert.ok(validateConfig(c).some(x=>x.includes('level-exit')));
+});
+test('scanner target mode reaches both live and backtest resolution and cannot affect another scanner',async t=>{
+ const {c}=setup(t);const {backtestPolicy,scannerExitPolicy}=await import('./policy.ts');const {exitConfigFor,resolveLevels}=await import('./logic.ts');
+ c.scanners.s.exit={scriptTargets:'ignore',fallbackRR:[1,2,3],tpSplit:[1,0,0]};
+ const live=exitConfigFor(c.paper,'ETHUSD',scannerExitPolicy(c,'s'),'15m'),bt=backtestPolicy(c,'s','15m','account');
+ const replay=exitConfigFor(bt.cfg,'ETHUSD',bt.scannerExit,'15m');assert.deepEqual(live,replay);
+ assert.deepEqual(resolveLevels({side:'long',price:100,sl:98,tp:[110,120,130]},live,.01),{sl:98,tp:[102,104,106],source:'mixed'});
+ assert.equal(scannerExitPolicy(c,'unrelated'),undefined);assert.deepEqual(validateConfig(c),[]);
+ c.scanners.s.exit.tpSplit=[2,-1,0];assert.ok(validateConfig(c).some(x=>x.includes('scanners.s.exit.tpSplit')));
+});
+test('coordinated targets defer trailing explicitly while retaining the original stop and protective floor',t=>{
+ const {db,c,e,service,ctx}=setup(t);
+ Object.assign(c.paper,{fillSource:'tape',trailAfterR:.5,trailGiveBackPct:10,floorAtR:.5,floorKeepR:.25});
+ const control=structuredClone(c.executionPlans![1]);
+ c.executionPlans=[control,{...control,id:'eth-coordinated',takeProfit:{mode:'r',rr:[1,2,4],split:[.5,.25,.25],trailAfterR:1}}];
+ service.observe(ctx);e.onTrade('ETHUSD',100,10,T+1,T+1);const [base,variant]=e.openPositions();
+ assert.equal(variant.slOriginal,base.slOriginal);assert.equal(variant.qty,base.qty);assert.equal(variant.riskAmount,base.riskAmount);
+ e.onTrade('ETHUSD',101.4,10,T+1000,T+1000);
+ assert.ok(base.sl!>101);assert.equal(variant.sl,100.5);
+ e.onTrade('ETHUSD',101,10,T+2000,T+2000);
+ assert.equal(e.position(base.id)!.status,'closed');assert.equal(e.position(variant.id)!.status,'open');
+ e.onTrade('ETHUSD',102.1,10,T+3000,T+3000);
+ assert.ok(variant.qtyOpen>0&&variant.qtyOpen<variant.qty);assert.ok(variant.sl!>101);
+ const held=variant.executionPlan!;assert.equal(held.paper.trailAfterR,1);assert.equal(c.paper.trailAfterR,.5);
+ assert.ok(service.view().cohorts.find(x=>x.id==='eth-coordinated')!.takeProfitLabel.includes('trail from 1R'));
+ c.executionPlans![1].takeProfit={mode:'r',rr:[3,4,5],split:[1,0,0],trailAfterR:.25};
+ const reloaded=new PaperEngine(db,()=>({...c,paper:bookPaperConfig(c,'shadow')}),{book:2});
+ const restored=reloaded.position(variant.id)!;assert.deepEqual(restored.tp,[102,104,108]);assert.equal(restored.executionPlan!.paper.trailAfterR,1);assert.equal(restored.qtyOpen,variant.qtyOpen);
+ c.executionPlans![1].takeProfit!.trailAfterR=NaN;assert.ok(validateConfig(c).some(x=>x.includes('TP trail activation')));
+});
