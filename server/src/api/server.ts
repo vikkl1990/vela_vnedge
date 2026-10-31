@@ -20,6 +20,7 @@ import { aggregateMonthly } from '../pine/provider.ts';
 import { duplicateGroups } from '../scanners/identity.ts';
 import { overlapClusters } from '../incubator/overlap.ts';
 import { lockStudy } from '../analytics/lockStudy.ts';
+import { ContributionService } from '../scanners/contributions.ts';
 
 const log = logger.scoped('api');
 
@@ -254,6 +255,9 @@ export class ApiServer {
     this.add('GET', '/api/markets/today', () => a.marketGate.today);
     this.add('POST', '/api/markets/today/refresh', async () => { const own = [...new Set([...a.resolvedSymbols, ...a.incubator.symbols()])]; return a.marketGate.refresh(await a.marketGate.universe(own), undefined, own); });
     this.add('GET', '/api/scanners', (_r, _s, _p, url) => (url.searchParams.get('view') === 'lite' ? a.scannerIndex() : a.scannerViews()));
+    const contributions = new ContributionService(a);
+    this.add('GET', '/api/scanners/contributions', () => contributions.view());
+    this.add('GET', '/api/scanners/:id/contribution', (_r, _s, p) => { const detail=contributions.detail(p.id); if(!detail) throw new HttpError(404,'unknown scanner'); return detail; });
     this.add('POST', '/api/scanners/auto-tune', async (_r, _s, _p, _u, body) => {
       const report = a.scanners.autoTune({ minTrades: Number(body?.minTrades ?? 3), minProfitFactor: Number(body?.minProfitFactor ?? 1) });
       await a.onConfigChanged();

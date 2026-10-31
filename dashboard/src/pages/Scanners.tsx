@@ -1,3 +1,4 @@
+import {ScannerContributions} from '../components/ScannerContributions'
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
@@ -179,8 +180,8 @@ export function Scanners() {
         render: (s) => (s.health?.quarantined ? <Pill tone="danger" title={`Quarantined: ${s.health.reason ?? s.health.lastError}`}>quarantined</Pill> : s.kind ? <Pill tone={KIND_TONE[s.kind]}>{s.kind}</Pill> : <span className="muted">–</span>),
       },
       {
-        key: 'reads', header: 'Reads', value: (s) => (s.reads?.sources ?? []).join(','), title: 'Which of the script\'s channels may open a trade (decision 48); "all" is the old behaviour',
-        render: (s) => <span className="mono small muted">{s.reads?.sources?.length ? s.reads.sources.join('+') : 'all'}{s.reads?.rule ? ` · ${s.reads.rule}` : ''}</span>,
+        key: 'reads', header: 'Reads', value: (s) => (s.reads?.sources ?? []).join(','), title: 'Which channels may open a trade; automatic uses the production reader, while an empty list disables entries',
+        render: (s) => <span className="mono small muted">{s.reads?.sources == null ? 'automatic' : s.reads.sources.length ? s.reads.sources.join('+') : 'entries disabled'}{s.reads?.rule ? ` · ${s.reads.rule}` : ''}</span>,
       },
       {
         key: 'enabled',
@@ -293,6 +294,7 @@ export function Scanners() {
         </div>
       </div>
 
+      <ScannerContributions />
       <div className="toolbar">
         <div className="cat-tabs" role="tablist" aria-label="Category">
           {CATEGORIES.map((c) => (

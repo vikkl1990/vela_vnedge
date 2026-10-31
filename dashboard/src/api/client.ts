@@ -1,3 +1,4 @@
+import type {Contributions, ContributionDetail} from './contributions'
 import type {
   ReclaimTrialsView,
   ExecutionStatus,
@@ -152,6 +153,8 @@ export const api = {
   revokeShareLink: (id: number) => del<{ link: ShareLink }>(`/share/${id}`),
 
   scanners: () => get<Scanner[]>('/scanners'),
+  scannerContributions: () => get<Contributions>('/scanners/contributions'),
+  scannerContribution: (id:string) => get<ContributionDetail>(`/scanners/${encodeURIComponent(id)}/contribution`),
   /** id/name/status/category/enabled/hidden only — the full list carries per-scanner stats for ~2000 scripts. */
   scannerIndex: () => get<ScannerIndexEntry[]>('/scanners?view=lite'),
   updateScanner: (id: string, body: ScannerUpdate) => post<Scanner>(`/scanners/${encodeURIComponent(id)}`, body),

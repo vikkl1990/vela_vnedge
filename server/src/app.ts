@@ -37,7 +37,7 @@ import type { DepthRecorder } from './execution/depthRecorder.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
 import { MarketGate } from './risk/marketGate.ts';
-import { ProfileStore, brokenRun, classifyRun, summarizeKind, type ProfileRow } from './scanners/profile.ts';
+import { ProfileStore, brokenRun, observeHistoricalRun, summarizeKind, type ProfileRow } from './scanners/profile.ts';
 import { extractEvents } from './scanners/extractor.ts';
 import { applyRules } from './scanners/rules.ts';
 import { MarkStore } from './data/marks.ts';
@@ -544,11 +544,7 @@ export class App {
       const c = cfg.scanners[id];
       const inputs = c?.inputs && Object.keys(c.inputs).length ? c.inputs : undefined;
       const res = await this.pool.run({ scannerId: id, source: s.patched, symbol: market, tf, tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs, timezone: c?.timezone }, { priority: 'background' });
-      if (!res.ok) { out.push({ scannerId: id, market, tf, at, ...brokenRun(res.error ?? 'failed', res.ms) }); continue; }
-      const READ = readingOf(c, id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
-      const derived = applyRules({ scannerId: id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: c?.rule ?? null, bars, mode: 'backtest', ...READ.rule });
-      const events = extractEvents(res.alerts, res.shapes, { derived, drawn: res.labels, ...READ.extract });
-      out.push({ scannerId: id, market, tf, at, ...classifyRun(res, events) });
+      out.push(observeHistoricalRun(s, c, market, tf, bars, res, 'manual', at).profile);
     }
     for (const r of out) this.profiles.save(r);
     return out;

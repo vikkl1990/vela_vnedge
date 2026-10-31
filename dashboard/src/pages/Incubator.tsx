@@ -1,3 +1,4 @@
+import {ScannerContributions} from '../components/ScannerContributions'
 import { Fragment, useDeferredValue, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -39,6 +40,7 @@ export default function Incubator() {
   return (
     <>
       <PageTitle pre="From signals," accent="to evidence." sub="Screening finds candidates. Forward shadow results determine gate eligibility; review the evidence, blockers and account pairs below." />
+      <ScannerContributions compact />
       <QueryState {...q} data={q.data} empty="Incubator unavailable." onRetry={() => q.refetch()}>
         {(d) => {
           const by = (st: IncubatorPair['stage']) => d.pairs.filter((p) => p.stage === st)

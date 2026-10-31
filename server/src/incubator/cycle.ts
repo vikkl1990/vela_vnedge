@@ -8,6 +8,7 @@ import { IncubatorStore, type PairRow, type Stage } from './store.ts';
 import { cohortStats, cohortVerdict, deliveryVerdict, demoteVerdict, gateVerdict, overlapPct, pairStats, screenScore, thinMarketRefusal, type CohortStats } from './gate.ts';
 
 export interface ScreenResult {
+  reason?: string;
   pass: boolean; at: number; trades: number; profitFactor: number; netPnl: number; netAtStress: number;
   windowsUp: number; winRatePct: number; avgR: number; bars: number; days: number;
   /** R per trade in the first and second half of the screen history (decision 55). */

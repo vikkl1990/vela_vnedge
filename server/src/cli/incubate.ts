@@ -36,6 +36,8 @@ import { sliceOf } from '../incubator/gate.ts';
 import { backtestPolicy, entryPolicy } from '../paper/policy.ts';
 import { aliasMap, duplicateGroups } from '../scanners/identity.ts';
 import { readingOf } from '../scanners/reading.ts';
+import { ProfileStore, observeHistoricalRun } from '../scanners/profile.ts';
+import { probeMarketOrder } from '../incubator/probeOrder.ts';
 import { createHash } from 'node:crypto';
 import { sourceHash } from '../paper/fingerprint.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
@@ -52,6 +54,7 @@ const inc = cfg.incubator;
 const db = new Db();
 const store = new IncubatorStore(db);
 const health = new ScriptHealth(db);
+const profiles = new ProfileStore(db);
 const rest = new DeltaRest();
 // Decision 107: the screen walks the library continuously. A cursor over (timeframe, slice, script) is
 // kept in the database; every night starts where the last one stopped and goes as far as the time and
@@ -237,8 +240,10 @@ while (sliceArg !== 'none') {
     }
     if (health.isQuarantined(s.id)) { summary.skippedSick++; continue; }
     let probed = 0, sawEntry = false;
-    for (const symbol of markets) {
-      // a script that produced no entry on its first three markets is not going to on the rest
+    const observedAt = new Map(profiles.forScanner(s.id).filter(p=>p.tf===TF).map(p=>[p.market,p.at]));
+    for (const symbol of probeMarketOrder(markets, observedAt)) {
+      // Limit quiet work this pass; subsequent passes probe other markets first. Silence on three
+      // markets is not evidence of silence everywhere, and it must not permanently starve the rest.
       if (!shadowOnly && probed >= 3 && !sawEntry) { summary.silentSkipped += markets.length - probed; break; }
       const cur = store.find(s.id, symbol, TF);
       if (cur && skipStages.has(cur.stage)) continue;
@@ -250,7 +255,7 @@ while (sliceArg !== 'none') {
       try {
         const inputs = cfg.scanners[s.id]?.inputs;
         const rssBefore = memoryUsedBytes();
-        const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined });
+        const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: d.bars, tailBars: 'all', plotTail: d.bars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone });
         // One run that takes more than a gigabyte and a half is a memory hog (Wyckoff Range Engine needs 6 GB for
         // one market): quarantine it at once, drop the workers that hold its memory, and go on with the slice.
         // Waiting for the memory line (decision 93) cost a whole night per hog.
@@ -262,6 +267,8 @@ while (sliceArg !== 'none') {
           pool.recycleAll();
           break;
         }
+        const observed = observeHistoricalRun(s, cfg.scanners[s.id], symbol, TF, d.bars, res, 'screen');
+        if (!dry) profiles.save(observed.profile);
         if (!res.ok) {
           summary.failed++;
           if (/^memory:/.test(res.error ?? '')) {
@@ -284,12 +291,17 @@ while (sliceArg !== 'none') {
           continue;
         }
         health.clear(s.id);
-        const READ = readingOf(cfg.scanners[s.id], s.id, (TF_SECONDS[TF] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
-        const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule: cfg.scanners[s.id]?.rule ?? null, bars: d.bars, mode: 'backtest', ...READ.rule });
-        // decision 110: the screen reads a script the way the shadow book and the account would (its sources, edge, labels, inversion)
-        const rd = cfg.scanners[s.id] ?? {};
-        const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[TF] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
-        if (!events.some(e => e.kind === 'entry')) continue;
+        const READ = observed.read;
+        const events = observed.events;
+        if (!events.some(e => e.kind === 'entry')) {
+          // A completed re-screen with no entries supersedes an old passing screen.
+          const empty = screenVerdict([], [], d.bars, inc, Date.now(), 0);
+          empty.reason = `no entry events under the current reading (${observed.profile.kind})`;
+          empty.provenance = screenProvenance(s.patched, READ, backtestPolicy(cfg, s.id, TF, 'shadow'));
+          if (!dry) recordScreen(store, { scannerId: s.id, symbol, tf: TF }, empty, inc);
+          if (shadowOnly) verdicts.push({scannerId:s.id,symbol,tf:TF,pass:false,reason:empty.reason,pf:0,trades:0,avgR:0});
+          continue;
+        }
         sawEntry = true;
         // decision 191: the screen trades the scanner the way the shadow book it admits to will — the entry model (a maker
         // limit on 1h/4h), the scanner's exit rules with the script-exit protection, its trend gate and the regime's chop gate
@@ -325,7 +337,7 @@ while (sliceArg !== 'none') {
         if (dry) continue;
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);
         if (k === 'new' || k === 'updated' || k === 'cooldown') summary[k]++;
-      } catch (e: any) { summary.failed++; }
+      } catch (e: any) { summary.failed++; out(`  ${s.id} ${symbol}: screen failed: ${String(e?.message ?? e).slice(0,200)}`); }
     }
     if (retrying.has(s.id)) {
       if (health.isQuarantined(s.id)) { health.markRetried(s.id); summary.retryFailed = (summary.retryFailed ?? 0) + 1; out(`  ${s.id}: failed its retry — ${health.row(s.id)?.reason ?? 'quarantined'}`); }

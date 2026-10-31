@@ -18,6 +18,7 @@ const ADDED_COLUMNS: Array<[string, string]> = [
   ['orders', 'quote_at INTEGER'], ['orders', 'price_source TEXT'],
   // how far a trade actually travelled, so a closed trade can be judged without replaying candles
   ['positions', 'peak_r REAL'], ['positions', 'peak_at INTEGER'], ['positions', 'worst_r REAL'], ['positions', 'worst_at INTEGER'],
+  ['script_profile', 'signature TEXT'], ['script_profile', 'bars INTEGER'], ['script_profile', 'window_start INTEGER'], ['script_profile', 'window_end INTEGER'], ['script_profile', 'origin TEXT'],
 ];
 
 const SCHEMA = `
