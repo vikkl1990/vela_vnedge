@@ -63,7 +63,7 @@ const GROUPS: Array<{ label: string; items: NavItem[] }> = [
       { to: '/library', label: 'Library', icon: IconBook, key: 'b' },
       { to: '/incubator', label: 'Incubator', icon: IconFlask, key: 'n' },
       { to: '/trackers', label: 'Trackers', icon: IconTarget, key: 'r' },
-      { to: '/analytics', label: 'Analytics', icon: IconBars, key: 'a' },
+      { to: '/analytics', label: 'Performance', icon: IconBars, key: 'a' },
       { to: '/daily', label: 'Daily', icon: IconCalendar, key: 'y' },
       { to: '/learn', label: 'Learn', icon: IconGraduation, key: 'l' },
       { to: '/decisions', label: 'Decisions', icon: IconBookmark, key: 'd' },

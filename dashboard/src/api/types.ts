@@ -902,3 +902,16 @@ export interface ExecutionQuality {
   depth: {books:{symbol:string;at:number|null;valid:boolean;fresh:boolean}[];gaps:{symbol:string;n:number;lastAt:number}[];symbols:string[];validBooks:string[];failures:number;queued:number;droppedPending:number;retention:string;stored:{n:number;oldest:number|null;newest:number|null;bytes:number|null}};
   account: {cursors:{host:string;from_at:number;through_at:number;error:string|null}[];comparisons:{orderId:number;complete:boolean;quantityMatches:boolean|null}[];rows:{host:string;kind:string;n:number}[]};
 }
+export interface PerformanceFilter { from?: number; to?: number; scanner?: string; symbol?: string; tf?: string; side?: string; reason?: string }
+export interface PerformanceStats {
+  trades: number; rTrades: number; wins: number; stops: number; trails: number;
+  net: number; commission: number; funding: number; grossTrading: number;
+  sumR: number | null; avgR: number | null; winRate: number | null; stopRate: number | null;
+  profitFactor: number | null; noLosses: boolean; fundingUnknown: number; avgCommissionR: number | null;
+}
+export interface PerformanceGroup { key: string; label: string; paper: PerformanceStats; shadow: PerformanceStats }
+export interface PerformanceReport {
+  at: number; from: number | null; to: number; firstClose: number | null; lastClose: number | null;
+  paper: PerformanceStats; shadow: PerformanceStats;
+  daily: PerformanceGroup[]; byTf: PerformanceGroup[]; byScanner: PerformanceGroup[]; bySymbol: PerformanceGroup[]; byExit: PerformanceGroup[];
+}

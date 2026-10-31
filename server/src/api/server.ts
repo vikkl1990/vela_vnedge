@@ -1,4 +1,5 @@
 import { allocationAudit } from '../analytics/allocationAudit.ts';
+import { performanceReport, validatePerformanceFilter } from '../analytics/performance.ts';
 import {reclaimStatus} from '../paper/reclaimAudit.ts';
 import http from 'node:http';
 import { sourceHash } from '../paper/fingerprint.ts';
@@ -391,6 +392,11 @@ export class ApiServer {
     });
     this.add('GET', '/api/analytics/allocations', () => allocationAudit(a.db, a.registry.all().filter(s => a.scanners.isActive(s)).flatMap(s => a.scanners.pairsFor(s.id).map(p => ({ scannerId: s.id, scannerName: s.name, ...p })))));
     this.add('GET', '/api/analytics', () => a.analytics());
+    this.add('GET', '/api/analytics/performance', (_r, _s, _p, url) => {
+      const filter = tradeFilter(url);
+      try { validatePerformanceFilter(filter); } catch (e) { throw new HttpError(400, (e as Error).message); }
+      return performanceReport(a.db, filter);
+    });
     this.add('GET', '/api/trackers', () => a.trackers());
     this.add('GET', '/api/reclaim-trials', () => reclaimStatus(a.db,a.config.get(),a.paper));
     this.add('POST', '/api/trackers', (_r, _s, _p, _u, body) => { try { return a.saveTracker(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); } });

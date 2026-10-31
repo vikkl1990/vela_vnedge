@@ -194,6 +194,7 @@ export const api = {
   fundingGuard: () => get<{at:number;executionSupported:boolean;settings?:{enabled:boolean;leadMinutes:number;scalpMaxR:number;swingMaxR:number};positions:Array<{id:number;book:string;symbol:string;tf:string;side:string;fresh:boolean;cost:number|null;costR:number|null;limitR:number;nextAt:number|null;ratePct:number|null;near:boolean;trigger:boolean;enabled:boolean}>}>('/funding-guard'),
   allocationAudit: () => get<AllocationAudit>('/analytics/allocations'),
   analytics: () => get<Analytics>('/analytics'),
+  performance: (q: import('./types').PerformanceFilter) => get<import('./types').PerformanceReport>(`/analytics/performance${qs(q)}`),
   dailyReport: (days = 30) => get<DailyRow[]>(`/reports/daily?days=${days}`),
   reclaimTrials: () => get<ReclaimTrialsView>('/reclaim-trials'),
   trackers: () => get<TrackerView[]>('/trackers'),
