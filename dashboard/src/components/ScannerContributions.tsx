@@ -1,4 +1,4 @@
-import {useState} from 'react'
+import {useEffect,useRef,useState} from 'react'
 import {useQuery} from '@tanstack/react-query'
 import {Link} from 'react-router-dom'
 import {api} from '../api/client'
@@ -10,11 +10,13 @@ const topReasons=(r:ContributionRow)=>Object.entries(r.paper.reasons).sort((a,b)
 export function ScannerContributions({compact=false}:{compact?:boolean}){
   const q=useQuery({queryKey:['scanner-contributions'],queryFn:api.scannerContributions,staleTime:60_000,refetchInterval:60_000})
   const [author,setAuthor]=useState('All'),[search,setSearch]=useState(''),[filter,setFilter]=useState('working'),[selected,setSelected]=useState<string|null>(null),[more,setMore]=useState(false),[page,setPage]=useState(0)
+  const detailRef=useRef<HTMLDivElement>(null)
+  useEffect(()=>{if(selected)detailRef.current?.scrollIntoView({behavior:'smooth',block:'start'})},[selected])
   const detail=useQuery({queryKey:['scanner-contribution',selected],queryFn:()=>api.scannerContribution(selected!),enabled:!!selected,staleTime:60_000})
   if(q.isError&&!q.data)return <ErrorState error={q.error} onRetry={()=>q.refetch()}/>
   if(!q.data)return <section className="contribution-panel" aria-busy="true">Loading scanner contribution evidence…</section>
   const d=q.data,term=search.toLowerCase().trim()
-  const rows=d.rows.filter(r=>(author==='All'||r.author===author)&&(!term||`${r.name} ${r.id} ${r.author}`.toLowerCase().includes(term))&&(filter==='all'||filter==='working'&&(r.cells.paper+r.cells.shadow+r.cells.candidate+r.cells.tracked>0)||filter==='unverified'&&!r.profiles.matching&&!r.aliasOf&&r.status==='ok'||filter==='context'&&r.entryDisabled||filter==='blocked'&&r.status!=='ok'||filter==='duplicates'&&!!r.aliasOf)).sort((a,b)=>b.cells.paper-a.cells.paper||b.paper.signals-a.paper.signals||b.cells.shadow-a.cells.shadow||a.name.localeCompare(b.name))
+  const rows=d.rows.filter(r=>(author==='All'||r.author===author)&&(!term||`${r.name} ${r.id} ${r.author}`.toLowerCase().includes(term))&&(filter==='all'||filter==='working'&&(r.cells.paper+r.cells.shadow+r.cells.candidate+r.cells.tracked>0)||filter==='unverified'&&!r.profiles.matching&&!r.aliasOf&&!r.hidden&&r.status==='ok'||filter==='context'&&r.entryDisabled||filter==='blocked'&&r.status!=='ok'||filter==='duplicates'&&!!r.aliasOf||filter==='archived'&&r.hidden)).sort((a,b)=>b.cells.paper-a.cells.paper||b.paper.signals-a.paper.signals||b.cells.shadow-a.cells.shadow||a.name.localeCompare(b.name))
   const pageNo=Math.min(page,Math.max(0,Math.ceil(rows.length/20)-1)),visible=rows.slice(pageNo*20,pageNo*20+20),chosen=d.rows.find(r=>r.id===selected)
   const changeAuthor=(value:string)=>{setAuthor(value);setPage(0)}
   return <section className="contribution-panel" id="contributions" aria-label="Scanner contribution ledger">
@@ -25,18 +27,18 @@ export function ScannerContributions({compact=false}:{compact?:boolean}){
       <div><strong>{d.summary.shadow}</strong><span>Scanners allocated to shadow</span></div>
       <div><strong>{d.summary.unverified}</strong><span>Runnable, needs current probe</span></div>
     </div>
-    <p className="contribution-note">{d.summary.specified} have explicit reading specifications · {d.summary.aliases} duplicate aliases · {d.summary.held} source or runtime holds. “Current” matches code and settings; it is not a profitability verdict.</p>
+    <p className="contribution-note">{d.summary.hidden} archived records included · {d.summary.specified} have explicit reading specifications · {d.summary.aliases} duplicate aliases · {d.summary.held} source or runtime holds. “Current” matches code and settings; it is not a profitability verdict.</p>
     <div className="contribution-families">{d.authors.filter(a=>a.major||more).map(a=><button key={a.author} className={`contribution-family ${author===a.author?'selected':''}`} aria-pressed={!compact&&author===a.author} onClick={()=>{if(!compact)changeAuthor(author===a.author?'All':a.author)}} disabled={compact}>
       <strong>{a.author}</strong><span>{a.matching} / {a.total} with matching profiles</span><span><b>{a.paper}</b> paper · <b>{a.shadow}</b> shadow · {a.specified} specified</span><progress value={a.matching} max={Math.max(1,a.total)} aria-label={`${a.author} profile coverage`}/>
     </button>)}</div>
     {!compact&&<>
       <div className="contribution-controls"><label>Family<select className="input" value={author} onChange={e=>changeAuthor(e.target.value)}><option>All</option>{d.authors.map(a=><option key={a.author}>{a.author}</option>)}</select></label>
-        <label>Contribution<select className="input" value={filter} onChange={e=>{setFilter(e.target.value);setPage(0)}}><option value="working">Allocated / candidates</option><option value="all">Entire library</option><option value="unverified">Needs current probe</option><option value="context">Context / entries disabled</option><option value="blocked">Source / runtime holds</option><option value="duplicates">Duplicate aliases</option></select></label>
+        <label>Contribution<select className="input" value={filter} onChange={e=>{setFilter(e.target.value);setPage(0)}}><option value="working">Allocated / candidates</option><option value="all">Entire library</option><option value="unverified">Needs current probe</option><option value="context">Context / entries disabled</option><option value="blocked">Source / runtime holds</option><option value="duplicates">Duplicate aliases</option><option value="archived">Archived scanners</option></select></label>
         <label className="contribution-search">Find a scanner<input className="input" value={search} onChange={e=>{setSearch(e.target.value);setPage(0)}} placeholder="Name, ID or author…"/></label><button className="btn" onClick={()=>setMore(!more)}>{more?'Major families':'All family cards'}</button>
       </div>
       <p className="muted">{rows.length} scanners · activity and closed trades: last 7 days · shadow decisions are a bounded retained sample</p>
       <div className="contribution-table-wrap"><table className="contribution-table"><thead><tr><th>Scanner / observed role</th><th>Code-matched evidence</th><th>Allocated cells</th><th>Paper decisions · 7d</th><th>Shadow decisions · 7d</th><th>Next action</th></tr></thead><tbody>{visible.map(r=><tr key={r.id} className={selected===r.id?'selected':''}>
-        <td><button className="contribution-name" onClick={()=>setSelected(selected===r.id?null:r.id)} aria-expanded={selected===r.id}>{r.name}</button><span className="contribution-sub">{r.author} · {r.role}</span>{r.status!=='ok'&&<Pill tone="warn">{r.status}</Pill>}</td>
+        <td><button className="contribution-name" onClick={()=>setSelected(selected===r.id?null:r.id)} aria-expanded={selected===r.id}>{r.name}</button><span className="contribution-sub">{r.author} · {r.role}</span>{r.hidden&&<Pill tone="muted">Archived</Pill>}{r.status!=='ok'&&<Pill tone="warn">{r.status}</Pill>}</td>
         <td><b>{r.profiles.matching}</b> observations<span className="contribution-sub">{r.profiles.tfs.join(' · ')||'No current timeframe evidence'}</span>{r.profiles.legacy+r.profiles.changed>0&&<span className="contribution-sub">{r.profiles.legacy} unversioned · {r.profiles.changed} changed</span>}<span className="contribution-sub">{r.profiles.lastAt?timeAgo(r.profiles.lastAt):'Never profiled'}</span></td>
         <td>{r.cells.paper} paper · {r.cells.shadow} shadow<span className="contribution-sub">{r.cells.candidate} candidates · {r.cells.tracked} trackers</span></td>
         <td>{r.paper.signals} signals<span className="contribution-sub">{r.paper.opened} opened · {r.paper.pending} pending · {r.paper.blocked} other</span><span className="contribution-sub">{r.closes.paper} closed trades</span></td>
@@ -45,7 +47,7 @@ export function ScannerContributions({compact=false}:{compact?:boolean}){
       </tr>)}</tbody></table></div>
       {!rows.length&&<p className="muted">No scanners match these filters.</p>}
       <div className="contribution-pagination"><button className="btn btn-xs" disabled={pageNo===0} onClick={()=>setPage(pageNo-1)}>Previous</button><span>{rows.length?`${pageNo*20+1}–${Math.min(rows.length,(pageNo+1)*20)} of ${rows.length}`:'0 results'}</span><button className="btn btn-xs" disabled={(pageNo+1)*20>=rows.length} onClick={()=>setPage(pageNo+1)}>Next</button></div>
-      {chosen&&<div className="contribution-detail"><div className="contribution-heading"><div><h3>{chosen.name}</h3><p>{chosen.next}{chosen.reason?` · ${chosen.reason}`:''}</p></div><button className="btn btn-xs" onClick={()=>setSelected(null)}>Close detail</button></div>
+      {chosen&&<div className="contribution-detail" ref={detailRef}><div className="contribution-heading"><div><h3>{chosen.name}</h3><p>{chosen.next}{chosen.reason?` · ${chosen.reason}`:''}</p></div><button className="btn btn-xs" onClick={()=>setSelected(null)}>Close detail</button></div>
         <div className="contribution-links"><Link className="btn btn-xs" to={`/scanners/${chosen.id}`}>Source & settings</Link><Link className="btn btn-xs" to={`/analytics?period=7d&scanner=${encodeURIComponent(chosen.id)}`}>Performance</Link>{chosen.aliasOf&&<Link className="btn btn-xs" to={`/scanners/${chosen.aliasOf}`}>Canonical scanner</Link>}</div>
         {topReasons(chosen).length>0&&<div><h4>Top paper decision blockers</h4><ul>{topReasons(chosen).map(([reason,n])=><li key={reason}>{n} × {reason}</li>)}</ul></div>}
         {detail.isError&&<ErrorState error={detail.error} onRetry={()=>detail.refetch()}/>}

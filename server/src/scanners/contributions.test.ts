@@ -25,6 +25,11 @@ test('ledger separates source evidence, matching profiles, pending orders, track
   assert.equal(row.paper.opened,1);assert.equal(row.paper.pending,1);assert.equal(row.paper.blocked,1);assert.equal(row.shadow.signals,2);assert.equal(row.cells.paper,1);assert.equal(row.cells.tracked,1);
   assert.equal(view.rows.find(r=>r.id==='context')!.role,'context / entries disabled');assert.equal(service.detail('s')!.profiles.length,3);
   assert.equal(view.authors.find(a=>a.author==='LuxAlgo')!.matching,1);
+  assert.equal(view.summary.unverified,1);
+  cfg.scanners.context.hidden=true;
+  const refreshed=await service.view(now+61_000);
+  assert.equal(refreshed.summary.unverified,0);assert.equal(refreshed.summary.hidden,1);
+  assert.equal(refreshed.rows.find(r=>r.id==='context')!.next,'Archived: review before restoring');
  }finally{db.db.close();}
 });
 test('a completed no-entry re-screen replaces stale passing eligibility without creating silent candidates',()=>{

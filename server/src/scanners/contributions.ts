@@ -15,7 +15,7 @@ const MAJORS=['WillyAlgoTrader','LuxAlgo','BigBeluga','AlgoAlpha','Zeiierman','C
 const emptyActivity=()=>({signals:0,opened:0,pending:0,blocked:0,reasons:{} as Record<string,number>});
 export interface ContributionRow {
   id:string; name:string; author:string; status:string; reason:string|null; aliasOf:string|null;
-  readingSpecified:boolean; entryDisabled:boolean; channels:string[]; cautions:number; role:string;
+  readingSpecified:boolean; entryDisabled:boolean; hidden:boolean; channels:string[]; cautions:number; role:string;
   profiles:{total:number;matching:number;changed:number;legacy:number;lastAt:number|null;tfs:string[]};
   cells:{paper:number;shadow:number;candidate:number;tracked:number};
   paper:ReturnType<typeof emptyActivity>; shadow:ReturnType<typeof emptyActivity>;
@@ -77,12 +77,12 @@ export class ContributionService {
       const cells=counts.get(s.id)??{paper:0,shadow:0,candidate:0,tracked:0};cells.paper=a.scanners.isActive(s)?a.scanners.pairsFor(s.id).length:0;
       const role=entryDisabled?'context / entries disabled':summarizeKind(matching)??'unverified';
       const reason=health.get(s.id)??s.reason??null,aliasOf=aliases.get(s.id)??null;
-      const next=aliasOf?'Use canonical scanner':entryDisabled?'Review context adapter':health.has(s.id)?'Repair runtime':s.status!=='ok'?'Resolve source hold':!matching.length?'Run current behavior probe':role==='broken'?'Repair runtime':role==='silent'||role==='levels'||role==='exits'?'Review reading / role':cells.paper?'Monitor paper execution':cells.shadow?'Collect shadow evidence':cells.candidate?'Review admission blockers':'Screen for shadow admission';
+      const next=sc?.hidden?'Archived: review before restoring':aliasOf?'Use canonical scanner':entryDisabled?'Review context adapter':health.has(s.id)?'Repair runtime':s.status!=='ok'?'Resolve source hold':!matching.length?'Run current behavior probe':role==='broken'?'Repair runtime':role==='silent'||role==='levels'||role==='exits'?'Review reading / role':cells.paper?'Monitor paper execution':cells.shadow?'Collect shadow evidence':cells.candidate?'Review admission blockers':'Screen for shadow admission';
       const facts=this.source(s.id)!.facts;
-      rows.push({id:s.id,name:s.name,author:s.author,status:health.has(s.id)?'quarantined':s.status,reason,aliasOf,readingSpecified:Object.hasOwn(specs,s.id),entryDisabled,channels:facts.channels,cautions:facts.cautions.length,role,
+      rows.push({id:s.id,name:s.name,author:s.author,status:health.has(s.id)?'quarantined':s.status,reason,aliasOf,readingSpecified:Object.hasOwn(specs,s.id),entryDisabled,hidden:Boolean(sc?.hidden),channels:facts.channels,cautions:facts.cautions.length,role,
         profiles:{total:ps.length,matching:matching.length,changed:ps.length-matching.length-legacy,legacy,lastAt:ps.length?Math.max(...ps.map(p=>p.at)):null,tfs:[...new Set(matching.map(p=>p.tf))].sort()},cells,paper:paper.get(s.id)??emptyActivity(),shadow:shadow.get(s.id)??emptyActivity(),closes:closes.get(s.id)??{paper:0,shadow:0},next});
     }
-    const summarize=(rs:ContributionRow[])=>({total:rs.length,matching:rs.filter(r=>r.profiles.matching>0).length,specified:rs.filter(r=>r.readingSpecified).length,paper:rs.filter(r=>r.cells.paper>0).length,shadow:rs.filter(r=>r.cells.shadow>0).length,aliases:rs.filter(r=>r.aliasOf).length,held:rs.filter(r=>r.status!=='ok').length,unverified:rs.filter(r=>!r.profiles.matching&&!r.aliasOf&&r.status==='ok').length});
+    const summarize=(rs:ContributionRow[])=>({total:rs.length,hidden:rs.filter(r=>r.hidden).length,matching:rs.filter(r=>r.profiles.matching>0).length,specified:rs.filter(r=>r.readingSpecified).length,paper:rs.filter(r=>r.cells.paper>0).length,shadow:rs.filter(r=>r.cells.shadow>0).length,aliases:rs.filter(r=>r.aliasOf).length,held:rs.filter(r=>r.status!=='ok').length,unverified:rs.filter(r=>!r.profiles.matching&&!r.aliasOf&&!r.hidden&&r.status==='ok').length});
     const authors=[...new Set([...MAJORS,...rows.map(r=>r.author)])].map(author=>({author,major:MAJORS.includes(author),...summarize(rows.filter(r=>r.author===author))})).sort((a,b)=>Number(b.major)-Number(a.major)||b.total-a.total);
     return {at:now,from,to:now,summary:summarize(rows),authors,rows,lastScreen:a.db.kvGet('incubator.lastRun')??null,
       notes:['Profiles describe observed behavior, not profitability or a completed code review. Matching means the source, reading, inputs and timeframe match; check the observation date and candle window.',

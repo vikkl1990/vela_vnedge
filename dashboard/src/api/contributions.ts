@@ -1,8 +1,8 @@
-export interface ContributionSummary { total:number;matching:number;specified:number;paper:number;shadow:number;aliases:number;held:number;unverified:number }
+export interface ContributionSummary { total:number;hidden:number;matching:number;specified:number;paper:number;shadow:number;aliases:number;held:number;unverified:number }
 export interface ContributionActivity { signals:number;opened:number;pending:number;blocked:number;reasons:Record<string,number> }
 export interface ContributionRow {
  id:string;name:string;author:string;status:string;reason:string|null;aliasOf:string|null;
- readingSpecified:boolean;entryDisabled:boolean;channels:string[];cautions:number;role:string;
+ readingSpecified:boolean;entryDisabled:boolean;hidden:boolean;channels:string[];cautions:number;role:string;
  profiles:{total:number;matching:number;changed:number;legacy:number;lastAt:number|null;tfs:string[]};
  cells:{paper:number;shadow:number;candidate:number;tracked:number};paper:ContributionActivity;shadow:ContributionActivity;closes:{paper:number;shadow:number};next:string;
 }
