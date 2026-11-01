@@ -401,7 +401,7 @@ export interface Order {
   expectedQty?: number | null
   pnl?: number | null
   /** Where the fill price came from: 'exchange' (restated from the exchange's fill), 'quote' (crossed the live spread), 'slippage' (modelled), or null. */
-  priceSource?: 'exchange' | 'quote' | 'depth' | 'slippage' | null
+  priceSource?: 'exchange' | 'quote' | 'depth' | 'slippage' | 'candle-model' | null
   id: number
   at: number
   positionId: number

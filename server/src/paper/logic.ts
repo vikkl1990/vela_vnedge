@@ -530,7 +530,13 @@ export function modelTrail(pos: Position, bar: { close: number }, m: TrailModel)
   }
 }
 
-export function applyBar(pos: Position, bar: { time: number; high: number; low: number; close: number }, cfg: PaperConfig, atrNow?: number, model?: TrailModel | null): Fill[] {
+/** A stop-market cannot fill at its trigger when the first known price is already worse. */
+function stopMarketReference(side: Side, stop: number, open?: number): number {
+  if (open === undefined || !Number.isFinite(open) || open <= 0) return stop;
+  return side === 'long' ? Math.min(stop, open) : Math.max(stop, open);
+}
+
+export function applyBar(pos: Position, bar: PriceBar, cfg: PaperConfig, atrNow?: number, model?: TrailModel | null): Fill[] {
   if (pos.status !== 'open') return [];
   const fills: Fill[] = [];
   const long = pos.side === 'long';
@@ -545,9 +551,13 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   // reading. `target-first` inverts it, and the difference bounds what finer data could be worth.
   const stopLevel = pos.sl;
   const stopHit = stopLevel !== null && (long ? bar.low <= stopLevel : bar.high >= stopLevel);
-  if (stopHit && stopLevel !== null && (cfg.barOrder ?? 'stop-first') === 'stop-first') {
+  // The open is known to precede the extremes. A stop already reached there wins
+  // even in target-first research; only intrabar ordering is ambiguous.
+  const stoppedAtOpen = stopLevel !== null && bar.open !== undefined && Number.isFinite(bar.open) && bar.open > 0
+    && (long ? bar.open <= stopLevel : bar.open >= stopLevel);
+  if (stopHit && stopLevel !== null && (stoppedAtOpen || (cfg.barOrder ?? 'stop-first') === 'stop-first')) {
     const reason = stopReason(pos);
-    fills.push(fillExit(pos, stopLevel, pos.qtyOpen, reason, at, cfg, true));
+    fills.push(fillExit(pos, stopMarketReference(pos.side, stopLevel, bar.open), pos.qtyOpen, reason, at, cfg, true));
     return fills;
   }
   // 2. take-profits in order
@@ -790,8 +800,7 @@ export function restingEntryStop(pos: Position, bar: PriceBar, cfg: PaperConfig,
   if (pos.status !== 'open' || pos.sl === null) return null;
   const long = pos.side === 'long';
   if (!(long ? bar.low <= pos.sl : bar.high >= pos.sl)) return null;
-  const open = bar.open !== undefined && Number.isFinite(bar.open) && bar.open > 0 ? bar.open : pos.sl;
-  return fillExit(pos, long ? Math.min(pos.sl, open) : Math.max(pos.sl, open), pos.qtyOpen, 'sl', at, cfg, true);
+  return fillExit(pos, stopMarketReference(pos.side, pos.sl, bar.open), pos.qtyOpen, 'sl', at, cfg, true);
 }
 
 /** Process only price information newly observed since entry/the previous update.
@@ -812,7 +821,10 @@ export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, obs
     high = low = bar.close;
   }
   pos.lastPriceBar = { ...bar };
-  return applyBar(pos, { time: observedAt, high, low, close: bar.close }, cfg, atrNow);
+  // Only a newly observed post-entry minute supplies a new opening price. Reusing
+  // a cumulative candle's open after TP1/trailing would charge a pre-stop gap.
+  const open = !sameBar && bar.time >= pos.entryAt ? bar.open : undefined;
+  return applyBar(pos, { time: observedAt, open, high, low, close: bar.close }, cfg, atrNow);
 }
 
 /** Where a position stands right now, in R, counting realised legs, fees and the open mark. */

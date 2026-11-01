@@ -3,11 +3,48 @@ import assert from 'node:assert/strict';
 import { extractEvents, parseAlert, parseAlertAll, declaredChannels } from './extractor.ts';
 import { applyRules, ruleErrors } from './rules.ts';
 import { readingOf } from './reading.ts';
+import { loadSpecs } from '../config.ts';
 
 const A = (message: string, time = 1_000) => ({ barIndex: 10, time, type: 'alert' as const, message });
 const C = (title: string, time = 1_000) => ({ barIndex: 10, time, type: 'alertcondition' as const, message: title, title });
 const S = (title: string, times: number[], location = 'belowbar', shape = 'triangleup') => ({ title, times, location, shape });
 const entries = (evs: any[]) => evs.filter(e => e.kind === 'entry').map(e => `${e.side}@${e.barTime}`);
+
+test('Role Reversal trades confirmed flips, never the initial break or its drawn label', () => {
+  const spec = loadSpecs()['role-reversal'];
+  const read = readingOf(spec, 'role-reversal', 900_000, 'alertcondition(x, "Support Broken")');
+  const titles = ['Resistance Broken', 'Support Broken', 'Flip Held as Support', 'Flip Held as Resistance', 'Failed Flip (Bearish)', 'Failed Flip (Bullish)'];
+  const alerts = titles.map((title, i) => C(title, (i + 1) * 1000));
+  const drops: Record<string, number> = {};
+  const events = extractEvents(alerts, [S('Support Broken', [2000])], { ...read.extract, drops,
+    drawn: [{ time: 2000, createdAt: 2000, y: 1, text: 'Support Broken', style: 'label_up' }] });
+  assert.deepEqual(entries(events), ['long@3000', 'short@4000', 'short@5000', 'long@6000']);
+  assert.equal(drops['condition: not an entry by the scanner contract'], 2);
+  assert.deepEqual(entries(extractEvents([C('Support Broken')], [], read.extract)), [], 'AKE wrong-side break regression');
+});
+
+test('Role Reversal confirms a flip even when a break also appears on the same bar', () => {
+  const read = readingOf(loadSpecs()['role-reversal'], 'role-reversal', 900_000);
+  assert.deepEqual(entries(extractEvents([C('Support Broken'), C('Flip Held as Resistance')], [], read.extract)), ['short@1000']);
+  assert.deepEqual(entries(extractEvents([C('Resistance Broken'), C('Failed Flip (Bearish)')], [], read.extract)), ['short@1000']);
+});
+
+test('Role Reversal contract loads for an imported scanner and fingerprints its new evidence', async t => {
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const { ConfigStore } = await import('../config.ts');
+  const { configFingerprint } = await import('../paper/fingerprint.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-contract-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'config.json');
+  fs.writeFileSync(file, JSON.stringify({ scanners: { 'role-reversal': { enabled: true, pairs: [{ symbol: 'AKEUSD', tf: '15m' }] } } }));
+  const current = new ConfigStore(file).get();
+  assert.equal(current.scanners['role-reversal'].enabled, true);
+  assert.deepEqual(current.scanners['role-reversal'].pairs, [{ symbol: 'AKEUSD', tf: '15m' }]);
+  assert.deepEqual(current.scanners['role-reversal'].sides, loadSpecs()['role-reversal'].sides);
+  const before = structuredClone(current);
+  delete before.scanners['role-reversal'].sides; delete before.scanners['role-reversal'].labels; delete before.scanners['role-reversal'].sources;
+  assert.notEqual(configFingerprint(current, 'role-reversal', '15m').fp, configFingerprint(before, 'role-reversal', '15m').fp);
+});
 
 test('decision 195: a scanner contract names each title\'s side — the retest reading, the short break, a title that is not an entry', () => {
   const retests = [S('Lower Retest', [1000]), S('Upper Retest', [2000], 'abovebar', 'triangledown')];

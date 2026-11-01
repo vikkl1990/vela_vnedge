@@ -4,4 +4,5 @@
 // 7: script TP notifications execute at the current market with crossing costs, never at a retrospective target.
 // 8: account backtests enforce the same native/mixed-stop restriction as account execution.
 // 10: confirmed resting fills, exact expiry and mandatory fill-minute maker stops.
-export const SIMULATION_VERSION = 10;
+// 11: held-position stops use adverse opens, including known stop-before-target ordering.
+export const SIMULATION_VERSION = 11;

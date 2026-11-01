@@ -6386,3 +6386,64 @@ $150 target margin, 3% stop-risk cap and 6x fee floor are unchanged. Production
 exchange execution remains disabled. Regression cases cover both directions,
 opening gaps, favourable extremes, missing minute data, fractional expiry, timely
 partial candles, duplicate delivery and a failed stop write followed by retry.
+
+## 214. Confirm Role Reversal entries and price held stops through gaps (2 November 2026)
+
+The paper SL review found AKEUSD #7313 opened long on Role Reversal's "Support
+Broken" alert and lost $9.86. Its source describes a downward break that creates
+candidate resistance. The generic reader inferred long from the word "support";
+"Resistance Broken" inferred short. These two events describe setup formation.
+The scanner now has an explicit condition-only contract: breaks do not enter;
+Flip Held as Support and Failed Flip (Bullish) enter long; Flip Held as Resistance
+and Failed Flip (Bearish) enter short. Only these four confirmed titles may enter.
+The contract reaches imported scanners through ConfigStore, readingOf and the
+existing plan signature/configuration fingerprint. It does not enable new pairs.
+On 1,344 saved AKE 15m candles, the actual imported Pine source emits 41 alerts:
+20 initial breaks are excluded and all 21 confirmed flips retain the intended side.
+This verifies event semantics, not profitability. A source-title audit identifies
+eight other scanners for individual review; their readings are not silently changed.
+
+Decision 213 corrected resting-entry stops, but ordinary held-position candle
+stops still filled at the trigger plus fixed slippage. A long with stop 95 could
+exit at 94.981 on a candle whose open was 94 and high only 94.5. Held stops now use
+the adverse opening price when it is beyond the stop, then charge configured
+slippage and taker fees. An opening stop precedes later targets even under the
+target-first research setting: that part of the sequence is known. Intrabar
+ordering remains approximate. The live adapter supplies the opening price only
+once, for a minute starting after entry; cumulative updates cannot reuse an old
+open against a newly raised break-even/trailing stop. Its baseline persists across
+restarts. Missing/invalid opens retain the existing intrabar model. Ordinary
+backtests share this logic for both minute and coarse candles. Tape and exchange
+fills retain their existing paths.
+
+Candle-derived level exits now record price_source=candle-model. The journal's
+order price shows a candle label and explains that it is a simulation, distinct
+from an exchange fill or an observed quote/depth crossing. Historical rows remain
+unchanged. Paper simulation version 207 and backtest version 11 separate future
+evidence and invalidate stale backtest/learning caches.
+
+Repeating the decision-212 eight-cell replay with the corrected model weakens
+all eight. Six retain positive R in both chronological halves and the later-half
+crossing-cost scenario. EVAA/Trend Impulse 15m's later-half R falls from +1.38 to
+-2.14 (its dollar result remains +$23.68 because sizes vary). PARTI/Trend Impulse
+1h falls from +1.11 to -0.66R, and to -0.98R under crossing-cost stress. These are
+operator paper trials; this release preserves allocations and records the weaker
+evidence instead of treating the old replay as current proof of eligibility.
+
+A separate exploratory Trend Impulse comparison uses ten markets, 28 days and
+both legacy/native retest directions under the same account policy. Only signals
+on >3-ATR 15m candles wait: a subsequent 0.25-ATR pullback and a later directional
+close through the original signal close must occur within three bars. A 1.5-ATR
+adverse move, opposite event or missing bar cancels the setup. Confirmations enter
+at their own closed-bar time under normal policy, never at a retrospective price.
+Legacy later-half stops fall from 104 to 88 and net R improves from -27.76 to
+-21.45, but trade count falls from 289 to 252 and results remain negative. EVAA's
+later half improves while its earlier half weakens. Native directions also remain
+negative in aggregate. The transform passes prefix-causality checks; the cohort
+is reused, not a pristine holdout, and historical funding/depth and portfolio
+effects remain unmodelled. This rule is not enabled. The $150 margin target,
+3% stop-risk cap, 6x fee floor and global exit settings remain unchanged.
+
+Regression checks cover both stop directions and costs, target ordering, entry
+minute exclusion, restored intraminute baselines, duplicate deliveries, both paper
+books, minute/coarse backtests, same-bar scanner events and contract fingerprinting.

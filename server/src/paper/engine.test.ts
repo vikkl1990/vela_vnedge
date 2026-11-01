@@ -256,7 +256,7 @@ test('fill provenance: a rejected entry cannot contaminate another symbol stop',
   const exit = db.get<any>('SELECT * FROM orders WHERE position_id=? AND reason=?', p.id, 'sl');
   assert.ok(exit);
   assert.equal(exit.ref_price, null);
-  assert.equal(exit.price_source, null);
+  assert.equal(exit.price_source, 'candle-model');
   const entry = db.get<any>('SELECT * FROM orders WHERE position_id=? AND reason=?', p.id, 'entry');
   assert.equal(entry.ref_price, 100);
   assert.equal(entry.price_source, 'slippage');

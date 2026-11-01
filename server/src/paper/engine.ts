@@ -21,7 +21,7 @@ import type { StructureLevel } from './luxExits.ts';
 const log = logger.scoped('paper');
 
 /** Pricing provenance belongs to one fill, never to an engine-wide pending context. */
-interface FillContext { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' }
+interface FillContext { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' | 'candle-model' }
 
 export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number }
 export type EntryContext = {executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
@@ -969,7 +969,7 @@ export class PaperEngine extends EventEmitter {
               const pos = this.fillLimit(pe, observedAt, bar.time);
               if (pos) {
                 const stop = restingEntryStop(pos, bar, this.configFor(pos), observedAt);
-                if (stop && this.applyFills(pos, [stop])) this.recordPath(pos, stop.price, observedAt, stop.reason, 'resting entry minute crossed stop (candle)');
+                if (stop && this.applyFills(pos, [stop], { source: 'candle-model' })) this.recordPath(pos, stop.price, observedAt, stop.reason, 'resting entry minute crossed stop (candle)');
               }
             };
             // Entry and its already-observed stop must commit together. Otherwise a
@@ -994,7 +994,7 @@ export class PaperEngine extends EventEmitter {
       const fills = applyLiveBar(pos, bar, pcfg, eventAt, (pcfg.trailAtrMult ?? 0) > 0 ? this.atrFor?.(pos.symbol, pos.tf) : undefined);
       const maxHold=pos.executionPlan?.maxHoldMinutes;
       if(!historical && pos.status==="open" && maxHold && eventAt-pos.entryAt>=maxHold*60_000)fills.push(fillExit(pos,bar.close,pos.qtyOpen,"plan_time",eventAt,pcfg,true));
-      if (fills.length) this.applyFills(pos, fills);
+      if (fills.length) this.applyFills(pos, fills, { source: 'candle-model' });
       // decision 178: the structure stop of the last closed bar of the position's timeframe, over the trail, from the next minute on
       const st = pcfg.structureTrail;
       if (pos.status === 'open' && st?.enabled && this.structureFor && st.books.includes(this.book === 0 ? 'account' : 'shadow')) {

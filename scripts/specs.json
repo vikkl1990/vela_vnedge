@@ -367,6 +367,18 @@
       "Lower High MSS Sweep"
     ]
   },
+  "role-reversal": {
+    "sources": ["alertcondition"],
+    "labels": ["Flip Held as Support", "Flip Held as Resistance", "Failed Flip (Bearish)", "Failed Flip (Bullish)"],
+    "sides": {
+      "resistance broken": "none",
+      "support broken": "none",
+      "flip held as support": "long",
+      "flip held as resistance": "short",
+      "failed flip (bearish)": "short",
+      "failed flip (bullish)": "long"
+    }
+  },
   "trend-impulse-channels-zeiierman": {
     "sides": {
       "upper retest": "long",

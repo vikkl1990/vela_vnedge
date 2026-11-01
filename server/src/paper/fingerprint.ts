@@ -32,7 +32,8 @@ const stable = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof
 // 203: maker-aware budgets/sizing, measured crossing replaces fallback, funding settlement replay.
 // 205: ordinary shadow cells no longer consume each other's synthetic margin/leverage budget.
 // 206: candle-filled resting limits charge their fill-minute stop, including adverse opening gaps.
-export const SIM_VERSION = 206;
+// 207: held-position candle stops execute through opening gaps; Role Reversal uses confirmed flip events.
+export const SIM_VERSION = 207;
 
 /** A short, stable hash of a scanner's patched Pine source: library imports change outside the commit. */
 export function sourceHash(patched: string | undefined | null): string | null {
