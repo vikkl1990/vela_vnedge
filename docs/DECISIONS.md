@@ -6344,3 +6344,45 @@ ESPORTS failed fresh deployable-size depth checks. All six added markets passed
 fresh $750/$1,500 depth probes. Historical funding and depth, concurrent portfolio
 effects and selection bias are not resolved by this study; samples are small for
 several cells, so the next evidence must come from forward paper execution.
+
+## 213. Resting maker fills cannot erase an immediate stop (1 November 2026)
+
+The next execution review reproduced a paper optimism bug. A limit resting before
+one minute could fill from that candle, then ignore its already-crossed original
+stop because the new position saved the full candle as its entry baseline. A close
+back above a long stop (or below a short stop) therefore let it survive. Unlike a
+market entry placed inside that minute, the resting limit must be crossed before
+the adverse stop. The fill now charges that stop immediately, with the worse
+opening price for an adverse gap. Favourable fill-minute extremes do not earn
+same-fill targets or a trail. Entry and immediate stop commit atomically; an exit
+write failure restores the pending order and emits no uncommitted fills.
+
+Candle evidence must also fit inside the order lifetime. A partial candle observed
+before expiry remains usable. A candle whose observed range spans expiry cannot
+prove a timely touch. The existing placing-minute and historical-backfill
+exclusions continue to apply. Tape execution remains unchanged.
+
+Ordinary backtests now charge maker fill-minute stops by default, using the same
+helper. The older conservativeEntryMinute option remains accepted for research
+callers but cannot disable the stop. Explicit minute data, including an empty
+array, cannot fall back to a fabricated parent-candle entry. Missing or conflicting
+minute evidence records a refusal while preserving the order until its expiry.
+Expiry is an absolute timestamp, so a fractional signal-bar lifetime such as five
+minutes on 15m is honoured. A minute or coarse candle straddling expiry cannot
+establish a fill. Coarse replays still have OHLC ordering limits; historical queue
+position, spread paths and signal receipt latency remain unobserved.
+
+The eight allocations enabled in decision 212 were replayed against the same saved
+28-day candles and scanner outputs with full commissions and the same crossing-cost
+scenarios. PARTI 1h's first-half result falls from +5.68R to +3.83R. The other seven
+results, all later-half results and all cost-stress results are unchanged. All eight
+remain positive in both halves and stress, with the earlier small-sample, selection
+and missing historical funding/depth limitations. This corrects evidence rather
+than demonstrating higher future returns. No old journal rows are rewritten.
+
+Paper fingerprint version 206 separates future fill semantics; backtest version 10
+invalidates cached simulation and learning results. The existing paper allocations,
+$150 target margin, 3% stop-risk cap and 6x fee floor are unchanged. Production
+exchange execution remains disabled. Regression cases cover both directions,
+opening gaps, favourable extremes, missing minute data, fractional expiry, timely
+partial candles, duplicate delivery and a failed stop write followed by retry.

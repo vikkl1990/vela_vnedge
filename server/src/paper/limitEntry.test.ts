@@ -150,3 +150,69 @@ test('a tape print that fills a maker entry beyond its stop must book the gap lo
     db.db.close();
   }
 });
+
+test('a resting candle fill cannot recover from crossing its original stop inside the fill minute', () => {
+  for (const side of ['long', 'short'] as const) {
+    for (const gap of [false, true]) {
+      const {engine, at, enter, db} = setup('4h', {fillSource: 'candles', trailAfterR: 0, floorAtR: 0});
+      enter(side);
+      const price = engine.pendingEntries()[0].limit!.price;
+      const stop = price + (side === 'long' ? -3 : 3);
+      const open = gap ? stop + (side === 'long' ? -1 : 1) : 100;
+      const minute = {time: at + 60_000, open, high: 110, low: 90, close: 100};
+      engine.onBar('ETHUSD', minute, at + 120_000);
+      assert.equal(engine.openPositions().length, 0, `${side} gap=${gap}: stop cannot be erased by the recovery`);
+      const row = db.get<{exit_reason: string; exit_price: number; entry_at: number; exit_at: number}>("SELECT exit_reason,exit_price,entry_at,exit_at FROM positions WHERE status='closed'")!;
+      assert.equal(row.exit_reason, 'sl');
+      assert.equal(row.exit_price, gap ? open : stop);
+      assert.ok(row.exit_at >= row.entry_at);
+      engine.onBar('ETHUSD', minute, at + 120_000);
+      assert.equal(db.get<{n:number}>("SELECT count(*) n FROM positions WHERE status='closed'")!.n, 1, 'duplicate delivery cannot close twice');
+      db.db.close();
+    }
+  }
+});
+
+test('a resting candle fill does not earn targets or a trail from a possibly pre-fill favourable extreme', () => {
+  const {engine, at, enter, db} = setup('4h');
+  enter('long');
+  engine.onBar('ETHUSD', {time: at + 60_000, high: 120, low: 99.3, close: 99.5}, at + 120_000);
+  const [pos] = engine.openPositions();
+  assert.ok(pos);
+  assert.equal(pos.sl, pos.slOriginal);
+  assert.equal(pos.fills.length, 1);
+  assert.equal(pos.qtyOpen, pos.qty);
+  db.db.close();
+});
+
+test('a candle cannot backdate a limit fill across expiry, while a timely partial candle can fill', () => {
+  for (const timely of [true, false]) {
+    const {engine, at, enter, db} = setup('4h', {limitEntry:{enabled:true,tfs:['4h'],atr:.3,bars:90_000/(4*H),books:['account','shadow']}});
+    enter();
+    const minute = {time:at+59_000,open:100,high:100,low:99.3,close:99.5};
+    engine.onBar('ETHUSD', minute, minute.time+(timely?30_000:60_000));
+    assert.equal(engine.openPositions().length, timely?1:0);
+    assert.equal(engine.pendingEntries().length, 0);
+    db.db.close();
+  }
+});
+
+test('a failed fill-minute stop write rolls back the entry too and the same candle can retry', () => {
+  const {engine, at, enter, db} = setup('4h'); enter();
+  const minute = {time:at+60_000,open:100,high:110,low:90,close:100};
+  const run = db.run.bind(db); let orderWrites=0, notifications=0;
+  engine.on('order',()=>notifications++);
+  db.run = ((sql: string, ...args: any[]) => {
+    if(sql.includes('INSERT INTO orders') && ++orderWrites === 2) throw Error('injected fill-minute stop write failure');
+    return run(sql,...args);
+  }) as typeof db.run;
+  engine.onBar('ETHUSD',minute,at+120_000);
+  assert.equal(engine.openPositions().length,0); assert.equal(engine.pendingEntries().length,1);
+  assert.equal(db.all('SELECT * FROM orders').length,0); assert.equal(notifications,0);
+  db.run=run;
+  engine.onBar('ETHUSD',minute,at+120_000);
+  assert.equal(engine.pendingEntries().length,0); assert.equal(engine.openPositions().length,0);
+  assert.equal(db.all("SELECT * FROM positions WHERE status='closed' AND exit_reason='sl'").length,1);
+  assert.equal(db.all('SELECT * FROM orders').length,2); assert.equal(notifications,2);
+  db.db.close();
+});

@@ -16,7 +16,7 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { scriptModeExit, applyFunding, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor, modelTrail, type TrailModel } from './logic.ts';
+import { scriptModeExit, applyFunding, applyBar, applyScriptExit, earlyStallExit, earlyCutExit, checkRiskVsFees, computeStats, fillExit, restingEntryStop, openPosition, resolveLevels, reversalAllowed, sizeContracts, roundTick, trendExit, type Position, trendGateReason, higherTrend, trendPerBar, exitConfigFor, modelTrail, type TrailModel } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
@@ -42,7 +42,7 @@ export interface BacktestInput {
   scannerExitResolved?: boolean;
   /** Optional 1-minute candles, ascending, covering `bars`: exits are then resolved on this path. */
   subBars?: Bar[];
-  /** Research sensitivity: charge fill-minute stop/gap before profits for resting entries. */
+  /** @deprecated Resting maker fill-minute stops are always charged; retained for older research callers. */
   conservativeEntryMinute?: boolean;
   /** Optional actual context-frame candles; complete entry-frame aggregation is the fallback. */
   alignmentBars?: Record<string, Bar[]>;
@@ -159,7 +159,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     bars.forEach((b, i) => { ema = i ? b.close * k + ema * (1 - k) : b.close; trend.push(b.close >= ema ? 1 : -1); });
   }
   const tfMs = (TF_SECONDS[inp.tf] ?? 0) * 1000;
-  const sub = inp.subBars && inp.subBars.length && tfMs > 60_000 ? inp.subBars : null;
+  const sub = inp.subBars !== undefined && tfMs > 60_000 ? inp.subBars : null;
   let si = 0;   // cursor into `sub`, only ever moves forward
 
   const refuse = (why: string) => { rejected[why] = (rejected[why] ?? 0) + 1; };
@@ -194,7 +194,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     return true;
   };
   // a limit resting back from a signal price (the pullback entry model); the latest signal replaces an earlier one
-  let pending: { ev: ScanEvent; limit: number; sigI: number; expires: number; kind?: 'limit' | 'stop' } | null = null;
+  let pending: { ev: ScanEvent; limit: number; sigI: number; expiresAt: number; kind?: 'limit' | 'stop' } | null = null;
   let reclaim: {ev: ScanEvent; sigI: number; state: ReclaimState} | null = null;
 
   let busted = false;
@@ -237,40 +237,47 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         break;
       }
     }
-    // 0. a resting pullback limit: filled on the first minute that touches it, dropped when its bars run out
+    // 0. A resting entry needs a confirmed fill before its absolute expiry. When minute
+    // data was requested, a parent candle alone cannot manufacture a missing minute fill.
     if (pending && !open) {
-      if (i > pending.expires) { refuse('no pullback'); pending = null; }
+      if (bar.time >= pending.expiresAt) { refuse('no pullback'); pending = null; }
       else if (pending.kind === 'stop' ? (pending.ev.side === 'long' ? bar.high >= pending.limit : bar.low <= pending.limit) : limitHit(pending.ev.side!, pending.limit, bar)) {
-        const { ev, limit, sigI } = pending; const isStop = pending.kind === 'stop'; pending = null;
+        const { ev, limit, sigI, expiresAt } = pending; const isStop = pending.kind === 'stop';
         const touched = (b: { high: number; low: number }) => isStop ? (ev.side === 'long' ? b.high >= limit : b.low <= limit) : limitHit(ev.side!, limit, b);
         if (sub) {
           while (si < sub.length && sub[si].time < bar.time) si++;
           let j = si;
-          for (; j < sub.length && sub[j].time < bar.time + tfMs; j++) if (touched(sub[j])) break;
-          const fillAt = j < sub.length && sub[j].time < bar.time + tfMs ? sub[j].time : bar.time;
-          if (openAt(limit, fillAt, ev, sigI, !isStop)) {
-            // `openAt` assigned the closure's `open`; the narrowing above does not see that
-            const o = open as unknown as Position;
-            if (inp.conservativeEntryMinute && !isStop && j < sub.length && sub[j].time < bar.time + tfMs) {
-              const minute = sub[j];
-              if (o.side === 'long' ? minute.low <= o.sl! : minute.high >= o.sl!) {
-                const stopPrice = o.side === 'long' ? Math.min(o.sl!, minute.open) : Math.max(o.sl!, minute.open);
-                fillExit(o, stopPrice, o.qtyOpen, 'sl', minute.time, cfg, true);
+          // A minute straddling expiry cannot establish which side of the deadline touched.
+          const end = Math.min(bar.time + tfMs, expiresAt);
+          for (; j < sub.length && sub[j].time + 60_000 <= end; j++) if (touched(sub[j])) break;
+          if (j >= sub.length || sub[j].time + 60_000 > end) {
+            refuse('resting fill unconfirmed by minute data');
+          } else {
+            pending = null;
+            if (openAt(limit, sub[j].time, ev, sigI, !isStop)) {
+              // `openAt` assigned the closure's `open`; the narrowing above does not see that.
+              const o = open as unknown as Position;
+              if (!isStop) restingEntryStop(o, sub[j], cfg, sub[j].time);
+              const atrKnown = atr[i - 1] ?? atr[i];
+              for (let k = j + 1; o.status === 'open' && k < sub.length && sub[k].time < bar.time + tfMs; k++) {
+                applyPriceBar(o, sub[k], cfg, atrKnown);
+                if (o.status === 'open' && te?.enabled) trendExit(o, trend[i - 1], sub[k].close, sub[k].time, cfg);
+                if (o.status === 'open') earlyStallExit(o, sub[k].close, sub[k].time, cfg);
+                if (o.status === 'open') earlyCutExit(o, sub[k].close, sub[k].time, cfg);
               }
+              if (o.status === 'closed') finish(o);
             }
-            const atrKnown = atr[i - 1] ?? atr[i];
-            for (let k = j + 1; o.status === 'open' && k < sub.length && sub[k].time < bar.time + tfMs; k++) {
-              applyPriceBar(o, sub[k], cfg, atrKnown);
-              if (o.status === 'open' && te?.enabled) trendExit(o, trend[i - 1], sub[k].close, sub[k].time, cfg);
-              if (o.status === 'open') earlyStallExit(o, sub[k].close, sub[k].time, cfg);
-              if (o.status === 'open') earlyCutExit(o, sub[k].close, sub[k].time, cfg);
-            }
+          }
+        } else if (bar.time + tfMs > expiresAt) {
+          refuse('resting fill unconfirmed before expiry');
+        } else {
+          pending = null;
+          if (openAt(limit, bar.time, ev, sigI, !isStop)) {
+            const o = open as unknown as Position;
+            if (!isStop) restingEntryStop(o, bar, cfg, bar.time);
+            if (o.status === 'open') applyPriceBar(o, bar, cfg, atr[i], model);
             if (o.status === 'closed') finish(o);
           }
-        } else if (openAt(limit, bar.time, ev, sigI, !isStop)) {
-          const o = open as unknown as Position;
-          applyPriceBar(o, bar, cfg, atr[i], model);
-          if (o.status === 'closed') finish(o);
         }
       }
     }
@@ -360,12 +367,12 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         const raw = ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i];
         // Match passive live planning; historical candles have no contemporaneous bid/ask.
         const limit = inp.tickSize > 0 ? Number(((ev.side === 'long' ? Math.floor(raw / inp.tickSize + 1e-9) : Math.ceil(raw / inp.tickSize - 1e-9)) * inp.tickSize).toPrecision(14)) : raw;
-        pending = { ev, limit, sigI: i, expires: i + Math.max(1, em.pullbackBars ?? 3) };
+        pending = { ev, limit, sigI: i, expiresAt: bar.time + tfMs * (1 + Math.max(0, em.pullbackBars ?? 3)) };
         continue;
       }
       if (em?.breakAtr != null && em.breakAtr >= 0 && atr[i] > 0) {
         const trigger = roundTick(ev.side === 'long' ? bar.high + em.breakAtr * atr[i] : bar.low - em.breakAtr * atr[i], inp.tickSize);
-        pending = { ev, limit: trigger, sigI: i, expires: i + Math.max(1, em.breakBars ?? 4), kind: 'stop' };
+        pending = { ev, limit: trigger, sigI: i, expiresAt: bar.time + tfMs * (1 + Math.max(0, em.breakBars ?? 4)), kind: 'stop' };
         continue;
       }
       openAt(price, bar.time, ev, i, false);

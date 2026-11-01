@@ -1,5 +1,5 @@
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
-import {applyFundingSettlement} from './logic.ts';
+import {applyFundingSettlement, restingEntryStop} from './logic.ts';
 import {recordFillBudget} from './decisionTrace.ts';
 import {depthPlan} from './depthPlan.ts';
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
@@ -961,7 +961,27 @@ export class PaperEngine extends EventEmitter {
         // decision 185: a resting limit fills on a minute that traded through its price. Decision 189: only a minute that
         // began after the order was placed — the placing minute's low may have printed before the order existed, and the
         // tape audit showed limits filled that no trade after placement ever reached (thin coins, where this fallback runs)
-        if (pe.limit) { if (bar.time >= pe.at && bar.time < pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) this.fillLimit(pe, observedAt, bar.time); continue; }
+        if (pe.limit) {
+          // A partial candle observed before expiry is usable; an OHLC range spanning
+          // the deadline cannot prove that the touch happened while the order rested.
+          if (bar.time >= pe.at && bar.time < pe.limit.expiresAt && Math.min(observedAt, barClosedAt) <= pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) {
+            const fill = () => {
+              const pos = this.fillLimit(pe, observedAt, bar.time);
+              if (pos) {
+                const stop = restingEntryStop(pos, bar, this.configFor(pos), observedAt);
+                if (stop && this.applyFills(pos, [stop])) this.recordPath(pos, stop.price, observedAt, stop.reason, 'resting entry minute crossed stop (candle)');
+              }
+            };
+            // Entry and its already-observed stop must commit together. Otherwise a
+            // failed stop write leaves an entry whose saved baseline erases that low.
+            if (this.decisionActive) fill();
+            else {
+              try { this.commitDecision(fill); }
+              catch (e) { log.error(`resting candle fill for #${pe.id} ${symbol} rolled back: ${String(e)}`); }
+            }
+          }
+          continue;
+        }
         if (observedAt >= pe.dueAt) this.fillPending(pe, bar.close, observedAt, 'candle', observedAt);
       }
     }

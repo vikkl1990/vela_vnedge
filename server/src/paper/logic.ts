@@ -780,7 +780,19 @@ export function staleExit(pos: Position, bar: { time: number; close: number }, c
   return fillExit(pos, bar.close, pos.qtyOpen, 'stale', bar.time, cfg, true);
 }
 
-export interface PriceBar { time: number; high: number; low: number; close: number }
+export interface PriceBar { time: number; open?: number; high: number; low: number; close: number }
+
+/** A limit resting before this minute must cross its entry before its adverse stop.
+ * A favourable extreme has no such ordering guarantee. Charge only the stop here;
+ * ordinary post-entry updates handle profits. An opening gap fills worse than the stop.
+ */
+export function restingEntryStop(pos: Position, bar: PriceBar, cfg: PaperConfig, at: number): Fill | null {
+  if (pos.status !== 'open' || pos.sl === null) return null;
+  const long = pos.side === 'long';
+  if (!(long ? bar.low <= pos.sl : bar.high >= pos.sl)) return null;
+  const open = bar.open !== undefined && Number.isFinite(bar.open) && bar.open > 0 ? bar.open : pos.sl;
+  return fillExit(pos, long ? Math.min(pos.sl, open) : Math.max(pos.sl, open), pos.qtyOpen, 'sl', at, cfg, true);
+}
 
 /** Process only price information newly observed since entry/the previous update.
  * OHLC extremes are cumulative; replaying an old low after TP1 must not hit the new BE stop.
