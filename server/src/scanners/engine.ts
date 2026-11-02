@@ -434,6 +434,7 @@ export class ScannerEngine extends EventEmitter {
 
   /** Store what this run produced and where it emptied, on the run record and in the row the Scanners page reads. */
   private recordFunnel(id: string, symbol: string, tf: string, info: RunInfo, res: WorkerResult, events: RunFunnel['events'], drops: Record<string, number>, actions: string[], note?: string) {
+    note = [note, ...(res.dataWarnings ?? [])].filter(Boolean).join(' · ') || undefined;
     const tally: Record<string, number> = {};
     for (const a of actions) {
       const k = a === 'opened' || a === 'reversed' || a === 'info' || a === 'none' ? a : a.startsWith('pending') ? 'pending' : `${a.split(':')[0]}: ${(a.split(':')[1] ?? '').trim().slice(0, 60)}`;

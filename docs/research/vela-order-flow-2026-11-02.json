@@ -1,0 +1,577 @@
+{
+  "date": "2026-11-02",
+  "baselineCommit": "6d44b2d",
+  "runtime": {
+    "before": "0.12.0",
+    "after": "0.13.1"
+  },
+  "chart": {
+    "vela": "0.9.3",
+    "bridge": "0.3.2"
+  },
+  "method": "Same 1,000 closed candles, patched sources, inputs and deployed reading policies. Actual applyRules/extractEvents outputs compared by exact JSON equality.",
+  "jobs": 90,
+  "scanners": 18,
+  "marketsAndFrames": [
+    "BTCUSD 15m",
+    "BTCUSD 1h",
+    "BTCUSD 4h",
+    "ETHUSD 15m",
+    "SOLUSD 15m"
+  ],
+  "successBefore": 90,
+  "successAfter": 90,
+  "identicalEventRuns": 90,
+  "eventsBefore": 2667,
+  "eventsAfter": 2667,
+  "medianMsBefore": 198.5,
+  "medianMsAfter": 147.0,
+  "fixtureSha256": "bd055f5a37347de816739de552980e77f7fdb91eb17c42c00299da39750adc20",
+  "limitations": [
+    "Local sequential benchmark; not a VM throughput or profitability claim.",
+    "Runtime shape groups differ for some call sites; extracted trading events remain identical.",
+    "New footprint archive starts with collection; no historical trade-side backfill."
+  ],
+  "runs": [
+    {
+      "key": "liquidity-trail-matrix|BTCUSD|15m",
+      "before": 33,
+      "after": 33,
+      "equal": true
+    },
+    {
+      "key": "structure-anchored-vwap|BTCUSD|15m",
+      "before": 15,
+      "after": 15,
+      "equal": true
+    },
+    {
+      "key": "trend-lines|BTCUSD|15m",
+      "before": 5,
+      "after": 5,
+      "equal": true
+    },
+    {
+      "key": "adaptive-volatility-trend|BTCUSD|15m",
+      "before": 12,
+      "after": 12,
+      "equal": true
+    },
+    {
+      "key": "kinetic-momentum-vectors|BTCUSD|15m",
+      "before": 8,
+      "after": 8,
+      "equal": true
+    },
+    {
+      "key": "pivot-channel-breaks|BTCUSD|15m",
+      "before": 16,
+      "after": 16,
+      "equal": true
+    },
+    {
+      "key": "smart-money-breakout-signals|BTCUSD|15m",
+      "before": 5,
+      "after": 5,
+      "equal": true
+    },
+    {
+      "key": "smart-swing-vwap-zeiierman|BTCUSD|15m",
+      "before": 51,
+      "after": 51,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts|BTCUSD|15m",
+      "before": 5,
+      "after": 5,
+      "equal": true
+    },
+    {
+      "key": "ai-predictive-flow-zeiierman|BTCUSD|15m",
+      "before": 13,
+      "after": 13,
+      "equal": true
+    },
+    {
+      "key": "supertrend-cluster-zeiierman|BTCUSD|15m",
+      "before": 29,
+      "after": 29,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman|BTCUSD|15m",
+      "before": 39,
+      "after": 39,
+      "equal": true
+    },
+    {
+      "key": "alphamojo-supertrend-strategy-ha-with-buffer|BTCUSD|15m",
+      "before": 31,
+      "after": 31,
+      "equal": true
+    },
+    {
+      "key": "rsi-volume-ladder|BTCUSD|15m",
+      "before": 3,
+      "after": 3,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts-all-sessions|BTCUSD|15m",
+      "before": 26,
+      "after": 26,
+      "equal": true
+    },
+    {
+      "key": "machine-learning-rsi-ai-classification-ranking-zeiierman|BTCUSD|15m",
+      "before": 80,
+      "after": 80,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix-atr-maker|BTCUSD|15m",
+      "before": 33,
+      "after": 33,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman-maker|BTCUSD|15m",
+      "before": 39,
+      "after": 39,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix|ETHUSD|15m",
+      "before": 33,
+      "after": 33,
+      "equal": true
+    },
+    {
+      "key": "structure-anchored-vwap|ETHUSD|15m",
+      "before": 18,
+      "after": 18,
+      "equal": true
+    },
+    {
+      "key": "trend-lines|ETHUSD|15m",
+      "before": 3,
+      "after": 3,
+      "equal": true
+    },
+    {
+      "key": "adaptive-volatility-trend|ETHUSD|15m",
+      "before": 7,
+      "after": 7,
+      "equal": true
+    },
+    {
+      "key": "kinetic-momentum-vectors|ETHUSD|15m",
+      "before": 3,
+      "after": 3,
+      "equal": true
+    },
+    {
+      "key": "pivot-channel-breaks|ETHUSD|15m",
+      "before": 14,
+      "after": 14,
+      "equal": true
+    },
+    {
+      "key": "smart-money-breakout-signals|ETHUSD|15m",
+      "before": 4,
+      "after": 4,
+      "equal": true
+    },
+    {
+      "key": "smart-swing-vwap-zeiierman|ETHUSD|15m",
+      "before": 55,
+      "after": 55,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts|ETHUSD|15m",
+      "before": 5,
+      "after": 5,
+      "equal": true
+    },
+    {
+      "key": "ai-predictive-flow-zeiierman|ETHUSD|15m",
+      "before": 11,
+      "after": 11,
+      "equal": true
+    },
+    {
+      "key": "supertrend-cluster-zeiierman|ETHUSD|15m",
+      "before": 22,
+      "after": 22,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman|ETHUSD|15m",
+      "before": 41,
+      "after": 41,
+      "equal": true
+    },
+    {
+      "key": "alphamojo-supertrend-strategy-ha-with-buffer|ETHUSD|15m",
+      "before": 25,
+      "after": 25,
+      "equal": true
+    },
+    {
+      "key": "rsi-volume-ladder|ETHUSD|15m",
+      "before": 5,
+      "after": 5,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts-all-sessions|ETHUSD|15m",
+      "before": 23,
+      "after": 23,
+      "equal": true
+    },
+    {
+      "key": "machine-learning-rsi-ai-classification-ranking-zeiierman|ETHUSD|15m",
+      "before": 72,
+      "after": 72,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman-maker|ETHUSD|15m",
+      "before": 41,
+      "after": 41,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix-atr-maker|ETHUSD|15m",
+      "before": 33,
+      "after": 33,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix|SOLUSD|15m",
+      "before": 40,
+      "after": 40,
+      "equal": true
+    },
+    {
+      "key": "structure-anchored-vwap|SOLUSD|15m",
+      "before": 27,
+      "after": 27,
+      "equal": true
+    },
+    {
+      "key": "trend-lines|SOLUSD|15m",
+      "before": 6,
+      "after": 6,
+      "equal": true
+    },
+    {
+      "key": "kinetic-momentum-vectors|SOLUSD|15m",
+      "before": 3,
+      "after": 3,
+      "equal": true
+    },
+    {
+      "key": "adaptive-volatility-trend|SOLUSD|15m",
+      "before": 7,
+      "after": 7,
+      "equal": true
+    },
+    {
+      "key": "pivot-channel-breaks|SOLUSD|15m",
+      "before": 16,
+      "after": 16,
+      "equal": true
+    },
+    {
+      "key": "smart-money-breakout-signals|SOLUSD|15m",
+      "before": 1,
+      "after": 1,
+      "equal": true
+    },
+    {
+      "key": "smart-swing-vwap-zeiierman|SOLUSD|15m",
+      "before": 64,
+      "after": 64,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts|SOLUSD|15m",
+      "before": 3,
+      "after": 3,
+      "equal": true
+    },
+    {
+      "key": "ai-predictive-flow-zeiierman|SOLUSD|15m",
+      "before": 11,
+      "after": 11,
+      "equal": true
+    },
+    {
+      "key": "supertrend-cluster-zeiierman|SOLUSD|15m",
+      "before": 29,
+      "after": 29,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman|SOLUSD|15m",
+      "before": 44,
+      "after": 44,
+      "equal": true
+    },
+    {
+      "key": "alphamojo-supertrend-strategy-ha-with-buffer|SOLUSD|15m",
+      "before": 37,
+      "after": 37,
+      "equal": true
+    },
+    {
+      "key": "rsi-volume-ladder|SOLUSD|15m",
+      "before": 7,
+      "after": 7,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts-all-sessions|SOLUSD|15m",
+      "before": 26,
+      "after": 26,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix-atr-maker|SOLUSD|15m",
+      "before": 40,
+      "after": 40,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman-maker|SOLUSD|15m",
+      "before": 44,
+      "after": 44,
+      "equal": true
+    },
+    {
+      "key": "machine-learning-rsi-ai-classification-ranking-zeiierman|SOLUSD|15m",
+      "before": 81,
+      "after": 81,
+      "equal": true
+    },
+    {
+      "key": "structure-anchored-vwap|BTCUSD|1h",
+      "before": 19,
+      "after": 19,
+      "equal": true
+    },
+    {
+      "key": "adaptive-volatility-trend|BTCUSD|1h",
+      "before": 6,
+      "after": 6,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix|BTCUSD|1h",
+      "before": 39,
+      "after": 39,
+      "equal": true
+    },
+    {
+      "key": "trend-lines|BTCUSD|1h",
+      "before": 5,
+      "after": 5,
+      "equal": true
+    },
+    {
+      "key": "kinetic-momentum-vectors|BTCUSD|1h",
+      "before": 2,
+      "after": 2,
+      "equal": true
+    },
+    {
+      "key": "pivot-channel-breaks|BTCUSD|1h",
+      "before": 12,
+      "after": 12,
+      "equal": true
+    },
+    {
+      "key": "smart-money-breakout-signals|BTCUSD|1h",
+      "before": 4,
+      "after": 4,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts|BTCUSD|1h",
+      "before": 22,
+      "after": 22,
+      "equal": true
+    },
+    {
+      "key": "smart-swing-vwap-zeiierman|BTCUSD|1h",
+      "before": 66,
+      "after": 66,
+      "equal": true
+    },
+    {
+      "key": "ai-predictive-flow-zeiierman|BTCUSD|1h",
+      "before": 11,
+      "after": 11,
+      "equal": true
+    },
+    {
+      "key": "supertrend-cluster-zeiierman|BTCUSD|1h",
+      "before": 23,
+      "after": 23,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman|BTCUSD|1h",
+      "before": 37,
+      "after": 37,
+      "equal": true
+    },
+    {
+      "key": "alphamojo-supertrend-strategy-ha-with-buffer|BTCUSD|1h",
+      "before": 38,
+      "after": 38,
+      "equal": true
+    },
+    {
+      "key": "rsi-volume-ladder|BTCUSD|1h",
+      "before": 8,
+      "after": 8,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts-all-sessions|BTCUSD|1h",
+      "before": 85,
+      "after": 85,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix-atr-maker|BTCUSD|1h",
+      "before": 39,
+      "after": 39,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman-maker|BTCUSD|1h",
+      "before": 37,
+      "after": 37,
+      "equal": true
+    },
+    {
+      "key": "machine-learning-rsi-ai-classification-ranking-zeiierman|BTCUSD|1h",
+      "before": 79,
+      "after": 79,
+      "equal": true
+    },
+    {
+      "key": "structure-anchored-vwap|BTCUSD|4h",
+      "before": 24,
+      "after": 24,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix|BTCUSD|4h",
+      "before": 23,
+      "after": 23,
+      "equal": true
+    },
+    {
+      "key": "trend-lines|BTCUSD|4h",
+      "before": 2,
+      "after": 2,
+      "equal": true
+    },
+    {
+      "key": "kinetic-momentum-vectors|BTCUSD|4h",
+      "before": 2,
+      "after": 2,
+      "equal": true
+    },
+    {
+      "key": "adaptive-volatility-trend|BTCUSD|4h",
+      "before": 10,
+      "after": 10,
+      "equal": true
+    },
+    {
+      "key": "pivot-channel-breaks|BTCUSD|4h",
+      "before": 15,
+      "after": 15,
+      "equal": true
+    },
+    {
+      "key": "smart-money-breakout-signals|BTCUSD|4h",
+      "before": 6,
+      "after": 6,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts|BTCUSD|4h",
+      "before": 77,
+      "after": 77,
+      "equal": true
+    },
+    {
+      "key": "smart-swing-vwap-zeiierman|BTCUSD|4h",
+      "before": 57,
+      "after": 57,
+      "equal": true
+    },
+    {
+      "key": "ai-predictive-flow-zeiierman|BTCUSD|4h",
+      "before": 11,
+      "after": 11,
+      "equal": true
+    },
+    {
+      "key": "supertrend-cluster-zeiierman|BTCUSD|4h",
+      "before": 26,
+      "after": 26,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman|BTCUSD|4h",
+      "before": 43,
+      "after": 43,
+      "equal": true
+    },
+    {
+      "key": "alphamojo-supertrend-strategy-ha-with-buffer|BTCUSD|4h",
+      "before": 27,
+      "after": 27,
+      "equal": true
+    },
+    {
+      "key": "rsi-volume-ladder|BTCUSD|4h",
+      "before": 13,
+      "after": 13,
+      "equal": true
+    },
+    {
+      "key": "session-killzones-breakouts-all-sessions|BTCUSD|4h",
+      "before": 299,
+      "after": 299,
+      "equal": true
+    },
+    {
+      "key": "liquidity-trail-matrix-atr-maker|BTCUSD|4h",
+      "before": 23,
+      "after": 23,
+      "equal": true
+    },
+    {
+      "key": "trend-impulse-channels-zeiierman-maker|BTCUSD|4h",
+      "before": 43,
+      "after": 43,
+      "equal": true
+    },
+    {
+      "key": "machine-learning-rsi-ai-classification-ranking-zeiierman|BTCUSD|4h",
+      "before": 90,
+      "after": 90,
+      "equal": true
+    }
+  ]
+}

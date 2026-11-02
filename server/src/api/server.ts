@@ -3,6 +3,7 @@ import { allocationAudit } from '../analytics/allocationAudit.ts';
 import { performanceReport, validatePerformanceFilter } from '../analytics/performance.ts';
 import {reclaimStatus} from '../paper/reclaimAudit.ts';
 import http from 'node:http';
+import { flowQuery } from '../orderflow/query.ts';
 import { sourceHash } from '../paper/fingerprint.ts';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
@@ -447,6 +448,16 @@ export class ApiServer {
     });
     this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, fillSource: a.config.get().paper.fillSource, quotes: a.marks.quoteSummary(a.config.get().paper.quoteMaxAgeMs), funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), account: a.accountAudit.summary() }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
+    for (const route of ['/api/order-flow', '/api/footprints']) this.add('GET', route, (_r, _s, _p, url) => {
+      let q; try { q = flowQuery(url.searchParams); } catch (e: any) { throw new HttpError(400, e.message); }
+      const view = a.orderFlow.view(q.symbol, q.duration, q.from, q.to);
+      if (route === '/api/footprints') return view.bars.filter(b => b.covered).slice(-q.limit).map(({ openTime, levels }) => ({ openTime, levels }));
+      // The table needs only the latest bar's largest 15 rows. Full footprints use
+      // the dedicated endpoint; don't transfer days of price levels every 10 seconds.
+      return { ...view, bars: view.bars.slice(-q.limit).map((bar, i, all) => ({ ...bar,
+        levels: i === all.length - 1 ? [...bar.levels].sort((a,b) => b.buyVolume+b.sellVolume-a.buyVolume-a.sellVolume).slice(0,15) : [],
+      })) };
+    });
     this.add('GET', '/api/radar', (_r, _s, _p, url) => a.radarView(Math.min(168, Math.max(1, Number(url.searchParams.get('hours') ?? 24)))));
     this.add('POST', '/api/incubator/evaluate', (r) => a.incubatorEvaluate(this.userFor(r)?.username ?? 'unknown'));
     // decision 174: screening on demand

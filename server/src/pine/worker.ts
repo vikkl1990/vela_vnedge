@@ -9,6 +9,7 @@ import { PineTS, Indicator } from 'pinets';
 import { DeltaPineProvider, type ProviderBar } from './provider.ts';
 import { DeltaRest } from '../delta/rest.ts';
 import { TF_SECONDS, TF_TO_PINE } from '../config.ts';
+import type { FlowMinute } from '../orderflow/store.ts';
 
 export interface WorkerJob {
   id: number;
@@ -31,6 +32,7 @@ export interface WorkerJob {
   inputs?: Record<string, number | string | boolean>;
   /** IANA timezone for the script's sessions (default Etc/UTC). */
   timezone?: string;
+  footprints?: FlowMinute[];
 }
 
 export interface WorkerAlert { barIndex: number; time: number; type: 'alert' | 'alertcondition'; title?: string; message: string }
@@ -48,6 +50,7 @@ export interface WorkerResult {
   title?: string;
   overlay?: boolean;
   warnings: number;
+  dataWarnings?: string[];
   alerts: WorkerAlert[];
   shapes: WorkerShape[];
   labels: WorkerLabel[];
@@ -82,7 +85,12 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
   const t0 = Date.now();
   const base: WorkerResult = { id: job.id, ok: false, ms: 0, bars: job.bars.length, lastBarTime: job.bars.at(-1)?.time ?? 0, warnings: 0, alerts: [], shapes: [], labels: [], plots: [] };
   try {
-    const provider = new DeltaPineProvider({ symbol: job.symbol, tf: job.tf, bars: job.bars, tickSize: job.tickSize, timezone: job.timezone, fetchOther });
+    const provider = new DeltaPineProvider({ symbol: job.symbol, tf: job.tf, bars: job.bars, tickSize: job.tickSize, timezone: job.timezone, fetchOther, footprints: job.footprints });
+    if (/\brequest\.footprint\s*\(/.test(job.source)) {
+      const observed = await provider.getFootprintData(job.symbol, TF_TO_PINE[job.tf] ?? '15');
+      const latest = job.bars.at(-1)?.time;
+      if (!observed.some(b => b.openTime === latest)) base.dataWarnings = ['Footprint unavailable for the latest closed bar: collection warm-up, unsupported market or a tape gap'];
+    }
     const pine = new PineTS(provider as any, job.symbol, TF_TO_PINE[job.tf] ?? '15', job.bars.length);
     pine.setAlertMode('all');
     pine.setMaxLoops(200_000);

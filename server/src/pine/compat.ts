@@ -121,10 +121,10 @@ export function replaceCall(src: string, name: string, repl: (args: string) => s
   return out + src.slice(last);
 }
 
-/** Fundamentals and footprint data do not exist for Delta's perpetuals: TradingView returns `na` there too. */
+/** Equity fundamentals do not exist for Delta perpetuals. Footprints use the measured tape provider. */
 export function fundamentalsToNa(src: string): string {
   let out = src;
-  for (const fn of ['request.financial', 'request.earnings', 'request.dividends', 'request.splits', 'request.footprint', 'request.economic', 'request.quandl']) out = replaceCall(out, fn, () => 'float(na)');
+  for (const fn of ['request.financial', 'request.earnings', 'request.dividends', 'request.splits', 'request.economic', 'request.quandl']) out = replaceCall(out, fn, () => 'float(na)');
   return out;
 }
 

@@ -1,4 +1,9 @@
 import { protectionText, quantityText } from '../lib/protection'
+import type { ScriptRun } from '@luxalgo/vela'
+import { OrderFlowPanel } from '../chart/OrderFlowPanel'
+import { CryptoComparison } from '../chart/CryptoComparison'
+import { ScriptReadout } from '../chart/ScriptReadout'
+import { snapshotRun, type ScriptSnapshot } from '../chart/scriptSnapshot'
 import { useQueries } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -55,6 +60,7 @@ export function ChartPage() {
   }
   const [showPosition, setShowPosition] = useState(true)
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
+  const [runs, setRuns] = useState<Record<string, ScriptSnapshot>>({})
 
   const symbolOptions = useMemo(() => {
     const list = (markets.data ?? []).map((m) => m.symbol)
@@ -63,6 +69,12 @@ export function ChartPage() {
   }, [markets.data, config.data])
 
   const symbol = symbolSel || symbolOptions[0] || 'BTCUSD'
+  const recordRun = (frame: string, run: ScriptRun) => setRuns(prev => {
+    const key = `${symbol}:${frame}:${run.id}`
+    const next = {...prev, [key]: snapshotRun(run, frame)}
+    if (Object.keys(next).length > 64) delete next[Object.keys(next)[0]]
+    return next
+  })
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({ symbol, tf, view, frames }))
@@ -234,6 +246,8 @@ export function ChartPage() {
         <div className="chart-main" style={{ position: 'relative' }}>
           {symbol && view === 'frames' ? (
             <ChartFrames
+              key={`${symbol}:${frames.join(',')}`}
+              onScriptRun={recordRun}
               marks={marks}
               symbol={symbol}
               tfs={frames}
@@ -251,6 +265,7 @@ export function ChartPage() {
             />
           ) : symbol ? (
             <VelaChart
+              onScriptRun={r => recordRun(tf, r)}
               marks={marks}
               symbol={symbol}
               tf={tf}
@@ -277,6 +292,9 @@ export function ChartPage() {
           </QueryState>
         </Panel>
       </div>
+      <ScriptReadout runs={Object.entries(runs).filter(([key,r]) => key.startsWith(`${symbol}:`) && (view === 'frames' ? frames.includes(r.tf) : r.tf === tf) && selectedIds.some(id => r.id === `vn:${id}`)).map(([,r]) => r)} />
+      <OrderFlowPanel symbol={symbol} />
+      <CryptoComparison symbol={symbol} tf={tf} scripts={scripts} />
     </div>
   )
 }

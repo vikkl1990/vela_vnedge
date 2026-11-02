@@ -20,7 +20,7 @@ export interface WsTicker { symbol: string; price: number; markPrice: number; ti
 /** L1 publication time is freshness; bookTimeMs can remain unchanged on an unchanged book. */
 export interface WsQuote { symbol: string; bestBid: number; bestAsk: number; bidSize: number; askSize: number; timeMs: number; bookTimeMs: number; receivedAt: number }
 /** One print from the `all_trades` channel (the tape). `qty` is in contracts. */
-export interface WsTrade { symbol: string; price: number; qty: number; timeMs: number; aggressor: 'buy' | 'sell' | null }
+export interface WsTrade { symbol: string; price: number; qty: number; timeMs: number; aggressor: 'buy' | 'sell' | null; id?: string; timeKnown?: boolean }
 /** `mark_price` channel (Delta sends symbols as `MARK:BTCUSD`; `symbol` here is the bare product symbol). */
 export interface WsMark { symbol: string; markPrice: number; timeMs: number; bestBid: number | null; bestAsk: number | null }
 /** `funding_rate` channel. Rates are Delta's percent-per-interval figures (0.01 = 0.01 % per 8 h). */
@@ -270,7 +270,9 @@ export function parseTrade(symbol: string, x: any): WsTrade | null {
   const price = Number(x?.price), qty = Number(x?.size ?? x?.qty ?? 0);
   if (!symbol || !Number.isFinite(price) || price <= 0) return null;
   const aggressor: WsTrade['aggressor'] = x?.buyer_role === 'taker' ? 'buy' : x?.seller_role === 'taker' ? 'sell' : null;
-  return { symbol: String(symbol), price, qty: Number.isFinite(qty) ? qty : 0, timeMs: toMs(x?.timestamp), aggressor };
+  return { symbol: String(symbol), price, qty: Number.isFinite(qty) ? qty : 0, timeMs: toMs(x?.timestamp), aggressor,
+    ...(!(Number.isFinite(Number(x?.timestamp)) && Number(x?.timestamp) > 0) || x?.trade_time_known === false ? { timeKnown: false } : {}),
+    ...(x?.id != null ? { id: String(x.id) } : {}) };
 }
 
 
@@ -282,7 +284,7 @@ export function normalizePublicMessage(m: any): any[] {
     timestamp: m.ts, quotes: { best_ask: t.q?.[0], best_bid: t.q?.[2] },
   }));
   if (m.type === 'trades') return [{ type: 'all_trades', symbol: m.sy, price: m.p, size: m.s,
-    timestamp: m.t ?? m.ts, buyer_role: m.r === 't' ? 'taker' : 'maker', seller_role: m.r === 'm' ? 'taker' : 'maker' }];
+    timestamp: m.t ?? m.ts, ...(m.t == null ? { trade_time_known: false } : {}), ...(m.id != null ? { id: m.id } : {}), buyer_role: m.r === 't' ? 'taker' : m.r === 'm' ? 'maker' : null, seller_role: m.r === 'm' ? 'taker' : m.r === 't' ? 'maker' : null }];
   if (String(m.type).startsWith('candlestick_') && m.sy !== undefined) return [{
     type: m.type, symbol: m.sy, resolution: m.res, candle_start_time: m.cst,
     open: m.o, high: m.h, low: m.l, close: m.c, volume: m.v ?? 0, timestamp: m.ts,

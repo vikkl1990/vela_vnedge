@@ -48,7 +48,7 @@ export const PATCH_RULES: PatchRule[] = [
       return TA_LIBRARY_OWN.some(f => new RegExp(`\\b${alias}\\.${f}\\s*\\(`).test(src)) ? src : src.replace(m[0], '');
     },
   },
-  { id: 'fundamentals-na', description: 'request.financial / earnings / dividends / splits / footprint / economic return na on a crypto perpetual on TradingView too; lowered to na so the script runs.', apply: fundamentalsToNa },
+  { id: 'fundamentals-na', description: 'Unavailable equity/economic fundamentals are lowered to na. request.footprint uses observed Delta tape data and preserves missing coverage.', apply: fundamentalsToNa },
   {
     id: 'label.all-size',
     description: "PineTS returns a plain JS array for `label.all` / `line.all` / `box.all`, so `array.size(x.all)` throws. These calls only guard drawing-object housekeeping; the branch is disabled.",

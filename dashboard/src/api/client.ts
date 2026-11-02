@@ -1,4 +1,5 @@
 import type {ExecutionPlansView} from './executionPlans'
+import type {Footprint, OrderFlowView} from './orderFlow'
 import type {Contributions, ContributionDetail} from './contributions'
 import type {
   ReclaimTrialsView,
@@ -94,6 +95,8 @@ const put = <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT'
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export const api = {
+  orderFlow: (symbol: string, tf: string) => request<OrderFlowView>(`/order-flow${qs({symbol, tf, limit: 120})}`),
+  footprints: (symbol: string, tf: string, range: {from?: number; to?: number; limit?: number}) => request<Footprint[]>(`/footprints${qs({symbol, tf, ...range})}`),
   signalActivity: () => get<{at:number;since:number;entries:number}>('/signals/activity'),
   executionQuality: () => get<import('./types').ExecutionQuality>('/execution-quality'),
   // health / config

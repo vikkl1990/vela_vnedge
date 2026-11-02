@@ -38,6 +38,7 @@ import { subscribeRealtime, wireRealtime } from './execution/wiring.ts';
 import type { FundingJournal } from './execution/fundingJournal.ts';
 import type { AccountAudit } from './execution/accountAudit.ts';
 import type { DepthRecorder } from './execution/depthRecorder.ts';
+import type { OrderFlowStore } from './orderflow/store.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
 import { MarketGate } from './risk/marketGate.ts';
@@ -94,6 +95,7 @@ export class App {
   fundingJournal!: FundingJournal;
   accountAudit!: AccountAudit;
   depthRecorder!: DepthRecorder;
+  orderFlow!: OrderFlowStore;
   stopExecutionAudit?: () => void;
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;

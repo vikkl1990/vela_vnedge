@@ -1,6 +1,8 @@
 import { FundingJournal } from './fundingJournal.ts';
 import { AccountAudit } from './accountAudit.ts';
 import { DepthRecorder } from './depthRecorder.ts';
+import { OrderFlowStore, FLOW_SETTLE_MS } from '../orderflow/store.ts';
+import { TF_SECONDS } from '../config.ts';
 import { fundingAssessment } from '../paper/fundingGuard.ts';
 import { depthFill } from '../paper/entryExecution.ts';
 /**
@@ -22,6 +24,17 @@ export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
   // describes the same fills, liquidation and funding a promoted pair would see.
   const books = [app.paper, app.shadow];
+  const flow = app.orderFlow = new OrderFlowStore(app.db);
+  app.feed.subscribe('all_trades', flow.symbols);
+  app.pool.footprintLoader = async job => {
+    const end = (job.bars.at(-1)?.time ?? 0) + (TF_SECONDS[job.tf] ?? 900) * 1000;
+    const wait = end + FLOW_SETTLE_MS - Date.now();
+    // Wait outside the workers only for a just-closed bar. Historical runs never wait;
+    // malformed future jobs cannot reserve a worker or an unbounded timer.
+    if (wait > 0 && wait <= FLOW_SETTLE_MS) await new Promise(resolve => setTimeout(resolve, wait));
+    flow.flush();
+    return flow.minutes(job.symbol, job.bars[0]?.time ?? 0, end);
+  };
   const funding = app.fundingJournal = new FundingJournal(app.db);
   const audit = app.accountAudit = new AccountAudit(app.db);
   const depth = app.depthRecorder = new DepthRecorder(app.db, undefined, symbol => {
@@ -41,9 +54,12 @@ export function wireRealtime(app: App): void {
     // Periodic snapshots keep the bounded diagnostic ring replayable after pruning.
     app.feed.unsubscribe('ob_updates',depth.symbols); app.feed.subscribe('ob_updates',depth.symbols);
   },600_000);
-  const depthTimer=setInterval(()=>{try{depth.flush();}catch(e:any){log.warn(`depth audit: ${e.message}`);}},5000);
+  const depthTimer=setInterval(()=>{
+    try{depth.flush();}catch(e:any){log.warn(`depth audit: ${e.message}`);}
+    try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
+  },5000);
   for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=()=>{for(const t of [auditTimer,historyTimer,depthTimer,statusTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();}catch(e:any){log.warn(`depth shutdown flush: ${e.message}`);}};
+  app.stopExecutionAudit=()=>{for(const t of [auditTimer,historyTimer,depthTimer,statusTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
   const status = app.exchangeStatus ?? new TradingStatus();
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
   app.db.run('CREATE TABLE IF NOT EXISTS funding_guard_blocks (symbol TEXT PRIMARY KEY, until_at INTEGER NOT NULL)');
@@ -63,7 +79,7 @@ export function wireRealtime(app: App): void {
     } catch (e: any) { log.warn(`exchange product-status refresh failed: ${e?.message ?? e}`); }
     finally { refreshing = false; }
   };
-  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); if (!connected) { depth.disconnect(); app.marks.invalidateQuotes(); } if (connected) void refresh(); });
+  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); try { flow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { depth.disconnect(); app.marks.invalidateQuotes(); } if (connected) void refresh(); });
   app.feed.on('quote', q => app.marks.onWsQuote(q));
   app.feed.on('quoteGap', ({ symbols }: { symbols: string[] }) => app.marks.invalidateQuotes(symbols));
   app.feed.on('system_status', (m: any) => {
@@ -100,7 +116,9 @@ export function wireRealtime(app: App): void {
   });
   for (const b of books) b.quotes = app.marks;   // spread-crossing fills (paper.useSpread)
   // decision 190: the audit sees each print before the books do, so the print that fills a limit is counted as its through
-  app.feed.on('trade', (t: WsTrade) => { depth.onTrade(t); app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs); });
+  app.feed.on('trade', (t: WsTrade) => { depth.onTrade(t); app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs);
+    try { flow.onTrade(t); } catch(e:any) { log.warn(`order flow print: ${e.message}`); }
+  });
   app.feed.on('mark', (m: WsMark) => { funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
   app.feed.on('funding', (f: WsFunding) => { funding.observe(f); app.marks.onWsFunding(f); });
   const timer = setInterval(() => {
@@ -131,7 +149,7 @@ export function subscribeRealtime(app: App): void {
   if (!symbols.length) return;
   app.feed.subscribe('v2/ticker', symbols);
   app.feed.subscribe('ob_l1', symbols);
-  app.feed.subscribe('all_trades', symbols);
+  app.feed.subscribe('all_trades', [...new Set([...symbols, ...app.orderFlow.symbols])]);
   app.feed.subscribe('mark_price', symbols);
   app.feed.subscribe('funding_rate', symbols);
 }

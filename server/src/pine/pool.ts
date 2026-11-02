@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { logger } from '../log.ts';
 import { SCRIPTS_DIR } from '../config.ts';
 import type { WorkerJob, WorkerResult } from './worker.ts';
+import type { FlowMinute } from '../orderflow/store.ts';
 
 const log = logger.scoped('pool');
 /** Decision 184: how long a terminated worker may take to exit before its slot is replaced regardless. */
@@ -111,6 +112,8 @@ interface Slot { w: PoolWorker; busy: Pending | null; index: number; ready: bool
  * trading decision.
  */
 export class PinePool {
+  /** Attach recorded data only for footprint scripts; ordinary scans do no extra DB work. */
+  footprintLoader?: (job: Omit<WorkerJob, 'id'>) => FlowMinute[] | Promise<FlowMinute[]>;
   private workers: Slot[] = [];
   private live: Pending[] = [];
   private mirror: Pending[] = [];
@@ -287,9 +290,13 @@ export class PinePool {
    * old to trade costs a worker and produces a signal the engine will reject as stale — the worst of
    * both, and the reason 48% of signals were being discarded on the VM.
    */
-  run(job: Omit<WorkerJob, 'id'>, opts: { priority?: JobPriority; deadlineMs?: number } = {}): Promise<WorkerResult> {
+  async run(job: Omit<WorkerJob, 'id'>, opts: { priority?: JobPriority; deadlineMs?: number } = {}): Promise<WorkerResult> {
+    const now = Date.now();
+    if (job.footprints === undefined && /\brequest\.footprint\s*\(/.test(job.source)) {
+      try { job = { ...job, footprints: await this.footprintLoader?.(job) ?? [] }; }
+      catch { job = { ...job, footprints: [] }; }
+    }
     return new Promise(resolve => {
-      const now = Date.now();
       const live = (opts.priority ?? 'background') === 'live';
       const ttl = opts.deadlineMs ?? (live ? LIVE_QUEUE_DEADLINE_MS : undefined);
       const p: Pending = { job: { legacyConditionTitles: readingLegacy().has(job.scannerId), ...job, id: this.nextId++ }, resolve, queuedAt: now, deadline: ttl === undefined ? undefined : now + ttl, live: live || opts.priority === 'mirror', priority: opts.priority ?? 'background' };

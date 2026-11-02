@@ -919,7 +919,9 @@ thead.sticky th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(
 }
 .state-overlay.error { color: var(--loss); }
 
-.page-chart { height: calc(100vh - 150px); min-height: 640px; }
+.page-chart { min-height: 640px; }
+.page-chart > .chart-layout { flex: none; height: calc(100vh - 320px); min-height: 500px; }
+.page-chart > .chart-layout-frames { min-height: 700px; }
 .chart-layout {
   display: grid;
   grid-template-columns: 1fr 320px;

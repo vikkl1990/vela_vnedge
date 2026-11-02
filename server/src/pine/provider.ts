@@ -1,4 +1,5 @@
 import { TF_SECONDS, pineTfToDelta } from '../config.ts';
+import { aggregateFlow, type FlowMinute } from '../orderflow/store.ts';
 
 /** Candle shape PineTS expects from a provider (`Kline`). */
 export interface Kline {
@@ -20,6 +21,7 @@ export interface DeltaPineProviderOptions {
   timezone?: string;
   /** Fetch bars for another timeframe (used by `request.security`). Returns ascending bars. */
   fetchOther?: (symbol: string, deltaTf: string, bars: number, endMs: number) => Promise<ProviderBar[]>;
+  footprints?: FlowMinute[];
 }
 
 export function toKlines(bars: ProviderBar[], tfSeconds: number): Kline[] {
@@ -82,6 +84,21 @@ export class DeltaPineProvider {
   }
 
   configure(): void { /* keyless */ }
+
+  async getFootprintData(tickerId: string, timeframe: string, limit?: number, sDate?: number, eDate?: number) {
+    // Never reinterpret another venue's footprint as Delta order flow.
+    if (tickerId.includes(':') && !/^delta:/i.test(tickerId)) return [];
+    const { symbol, modifier } = parseTicker(tickerId, this.opts.symbol);
+    if (symbol !== this.opts.symbol || modifier) return [];
+    const tf = TF_SECONDS[timeframe] ? timeframe : pineTfToDelta(timeframe) ?? timeframe;
+    const duration = (TF_SECONDS[tf] ?? 0) * 1000;
+    if (!duration) return [];
+    const end = (this.opts.bars.at(-1)?.time ?? 0) + TF_SECONDS[this.opts.tf] * 1000;
+    const from = sDate ?? this.opts.bars[0]?.time ?? 0;
+    const bars = aggregateFlow(this.opts.footprints ?? [], duration, from, Math.min(end, eDate ?? end));
+    return bars.filter(b => b.covered).slice(-Math.max(1, Math.min(5000, limit ?? 5000)))
+      .map(({ openTime, levels }) => ({ openTime, levels }));
+  }
 
   async getMarketData(tickerId: string, timeframe: string, limit?: number): Promise<Kline[]> {
     const tf = String(timeframe ?? this.primaryPineTf);

@@ -243,3 +243,16 @@ test('fresh shadow scans beat research while preserving reserved account capacit
  void pool.run({...job,scannerId:'research'});void pool.run({...job,scannerId:'shadow'},{priority:'shadow'});void pool.run({...job,scannerId:'live'},{priority:'live'});
  workers[0].ready();assert.equal(workers[0].jobs[0].scannerId,'live');workers[0].finish();assert.equal(workers[0].jobs[1].scannerId,'shadow');workers[0].finish();assert.equal(workers[0].jobs[2].scannerId,'research');workers[0].finish();void pool.stop();
 });
+
+test('footprint data waits outside workers and settlement time counts toward the deadline', async t => {
+  const {pool, workers} = setup(); t.after(() => pool.stop()); workers[0].ready();
+  let release!: (value: []) => void;
+  pool.footprintLoader = () => new Promise<[]>(resolve => {release = resolve;});
+  const waiting = pool.run({...job, source:'request.footprint(1)'}, {priority:'live', deadlineMs:1});
+  const ordinary = pool.run(job);
+  assert.equal(workers[0].jobs.length, 1, 'ordinary scans run while the footprint settles');
+  workers[0].finish(); await ordinary;
+  await new Promise(resolve => setTimeout(resolve, 10)); release([]);
+  assert.match((await waiting).error!, /expired/);
+  assert.equal(workers[0].jobs.length, 1, 'expired footprint job never reaches a worker');
+});

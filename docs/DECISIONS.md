@@ -6530,3 +6530,67 @@ an alias and would be excluded from subsequent screening. Strategy identity now
 includes entry protection, passive-entry settings, and the effective scanner ATR
 floor/regime exemption. Equal policies still deduplicate; genuinely different
 entry policies remain separate measured strategies. No history is moved between ids.
+
+## 216. Upgrade Vela/PineTS and record measured crypto footprints (2 November 2026)
+
+Pin Vela 0.9.3, vela-pinets 0.3.2 and PineTS 0.13.1 in both workspaces.
+The 18 enabled scanners were run on identical 1,000-bar fixtures: BTC, ETH and
+SOL 15m plus BTC 1h/4h. All 90 runs succeed on both runtimes. Actual production
+reading policies extract the same 2,667 events, including timestamps, sides and
+labels. Some plot-shape groups changed; comparing extracted events avoids mistaking
+these rendering changes for altered signals. Local median runtime falls from
+198.5 to 147.0 ms; this is not a measured VM throughput or profit improvement.
+Evidence: `docs/research/vela-order-flow-2026-11-02.json`.
+
+The chart gains optional direct Binance USDT perpetual, Hyperliquid perpetual
+and Coinbase USD spot comparisons for BTC/ETH/SOL. Each uses its own venue data
+and the selected scanner sources. Delta journal marks and position overlays stay
+on the Delta chart. Structured script-run readouts expose the frame, bar, state
+and numeric outputs. Shared replay reveals only bars closed by its shared clock;
+crosshairs synchronize across selected frames.
+
+Order flow is a separate measured-data integration using Delta India's public
+live trade stream. BTCUSD, ETHUSD and SOLUSD are subscribed before connection.
+Buy/sell aggressor volume is recorded by price and minute, in contracts. The
+compact buyer-role field is decoded explicitly; unknown roles and missing event
+timestamps invalidate coverage. Snapshot prints never enter the collector, and
+only supplied exchange trade IDs are deduplicated. Identical anonymous prints
+are retained. An unseen subscription, partial startup minute, reconnect, late
+print, unknown side or overflow cannot become an executable footprint. Local
+socket continuity is observational coverage, not certified lossless delivery.
+
+The archive is bounded to 72 hours, 16,000 rows and 64 MiB of payload. It contains
+only measured history since collection began; it never fabricates historical
+buy/sell volumes from OHLCV. Higher frames require every constituent minute.
+CVD resets after gaps and reports its anchor. Authenticated, bounded endpoints
+serve diagnostic summaries and full covered footprints separately. The regular
+polling response includes only the latest bar's 15 largest price levels.
+
+Pine's supported footprint-provider interface now reads this archive in both
+server workers and browser workers. The compatibility patch no longer replaces
+`request.footprint()` with `na`. Missing coverage remains `na`, with an explicit
+scanner-run diagnostic; it is not a runtime fault or a fabricated zero delta.
+Footprint jobs wait at most ten seconds for a just-closed bar outside the worker
+pool, within the existing queue deadline. Ordinary scanners incur no wait or
+additional archive read. Browser footprint indicators rerun after settlement so
+the live tail cache cannot permanently hide the newly recorded closed bar.
+
+The UI exposes executed buy/sell volume, delta, CVD, price-level footprints,
+coverage, archive start and retention. These are research observations; they do
+not create an order-flow gate, change sizing/fees/stops or automatically activate
+unvalidated footprint strategies. The existing $150 margin sizing, 3% stop-risk
+cap and 6x stop-cost policy remain unchanged. Hosted LuxAlgo order-flow data is
+not assumed to be included in the open-source chart runtime.
+
+Regression coverage includes named Pine arguments, real footprint calculations,
+unknown roles/timestamps, ID deduplication, late prints, startup/reconnect/restart,
+unseen channels, higher-frame completeness, no future/foreign-venue footprints,
+query bounds, worker settlement/deadline behavior and replay frame boundaries.
+An isolated public-feed smoke test verified all three symbols, API authentication,
+invalid-parameter errors and exact agreement between API delta and price-level
+buy-minus-sell sums. Browser checks cover the footprint table/plots, all three
+external venues with a VWAP overlay, script readouts, and shared replay controls.
+
+Primary references: https://docs.luxalgo.com/vela/user/api-reference,
+https://docs.luxalgo.com/vela/user/data-providers,
+https://docs.delta.exchange/#trades and PineTS's `IFootprintProvider` types.
