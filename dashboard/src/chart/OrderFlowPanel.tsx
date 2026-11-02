@@ -26,7 +26,7 @@ export function OrderFlowPanel({ symbol }: {symbol: string}) {
   const data = q.data, last = data?.bars.at(-1)
   const levels = [...(last?.levels ?? [])].sort((a, b) => b.buyVolume + b.sellVolume - a.buyVolume - a.sellVolume).slice(0, 15).sort((a, b) => b.price - a.price)
   const n = (v: number | null | undefined) => v == null ? 'Unavailable' : v.toLocaleString(undefined, {maximumFractionDigits: 2})
-  return <section className="panel" style={{padding: 16}} aria-label="Measured order flow">
+  return <section id="chart-order-flow" className="panel chart-section" style={{padding: 16}} aria-label="Measured order flow">
     <div className="row gap" style={{flexWrap: 'wrap'}}><h2 style={{margin: 0}}>Delta order flow · {symbol}</h2>
       <select className="select" aria-label="Order flow timeframe" value={tf} onChange={e => setTf(e.target.value)}>{['1m','5m','15m','1h','4h'].map(t => <option key={t}>{t}</option>)}</select>
       <button className="btn btn-xs" onClick={() => setPlot(v => !v)} aria-pressed={plot}>{plot ? 'Hide' : 'Show'} delta / CVD chart</button>

@@ -6609,3 +6609,12 @@ remains its distinct estimate, and choosing intrabar mode raises a clear error.
 CME Lens still defaults to its author's geometric mode and can fall back to that
 estimate when footprint coverage is absent; do not interpret its entire history
 as measured tape. No footprint strategy is automatically enabled for paper entry.
+
+UI follow-up: add an Explore bar above the Chart controls with direct links to
+price/frames, measured order flow, venue comparison and scanner values. The
+comparison/readout shortcuts expand their target panels; an empty scanner readout
+explains how to select an overlay, and unsupported venue symbols have an explicit
+message. Previously these tools were below a full chart grid and easy to miss.
+The local port 18791 serves the separate saved scanner audit, not this deployed
+dashboard. Browser checks verified navigation, automatic expansion and the empty
+state; dashboard build, lint and existing tests pass.

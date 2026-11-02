@@ -920,6 +920,9 @@ thead.sticky th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(
 .state-overlay.error { color: var(--loss); }
 
 .page-chart { min-height: 640px; }
+.chart-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
+.chart-tools a { text-decoration: none; }
+.chart-section { scroll-margin-top: 100px; }
 .page-chart > .chart-layout { flex: none; height: calc(100vh - 320px); min-height: 500px; }
 .page-chart > .chart-layout-frames { min-height: 700px; }
 .chart-layout {

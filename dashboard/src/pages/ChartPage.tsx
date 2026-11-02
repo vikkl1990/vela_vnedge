@@ -61,6 +61,8 @@ export function ChartPage() {
   const [showPosition, setShowPosition] = useState(true)
   const [scriptErrors, setScriptErrors] = useState<Record<string, string>>({})
   const [runs, setRuns] = useState<Record<string, ScriptSnapshot>>({})
+  const [readoutOpen, setReadoutOpen] = useState(false)
+  const [comparisonOpen, setComparisonOpen] = useState(false)
 
   const symbolOptions = useMemo(() => {
     const list = (markets.data ?? []).map((m) => m.symbol)
@@ -163,10 +165,18 @@ export function ChartPage() {
 
   return (
     <div className="page page-chart">
+      <nav className="chart-tools panel" aria-label="Chart tools">
+        <span className="chips-label">Explore</span>
+        <a className="btn btn-xs" href="#chart-price">Price &amp; frames</a>
+        <a className="btn btn-xs" href="#chart-order-flow">Order flow · Delta / CVD</a>
+        <a className="btn btn-xs" href="#chart-venues" onClick={() => setComparisonOpen(true)}>Compare venues</a>
+        <a className="btn btn-xs" href="#chart-values" onClick={() => setReadoutOpen(true)}>Scanner values</a>
+        <span className="muted small">Measured crypto footprints: BTC · ETH · SOL</span>
+      </nav>
       <p className="muted small">Indicator plots are a live preview; timeline marks and the decision feed come from the bot journal. {heldScanner && !heldScanner.enabled ? `Held scanner ${heldScanner.name} is displayed read-only (disabled for entries).` : ''}</p>
       {scripts.length > 0 && <details className="small"><summary>Bot script inputs and source versions</summary>{scripts.map(s => <p key={s.id} className="mono">{s.title} · source {s.sourceHash ?? 'unknown'} · bot timezone {s.timezone ?? 'UTC'} · inputs {JSON.stringify(s.inputs ?? {})}{s.timezone && s.timezone !== 'UTC' ? ' · Chart metadata uses UTC; this custom timezone is not reproduced.' : ''}</p>)}</details>}
       {(positions.data?.length ?? 0) > 0 && <div className="row gap" style={{ flexWrap: 'wrap' }}><span className="chips-label">Open positions</span>{positions.data?.map(p => <button key={p.id} className={`btn btn-xs ${position?.id === p.id ? 'btn-on' : ''}`} onClick={() => { setSymbol(p.symbol); setPositionId(p.id); setTf(p.tf); setShowPosition(true) }}>#{p.id} {p.symbol} · {p.tf} · {p.side}</button>)}</div>}
-      <div className="toolbar">
+      <div className="toolbar chart-section" id="chart-price">
         <label className="field-inline">
           <span className="chips-label">Symbol</span>
           <select className="select" value={symbol} onChange={(e) => setSymbol(e.target.value)} aria-label="Symbol">
@@ -292,9 +302,9 @@ export function ChartPage() {
           </QueryState>
         </Panel>
       </div>
-      <ScriptReadout runs={Object.entries(runs).filter(([key,r]) => key.startsWith(`${symbol}:`) && (view === 'frames' ? frames.includes(r.tf) : r.tf === tf) && selectedIds.some(id => r.id === `vn:${id}`)).map(([,r]) => r)} />
+      <ScriptReadout open={readoutOpen} onOpenChange={setReadoutOpen} selectedCount={selectedIds.length} runs={Object.entries(runs).filter(([key,r]) => key.startsWith(`${symbol}:`) && (view === 'frames' ? frames.includes(r.tf) : r.tf === tf) && selectedIds.some(id => r.id === `vn:${id}`)).map(([,r]) => r)} />
       <OrderFlowPanel symbol={symbol} />
-      <CryptoComparison symbol={symbol} tf={tf} scripts={scripts} />
+      <CryptoComparison symbol={symbol} tf={tf} scripts={scripts} open={comparisonOpen} onOpenChange={setComparisonOpen} />
     </div>
   )
 }
