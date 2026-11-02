@@ -6523,3 +6523,10 @@ Validation covers both books, source preservation, costs after conversion,
 timeframe-scoped passive orders, exact expiry after restart, exchange-mode policy,
 frozen research plans, malformed settings, scanner-specific ATR floors with chop
 and weekend guards retained, reader contracts, and pending/fill funnel accounting.
+
+Post-deploy UI verification exposed one further identity gap: deduplication still
+hashed only the older reading/exit fields, so LTM's ATR maker variant was shown as
+an alias and would be excluded from subsequent screening. Strategy identity now
+includes entry protection, passive-entry settings, and the effective scanner ATR
+floor/regime exemption. Equal policies still deduplicate; genuinely different
+entry policies remain separate measured strategies. No history is moved between ids.

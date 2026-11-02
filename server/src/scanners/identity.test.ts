@@ -34,3 +34,15 @@ test('decision 194: shadow pairs whose entries coincide are clustered; ones that
   assert.deepEqual(c[0].members, ['donchian-a|SOLUSD|1h', 'donchian-b|SOLUSD|1h']);
   assert.equal(c[0].links[0].shared, 10);
 });
+
+test('passive-entry/protection variants and scoped ATR floors are not suppressed as source aliases',()=>{
+ const c=structuredClone(DEFAULT_CONFIG),base={enabled:true,symbols:null,timeframes:null,exitMode:'both' as const};
+ c.scanners.a={...base};c.scanners.b={...base};const lib=[{id:'a',patched:'same source'},{id:'b',patched:'same source'}];
+ assert.equal(duplicateGroups(lib,c).length,1);
+ c.scanners.b.entryProtection='atr';assert.equal(duplicateGroups(lib,c).length,0);
+ delete c.scanners.b.entryProtection;c.scanners.b.entryLimit={tfs:['15m'],atr:.1,minutes:5};assert.equal(duplicateGroups(lib,c).length,0);
+ c.scanners.a.entryLimit=structuredClone(c.scanners.b.entryLimit);assert.equal(duplicateGroups(lib,c).length,1);
+ c.risk.regime.minAtrPctByScanner={b:0};assert.equal(duplicateGroups(lib,c).length,0);
+ c.risk.regime.minAtrPctByScanner.a=0;assert.equal(duplicateGroups(lib,c).length,1);
+ c.risk.regime.exempt=['b'];assert.equal(duplicateGroups(lib,c).length,0);
+});
