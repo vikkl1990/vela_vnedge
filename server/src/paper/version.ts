@@ -5,4 +5,5 @@
 // 8: account backtests enforce the same native/mixed-stop restriction as account execution.
 // 10: confirmed resting fills, exact expiry and mandatory fill-minute maker stops.
 // 11: held-position stops use adverse opens, including known stop-before-target ordering.
-export const SIMULATION_VERSION = 11;
+// 12: scanner-specific protection, passive entry expiry and explicit signal direction contracts.
+export const SIMULATION_VERSION = 12;

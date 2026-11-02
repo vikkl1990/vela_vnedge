@@ -20,6 +20,7 @@ import { scriptModeExit, applyFunding, applyBar, applyScriptExit, earlyStallExit
 import { tradeOf } from './engine.ts';
 import { TF_SECONDS } from '../config.ts';
 import { SIMULATION_VERSION } from './version.ts';
+import { protectEntry, type EntryProtection } from './entryProtection.ts';
 import { computeFeatures } from '../ml/features.ts';
 
 export interface BacktestInput {
@@ -30,6 +31,7 @@ export interface BacktestInput {
   cfg: PaperConfig; exitMode: ExitMode; contractValue: number; tickSize: number;
   /** Account-only plan restriction. Shadow may measure native plans without making them account eligible. */
   requireAtrStop?: boolean;
+  entryProtection?: EntryProtection;
   /** The market's maintenance margin and leverage ceiling (Delta's product record); the config's figures when absent. */
   maintenanceMarginPct?: number; maxLeverage?: number;
   /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
@@ -128,7 +130,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const idxByTime = new Map<number, number>();
   bars.forEach((b, i) => idxByTime.set(b.time, i));
   const byBar = new Map<number, ScanEvent[]>();
-  for (const e of inp.events) { const l = byBar.get(e.barTime) ?? []; l.push(e); byBar.set(e.barTime, l); }
+  for (const raw of inp.events) { const e = protectEntry(raw, inp.entryProtection); const l = byBar.get(e.barTime) ?? []; l.push(e); byBar.set(e.barTime, l); }
 
   // the trend every bar sees, on its own timeframe or a higher one, never reading an unclosed bar
   const gate = cfg.trendGate;

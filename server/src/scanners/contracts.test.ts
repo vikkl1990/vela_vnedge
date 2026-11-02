@@ -10,6 +10,24 @@ const C = (title: string, time = 1_000) => ({ barIndex: 10, time, type: 'alertco
 const S = (title: string, times: number[], location = 'belowbar', shape = 'triangleup') => ({ title, times, location, shape });
 const entries = (evs: any[]) => evs.filter(e => e.kind === 'entry').map(e => `${e.side}@${e.barTime}`);
 
+test('Smart Swing VWAP explicitly reads cross directions and excludes anchor/aggregate drawings',()=>{
+  const spec=loadSpecs()['smart-swing-vwap-zeiierman'];
+  const read=readingOf(spec,'smart-swing-vwap-zeiierman',3600_000,'alertcondition(x,"Cross above AVWAP")');
+  const alerts=[C('Cross above AVWAP',1000),C('Any ranked AVWAP event',1000),C('Cross below AVWAP',2000),C('New ranked anchor',3000),C('Bullish AVWAP retest',4000),C('Bearish polarity flip',5000)];
+  assert.deepEqual(entries(extractEvents(alerts,[S('Buy',[3000])],read.extract)),['long@1000','short@2000','long@4000','short@5000']);
+  assert.deepEqual(entries(extractEvents(alerts,[],{...read.extract,sinceBarTime:2000})),['short@2000','long@4000','short@5000']);
+});
+
+test('new spike/session variants recover the excluded channels without changing their base readings',()=>{
+  const specs=loadSpecs();
+  const spikes=[S('Bull Spike',[1000]),S('Bear Spike',[2000],'abovebar','triangledown')];
+  assert.deepEqual(entries(extractEvents([],spikes,readingOf(specs['kinetic-momentum-vectors'],'kinetic-momentum-vectors',900000).extract)),['long@1000']);
+  assert.deepEqual(entries(extractEvents([],spikes,readingOf(specs['kinetic-momentum-vectors-two-sided'],'kinetic-momentum-vectors-two-sided',900000).extract)),['long@1000','short@2000']);
+  const sessions=[S('London Bear Breakout',[1000],'abovebar','triangledown'),S('NY Bull Breakout',[2000]),S('Asia Bull Breakout',[3000])];
+  assert.deepEqual(entries(extractEvents([],sessions,readingOf(specs['session-killzones-breakouts'],'session-killzones-breakouts',3600000).extract)),['long@3000']);
+  assert.deepEqual(entries(extractEvents([],sessions,readingOf(specs['session-killzones-breakouts-all-sessions'],'session-killzones-breakouts-all-sessions',3600000).extract)),['short@1000','long@2000','long@3000']);
+});
+
 test('Role Reversal trades confirmed flips, never the initial break or its drawn label', () => {
   const spec = loadSpecs()['role-reversal'];
   const read = readingOf(spec, 'role-reversal', 900_000, 'alertcondition(x, "Support Broken")');
@@ -150,7 +168,7 @@ test('decision 195: variants load as their own ids over the base source, with th
   const { loadSpecs } = await import('../config.ts');
   const reg = new ScannerRegistry();
   const specs = loadSpecs();
-  for (const [v, base] of [['trend-impulse-channels-zeiierman-native', 'trend-impulse-channels-zeiierman'], ['pivot-channel-breaks-two-sided', 'pivot-channel-breaks'], ['structure-anchored-vwap-pivots', 'structure-anchored-vwap']]) {
+  for (const [v, base] of [['trend-impulse-channels-zeiierman-native', 'trend-impulse-channels-zeiierman'], ['pivot-channel-breaks-two-sided', 'pivot-channel-breaks'], ['structure-anchored-vwap-pivots', 'structure-anchored-vwap'], ['liquidity-trail-matrix-atr-maker', 'liquidity-trail-matrix'], ['trend-impulse-channels-zeiierman-maker', 'trend-impulse-channels-zeiierman'], ['kinetic-momentum-vectors-two-sided', 'kinetic-momentum-vectors'], ['session-killzones-breakouts-all-sessions', 'session-killzones-breakouts']]) {
     const s = reg.get(v), b = reg.get(base);
     assert.ok(s && b, v);
     assert.equal(s!.variantOf, base);

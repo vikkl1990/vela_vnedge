@@ -134,7 +134,10 @@ while (sliceArg !== 'none') {
   // decision 115: on a fast timeframe a quiet market is not screened — its cells could never clear the cost rule
   const quietTfs = new Set(inc.screen.quietFilterTfs ?? ['5m', '15m']);
   const verdictOf = new Map((today?.markets ?? []).map(m => [m.symbol, m]));
-  const quiet = quietTfs.has(TF) && !onlyMarkets ? universe.filter(sym => { const v = verdictOf.get(sym); return v ? tooQuietForTf(v.atrPct, v.bookCostPct, TF, cfg.paper, { maker: !!entryPolicy(cfg, TF, 'shadow') }) !== null : false; }) : [];
+  // A market-wide prefilter must not exclude a scanner with a cheaper passive entry.
+  // Every actual run still applies its own cost policy in the backtest and admission.
+  const anyMaker=!!entryPolicy(cfg,TF,'shadow') || Object.keys(cfg.scanners).some(scannerId=>!!entryPolicy(cfg,TF,'shadow',{scannerId}));
+  const quiet = quietTfs.has(TF) && !onlyMarkets ? universe.filter(sym => { const v = verdictOf.get(sym); return v ? tooQuietForTf(v.atrPct, v.bookCostPct, TF, cfg.paper, { maker: anyMaker }) !== null : false; }) : [];
   for (const sym of quiet) universe.splice(universe.indexOf(sym), 1);
   summary.quiet = quiet.length;
   if (quiet.length) out(`${TF}: ${quiet.length} markets too quiet for this timeframe's cost floor, not screened: ${quiet.slice(0, 12).join(', ')}${quiet.length > 12 ? ', …' : ''}`);

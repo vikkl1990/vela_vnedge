@@ -6447,3 +6447,79 @@ effects remain unmodelled. This rule is not enabled. The $150 margin target,
 Regression checks cover both stop directions and costs, target ordering, entry
 minute exclusion, restored intraminute baselines, duplicate deliveries, both paper
 books, minute/coarse backtests, same-bar scanner events and contract fingerprinting.
+
+## 215. Repair scanner entry contracts and allocate measured passive-entry variants (2 November 2026)
+
+The 24-hour audit found 15 enabled scanners but only 13 with account allocations
+(40 scanner/market/timeframe cells). Alphamojo HA Supertrend and RSI Volume Ladder
+had no assigned pairs. The 2,070 account scanner runs all completed successfully;
+126 entry decisions produced 27 fills. Refusals included 36 daily pilot-cap and
+three open-pilot-cap decisions, 16 costs, 16 regime, seven symbol-cap, seven burst,
+and six native-stop decisions. Enabled, scheduled, source events, resting orders
+and fills are different counts. Scanner cards and detail pages now show actual
+scheduled cells, accepted channels/labels, protection, passive-entry settings and
+ATR floor. The seven-day funnel separates resting orders from fills and exposes
+pilot-cap and native-stop refusals instead of burying them in "other".
+
+Smart Swing VWAP's Cross above/below AVWAP conditions did not match the generic
+side parser. Its contract now explicitly maps its six directional condition titles
+and excludes anchor/aggregate notifications. Kinetic's established reader accepts
+only Bull Spike; Session Killzones accepts only Asia Bull Breakout. Separate
+both-direction and all-session variants preserve the established strategies' records.
+The Kinetic variant remains available for research, not activated in the account.
+
+A scanner can explicitly select ATR entry protection (clear both native SL and TP
+before the common resolver), native protection, or inherit the existing rule.
+The legacy skipScriptStops flag continues to reject native plans by default.
+Conversion is audited alongside original source levels, is shared by paper and
+backtests, and persists through pending-order recovery. Current research plans freeze
+this choice with their other settings. A scanner-specific passive policy specifies
+its timeframes, ATR pullback and wall-clock expiry. The same policy feeds execution,
+backtests and screening; it does not enable passive execution on a mirrored exchange
+account. Existing held positions are not re-sized or retrospectively rewritten.
+
+Eighteen fixed candidate cells (six readers across BTC/ETH/SOL 15m) were compared
+on 28 days, 5 October 15:00 UTC through 2 November 15:00 UTC, with a chronological
+split at 19 October 15:00 UTC. Execution uses recorded minute candles, current
+full commissions/tax, the 6x stop/cost rule, ER >= 0.1 and current exit policy.
+These comparisons remove the fixed 0.3% ATR floor in both arms; the market-entry
+arm is a like-for-like simulation, not the historical live trade count. Four
+selected maker cells were positive in both halves and in later-half cost stress:
+
+| Paper variant / 15m market | First half trades / R | Later half trades / R | Stress trades / R |
+| --- | --- | --- | --- |
+| Liquidity Trail Matrix ATR maker / ETH | 9 / +0.39 | 8 / +2.86 | 3 / +0.82 |
+| Session Killzones all sessions / ETH | 10 / +0.31 | 12 / +3.46 | 2 / +0.65 |
+| Liquidity Trail Matrix ATR maker / SOL | 9 / +0.64 | 11 / +0.34 | 3 / +0.53 |
+| Trend Impulse continuation maker / SOL | 24 / +1.17 | 30 / +1.00 | 13 / +0.18 |
+
+The production variants reproduce those results: a 0.1-ATR passive pullback, five
+minutes to fill, no market conversion after expiry. Combined closed trades are
+113 and +10.19R versus 41 and -3.40R in the matched market-entry arm. Absolute SLs
+increase from 13 to 24; the proportion falls from 31.7% to 21.2%. These are isolated
+cell simulations, not a shared-capital portfolio. The four cells were selected
+after inspecting all 18 outcomes; the later half is not an untouched holdout.
+Stress uses at least 0.08% crossing plus three basis points quoted slippage and
+leaves only 21 later-half fills. Historical funding, depth and queue position are
+not reconstructed. This supports bounded operator paper trials, not assured returns.
+BTC's tested candidates did not meet the same standard and are not activated.
+
+Full-history/prefix event checks and recent-event checks against the runtime's
+1,000-bar history agree for all four cells. Fresh Delta India depth passes at
+$750 and $1,500 notional in both ETH and SOL. Snapshots do not replace fresh depth
+checks at every actual order. Summary evidence is in
+`docs/research/scanner-entry-2026-11-02.json`.
+
+The four operator paper allocations use three new scanner ids. Only these ids get
+an explicit zero fixed ATR floor; the ordinary 0.3% default and ER/chop policy stay
+in place. The actual stop-cost floor (6x), full fees, depth checks, $150 margin
+target, 3% stop-risk cap, account capacity and daily/open copy-pilot limits remain.
+This adds direct paper opportunities without spending the copy pilot's daily budget.
+The ATR maker variant fixes the native-stop conflict for its new LTM allocations;
+existing native-policy allocations are not silently converted. Simulation versions
+208/12 separate future evidence and invalidate incompatible cached tests/learning.
+
+Validation covers both books, source preservation, costs after conversion,
+timeframe-scoped passive orders, exact expiry after restart, exchange-mode policy,
+frozen research plans, malformed settings, scanner-specific ATR floors with chop
+and weekend guards retained, reader contracts, and pending/fill funnel accounting.

@@ -1,6 +1,7 @@
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
 import { createHash } from 'node:crypto';
 import type { AppConfig, PaperConfig, ExitMode } from '../config.ts';
+import {protectEntry} from './entryProtection.ts';
 import type { Bar } from '../data/candleStore.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
 import { exitConfigFor } from './logic.ts';
@@ -42,14 +43,14 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   const sc = cfg.scanners[p.scannerId];
   const exitMode = p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
   const base = p.variant === 'current' ? scannerExitPolicy(cfg,p.scannerId) : sc?.exit;
-  const entry = entryPolicy(cfg,p.tf,'account');
+  const entry = entryPolicy(cfg,p.tf,'account',{scannerId:p.scannerId});
   const paper = structuredClone(exitConfigFor(cfg.paper,p.symbol,base,p.tf));
   // Resolved settings must not be layered a second time in the backtester.
   delete paper.exitBySymbol;delete paper.exitByTf;
   Object.assign(paper, { initialEquity:p.referenceEquity, sizingMode:'margin', maxOpenPositions:100_000,
     // Prospective plan evidence always pays full fees. Account offer settings remain separate.
     scalperOffer:paper.scalperOffer ? {...paper.scalperOffer,enabled:false} : undefined,
-    skipScriptStops:p.variant === 'current' && Boolean(cfg.paper.skipScriptStops),
+    skipScriptStops:p.variant === 'current' && Boolean(cfg.paper.skipScriptStops) && sc?.entryProtection !== 'native',
     limitEntry:entry ? {enabled:true,tfs:[p.tf],books:['shadow'],atr:entry.pullbackAtr,bars:entry.pullbackBars} : undefined });
   if(p.takeProfit)Object.assign(paper,{scriptTargets:p.takeProfit.mode==='native'?'use':'ignore',
     tpSplit:[...p.takeProfit.split],...(p.takeProfit.rr?{fallbackRR:[...p.takeProfit.rr]}:{}),
@@ -61,7 +62,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   return {...result,signature};
 }
 export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSnapshot): ScanEvent[] {
-  return p.variant === 'current' ? events : adaptPlan(events,bars,p.variant);
+  return p.variant === 'current' ? events.map(ev=>protectEntry(ev,p.reading?.entryProtection)) : adaptPlan(events,bars,p.variant);
 }
 export function planBacktest(p: ExecutionPlanSnapshot) {
   const le=p.paper.limitEntry;

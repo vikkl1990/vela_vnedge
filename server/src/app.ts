@@ -1,5 +1,6 @@
 import { createValidation, type ValidationModule } from './validation/runtime.ts';
 import { PlanComparisons } from './paper/planComparisons.ts';
+import { scannerWeekFunnel } from './scanners/activity.ts';
 import {shadowCapacity} from './incubator/capacity.ts';
 import {admissionEvidence} from './incubator/evidencePriority.ts';
 import {EntryDepthGate,wireEntryDepth} from './risk/entryDepth.ts';
@@ -397,9 +398,9 @@ export class App {
     const mt = this.db.kvGet<{ at: number; enabled: boolean; markets: Array<{ symbol: string; allowed: boolean; tracked: boolean }> }>('risk.marketsToday');
     const tracked = (mt?.markets ?? []).filter(m => m.tracked !== false), allowed = tracked.filter(m => this.marketGate.verdict(m.symbol,now)?.allowed);
     const stale = mt ? now - mt.at > 2 * 3600_000 : true;
-    g.push({ key: 'market', group: 'Market', name: 'Markets today', state: !rc.marketGate?.enabled ? 'off' : stale ? 'attention' : allowed.length ? 'armed' : 'blocking', value: mt ? `${allowed.length} of ${tracked.length} scanned markets allowed${stale ? ' · judgement stale' : ''}` : 'no judgement yet', rule: `Book under ${rc.marketGate?.maxBookCostPct ?? '?'}% round trip, turnover over $${((rc.marketGate?.minTurnoverUsd ?? 0) / 1e6).toFixed(2)}M, ATR over ${rc.regime?.minAtrPct ?? '?'}%`, next: stale ? 'Re-judge on the Overview' : 'The Overview lists every market and its reason', href: '/' });
+    g.push({ key: 'market', group: 'Market', name: 'Markets today', state: !rc.marketGate?.enabled ? 'off' : stale ? 'attention' : allowed.length ? 'armed' : 'blocking', value: mt ? `${allowed.length} of ${tracked.length} scanned markets allowed${stale ? ' · judgement stale' : ''}` : 'no judgement yet', rule: `Book under ${rc.marketGate?.maxBookCostPct ?? '?'}% round trip, turnover over $${((rc.marketGate?.minTurnoverUsd ?? 0) / 1e6).toFixed(2)}M, scanner-specific ATR and entry-cost checks`, next: stale ? 'Re-judge on the Overview' : 'The Overview lists every market and its reason', href: '/' });
     g.push({key:'entry-depth',group:'Trade',name:'Fresh depth at actual size',state:this.entryDepth.enabled()?'armed':'off',value:`${this.entryDepth.counts.checks} checks · ${this.entryDepth.counts.blocked} blocked · ${cfg.paper.quoteMaxAgeMs/1000}s max age`,rule:'Account quantity and deployable shadow-equivalent quantity checked before entry and pending fills; stale or unavailable depth refuses entry',next:'Signals shows depth-read counters and entry decisions',href:'/signals'});
-    g.push({ key: 'regime', group: 'Market', name: 'Regime', state: rc.regime?.enabled ? 'armed' : 'off', value: `ATR ≥ ${rc.regime?.minAtrPct ?? 0}%${(rc.regime as any)?.minEr ? ` · efficiency ≥ ${(rc.regime as any).minEr}` : ''}${rc.regime?.noWeekend ? ' · no weekend entries' : ''}`, rule: 'No entries in dead or choppy markets', next: 'Settings → risk → regime', href: '/settings' });
+    g.push({ key: 'regime', group: 'Market', name: 'Regime', state: rc.regime?.enabled ? 'armed' : 'off', value: `ATR default ≥ ${rc.regime?.minAtrPct ?? 0}% · ${Object.keys(rc.regime?.minAtrPctByScanner ?? {}).length} scanner overrides${(rc.regime as any)?.minEr ? ` · efficiency ≥ ${(rc.regime as any).minEr}` : ''}${rc.regime?.noWeekend ? ' · no weekend entries' : ''}`, rule: 'No entries in dead or choppy markets', next: 'Settings → risk → regime', href: '/settings' });
     // --- the trade ---
     const ratio = cfg.paper.minRiskFeeRatio ?? 0;
     g.push({ key: 'cost', group: 'Trade', name: 'Stop versus round-trip cost', state: ratio >= 6 ? 'armed' : ratio > 0 ? 'attention' : 'off', value: `stop ≥ ${ratio}× fees plus ${this.entryDepth.enabled()?'actual-size depth cost':'the live spread'}`, rule: 'A stop that cannot pay the round trip is refused before it loses (decision 96)', next: ratio < 6 ? 'Settings → Paper account → minimum stop over round-trip fee: 6 (measured in decision 96)' : 'As measured', href: '/settings' });
@@ -497,10 +498,7 @@ export class App {
 
   /** The last seven days of entry signals per scanner, by what became of them (decision 87): the week explained, not just the last run. */
   private weekFunnelByScanner() {
-    const out = new Map<string, { entries: number; opened: number; gate: number; fee: number; regime: number; guard: number; other: number }>();
-    const rows = this.db.all<{ scanner_id: string; k: string; n: number }>(`SELECT scanner_id, CASE WHEN action IN ('opened','reversed') OR action LIKE 'pending%' THEN 'opened' WHEN action LIKE 'rejected:risk market%' THEN 'gate' WHEN action LIKE 'rejected:stop too tight%' THEN 'fee' WHEN action LIKE 'rejected:risk regime%' THEN 'regime' WHEN action LIKE 'rejected:risk re-entry%' OR action LIKE 'rejected:risk burst%' THEN 'guard' ELSE 'other' END k, COUNT(*) n FROM signals WHERE kind='entry' AND at > ? GROUP BY 1, 2`, Date.now() - 7 * 86_400_000);
-    for (const r of rows) { const w = out.get(r.scanner_id) ?? { entries: 0, opened: 0, gate: 0, fee: 0, regime: 0, guard: 0, other: 0 }; w.entries += r.n; (w as any)[r.k] += r.n; out.set(r.scanner_id, w); }
-    return out;
+    return scannerWeekFunnel(this.db);
   }
 
   /** Which books each scanner is in (decision 64): markets it trades in the account, markets it is proving in the shadow book. */
@@ -518,6 +516,7 @@ export class App {
     const s = this.registry.get(id);
     if (!s) return null;
     const c = this.scanners.scannerConfig(id);
+    const regime = this.config.get().risk.regime;
     const stats = idx ? this.paper.scannerStats(id, { closed: idx.closed, open: idx.open }) : this.paper.scannerStats(id);
     stats.signals = idx ? (idx.signals.get(id) ?? 0) : this.db.countSignals(id);
     stats.backtest = idx ? this.scanners.backtestSummary(id, idx.backtests) : this.scanners.backtestSummary(id);
@@ -527,6 +526,10 @@ export class App {
       id: s.id, name: s.name, author: s.author, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: Boolean(c.enabled && !c.hidden), active: this.scanners.isActive(s), hidden: Boolean(c.hidden),
       overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, updated: s.updated, patches: s.patches,
       symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), pairs: c.pairs ?? null, exitMode: c.exitMode,
+      scheduledCells: this.scanners.isActive(s) ? this.scanners.pairsFor(id).length : 0,
+      entryProtection: c.entryProtection ?? 'inherit',
+      entryLimit: c.entryLimit ?? null,
+      minAtrPct: regime.minAtrPctByScanner?.[id] ?? regime.minAtrPct,
       // how the script is read (decision 48): its entry channel, timezone, derivation rule, input overrides and exit overrides
       reads: { sources: c.sources ?? null, timezone: c.timezone ?? null, rule: c.rule ?? null, inputs: c.inputs ?? null, exit: c.exit ?? null, labels: c.labels ?? null, edge: c.edge ?? null, invert: Boolean(c.invert), sides: c.sides ?? null, variantOf: s.variantOf ?? null },
       // what it produced when last profiled, and whether the runtime has given up on it

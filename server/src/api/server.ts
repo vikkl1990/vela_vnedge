@@ -279,6 +279,10 @@ export class ApiServer {
       if (Array.isArray(body?.timeframes)) { for (const tf of body.timeframes) if (!(tf in TF_SECONDS)) throw new HttpError(400, `unsupported tf ${tf}`); patch.timeframes = body.timeframes; }
       if (body?.timeframes === null) patch.timeframes = null;
       if (body?.exitMode) { if (!['levels', 'script', 'both'].includes(body.exitMode)) throw new HttpError(400, 'bad exitMode'); patch.exitMode = body.exitMode; }
+      if (body?.entryProtection === null) patch.entryProtection = undefined;
+      else if (body?.entryProtection !== undefined) { if (!['atr','native'].includes(body.entryProtection)) throw new HttpError(400,'entryProtection must be atr|native'); patch.entryProtection = body.entryProtection; }
+      if (body?.entryLimit === null) patch.entryLimit = undefined;
+      else if (body?.entryLimit !== undefined) patch.entryLimit = body.entryLimit;
       if (typeof body?.hidden === 'boolean') { patch.hidden = body.hidden; if (body.hidden) patch.enabled = false; }
       // how the script is read (decision 48)
       if (body?.sources === null) patch.sources = undefined;

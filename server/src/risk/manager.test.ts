@@ -236,3 +236,13 @@ test('decision 82: no re-entry for an hour after a stop on the same scanner and 
   clock.now += 61 * 60_000;
   assert.equal(mgr.gate(req('BTCUSD', 'long')).reject, undefined, 'an hour later it may');
 });
+
+test('scanner ATR floor override preserves chop and weekend guards and other scanners floors',async()=>{
+ const{regimeRefusal}=await import('./manager.ts');
+ const r={enabled:true,minAtrPct:.3,minAtrPctByScanner:{maker:0},minEr:.1,noWeekend:false,exempt:[]};
+ const req={at:Date.UTC(2026,10,2),price:100,atr:.1};
+ assert.match(regimeRefusal(r,'old',req,[])!,/ATR/);assert.equal(regimeRefusal(r,'maker',req,[]),null);
+ const bars=Array.from({length:30},(_,i)=>({time:req.at+i*900000,open:100,high:102,low:99,close:100+i%2,volume:1}));
+ assert.match(regimeRefusal(r,'maker',req,bars)!,/choppy/);
+ assert.match(regimeRefusal({...r,noWeekend:true},'maker',{...req,at:Date.UTC(2026,10,1)},[])!,/weekend/);
+});

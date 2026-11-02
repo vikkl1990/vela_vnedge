@@ -10,6 +10,7 @@
 import type { AppConfig, PaperConfig } from '../config.ts';
 import type { ExitOverride } from '../config.ts';
 import { scriptModeExit, scriptModeProtection } from './logic.ts';
+import {scannerEntryConfig} from './entryProtection.ts';
 
 export type Book = 'account' | 'shadow';
 
@@ -35,8 +36,8 @@ export function scannerExitPolicy(cfg: AppConfig, scannerId: string, now = Date.
 }
 
 /** The entry model a book uses on this timeframe (decision 185): a maker limit resting back from the signal, or a market entry (undefined). */
-export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { executor?: boolean } = {}): { pullbackAtr: number; pullbackBars: number; limitWhenFlatOnly: true } | undefined {
-  const le = cfg.paper.limitEntry;
+export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { executor?: boolean; scannerId?:string } = {}): { pullbackAtr: number; pullbackBars: number; limitWhenFlatOnly: true } | undefined {
+  const le = scannerEntryConfig(cfg.paper,opts.scannerId?cfg.scanners[opts.scannerId]:undefined,tf).limitEntry;
   if (!le?.enabled || !le.tfs.includes(tf) || !le.books.includes(book)) return undefined;
   if (book === 'account' && opts.executor) return undefined;   // an exchange-mirrored account enters at market (decision 185)
   return { pullbackAtr: le.atrByTf?.[tf] ?? le.atr, pullbackBars: le.bars, limitWhenFlatOnly: true };
@@ -46,13 +47,14 @@ export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { exec
 export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number } = {}) {
   const sc = cfg.scanners[scannerId] ?? {};
   return {
-    cfg: bookPaperConfig(cfg, book),
-    requireAtrStop: book === 'account' && Boolean(cfg.paper.skipScriptStops),
+    cfg: scannerEntryConfig(bookPaperConfig(cfg, book),sc,tf),
+    entryProtection: sc.entryProtection,
+    requireAtrStop: book === 'account' && Boolean(cfg.paper.skipScriptStops) && sc.entryProtection !== 'native',
     exitMode: sc.exitMode ?? 'both',
     scannerExit: scannerExitPolicy(cfg, scannerId, opts.now),
     scannerExitResolved: true as const,
     trendGate: sc.trendGate,
-    entry: entryPolicy(cfg, tf, book, opts),
+    entry: entryPolicy(cfg, tf, book, {...opts,scannerId}),
     chopGate: cfg.risk.regime?.enabled && (cfg.risk.regime.minEr ?? 0) > 0 ? { minEr: cfg.risk.regime.minEr! } : undefined,
   };
 }

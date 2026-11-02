@@ -282,6 +282,10 @@ export type TrendGateMode = 'follow' | 'fade' | 'off';
 
 export interface ScannerConfig {
   enabled: boolean;
+  /** Entry protection only: convert to ATR, permit native levels, or inherit the legacy policy when absent. */
+  entryProtection?: 'atr' | 'native';
+  /** Scanner-specific passive entry; expiry is wall-clock minutes, not a whole signal candle. */
+  entryLimit?: { tfs:string[]; atr:number; minutes:number };
   /** Removed from the dashboard list (kept disabled); restorable. */
   hidden?: boolean;
   symbols: string[] | null;
@@ -583,6 +587,8 @@ export interface RiskConfig {
     enabled: boolean;
     /** Skip entries when ATR(14) / price × 100 is below this. */
     minAtrPct: number;
+    /** Explicit per-scanner ATR floors; other regime and execution-cost checks still apply. */
+    minAtrPctByScanner?: Record<string,number>;
     /** Skip entries on Saturday/Sunday (UTC). */
     noWeekend: boolean;
     /** Whipsaw gate (decision 66/70): skip entries when the entry timeframe's Kaufman efficiency ratio over 20 closed bars is below this (0 = off). */
@@ -760,6 +766,8 @@ export function validateConfig(c: AppConfig): string[] {
   for (const tf of c.timeframes || []) if (!(tf in TF_SECONDS)) errs.push(`unsupported timeframe ${tf}`);
   if (!(c.historyBars >= 200 && c.historyBars <= 4000)) errs.push('historyBars must be 200..4000');
   const p = c.paper;
+  for (const [id,sc] of Object.entries(c.scanners??{})) if (sc.entryProtection !== undefined && !['atr','native'].includes(sc.entryProtection)) errs.push(`scanner ${id}: entryProtection must be atr|native`);
+  for (const [id,sc] of Object.entries(c.scanners??{})) if (sc.entryLimit && (!Array.isArray(sc.entryLimit.tfs) || !sc.entryLimit.tfs.length || sc.entryLimit.tfs.some(tf=>!(tf in TF_SECONDS)) || !Number.isFinite(sc.entryLimit.atr) || sc.entryLimit.atr<0 || sc.entryLimit.atr>2 || !Number.isFinite(sc.entryLimit.minutes) || sc.entryLimit.minutes<1 || sc.entryLimit.minutes>240)) errs.push(`scanner ${id}: invalid entryLimit`);
   const fg = p.fundingGuard;
   if (fg && (typeof fg.enabled !== "boolean" || !Number.isFinite(fg.leadMinutes) || fg.leadMinutes < 1 || fg.leadMinutes > 60 || !Number.isFinite(fg.maxAgeSec) || fg.maxAgeSec < 10 || fg.maxAgeSec > 600 || !Number.isFinite(fg.scalpMaxR) || fg.scalpMaxR <= 0 || fg.scalpMaxR > 2 || !Number.isFinite(fg.swingMaxR) || fg.swingMaxR <= 0 || fg.swingMaxR > 2)) errs.push("invalid paper.fundingGuard settings");
   if (!(p.initialEquity > 0)) errs.push('paper.initialEquity must be > 0');
@@ -930,6 +938,7 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   if (!Array.isArray(r.ddScale) || r.ddScale.some(d => !(d.ddPct >= 0 && d.ddPct <= 100 && d.leverageMult >= 0 && d.leverageMult <= 1))) errs.push('risk.ddScale must be [{ddPct 0..100, leverageMult 0..1}]');
   if (r.marketGate) { const g = r.marketGate; if (![g.minTurnoverUsd, g.minAtrFeeMult, g.lookbackDays, g.minTrades, g.minPf, g.refreshMinutes, g.probeNotionalUsd ?? 0, g.maxBookCostPct ?? 0].every(v => Number.isFinite(v) && v >= 0) || g.refreshMinutes < 1 || g.lookbackDays < 1) errs.push('risk.marketGate values must be ≥ 0 (refreshMinutes, lookbackDays ≥ 1)'); }
   if (!(r.regime && Number.isFinite(r.regime.minAtrPct) && r.regime.minAtrPct >= 0 && Array.isArray(r.regime.exempt))) errs.push('risk.regime.minAtrPct must be ≥ 0 and exempt an array');
+  if (r.regime?.minAtrPctByScanner !== undefined && (!r.regime.minAtrPctByScanner || Array.isArray(r.regime.minAtrPctByScanner) || typeof r.regime.minAtrPctByScanner !== 'object' || Object.values(r.regime.minAtrPctByScanner).some(v=>!Number.isFinite(v)||v<0))) errs.push('risk.regime.minAtrPctByScanner must contain nonnegative finite floors');
   return errs;
 }
 
@@ -1024,6 +1033,9 @@ export class ConfigStore {
     this.refreshIfChangedOnDisk();
     const cur = this.cfg.scanners[id] || { enabled: true, symbols: null, timeframes: null, exitMode: 'both' as ExitMode };
     const next = { ...cur, ...patch };
+    if (next.entryProtection !== undefined && !['atr','native'].includes(next.entryProtection)) throw new Error('entryProtection must be atr|native');
+    const errors=validateConfig({...this.cfg,scanners:{...this.cfg.scanners,[id]:next}}).filter(e=>e.includes(`scanner ${id}:`));
+    if(errors.length)throw new Error(errors.join('; '));
     if (next.symbols && next.symbols.length === 0) next.symbols = null;
     if (next.timeframes && next.timeframes.length === 0) next.timeframes = null;
     // the fleet cap (decision 79): no single save may put more live cells on the box than incubator.promote.maxFleet allows

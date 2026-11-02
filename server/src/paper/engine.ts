@@ -5,6 +5,7 @@ import {depthPlan} from './depthPlan.ts';
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
 import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
 import {createReclaim, advanceReclaim, type ReclaimState} from './reclaim.ts';
+import { protectEntry, scannerEntryConfig } from './entryProtection.ts';
 import {initReclaimAudit,recordReclaimEvent} from './reclaimAudit.ts';
 import type {Bar} from '../data/candleStore.ts';
 import { offerStatus, type EntryExecution } from './costs.ts';
@@ -209,7 +210,7 @@ export class PaperEngine extends EventEmitter {
 
 
   private configFor(cell: {scannerId:string;symbol:string;tf:string;entryAt?:number;at?:number;executionPlan?:ExecutionPlanSnapshot}): PaperConfig {
-    return cell.executionPlan?.paper ?? exitConfigFor(this.paper,cell.symbol,this.scannerExit?.(cell.scannerId,cell.entryAt ?? cell.at),cell.tf);
+    return cell.executionPlan?.paper ?? scannerEntryConfig(exitConfigFor(this.paper,cell.symbol,this.scannerExit?.(cell.scannerId,cell.entryAt ?? cell.at),cell.tf),this.cfgRef().scanners[cell.scannerId],cell.tf);
   }
   private planEnabled(p: ExecutionPlanSnapshot | undefined): boolean {
     return !p || (this.book===2 && this.cfgRef().executionPlans?.some(x=>x.enabled&&x.id===p.id&&x.revision===p.revision)===true);
@@ -398,20 +399,21 @@ export class PaperEngine extends EventEmitter {
   }
   onEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
     if (!this.planEnabled(ctx.executionPlan)) return {action:"rejected",reason:"research plan disabled or wrong book"};
+    const protection = ctx.executionPlan ? undefined : this.cfgRef().scanners[ctx.scannerId]?.entryProtection;
     const auditConfig = configFingerprint(this.cfgRef(),ctx.scannerId,ctx.tf,{source:this.sourceHashFor?.(ctx.scannerId)??null,book:this.book,plan:ctx.executionPlan});
     this.db.run('INSERT OR IGNORE INTO config_fingerprints(fp,parts,first_at) VALUES(?,?,?)',auditConfig.fp,JSON.stringify(auditConfig.parts),Date.now());
     const write = (stage: string, reason: string | null, positionId: number | null = null) => this.db.run(
       'INSERT INTO decision_trace(at,book,signal_id,position_id,scanner_id,symbol,tf,stage,reason,snapshot) VALUES(?,?,?,?,?,?,?,?,?,?)',
       Date.now(),this.book,ctx.signalId,positionId,ctx.scannerId,ctx.symbol,ctx.tf,stage,reason,
       JSON.stringify({version:2,executionPlan:ctx.executionPlan ? {id:ctx.executionPlan.id,revision:ctx.executionPlan.revision,signature:ctx.executionPlan.signature} : null,configFp:auditConfig.fp,signalAt:ctx.at,reference:ctx.refPrice,side:ev.side,atr:ctx.atr??null,
-        scannerStop:ev.sl??null,scannerTargets:ev.tp??[],quote:this.quotes?.markState?.(ctx.symbol)??null,
+        scannerStop:ev.sl??null,scannerTargets:ev.tp??[],entryProtection:protection??'inherit',quote:this.quotes?.markState?.(ctx.symbol)??null,
         market:ctx.market,sizeScale:ctx.sizeScale??1,feeRatePct:this.paper.feeRatePct,
         makerFeeRatePct:this.paper.makerFeeRatePct,feeTaxPct:this.paper.feeTaxPct,
         minRiskFeeRatio:this.paper.minRiskFeeRatio,offerConfigured:!!this.paper.scalperOffer?.enabled,
         offerEligibility:offerStatus(this.paper),sourceHash:this.sourceHashFor?.(ctx.scannerId)??null}));
     write('received',null);
     try {
-      const decision = this.decideEntry(ev,ctx);
+      const decision = this.decideEntry(protectEntry(ev,protection),ctx);
       write(decision.action,decision.reason??null,decision.position?.id??decision.pendingId??null);
       return decision;
     } catch (error) {
@@ -532,7 +534,8 @@ export class PaperEngine extends EventEmitter {
     if ('error' in levels) return refused(levels.error);
     // decision 146: a stop the scanner placed itself (source script or mixed) loses in both books and both halves of
     // decision 145's sample; the account takes only entries on the engine's own ATR stop. The shadow book keeps them.
-    if ((this.book === 0 || ctx.executionPlan?.requireAtrStop) && cfg.skipScriptStops && levels.source !== 'atr-fallback') return refused("the scanner's own stop: the account takes only the ATR stop (decision 146)");
+    const nativeAllowed = !ctx.executionPlan && this.cfgRef().scanners[ctx.scannerId]?.entryProtection === 'native';
+    if ((this.book === 0 || ctx.executionPlan?.requireAtrStop) && cfg.skipScriptStops && !nativeAllowed && levels.source !== 'atr-fallback') return refused("the scanner's own stop: the account takes only the ATR stop (decision 146)");
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, ctx.symbol, this.spreadPct(ctx.symbol, cfg, ctx.at), { maker: willRestLimit });
     if (feeErr) return refused(feeErr);
     // portfolio risk layer: kill switches, position caps, cooldowns, regime filter, drawdown scaling

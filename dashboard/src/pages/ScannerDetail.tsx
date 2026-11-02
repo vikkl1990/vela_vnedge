@@ -94,12 +94,18 @@ export function ScannerDetail() {
             <ScannerStatusPill status={s.status} reason={s.reason} />
             <Pill tone={s.enabled ? 'ok' : 'muted'}>{s.enabled ? 'ENABLED' : 'DISABLED'}</Pill>
             <Pill tone="accent">{s.exitMode}</Pill>
+            <Pill tone={s.scheduledCells ? 'ok' : 'warn'}>{s.scheduledCells ?? 0} PAPER CELLS</Pill>
+            <Pill tone="muted">{s.entryProtection ?? 'inherit'} protection</Pill>
+            <Pill tone="muted">ATR floor {s.minAtrPct ?? '–'}%</Pill>
+            {s.entryLimit && <Pill tone="accent">Maker {s.entryLimit.atr} ATR · {s.entryLimit.minutes}m expiry</Pill>}
             <span className="muted small mono">
               v{s.pineVersion} · {s.lines} lines · {s.file}
             </span>
             {s.status === 'ok' && <ScreenNow ids={[s.id]} label={s.name} />}
           </div>
           {s.reason && <div className="small loss mt">{s.reason}</div>}
+          {s.enabled && !s.symbols.length && <p className="small loss">No pairs are assigned. Enabling a scanner alone does not schedule paper scans.</p>}
+          {!!s.reads?.labels?.length && <p className="small muted">Accepted entry labels: {s.reads.labels.join(', ')}</p>}
           {s.lastRun && (
             <div className="small muted mt">
               last run <Time t={s.lastRun.at} mode="ago" /> on {s.lastRun.symbol} {s.lastRun.tf} in {fmtMs(s.lastRun.ms)}

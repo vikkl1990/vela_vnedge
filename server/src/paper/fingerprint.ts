@@ -33,7 +33,8 @@ const stable = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof
 // 205: ordinary shadow cells no longer consume each other's synthetic margin/leverage budget.
 // 206: candle-filled resting limits charge their fill-minute stop, including adverse opening gaps.
 // 207: held-position candle stops execute through opening gaps; Role Reversal uses confirmed flip events.
-export const SIM_VERSION = 207;
+// 208: explicit per-scanner entry protection/maker policies and repaired directional readers.
+export const SIM_VERSION = 208;
 
 /** A short, stable hash of a scanner's patched Pine source: library imports change outside the commit. */
 export function sourceHash(patched: string | undefined | null): string | null {

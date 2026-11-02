@@ -538,5 +538,106 @@
     "sources": [],
     "enabled": false,
     "exitMode": "levels"
+  },
+  "smart-swing-vwap-zeiierman": {
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Bullish polarity flip",
+      "Bearish polarity flip",
+      "Cross above AVWAP",
+      "Cross below AVWAP",
+      "Bullish AVWAP retest",
+      "Bearish AVWAP retest"
+    ],
+    "sides": {
+      "New ranked anchor": "none",
+      "Any ranked AVWAP event": "none",
+      "Bullish polarity flip": "long",
+      "Bearish polarity flip": "short",
+      "Cross above AVWAP": "long",
+      "Cross below AVWAP": "short",
+      "Bullish AVWAP retest": "long",
+      "Bearish AVWAP retest": "short"
+    }
+  },
+  "kinetic-momentum-vectors-two-sided": {
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Bull Spike",
+      "Bear Spike"
+    ],
+    "sides": {
+      "Bull Spike": "long",
+      "Bear Spike": "short"
+    }
+  },
+  "session-killzones-breakouts-all-sessions": {
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Asia Bull Breakout",
+      "Asia Bear Breakout",
+      "London Bull Breakout",
+      "London Bear Breakout",
+      "NY Bull Breakout",
+      "NY Bear Breakout"
+    ],
+    "sides": {
+      "Asia Bull Breakout": "long",
+      "Asia Bear Breakout": "short",
+      "London Bull Breakout": "long",
+      "London Bear Breakout": "short",
+      "NY Bull Breakout": "long",
+      "NY Bear Breakout": "short"
+    },
+    "entryLimit": {
+      "tfs": [
+        "15m"
+      ],
+      "atr": 0.1,
+      "minutes": 5
+    }
+  },
+  "liquidity-trail-matrix-atr-maker": {
+    "sources": [
+      "alert"
+    ],
+    "entryProtection": "atr",
+    "entryLimit": {
+      "tfs": [
+        "15m"
+      ],
+      "atr": 0.1,
+      "minutes": 5
+    },
+    "exitMode": "both",
+    "enabled": false
+  },
+  "trend-impulse-channels-zeiierman-maker": {
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Upper Retest",
+      "Lower Retest"
+    ],
+    "sides": {
+      "upper retest": "long",
+      "lower retest": "short"
+    },
+    "entryLimit": {
+      "tfs": [
+        "15m"
+      ],
+      "atr": 0.1,
+      "minutes": 5
+    },
+    "exitMode": "both",
+    "enabled": false
   }
 }

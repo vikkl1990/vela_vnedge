@@ -26,6 +26,7 @@ import { extractEvents } from '../scanners/extractor.ts';
 import { applyRules, labelKey } from '../scanners/rules.ts';
 import { lastAtr } from '../data/indicators.ts';
 import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
+import { protectEntry } from '../paper/entryProtection.ts';
 import type { Features, FeatureInputs } from '../ml/features.ts';
 import { logger } from '../log.ts';
 import { mirrorRefusal } from './gate.ts';
@@ -362,7 +363,8 @@ export class ShadowRunner {
         let features: Features | undefined; let mlProb: number | null = null;
         if (this.deps.ml && atr) {
           const price = ev.price && ev.price > 0 ? ev.price : refPrice;
-          const levels = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr }, cfg.paper, market.tickSize);
+          const plan = protectEntry(ev,cfg.scanners[s.id]?.entryProtection);
+          const levels = resolveLevels({ side: ev.side, price, sl: plan.sl, tp: plan.tp, atr }, cfg.paper, market.tickSize);
           if (!('error' in levels)) {
             features = this.deps.ml.features({ bars, i: bars.length - 1, ev, entry: price, sl: levels.sl, tp1: levels.tp[0], atr, levelsSource: levels.source });
             mlProb = this.deps.ml.score(s.id, features, { record: false, tf: r.tf })?.prob ?? null;

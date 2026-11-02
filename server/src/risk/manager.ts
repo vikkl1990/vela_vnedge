@@ -65,9 +65,10 @@ export function isWeekend(t: number): boolean { const d = new Date(t).getUTCDay(
 export function regimeRefusal(r: RiskConfig['regime'] | undefined, scannerId: string, req: { at: number; price: number; atr?: number }, bars: Bar[]): string | null {
   if (!r?.enabled || (r.exempt ?? []).includes(scannerId)) return null;
   if (r.noWeekend && isWeekend(req.at)) return 'regime: weekend';
-  if (r.minAtrPct > 0 && req.atr !== undefined && req.atr > 0 && req.price > 0) {
+  const minAtrPct = r.minAtrPctByScanner?.[scannerId] ?? r.minAtrPct;
+  if (minAtrPct > 0 && req.atr !== undefined && req.atr > 0 && req.price > 0) {
     const atrPct = req.atr / req.price * 100;
-    if (atrPct < r.minAtrPct) return `regime: ATR ${atrPct.toFixed(2)}% < ${r.minAtrPct}%`;
+    if (atrPct < minAtrPct) return `regime: ATR ${atrPct.toFixed(2)}% < ${minAtrPct}%`;
   }
   // the whipsaw gate (decision 70): a market that travelled far but went nowhere over the last 20 bars of the entry timeframe
   if ((r.minEr ?? 0) > 0 && bars.length) {

@@ -186,3 +186,12 @@ test('coordinated targets defer trailing explicitly while retaining the original
  const restored=reloaded.position(variant.id)!;assert.deepEqual(restored.tp,[102,104,108]);assert.equal(restored.executionPlan!.paper.trailAfterR,1);assert.equal(restored.qtyOpen,variant.qtyOpen);
  c.executionPlans![1].takeProfit!.trailAfterR=NaN;assert.ok(validateConfig(c).some(x=>x.includes('TP trail activation')));
 });
+
+test('current plan freezes scanner protection and five-minute passive entry',t=>{
+ const {c,ev,bars}=setup(t);c.scanners.s.entryProtection='atr';c.scanners.s.entryLimit={tfs:['15m'],atr:.1,minutes:5};
+ const p=planSnapshot(c,c.executionPlans![0],'a');
+ c.scanners.s.entryProtection='native';c.scanners.s.entryLimit.minutes=20;
+ assert.equal(planEvents([ev],bars,p)[0].sl,undefined);assert.deepEqual(planEvents([ev],bars,p)[0].tp,[]);
+ assert.equal(p.paper.limitEntry!.bars,1/3);assert.equal(planBacktest(p).entry!.pullbackBars,1/3);
+ assert.equal(ev.sl,98);assert.notEqual(p.signature,planSnapshot(c,c.executionPlans![0],'a').signature);
+});

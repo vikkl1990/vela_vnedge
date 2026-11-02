@@ -189,7 +189,7 @@ export interface Scanner {
   id: string
   name: string
   /** The last seven days of this scanner's entry signals by outcome (decision 87). */
-  week?: { entries: number; opened: number; gate: number; fee: number; regime: number; guard: number; other: number } | null
+  week?: { entries: number; opened: number; pending?: number; pilot?: number; protection?: number; gate: number; fee: number; regime: number; guard: number; other: number } | null
   author?: string
   file: string
   url: string
@@ -198,6 +198,10 @@ export interface Scanner {
   enabled: boolean
   /** Scheduled right now: enabled, runnable and not quarantined. */
   active?: boolean
+  scheduledCells?: number
+  minAtrPct?: number
+  entryProtection?: 'atr' | 'native' | 'inherit'
+  entryLimit?: {tfs:string[];atr:number;minutes:number} | null
   hidden?: boolean
   overlay: boolean
   pineVersion: string

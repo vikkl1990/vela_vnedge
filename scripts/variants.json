@@ -16,5 +16,29 @@
     "base": "structure-anchored-vwap",
     "name": "Structure-Anchored VWAP | confirmed HL/LH pivots",
     "why": "Decision 195: the derived HL/LH entries (55-bar pivots, entered on confirmation) are a different strategy from the script's own LONG/SHORT alerts. They never fired live (a 40-bar cut-off threw every confirmed pivot away) while the backtest counted them; the base id now reads only the native alerts."
+  },
+  {
+    "id": "kinetic-momentum-vectors-two-sided",
+    "base": "kinetic-momentum-vectors",
+    "name": "Kinetic Momentum Vectors | both spike directions",
+    "why": "Decision 215: measure both spike directions separately from the established Bull Spike-only reading."
+  },
+  {
+    "id": "session-killzones-breakouts-all-sessions",
+    "base": "session-killzones-breakouts",
+    "name": "Session Killzones & Breakouts | all sessions",
+    "why": "Decision 215: measure Asia, London and New York breakouts separately from the Asia Bull-only reading."
+  },
+  {
+    "id": "liquidity-trail-matrix-atr-maker",
+    "base": "liquidity-trail-matrix",
+    "name": "Liquidity Trail Matrix | ATR maker",
+    "why": "Decision 215: explicit ATR protection and a 0.1-ATR passive entry with five-minute expiry; separate evidence from native levels."
+  },
+  {
+    "id": "trend-impulse-channels-zeiierman-maker",
+    "base": "trend-impulse-channels-zeiierman",
+    "name": "Trend Impulse Channels | continuation maker",
+    "why": "Decision 215: preserve the measured Upper Retest long / Lower Retest short continuation reading with a 0.1-ATR passive entry and five-minute expiry."
   }
 ]

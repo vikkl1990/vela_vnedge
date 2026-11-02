@@ -173,7 +173,7 @@ export function Scanners() {
         key: 'week', header: '7 days', title: 'This scanner\'s entry signals in the last seven days: how many, how many opened, and what refused the rest (market gate, fee rule, regime, entry guards)',
         value: (s) => s.week?.entries ?? 0,
         numeric: true,
-        render: (s) => (s.week && s.week.entries ? <span className="mono small" title={`opened ${s.week.opened} · gate ${s.week.gate} · fee ${s.week.fee} · regime ${s.week.regime} · guards ${s.week.guard} · other ${s.week.other}`}>{s.week.entries} → <b className={s.week.opened ? 'gain' : ''}>{s.week.opened}</b>{s.week.gate ? ` · gate ${s.week.gate}` : ''}{s.week.fee ? ` · fee ${s.week.fee}` : ''}{s.week.regime ? ` · regime ${s.week.regime}` : ''}{s.week.guard ? ` · guard ${s.week.guard}` : ''}</span> : <span className="muted">–</span>),
+        render: (s) => (s.week && s.week.entries ? <span className="mono small" title={`filled ${s.week.opened} · pending ${s.week.pending ?? 0} · pilot cap ${s.week.pilot ?? 0} · protection ${s.week.protection ?? 0} · gate ${s.week.gate} · fee ${s.week.fee} · regime ${s.week.regime} · guards ${s.week.guard} · other ${s.week.other}`}>{s.week.entries} → <b className={s.week.opened ? 'gain' : ''}>{s.week.opened}</b>{s.week.pending ? ` · pending ${s.week.pending}` : ''}{s.week.pilot ? ` · pilot cap ${s.week.pilot}` : ''}{s.week.protection ? ` · stops ${s.week.protection}` : ''}{s.week.gate ? ` · gate ${s.week.gate}` : ''}{s.week.fee ? ` · fee ${s.week.fee}` : ''}{s.week.regime ? ` · regime ${s.week.regime}` : ''}{s.week.guard ? ` · guard ${s.week.guard}` : ''}</span> : <span className="muted">–</span>),
       },
       {
         key: 'kind', header: 'Kind', value: (s) => s.kind ?? '', title: 'What the script produced when last profiled: plan (its own stop and targets), signal (a direction), levels (information), silent, broken',
@@ -277,7 +277,7 @@ export function Scanners() {
   return (
     <div className="page">
       <div className="page-head">
-        <PageTitle pre="Every scanner," accent="one" post="terminal." sub={scanners.data ? `${scanners.data.filter((s) => !s.hidden).length} in list · ${enabledCount} enabled · ${hiddenCount} removed` : undefined} />
+        <PageTitle pre="Every scanner," accent="one" post="terminal." sub={scanners.data ? `${scanners.data.filter((s) => !s.hidden).length} in list · ${enabledCount} enabled · ${scanners.data.filter(s => (s.scheduledCells ?? 0) > 0).length} scheduled · ${hiddenCount} removed` : undefined} />
         <div className="page-actions">
           <button className="btn" onClick={() => bulk(true)} disabled={busy || !scanners.data} title="Every runnable scanner on its own symbols: a fleet far above the cap, which the server refuses. Enable scanners one at a time or through the Incubator instead.">
             {bulkBusy ? 'Working…' : 'Enable all runnable'}
@@ -431,7 +431,10 @@ function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide, onRelease }: {
         </span>
       </div>
       <div className="card-summary mono">
-        alerts: LONG/SHORT · SL · TP1-3 · {s.exitMode} · {(s.symbols ?? []).join(',') || 'global symbols'} · {categorize(s.name).toLowerCase()}
+        {s.scheduledCells ?? 0} paper cells · {s.reads?.sources?.join(' + ') || 'automatic reader'} · {s.entryProtection ?? 'inherit'} protection · {s.exitMode} exits
+        {s.entryLimit && <div>Maker {s.entryLimit.atr} ATR · {s.entryLimit.minutes}m expiry · {s.entryLimit.tfs.join(', ')}</div>}
+        {s.reads?.labels?.length ? <div>Entry labels: {s.reads.labels.join(', ')}</div> : null}
+        {s.enabled && s.scheduledCells === 0 && <div className="loss">{s.health?.quarantined ? 'Quarantined: paper scans stopped' : !s.symbols.length ? 'No pairs assigned: no paper scans scheduled' : 'Scanner unavailable: no paper scans scheduled'}</div>}
       </div>
       {s.status !== 'ok' && s.reason && (
         <div className="small loss" title={s.reason}>

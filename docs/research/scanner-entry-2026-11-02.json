@@ -1,0 +1,515 @@
+{
+  "start": 1791212400000,
+  "end": 1793631600000,
+  "split": 1792422000000,
+  "policy": "Exploratory 28-day isolated scanner simulations on 15m, 1m fills, $150 margin target, full fees, 6x cost rule, ER 0.1; no fixed ATR floor for these selected variants. Market-entry comparison uses the same ATR-floor setting. Not a shared-portfolio or historical-fill replay.",
+  "cells": [
+    {
+      "id": "liquidity-trail-matrix-atr-maker",
+      "sym": "ETHUSD",
+      "tf": "15m",
+      "sourceHash": "f0cb4eaa98a1099ce479179f4743a77b00a8224e57b31a6ef8420b94b24151df",
+      "spread": 0.005,
+      "rawEntries": 46,
+      "all": {
+        "n": 17,
+        "R": 3.2573600404943877,
+        "SL": 2,
+        "dd": 1
+      },
+      "train": {
+        "n": 9,
+        "R": 0.3929379639035983,
+        "SL": 2,
+        "dd": 1
+      },
+      "test": {
+        "n": 8,
+        "R": 2.86442207659079,
+        "SL": 0,
+        "dd": 0
+      },
+      "stress": {
+        "n": 3,
+        "R": 0.8155167869890336,
+        "SL": 0,
+        "dd": 0
+      },
+      "rejected": {
+        "context": 9,
+        "stop too tight for fees": 13,
+        "no pullback": 7,
+        "resting fill unconfirmed by minute data": 3
+      },
+      "prefix": {
+        "full": 45,
+        "prefix": 45,
+        "onlyFull": 0,
+        "onlyPrefix": 0
+      },
+      "window": {
+        "full": 2,
+        "runtime": 2,
+        "missing": 0,
+        "extra": 0
+      },
+      "marketEntryComparison": {
+        "id": "liquidity-trail-matrix",
+        "sym": "ETHUSD",
+        "tf": "15m",
+        "sourceHash": "f0cb4eaa98a1099ce479179f4743a77b00a8224e57b31a6ef8420b94b24151df",
+        "spread": 0.005,
+        "rawEntries": 46,
+        "all": {
+          "n": 7,
+          "R": -1.9425875935995462,
+          "SL": 3,
+          "dd": 2.7822447867057676
+        },
+        "train": {
+          "n": 3,
+          "R": -0.521003955134468,
+          "SL": 1,
+          "dd": 0.9999999999999998
+        },
+        "test": {
+          "n": 4,
+          "R": -1.4215836384650784,
+          "SL": 2,
+          "dd": 2
+        },
+        "stress": {
+          "n": 0,
+          "R": 0,
+          "SL": 0,
+          "dd": 0
+        },
+        "rejected": {
+          "stop too tight for fees": 30,
+          "context": 9
+        }
+      }
+    },
+    {
+      "id": "session-killzones-breakouts-all-sessions",
+      "sym": "ETHUSD",
+      "tf": "15m",
+      "sourceHash": "89d3617bdc53ba341f7f79877ac739c08cee3fc2c3fd5b291b36c02bee4dee3d",
+      "spread": 0.005,
+      "rawEntries": 58,
+      "all": {
+        "n": 22,
+        "R": 3.776556389574478,
+        "SL": 3,
+        "dd": 2
+      },
+      "train": {
+        "n": 10,
+        "R": 0.313393470700416,
+        "SL": 2,
+        "dd": 2
+      },
+      "test": {
+        "n": 12,
+        "R": 3.463162918874062,
+        "SL": 1,
+        "dd": 0.9999999999999998
+      },
+      "stress": {
+        "n": 2,
+        "R": 0.6460820524408029,
+        "SL": 0,
+        "dd": 0
+      },
+      "rejected": {
+        "stop too tight for fees": 28,
+        "resting fill unconfirmed by minute data": 3,
+        "no pullback": 6,
+        "context": 2
+      },
+      "prefix": {
+        "full": 31,
+        "prefix": 31,
+        "onlyFull": 0,
+        "onlyPrefix": 0
+      },
+      "window": {
+        "full": 2,
+        "runtime": 2,
+        "missing": 0,
+        "extra": 0
+      },
+      "marketEntryComparison": {
+        "id": "session-killzones-breakouts-all-sessions",
+        "sym": "ETHUSD",
+        "tf": "15m",
+        "sourceHash": "89d3617bdc53ba341f7f79877ac739c08cee3fc2c3fd5b291b36c02bee4dee3d",
+        "spread": 0.005,
+        "rawEntries": 58,
+        "all": {
+          "n": 5,
+          "R": 0.8671826830183182,
+          "SL": 1,
+          "dd": 1
+        },
+        "train": {
+          "n": 3,
+          "R": 1.4323292973180346,
+          "SL": 0,
+          "dd": 0
+        },
+        "test": {
+          "n": 2,
+          "R": -0.5651466142997164,
+          "SL": 1,
+          "dd": 1
+        },
+        "stress": {
+          "n": 0,
+          "R": 0,
+          "SL": 0,
+          "dd": 0
+        },
+        "rejected": {
+          "stop too tight for fees": 51,
+          "context": 2
+        }
+      }
+    },
+    {
+      "id": "liquidity-trail-matrix-atr-maker",
+      "sym": "SOLUSD",
+      "tf": "15m",
+      "sourceHash": "f0cb4eaa98a1099ce479179f4743a77b00a8224e57b31a6ef8420b94b24151df",
+      "spread": 0.011673254981026376,
+      "rawEntries": 51,
+      "all": {
+        "n": 20,
+        "R": 0.9849535428206071,
+        "SL": 5,
+        "dd": 2.4494082807672983
+      },
+      "train": {
+        "n": 9,
+        "R": 0.6447963411708055,
+        "SL": 2,
+        "dd": 0.9999999999999998
+      },
+      "test": {
+        "n": 11,
+        "R": 0.3401572016498016,
+        "SL": 3,
+        "dd": 2.4494082807672983
+      },
+      "stress": {
+        "n": 3,
+        "R": 0.5279997090958496,
+        "SL": 0,
+        "dd": 0.2599485718170594
+      },
+      "rejected": {
+        "context": 7,
+        "stop too tight for fees": 16,
+        "no pullback": 8,
+        "resting fill unconfirmed by minute data": 5
+      },
+      "prefix": {
+        "full": 45,
+        "prefix": 45,
+        "onlyFull": 0,
+        "onlyPrefix": 0
+      },
+      "window": {
+        "full": 4,
+        "runtime": 4,
+        "missing": 0,
+        "extra": 0
+      },
+      "marketEntryComparison": {
+        "id": "liquidity-trail-matrix",
+        "sym": "SOLUSD",
+        "tf": "15m",
+        "sourceHash": "f0cb4eaa98a1099ce479179f4743a77b00a8224e57b31a6ef8420b94b24151df",
+        "spread": 0.011673254981026376,
+        "rawEntries": 51,
+        "all": {
+          "n": 6,
+          "R": 1.4128778679619982,
+          "SL": 0,
+          "dd": 0.2999387603599457
+        },
+        "train": {
+          "n": 4,
+          "R": 1.2358247882477225,
+          "SL": 0,
+          "dd": 0
+        },
+        "test": {
+          "n": 2,
+          "R": 0.1770530797142758,
+          "SL": 0,
+          "dd": 0.29993876035994566
+        },
+        "stress": {
+          "n": 1,
+          "R": 0.3502394078413968,
+          "SL": 0,
+          "dd": 0
+        },
+        "rejected": {
+          "context": 7,
+          "stop too tight for fees": 38
+        },
+        "prefix": {
+          "full": 45,
+          "prefix": 45,
+          "onlyFull": 0,
+          "onlyPrefix": 0
+        }
+      }
+    },
+    {
+      "id": "trend-impulse-channels-zeiierman-maker",
+      "sym": "SOLUSD",
+      "tf": "15m",
+      "sourceHash": "40ffb8f17e3b3a419021020116c6844c346fb3635a48c7e2386305a009879fd2",
+      "spread": 0.011673254981026376,
+      "rawEntries": 146,
+      "all": {
+        "n": 54,
+        "R": 2.1682491025604826,
+        "SL": 14,
+        "dd": 3.078000214881839
+      },
+      "train": {
+        "n": 24,
+        "R": 1.1694815250892514,
+        "SL": 6,
+        "dd": 3.078000214881839
+      },
+      "test": {
+        "n": 30,
+        "R": 0.9987675774712308,
+        "SL": 8,
+        "dd": 3.068463285231383
+      },
+      "stress": {
+        "n": 13,
+        "R": 0.18006629784030317,
+        "SL": 3,
+        "dd": 2.5084658311777264
+      },
+      "rejected": {
+        "stop too tight for fees": 28,
+        "no pullback": 20,
+        "context": 37,
+        "resting fill unconfirmed by minute data": 10,
+        "already_open": 7
+      },
+      "prefix": {
+        "full": 80,
+        "prefix": 80,
+        "onlyFull": 0,
+        "onlyPrefix": 0
+      },
+      "window": {
+        "full": 8,
+        "runtime": 8,
+        "missing": 0,
+        "extra": 0
+      },
+      "marketEntryComparison": {
+        "id": "trend-impulse-channels-zeiierman",
+        "sym": "SOLUSD",
+        "tf": "15m",
+        "sourceHash": "40ffb8f17e3b3a419021020116c6844c346fb3635a48c7e2386305a009879fd2",
+        "spread": 0.011673254981026376,
+        "rawEntries": 146,
+        "all": {
+          "n": 23,
+          "R": -3.7405785736276016,
+          "SL": 9,
+          "dd": 4.46464296111854
+        },
+        "train": {
+          "n": 11,
+          "R": -1.2080209332599054,
+          "SL": 4,
+          "dd": 1.9587677592905266
+        },
+        "test": {
+          "n": 12,
+          "R": -2.532557640367696,
+          "SL": 5,
+          "dd": 3.763053392829656
+        },
+        "stress": {
+          "n": 4,
+          "R": -1.2779253520664455,
+          "SL": 2,
+          "dd": 1.2779253520664455
+        },
+        "rejected": {
+          "stop too tight for fees": 83,
+          "context": 37,
+          "already_open": 3
+        }
+      }
+    }
+  ],
+  "coverage": [
+    {
+      "sym": "ETHUSD",
+      "tf": "1m",
+      "n": 40320,
+      "first": 1791212400000,
+      "last": 1793631540000,
+      "gaps": 0
+    },
+    {
+      "sym": "ETHUSD",
+      "tf": "15m",
+      "n": 3188,
+      "first": 1790762400000,
+      "last": 1793630700000,
+      "gaps": 0
+    },
+    {
+      "sym": "ETHUSD",
+      "tf": "1h",
+      "n": 1172,
+      "first": 1789412400000,
+      "last": 1793628000000,
+      "gaps": 0
+    },
+    {
+      "sym": "ETHUSD",
+      "tf": "4h",
+      "n": 668,
+      "first": 1784016000000,
+      "last": 1793620800000,
+      "gaps": 0
+    },
+    {
+      "sym": "SOLUSD",
+      "tf": "1m",
+      "n": 40320,
+      "first": 1791212400000,
+      "last": 1793631540000,
+      "gaps": 0
+    },
+    {
+      "sym": "SOLUSD",
+      "tf": "15m",
+      "n": 3188,
+      "first": 1790762400000,
+      "last": 1793630700000,
+      "gaps": 0
+    },
+    {
+      "sym": "SOLUSD",
+      "tf": "1h",
+      "n": 1172,
+      "first": 1789412400000,
+      "last": 1793628000000,
+      "gaps": 0
+    },
+    {
+      "sym": "SOLUSD",
+      "tf": "4h",
+      "n": 668,
+      "first": 1784016000000,
+      "last": 1793620800000,
+      "gaps": 0
+    }
+  ],
+  "errors": [],
+  "depth": [
+    {
+      "at": 1793637069738,
+      "sym": "ETHUSD",
+      "price": 2267.25,
+      "turnover": 575522975.7941465,
+      "checks": [
+        {
+          "notional": 750,
+          "qty": 33,
+          "maker": false,
+          "result": {
+            "crossingPct": 0.002205144602345266
+          }
+        },
+        {
+          "notional": 750,
+          "qty": 33,
+          "maker": true,
+          "result": {
+            "crossingPct": 0.002205144602345266
+          }
+        },
+        {
+          "notional": 1500,
+          "qty": 66,
+          "maker": false,
+          "result": {
+            "crossingPct": 0.002205144602345266
+          }
+        },
+        {
+          "notional": 1500,
+          "qty": 66,
+          "maker": true,
+          "result": {
+            "crossingPct": 0.002205144602345266
+          }
+        }
+      ]
+    },
+    {
+      "at": 1793637069967,
+      "sym": "SOLUSD",
+      "price": 93.417,
+      "turnover": 123268883.51122317,
+      "checks": [
+        {
+          "notional": 750,
+          "qty": 8,
+          "maker": false,
+          "result": {
+            "crossingPct": 0.011775852009651573
+          }
+        },
+        {
+          "notional": 750,
+          "qty": 8,
+          "maker": true,
+          "result": {
+            "crossingPct": 0.011775852009651573
+          }
+        },
+        {
+          "notional": 1500,
+          "qty": 16,
+          "maker": false,
+          "result": {
+            "crossingPct": 0.011775852009651573
+          }
+        },
+        {
+          "notional": 1500,
+          "qty": 16,
+          "maker": true,
+          "result": {
+            "crossingPct": 0.011775852009651573
+          }
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Four cells selected after reviewing 18 candidate results; chronological split is not an untouched holdout.",
+    "Stress retains only 21 later-half fills across four cells; small samples.",
+    "No historical depth, funding or queue position; snapshot crossing and higher-cost scenario, not historical measurements.",
+    "Profit is not guaranteed; live spread, capacity, risk and maker expiry may reduce counts."
+  ]
+}
