@@ -573,5 +573,32 @@
       "after": 90,
       "equal": true
     }
+  ],
+  "footprintLibrarySmoke": [
+    {
+      "id": "cme-institutional-order-flow-amt-lens",
+      "ok": true,
+      "ms": 955
+    },
+    {
+      "id": "2x-fvg-bos-choch-ema-rsi-gradient-pvsra",
+      "ok": true,
+      "ms": 243
+    },
+    {
+      "id": "cvd-footprint-exporter",
+      "ok": true,
+      "ms": 97
+    },
+    {
+      "id": "norn-weave-thurisaz",
+      "ok": true,
+      "ms": 749
+    }
+  ],
+  "footprintLibraryLimits": [
+    "CME Lens native and geometric modes work; its unavailable TradingView/ta/14 intrabar proxy is explicitly rejected. Original source unchanged.",
+    "CME Lens retains its author's geometric default and fallback. Its history must not be presented as entirely measured order flow.",
+    "No footprint scanner automatically activated for paper entries."
   ]
 }

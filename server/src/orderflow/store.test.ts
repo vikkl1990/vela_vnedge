@@ -7,6 +7,11 @@ import { DeltaPineProvider } from '../pine/provider.ts';
 import { PineTS } from 'pinets';
 import { fundamentalsToNa } from '../pine/compat.ts';
 import { normalizePublicMessage, parseTrade } from '../delta/ws.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { SCRIPTS_DIR } from '../config.ts';
+import { applyPatches } from '../pine/patches.ts';
+import { Indicator } from 'pinets';
 
 const T = 1800000000000, M = 60000;
 const print = (timeMs: number, aggressor: 'buy' | 'sell' | null, qty = 2) => ({ symbol: 'BTCUSD', price: 100, timeMs, aggressor, qty });
@@ -111,4 +116,26 @@ test('an unobserved symbol is unavailable; restart preserves records but cannot 
     assert.equal(rows.length,2); assert.equal(rows[0].covered,true); assert.equal(rows[1].covered,false);
     assert.equal(aggregateFlow(rows,3*M,T,T+3*M)[0].covered,false);
   } finally {db.db.close();}
+});
+
+test('CME Lens runs native footprints and retains its labelled proxy, while unavailable intrabar mode fails explicitly', async () => {
+  const file = 'EYNNWCWE-CME-Institutional-Order-Flow-AMT-Lens.pine';
+  const original = fs.readFileSync(path.join(SCRIPTS_DIR,'pine',file),'utf8');
+  const patched = applyPatches(original,file);
+  assert.ok(patched.applied.includes('cme-native-footprint-without-intrabar-library'));
+  assert.ok(original.includes('import TradingView/ta/14 as tvta'), 'vendored original stays unchanged');
+  const bars = Array.from({length:80},(_,i)=>({time:T+i*M,open:100,high:101,low:99,close:100,volume:5}));
+  const run = async (native: boolean, intrabar = false) => {
+    const provider = new DeltaPineProvider({symbol:'BTCUSD',tf:'1m',tickSize:.5,bars,footprints:bars.map(b=>minute(b.time,4))});
+    const pine = new PineTS(provider as any,'BTCUSD','1',bars.length); pine.setMaxLoops(200000);
+    const ind = new Indicator(patched.source+'\nplot(engBuy,"probeBuy")\nplot(engSell,"probeSell")');
+    ind.input.replayOptimized = !native;
+    if(intrabar) ind.input.engineInput = 'Intrabar (1m Low Memory)';
+    return pine.run(ind);
+  };
+  const native = await run(true), proxy = await run(false);
+  assert.equal(native.plots.probeBuy.data.at(-1)!.value,4);
+  assert.equal(native.plots.probeSell.data.at(-1)!.value,1);
+  assert.equal(proxy.plots.probeBuy.data.at(-1)!.value,2.5);
+  await assert.rejects(run(true,true),/intrabar proxy is unavailable/);
 });

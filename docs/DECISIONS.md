@@ -6594,3 +6594,18 @@ external venues with a VWAP overlay, script readouts, and shared replay controls
 Primary references: https://docs.luxalgo.com/vela/user/api-reference,
 https://docs.luxalgo.com/vela/user/data-providers,
 https://docs.delta.exchange/#trades and PineTS's `IFootprintProvider` types.
+
+The final library smoke test exercised all four existing footprint consumers on
+recorded BTC minute data. FVG Structure EMA RSI PVSRA, CVD Footprint Exporter and
+NORN WEAVE ran immediately. CME Lens was blocked by its optional intrabar-proxy
+import (`TradingView/ta/14`). Fetching the exact open-source v14 library reproduced
+an upstream PineTS `ClosedWorldViolation: tickPosVol`; adding a resolver alone
+would not fix it. A source-scoped compatibility patch removes that dependency
+only from CME Lens and rejects the unavailable intrabar mode explicitly. Its
+native-footprint and original geometric-proxy paths are retained, and the original
+source file is untouched. All four then run successfully. A full-script regression
+verifies native buy/sell values equal supplied measured volume, geometric mode
+remains its distinct estimate, and choosing intrabar mode raises a clear error.
+CME Lens still defaults to its author's geometric mode and can fall back to that
+estimate when footprint coverage is absent; do not interpret its entire history
+as measured tape. No footprint strategy is automatically enabled for paper entry.

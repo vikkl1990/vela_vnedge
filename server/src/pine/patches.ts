@@ -50,6 +50,18 @@ export const PATCH_RULES: PatchRule[] = [
   },
   { id: 'fundamentals-na', description: 'Unavailable equity/economic fundamentals are lowered to na. request.footprint uses observed Delta tape data and preserves missing coverage.', apply: fundamentalsToNa },
   {
+    id: 'cme-native-footprint-without-intrabar-library',
+    only: ['EYNNWCWE-CME-Institutional-Order-Flow-AMT-Lens'],
+    description: 'CME Lens uses TradingView/ta/14 only for its optional intrabar proxy. PineTS cannot compile that library (tickPosVol). Keep the original geometric/native footprint paths; explicitly reject the unavailable intrabar mode instead of blocking every mode or inventing its volumes.',
+    apply: src => {
+      if (!/^import TradingView\/ta\/14 as tvta\s*$/m.test(src) || !src.includes('tvta.requestUpAndDownVolume(effective_ltf)')) return src;
+      const helper = 'vnedge_intrabar_unavailable(string tf) =>\n    runtime.error("Delta: this intrabar proxy is unavailable; choose Native Footprint or the explicitly estimated Geometric Proxy mode")\n    [float(na), float(na), float(na)]\n\n';
+      return src.replace(/^import TradingView\/ta\/14 as tvta\s*$/m, '')
+        .replace('string root_sym =', helper + 'string root_sym =')
+        .replace('tvta.requestUpAndDownVolume(effective_ltf)', 'vnedge_intrabar_unavailable(effective_ltf)');
+    },
+  },
+  {
     id: 'label.all-size',
     description: "PineTS returns a plain JS array for `label.all` / `line.all` / `box.all`, so `array.size(x.all)` throws. These calls only guard drawing-object housekeeping; the branch is disabled.",
     apply: (src) => src.replace(/array\.size\(\s*(label|line|box|table|linefill|polyline)\.all\s*\)/g, '0'),
