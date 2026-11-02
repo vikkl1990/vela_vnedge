@@ -6665,3 +6665,14 @@ Regression tests cover alt-market rotation, negative/stale/policy-changed eviden
 assignment preservation, failed-job retries, daily budgets and restart recovery,
 worker pressure, concurrent ticks, pause/shutdown races, malformed workload limits,
 explicit market batches and market-assessment parity.
+
+Live validation found that the existing on-demand launcher could not reach the
+user-service bus: ProtectHome also hides /run/user. The OCI systemd drop-in binds
+only that socket at /run/vnedge-research/bus and sets its address; ProtectHome,
+ProtectSystem, NoNewPrivileges and the independent 6 GiB research scope stay in
+place. A transient service with the same restrictions verified successful scope
+creation before installing the drop-in. The UID is explicit for this host.
+Reference: https://freedesktop.org/software/systemd/man/latest/systemd.exec.html.
+
+Fair rotation is by market first, then untested cell, so a large scanner pool
+cannot keep the next several batches on BTC/ETH/SOL before visiting other pairs.

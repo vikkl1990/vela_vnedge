@@ -61,6 +61,7 @@ export class PairAgents {
       .filter(r=>r.at<=now && r.at>now-settings.refreshDays*DAY && r.signature===signatures.get(`${r.scanner_id}|${r.tf}`))
       .map(r=>[cellKey(r.scanner_id,r.symbol,r.tf),r]));
     const pairs=new Map(store.list().map(r=>[cellKey(r.scannerId,r.symbol,r.tf),r]));
+    const marketAttempts=new Map<string,number>();
     const active=new Set(['live','demote_proposed','shadow','proposed','tracked']);
     const due: Array<{id:string;symbol:string;tf:string;attempt:number;turnover:number}>=[];
     const markets:CoverageMarket[]=(await this.deps.markets()).filter(m=>/^[A-Z0-9]+USD$/.test(m.symbol)&&isCrypto(m.description)).map(m=>{
@@ -72,6 +73,8 @@ export class PairAgents {
       const row:CoverageMarket={symbol:m.symbol,turnover:m.volume24h,eligible:!reasons.length,reasons,account:0,shadow:0,tracked:0,candidates:0,screened:0,passed:0,due:0,cells:scanners.length*tfs.length};
       for(const sc of scanners)for(const tf of tfs){
         const key=cellKey(sc.id,m.symbol,tf),pair=pairs.get(key),e=evidence.get(key);
+        const attempt=s.attempts[key]??0;
+        marketAttempts.set(m.symbol,Math.max(marketAttempts.get(m.symbol)??0,attempt));
         if(pair?.stage==='live'||pair?.stage==='demote_proposed')row.account++;
         else if(pair?.stage==='shadow'||pair?.stage==='proposed')row.shadow++;
         else if(pair?.stage==='tracked')row.tracked++;
@@ -80,12 +83,12 @@ export class PairAgents {
         if(active.has(pair?.stage??'')||e)continue;
         if(pair?.stage==='retired'&&now-pair.since<c.incubator.cooldownDays*DAY)continue;
         row.due++;
-        const attempt=s.attempts[key]??0;
         if(row.eligible&&(!attempt||now-attempt>=DAY))due.push({id:sc.id,symbol:m.symbol,tf,attempt,turnover:m.volume24h});
       }
       return row;
     }).sort((a,b)=>b.turnover-a.turnover||a.symbol.localeCompare(b.symbol));
-    due.sort((a,b)=>a.attempt-b.attempt||b.turnover-a.turnover||a.symbol.localeCompare(b.symbol)||a.tf.localeCompare(b.tf)||a.id.localeCompare(b.id));
+    // Visit other markets before trying another policy on the same high-turnover trio.
+    due.sort((a,b)=>(marketAttempts.get(a.symbol)??0)-(marketAttempts.get(b.symbol)??0)||a.attempt-b.attempt||b.turnover-a.turnover||a.symbol.localeCompare(b.symbol)||a.tf.localeCompare(b.tf)||a.id.localeCompare(b.id));
     const q=this.deps.queue.list();
     return {enabled:settings.enabled&&c.incubator.enabled,settings,at:now,lastAt:s.lastAt,status:s.status,usedToday:s.used,nextAt:s.nextAt,
       scannerCount:scanners.length,tfs,markets,eligible:markets.filter(m=>m.eligible).length,

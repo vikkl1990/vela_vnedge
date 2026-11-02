@@ -29,6 +29,11 @@ test('active account, shadow and watch cells are preserved without promotion or 
   const f=fixture(t);f.markets.splice(1);for(const id of ['a','b'])f.store.move({scannerId:id,symbol:'XRPUSD',tf:'15m'},'tracked','test',null,'tracker:test',f.now());
   await f.agent.tick();assert.equal(f.jobs.length,0);const v=await f.agent.view();assert.equal(v.markets[0].tracked,2);assert.equal(v.markets[0].account,0);assert.equal(v.markets[0].due,0);assert.equal(f.evaluations(),0);
 });
+test('a larger scanner pool still visits other markets before repeating the top trio',async t=>{
+  const f=fixture(t);for(let i=0;i<8;i++)f.scanners.push({id:`extra${i}`,name:`Extra ${i}`,patched:`indicator("Extra ${i}")`});
+  await f.agent.tick();assert.equal(f.jobs[0].ids.length,4);f.finish();f.advance(11*60_000);await f.agent.tick();
+  assert.deepEqual(f.jobs[1].markets,['AVAXUSD','SUIUSD','BNBUSD']);
+});
 test('recent negative results count as tested; stale or changed-policy evidence does not',async t=>{
   const f=fixture(t),signature=coverageSignature(f.cfg,f.scanners[0],'15m');
   recordCoverage(f.db,'a','XRPUSD','15m',signature,{at:f.now(),pass:false,trades:20,avgR:-.1} as any);
