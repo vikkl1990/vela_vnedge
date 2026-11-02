@@ -15,6 +15,14 @@ class FakeChild extends EventEmitter {
   say(line: string) { this.stdout.emit('data', Buffer.from(line + '\n')); }
 }
 
+test('bounded pair-agent jobs pass their budget and canonicalize market order for deduplication',t=>{
+  const {q,children}=setup(t);
+  const a=q.enqueue({label:'coverage',ids:['a'],markets:['XRPUSD','LINKUSD'],tf:'15m',actor:'pair-agents',budgetMinutes:15});
+  assert.equal(children[0].env.BUDGET_MIN,'15');
+  assert.equal(q.enqueue({label:'same',ids:['a'],markets:['LINKUSD','XRPUSD'],tf:'15m',actor:'pair-agents',budgetMinutes:15}).id,a.id);
+  assert.throws(()=>q.enqueue({label:'bad',ids:['b'],tf:'15m',actor:'pair-agents',budgetMinutes:Infinity}));
+});
+
 function setup(t: { after: (fn: () => void) => void }, nightly = { running: false }) {
   const db = new Db(':memory:'); t.after(() => db.db.close());
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vnedge-screen-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

@@ -370,6 +370,8 @@ export interface MlConfig {
  * only on shadow trades taken after the pair was picked. See docs/DECISIONS.md, decision 17.
  */
 export interface IncubatorConfig {
+  /** Pair coverage agents share the existing screen queue and promotion pipeline. */
+  agents?: { enabled: boolean; maxJobsPerDay: number; scannersPerJob: number; marketsPerJob: number; refreshDays: number; budgetMinutes: number };
   /** Run shadow pairs in the bot. The daily screen is a separate job (`npm run incubate`). */
   enabled: boolean;
   tf: string;
@@ -605,6 +607,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   universe: { mode: 'list', top: 20, exclude: [] },
   ml: { minProb: 0, useAsScore: false },
   incubator: {
+    agents: { enabled: false, maxJobsPerDay: 24, scannersPerJob: 4, marketsPerJob: 3, refreshDays: 7, budgetMinutes: 15 },
     enabled: true, tf: '15m', tfs: ['15m', '1h', '4h'], universeTop: 40, minTurnoverUsd: 1_000_000, maxShadow: 100,
     screen: { bars: 4000, slices: 7, minTrades: 20, minProfitFactor: 1.2, minWindowsUp: 5, stressBps: 10, requireBothHalves: true, holdoutShare: 0.3, minHoldoutTrades: 8, requireHoldout: true, retryPerNight: 20, quietFilterTfs: ['5m', '15m'] },
     gate: {
@@ -887,6 +890,12 @@ export function validateConfig(c: AppConfig): string[] {
   errs.push(...validateOpsConfig(c));
   const inc = c.incubator;
   if (inc !== undefined) {
+    if(inc.agents!==undefined){
+      const a=inc.agents;
+      if(!a||typeof a.enabled!=='boolean')errs.push('incubator.agents.enabled must be boolean');
+      for(const [key,max] of [['maxJobsPerDay',48],['scannersPerJob',8],['marketsPerJob',3],['refreshDays',30],['budgetMinutes',30]] as const)
+        if(!a||!Number.isInteger(a[key])||a[key]<1||a[key]>max)errs.push(`incubator.agents.${key} must be 1..${max}`);
+    }
     if (!(inc.tf in TF_SECONDS)) errs.push('incubator.tf must be a supported timeframe');
     if (inc.tfs && (!inc.tfs.length || inc.tfs.some(t => !(t in TF_SECONDS)))) errs.push('incubator.tfs must list supported timeframes');
     if (!(inc.maxShadow >= 0 && inc.maxShadow <= 1000)) errs.push('incubator.maxShadow must be 0..1000');

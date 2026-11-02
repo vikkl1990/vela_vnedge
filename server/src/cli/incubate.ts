@@ -42,6 +42,9 @@ import { createHash } from 'node:crypto';
 import { sourceHash } from '../paper/fingerprint.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import { crossingPct } from '../risk/marketGate.ts';
+import type { MarketsToday } from '../risk/marketGate.ts';
+import { screenUniverse } from '../incubator/screenUniverse.ts';
+import { coverageSignature, recordCoverage } from '../incubator/pairAgents.ts';
 /** Decision 201: the hashes a screen result carries, so a later reader can tell what strategy it measured. */
 function screenProvenance(patched: string, read: { extract: Record<string, unknown>; rule: Record<string, unknown> }, policy: Record<string, unknown>) {
   const h = (v: unknown) => createHash('sha1').update(JSON.stringify(v, (_k, x) => (x instanceof Set ? [...x].sort() : x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x))).digest('hex').slice(0, 12);
@@ -115,22 +118,16 @@ while (sliceArg !== 'none') {
   // ---- universe: every market the gate allows today (decision 56b: a book cheap enough to cross,
   //      not dead, not too quiet), most liquid first; the turnover top-N only when the gate has no verdicts ----
   const tickers = await rest.tickers();
-  const turnover = new Map(tickers.map((t: any) => [String(t.symbol), Number(t.turnover_usd ?? 0)]));
-  const today = db.kvGet<{ enabled: boolean; markets: Array<{ symbol: string; allowed: boolean; bookCostPct?: number | null; atrPct?: number | null }> }>('risk.marketsToday');
+  const today = db.kvGet<MarketsToday>('risk.marketsToday');
   // decision 109: the screen pays each market's measured round-trip book cost, as the account does (decision 96's honest
   // base), so a cell whose stop the live cost rule would refuse is not admitted on a backtest that never paid the book
   const bookCost = new Map((today?.markets ?? []).filter(m => typeof m.bookCostPct === 'number' && m.bookCostPct! > 0).map(m => [m.symbol, m.bookCostPct as number]));
   // decision 202: what the backtest is charged on top of its own fees — the book crossing only
   const crossing = new Map([...bookCost].map(([s, c]) => [s, crossingPct(c, cfg.paper)]));
-  const allowed = today?.enabled ? today.markets.filter(m => m.allowed && /USD$/.test(m.symbol)).map(m => m.symbol) : [];
   // MARKETS=BTCUSD,ETHUSD: a hand run on just these markets (a 4h screen of the whole universe pulls a million 1m bars per market)
   const onlyMarkets = process.env.MARKETS ? new Set(process.env.MARKETS.split(',').map(x => x.trim()).filter(Boolean)) : null;
-  const universe = (allowed.length
-    ? allowed
-    : tickers.filter((t: any) => t.contract_type === 'perpetual_futures' && /USD$/.test(t.symbol) && Number(t.turnover_usd ?? 0) >= inc.minTurnoverUsd).map((t: any) => String(t.symbol)))
-    .filter(sym => !onlyMarkets || onlyMarkets.has(sym))
-    .sort((a, b) => (turnover.get(b) ?? 0) - (turnover.get(a) ?? 0))
-    .slice(0, inc.universeTop);
+  const selection=screenUniverse(tickers,{today,freshDepth:!!cfg.risk.marketGate?.freshDepth,onlyMarkets,top:inc.universeTop,floor:inc.minTurnoverUsd});
+  const universe=selection.symbols;
   // decision 115: on a fast timeframe a quiet market is not screened — its cells could never clear the cost rule
   const quietTfs = new Set(inc.screen.quietFilterTfs ?? ['5m', '15m']);
   const verdictOf = new Map((today?.markets ?? []).map(m => [m.symbol, m]));
@@ -142,7 +139,7 @@ while (sliceArg !== 'none') {
   summary.quiet = quiet.length;
   if (quiet.length) out(`${TF}: ${quiet.length} markets too quiet for this timeframe's cost floor, not screened: ${quiet.slice(0, 12).join(', ')}${quiet.length > 12 ? ', …' : ''}`);
   summary.symbols = universe.length;
-  out(allowed.length ? `universe: ${universe.length} of the ${allowed.length} markets the gate allows today (cap ${inc.universeTop})` : `universe: ${universe.length} perpetuals over $${(inc.minTurnoverUsd / 1e6).toFixed(1)}M 24h turnover (no gate verdicts yet)`);
+  out(selection.hasVerdicts ? `universe: ${universe.length} of the ${selection.allowedCount} eligible markets${onlyMarkets?' (explicit market batch)':` (cap ${inc.universeTop})`}` : `universe: ${universe.length} perpetuals over $${(inc.minTurnoverUsd / 1e6).toFixed(1)}M 24h turnover (no gate verdicts yet)`);
 
   const registry = new ScannerRegistry();
   // IDS=file: screen just these scripts, whatever slice they fall in (a fresh import, judged on every market tonight)
@@ -183,6 +180,7 @@ while (sliceArg !== 'none') {
   const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
   const data = new Map<string, { bars: Bar[]; m1: Bar[]; market: ReturnType<typeof marketSpec> }>();
   for (const symbol of universe) {
+    if(Date.now()-started>BUDGET_MS){out('time budget spent while loading candles');break;}
     try {
       const p = await rest.product(symbol);
       const bars = toBars(await rest.recentCandles(symbol, TF, inc.screen.bars, TF_SECONDS[TF]));
@@ -301,7 +299,7 @@ while (sliceArg !== 'none') {
           const empty = screenVerdict([], [], d.bars, inc, Date.now(), 0);
           empty.reason = `no entry events under the current reading (${observed.profile.kind})`;
           empty.provenance = screenProvenance(s.patched, READ, backtestPolicy(cfg, s.id, TF, 'shadow'));
-          if (!dry) recordScreen(store, { scannerId: s.id, symbol, tf: TF }, empty, inc);
+          if (!dry) {recordCoverage(db,s.id,symbol,TF,coverageSignature(cfg,s,TF),empty);recordScreen(store, { scannerId: s.id, symbol, tf: TF }, empty, inc);}
           if (shadowOnly) verdicts.push({scannerId:s.id,symbol,tf:TF,pass:false,reason:empty.reason,pf:0,trades:0,avgR:0});
           continue;
         }
@@ -338,6 +336,7 @@ while (sliceArg !== 'none') {
         r.provenance = screenProvenance(s.patched, READ, policy);
         if (shadowOnly) verdicts.push({ scannerId: s.id, symbol, tf: TF, pass: r.pass, reason: `PF ${r.profitFactor.toFixed(2)}, ${r.trades} trades, ${r.avgR.toFixed(2)}R, ${r.windowsUp}/8 windows up, at stress ${r.netAtStress.toFixed(0)}${r.holdoutPass === false ? ', holdout failed' : ''}${coarse.has(symbol) ? ', too coarse to size' : ''}`, pf: r.profitFactor, trades: r.trades, avgR: r.avgR });
         if (dry) continue;
+        recordCoverage(db,s.id,symbol,TF,coverageSignature(cfg,s,TF),r);
         const k = recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc);
         if (k === 'new' || k === 'updated' || k === 'cooldown') summary[k]++;
       } catch (e: any) { summary.failed++; out(`  ${s.id} ${symbol}: screen failed: ${String(e?.message ?? e).slice(0,200)}`); }

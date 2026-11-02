@@ -6618,3 +6618,50 @@ message. Previously these tools were below a full chart grid and easy to miss.
 The local port 18791 serves the separate saved scanner audit, not this deployed
 dashboard. Browser checks verified navigation, automatic expansion and the empty
 state; dashboard build, lint and existing tests pass.
+
+## 217. Pair agents fill market coverage gaps through the existing incubator (2026-11-03)
+
+Add three coordinated runtime duties: discover all currently listed crypto USD
+perpetuals, schedule missing scanner/market/timeframe research, and hand completed
+results to the existing incubator evaluation. This expands coverage beyond
+BTC/ETH/SOL without maintaining a second promotion or execution system.
+
+The research pool is the healthy, enabled, distinct scanner policies on the
+configured incubator timeframes. The nightly hunter continues wider-library
+research. Historical footprint consumers are excluded from candle-only agent
+screens; absent historical tape must not become invented order-flow evidence.
+Existing account, shadow, proposed and watch-only cells retain their roles.
+Watch-only coverage does not automatically authorize paper allocation.
+
+Jobs share the existing isolated research queue and yield to other screens and
+trading-worker pressure. Defaults allow 24 jobs per UTC day, up to four scanners
+and three markets per job, with a 15-minute launch budget. Scheduling rotates
+past submitted combinations, persists its daily budget/retry times across restart,
+and retries unsuccessful attempts no sooner than the next day. Pending discovery
+cannot enqueue after shutdown or an incubator pause. External hand screens that
+survive a service restart also hold the shared queue until their process exits.
+
+A separate bounded-per-cell coverage ledger records completed negative results
+as well as passes. Queued, skipped, failed and unrun combinations are not marked
+as tested. Coverage expires after seven days and is invalidated by changes to
+scanner identity, screen rules, shared execution policy or simulation version.
+Only normal passing screen results become candidates; shadow admission and
+forward-evidence promotion retain their existing rules. Sizing, fees, stop-risk
+limits and trade-entry checks are unchanged.
+
+Fix two screening inconsistencies discovered during integration: an enabled
+market assessment rejecting every market must not fall back to a turnover list;
+and fresh-depth mode must treat cached book vetoes consistently with the runtime,
+while retaining other refusals and fresh execution checks. Explicit market batches
+are no longer silently truncated by the general universe cap.
+
+Radar now exposes the agents' status, daily budget, current/recent research jobs,
+and a searchable market table separating paper, shadow, watch-only, completed
+screens and remaining gaps. The display distinguishes research eligibility from
+profitability: wider measured coverage creates opportunities to validate strategies,
+not a promise that every pair will produce a profitable signal.
+
+Regression tests cover alt-market rotation, negative/stale/policy-changed evidence,
+assignment preservation, failed-job retries, daily budgets and restart recovery,
+worker pressure, concurrent ticks, pause/shutdown races, malformed workload limits,
+explicit market batches and market-assessment parity.

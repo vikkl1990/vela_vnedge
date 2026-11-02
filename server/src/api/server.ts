@@ -415,6 +415,7 @@ export class ApiServer {
       return performanceReport(a.db, filter);
     });
     this.add('GET', '/api/trackers', () => a.trackers());
+    this.add('GET', '/api/incubator/agents', async () => {const {due,...view}=await a.pairAgents.view();return {...view,dueCells:due.length};});
     this.add('GET', '/api/reclaim-trials', () => reclaimStatus(a.db,a.config.get(),a.paper));
     this.add('POST', '/api/trackers', (_r, _s, _p, _u, body) => { try { return a.saveTracker(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); } });
     this.add('DELETE', '/api/trackers/:id', (_r, _s, p) => a.removeTracker(p.id));

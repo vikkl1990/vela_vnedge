@@ -24,6 +24,7 @@ export interface ScreenJob {
   ids: string[];
   tf: string;
   markets?: string[];
+  budgetMinutes?: number;
   actor: string;
   requestedAt: number;
   status: ScreenJobStatus;
@@ -59,6 +60,7 @@ export class ScreenQueue extends EventEmitter {
   private running: ScreenJob | null = null;
   private child: ChildProcess | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private stopped = false;
   readonly capped: boolean;
   private deps: ScreenQueueDeps;
 
@@ -80,11 +82,14 @@ export class ScreenQueue extends EventEmitter {
   private now() { return this.deps.now?.() ?? Date.now(); }
 
   start() {
+    this.stopped=false;
+    if(this.timer)return;
     this.timer = setInterval(() => this.pump(), 30_000);
     this.timer.unref?.();
     this.pump();
   }
   stop() {
+    this.stopped=true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
@@ -94,13 +99,15 @@ export class ScreenQueue extends EventEmitter {
   }
 
   /** Queue a screen. The same list on the same timeframe already queued is returned rather than queued twice. */
-  enqueue(req: { label: string; ids: string[]; tf: string; markets?: string[]; actor: string }): ScreenJob {
+  enqueue(req: { label: string; ids: string[]; tf: string; markets?: string[]; actor: string; budgetMinutes?: number }): ScreenJob {
+    if(req.budgetMinutes!==undefined&&(!Number.isInteger(req.budgetMinutes)||req.budgetMinutes<1||req.budgetMinutes>30))throw Object.assign(new Error('screen budget must be 1..30 minutes'),{status:400});
+    if(req.markets)req={...req,markets:[...new Set(req.markets)].sort()};
     const ids = [...new Set(req.ids)].sort();
     if (!ids.length) throw Object.assign(new Error('nothing to screen: no runnable script matched'), { status: 400 });
     const key = `${ids.join(',')}|${req.tf}|${(req.markets ?? []).join(',')}`;
     const same = [this.running, ...this.queued].find(j => j && `${[...j.ids].sort().join(',')}|${j.tf}|${(j.markets ?? []).join(',')}` === key);
     if (same) return same;
-    const job: ScreenJob = { id: `${this.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, '0')}`, label: req.label, ids, tf: req.tf, markets: req.markets?.length ? req.markets : undefined, actor: req.actor, requestedAt: this.now(), status: 'queued', tail: [] };
+    const job: ScreenJob = { id: `${this.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, '0')}`, label: req.label, ids, tf: req.tf, markets: req.markets?.length ? req.markets : undefined, actor: req.actor, budgetMinutes:req.budgetMinutes, requestedAt: this.now(), status: 'queued', tail: [] };
     this.queued.push(job);
     this.persist();
     log.info(`queued ${job.id}: ${job.label} (${ids.length} scripts, ${job.tf}) by ${req.actor}`);
@@ -126,6 +133,7 @@ export class ScreenQueue extends EventEmitter {
   }
 
   private pump() {
+    if(this.stopped)return;
     if (this.running || !this.queued.length) return;
     if (this.deps.nightlyRunning()) return;    // the nightly has the machine; the queue waits for it
     const job = this.queued.shift()!;
@@ -137,7 +145,10 @@ export class ScreenQueue extends EventEmitter {
     fs.writeFileSync(idsFile, job.ids.join('\n') + '\n');
     const logFile = path.join(this.deps.diagDir, `screen-${job.id}.log`);
     const env: NodeJS.ProcessEnv = { ...process.env, IDS: idsFile, TF: job.tf, WORKERS: process.env.SCREEN_WORKERS || '2', NODE_ENV: process.env.NODE_ENV ?? 'production' };
+    // A background agent must not inherit CLI-only modes from the service environment.
+    if(job.actor==='pair-agents')for(const key of ['SLICE','RESCREEN_SHADOW','RESCREEN_STAGES','DRY','ADD','LIMIT','OUT'])delete env[key];
     if (job.markets?.length) env.MARKETS = job.markets.join(',');
+    if(job.budgetMinutes)env.BUDGET_MIN=String(job.budgetMinutes);
     job.status = 'running'; job.startedAt = this.now(); job.tail = [];
     this.running = job;
     this.persist();

@@ -1,4 +1,5 @@
 import type {ExecutionPlansView} from './executionPlans'
+import type {PairAgentsView} from './pairAgents'
 import type {Footprint, OrderFlowView} from './orderFlow'
 import type {Contributions, ContributionDetail} from './contributions'
 import type {
@@ -137,6 +138,7 @@ export const api = {
   // incubator
   incubator: () => get<IncubatorView>('/incubator'),
   radar: (hours: number) => get<RadarView>(`/radar?hours=${hours}`),
+  pairAgents: () => get<PairAgentsView>('/incubator/agents'),
   tapeAudit: (days: number) => get<TapeAuditView>(`/tape-audit?days=${days}`),
   scannerDuplicates: () => get<DuplicateGroup[]>('/scanners/duplicates'),
   lockStudy: (days: number) => get<LockStudyView>(`/research/lock?days=${days}`),

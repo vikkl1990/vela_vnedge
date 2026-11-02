@@ -25,6 +25,10 @@ const ADDED_COLUMNS: Array<[string, string]> = [
 ];
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS pair_screen_evidence (
+ scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL,
+ signature TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(scanner_id,symbol,tf)
+);
 CREATE TABLE IF NOT EXISTS decision_trace (
  id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, book INTEGER NOT NULL,
  signal_id INTEGER, position_id INTEGER, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,

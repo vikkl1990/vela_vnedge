@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useRadar } from '../api/queries'
 import type { RadarCell, RadarMarket } from '../api/types'
 import { PageTitle, Panel, QueryState } from '../components/ui'
+import { PairAgentsPanel } from '../components/PairAgentsPanel'
 
 /**
  * Decision 183: the signal radar. Where the scanners sit (pairs by stage) and what they produce (signals, entries,
@@ -66,6 +67,7 @@ export default function Radar() {
   return (
     <>
       <PageTitle pre="Signal" accent="radar" sub={<>Where the scanners sit and what they produce, market × timeframe, last {hours} h. A cell's shade is entries per pair; bars are entries up and stops down; a quiet cell names what silenced it. Filled activity combines account and ordinary shadow trades; experimental plans and unfilled orders are excluded.</>} />
+      <PairAgentsPanel />
       <QueryState {...q} data={view ?? undefined} empty="No markets in the book." onRetry={() => q.refetch()}>
         {(v) => (
           <>

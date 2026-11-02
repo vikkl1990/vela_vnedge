@@ -10,6 +10,8 @@ import { lastAtr } from './data/indicators.ts';
 import { trendSide } from './paper/logic.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ScreenQueue } from './incubator/screenQueue.ts';
+import { PairAgents } from './incubator/pairAgents.ts';
+import { aliasMap, duplicateGroups } from './scanners/identity.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { dailyReport } from './analytics/daily.ts';
 import { listTrackers, removeTracker, saveTracker, trackerView } from './incubator/tracker.ts';
@@ -102,6 +104,7 @@ export class App {
   readonly ops: OpsService;
   /** Decision 174: screens on demand, one at a time, never over the nightly. */
   readonly screenQueue: ScreenQueue;
+  readonly pairAgents: PairAgents;
   readonly context: ContextCollector;
   lastError: string | null = null;
   private marketCache: { at: number; list: any[] } | null = null;
@@ -233,12 +236,27 @@ export class App {
     this.screenQueue = new ScreenQueue({
       db: this.db, diagDir: path.join(DATA_DIR, 'diag'), serverDir: path.join(ROOT_DIR, 'server'),
       nightlyRunning: () => {
-        const s = this.db.kvGet<{ at: number; pid?: number }>('incubator.lastStart'), r = this.db.kvGet<{ at: number }>('incubator.lastRun');
-        if (!s || (r && r.at >= s.at)) return false;
-        if (!s.pid) return Date.now() - s.at < 7 * 3600_000;
-        try { process.kill(s.pid, 0); return true; } catch { return false; }
+        // A hand screen in a user scope can outlive a trading-service restart too.
+        return [['incubator.lastStart','incubator.lastRun'],['incubator.lastHandStart','incubator.lastHandRun']].some(([start,end])=>{
+          const s=this.db.kvGet<{at:number;pid?:number}>(start),r=this.db.kvGet<{at:number}>(end);
+          if(!s||(r&&r.at>=s.at))return false;
+          if(!s.pid)return Date.now()-s.at<7*3600_000;
+          try{process.kill(s.pid,0);return true;}catch{return false;}
+        });
       },
       notify: text => { void this.ops.alerts.notify(text); },
+    });
+    this.pairAgents=new PairAgents({db:this.db,cfg,store:this.incubatorStore,queue:this.screenQueue,
+      scanners:()=>{
+        const list=this.registry.all().filter(s=>s.status==='ok'&&cfg().scanners[s.id]?.enabled&&!cfg().scanners[s.id]?.hidden&&!this.scanners.health.isQuarantined(s.id));
+        const aliases=aliasMap(duplicateGroups(list,cfg()));
+        // The historical screener has candles, not historical tape. Never screen a footprint source on invented data.
+        return list.filter(s=>!aliases.has(s.id)&&!/\brequest\.footprint\s*\(/.test(s.patched));
+      },
+      markets:async()=>{const [markets,products]=await Promise.all([this.markets(),this.rest.products()]);return markets.filter(m=>products.has(m.symbol)).map(m=>({...m,description:products.get(m.symbol)?.description??m.description}));},
+      verdict:(s,at)=>this.marketGate.verdict(s,at),
+      pressure:()=>this.pool.stats.queuedLive>0||this.pool.stats.queued>this.pool.size*2,
+      evaluate:()=>this.incubatorEvaluate('pair agents'),
     });
     this.validation=createValidation(this);
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
@@ -303,6 +321,7 @@ export class App {
     this.huntTimer.unref?.();
     this.ops.start();
     this.screenQueue.start();
+    this.pairAgents.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
     // the incubator's live rows follow the config from the first second (decision 83): a fleet edited on disk and restarted used to
@@ -942,6 +961,7 @@ export class App {
   }
 
   async stop() {
+    this.pairAgents.stop();
     this.scanners.stop();
     this.validation.stop();
     this.stopExecutionAudit?.();
