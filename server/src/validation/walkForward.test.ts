@@ -72,3 +72,14 @@ test('walk-forward preserves the account native-stop restriction in every window
  assert.ok(walkForward(inp).outOfSampleAll.trades>0);
  const restricted=walkForward({...inp,requireAtrStop:true});assert.equal(restricted.inSample.trades,0);assert.equal(restricted.outOfSampleAll.trades,0);
 });
+
+test('walk-forward passes the minute path to selective account trials',()=>{
+  const M=60_000,bars=Array.from({length:48},(_,i)=>({time:T0+i*15*M,open:100,high:101,low:99,close:100,volume:1}));
+  const subBars=Array.from({length:48*15},(_,i)=>({time:T0+i*M,open:100,high:100.1,low:99.9,close:100,volume:1}));
+  const cfg={...structuredClone(DEFAULT_CONFIG.paper),minRiskFeeRatio:0,liquidation:false,trendGate:{enabled:false,mode:'follow' as const,emaLen:21,tf:'15m'}};
+  cfg.reclaimTrials=[{enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',minSignalBarAtr:3,pullbackAtr:.25,setupMinutes:15,orderMinutes:3,sizeScale:1,maxDailyEntries:10,maxStopLossPct:1.5}];
+  const input={scannerId:'s',scannerName:'s',symbol:'ETHUSD',tf:'15m',bars,subBars,events:[] as ScanEvent[],cfg,exitMode:'both' as const,contractValue:1,tickSize:.01,
+    opts:{trainDays:1,testDays:1,stepDays:1,minTrades:1,minProfitFactor:1},windows:[{index:0,trainFrom:T0,trainTo:T0+24*15*M,testFrom:T0+24*15*M,testTo:T0+48*15*M}]};
+  assert.equal(walkForward(input).windows.length,1);
+  assert.throws(()=>walkForward({...input,subBars:undefined}),/minute history/);
+});

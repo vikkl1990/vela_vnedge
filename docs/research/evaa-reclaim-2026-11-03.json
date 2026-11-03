@@ -1,0 +1,327 @@
+{
+  "study": "EVAA selective reclaim deployment validation",
+  "sourceCommit": "3c13eca",
+  "window": {
+    "start": 1791297900000,
+    "split": 1793112300000,
+    "end": 1793717100000
+  },
+  "comparisons": [
+    {
+      "symbol": "EVAAUSD",
+      "variant": "expansion_reclaim_risk15",
+      "baseline": {
+        "all": {
+          "trades": 63,
+          "stops": 24,
+          "net": -44.592568145989745,
+          "fees": 44.80920474485843,
+          "R": -3.677348641685552,
+          "winPct": 61.904761904761905,
+          "profitFactor": 0.9202410422224877,
+          "maxDrawdown": 147.46650285005308
+        },
+        "earlier": {
+          "trades": 26,
+          "stops": 9,
+          "net": 26.672533244495344,
+          "fees": 22.854433980450715,
+          "R": -0.9832869812454408,
+          "winPct": 65.38461538461539,
+          "profitFactor": 1.2419037468508725,
+          "maxDrawdown": 49.821614841403054
+        },
+        "reviewedWeek": {
+          "trades": 37,
+          "stops": 15,
+          "net": -71.26510139048511,
+          "fees": 21.954770764407712,
+          "R": -2.694061660440112,
+          "winPct": 59.45945945945946,
+          "profitFactor": 0.8412205375094216,
+          "maxDrawdown": 147.46650285005308
+        }
+      },
+      "candidate": {
+        "all": {
+          "trades": 52,
+          "stops": 17,
+          "net": 33.25463805048896,
+          "fees": 26.608603803172628,
+          "R": 1.2171234870139833,
+          "winPct": 67.3076923076923,
+          "profitFactor": 1.133161610410092,
+          "maxDrawdown": 51.96417043008181
+        },
+        "earlier": {
+          "trades": 22,
+          "stops": 6,
+          "net": 35.470504704632546,
+          "fees": 18.314232927167957,
+          "R": 1.2165903257965138,
+          "winPct": 72.72727272727273,
+          "profitFactor": 1.4595937390748688,
+          "maxDrawdown": 30.44900786148416
+        },
+        "reviewedWeek": {
+          "trades": 30,
+          "stops": 11,
+          "net": -2.2158666541435945,
+          "fees": 8.294370876004663,
+          "R": 0.000533161217469158,
+          "winPct": 63.33333333333333,
+          "profitFactor": 0.9871583763966733,
+          "maxDrawdown": 46.1836837193958
+        }
+      },
+      "delta": 77.84720619647871,
+      "missingBaselineWinners": 7,
+      "missingBaselineWinnerPnl": 68.21676243708345,
+      "avoidedBaselineLosers": 5,
+      "avoidedBaselineLossPnl": -108.62939682935756,
+      "newEntries": 1,
+      "newEntryPnl": 3.2659050911759957,
+      "commonEntries": 51,
+      "commonEntryDelta": 34.1686667130286,
+      "fixedFillExtra6bps": {
+        "baseline": -67.27885921214575,
+        "candidate": 19.29999122408096
+      },
+      "dayBootstrap95PctIllustrative": [
+        -41.72494969234602,
+        213.2499701120429
+      ],
+      "deltaWithoutBestDay": 33.651165236270145,
+      "dailyDeltas": [
+        0.0,
+        0.0,
+        9.429142369470505,
+        0.0,
+        0.0,
+        0.0,
+        -10.98523765112203,
+        0.0,
+        -4.169742337326568,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        3.2659050911759957,
+        11.25790398793931,
+        -20.14640989651648,
+        -9.71884344463431,
+        -11.467047286918064,
+        15.300676321874814,
+        24.04798289775107,
+        26.8368351845759,
+        44.19604096020858
+      ]
+    },
+    {
+      "symbol": "STRKUSD",
+      "variant": "expansion_maker",
+      "baseline": {
+        "all": {
+          "trades": 21,
+          "stops": 7,
+          "net": 51.69358632254959,
+          "fees": 18.236062483681774,
+          "R": 1.221639088712307,
+          "winPct": 66.66666666666666,
+          "profitFactor": 1.4894463515598184,
+          "maxDrawdown": 30.144280091675984
+        },
+        "earlier": {
+          "trades": 15,
+          "stops": 3,
+          "net": 75.67565978988854,
+          "fees": 12.953900826679776,
+          "R": 3.166961886851217,
+          "winPct": 80,
+          "profitFactor": 2.301622882978627,
+          "maxDrawdown": 30.144280091675984
+        },
+        "reviewedWeek": {
+          "trades": 6,
+          "stops": 4,
+          "net": -23.982073467338935,
+          "fees": 5.282161657002,
+          "R": -1.9453227981389096,
+          "winPct": 33.33333333333333,
+          "profitFactor": 0.4948694839964204,
+          "maxDrawdown": 26.76995500782008
+        }
+      },
+      "candidate": {
+        "all": {
+          "trades": 20,
+          "stops": 7,
+          "net": 69.83539074533152,
+          "fees": 15.48357889153987,
+          "R": 4.231943336082367,
+          "winPct": 65,
+          "profitFactor": 1.666714286302308,
+          "maxDrawdown": 30.144280091675984
+        },
+        "earlier": {
+          "trades": 14,
+          "stops": 3,
+          "net": 76.00655821413048,
+          "fees": 10.726538643277872,
+          "R": 3.4716671103101904,
+          "winPct": 78.57142857142857,
+          "profitFactor": 2.3167548610005553,
+          "maxDrawdown": 30.144280091675984
+        },
+        "reviewedWeek": {
+          "trades": 6,
+          "stops": 4,
+          "net": -6.171167468798954,
+          "fees": 4.757040248261999,
+          "R": 0.7602762257721758,
+          "winPct": 33.33333333333333,
+          "profitFactor": 0.8687627052545066,
+          "maxDrawdown": 26.315941651050032
+        }
+      },
+      "delta": 18.14180442278193,
+      "missingBaselineWinners": 2,
+      "missingBaselineWinnerPnl": 24.856728704438183,
+      "avoidedBaselineLosers": 0,
+      "avoidedBaselineLossPnl": 0,
+      "newEntries": 1,
+      "newEntryPnl": 29.482715063648136,
+      "commonEntries": 19,
+      "commonEntryDelta": 13.515818063571976,
+      "fixedFillExtra6bps": {
+        "baseline": 42.44201217770959,
+        "candidate": 61.05142975313152
+      },
+      "dayBootstrap95PctIllustrative": [
+        -25.06299434331561,
+        68.46285193853028
+      ],
+      "deltaWithoutBestDay": 0.33089842424194416,
+      "dailyDeltas": [
+        0.0,
+        -0.08423198204397764,
+        4.127917063416042,
+        -12.730906282559978,
+        0.0662173378003974,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.4168328660479297,
+        0.0,
+        8.535069421581532,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        17.81090599853998
+      ]
+    }
+  ],
+  "methods": {
+    "windows": "Earlier 21 days versus reviewed last 7 days. Earlier history is a retrospective validation check, not pristine prospective OOS.",
+    "controls": "Current scanner/read rules; current per-scanner exit policy, regime and cost gates; $150 margin; 5x base leverage; 3% current risk ceiling. Alternative risk ceiling 1.5%. One position per cell. Original scanner targets/trailing unchanged.",
+    "selective": "Exploratory follow-up: use a retest only when the completed signal bar range exceeds 3 ATR, the expansion threshold from the preceding SL audit; no threshold search. Research copy changes only entry-model selection and is checked against production for every original variant.",
+    "entry": "Completed 1m candles. Limits need trade-through; no placement-minute fills; stop-first if entry minute also crosses stop. Reclaim waits for pullback, a later reclaim close, then a later limit fill. No parameter search.",
+    "costs": "Full configured maker/taker fees plus 18% tax. Round-trip crossing scenarios 0.04% / 0.10%; historical spread/depth and queue priority unavailable. Funding recorded only where settlements available; unrecorded funding not reconstructed.",
+    "portfolio": "Isolated per-cell replays; no shared-account capacity, dynamic leverage, ML sizing, or order-book reconstruction. End-of-window open trades reported separately; closed P&L is not a whole-portfolio backtest.",
+    "journal": "Resizing-only counterfactual preserves actual fill prices/time/cashflows, integer quantities, and original maximum quantity. It can lower risk but does not prove a better entry edge."
+  },
+  "coverage": [
+    {
+      "symbol": "EVAAUSD",
+      "tf": "15m",
+      "n": 3188,
+      "first": 1790847900000,
+      "last": 1793716200000,
+      "gaps": 0
+    },
+    {
+      "symbol": "EVAAUSD",
+      "tf": "1m",
+      "n": 40316,
+      "first": 1791297900000,
+      "last": 1793717040000,
+      "gaps": 1
+    },
+    {
+      "symbol": "STRKUSD",
+      "tf": "15m",
+      "n": 3188,
+      "first": 1790847900000,
+      "last": 1793716200000,
+      "gaps": 0
+    },
+    {
+      "symbol": "STRKUSD",
+      "tf": "1m",
+      "n": 40320,
+      "first": 1791297900000,
+      "last": 1793717040000,
+      "gaps": 0
+    }
+  ],
+  "scannerPrefixChecks": [
+    {
+      "id": "trend-impulse-channels-zeiierman",
+      "symbol": "EVAAUSD",
+      "sourceHash": "6baa7ac9c584",
+      "full": 129,
+      "prefix": 129,
+      "onlyFull": 0,
+      "onlyPrefix": 0
+    },
+    {
+      "id": "kinetic-momentum-vectors",
+      "symbol": "STRKUSD",
+      "sourceHash": "57e54990b479",
+      "full": 17,
+      "prefix": 17,
+      "onlyFull": 0,
+      "onlyPrefix": 0
+    }
+  ],
+  "validation": {
+    "serverTests": 857,
+    "dashboardTests": 5,
+    "targetedFinalTests": 37,
+    "typescript": "passed",
+    "dashboardLintBuild": "passed",
+    "productionReplay": "All entries, exits, quantities, P&L, fees and R match the research ledgers exactly in 0.04% and 0.10% crossing scenarios. STRK retains baseline execution."
+  },
+  "deploymentPolicy": {
+    "scannerId": "trend-impulse-channels-zeiierman",
+    "symbol": "EVAAUSD",
+    "tf": "15m",
+    "minSignalBarAtr": 3,
+    "pullbackAtr": 0.25,
+    "setupMinutes": 15,
+    "orderMinutes": 3,
+    "maxStopLossPct": 1.5,
+    "sizeScale": 1,
+    "maxDailyEntries": 10
+  },
+  "forwardEvidence": "Not yet collected at deployment; latest review week remained negative; no claim of proven profitability."
+}

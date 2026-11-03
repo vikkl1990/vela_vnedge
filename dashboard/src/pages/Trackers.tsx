@@ -86,12 +86,13 @@ function ReclaimTrials() {
     {(data) => <>{data.trials.map((t) => <Panel key={`${t.rule.scannerId}|${t.rule.symbol}|${t.rule.tf}`} title={`Paper account trial · ${t.rule.symbol} · ${t.rule.tf}`}>
       <p><Link to={`/scanners/${t.rule.scannerId}`}>{t.rule.scannerId}</Link> · <strong>{t.state}</strong></p>
       <p className="muted small">{Math.round(t.rule.sizeScale * 100)}% of normal size · {t.usedToday}/{t.rule.maxDailyEntries} daily order placements used (UTC) · {t.open} open</p>
-      <div className="stat-strip">{[['setup','Setups'],['pullback','Pullbacks'],['confirmed','Confirmed'],['ordered','Orders'],['filled','Fills'],['cancelled','Cancelled'],['refused','Refused']].map(([key,label]) => <span key={key}><span className="stat-k">{label}</span> <span className="mono">{t.counts[key] ?? 0}</span></span>)}</div>
+      {t.rule.minSignalBarAtr !== undefined && <p className="muted small">Retest only after a signal candle larger than {t.rule.minSignalBarAtr} ATR. Ordinary signals keep their entry policy. Pullback {t.rule.pullbackAtr} ATR · confirmation within {t.rule.setupMinutes} min · maker order expires after {t.rule.orderMinutes} min. {t.rule.maxStopLossPct !== undefined && <>All new entries in this cell have a {t.rule.maxStopLossPct}% equity stop-risk ceiling, within the configured margin budget.</>}</p>}
+      <div className="stat-strip">{[['ordinary','Ordinary signals'],['setup','Setups'],['pullback','Pullbacks'],['confirmed','Confirmed'],['ordered','Orders'],['filled','Fills'],['cancelled','Cancelled'],['refused','Refused']].map(([key,label]) => <span key={key}><span className="stat-k">{label}</span> <span className="mono">{t.counts[key] ?? 0}</span></span>)}</div>
       <p>{t.closed ? `${t.closed} closed · ${r(t.net, 2)} USD net · ${r(t.sumR, 2)}R` : 'No closed trial trades yet.'}</p>
       <p className="muted small">Last scan: {t.lastScan ? `${timeAgo(t.lastScan.at)} · ${t.lastScan.note ?? 'scan completed'}` : 'not recorded yet'}</p>
       {t.pending.map((p) => <p className="small" key={p.id}>{p.phase === 'order' ? `Maker limit ${p.price}` : 'Setup pending'} · expires {p.expiresAt ? new Date(p.expiresAt).toLocaleString() : '–'}</p>)}
       <details><summary>Recent trial events</summary>{t.events.length ? <ul>{t.events.map((e,i) => <li key={i}>{new Date(e.at).toLocaleString()} · {e.event}{e.reason ? ` · ${e.reason}` : ''}</li>)}</ul> : <p className="muted small">No recorded events yet.</p>}</details>
-      <p className="muted small">Counts and closed results use the current trial settings, from audit start {data.auditStartedAt ? new Date(data.auditStartedAt).toLocaleString() : 'pending'}. Earlier activity is not reconstructed. Cancelled includes setups and orders.</p>
+      <p className="muted small">Closed results cover retest fills only; ordinary trades remain in paper performance. Counts and closed results use the current trial settings, from audit start {data.auditStartedAt ? new Date(data.auditStartedAt).toLocaleString() : 'pending'}. Earlier activity is not reconstructed. Cancelled includes setups and orders.</p>
     </Panel>)}</>}
   </QueryState>
 }

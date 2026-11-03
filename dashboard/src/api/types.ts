@@ -907,7 +907,7 @@ export interface AllocationAudit {
 export interface ReclaimTrialsView {
   at: number; auditStartedAt: number | null;
   trials: Array<{
-    rule: { scannerId: string; symbol: string; tf: string; sizeScale: number; maxDailyEntries: number };
+    rule: { scannerId: string; symbol: string; tf: string; sizeScale: number; maxDailyEntries: number; minSignalBarAtr?:number; maxStopLossPct?:number; pullbackAtr:number; setupMinutes:number; orderMinutes:number };
     active: boolean; state: string; counts: Record<string, number>;
     pending: Array<{id: number; phase: string; expiresAt: number | null; price: number | null}>;
     open: number; usedToday: number; closed: number; net: number; sumR: number;

@@ -6,4 +6,5 @@
 // 10: confirmed resting fills, exact expiry and mandatory fill-minute maker stops.
 // 11: held-position stops use adverse opens, including known stop-before-target ordering.
 // 12: scanner-specific protection, passive entry expiry and explicit signal direction contracts.
-export const SIMULATION_VERSION = 12;
+// 13: selective account reclaim trials share candle selection and cell stop-risk caps with execution.
+export const SIMULATION_VERSION = 13;

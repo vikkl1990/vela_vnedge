@@ -113,3 +113,64 @@ test('level-only exits preserve reclaim setups, resting orders and positions; sc
   assert.equal(a.e.onScriptExit(ID,'SOLUSD','15m','close',100,order.at+2000,'levels','long'),undefined);
   assert.equal(a.e.openPositions().length,1);
 });
+
+function selective(t:any){
+  const a=setup(t,1);Object.assign(a.cfg.paper,{initialEquity:1000,sizingMode:'margin',marginPerTrade:150,maxStopLossPct:3,minLeverage:5});
+  a.cfg.paper.reclaimTrials![0]={...a.cfg.paper.reclaimTrials![0],minSignalBarAtr:3,maxStopLossPct:1.5};
+  const ctx={...a.ctx,signalBar:{time:a.ev.barTime,high:104,low:97,close:100}};
+  return {...a,ctx};
+}
+test('selective reclaim uses the completed source candle without ML; exact threshold keeps ordinary entries',t=>{
+  const a=selective(t);assert.equal(a.e.onEntry(a.ev,a.ctx).action,'pending');
+  assert.ok(a.e.pendingEntries()[0].reclaim);assert.equal('features' in a.ctx,false);
+  const b=selective(t);b.ctx.signalBar.high=103;
+  assert.equal(b.e.onEntry(b.ev,b.ctx).reason,'awaiting tape fill');
+  assert.equal(b.e.pendingEntries()[0].reclaim,undefined);
+  b.e.onTrade('SOLUSD',100,1,b.ctx.at+2000,b.ctx.at+2000);
+  const pos=b.e.openPositions()[0];assert.ok(pos);assert.ok(pos.riskAmount<=15);assert.ok(pos.riskAmount>14);
+  assert.equal(b.cfg.paper.marginPerTrade,150);assert.equal(b.cfg.paper.maxStopLossPct,3);
+  assert.equal(reclaimStatus(b.db,b.cfg,b.e,b.ctx.at).trials[0].counts.ordinary,1);
+  assert.equal(reclaimStatus(b.db,b.cfg,b.e,b.ctx.at).trials[0].pending.length,0);
+});
+test('selective maker risk is recomputed from current equity at fill, including after confirmation',t=>{
+  const a=selective(t);a.e.onEntry(a.ev,a.ctx);a.confirm();const pe=a.e.pendingEntries()[0];assert.ok(pe.limit);
+  a.db.kvSet('paper.initialEquity',600);
+  a.e.onTrade('SOLUSD',100,1,pe.at+1000,pe.at+1000);
+  const p=a.e.openPositions()[0];assert.ok(p);assert.ok(p.riskAmount<=9);assert.ok(p.riskAmount>8);
+});
+test('selective reclaim refuses absent, mismatched or unclosed signal candles',t=>{
+  for(const broken of ['missing','mismatched','forming']as const){
+    const a=selective(t),ctx={...a.ctx,signalBar:broken==='missing'?undefined:{...a.ctx.signalBar,time:broken==='mismatched'?a.ev.barTime-900000:a.ev.barTime},at:broken==='forming'?a.ev.barTime+1000:a.ctx.at};
+    assert.match(a.e.onEntry(a.ev,ctx).reason!,/completed signal candle/);assert.equal(a.e.pendingEntries().length,0);
+  }
+});
+test('ordinary signals replace an unfinished selective setup and remain eligible after the retest order budget',t=>{
+  const a=selective(t);a.cfg.paper.reclaimTrials![0].maxDailyEntries=1;
+  a.e.onEntry(a.ev,a.ctx);a.confirm();assert.ok(a.e.pendingEntries()[0].limit);
+  const ctx={...a.ctx,at:a.ctx.at+200000,signalBar:{...a.ctx.signalBar,high:103}};
+  // New completed source candle, not an old event reused after its freshness window.
+  const ev={...a.ev,barTime:ctx.at-1000-900000};ctx.signalBar.time=ev.barTime;
+  assert.equal(a.e.onEntry(ev,ctx).reason,'awaiting tape fill');
+  assert.equal(a.e.pendingEntries().length,1);assert.equal(a.e.pendingEntries()[0].reclaim,undefined);
+  assert.equal(a.e.pendingEntries()[0].features?.reclaim_trial,undefined);
+});
+test('selective rules preserve ordinary reversals and do not change other cells or shadow sizing',t=>{
+  const a=selective(t);Object.assign(a.cfg.paper,{allowReversal:true,reversalMinR:-100});a.ctx.signalBar.high=103;
+  a.e.onEntry(a.ev,a.ctx);a.e.onTrade('SOLUSD',100,1,a.ctx.at+2000,a.ctx.at+2000);
+  assert.equal(a.e.openPositions().length,1);
+  const d=a.e.onEntry({...a.ev,side:'short'},{...a.ctx,at:a.ctx.at+3000,signalBar:{...a.ctx.signalBar,high:104}});
+  assert.equal(d.action,'pending');assert.equal(a.e.pendingEntries()[0].reclaim,undefined);
+  a.e.onTrade('SOLUSD',100,1,a.ctx.at+5000,a.ctx.at+5000);
+  assert.equal(a.e.openPositions()[0].side,'short');
+  const b=selective(t);assert.equal(b.e.onEntry(b.ev,{...b.ctx,symbol:'ETHUSD'}).reason,'awaiting tape fill');
+  const c=selective(t);c.cfg.paper.reclaimTrials![0].enabled=false;
+  assert.equal(c.e.onEntry(c.ev,c.ctx).reason,'awaiting tape fill');
+  c.cfg.paper.reclaimTrials![0].enabled=true;
+  const shadow=new PaperEngine(c.db,()=>c.cfg,{book:2});shadow.quotes={executable:()=>100.4};
+  assert.equal(shadow.onEntry(c.ev,c.ctx).reason,'awaiting tape fill');
+});
+test('selective trial validation rejects unsafe thresholds, caps and hidden quantity scaling',t=>{
+  for(const patch of [{minSignalBarAtr:0},{minSignalBarAtr:NaN},{maxStopLossPct:0},{maxStopLossPct:101},{sizeScale:.5}]){
+    const a=selective(t);Object.assign(a.cfg.paper.reclaimTrials![0],patch);assert.ok(validateConfig(a.cfg).some(x=>x.includes('reclaimTrials')));
+  }
+});

@@ -5,6 +5,7 @@ import {depthPlan} from './depthPlan.ts';
 import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
 import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
 import {createReclaim, advanceReclaim, type ReclaimState} from './reclaim.ts';
+import {selectiveReclaimRule,trialRiskConfig,expansionRatio} from './selectiveEntry.ts';
 import { protectEntry, scannerEntryConfig } from './entryProtection.ts';
 import {initReclaimAudit,recordReclaimEvent} from './reclaimAudit.ts';
 import type {Bar} from '../data/candleStore.ts';
@@ -25,7 +26,7 @@ const log = logger.scoped('paper');
 interface FillContext { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' | 'candle-model' }
 
 export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number }
-export type EntryContext = {executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
+export type EntryContext = {executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; signalBar?: Pick<Bar,'time'|'high'|'low'|'close'>; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
 type ReclaimTrial = NonNullable<PaperConfig['reclaimTrials']>[number];
 type PlannedReclaim = {price: number; expiresAt: number; ruleKey: string};
 
@@ -209,8 +210,13 @@ export class PaperEngine extends EventEmitter {
   }
 
 
+  private entryPaper(cell: {scannerId:string;symbol:string;tf:string}): PaperConfig {
+    return this.book===0 && this.cfgRef().execution.mode==='paper'
+      ? trialRiskConfig(this.paper,selectiveReclaimRule(this.paper,cell)) : this.paper;
+  }
+
   private configFor(cell: {scannerId:string;symbol:string;tf:string;entryAt?:number;at?:number;executionPlan?:ExecutionPlanSnapshot}): PaperConfig {
-    return cell.executionPlan?.paper ?? scannerEntryConfig(exitConfigFor(this.paper,cell.symbol,this.scannerExit?.(cell.scannerId,cell.entryAt ?? cell.at),cell.tf),this.cfgRef().scanners[cell.scannerId],cell.tf);
+    return cell.executionPlan?.paper ?? scannerEntryConfig(exitConfigFor(this.entryPaper(cell),cell.symbol,this.scannerExit?.(cell.scannerId,cell.entryAt ?? cell.at),cell.tf),this.cfgRef().scanners[cell.scannerId],cell.tf);
   }
   private planEnabled(p: ExecutionPlanSnapshot | undefined): boolean {
     return !p || (this.book===2 && this.cfgRef().executionPlans?.some(x=>x.enabled&&x.id===p.id&&x.revision===p.revision)===true);
@@ -409,7 +415,7 @@ export class PaperEngine extends EventEmitter {
         scannerStop:ev.sl??null,scannerTargets:ev.tp??[],entryProtection:protection??'inherit',quote:this.quotes?.markState?.(ctx.symbol)??null,
         market:ctx.market,sizeScale:ctx.sizeScale??1,feeRatePct:this.paper.feeRatePct,
         makerFeeRatePct:this.paper.makerFeeRatePct,feeTaxPct:this.paper.feeTaxPct,
-        minRiskFeeRatio:this.paper.minRiskFeeRatio,offerConfigured:!!this.paper.scalperOffer?.enabled,
+        minRiskFeeRatio:this.paper.minRiskFeeRatio,maxStopLossPct:this.entryPaper(ctx).maxStopLossPct,signalBar:ctx.signalBar??null,offerConfigured:!!this.paper.scalperOffer?.enabled,
         offerEligibility:offerStatus(this.paper),sourceHash:this.sourceHashFor?.(ctx.scannerId)??null}));
     write('received',null);
     try {
@@ -423,11 +429,25 @@ export class PaperEngine extends EventEmitter {
   }
 
   private decideEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
-    if (this.book===0 && this.paper.reclaimTrials?.some(r=>!r.enabled&&r.scannerId===ctx.scannerId&&r.symbol===ctx.symbol&&r.tf===ctx.tf)) return {action:'rejected',reason:'reclaim trial disabled'};
+    if (this.book===0 && this.paper.reclaimTrials?.some(r=>!r.enabled&&r.minSignalBarAtr===undefined&&r.scannerId===ctx.scannerId&&r.symbol===ctx.symbol&&r.tf===ctx.tf)) return {action:'rejected',reason:'reclaim trial disabled'};
     const rule=this.book===0?this.reclaimRule(ctx):undefined;
     if (!rule) return this.executeEntry(ev,ctx);
     const refuse=(reason:string):ReturnType<PaperEngine['onEntry']>=>{recordReclaimEvent(this.db,ctx,JSON.stringify(rule),'refused',ctx.at,reason);return {action:'rejected',reason};};
     if (!this.reclaimAvailable(ctx)) return refuse('reclaim trial requires an allocated paper-only cell');
+    if (rule.minSignalBarAtr!==undefined) {
+      const ratio=expansionRatio(ctx.signalBar,ev.barTime,ctx.atr);
+      if(ratio===null || ctx.at<ev.barTime+(TF_SECONDS[ctx.tf]??0)*1000) return refuse('selective reclaim requires the completed signal candle and ATR');
+      // Reversals retain the ordinary admission/close order, matching limitWhenFlatOnly in replay.
+      if(this.findOpen(ctx.scannerId,ctx.symbol,ctx.tf))return this.executeEntry(ev,ctx);
+      const prior=this.findPending(ctx.scannerId,ctx.symbol,ctx.tf);
+      if(prior?.features?.reclaim_trial)this.cancelPending(prior.id,'reclaim setup replaced by fresh signal');
+      if(ratio<=rule.minSignalBarAtr) {
+        recordReclaimEvent(this.db,ctx,JSON.stringify(rule),'ordinary',ctx.at,`signal range ${ratio.toFixed(2)} ATR; ordinary entry policy`);
+        return this.executeEntry(ev,ctx);
+      }
+      // The research reference is the source candle close; current quotes still enforce passivity.
+      ctx={...ctx,refPrice:ctx.signalBar!.close};
+    }
     if (this.findOpen(ctx.scannerId,ctx.symbol,ctx.tf)) return {action:'ignored',reason:'reclaim trial already holds a position'};
     const previous=this.findPending(ctx.scannerId,ctx.symbol,ctx.tf);
     if (previous) this.cancelPending(previous.id,'reclaim setup replaced by fresh signal');
@@ -620,7 +640,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   private size(price: number, sl: number, market: MarketInfo, score: number | undefined, leverageMult: number, replacing?: number, cell?: { scannerId: string; symbol: string; tf: string; at: number; executionPlan?:ExecutionPlanSnapshot }, entryExecution?: EntryExecution, sizeScale = 1) {
-    const cfg = this.scaledCfg(leverageMult,cell?.executionPlan?.paper ?? this.paper);
+    const cfg = this.scaledCfg(leverageMult,cell?.executionPlan?.paper ?? (cell?this.entryPaper(cell):this.paper));
     if(cell?.executionPlan) return sizeContracts(price,sl,{equity:cell.executionPlan.referenceEquity,availableMargin:cell.executionPlan.referenceEquity,contractValue:market.contractValue,tickSize:market.tickSize,maintenanceMarginPct:market.maintenanceMarginPct,maxLeverage:market.maxLeverage,cfg,wantedLeverage:cfg.marginLeverage?.base,entryExecution},0,score);
     const wantedLeverage = cfg.sizingMode === 'margin' && cell ? this.cellLeverage(cell, cfg).leverage : undefined;
     // Shadow cells are independent experiments with a fixed reference purse. Summing their

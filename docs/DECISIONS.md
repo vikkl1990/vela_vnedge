@@ -6676,3 +6676,35 @@ Reference: https://freedesktop.org/software/systemd/man/latest/systemd.exec.html
 
 Fair rotation is by market first, then untested cell, so a large scanner pool
 cannot keep the next several batches on BTC/ETH/SOL before visiting other pairs.
+
+## 218. EVAA uses selective reclaim entries and a cell stop-risk ceiling (2026-11-03)
+
+Enable a paper-only trial for Trend Impulse Channels / EVAAUSD / 15m. Ordinary
+signals and reversals retain their entry policy. When the completed source candle
+range exceeds 3 ATR(14), wait for a 0.25 ATR pullback and a later completed minute
+closing beyond the preceding minute's high (long) or low (short). Rest a passive
+limit at that level for three minutes, with 15 minutes to confirm the setup.
+Existing quote, fee, depth, exposure, freshness and allocation checks still apply.
+The retest pipeline allows at most ten order placements per UTC day; that budget
+does not block ordinary entries. Restart cancels short unfilled setups/orders.
+
+All new entries in this cell, including ordinary signals and deferred fills, use
+a 1.5% equity stop-risk ceiling. Sizing still permits at most $150 margin; the cap
+can reduce quantity. The fleet's 3% ceiling, 6x fee policy and STRK execution stay
+unchanged. Existing open positions retain their recorded stops and quantities.
+
+The 28-day replay ending 2026-11-03 14:45 UTC improved this cell from -$44.59 over
+63 trades / 24 SLs to +$33.25 over 52 trades / 17 SLs at assumed 0.04% crossing,
+full configured commissions and tax, and available funding. Production replay
+reproduced every tested trade and both cost-scenario totals. Funding/depth history
+is incomplete, the latest week remained negative, and uncertainty includes
+underperformance. This is a forward paper experiment, not proven profitability.
+STRK's measured gain depended heavily on one day and is not enabled.
+
+The source candle is passed explicitly, independent of optional ML features.
+Live sizing and the backtester share cell-cap/expansion helpers. Account chart
+backtests and walk-forward fetch minute history; shadow does not inherit this
+account trial. Trackers shows ordinary signals separately from the reclaim funnel
+and labels closed results as retest fills only. Config migration is scoped,
+validated, idempotent and backed up on the VM. Review with new forward results,
+including missed signals, fees and ordinary-versus-retest outcomes.

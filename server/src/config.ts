@@ -50,7 +50,7 @@ export interface PaperConfig {
   /** Explicit scanner/market/entry-frame rules; context must agree on closed bars. */
   entryAlignments?: Array<{ scannerId: string; symbol: string; tf: string; contextTf: string; emaLen: number }>;
   /** Small account-only paper trials of the completed-minute reclaim entry. */
-  reclaimTrials?: Array<{enabled: boolean; scannerId: string; symbol: string; tf: '15m'; pullbackAtr: number; setupMinutes: number; orderMinutes: number; sizeScale: number; maxDailyEntries: number}>;
+  reclaimTrials?: Array<{enabled: boolean; scannerId: string; symbol: string; tf: '15m'; pullbackAtr: number; setupMinutes: number; orderMinutes: number; sizeScale: number; maxDailyEntries: number; minSignalBarAtr?: number; maxStopLossPct?: number}>;
   /**
    * Reject entries whose signal bar closed more than this many seconds ago (0 = off).
    * Measured bar-close lag on this feed: median 11 s, p90 71 s, worst 234 s on thin symbols
@@ -808,6 +808,8 @@ export function validateConfig(c: AppConfig): string[] {
         || !Number.isFinite(r.pullbackAtr) || r.pullbackAtr < 0 || r.pullbackAtr > 2
         || !Number.isInteger(r.setupMinutes) || r.setupMinutes < 2 || r.setupMinutes > 30
         || !Number.isInteger(r.orderMinutes) || r.orderMinutes < 1 || r.orderMinutes > 5
+        || (r.minSignalBarAtr !== undefined && (!Number.isFinite(r.minSignalBarAtr) || r.minSignalBarAtr <= 0 || r.minSignalBarAtr > 20 || r.sizeScale !== 1))
+        || (r.maxStopLossPct !== undefined && (r.minSignalBarAtr === undefined || !Number.isFinite(r.maxStopLossPct) || r.maxStopLossPct <= 0 || r.maxStopLossPct > 100))
         || !(r.sizeScale > 0 && r.sizeScale <= 1) || !Number.isInteger(r.maxDailyEntries) || r.maxDailyEntries < 1 || r.maxDailyEntries > 10) errs.push('invalid paper.reclaimTrials rule');
       const key = `${r?.scannerId}|${r?.symbol}|${r?.tf}`;
       if (keys.has(key)) errs.push('duplicate paper.reclaimTrials rule');

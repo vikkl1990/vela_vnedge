@@ -99,3 +99,14 @@ test('decision 202: the backtest is charged the book crossing only — the marke
   assert.equal(checkRiskVsFees(80_000, 80_000 * (1 - 0.0075), paper, 'BTCUSD', cross), null);
   assert.notEqual(checkRiskVsFees(80_000, 80_000 * (1 - 0.0075), paper, 'BTCUSD', btcBookCost), null);
 });
+
+test('selective trial policy is paper-account only and its cap cannot loosen the global risk ceiling',async()=>{
+  const {trialRiskConfig,selectiveReclaimRule}=await import('./selectiveEntry.ts');
+  const c=cfgWith();c.paper.reclaimTrials=[{enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',pullbackAtr:.25,setupMinutes:15,orderMinutes:3,sizeScale:1,maxDailyEntries:10,minSignalBarAtr:3,maxStopLossPct:1.5}];
+  const cell={scannerId:'s',symbol:'ETHUSD',tf:'15m'},rule=selectiveReclaimRule(backtestPolicy(c,'s','15m','account').cfg,cell)!;
+  assert.ok(rule);assert.equal(trialRiskConfig({...c.paper,maxStopLossPct:3},rule).maxStopLossPct,1.5);
+  assert.equal(trialRiskConfig({...c.paper,maxStopLossPct:1},rule).maxStopLossPct,1);
+  assert.equal(selectiveReclaimRule(backtestPolicy(c,'s','15m','shadow').cfg,cell),undefined);
+  assert.equal(selectiveReclaimRule(backtestPolicy(c,'s','15m','account',{executor:true}).cfg,cell),undefined);
+  c.execution.mode='dry-run';assert.equal(selectiveReclaimRule(backtestPolicy(c,'s','15m','account').cfg,cell),undefined);
+});

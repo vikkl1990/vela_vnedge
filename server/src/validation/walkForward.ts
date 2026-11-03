@@ -123,6 +123,8 @@ export function passesRule(s: { trades: number; pnl: number; profitFactor: numbe
 export interface WalkForwardInput {
   scannerId: string; scannerName: string; symbol: string; tf: string;
   bars: Bar[];              // ascending closed bars over the whole history
+  subBars?: Bar[];          // completed minute path for selective entry plans
+  entryProtection?: BacktestInput['entryProtection'];
   events: ScanEvent[];      // extracted events over the whole history
   cfg: PaperConfig; exitMode: ExitMode; contractValue: number; tickSize: number;
   /** The live path's gates and this scanner's exit overrides (decision 85): a validation result must describe the deployed strategy. */
@@ -141,7 +143,7 @@ function replay(inp: WalkForwardInput, from: number, to: number): BacktestResult
   if (i1 < 0) i1 = inp.bars.length;
   const bars = inp.bars.slice(Math.max(0, i0 - lead), i1);
   const events = inp.events.filter(e => e.barTime >= from && e.barTime < to);
-  return runBacktest({ scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, bars, events, cfg: inp.cfg, exitMode: inp.exitMode, contractValue: inp.contractValue, tickSize: inp.tickSize, trendGate: inp.trendGate, scannerExit: inp.scannerExit, chopGate: inp.chopGate, entry: inp.entry, scannerExitResolved: inp.scannerExitResolved, requireAtrStop: inp.requireAtrStop });
+  return runBacktest({ scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, bars, subBars:inp.subBars?.filter(b=>b.time>=(bars[0]?.time??from)&&b.time<to), entryProtection:inp.entryProtection, events, cfg: inp.cfg, exitMode: inp.exitMode, contractValue: inp.contractValue, tickSize: inp.tickSize, trendGate: inp.trendGate, scannerExit: inp.scannerExit, chopGate: inp.chopGate, entry: inp.entry, scannerExitResolved: inp.scannerExitResolved, requireAtrStop: inp.requireAtrStop });
 }
 
 const brief = (s: WfStats | BacktestResult['stats']) => ({ trades: s.trades, pnl: s.pnl, profitFactor: s.profitFactor === Infinity ? 999 : s.profitFactor, winRatePct: s.winRatePct });

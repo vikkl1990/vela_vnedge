@@ -18,6 +18,7 @@ import { PaperEngine } from '../paper/engine.ts';
 import type { MarketInfo } from '../paper/engine.ts';
 import { marketSpec } from '../delta/rest.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
+import {selectiveReclaimRule} from '../paper/selectiveEntry.ts';
 import { runBacktest, type BacktestResult } from '../paper/backtest.ts';
 import type { PinePool } from '../pine/pool.ts';
 import type { WorkerResult } from '../pine/worker.ts';
@@ -522,7 +523,10 @@ export class ScannerEngine extends EventEmitter {
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: btBars, mode: 'backtest', ...READ.rule });
         const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
         // decision 191: the account's own policy — entry model, exit rules with script protection, trend and chop gates
-        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, events, ...backtestPolicy(this.cfgRef(), s.id, tf, 'account', { executor: this.executorAttached?.() }), exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
+        const policy=backtestPolicy(this.cfgRef(),s.id,tf,'account',{executor:this.executorAttached?.()});
+        const selective=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf});
+        const subBars=selective?await this.history?.getHistory(symbol,'1m',Math.ceil((Date.now()-btBars[0].time)/60_000)):undefined;
+        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
         this.backtests.set(key, bt);
         if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? ''), resolvedAt: t.exitAt ?? null })));
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));
@@ -712,7 +716,7 @@ export class ScannerEngine extends EventEmitter {
       } else if (mlCfg.minProb > 0 && mlProb !== null && mlProb < mlCfg.minProb) {
         action = `rejected:ml ${(mlProb * 100).toFixed(0)}% < ${(mlCfg.minProb * 100).toFixed(0)}%`;
       } else {
-        const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, atr, refPrice, at: now, signalId: sigId, exitMode, features: pilot ? {...features,copy_pilot:1} : features, mlProb, scoreOverride, sizeScale: pilot?.sizeScale });
+        const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: sigId, exitMode, features: pilot ? {...features,copy_pilot:1} : features, mlProb, scoreOverride, sizeScale: pilot?.sizeScale });
         if (pilot && ['opened','reversed','pending'].includes(d.action)) this.db.kvSet('incubator.copyPilot',{day:pilotDay,entries:pilotEntries+1});
         action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
         positionId = d.position?.id ?? d.pendingId ?? null;

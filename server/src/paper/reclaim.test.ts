@@ -109,3 +109,18 @@ test('reclaim replay respects level-only exits while script and both modes cance
     assert.equal(r.entryFlow?.['script cancelled setup']??0,exitMode==='levels'?0:1,exitMode);
   }
 });
+
+test('configured selective replay preserves normal entries and applies the cap to both entry routes',()=>{
+  const inp=replay(),rule={enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m' as const,pullbackAtr:.1,setupMinutes:10,orderMinutes:2,sizeScale:1,maxDailyEntries:10,minSignalBarAtr:3,maxStopLossPct:1.5};
+  Object.assign(inp.cfg,{initialEquity:1000,sizingMode:'margin',marginPerTrade:150,maxStopLossPct:3,reclaimTrials:[rule]});
+  const normal=runBacktest({...inp,entry:undefined});
+  assert.equal(normal.entries,1);assert.equal(normal.entryFlow?.setups,undefined);
+  assert.ok(normal.trades[0].qty*Math.abs(normal.trades[0].entryPrice-normal.trades[0].sl!)<=15);
+  inp.bars[20]={...inp.bars[20],high:105,low:97};
+  const expanded=runBacktest({...inp,entry:undefined});
+  assert.equal(expanded.entryFlow?.setups,1);assert.equal(expanded.entries,1);
+  assert.equal(expanded.trades[0].entryAt,T+(21*15+2)*M);
+  assert.ok(expanded.trades[0].qty*Math.abs(expanded.trades[0].entryPrice-expanded.trades[0].sl!)<=15);
+  assert.throws(()=>runBacktest({...inp,entry:undefined,subBars:undefined}),/minute history/);
+  const other=runBacktest({...inp,symbol:'OTHERUSD',entry:undefined,subBars:undefined});assert.equal(other.entries,1);
+});

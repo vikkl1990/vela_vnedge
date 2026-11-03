@@ -20,7 +20,7 @@ export type Book = 'account' | 'shadow';
  */
 export function bookPaperConfig(cfg: AppConfig, book: Book): PaperConfig {
   if (book === 'account') return cfg.paper;
-  return { ...cfg.paper, initialEquity: 10_000_000, maxOpenPositions: 100_000, sizingMode: cfg.paper.sizingMode === 'margin' ? 'risk' : cfg.paper.sizingMode };
+  return { ...cfg.paper, reclaimTrials:undefined, initialEquity: 10_000_000, maxOpenPositions: 100_000, sizingMode: cfg.paper.sizingMode === 'margin' ? 'risk' : cfg.paper.sizingMode };
 }
 
 /**
@@ -47,7 +47,7 @@ export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { exec
 export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number } = {}) {
   const sc = cfg.scanners[scannerId] ?? {};
   return {
-    cfg: scannerEntryConfig(bookPaperConfig(cfg, book),sc,tf),
+    cfg: scannerEntryConfig({...bookPaperConfig(cfg, book),...(opts.executor || cfg.execution.mode!=='paper' ? {reclaimTrials:undefined} : {})},sc,tf),
     entryProtection: sc.entryProtection,
     requireAtrStop: book === 'account' && Boolean(cfg.paper.skipScriptStops) && sc.entryProtection !== 'native',
     exitMode: sc.exitMode ?? 'both',

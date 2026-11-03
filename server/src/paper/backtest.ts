@@ -1,4 +1,5 @@
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
+import {selectiveReclaimRule,trialRiskConfig,expansionRatio} from './selectiveEntry.ts';
 import { crossingSlippageBps } from './costs.ts';
 import {createReclaim, advanceReclaim, type ReclaimOptions, type ReclaimState} from './reclaim.ts';
 import {alignmentRule,alignmentRefusal,aggregateContext} from './entryAlignment.ts';
@@ -101,12 +102,14 @@ export interface BacktestResult {
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
+  const trial=selectiveReclaimRule(inp.cfg,inp);
+  if(trial && !inp.subBars?.length)throw Error('selective reclaim requires minute history');
   if(inp.executionPlan?.maxHoldMinutes&&!inp.subBars?.length)throw Error('timed execution plans require minute subBars');
   if (inp.entry?.reclaim && (!inp.subBars?.length || (TF_SECONDS[inp.tf] ?? 0) <= 60)) throw Error('reclaim research requires minute subBars and a higher signal timeframe');
   if (inp.entry?.reclaim && (inp.entry.pullbackAtr !== undefined || inp.entry.breakAtr !== undefined)) throw Error('reclaim cannot be combined with another entry model');
   // a backtest is one market, so its exit rules are resolved once (decision 34)
   // decision 113: under exit mode `script` the script's exits are the exits
-  const cfg0 = exitConfigFor(inp.cfg, inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit, inp.tf);
+  const cfg0 = exitConfigFor(trialRiskConfig(inp.cfg,trial), inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit, inp.tf);
   const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: crossingSlippageBps(cfg0, inp.spreadPct) } : cfg0;
   const funding = [...(inp.funding ?? [])].sort((a, b) => a.at - b.at);
   if (funding.some(f => !Number.isFinite(f.at) || !Number.isFinite(f.ratePct) || !Number.isFinite(f.markPrice) || f.markPrice <= 0)) throw new Error('invalid historical funding settlement');
@@ -147,6 +150,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const curve: Array<{ at: number; equity: number }> = [{ at: bars[0]?.time ?? 0, equity }];
   const rejected: Record<string, number> = {};
   const entryFlow: Record<string, number> = {};
+  const trialOrders=new Map<number,number>();
   const flow = (key: string) => { entryFlow[key] = (entryFlow[key] ?? 0) + 1; };
   let nextId = 1, entries = 0;
 
@@ -211,13 +215,17 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       }
       for (let j = si; reclaim && j < sub.length && sub[j].time < bar.time + tfMs; j++) {
         const step = advanceReclaim(reclaim.state, sub[j], sub[j].time + 60_000, through);
-        if (step.kind === 'placed') flow('orders');
+        if (step.kind === 'placed') {
+          if(trial){const day=Math.floor((sub[j].time+60_000)/86_400_000),n=trialOrders.get(day)??0;
+            if(n>=trial.maxDailyEntries){flow('daily order limit');reclaim=null;break;}trialOrders.set(day,n+1);}
+          flow('orders');
+        }
         if (step.kind === 'cancelled') { flow(step.reason); reclaim = null; break; }
         if (step.kind !== 'filled') continue;
         const r = reclaim; reclaim = null;
         // The ATR control keeps the normal scanner levels and stop distance, so
         // entry timing is tested independently of the optional structural stop.
-        const entryEvent = inp.entry!.reclaim!.structuralStop ? {...r.ev, sl: step.stop, tp: []} : r.ev;
+        const entryEvent = r.state.options.structuralStop ? {...r.ev, sl: step.stop, tp: []} : r.ev;
         if (!openAt(step.price, step.at, entryEvent, r.sigI, true)) { flow('fill refused'); break; }
         flow('fills');
         const o = open as unknown as Position;
@@ -355,7 +363,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       // after the bar closed beyond it, handed the screen a head start the account never gets (Inside Day Breakout: a
       // median 60% of the bar's range).
       const price = bar.close;
-      const em = inp.entry;
+      const expanded=trial && (expansionRatio(bar,ev.barTime,atr[i])??0)>trial.minSignalBarAtr!;
+      const em:BacktestInput['entry']=expanded?{reclaim:trial}:inp.entry;
+      if(trial && !expanded && reclaim){flow('setup replaced by ordinary entry');reclaim=null;}
       if (em?.maxSignalBarAtr && atr[i] > 0 && (bar.high - bar.low) / atr[i] > em.maxSignalBarAtr) { refuse('chased'); continue; }
       if (em?.reclaim) {
         const lv = resolveLevels({side: ev.side, price, sl: ev.sl, tp: ev.tp, atr: atr[i]}, cfg, inp.tickSize);
@@ -386,7 +396,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
     version: SIMULATION_VERSION, costCoverage: { crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: !cfg.scalperOffer?.enabled ? 'disabled' : cfg.scalperOffer.joinedAt === undefined ? 'unverified-full-fees' : 'enrollment-dated' }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
-    stats, trades: closed.map(p => ({...tradeOf(p), setupAt: setupTimes.get(p.id)!})).reverse(), equity: curve, rejected, ...(inp.entry?.reclaim ? {entryFlow: {...entryFlow, pendingAtEnd: reclaim ? 1 : 0}} : {}),
+    stats, trades: closed.map(p => ({...tradeOf(p), setupAt: setupTimes.get(p.id)!})).reverse(), equity: curve, rejected, ...(inp.entry?.reclaim || trial ? {entryFlow: {...entryFlow, pendingAtEnd: reclaim ? 1 : 0}} : {}),
   };
 }
 
