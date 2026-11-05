@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {DEFAULT_CONFIG,validateConfig} from '../config.ts';
+import {DEFAULT_CONFIG,validateConfig,type AppConfig} from '../config.ts';
 import {Db} from '../db.ts';
 import {PaperEngine} from './engine.ts';
 import {bookPaperConfig} from './policy.ts';
@@ -194,4 +194,80 @@ test('current plan freezes scanner protection and five-minute passive entry',t=>
  assert.equal(planEvents([ev],bars,p)[0].sl,undefined);assert.deepEqual(planEvents([ev],bars,p)[0].tp,[]);
  assert.equal(p.paper.limitEntry!.bars,1/3);assert.equal(planBacktest(p).entry!.pullbackBars,1/3);
  assert.equal(ev.sl,98);assert.notEqual(p.signature,planSnapshot(c,c.executionPlans![0],'a').signature);
+});
+
+function payoffPair(c:AppConfig) {
+ c.scanners.s.entryProtection='native';c.paper.skipScriptStops=false;
+ Object.assign(c.paper,{fillSource:'tape',trailAfterR:.5,trailGiveBackPct:10,trailAtrMult:0,floorAtR:.5,floorKeepR:.25,trailSteps:[[2,8],[4,6]],trailStall:{minutes:45,factor:.6}});
+ const common={revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current' as const,referenceEquity:1000,maxStopLossPct:1};
+ c.executionPlans=[{...common,id:'control',label:'Control',comparison:{group:'payoff',role:'control'}},
+  {...common,id:'candidate',label:'Later trail',comparison:{group:'payoff',role:'candidate'},trailing:{afterR:1,giveBackPct:20,floorAtR:1,floorKeepR:.5}}];
+}
+
+test('complete profit-capture plan changes only exits, removes early floors and tightening, and measures matched outcomes',t=>{
+ const {db,c,e,service,ctx}=setup(t);payoffPair(c);assert.deepEqual(validateConfig(c),[]);
+ service.observe(ctx);service.observe(ctx);e.onTrade('ETHUSD',100,10,T+1,T+1);
+ const control=e.openPositions().find(p=>p.executionPlan?.id==='control')!,candidate=e.openPositions().find(p=>p.executionPlan?.id==='candidate')!;
+ assert.equal(control.qty,candidate.qty);assert.equal(control.riskAmount,candidate.riskAmount);assert.ok(candidate.riskAmount<=10);
+ assert.equal(control.slOriginal,candidate.slOriginal);assert.deepEqual(control.tp,candidate.tp);assert.deepEqual(control.legs,candidate.legs);
+ const policy=candidate.executionPlan!.paper;
+ assert.deepEqual([policy.trailAfterR,policy.trailGiveBackPct,policy.floorAtR,policy.floorKeepR,policy.trailAtrMult],[1,20,1,.5,0]);
+ assert.deepEqual(policy.trailSteps,[]);assert.equal(policy.trailStall,undefined);
+ e.onTrade('ETHUSD',101.2,10,T+1000,T+1000);
+ assert.ok(control.sl!>101);assert.equal(candidate.sl,98,'the old 0.5R floor must not close the candidate early');
+ e.onTrade('ETHUSD',100.9,10,T+2000,T+2000);
+ assert.equal(e.position(control.id)!.status,'closed');assert.equal(candidate.status,'open');
+ let comparison=service.view().comparisons[0];assert.equal(comparison.sharedSignals,1);assert.equal(comparison.matchedClosed,0);assert.equal(comparison.unresolvedSignals,1);assert.equal(comparison.matchedDeltaNet,null);
+ e.onTrade('ETHUSD',102.5,10,T+3000,T+3000);assert.equal(candidate.sl,102);
+ e.onTrade('ETHUSD',101.8,10,T+4000,T+4000);assert.equal(candidate.status,'closed');
+ comparison=service.view().comparisons[0];assert.equal(comparison.matchedClosed,1);assert.equal(comparison.unresolvedSignals,0);
+ assert.ok(comparison.matchedDeltaNet!>0);assert.equal(comparison.matchedDeltaNet,comparison.candidateNet-comparison.controlNet);
+ db.run("UPDATE execution_plan_events SET action='interrupted' WHERE plan_id='candidate'");
+ assert.equal(service.view().comparisons[0].unresolvedSignals,0,'a recovered, closed position resolves an interrupted admission');
+ const next={...ctx,at:T+H,event:{...ctx.event,barTime:ctx.event.barTime+H}};
+ service.observe(next);e.onTrade('ETHUSD',100,10,T+H+1,T+H+1);e.onTrade('ETHUSD',97,10,T+H+1000,T+H+1000);
+ for(const cohort of service.view().cohorts){assert.equal(cohort.closed,2);assert.equal(cohort.winRate,.5);assert.ok(cohort.avgWin!>0);assert.ok(cohort.avgLoss!<0);assert.equal(cohort.payoffRatio,cohort.avgWin!/-cohort.avgLoss!);assert.equal(cohort.breakEvenWinRate,-cohort.avgLoss!/(cohort.avgWin!-cohort.avgLoss!));}
+ assert.equal(c.paper.maxStopLossPct,3);assert.equal(c.paper.trailAfterR,.5);assert.equal(c.paper.marginPerTrade,150);
+});
+
+test('held profit-capture rule survives restart and cohort comparison never mixes changed policies',t=>{
+ const {db,c,e,service,ctx}=setup(t);payoffPair(c);service.observe(ctx);e.onTrade('ETHUSD',100,10,T+1,T+1);
+ const candidate=e.openPositions().find(p=>p.executionPlan?.id==='candidate')!;
+ const before=JSON.parse(JSON.stringify(candidate.executionPlan!));
+ c.executionPlans![1].trailing={afterR:.2,giveBackPct:50,floorAtR:0,floorKeepR:0};c.paper.feeRatePct=2;
+ const reloaded=new PaperEngine(db,()=>({...c,paper:bookPaperConfig(c,'shadow')}),{book:2});const next=new PlanComparisons(db,()=>c,reloaded,()=> 'source-a');
+ const held=reloaded.position(candidate.id)!;assert.deepEqual(held.executionPlan,before);
+ reloaded.onTrade('ETHUSD',101.2,10,T+1000,T+1000);assert.equal(held.sl,98);
+ assert.equal(next.view().comparisons[0].sharedSignals,0,'old policy observations are not current evidence');
+ assert.equal(next.view().cohorts.length,2,'old cohorts remain visible');
+});
+
+test('paired ledger keeps refusals, asymmetric coverage and unfinished fills visible',t=>{
+ const {c,e,service,ctx}=setup(t);payoffPair(c);
+ service.observe({...ctx,refusal:'market unavailable'});let v=service.view();
+ assert.equal(v.comparisons[0].sharedSignals,1);assert.equal(v.comparisons[0].matchedClosed,0);assert.equal(v.comparisons[0].matchedDeltaNet,null);
+ assert.ok(v.cohorts.every(p=>p.avgWin===null&&p.avgLoss===null&&p.winRate===null));
+ c.executionPlans![1].enabled=false;
+ service.observe({...ctx,at:T+H,event:{...ctx.event,barTime:ctx.event.barTime+H}});e.onTrade('ETHUSD',100,10,T+H+1,T+H+1);
+ v=service.view();assert.equal(v.comparisons[0].controlOnly,1);assert.equal(v.comparisons[0].candidateOnly,0);assert.equal(v.comparisons[0].enabled,false);
+});
+
+test('profit-capture validation rejects ambiguous settings, unsafe floors and mismatched comparisons',t=>{
+ const {c}=setup(t);payoffPair(c);const original=structuredClone(c);
+ for(const bad of [null,{afterR:NaN,giveBackPct:20,floorAtR:1,floorKeepR:.5},{afterR:1,giveBackPct:100,floorAtR:1,floorKeepR:.5},{afterR:1,giveBackPct:20,floorAtR:1,floorKeepR:1},{afterR:1,giveBackPct:20,floorAtR:0,floorKeepR:.5}]){
+  const cfg=structuredClone(original);cfg.executionPlans![1].trailing=bad as any;assert.ok(validateConfig(cfg).some(e=>e.includes('profit-capture')));
+ }
+ const mismatch=structuredClone(original);mismatch.executionPlans![1].maxStopLossPct=2;assert.ok(validateConfig(mismatch).some(e=>e.includes('must share')));
+ const invalidCap=structuredClone(original);invalidCap.executionPlans!.forEach(p=>p.maxStopLossPct=4);assert.ok(validateConfig(invalidCap).some(e=>e.includes('stop-risk ceiling')));
+ const invalidGroup=structuredClone(original);invalidGroup.executionPlans![1].comparison=null as any;assert.ok(validateConfig(invalidGroup).some(e=>e.includes('invalid comparison')));
+ c.paper.maxStopLossPct=.5;assert.equal(planSnapshot(c,c.executionPlans![1]).paper.maxStopLossPct,.5,'a research plan cannot relax an existing cap');
+ const conflict=structuredClone(original);conflict.executionPlans![1].takeProfit={mode:'r',rr:[1,2,3],split:[1,0,0],trailAfterR:.5};assert.ok(validateConfig(conflict).some(e=>e.includes('only one place')));
+});
+
+test('renaming a plan preserves its policy cohort while a trailing change creates new evidence',t=>{
+ const {c}=setup(t);payoffPair(c);const p=c.executionPlans![1],before=planSnapshot(c,p,'source-a');
+ p.label='A clearer display name';p.comparison!.group='renamed-group';
+ assert.equal(planSnapshot(c,p,'source-a').signature,before.signature);
+ p.trailing!.giveBackPct=25;
+ assert.notEqual(planSnapshot(c,p,'source-a').signature,before.signature);
 });

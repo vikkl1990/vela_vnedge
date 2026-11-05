@@ -6708,3 +6708,51 @@ account trial. Trackers shows ordinary signals separately from the reclaim funne
 and labels closed results as retest fills only. Config migration is scoped,
 validated, idempotent and backed up on the VM. Review with new forward results,
 including missed signals, fees and ordinary-versus-retest outcomes.
+
+## 219. Compare complete profit-capture policies on the same PEPE signals (2026-11-05)
+
+The existing execution-plan registry now supports a complete proportional trail
+override, including the floor and removal of inherited stepped/stall tightening.
+Changing only trail activation had left the earlier protective floor active, so
+it could not represent the researched later-trailing policy. Freeze the complete
+effective rule on each position and preserve it after configuration changes and
+restart. Display-name edits do not create new policy evidence.
+
+Add two isolated shadow plans for Trend Impulse Channels / 1000PEPEUSD / 15m:
+the current exit rule, and a candidate trailing from 1R with 20% peak giveback
+and a 0.5R floor from 1R. Candidate stepped/stall tightening is disabled. Both
+retain the same entries, initial stops and target policy, $150 maximum margin,
+full configured fees, $1000 fixed reference equity and a 1% modeled stop-risk
+ceiling ($10 before gaps and costs). A research ceiling may only tighten the
+account ceiling. Account settings and other plans are unchanged. These plans
+have independent purses and occupancy; their totals are not portfolio returns.
+
+The earlier 384 exploratory replays did not identify a universal exit improvement.
+An exact-plan replay on cached PEPE minute histories, using 0.04% crossing, found:
+
+| Window | Current closed / net | Candidate closed / net | Closed drawdown, current / candidate |
+| --- | --- | --- | --- |
+| 7 Oct–3 Nov | 54 / -$12.40 | 45 / +$136.58 | $58.67 / $81.96 |
+| 9 Sep–6 Oct | 51 / -$8.86 | 46 / -$17.13 | $50.06 / $64.29 |
+
+At 0.10% crossing, current/candidate net was +$27.62/+$97.18 recently and
++$9.51/+$7.20 previously. Higher assumed costs change admissions; these are
+separate simulations, not a same-fill cost adjustment. Full commissions and tax
+are charged. Historical funding and depth remain incomplete. Both windows were
+already examined during research; neither is an untouched validation sample.
+The candidate increases average wins but does not reduce stops in these windows.
+Forward evidence is required before any account policy change.
+
+Incubator's existing Execution plan comparisons panel shows each policy's whole
+closed net, fees, average win/loss, payoff, break-even win rate and drawdown. It
+also joins identical source events across current policy versions, reporting
+matched closed outcomes, unfinished trades, differing fills and missing coverage.
+The matched subset alone is not a verdict. Old cohorts remain visible and no
+automatic promotion is introduced.
+
+Enable with `VNEDGE_CONFIG=data/config.json node ops/enable-pepe-exit-comparison.ts`
+while the service is stopped; `--dry-run` validates without changes. The migration
+checks paper mode, the source scheduler and reviewed control settings, preserves
+unrelated configuration, backs up before atomic replacement and is idempotent.
+Regression coverage includes identical sizing, complete trailing behavior,
+restart snapshots, missed admissions, version separation and migration safety.

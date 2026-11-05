@@ -73,16 +73,23 @@ export class PlanComparisons {
 
   view() {
     const configured=(this.cfg().executionPlans??[]).map(p=>{const snapshot=planSnapshot(this.cfg(),p,this.sourceHash(p.scannerId));return {...p,signature:snapshot.signature,takeProfitLabel:takeProfitLabel(snapshot)};});
+    const eventsByCohort=new Map<string,any[]>();
     const cohorts=this.db.all<any>('SELECT * FROM execution_plan_cohorts ORDER BY first_at DESC').map(row=>{
       const p=JSON.parse(row.snapshot) as ExecutionPlanSnapshot;
       const events=this.db.all<any>('SELECT e.*,p.status,p.realized_pnl,p.fees,p.risk_amount,p.exit_reason,p.exit_at FROM execution_plan_events e LEFT JOIN positions p ON p.id=e.position_id AND p.bt=2 WHERE e.scanner_id=? ORDER BY e.at',row.scanner_id);
+      eventsByCohort.set(row.scanner_id,events);
       const closed=events.filter(e=>e.status==='closed').sort((a,b)=>a.exit_at-b.exit_at);
       let balance=0,peak=0,drawdown=0;
       for(const e of closed){balance+=e.realized_pnl-e.fees;peak=Math.max(peak,balance);drawdown=Math.max(drawdown,peak-balance);}
       const reasons:Record<string,number>={};
       for(const e of events)if(e.reason)reasons[e.reason]=(reasons[e.reason]??0)+1;
-      return {id:p.id,revision:p.revision,signature:p.signature,sourceScannerId:p.sourceScannerId,takeProfitLabel:takeProfitLabel(p),symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
+      const gains=closed.map(e=>e.realized_pnl-e.fees).filter(n=>n>0),losses=closed.map(e=>e.realized_pnl-e.fees).filter(n=>n<0);
+      const avgWin=gains.length?gains.reduce((a,b)=>a+b,0)/gains.length:null,avgLoss=losses.length?losses.reduce((a,b)=>a+b,0)/losses.length:null;
+      return {id:p.id,label:p.label??p.id,comparison:p.comparison,revision:p.revision,signature:p.signature,sourceScannerId:p.sourceScannerId,takeProfitLabel:takeProfitLabel(p),symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
         referenceEquity:p.referenceEquity,margin:p.paper.marginPerTrade,leverage:p.paper.marginLeverage?.base,
+        maxStopLossPct:p.paper.maxStopLossPct,avgWin,avgLoss,winRate:closed.length?gains.length/closed.length:null,
+        payoffRatio:avgWin!==null&&avgLoss!==null?avgWin/-avgLoss:null,
+        breakEvenWinRate:avgWin!==null&&avgLoss!==null?-avgLoss/(avgWin-avgLoss):null,
         signals:events.length,placed:events.filter(e=>e.position_id!==null).length,
         filled:events.filter(e=>e.status==='open'||e.status==='closed').length,
         pending:events.filter(e=>e.status==='pending').length,open:events.filter(e=>e.status==='open').length,
@@ -90,6 +97,26 @@ export class PlanComparisons {
         avgR:closed.length?closed.reduce((n,e)=>n+(e.risk_amount>0?(e.realized_pnl-e.fees)/e.risk_amount:0),0)/closed.length:null,
         drawdown,reasons,positionIds:events.filter(e=>e.status==='open'||e.status==='closed').slice(-5).reverse().map(e=>e.position_id as number)};
     });
-    return {configured,cohorts};
+    const comparisons=[];
+    for(const group of new Set(configured.filter(p=>p.comparison).map(p=>p.comparison!.group))){
+      const control=configured.find(p=>p.comparison?.group===group&&p.comparison.role==='control');
+      const candidate=configured.find(p=>p.comparison?.group===group&&p.comparison.role==='candidate');
+      if(!control||!candidate)continue;
+      const ce=eventsByCohort.get(planScannerId(control))??[],ve=eventsByCohort.get(planScannerId(candidate))??[];
+      const cm=new Map(ce.map(e=>[e.source_event,e])),vm=new Map(ve.map(e=>[e.source_event,e]));
+      const shared=[...cm.keys()].filter(k=>vm.has(k));
+      const paired=shared.map(k=>[cm.get(k)!,vm.get(k)!]).filter(([a,b])=>a.status==='closed'&&b.status==='closed');
+      const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));
+      const controlNet=cohorts.find(c=>c.id===control.id&&c.signature===control.signature)?.net??0;
+      const candidateNet=cohorts.find(c=>c.id===candidate.id&&c.signature===candidate.signature)?.net??0;
+      comparisons.push({group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
+        controlId:control.id,candidateId:candidate.id,controlLabel:control.label??control.id,candidateLabel:candidate.label??candidate.id,
+        controlSignature:control.signature,candidateSignature:candidate.signature,controlNet,candidateNet,
+        sharedSignals:shared.length,controlOnly:cm.size-shared.length,candidateOnly:vm.size-shared.length,
+        unresolvedSignals:shared.filter(k=>unresolved(cm.get(k))||unresolved(vm.get(k))).length,
+        differentAdmissions:shared.filter(k=>Boolean(cm.get(k).status==='open'||cm.get(k).status==='closed')!==Boolean(vm.get(k).status==='open'||vm.get(k).status==='closed')).length,
+        matchedClosed:paired.length,matchedDeltaNet:paired.length?paired.reduce((sum,[a,b])=>sum+(b.realized_pnl-b.fees)-(a.realized_pnl-a.fees),0):null});
+    }
+    return {configured,cohorts,comparisons};
   }
 }
