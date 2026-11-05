@@ -292,6 +292,85 @@ test('a profit floor banks a small gain without capping the runner', () => {
   assert.equal(pos.sl, 101.25, 'the floor does not keep tightening, so the runner is not capped');
 });
 
+// ARIA paper #10646: the decimal +0.5R price became 0.4999999999999946 in JS.
+const decimalTrailCases = [
+  { side: 'long' as const, entry: 0.13977, stop: 0.13719, boundary: 0.14106 },
+  { side: 'short' as const, entry: 0.13970, stop: 0.14228, boundary: 0.13841 },
+];
+for (const sample of decimalTrailCases) {
+  for (const protection of ['floor', 'trail'] as const) {
+    for (const path of ['backtest candle', 'live candle', 'tape'] as const) {
+      test(`${sample.side} ${protection} activates at the decimal R boundary on ${path}`, () => {
+        const c = { ...cfg, breakEvenAfterTp1: false, trailAfterR: protection === 'trail' ? 0.5 : 0,
+          floorAtR: protection === 'floor' ? 0.5 : 0, floorKeepR: 0.25,
+          trailGiveBackPct: 10, trailSteps: [], trailStall: undefined };
+        const make = () => openPosition({ ...pos(sample.side), entryPrice: sample.entry, sl: sample.stop,
+          tp: [], at: 0, cfg: c });
+        const p = make(), dir = sample.side === 'long' ? 1 : -1;
+        const risk = Math.abs(sample.entry - sample.stop);
+        assert.ok((sample.boundary - sample.entry) * dir / risk < 0.5, 'fixture reproduces the rounding miss');
+        const advance = (price: number, time: number) => {
+          if (path === 'tape') return applyTrade(p, { time, price, qty: 1 }, c);
+          const open = time >= 180_000 ? sample.boundary : sample.entry;
+          const bar = { time, open, high: Math.max(open, price), low: Math.min(open, price), close: price };
+          return path === 'live candle' ? applyLiveBar(p, bar, c, time + 1) : applyBar(p, bar, c);
+        };
+        assert.equal(advance(sample.boundary - dir * 0.00001, 60_000).length, 0);
+        assert.equal(p.sl, sample.stop, 'one real price tick below the threshold must not arm protection');
+        assert.equal(advance(sample.boundary, 120_000).length, 0, 'the event raising a stop cannot trigger that stop');
+        const expected = sample.entry + dir * risk * (protection === 'floor' ? 0.25 : 0.45);
+        assert.ok(Math.abs(p.sl! - expected) < 1e-14, `expected ${expected}, got ${p.sl}`);
+        assert.equal(p.breakEven, true);
+        // A later event actually triggers the new stop; do not merely check a stored flag.
+        const exit = sample.entry + dir * risk * 0.2;
+        const fills = path === 'tape' ? applyTrade(p, { time: 180_000, price: exit }, c)
+          : advance(exit, 180_000);
+        assert.equal(fills.length, 1);
+        assert.equal(fills[0].reason, 'trail');
+        assert.ok(fills[0].pnl > 0, 'the later retracement closes on the profitable side of entry');
+        assert.equal(p.status, 'closed');
+      });
+    }
+  }
+}
+
+test('profit protection does not round a genuinely sub-threshold R up to the threshold', () => {
+  for (const sample of decimalTrailCases) {
+    const c = { ...cfg, trailAfterR: 0.5, floorAtR: 0.5, floorKeepR: 0.25, trailGiveBackPct: 10 };
+    const p = openPosition({ ...pos(sample.side), entryPrice: sample.entry, sl: sample.stop, tp: [], at: 0, cfg: c });
+    const dir = sample.side === 'long' ? 1 : -1;
+    trailStop(p, sample.entry + dir * Math.abs(sample.entry - sample.stop) * (0.5 - 1e-8), c);
+    assert.equal(p.sl, sample.stop, 'a difference 100 times the rounding tolerance is still below threshold');
+  }
+});
+
+test('stepped giveback recognizes numerical boundaries without tightening early', () => {
+  const c = { ...cfg, trailGiveBackPct: 10, trailSteps: [[2, 8], [4, 6]] as Array<[number, number]>,
+    trailStall: { minutes: 45, factor: 0.6 } };
+  assert.equal(giveBackPct(2 - 1e-14, c), 8);
+  assert.equal(giveBackPct(4 - 1e-14, c), 6);
+  assert.equal(giveBackPct(2 - 1e-8, c), 10);
+  assert.equal(giveBackPct(4 - 1e-8, c), 8);
+  assert.ok(Math.abs(giveBackPct(4 - 1e-14, c, 45) - 3.6) < 1e-12);
+});
+
+test('restored and late-enabled trails use their own eligible peak at numerical boundaries', () => {
+  const c = { ...cfg, trailAfterR: 0.5, floorAtR: 0.5, floorKeepR: 0.25, trailGiveBackPct: 10,
+    trailSteps: [], trailStall: undefined };
+  const sample = decimalTrailCases[0];
+  const p = openPosition({ ...pos(), entryPrice: sample.entry, sl: sample.stop, tp: [], at: 0, cfg: c });
+  p.peakR = 0.4999999999999946; p.peakAt = 60_000;
+  const restored = JSON.parse(JSON.stringify(p));
+  trailStop(restored, 0.141, c, undefined, 120_000);
+  assert.ok(restored.sl > restored.entryPrice, 'the persisted boundary peak remains eligible after restart');
+  const late = JSON.parse(JSON.stringify(p));
+  late.peakR = 5; late.trailOff = true;
+  trailStop(late, 0.140, c, undefined, 120_000);
+  assert.equal(late.sl, sample.stop, 'enabling protection cannot reuse a peak from when protection was off');
+  trailStop(late, sample.boundary, c, undefined, 180_000);
+  assert.ok(late.sl > late.entryPrice, 'a fresh boundary crossing after enablement does protect the trade');
+});
+
 test('proportional give-back is tight when small and loose when running', () => {
   const c = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false,
     breakEvenAfterTp1: false, trailAfterR: 0.5, trailDistanceR: 0, trailGiveBackPct: 40, tpSplit: [0, 0, 1] as [number, number, number] };

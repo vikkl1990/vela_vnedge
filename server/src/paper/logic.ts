@@ -589,10 +589,13 @@ export function applyBar(pos: Position, bar: PriceBar, cfg: PaperConfig, atrNow?
   return fills;
 }
 
-/**
- * Advance the trailing stop from the best price seen. Never moves against the position and does
- * nothing until the trade has shown `trailAfterR` of favourable excursion.
- */
+// Decimal exchange prices can produce 0.4999999999999946 at a mathematical +0.5R.
+// Compare only within one ten-billionth of an R; do not round the peak or stop price.
+function reachedProfitR(peakR: number, thresholdR: number): boolean {
+  return Number.isFinite(peakR) && Number.isFinite(thresholdR)
+    && (peakR >= thresholdR || thresholdR - peakR <= 1e-10);
+}
+
 /**
  * How much of the peak this trade gives back, given how large it is and how long it has stalled.
  *
@@ -604,7 +607,7 @@ export function applyBar(pos: Position, bar: PriceBar, cfg: PaperConfig, atrNow?
  */
 export function giveBackPct(peakR: number, cfg: PaperConfig, minutesSincePeak = 0): number {
   let give = cfg.trailGiveBackPct ?? 0;
-  for (const [atR, pct] of cfg.trailSteps ?? []) if (peakR >= atR) give = pct;
+  for (const [atR, pct] of cfg.trailSteps ?? []) if (reachedProfitR(peakR, atR)) give = pct;
   const stall = cfg.trailStall;
   if (stall && stall.minutes > 0 && minutesSincePeak >= stall.minutes) give *= stall.factor;
   return give;
@@ -624,6 +627,7 @@ export function stopReason(pos: Pick<Position, 'side' | 'entryPrice' | 'sl' | 'b
   return 'sl';
 }
 
+/** Advance profit protection from the eligible peak; never loosen the stop. */
 export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, atrNow?: number, at?: number): void {
   if (pos.status !== 'open') return;
   const base = pos.slOriginal ?? pos.sl;
@@ -648,9 +652,9 @@ export function trailStop(pos: Position, favourable: number, cfg: PaperConfig, a
   // takes over later and rises with the peak.
   let keptR = -Infinity;
   const floorAt = cfg.floorAtR ?? 0;
-  if (floorAt > 0 && peak >= floorAt) keptR = Math.max(keptR, cfg.floorKeepR ?? 0);
+  if (floorAt > 0 && reachedProfitR(peak, floorAt)) keptR = Math.max(keptR, cfg.floorKeepR ?? 0);
   const afterR = cfg.trailAfterR ?? 0;
-  if (afterR > 0 && peak >= afterR) {
+  if (afterR > 0 && reachedProfitR(peak, afterR)) {
     const atrMult = cfg.trailAtrMult ?? 0;
     if (atrMult > 0 && atrNow && atrNow > 0) {
       // distance measured in today's volatility, converted into R so the rest of the maths is shared

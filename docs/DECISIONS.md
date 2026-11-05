@@ -6756,3 +6756,33 @@ checks paper mode, the source scheduler and reviewed control settings, preserves
 unrelated configuration, backs up before atomic replacement and is idempotent.
 Regression coverage includes identical sizing, complete trailing behavior,
 restart snapshots, missed admissions, version separation and migration safety.
+
+## 220. Profit protection recognizes decimal R boundaries (2026-11-05)
+
+The all-trade review reproduced a missed protection threshold on ARIAUSD paper
+position #10646. Entry 0.13977, original stop 0.13719 and a favorable price of
+0.14106 mathematically represent +0.5R, but JavaScript produced
+0.4999999999999946. Strict comparisons left both the +0.5R floor and trailing
+activation off. The position subsequently stopped for -$14.85. One stopped
+position matched this precise boundary in the reviewed history; sampled paths
+cannot establish the exact alternate executable exit or recovered profit.
+
+Use a shared comparison tolerance of 1e-10 R for floor activation, trail
+activation and stepped giveback thresholds. Do not round stored peaks or stop
+prices. Meaningfully sub-threshold prices still do not arm protection, and the
+existing stop-first event ordering remains: a newly raised stop applies to later
+events. Restored positions use their eligible persisted peak; a trail switched
+on mid-trade still cannot borrow a peak recorded while protection was disabled.
+
+The same pure logic serves tape execution, live candles and backtests; UI
+giveback calculations use the same comparator. Regression tests cover decimal
+long and short boundaries on all three paths, floor and trail independently,
+one-tick and 1e-8 R near misses, stepped/stall tightening, restart and late
+enablement. Fourteen new regression cases fail on the old logic, while the
+near-miss guard passes there; all fifteen pass after the correction.
+
+Advance execution fingerprint version to 209 and simulation version to 14 so
+new evidence is distinguishable and obsolete cached backtests/derived ML labels
+are refreshed through the existing version mechanism. Recorded trades and
+account configuration are preserved. This is a numerical correctness repair,
+not a new stop/target policy, risk budget or scanner-admission rule.

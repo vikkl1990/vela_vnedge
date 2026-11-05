@@ -7,4 +7,5 @@
 // 11: held-position stops use adverse opens, including known stop-before-target ordering.
 // 12: scanner-specific protection, passive entry expiry and explicit signal direction contracts.
 // 13: selective account reclaim trials share candle selection and cell stop-risk caps with execution.
-export const SIMULATION_VERSION = 13;
+// 14: numerical R-boundary crossings activate floors, trails and stepped giveback consistently.
+export const SIMULATION_VERSION = 14;
