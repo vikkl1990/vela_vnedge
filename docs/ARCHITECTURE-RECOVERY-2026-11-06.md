@@ -1,7 +1,9 @@
 # VN EDGE: architecture recovery plan
 
 6 November 2026. Code inspected at `71c5da0f2de490ade49a107124a131e64da0afbd`.
-Status: architecture proposal and implementation backlog, not implemented or deployed.
+Status: core reliability release implemented and deployed at `258a4b8` on 6 November
+2026 at 16:59 UTC. The implementation status below separates delivered work from the
+remaining architecture backlog.
 This review covers the decision, evidence and execution paths; it is not a line-by-line
 certification of every imported Pine script.
 
@@ -56,6 +58,12 @@ lint/build and targeted server TypeScript checks.
 The cached historical chronology retest ran 396 scenarios and 7,357 closes, including all
 36 continuation scenarios; no negative holding times or pre-entry fills remained. This is
 chronology validation, not a new profitability study.
+
+Deployment verification: the VM service is active, the API answers, and the configuration
+hash is unchanged. All 133 existing open positions and resting orders were adopted with
+policy bindings, and all 794 closed paper trades have risk-processing receipts. The database
+and configuration were backed up before deployment. The local dashboard tunnel was restored;
+its expired browser session requires a normal sign-in to inspect the new authenticated panels.
 
 Still required: reconstruct complete signal/admission inputs for full runtime replay;
 measure portfolio sensitivity across different ready windows; evaluate scalp/swing candidates
