@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, PINE_DIR, SCRIPTS_DIR } from '../config.ts';
+import { pineLibraries } from '../pine/libraries.ts';
 import { applyPatches } from '../pine/patches.ts';
 import { familyFor, originOf } from '../library/families.ts';
 
@@ -110,8 +111,11 @@ export class ScannerRegistry {
       if (m.status === 'removed') continue;
       const file = path.join(m.__dir, m.file);
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-      const { source: patched, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
+      const { source: compatible, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
       let { status, reason } = reviewedStatus(m, report[m.id]);
+      let patched = compatible;
+      try { patched = pineLibraries().pin(compatible); pineLibraries().resolver(patched); }
+      catch (error) { status = 'incompatible'; reason = reason ?? `Pine dependencies: ${(error as Error).message}`; }
       if (!source.trim() || source.trim().length < 100) { status = 'unavailable'; reason = reason ?? 'source not published'; }
       this.map.set(m.id, {
         id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,

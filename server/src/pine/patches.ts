@@ -40,7 +40,7 @@ export const PATCH_RULES: PatchRule[] = [
   },
   {
     id: 'unused-ta-import',
-    description: "An `import TradingView/ta/N` whose own functions the script never calls is removed; PineTS loads no TradingView library, and without that library's functions the import only names the built-in `ta` namespace the script already uses (decision 163).",
+    description: "An `import TradingView/ta/N` whose own functions the script never calls is removed; without that library's functions the import only names the built-in `ta` namespace the script already uses (decision 163).",
     apply: (src) => {
       const m = src.match(/^import\s+TradingView\/ta\/\d+(?:\s+as\s+(\w+))?[ \t]*\r?$/m);
       if (!m) return src;

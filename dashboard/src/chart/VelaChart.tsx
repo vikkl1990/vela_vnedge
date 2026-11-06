@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { IndicatorHandle, TimelineMark, ScriptRun, Vela as VelaType } from '@luxalgo/vela'
 import { api } from '../api/client'
 import { venueSymbol, type ChartVenue } from './venues'
+import { createLibraryResolver } from './libraryResolver'
 import { scriptInputs } from './scriptInputs'
 import { deltaProvider } from './deltaProvider'
 import { FallbackChart } from './FallbackChart'
@@ -68,6 +69,8 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const { theme } = useTheme()
+  const librarySourcesRef = useRef<string[]>([])
+  useEffect(() => { librarySourcesRef.current = scripts.map(script => script.source) }, [scripts])
   const cbRef = useRef({ onScriptError, onScriptReady, onChartReady, onScriptRun })
   useEffect(() => {
     cbRef.current = { onScriptError, onScriptReady, onChartReady, onScriptRun }
@@ -107,6 +110,7 @@ export function VelaChart({ symbol, tf, venue = 'delta', height = 520, scripts =
           }
           try {
             chart.registerEngine('pine', new pine.PineWorkerEngine({ props: 'none',
+              importResolver: createLibraryResolver(() => librarySourcesRef.current, api.pineLibrary),
               footprints: venue === 'delta' ? (s, timeframe, range) => api.footprints(s, timeframe, range) : undefined,
             }))
           } catch (e) {

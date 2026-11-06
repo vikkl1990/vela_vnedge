@@ -5,6 +5,7 @@
  */
 import { parentPort, workerData } from 'node:worker_threads';
 import { ledgerAlerts } from './strategyLedger.ts';
+import { pineLibraries } from './libraries.ts';
 import { PineTS, Indicator } from 'pinets';
 import { DeltaPineProvider, type ProviderBar } from './provider.ts';
 import { DeltaRest } from '../delta/rest.ts';
@@ -92,6 +93,7 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
       if (!observed.some(b => b.openTime === latest)) base.dataWarnings = ['Footprint unavailable for the latest closed bar: collection warm-up, unsupported market or a tape gap'];
     }
     const pine = new PineTS(provider as any, job.symbol, TF_TO_PINE[job.tf] ?? '15', job.bars.length);
+    pine.setImportResolver(pineLibraries().resolver(job.source));
     pine.setAlertMode('all');
     pine.setMaxLoops(200_000);
     let program: string | Indicator = job.source;

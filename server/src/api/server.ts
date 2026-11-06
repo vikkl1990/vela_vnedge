@@ -1,3 +1,4 @@
+import { pineLibraries } from '../pine/libraries.ts';
 import { costAudit } from '../paper/costAudit.ts';
 import { allocationAudit } from '../analytics/allocationAudit.ts';
 import { performanceReport, validatePerformanceFilter } from '../analytics/performance.ts';
@@ -321,6 +322,10 @@ export class ApiServer {
       const u = this.userFor(req); if (!u) throw new HttpError(401, 'sign in to keep favorites');
       if (!body || typeof body.id !== 'string') throw new HttpError(400, 'id required');
       try { return { favorites: library.setFavorite(u.id, body.id, body.on !== false) }; } catch (e: any) { throw new HttpError(404, String(e?.message ?? e)); }
+    });
+    this.add('GET', '/api/pine-library', (_r, _s, _p, url) => {
+      try { return pineLibraries().get(url.searchParams.get('path') ?? '', url.searchParams.get('hash') ?? ''); }
+      catch (error) { throw new HttpError(409, (error as Error).message); }
     });
     this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); const read = a.config.get().scanners[p.id]; return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches, sourceHash: sourceHash(s.patched), inputs: read?.inputs ?? {}, timezone: read?.timezone ?? 'UTC' }; });
     this.add('GET', '/api/scanners/:id/overlay', (_r, _s, p, url) => {

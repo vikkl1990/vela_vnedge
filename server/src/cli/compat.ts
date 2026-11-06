@@ -1,3 +1,4 @@
+import { pineLibraries } from '../pine/libraries.ts';
 /**
  * Compatibility matrix: runs every manifest script through the worker pool on real Delta
  * candles and prints what each one produces. Usage: [WORKERS=2] npm run compat -- [SYMBOL] [TF] [BARS] [ids,…] [--replace]
@@ -41,7 +42,7 @@ let next = 0;
 const one = async (m: any) => {
   const raw = fs.readFileSync(path.join(PINE_DIR, m.file), 'utf8');
   const { source, applied } = applyPatches(raw, m.file);
-  const r = await withDeadline(pool.run({ scannerId: m.id, source, symbol, tf, tickSize: tick, bars, tailBars: 'all', plotTail: 50 }), 150_000, (): WorkerResult => ({ id: -1, bars: bars.length, lastBarTime: bars.at(-1)?.time ?? 0, ok: false, error: 'hung: no result within 150s (script likely loops forever under PineTS)', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 }));
+  const r = await withDeadline(pool.run({ scannerId: m.id, source: pineLibraries().pin(source), symbol, tf, tickSize: tick, bars, tailBars: 'all', plotTail: 50 }), 150_000, (): WorkerResult => ({ id: -1, bars: bars.length, lastBarTime: bars.at(-1)?.time ?? 0, ok: false, error: 'hung: no result within 150s (script likely loops forever under PineTS)', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 }));
   const entryish = r.alerts.filter(a => a.type === 'alert' && /🟢|🔴|LONG|SHORT|BUY|SELL/i.test(a.message)).length;
   rows.push({ id: m.id, ok: r.ok, ms: r.ms, error: r.error, patches: applied, alerts: r.alerts.length, entryish, shapes: r.shapes.map(s => `${s.title}:${s.times.length}`).join(','), labels: r.labels.length, plots: r.plots.length, warnings: r.warnings });
   if (rows.length % 10 === 0) save();

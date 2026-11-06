@@ -1,3 +1,4 @@
+import { pineLibraries } from '../pine/libraries.ts';
 /**
  * Decision 172: what do the library's silent scripts emit? Every runnable script is run on a few markets and its output
  * is read exactly as the scanner reads it (`extractEvents` with the scanner's own overrides). A script that yields no
@@ -49,7 +50,7 @@ const one = async (m: any) => {
   let entries = 0, alerts = 0, conds = 0, shapes = 0, labels = 0, plots = 0, ms = 0, error = '';
   const condTitles: string[] = [], shapeTitles: string[] = [], labelTexts: string[] = [], alertSamples: string[] = [];
   for (const d of data) {
-    const r = await withDeadline(pool.run({ scannerId: m.id, source, symbol: d.symbol, tf: TF, tickSize: d.tick, bars: d.bars, tailBars: 'all', plotTail: 5, inputs: sc?.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc?.timezone }), 150_000, (): WorkerResult => ({ id: -1, bars: d.bars.length, lastBarTime: 0, ok: false, error: 'hung', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 }));
+    const r = await withDeadline(pool.run({ scannerId: m.id, source: pineLibraries().pin(source), symbol: d.symbol, tf: TF, tickSize: d.tick, bars: d.bars, tailBars: 'all', plotTail: 5, inputs: sc?.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc?.timezone }), 150_000, (): WorkerResult => ({ id: -1, bars: d.bars.length, lastBarTime: 0, ok: false, error: 'hung', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 }));
     ms += r.ms;
     if (!r.ok) { error = error || String(r.error ?? 'error').slice(0, 120); continue; }
     const ev = extractEvents(r.alerts, r.shapes, { drawn: r.labels, scannerId: m.id, sources: sc?.sources, edge: sc?.edge, labels: sc?.labels, invert: sc?.invert });

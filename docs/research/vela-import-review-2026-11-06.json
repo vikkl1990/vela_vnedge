@@ -1,0 +1,271 @@
+{
+  "date": "2026-11-06",
+  "packages": {
+    "@luxalgo/vela": "0.9.4",
+    "@luxalgo/vela-pinets": "0.3.2",
+    "pinets": "0.13.1"
+  },
+  "validation": {
+    "scannerRuns": 90,
+    "unchangedEvents": 2667,
+    "changedEventSets": 0,
+    "fixture": "Cached closed-bar account scanner inputs captured 2 November 2026; 18 scanners across BTC/ETH/SOL 15m and BTC 1h/4h",
+    "importSmoke": "300 cached BTCUSD 15m bars; runtime compatibility only, not a profitability or data-coverage study",
+    "chart": "Power Root SuperTrend 15m/1h/4h/1d, no browser errors; Enhanced Candle Sticks also ran and retained its source input/timeframe warnings",
+    "api": "Pinned bytes verified; unauthenticated 401; incorrect hash 409"
+  },
+  "consumers": [
+    {
+      "id": "support-and-resistance-retest-breakout-signals",
+      "imports": [
+        "TradingView/ta/12"
+      ],
+      "ok": true,
+      "alerts": 7,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "flag-breakout-forecasts",
+      "imports": [
+        "TradingView/ta/12"
+      ],
+      "ok": true,
+      "alerts": 2,
+      "shapes": 2,
+      "plots": 0
+    },
+    {
+      "id": "volume-divergence-reversal-signals",
+      "imports": [
+        "TradingView/ta/12"
+      ],
+      "ok": true,
+      "alerts": 0,
+      "shapes": 2,
+      "plots": 0
+    },
+    {
+      "id": "orderblock-footprints",
+      "imports": [
+        "TradingView/ta/12"
+      ],
+      "ok": true,
+      "alerts": 45,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "liquidation-reversal-signals",
+      "imports": [
+        "TradingView/ta/10"
+      ],
+      "ok": true,
+      "alerts": 13,
+      "shapes": 4,
+      "plots": 3
+    },
+    {
+      "id": "inversion-fair-value-gap-signals",
+      "imports": [
+        "TradingView/ta/10"
+      ],
+      "ok": true,
+      "alerts": 42,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "smart-money-breakout-channels",
+      "imports": [
+        "TradingView/ta/10"
+      ],
+      "ok": true,
+      "alerts": 10,
+      "shapes": 2,
+      "plots": 0
+    },
+    {
+      "id": "range-breakout-signals",
+      "imports": [
+        "TradingView/ta/9"
+      ],
+      "ok": true,
+      "alerts": 14,
+      "shapes": 4,
+      "plots": 0
+    },
+    {
+      "id": "liquidity-depth",
+      "imports": [
+        "TradingView/ta/9"
+      ],
+      "ok": true,
+      "alerts": 6,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "breakout-and-retest-signals",
+      "imports": [
+        "TradingView/ta/9"
+      ],
+      "ok": true,
+      "alerts": 19,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "adaptive-resonance-oscillator",
+      "imports": [
+        "TradingView/ta/9"
+      ],
+      "ok": true,
+      "alerts": 35,
+      "shapes": 4,
+      "plots": 6
+    },
+    {
+      "id": "power-root-supertrend",
+      "imports": [
+        "TradingView/ta/8"
+      ],
+      "ok": true,
+      "alerts": 250,
+      "shapes": 2,
+      "plots": 3
+    },
+    {
+      "id": "enhanced-candle-sticks",
+      "imports": [
+        "TradingView/ta/7"
+      ],
+      "ok": true,
+      "alerts": 318,
+      "shapes": 4,
+      "plots": 0
+    },
+    {
+      "id": "split-atr",
+      "imports": [
+        "alodis/OKLCh/1"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: alodis/OKLCh/1",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "frenchfinance-funding-v0-1",
+      "imports": [
+        "TradingView/Request/3"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: TradingView/Request/3",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "volume-delta-crypto-search",
+      "imports": [
+        "TradingView/ta/8"
+      ],
+      "ok": false,
+      "error": "$.iter is not a function or its return value is not iterable",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "cot-index-commercial-positioning-weekly",
+      "imports": [
+        "TradingView/LibraryCOT/2"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: TradingView/LibraryCOT/2",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "fixed-range-volume-delta-by-sarojh",
+      "imports": [
+        "TradingView/ta/12"
+      ],
+      "ok": true,
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 1
+    },
+    {
+      "id": "byo-pattern-v1",
+      "imports": [
+        "Trendoscope/Zigzag/11",
+        "Trendoscope/utils/1",
+        "Trendoscope/FibRatios/1"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: Trendoscope/Zigzag/11",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "stabilized-hma-scalper",
+      "imports": [
+        "Horazio/Table_Utils/2"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: Horazio/Table_Utils/2",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "dragon-oscillation-reversal-v1-is-a-range-reversal-strategy",
+      "imports": [
+        "richardgong1988/HanJinSignals26/15"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: richardgong1988/HanJinSignals26/15",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "scalper-s-volatility-filter-quantrasystems",
+      "imports": [
+        "QuantraAI/QuantraMAs/2",
+        "QuantraSystems/DynamicFunctions/1"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: QuantraAI/QuantraMAs/2",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    },
+    {
+      "id": "dema-atr-strategy",
+      "imports": [
+        "TradingView/ta/7"
+      ],
+      "ok": true,
+      "alerts": 3,
+      "shapes": 0,
+      "plots": 5
+    },
+    {
+      "id": "rsi-primed",
+      "imports": [
+        "lastguru/DominantCycle/2"
+      ],
+      "ok": false,
+      "error": "Pine library not pinned or unavailable: lastguru/DominantCycle/2",
+      "alerts": 0,
+      "shapes": 0,
+      "plots": 0
+    }
+  ]
+}

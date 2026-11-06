@@ -6861,3 +6861,35 @@ scenarios, zero exits or fills before entry. Profitability is not certified by t
 execution replay is not a reconstruction of historical quotes, queues, ML or allocation.
 Live intent-first execution and an enforced activation certificate remain required. The
 operator's $150 margin and 3% stop-risk ceiling are unchanged; no production activation.
+
+## 223. Pin Pine imports across scanner and chart workers (6 November 2026)
+
+**Problem.** The installed PineTS/Vela adapter supports library imports, but neither
+worker supplied a resolver. Scanners relying on external Pine functions could fail
+while an old compatibility report still labelled them runnable. Library changes
+were also absent from scanner source identity.
+
+**Change.** Upgrade Vela 0.9.3 to 0.9.4, the published release compatible with the
+installed vela-pinets 0.3.2 adapter. Keep PineTS 0.13.1. Bundle original, hash-checked
+TradingView ta versions 7–14 and RelativeValue versions 2–3, retaining their licenses.
+Use the same local sources in scanner workers and the authenticated chart API.
+Record the transitive lock in executable source identity and reject unpinned or
+changed imports. Missing dependencies override stale compatibility verdicts.
+Research CLIs pin their new inputs explicitly; archived sources are never re-pinned.
+
+**Validation.** 908 server tests and 7 dashboard tests; lint, dashboard build and
+server type checks. All 90 cached account-scanner runs succeeded, with exactly the
+same 2,667 extracted events. On a 300-bar BTC 15m smoke fixture, 15 of 16 ta consumers
+ran; eight other consumers lack separately reviewed third-party libraries. The
+remaining ta consumer (`volume-delta-crypto-search`) still fails inside PineTS with
+`$.iter is not a function or its return value is not iterable`. The browser rendered
+Power Root SuperTrend in 15m, 1h, 4h and 1d frames without console errors. Enhanced
+Candle Sticks also ran, retaining its own input/timeframe warning on other frames. API checks
+confirmed exact bytes, 401 without authentication and 409 for a mismatched hash.
+Details: `docs/research/vela-import-review-2026-11-06.json`.
+
+**Limits.** Runtime success is not signal/economic qualification. No scanners are
+automatically promoted or enabled. The CME intrabar-proxy restriction remains;
+observed footprints and estimated proxies retain their separate semantics. Vela
+0.10 awaits a published compatible adapter and its own migration tests. Account
+configuration, $150 margin, leverage policy and stop-risk cap are unchanged.

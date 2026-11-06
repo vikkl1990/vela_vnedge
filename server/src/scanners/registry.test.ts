@@ -40,3 +40,16 @@ test('retired catalogue entries stay absent and duplicate canonical scanners rem
     assert.ok(registry.get(v.base), `variant base ${v.base} is retained`);
   }
 });
+
+test('unresolved library imports cannot inherit a stale compatible verdict', async () => {
+  const { ScannerRegistry } = await import('./registry.ts');
+  const { readLibraryLock } = await import('../../../shared/pineLibraries.ts');
+  const registry = new ScannerRegistry();
+  const supported = registry.get('enhanced-candle-sticks')!;
+  assert.equal(supported.status, 'ok');
+  assert.equal(Object.keys(readLibraryLock(supported.patched)).length, 2);
+  const missing = registry.get('split-atr')!;
+  assert.equal(missing.status, 'incompatible');
+  assert.match(missing.reason!, /alodis\/OKLCh\/1/);
+  assert.equal(registry.runnable().some(s => s.id === missing.id), false);
+});

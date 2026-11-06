@@ -1,3 +1,4 @@
+import { pineLibraries } from '../pine/libraries.ts';
 /**
  * PineTS upgrade parity (decision 150): runs a list of scripts on one saved candle set and records exactly what each
  * produces (alert and shape bar times), so two engine versions can be compared signal by signal.
@@ -30,7 +31,7 @@ let done = 0;
 const inFlight = Number(process.env.WORKERS) || 4; let next = 0;
 const one = async (m: any) => {
   const { source } = applyPatches(fs.readFileSync(path.join(PINE_DIR, m.file), 'utf8'), m.file);
-  const r: any = await withDeadline<any>(pool.run({ scannerId: m.id, source, symbol: c.symbol, tf: c.tf, tickSize: c.tick, bars: c.bars, tailBars: 'all', plotTail: 0 } as any), 150_000, () => ({ ok: false, error: 'hung: no result within 150s', ms: 150_000, alerts: [], shapes: [] }));
+  const r: any = await withDeadline<any>(pool.run({ scannerId: m.id, source: pineLibraries().pin(source), symbol: c.symbol, tf: c.tf, tickSize: c.tick, bars: c.bars, tailBars: 'all', plotTail: 0 } as any), 150_000, () => ({ ok: false, error: 'hung: no result within 150s', ms: 150_000, alerts: [], shapes: [] }));
   out[m.id] = { ok: r.ok, error: r.error ? String(r.error).slice(0, 200) : undefined, ms: r.ms,
     alerts: (r.alerts ?? []).map((a: any) => `${a.time}|${a.type}|${String(a.title ?? '').slice(0, 40)}|${String(a.message).slice(0, 80)}`),
     shapes: Object.fromEntries((r.shapes ?? []).map((s: any) => [s.title, s.times])) };
