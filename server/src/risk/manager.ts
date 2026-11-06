@@ -102,6 +102,12 @@ export class RiskManager extends EventEmitter implements RiskGate {
     this.db = deps.db; this.paper = deps.paper; this.candles = deps.candles; this.cfgRef = deps.cfgRef; this.now = deps.now ?? (() => Date.now());
     const stored = this.db.kvGet<RiskState>(KV_KEY);
     this.st = stored ?? this.freshState(this.now());
+    // Adopt old bookkeeping once. Subsequent closes must be receipted with risk state.
+    if(!this.db.kvGet('risk.receipts.initialized'))this.db.transaction(()=>{
+      this.db.run("INSERT OR IGNORE INTO risk_close_receipts SELECT id,entry_at FROM positions WHERE bt=0 AND status='closed'");
+      this.db.kvSet('risk.receipts.initialized',this.now());
+    });
+    this.recoverClosedTrades();
     this.tick(this.now());
     this.paper.on('trade', (t: { scannerId: string; pnl: number; exitAt: number; exitReason: string | null }) => this.onTradeClosed(t));
     log.info(`risk layer ready: day ${this.st.day.tripped ? 'TRIPPED' : 'ok'}, week ${this.st.week.tripped ? 'TRIPPED' : 'ok'}${this.st.manualHalt ? ', MANUAL HALT' : ''}`);
@@ -124,6 +130,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
 
   /** Roll UTC day / week windows, track the equity peak, trip kill switches. Safe to call often. */
   tick(now = this.now()): void {
+    if(!this.db.inTransaction){const restore=this.checkpoint();try{return this.db.transaction(()=>this.tick(now));}catch(e){restore();throw e;}}
     const resetAt = this.db.kvGet<number>('paper.resetAt') ?? null;
     if (resetAt !== this.st.paperResetAt) { this.st = this.freshState(now); this.save(); log.info('paper account was reset: risk bookkeeping restarted'); return; }
     const eq = this.paper.equity();
@@ -144,15 +151,28 @@ export class RiskManager extends EventEmitter implements RiskGate {
 
   private trip(p: Period, which: 'daily' | 'weekly', pnlPct: number, now: number) {
     p.tripped = true; p.trippedAt = now; p.trippedPnlPct = pnlPct;
+    this.db.run('INSERT OR IGNORE INTO risk_halts(at,kind,period_start,reset_at,pnl_pct) VALUES(?,?,?,?,?)',now,which,p.start,this.st.paperResetAt??0,pnlPct);
     log.error(`KILL SWITCH: ${which} loss ${pnlPct.toFixed(2)}% reached the limit — no new entries until the ${which === 'daily' ? 'UTC day' : 'week'} rolls`);
     this.emit('kill', { which, pnlPct, at: now });
     if (this.cfg.closeAllOnKill) { const n = this.paper.closeAll('risk-kill', now); log.warn(`closed ${n} position(s) on ${which} kill switch`); }
   }
 
-  private onTradeClosed(t: { scannerId: string; pnl: number; exitAt: number }) {
+  private recoverClosedTrades() {
+    for(const t of this.db.all<{id:number;entryAt:number;scannerId:string;pnl:number;exitAt:number}>(
+      `SELECT p.id,p.entry_at entryAt,p.scanner_id scannerId,p.realized_pnl-p.fees pnl,p.exit_at exitAt
+       FROM positions p WHERE p.bt=0 AND p.status='closed' AND NOT EXISTS
+       (SELECT 1 FROM risk_close_receipts r WHERE r.position_id=p.id AND r.entry_at=p.entry_at) ORDER BY p.exit_at,p.id`))this.onTradeClosed(t);
+  }
+
+  private onTradeClosed(t: { id?:number;entryAt?:number;scannerId: string; pnl: number; exitAt: number }) {
+    if(!this.db.inTransaction){const restore=this.checkpoint();try{return this.db.transaction(()=>this.onTradeClosed(t));}catch(e){restore();throw e;}}
+    if(t.id!=null&&t.entryAt!=null){
+      const r=this.db.run('INSERT OR IGNORE INTO risk_close_receipts(position_id,entry_at) VALUES(?,?)',t.id,t.entryAt);
+      if(!r.changes)return;
+    }
     const c = this.cfg;
     const s = this.st.scanners[t.scannerId] ?? (this.st.scanners[t.scannerId] = { consecutive: 0, lastLossAt: null, cooldownUntil: null });
-    const at = Math.max(this.now(), t.exitAt);
+    const at = t.exitAt;
     if (t.pnl < 0) {
       s.consecutive++; s.lastLossAt = t.exitAt;
       if (c?.cooldownAfterLosses > 0 && s.consecutive >= c.cooldownAfterLosses) {
@@ -161,12 +181,13 @@ export class RiskManager extends EventEmitter implements RiskGate {
       }
     } else if (t.pnl > 0) { s.consecutive = 0; }
     this.save();
-    this.tick(at);
+    this.tick(Math.max(this.now(),at));
   }
 
   // ---- entry gate ----
 
   gate(req: RiskEntryRequest): { reject?: string; leverageMult: number } {
+    this.recoverClosedTrades();
     const now = Math.max(this.now(), req.at);
     this.tick(now);
     const c = this.cfg;
@@ -274,6 +295,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
       net += sign * notional; netBeta += beta;
     };
     for (const p of this.paper.openPositions()) if (p.id !== exclude) add(p.symbol, p.side, notionalOf(p));
+    for (const p of this.paper.pendingEntries()) if(p.reservation && (exclude===undefined||p.replacingId!==exclude)) add(p.symbol,p.side,p.reservation.notional);
     if (candidate) add(candidate.symbol, candidate.side, candidate.notional);
     return { netNotional: net, netBetaNotional: netBeta, netPct: net / eq * 100, netBetaPct: netBeta / eq * 100, rows, candidateCorr: candidate ? corrOf(candidate.symbol) : null };
   }

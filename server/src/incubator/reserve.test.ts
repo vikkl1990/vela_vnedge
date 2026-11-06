@@ -8,7 +8,7 @@ import { evaluate, recordScreen } from './cycle.ts';
 const T0 = Date.UTC(2026, 9, 1);
 function world(reserve: AppConfig['incubator']['admit']['reserve']) {
   const db = new Db(':memory:');
-  const store = new IncubatorStore(db);
+  const store = new IncubatorStore(db,{evidenceMode:'historical-research'});
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
   cfg.scanners = {};
   cfg.incubator.maxShadow = 4; cfg.incubator.gate.pool = 'pair';

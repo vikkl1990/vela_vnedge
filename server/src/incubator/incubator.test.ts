@@ -64,7 +64,7 @@ test('slices are stable and cover every slice', () => {
 
 function world() {
   const db = new Db(':memory:');
-  const store = new IncubatorStore(db);
+  const store = new IncubatorStore(db,{evidenceMode:'historical-research'});
   store.marketStaleMs = Infinity;   // these scenarios set the gate's verdicts once and walk the clock for weeks
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
   cfg.scanners = { live1: { enabled: true, symbols: ['BTCUSD'], timeframes: null, exitMode: 'both' } as any };
@@ -398,7 +398,7 @@ test('decision 108: the positive-weeks share is judged only from minWeeks weeks,
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vnedge-stale-'));
   const db = new Db(path.join(dir, 'x.db'));
-  const store = new IncubatorStore(db);
+  const store = new IncubatorStore(db,{evidenceMode:'historical-research'});
   const cfg: AppConfig = { ...DEFAULT_CONFIG, scanners: {}, incubator: { ...DEFAULT_CONFIG.incubator, gate: { ...gate, staleDays: 21, staleDaysByTf: { '4h': 45 } } } };
   store.move({ scannerId: 's', symbol: 'ETHUSD', tf: '15m' }, 'shadow', 'test', null, null, T0);
   store.move({ scannerId: 's', symbol: 'ETHUSD', tf: '4h' }, 'shadow', 'test', null, null, T0);
@@ -585,7 +585,7 @@ test('decision 139: a tracker tracks new cells, keeps existing ones, and the gat
 });
 
 test('decision 151: restartEvidence moves the window start and logs it; expireScreen stops a candidate from being admitted', () => {
-  const db = new Db(':memory:'); const store = new IncubatorStore(db);
+  const db = new Db(':memory:'); const store = new IncubatorStore(db,{evidenceMode:'historical-research'});
   const sh = store.move({ scannerId: 's', symbol: 'BTCUSD', tf: '15m' }, 'shadow', 'screen', null, null, 1_000);
   const r = store.restartEvidence(sh.id, 'engine-upgrade', 'new engine', 5_000)!;
   assert.equal(r.stage, 'shadow');
@@ -779,7 +779,7 @@ test('an active filled account position is not mistaken for a silent or cost-sta
 
 test('major coverage tracker adds watch-only cells without promoting candidates or changing live cells', async () => {
   const { saveTracker } = await import('./tracker.ts');
-  const db = new Db(':memory:'); const store = new IncubatorStore(db);
+  const db = new Db(':memory:'); const store = new IncubatorStore(db,{evidenceMode:'historical-research'});
   try {
     store.move({scannerId:'s0',symbol:'BTCUSD',tf:'15m'},'live','test',{},'allocated',1000);
     store.move({scannerId:'s1',symbol:'ETHUSD',tf:'1h'},'candidate','test',{},'not qualified',1000);

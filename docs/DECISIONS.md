@@ -6835,3 +6835,29 @@ unchanged and retain the existing prospective PEPE experiment. Full comparison
 and caveats: `docs/research/execution-entry-review-2026-11-06.json`.
 
 SQLite concurrency reference: https://www.sqlite.org/isolation.html.
+
+## 222. Bind trade rules, reserve pending capital and qualify matching evidence (6 November 2026)
+
+**Problem.** Ordinary positions re-read mutable settings. Old scanner results could qualify
+changed policies, pending limits did not reserve margin, and risk callbacks could be lost
+between a committed close and process death. The account's callback ordering also affected
+which contemporaneous candidate took scarce capacity.
+
+**Change.** Save immutable ordinary trade policies and archive scanner source for held exits.
+Mark legacy adoptions explicitly. Reserve resting order margin/exposure and cap fill size at
+the accepted quantity. Use compatible source/strategy evidence for promotion and leverage;
+use full policy identity for account readiness. Keep historical results in the journal.
+Batch ready paper admissions for 250 ms, rechecking risk and available capital in a stable
+order. Persist close receipts and loss-limit events. Correct backtest chronology and expose
+evidence/reservation status in Performance and Incubator. An exchange adapter that cannot
+honor maker intent now refuses it instead of substituting a market entry.
+
+**Validation.** Full server suite and new restart, policy, reservation, risk recovery,
+allocation, source-exit and readiness regressions; dashboard tests/lint/build and targeted
+server type checking. Cached chronology replay: 396 scenarios, 7,357 closes, 36 continuation
+scenarios, zero exits or fills before entry. Profitability is not certified by these checks.
+
+**Limits.** 250 ms ordering is deterministic only for the same ready-set. Recorded-input
+execution replay is not a reconstruction of historical quotes, queues, ML or allocation.
+Live intent-first execution and an enforced activation certificate remain required. The
+operator's $150 margin and 3% stop-risk ceiling are unchanged; no production activation.

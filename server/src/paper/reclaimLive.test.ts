@@ -45,7 +45,7 @@ test('reclaim reservations survive cancellation and restart; pending setups and 
 });
 test('reclaim mode, allocation and config checks apply again at fill',t=>{
   for(const change of ['disabled','executor','mode','allocation']as const){
-    const a=setup(t);a.e.onEntry(a.ev,a.ctx);a.confirm();const order=a.e.pendingEntries()[0];
+    const a=setup(t);a.e.onEntry(a.ev,{...a.ctx,exitMode:'levels'});a.confirm();const order=a.e.pendingEntries()[0];
     if(change==='disabled')a.cfg.paper.reclaimTrials![0].enabled=false;
     if(change==='executor')a.e.limitEntryAllowed=()=>false;
     if(change==='mode')a.cfg.execution.mode='dry-run';
@@ -108,7 +108,7 @@ test('level-only exits preserve reclaim setups, resting orders and positions; sc
       assert.equal(audit.counts.cancelled??0,mode==='levels'?0:1);
     }
   }
-  const a=setup(t);a.e.onEntry(a.ev,a.ctx);a.confirm();const order=a.e.pendingEntries()[0];
+  const a=setup(t);a.e.onEntry(a.ev,{...a.ctx,exitMode:'levels'});a.confirm();const order=a.e.pendingEntries()[0];
   a.e.onTrade('SOLUSD',100,1,order.at+1000,order.at+1000);
   assert.equal(a.e.onScriptExit(ID,'SOLUSD','15m','close',100,order.at+2000,'levels','long'),undefined);
   assert.equal(a.e.openPositions().length,1);

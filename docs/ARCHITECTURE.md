@@ -1,7 +1,12 @@
 # VN EDGE architecture
 
-Current ownership audit: 31 October 2026 (decisions 206–207). The application is a modular
-monolith. Pages are views and controls over shared services, not independent bots.
+Ownership audit: 31 October 2026 (decisions 206–207), with the execution-outbox status
+corrected on 6 November. The application is a modular monolith. Pages are views and
+controls over shared services, not independent bots.
+
+The [6 November architecture recovery plan](ARCHITECTURE-RECOVERY-2026-11-06.md) records
+the remaining verified policy, evidence, allocation and execution boundaries, with an
+ordered migration and acceptance criteria. That plan is proposed work, not deployed behavior.
 
 ## Control and evidence boundaries
 
@@ -90,9 +95,11 @@ These changes remove confirmed conflicts, but are not a production-readiness cer
 
 1. Extend durable event recovery to the shadow scheduler and post-commit consumers. The account
    receipt/decision boundary now recovers without duplicate paper fills. Observer delivery to
-   learning, risk close bookkeeping, alerts and exchange commands is not yet a durable outbox:
-   a kill after commit can miss a callback. Recover those consumers from the committed journal
-   with independent cursors, and reconcile exchange state before any live replay. Pending
+   learning, risk close bookkeeping and alerts still needs durable recovery: a kill after
+   commit can miss a callback. Exchange commands now have a transactional execution outbox
+   and order-ledger recovery; extend those existing mechanisms rather than duplicating them.
+   Recover the remaining consumers from the committed journal with independent cursors,
+   and reconcile exchange state before any live replay. Pending
    market/tape entries retain their existing cancel-on-restart policy; maker limits reload.
 2. Key cached backtests/walk-forward evidence by source hash, inputs, signal reader, policy,
    cost model and market-data window. Current simulation-version checks do not capture all

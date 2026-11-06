@@ -1,3 +1,4 @@
+import { PolicyHealthPanel } from '../components/PolicyHealth'
 import {ExecutionPlans} from '../components/ExecutionPlans'
 import {ScannerContributions} from '../components/ScannerContributions'
 import { Fragment, useDeferredValue, useEffect, useState } from 'react'
@@ -40,6 +41,7 @@ export default function Incubator() {
 
   return (
     <>
+      <PolicyHealthPanel />
       <PageTitle pre="From signals," accent="to evidence." sub="Screening finds candidates. Forward shadow results determine gate eligibility; review the evidence, blockers and account pairs below." />
       <ScannerContributions compact />
       <ExecutionPlans />

@@ -19,7 +19,7 @@ test('a break entry fills on the first lower bar beyond the signal bar, or lapse
   const base = { scannerId: 's', scannerName: 's', symbol: 'XUSD', tf: '1h', bars, events, cfg: { ...DEFAULT_CONFIG.paper, minRiskFeeRatio: 0 }, exitMode: 'both' as const, contractValue: 1, tickSize: 0.01, subBars: sub };
   const direct = runBacktest(base); const hybrid = runBacktest({ ...base, entry: { breakAtr: 0, breakBars: 4 } });
   assert.equal(direct.trades.length, 1); assert.equal(hybrid.trades.length, 1);
-  assert.equal(direct.trades[0].entryAt, bars[30].time, 'direct: at the signal bar');
+  assert.equal(direct.trades[0].entryAt, bars[30].time + 3600_000, 'direct: after the signal bar closes');
   assert.equal(hybrid.trades[0].entryAt, bars[31].time + 15 * 60_000, 'hybrid: on the 15m bar that crossed the signal high');
   assert.ok(hybrid.trades[0].entryPrice >= 102, 'filled at the trigger, as a taker');
   // no continuation: the signal lapses

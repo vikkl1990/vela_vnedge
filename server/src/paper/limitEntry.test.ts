@@ -41,7 +41,7 @@ test('decision 185: a limit that price never comes back to lapses after its bars
   assert.equal(db.all("SELECT * FROM positions WHERE status='pending'").length, 0);
 });
 
-test('decision 185: a resting limit survives a restart; 15m entries and executor-mirrored books keep the market entry', () => {
+test('decision 185: a resting limit survives a restart; 15m market entries remain; an unsupported executor cannot substitute a market entry', () => {
   const a = setup();
   a.enter('long');
   const again = new PaperEngine(a.db, () => a.cfg);
@@ -57,7 +57,8 @@ test('decision 185: a resting limit survives a restart; 15m entries and executor
   assert.notEqual(b.enter('long').action, 'pending', '15m is not in limitEntry.tfs: the market entry');
   const c = setup();
   c.engine.limitEntryAllowed = () => false;
-  assert.notEqual(c.enter('long').action, 'pending', 'an executor attached: the market entry');
+  assert.match(c.enter('long').reason!,/cannot honor resting maker/);
+  assert.equal(c.engine.openPositions().length,0);
 });
 
 test('decision 189: the minute the limit was placed in cannot fill it — its low may have printed before the order existed', () => {

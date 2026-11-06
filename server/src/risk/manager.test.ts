@@ -246,3 +246,20 @@ test('scanner ATR floor override preserves chop and weekend guards and other sca
  assert.match(regimeRefusal(r,'maker',req,bars)!,/choppy/);
  assert.match(regimeRefusal({...r,noWeekend:true},'maker',{...req,at:Date.UTC(2026,10,1)},[])!,/weekend/);
 });
+
+test('committed closes recover after a missed callback and are never counted twice',t=>{
+  const {db,cfg,paper,clock,entry,closeAt}=setup(t,{cooldownAfterLosses:1,cooldownMinutes:60});
+  const p=entry().position!;paper.removeAllListeners('trade');closeAt(p.id,99);
+  assert.equal(db.get<{n:number}>('SELECT COUNT(*) n FROM risk_close_receipts')!.n,0);
+  const again=new RiskManager({db,paper,candles:null,cfgRef:()=>cfg,now:()=>clock.now});
+  assert.equal(again.state().scanners.s.consecutive,1);
+  assert.equal(db.get<{n:number}>('SELECT COUNT(*) n FROM risk_close_receipts')!.n,1);
+  paper.removeAllListeners('trade');const twice=new RiskManager({db,paper,candles:null,cfgRef:()=>cfg,now:()=>clock.now});
+  assert.equal(twice.state().scanners.s.consecutive,1);
+});
+test('loss-limit trips are recorded once even when no positions are force-closed',t=>{
+  const {db,mgr,entry,closeAt}=setup(t,{maxDailyLossPct:1,maxWeeklyLossPct:0,closeAllOnKill:false});
+  const p=entry().position!;closeAt(p.id,90);mgr.state();mgr.state();
+  assert.equal(db.get<{n:number}>('SELECT COUNT(*) n FROM risk_halts')!.n,1);
+  assert.equal(db.get<{n:number}>("SELECT COUNT(*) n FROM positions WHERE exit_reason='risk-kill'")!.n,0);
+});

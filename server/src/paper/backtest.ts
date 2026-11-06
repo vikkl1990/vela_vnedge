@@ -182,7 +182,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     return sizeContracts(price, lv.sl, { equity:inp.executionPlan?.referenceEquity??equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score).qty >= 1;
   };
   /** Open a position at `price` for signal `ev` raised on bar `sigI`; false when sizing or fees refuse it. */
-  const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean): boolean => {
+  const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean, fillAt = at + (maker ? 0 : tfMs)): boolean => {
     const aligned=alignmentBlock(ev.side!,Math.max(at,bars[sigI].time+tfMs));
     if(aligned){refuse(aligned);return false;}
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
@@ -193,7 +193,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     const sz = sizeContracts(price, lv.sl, { entryExecution: { maker }, equity:inp.executionPlan?.referenceEquity??equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score);
     if (sz.qty < 1) { refuse(sz.reason ?? 'size'); return false; }
     const features = computeFeatures({ bars, i: sigI, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[sigI], levelsSource: lv.source });
-    open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side!, qty: sz.qty, contractValue: inp.contractValue, maintenanceMarginPct: inp.maintenanceMarginPct, entryPrice: price, at, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: at + (maker ? 0 : tfMs), leverage: sz.leverage, marginLeverage: sz.marginLeverage, features, maker });
+    open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side!, qty: sz.qty, contractValue: inp.contractValue, maintenanceMarginPct: inp.maintenanceMarginPct, entryPrice: price, at:fillAt, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, openedAt: fillAt, leverage: sz.leverage, marginLeverage: sz.marginLeverage, features, maker });
     open.executionPlan=inp.executionPlan;
     setupTimes.set(open.id, bars[sigI].time + tfMs);
     entries++;
@@ -207,6 +207,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   for (let i = 0; i < bars.length && !busted; i++) {
     const model = inp.trailModel?.(i) ?? null;
     const bar = bars[i];
+    let processedEntryPath = false;
     if (equity <= Math.max(0, cfg.initialEquity * 0.02)) { busted = true; rejected['purse_wiped'] = (rejected['purse_wiped'] ?? 0) + 1; break; }
     if (reclaim && !open && sub) {
       while (si < sub.length && sub[si].time < bar.time) si++;
@@ -229,6 +230,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         if (!openAt(step.price, step.at, entryEvent, r.sigI, true)) { flow('fill refused'); break; }
         flow('fills');
         const o = open as unknown as Position;
+        processedEntryPath = true;
         const minute = sub[j], hitStop = o.side === 'long' ? minute.low <= o.sl! : minute.high >= o.sl!;
         if (hitStop) {
           // No OHLC ordering assumption in our favor: charge a gap at the worse
@@ -264,9 +266,10 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
             refuse('resting fill unconfirmed by minute data');
           } else {
             pending = null;
-            if (openAt(limit, sub[j].time, ev, sigI, !isStop)) {
+            if (openAt(limit, sub[j].time, ev, sigI, !isStop, sub[j].time)) {
               // `openAt` assigned the closure's `open`; the narrowing above does not see that.
               const o = open as unknown as Position;
+              processedEntryPath = true;
               if (!isStop) restingEntryStop(o, sub[j], cfg, sub[j].time);
               const atrKnown = atr[i - 1] ?? atr[i];
               for (let k = j + 1; o.status === 'open' && k < sub.length && sub[k].time < bar.time + tfMs; k++) {
@@ -282,8 +285,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
           refuse('resting fill unconfirmed before expiry');
         } else {
           pending = null;
-          if (openAt(limit, bar.time, ev, sigI, !isStop)) {
+          if (openAt(limit, bar.time, ev, sigI, !isStop, bar.time)) {
             const o = open as unknown as Position;
+            processedEntryPath = true;
             if (!isStop) restingEntryStop(o, bar, cfg, bar.time);
             if (o.status === 'open') applyPriceBar(o, bar, cfg, atr[i], model);
             if (o.status === 'closed') finish(o);
@@ -292,7 +296,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       }
     }
     // 1. level fills on this bar for a position opened on an earlier bar
-    if (open && open.entryAt < bar.time) {
+    if (open && !processedEntryPath && open.entryAt <= bar.time) {
       if (sub) {
         while (si < sub.length && sub[si].time < bar.time) si++;
         const start = si;
@@ -328,7 +332,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
         // Script messages are market instructions after the close; resting targets already had their chance in the price path.
         const type = ev.exitType ?? 'close';
-        applyScriptExit(open, type, undefined, bar.time, cfg, inp.exitMode, bar.close, { marketPrice: bar.close, quoted: false });
+        applyScriptExit(open, type, undefined, bar.time + tfMs, cfg, inp.exitMode, bar.close, { marketPrice: bar.close, quoted: false });
         if (open.status === 'closed') finish(open);
       }
     }
@@ -352,7 +356,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         // decision 191: as the books do (decision 77), the replacement must be admissible before the held trade is closed;
         // one that is not leaves the held trade as it was
         if (!admissible(bar.close, ev, i)) { refuse('reversal refused: replacement not admissible'); continue; }
-        fillExit(open, bar.close, open.qtyOpen, 'reversal', bar.time, cfg, true);
+        fillExit(open, bar.close, open.qtyOpen, 'reversal', bar.time + tfMs, cfg, true);
         finish(open);
         // a reversal enters at market in the books, whatever the entry model; a research variant without
         // `limitWhenFlatOnly` keeps applying its entry model to reversals, as the earlier studies measured

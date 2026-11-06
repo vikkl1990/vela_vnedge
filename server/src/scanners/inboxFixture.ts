@@ -8,7 +8,7 @@ import type { ScanEvent } from './extractor.ts';
 
 export function inboxFixture(file=':memory:',opts:{limit?:boolean}={}) {
   const db=new Db(file),cfg=structuredClone(DEFAULT_CONFIG);
-  Object.assign(cfg.paper,{latencyMs:0,slippageBps:0,fillSource:'candles',minRiskFeeRatio:0,requireQuote:false,skipScriptStops:false,limitEntry:{...cfg.paper.limitEntry,enabled:false}});
+  Object.assign(cfg.paper,{entryBatchMs:0,latencyMs:0,slippageBps:0,fillSource:'candles',minRiskFeeRatio:0,requireQuote:false,skipScriptStops:false,limitEntry:{...cfg.paper.limitEntry,enabled:false}});
   if(opts.limit)cfg.paper.limitEntry={enabled:true,atr:0.1,bars:4,tfs:['15m'],books:['account']};
   cfg.incubator.mirror={enabled:true,minTrades:0,minNetR:0,minTurnoverUsd:0};
   cfg.scanners.s={enabled:true,symbols:['BTCUSD'],timeframes:['15m'],pairs:[{symbol:'BTCUSD',tf:'15m'}],exitMode:'both'};

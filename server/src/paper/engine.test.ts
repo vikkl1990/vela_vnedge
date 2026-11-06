@@ -1,3 +1,4 @@
+import {saveTradePolicy} from './tradePolicy.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Db } from '../db.ts';
@@ -356,9 +357,11 @@ test('decision 144: margin sizing reads the cell record from the shadow book; a 
   const shadow = (scannerId: string, netR: number, exitAt: number, tf = '15m') => db.run(
     "INSERT INTO positions (status, scanner_id, scanner_name, symbol, tf, side, qty, qty_open, contract_value, entry_price, entry_at, realized_pnl, fees, risk_amount, exit_at, bt) VALUES ('closed', ?, ?, 'BTCUSD', ?, 'long', 1, 0, 1, 100, 0, ?, 0, 100, ?, 2)",
     scannerId, scannerId, tf, netR * 100, exitAt);
+  engine.sourceHashFor=()=> 'source-a';
   for (let i = 0; i < 6; i++) shadow('good', 0.4, 50_000 + i);
   for (let i = 0; i < 6; i++) shadow('late', 0.4, 70_000 + i); // closed after the entry: not known yet
   for (let i = 0; i < 6; i++) shadow('other-tf', 0.4, 50_000 + i, '1h');
+  for(const scannerId of ['good','late','other-tf']){const p=engine.policyForCell({scannerId,symbol:'BTCUSD',tf:scannerId==='other-tf'?'1h':'15m'});saveTradePolicy(db,p);db.run('UPDATE positions SET policy_id=? WHERE scanner_id=?',p.id,scannerId);}
   assert.equal(entry('good').qty, 30, '$150 at 20x');
   assert.equal(entry('late').qty, 7, 'a record that closes after the entry does not count');
   assert.equal(entry('other-tf').qty, 7, 'the record is per timeframe');

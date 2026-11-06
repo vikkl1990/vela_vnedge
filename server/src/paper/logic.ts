@@ -13,10 +13,12 @@ import type { TrendGateMode, PaperConfig, ExitMode, ExitOverride } from '../conf
 import type { Side, ExitType } from '../scanners/extractor.ts';
 
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
+import type { TradePolicy } from './tradePolicy.ts';
 
 export interface Fill { orderId?: number; liquidity?: 'maker' | 'taker'; feeWaived?: boolean; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
 
 export interface Position {
+  policy?: TradePolicy;
   executionPlan?: ExecutionPlanSnapshot;
   id: number;
   status: 'open' | 'closed';
@@ -75,7 +77,7 @@ export interface Position {
   peakAt?: number;
   worstR?: number;
   worstAt?: number;
-  /** When the position was actually filled; the backtest stamps `entryAt` with the signal bar's open. */
+  /** When the position was actually filled; entryAt uses this same chronology. */
   openedAt?: number;
   /** Fingerprint of the settings that produced this trade (decision 90). */
   configFp?: string;

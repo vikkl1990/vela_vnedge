@@ -15,6 +15,8 @@ const ADDED_COLUMNS: Array<[string, string]> = [
   ['exchange_orders', 'source_order_id INTEGER'],
   ['exchange_orders', 'adoption_pending INTEGER NOT NULL DEFAULT 0'],
   ['positions', 'config_fp TEXT'],
+  ['positions', 'policy_id TEXT'],
+  ['positions', 'policy_adopted_at INTEGER'],
   ['positions', 'evidence_scope TEXT'],
   ['scanner_runs', 'funnel TEXT'],
   ['orders', 'ref_price REAL'], ['orders', 'bid REAL'], ['orders', 'ask REAL'],
@@ -25,6 +27,18 @@ const ADDED_COLUMNS: Array<[string, string]> = [
 ];
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS risk_close_receipts (
+ position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,PRIMARY KEY(position_id,entry_at)
+);
+CREATE TABLE IF NOT EXISTS risk_halts (
+ id INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,period_start INTEGER NOT NULL,
+ reset_at INTEGER NOT NULL,pnl_pct REAL NOT NULL,UNIQUE(kind,period_start,reset_at)
+);
+CREATE TABLE IF NOT EXISTS scanner_source_versions (hash TEXT PRIMARY KEY,source TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS trade_policies (
+ id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL, source_hash TEXT, snapshot TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trade_policies_strategy ON trade_policies(strategy_id);
 CREATE TABLE IF NOT EXISTS pair_screen_evidence (
  scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL,
  signature TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(scanner_id,symbol,tf)

@@ -1,3 +1,5 @@
+import {currentPolicyIds,policyHealth} from './analytics/policyHealth.ts';
+import {BoundExits} from './scanners/boundExits.ts';
 import { createValidation, type ValidationModule } from './validation/runtime.ts';
 import { PlanComparisons } from './paper/planComparisons.ts';
 import { scannerWeekFunnel } from './scanners/activity.ts';
@@ -85,6 +87,7 @@ export class App {
   /** Decision 108: entry-time features for trades opened without them, costed once from the candle store. */
   readonly enricher: FeatureEnricher;
   readonly scanners: ScannerEngine;
+  readonly boundExits: BoundExits;
   readonly profiles: ProfileStore;
   readonly marketGate: MarketGate;
   private marketTimer: ReturnType<typeof setInterval> | null = null;
@@ -144,9 +147,11 @@ export class App {
     this.paper.scannerExit = protectedExit;
     this.shadow.scannerExit = protectedExit;
     this.paper.sourceHashFor = this.shadow.sourceHashFor = (sid: string) => this.sourceHashFor(sid);
+    this.paper.sourceCodeFor=this.shadow.sourceCodeFor=(sid)=>this.registry.get(sid)?.patched;
+    this.paper.adoptLegacyPolicies();this.shadow.adoptLegacyPolicies();
     // the same trend both books and the backtest use: closes of the position's own timeframe
-    const trendFor = (symbol: string, tf: string) => {
-      const len = cfg().paper.trendExit?.emaLen ?? 20;
+    const trendFor = (symbol: string, tf: string, emaLen?:number) => {
+      const len = emaLen ?? cfg().paper.trendExit?.emaLen ?? 20;
       const closes = this.candles.get(symbol, tf, { closedOnly: true, limit: len * 4 }).map(b => b.close);
       return closes.length >= len ? trendSide(closes, len) : undefined;
     };
@@ -174,6 +179,7 @@ export class App {
     this.paper.limitEntryAllowed = () => !this.executor;
     this.shadow.limitEntryAllowed = () => true;
     this.incubatorStore = new IncubatorStore(this.db);
+    this.incubatorStore.policyFor=cell=>this.paper.policyForCell(cell);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.ml.excluded = () => this.scanners.health.quarantined();
     this.enricher = new FeatureEnricher(this.db, this.candles);
@@ -194,6 +200,8 @@ export class App {
         return { held: new Set(open.map(p => p.symbol)), full: open.length >= cap };
       },
     });
+    this.boundExits=new BoundExits({db:this.db,books:[this.paper,this.shadow],cfg,registry:this.registry,candles:this.candles,pool:this.pool,marketInfo:s=>this.scanners.marketInfo(s)});
+    this.candles.on('closed',(e:{symbol:string;tf:string})=>{void this.boundExits.run(e.symbol,e.tf).catch(err=>log.error(String(err)));});
     // 1m candles drive paper fills for every open position
     // `historical` marks bars that a resync or gap fill pulled from REST: they describe the past,
     // so they must not fill new entries or move the live mark (audit: current-time fills from old candles)
@@ -673,11 +681,11 @@ export class App {
    * Decision 167: each closed account trade's net result as % of the account's equity when it was opened, in exit order —
    * what the money did under margin sizing, where trades carry different risk.
    */
-  equityReturnsPct(): number[] {
-    const rows = this.db.all<{ net: number; at: number }>("SELECT realized_pnl - fees AS net, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND exit_at IS NOT NULL ORDER BY exit_at");
+  equityReturnsPct(ids?:Set<number>): number[] {
+    const rows = this.db.all<{ id:number;net: number; at: number }>("SELECT id,realized_pnl - fees AS net, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND exit_at IS NOT NULL ORDER BY exit_at");
     const eq = this.db.all<{ at: number; equity: number }>('SELECT at, equity FROM equity WHERE scanner_id IS NULL ORDER BY at');
     const initial = this.config.get().paper.initialEquity;
-    return rows.map(r => {
+    return rows.filter(r=>!ids||ids.has(r.id)).map(r => {
       // the last equity point at or before the entry; the series is short enough to search
       let lo = 0, hi = eq.length - 1, e = initial;
       while (lo <= hi) { const m = (lo + hi) >> 1; if (eq[m].at <= r.at) { e = eq[m].equity; lo = m + 1; } else hi = m - 1; }
@@ -685,8 +693,8 @@ export class App {
     });
   }
 
-  realisedRiskPct(): number | null {
-    const rows = this.db.all<{ risk: number; at: number }>("SELECT risk_amount AS risk, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND risk_amount > 0 ORDER BY entry_at DESC LIMIT 30").reverse();
+  realisedRiskPct(ids?:Set<number>): number | null {
+    const rows = this.db.all<{ id:number;risk: number; at: number }>("SELECT id,risk_amount AS risk, entry_at AS at FROM positions WHERE bt=0 AND status='closed' AND risk_amount > 0 ORDER BY entry_at DESC").filter(r=>!ids||ids.has(r.id)).slice(0,30).reverse();
     if (rows.length < 5) return null;
     const eq = this.db.all<{ at: number; equity: number }>('SELECT at, equity FROM equity WHERE scanner_id IS NULL ORDER BY at');
     let j = 0; const pcts: number[] = [];
@@ -696,15 +704,16 @@ export class App {
   }
 
   /** What the journal teaches, in R, for the live book and the shadow book (decision 63). */
+  policyHealth(){return {...policyHealth(this.db,this.paper,this.shadow),allocation:this.scanners.entryCoordinator.status(),boundExits:this.boundExits.status()};}
+
   learning() {
     const toLearn = (book: number) => (t: any) => ({ scannerId: t.scannerId, scannerName: t.scannerName, symbol: t.symbol, tf: t.tf, side: t.side, entryAt: t.entryAt, exitAt: t.exitAt, pnl: t.pnl, fees: t.fees, rMultiple: t.rMultiple, exitReason: t.exitReason ?? null, peakR: t.peakR ?? null, riskAmount: t.riskAmount, configFp: t.configFp ?? null, features: this.featuresOf(book, t) });
     const since = Date.now() - 30 * 86_400_000;
     const liveAll = this.paper.trades({ limit: 5000 }).map(toLearn(this.paper.book));
     const live = learnBook(liveAll);
     // the book under the settings that are live now (decision 90): the only part of the journal a change today can be judged on
-    const fpCache = new Map<string, string>();
-    const fpFor = (sid: string, tf: string) => { const k = `${sid}|${tf}`; let v = fpCache.get(k); if (!v) { v = configFingerprint(this.config.get(), sid, tf, { source: this.sourceHashFor(sid), book: this.paper.book }).fp; fpCache.set(k, v); } return v; };
-    const current = learnBook(liveAll.filter(t => t.configFp && t.configFp === fpFor(t.scannerId, t.tf)));
+    const currentIds=currentPolicyIds(this.db,this.paper);
+    const current=learnBook(this.paper.trades({limit:5000}).filter(t=>currentIds.has(t.id)).map(toLearn(this.paper.book)));
     const shadow = learnBook(this.shadow.trades({ limit: 20000 }).filter(t => !t.scannerId.startsWith('plan:') && (t.exitAt ?? 0) >= since).map(toLearn(this.shadow.book)));
     this.enricher.flush();
     const counts = this.incubatorStore.counts();
@@ -713,17 +722,18 @@ export class App {
     const funnel = { stages: counts, lastHunt: hunt, shadowAgeDays: { median: ages.length ? ages[ages.length >> 1] : null, over30: ages.filter(a => a > 30).length }, gate: this.config.get().incubator.gate ?? null };
     // the go-live rule (decision 65): the journal's R series through the fleet's own halts, plus the checks a rule can state
     const cfg = this.config.get();
-    const liveTrades = this.paper.trades({ limit: 5000 }).filter(t => !t.scannerId.startsWith('plan:') && Number.isFinite(t.exitAt));
+    const liveTrades = this.paper.trades({ limit: 5000 }).filter(t => currentIds.has(t.id) && Number.isFinite(t.exitAt) && t.exitAt! >= since);
+    const readinessIds=new Set(liveTrades.map(t=>t.id));
     const span = liveTrades.length > 1 ? (Math.max(...liveTrades.map(t => t.exitAt!)) - Math.min(...liveTrades.map(t => t.entryAt))) / 86_400_000 : 1;
-    const halts = this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM positions WHERE bt=0 AND status='closed' AND exit_reason='risk-kill' AND exit_at > ?", since)?.n ?? 0;
-    const riskState = this.risk.state();
-    const equityPcts = cfg.paper.sizingMode === 'margin' ? this.equityReturnsPct() : null;
+    const halts = this.db.get<{n:number}>('SELECT COUNT(*) n FROM risk_halts WHERE at>=?',since)?.n??0;
+    const equityPcts=cfg.paper.sizingMode==='margin'?this.equityReturnsPct(readinessIds):null;
+    const readyBook=learnBook(liveTrades.map(toLearn(this.paper.book)));
     const golive = goLive({
       equityPcts, lbPct90: equityPcts && equityPcts.length >= 10 ? band(equityPcts).lb : null,
       rs: [...liveTrades].sort((a, b) => a.exitAt! - b.exitAt!).map(t => (typeof t.rMultiple === 'number' && Number.isFinite(t.rMultiple) ? t.rMultiple : 0)),
       // the risk actually taken, not the configured intention: quality sizing and the stop cap set the size, so measure risk_amount against equity at entry (decision 69)
-      tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: this.realisedRiskPct() ?? cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,
-      drawdownAlertPct: cfg.risk.ddScale?.[0]?.ddPct ?? 10, lb90: live.lb90, haltsInWindow: halts + (riskState.day.tripped ? 1 : 0) + (riskState.week.tripped ? 1 : 0), alertsConfigured: this.ops.alerts.configured,
+      tradesPerDay: liveTrades.length / Math.max(1, span), riskPct: this.realisedRiskPct(readinessIds) ?? cfg.paper.riskPerTradePct, dailyLossPct: cfg.risk.maxDailyLossPct, maxLossPct: cfg.risk.maxWeeklyLossPct || 30,
+      drawdownAlertPct: cfg.alerts.drawdownPct, lb90: readyBook.lb90, haltsInWindow: halts, alertsConfigured: this.ops.alerts.configured,
     });
     return { at: Date.now(), live, current, shadow: { ...shadow, windowDays: 30 }, funnel, golive };
   }
@@ -962,7 +972,7 @@ export class App {
 
   async stop() {
     this.pairAgents.stop();
-    this.scanners.stop();
+    this.scanners.stop();this.boundExits.stop();
     this.validation.stop();
     this.stopExecutionAudit?.();
     this.screenQueue.stop();

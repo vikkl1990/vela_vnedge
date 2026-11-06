@@ -13,6 +13,8 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 export type ExitMode = 'levels' | 'script' | 'both';
 
 export interface PaperConfig {
+  /** Ready entry candidates share a bounded allocation window; exits bypass it. 0 disables. */
+  entryBatchMs?: number;
   initialEquity: number;
   riskPerTradePct: number;
   maxLeverage: number;
@@ -769,6 +771,7 @@ export function validateConfig(c: AppConfig): string[] {
   for (const tf of c.timeframes || []) if (!(tf in TF_SECONDS)) errs.push(`unsupported timeframe ${tf}`);
   if (!(c.historyBars >= 200 && c.historyBars <= 4000)) errs.push('historyBars must be 200..4000');
   const p = c.paper;
+  if(p.entryBatchMs!==undefined&&(!Number.isInteger(p.entryBatchMs)||p.entryBatchMs<0||p.entryBatchMs>5000))errs.push('paper.entryBatchMs must be 0..5000 milliseconds');
   for (const [id,sc] of Object.entries(c.scanners??{})) if (sc.entryProtection !== undefined && !['atr','native'].includes(sc.entryProtection)) errs.push(`scanner ${id}: entryProtection must be atr|native`);
   for (const [id,sc] of Object.entries(c.scanners??{})) if (sc.entryLimit && (!Array.isArray(sc.entryLimit.tfs) || !sc.entryLimit.tfs.length || sc.entryLimit.tfs.some(tf=>!(tf in TF_SECONDS)) || !Number.isFinite(sc.entryLimit.atr) || sc.entryLimit.atr<0 || sc.entryLimit.atr>2 || !Number.isFinite(sc.entryLimit.minutes) || sc.entryLimit.minutes<1 || sc.entryLimit.minutes>240)) errs.push(`scanner ${id}: invalid entryLimit`);
   const fg = p.fundingGuard;
@@ -924,6 +927,7 @@ export function validateConfig(c: AppConfig): string[] {
 export function validateRealismAndRisk(c: AppConfig): string[] {
   const errs: string[] = [];
   const p = c.paper;
+  if(p.entryBatchMs!==undefined&&(!Number.isInteger(p.entryBatchMs)||p.entryBatchMs<0||p.entryBatchMs>5000))errs.push('paper.entryBatchMs must be 0..5000 milliseconds');
   if (!['candles', 'tape'].includes(p.fillSource)) errs.push('paper.fillSource must be candles|tape');
   if (!['touch', 'through'].includes(p.limitFill)) errs.push('paper.limitFill must be touch|through');
   if (!(Number.isFinite(p.depthUsdPerBp) && p.depthUsdPerBp >= 0)) errs.push('paper.depthUsdPerBp must be ≥ 0');

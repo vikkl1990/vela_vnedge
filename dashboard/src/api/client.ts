@@ -208,6 +208,7 @@ export const api = {
   dailyReport: (days = 30) => get<DailyRow[]>(`/reports/daily?days=${days}`),
   reclaimTrials: () => get<ReclaimTrialsView>('/reclaim-trials'),
   trackers: () => get<TrackerView[]>('/trackers'),
+  policyHealth: () => get<{at:number;windowDays:number;haltEvents:number;boundExits:{failures:number};allocation:{widthMs:number;pending:number};books:Array<{book:string;matching:number;changed:number;legacy:number;quarantined:number;pending:number;reservedMargin:number;adoptedOpen:number}>}>('/policy-health'),
   learning: () => get<Learning>('/learning'),
   ml: () => get<MlSnapshot>('/ml'),
   mlTrain: () => post<MlSnapshot>('/ml/train'),

@@ -1,4 +1,5 @@
 import {emptyRotation, type RotationState} from './rotation.ts';
+import {eligibleEvidence,evidenceCoverage,type TradePolicy} from '../paper/tradePolicy.ts';
 import {withoutCachedBookVeto} from '../risk/marketGate.ts';
 /**
  * Incubator state: which stage each scanner/market pair is in, and an audit trail of every move.
@@ -45,7 +46,10 @@ export function funnelClass(action: string): 'opened' | 'pending' | 'regime' | '
 
 export class IncubatorStore {
   private db: Db;
-  constructor(db: Db) { this.db = db; }
+  /** Installed by the runtime/screen composition root. Raw history stays available for audit. */
+  policyFor?: (cell:{scannerId:string;symbol:string;tf:string})=>TradePolicy;
+  private historicalResearch=false;
+  constructor(db: Db, opts:{evidenceMode?:'historical-research'}={}) { this.db = db;this.historicalResearch=opts.evidenceMode==='historical-research'; }
 
   get(id: number): PairRow | null { const r = this.db.get('SELECT * FROM incubator_pairs WHERE id=?', id); return r ? toPair(r) : null; }
   /**
@@ -220,6 +224,23 @@ export class IncubatorStore {
   trades(scannerId: string, symbol: string, tf: string, book: number): TradeR[] {
     return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount, peak_r FROM positions WHERE bt=? AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND risk_amount > 0 AND NOT EXISTS (SELECT 1 FROM evidence_flags f WHERE f.position_id=positions.id AND f.entry_at=positions.entry_at AND f.status='quarantined') ORDER BY exit_at`, book, scannerId, symbol, tf)
       .map(r => ({ entryAt: r.entry_at, exitAt: r.exit_at, r: (r.realized_pnl - r.fees) / r.risk_amount, side: r.side, peakR: r.peak_r ?? undefined }));
+  }
+  qualifiedTrades(scannerId:string,symbol:string,tf:string,book=2,at=Date.now()):TradeR[] {
+    // Missing runtime policy cannot certify trades. Offline gate research must opt in explicitly.
+    if(!this.policyFor)return this.historicalResearch?this.trades(scannerId,symbol,tf,book):[];
+    const p=this.policyFor({scannerId,symbol,tf});
+    const atrOnly=p.paper.skipScriptStops&&p.reading.entryProtection!=='native';
+    return this.db.all<any>(`SELECT p.* FROM positions p JOIN trade_policies t ON t.id=p.policy_id
+      WHERE p.bt=? AND p.status='closed' AND p.risk_amount>0 AND p.scanner_id=? AND p.symbol=? AND p.tf=?
+      AND p.exit_at<=? AND t.strategy_id=? AND ${eligibleEvidence} ${atrOnly?"AND p.levels_source='atr-fallback'":''} ORDER BY p.exit_at`,
+      book,scannerId,symbol,tf,at,p.strategyId)
+      .map(r=>({entryAt:r.entry_at,exitAt:r.exit_at,r:(r.realized_pnl-r.fees)/r.risk_amount,side:r.side,peakR:r.peak_r??undefined}));
+  }
+  policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
+    if(!this.policyFor)return {mode:'unconfigured' as const};
+    const p=this.policyFor(cell),coverage=evidenceCoverage(this.db,cell,2,p.strategyId,at);
+    return {mode:'compatible' as const,policyId:p.id,strategyId:p.strategyId,...coverage,
+      qualified:this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at).length};
   }
   /** Closed live trades on a market, any scanner: the overlap check compares against these. */
   liveTradesOn(symbol: string, excludeScanner?: string): TradeR[] {

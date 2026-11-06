@@ -366,12 +366,13 @@ function returningGate(store: IncubatorStore, g: ReturnType<typeof gateFor>, row
 
 /** One market judged on its own: the original gate, kept for `gate.pool: 'pair'`. */
 function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: CycleReport, now: number): void {
-  const trades = store.trades(r.scannerId, r.symbol, r.tf, 2);
+  const trades = store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2);
   const stats = pairStats(trades, r.since, now);
-  const dv = deliveryVerdict(r.screen, stats);
+  const dv = deliveryVerdict(r.screen, pairStats(store.trades(r.scannerId,r.symbol,r.tf,2),r.since,now));
   if (dv.retire && r.stage === 'shadow' && !store.shadowHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
   const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
   let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap);
+  if (v.decision === 'retire' && store.policyFor && stats.trades<store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=r.since).length) v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
   if (v.decision === 'retire' && store.shadowHolds(r)) v = {...v, decision:'brewing', reasons:['retirement deferred: shadow position or order still active', ...v.reasons]};
   store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v }, now);
   if (v.decision === 'propose' && r.stage === 'shadow' && marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)!] }, now); rep.brewing++; }
@@ -403,7 +404,7 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
       store.move(r, 'retired', 'gate', { reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return false;
     });
     if (!rows.length) continue;
-    const members = rows.map(r => ({ row: r, symbol: r.symbol, since: r.since, trades: store.trades(r.scannerId, r.symbol, r.tf, 2) }));
+    const members = rows.map(r => ({ row: r, symbol: r.symbol, since: r.since, trades: store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2) }));
     const stats = cohortStats(members, now, inc.gate.minMarketTrades);
     let hit = 0, n = 0;
     for (const m of members) {
@@ -411,7 +412,8 @@ function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], 
       n += t.length; hit += overlapPct(t, store.liveTradesOn(m.symbol, m.row.scannerId)) / 100 * t.length;
     }
     const overlap = n ? hit / n * 100 : 0;
-    const v = cohortVerdict(stats, returningGate(store, gateFor(inc, rows[0].tf), rows), overlap);
+    let v = cohortVerdict(stats, returningGate(store, gateFor(inc, rows[0].tf), rows), overlap);
+    if(v.decision==='retire'&&store.policyFor&&members.some(m=>m.trades.length<store.trades(m.row.scannerId,m.symbol,m.row.tf,2).length))v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
     const cohort = `${rows[0].scannerId} ${rows[0].tf} across ${rows.length} market${rows.length === 1 ? '' : 's'}`;
     // decision 114: a strategy cohort carries the verdict on its own exits, advisory, beside the gate's
     const strategyComparison = cohortComparison(rows.map(r => r.screen));
@@ -526,7 +528,7 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
   const cooling = demotionAnswered(store, cfg, r, now);
   if (cooling) return cooling;
   if (inc.gate.pool !== 'cohort') {
-    const trades = store.trades(r.scannerId, r.symbol, r.tf, 2);
+    const trades = store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2);
     const stats = pairStats(trades, r.since, now);
     const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
     const v = gateVerdict(stats, returningGate(store, gateFor(inc, r.tf), [r]), overlap);
@@ -535,7 +537,7 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
   // Match cohort evaluation: failed-delivery shadow members no longer support the group.
   const rows = store.list(['shadow', 'proposed']).filter(p => p.scannerId === r.scannerId && p.tf === r.tf)
     .filter(p => p.stage !== 'shadow' || !deliveryVerdict(p.screen, pairStats(store.trades(p.scannerId, p.symbol, p.tf, 2), p.since, now)).retire);
-  const members = rows.map(p => ({ symbol: p.symbol, since: p.since, trades: store.trades(p.scannerId, p.symbol, p.tf, 2) }));
+  const members = rows.map(p => ({ symbol: p.symbol, since: p.since, trades: store.qualifiedTrades(p.scannerId, p.symbol, p.tf, 2) }));
   const stats = cohortStats(members, now, inc.gate.minMarketTrades);
   let n = 0, hit = 0;
   for (const m of members) {
@@ -578,11 +580,11 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
     if (crowded) throw new IncubatorError(crowded);
     const refusal = promotionRefusal(store, cfg, r, now);
     if (refusal) throw new IncubatorError(`proposal no longer qualifies: ${refusal}`);
-    const stats = pairStats(store.trades(r.scannerId, r.symbol, r.tf, 2), r.since, now);
+    const stats = pairStats(store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2, now), r.since, now);
     // Converting a running legacy symbol list to explicit pairs must retain its current allocation.
     const existing = sc?.pairs?.length ? sc.pairs : livePairs(cfg).filter(p => p.scannerId === r.scannerId).map(({symbol, tf}) => ({symbol, tf}));
     setScanner(r.scannerId, { enabled: true, hidden: false, pairs: [...existing.filter(p => !(p.symbol === r.symbol && p.tf === r.tf)), { symbol: r.symbol, tf: r.tf }] });
-    return store.move(r, 'live', actor, { shadow: stats, gate: r.gate }, 'promoted from the shadow book', now);
+    return store.move(r, 'live', actor, { shadow: stats, gate: r.gate, policy: store.policyEvidence(r,now) }, 'promoted from the shadow book', now);
   }
   if (r.stage === 'demote_proposed') {
     const assessment = liveAssessment(store, cfg, r, now, { ...store.marketOut() });

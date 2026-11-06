@@ -1,3 +1,4 @@
+import {resolveTradePolicy} from '../paper/tradePolicy.ts';
 /**
  * The incubator's daily job: screen one slice of the script library on every liquid market, then
  * judge the shadow book and the live fleet.
@@ -56,6 +57,8 @@ const cfg = new ConfigStore().get();
 const inc = cfg.incubator;
 const db = new Db();
 const store = new IncubatorStore(db);
+const registry = new ScannerRegistry();
+store.policyFor=cell=>resolveTradePolicy(cfg,cell,sourceHash(registry.get(cell.scannerId)?.patched));
 const health = new ScriptHealth(db);
 const profiles = new ProfileStore(db);
 const rest = new DeltaRest();
@@ -141,7 +144,7 @@ while (sliceArg !== 'none') {
   summary.symbols = universe.length;
   out(selection.hasVerdicts ? `universe: ${universe.length} of the ${selection.allowedCount} eligible markets${onlyMarkets?' (explicit market batch)':` (cap ${inc.universeTop})`}` : `universe: ${universe.length} perpetuals over $${(inc.minTurnoverUsd / 1e6).toFixed(1)}M 24h turnover (no gate verdicts yet)`);
 
-  const registry = new ScannerRegistry();
+
   // IDS=file: screen just these scripts, whatever slice they fall in (a fresh import, judged on every market tonight)
   const only = process.env.IDS ? new Set(fs.readFileSync(process.env.IDS, 'utf8').split(/\s+/).filter(Boolean)) : null;
   let scripts = registry.all().filter(s => s.status === 'ok' && (only ? only.has(s.id) : sliceOf(s.id, inc.screen.slices) === slice));

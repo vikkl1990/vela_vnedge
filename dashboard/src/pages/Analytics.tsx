@@ -1,3 +1,4 @@
+import { PolicyHealthPanel } from '../components/PolicyHealth'
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -93,6 +94,7 @@ export function Analytics() {
   const includesToday = d && (from === undefined || from <= d.at) && (to === undefined || to > d.at)
   const periodText = d ? `${from === undefined ? 'All available history' : day(from)} → ${day((to ?? d.to) - 1)} UTC${includesToday ? ' · today partial' : ''}` : ''
   return <div className="page performance-page">
+    <PolicyHealthPanel />
     <PageTitle pre="Paper & shadow," accent="in perspective." sub="One closing period. Two books. Compare results after costs, then find which markets, timeframes and scanners contribute." />
     <Panel title="Compare performance" right={<div className="row gap"><Link className="btn btn-sm" to="/daily">Daily report</Link><button className="btn btn-sm" onClick={() => { setParams({period:'7d'}); setScannerSearch(''); setSearch('') }}>Reset filters</button></div>}>
       <div className="performance-filters">

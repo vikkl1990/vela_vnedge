@@ -1,3 +1,6 @@
+import {sourceHash} from '../paper/fingerprint.ts';
+import {sameExitSource} from '../scanners/boundExits.ts';
+import {policyReading} from '../paper/tradePolicy.ts';
 import type { PlanComparisons } from '../paper/planComparisons.ts';
 import {evidencePriority} from './evidencePriority.ts';
 import { ShadowDispatch } from './dispatch.ts';
@@ -378,6 +381,8 @@ export class ShadowRunner {
       } else if (ev.kind === 'exit') {
         this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice:this.deps.paper.mark(r.symbol)??lastBar.close});
         if(r.id<0)continue;
+        const held=this.deps.paper.findOpen(s.id,r.symbol,r.tf);
+        if(held&&!sameExitSource(held.policy,sourceHash(s.patched),policyReading(cfg.scanners[s.id])))continue;
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
       }
     }

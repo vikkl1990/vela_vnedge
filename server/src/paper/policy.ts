@@ -7,7 +7,7 @@
  * a script-exit trade gets in the books (decision 159). This module resolves the effective policy once; the books and
  * the backtests take it from here.
  */
-import type { AppConfig, PaperConfig } from '../config.ts';
+import type { AppConfig, PaperConfig, ScannerConfig } from '../config.ts';
 import type { ExitOverride } from '../config.ts';
 import { scriptModeExit, scriptModeProtection } from './logic.ts';
 import {scannerEntryConfig} from './entryProtection.ts';
@@ -45,7 +45,7 @@ export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { exec
 
 /** Everything a backtest needs to trade a scanner the way `book` trades it today. */
 export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number } = {}) {
-  const sc = cfg.scanners[scannerId] ?? {};
+  const sc: Partial<ScannerConfig> = cfg.scanners[scannerId] ?? {};
   return {
     cfg: scannerEntryConfig({...bookPaperConfig(cfg, book),...(opts.executor || cfg.execution.mode!=='paper' ? {reclaimTrials:undefined} : {})},sc,tf),
     entryProtection: sc.entryProtection,

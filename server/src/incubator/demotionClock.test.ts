@@ -9,7 +9,7 @@ const T0 = Date.UTC(2026, 9, 1), DAY = 86400_000;
 
 test('decision 184: a demotion restarts the shadow clock, so a returning pair is not retired as stale before it trades', () => {
   const db = new Db(':memory:');
-  const store = new IncubatorStore(db);
+  const store = new IncubatorStore(db,{evidenceMode:'historical-research'});
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
   cfg.scanners = {};
   const screen = { pass: true, at: T0, trades: 40, profitFactor: 1.6, netPnl: 100, netAtStress: 50, windowsUp: 6, winRatePct: 50, avgR: 0.2, bars: 4000 } as any;

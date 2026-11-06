@@ -8,4 +8,5 @@
 // 12: scanner-specific protection, passive entry expiry and explicit signal direction contracts.
 // 13: selective account reclaim trials share candle selection and cell stop-risk caps with execution.
 // 14: numerical R-boundary crossings activate floors, trails and stepped giveback consistently.
-export const SIMULATION_VERSION = 14;
+// 15: actual fill timestamps; closed-bar script/reversal exits; no duplicate entry-bar processing.
+export const SIMULATION_VERSION = 15;

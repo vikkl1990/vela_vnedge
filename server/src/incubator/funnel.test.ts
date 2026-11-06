@@ -65,7 +65,7 @@ test('decision 201: with copying off, an exit still reaches the account when it 
   const bars = Array.from({ length: 80 }, (_, i) => ({ time: last - (79 - i) * H, open: 1, high: 1, low: 1, close: 1, volume: 1 }));
   let alerts: any[] = [];
   const forwarded: any[] = [];
-  const paper: any = new EventEmitter(); paper.onEntry = () => ({ action: 'opened' }); paper.onScriptExit = () => {}; paper.openPositions = () => []; paper.mark = () => 1;
+  const paper: any = new EventEmitter(); paper.onEntry = () => ({ action: 'opened' }); paper.onScriptExit = () => {}; paper.findOpen = () => undefined; paper.openPositions = () => []; paper.mark = () => 1;
   let holds = true;
   const runner = new ShadowRunner({
     store: { shadowFunnel: () => ({}), setShadowFunnel: () => {}, liveMarks: () => undefined, setLiveMarks: () => {}, get: () => pair, trades: () => [] },

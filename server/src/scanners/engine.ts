@@ -1,3 +1,6 @@
+import {sameExitSource} from './boundExits.ts';
+import {policyReading,stablePolicy} from '../paper/tradePolicy.ts';
+import {EntryCoordinator} from './entryCoordinator.ts';
 import { SignalInbox, type Delivery, type InboxRow } from './inbox.ts';
 import { configFingerprint, sourceHash } from '../paper/fingerprint.ts';
 import {ScanRecovery} from './recovery.ts';
@@ -87,6 +90,7 @@ export class ScannerEngine extends EventEmitter {
   private paper: PaperEngine;
   private db: Db;
   readonly inbox: SignalInbox;
+  readonly entryCoordinator: EntryCoordinator;
   private inboxTimer: ReturnType<typeof setInterval> | null = null;
   private processingReceipts = new Set<string>();
   private stopping = false;
@@ -120,6 +124,7 @@ export class ScannerEngine extends EventEmitter {
     super();
     this.registry = deps.registry; this.health = new ScriptHealth(deps.db); this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
     this.inbox = new SignalInbox(this.db);
+    this.entryCoordinator=new EntryCoordinator(this.db,()=>this.cfgRef().execution.mode==='paper'?(this.cfgRef().paper.entryBatchMs??250):0);
     this.marks = new BarWatermark({ load: () => this.db.kvGet<Record<string, number>>('scanner.liveMarks'), save: rec => this.db.kvSet('scanner.liveMarks', rec) });
     // decision 201: every account run, kept for 14 days — scanner_runs holds only the latest row per cell, so a recovered
     // cell hid the failures before it
@@ -562,7 +567,7 @@ export class ScannerEngine extends EventEmitter {
         const events = extractEvents(liveRes.alerts, liveRes.shapes, { drawn: liveRes.labels, scannerId: s.id, sinceBarTime: since, derived, ...READ.extract, drops })
           .filter(ev => { if (ev.kind === 'entry' && ev.barTime < lastBar.time) { drops['entry: superseded bar'] = (drops['entry: superseded bar'] ?? 0) + 1; return false; } return true; });
         if (since < lastBar.time && events.some(ev => ev.barTime < lastBar.time)) log.info(`${key}: ${events.filter(ev => ev.barTime < lastBar.time).length} event(s) from a superseded bar read on this run`);
-        for (const ev of events) await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
+        for (const ev of [...events].sort((a,b)=>Number(b.kind==='exit')-Number(a.kind==='exit'))) await this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
         this.marks.advance(key, lastBar.time);
         const acts = this.db.all<{ action: string }>('SELECT action FROM signals WHERE scanner_id=? AND symbol=? AND tf=? AND bar_time=?', s.id, symbol, tf, lastBar.time).map(r => r.action);
         this.recordFunnel(s.id, symbol, tf, info, liveRes, { entries: events.filter(e => e.kind === 'entry').length, exits: events.filter(e => e.kind === 'exit').length, info: events.filter(e => e.kind === 'info').length }, drops, acts);
@@ -605,7 +610,7 @@ export class ScannerEngine extends EventEmitter {
 
   /** Stop recovery and future scanner intake before worker shutdown. */
   stop() {
-    this.stopping=true;
+    this.stopping=true;this.entryCoordinator.stop();
     if(this.inboxTimer)clearInterval(this.inboxTimer);this.inboxTimer=null;
     if(this.retuneTimer)clearTimeout(this.retuneTimer);this.retuneTimer=null;
   }
@@ -618,7 +623,8 @@ export class ScannerEngine extends EventEmitter {
   }
 
   private deliveryFingerprint(s:LoadedScanner,tf:string):string {
-    return configFingerprint(this.cfgRef(),s.id,tf,{source:sourceHash(s.patched),book:0}).fp;
+    const {sha,...parts}=configFingerprint(this.cfgRef(),s.id,tf,{source:sourceHash(s.patched),book:0}).parts;
+    return sourceHash(stablePolicy(parts));
   }
 
   private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false) {
@@ -668,10 +674,14 @@ export class ScannerEngine extends EventEmitter {
         const side=delivery.ev.kind==='entry'?(delivery.ev.side==='long'?'buy':'sell'):(target?.side==='long'?'sell':'buy');
         if(!this.paper.hasFreshPrice(delivery.symbol,side))throw new Error('waiting for fresh market price after interruption');
       }
-      this.paper.commitDecision(()=>{
-        const result=blocked?{action:blocked,positionId:null}:this.applyDelivery(scanner,delivery,row.signal_id,recovery);
-        this.inbox.complete(row,result.action,result.positionId);
+      const decide=()=>this.paper.commitDecision(()=>{
+        if(this.stopping)throw Error('scanner stopped before allocation');
+        const refused=invalidEntry();
+        const result=refused?{action:refused,positionId:null}:this.applyDelivery(scanner,delivery,row.signal_id,recovery);
+        this.inbox.complete(row,result.action,result.positionId);return result;
       });
+      if(delivery.ev.kind==='entry'&&!blocked)await this.entryCoordinator.enqueue({key:row.event_key,scannerId:delivery.scannerId,symbol:delivery.symbol,tf:delivery.tf,barTime:delivery.ev.barTime},decide);
+      else decide();
       const sig=this.db.signalById(row.signal_id);
       if(sig){this.emit('signal',sig);log.info(`SIGNAL ${sig.kind} ${sig.symbol} ${sig.tf} ${sig.label} → ${sig.action} [${sig.scannerId}]`);}
     }catch(e){this.inbox.fail(row,e);throw e;}
@@ -723,6 +733,8 @@ export class ScannerEngine extends EventEmitter {
       }
       if (mlProb !== null) this.db.run('UPDATE signals SET ml_prob=? WHERE id=?', mlProb, sigId);
     } else if (ev.kind === 'exit') {
+      const held=this.paper.findOpen(s.id,symbol,tf);
+      if(held&&!sameExitSource(held.policy,s.patched?sourceHash(s.patched):null,policyReading(this.cfgRef().scanners[s.id])))return {action:'ignored:bound scanner exit handled separately',positionId:held.id};
       const pos = this.paper.onScriptExit(s.id, symbol, tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side, {positionId:delivery.targetPositionId,pendingIds:delivery.targetPendingIds});
       action = pos ? (pos.status === 'closed' ? 'closed' : 'reduced') : 'ignored:no position';
       positionId = pos?.id ?? null;
