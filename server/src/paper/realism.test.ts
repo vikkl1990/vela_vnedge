@@ -306,3 +306,42 @@ test('tape market entry buys current ask and timestamps receipt, then journals t
   assert.equal(p.status, 'open', 'out-of-order tape cannot stop the position or rewind its mark');
   assert.equal(engine.mark('BTCUSD'), 103);
 });
+
+test('deferred market fill failure restores pending order until a fresh tape retry commits',t=>{
+  const {db,engine,signal}=setup(t);signal('long',60000);const pe=engine.pendingEntries()[0];let orders=0;
+  engine.on('order',()=>orders++);
+  db.db.exec("CREATE TEMP TRIGGER reject_entry BEFORE INSERT ON orders BEGIN SELECT RAISE(ABORT,'injected entry failure'); END");
+  assert.doesNotThrow(()=>engine.onTrade('BTCUSD',100,1,62000,62000));
+  assert.equal(engine.pendingEntries()[0],pe);assert.equal(engine.openPositions().length,0);assert.equal(orders,0);
+  db.db.exec('DROP TRIGGER reject_entry');engine.onTrade('BTCUSD',100,1,62001,62001);
+  assert.equal(engine.pendingEntries().length,0);assert.equal(engine.openPositions().length,1);assert.equal(orders,1);
+  assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,1);
+});
+
+test('candle fallback restores a failed deferred fill and retries without duplicate orders',t=>{
+  const {db,engine,signal}=setup(t);signal('long',60000);const pe=engine.pendingEntries()[0];
+  db.db.exec("CREATE TEMP TRIGGER reject_entry BEFORE INSERT ON orders BEGIN SELECT RAISE(ABORT,'injected entry failure'); END");
+  const bar={time:60000,open:100,high:100,low:100,close:100};
+  assert.doesNotThrow(()=>engine.onBar('BTCUSD',bar,62000));
+  assert.equal(engine.pendingEntries()[0],pe);assert.equal(engine.openPositions().length,0);
+  db.db.exec('DROP TRIGGER reject_entry');engine.onBar('BTCUSD',bar,63000);
+  assert.equal(engine.openPositions().length,1);assert.equal(engine.pendingEntries().length,0);
+  assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,1);
+});
+
+test('failed deferred reversal restores the held position and both sides of its ledger',t=>{
+  const {db,engine,signal}=setup(t,{allowReversal:true,reversalMinR:-100});
+  signal('long',60000);engine.onTrade('BTCUSD',100,1,62000,62000);const held=engine.openPositions()[0];const saved=structuredClone(held);
+  assert.equal(signal('short',63000).action,'pending');const pending=engine.pendingEntries()[0];let orders=0;
+  engine.on('order',()=>orders++);
+  db.db.exec("CREATE TEMP TRIGGER reject_replacement BEFORE INSERT ON orders WHEN NEW.reason='entry' BEGIN SELECT RAISE(ABORT,'injected replacement failure'); END");
+  engine.onTrade('BTCUSD',100,1,65000,65000);
+  assert.equal(engine.openPositions()[0],held);
+  // The retained position still observes this fresh print (peak/path metadata may advance).
+  for(const key of ['status','qtyOpen','realizedPnl','fees','fills','exitAt','exitReason','sl'] as const)assert.deepEqual(held[key],saved[key],key);
+  assert.equal(engine.pendingEntries()[0],pending);assert.equal(orders,0);
+  assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,1);
+  db.db.exec('DROP TRIGGER reject_replacement');engine.onTrade('BTCUSD',100,1,65001,65001);
+  assert.equal(engine.openPositions()[0].side,'short');assert.equal(engine.pendingEntries().length,0);assert.equal(orders,2);
+  assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,3);
+});

@@ -6786,3 +6786,52 @@ new evidence is distinguishable and obsolete cached backtests/derived ML labels
 are refreshed through the existing version mechanism. Recorded trades and
 account configuration are preserved. This is a numerical correctness repair,
 not a new stop/target policy, risk budget or scanner-admission rule.
+
+## 221. Reserve database writes and roll back complete deferred decisions (2026-11-06)
+
+The November 6 review found two BTC 4h resting candle fill rollbacks during
+concurrent SQLite writes. Both later filled once; the alert's ten error reports
+are not necessarily ten distinct failed writes because errors pass through
+nested wrappers. A real two-connection regression reproduces the read-to-write
+upgrade failure under deferred BEGIN despite busy_timeout. Begin outer write
+transactions with BEGIN IMMEDIATE, before reading the decision snapshot. Keep
+nested savepoints, the existing bounded timeout and WAL readers. Set the timeout
+before startup journal configuration, and report acquisition failures. Do not
+retry callbacks that may already have mutated engine/risk state.
+
+Failure injection exposed additional incomplete transitions: a tape maker entry
+could persist before its same-print adverse stop failed; deferred market/reversal
+fills and cancellation could remove an order from memory before its durable write
+succeeded; reclaim confirmation could advance the setup and consume its daily
+budget before the final audit write failed. Extend the existing commitDecision
+checkpoint to these paths. Roll back memory, orders, positions, budgets and audit
+together; publish events only after commit. An uncommitted order may retry on a
+fresh observation within its existing validity window. A reclaimed setup keeps
+its last successful minute; missing later data still cancels conservatively.
+Prices, commissions, strategy thresholds and model versions remain unchanged.
+
+Nine regression tests cover concurrent writers, lock timeout, WAL readers/nested
+rollback, tape entry-plus-stop, deferred market/candle/reversal fills, cancellation
+and reclaim confirmation. Six failures were demonstrated before their fixes;
+all nine and the full 887-test server suite pass afterwards.
+
+Research separately ran 144 simulations (120 distinct settings) across two 28-day
+windows ending 6 November 00:00 UTC: selective >3 ATR reclaim entries for AIN /
+Trend Impulse, AKE / Adaptive Volatility and ARIA / Smart Money; retests and a
+complete later runner trail on BTC/ETH/SOL 4h for Trend Impulse and Squeeze Release;
+then a follow-up closed-daily EMA21 alignment rule. Current account policies, full
+commission/tax, $150 max margin and two crossing assumptions were used. All 18
+source-prefix checks passed; minimum minute coverage was 99.78%. Funding/depth
+history remains incomplete, and these are exploratory isolated-cell replays,
+not a shared-account or untouched out-of-sample result.
+
+The current-window AKE retest worsened closed net from -$24.70 to -$82.80 at
+0.04% crossing. AIN stopped less often but missed six closed winners; ARIA also
+lost net profit. 4h changes were inconsistent across scanners and windows. Of
+the last day's 51 regular-shadow 4h stops, 50 were longs; none had recorded +0.5R.
+Changing an exit armed beyond +0.5R cannot rescue that loss cohort. Do not turn
+these hypotheses into global gates or wider stops. Keep trading configuration
+unchanged and retain the existing prospective PEPE experiment. Full comparison
+and caveats: `docs/research/execution-entry-review-2026-11-06.json`.
+
+SQLite concurrency reference: https://www.sqlite.org/isolation.html.

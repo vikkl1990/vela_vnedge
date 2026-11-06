@@ -216,3 +216,26 @@ test('a failed fill-minute stop write rolls back the entry too and the same cand
   assert.equal(db.all('SELECT * FROM orders').length,2); assert.equal(notifications,2);
   db.db.close();
 });
+
+test('failed tape fill and same-print stop retain the pending order and publish no phantom entry',t=>{
+  const {engine,at,enter,db}=setup('4h',{fillSource:'tape'});t.after(()=>db.db.close());
+  enter();const pending=engine.pendingEntries()[0];let notifications=0;
+  engine.on('order',()=>notifications++);engine.on('position',()=>notifications++);
+  db.db.exec("CREATE TEMP TRIGGER reject_stop BEFORE INSERT ON orders WHEN NEW.reason='sl' BEGIN SELECT RAISE(ABORT,'injected stop failure'); END");
+  assert.doesNotThrow(()=>engine.onTrade('ETHUSD',95,1,at+1000,at+1000));
+  assert.equal(engine.openPositions().length,0);assert.equal(engine.pendingEntries()[0],pending);
+  assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,0);assert.equal(notifications,0);
+  assert.equal(db.get<any>('SELECT status FROM positions WHERE id=?',pending.id)!.status,'pending');
+  db.db.exec('DROP TRIGGER reject_stop');engine.onTrade('ETHUSD',95,1,at+1001,at+1001);
+  assert.equal(engine.pendingEntries().length,0);assert.equal(engine.openPositions().length,0);
+  const closed=engine.closedPositions();assert.equal(closed.length,1);assert.equal(closed[0].exitReason,'sl');
+  assert.equal(db.get<any>('SELECT count(*) n FROM orders')!.n,2);
+});
+
+test('failed cancellation keeps pending state and emits cancellation only after the retry commits',t=>{
+  const {engine,enter,db}=setup();t.after(()=>db.db.close());enter();const pe=engine.pendingEntries()[0];let cancellations=0;
+  engine.on('pending',()=>cancellations++);
+  db.db.exec("CREATE TEMP TRIGGER reject_cancel BEFORE DELETE ON positions BEGIN SELECT RAISE(ABORT,'injected cancellation failure'); END");
+  assert.throws(()=>engine.cancelPending(pe.id),/injected/);assert.equal(engine.pendingEntries()[0],pe);assert.equal(cancellations,0);
+  db.db.exec('DROP TRIGGER reject_cancel');assert.equal(engine.cancelPending(pe.id),true);assert.equal(engine.pendingEntries().length,0);assert.equal(cancellations,1);
+});

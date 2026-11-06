@@ -475,6 +475,14 @@ export class PaperEngine extends EventEmitter {
   /** Only closed live minutes may advance a setup; tape/partial candles only fill its later order. */
   onClosedMinute(symbol: string, bar: Bar, at=Date.now(), historical=false): void {
     if (historical || at<bar.time+60_000 || at>bar.time+90_000) return;
+    if (!this.decisionActive) {
+      if (![...this.pending.values()].some(pe=>pe.symbol===symbol && pe.reclaim)) return;
+      // Confirmation, setup replacement, order budget and audit form one transition.
+      // A failed write must not advance the in-memory minute or consume the setup.
+      try { this.commitDecision(()=>this.onClosedMinute(symbol,bar,at,historical)); }
+      catch(e) { log.error(`reclaim minute for ${symbol} rolled back: ${String(e)}`); }
+      return;
+    }
     for (const pe of [...this.pending.values()]) {
       if (pe.symbol!==symbol || !pe.reclaim) continue;
       if (!this.reclaimAvailable(pe,pe.reclaim.ruleKey)) {this.cancelPending(pe.id,'reclaim trial disabled or changed');continue;}
@@ -742,6 +750,10 @@ export class PaperEngine extends EventEmitter {
 
   /** Fill a pending entry at `price` (first print after the latency window, or the 1m close when the tape is silent). */
   private fillPending(pe: PendingEntry, priceIn: number, at: number, source: 'tape' | 'candle', receivedAt = Date.now()): Position | null {
+    if (!this.decisionActive) {
+      try { return this.commitDecision(()=>this.fillPending(pe,priceIn,at,source,receivedAt)); }
+      catch(e) { log.error(`pending ${source} fill for #${pe.id} ${pe.symbol} rolled back: ${String(e)}`); return null; }
+    }
     let price = priceIn;
     this.pending.delete(pe.id);
     const cfg = this.configFor(pe);
@@ -819,6 +831,7 @@ export class PaperEngine extends EventEmitter {
   cancelPending(id: number, reason = 'cancelled'): boolean {
     const pe = this.pending.get(id);
     if (!pe) return false;
+    if (!this.decisionActive) return this.commitDecision(()=>this.cancelPending(id,reason));
     this.auditReclaim(pe,'cancelled',Date.now(),reason);
     this.pending.delete(id);
     this.db.run('DELETE FROM positions WHERE id=?', id);
@@ -856,11 +869,11 @@ export class PaperEngine extends EventEmitter {
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
       if (pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
-      if (pe.limit) {
-        if (time >= pe.at && this.limitTouched(pe, price, price)) {
+      if (pe.limit && !(time >= pe.at && this.limitTouched(pe, price, price))) continue;
+      const fill = () => {
+        if (pe.limit) {
           const pos = this.fillLimit(pe, observedAt, time);
           if (pos) {
-            filled.add(pos.id);
             // A gap can cross both the resting entry and its stop. Do not give the
             // new position a free recovery until the next print. Only adverse stops
             // are evaluated here; this print cannot earn a same-fill target/trail.
@@ -870,11 +883,16 @@ export class PaperEngine extends EventEmitter {
               if (exits.length && this.applyFills(pos, exits)) for (const f of exits) this.recordPath(pos, f.price, observedAt, f.reason, 'entry print crossed stop (tape)');
             }
           }
+          return pos;
         }
-        continue;
-      }
-      const pos = this.fillPending(pe, price, time, 'tape', observedAt);
-      if (pos) filled.add(pos.id);
+        return this.fillPending(pe, price, time, 'tape', observedAt);
+      };
+      // Tape entries need the same entry + adverse-stop atomicity as candle fills.
+      // Publish fill events only after success; a failure keeps the order available
+      // for a fresh observation without replaying a partially committed callback.
+      if (this.decisionActive) { const pos=fill(); if(pos)filled.add(pos.id); }
+      else try { const pos=this.commitDecision(fill); if(pos)filled.add(pos.id); }
+      catch(e) { log.error(`tape fill for #${pe.id} ${symbol} rolled back: ${String(e)}`); }
     }
     const mark = this.markPrices.get(symbol)?.price;
     for (const pos of [...this.open.values()]) {

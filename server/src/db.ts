@@ -192,7 +192,7 @@ export class Db {
     if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
     // busy_timeout: the incubator's daily job writes from its own process while the bot runs
-    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 10000;');
+    this.db.exec('PRAGMA busy_timeout = 10000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
     this.db.exec(SCHEMA);
     // additive migrations
     const cols = this.db.prepare('PRAGMA table_info(signals)').all() as Array<{ name: string }>;
@@ -239,7 +239,12 @@ export class Db {
     const callbacks: Array<() => void> = []; this.commitCallbacks.push(callbacks);
     let committed = false;
     try {
-      this.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN');
+      // Reserve the writer before the decision reads its snapshot. A deferred BEGIN
+      // can read successfully while another process writes, then fail immediately
+      // on its read-to-write upgrade despite busy_timeout. Wait here, before any
+      // callback mutates engine state; never replay a callback with side effects.
+      try { this.db.exec(depth ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE'); }
+      catch(e) { this.noteError(e); throw e; }
       try { const r=fn();this.db.exec(depth ? `RELEASE ${savepoint}` : 'COMMIT');committed=true;return r; }
       catch(e){this.db.exec(depth ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : 'ROLLBACK');this.noteError(e);throw e;}
     } finally {

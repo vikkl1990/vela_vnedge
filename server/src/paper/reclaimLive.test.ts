@@ -174,3 +174,17 @@ test('selective trial validation rejects unsafe thresholds, caps and hidden quan
     const a=selective(t);Object.assign(a.cfg.paper.reclaimTrials![0],patch);assert.ok(validateConfig(a.cfg).some(x=>x.includes('reclaimTrials')));
   }
 });
+
+test('failed reclaim confirmation restores setup and budget; retry creates one audited order',t=>{
+  const a=setup(t);a.e.onEntry(a.ev,a.ctx);const pe=a.e.pendingEntries()[0];
+  a.e.onClosedMinute('SOLUSD',a.p,a.p.time+M+1000);const saved=structuredClone(pe);let placed=0;
+  a.e.on('pending',(x:any)=>{if(x.type==='placed')placed++;});
+  a.db.db.exec("CREATE TEMP TRIGGER reject_order_audit BEFORE INSERT ON reclaim_events WHEN NEW.event='ordered' BEGIN SELECT RAISE(ABORT,'injected reclaim failure'); END");
+  assert.doesNotThrow(()=>a.e.onClosedMinute('SOLUSD',a.r,a.r.time+M+1000));
+  assert.equal(a.e.pendingEntries()[0],pe);assert.deepEqual(pe,saved);assert.equal(placed,0);
+  assert.equal(reclaimStatus(a.db,a.cfg,a.e,a.ctx.at).trials[0].usedToday,0);
+  assert.equal(a.db.get<any>("SELECT count(*) n FROM reclaim_events WHERE event IN('confirmed','ordered')")!.n,0);
+  a.db.db.exec('DROP TRIGGER reject_order_audit');a.e.onClosedMinute('SOLUSD',a.r,a.r.time+M+1000);
+  assert.equal(a.e.pendingEntries().length,1);assert.ok(a.e.pendingEntries()[0].limit);assert.equal(placed,1);
+  assert.equal(reclaimStatus(a.db,a.cfg,a.e,a.ctx.at).trials[0].usedToday,1);
+});
