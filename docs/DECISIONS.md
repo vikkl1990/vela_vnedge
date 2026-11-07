@@ -6923,10 +6923,24 @@ concurrency and retries. DRY=1 creates no sync files. Pagination follows `next`
 even when `page_count` is absent; failures are recorded and return a nonzero exit.
 The existing weekly service/timer continues to use `OUT=data npm run library:sync`.
 
-**Validation.** 13 new regression tests; all 921 server tests and 7 dashboard tests
+**Validation.** 14 new regression tests; all 922 server tests and 7 dashboard tests
 pass, as do dashboard lint/build and targeted TypeScript checks for the changed
 files. Full-project type checking still reports pre-existing errors in
 tradePolicy.test.ts and risk/manager.ts. Trend Continuations ran on five cached
 1,000-bar fixtures (BTC/ETH/SOL 15m, BTC 1h/4h); every 800-bar prefix retained the
 same alerts when later bars were appended. This is compatibility/chronology
 validation, not an economic backtest. No new scanner is enabled or promoted.
+
+**Deployed-source repair.** The prior sync had already imported only 40 of 311
+lines of `9-29-et-fair-price-reversal` into the VM overlay. Its bytes exactly
+matched the current public preview; it had no positions or incubator pairs. Back
+up the overlay manifest and mark this specific source incomplete with a persistent
+correctness hold. Keep its source for audit; do not fabricate the missing logic.
+The bot was restarted to load that status, with its trading configuration hash
+unchanged. Public LuxAlgo pages now preview many older sources too; retain our
+existing complete copies. Full replacements require an authenticated source read.
+
+The live review also exercised legacy Pine `study()` declarations and spaced
+version headers; accept these valid full sources while applying the same preview
+rejection. Record the author/library scope on each report, including partial
+rechecks, so their counts cannot be mistaken for a complete catalogue scan.

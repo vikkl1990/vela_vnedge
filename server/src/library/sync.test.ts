@@ -48,6 +48,13 @@ test('a known publication is fetched and a revised hash is staged without touchi
   assert.equal(fs.readFileSync(path.join(f.dir, 'pine', 'original.pine'), 'utf8'), code());
   assert.equal(fs.existsSync(path.join(f.dir, 'manifest.json')), false);
   assert.equal(report.complete, true);
+  assert.deepEqual(report.scope, { authors: ['Author'], luxalgo: false });
+});
+
+test('complete legacy Pine studies and spaced version headers remain eligible for source comparison', () => {
+  const legacy = code().replace('//@version=6', '//@version = 4').replace('indicator(', 'study(');
+  assert.equal(completeSource(legacy), legacy);
+  assert.throws(() => completeSource(legacy, { shownLines: 4, totalLines: 100 }), /Incomplete/);
 });
 
 test('known LuxAlgo slugs are rechecked and incomplete new pages never create source candidates', async t => {

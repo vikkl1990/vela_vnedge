@@ -35,7 +35,7 @@ export function completeSource(code: unknown, preview?: unknown): string {
     }
   }
   if (typeof code !== 'string' || code.trim().length < 100 ||
-      !/^\s*\/\/@version=\d+/m.test(code) || !/^\s*(?:indicator|strategy)\s*\(/m.test(code)) {
+      !/^\s*\/\/@version\s*=\s*\d+/m.test(code) || !/^\s*(?:indicator|strategy|study)\s*\(/m.test(code)) {
     throw new Error('Full Pine indicator/strategy source is unavailable');
   }
   return code;
@@ -109,8 +109,8 @@ export class SourceReview {
     this.candidates.set(key, candidate);
     this.counts[kind === 'local-difference' ? 'localDifference' : kind]++;
   }
-  save(complete: boolean) {
-    const report = { schema: 1, checkedAt: this.now, complete, counts: this.counts,
+  save(complete: boolean, scope?: { authors: string[]; luxalgo: boolean }) {
+    const report = { schema: 1, checkedAt: this.now, complete, scope, counts: this.counts,
       candidates: [...this.candidates.values()].sort((a, b) => a.key.localeCompare(b.key)),
       issues: [...this.issues.values()].sort((a, b) => a.key.localeCompare(b.key)) };
     if (!this.dry) atomicJson(path.join(this.root, 'review.json'), report);
@@ -136,6 +136,7 @@ export async function syncSources(options: SyncOptions) {
   const { review, text } = options, log = options.log ?? (() => {}), concurrency = options.concurrency ?? 3;
   const inspectedTV = new Set<string>();
   const authors = options.authors ?? AUTHORS;
+  const scope = { authors, luxalgo: options.luxalgo !== false };
   // Primary TradingView source takes precedence over a library preview of the same publication.
   for (const author of authors) {
     const pub: Publication = { name: author, author, url: `https://www.tradingview.com/u/${author}/`, pub: `catalog:${author}` };
@@ -166,7 +167,7 @@ export async function syncSources(options: SyncOptions) {
       });
       review.issues.delete(keyOf(pub)); log(`${author}: checked ${seen.size} public publications`);
     } catch (e) { review.issue(pub, (e as Error).message, true); log(`${author}: ${(e as Error).message}`); }
-    review.save(false);
+    review.save(false, scope);
   }
   if (options.luxalgo !== false) {
     const catalogue: Publication = { name: 'LuxAlgo catalogue', author: 'LuxAlgo', url: SITEMAP, slug: 'catalogue' };
@@ -195,7 +196,7 @@ export async function syncSources(options: SyncOptions) {
       review.issues.delete(keyOf(catalogue)); log(`LuxAlgo library: checked ${slugs.length} pages`);
     } catch (e) { review.issue(catalogue, (e as Error).message, true); log((e as Error).message); }
   }
-  return review.save(review.counts.failed === 0);
+  return review.save(review.counts.failed === 0, scope);
 }
 
 /** Read-only public requests with a deadline, status checks and bounded transient retry. */
