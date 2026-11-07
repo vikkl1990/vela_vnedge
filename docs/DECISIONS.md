@@ -6893,3 +6893,40 @@ automatically promoted or enabled. The CME intrabar-proxy restriction remains;
 observed footprints and estimated proxies retain their separate semantics. Vela
 0.10 awaits a published compatible adapter and its own migration tests. Account
 configuration, $150 margin, leverage policy and stop-risk cap are unchanged.
+
+## 224. Review upstream source revisions and reject previews (7 November 2026)
+
+**Problem.** Library sync skipped known publication IDs/slugs and therefore missed
+source revisions. LuxAlgo now exposes partial source previews on some pages: the
+new 10am Open Key Levels page supplies 40 of 323 lines. The old length-only check
+would accept that incomplete implementation as a runnable scanner.
+
+**Change.** Check all six public TradingView catalogues and all LuxAlgo library
+pages, comparing normalized source hashes against every installed version with
+the same publication identity. Prefer full primary TradingView source over its
+library preview. Reject missing, partial or inconsistent source metadata. Keep
+retired scanners retired and classify an undated/older hash difference separately
+from a newer upstream revision so local accounting fixes are preserved.
+
+Stage both new publications and revisions in content-addressed files under
+`data/library/updates/sources/` on the VM (`scripts/updates/` for repo-mode sync).
+`review.json` records candidates, source versions/hashes, installed identities,
+first/last observation times, source issues and whether the run completed without
+fetch failures. This replaces automatic admission of unseen sources: source
+review, explicit signal contracts and runtime/economic qualification must precede
+import into the scanner manifest. Existing sources, specs, evidence and enabled
+scanners are unchanged. Revisions require a separate reviewed identity.
+
+Use atomic report writes, preserve prior candidates on failed downloads, prevent
+concurrent writers, recover locks left by dead processes, and bound request time,
+concurrency and retries. DRY=1 creates no sync files. Pagination follows `next`
+even when `page_count` is absent; failures are recorded and return a nonzero exit.
+The existing weekly service/timer continues to use `OUT=data npm run library:sync`.
+
+**Validation.** 13 new regression tests; all 921 server tests and 7 dashboard tests
+pass, as do dashboard lint/build and targeted TypeScript checks for the changed
+files. Full-project type checking still reports pre-existing errors in
+tradePolicy.test.ts and risk/manager.ts. Trend Continuations ran on five cached
+1,000-bar fixtures (BTC/ETH/SOL 15m, BTC 1h/4h); every 800-bar prefix retained the
+same alerts when later bars were appended. This is compatibility/chronology
+validation, not an economic backtest. No new scanner is enabled or promoted.

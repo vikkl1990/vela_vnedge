@@ -1,0 +1,90 @@
+{
+  "fixture": "Cached closed bars captured 2026-11-02; runtime/prefix checks only, no profitability inference",
+  "results": [
+    {
+      "symbol": "BTCUSD",
+      "tf": "15m",
+      "bars": 1000,
+      "ok": true,
+      "ms": 94,
+      "alerts": {
+        "Bearish Bounce": 17,
+        "Any Bounce": 32,
+        "Bullish Trend": 10,
+        "Bearish Trend": 10,
+        "Bullish Bounce": 15
+      },
+      "prefixStable": true,
+      "dataWarnings": []
+    },
+    {
+      "symbol": "ETHUSD",
+      "tf": "15m",
+      "bars": 1000,
+      "ok": true,
+      "ms": 53,
+      "alerts": {
+        "Bullish Trend": 8,
+        "Bullish Bounce": 25,
+        "Any Bounce": 36,
+        "Bearish Trend": 7,
+        "Bearish Bounce": 11
+      },
+      "prefixStable": true,
+      "dataWarnings": []
+    },
+    {
+      "symbol": "SOLUSD",
+      "tf": "15m",
+      "bars": 1000,
+      "ok": true,
+      "ms": 50,
+      "alerts": {
+        "Bullish Trend": 9,
+        "Bullish Bounce": 14,
+        "Any Bounce": 28,
+        "Bearish Trend": 8,
+        "Bearish Bounce": 14
+      },
+      "prefixStable": true,
+      "dataWarnings": []
+    },
+    {
+      "symbol": "BTCUSD",
+      "tf": "1h",
+      "bars": 1000,
+      "ok": true,
+      "ms": 42,
+      "alerts": {
+        "Bearish Bounce": 9,
+        "Any Bounce": 35,
+        "Bullish Trend": 9,
+        "Bullish Bounce": 26,
+        "Bearish Trend": 9
+      },
+      "prefixStable": true,
+      "dataWarnings": []
+    },
+    {
+      "symbol": "BTCUSD",
+      "tf": "4h",
+      "bars": 1000,
+      "ok": true,
+      "ms": 58,
+      "alerts": {
+        "Bullish Bounce": 25,
+        "Any Bounce": 43,
+        "Bearish Trend": 7,
+        "Bullish Trend": 7,
+        "Bearish Bounce": 18
+      },
+      "prefixStable": true,
+      "dataWarnings": []
+    }
+  ],
+  "serverTests": 921,
+  "dashboardTests": 7,
+  "syncRegressionTests": 13,
+  "newScannersActivated": false,
+  "scope": "Updater source completeness, revision detection and staging; no execution-policy changes"
+}
