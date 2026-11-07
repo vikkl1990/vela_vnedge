@@ -24,6 +24,8 @@ import { duplicateGroups } from '../scanners/identity.ts';
 import { overlapClusters } from '../incubator/overlap.ts';
 import { lockStudy } from '../analytics/lockStudy.ts';
 import { ContributionService } from '../scanners/contributions.ts';
+import { DeltaConnection } from '../connections/delta.ts';
+import { deltaConnectionRoutes } from '../connections/routes.ts';
 
 const log = logger.scoped('api');
 
@@ -50,6 +52,7 @@ export class ApiServer {
     this.auth = new AuthStore(app.db);
     this.authCtx = createAuth(this.auth);
     authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
+    deltaConnectionRoutes((m, r, h) => this.add(m, r, h), new DeltaConnection(DATA_DIR));
     setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000).unref?.();
     this.defineRoutes();
     for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);

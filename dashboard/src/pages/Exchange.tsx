@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useExchangeCloseAll, useExecution, usePositions, useReconcile } from '../api/queries'
 import type { LedgerRow } from '../api/types'
 import { useAuth } from '../auth/AuthGate'
@@ -53,10 +54,11 @@ export function Exchange() {
           <dl className="kv-list">
             <div><dt>Account</dt><dd><BookBadge book="account" mode={e.dryRun ? 'dry-run' : e.mode} /></dd></div>
             <div><dt>Host</dt><dd className="mono">{e.host ?? '— (paper: no exchange attached)'}</dd></div>
-            <div><dt>API keys</dt><dd><StatusDot tone={e.hasKeys ? 'ok' : 'neutral'} /> {e.hasKeys ? 'present (environment)' : 'none'}</dd></div>
+            <div><dt>Executor credentials</dt><dd><StatusDot tone={e.hasKeys ? 'ok' : 'neutral'} /> {e.hasKeys ? 'present (environment)' : 'none'}</dd></div>
             <div><dt>Brackets</dt><dd>{e.bracket ? 'stop-market + take-profit limits rest on the exchange' : 'off — every exit is sent at market when it happens'}</dd></div>
             <div><dt>Products known</dt><dd className="mono">{e.products ?? '–'}</dd></div>
           </dl>
+          {auth.isAdmin && <p className="small"><Link to="/settings#delta-connection">Set up a Delta API connection</Link> for a read-only check. Saved connection credentials are separate from the executor.</p>}
         </Panel>
 
         <Panel title="Last reconciliation">

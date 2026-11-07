@@ -10,8 +10,38 @@ test('status gate blocks startup, halts, auctions and stale products; old system
   s.product('BTCUSD','operational',1003);assert.match(s.block('BTCUSD',1005)!,/cancel_only/);
   s.product('BTCUSD','disrupted_post_only',1006);assert.match(s.block('BTCUSD',1007)!,/post_only/);
   s.product('BTCUSD','operational',1008);s.systemUpdate('maintenance',1008,1008);assert.match(s.block('BTCUSD',1009)!,/maintenance/);
-  s.systemUpdate('live',1009,1009);assert.equal(s.block('BTCUSD',1010),null);
+  s.systemUpdate('live',1009,1009);assert.match(s.block('BTCUSD',1010)!,/unknown|stale/);
+  s.product('BTCUSD','operational',1010);assert.equal(s.block('BTCUSD',1011),null);
   assert.match(s.block('BTCUSD',122000)!,/stale/);
+});
+
+test('maintenance recovery invalidates old and in-flight products, without rearming on duplicate finishes', () => {
+  const s=new TradingStatus();s.connection(true,1000);s.systemUpdate('live',1000,1000);s.product('BTCUSD','operational',1001);
+  const old=s.generation;
+  s.systemUpdate('maintenance',1002,1002,'maintenance_started');
+  assert.equal(s.systemUpdate('live',1003,1003,'maintenance_finished'),true);
+  s.product('BTCUSD','operational',1004,old);
+  assert.match(s.block('BTCUSD',1005)!,/unknown|stale/);
+  s.product('BTCUSD','operational',1002);
+  assert.match(s.block('BTCUSD',1005)!,/unknown|stale/);
+  s.product('BTCUSD','disrupted_post_only',1004);
+  assert.match(s.block('BTCUSD',1005)!,/post_only/);
+  s.product('BTCUSD','operational',1006);
+  assert.equal(s.block('BTCUSD',1007),null);
+  assert.equal(s.systemUpdate('live',1003,1008,'maintenance_finished'),false);
+  assert.equal(s.block('BTCUSD',1009),null);
+  assert.equal(s.systemUpdate('maintenance',1002,1010,'maintenance_started'),false);
+  assert.equal(s.block('BTCUSD',1011),null);
+});
+
+test('scheduling or cancelling maintenance does not discard valid product observations', () => {
+  const s=new TradingStatus();s.connection(true,1000);s.systemUpdate('live',1000,1000);s.product('BTCUSD','operational',1001);
+  assert.equal(s.systemUpdate('live',1002,1002,'maintenance_scheduled'),false);
+  assert.equal(s.systemUpdate('api_fallback',1003,1003,'maintenance_cancelled'),false);
+  assert.equal(s.block('BTCUSD',1004),null);
+  s.systemUpdate('maintenance',1005,1005);
+  assert.equal(s.systemUpdate('degraded_mode',1006,1006),true);
+  assert.match(s.block('BTCUSD',1007)!,/unknown|stale/);
 });
 test('reconnect requires both a new system snapshot and revalidated products', () => {
   const s=new TradingStatus();s.connection(true,100);s.product('BTCUSD','operational',101);s.systemUpdate('live',90,101);

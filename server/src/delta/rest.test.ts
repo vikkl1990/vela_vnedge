@@ -79,3 +79,16 @@ test('concurrent forced product refreshes share the same request',async t=>{
   finish(new Response('{"result":[{"symbol":"BTCUSD"}],"meta":{}}'));
   assert.equal(calls,1);assert.equal(await a,await b);
 });
+
+test('revalidation waits for an older in-flight catalogue then requests a fresh one',async t=>{
+  let finish!:(r:Response)=>void,calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{
+    if (++calls===1) return new Promise<Response>(resolve=>{finish=resolve;});
+    return new Response('{"result":[{"symbol":"BTCUSD","trading_status":"disrupted_post_only"}],"meta":{}}');
+  });
+  const rest=new DeltaRest(),old=rest.products(true),fresh=rest.revalidateProducts();
+  finish(new Response('{"result":[{"symbol":"BTCUSD","trading_status":"operational"}],"meta":{}}'));
+  assert.equal((await old).get('BTCUSD')?.trading_status,'operational');
+  assert.equal((await fresh).get('BTCUSD')?.trading_status,'disrupted_post_only');
+  assert.equal(calls,2);
+});

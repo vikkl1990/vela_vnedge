@@ -19,6 +19,44 @@ import { logger } from '../log.ts';
 const log = logger.scoped('realtime');
 const TICK_MS = 5000;
 
+/** Coalesce refreshes, retaining one fresh pass after a reconnect or maintenance recovery. */
+export function wireTradingStatus(app: Pick<App, 'feed' | 'rest'>, status: TradingStatus): () => void {
+  let running = false, requested = false, fresh = false, stopped = false;
+  const refresh = async (recovery = false) => {
+    if (stopped) return;
+    requested = true; fresh ||= recovery;
+    if (running) return;
+    running = true;
+    try {
+      do {
+        requested = false;
+        const forceFresh = fresh; fresh = false;
+        const generation = status.generation, at = Date.now();
+        try {
+          const products = await (forceFresh ? app.rest.revalidateProducts() : app.rest.products(true));
+          if (!stopped) for (const p of products.values()) status.product(p.symbol, p.trading_status ?? 'unknown', at, generation);
+        } catch (e: any) { log.warn(`exchange product-status refresh failed: ${e?.message ?? e}`); }
+      } while (requested && !stopped);
+    } finally { running = false; }
+  };
+  const connection = ({ connected }: { connected: boolean }) => {
+    status.connection(connected);
+    if (connected) void refresh(true); else requested = false;
+  };
+  const system = (m: any) => {
+    if (status.systemUpdate(String(m.status ?? ''), toMs(m.timestamp ?? m.ts), Date.now(), String(m.event ?? ''))) void refresh(true);
+    log.info(`exchange system status ${m.status} (${m.event ?? 'update'})`);
+  };
+  const product = (m: any) => status.product(String(m.product?.symbol ?? ''), String(m.product?.trading_status ?? ''), toMs(m.timestamp ?? m.ts));
+  app.feed.on('status', connection); app.feed.on('system_status', system); app.feed.on('product_updates', product);
+  const timer = setInterval(() => { if (app.feed.connected) void refresh(); }, 60_000);
+  timer.unref();
+  return () => {
+    stopped = true; clearInterval(timer);
+    app.feed.off('status', connection); app.feed.off('system_status', system); app.feed.off('product_updates', product);
+  };
+}
+
 /** Attach feed listeners and the periodic scheduler. Call once from the App constructor. */
 export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
@@ -59,8 +97,9 @@ export function wireRealtime(app: App): void {
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
   },5000);
   for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=()=>{for(const t of [auditTimer,historyTimer,depthTimer,statusTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
+  app.stopExecutionAudit=()=>{stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
   const status = app.exchangeStatus ?? new TradingStatus();
+  const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
   app.db.run('CREATE TABLE IF NOT EXISTS funding_guard_blocks (symbol TEXT PRIMARY KEY, until_at INTEGER NOT NULL)');
   for (const b of books) b.fundingEntryBlock = (symbol,side,tf,notional,risk,at) => {
@@ -69,29 +108,9 @@ export function wireRealtime(app: App): void {
     const a=fundingAssessment(app.marks.funding(symbol),app.config.get().paper,side,tf,notional,risk,at);
     return a.trigger?`funding guard: next payment ${a.costR!.toFixed(3)}R exceeds ${a.limitR}R budget`:null;
   };
-  let refreshing = false;
-  const refresh = async () => {
-    if (refreshing) return;
-    refreshing = true;
-    const at = Date.now();
-    try {
-      for (const p of (await app.rest.products(true)).values()) status.product(p.symbol, p.trading_status ?? 'unknown', at);
-    } catch (e: any) { log.warn(`exchange product-status refresh failed: ${e?.message ?? e}`); }
-    finally { refreshing = false; }
-  };
-  app.feed.on('status', ({ connected }: { connected: boolean }) => { status.connection(connected); try { flow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { depth.disconnect(); app.marks.invalidateQuotes(); } if (connected) void refresh(); });
+  app.feed.on('status', ({ connected }: { connected: boolean }) => { try { flow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { depth.disconnect(); app.marks.invalidateQuotes(); } });
   app.feed.on('quote', q => app.marks.onWsQuote(q));
   app.feed.on('quoteGap', ({ symbols }: { symbols: string[] }) => app.marks.invalidateQuotes(symbols));
-  app.feed.on('system_status', (m: any) => {
-    status.systemUpdate(String(m.status ?? ''), toMs(m.timestamp ?? m.ts));
-    log.info(`exchange system status ${m.status} (${m.event ?? 'update'})`);
-  });
-  app.feed.on('product_updates', (m: any) => {
-    status.product(String(m.product?.symbol ?? ''), String(m.product?.trading_status ?? ''), toMs(m.timestamp ?? m.ts));
-    log.info(`exchange product ${m.product?.symbol} status ${m.product?.trading_status}`);
-  });
-  const statusTimer = setInterval(() => { if (app.feed.connected) void refresh(); }, 60_000);
-  statusTimer.unref();
   // Depth observation is deliberately asynchronous and labelled post-entry; it never changes an entry.
   const queue: Array<{ id: number; symbol: string; side: 'long' | 'short'; qty: number; entryAt: number }> = [];
   let busy = 0;

@@ -1,4 +1,5 @@
 import type {ExecutionPlansView} from './executionPlans'
+import type { DeltaConnectionStatus, DeltaEnvironment } from './deltaConnection'
 import type {PairAgentsView} from './pairAgents'
 import type {Footprint, OrderFlowView} from './orderFlow'
 import type {Contributions, ContributionDetail} from './contributions'
@@ -96,6 +97,10 @@ const put = <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT'
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export const api = {
+  deltaConnection: () => get<DeltaConnectionStatus>('/connections/delta'),
+  saveDeltaConnection: (body: { environment: DeltaEnvironment; apiKey: string; apiSecret: string }) => put<DeltaConnectionStatus>('/connections/delta', body),
+  checkDeltaConnection: () => post<DeltaConnectionStatus>('/connections/delta/check', {}),
+  removeDeltaConnection: () => del<DeltaConnectionStatus>('/connections/delta'),
   pineLibrary: (path: string, hash: string) => request<{path: string; sha256: string; source: string}>(`/pine-library${qs({path, hash})}`),
   orderFlow: (symbol: string, tf: string) => request<OrderFlowView>(`/order-flow${qs({symbol, tf, limit: 120})}`),
   footprints: (symbol: string, tf: string, range: {from?: number; to?: number; limit?: number}) => request<Footprint[]>(`/footprints${qs({symbol, tf, ...range})}`),

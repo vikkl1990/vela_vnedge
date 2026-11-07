@@ -100,7 +100,7 @@ export class DeltaRest {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
       try {
-        const res = await fetch(this.baseUrl + path + qs, { method, headers, body: bodyStr || undefined, signal: ctrl.signal });
+        const res = await fetch(this.baseUrl + path + qs, { method, headers, body: bodyStr || undefined, signal: ctrl.signal, redirect: 'error' });
         const text = await res.text();
         let json: any;
         try { json = JSON.parse(text); } catch { json = { success: false, error: { code: 'bad_json', message: text.slice(0, 200) } }; }
@@ -137,9 +137,15 @@ export class DeltaRest {
   async products(force = false): Promise<Map<string, DeltaProduct>> {
     if (!force && this.productCache && Date.now() - this.productCacheAt < 600_000) return this.productCache;
     if (this.productLoad) return this.productLoad;
-    this.productLoad = this.loadProducts();
-    try { return await this.productLoad; }
-    finally { this.productLoad = null; }
+    const pending = this.loadProducts().finally(() => { if (this.productLoad === pending) this.productLoad = null; });
+    this.productLoad = pending;
+    return pending;
+  }
+
+  /** A recovery must not join a catalogue request started before its barrier. */
+  async revalidateProducts(): Promise<Map<string, DeltaProduct>> {
+    if (this.productLoad) { try { await this.productLoad; } catch { /* start a new observation */ } }
+    return this.products(true);
   }
 
   private async loadProducts(): Promise<Map<string, DeltaProduct>> {

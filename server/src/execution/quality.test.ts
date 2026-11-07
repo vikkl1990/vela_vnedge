@@ -49,6 +49,20 @@ test('audit commits both histories atomically, deduplicates and omits private me
  await assert.rejects(a.sync(transport,T+1000));assert.equal(d.get<any>('SELECT count(*) n FROM exchange_history')!.n,0);fail=false;await a.sync(transport,T+1000);await a.sync(transport,T+2000);
  assert.equal(d.get<any>('SELECT count(*) n FROM exchange_history')!.n,2);assert.ok(!JSON.stringify(a.summary()).includes('private'));
 });
+
+test('audit retains exact fee-credit evidence without inventing missing values or retaining private metadata',async t=>{
+ const d=db(t),audit=new AccountAudit(d);
+ const transport:any={hasAuth:true,dryRun:false,host:'testnet',accountHistory:async(kind:string)=>kind==='wallet'?[]:[
+  {id:'detailed',commission:'.2',settling_asset_symbol:'USD',created_at:T*1000,meta_data:{effective_commission_rate:'0.00020000',trading_fee_credits_used:'0.10',tfc_used_for_commission:0,total_commission_in_settling_asset:'.2',liquidation_fee_deto:null,rack_commision:'not-a-number',commission_deto:{secret:'private'},ip:'private',unknown:'private'}},
+  {id:'missing',commission:'.2',created_at:T*1000},
+ ]};
+ await audit.sync(transport,T+1000);
+ const rows=d.all<any>('SELECT payload FROM exchange_history ORDER BY id').map(r=>JSON.parse(r.payload));
+ assert.deepEqual(rows[0].feeDetails,{effective_commission_rate:'0.00020000',total_commission_in_settling_asset:'.2',trading_fee_credits_used:'0.10',tfc_used_for_commission:0});
+ assert.equal(rows[0].accountingSchema,2);assert.equal(rows[1].feeDetails,null);
+ assert.equal(JSON.stringify(rows).includes('private'),false);
+ assert.equal(rows[0].commission,'.2','credits do not silently rewrite commission');
+});
 test('post-only serializes only valid limits and preserves production restriction',()=>{
  const o:any={product_id:1,size:1,side:'buy',order_type:'limit_order',limit_price:'100',post_only:true,time_in_force:'gtc',purpose:'entry'};
  assert.equal(wirePayload(o).post_only,true);assert.equal(wirePayload(o).purpose,undefined);

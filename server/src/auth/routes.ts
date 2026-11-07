@@ -27,6 +27,7 @@ export function permissionFor(method: string, pathname: string): Permission | nu
   if (pathname.startsWith('/api/auth/')) return 'read';        // me, logout, own password: any signed-in user
   if (pathname.startsWith('/api/users')) return 'admin';
   if (pathname.startsWith('/api/share')) return 'admin';           // decision 117: share links are an administrator's to mint and revoke
+  if (pathname.startsWith('/api/connections/')) return 'admin';
   if (method === 'GET' || method === 'HEAD') return 'read';
   if (BACKTEST_SAFE.some(r => r.test(pathname))) return 'backtest';
   return 'trade';                                               // default-deny for anything that changes state

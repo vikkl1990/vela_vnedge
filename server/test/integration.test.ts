@@ -345,6 +345,9 @@ test('authorisation is enforced by the server, not just hidden in the UI', async
   const cfg = await getJson('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(cfg.status, 403, 'viewer must not rewrite configuration');
   assert.equal((await getJson('/api/users')).status, 403, 'viewer must not see the user list');
+  for (const [method, route] of [['GET', '/api/connections/delta'], ['PUT', '/api/connections/delta'], ['DELETE', '/api/connections/delta'], ['POST', '/api/connections/delta/check']]) {
+    assert.equal((await getJson(route, { method })).status, 403, 'connection credentials are admin-only');
+  }
 
   // signing out invalidates the session immediately
   await getJson('/api/auth/logout', { method: 'POST' });
@@ -352,6 +355,20 @@ test('authorisation is enforced by the server, not just hidden in the UI', async
 
   cookie = admin;   // hand the rest of the suite back its administrator
   assert.equal((await getJson('/api/stats')).status, 200);
+});
+
+test('admin can save and remove credentials over the API without changing execution or exposing secrets', async () => {
+  const before = fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8');
+  const input = { environment: 'testnet', apiKey: 'fixture-key-only', apiSecret: 'fixture-secret-only' };
+  const saved = await getJson('/api/connections/delta', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+  assert.equal(saved.status, 200); assert.equal(saved.body.configured, true);
+  const read = await getJson('/api/connections/delta');
+  assert.equal(read.status, 200); assert.equal(read.body.environment, 'testnet');
+  for (const response of [saved, read]) {
+    assert.ok(!JSON.stringify(response).includes(input.apiKey)); assert.ok(!JSON.stringify(response).includes(input.apiSecret));
+  }
+  assert.equal(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'), before);
+  assert.equal((await getJson('/api/connections/delta', { method: 'DELETE' })).body.configured, false);
 });
 
 test('failed authentication reports 401 and 400, not 500', async () => {

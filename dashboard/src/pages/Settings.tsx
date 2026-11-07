@@ -5,6 +5,7 @@ import { ChipSelect, ConfirmDialog, ErrorState, Loading, PageTitle, Panel, Pill,
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { MEASURED } from '../lib/measured'
 import { useToast } from '../lib/toast'
+import { DeltaConnectionPanel } from '../components/DeltaConnectionPanel'
 
 /**
  * Decision 119: every number the system runs on, grouped by what it can cost, each shown against the value the
@@ -251,6 +252,8 @@ export function Settings() {
           <button className="btn btn-cta" onClick={save} disabled={!dirty || update.isPending || Object.keys(errors).length > 0}>{update.isPending ? 'Saving…' : highRisk.length ? 'Review and save' : 'Save settings'}</button>
         </div>
       </div>
+
+      <DeltaConnectionPanel />
 
       <div className="settings-grid">
         {SECTIONS.map((sec) => (

@@ -1,6 +1,38 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { subscribeRealtime } from './wiring.ts';
+import { subscribeRealtime, wireTradingStatus } from './wiring.ts';
+import { EventEmitter } from 'node:events';
+import { TradingStatus } from '../delta/tradingStatus.ts';
+
+test('maintenance completion discards an in-flight catalogue and immediately requests a fresh one', async t => {
+  const at = 1_800_000_000_000;
+  t.mock.timers.enable({ apis: ['Date'], now: at });
+  const feed = Object.assign(new EventEmitter(), { connected: true });
+  const status = new TradingStatus();
+  const pending: Array<(products: Map<string, any>) => void> = [];
+  let refreshes = 0;
+  const stop = wireTradingStatus({ feed, rest: {
+    revalidateProducts: () => { refreshes++; return new Promise<Map<string, any>>(resolve => pending.push(resolve)); },
+    products: () => { throw new Error('Recovery must force a new observation'); },
+  } } as any, status);
+  t.after(stop);
+  feed.emit('status', { connected: true });
+  feed.emit('system_status', { status: 'live', event: 'snapshot', timestamp: at * 1000 });
+  assert.equal(refreshes, 1);
+  t.mock.timers.setTime(at + 1000);
+  feed.emit('system_status', { status: 'maintenance', event: 'maintenance_started', timestamp: (at + 1000) * 1000 });
+  t.mock.timers.setTime(at + 2000);
+  feed.emit('system_status', { status: 'live', event: 'maintenance_finished', timestamp: (at + 2000) * 1000 });
+  assert.match(status.block('BTCUSD')!, /unknown or stale/);
+  pending.shift()!(new Map([['BTCUSD', { symbol: 'BTCUSD', trading_status: 'operational' }]]));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshes, 2, 'completion queued a fresh observation without waiting a minute');
+  assert.match(status.block('BTCUSD')!, /unknown or stale/, 'pre-maintenance result must not unblock');
+  pending.shift()!(new Map([['BTCUSD', { symbol: 'BTCUSD', trading_status: 'operational' }]]));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(status.block('BTCUSD'), null);
+  stop(); assert.equal(feed.listenerCount('system_status'), 0);
+});
 test('L1 subscriptions include held and pending markets from both books even after scanner removal',()=>{
   const seen=new Map<string,string[]>();
   subscribeRealtime({resolvedSymbols:['BTCUSD'],scanners:{requiredSeries:()=>[]},paper:{openPositions:()=>[{symbol:'ETHUSD'}],pendingEntries:()=>[{symbol:'SOLUSD'}]},shadow:{openPositions:()=>[{symbol:'AINUSD'}],pendingEntries:()=>[{symbol:'ETHUSD'}]},incubator:{symbols:()=>['BTCUSD','XRPUSD']},orderFlow:{symbols:['BTCUSD']},depthRecorder:{symbols:['BTCUSD']},feed:{subscribe:(ch:string,sy:string[])=>seen.set(ch,sy)}} as any);
