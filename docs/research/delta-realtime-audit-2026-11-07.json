@@ -1,0 +1,2926 @@
+{
+  "auditDate": "2026-11-07",
+  "vmCommit": "41d74f8",
+  "vm": {
+    "at": 1794036723879,
+    "windowHours": 24,
+    "configSha256": "bcff89cd16ddc99b5d9fa4bf50e04e864f3dba777cc1e8f16b43c96798c953c5",
+    "config": {
+      "paper": {
+        "fillSource": "candles",
+        "tapeFallbackMs": 5000,
+        "sizingMode": "margin",
+        "marginPerTrade": 150,
+        "marginLeverage": {
+          "base": 5,
+          "strong": 10,
+          "weak": 5,
+          "strongAboveR": 0.05,
+          "weakBelowR": -0.05,
+          "minTrades": 20,
+          "lookback": 30
+        },
+        "maxStopLossPct": 3,
+        "minRiskFeeRatio": 6,
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02,
+        "feeTaxPct": 18,
+        "scalperOffer": {
+          "enabled": true,
+          "majors": [
+            "BTCUSD",
+            "ETHUSD"
+          ],
+          "majorsMinutes": 30,
+          "othersMinutes": 15,
+          "excluded": [
+            "PAXGUSD",
+            "SLVONUSD",
+            "XAUTUSD"
+          ]
+        },
+        "quoteMaxAgeMs": 10000,
+        "requireQuote": true,
+        "useSpread": true,
+        "slippageBps": 2,
+        "quotedSlippageBps": 0,
+        "depthUsdPerBp": 0,
+        "maxSignalAgeSec": 300
+      },
+      "execution": {
+        "mode": "paper",
+        "allowProduction": false
+      },
+      "marketGate": {
+        "enabled": true,
+        "tf": "15m",
+        "cryptoOnly": true,
+        "minTurnoverUsd": 50000,
+        "probeNotionalUsd": 750,
+        "maxBookCostPct": 0.25,
+        "freshDepth": true,
+        "minAtrFeeMult": 0,
+        "lookbackDays": 14,
+        "minTrades": 100000,
+        "minPf": 1,
+        "refreshMinutes": 60,
+        "exempt": []
+      }
+    },
+    "depth": [
+      {
+        "symbol": "BTCUSD",
+        "kind": "gap",
+        "n": 3,
+        "oldest": 1794035275273,
+        "latest": 1794036608875
+      },
+      {
+        "symbol": "BTCUSD",
+        "kind": "snapshot",
+        "n": 10,
+        "oldest": 1794032108652,
+        "latest": 1794036610667
+      },
+      {
+        "symbol": "BTCUSD",
+        "kind": "trade",
+        "n": 5155,
+        "oldest": 1794032019039,
+        "latest": 1794036717543
+      },
+      {
+        "symbol": "BTCUSD",
+        "kind": "update",
+        "n": 16279,
+        "oldest": 1794032016872,
+        "latest": 1794036718807
+      },
+      {
+        "symbol": "ETHUSD",
+        "kind": "gap",
+        "n": 3,
+        "oldest": 1794035275273,
+        "latest": 1794036608875
+      },
+      {
+        "symbol": "ETHUSD",
+        "kind": "snapshot",
+        "n": 10,
+        "oldest": 1794032108704,
+        "latest": 1794036610673
+      },
+      {
+        "symbol": "ETHUSD",
+        "kind": "trade",
+        "n": 3907,
+        "oldest": 1794032020725,
+        "latest": 1794036717045
+      },
+      {
+        "symbol": "ETHUSD",
+        "kind": "update",
+        "n": 12705,
+        "oldest": 1794032017037,
+        "latest": 1794036718428
+      },
+      {
+        "symbol": "SOLUSD",
+        "kind": "gap",
+        "n": 3,
+        "oldest": 1794035275273,
+        "latest": 1794036608875
+      },
+      {
+        "symbol": "SOLUSD",
+        "kind": "snapshot",
+        "n": 10,
+        "oldest": 1794032108721,
+        "latest": 1794036610677
+      },
+      {
+        "symbol": "SOLUSD",
+        "kind": "trade",
+        "n": 748,
+        "oldest": 1794032019038,
+        "latest": 1794036713539
+      },
+      {
+        "symbol": "SOLUSD",
+        "kind": "update",
+        "n": 11167,
+        "oldest": 1794032016981,
+        "latest": 1794036718899
+      }
+    ],
+    "depthGaps": [
+      {
+        "symbol": "BTCUSD",
+        "reason": "disconnect or restart",
+        "n": 3
+      },
+      {
+        "symbol": "ETHUSD",
+        "reason": "disconnect or restart",
+        "n": 3
+      },
+      {
+        "symbol": "SOLUSD",
+        "reason": "disconnect or restart",
+        "n": 3
+      }
+    ],
+    "entries": [
+      {
+        "book": 0,
+        "source": "depth",
+        "n": 18,
+        "delayMs": 2706.4444444444443,
+        "meanQuoteAgeMs": 107.33333333333333,
+        "maxQuoteAgeMs": 164
+      },
+      {
+        "book": 0,
+        "source": "quote",
+        "n": 6,
+        "delayMs": 348642.3333333333,
+        "meanQuoteAgeMs": 105.83333333333333,
+        "maxQuoteAgeMs": 147
+      },
+      {
+        "book": 2,
+        "source": "depth",
+        "n": 4,
+        "delayMs": null,
+        "meanQuoteAgeMs": 107.5,
+        "maxQuoteAgeMs": 141
+      },
+      {
+        "book": 2,
+        "source": "quote",
+        "n": 499,
+        "delayMs": null,
+        "meanQuoteAgeMs": 141.67134268537075,
+        "maxQuoteAgeMs": 2040
+      }
+    ],
+    "flow": [
+      {
+        "symbol": "BTCUSD",
+        "n": 1436,
+        "covered": 1427,
+        "oldest": 1793950380000,
+        "newest": 1794036600000
+      },
+      {
+        "symbol": "ETHUSD",
+        "n": 1436,
+        "covered": 1427,
+        "oldest": 1793950380000,
+        "newest": 1794036600000
+      },
+      {
+        "symbol": "SOLUSD",
+        "n": 1436,
+        "covered": 1427,
+        "oldest": 1793950380000,
+        "newest": 1794036600000
+      }
+    ],
+    "ops": [
+      {
+        "n": 1419,
+        "up": 1419,
+        "maxCloseLag": 3.734,
+        "meanCloseLag": 1.649286016949148,
+        "maxQueue": 199,
+        "meanQueue": 1.0676532769556026,
+        "maxRss": 4379537408
+      }
+    ],
+    "funding": [
+      {
+        "status": "applied",
+        "source": "observed-websocket",
+        "n": 3363
+      },
+      {
+        "status": "pending",
+        "source": "observed-websocket",
+        "n": 91
+      },
+      {
+        "status": "unresolved",
+        "source": "observed-websocket",
+        "n": 2
+      }
+    ],
+    "orderSources": [
+      {
+        "bt": 0,
+        "reason": "entry",
+        "price_source": "depth",
+        "n": 18
+      },
+      {
+        "bt": 0,
+        "reason": "entry",
+        "price_source": "quote",
+        "n": 6
+      },
+      {
+        "bt": 0,
+        "reason": "funding",
+        "price_source": null,
+        "n": 14
+      },
+      {
+        "bt": 0,
+        "reason": "sl",
+        "price_source": "candle-model",
+        "n": 8
+      },
+      {
+        "bt": 0,
+        "reason": "trail",
+        "price_source": "candle-model",
+        "n": 17
+      },
+      {
+        "bt": 2,
+        "reason": "entry",
+        "price_source": "depth",
+        "n": 4
+      },
+      {
+        "bt": 2,
+        "reason": "entry",
+        "price_source": "quote",
+        "n": 499
+      },
+      {
+        "bt": 2,
+        "reason": "funding",
+        "price_source": null,
+        "n": 457
+      },
+      {
+        "bt": 2,
+        "reason": "reversal",
+        "price_source": "quote",
+        "n": 19
+      },
+      {
+        "bt": 2,
+        "reason": "script_exit",
+        "price_source": "quote",
+        "n": 22
+      },
+      {
+        "bt": 2,
+        "reason": "script_flip",
+        "price_source": "quote",
+        "n": 1
+      },
+      {
+        "bt": 2,
+        "reason": "sl",
+        "price_source": "candle-model",
+        "n": 144
+      },
+      {
+        "bt": 2,
+        "reason": "sl",
+        "price_source": "quote",
+        "n": 5
+      },
+      {
+        "bt": 2,
+        "reason": "trail",
+        "price_source": "candle-model",
+        "n": 313
+      }
+    ],
+    "performance": [
+      {
+        "bt": 0,
+        "trades": 25,
+        "gross": 33.65528758235274,
+        "fees": 11.279989398426519,
+        "net": 22.375298183926237,
+        "stops": 8
+      },
+      {
+        "bt": 2,
+        "trades": 504,
+        "gross": 3049305.223523626,
+        "fees": 2353759.712993357,
+        "net": 695545.5105302684,
+        "stops": 149
+      }
+    ],
+    "policyModes": [
+      {
+        "bt": 0,
+        "mode": null,
+        "n": 7
+      },
+      {
+        "bt": 0,
+        "mode": "candles",
+        "n": 17
+      },
+      {
+        "bt": 2,
+        "mode": null,
+        "n": 211
+      },
+      {
+        "bt": 2,
+        "mode": "candles",
+        "n": 292
+      }
+    ]
+  },
+  "publicProbe": {
+    "start": 1794036178970,
+    "finishedAt": 1794036224800,
+    "openMs": 581,
+    "symbols": [
+      "BTCUSD",
+      "XAUTUSD",
+      "ETHUSD",
+      "AKEUSD",
+      "PAXGUSD",
+      "SOLUSD",
+      "AINUSD",
+      "SNDKBUSD",
+      "ZECUSD",
+      "XRPUSD",
+      "ARIAUSD",
+      "SLVONUSD",
+      "UNIUSD",
+      "AAVEUSD",
+      "JCTUSD",
+      "BTWUSD",
+      "QQQXUSD",
+      "BCHUSD",
+      "AIOUSD",
+      "BEATUSD"
+    ],
+    "stats": {
+      "subscriptions:*": {
+        "n": 1,
+        "last": 1794036179654,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "ob_l1:XRPUSD": {
+        "n": 450,
+        "last": 1794036224719,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 41.092041015625,
+          "median": 43.239013671875,
+          "p95": 45.742919921875,
+          "max": 178.251953125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 210
+        }
+      },
+      "ob_l1:BTWUSD": {
+        "n": 450,
+        "last": 1794036224700,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 41.159912109375,
+          "median": 43.2041015625,
+          "p95": 45.1201171875,
+          "max": 174.19091796875
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 210
+        }
+      },
+      "ob_l1:QQQXUSD": {
+        "n": 450,
+        "last": 1794036224701,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 41.22509765625,
+          "median": 44.212890625,
+          "p95": 46.27392578125,
+          "max": 174.19091796875
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 210
+        }
+      },
+      "ob_l1:AKEUSD": {
+        "n": 450,
+        "last": 1794036224722,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 44.06689453125,
+          "median": 46.23193359375,
+          "p95": 49.23291015625,
+          "max": 178.251953125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 210
+        }
+      },
+      "ob_l1:ETHUSD": {
+        "n": 450,
+        "last": 1794036224703,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 42.297119140625,
+          "median": 45.85791015625,
+          "p95": 48.235107421875,
+          "max": 174.19091796875
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 210
+        }
+      },
+      "ob_l1:AINUSD": {
+        "n": 450,
+        "last": 1794036224703,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 43.2099609375,
+          "median": 46.19189453125,
+          "p95": 48.2958984375,
+          "max": 174.19091796875
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 104,
+          "max": 210
+        }
+      },
+      "ob_l1:ARIAUSD": {
+        "n": 450,
+        "last": 1794036224727,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 47.258056640625,
+          "median": 51.205078125,
+          "p95": 54.23291015625,
+          "max": 178.251953125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 104,
+          "max": 209
+        }
+      },
+      "ob_l1:JCTUSD": {
+        "n": 450,
+        "last": 1794036224728,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 49.258056640625,
+          "median": 52.298095703125,
+          "p95": 55.322998046875,
+          "max": 178.251953125
+        },
+        "gapMs": {
+          "median": 101,
+          "p95": 104,
+          "max": 209
+        }
+      },
+      "ob_updates:BTCUSD": {
+        "n": 156,
+        "last": 1794036224678,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 38.10107421875,
+          "median": 41.10107421875,
+          "p95": 43.966064453125,
+          "max": 221.610107421875
+        },
+        "gapMs": {
+          "median": 253,
+          "p95": 507,
+          "max": 514
+        }
+      },
+      "ob_updates:ETHUSD": {
+        "n": 131,
+        "last": 1794036224464,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.530029296875,
+          "median": 39.89111328125,
+          "p95": 42.866943359375,
+          "max": 630.583984375
+        },
+        "gapMs": {
+          "median": 254,
+          "p95": 510,
+          "max": 758
+        }
+      },
+      "ob_updates:SOLUSD": {
+        "n": 103,
+        "last": 1794036224772,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.0849609375,
+          "median": 38.48193359375,
+          "p95": 40.72900390625,
+          "max": 1431.841064453125
+        },
+        "gapMs": {
+          "median": 500,
+          "p95": 758,
+          "max": 1255
+        }
+      },
+      "system_status:*": {
+        "n": 1,
+        "last": 1794036179863,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "heartbeat:*": {
+        "n": 10,
+        "last": 1794036224422,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": null,
+          "median": null,
+          "p95": null,
+          "max": null
+        },
+        "gapMs": {
+          "median": 5001,
+          "p95": 5001,
+          "max": 5001
+        }
+      },
+      "ob_l1:SNDKBUSD": {
+        "n": 450,
+        "last": 1794036224764,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 48.2041015625,
+          "median": 52.14990234375,
+          "p95": 54.2529296875,
+          "max": 249.219970703125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 104,
+          "max": 115
+        }
+      },
+      "ob_l1:BCHUSD": {
+        "n": 450,
+        "last": 1794036224764,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 49.2041015625,
+          "median": 53.115966796875,
+          "p95": 55.23193359375,
+          "max": 250.219970703125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 104,
+          "max": 115
+        }
+      },
+      "ob_l1:AIOUSD": {
+        "n": 450,
+        "last": 1794036224756,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.176025390625,
+          "median": 38.281005859375,
+          "p95": 40.237060546875,
+          "max": 224.19189453125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 102,
+          "max": 111
+        }
+      },
+      "ob_l1:BEATUSD": {
+        "n": 450,
+        "last": 1794036224758,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 39.1259765625,
+          "median": 40.55810546875,
+          "p95": 42.532958984375,
+          "max": 224.19189453125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 109
+        }
+      },
+      "ob_l1:SLVONUSD": {
+        "n": 449,
+        "last": 1794036224682,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 46.077880859375,
+          "median": 49.26611328125,
+          "p95": 52.162109375,
+          "max": 225.220947265625
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 104,
+          "max": 112
+        }
+      },
+      "ob_l1:PAXGUSD": {
+        "n": 450,
+        "last": 1794036224767,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 45.27490234375,
+          "median": 48.281982421875,
+          "p95": 51.215087890625,
+          "max": 224.19189453125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 104,
+          "max": 112
+        }
+      },
+      "ob_l1:AAVEUSD": {
+        "n": 449,
+        "last": 1794036224734,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 39.2041015625,
+          "median": 41.22412109375,
+          "p95": 42.282958984375,
+          "max": 207.26611328125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 102,
+          "max": 134
+        }
+      },
+      "ob_l1:XAUTUSD": {
+        "n": 449,
+        "last": 1794036224735,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 40.2041015625,
+          "median": 42.194091796875,
+          "p95": 43.27294921875,
+          "max": 207.26611328125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 102,
+          "max": 134
+        }
+      },
+      "ob_l1:UNIUSD": {
+        "n": 449,
+        "last": 1794036224738,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 42.256103515625,
+          "median": 44.19091796875,
+          "p95": 46.25390625,
+          "max": 207.26611328125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 133
+        }
+      },
+      "ob_l1:SOLUSD": {
+        "n": 449,
+        "last": 1794036224752,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 54.238037109375,
+          "median": 57.291015625,
+          "p95": 60.31005859375,
+          "max": 207.26611328125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 104,
+          "max": 134
+        }
+      },
+      "ob_l1:BTCUSD": {
+        "n": 449,
+        "last": 1794036224757,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 58.12109375,
+          "median": 62.27197265625,
+          "p95": 66.264892578125,
+          "max": 207.26611328125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 105,
+          "max": 135
+        }
+      },
+      "ob_l1:ZECUSD": {
+        "n": 449,
+        "last": 1794036224719,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 40.218994140625,
+          "median": 42.2509765625,
+          "p95": 45.010986328125,
+          "max": 178.251953125
+        },
+        "gapMs": {
+          "median": 100,
+          "p95": 103,
+          "max": 108
+        }
+      },
+      "mark_price:MARK:AKEUSD": {
+        "n": 23,
+        "last": 1794036224308,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.596923828125,
+          "median": 37.26708984375,
+          "p95": 53.280029296875,
+          "max": 136.47607421875
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2037,
+          "max": 2046
+        }
+      },
+      "mark_price:MARK:SOLUSD": {
+        "n": 23,
+        "last": 1794036224420,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.3701171875,
+          "median": 37.18310546875,
+          "p95": 37.60791015625,
+          "max": 38.531982421875
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2025,
+          "max": 2033
+        }
+      },
+      "mark_price:MARK:BTWUSD": {
+        "n": 23,
+        "last": 1794036224536,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.385986328125,
+          "median": 36.705078125,
+          "p95": 37.511962890625,
+          "max": 38.56396484375
+        },
+        "gapMs": {
+          "median": 2023,
+          "p95": 2025,
+          "max": 2030
+        }
+      },
+      "trades:AKEUSD": {
+        "n": 36,
+        "last": 1794036224542,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.631103515625,
+          "median": 36.548095703125,
+          "p95": 37.26806640625,
+          "max": 37.89892578125
+        },
+        "gapMs": {
+          "median": 998,
+          "p95": 5001,
+          "max": 6500
+        }
+      },
+      "trades:AINUSD": {
+        "n": 48,
+        "last": 1794036224041,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.5869140625,
+          "median": 36.3369140625,
+          "p95": 37.37890625,
+          "max": 49.551025390625
+        },
+        "gapMs": {
+          "median": 504,
+          "p95": 2501,
+          "max": 4001
+        }
+      },
+      "trades:XRPUSD": {
+        "n": 8,
+        "last": 1794036223540,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.85107421875,
+          "median": 36.212890625,
+          "p95": 36.531982421875,
+          "max": 38.14208984375
+        },
+        "gapMs": {
+          "median": 5002,
+          "p95": 7000,
+          "max": 21001
+        }
+      },
+      "candlestick_1m:XAUTUSD": {
+        "n": 16,
+        "last": 1794036215549,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 62.19091796875,
+          "median": 252.205078125,
+          "p95": 548.368896484375,
+          "max": 4578.806884765625
+        },
+        "gapMs": {
+          "median": 1506,
+          "p95": 4503,
+          "max": 5503
+        }
+      },
+      "mark_price:MARK:ARIAUSD": {
+        "n": 23,
+        "last": 1794036224546,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.2099609375,
+          "median": 36.719970703125,
+          "p95": 37.695068359375,
+          "max": 43.597900390625
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2026,
+          "max": 2029
+        }
+      },
+      "candlestick_1m:AIOUSD": {
+        "n": 8,
+        "last": 1794036222548,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 76.873046875,
+          "median": 143.48193359375,
+          "p95": 522.43310546875,
+          "max": 12137.035888671875
+        },
+        "gapMs": {
+          "median": 5504,
+          "p95": 11002,
+          "max": 11495
+        }
+      },
+      "candlestick_1m:ZECUSD": {
+        "n": 6,
+        "last": 1794036217546,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 67.361083984375,
+          "median": 341.84912109375,
+          "p95": 429.235107421875,
+          "max": 8037.966064453125
+        },
+        "gapMs": {
+          "median": 7501,
+          "p95": 11492,
+          "max": 11502
+        }
+      },
+      "candlestick_1m:AKEUSD": {
+        "n": 22,
+        "last": 1794036224550,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 114.787109375,
+          "median": 261.031005859375,
+          "p95": 498.875,
+          "max": 795.178955078125
+        },
+        "gapMs": {
+          "median": 1008,
+          "p95": 5005,
+          "max": 6498
+        }
+      },
+      "candlestick_1m:BEATUSD": {
+        "n": 1,
+        "last": 1794036180119,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 27189.19189453125,
+          "median": 27189.19189453125,
+          "p95": 27189.19189453125,
+          "max": 27189.19189453125
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "candlestick_1m:SOLUSD": {
+        "n": 2,
+        "last": 1794036195058,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 321.535888671875,
+          "median": 321.535888671875,
+          "p95": 321.535888671875,
+          "max": 26099.135986328125
+        },
+        "gapMs": {
+          "median": 14933,
+          "p95": 14933,
+          "max": 14933
+        }
+      },
+      "candlestick_1m:BTWUSD": {
+        "n": 3,
+        "last": 1794036205046,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 95.00390625,
+          "median": 156.032958984375,
+          "p95": 156.032958984375,
+          "max": 60128.27099609375
+        },
+        "gapMs": {
+          "median": 4003,
+          "p95": 4003,
+          "max": 20913
+        }
+      },
+      "candlestick_1m:SLVONUSD": {
+        "n": 1,
+        "last": 1794036180135,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 60133.31201171875,
+          "median": 60133.31201171875,
+          "p95": 60133.31201171875,
+          "max": 60133.31201171875
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "candlestick_1m:PAXGUSD": {
+        "n": 5,
+        "last": 1794036216548,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 209.93798828125,
+          "median": 494.2900390625,
+          "p95": 502.531982421875,
+          "max": 25586.10205078125
+        },
+        "gapMs": {
+          "median": 505,
+          "p95": 2500,
+          "max": 32997
+        }
+      },
+      "candlestick_1m:JCTUSD": {
+        "n": 3,
+        "last": 1794036213043,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 477.218994140625,
+          "median": 492.887939453125,
+          "p95": 492.887939453125,
+          "max": 41666.60205078125
+        },
+        "gapMs": {
+          "median": 2404,
+          "p95": 2404,
+          "max": 30498
+        }
+      },
+      "candlestick_1m:XRPUSD": {
+        "n": 8,
+        "last": 1794036223543,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 58.886962890625,
+          "median": 383.791015625,
+          "p95": 513.181884765625,
+          "max": 15644.583984375
+        },
+        "gapMs": {
+          "median": 5008,
+          "p95": 6994,
+          "max": 21002
+        }
+      },
+      "mark_price:MARK:XRPUSD": {
+        "n": 23,
+        "last": 1794036224712,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.19189453125,
+          "median": 37.2890625,
+          "p95": 38.218017578125,
+          "max": 39.403076171875
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2026,
+          "max": 2036
+        }
+      },
+      "candlestick_1m:QQQXUSD": {
+        "n": 3,
+        "last": 1794036190042,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 202.212890625,
+          "median": 212.7099609375,
+          "p95": 212.7099609375,
+          "max": 60167.718017578125
+        },
+        "gapMs": {
+          "median": 4877,
+          "p95": 4877,
+          "max": 4995
+        }
+      },
+      "candlestick_1m:BTCUSD": {
+        "n": 33,
+        "last": 1794036224551,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 52.43701171875,
+          "median": 189.570068359375,
+          "p95": 449.9150390625,
+          "max": 875.455078125
+        },
+        "gapMs": {
+          "median": 993,
+          "p95": 3500,
+          "max": 6000
+        }
+      },
+      "candlestick_1m:AINUSD": {
+        "n": 41,
+        "last": 1794036224046,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 60.837890625,
+          "median": 351.927001953125,
+          "p95": 522.2890625,
+          "max": 946.1669921875
+        },
+        "gapMs": {
+          "median": 990,
+          "p95": 2995,
+          "max": 4003
+        }
+      },
+      "candlestick_1m:SNDKBUSD": {
+        "n": 3,
+        "last": 1794036223047,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 327.993896484375,
+          "median": 454.262939453125,
+          "p95": 454.262939453125,
+          "max": 60196.6298828125
+        },
+        "gapMs": {
+          "median": 8848,
+          "p95": 8848,
+          "max": 34001
+        }
+      },
+      "candlestick_1m:UNIUSD": {
+        "n": 3,
+        "last": 1794036222547,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 192.756103515625,
+          "median": 392.27294921875,
+          "p95": 392.27294921875,
+          "max": 43476.487060546875
+        },
+        "gapMs": {
+          "median": 6356,
+          "p95": 6356,
+          "max": 35991
+        }
+      },
+      "candlestick_1m:AAVEUSD": {
+        "n": 5,
+        "last": 1794036224553,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 116.06201171875,
+          "median": 384.56201171875,
+          "p95": 402.1640625,
+          "max": 60231.162109375
+        },
+        "gapMs": {
+          "median": 10994,
+          "p95": 13317,
+          "max": 14010
+        }
+      },
+      "candlestick_1m:ARIAUSD": {
+        "n": 21,
+        "last": 1794036222042,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 62.60205078125,
+          "median": 280.41796875,
+          "p95": 493.860107421875,
+          "max": 909.714111328125
+        },
+        "gapMs": {
+          "median": 1494,
+          "p95": 4509,
+          "max": 5007
+        }
+      },
+      "candlestick_1m:ETHUSD": {
+        "n": 28,
+        "last": 1794036221044,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 57.200927734375,
+          "median": 285.87109375,
+          "p95": 447.52587890625,
+          "max": 1483.5810546875
+        },
+        "gapMs": {
+          "median": 1001,
+          "p95": 4003,
+          "max": 4504
+        }
+      },
+      "candlestick_1m:BCHUSD": {
+        "n": 2,
+        "last": 1794036222559,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 321.469970703125,
+          "median": 321.469970703125,
+          "p95": 321.469970703125,
+          "max": 37746.5791015625
+        },
+        "gapMs": {
+          "median": 42315,
+          "p95": 42315,
+          "max": 42315
+        }
+      },
+      "mark_price:MARK:SLVONUSD": {
+        "n": 22,
+        "last": 1794036222866,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.2470703125,
+          "median": 37.240966796875,
+          "p95": 37.471923828125,
+          "max": 42.199951171875
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2030,
+          "max": 2032
+        }
+      },
+      "mark_price:MARK:XAUTUSD": {
+        "n": 22,
+        "last": 1794036222994,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.1689453125,
+          "median": 37.166015625,
+          "p95": 37.322998046875,
+          "max": 38.242919921875
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2028,
+          "max": 2032
+        }
+      },
+      "mark_price:MARK:UNIUSD": {
+        "n": 22,
+        "last": 1794036222978,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.202880859375,
+          "median": 37.12890625,
+          "p95": 37.381103515625,
+          "max": 38.180908203125
+        },
+        "gapMs": {
+          "median": 2023,
+          "p95": 2027,
+          "max": 2036
+        }
+      },
+      "trades:PAXGUSD": {
+        "n": 4,
+        "last": 1794036216539,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.85009765625,
+          "median": 36.302978515625,
+          "p95": 36.3369140625,
+          "max": 36.4599609375
+        },
+        "gapMs": {
+          "median": 2501,
+          "p95": 2501,
+          "max": 32998
+        }
+      },
+      "trades:BTCUSD": {
+        "n": 49,
+        "last": 1794036224542,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.718994140625,
+          "median": 36.472900390625,
+          "p95": 38.7548828125,
+          "max": 39.635986328125
+        },
+        "gapMs": {
+          "median": 500,
+          "p95": 3004,
+          "max": 6001
+        }
+      },
+      "trades:ETHUSD": {
+        "n": 30,
+        "last": 1794036221039,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.7119140625,
+          "median": 36.385009765625,
+          "p95": 37.783935546875,
+          "max": 39.576904296875
+        },
+        "gapMs": {
+          "median": 999,
+          "p95": 4000,
+          "max": 4508
+        }
+      },
+      "trades:ZECUSD": {
+        "n": 5,
+        "last": 1794036217539,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.693115234375,
+          "median": 36.029052734375,
+          "p95": 36.054931640625,
+          "max": 36.091064453125
+        },
+        "gapMs": {
+          "median": 7506,
+          "p95": 11492,
+          "max": 11502
+        }
+      },
+      "mark_price:MARK:QQQXUSD": {
+        "n": 22,
+        "last": 1794036223047,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.27001953125,
+          "median": 36.6220703125,
+          "p95": 38.39501953125,
+          "max": 40.320068359375
+        },
+        "gapMs": {
+          "median": 2023,
+          "p95": 2026,
+          "max": 2026
+        }
+      },
+      "mark_price:MARK:AIOUSD": {
+        "n": 22,
+        "last": 1794036223172,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.22607421875,
+          "median": 36.576904296875,
+          "p95": 38.887939453125,
+          "max": 50.283935546875
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2033,
+          "max": 2035
+        }
+      },
+      "funding_rate:XAUTUSD": {
+        "n": 1,
+        "last": 1794036180735,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.73291015625,
+          "median": 37.73291015625,
+          "p95": 37.73291015625,
+          "max": 37.73291015625
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "mark_price:MARK:PAXGUSD": {
+        "n": 22,
+        "last": 1794036223246,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.0380859375,
+          "median": 37.319091796875,
+          "p95": 38.43310546875,
+          "max": 39.068115234375
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2027,
+          "max": 2032
+        }
+      },
+      "ticker:BTCUSD": {
+        "n": 9,
+        "last": 1794036221063,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 435.117919921875,
+          "median": 1466.22412109375,
+          "p95": 1936.784912109375,
+          "max": 2045.1650390625
+        },
+        "gapMs": {
+          "median": 5030,
+          "p95": 5038,
+          "max": 5048
+        }
+      },
+      "ticker:SNDKBUSD": {
+        "n": 9,
+        "last": 1794036221066,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 440.117919921875,
+          "median": 1469.22412109375,
+          "p95": 1939.784912109375,
+          "max": 2049.1650390625
+        },
+        "gapMs": {
+          "median": 5030,
+          "p95": 5038,
+          "max": 5048
+        }
+      },
+      "ticker:XAUTUSD": {
+        "n": 9,
+        "last": 1794036221071,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 446.117919921875,
+          "median": 1475.22412109375,
+          "p95": 1944.784912109375,
+          "max": 2054.1650390625
+        },
+        "gapMs": {
+          "median": 5031,
+          "p95": 5037,
+          "max": 5046
+        }
+      },
+      "ticker:AAVEUSD": {
+        "n": 9,
+        "last": 1794036221077,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 452.117919921875,
+          "median": 1479.22412109375,
+          "p95": 1950.784912109375,
+          "max": 2058.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5046
+        }
+      },
+      "ticker:BEATUSD": {
+        "n": 9,
+        "last": 1794036221077,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 452.117919921875,
+          "median": 1479.22412109375,
+          "p95": 1950.784912109375,
+          "max": 2058.1650390625
+        },
+        "gapMs": {
+          "median": 5032,
+          "p95": 5039,
+          "max": 5047
+        }
+      },
+      "ticker:AKEUSD": {
+        "n": 9,
+        "last": 1794036221078,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 453.117919921875,
+          "median": 1481.22412109375,
+          "p95": 1952.784912109375,
+          "max": 2059.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5046
+        }
+      },
+      "ticker:ARIAUSD": {
+        "n": 9,
+        "last": 1794036221087,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 462.117919921875,
+          "median": 1489.22412109375,
+          "p95": 1960.784912109375,
+          "max": 2068.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5046
+        }
+      },
+      "mark_price:MARK:SNDKBUSD": {
+        "n": 22,
+        "last": 1794036223342,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.322021484375,
+          "median": 37.212890625,
+          "p95": 38.198974609375,
+          "max": 39.240966796875
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2027,
+          "max": 2027
+        }
+      },
+      "ticker:AIOUSD": {
+        "n": 9,
+        "last": 1794036221120,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 495.117919921875,
+          "median": 1527.22412109375,
+          "p95": 1994.784912109375,
+          "max": 2100.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5040
+        }
+      },
+      "ticker:SOLUSD": {
+        "n": 9,
+        "last": 1794036221132,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 509.117919921875,
+          "median": 1540.22412109375,
+          "p95": 2010.784912109375,
+          "max": 2113.1650390625
+        },
+        "gapMs": {
+          "median": 5032,
+          "p95": 5039,
+          "max": 5039
+        }
+      },
+      "ticker:PAXGUSD": {
+        "n": 9,
+        "last": 1794036221133,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 509.117919921875,
+          "median": 1541.22412109375,
+          "p95": 2010.784912109375,
+          "max": 2114.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5040
+        }
+      },
+      "ticker:SLVONUSD": {
+        "n": 9,
+        "last": 1794036221137,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 512.117919921875,
+          "median": 1545.22412109375,
+          "p95": 2016.784912109375,
+          "max": 2117.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5041
+        }
+      },
+      "ticker:XRPUSD": {
+        "n": 9,
+        "last": 1794036221137,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 513.117919921875,
+          "median": 1546.22412109375,
+          "p95": 2016.784912109375,
+          "max": 2118.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5040
+        }
+      },
+      "ticker:AINUSD": {
+        "n": 9,
+        "last": 1794036221138,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 515.117919921875,
+          "median": 1548.22412109375,
+          "p95": 2017.784912109375,
+          "max": 2120.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5039,
+          "max": 5039
+        }
+      },
+      "ticker:ETHUSD": {
+        "n": 9,
+        "last": 1794036221140,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 516.117919921875,
+          "median": 1550.22412109375,
+          "p95": 2019.784912109375,
+          "max": 2122.1650390625
+        },
+        "gapMs": {
+          "median": 5034,
+          "p95": 5039,
+          "max": 5040
+        }
+      },
+      "ticker:QQQXUSD": {
+        "n": 9,
+        "last": 1794036221142,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 517.117919921875,
+          "median": 1551.22412109375,
+          "p95": 2021.784912109375,
+          "max": 2124.1650390625
+        },
+        "gapMs": {
+          "median": 5035,
+          "p95": 5039,
+          "max": 5040
+        }
+      },
+      "ticker:ZECUSD": {
+        "n": 9,
+        "last": 1794036221154,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 530.117919921875,
+          "median": 1565.22412109375,
+          "p95": 2033.784912109375,
+          "max": 2136.1650390625
+        },
+        "gapMs": {
+          "median": 5034,
+          "p95": 5039,
+          "max": 5042
+        }
+      },
+      "ticker:BTWUSD": {
+        "n": 9,
+        "last": 1794036221159,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 535.117919921875,
+          "median": 1569.22412109375,
+          "p95": 2037.784912109375,
+          "max": 2141.1650390625
+        },
+        "gapMs": {
+          "median": 5034,
+          "p95": 5039,
+          "max": 5039
+        }
+      },
+      "ticker:UNIUSD": {
+        "n": 9,
+        "last": 1794036221165,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 539.117919921875,
+          "median": 1574.22412109375,
+          "p95": 2040.784912109375,
+          "max": 2144.1650390625
+        },
+        "gapMs": {
+          "median": 5033,
+          "p95": 5038,
+          "max": 5038
+        }
+      },
+      "ticker:BCHUSD": {
+        "n": 9,
+        "last": 1794036221170,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 546.117919921875,
+          "median": 1580.22412109375,
+          "p95": 2048.784912109375,
+          "max": 2150.1650390625
+        },
+        "gapMs": {
+          "median": 5032,
+          "p95": 5039,
+          "max": 5039
+        }
+      },
+      "ticker:JCTUSD": {
+        "n": 9,
+        "last": 1794036221176,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 554.117919921875,
+          "median": 1586.22412109375,
+          "p95": 2056.784912109375,
+          "max": 2157.1650390625
+        },
+        "gapMs": {
+          "median": 5031,
+          "p95": 5040,
+          "max": 5040
+        }
+      },
+      "mark_price:MARK:BCHUSD": {
+        "n": 22,
+        "last": 1794036223552,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.154052734375,
+          "median": 37.25390625,
+          "p95": 37.468017578125,
+          "max": 38.37109375
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2025,
+          "max": 2026
+        }
+      },
+      "mark_price:MARK:JCTUSD": {
+        "n": 22,
+        "last": 1794036223693,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.23291015625,
+          "median": 37.15087890625,
+          "p95": 37.39501953125,
+          "max": 38.428955078125
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2027,
+          "max": 2108
+        }
+      },
+      "mark_price:MARK:ETHUSD": {
+        "n": 22,
+        "last": 1794036223685,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.39404296875,
+          "median": 37.35498046875,
+          "p95": 38.177001953125,
+          "max": 38.35400390625
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2027,
+          "max": 2035
+        }
+      },
+      "mark_price:MARK:AINUSD": {
+        "n": 22,
+        "last": 1794036223728,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.236083984375,
+          "median": 37.137939453125,
+          "p95": 37.39892578125,
+          "max": 37.51806640625
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2024,
+          "max": 2024
+        }
+      },
+      "mark_price:MARK:ZECUSD": {
+        "n": 22,
+        "last": 1794036223853,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.346923828125,
+          "median": 37.259033203125,
+          "p95": 38.263916015625,
+          "max": 48.412109375
+        },
+        "gapMs": {
+          "median": 2024,
+          "p95": 2026,
+          "max": 2035
+        }
+      },
+      "mark_price:MARK:BTCUSD": {
+        "n": 22,
+        "last": 1794036223950,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.39111328125,
+          "median": 37.251953125,
+          "p95": 37.445068359375,
+          "max": 38.363037109375
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2028,
+          "max": 2035
+        }
+      },
+      "trades:AIOUSD": {
+        "n": 9,
+        "last": 1794036222541,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.95703125,
+          "median": 36.27099609375,
+          "p95": 38.660888671875,
+          "max": 40.013916015625
+        },
+        "gapMs": {
+          "median": 5004,
+          "p95": 11000,
+          "max": 11500
+        }
+      },
+      "trades:XAUTUSD": {
+        "n": 16,
+        "last": 1794036215540,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.794921875,
+          "median": 36.447021484375,
+          "p95": 36.94091796875,
+          "max": 36.944091796875
+        },
+        "gapMs": {
+          "median": 1502,
+          "p95": 4500,
+          "max": 5500
+        }
+      },
+      "mark_price:MARK:BEATUSD": {
+        "n": 22,
+        "last": 1794036224009,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.324951171875,
+          "median": 37.156982421875,
+          "p95": 38.364013671875,
+          "max": 39.384033203125
+        },
+        "gapMs": {
+          "median": 2022,
+          "p95": 2025,
+          "max": 2025
+        }
+      },
+      "mark_price:MARK:AAVEUSD": {
+        "n": 22,
+        "last": 1794036224169,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.366943359375,
+          "median": 37.347900390625,
+          "p95": 38.56103515625,
+          "max": 40.615966796875
+        },
+        "gapMs": {
+          "median": 2023,
+          "p95": 2028,
+          "max": 2071
+        }
+      },
+      "trades:JCTUSD": {
+        "n": 2,
+        "last": 1794036213041,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.885986328125,
+          "median": 35.885986328125,
+          "p95": 35.885986328125,
+          "max": 36.512939453125
+        },
+        "gapMs": {
+          "median": 30501,
+          "p95": 30501,
+          "max": 30501
+        }
+      },
+      "trades:ARIAUSD": {
+        "n": 23,
+        "last": 1794036222039,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.552978515625,
+          "median": 36.492919921875,
+          "p95": 37.72900390625,
+          "max": 39.008056640625
+        },
+        "gapMs": {
+          "median": 1000,
+          "p95": 4001,
+          "max": 5001
+        }
+      },
+      "trades:QQQXUSD": {
+        "n": 2,
+        "last": 1794036190039,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.39697265625,
+          "median": 36.39697265625,
+          "p95": 36.39697265625,
+          "max": 36.666015625
+        },
+        "gapMs": {
+          "median": 4999,
+          "p95": 4999,
+          "max": 4999
+        }
+      },
+      "trades:UNIUSD": {
+        "n": 2,
+        "last": 1794036222539,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.299072265625,
+          "median": 36.299072265625,
+          "p95": 36.299072265625,
+          "max": 36.97802734375
+        },
+        "gapMs": {
+          "median": 35996,
+          "p95": 35996,
+          "max": 35996
+        }
+      },
+      "funding_rate:XRPUSD": {
+        "n": 1,
+        "last": 1794036187009,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.68408203125,
+          "median": 37.68408203125,
+          "p95": 37.68408203125,
+          "max": 37.68408203125
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "funding_rate:BTCUSD": {
+        "n": 1,
+        "last": 1794036187801,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.930908203125,
+          "median": 36.930908203125,
+          "p95": 36.930908203125,
+          "max": 36.930908203125
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "funding_rate:SLVONUSD": {
+        "n": 1,
+        "last": 1794036188456,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.968017578125,
+          "median": 36.968017578125,
+          "p95": 36.968017578125,
+          "max": 36.968017578125
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "trades:SNDKBUSD": {
+        "n": 2,
+        "last": 1794036223041,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.093994140625,
+          "median": 37.093994140625,
+          "p95": 37.093994140625,
+          "max": 37.89111328125
+        },
+        "gapMs": {
+          "median": 34001,
+          "p95": 34001,
+          "max": 34001
+        }
+      },
+      "funding_rate:BTWUSD": {
+        "n": 1,
+        "last": 1794036190404,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.048095703125,
+          "median": 37.048095703125,
+          "p95": 37.048095703125,
+          "max": 37.048095703125
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "funding_rate:ARIAUSD": {
+        "n": 1,
+        "last": 1794036191176,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.72802734375,
+          "median": 37.72802734375,
+          "p95": 37.72802734375,
+          "max": 37.72802734375
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "trades:AAVEUSD": {
+        "n": 5,
+        "last": 1794036224542,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.376953125,
+          "median": 36.422119140625,
+          "p95": 36.64599609375,
+          "max": 38.596923828125
+        },
+        "gapMs": {
+          "median": 6001,
+          "p95": 10999,
+          "max": 14003
+        }
+      },
+      "funding_rate:ETHUSD": {
+        "n": 1,
+        "last": 1794036193580,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 38.5009765625,
+          "median": 38.5009765625,
+          "p95": 38.5009765625,
+          "max": 38.5009765625
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "trades:SOLUSD": {
+        "n": 1,
+        "last": 1794036195040,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.569091796875,
+          "median": 37.569091796875,
+          "p95": 37.569091796875,
+          "max": 37.569091796875
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "funding_rate:PAXGUSD": {
+        "n": 1,
+        "last": 1794036199725,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.321044921875,
+          "median": 37.321044921875,
+          "p95": 37.321044921875,
+          "max": 37.321044921875
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "funding_rate:SOLUSD": {
+        "n": 1,
+        "last": 1794036199885,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.590087890625,
+          "median": 37.590087890625,
+          "p95": 37.590087890625,
+          "max": 37.590087890625
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "trades:BTWUSD": {
+        "n": 2,
+        "last": 1794036205039,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 36.509033203125,
+          "median": 36.509033203125,
+          "p95": 36.509033203125,
+          "max": 36.75390625
+        },
+        "gapMs": {
+          "median": 4000,
+          "p95": 4000,
+          "max": 4000
+        }
+      },
+      "funding_rate:AKEUSD": {
+        "n": 1,
+        "last": 1794036213176,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 37.462890625,
+          "median": 37.462890625,
+          "p95": 37.462890625,
+          "max": 37.462890625
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      },
+      "trades:BCHUSD": {
+        "n": 1,
+        "last": 1794036222541,
+        "missingTradeTime": 0,
+        "lagMs": {
+          "min": 35.592041015625,
+          "median": 35.592041015625,
+          "p95": 35.592041015625,
+          "max": 35.592041015625
+        },
+        "gapMs": {
+          "median": null,
+          "p95": null,
+          "max": null
+        }
+      }
+    },
+    "errors": []
+  },
+  "economics": {
+    "at": 1794036401736,
+    "products": 250,
+    "commissionDistribution": {
+      "0.0002/0.0002": 47,
+      "0.0005/0.0002": 200,
+      "0.0001/0.0001": 3
+    },
+    "rows": [
+      {
+        "symbol": "BTCUSD",
+        "description": "Bitcoin Perpetual futures, quoted, settled & margined in US Dollar",
+        "contractValue": 0.001,
+        "tickSize": 0.5,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 1005674241.0734909,
+        "bookRttMs": 82,
+        "bookAgeMs": 2371,
+        "spreadBps": 0.06580657473488176,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 9,
+            "actualNotional": 683.82225,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.0006580657473488176,
+            "baselineTakerRoundTripPct": 0.11865806574734881,
+            "baselineMakerTakerPct": 0.08292903287367441
+          },
+          {
+            "budget": 1500,
+            "qty": 19,
+            "actualNotional": 1443.62475,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.0006580657473488176,
+            "baselineTakerRoundTripPct": 0.11865806574734881,
+            "baselineMakerTakerPct": 0.08292903287367441
+          }
+        ]
+      },
+      {
+        "symbol": "XAUTUSD",
+        "description": "Tether Gold Token perpetual future quoted in USD",
+        "contractValue": 0.001,
+        "tickSize": 0.01,
+        "takerCommissionRate": "0.0001",
+        "makerCommissionRate": "0.0001",
+        "turnoverUsd": 701714742.4388912,
+        "bookRttMs": 85,
+        "bookAgeMs": 2977,
+        "spreadBps": 0.04921271951944225,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 184,
+            "actualNotional": 747.7741599999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.0004921271952056122,
+            "baselineTakerRoundTripPct": 0.1184921271952056,
+            "baselineMakerTakerPct": 0.08284606359760281
+          },
+          {
+            "budget": 1500,
+            "qty": 369,
+            "actualNotional": 1499.61231,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.0004921271951832328,
+            "baselineTakerRoundTripPct": 0.11849212719518323,
+            "baselineMakerTakerPct": 0.08284606359759163
+          }
+        ]
+      },
+      {
+        "symbol": "ETHUSD",
+        "description": "Ethereum Perpetual futures, quoted, settled & margined in US Dollar",
+        "contractValue": 0.01,
+        "tickSize": 0.05,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 485029416.8580018,
+        "bookRttMs": 85,
+        "bookAgeMs": 761,
+        "spreadBps": 0.22284867460629168,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 33,
+            "actualNotional": 740.4127500000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.0022284867460629167,
+            "baselineTakerRoundTripPct": 0.12022848674606292,
+            "baselineMakerTakerPct": 0.08371424337303146
+          },
+          {
+            "budget": 1500,
+            "qty": 66,
+            "actualNotional": 1480.8255000000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.0022284867460629167,
+            "baselineTakerRoundTripPct": 0.12022848674606292,
+            "baselineMakerTakerPct": 0.08371424337303146
+          }
+        ]
+      },
+      {
+        "symbol": "AKEUSD",
+        "description": "Akedo perpetual future quoted in USD",
+        "contractValue": 10000,
+        "tickSize": 1e-07,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 138080179.68299747,
+        "bookRttMs": 83,
+        "bookAgeMs": 129,
+        "spreadBps": 1.8654027150080785,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 12,
+            "actualNotional": 707.6220000000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.018654027150080785,
+            "baselineTakerRoundTripPct": 0.1366540271500808,
+            "baselineMakerTakerPct": 0.0919270135750404
+          },
+          {
+            "budget": 1500,
+            "qty": 25,
+            "actualNotional": 1474.2125,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.02001068367007917,
+            "baselineTakerRoundTripPct": 0.13801068367007915,
+            "baselineMakerTakerPct": 0.09260534183503959
+          }
+        ]
+      },
+      {
+        "symbol": "PAXGUSD",
+        "description": "PAX Gold Token perpetual future quoted in USD",
+        "contractValue": 0.001,
+        "tickSize": 0.01,
+        "takerCommissionRate": "0.0001",
+        "makerCommissionRate": "0.0001",
+        "turnoverUsd": 102773933.29951072,
+        "bookRttMs": 90,
+        "bookAgeMs": 3142,
+        "spreadBps": 0.24616899501597342,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 184,
+            "actualNotional": 747.454,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.0024616899501597343,
+            "baselineTakerRoundTripPct": 0.12046168995015973,
+            "baselineMakerTakerPct": 0.08383084497507988
+          },
+          {
+            "budget": 1500,
+            "qty": 369,
+            "actualNotional": 1498.97025,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.002461689950137345,
+            "baselineTakerRoundTripPct": 0.12046168995013734,
+            "baselineMakerTakerPct": 0.08383084497506868
+          }
+        ]
+      },
+      {
+        "symbol": "SOLUSD",
+        "description": "Solana perpetual future quoted in USD",
+        "contractValue": 1,
+        "tickSize": 0.0001,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 84986975.36850035,
+        "bookRttMs": 84,
+        "bookAgeMs": 955,
+        "spreadBps": 1.2205879905248962,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 8,
+            "actualNotional": 720.9639999999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.012205879905248962,
+            "baselineTakerRoundTripPct": 0.13020587990524896,
+            "baselineMakerTakerPct": 0.08870293995262449
+          },
+          {
+            "budget": 1500,
+            "qty": 16,
+            "actualNotional": 1441.9279999999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.012205879905248962,
+            "baselineTakerRoundTripPct": 0.13020587990524896,
+            "baselineMakerTakerPct": 0.08870293995262449
+          }
+        ]
+      },
+      {
+        "symbol": "AINUSD",
+        "description": "AIN perpetual future quoted in USD",
+        "contractValue": 100,
+        "tickSize": 1e-05,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 20777217.144000106,
+        "bookRttMs": 87,
+        "bookAgeMs": 163,
+        "spreadBps": 4.852854518353269,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 51,
+            "actualNotional": 735.6495000000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.048528545183532695,
+            "baselineTakerRoundTripPct": 0.1665285451835327,
+            "baselineMakerTakerPct": 0.10686427259176635
+          },
+          {
+            "budget": 1500,
+            "qty": 103,
+            "actualNotional": 1485.7235,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.048528545183532695,
+            "baselineTakerRoundTripPct": 0.1665285451835327,
+            "baselineMakerTakerPct": 0.10686427259176635
+          }
+        ]
+      },
+      {
+        "symbol": "SNDKBUSD",
+        "description": "SanDisk bStocks Token perpetual future quoted in USD",
+        "contractValue": 0.01,
+        "tickSize": 0.01,
+        "takerCommissionRate": "0.0002",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 16056905.636199977,
+        "bookRttMs": 91,
+        "bookAgeMs": 3372,
+        "spreadBps": 0.35910725935292126,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 89,
+            "actualNotional": 743.51045,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.003591072593529212,
+            "baselineTakerRoundTripPct": 0.1215910725935292,
+            "baselineMakerTakerPct": 0.0843955362967646
+          },
+          {
+            "budget": 1500,
+            "qty": 179,
+            "actualNotional": 1495.37495,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.003591072593529212,
+            "baselineTakerRoundTripPct": 0.1215910725935292,
+            "baselineMakerTakerPct": 0.0843955362967646
+          }
+        ]
+      },
+      {
+        "symbol": "ZECUSD",
+        "description": "ZEC perpetual future quoted in USD",
+        "contractValue": 0.1,
+        "tickSize": 0.01,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 14637645.522000004,
+        "bookRttMs": 93,
+        "bookAgeMs": 136,
+        "spreadBps": 0.3801457478793914,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 5,
+            "actualNotional": 657.6424999999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.003801457478793914,
+            "baselineTakerRoundTripPct": 0.12180145747879391,
+            "baselineMakerTakerPct": 0.08450072873939696
+          },
+          {
+            "budget": 1500,
+            "qty": 11,
+            "actualNotional": 1446.8135,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.003801457478793914,
+            "baselineTakerRoundTripPct": 0.12180145747879391,
+            "baselineMakerTakerPct": 0.08450072873939696
+          }
+        ]
+      },
+      {
+        "symbol": "XRPUSD",
+        "description": "Ripple perpetual future quoted in USD",
+        "contractValue": 1,
+        "tickSize": 0.0001,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 14306749.89240003,
+        "bookRttMs": 82,
+        "bookAgeMs": 855,
+        "spreadBps": 1.7080877957125113,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 640,
+            "actualNotional": 749.376,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.017080877957125113,
+            "baselineTakerRoundTripPct": 0.13508087795712512,
+            "baselineMakerTakerPct": 0.09114043897856257
+          },
+          {
+            "budget": 1500,
+            "qty": 1281,
+            "actualNotional": 1499.9229,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.017080877957125113,
+            "baselineTakerRoundTripPct": 0.13508087795712512,
+            "baselineMakerTakerPct": 0.09114043897856257
+          }
+        ]
+      },
+      {
+        "symbol": "ARIAUSD",
+        "description": "ARIA perpetual future quoted in USD",
+        "contractValue": 10,
+        "tickSize": 1e-05,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 9404351.68360002,
+        "bookRttMs": 87,
+        "bookAgeMs": 294,
+        "spreadBps": 3.069273502961511,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 460,
+            "actualNotional": 749.3629999999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.03069273502961511,
+            "baselineTakerRoundTripPct": 0.1486927350296151,
+            "baselineMakerTakerPct": 0.09794636751480756
+          },
+          {
+            "budget": 1500,
+            "qty": 920,
+            "actualNotional": 1498.7259999999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.03069273502961511,
+            "baselineTakerRoundTripPct": 0.1486927350296151,
+            "baselineMakerTakerPct": 0.09794636751480756
+          }
+        ]
+      },
+      {
+        "symbol": "SLVONUSD",
+        "description": "iShares Silver (XAG) Trust ONDO Token perpetual future quoted in USD",
+        "contractValue": 0.1,
+        "tickSize": 0.01,
+        "takerCommissionRate": "0.0001",
+        "makerCommissionRate": "0.0001",
+        "turnoverUsd": 7394272.042999998,
+        "bookRttMs": 89,
+        "bookAgeMs": 10573,
+        "spreadBps": 4.231908590775101,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 158,
+            "actualNotional": 746.7080000000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.042319085907751006,
+            "baselineTakerRoundTripPct": 0.160319085907751,
+            "baselineMakerTakerPct": 0.10375954295387552
+          },
+          {
+            "budget": 1500,
+            "qty": 317,
+            "actualNotional": 1498.1420000000003,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.042319085907751006,
+            "baselineTakerRoundTripPct": 0.160319085907751,
+            "baselineMakerTakerPct": 0.10375954295387552
+          }
+        ]
+      },
+      {
+        "symbol": "UNIUSD",
+        "description": "UNI perpetual future quoted in USD",
+        "contractValue": 1,
+        "tickSize": 0.0001,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 6799679.625099998,
+        "bookRttMs": 83,
+        "bookAgeMs": 1993,
+        "spreadBps": 4.267728856960117,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 106,
+            "actualNotional": 745.127,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.042677288569601166,
+            "baselineTakerRoundTripPct": 0.16067728856960117,
+            "baselineMakerTakerPct": 0.1039386442848006
+          },
+          {
+            "budget": 1500,
+            "qty": 213,
+            "actualNotional": 1497.2835,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.04267728856958853,
+            "baselineTakerRoundTripPct": 0.16067728856958852,
+            "baselineMakerTakerPct": 0.10393864428479427
+          }
+        ]
+      },
+      {
+        "symbol": "AAVEUSD",
+        "description": "AAVE perpetual future quoted in USD",
+        "contractValue": 1,
+        "tickSize": 0.001,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 5503592.181999999,
+        "bookRttMs": 82,
+        "bookAgeMs": 758,
+        "spreadBps": 2.263382247538657,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 5,
+            "actualNotional": 662.7250000000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.022633822475386572,
+            "baselineTakerRoundTripPct": 0.14063382247538656,
+            "baselineMakerTakerPct": 0.09391691123769329
+          },
+          {
+            "budget": 1500,
+            "qty": 11,
+            "actualNotional": 1457.9950000000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.022633822475386572,
+            "baselineTakerRoundTripPct": 0.14063382247538656,
+            "baselineMakerTakerPct": 0.09391691123769329
+          }
+        ]
+      },
+      {
+        "symbol": "JCTUSD",
+        "description": "Janction perpetual future quoted in USD",
+        "contractValue": 1000,
+        "tickSize": 1e-06,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 4616454.695999995,
+        "bookRttMs": 87,
+        "bookAgeMs": 150,
+        "spreadBps": 16.09010458567915,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 241,
+            "actualNotional": 748.9075,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.16090104585679152,
+            "baselineTakerRoundTripPct": 0.27890104585679154,
+            "baselineMakerTakerPct": 0.16305052292839578
+          },
+          {
+            "budget": 1500,
+            "qty": 482,
+            "actualNotional": 1497.815,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.20536581620560357,
+            "baselineTakerRoundTripPct": 0.32336581620560356,
+            "baselineMakerTakerPct": 0.1852829081028018
+          }
+        ]
+      },
+      {
+        "symbol": "BTWUSD",
+        "description": "Bitway perpetual future quoted in USD",
+        "contractValue": 10,
+        "tickSize": 0.0001,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 3435864.231999999,
+        "bookRttMs": 85,
+        "bookAgeMs": 2643,
+        "spreadBps": 2.5289778714433466,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 63,
+            "actualNotional": 747.3374999999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.025289778714433466,
+            "baselineTakerRoundTripPct": 0.14328977871443346,
+            "baselineMakerTakerPct": 0.09524488935721674
+          },
+          {
+            "budget": 1500,
+            "qty": 126,
+            "actualNotional": 1494.6749999999997,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.031712579657789675,
+            "baselineTakerRoundTripPct": 0.14971257965778967,
+            "baselineMakerTakerPct": 0.09845628982889484
+          }
+        ]
+      },
+      {
+        "symbol": "BCHUSD",
+        "description": "Bitcoin Cash perpetual future quoted in USD",
+        "contractValue": 0.01,
+        "tickSize": 0.01,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 2844455.857999999,
+        "bookRttMs": 87,
+        "bookAgeMs": 1684,
+        "spreadBps": 1.1497997432125238,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 287,
+            "actualNotional": 748.8260499999999,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.011497997432125238,
+            "baselineTakerRoundTripPct": 0.12949799743212523,
+            "baselineMakerTakerPct": 0.08834899871606262
+          },
+          {
+            "budget": 1500,
+            "qty": 574,
+            "actualNotional": 1497.6520999999998,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.011497997432125238,
+            "baselineTakerRoundTripPct": 0.12949799743212523,
+            "baselineMakerTakerPct": 0.08834899871606262
+          }
+        ]
+      },
+      {
+        "symbol": "QQQXUSD",
+        "description": "Nasdaq xStock Token perpetual future quoted in USD",
+        "contractValue": 0.01,
+        "tickSize": 0.01,
+        "takerCommissionRate": "0.0002",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 2817738.9925999977,
+        "bookRttMs": 89,
+        "bookAgeMs": 1109,
+        "spreadBps": 0.4570349098494484,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 114,
+            "actualNotional": 748.3017000000001,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.004570349098511803,
+            "baselineTakerRoundTripPct": 0.12257034909851179,
+            "baselineMakerTakerPct": 0.08488517454925591
+          },
+          {
+            "budget": 1500,
+            "qty": 228,
+            "actualNotional": 1496.6034000000002,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.004570349098511803,
+            "baselineTakerRoundTripPct": 0.12257034909851179,
+            "baselineMakerTakerPct": 0.08488517454925591
+          }
+        ]
+      },
+      {
+        "symbol": "AIOUSD",
+        "description": "AIO perpetual future quoted in USD",
+        "contractValue": 100,
+        "tickSize": 1e-05,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 2617239.407999999,
+        "bookRttMs": 84,
+        "bookAgeMs": 2563,
+        "spreadBps": 14.443909484834977,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 180,
+            "actualNotional": 747.72,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.14443909484834977,
+            "baselineTakerRoundTripPct": 0.26243909484834976,
+            "baselineMakerTakerPct": 0.1548195474241749
+          },
+          {
+            "budget": 1500,
+            "qty": 361,
+            "actualNotional": 1499.594,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.1505740887200341,
+            "baselineTakerRoundTripPct": 0.2685740887200341,
+            "baselineMakerTakerPct": 0.15788704436001705
+          }
+        ]
+      },
+      {
+        "symbol": "BEATUSD",
+        "description": "BEAT perpetual future quoted in USD",
+        "contractValue": 10,
+        "tickSize": 0.0001,
+        "takerCommissionRate": "0.0005",
+        "makerCommissionRate": "0.0002",
+        "turnoverUsd": 2492776.6659999313,
+        "bookRttMs": 84,
+        "bookAgeMs": 2334,
+        "spreadBps": 9.376465072667873,
+        "sizing": [
+          {
+            "budget": 750,
+            "qty": 703,
+            "actualNotional": 749.7495,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.09376465072667874,
+            "baselineTakerRoundTripPct": 0.21176465072667872,
+            "baselineMakerTakerPct": 0.12948232536333937
+          },
+          {
+            "budget": 1500,
+            "qty": 1406,
+            "actualNotional": 1499.499,
+            "coverage": 1,
+            "roundTripCrossingPct": 0.09376465072667874,
+            "baselineTakerRoundTripPct": 0.21176465072667872,
+            "baselineMakerTakerPct": 0.12948232536333937
+          }
+        ]
+      }
+    ]
+  },
+  "patchedFeedProbe": {
+    "at": 1794036766257,
+    "durationMs": 45000,
+    "connectedBeforeStop": true,
+    "counts": {
+      "quote": 1321,
+      "mark": 65,
+      "trade": 49,
+      "candle": 38,
+      "funding": 3
+    },
+    "status": [
+      {
+        "at": 1794036721781,
+        "connected": true
+      },
+      {
+        "at": 1794036766257,
+        "connected": false
+      }
+    ],
+    "errors": []
+  },
+  "validation": {
+    "serverTests": 937,
+    "passed": 937,
+    "addedRegressionTests": 15,
+    "targetedTypecheck": "passed",
+    "fullTypecheck": "pre-existing diagnostics; baseline comparison recorded separately",
+    "typecheckComparison": {
+      "matchesBaseline": true,
+      "currentErrors": 16,
+      "baselineErrors": 16
+    }
+  },
+  "deployment": "not deployed; VM and trading configuration unchanged"
+}

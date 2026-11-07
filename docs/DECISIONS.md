@@ -6944,3 +6944,16 @@ The live review also exercised legacy Pine `study()` declarations and spaced
 version headers; accept these valid full sources while applying the same preview
 rejection. Record the author/library scope on each report, including partial
 rechecks, so their counts cannot be mistaken for a complete catalogue scan.
+
+
+## 225. Repair interrupted Delta candles before releasing scanner closes (7 November 2026)
+
+A Delta India audit found the public feed delivering all 20 leading turnover markets promptly, while account exits still use the configured candle model. A 45.8-second VM probe measured approximately 38–62 ms median L1 delivery per symbol. The full findings, economics, boundaries and next implementation are in `docs/research/delta-realtime-audit-2026-11-07.html`, with machine-readable measurements alongside it.
+
+The reliability changes add a per-series recovery barrier after disconnect, preserve the first interrupted candle until repaired, distinguish historical recovered closes, discard repairs from earlier connections, preserve newer websocket candles against in-flight REST responses, and coalesce duplicate resyncs. Recovery uses four workers; a failed or empty repair stays pending and is retried by maintenance. A refresh during a disconnected period cannot clear the barrier for the later reconnect.
+
+The websocket now times out a hanging handshake after 15 seconds and follows Delta's 35-second heartbeat deadline. Unknown-time, future-dated or malformed trades remain diagnostic observations but cannot drive paper execution or tape-fill evidence. Product refreshes validate all pagination and preserve the last complete catalogue on failure. REST mutations default to no retries. Continuous ticker traffic no longer prevents the clock-drift window from renewing, and late funding observations cannot rewind the current decision rate.
+
+The audit keeps $150 margin sizing, the 3% stop-risk cap, the 6× policy, scanner rules and VM configuration unchanged. These patches do not switch fills to tape, enable trading, or claim improved strategy returns. The next execution change needs complete multi-pair tape/depth retention, causal exit-side pricing and paired replay. Live readiness additionally requires private account events, exchange-native protection and restart/partial-fill drills.
+
+Validation: regression tests cover reconnect repair, concurrent/late REST responses, disconnected repair, heartbeat/handshake failures, invalid execution observations, incomplete product pages, clock-window rollover and out-of-order funding. The full server suite passes; targeted strict typechecks pass. A clean-HEAD comparison confirms the full project typecheck has the same existing diagnostics. The patched feed was also exercised against the real public endpoint without sending exchange orders. Deployment is a separate operational step; this audit leaves the running VM at 41d74f8.

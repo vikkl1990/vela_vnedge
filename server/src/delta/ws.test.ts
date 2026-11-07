@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DeltaFeed, normalizePublicMessage, DELTA_INDIA_WS, DELTA_INDIA_PUBLIC_TESTNET_WS, parseQuote } from './ws.ts';
+import { DeltaFeed, normalizePublicMessage, DELTA_INDIA_WS, DELTA_INDIA_PUBLIC_TESTNET_WS, parseQuote, parseTrade, isExecutableTrade } from './ws.ts';
 const T = 1792950480000;
 function read(m: any, event: string) {
   const f = new DeltaFeed(); const out: any[] = [];
@@ -88,4 +88,34 @@ test('healthy heartbeat cannot mask a silent L1 channel; repair is per stale sym
   assert.deepEqual(gaps[0].symbols,['BTCUSD']);
   assert.equal(SocketFixture.instances.length,1);
   const repairs=ws.sent.filter(m=>m.type==='unsubscribe');assert.deepEqual(repairs[0].payload.channels[0].symbols,['BTCUSD']);
+});
+
+test('a hung websocket handshake is abandoned and retried',t=>{
+  const f=socketFixture(t); f.start(); const old=SocketFixture.instances[0];
+  t.mock.timers.tick(15000); t.mock.timers.tick(1000);
+  assert.equal(SocketFixture.instances.length,2);
+  old.onopen!(); assert.equal(f.connected,false,'late handshake cannot resurrect old socket');
+  SocketFixture.instances[1].onopen!(); assert.equal(f.connected,true);
+});
+
+test('missing heartbeat reconnects even when another channel continues sending messages',t=>{
+  const f=socketFixture(t); f.start(); const old=SocketFixture.instances[0]; old.onopen!();
+  t.mock.timers.tick(30000); old.receive({type:'ticker',d:[]});
+  t.mock.timers.tick(5000); assert.equal(f.connected,false);
+  t.mock.timers.tick(1000); assert.equal(SocketFixture.instances.length,2);
+});
+
+test('timely heartbeats retain the connection past multiple watchdog deadlines',t=>{
+  const f=socketFixture(t);f.start();const ws=SocketFixture.instances[0];ws.onopen!();
+  for(let i=0;i<4;i++){t.mock.timers.tick(30000);ws.receive({type:'heartbeat'});}
+  assert.equal(SocketFixture.instances.length,1);assert.equal(f.connected,true);
+});
+
+test('uncertain or malformed tape observations cannot execute paper trades',()=>{
+  const good=parseTrade('BTCUSD',{price:100,size:1,timestamp:T*1000})!;
+  assert.equal(isExecutableTrade(good,T+500),true);
+  for(const patch of [{timeKnown:false},{timeMs:T+2001},{price:Infinity},{qty:0},{qty:-1},{timeMs:NaN}])
+    assert.equal(isExecutableTrade({...good,...patch},T),false);
+  const [unknown]=read({type:'trades',sy:'BTCUSD',p:100,s:1,ts:T*1000,r:'m'},'trade');
+  assert.equal(unknown.timeKnown,false);assert.equal(isExecutableTrade(unknown,T),false);
 });

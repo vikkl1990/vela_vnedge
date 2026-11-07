@@ -114,6 +114,7 @@ export class MarkStore extends EventEmitter {
     const prev = this.fundingBySymbol.get(symbol);
     const intervalSec = f.intervalSec && f.intervalSec > 0 ? f.intervalSec : FUNDING_INTERVAL_MS / 1000;
     const at = f.at ?? Date.now();
+    if (!Number.isFinite(f.ratePct) || !Number.isFinite(at) || (prev && at < prev.at)) return;
     let nextAt = f.nextAt > 0 ? f.nextAt : prev?.nextAt ?? nextFundingAfter(at, intervalSec);
     // Delta keeps publishing the previous realization for a moment after it passed; never re-charge a charged slot.
     if (prev?.lastChargedAt !== null && prev?.lastChargedAt !== undefined && nextAt <= prev.lastChargedAt) nextAt = prev.lastChargedAt + intervalSec * 1000;

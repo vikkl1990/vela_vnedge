@@ -76,3 +76,11 @@ test('future timestamps cannot poison ordering, and a quote gap invalidates only
   assert.equal(m.executable('ETHUSD','buy',2000,now+1),11);
   m.invalidateQuotes();assert.equal(m.quoteSummary(2000,now+1).total,0);
 });
+
+test('late funding observations cannot rewind the rate used by entry and exit decisions',()=>{
+  const m=new MarkStore(),at=Date.UTC(2026,10,7,8);
+  m.setFunding('BTCUSD',{ratePct:.01,nextAt:at+3600000,at});
+  m.setFunding('BTCUSD',{ratePct:10,nextAt:at+1800000,at:at-1});
+  m.setFunding('BTCUSD',{ratePct:NaN,nextAt:at+3600000,at:at+1});
+  assert.equal(m.funding('BTCUSD')!.ratePct,.01);assert.equal(m.funding('BTCUSD')!.nextAt,at+3600000);
+});

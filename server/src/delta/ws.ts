@@ -52,6 +52,9 @@ export class DeltaFeed extends EventEmitter {
   private closed = false;
   private reconnectDelay = 1000;
   private lastMessageAt = 0;
+  private lastHeartbeatAt = 0;
+  private lastPingAt = 0;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private quoteSeen = new Map<string, number>();
@@ -81,18 +84,19 @@ export class DeltaFeed extends EventEmitter {
     this.connect();
     this.hbTimer = setInterval(() => {
       if (!this.connected) return;
-      if (Date.now() - this.lastMessageAt > 60_000) {
+      if (Date.now() - this.lastHeartbeatAt >= 35_000) {
         // decision 184: a dead TCP connection never completes a close handshake; drop it and reconnect now
-        log.warn('no messages for 60s, reconnecting');
+        log.warn('no heartbeat for 35s, reconnecting');
         const dead = this.ws; this.ws = null;
         this.connected = false; this.emit('status', { connected: false });
         try { (dead as any)?.terminate?.(); dead?.close?.(); } catch { /* already gone */ }
         this.scheduleReconnect();
-      } else {
+      } else if (Date.now() - this.lastPingAt >= 20_000) {
+        this.lastPingAt = Date.now();
         try { this.ws?.send(JSON.stringify({ type: 'ping' })); } catch { /* ignore */ }
         this.refreshSilentQuotes();
       }
-    }, 20_000);
+    }, 5000);
   }
 
   stop(): void {
@@ -101,6 +105,8 @@ export class DeltaFeed extends EventEmitter {
     this.hbTimer = null;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = null;
     const ws = this.ws; this.ws = null;
     this.connected = false; this.quoteSeen.clear();
     ws?.close();
@@ -150,9 +156,19 @@ export class DeltaFeed extends EventEmitter {
     let ws: WebSocket;
     try { ws = new WebSocket(this.url); } catch (e) { log.error('ws ctor failed', String(e)); this.scheduleReconnect(); return; }
     this.ws = ws;
+    this.connectTimer = setTimeout(() => {
+      if (this.ws !== ws || this.connected || this.closed) return;
+      this.connectTimer = null; this.ws = null;
+      log.warn('connection handshake exceeded 15s, retrying');
+      try { ws.close(); } catch { /* handshake already failed */ }
+      this.scheduleReconnect();
+    }, 15_000);
     ws.onopen = () => {
       if (this.ws !== ws || this.closed) return;
+      if (this.connectTimer) clearTimeout(this.connectTimer);
+      this.connectTimer = null;
       this.connected = true; this.reconnectDelay = 1000; this.lastMessageAt = Date.now();
+      this.lastHeartbeatAt = this.lastMessageAt; this.lastPingAt = this.lastMessageAt;
       for (const s of this.subs.get('ob_l1') ?? []) this.quoteSeen.set(s, Date.now());
       log.info('connected');
       this.emit('status', { connected: true });
@@ -165,11 +181,14 @@ export class DeltaFeed extends EventEmitter {
       this.lastMessageAt = Date.now();
       let msg: any;
       try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data)); } catch { return; }
+      if (msg?.type === 'heartbeat') this.lastHeartbeatAt = Date.now();
       for (const normalized of normalizePublicMessage(msg)) this.handle(normalized);
     };
     ws.onerror = (ev: any) => { log.warn('socket error', ev?.message ?? ''); };
     ws.onclose = () => {
       if (this.ws !== ws) return;
+      if (this.connectTimer) clearTimeout(this.connectTimer);
+      this.connectTimer = null;
       this.ws = null;
       const was = this.connected;
       this.connected = false;
@@ -273,6 +292,12 @@ export function parseTrade(symbol: string, x: any): WsTrade | null {
   return { symbol: String(symbol), price, qty: Number.isFinite(qty) ? qty : 0, timeMs: toMs(x?.timestamp), aggressor,
     ...(!(Number.isFinite(Number(x?.timestamp)) && Number(x?.timestamp) > 0) || x?.trade_time_known === false ? { timeKnown: false } : {}),
     ...(x?.id != null ? { id: String(x.id) } : {}) };
+}
+
+/** Unknown trade times remain diagnostic observations, never execution triggers. */
+export function isExecutableTrade(t: WsTrade, receivedAt = Date.now()): boolean {
+  return t.timeKnown !== false && Number.isFinite(t.timeMs) && t.timeMs > 0 && t.timeMs <= receivedAt + 2000 &&
+    Number.isFinite(t.price) && t.price > 0 && Number.isFinite(t.qty) && t.qty > 0;
 }
 
 

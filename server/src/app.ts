@@ -217,7 +217,7 @@ export class App {
     });
     this.feed.on('ticker', (t: WsTicker) => { this.paper.setMark(t.symbol, t.price); this.shadow.setMark(t.symbol, t.price); this.marks.onWsTicker(t); });
     this.feed.on('status', async (s: { connected: boolean }) => {
-      if (s.connected) for (const t of this.candles.tracked()) { try { const n = await this.candles.resync(t.symbol, t.tf); if (n) log.info(`resynced ${t.symbol} ${t.tf}: ${n} bars`); } catch (e: any) { log.warn(`resync failed ${t.symbol} ${t.tf}: ${e?.message}`); } }
+      if (s.connected) await this.candles.resyncAll();
     });
     this.marketGate = new MarketGate({
       db: this.db, candles: this.candles, markets: () => this.markets(), cfgRef: cfg,

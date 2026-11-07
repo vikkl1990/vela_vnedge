@@ -66,6 +66,7 @@ export class DeltaRest {
   private timeoutMs: number;
   private productCache: Map<string, DeltaProduct> | null = null;
   private productCacheAt = 0;
+  private productLoad: Promise<Map<string, DeltaProduct>> | null = null;
 
   constructor(opts: DeltaRestOptions = {}) {
     this.baseUrl = (opts.baseUrl || DELTA_INDIA_PROD).replace(/\/$/, '');
@@ -86,7 +87,7 @@ export class DeltaRest {
     const qs = opts.query ? '?' + new URLSearchParams(Object.entries(opts.query).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])).toString() : '';
     const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
     const headers: Record<string, string> = { 'User-Agent': this.ua, 'Content-Type': 'application/json', Accept: 'application/json' };
-    const retries = opts.retries ?? 2;
+    const retries = opts.retries ?? (method === 'GET' ? 2 : 0);
     let lastErr: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
     if (opts.auth) {
@@ -135,19 +136,33 @@ export class DeltaRest {
   /** Perpetual futures products (cached 10 min). */
   async products(force = false): Promise<Map<string, DeltaProduct>> {
     if (!force && this.productCache && Date.now() - this.productCacheAt < 600_000) return this.productCache;
+    if (this.productLoad) return this.productLoad;
+    this.productLoad = this.loadProducts();
+    try { return await this.productLoad; }
+    finally { this.productLoad = null; }
+  }
+
+  private async loadProducts(): Promise<Map<string, DeltaProduct>> {
     const map = new Map<string, DeltaProduct>();
+    const cursors = new Set<string>();
     let after: string | undefined;
     // `meta.after` only exists on the raw envelope, so page with `raw: true` until it runs out.
     for (let page = 0; page < 20; page++) {
       const env = await this.request<any>('GET', '/v2/products', { query: { contract_types: 'perpetual_futures', states: 'live', page_size: 200, after }, raw: true });
-      const list: DeltaProduct[] = env?.result ?? [];
+      const list: DeltaProduct[] = env?.result;
+      if (!Array.isArray(list) || list.some(p => !p || typeof p.symbol !== 'string' || !p.symbol)) throw new Error('Delta products: invalid response');
       for (const p of list) map.set(p.symbol, p);
       after = env?.meta?.after ?? undefined;
-      if (!after || list.length === 0) break;
+      if (!after) {
+        log.debug(`products: ${map.size} live perpetuals`);
+        this.productCache = map; this.productCacheAt = Date.now();
+        return map;
+      }
+      if (!list.length) throw new Error('Delta products: empty page with continuation cursor');
+      if (cursors.has(after)) throw new Error('Delta products: repeated pagination cursor');
+      cursors.add(after);
     }
-    log.debug(`products: ${map.size} live perpetuals`);
-    this.productCache = map; this.productCacheAt = Date.now();
-    return map;
+    throw new Error('Delta products: pagination limit exceeded');
   }
 
   async product(symbol: string): Promise<DeltaProduct | undefined> {

@@ -108,7 +108,13 @@ export class CandleStore extends EventEmitter {
   private maintenance: ReturnType<typeof setInterval> | null = null;
   /** Announces a bar closed by the clock, not by the next trade (decision 74). */
   private closeTicker: ReturnType<typeof setInterval> | null = null;
+  private connectionGeneration = 0;
+  private recovery = new Map<string, { generation: number; from: number }>();
+  private resyncs = new Map<string, Promise<number>>();
+  private wsRevision = 0;
+  private wsVersions = new WeakMap<Series, Map<number, number>>();
   private lastDriftWarnAt = 0;
+  private driftWindowAt: number | null = null;
   driftWarnMs = 2000;
 
   constructor(rest: DeltaRest, feed: DeltaFeed, maxBars = 1500) {
@@ -116,6 +122,16 @@ export class CandleStore extends EventEmitter {
     this.rest = rest; this.feed = feed; this.maxBars = maxBars;
     feed.on('candle', (c: WsCandle) => this.onWsCandle(c));
     feed.on('ticker', (t: WsTicker) => this.noteExchangeTime(t.timeMs, 'ws'));
+    feed.on('status', ({ connected }: { connected: boolean }) => {
+      if (connected) return;
+      this.connectionGeneration++;
+      for (const [key, s] of this.series) if (s.loaded) {
+        // Retain the first interrupted bar even if live updates advance the series
+        // before the queued repair starts.
+        this.recovery.set(key, { generation: this.connectionGeneration,
+          from: this.recovery.get(key)?.from ?? s.bars.at(-1)?.time ?? Date.now() });
+      }
+    });
   }
 
   static key(symbol: string, tf: string) { return `${symbol}:${tf}`; }
@@ -143,11 +159,12 @@ export class CandleStore extends EventEmitter {
 
   untrack(symbol: string, tf: string) {
     const key = CandleStore.key(symbol, tf);
+    this.recovery.delete(key);
     if (this.series.delete(key)) this.feed.unsubscribe(`candlestick_${tf}`, [symbol]);
   }
 
-  tracked(): Array<{ symbol: string; tf: string; bars: number; loaded: boolean; lastBarTime: number | null; lastClosedBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant: boolean }> {
-    return [...this.series.values()].map(s => ({ symbol: s.symbol, tf: s.tf, bars: s.bars.length, loaded: s.loaded, lastBarTime: s.bars.at(-1)?.time ?? null, lastClosedBarTime: s.lastClosedEmitted || null, lastClosedAt: s.lastClosedAt || null, loadedAt: s.loadedAt || null, dormant: s.dormant }));
+  tracked(): Array<{ symbol: string; tf: string; bars: number; loaded: boolean; lastBarTime: number | null; lastClosedBarTime: number | null; lastClosedAt: number | null; loadedAt: number | null; dormant: boolean; recovering: boolean }> {
+    return [...this.series.values()].map(s => ({ symbol: s.symbol, tf: s.tf, bars: s.bars.length, loaded: s.loaded, lastBarTime: s.bars.at(-1)?.time ?? null, lastClosedBarTime: s.lastClosedEmitted || null, lastClosedAt: s.lastClosedAt || null, loadedAt: s.loadedAt || null, dormant: s.dormant, recovering: this.recovery.has(CandleStore.key(s.symbol, s.tf)) }));
   }
 
   /** Ascending bars (copy). `closedOnly` drops the forming bar. */
@@ -174,17 +191,52 @@ export class CandleStore extends EventEmitter {
 
   /** Fetch any bars newer than what we hold (used after reconnects), then scan the series for gaps and fill them. */
   async resync(symbol: string, tf: string): Promise<number> {
-    const s = this.series.get(CandleStore.key(symbol, tf));
+    const key = CandleStore.key(symbol, tf), s = this.series.get(key);
     if (!s || !s.loaded) return 0;
+    const pending = this.resyncs.get(key);
+    if (pending) {
+      await pending;
+      // An older connection's request cannot clear this connection's barrier.
+      return this.recovery.has(key) && this.feed.connected !== false ? this.resync(symbol, tf) : 0;
+    }
+    const generation = this.connectionGeneration, revision = this.wsRevision;
+    const task = this.repairSeries(s, generation, revision);
+    this.resyncs.set(key, task);
+    try { return await task; }
+    finally { if (this.resyncs.get(key) === task) this.resyncs.delete(key); }
+  }
+
+  /** Bounded recovery avoids serially delaying hundreds of series or flooding REST. */
+  async resyncAll(): Promise<void> {
+    const generation = this.connectionGeneration;
+    const queue = this.tracked().filter(s => s.loaded);
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (queue.length && this.feed.connected !== false && generation === this.connectionGeneration) {
+        const s = queue.shift()!;
+        try { await this.resync(s.symbol, s.tf); }
+        catch (e: any) { log.warn(`resync failed ${s.symbol} ${s.tf}: ${e?.message ?? e}`); }
+      }
+    }));
+  }
+
+  private async repairSeries(s: Series, generation: number, revision: number): Promise<number> {
+    const { symbol, tf } = s, key = CandleStore.key(symbol, tf);
     const last = s.bars.at(-1);
     const secs = TF_SECONDS[tf];
-    const startSec = last ? Math.floor(last.time / 1000) - secs : Math.floor(Date.now() / 1000) - secs * s.maxBars;
+    const anchor = this.recovery.get(key)?.from ?? last?.time;
+    const startSec = anchor !== undefined ? Math.floor(anchor / 1000) - secs : Math.floor(Date.now() / 1000) - secs * s.maxBars;
     const fresh = await this.rest.candles(symbol, tf, startSec, Math.floor(Date.now() / 1000));
+    if (generation !== this.connectionGeneration || this.series.get(key) !== s) return 0;
     let n = 0;
-    for (const c of fresh) if (this.merge(s, { time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }, 'rest')) n++;
-    // bars that closed while we were disconnected never had their close announced: announce the newest one so scanners re-run
-    if (n) this.announceLatestClosed(s);
+    for (const c of fresh) {
+      if ((this.wsVersions.get(s)?.get(c.time * 1000) ?? 0) > revision) continue;
+      if (this.merge(s, { time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }, 'rest')) n++;
+    }
     n += await this.checkGaps(s, 'resync');
+    if (generation !== this.connectionGeneration || this.feed.connected === false) return n;
+    // Empty/error responses cannot certify that the interrupted candle is whole.
+    if (fresh.length) this.recovery.delete(key);
+    if (fresh.length || n) this.announceLatestClosed(s, true);
     return n;
   }
 
@@ -234,7 +286,7 @@ export class CandleStore extends EventEmitter {
       if (inserted) this.report({ at: Date.now(), type: 'gap-filled', symbol: s.symbol, tf: s.tf, filled: inserted, missing: filledTimes.slice(0, 50), detail: `backfilled ${inserted} bar(s) from REST` });
       if (want.size) this.report({ at: Date.now(), type: 'gap-unfillable', symbol: s.symbol, tf: s.tf, missing: [...want].slice(0, 50), detail: `${want.size} bar(s) not available from REST (no trades on the exchange in that period)` });
       // A filled bar that is now the newest closed bar never had its close announced: announce it once so scanners re-run on it.
-      if (inserted) this.announceLatestClosed(s);
+      if (inserted) this.announceLatestClosed(s, true);
     } catch (e: any) {
       this.status.backfillErrors++;
       this.report({ at: Date.now(), type: 'backfill-error', symbol: s.symbol, tf: s.tf, detail: String(e?.message ?? e).slice(0, 200) });
@@ -245,11 +297,13 @@ export class CandleStore extends EventEmitter {
   /** Compare the local clock with an exchange timestamp in milliseconds (ws ticker, REST ticker). */
   noteExchangeTime(ms: number, source: 'ws' | 'rest') {
     if (!Number.isFinite(ms) || ms <= 0) return;
-    const drift = Date.now() - ms;
+    const now = Date.now(), drift = now - ms;
     // network latency makes the exchange look "behind"; keep the value nearest zero over a short window
     const prev = this.status.driftMs;
-    this.status.driftMs = prev === null || this.status.driftCheckedAt === null || Date.now() - this.status.driftCheckedAt > 60_000 || Math.abs(drift) < Math.abs(prev) ? drift : prev;
-    this.status.driftCheckedAt = Date.now();
+    const newWindow = this.driftWindowAt === null || now - this.driftWindowAt >= 60_000 || now < this.driftWindowAt;
+    if (newWindow) this.driftWindowAt = now;
+    this.status.driftMs = prev === null || newWindow || Math.abs(drift) < Math.abs(prev) ? drift : prev;
+    this.status.driftCheckedAt = now;
     if (Math.abs(this.status.driftMs) > this.driftWarnMs && Date.now() - this.lastDriftWarnAt > 300_000) {
       this.lastDriftWarnAt = Date.now(); this.status.driftWarnings++;
       this.report({ at: Date.now(), type: 'clock-drift', driftMs: this.status.driftMs, detail: `local clock is ${(this.status.driftMs / 1000).toFixed(2)}s ${this.status.driftMs > 0 ? 'ahead of' : 'behind'} Delta (${source})` });
@@ -310,10 +364,10 @@ export class CandleStore extends EventEmitter {
       // only thing that runs a scanner — so pull it from REST instead of waiting. If the exchange has
       // nothing newer either, the market is dormant rather than broken and nothing is wrong.
       for (const s of this.series.values()) {
-        if (!s.loaded || s.backfilling) continue;
+        if (!s.loaded || s.backfilling || this.resyncs.has(CandleStore.key(s.symbol, s.tf))) continue;
         const tfMs = TF_SECONDS[s.tf] * 1000;
         const lastClose = (s.bars.at(-1)?.time ?? 0) + tfMs;
-        if (Date.now() - lastClose < 2 * tfMs) { s.dormant = false; continue; }
+        if (!this.recovery.has(CandleStore.key(s.symbol, s.tf)) && Date.now() - lastClose < 2 * tfMs) { s.dormant = false; continue; }
         void this.resync(s.symbol, s.tf).then(n => { s.dormant = n === 0; })
           .catch(e => log.warn(`quiet-series resync failed ${s.symbol} ${s.tf}: ${e?.message ?? e}`));
       }
@@ -341,7 +395,7 @@ export class CandleStore extends EventEmitter {
     // decision 184: with the feed down the bar in hand is a fragment; its close is announced by the resync that completes it
     if (this.feed.connected === false) return 0;
     for (const s of this.series.values()) {
-      if (!s.loaded || s.backfilling) continue;
+      if (!s.loaded || s.backfilling || this.recovery.has(CandleStore.key(s.symbol, s.tf))) continue;
       const last = s.bars.at(-1);
       if (!last || last.time <= s.lastClosedEmitted) continue;
       if (now - (last.time + TF_SECONDS[s.tf] * 1000) < CLOSE_GRACE_MS) continue;
@@ -359,18 +413,18 @@ export class CandleStore extends EventEmitter {
   }
 
   /** Emit `closed` for the newest closed bar of a series unless it was already announced. */
-  private announceLatestClosed(s: Series) {
+  private announceLatestClosed(s: Series, historical = false) {
     if (!s.loaded) return;
     for (let i = s.bars.length - 1; i >= 0; i--) {
-      if (this.isClosed(s.tf, s.bars[i].time)) { this.emitClosed(s, s.bars[i]); return; }
+      if (this.isClosed(s.tf, s.bars[i].time)) { this.emitClosed(s, s.bars[i], Date.now(), historical); return; }
     }
   }
 
-  private emitClosed(s: Series, bar: Bar, now = Date.now()) {
-    if (bar.time <= s.lastClosedEmitted) return;
+  private emitClosed(s: Series, bar: Bar, now = Date.now(), recovered = false) {
+    if (this.feed.connected === false || bar.time <= s.lastClosedEmitted || this.recovery.has(CandleStore.key(s.symbol, s.tf))) return;
     s.lastClosedEmitted = bar.time; s.lastClosedAt = now;
     // announced more than one timeframe after the period ended → we are catching up, not live
-    const historical = now - (bar.time + TF_SECONDS[s.tf] * 1000) > TF_SECONDS[s.tf] * 1000;
+    const historical = recovered || now - (bar.time + TF_SECONDS[s.tf] * 1000) > TF_SECONDS[s.tf] * 1000;
     this.emit('closed', { symbol: s.symbol, tf: s.tf, bar: { ...bar }, historical });
   }
 
@@ -396,6 +450,10 @@ export class CandleStore extends EventEmitter {
   private onWsCandle(c: WsCandle) {
     const s = this.series.get(CandleStore.key(c.symbol, c.resolution));
     if (!s) return;
+    const versions = this.wsVersions.get(s) ?? new Map<number, number>();
+    versions.set(c.candleStartMs, ++this.wsRevision);
+    while (versions.size > s.maxBars + 50) versions.delete(versions.keys().next().value!);
+    this.wsVersions.set(s, versions);
     const bar: Bar = { time: c.candleStartMs, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume };
     this.merge(s, bar, 'ws');
   }

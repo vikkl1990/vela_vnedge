@@ -11,7 +11,7 @@ import { depthFill } from '../paper/entryExecution.ts';
  * pending-entry housekeeping.
  */
 import { TradingStatus } from '../delta/tradingStatus.ts';
-import { toMs } from '../delta/ws.ts';
+import { toMs, isExecutableTrade } from '../delta/ws.ts';
 import type { App } from '../app.ts';
 import type { WsFunding, WsMark, WsTrade } from '../delta/ws.ts';
 import { logger } from '../log.ts';
@@ -116,7 +116,9 @@ export function wireRealtime(app: App): void {
   });
   for (const b of books) b.quotes = app.marks;   // spread-crossing fills (paper.useSpread)
   // decision 190: the audit sees each print before the books do, so the print that fills a limit is counted as its through
-  app.feed.on('trade', (t: WsTrade) => { depth.onTrade(t); app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs);
+  app.feed.on('trade', (t: WsTrade) => { depth.onTrade(t);
+    const receivedAt = Date.now();
+    if (isExecutableTrade(t, receivedAt)) { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs, receivedAt); }
     try { flow.onTrade(t); } catch(e:any) { log.warn(`order flow print: ${e.message}`); }
   });
   app.feed.on('mark', (m: WsMark) => { funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });

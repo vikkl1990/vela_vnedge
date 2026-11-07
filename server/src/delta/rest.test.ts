@@ -52,3 +52,30 @@ test('order mutations preserve ambiguity on server errors and malformed acknowle
     assert.equal(calls,1);
   }
 });
+
+test('product refresh rejects incomplete pagination and retains the last complete catalogue',async t=>{
+  const rest=new DeltaRest(); let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({result:[{symbol:'BTCUSD',id:27}],meta:{}})));
+  const original=await rest.products();
+  t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response(JSON.stringify({result:[{symbol:'ETHUSD',id:3136}],meta:{after:'stuck'}}));});
+  await assert.rejects(rest.products(true),/repeated.*cursor/);assert.equal(calls,2);
+  assert.equal(await rest.products(),original);
+});
+
+test('product refresh never treats malformed or truncated responses as a complete universe',async t=>{
+  for(const response of [{result:{}},{result:[],meta:{after:'more'}}]){
+    t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify(response)));
+    await assert.rejects(new DeltaRest().products(),/invalid|empty.*cursor/);
+  }
+  let page=0;
+  t.mock.method(globalThis,'fetch',async()=>new Response(JSON.stringify({result:[{symbol:'BTCUSD'}],meta:{after:String(++page)}})));
+  await assert.rejects(new DeltaRest().products(),/pagination limit/);
+});
+
+test('concurrent forced product refreshes share the same request',async t=>{
+  let finish!:(r:Response)=>void,calls=0;
+  t.mock.method(globalThis,'fetch',()=>{calls++;return new Promise<Response>(resolve=>{finish=resolve;});});
+  const rest=new DeltaRest(),a=rest.products(true),b=rest.products(true);
+  finish(new Response('{"result":[{"symbol":"BTCUSD"}],"meta":{}}'));
+  assert.equal(calls,1);assert.equal(await a,await b);
+});
