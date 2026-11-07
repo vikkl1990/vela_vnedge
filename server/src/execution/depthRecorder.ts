@@ -2,7 +2,7 @@ import type {Db} from '../db.ts';
 import {toMs,type WsTrade} from '../delta/ws.ts';
 const MAX_LEVELS=10000,MAX_BYTES=128*1024;
 export function crc32(s:string):number {let c=0xffffffff;for(const v of Buffer.from(s)){c^=v;for(let j=0;j<8;j++)c=(c>>>1)^((c&1)?0xedb88320:0);}return (c^0xffffffff)>>>0;}
-type Book={at:number;seq:number;asks:Map<number,[string,string]>;bids:Map<number,[string,string]>};
+type Book={at:number;exchangeAt:number;seq:number;asks:Map<number,[string,string]>;bids:Map<number,[string,string]>};
 /** Bounded diagnostic ring, independent of the execution path. A replay must start at a retained snapshot. */
 export class DepthRecorder {
  private books=new Map<string,Book>();private queue:Array<[number,string,string,string,number]>=[];private dropped=0;private failures=0;private lastRetry=new Map<string,number>();
@@ -17,7 +17,7 @@ export class DepthRecorder {
   if(!['snapshot','update'].includes(m.action)||!Number.isSafeInteger(m.seq)||!Number.isInteger(m.cs)||!Array.isArray(m.a)||!Array.isArray(m.b)){this.invalid(symbol,'invalid envelope',now);return;}
   const old=this.books.get(symbol);
   if(m.action==='update'&&(!old||m.seq!==old.seq+1)){this.invalid(symbol,'sequence gap',now);return;}
-  const book:Book=m.action==='snapshot'?{at:now,seq:m.seq,asks:new Map(),bids:new Map()}:old!;
+  const book:Book=m.action==='snapshot'?{at:now,exchangeAt:toMs(m.ts,0),seq:m.seq,asks:new Map(),bids:new Map()}:old!;
   for(const [rows,side] of [[m.a,book.asks],[m.b,book.bids]] as const)for(const pair of rows){
    if(!Array.isArray(pair)||pair.length!==2||!Number.isFinite(Number(pair[0]))||!(Number(pair[0])>0)||!Number.isFinite(Number(pair[1]))||Number(pair[1])<0){this.invalid(symbol,'invalid level',now);return;}
    const [p,q]=pair.map(String);if(Number(q)===0)side.delete(Number(p));else side.set(Number(p),[p,q]);
@@ -27,7 +27,15 @@ export class DepthRecorder {
   const encode=(v:typeof asks)=>v.slice(0,10).map(([,x])=>x.join(':')).join(',');
   if((asks.length&&bids.length&&asks[0][0]<=bids[0][0])||crc32(encode(asks)+'|'+encode(bids))!==(m.cs>>>0)){this.invalid(symbol,'checksum or crossed book',now);return;}
   if(!toMs(m.ts,0)||Math.abs(now-toMs(m.ts,0))>10000){this.invalid(symbol,'stale depth',now);return;}
-  book.seq=m.seq;book.at=now;this.books.set(symbol,book);this.record(symbol,m.action,m,now);
+  book.seq=m.seq;book.at=now;book.exchangeAt=toMs(m.ts,0);this.books.set(symbol,book);this.record(symbol,m.action,m,now);
+ }
+ /** Causal, detached research view. No book is backdated across a gap or an observation. */
+ bookAt(symbol:string,now:number,maxAgeMs=1000){
+  const b=this.books.get(symbol);
+  if(!b||!Number.isFinite(now)||!(maxAgeMs>0)||!Number.isFinite(maxAgeMs)||
+    [b.at,b.exchangeAt].some(t=>!Number.isFinite(t)||t<=0||t>now||now-t>maxAgeMs))return null;
+  const levels=(side:Book['asks'],sign:number)=>[...side].sort((a,b)=>sign*(a[0]-b[0])).map(([price,v])=>({price,size:Number(v[1])}));
+  return {receivedAt:b.at,exchangeAt:b.exchangeAt,seq:b.seq,bids:levels(b.bids,-1),asks:levels(b.asks,1)};
  }
  onTrade(t:WsTrade,now=Date.now()){if(this.symbols.includes(t.symbol))this.record(t.symbol,'trade',t,now);}
  flush(now=Date.now()){

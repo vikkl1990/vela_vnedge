@@ -6957,3 +6957,39 @@ The websocket now times out a hanging handshake after 15 seconds and follows Del
 The audit keeps $150 margin sizing, the 3% stop-risk cap, the 6× policy, scanner rules and VM configuration unchanged. These patches do not switch fills to tape, enable trading, or claim improved strategy returns. The next execution change needs complete multi-pair tape/depth retention, causal exit-side pricing and paired replay. Live readiness additionally requires private account events, exchange-native protection and restart/partial-fill drills.
 
 Validation: regression tests cover reconnect repair, concurrent/late REST responses, disconnected repair, heartbeat/handshake failures, invalid execution observations, incomplete product pages, clock-window rollover and out-of-order funding. The full server suite passes; targeted strict typechecks pass. A clean-HEAD comparison confirms the full project typecheck has the same existing diagnostics. The patched feed was also exercised against the real public endpoint without sending exchange orders. Deployment is a separate operational step; this audit leaves the running VM at 41d74f8.
+
+## 226. Validate execution economics independently of strategy profit (7 November 2026)
+
+Test decision 225 against the deployed source, keeping identical fixtures: 11 of
+23 recovery/REST/funding tests fail on 41d74f8; all 23 pass with the repairs. The
+complete suite, including five new execution-research tests, passes 942/942.
+
+A read-only seven-day export supports quote sensitivity for 182 of 185 paper
+market exits and 4,377 of 4,403 shadow exits. Hold signal, entry, exit time,
+quantity and the effective recorded commission rate fixed; substitute the saved
+closing-side quote received no more than one second before exit. Matched paper
+net changes from -$44.00 to -$151.17; last-24h matched net changes from +$22.38 to
++$11.72 over 25 exits. Historical quote size and the exchange publication clock
+are absent, so these are sensitivities, not guaranteed fills or a strategy
+backtest. Shadow synthetic dollars must not be compared with account dollars.
+
+A three-minute VM public capture delivers all top 20 crypto pairs with no
+reported subscription, checksum or sequence errors. Depth is <=1s old in 3,121
+of 3,560 fixed-time samples, <=5s in 3,557, and <=10s in all samples. Quotes are
+fresh in all samples. Both $750/$1,500 integer-contract exit probes have complete
+visible depth wherever a <=1s book exists. This establishes short-run feed
+coverage, not profitable signals, queue fills or round-the-clock reliability.
+
+Add reproducible read-only export/capture tools and an offline validation CLI.
+Expose detached causal views of checksum-validated books; the research exit
+pricer walks bids for long exits and asks for shorts, reports partial liquidity,
+and rejects missing, stale, future, crossed or duplicate levels. It is not wired
+into production execution. The report and input hashes are saved under
+`docs/research/delta-execution-validation-2026-11-07.*`.
+
+Proceed with the verified reliability fixes and complete multi-pair exit
+recording before judging a new TP/SL policy. Keep risk reduction available when
+depth is missing and identify quote/model fallbacks explicitly. The existing
+32 MiB ring is too short for full-day 20-pair replay: use bounded segments,
+checkpoints and gap manifests, not just a larger symbol list. No strategy or VM
+configuration changed during validation, and no profit uplift is claimed.

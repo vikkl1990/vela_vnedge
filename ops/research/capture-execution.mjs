@@ -1,0 +1,24 @@
+// Read-only public-data experiment. Does not import app.ts, credentials or configuration.
+import {writeFileSync} from 'node:fs';
+import {gzipSync} from 'node:zlib';
+import {DeltaRest,marketSpec} from '../../server/src/delta/rest.ts';
+import {isCrypto} from '../../server/src/risk/marketGate.ts';
+const args=process.argv.slice(2);
+const option=k=>{const i=args.indexOf(k);return i<0?undefined:args[i+1];};
+const seconds=Number(option('--seconds')??180),output=option('--out');
+if(!output||!Number.isFinite(seconds)||seconds<30||seconds>900)throw Error('usage: node ops/research/capture-execution.mjs --seconds 180 --out capture.json.gz (30–900 seconds)');
+const rest=new DeltaRest();
+const [products,tickers]=await Promise.all([rest.products(),rest.tickers()]);
+const markets=tickers.filter(t=>products.has(t.symbol)&&isCrypto(t.description)&&/USD$/.test(t.symbol)&&Number(t.close)>0).sort((a,b)=>Number(b.turnover_usd)-Number(a.turnover_usd)).slice(0,20).map(t=>({symbol:t.symbol,description:t.description,turnover:Number(t.turnover_usd),price:Number(t.close),...marketSpec(products.get(t.symbol))}));
+const symbols=markets.map(m=>m.symbol),events=[],errors=[],counts={};let bytes=0,dropped=0;
+const startedAt=Date.now();
+const ws=new WebSocket('wss://public-socket.india.delta.exchange');
+ws.onopen=()=>{ws.send(JSON.stringify({type:'subscribe',payload:{channels:['ob_updates','ob_l1','trades','candlestick_1m'].map(name=>({name,symbols}))}}));ws.send(JSON.stringify({type:'enable_heartbeat'}));};
+ws.onerror=e=>errors.push(String(e.message??'socket error'));
+ws.onmessage=e=>{const receivedAt=Date.now();let m;try{m=JSON.parse(e.data)}catch{return}counts[m.type]=(counts[m.type]??0)+1;
+ if(m.type==='error')errors.push(m);if(!['ob_updates','ob_l1','trades','candlestick_1m'].includes(m.type))return;
+ bytes+=Buffer.byteLength(e.data);if(bytes>64*1024*1024){dropped++;return;}events.push({receivedAt,m});};
+await new Promise(r=>setTimeout(r,seconds*1000));ws.close();
+const out={startedAt,finishedAt:Date.now(),markets,counts,errors,bytes,dropped,events};
+writeFileSync(output,gzipSync(JSON.stringify(out)));
+console.log(JSON.stringify({startedAt,finishedAt:out.finishedAt,markets:markets.map(m=>m.symbol),counts,errors,bytes,dropped,rss:process.memoryUsage().rss}));
