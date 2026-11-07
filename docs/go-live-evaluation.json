@@ -1,35 +1,128 @@
 {
-  "planId": "GL-2026-11-07-v1",
+  "planId": "GL-2026-11-08-v2",
   "status": "proposed_not_runtime_configuration",
   "preparedAt": "2026-11-07",
   "canonicalDocument": "GO-LIVE-ROLLOUT.md",
   "productionAuthorized": false,
   "operatorApproval": null,
   "baseline": {
-    "vmCommitLastVerified": "41d74f8",
-    "localReliabilityCommit": "10d8110",
+    "vmCommitLastVerified": "15a93a4",
+    "localReliabilityCommit": "15a93a4",
     "localValidationCommit": "8fc6ec7",
-    "serverTestsPassed": 942,
-    "serverTestsTotal": 942,
-    "fullProjectTypeDiagnosticsOutstanding": 16,
+    "serverTestsPassed": 987,
+    "serverTestsTotal": 987,
+    "fullProjectTypeDiagnosticsOutstanding": 0,
     "paperMarginUsd": 150,
     "paperStopRiskCapPct": 3,
     "riskToCostRatio": 6,
     "profitUpliftEstablished": false,
-    "exchangeCertification": null
+    "exchangeCertification": null,
+    "localExecutionBoundaryCommit": "32022cc",
+    "dashboardTestsPassed": 7
   },
   "phases": [
-    {"id":"P0","name":"Release baseline","dependsOn":[],"status":"local_tests_passed_deployment_pending","minimumOperationalHours":48,"workIds":["R0"]},
-    {"id":"P1","name":"Complete evidence recording","dependsOn":["P0"],"status":"short_probe_only","workIds":["D1"]},
-    {"id":"P2","name":"Executable paper model","dependsOn":["P1"],"status":"research_pricer_only","workIds":["X1","X2"]},
-    {"id":"P3","name":"Exchange certification","dependsOn":["P0","P2"],"engineeringCanStartAfter":["P0"],"status":"not_certified","workIds":["A1","S1","U1"]},
-    {"id":"P4","name":"Economic qualification","dependsOn":["P1","P2"],"status":"not_started_under_corrected_model","workIds":["E1"]},
-    {"id":"P5","name":"Approved limited live pilot","dependsOn":["P0","P1","P2","P3","P4"],"requiresExplicitOperatorApproval":true,"status":"ineligible"},
-    {"id":"P6","name":"Controlled expansion","dependsOn":["P5"],"requiresExplicitOperatorApproval":true,"status":"ineligible"}
+    {
+      "id": "P0",
+      "name": "Release baseline",
+      "dependsOn": [],
+      "status": "deployed_sustained_observation_pending",
+      "minimumOperationalHours": 48,
+      "workIds": [
+        "R0"
+      ]
+    },
+    {
+      "id": "P1",
+      "name": "Complete evidence recording",
+      "dependsOn": [
+        "P0"
+      ],
+      "status": "short_probe_only",
+      "workIds": [
+        "D1"
+      ]
+    },
+    {
+      "id": "P2",
+      "name": "Executable paper model",
+      "dependsOn": [
+        "P1"
+      ],
+      "status": "research_pricer_only",
+      "workIds": [
+        "X1",
+        "X2"
+      ]
+    },
+    {
+      "id": "P3",
+      "name": "Production observation and execution preparation",
+      "dependsOn": [
+        "P0",
+        "P2"
+      ],
+      "engineeringCanStartAfter": [
+        "P0"
+      ],
+      "status": "observer_and_protection_incomplete",
+      "workIds": [
+        "A1",
+        "S1",
+        "U1"
+      ],
+      "outcome": "pre_pilot_engineering_review_not_exchange_certificate"
+    },
+    {
+      "id": "P4",
+      "name": "Economic qualification",
+      "dependsOn": [
+        "P1",
+        "P2"
+      ],
+      "status": "not_started_under_corrected_model",
+      "workIds": [
+        "E1"
+      ]
+    },
+    {
+      "id": "P5",
+      "name": "Approved limited production pilot",
+      "dependsOn": [
+        "P0",
+        "P1",
+        "P2",
+        "P3",
+        "P4"
+      ],
+      "requiresExplicitOperatorApproval": true,
+      "status": "ineligible",
+      "outcome": "observed_real_order_lifecycles_and_production_execution_certificate"
+    },
+    {
+      "id": "P6",
+      "name": "Controlled expansion",
+      "dependsOn": [
+        "P5"
+      ],
+      "requiresExplicitOperatorApproval": true,
+      "status": "ineligible",
+      "requiresProductionExecutionCertificate": true
+    }
   ],
   "evaluation": {
-    "stateValues": ["pass","fail","insufficient_evidence","not_run","expired"],
-    "experimentKinds": ["E0_model_reconciliation","E1_entry_route","E2_exit_policy","E3_scanner_or_ml_contribution"],
+    "stateValues": [
+      "pass",
+      "fail",
+      "insufficient_evidence",
+      "not_run",
+      "expired"
+    ],
+    "experimentKinds": [
+      "E0_model_reconciliation",
+      "E1_entry_route",
+      "E2_exit_policy",
+      "E3_scanner_or_ml_contribution"
+    ],
     "maxDevelopmentChallengersPerLane": 3,
     "finalistsPerLane": 1,
     "scalp": {
@@ -67,7 +160,17 @@
     "unsetRegistrationFieldsPreventQualification": true,
     "opportunityReductionReviewThresholdPct": 20,
     "concentrationTest": "leave_one_pair_and_one_time_block_out; require_confirmation_if_edge_reverses",
-    "scoringIncludes": ["nonfills","reserved_margin","partial_fills","entry_and_exit_fees","tax","funding","unrealized_equity","halting_effects","unknown_evidence_bounds"]
+    "scoringIncludes": [
+      "nonfills",
+      "reserved_margin",
+      "partial_fills",
+      "entry_and_exit_fees",
+      "tax",
+      "funding",
+      "unrealized_equity",
+      "halting_effects",
+      "unknown_evidence_bounds"
+    ]
   },
   "dataAcceptance": {
     "researchTopCryptoPairs": 20,
@@ -79,7 +182,11 @@
     "minimumCompleteCandidatePathsPct": 99,
     "incompletePathAdverseBoundsMustNotReverseQualification": true,
     "silentDropsAllowed": 0,
-    "depthAgeBucketsMs": [1000,5000,10000],
+    "depthAgeBucketsMs": [
+      1000,
+      5000,
+      10000
+    ],
     "depthAvailabilityIsNotAProtectiveExitVeto": true,
     "loadTestRecordedHours": 24,
     "loadTestPeakRateMultiplier": 2,
@@ -88,11 +195,23 @@
   },
   "stressScenarios": {
     "base": "actual_product_costs; verified_offers_only; measured_latency; actual_funding_schedule",
-    "moderate": {"optionalPromotions":false,"spreadAndDepthCostMultiplier":1.5,"observedP95OrderLatencyMultiplier":2,"makerFillProbabilityMultiplier":0.75,"positiveNetRequired":true},
-    "severe": {"spreadAndDepthCostMultiplier":2,"additionalOrderDelayMs":1000,"feedOutageMs":5000,"fundingBoundaryOutage":true,"positiveNetRequired":false,"safetyInvariantsRequired":true}
+    "moderate": {
+      "optionalPromotions": false,
+      "spreadAndDepthCostMultiplier": 1.5,
+      "observedP95OrderLatencyMultiplier": 2,
+      "makerFillProbabilityMultiplier": 0.75,
+      "positiveNetRequired": true
+    },
+    "severe": {
+      "spreadAndDepthCostMultiplier": 2,
+      "additionalOrderDelayMs": 1000,
+      "feedOutageMs": 5000,
+      "fundingBoundaryOutage": true,
+      "positiveNetRequired": false,
+      "safetyInvariantsRequired": true
+    }
   },
   "executionCertification": {
-    "minimumTestnetDays": 7,
     "minimumOrderLifecycles": 100,
     "allCriticalFaultCasesRequired": true,
     "duplicateEntriesAllowed": 0,
@@ -103,7 +222,17 @@
     "proposedCertificateExpiryDays": 30,
     "runtimeReadinessCheckedAtStartupAndEveryEntry": true,
     "readinessBlocksMustNeverBlockExitsOrRecovery": true,
-    "testnetProfitIsNotProductionEdgeEvidence": true
+    "environment": "production",
+    "prePilotReadOnlyObservationMinimumDays": 7,
+    "minimumProductionLifecycleDays": 7,
+    "realOrderEvidenceCollectedInPhase": "P5",
+    "requiredBeforeExpansionPhase": "P6",
+    "prePilotFaultEvidence": "isolated_replay_of_production_events_and_labelled_synthetic_boundary_cases",
+    "syntheticFaultsExcludedFromProfitability": true,
+    "faultInjectionMayWriteToProduction": false,
+    "simulatedFillsDoNotCertifyExchangeExecution": true,
+    "unobservedOrderRoutesRemainUnverified": true,
+    "minimumCountsDoNotAuthorizeExtraTrades": true
   },
   "pilotProposal": {
     "status": "unapproved",
@@ -121,5 +250,44 @@
     "minimumClosedTradesAtInitialReview": 50,
     "automaticSizeIncrease": false,
     "approvalExpiresAt": null
+  },
+  "updatedAt": "2026-11-08",
+  "environmentPolicy": {
+    "selectedExchangeEnvironment": "production",
+    "marketAndAccountDataEnvironment": "production",
+    "testnetRequired": false,
+    "testnetUsedForRollout": false,
+    "paperAndShadowFillsAreSimulations": true,
+    "isolatedUnitAndFaultReplayRequired": true,
+    "faultInjectionMayWriteToProduction": false,
+    "productionOrderActivationRequiresSeparatePilotApproval": true
+  },
+  "productionObserverAcceptance": {
+    "worksInPaperModeWithoutExecutor": true,
+    "readOperationsOnly": true,
+    "historyScope": [
+      "account_identity",
+      "environment"
+    ],
+    "credentialRotationIsolationRequired": true,
+    "incompletePaginationCannotAdvanceCompleteness": true,
+    "unknownCostsAreNotZero": true,
+    "accountingComponents": [
+      "balances",
+      "orders",
+      "positions",
+      "fills",
+      "commissions",
+      "tax",
+      "funding",
+      "confirmed_offer_credits"
+    ],
+    "uiShows": [
+      "environment",
+      "execution_mode",
+      "last_successful_sync",
+      "missing_intervals",
+      "unresolved_differences"
+    ]
   }
 }

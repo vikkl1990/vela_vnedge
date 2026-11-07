@@ -1,17 +1,21 @@
 # VN EDGE — phased rollout and evaluation
 
-Plan ID: **GL-2026-11-07-v1** · Prepared 7 November 2026 · Status: **implementation plan; production is not authorized**.
+Plan ID: **GL-2026-11-08-v2** · Revised 8 November 2026 · Status: **production environment selected; real-money execution is not activated**.
 
 This is the implementation and evaluation specification for the path from the current paper bot to a limited live pilot. Thresholds below are proposed project acceptance criteria, not proven profit guarantees or changes to running configuration. Freeze the evaluation specification before collecting its qualification sample. The existing `ROADMAP.md` remains untouched; historical items there must be checked against current code before implementation.
+
+**Environment decision:** use Delta India production for market data, account observation and eventual order execution. Testnet is excluded from this rollout at the operator's request. Production-feed paper/shadow fills remain simulations; exchange fills and protection are verified only during a separately approved, budgeted production pilot. Local unit tests and fault replay remain necessary and never send their simulated faults to the production account.
+
+**Immediate next delivery:** an independent production account observer while paper trading continues. Reuse the existing audit ledger; scope history by account identity and environment, handle credential changes, and reconcile balances, orders, positions, fees, tax, funding and confirmed offer credits. Show last sync, missing intervals and discrepancies. The saved-credential connection check currently supplies access verification only; the continuous audit timer depends on an executor and therefore does not run in paper mode. This work must not construct an order writer.
 
 ## 1. Starting evidence and constraints
 
 | Item | Verified position as of this plan | What remains |
 | --- | --- | --- |
-| Running VM | Last verified at `41d74f8`, active, configuration hash unchanged | Deploy and observe the repaired release |
-| Local release | `10d8110` reliability repairs; `8fc6ec7` execution research and validation | These commits are not yet deployed |
-| Tests | 942/942 server tests; 11 failures on old source become zero on identical recovery fixtures | Testnet lifecycle certification and sustained runtime evidence |
-| Type checking | Changed modules pass targeted strict checks | Resolve the 16 known full-project diagnostics before live certification |
+| Running VM | Last verified at `15a93a4`, active, configuration hash unchanged; 129 open positions preserved on the final restart | Complete sustained runtime observation |
+| Local release | `32022cc` execution boundary fixes and `15a93a4` pending-order warm-up repair deployed | Production observation and protection work remains |
+| Tests | 987/987 server tests and 7/7 dashboard tests passed on the deployed release | Production observation, isolated fault replay and later real-order lifecycle evidence |
+| Type checking | Full server type check and dashboard lint/build passed | Repeat relevant checks on subsequent implementation changes |
 | Economic evidence | Seven-day matched paper net: −$44.00 recorded versus −$151.17 at saved closing quotes, 182 exits | Profitable performance under realistic execution has not been established |
 | Coverage probe | 20 crypto pairs, three minutes, no detected sequence/checksum failures; all sampled quotes fresh | Full trade lifetimes, continuous retention and outage tests |
 | Execution | Durable intent/ledger and reconciliation code already exist | Private account stream, production protective-order path, lifecycle proof |
@@ -20,19 +24,19 @@ This is the implementation and evaluation specification for the path from the cu
 
 The 6× rule is a risk-to-cost ratio, not a fixed 6× leverage setting. Preserve the current paper configuration while establishing the baseline. Shadow synthetic dollars never count as account profit or proof of capital feasibility. Historical journal rows remain intact; new evidence is identified by source, simulation, execution and policy versions.
 
-Evidence: [execution validation](research/delta-execution-validation-2026-11-07.html), [machine-readable results](research/delta-execution-validation-2026-11-07.json), [realtime audit](research/delta-realtime-audit-2026-11-07.html).
+Evidence: [deployed repairs and validation](research/delta-execution-boundary-fix-2026-11-07.md), [execution validation](research/delta-execution-validation-2026-11-07.html), [machine-readable results](research/delta-execution-validation-2026-11-07.json), [realtime audit](research/delta-realtime-audit-2026-11-07.html). The earlier research measurements remain historical; the release status above supersedes the original plan's deployment status.
 
 ## 2. Phase sequence and dependencies
 
 | Phase | Dependency | Deliverable | Current status |
 | --- | --- | --- | --- |
-| P0 — establish the release baseline | None | Repaired VM, verified rollback and stable operations | Ready for deployment checks; not deployed |
+| P0 — establish the release baseline | None | Repaired VM, verified rollback and stable operations | Repairs deployed; sustained observation not yet certified |
 | P1 — record complete evidence | P0 | Multi-pair recording with continuity, retention and replay manifests | Short probe passed; recorder expansion not built |
 | P2 — align paper with executable orders | P1 | Causal entries/exits, realistic quantities, fees and funding | Research pricer tested; production integration pending |
-| P3 — certify exchange execution | P0; P2 parity before final certification | Protected, reconciled testnet lifecycle and production readiness enforcement | Partial foundation exists; certification absent |
+| P3 — prepare production execution | P0; P2 parity before pilot readiness | Production read-only reconciliation, isolated fault replay and protected execution implementation | Boundary fixes deployed; observer/protection work incomplete |
 | P4 — qualify scalp and swing policies | P1 + P2 | Frozen policies evaluated on unseen forward data | Not started under the corrected execution model |
-| P5 — limited live pilot | P0–P4 passed for the selected policy; operator approval | Small, explicitly budgeted live allocation | Ineligible today |
-| P6 — controlled expansion | Successful P5 and new capacity evidence | More exposure or pairs in separate increments | Not eligible |
+| P5 — limited production pilot | P0–P4 passed for the selected policy; operator approval | Small, budgeted real-order validation on production | Ineligible today |
+| P6 — controlled expansion | Successful P5, production execution certificate and new capacity evidence | More exposure or pairs in separate increments | Not eligible |
 
 P3 engineering can run alongside P1/P2. P4 data collection starts only after P2 is stable and the candidate is frozen. Scalp and swing qualify independently: one lane may advance while the other stays in paper. There is no calendar-based automatic launch.
 
@@ -42,7 +46,7 @@ P3 engineering can run alongside P1/P2. P4 data collection starts only after P2 
 
 Deliver an exact-SHA release of the tested fixes. Before restart, capture a consistent database backup, configuration hash, open/pending positions, enabled scanner set and deployment manifest. Restore the backup into an isolated database to verify it can be read. Preserve pending-order and bound-policy semantics across restart. Verify the UI asset version and authenticated service response after deploy.
 
-Acceptance: server tests pass; changed dashboard code passes its tests/lint/build; database migration and restart preserve positions and pending intent; recovery/duplicate-decision drills pass. Observe at least **48 continuous hours** with zero unexplained duplicate entries, lost position state or unhandled reconnect faults. This observation is operational evidence, not profitability evidence. All full-project type diagnostics must be resolved before P3 certification closes.
+Acceptance: server tests pass; changed dashboard code passes its tests/lint/build; database migration and restart preserve positions and pending intent; recovery/duplicate-decision drills pass. Observe at least **48 continuous hours** with zero unexplained duplicate entries, lost position state or unhandled reconnect faults. This observation is operational evidence, not profitability evidence. All full-project type diagnostics must be resolved before the P3 pre-pilot engineering review closes.
 
 Rollback: stop new entries, retain journal/config backups and revert only to a compatible release. A database restore must never overwrite subsequent exchange fills. If a schema cannot safely roll back, use a forward repair. Do not cancel protective orders merely because the bot is being redeployed.
 
@@ -75,7 +79,9 @@ Acceptance: deterministic replay gives identical decisions from the same input o
 
 Rollout: first record proposed fills beside the current engine. Then enable the corrected policy for a bounded paper cohort with new policy/simulation identity. Existing positions finish under their original bound rules. Increase coverage after reconciliation and replay invariants pass; account P&L may look worse as optimistic fills disappear.
 
-### P3 — exchange lifecycle and readiness
+### P3 — production observation and execution preparation
+
+All network observation uses the production environment. Continuous account observation must work without an executor, preserve account/environment isolation, and survive restarts and credential rotation. Paginated or malformed responses cannot advance history completeness. Missing or delayed costs stay pending; cash, promotional credits and paper P&L remain distinguishable. Verify the observer invokes only read operations, even if the saved key has trading permission.
 
 Extend the existing ledger/outbox/account-audit path. Add authenticated private order/fill/position events with REST backfill and reconciliation after reconnect. Use stable client-order IDs and reconcile uncertain acknowledgements before retrying. Private events are observations, not permission to send a second order.
 
@@ -83,9 +89,11 @@ Add a narrowly scoped production path for reduce-only protection and approved en
 
 For each filled entry quantity, confirm an exchange-held stop for the actual residual exposure. Define a bounded protection deadline: if protection cannot be confirmed, cancel the unfilled entry, request a reduce-only close of filled exposure, keep reconciling until flat and raise an incident. A proposed initial deadline is **2 seconds**; validate against measured exchange response times before pilot approval. This is a recovery deadline, not a promise that market losses stop at the trigger price.
 
-Acceptance: at least **100 testnet order lifecycles over seven days**, plus every critical fault case in section 6. Natural testnet activity and controlled fault injection must be distinguished. No duplicate exchange entries, position sign flips, quantity drift or unresolved safety incidents. Critical states reconcile immediately, with a periodic reconciliation backstop proposed at ≤5 seconds while exposure exists. Reconcile fees and funding to exchange accounting units and currency; late settlements are pending, not silently zero.
+Pre-pilot acceptance: every critical fault case in section 6 passes in an isolated harness with captured production events and explicitly labelled synthetic boundary cases. Run at least seven continuous days of production read-only observation; an inactive account supplies connectivity evidence but cannot establish fill or settlement reconciliation. Record real account activity where available and mark absent lifecycle evidence as not observed. No duplicate accounting, mixed accounts, falsely complete history or unresolved reconciliation errors. Critical states reconcile immediately, with a periodic reconciliation backstop proposed at ≤5 seconds while exposure exists. Reconcile fees and funding to exchange accounting units and currency; late settlements are pending, not silently zero.
 
-Certificate: exact build and execution version, permitted order types, policy hashes, dataset/test IDs, environment, timestamps, incidents and resolutions. Testnet liquidity/profit does not establish production profitability. Major execution changes invalidate the certificate; cosmetic UI changes do not. Reconfirm certificates and incident status before every live activation; proposed expiry is 30 days without recertification.
+Production-feed paper evaluation supplies market/economic evidence; isolated replay supplies fault-handling evidence. Neither proves exchange acceptance, queue priority, actual fills or actual protective-stop behavior. Those claims remain pending until P5 observes the corresponding real production orders. Do not deliberately reject stops, kill an exposed production process or disrupt the real account to manufacture a fault case; inject these failures only into isolated local tests with exchange writes disabled.
+
+Evidence package: exact build and execution version, permitted order types, policy hashes, dataset/test IDs, environment, timestamps, incidents and resolutions. P3 produces a **pre-pilot engineering review**, not an exchange execution certificate. P5 adds observed real-order lifecycle evidence before certification for P6. Major execution changes invalidate affected evidence; cosmetic UI changes do not. Reconfirm evidence and incident status before each activation; proposed certificate expiry is 30 days without recertification.
 
 ### P4 — economic qualification
 
@@ -95,13 +103,15 @@ Acceptance: the selected policy passes all registered economic, coverage and cap
 
 ### P5 — limited live pilot
 
-Present the operator with the exact certified policy/pair/timeframe allowlist, pilot capital, permissions, maximum notional, risk, loss budget and stop procedure. Explicit approval is required for real-money activation. Keep keys in the VM's approved secret store; use only needed trade permissions and no withdrawal permission, with IP restriction where supported.
+Present the operator with the exact economically qualified policy/pair/timeframe allowlist, pre-pilot engineering evidence, outstanding exchange verification, pilot capital, permissions, maximum notional, risk, loss budget and stop procedure. Explicit approval is required for real-money activation. Selecting the production environment does not supply the missing pilot allocation or authorize arbitrary validation trades. Keep keys in the VM's approved secret store; use only needed trade permissions and no withdrawal permission, with IP restriction where supported.
 
 Proposed pilot limits, to be approved separately: **one concurrent position**, $150 margin as an upper ceiling rather than a forced allocation, planned stop loss including costs ≤**0.25% of assigned pilot equity**, daily total-equity loss limit **1%**, and pilot peak-to-trough drawdown limit **3%**. Risk sizing uses the lower of current and initially assigned pilot equity. The daily loss denominator is equity at 00:00 UTC, adjusted for external cash transfers; transfers do not erase losses or reset the pilot drawdown. Use isolated margin where supported and verified. If the minimum contract breaches the budget, that pair cannot be used at that pilot capital. Limits trigger control actions; gaps, slippage and outages can cause losses beyond the planned amounts.
 
 Pilot results use actual exchange fills, fees, funding and executable marking. Entry readiness is enforced server-side at startup and at every new entry. Live results must not be overwritten by paper assumptions. Hold standard $150 paper sizing and its 3% ceiling unchanged while the pilot uses its stricter, explicitly approved allocation.
 
 Review after a fixed initial **14-day live window and at least 50 closed trades**; fewer trades means insufficient evidence, not automatic failure. No automatic size increase. The purpose is execution calibration and exposure control; 50 trades alone cannot establish a durable trading edge.
+
+For execution certification before P6, propose at least **100 completed production order lifecycles across seven or more days**, including independently confirmed protection, amendments/cancellations when used, final exposure and settled costs. These are naturally occurring orders under the approved strategy and budget, never churn created to reach a quota. Keep the 14-day pilot review requirement as well. Distinguish actual production observations from fault replay; a route with no real observation remains unverified. Any uncovered required lifecycle keeps that route outside expansion, regardless of total trade count. Measure maker fill rates, slippage, stop confirmation latency and reconciliation lag against the production-feed paper predictions, then carry the measured differences into the next economic evaluation.
 
 ### P6 — controlled expansion
 
@@ -188,7 +198,7 @@ Reuse `tradePolicy`, `policyHealth`, the ledger/outbox, existing risk halt histo
 
 ## 6. Required execution certification matrix
 
-All critical cases must pass. Record whether evidence comes from unit tests, recorded replay, controlled testnet drills or real testnet fills; one category does not silently substitute for another.
+All critical cases must pass in isolated tests. Record whether evidence comes from unit fixtures, recorded production replay, production read-only observation or approved real production orders; one category does not silently substitute for another. Synthetic faults are local software tests, excluded from strategy-profitability samples. No fault injector may write to the production exchange. Actual production order behavior is observed during P5; unobserved behavior is explicitly unverified.
 
 | Case | Required behavior / assertion |
 | --- | --- |
@@ -239,18 +249,18 @@ Daily scorecards are **specified here, not scheduled**. They should show data ga
 
 | Work ID | Task / primary source area | Acceptance owner | Evidence to produce |
 | --- | --- | --- | --- |
-| R0 | Release `10d8110` + `8fc6ec7`; ops/deploy and backup path | Release owner | Exact SHA, config hash, backup/restore proof, restart reconciliation, 48h observation |
+| R0 | Observe deployed `15a93a4`; ops/deploy and backup path | Release owner | Exact SHA, config hash, backup/restore proof, restart reconciliation, 48h observation |
 | D1 | Segmented capture, checkpoints, prioritization; depthRecorder/orderflow/wiring | Data/execution maintainer | Retention manifest, gap tests, 24h replay and load report |
 | X1 | Integrate causal exit pricing and provenance; paper engine/logic/tradePolicy | Execution maintainer | Paired replay, invariant tests, old/new policy attribution |
 | X2 | Route parity and partial/maker fills; entry/exit execution | Execution maintainer | Market/post-only/cancel/expiry/partial tests and matched opportunities |
-| A1 | Private events and accounting reconciliation; ledger/outbox/accountAudit | Execution maintainer | Reconnect/backfill/idempotence and fee/funding reconciliation |
-| S1 | Native protection and readiness enforcement; client/testnet/risk | Execution maintainer + operator | Fault matrix, protective deadlines, certificate; approval only for live activation |
+| A1 | Independent production observer, private events and accounting; connections/delta, ledger/outbox/accountAudit | Execution maintainer | Works in paper mode; reads only; account isolation; reconnect/backfill/idempotence and fee/funding reconciliation |
+| S1 | Native production protection and readiness enforcement; execution/client, execution/testnet, risk | Execution maintainer + operator | Isolated fault matrix, protective deadlines and pre-pilot review; actual production certificate after approved pilot |
 | E1 | Frozen scalp/swing evaluation and statistics; research/analytics/incubator | Strategy reviewer | Registered protocol, final holdout/stress/portfolio results |
-| U1 | Shared readiness projection; policyHealth/Decisions/Performance | Dashboard maintainer | Cross-page consistency and server-enforced authorization tests |
+| U1 | Shared production readiness projection; Exchange/policyHealth/Decisions/Performance | Dashboard maintainer | Separate feed environment, simulation mode, read-only sync and real-order verification; remove mandatory testnet copy; server-enforced authorization tests |
 
 Roles name responsibilities, not newly assigned people or autonomous agents. No new task, automation, deploy or trading permission is created by this document.
 
-Suggested review cadence: a release review after P0; a data/realism review after P1/P2; separate execution certification after P3; registered economic endpoints for P4; explicit pilot review before P5. Engineering duration depends on the implementation and tests. The observation windows start only when their prerequisites pass.
+Suggested review cadence: a release review after P0; a data/realism review after P1/P2; pre-pilot engineering review after P3; registered economic endpoints for P4; explicit pilot approval before P5; production execution certification after P5 and before P6. Engineering duration depends on the implementation and tests. The observation windows start only when their prerequisites pass. The existing file name `execution/testnet.ts` denotes shared executor code and is not evidence that a testnet host is selected; validate the actual transport environment.
 
 ## 10. Exchange references and document maintenance
 
