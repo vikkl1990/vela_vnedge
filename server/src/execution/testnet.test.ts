@@ -48,7 +48,7 @@ class FakeTransport implements ExchangeTransport {
     const id = this.seq++;
     const market = o.order_type === 'market_order' && !o.stop_order_type;
     const size = market ? (n.size ?? o.size) : o.size;
-    const ord: ExchangeOrder = { id, product_id: o.product_id, side: o.side, size: o.size, unfilled_size: market && !n.pending ? o.size - size : o.size, order_type: o.order_type, stop_order_type: o.stop_order_type ?? null, limit_price: o.limit_price ?? null, stop_price: o.stop_price ?? null, reduce_only: Boolean(o.reduce_only), client_order_id: o.client_order_id ?? null, state: n.pending ? 'pending' : market ? (size > 0 ? 'closed' : 'cancelled') : 'open', average_fill_price: market && size > 0 && !n.pending ? (n.price === undefined ? 100.5 : n.price) : null, paid_commission: market && !n.pending ? (n.fee ?? 0) : null };
+    const ord: ExchangeOrder = { id, product_id: o.product_id, side: o.side, size: o.size, unfilled_size: market && !n.pending ? o.size - size : o.size, order_type: o.order_type, stop_order_type: o.stop_order_type ?? null, stop_trigger_method: o.stop_trigger_method ?? null, limit_price: o.limit_price ?? null, stop_price: o.stop_price ?? null, reduce_only: Boolean(o.reduce_only), client_order_id: o.client_order_id ?? null, state: n.pending ? 'pending' : market ? (size > 0 ? 'closed' : 'cancelled') : 'open', average_fill_price: market && size > 0 && !n.pending ? (n.price === undefined ? 100.5 : n.price) : null, paid_commission: market && !n.pending ? (n.fee ?? 0) : null };
     this.orders.set(String(id), ord);
     return { id, state: ord.state };
   }
@@ -58,7 +58,7 @@ class FakeTransport implements ExchangeTransport {
   async order(id: number | string) { return this.orders.get(String(id)) ?? null; }
   async orderByClientId(cid: string) { if (this.lagLookups > 0) { this.lagLookups--; return null; } return [...this.orders.values()].find(o => o.client_order_id === cid) ?? null; }
   async setLeverage(product_id: number, leverage: number) { this.leverageCalls.push({ product_id, leverage }); if (this.failLeverage) throw new Error(this.failLeverage); return { leverage: this.holdLeverage ?? leverage }; }
-  async editOrder(e: EditOrder) { if (this.failEdit) throw new Error('Delta PUT /v2/orders → 400 edit refused'); this.edited.push(e); const o = this.orders.get(String(e.id)); if (o) { if (e.stop_price) o.stop_price = e.stop_price; if (e.size) { o.size = e.size; o.unfilled_size = e.size; } } return { id: e.id, state: 'open' }; }
+  async editOrder(e: EditOrder) { if (this.failEdit) throw new DeltaRequestError('edit refused', 400, 'order_edit_failed'); this.edited.push(e); const o = this.orders.get(String(e.id)); if (o) { if (e.stop_price) o.stop_price = e.stop_price; if (e.size) { o.size = e.size; o.unfilled_size = e.size; } } return { id: e.id, state: 'open' }; }
   /** The exchange fills a resting order on its own. */
   fill(id: number | string, price: number, fee = 0, size?: number) { const o = this.orders.get(String(id))!; const q = size ?? o.size; o.unfilled_size = o.size - q; o.state = o.unfilled_size <= 0 ? 'closed' : 'open'; o.average_fill_price = price; o.paid_commission = fee; }
   vanish(id: number | string) { const o = this.orders.get(String(id))!; o.state = 'cancelled'; }
@@ -157,6 +157,97 @@ test('edit refused: a new stop is placed BEFORE the old one is cancelled', async
   assert.deepEqual(fake.cancelled, [{ id: '2', product_id: 27 }]);
   assert.equal(ex.status().brackets[0].stop?.exchangeId, String(stops[1].id));
   void p;
+});
+
+for (const failure of ['timeout-after-apply', 'empty-ack-after-apply', 'timeout-before-apply', 'stale-readback', 'wrong-order', 'wrong-reduce-only', 'wrong-trigger', 'offset-after-apply']) {
+  test(`stop amendment ${failure}: confirmed protection or explicit uncertainty, never a duplicate`, async t => {
+    const { fake, ex, open, paper } = await setup(t);
+    const p = open(); await ex.flush();
+    const edit = fake.editOrder.bind(fake), lookup = fake.order.bind(fake);
+    fake.editOrder = async e => {
+      if (failure !== 'timeout-before-apply' && failure !== 'stale-readback') await edit(e);
+      if (failure === 'offset-after-apply') throw new DeltaRequestError('offset applied', 400, 'offset_by_reduce_only');
+      if (failure.startsWith('timeout') || failure === 'empty-ack-after-apply') throw Error('ambiguous edit acknowledgement');
+      return { id: e.id, state: 'open' };
+    };
+    fake.order = async id => {
+      const o = await lookup(id);
+      if (String(id) !== '2' || !o) return o;
+      if (failure === 'wrong-order') return { ...o, product_id: 999 };
+      if (failure === 'wrong-trigger') return { ...o, stop_trigger_method: 'last_traded_price' };
+      if (failure === 'wrong-reduce-only') return { ...o, reduce_only: false };
+      return o;
+    };
+    fake.fill(fake.byPurpose('tp')[0].id, 105);
+    paper.onBar('BTCUSD', { time: 120_000, high: 106, low: 100, close: 105.5 }, 120_010);
+    await ex.flush();
+    const confirmed = failure === 'timeout-after-apply' || failure === 'empty-ack-after-apply' || failure === 'offset-after-apply';
+    assert.equal(fake.byPurpose('stop').length, 1);
+    assert.equal(fake.cancelled.length, 0);
+    assert.equal(ex.ledger.get(2)!.state, confirmed ? 'acknowledged' : 'unknown');
+    assert.equal(ex.status().brackets[0].stop?.price, confirmed ? p.sl : 95);
+    assert.equal(ex.status().brackets[0].stop?.size, confirmed ? 120 : 200);
+    if (!confirmed) {
+      fake.editOrder = edit; fake.order = lookup;
+      await ex.recover(); await ex.flush();
+      assert.equal(fake.byPurpose('stop').length, 1, 'recovery updates the existing stop rather than duplicating it');
+      assert.equal(ex.status().brackets[0].stop?.price, p.sl);
+      assert.equal(ex.ledger.get(2)!.state, 'acknowledged');
+    }
+  });
+}
+
+test('crash after applied PUT restores the observed stop shape without another edit', async t => {
+  const db = new Db(':memory:'); t.after(() => db.db.close());
+  const fake = new FakeTransport(), a = await setup(t, {}, fake, db);
+  const p = a.open(); await a.ex.flush(); a.ex.stop();
+  a.ex.ledger.unknown(2, 'edit pending: awaiting independent readback');
+  fake.orders.get('2')!.stop_price = '96';
+  db.run('UPDATE positions SET sl=? WHERE id=?', 96, p.id);
+  const b = await setup(t, {}, fake, db);
+  assert.equal(b.ex.ledger.get(2)!.stopPrice, 96);
+  assert.equal(b.ex.ledger.get(2)!.state, 'acknowledged');
+  assert.equal(fake.edited.length, 0);
+  assert.equal(fake.byPurpose('stop').length, 1);
+});
+
+test('a stop that fills while an edit is rejected must settle, not be replaced', async t => {
+  const { fake, ex, open, paper } = await setup(t);
+  open(); await ex.flush();
+  fake.editOrder = async () => {
+    fake.fill(2, 95, 0, 20);
+    throw new DeltaRequestError('no open order', 400, 'open_order_not_found');
+  };
+  fake.fill(fake.byPurpose('tp')[0].id, 105);
+  paper.onBar('BTCUSD', { time: 120_000, high: 106, low: 100, close: 105.5 }, 120_010);
+  await ex.flush();
+  assert.equal(fake.byPurpose('stop').length, 1);
+  assert.equal(fake.cancelled.length, 0);
+  assert.equal(ex.ledger.get(2)!.state, 'unknown');
+  assert.equal(ex.status().brackets[0].stop?.price, 95);
+});
+
+test('reconciliation requests touched products even when the position inventory could be empty', async t => {
+  const { fake, ex, open } = await setup(t);
+  open(); await ex.flush();
+  let requested: number[] = [];
+  fake.positions = async (ids: number[] = []) => { requested = ids; return [{ symbol: 'BTCUSD', product_id: 27, size: 200, entry_price: 100.5 }]; };
+  assert.equal((await ex.reconcile()).ok, true);
+  assert.ok(requested.includes(27));
+});
+
+test('flatten sizes from real-time exposure after cancellation, including fills racing cancellation', async t => {
+  const { fake, ex } = await setup(t);
+  fake.positionsList = [];
+  fake.orders.set('40', { id: 40, product_id: 27, side: 'buy', size: 7, unfilled_size: 7, order_type: 'limit_order', state: 'open', reduce_only: false });
+  let cancelled = false;
+  fake.cancelAll = async pid => { assert.equal(pid, 27); cancelled = true; return {}; };
+  fake.positions = async (ids: number[] = []) => {
+    assert.ok(ids.includes(27), 'pending orders supply the product even without a margined position');
+    return cancelled ? [{ symbol: 'BTCUSD', product_id: 27, size: 7, entry_price: 100 }] : [];
+  };
+  await ex.closeAll({ confirm: true });
+  assert.deepEqual(fake.placed.map(o => [o.size, o.side, o.reduce_only]), [[7, 'sell', true]]);
 });
 
 test('paper stop hit but the exchange stop did not fire: it is cancelled and the exit goes out at market at the exchange price', async t => {
@@ -469,7 +560,7 @@ test('close-all cancels every order and sends reduce-only market orders against 
   const r = await ex.closeAll({ confirm: true });
   assert.deepEqual(fake.cancelledAll.sort(), [1, 27, 3136]);
   assert.deepEqual(fake.placed.map(o => [o.product_id, o.side, o.size, o.reduce_only, o.order_type, o.purpose]), [[27, 'sell', 150, true, 'market_order', 'close-all'], [3136, 'buy', 5, true, 'market_order', 'close-all']]);
-  assert.equal(r.closed.length, 2); assert.equal(r.dryRun, false);
+  assert.equal(r.submitted.length, 2); assert.equal(r.dryRun, false);
   assert.equal(ex.ledger.recent(5).filter(x => x.purpose === 'close-all').length, 2);
 });
 

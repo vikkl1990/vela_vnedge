@@ -46,7 +46,7 @@ test('thin candle pages continue backwards and respect the requested time window
 
 test('order mutations preserve ambiguity on server errors and malformed acknowledgements without retrying',async t=>{
   const rest=new DeltaRest({apiKey:'test',apiSecret:'test'});
-  for(const [status,body,definitive] of [[502,'{"success":false,"error":{"code":"gateway_error"}}',false],[200,'<html>upstream failed</html>',false],[400,'{"success":false,"error":{"code":"insufficient_margin"}}',true],[408,'{"error":{"code":"timeout"}}',false]] as const){
+  for(const [status,body,definitive] of [[502,'{"success":false,"error":{"code":"gateway_error"}}',false],[200,'<html>upstream failed</html>',false],[400,'{"success":false,"error":{"code":"insufficient_margin"}}',true],[408,'{"error":{"code":"timeout"}}',false],[400,'{"error":{"code":"offset_by_reduce_only"}}',false]] as const){
     let calls=0;t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response(body,{status});});
     await assert.rejects(rest.placeOrder({product_id:27,size:1,side:'buy',order_type:'market_order'}),e=>e instanceof DeltaRequestError&&e.definitive===definitive);
     assert.equal(calls,1);

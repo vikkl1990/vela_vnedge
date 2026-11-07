@@ -421,8 +421,7 @@ export class ExchangeExecutor {
     if (!this.stranded.has(p.id)) this.stranded.set(p.id, { symbol: p.symbol, product_id, exitSide, since: this.now(), attempts: 0 });
     const b = this.brackets.get(p.id);
     if (b?.stop && b.stop.size !== left && !(this.ledger.get(b.stop.ledgerId)?.filledSize)) {
-      try { await this.transport.editOrder({ id: b.stop.exchangeId, product_id, size: left }); this.ledger.edited(b.stop.ledgerId, { size: left }); b.stop.size = left; }
-      catch (e: any) { log.warn(`resize stop #${p.id} to ${left} failed: ${e?.message ?? e}`); }
+      await this.editStop(b, b.stop.price, left);
     }
     log.error(`STRANDED #${p.id} ${p.symbol}: the book is closed but the exchange still holds ${left}; ${b?.stop ? `stop ${b.stop.price} stays` : 'NO STOP on the exchange'}; closing the rest at market on the next sweep`);
     await this.closeStranded(p.id);
@@ -496,33 +495,75 @@ export class ExchangeExecutor {
     log.info(`bracket #${p.id} ${p.symbol}: stop ${b.stop?.price ?? '-'} x${b.stop?.size ?? 0}, tp ${b.tps.map(t => `${t.price}x${t.size}`).join(' ') || '-'}`);
   }
 
-  /** The paper stop moved or the open size changed: edit the resting stop in place; failing that, place the new one before cancelling the old. */
+  /** Verify the identity and protective semantics before adopting any returned order. */
+  private validateProtection(row: LedgerRow, o: ExchangeOrder): void {
+    if (o.product_id !== row.productId || o.side !== row.side || (row.exchangeId && String(o.id) !== row.exchangeId) || o.client_order_id !== row.clientOrderId || o.reduce_only !== true || (o.stop_order_type ?? o.order_type) !== row.orderType) throw new Error('protection identity or reduce-only mismatch');
+    if (!Number.isSafeInteger(o.size) || o.size <= 0 || !Number.isSafeInteger(o.unfilled_size) || o.unfilled_size! < 0 || o.unfilled_size! > o.size || o.size - o.unfilled_size! < row.filledSize) throw new Error('invalid or regressing protection quantities');
+    if (row.purpose === 'stop' && (o.stop_order_type !== 'stop_loss_order' || o.stop_trigger_method !== 'mark_price' || !Number.isFinite(Number(o.stop_price)) || Number(o.stop_price) <= 0)) throw new Error('invalid protective stop');
+    if (row.purpose === 'tp' && (!Number.isFinite(Number(o.limit_price)) || Number(o.limit_price) <= 0)) throw new Error('invalid protective target');
+    if (!['open', 'pending', 'closed', 'cancelled'].includes(o.state ?? '')) throw new Error('invalid protection state');
+  }
+
+  /** Persist uncertainty before PUT, then independently GET the exact protection.
+   * A timeout may have applied. Only an explicit rejection permits replacement. */
+  private async editStop(b: Bracket, price: number, size: number): Promise<'confirmed' | 'rejected' | 'unknown'> {
+    const stop = b.stop!;
+    const row = this.ledger.get(stop.ledgerId)!;
+    if (row.state !== 'acknowledged' || row.filledSize > 0) return 'unknown';
+    this.ledger.unknown(row.id, 'edit pending: awaiting independent readback');
+    let rejected = false;
+    try {
+      await this.transport.editOrder({ id: stop.exchangeId, product_id: b.product_id, stop_price: String(price), size });
+    } catch (e) {
+      rejected = e instanceof DeltaRequestError && e.definitive;
+      // Network failures, malformed acknowledgements and timeouts remain ambiguous.
+    }
+    try {
+      const o = await this.transport.order(stop.exchangeId);
+      if (!o) throw new Error('stop edit readback unavailable');
+      this.validateProtection(row, o);
+      if (!['open', 'pending'].includes(o.state!) || o.unfilled_size !== o.size) throw new Error('stop triggered during edit; reconcile fills');
+      if (o.size !== size || Number(o.stop_price) !== price) {
+        if (!rejected) throw new Error('stop edit not confirmed by readback');
+        this.ledger.edited(row.id, { stopPrice: Number(o.stop_price), size: o.size });
+        this.ledger.acknowledged(row.id, o.id);
+        stop.price = Number(o.stop_price); stop.size = o.size;
+        return 'rejected';
+      }
+      this.ledger.edited(row.id, { stopPrice: price, size });
+      this.ledger.acknowledged(row.id, o.id);
+      stop.price = price; stop.size = size;
+      return 'confirmed';
+    } catch {
+      this.ledger.unknown(row.id, 'edit outcome uncertain: retain existing protection and reconcile');
+      this.recoveryPending = true;
+      this.lastSeen.delete(b.positionId);
+      log.warn(`stop #${b.positionId} edit remains unconfirmed; no replacement submitted`);
+      return 'unknown';
+    }
+  }
+
+  /** Edit in place. Replace only after a definitive refusal, never an ambiguous response. */
   private async moveStop(p: Position, b: Bracket) {
     if (p.status !== 'open' || p.sl === null || p.qtyOpen <= 0) return;
-    // An already triggered partial stop is a working exit. Editing its total size
-    // as though it were remaining size can under-protect or reset cumulative evidence.
-    // Let confirmation/cancellation and the residual-exit path settle it first.
-    if(b.stop && (this.ledger.get(b.stop.ledgerId)?.filledSize??0)>0)return;
+    if (b.stop && (this.ledger.get(b.stop.ledgerId)?.filledSize ?? 0) > 0) return;
     if (this.ledger.unsettled().some(r => r.positionId === p.id && r.purpose === 'stop' && r.state !== 'acknowledged')) return;
-    const size = Math.round(this.exposure.get(p.id)??p.qtyOpen);
+    const size = Math.round(this.exposure.get(p.id) ?? p.qtyOpen);
+    if (size <= 0) return;
     if (b.stop) {
       if (b.stop.price === p.sl && b.stop.size === size) return;
-      try {
-        await this.transport.editOrder({ id: b.stop.exchangeId, product_id: b.product_id, stop_price: String(p.sl), size });
-        this.ledger.edited(b.stop.ledgerId, { stopPrice: p.sl, size });
-        b.stop.price = p.sl; b.stop.size = size;
-        log.info(`stop #${p.id} ${p.symbol} edited → ${p.sl} x${size}${p.breakEven ? ' (break-even)' : ''}`);
-        return;
-      } catch (e: any) { log.warn(`edit stop #${p.id} failed (${e?.message ?? e}); placing a new stop before cancelling the old`); }
+      const result = await this.editStop(b, p.sl, size);
+      if (result !== 'rejected') return;
+      log.warn(`edit stop #${p.id} rejected; placing a new stop before cancelling the old`);
     }
     const o = this.bracketPayloads(p, b.product_id).find(x => x.purpose === 'stop');
     if (!o) return;
-    o.size=size;
+    o.size = size;
     const old = b.stop;
     const sent = await this.send(o, p.id, p.symbol);
     if (!sent.ok) { log.error(`replace stop #${p.id} failed; ${old ? `the old stop at ${old.price} x${old.size} stays` : 'the position has NO exchange stop'}; the next update retries`); this.lastSeen.delete(p.id); return; }
     b.stop = { ledgerId: sent.row.id, exchangeId: String(sent.row.exchangeId), price: Number(o.stop_price), size: o.size, leg: 0 };
-    if (old) { try { await this.transport.cancelOrder(old.exchangeId, b.product_id); this.ledger.cancelled(old.ledgerId, 'replaced'); } catch (e: any) { log.warn(`cancel old stop ${old.exchangeId} failed: ${e?.message ?? e}`); } }
+    if (old) { try { await this.transport.cancelOrder(old.exchangeId, b.product_id); this.ledger.cancelled(old.ledgerId, 'replaced'); } catch { this.ledger.unknown(old.ledgerId, 'cancel outcome uncertain: replaced stop'); this.recoveryPending = true; } }
     log.info(`stop #${p.id} ${p.symbol} → ${o.stop_price} x${o.size}${p.breakEven ? ' (break-even)' : ''}`);
   }
 
@@ -629,7 +670,13 @@ export class ExchangeExecutor {
       try {
         const o = row.exchangeId ? await this.transport.order(row.exchangeId) : await this.transport.orderByClientId(row.clientOrderId);
         if (o && row.error?.startsWith('cancel') && o.state !== 'closed' && o.state !== 'cancelled') uncertainProtection.add(row.positionId);
-        else if (o) this.ledger.acknowledged(row.id, o.id); // step 2 settles terminal protection against open orders
+        else if (o) {
+          this.validateProtection(row, o);
+          // A crash or lost PUT acknowledgement may leave different price/size
+          // on the exchange. Restore the observed shape before cumulative fills.
+          this.ledger.edited(row.id, { size: o.size, ...(row.purpose === 'stop' ? { stopPrice: Number(o.stop_price) } : { limitPrice: Number(o.limit_price) }) });
+          this.ledger.acknowledged(row.id, o.id); // step 2 settles terminal protection
+        }
         else { this.ledger.unknown(row.id, 'protection outcome uncertain: no lookup result'); uncertainProtection.add(row.positionId); }
       } catch (e: any) { this.ledger.unknown(row.id, String(e?.message ?? e)); uncertainProtection.add(row.positionId); }
     }
@@ -736,12 +783,20 @@ export class ExchangeExecutor {
 
   // ---- reconciliation ----
 
+  /** Include touched products even if a new fill is absent from margin inventory. */
+  private positionProducts(orders: ExchangeOrder[] = []): number[] {
+    const ids = new Set([...this.ledger.productIds(), ...orders.map(o => o.product_id)]);
+    for (const p of this.paper.openPositions()) { const id = this.productId(p.symbol); if (id) ids.add(id); }
+    return [...ids];
+  }
+
   /** Compare exchange positions / open orders with the paper book; log and return every drift. */
   async reconcile(): Promise<ReconcileReport> {
     const at = this.now();
-    if (!this.transport.hasAuth) { this.lastReconcile = { at, ok: true, drift: [], positions: 0, orders: 0, error: 'no API keys: nothing to reconcile' }; return this.lastReconcile; }
+    if (!this.transport.hasAuth) { this.lastReconcile = { at, ok: false, drift: [], positions: 0, orders: 0, error: 'no API keys: nothing to reconcile' }; return this.lastReconcile; }
     try {
-      const [positions, orders] = await Promise.all([this.transport.positions(), this.transport.openOrders()]);
+      const orders = await this.transport.openOrders();
+      const positions = await this.transport.positions(this.positionProducts(orders));
       const drift: Drift[] = [];
       const paperBySymbol = new Map<string, { size: number; notional: number; qty: number }>();
       for (const p of this.paper.openPositions()) {
@@ -778,7 +833,7 @@ export class ExchangeExecutor {
   // ---- emergency ----
 
   /** Flatten the exchange account: cancel all orders, then a reduce-only market order against every open exchange position. */
-  async closeAll(opts: { confirm?: boolean } = {}): Promise<{ closed: Array<{ symbol: string; size: number; order: unknown }>; cancelled: number[]; dryRun: boolean }> {
+  async closeAll(opts: { confirm?: boolean } = {}): Promise<{ submitted: Array<{ symbol: string; size: number; order: unknown }>; cancelled: number[]; dryRun: boolean }> {
     if (opts.confirm !== true) throw new Error('close-all needs { "confirm": true }');
     if (!this.transport.hasAuth && !this.transport.dryRun) throw new Error('no API keys configured');
     // Flattening must not leave an unsent entry that can reopen exposure next sweep.
@@ -786,22 +841,34 @@ export class ExchangeExecutor {
       this.outbox.set(cmd.id,'cancelled','cancelled by flatten exchange');
       this.adopt(cmd.positionId,()=>this.paper.voidPosition(cmd.positionId,'exchange-flatten-unsent'));
     }
-    const positions = await this.transport.positions();
+    const orders = await this.transport.openOrders();
+    const knownProducts = this.positionProducts(orders);
+    const inventory = await this.transport.positions(knownProducts);
     const cancelled: number[] = [];
     const seen = new Set<number>();
-    for (const p of positions) if (!seen.has(p.product_id)) { seen.add(p.product_id); try { await this.transport.cancelAll(p.product_id); cancelled.push(p.product_id); } catch (e: any) { log.warn(`cancelAll ${p.symbol} failed: ${e?.message ?? e}`); } }
+    for (const p of [...inventory, ...orders.map(o => ({ product_id: o.product_id, symbol: this.symbolOf(o.product_id) }))]) if (!seen.has(p.product_id)) { seen.add(p.product_id); try { await this.transport.cancelAll(p.product_id); cancelled.push(p.product_id); } catch (e: any) { log.warn(`cancelAll ${p.symbol} failed: ${e?.message ?? e}`); } }
     for (const b of this.brackets.values()) if (!seen.has(b.product_id)) { seen.add(b.product_id); try { await this.transport.cancelAll(b.product_id); cancelled.push(b.product_id); } catch { /* ignore */ } }
-    for (const b of this.brackets.values()) for (const l of [...(b.stop ? [b.stop] : []), ...b.tps]) this.ledger.cancelled(l.ledgerId, 'close-all');
-    this.brackets.clear();
-    const closed: Array<{ symbol: string; size: number; order: unknown }> = [];
+    // Confirm which protections disappeared before changing durable state.
+    const remaining = await this.transport.openOrders();
+    const remainingIds = new Set(remaining.map(o => String(o.id)));
+    for (const [id, b] of this.brackets) {
+      const legs = [...(b.stop ? [b.stop] : []), ...b.tps];
+      for (const l of legs) {
+        if (!remainingIds.has(l.exchangeId)) await this.confirmOnce(this.ledger.get(l.ledgerId)!);
+        else this.ledger.unknown(l.ledgerId, 'cancel outcome uncertain: close-all');
+      }
+      if (legs.every(l => ['filled', 'cancelled'].includes(this.ledger.get(l.ledgerId)?.state ?? ''))) this.brackets.delete(id);
+    }
+    const positions = await this.transport.positions([...new Set([...knownProducts, ...seen])]);
+    const submitted: Array<{ symbol: string; size: number; order: unknown }> = [];
     for (const p of positions) {
       if (!p.size) continue;
       const payload: OrderPayload = { product_id: p.product_id, size: Math.abs(Math.round(p.size)), side: p.size > 0 ? 'sell' : 'buy', order_type: 'market_order', reduce_only: true, client_order_id: cid(0, 'closeall'), purpose: 'close-all' };
       const sent = await this.send(payload, 0, p.symbol);
-      closed.push({ symbol: p.symbol, size: p.size, order: { id: sent.row.exchangeId, state: sent.row.state, error: sent.error } });
+      submitted.push({ symbol: p.symbol, size: p.size, order: { id: sent.row.exchangeId, state: sent.row.state, error: sent.error } });
       log.error(`CLOSE-ALL ${p.symbol} ${payload.side} ${payload.size} → ${sent.row.state} ${sent.row.exchangeId ?? ''} ${sent.error ?? ''}`);
     }
-    return { closed, cancelled, dryRun: this.transport.dryRun };
+    return { submitted, cancelled, dryRun: this.transport.dryRun };
   }
 
   status() {

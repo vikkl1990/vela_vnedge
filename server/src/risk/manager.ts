@@ -164,7 +164,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
        (SELECT 1 FROM risk_close_receipts r WHERE r.position_id=p.id AND r.entry_at=p.entry_at) ORDER BY p.exit_at,p.id`))this.onTradeClosed(t);
   }
 
-  private onTradeClosed(t: { id?:number;entryAt?:number;scannerId: string; pnl: number; exitAt: number }) {
+  private onTradeClosed(t: { id?:number;entryAt?:number;scannerId: string; pnl: number; exitAt: number }): void {
     if(!this.db.inTransaction){const restore=this.checkpoint();try{return this.db.transaction(()=>this.onTradeClosed(t));}catch(e){restore();throw e;}}
     if(t.id!=null&&t.entryAt!=null){
       const r=this.db.run('INSERT OR IGNORE INTO risk_close_receipts(position_id,entry_at) VALUES(?,?)',t.id,t.entryAt);

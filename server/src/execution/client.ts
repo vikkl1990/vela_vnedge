@@ -8,7 +8,7 @@
  * limit/stop orders placed by this bot. `DryRunTransport` never sends a write: it records the
  * exact payloads (and can still read positions/orders through a real transport for reconciliation).
  */
-import { DELTA_INDIA_PROD, DELTA_INDIA_TESTNET, DeltaRest, type DeltaProduct } from '../delta/rest.ts';
+import { DELTA_INDIA_PROD, DELTA_INDIA_TESTNET, DeltaRest, DeltaRequestError, type DeltaProduct } from '../delta/rest.ts';
 import type { ExecutionConfig } from '../config.ts';
 import { logger } from '../log.ts';
 
@@ -27,14 +27,14 @@ export interface OrderPayload {
   stop_order_type?: 'stop_loss_order' | 'take_profit_order';
   stop_price?: string;
   stop_trigger_method?: 'mark_price' | 'last_traded_price';
-  time_in_force?: 'gtc' | 'ioc' | 'fok';
+  time_in_force?: 'gtc' | 'ioc';
   post_only?: boolean;
   /** Executor annotation (stripped before sending): what this order is for. */
   purpose?: 'entry' | 'exit' | 'stop' | 'tp' | 'close-all';
 }
 
 export interface ExchangePosition { symbol: string; product_id: number; size: number; entry_price: number; raw?: any }
-export interface ExchangeOrder { id: number | string; product_id: number; symbol?: string; side: 'buy' | 'sell'; size: number; unfilled_size?: number; order_type: string; stop_order_type?: string | null; limit_price?: string | null; stop_price?: string | null; reduce_only?: boolean; client_order_id?: string | null; state?: string; average_fill_price?: number | null; paid_commission?: number | null; raw?: any }
+export interface ExchangeOrder { id: number | string; product_id: number; symbol?: string; side: 'buy' | 'sell'; size: number; unfilled_size?: number; order_type: string; stop_order_type?: string | null; stop_trigger_method?: string | null; limit_price?: string | null; stop_price?: string | null; reduce_only?: boolean; client_order_id?: string | null; state?: string; average_fill_price?: number | null; paid_commission?: number | null; raw?: any }
 export interface EditOrder { id: number | string; product_id: number; stop_price?: string; limit_price?: string; size?: number }
 
 export interface ExchangeTransport {
@@ -43,7 +43,7 @@ export interface ExchangeTransport {
   readonly hasAuth: boolean;
   readonly dryRun: boolean;
   products(): Promise<Map<string, DeltaProduct>>;
-  positions(): Promise<ExchangePosition[]>;
+  positions(productIds?: number[]): Promise<ExchangePosition[]>;
   openOrders(product_id?: number): Promise<ExchangeOrder[]>;
   placeOrder(o: OrderPayload): Promise<{ id: number | string; state?: string; dryRun?: boolean }>;
   cancelOrder(id: number | string, product_id: number): Promise<unknown>;
@@ -73,8 +73,52 @@ export function assertProductionSafe(o: OrderPayload): void {
   if (o.purpose !== 'entry' && o.reduce_only !== true) throw new OrderValidationError('production refuses a non-entry order that is not reduce-only');
 }
 
-export function parseOrder(o: any): ExchangeOrder {
-  return { id: o.id, product_id: Number(o.product_id), symbol: o.product_symbol ?? o.symbol, side: o.side, size: Number(o.size ?? 0), unfilled_size: Number(o.unfilled_size ?? o.size ?? 0), order_type: o.order_type, stop_order_type: o.stop_order_type ?? null, limit_price: o.limit_price ?? null, stop_price: o.stop_price ?? null, reduce_only: Boolean(o.reduce_only), client_order_id: o.client_order_id ?? null, state: o.state, average_fill_price: o.average_fill_price != null ? Number(o.average_fill_price) : null, paid_commission: o.paid_commission != null ? Number(o.paid_commission) : null, raw: o };
+/** Invalid exchange data is unknown, never an empty book or a fabricated fill. */
+export class ExchangeResponseError extends Error {}
+function record(value: any): Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ExchangeResponseError('invalid exchange object');
+  return value;
+}
+function numberField(value: unknown, field: string, integer = false): number {
+  if ((typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '') throw new ExchangeResponseError(`missing or invalid exchange ${field}`);
+  const n = Number(value);
+  if (!Number.isFinite(n) || (integer && !Number.isSafeInteger(n))) throw new ExchangeResponseError(`invalid exchange ${field}`);
+  return n;
+}
+function productId(value: unknown): number {
+  const id = numberField(value, 'product_id', true);
+  if (id <= 0) throw new ExchangeResponseError('invalid exchange product_id');
+  return id;
+}
+function orderId(value: unknown): number | string {
+  if ((typeof value === 'number' && Number.isSafeInteger(value) && value > 0) ||
+      (typeof value === 'string' && /^[1-9][0-9]*$/.test(value))) return value;
+  throw new ExchangeResponseError('missing or invalid exchange order id');
+}
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  throw new ExchangeResponseError('invalid exchange reduce_only');
+}
+function priceField(value: unknown, field: string): string | null {
+  if (value == null) return null;
+  if (numberField(value, field) <= 0) throw new ExchangeResponseError(`invalid exchange ${field}`);
+  return String(value);
+}
+export function parseOrder(value: any): ExchangeOrder {
+  const o = record(value), id = orderId(o.id), pid = productId(o.product_id);
+  const size = numberField(o.size, 'size', true), unfilled = numberField(o.unfilled_size, 'unfilled_size', true);
+  if (size <= 0 || unfilled < 0 || unfilled > size) throw new ExchangeResponseError('invalid exchange cumulative quantities');
+  if (!['buy', 'sell'].includes(o.side) || !['market_order', 'limit_order'].includes(o.order_type) || !['open', 'pending', 'closed', 'cancelled'].includes(o.state)) throw new ExchangeResponseError('invalid exchange order side, type or state');
+  if (o.stop_order_type != null && !['stop_loss_order', 'take_profit_order'].includes(o.stop_order_type)) throw new ExchangeResponseError('invalid exchange stop type');
+  const avg = o.average_fill_price == null ? null : numberField(o.average_fill_price, 'average_fill_price');
+  if (avg !== null && (avg < 0 || (size > unfilled && avg === 0))) throw new ExchangeResponseError('invalid exchange average fill price');
+  if (o.client_order_id != null && (typeof o.client_order_id !== 'string' || o.client_order_id.length > 32)) throw new ExchangeResponseError('invalid exchange client order id');
+  return { id, product_id: pid, symbol: o.product_symbol ?? o.symbol, side: o.side, size, unfilled_size: unfilled, order_type: o.order_type, stop_order_type: o.stop_order_type ?? null, stop_trigger_method: o.stop_trigger_method ?? null, limit_price: priceField(o.limit_price, 'limit_price'), stop_price: priceField(o.stop_price, 'stop_price'), reduce_only: optionalBoolean(o.reduce_only), client_order_id: o.client_order_id ?? null, state: o.state, average_fill_price: avg, paid_commission: o.paid_commission == null ? null : numberField(o.paid_commission, 'paid_commission'), raw: o };
+}
+function orderAbsent(e: unknown): boolean {
+  return e instanceof DeltaRequestError && [400, 404].includes(e.status) && ['order_not_found', 'invalid_order_id', 'invalid_client_order_id'].includes(e.code ?? '');
 }
 
 export function validatePostOnly(o: OrderPayload): void {
@@ -83,7 +127,16 @@ export function validatePostOnly(o: OrderPayload): void {
 
 export function wirePayload(o: OrderPayload): Record<string, unknown> {
   validatePostOnly(o);
-  if (o.client_order_id !== undefined && (!o.client_order_id.length || o.client_order_id.length > 32)) throw new OrderValidationError('client_order_id must be 1..32 characters');
+  if (!Number.isSafeInteger(o.product_id) || o.product_id <= 0 || !Number.isSafeInteger(o.size) || o.size <= 0) throw new OrderValidationError('order requires positive integer product_id and size');
+  if (!['buy', 'sell'].includes(o.side) || !['market_order', 'limit_order'].includes(o.order_type)) throw new OrderValidationError('invalid order side or type');
+  if (o.time_in_force !== undefined && !['gtc', 'ioc'].includes(o.time_in_force)) throw new OrderValidationError('unsupported time_in_force; use gtc or ioc');
+  for (const name of ['reduce_only', 'post_only'] as const) if (o[name] !== undefined && typeof o[name] !== 'boolean') throw new OrderValidationError(`${name} must be boolean`);
+  for (const name of ['limit_price', 'stop_price'] as const) if (o[name] !== undefined && (typeof o[name] !== 'string' || o[name]!.trim() === '' || !Number.isFinite(Number(o[name])) || Number(o[name]) <= 0)) throw new OrderValidationError(`${name} must be a positive finite price`);
+  if (o.order_type === 'limit_order' && o.limit_price === undefined) throw new OrderValidationError('limit order requires limit_price');
+  if (o.stop_order_type !== undefined && (!['stop_loss_order', 'take_profit_order'].includes(o.stop_order_type) || o.stop_price === undefined)) throw new OrderValidationError('stop order requires a supported type and stop_price');
+  if (o.stop_price !== undefined && !o.stop_order_type) throw new OrderValidationError('stop_price requires stop_order_type');
+  if (o.stop_trigger_method !== undefined && (!o.stop_order_type || !['mark_price', 'last_traded_price'].includes(o.stop_trigger_method))) throw new OrderValidationError('invalid stop trigger');
+  if (o.client_order_id !== undefined && (typeof o.client_order_id !== 'string' || !o.client_order_id.length || o.client_order_id.length > 32)) throw new OrderValidationError('client_order_id must be 1..32 characters');
   const { purpose: _p, ...rest } = o;
   return rest;
 }
@@ -102,31 +155,62 @@ export class RestTransport implements ExchangeTransport {
   }
   get hasAuth(): boolean { return this.rest.hasAuth; }
   products() { return this.rest.products(); }
-  async positions(): Promise<ExchangePosition[]> {
-    const res = await this.rest.positions();
-    const list: any[] = Array.isArray(res) ? res : res?.result ?? [];
-    return list.map(p => ({ symbol: String(p.product_symbol ?? p.symbol ?? p.product?.symbol ?? ''), product_id: Number(p.product_id ?? p.product?.id), size: Number(p.size ?? 0), entry_price: Number(p.entry_price ?? 0), raw: p }));
+  async positions(productIds: number[] = []): Promise<ExchangePosition[]> {
+    // Inventory discovers external exposure. Known products cover fills that have
+    // not reached that inventory yet. Never use its delayed size for reconciliation.
+    const inventory = await this.rest.positions();
+    if (!Array.isArray(inventory)) throw new ExchangeResponseError('invalid exchange position inventory');
+    const symbols = new Map<number, string>(), ids = new Set(productIds.map(productId));
+    for (const item of inventory) {
+      const p = record(item), id = productId(p.product_id ?? p.product?.id);
+      if (symbols.has(id)) throw new ExchangeResponseError('duplicate exchange position product');
+      const symbol = p.product_symbol ?? p.symbol ?? p.product?.symbol;
+      if (typeof symbol !== 'string' || !symbol.length) throw new ExchangeResponseError('missing exchange position symbol');
+      numberField(p.size, 'position size', true);
+      symbols.set(id, symbol); ids.add(id);
+    }
+    if ([...ids].some(id => !symbols.has(id))) {
+      for (const p of (await this.rest.products()).values()) if (ids.has(p.id) && !symbols.has(p.id)) symbols.set(p.id, p.symbol);
+    }
+    for (const id of ids) if (!symbols.get(id)) throw new ExchangeResponseError('unknown exchange position product');
+    const pending = [...ids], result: ExchangePosition[] = [];
+    // Bound signed request fan-out; one failure invalidates the whole snapshot.
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      for (;;) {
+        const id = pending.shift(); if (id === undefined) return;
+        const p = record(await this.rest.position(id));
+        if (p.product_id !== undefined && productId(p.product_id) !== id) throw new ExchangeResponseError('exchange position identity mismatch');
+        const size = numberField(p.size, 'position size', true);
+        const entry = p.entry_price == null && size === 0 ? 0 : numberField(p.entry_price, 'position entry price');
+        if (entry < 0 || (size !== 0 && entry === 0)) throw new ExchangeResponseError('invalid exchange position entry price');
+        result.push({ symbol: symbols.get(id)!, product_id: id, size, entry_price: entry, raw: p });
+      }
+    }));
+    return result.sort((a, b) => a.product_id - b.product_id);
   }
   async openOrders(product_id?: number): Promise<ExchangeOrder[]> {
     const list = await this.rest.openOrders(product_id);
     return list.map(parseOrder);
   }
   async order(id: number | string): Promise<ExchangeOrder | null> {
-    try { const res = await this.rest.order(id); return res && res.id !== undefined ? parseOrder(res) : null; }
-    catch (e: any) { if (/404|not found|invalid_order/i.test(String(e?.message))) return null; throw e; }
+    try { const res = await this.rest.order(id); return parseOrder(res); }
+    catch (e: any) { if (orderAbsent(e)) return null; throw e; }
   }
   async orderByClientId(clientOrderId: string): Promise<ExchangeOrder | null> {
-    try { const res = await this.rest.orderByClientId(clientOrderId); return res && res.id !== undefined ? parseOrder(res) : null; }
-    catch (e: any) { if (/404|not found|invalid_order/i.test(String(e?.message))) return null; throw e; }
+    try { const res = await this.rest.orderByClientId(clientOrderId); return parseOrder(res); }
+    catch (e: any) { if (orderAbsent(e)) return null; throw e; }
   }
-  async editOrder(e: EditOrder) { const res = await this.rest.editOrder(e); return { id: res?.id ?? e.id, state: res?.state }; }
+  async editOrder(e: EditOrder) {
+    const res = await this.rest.editOrder(e), id = orderId(res?.id);
+    if (String(id) !== String(e.id)) throw new ExchangeResponseError('edit acknowledgement identity mismatch');
+    return { id, state: res?.state }; // The executor independently reads back the edited protection.
+  }
   async setLeverage(product_id: number, leverage: number) { const res = await this.rest.setLeverage(product_id, leverage); return { leverage: Number(res?.leverage ?? res?.result?.leverage ?? NaN) }; }
   async placeOrder(o: OrderPayload) {
     validatePostOnly(o);
     if (this.host === 'production') assertProductionSafe(o);
     const res = await this.rest.placeOrder(wirePayload(o) as any);
-    if (res?.id === undefined || res.id === null || String(res.id).length === 0) throw new Error('order acknowledgement missing id; outcome unknown');
-    return { id: res.id, state: res?.state };
+    return { id: orderId(res?.id), state: res?.state };
   }
   cancelOrder(id: number | string, product_id: number) { return this.rest.cancelOrder(id, product_id); }
   cancelAll(product_id: number) { return this.rest.cancelAll(product_id); }
@@ -150,7 +234,7 @@ export class DryRunTransport implements ExchangeTransport {
     log.info(`dry-run ${action} ${JSON.stringify(payload)}`);
   }
   products() { return this.reader?.products() ?? Promise.resolve(new Map<string, DeltaProduct>()); }
-  positions() { return this.reader?.hasAuth ? this.reader.positions() : Promise.resolve([]); }
+  positions(productIds?: number[]) { return this.reader?.hasAuth ? this.reader.positions(productIds) : Promise.resolve([]); }
   openOrders(product_id?: number) { return this.reader?.hasAuth ? this.reader.openOrders(product_id) : Promise.resolve([]); }
   async placeOrder(o: OrderPayload) { if (this.host === 'production') assertProductionSafe(o); const id = `dry-${this.seq++}`; this.record('place', wirePayload(o)); this.log.at(-1)!.id = id; return { id, state: 'dry-run', dryRun: true }; }
   async cancelOrder(id: number | string, product_id: number) { this.record('cancel', { id, product_id }); return { dryRun: true }; }
@@ -162,12 +246,12 @@ export class DryRunTransport implements ExchangeTransport {
     if (!mine) return this.reader?.hasAuth ? this.reader.order(id) : null;
     const p = mine.payload;
     const market = p.order_type === 'market_order' && !p.stop_order_type;
-    return { id, product_id: Number(p.product_id), side: p.side as 'buy' | 'sell', size: Number(p.size), unfilled_size: market ? 0 : Number(p.size), order_type: String(p.order_type), state: market ? 'closed' : 'open', average_fill_price: null, paid_commission: null, reduce_only: Boolean(p.reduce_only), client_order_id: String(p.client_order_id ?? '') };
+    return { id, stop_price: p.stop_price as string | undefined, stop_order_type: p.stop_order_type as string | undefined, stop_trigger_method: p.stop_trigger_method as string | undefined, limit_price: p.limit_price as string | undefined, product_id: Number(p.product_id), side: p.side as 'buy' | 'sell', size: Number(p.size), unfilled_size: market ? 0 : Number(p.size), order_type: String(p.order_type), state: market ? 'closed' : 'open', average_fill_price: null, paid_commission: null, reduce_only: Boolean(p.reduce_only), client_order_id: String(p.client_order_id ?? '') };
   }
   async orderByClientId(clientOrderId: string): Promise<ExchangeOrder | null> {
     const mine = this.log.find(l => l.action === 'place' && l.payload.client_order_id === clientOrderId);
     return mine?.id ? this.order(mine.id) : null;
   }
-  async editOrder(e: EditOrder) { this.record('edit', { ...e }); return { id: e.id, state: 'dry-run' }; }
+  async editOrder(e: EditOrder) { this.record('edit', { ...e }); const mine = this.log.find(l => l.action === 'place' && l.id === String(e.id)); if (mine) Object.assign(mine.payload, e); return { id: e.id, state: 'dry-run' }; }
   async setLeverage(product_id: number, leverage: number) { this.record('leverage', { product_id, leverage }); return { leverage }; }
 }

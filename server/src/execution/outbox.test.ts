@@ -24,7 +24,7 @@ class Exchange {
   async orderByClientId(id:string){return this.hidden?null:[...this.orders.values()].find(o=>o.client_order_id===id)??null;}
   async cancelOrder(id:number|string,_product:number){const o=this.orders.get(String(id));if(o?.state==='open')o.state='cancelled';return {};}
   async cancelAll(_p:number){return {};}
-  async editOrder(o:any){const r=this.orders.get(String(o.id));if(r)Object.assign(r,o);return {id:o.id};}
+  async editOrder(o:any){const r=this.orders.get(String(o.id));if(r){const filled=r.size-r.unfilled_size!;Object.assign(r,o);r.unfilled_size=r.size-filled;}return {id:o.id};}
 }
 function fixture(t:any,bracket=false){
   const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);

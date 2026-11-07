@@ -16,7 +16,7 @@ function fixture(t:any,margin=false){
   marginLeverage:{base:5,strong:5,weak:5,minTrades:20,lookback:30,strongAboveR:1,weakBelowR:-1}});
  cfg.scanners.s={enabled:true,symbols:['BTCUSD'],timeframes:['1h'],exitMode:'both'};
  const engine=new PaperEngine(db,()=>cfg);engine.sourceHashFor=()=> 'source-a';
- const event={kind:'entry' as const,side:'long' as const,price:100,sl:99,tp:[101,102,103],label:'entry',message:'',source:'alert',barTime:T-3600000,barIndex:0};
+ const event={kind:'entry' as const,side:'long' as const,price:100,sl:99,tp:[101,102,103],label:'entry',message:'',source:'alert' as const,barTime:T-3600000,barIndex:0};
  const ctx={scannerId:'s',scannerName:'s',symbol:'BTCUSD',tf:'1h',market:{tickSize:.01,contractValue:1},atr:1,refPrice:100,at:T,signalId:null,exitMode:'both' as const};
  return {db,cfg,engine,event,ctx};
 }

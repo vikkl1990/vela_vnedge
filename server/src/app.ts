@@ -365,7 +365,7 @@ export class App {
     const result = await this.executor.closeAll({ confirm: true });
     await this.executor.flush();
     const reconcile = await this.executor.reconcile();
-    log.error(`FLATTEN by ${actor}: ${result.closed.length} position(s) closed, ${result.cancelled.length} product(s) cancelled; reconcile ${reconcile.ok ? 'in step' : `${reconcile.drift.length} drift(s)`}; entries stay paused until resumed`);
+    log.error(`FLATTEN by ${actor}: ${result.submitted.length} close order attempt(s), ${result.cancelled.length} product(s) cancelled; reconcile ${reconcile.ok ? 'in step' : `${reconcile.drift.length} drift(s)`}; entries stay paused until resumed`);
     return { ...result, reconcile };
   }
 

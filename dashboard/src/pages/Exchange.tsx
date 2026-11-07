@@ -47,6 +47,10 @@ export function Exchange() {
         </div>
       </div>
 
+      <Panel title="Live readiness" right={<Pill tone="warn">Certification pending</Pill>}>
+        <p className="small">Paper trading is available. Before live use, this release still needs testnet evidence for protective orders, emergency closure and restart recovery, plus complete account fee and balance reconciliation.</p>
+        <p className="small muted">A successful API connection check verifies read access only. It does not certify trading permission or live execution.</p>
+      </Panel>
       <ExecutionQualityPanel />
       <ExecutionAccountingPanel data={e.accounting} dryRun={e.dryRun} />
       <div className="grid-2">
@@ -55,7 +59,7 @@ export function Exchange() {
             <div><dt>Account</dt><dd><BookBadge book="account" mode={e.dryRun ? 'dry-run' : e.mode} /></dd></div>
             <div><dt>Host</dt><dd className="mono">{e.host ?? '— (paper: no exchange attached)'}</dd></div>
             <div><dt>Executor credentials</dt><dd><StatusDot tone={e.hasKeys ? 'ok' : 'neutral'} /> {e.hasKeys ? 'present (environment)' : 'none'}</dd></div>
-            <div><dt>Brackets</dt><dd>{e.bracket ? 'stop-market + take-profit limits rest on the exchange' : 'off — every exit is sent at market when it happens'}</dd></div>
+            <div><dt>Brackets</dt><dd>{e.host === 'production' ? 'Production resting stops and targets are not certified in this release' : e.bracket ? 'Enabled — verify each order’s acknowledged state below' : 'Off'}</dd></div>
             <div><dt>Products known</dt><dd className="mono">{e.products ?? '–'}</dd></div>
           </dl>
           {auth.isAdmin && <p className="small"><Link to="/settings#delta-connection">Set up a Delta API connection</Link> for a read-only check. Saved connection credentials are separate from the executor.</p>}
@@ -67,7 +71,7 @@ export function Exchange() {
           ) : (
             <dl className="kv-list">
               <div><dt>When</dt><dd title={fmtUtc(e.lastReconcile.at)}><Time t={e.lastReconcile.at} mode="ago" /></dd></div>
-              <div><dt>Result</dt><dd><Pill tone={e.lastReconcile.ok ? 'ok' : 'danger'}>{e.lastReconcile.ok ? 'in step' : `${drift.length} drift(s)`}</Pill>{e.lastReconcile.error ? <span className="muted small"> {e.lastReconcile.error}</span> : null}</dd></div>
+              <div><dt>Result</dt><dd><Pill tone={e.lastReconcile.ok ? 'ok' : 'danger'}>{e.lastReconcile.error ? 'Unavailable' : e.lastReconcile.ok ? 'in step' : `${drift.length} drift(s)`}</Pill>{e.lastReconcile.error ? <span className="muted small"> {e.lastReconcile.error}</span> : null}</dd></div>
               <div><dt>Exchange</dt><dd className="mono">{e.lastReconcile.positions} position(s) · {e.lastReconcile.orders} open order(s)</dd></div>
             </dl>
           )}

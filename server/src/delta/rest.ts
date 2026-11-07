@@ -14,7 +14,7 @@ export class DeltaRequestError extends Error {
   constructor(message: string, status: number, code: string | null) {
     super(message); this.name = 'DeltaRequestError';
     this.status = status; this.code = code;
-    this.definitive = status >= 400 && status < 500 && ![408, 429].includes(status) && !!code && code !== 'bad_json';
+    this.definitive = status >= 400 && status < 500 && ![408, 429].includes(status) && !!code && !['bad_json', 'offset_by_reduce_only'].includes(code);
   }
 }
 
@@ -241,6 +241,11 @@ export class DeltaRest {
 
   async wallet(): Promise<any> { return this.request('GET', '/v2/wallet/balances', { auth: true }); }
   async positions(): Promise<any> { return this.request('GET', '/v2/positions/margined', { auth: true }); }
+  /** Real-time quantity for one product; the margined inventory can lag a fill. */
+  async position(product_id: number): Promise<any> {
+    if (!Number.isSafeInteger(product_id) || product_id <= 0) throw new Error('invalid position product_id');
+    return this.request('GET', '/v2/positions', { auth: true, query: { product_id } });
+  }
   async placeOrder(order: { product_id: number; size: number; side: 'buy' | 'sell'; order_type: 'market_order' | 'limit_order'; limit_price?: string; reduce_only?: boolean; client_order_id?: string; stop_order_type?: string; stop_price?: string; time_in_force?: string; post_only?: boolean }): Promise<any> {
     return this.request('POST', '/v2/orders', { auth: true, body: order, retries: 0 });
   }

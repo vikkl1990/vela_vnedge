@@ -624,7 +624,7 @@ export class ScannerEngine extends EventEmitter {
 
   private deliveryFingerprint(s:LoadedScanner,tf:string):string {
     const {sha,...parts}=configFingerprint(this.cfgRef(),s.id,tf,{source:sourceHash(s.patched),book:0}).parts;
-    return sourceHash(stablePolicy(parts));
+    return sourceHash(stablePolicy(parts))!; // Serializing this object always yields non-empty input.
   }
 
   private async handleLiveEvent(s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar, copied = false) {

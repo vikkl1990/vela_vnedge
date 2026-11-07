@@ -40,7 +40,7 @@ export class OrderLedger {
   }
 
   submitted(id: number, exchangeId: number | string | null, state: LedgerState = 'submitted') { this.set(id, { state, exchange_id: exchangeId === null ? null : String(exchangeId) }); }
-  acknowledged(id: number, exchangeId?: number | string) { this.set(id, { state: 'acknowledged', ...(exchangeId !== undefined ? { exchange_id: String(exchangeId) } : {}) }); }
+  acknowledged(id: number, exchangeId?: number | string) { this.set(id, { state: 'acknowledged', error: null, ...(exchangeId !== undefined ? { exchange_id: String(exchangeId) } : {}) }); }
   filled(id: number, f: { filledSize: number; avgPrice: number | null; fee: number | null }) {
     const r=this.get(id);
     this.set(id, { state: 'filled', filled_size: f.filledSize, avg_price: f.avgPrice, fee: f.fee,
@@ -69,6 +69,8 @@ export class OrderLedger {
   get(id: number): LedgerRow | undefined { const r = this.db.get<any>('SELECT * FROM exchange_orders WHERE id=? AND host=?', id, this.host); return r ? row(r) : undefined; }
   byClientId(cid: string): LedgerRow | undefined { const r = this.db.get<any>('SELECT * FROM exchange_orders WHERE client_order_id=? AND host=?', cid, this.host); return r ? row(r) : undefined; }
   forPosition(positionId: number): LedgerRow[] { return this.db.all<any>('SELECT * FROM exchange_orders WHERE position_id=? AND host=? ORDER BY id ASC', positionId, this.host).map(row); }
+  /** All touched products: a newly filled order can precede the margin inventory. */
+  productIds(): number[] { return this.db.all<{id:number}>('SELECT DISTINCT product_id id FROM exchange_orders WHERE host=?', this.host).map(r => r.id); }
   /** Orders that may still be alive on the exchange: sent but not yet settled either way. */
   unsettled(): LedgerRow[] { return this.db.all<any>(`SELECT * FROM exchange_orders WHERE host=? AND state IN (${OPEN_STATES.map(() => '?').join(',')}) ORDER BY id ASC`, this.host, ...OPEN_STATES).map(row); }
   /** Resting protection (stops and targets) believed to be on the exchange for one position. */
