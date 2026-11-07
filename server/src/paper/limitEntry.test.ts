@@ -5,11 +5,11 @@ import { DEFAULT_CONFIG, type AppConfig } from '../config.ts';
 import { PaperEngine } from './engine.ts';
 
 const H = 3600_000;
-function setup(tf = '4h', over: Partial<AppConfig['paper']> = {}) {
+function setup(tf = '4h', over: Partial<AppConfig['paper']> = {}, book = 0) {
   const db = new Db(':memory:');
   const cfg: AppConfig = structuredClone(DEFAULT_CONFIG);
   Object.assign(cfg.paper, { slippageBps: 0, feeRatePct: 0.05, makerFeeRatePct: 0.02, liquidation: false, latencyMs: 0, minRiskFeeRatio: 0, limitFill: 'through', limitEntry: { enabled: true, tfs: ['4h'], atr: 0.3, bars: 2, books: ['account', 'shadow'] } }, over);
-  const engine = new PaperEngine(db, () => cfg);
+  const engine = new PaperEngine(db, () => cfg, { book });
   const at = Math.floor(Date.now() / 60_000) * 60_000 + 1000;   // anchored to now: a restored limit must not have lapsed
   const enter = (side: 'long' | 'short' = 'long') => engine.onEntry({ kind: 'entry', side, price: 100, tp: [], label: 'entry', message: '', source: 'alert', barTime: at - ({ '15m': H / 4, '1h': H, '4h': 4 * H } as Record<string, number>)[tf], barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol: 'ETHUSD', tf, market: { tickSize: 0.01, contractValue: 1 }, refPrice: 100, at, signalId: null, exitMode: 'both', atr: 2 } as any);
   return { db, cfg, engine, at, enter };
@@ -239,4 +239,41 @@ test('failed cancellation keeps pending state and emits cancellation only after 
   db.db.exec("CREATE TEMP TRIGGER reject_cancel BEFORE DELETE ON positions BEGIN SELECT RAISE(ABORT,'injected cancellation failure'); END");
   assert.throws(()=>engine.cancelPending(pe.id),/injected/);assert.equal(engine.pendingEntries()[0],pe);assert.equal(cancellations,0);
   db.db.exec('DROP TRIGGER reject_cancel');assert.equal(engine.cancelPending(pe.id),true);assert.equal(engine.pendingEntries().length,0);assert.equal(cancellations,1);
+});
+
+for (const book of [0, 2]) for (const reason of ['exchange feed disconnected', 'exchange system status awaiting snapshot', 'exchange product status unknown or stale']) {
+  test(`restored limit waits for status without cancelling or backfilling: book ${book}, ${reason}`, t => {
+    const { db, cfg, at, enter } = setup('4h', { fillSource: 'tape' }, book); t.after(() => db.db.close());
+    enter();
+    const restored = new PaperEngine(db, () => cfg, { book });
+    let block: string | null = reason; restored.entryBlock = () => block;
+    const before = restored.pendingEntries()[0], expiry = before.limit!.expiresAt;
+    restored.housekeeping(at + 1000);
+    restored.onTrade('ETHUSD', 99, 1, at + 2000, at + 2000);
+    assert.equal(restored.openPositions().length, 0);
+    assert.equal(restored.pendingEntries().length, 1);
+    assert.equal(restored.pendingEntries()[0].limit!.expiresAt, expiry);
+    assert.equal(db.get<any>("SELECT count(*) n FROM decision_trace WHERE stage='cancelled'").n, 0);
+    block = null;
+    restored.housekeeping(at + 3000);
+    assert.equal(restored.openPositions().length, 0, 'restoring status alone must not backfill a missed print');
+    restored.onTrade('ETHUSD', 100, 1, at + 4000, at + 4000);
+    assert.equal(restored.openPositions().length, 0, 'a fresh price above the limit does not fill');
+    restored.onTrade('ETHUSD', 99.3, 1, at + 5000, at + 5000);
+    assert.equal(restored.openPositions().length, 1);
+    assert.equal(restored.openPositions()[0].entryAt, at + 5000);
+    assert.equal(restored.openPositions()[0].id, before.id);
+  });
+}
+
+test('status outages cannot extend limit expiry, and an observed halt still cancels', t => {
+  for (const mode of ['expiry', 'halt', 'expired-fill']) {
+    const { db, engine, at, enter } = setup('4h', { fillSource: 'tape' }); t.after(() => db.db.close());
+    enter(); const expiry = engine.pendingEntries()[0].limit!.expiresAt;
+    engine.entryBlock = () => mode === 'halt' ? 'exchange product disrupted_cancel_only' : 'exchange product status unknown or stale';
+    if (mode === 'expired-fill') engine.onTrade('ETHUSD', 99, 1, expiry, expiry);
+    else engine.housekeeping(mode === 'expiry' ? expiry : at + 1000);
+    assert.equal(engine.pendingEntries().length, 0);
+    assert.equal(engine.openPositions().length, 0);
+  }
 });

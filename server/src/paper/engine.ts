@@ -1,3 +1,4 @@
+import { transientTradingBlock } from '../delta/tradingStatus.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import {makeTradePolicy,saveTradePolicy,loadTradePolicy,evidenceCoverage,eligibleEvidence,type TradePolicy} from './tradePolicy.ts';
 import {scannerExitPolicy} from './policy.ts';
@@ -772,12 +773,15 @@ export class PaperEngine extends EventEmitter {
     if(pe.limit&&this.limitEntryAllowed?.()===false)return cancel("execution adapter cannot honor resting maker entry");
     const alignment=this.alignmentBlock(pe,pe.side,at);
     if(alignment)return cancel(alignment);
-    const exchangeBlock = this.entryBlock?.(pe.symbol, at);
-    if (exchangeBlock) return cancel(exchangeBlock);
     // decision 190: expiry is part of the fill, judged on the exchange's event time; a message that arrives more than
     // LIMIT_LATE_MS after its event is too late to act on, whatever the scheduler did in between
     if (eventAt >= L.expiresAt) return cancel(`no fill: the limit lapsed at ${new Date(L.expiresAt).toISOString()} before price came back to ${L.price}`);
     if (at - eventAt > LIMIT_LATE_MS) return cancel(`no fill: the price update arrived ${Math.round((at - eventAt) / 1000)}s after its event`);
+    const exchangeBlock = this.entryBlock?.(pe.symbol, at);
+    if (exchangeBlock) {
+      if (transientTradingBlock(exchangeBlock)) { this.pending.set(pe.id, pe); return null; }
+      return cancel(exchangeBlock);
+    }
     const levels = resolveLevels({ side: pe.side, price: L.price, sl: L.sl, tp: L.tp, atr: L.atr }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`limit filled past its levels (${levels.error})`);
     // a maker entry crosses no spread; the exit still pays it, as checkRiskVsFees counts
@@ -824,11 +828,14 @@ export class PaperEngine extends EventEmitter {
     const alignment=this.alignmentBlock(pe,pe.side,receivedAt);
     if(alignment)return cancel(alignment);
     if (pe.features?.copy_pilot && (!this.cfgRef().incubator.mirror?.enabled || !this.cfgRef().incubator.mirror?.pilot || this.cfgRef().execution.mode !== 'paper')) return cancel('copy pilot disabled');
-    const exchangeBlock = this.entryBlock?.(pe.symbol, receivedAt);
-    if (exchangeBlock) return cancel(exchangeBlock);
     // expiry belongs in the fill path, not only in housekeeping: a print can arrive past the
     // deadline before the next housekeeping tick and would otherwise still be filled
     if (receivedAt > pe.dueAt + PENDING_EXPIRY_MS) return cancel(`no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
+    const exchangeBlock = this.entryBlock?.(pe.symbol, receivedAt);
+    if (exchangeBlock) {
+      if (transientTradingBlock(exchangeBlock)) { this.pending.set(pe.id, pe); return null; }
+      return cancel(exchangeBlock);
+    }
     // A tape print wakes the order; it is not an executable market quote. Every deferred market
     // entry rechecks the current book and requireQuote policy, just like an immediate entry.
     let quoted = false;
@@ -905,10 +912,13 @@ export class PaperEngine extends EventEmitter {
         if (now>=pe.reclaim.state.at+pe.reclaim.state.options.setupMinutes*60_000+30_000) this.cancelPending(pe.id,'reclaim setup expired');
         continue;
       }
+      if (pe.limit ? now >= pe.limit.expiresAt : now > pe.dueAt + PENDING_EXPIRY_MS) {
+        this.cancelPending(pe.id, pe.limit ? `no fill: price did not come back to ${pe.limit.price} within ${pe.limit.bars} ${pe.tf} bars` : `no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
+        continue;
+      }
       const exchangeBlock = this.entryBlock?.(pe.symbol, now);
-      if (exchangeBlock) { this.cancelPending(pe.id, exchangeBlock); continue; }
-      if (pe.limit) { if (now > pe.limit.expiresAt) this.cancelPending(pe.id, `no fill: price did not come back to ${pe.limit.price} within ${pe.limit.bars} ${pe.tf} bars`); continue; }
-      if (now > pe.dueAt + PENDING_EXPIRY_MS) { this.cancelPending(pe.id, `no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`); continue; }
+      if (exchangeBlock) { if (!transientTradingBlock(exchangeBlock)) this.cancelPending(pe.id, exchangeBlock); continue; }
+      if (pe.limit) continue;
       // candles mode: the window has closed and no candle update has come for the symbol — fill at the mark
       if (this.configFor(pe).fillSource !== 'tape' && now >= pe.dueAt + QUIET_FILL_MS) { const m = this.marks.get(pe.symbol); if (m && m > 0) this.fillPending(pe, m, now, 'candle', now); }
     }

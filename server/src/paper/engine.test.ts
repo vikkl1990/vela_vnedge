@@ -513,3 +513,16 @@ test('late settlement persists once after close without duplicate execution even
  assert.equal(resumed.reconcileFunding('BTCUSD',.01,100,60020),0);
  assert.equal(db.get<any>("SELECT count(*) n FROM orders WHERE position_id=? AND reason='funding'",p.id)!.n,1);
 });
+
+test('a delayed market entry waits through missing status only until its original deadline', t => {
+  const { engine, cfg, open } = setup(t);
+  Object.assign(cfg.paper, { latencyMs: 1500, fillSource: 'tape' });
+  open(); const before = engine.pendingEntries()[0];
+  engine.entryBlock = () => 'exchange product status unknown or stale';
+  engine.housekeeping(before.dueAt + 1);
+  engine.onTrade('BTCUSD', 100, 1, before.dueAt + 2, before.dueAt + 2);
+  assert.equal(engine.pendingEntries().length, 1); assert.equal(engine.openPositions().length, 0);
+  assert.equal(engine.pendingEntries()[0].dueAt, before.dueAt);
+  engine.housekeeping(before.dueAt + 120_000);
+  assert.equal(engine.pendingEntries().length, 0); assert.equal(engine.openPositions().length, 0);
+});

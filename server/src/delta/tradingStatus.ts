@@ -1,3 +1,8 @@
+/** Missing observations defer an existing order; they do not prove a trading halt. */
+export function transientTradingBlock(reason: string): boolean {
+  return ['exchange feed disconnected', 'exchange system status awaiting snapshot', 'exchange product status unknown or stale'].includes(reason);
+}
+
 /** Entry admission only: exits remain risk-reduction intents. Product snapshots revalidate after reconnect. */
 export class TradingStatus {
   private online = false;

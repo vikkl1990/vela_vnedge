@@ -30,3 +30,11 @@ Remaining rollout work includes production protective-order lifecycle and a prot
 A successful credential check verifies authenticated reads only. It does not prove trading permission, complete accounting, profitable execution, or eligibility for a live pilot. Continue the acceptance process in [GO-LIVE-ROLLOUT.md](../GO-LIVE-ROLLOUT.md).
 
 Reference: [Delta India API documentation](https://docs.delta.exchange/), including Get Position, Get Margined Positions, Edit Order and order-error semantics; the supplied API reference export was cross-checked during the preceding audit.
+
+## Restart validation follow-up
+
+The first deployment exposed an existing paper-layer gap: seven unfilled limits (one account, six shadow) were cancelled by the `exchange product status unknown or stale` admission result during metadata warm-up. All were still before expiry; no filled position or bound policy was lost. The cancellation traces and account signal action established the cause.
+
+The corrective follow-up retains pending orders during disconnected/awaiting-snapshot/stale-status observations, without allowing a fill. Their original expiry and reservations remain binding. Status recovery alone never fills a resting limit: a subsequent eligible price observation is required. Confirmed maintenance or product restrictions still cancel, and missing status cannot extend an expired order. Already cancelled historical limits are not recreated.
+
+Final validation: **987/987 server tests**, full server type check passed; eight new warm-up tests pass, seven of which fail on the baseline. The earlier 21 execution-boundary regression cases remain green. Dashboard tests/lint/build passed in the clean release checkout. This follow-up changes pending-order handling in paper and shadow; it does not enable live execution.
