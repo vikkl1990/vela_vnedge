@@ -53,7 +53,7 @@ const GROUPS: Array<{ label: string; items: NavItem[] }> = [
       { to: '/', label: 'Overview', icon: IconActivity, end: true, key: 'o' },
       { to: '/signals', label: 'Signals', icon: IconBell, key: 'i' },
       { to: '/radar', label: 'Radar', icon: IconGrid, key: 'w' },
-      { to: '/trades', label: 'Trades', icon: IconTrades, key: 't' },
+      { to: '/trades', label: 'Journals', icon: IconTrades, key: 't' },
       { to: '/chart', label: 'Chart', icon: IconCandles, key: 'c' },
     ],
   },
@@ -103,7 +103,7 @@ function routeMeta(pathname: string, scannerName?: string): { title: string; sec
   const m = /^\/scanners\/([^/]+)/.exec(pathname)
   if (m) return { title: scannerName ?? decodeURIComponent(m[1]), section: 'Research', parent: { label: 'Scanners', to: '/scanners' } }
   const r = /^\/trades\/(\d+)\/replay/.exec(pathname)
-  if (r) return { title: `Trade #${r[1]} replay`, section: 'Trade', parent: { label: 'Trades', to: '/trades' } }
+  if (r) return { title: `Trade #${r[1]} replay`, section: 'Trade', parent: { label: 'Journals', to: '/trades' } }
   const seg = pathname === '/' ? '/' : `/${pathname.replace(/^\//, '').split('/')[0]}`
   const group = GROUPS.find((g) => g.items.some((n) => n.to === seg))
   const nav = group?.items.find((n) => n.to === seg)

@@ -23,7 +23,7 @@ export function validatePerformanceFilter(f: PerformanceFilter): void {
   if (f.side && f.side !== 'long' && f.side !== 'short') throw new Error('Invalid direction.');
 }
 
-function fundingOf(raw: string): number | null {
+export function fundingOf(raw: string): number | null {
   try {
     const data = JSON.parse(raw);
     // Legacy rows have an empty array; current rows wrap fills with execution metadata.

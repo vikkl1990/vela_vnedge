@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS decision_trace (
  signal_id INTEGER, position_id INTEGER, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,
  stage TEXT NOT NULL, reason TEXT, snapshot TEXT NOT NULL DEFAULT '{}'
 );
+CREATE INDEX IF NOT EXISTS idx_trace_journal ON decision_trace(position_id,book,stage,id);
 CREATE INDEX IF NOT EXISTS idx_decision_trace_book_id ON decision_trace(book,id DESC);
 CREATE INDEX IF NOT EXISTS idx_decision_trace_signal ON decision_trace(signal_id,id);
 CREATE INDEX IF NOT EXISTS idx_decision_trace_position ON decision_trace(position_id,stage,id);
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS positions (
   exit_at INTEGER, exit_price REAL, exit_reason TEXT, signal_id INTEGER, fills TEXT NOT NULL DEFAULT '[]', bt INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status, bt);
+CREATE INDEX IF NOT EXISTS idx_positions_journal ON positions(bt,status,exit_at,id);
 CREATE TRIGGER IF NOT EXISTS trace_position_status AFTER UPDATE OF status ON positions
 WHEN OLD.status != NEW.status
 BEGIN
@@ -94,6 +96,7 @@ CREATE TABLE IF NOT EXISTS orders (
   ref_price REAL, bid REAL, ask REAL, quote_at INTEGER, price_source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_orders_at ON orders(at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_journal ON orders(position_id,bt,at,id);
 
 CREATE TABLE IF NOT EXISTS ops_metrics (
   at INTEGER PRIMARY KEY, rss INTEGER NOT NULL, heap INTEGER NOT NULL, rss_pct REAL NOT NULL, queued INTEGER NOT NULL, busy INTEGER NOT NULL, recycled INTEGER NOT NULL,

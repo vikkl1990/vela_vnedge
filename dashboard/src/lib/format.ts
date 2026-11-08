@@ -39,6 +39,12 @@ export function fmtPrice(v: number | null | undefined, tickSize?: number): strin
   return fmt(d, d).format(v)
 }
 
+const recordedPrice = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 10 })
+/** Audit prices must distinguish nearby entry/stop levels even on very small-priced pairs. */
+export function fmtRecordedPrice(v: number | null | undefined): string {
+  return isNum(v) ? recordedPrice.format(v) : 'Unknown'
+}
+
 export function fmtNum(v: number | null | undefined, decimals = 2): string {
   if (!isNum(v)) return '–'
   return fmt(decimals, decimals).format(v)

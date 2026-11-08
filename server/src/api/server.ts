@@ -25,6 +25,7 @@ import { overlapClusters } from '../incubator/overlap.ts';
 import { lockStudy } from '../analytics/lockStudy.ts';
 import { ContributionService } from '../scanners/contributions.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
+import { Journal, journalFilter } from '../analytics/journal.ts';
 
 const log = logger.scoped('api');
 
@@ -374,7 +375,7 @@ export class ApiServer {
         tpHit: JSON.parse(row.tp_hit || '[]') as number[], peakR: row.peak_r ?? null, peakAt: row.peak_at ?? null,
         worstR: row.worst_r ?? null, exitAt: row.exit_at ?? null, exitPrice: row.exit_price ?? null, exitReason: row.exit_reason ?? null,
         // decision 156: what the replay page shows beside the chart
-        tf: row.tf, scannerId: row.scanner_id, scannerName: row.scanner_name, book: row.bt === 0 ? 'paper' : row.bt === 2 ? 'shadow' : 'backtest',
+        tf: row.tf, scannerId: row.scanner_id, scannerName: row.scanner_name, book: [0,-1].includes(row.bt) ? 'paper' : [2,-3].includes(row.bt) ? 'shadow' : 'backtest',
         status: row.status, levelsSource: row.levels_source ?? null, realizedPnl: row.realized_pnl, fees: row.fees, riskAmount: row.risk_amount,
       };
       return { position: levels, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
@@ -391,6 +392,16 @@ export class ApiServer {
     };
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), ...tradeFilter(url) }));
     this.add('GET', '/api/trades/page', (_r, _s, _p, url) => a.paper.tradesPage({ limit: Number(url.searchParams.get('limit') ?? 300), offset: Number(url.searchParams.get('offset') ?? 0), ...tradeFilter(url) }));
+    const journal = new Journal(a.db);
+    this.add('GET', '/api/journal', (_r, _s, _p, url) => journal.page(journalFilter(url.searchParams)));
+    this.add('GET', '/api/journal/export', (_r, res, _p, url) => {
+      const filter = journalFilter(url.searchParams), fills = url.searchParams.get('kind') === 'fills';
+      const csv = journal.csv(filter, fills);
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename="vn-edge-${filter.book}-${fills ? 'fills' : 'journal'}-${new Date().toISOString().slice(0,10)}.csv"` });
+      res.end(csv);
+    });
+    this.add('GET', '/api/journal/:id', (_r, _s, p, url) => journal.detail(journalFilter(url.searchParams).book, Number(p.id)));
     this.add('GET', '/api/orders', (_r, _s, _p, url) => a.paper.orders(Number(url.searchParams.get('limit') ?? 200)));
     this.add('GET', '/api/stats', () => a.paper.stats());
     this.add('GET', '/api/equity', (_r, _s, _p, url) => a.paper.equityCurve(url.searchParams.get('scanner'), Number(url.searchParams.get('limit') ?? 2000)));

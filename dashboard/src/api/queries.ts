@@ -64,6 +64,8 @@ export function useBackendOnline(): { online: boolean; error: ApiError | null; c
  * Anything not pushed over SSE (markets, config) refreshes on a slow interval.
  */
 const LIVE_STALE = 30_000
+export const useJournal = (q: import('./journal').JournalQuery, enabled = true) => useQuery({ queryKey: ['journal', q], queryFn: () => api.journal(q), enabled, refetchInterval: 30_000, retry: 1 })
+export const useJournalDetail = (book: string, id: number | null) => useQuery({ queryKey: ['journal-detail', book, id], queryFn: () => api.journalDetail(book, id!), enabled: id !== null, refetchInterval: 30_000, retry: 1 })
 
 export const useContext = () => useQuery({ queryKey: ['context'], queryFn: api.context, refetchInterval: 5 * 60_000, staleTime: 60_000, retry: 1 })
 export const useGates = () => useQuery({ queryKey: ['gates'], queryFn: api.gates, refetchInterval: 30_000, staleTime: 15_000, retry: 1 })

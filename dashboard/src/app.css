@@ -1633,7 +1633,7 @@ body { overflow-x: clip; }
  .quality-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* Closed trade review: stable URL filters, full-result totals, readable phone cards. */
+/* Paper / shadow journals: stable filters, full-result totals and retained trade detail. */
 .journal-filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; padding: 16px 16px 8px; align-items: start; }
 .journal-filters label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: 12px; }
 .journal-filters .select, .journal-filters .input { width: 100%; min-width: 0; max-width: 100%; }
@@ -1668,9 +1668,8 @@ body { overflow-x: clip; }
 .journal-card-actions .btn, .position-card-actions .btn { min-height: 44px; flex: 1; justify-content: center; }
 @media (max-width: 760px) {
   .journal-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
-  .journal-filters label:nth-child(5) { grid-column: 1 / -1; }
   .journal-filters .select, .journal-filters .input, .trade-journal .btn { min-height: 44px; }
-  .journal-totals { margin-inline: 12px; }
+  .journal-totals { margin-inline: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .journal-totals > div { padding: 10px 8px; }
   .journal-totals span { font-size: 11px; }
   .journal-totals strong { font-size: 18px; }

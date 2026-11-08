@@ -1,61 +1,30 @@
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { TradeJournal } from '../components/TradeJournal'
-import { AccountingBadge } from '../components/ExecutionAccounting'
-import { useCloseAll, useExecution, useMarkets, useOrders, usePositions } from '../api/queries'
-import type { Order } from '../api/types'
-import { DataTable, type Column } from '../components/DataTable'
+import { useCloseAll, useExecution, usePositions } from '../api/queries'
 import { PositionsTable } from '../components/PositionsTable'
-import { BookBadge, ConfirmDialog, ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pill, Pnl, QueryState, Time } from '../components/ui'
-import { fmtInt, fmtMoney, fmtPrice } from '../lib/format'
+import { BookBadge, ConfirmDialog, ErrorState, Loading, PageTitle, Panel } from '../components/ui'
 import { useToast } from '../lib/toast'
 
 export function Trades() {
   const positions = usePositions()
-  const markets = useMarkets()
+  const [params] = useSearchParams()
+  const shadow = params.get('book') === 'shadow'
   const closeAll = useCloseAll()
   const exec = useExecution()
   const mode = exec.data?.mode ?? 'paper'
   const mirrored = mode !== 'paper' && !exec.data?.dryRun
   const toast = useToast()
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
-  const orders = useOrders(200)
-
-  const orderCols = useMemo<Column<Order>[]>(() => {
-    const tick = (sym: string) => markets.data?.find((m) => m.symbol === sym)?.tickSize
-    return [
-      { key: 'at', header: 'Time', value: (o) => o.at, render: (o) => <Time t={o.at} mode="datetime" className="small" /> },
-      { key: 'symbol', header: 'Symbol', value: (o) => o.symbol, render: (o) => <b>{o.symbol}</b> },
-      { key: 'side', header: 'Side', value: (o) => o.side, render: (o) => <span className={`side ${o.side === 'buy' ? 'side-long' : 'side-short'}`}>{o.side.toUpperCase()}</span> },
-      { key: 'qty', header: 'Qty', numeric: true, value: (o) => o.qty, render: (o) => <span className="mono">{fmtInt(o.qty)}</span> },
-      {
-        key: 'price', header: 'Price', numeric: true, value: (o) => o.price, title: 'exch = exchange fill; depth/q = simulated crossing of observed liquidity; candle = simulated OHLC fill (stop gaps and configured costs included)',
-        render: (o) => <span className="mono">{fmtPrice(o.price, tick(o.symbol))}{o.accountingState && o.accountingState!=='complete' ? <AccountingBadge pending /> : o.priceSource === 'exchange' ? <Pill tone="ok" className="ml">exch</Pill> : o.priceSource === 'depth' ? <span className="muted small"> depth</span> : o.priceSource === 'quote' ? <span className="muted small"> q</span> : o.priceSource === 'candle-model' ? <span className="muted small" title="Modelled from candle prices; this is not an exchange-confirmed fill"> candle</span> : null}</span>,
-      },
-      { key: 'funding', header: 'Funding (USD)', numeric: true, value: o => o.pnl, render: o => o.reason === 'funding' ? <span title="Paper settlement cashflow; source coverage is on Exchange">{o.pnl == null ? 'unavailable' : <Pnl value={o.pnl} />}</span> : <span className="muted">–</span> },
-      { key: 'fee', header: 'Commission (USD)', numeric: true, value: (o) => o.fee, render: (o) => <span className="mono muted">{fmtMoney(o.fee)}</span> },
-      { key: 'reason', header: 'Reason', value: (o) => o.reason, render: (o) => <ExitReasonPill reason={o.reason} /> },
-      { key: 'pos', header: 'Pos', numeric: true, value: (o) => o.positionId, render: (o) => <span className="mono muted">#{o.positionId}</span> },
-      {
-        key: 'scanner',
-        header: 'Scanner',
-        value: (o) => o.scannerId,
-        render: (o) => (
-          <Link to={`/scanners/${o.scannerId}`} className="link small">
-            {o.scannerId}
-          </Link>
-        ),
-      },
-    ]
-  }, [markets.data])
-
   const openCount = positions.data?.length ?? 0
 
   return (
     <div className="page">
-      <PageTitle pre="Positions," accent="managed" post="to the last fill." sub={<>The account's open exposure, closed trades and fills. <BookBadge book="account" mode={mode} short /> Shadow-book trades live in the Incubator; backtests in each scanner.</>} />
+      <PageTitle pre="Every trade," accent="its" post="recorded story." sub={<>Paper and shadow journals: signals, sizing, stops, targets, costs and every retained fill. <BookBadge book={shadow ? "shadow" : "account"} mode={mode} short /></>} />
 
-      <Panel
+      <TradeJournal />
+
+      {!shadow && <Panel
         title={
           <span>
             Open positions <span className="muted small">({openCount})</span>
@@ -75,15 +44,7 @@ export function Trades() {
         ) : (
           <PositionsTable positions={positions.data ?? []} />
         )}
-      </Panel>
-
-      <TradeJournal />
-
-      <Panel title="Orders / fills" right={<span className="small muted">Latest 200 · all markets · independent of journal filters</span>} pad={false}>
-        <QueryState {...orders} data={orders.data} empty="No fills yet." hint="Every paper fill (entry, partial TP, exit) is logged here." skeleton="table" skeletonRows={5} skeletonCols={9} onRetry={() => orders.refetch()}>
-          {(d) => <DataTable columns={orderCols} rows={d} rowKey={(o) => o.id} defaultSort={{ key: 'at', dir: 'desc' }} caption="Orders and fills" />}
-        </QueryState>
-      </Panel>
+      </Panel>}
 
       <ConfirmDialog
         open={confirmCloseAll}

@@ -1,182 +1,81 @@
-import { useMemo, useState } from 'react'
-import { AccountingBadge } from './ExecutionAccounting'
-import { Link, useSearchParams } from 'react-router-dom'
-import { useMarkets, useScannerIndex, useTradesPage } from '../api/queries'
-import type { Trade } from '../api/types'
+import { useSearchParams } from 'react-router-dom'
+import { api } from '../api/client'
+import { useJournal, useMarkets, useScannerIndex } from '../api/queries'
+import type { JournalQuery, JournalRow } from '../api/journal'
 import { DataTable, type Column } from './DataTable'
-import { TradePath } from './TradePath'
-import { ErrorState, ExitReasonPill, Loading, Panel, Pnl, SidePill, StatusDot, Time } from './ui'
-import { fmtDuration, fmtInt, fmtMoney, fmtPct, fmtPnl, fmtPrice, fmtR, fmtTime } from '../lib/format'
+import { JournalDetailPanel } from './JournalDetail'
+import { Panel, Pill, Pnl, QueryState, Time } from './ui'
+import { fmtMoney, fmtRecordedPrice as price, fmtR } from '../lib/format'
 import { JOURNAL_PAGE_SIZE, JOURNAL_PERIODS, journalFilters, updateJournalFilters } from '../lib/journalFilters'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
-import { useMediaQuery } from '../lib/useMediaQuery'
 import { useNow } from '../lib/useNow'
 
-const EXIT_REASONS: Record<string, string> = { sl: 'Stop loss', trail: 'Trailing stop', be: 'Break-even', tp1: 'Take profit 1', tp2: 'Take profit 2', tp3: 'Take profit 3', script_exit: 'Script exit', reversal: 'Reversal', manual: 'Manual close', tp_partial: 'Partial take profit', liquidation: 'Liquidation', removed: 'Scanner removed' }
-
+const money = (n: number | null) => n === null ? 'Unknown' : fmtMoney(n)
 export function TradeJournal() {
-  const [params, setParams] = useSearchParams()
-  const now = useNow(60_000)
-  const f = journalFilters(params, now)
-  const update = (values: Record<string, string>) => setParams(updateJournalFilters(params, values))
-  const [scannerSearch, setScannerSearch] = useState('')
-  const [pathOf, setPathOf] = useState<{ id: number; title: string } | null>(null)
-  const scanners = useScannerIndex()
-  const markets = useMarkets()
-  const pageQ = useTradesPage(f.query, !f.error)
-  // Never show the previous selection's rows or totals beneath new filters.
-  const trades = { ...pageQ, data: f.error ? undefined : pageQ.data?.trades }
-  const rows = trades.data ?? []
-  const total = pageQ.data?.total
-  const pages = Math.max(1, Math.ceil((total ?? 0) / JOURNAL_PAGE_SIZE))
-  const narrow = useMediaQuery('(max-width: 1440px)')
-  const veryNarrow = useMediaQuery('(max-width: 1180px)')
-  const mobile = useMediaQuery('(max-width: 760px)')
-  const symbols = Array.from(new Set([...(markets.data ?? []).map(m => m.symbol), ...rows.map(t => t.symbol), ...(f.symbol ? [f.symbol] : [])])).sort()
-  const filtered = Boolean(f.scanner || f.symbol || f.tf || f.side || f.reason || f.period !== 'all')
-  const openPath = (t: Trade) => setPathOf({ id: t.positionId, title: `${t.symbol} ${t.side} · ${t.scannerName}` })
-  const pagination = total !== undefined && !f.error && (pages > 1 || f.page > 0) ? <div className="journal-pagination" aria-label="Trade pages">
-    <span className="small muted">{rows.length ? `${fmtInt(f.page * JOURNAL_PAGE_SIZE + 1)}–${fmtInt(f.page * JOURNAL_PAGE_SIZE + rows.length)} of ${fmtInt(total)}` : 'No trades on this page'}</span>
-    <div className="row gap">
-      <button className="btn btn-sm" onClick={() => update({page:String(Math.max(0, f.page - 1))})} disabled={f.page === 0} aria-label="Newer trades">Newer</button>
-      <span className="mono small">{f.page + 1} / {pages}</span>
-      <button className="btn btn-sm" onClick={() => update({page:String(f.page + 1)})} disabled={f.page >= pages - 1} aria-label="Older trades">Older</button>
-    </div>
-    {f.page >= pages && <button className="btn btn-sm" onClick={() => update({page:''})}>First page</button>}
-  </div> : null
-  const tradeCols = useMemo<Column<Trade>[]>(() => {
-    const tick = (sym: string) => markets.data?.find((m) => m.symbol === sym)?.tickSize
-    return [
-      { key: 'exitAt', header: 'Closed', value: (t) => t.exitAt, render: (t) => <Time t={t.exitAt} mode="datetime" className="small" /> },
-      {
-        key: 'symbol',
-        header: 'Symbol',
-        value: (t) => t.symbol,
-        render: (t) => (
-          <span className="cell-sym">
-            <StatusDot tone={t.pnl >= 0 ? 'ok' : 'danger'} />
-            <span>
-              <b>{t.symbol}</b> <span className="muted small mono">{t.tf}</span>
-              <div className="muted small">
-                <Link to={`/scanners/${t.scannerId}`} className="link">
-                  {t.scannerName}
-                </Link>
-              </div>
-            </span>
-          </span>
-        ),
-      },
-      { key: 'side', header: 'Side', value: (t) => t.side, render: (t) => <SidePill side={t.side} /> },
-      { key: 'qty', header: 'Qty', numeric: true, value: (t) => t.qty, render: (t) => <span className="mono">{fmtInt(t.qty)}</span> },
-      { key: 'entry', header: 'Entry', numeric: true, value: (t) => t.entryPrice, render: (t) => <span className="mono">{fmtPrice(t.entryPrice, tick(t.symbol))}</span> },
-      { key: 'exit', header: 'Exit price', numeric: true, value: (t) => t.exitPrice, render: (t) => <span className="mono">{fmtPrice(t.exitPrice, tick(t.symbol))}</span> },
-      ...(veryNarrow
-        ? []
-        : ([{ key: 'dur', header: 'Held', numeric: true, value: (t) => t.exitAt - t.entryAt, render: (t) => <span className="mono muted small">{fmtDuration(t.exitAt - t.entryAt)}</span> }] as Column<Trade>[])),
-      { key: 'pnl', header: 'PnL (USD)', numeric: true, value: (t) => t.pnl, render: (t) => <div><AccountingBadge pending={t.accountingPending} /><details className="pnl-breakdown"><summary><Pnl value={t.pnl} /></summary><span className="small">Trading {fmtPnl(t.grossTradingPnl ?? (t.pnl + t.fees - (t.funding ?? 0)))} − commission {fmtMoney(t.fees)} + funding {fmtPnl(t.funding ?? 0)} = net {fmtPnl(t.pnl)}</span></details></div> },
-      // return % and fees restate what PnL already says, so they are the first to go when narrow
-      ...(narrow
-        ? []
-        : ([
-            { key: 'pnlPct', header: 'Return %', title: 'Net P&L divided by initial entry notional, after fees', numeric: true, value: (t) => t.pnlPct, render: (t) => <span className={`mono ${t.pnlPct >= 0 ? 'gain' : 'loss'}`}>{fmtPct(t.pnlPct, 1, true)}</span> },
-            { key: 'fees', header: 'Fees (USD)', numeric: true, value: (t) => t.fees, render: (t) => <span className="mono muted">{fmtMoney(t.fees)}</span> },
-          ] as Column<Trade>[])),
-      { key: 'r', header: 'R', numeric: true, value: (t) => t.rMultiple, render: (t) => <span className={`mono ${t.rMultiple >= 0 ? 'gain' : 'loss'}`}>{fmtR(t.rMultiple)}</span> },
-      { key: 'reason', header: 'Exit reason', value: (t) => t.exitReason, render: (t) => <ExitReasonPill reason={t.exitReason} /> },
-      {
-        key: 'fills',
-        header: 'Fills',
-        numeric: true,
-        value: (t) => t.fills?.length ?? 0,
-        render: (t) => (
-          <span className="mono small muted" title={(t.fills ?? []).map((f) => `${fmtTime(f.at)} ${f.reason} ${f.qty}@${fmtPrice(f.price, tick(t.symbol))}`).join('\n')}>
-            {t.fills?.length ?? 0}
-          </span>
-        ),
-      },
-    ]
-  }, [markets.data, narrow, veryNarrow])
-
+  const [params, setParams] = useSearchParams(), f = journalFilters(params, useNow(60_000))
+  const book = params.get('book') ?? 'paper', status = params.get('status') ?? 'closed', scope = params.get('scope') ?? 'all'
+  const history = params.get('history') ?? 'current'
+  const dateBy = params.get('dateBy') ?? 'exit', sort = params.get('sort') ?? 'newest'
+  const query: JournalQuery = { ...f.query, book, status, scope, history, dateBy, sort }
+  const q = useJournal(query, !f.error), scanners = useScannerIndex(), markets = useMarkets()
+  const update = (values: Record<string, string>) => { const next = updateJournalFilters(params, values); next.delete('trade'); setParams(next) }
+  const selected = Number(params.get('trade')), id = Number.isSafeInteger(selected) && selected > 0 ? selected : null
+  const show = (r: JournalRow) => { const next = new URLSearchParams(params); next.set('trade', String(r.id)); setParams(next) }
+  const symbols = [...new Set([...(markets.data ?? []).map(m => m.symbol), ...(q.data?.rows ?? []).map(r => r.symbol), ...(f.symbol ? [f.symbol] : [])])].sort()
+  const cols: Column<JournalRow>[] = [
+    {key:'id',header:'Trade',render:r=><button className="btn btn-xs" onClick={()=>show(r)}>#{r.id} · detail</button>},
+    {key:'symbol',header:'Market / scanner',render:r=><span><b>{r.symbol} · {r.tf}</b><div className="small muted">{r.scannerName}</div><span className="small">{r.evidenceScope}</span></span>},
+    {key:'status',header:'Status / side',render:r=><span><Pill>{r.status}</Pill>{r.archived&&<Pill tone="warn">archived</Pill>}<div>{r.side ?? 'Unknown'}</div></span>},
+    {key:'entry',header:'Entry / placement',render:r=>r.entryAt===null?'Unknown':<span><Time t={r.entryAt} mode="datetime" /><div>{price(r.entryPrice)}</div></span>},
+    {key:'exit',header:'Exit / cancellation',render:r=>r.exitAt===null?'—':<span><Time t={r.exitAt} mode="datetime" /><div>{price(r.exitPrice)}</div></span>},
+    {key:'risk',header:'Risk / margin · USD',numeric:true,render:r=><span>{money(r.risk)}<div className="small muted">{money(r.margin)}</div></span>},
+    {key:'sl',header:'Original SL / targets',render:r=><span>{price(r.slOriginal)}<div className="small muted">{r.targets?.length?r.targets.map(price).join(' / '):'No targets recorded'}</div></span>},
+    {key:'net',header:'Closed net · USD',numeric:true,render:r=><span>{r.net===null?'—':<Pnl value={r.net}/>} {r.accountingPending&&<Pill tone="warn">provisional</Pill>}</span>},
+    {key:'cost',header:'Commission / funding',numeric:true,render:r=><span>{money(r.commission)}<div className="small muted">{money(r.funding)}</div></span>},
+    {key:'r',header:'Net R / peak R',numeric:true,render:r=><span>{r.r===null?'—':fmtR(r.r)}<div className="small muted">{r.peakR===null?'Unknown':fmtR(r.peakR)}</div></span>},
+    {key:'exitReason',header:'Exit / ML',render:r=><span>{r.exitReason??'—'}<div className="small muted">ML {r.mlProbability===null?'not recorded':`${(r.mlProbability*100).toFixed(1)}%`}</div></span>},
+  ]
   return <>
-    <Panel className="trade-journal" title="Closed trade journal" pad={false} right={
-      <div className="row gap">
-        <button className="btn btn-sm" onClick={() => update({ period: 'today', reason: 'sl' })}>Today's stops</button>
-        {filtered && <button className="btn btn-sm" onClick={() => { setParams({}); setScannerSearch('') }}>Clear filters</button>}
-      </div>
-    }>
+    <div className="row gap" aria-label="Journal books">
+      <button className={`btn ${book==='paper'?'btn-cta':''}`} aria-pressed={book==='paper'} onClick={()=>update({book:'paper'})}>Paper journal</button>
+      <button className={`btn ${book==='shadow'?'btn-cta':''}`} aria-pressed={book==='shadow'} onClick={()=>update({book:'shadow'})}>Shadow journal</button>
+    </div>
+    <Panel className="trade-journal" title={`${book === 'shadow' ? 'Shadow' : 'Paper'} journal`} pad={false} right={<div className="page-actions">
+      <button className="btn btn-sm" onClick={()=>update({period:'today',status:'closed',reason:'sl',dateBy:'exit'})}>Today's stops</button>
+      <button className="btn btn-sm" onClick={()=>setParams({book})}>Clear filters</button>
+      {!f.error&&q.data&&<><a className="btn btn-sm" href={api.journalExportUrl(query,'trades')}>Export all matches · CSV</a><a className="btn btn-sm" href={api.journalExportUrl(query,'fills')}>Export matching fills · CSV</a></>}
+    </div>}>
       <div className="journal-filters">
-        <label>Market<select className="select" aria-label="Journal market" value={f.symbol} onChange={e => update({symbol:e.target.value})}>
-          <option value="">All markets</option>{symbols.map(s => <option key={s} value={s}>{s}</option>)}
-        </select></label>
-        <label>Timeframe<select className="select" aria-label="Journal timeframe" value={f.tf} onChange={e => update({tf:e.target.value})}>
-          <option value="">All timeframes</option>{f.tf && !DELTA_TIMEFRAMES.some(t => t === f.tf) && <option value={f.tf}>{f.tf}</option>}{DELTA_TIMEFRAMES.map(t => <option key={t} value={t}>{t}</option>)}
-        </select></label>
-        <label>Direction<select className="select" aria-label="Journal direction" value={f.side} onChange={e => update({side:e.target.value})}>
-          <option value="">All directions</option><option value="long">Long</option><option value="short">Short</option>
-        </select></label>
-        <label>Exit<select className="select" aria-label="Journal exit reason" value={f.reason} onChange={e => update({reason:e.target.value})}>
-          <option value="">All exits</option>{Array.from(new Set([...Object.keys(EXIT_REASONS),...rows.map(t => t.exitReason),...(f.reason ? [f.reason] : [])])).map(r => <option key={r} value={r}>{EXIT_REASONS[r] ?? r}</option>)}
-        </select></label>
-        <label>Closed in<select className="select" aria-label="Closing period" value={f.period} onChange={e => update({period:e.target.value})}>
-          {JOURNAL_PERIODS.map(([value,label]) => <option key={value} value={value}>{label}</option>)}
-        </select></label>
-        <details className="journal-scanner-filter">
-          <summary>Scanner: {f.scanner ? scanners.data?.find(s => s.id === f.scanner)?.name ?? f.scanner : 'All scanners'}</summary>
-          <label>Find scanner<input className="input" type="search" placeholder="Search scanner names…" value={scannerSearch} onChange={e => setScannerSearch(e.target.value)} /></label>
-          <label>Scanner<select className="select" aria-label="Journal scanner" value={f.scanner} onChange={e => update({scanner:e.target.value})}>
-            <option value="">All scanners</option>
-            {f.scanner && !scanners.data?.some(s => s.id === f.scanner) && <option value={f.scanner}>{f.scanner}</option>}
-            {(scanners.data ?? []).filter(s => s.id === f.scanner || `${s.name} ${s.id}`.toLowerCase().includes(scannerSearch.toLowerCase())).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select></label>
-        </details>
-        {f.period === 'custom' && <div className="journal-dates">
-          <label>From (UTC)<input className="input" type="date" value={f.start} onChange={e => update({start:e.target.value})} /></label>
-          <label>Through (UTC)<input className="input" type="date" value={f.end} min={f.start || undefined} onChange={e => update({end:e.target.value})} /></label>
-        </div>}
+        <label>History<select className="select" aria-label="Journal history" value={history} onChange={e=>update({history:e.target.value})}><option value="current">Current account period</option><option value="archived">Before account resets</option><option value="all">Current + archived</option></select></label>
+        <label>Status<select className="select" aria-label="Journal status" value={status} onChange={e=>update({status:e.target.value,dateBy:['open','pending','all'].includes(e.target.value)?'entry':'exit'})}>{['closed','all','open','pending','cancelled','voided'].map(s=><option key={s}>{s}</option>)}</select></label>
+        <label>Market<select className="select" aria-label="Journal market" value={f.symbol} onChange={e=>update({symbol:e.target.value})}><option value="">All markets</option>{symbols.map(s=><option key={s}>{s}</option>)}</select></label>
+        <label>Timeframe<select className="select" aria-label="Journal timeframe" value={f.tf} onChange={e=>update({tf:e.target.value})}><option value="">All timeframes</option>{[...new Set([...DELTA_TIMEFRAMES,...(f.tf?[f.tf]:[])])].map(s=><option key={s}>{s}</option>)}</select></label>
+        <label>Direction<select className="select" aria-label="Journal direction" value={f.side} onChange={e=>update({side:e.target.value})}><option value="">All directions</option><option value="long">Long</option><option value="short">Short</option></select></label>
+        <label>Exit reason<select className="select" aria-label="Journal exit reason" value={f.reason} onChange={e=>update({reason:e.target.value})}><option value="">All reasons</option>{[...new Set(['sl','trail','be','tp1','tp2','tp3','script_exit','script_flip','reversal','manual','liquidation','funding',...(f.reason?[f.reason]:[])])].map(s=><option key={s}>{s}</option>)}</select></label>
+        <label>Evidence<select className="select" aria-label="Journal evidence scope" value={scope} onChange={e=>update({scope:e.target.value})}><option value="all">All retained records</option><option value="evidence">Performance / incubator evidence</option><option value="watch">Watch-only</option><option value="plans">Plan comparisons</option></select></label>
+        <label>Date basis<select className="select" aria-label="Journal date basis" value={dateBy} onChange={e=>update({dateBy:e.target.value})}><option value="exit">Exit / cancellation</option><option value="entry">Entry / placement</option></select></label>
+        <label>Period<select className="select" aria-label="Closing period" value={f.period} onChange={e=>update({period:e.target.value})}>{JOURNAL_PERIODS.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
+        <label>Sort all matches<select className="select" aria-label="Journal sort" value={sort} onChange={e=>update({sort:e.target.value})}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="worst">Largest losses first</option><option value="best">Largest profits first</option></select></label>
+        <label>Scanner<input className="input" aria-label="Journal scanner" list="journal-scanners" value={f.scanner} onChange={e=>update({scanner:e.target.value})} placeholder="All scanners; search name / ID"/><datalist id="journal-scanners">{scanners.data?.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</datalist></label>
+        {f.period==='custom'&&<><label>From (UTC)<input className="input" type="date" value={f.start} onChange={e=>update({start:e.target.value})}/></label><label>Through (UTC)<input className="input" type="date" value={f.end} onChange={e=>update({end:e.target.value})}/></label></>}
       </div>
-      <p className="journal-scope muted small">Filters apply to closed trades only. Closing days use UTC, matching Daily; timestamps use your local zone. Filters stay in the URL.</p>
-      {!!pageQ.data?.accountingPending && <div className="banner banner-warn" role="status">{pageQ.data.accountingPending} matching trades have incomplete exchange accounting. Their P&amp;L and the totals below are provisional.</div>}
-      {f.error ? <div className="banner banner-warn" role="alert">{f.error}</div> : <>
-        <div className="journal-totals" aria-label="Filtered journal totals">
-          <div><span>Matching trades</span><strong className="mono">{total === undefined ? '–' : fmtInt(total)}</strong></div>
-          <div><span>Net P&L · USD</span><strong>{pageQ.data ? <Pnl value={pageQ.data.pnl} /> : '–'}</strong></div>
-          <div><span>Commission · USD</span><strong className="mono">{pageQ.data ? fmtMoney(pageQ.data.fees) : '–'}</strong></div>
-        </div>
-        <div className="journal-scope small muted" role="status">Totals cover every match, across all pages. Net includes commission and funding. Table sorting applies to the current page.{pageQ.isFetching && pageQ.data ? ' Refreshing…' : ''}</div>
-        {pagination}
-        {trades.isLoading && <Loading kind="table" rows={5} cols={6} />}
-        {trades.isError && !trades.data && <ErrorState error={trades.error} onRetry={() => trades.refetch()} />}
-        {trades.data && rows.length === 0 ? <div className="journal-empty">
-          <b>{filtered ? 'No closed trades match these filters.' : 'No closed trades yet.'}</b>
-          <p className="muted small">{filtered ? 'Try another closing period, market, or exit reason.' : 'Completed account positions appear here when they close.'}</p>
-          {filtered && <button className="btn btn-sm" onClick={() => { setParams({}); setScannerSearch('') }}>Show all history</button>}
-        </div> : trades.data && (mobile ? <div className="journal-cards">
-          {rows.map(t => <article key={t.id} className="journal-card">
-            <div className="journal-card-head"><div><b>{t.symbol}</b> <span className="mono muted small">{t.tf}</span> <SidePill side={t.side} /></div><Pnl value={t.pnl} /></div>
-            <AccountingBadge pending={t.accountingPending} />
-            <Link to={`/scanners/${t.scannerId}`} className="link small">{t.scannerName}</Link>
-            <div className="journal-card-meta"><Time t={t.exitAt} mode="datetime" className="small muted" /><ExitReasonPill reason={t.exitReason} /></div>
-            <dl className="journal-card-metrics">
-              <div><dt>Net return</dt><dd className="mono">{fmtR(t.rMultiple)}</dd></div>
-              <div><dt>Held</dt><dd>{fmtDuration(t.exitAt - t.entryAt)}</dd></div>
-              <div><dt>Entry</dt><dd className="mono">{fmtPrice(t.entryPrice, markets.data?.find(m => m.symbol === t.symbol)?.tickSize)}</dd></div>
-              <div><dt>Exit</dt><dd className="mono">{fmtPrice(t.exitPrice, markets.data?.find(m => m.symbol === t.symbol)?.tickSize)}</dd></div>
-            </dl>
-            <details className="journal-costs"><summary>Costs & fills · commission {fmtMoney(t.fees)}</summary>
-              <dl className="journal-card-metrics">
-                <div><dt>Trading P&L</dt><dd>{fmtPnl(t.grossTradingPnl ?? (t.pnl + t.fees - (t.funding ?? 0)))}</dd></div>
-                <div><dt>Funding</dt><dd>{fmtPnl(t.funding ?? 0)}</dd></div>
-                <div><dt>Contracts</dt><dd>{fmtInt(t.qty)}</dd></div>
-                <div><dt>Fills</dt><dd>{t.fills?.length ?? 0}</dd></div>
-              </dl>
-              <p className="muted small">Trading P&L − commission + funding = net P&L.</p>
-            </details>
-            <div className="journal-card-actions"><button className="btn btn-sm" onClick={() => openPath(t)}>View trade path</button><Link className="btn btn-sm" to={`/signals?${new URLSearchParams({scanner:t.scannerId,symbol:t.symbol,tf:t.tf})}`}>Signal journal</Link></div>
-          </article>)}
-        </div> : <DataTable columns={tradeCols} rows={rows} rowKey={t => t.id} onRowClick={openPath} defaultSort={{key:'exitAt',dir:'desc'}} caption="Closed trades" />)}
-        {rows.length > 10 && pagination}
-      </>}
+      <p className="journal-scope small muted">Every retained record in the selected history is available across pages. Archived open / pending records describe the pre-reset state, not current exposure. Date ranges use UTC; displayed timestamps use your local zone. {book==='shadow'?'Shadow dollars are synthetic and do not represent account profit. All-record totals include watch-only and plan comparisons; choose Performance / incubator evidence to match performance scope.':'Paper and shadow totals are kept separate.'} Open and pending records do not count as closed profit.</p>
+      {f.error?<p className="banner banner-warn" role="alert">{f.error}</p>:<QueryState {...q} data={q.data} onRetry={()=>q.refetch()}>{d=>{
+        const s=d.summary, pages=Math.max(1,Math.ceil(d.total/JOURNAL_PAGE_SIZE))
+        return <>
+          <div className="journal-totals" aria-label="Filtered journal totals">
+            <div><span>Matching records / archived</span><strong>{d.total} / {s.archived}</strong></div><div><span>Closed / open / pending</span><strong>{s.closed} / {s.open} / {s.pending}</strong></div>
+            <div><span>Closed net · {book==='shadow'?'synthetic ':''}USD</span><strong><Pnl value={s.net}/></strong></div><div><span>Commission · closed</span><strong>{money(s.commission)}</strong></div>
+            <div><span>Recorded funding · closed</span><strong>{s.unknownFunding?'Incomplete':money(s.funding)}</strong></div>
+            <div><span>Win rate / profit factor</span><strong>{s.winRate===null?'—':`${s.winRate.toFixed(1)}%`} / {s.profitFactor===null?s.noLosses?'No losses':'—':s.profitFactor.toFixed(2)}</strong></div>
+            <div><span>Sum R / average R</span><strong>{s.sumR===null?'—':fmtR(s.sumR)} / {s.avgR===null?'—':fmtR(s.avgR)}</strong></div>
+          </div>
+          <p className="journal-scope small muted">Totals and sorting cover all matching records, not just this page. Gross trading − commission + recorded funding = realized net. Missing risk: {s.unknownRisk}; missing funding detail: {s.unknownFunding}; missing net: {s.unknownNet}; provisional exchange accounting: {s.accountingPending}. Exports include all matches.</p>
+          <div className="journal-pagination"><span>{d.total?`${Math.min(d.offset+1,d.total)}–${Math.min(d.offset+d.rows.length,d.total)} of ${d.total}`:'No matching records'} · Page {f.page+1} / {pages}</span><div className="row gap"><button className="btn btn-sm" disabled={f.page===0} onClick={()=>update({page:String(f.page-1)})}>Previous</button><button className="btn btn-sm" disabled={f.page>=pages-1} onClick={()=>update({page:String(f.page+1)})}>Next</button>{f.page>=pages&&<button className="btn btn-sm" onClick={()=>update({page:''})}>First page</button>}</div></div>
+          <DataTable columns={cols} rows={d.rows} rowKey={r=>r.id} onRowClick={show} emptyLabel="No records match these filters." caption={`${book} journal`} />
+        </>
+      }}</QueryState>}
     </Panel>
-    <TradePath id={pathOf?.id ?? null} title={pathOf?.title} onClose={() => setPathOf(null)} />
+    {id!==null&&<JournalDetailPanel book={book} id={id} onClose={()=>{const next=new URLSearchParams(params);next.delete('trade');setParams(next)}}/>}
   </>
 }

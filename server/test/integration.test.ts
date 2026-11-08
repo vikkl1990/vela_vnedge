@@ -313,6 +313,27 @@ test('responses are gzipped when asked for, and identical once decoded', async (
   assert.equal(small.headers.get('content-encoding'), null, 'tiny payloads are not worth compressing');
 });
 
+test('journal endpoints isolate books, validate filters and export authenticated full history', async () => {
+  for (const book of ['paper','shadow']) {
+    const page=await getJson(`/api/journal?book=${book}&status=all&limit=1`);
+    assert.equal(page.status,200); assert.equal(page.body.book,book);
+    assert.ok(page.body.rows.every((r:any)=>r.book===book)); assert.ok(page.body.rows.length<=1);
+    const csv=await fetch(base+`/api/journal/export?book=${book}&status=all`,withAuth());
+    assert.equal(csv.status,200); assert.match(csv.headers.get('content-type')!,/text\/csv/);
+    assert.match(csv.headers.get('content-disposition')!,new RegExp(`vn-edge-${book}-journal`));
+    assert.match(await csv.text(),/closed_net_usd/);
+    if(page.body.rows.length) {
+      const id=page.body.rows[0].id;
+      assert.equal((await getJson(`/api/journal/${id}?book=${book}`)).status,200);
+      assert.equal((await getJson(`/api/journal/${id}?book=${book==='paper'?'shadow':'paper'}`)).status,404);
+    }
+  }
+  assert.equal((await getJson('/api/journal?book=live')).status,400);
+  assert.equal((await getJson('/api/journal?limit=100000')).status,400);
+  assert.equal((await fetch(base+'/api/journal')).status,401);
+  assert.equal((await fetch(base+'/api/journal/export')).status,401);
+});
+
 test('authorisation is enforced by the server, not just hidden in the UI', async () => {
   // an unauthenticated caller gets nothing, not even read access
   for (const [method, path] of [['GET', '/api/stats'], ['GET', '/api/scanners'], ['POST', '/api/paper/reset'], ['GET', '/api/users']] as const) {
