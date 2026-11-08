@@ -1643,6 +1643,16 @@ body { overflow-x: clip; }
 .journal-scanner-filter label { max-width: 520px; margin-bottom: 8px; }
 .journal-dates { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 220px)); gap: 12px; }
 .journal-scope { padding: 4px 16px 10px; margin: 0; line-height: 1.6; }
+.journal-export { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; padding: 20px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); }
+.journal-export-copy { flex: 1 1 360px; min-width: 0; }
+.journal-export h2 { margin: 0 0 6px; font-size: 18px; }
+.journal-export p { margin: 4px 0 0; line-height: 1.6; }
+.journal-export-actions { display: grid; gap: 12px; flex: 0 1 360px; min-width: 0; }
+.journal-export-actions label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.journal-export-actions .select { width: 100%; min-width: 0; }
+.journal-export-actions .btn { flex: 1; min-height: 44px; justify-content: center; }
+.journal-export-status { flex-basis: 100%; overflow-wrap: anywhere; }
+@media(max-width: 600px) { .journal-export { padding: 14px; } .journal-export-actions { flex-basis: 100%; } }
 .journal-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 16px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .journal-totals > div { padding: 12px 16px; min-width: 0; }
 .journal-totals > div + div { border-left: 1px solid var(--border); }

@@ -1,4 +1,5 @@
 import type {ExecutionPlansView} from './executionPlans'
+import { fetchJournalCsv } from '../lib/journalExport'
 import type { DeltaConnectionStatus, DeltaEnvironment } from './deltaConnection'
 import type {PairAgentsView} from './pairAgents'
 import type {Footprint, OrderFlowView} from './orderFlow'
@@ -191,7 +192,7 @@ export const api = {
   tradesPage: (q: TradeQuery = {}) => get<TradePage>(`/trades/page${qs(q)}`),
   journal: (q: import('./journal').JournalQuery) => get<import('./journal').JournalPage>(`/journal${qs(q)}`),
   journalDetail: (book: string, id: number) => get<import('./journal').JournalDetail>(`/journal/${id}${qs({book})}`),
-  journalExportUrl: (q: import('./journal').JournalQuery, kind: 'trades' | 'fills') => `${BASE}/journal/export${qs({...q, kind})}`,
+  journalExport: fetchJournalCsv,
   positionPath: (id: number) => get<{ position: PathLevels; path: PathPoint[] }>(`/positions/${id}/path`),
   orders: (limit = 200) => get<Order[]>(`/orders${qs({ limit })}`),
   stats: () => get<Stats>('/stats'),

@@ -1,9 +1,9 @@
 import { useSearchParams } from 'react-router-dom'
-import { api } from '../api/client'
 import { useJournal, useMarkets, useScannerIndex } from '../api/queries'
 import type { JournalQuery, JournalRow } from '../api/journal'
 import { DataTable, type Column } from './DataTable'
 import { JournalDetailPanel } from './JournalDetail'
+import { JournalExport } from './JournalExport'
 import { Panel, Pill, Pnl, QueryState, Time } from './ui'
 import { fmtMoney, fmtRecordedPrice as price, fmtR } from '../lib/format'
 import { JOURNAL_PAGE_SIZE, JOURNAL_PERIODS, journalFilters, updateJournalFilters } from '../lib/journalFilters'
@@ -40,10 +40,10 @@ export function TradeJournal() {
       <button className={`btn ${book==='paper'?'btn-cta':''}`} aria-pressed={book==='paper'} onClick={()=>update({book:'paper'})}>Paper journal</button>
       <button className={`btn ${book==='shadow'?'btn-cta':''}`} aria-pressed={book==='shadow'} onClick={()=>update({book:'shadow'})}>Shadow journal</button>
     </div>
+    <JournalExport key={book} query={query} total={q.data?.total} filterError={f.error} />
     <Panel className="trade-journal" title={`${book === 'shadow' ? 'Shadow' : 'Paper'} journal`} pad={false} right={<div className="page-actions">
       <button className="btn btn-sm" onClick={()=>update({period:'today',status:'closed',reason:'sl',dateBy:'exit'})}>Today's stops</button>
       <button className="btn btn-sm" onClick={()=>setParams({book})}>Clear filters</button>
-      {!f.error&&q.data&&<><a className="btn btn-sm" href={api.journalExportUrl(query,'trades')}>Export all matches · CSV</a><a className="btn btn-sm" href={api.journalExportUrl(query,'fills')}>Export matching fills · CSV</a></>}
     </div>}>
       <div className="journal-filters">
         <label>History<select className="select" aria-label="Journal history" value={history} onChange={e=>update({history:e.target.value})}><option value="current">Current account period</option><option value="archived">Before account resets</option><option value="all">Current + archived</option></select></label>
