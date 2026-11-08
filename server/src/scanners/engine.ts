@@ -1,4 +1,5 @@
 import {sameExitSource} from './boundExits.ts';
+import { pilotCapacityRefusal, pilotUsage, reservePilotEntry, type PilotUsage } from '../paper/pilotCapacity.ts';
 import {policyReading,stablePolicy} from '../paper/tradePolicy.ts';
 import {EntryCoordinator} from './entryCoordinator.ts';
 import { SignalInbox, type Delivery, type InboxRow } from './inbox.ts';
@@ -713,10 +714,8 @@ export class ScannerEngine extends EventEmitter {
       const configNow = this.cfgRef();
       const pilot = copied && !(this.isActive(s) && this.runsOn(s.id, symbol, tf)) ? configNow.incubator.mirror?.pilot : undefined;
       const pilotDay = Math.floor(now / 86400_000);
-      const savedPilot = this.db.kvGet<{day:number;entries:number}>('incubator.copyPilot');
-      const pilotEntries = savedPilot?.day === pilotDay ? savedPilot.entries : 0;
-      const pilotOpen = [...this.paper.openPositions(), ...this.paper.pendingEntries()].filter(p => p.features?.copy_pilot === 1).length;
-      const pilotBlock = copied && (!configNow.incubator.mirror?.enabled || (pilotRequested && !pilot)) ? 'copy pilot disabled' : pilot ? configNow.execution.mode !== 'paper' || !configNow.incubator.mirror?.enabled ? 'copy pilot disabled' : pilotEntries >= pilot.maxDailyEntries ? 'copy pilot daily entry limit' : pilotOpen >= pilot.maxOpenPositions ? 'copy pilot open position limit' : null : null;
+      const pilotState = pilotUsage(this.db.kvGet<PilotUsage>('incubator.copyPilot'), pilotDay);
+      const pilotBlock = copied && (!configNow.incubator.mirror?.enabled || (pilotRequested && !pilot)) ? 'copy pilot disabled' : pilot ? configNow.execution.mode !== 'paper' || !configNow.incubator.mirror?.enabled ? 'copy pilot disabled' : pilotCapacityRefusal(pilot, tf, [...this.paper.openPositions(), ...this.paper.pendingEntries()], pilotState) : null;
       if (pilotBlock) {
         action = `rejected:${pilotBlock}`;
       } else if (trendBlock) {
@@ -727,7 +726,7 @@ export class ScannerEngine extends EventEmitter {
         action = `rejected:ml ${(mlProb * 100).toFixed(0)}% < ${(mlCfg.minProb * 100).toFixed(0)}%`;
       } else {
         const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: sigId, exitMode, features: pilot ? {...features,copy_pilot:1} : features, mlProb, scoreOverride, sizeScale: pilot?.sizeScale });
-        if (pilot && ['opened','reversed','pending'].includes(d.action)) this.db.kvSet('incubator.copyPilot',{day:pilotDay,entries:pilotEntries+1});
+        if (pilot && ['opened','reversed','pending'].includes(d.action)) this.db.kvSet('incubator.copyPilot',reservePilotEntry(pilotState,tf));
         action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
         positionId = d.position?.id ?? d.pendingId ?? null;
       }

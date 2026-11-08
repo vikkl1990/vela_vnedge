@@ -20,6 +20,7 @@ import type { PaperEngine, RiskEntryRequest, RiskGate } from '../paper/engine.ts
 import { notionalOf } from '../paper/logic.ts';
 import type { Side } from '../scanners/extractor.ts';
 import { returnCorrelation } from './correlation.ts';
+import { recentPairStop } from './reentry.ts';
 
 const log = logger.scoped('risk');
 const KV_KEY = 'risk.state';
@@ -209,12 +210,11 @@ export class RiskManager extends EventEmitter implements RiskGate {
     }
     const s = this.st.scanners[req.scannerId];
     if (s?.cooldownUntil && now < s.cooldownUntil) return reject(`cooldown after ${s.consecutive} losses until ${new Date(s.cooldownUntil).toISOString().slice(11, 16)}Z`);
-    // decision 82: the two guards the 28 Sep stop study asked for
+    // Stops are shared across scanners and directions; changing scanner cannot bypass the pair cooldown.
     const stopCd = c.reentryCooldownMinutes ?? 0;
     if (stopCd > 0) {
-      const cut = now - stopCd * 60_000;
-      const last = this.paper.closedPositions().find(p => p.scannerId === req.scannerId && p.symbol === req.symbol && p.exitReason === 'sl' && (p.exitAt ?? 0) >= cut);
-      if (last) return reject(`re-entry cooldown: this scanner was stopped on ${req.symbol} ${Math.round((now - (last.exitAt ?? now)) / 60_000)} min ago (wait ${stopCd})`);
+      const last = recentPairStop(this.paper.closedPositions(), req.symbol, now, stopCd);
+      if (last) return reject(`re-entry cooldown: ${req.symbol} stopped by ${last.scannerId} ${Math.round((now - last.exitAt!) / 60_000)} min ago (all scanners wait ${stopCd} min)`);
     }
     const burst = c.burstWindowSec ?? 0;
     if (burst > 0) {

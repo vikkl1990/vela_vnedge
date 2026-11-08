@@ -462,7 +462,9 @@ export interface IncubatorConfig {
     /** Decision 177: no copy on a market under this 24h turnover (0 turns it off). */
     minTurnoverUsd?: number;
     /** Bounded exploration in the paper account only; normal allocations retain normal sizing. */
-    pilot?: { sizeScale: number; maxDailyEntries: number; maxOpenPositions: number } };
+    pilot?: { sizeScale: number; maxDailyEntries: number; maxOpenPositions: number;
+      /** Reserved quotas within the totals: frames below 1h scalp, 1h and above swing. */
+      byHorizon?: Record<'scalp' | 'swing', { maxDailyEntries: number; maxOpenPositions: number }> } };
   /**
    * Largest share of the risk budget one contract may consume before a market is skipped: contracts
    * are indivisible, so above this the bot can only take one contract or none and position sizing
@@ -552,7 +554,7 @@ export interface RiskConfig {
   /** After this many consecutive losing trades a scanner pauses for cooldownMinutes (0 = off). */
   cooldownAfterLosses: number;
   cooldownMinutes: number;
-  /** After a stop on (scanner, market), no re-entry there for this long (0 = off). The 28 Sep stop study: the same scanner re-entered an hour after its stop and was stopped again. */
+  /** After any account stop on a market, all scanners and directions wait this long before re-entry (0 = off). */
   reentryCooldownMinutes: number;
   /** One entry per side per window across the account (0 = off): the 06:00 IST triples were three same-side entries inside two minutes. */
   burstWindowSec: number;
@@ -854,6 +856,11 @@ export function validateConfig(c: AppConfig): string[] {
     if (c.execution.mode !== 'paper') errs.push('incubator.mirror.pilot requires paper execution');
     if (!(Number.isFinite(copyPilot.sizeScale) && copyPilot.sizeScale > 0 && copyPilot.sizeScale <= 1)) errs.push('copy pilot sizeScale must be >0 and <=1');
     for (const n of [copyPilot.maxDailyEntries, copyPilot.maxOpenPositions]) if (!Number.isInteger(n) || n < 1) errs.push('copy pilot limits must be positive integers');
+    if (copyPilot.byHorizon !== undefined) {
+      const buckets = ['scalp', 'swing'].map(k => copyPilot.byHorizon?.[k as 'scalp' | 'swing']);
+      if (buckets.some(b => !b || [b.maxDailyEntries,b.maxOpenPositions].some(n => !Number.isInteger(n) || n < 0))) errs.push('copy pilot horizon limits must include scalp and swing with non-negative integer quotas');
+      else for (const key of ['maxDailyEntries','maxOpenPositions'] as const) if (buckets.reduce((n,b) => n + b![key],0) > copyPilot[key]) errs.push(`copy pilot horizon ${key} quotas must fit within the total`);
+    }
   }
   if (p.trendGate) {
     if (!(p.trendGate.emaLen >= 2)) errs.push('paper.trendGate.emaLen must be ≥ 2');
