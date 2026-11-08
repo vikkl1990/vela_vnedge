@@ -1,19 +1,21 @@
 import { useState } from 'react'
 import { api } from '../api/client'
 import type { JournalQuery } from '../api/journal'
-import { journalExportQuery, type JournalExportKind, type JournalExportRange } from '../lib/journalExport'
+import { journalExportQuery, type JournalExportBook, type JournalExportKind, type JournalExportRange } from '../lib/journalExport'
 
 export function JournalExport({ query, total, filterError }: { query: JournalQuery; total?: number; filterError: string | null }) {
   const [range, setRange] = useState<JournalExportRange>('filtered')
+  const [exportBook, setExportBook] = useState<JournalExportBook>(query.book === 'shadow' ? 'shadow' : 'paper')
   const [busy, setBusy] = useState<JournalExportKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [download, setDownload] = useState<string | null>(null)
-  const book = query.book === 'shadow' ? 'Shadow' : 'Paper'
-  const unavailable = range === 'filtered' && (!!filterError || total === undefined || total === 0)
+  const book = exportBook === 'both' ? 'Paper + shadow books' : `${exportBook === 'shadow' ? 'Shadow' : 'Paper'} book`
+  const currentBook = exportBook === query.book
+  const unavailable = range === 'filtered' && (!!filterError || (currentBook && (total === undefined || total === 0)))
   const start = async (kind: JournalExportKind) => {
     setBusy(kind); setError(null); setDownload(null)
     try {
-      const file = await api.journalExport(journalExportQuery(query, range), kind)
+      const file = await api.journalExport(journalExportQuery(query, range), kind, exportBook)
       const url = URL.createObjectURL(file.blob), link = document.createElement('a')
       link.href = url; link.download = file.filename
       document.body.append(link); link.click(); link.remove()
@@ -26,13 +28,19 @@ export function JournalExport({ query, total, filterError }: { query: JournalQue
   return <section className="journal-export" aria-labelledby="journal-export-title" aria-busy={!!busy}>
     <div className="journal-export-copy">
       <h2 id="journal-export-title">Export trade history</h2>
-      <p>{book} book · {range === 'complete' ? 'All closed trades, all markets and scanners, including before account resets.' : 'Uses the journal filters below and includes every matching page.'}</p>
+      <p>{book} · {range === 'complete' ? 'All closed trades, all markets and scanners, including before account resets.' : 'Uses the journal filters below and includes every matching page.'}</p>
+      {exportBook === 'both' && <p className="small muted">One CSV, with a book column identifying every paper or shadow row. Paper rows come first, then shadow; dollar results should be assessed separately.</p>}
       <p className="small muted">CSV for Excel or Sheets. Trades include entry, exit, SL/TP, sizing, fees, funding and net P&amp;L. Fills contain individual executions.</p>
-      {query.book === 'shadow' && <p className="small muted">Shadow dollars are synthetic. Complete history also includes watch-only and plan comparisons, labelled in the trades file.</p>}
+      {exportBook !== 'paper' && <p className="small muted">Shadow dollars are synthetic. Complete history also includes watch-only and plan comparisons, labelled in the trades file.</p>}
     </div>
     <div className="journal-export-actions">
-      <label>Export range<select className="select" value={range} disabled={!!busy} onChange={e => { setRange(e.target.value as JournalExportRange); setError(null); setDownload(null) }}>
-        <option value="filtered">Selected filters{!filterError && total !== undefined ? ` · ${total.toLocaleString()} records` : ''}</option>
+      <label>Export book<select className="select" aria-label="Export book" value={exportBook} disabled={!!busy} onChange={e => { setExportBook(e.target.value as JournalExportBook); setError(null); setDownload(null) }}>
+        <option value="paper">Paper only</option>
+        <option value="shadow">Shadow only</option>
+        <option value="both">Both paper and shadow</option>
+      </select></label>
+      <label>Export range<select className="select" aria-label="Export range" value={range} disabled={!!busy} onChange={e => { setRange(e.target.value as JournalExportRange); setError(null); setDownload(null) }}>
+        <option value="filtered">Selected filters{currentBook && !filterError && total !== undefined ? ` · ${total.toLocaleString()} records` : ''}</option>
         <option value="complete">Complete closed history + archives</option>
       </select></label>
       <div className="row gap">
@@ -41,7 +49,7 @@ export function JournalExport({ query, total, filterError }: { query: JournalQue
       </div>
     </div>
     {range === 'filtered' && filterError && <p className="journal-export-status small" role="status">Correct the date or direction filter below, or choose complete history.</p>}
-    {range === 'filtered' && !filterError && total === 0 && <p className="journal-export-status small" role="status">No records match. Change the filters or choose complete history.</p>}
+    {range === 'filtered' && currentBook && !filterError && total === 0 && <p className="journal-export-status small" role="status">No records match. Change the filters or choose complete history.</p>}
     {error && <p className="journal-export-status loss" role="alert">{error}</p>}
     {download && <p className="journal-export-status small" role="status">Download started: {download}</p>}
   </section>

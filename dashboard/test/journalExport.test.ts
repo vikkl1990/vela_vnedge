@@ -34,3 +34,60 @@ test('failed or non-CSV responses cannot be downloaded as trade history', async 
     await assert.rejects(fetchJournalCsv(query,'trades'),expected);mock.mock.restore()
   }
 })
+
+test('both-book export applies identical filters and preserves escaped records under one header', async t => {
+  const requests: string[] = []
+  const paper = '"paper","1","scanner, with ""quotes""\nand newline","\'=SUM(A1)"\r\n'
+  const shadow = '"shadow","1","another scanner","2"\r\n'
+  const header = '"book","id","scanner","value"\r\n'
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    const p = new URL(url, 'http://localhost').searchParams
+    requests.push(p.get('book')!)
+    assert.equal(p.get('scanner'), 'a & b'); assert.equal(p.get('from'), '1000')
+    assert.equal(p.get('history'), 'current'); assert.equal(p.get('scope'), 'evidence')
+    assert.equal(p.get('offset'), null); assert.equal(p.get('limit'), null)
+    return new Response('\uFEFF' + header + (p.get('book') === 'paper' ? paper : shadow), { headers: { 'Content-Type': 'text/csv' } })
+  })
+  const file = await fetchJournalCsv(journalExportQuery(query, 'filtered'), 'trades', 'both')
+  assert.deepEqual(requests.sort(), ['paper', 'shadow'])
+  assert.equal(await file.blob.text(), header + paper + shadow)
+  assert.match(file.filename, /^vn-edge-paper-and-shadow-trades-\d{4}-\d{2}-\d{2}\.csv$/)
+  assert.deepEqual([...new Uint8Array(await file.blob.arrayBuffer()).slice(0, 3)], [239, 187, 191])
+})
+
+test('complete both-book fills include archives even when paper has no matching rows', async t => {
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    const p = new URL(url, 'http://localhost').searchParams
+    assert.equal(p.get('history'), 'all'); assert.equal(p.get('scope'), 'all')
+    assert.equal(p.get('kind'), 'fills'); assert.equal(p.get('status'), 'closed')
+    assert.equal(p.get('scanner'), null); assert.equal(p.get('from'), null)
+    return new Response('book,position_id\r\n' + (p.get('book') === 'paper' ? '' : 'shadow,42\r\n'), { headers: { 'Content-Type': 'text/csv' } })
+  })
+  const file = await fetchJournalCsv(journalExportQuery(query, 'complete'), 'fills', 'both')
+  assert.equal(await file.blob.text(), 'book,position_id\r\nshadow,42\r\n')
+  assert.match(file.filename, /paper-and-shadow-fills/)
+})
+
+test('both-book export fails as a whole if either book fails', async t => {
+  t.mock.method(globalThis, 'fetch', async (url: string) => new URL(url, 'http://localhost').searchParams.get('book') === 'paper'
+    ? new Response('book,id\r\npaper,1\r\n', { headers: { 'Content-Type': 'text/csv' } })
+    : new Response('{"error":"Shadow export unavailable"}', { status: 500 }))
+  await assert.rejects(fetchJournalCsv(query, 'trades', 'both'), /Shadow export unavailable/)
+})
+
+test('both-book export rejects incompatible column layouts', async t => {
+  t.mock.method(globalThis, 'fetch', async (url: string) => new Response(
+    new URL(url, 'http://localhost').searchParams.get('book') === 'paper' ? 'book,id\r\n' : 'book,position_id\r\n',
+    { headers: { 'Content-Type': 'text/csv' } }))
+  await assert.rejects(fetchJournalCsv(query, 'trades', 'both'), /columns do not match/)
+})
+
+test('a single book can be exported without switching the displayed journal', async t => {
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    assert.equal(new URL(url, 'http://localhost').searchParams.get('book'), 'paper')
+    return new Response('book,id\r\npaper,1\r\n', { headers: { 'Content-Type': 'text/csv' } })
+  })
+  const file = await fetchJournalCsv(query, 'trades', 'paper')
+  assert.match(file.filename, /^vn-edge-paper-trades-/)
+  assert.equal(query.book, 'shadow')
+})
