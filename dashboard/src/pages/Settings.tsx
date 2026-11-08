@@ -53,7 +53,7 @@ const SECTIONS: Section[] = [
       { path: 'risk.enabled', label: 'Risk layer on', kind: 'bool' },
       { path: 'risk.maxDailyLossPct', label: 'Daily loss limit (% of equity)', kind: 'number', step: '0.5', validate: num(0.5, 100) },
       { path: 'risk.maxWeeklyLossPct', label: 'Weekly loss limit (%)', kind: 'number', step: '0.5', validate: num(0.5, 100) },
-      { path: 'risk.reentryCooldownMinutes', label: 'Scanner cooldown after a stop (min)', hint: 'Applies to the same scanner and market. A different scanner is evaluated independently. Pending fills are checked again. Zero disables it.', kind: 'number', step: '5', validate: num(0, 1440) },
+      { path: 'risk.reentryCooldownMinutes', label: 'Pair cooldown after a stop (min)', hint: 'Shared by every scanner and both directions on the stopped market. Pending fills are checked again. Zero disables it.', kind: 'number', step: '5', validate: num(0, 1440) },
       { path: 'risk.burstWindowSec', label: 'Burst guard window (s)', kind: 'number', step: '10', hint: 'one entry per side inside the window', validate: num(0, 3600) },
     ],
   },

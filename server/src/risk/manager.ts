@@ -210,11 +210,11 @@ export class RiskManager extends EventEmitter implements RiskGate {
     }
     const s = this.st.scanners[req.scannerId];
     if (s?.cooldownUntil && now < s.cooldownUntil) return reject(`cooldown after ${s.consecutive} losses until ${new Date(s.cooldownUntil).toISOString().slice(11, 16)}Z`);
-    // Keep the existing scanner + market cooldown. Another scanner is judged on its own entry checks.
+    // A stop belongs to the market: all scanners and directions share the pair cooldown.
     const stopCd = c.reentryCooldownMinutes ?? 0;
     if (stopCd > 0) {
-      const last = recentPairStop(this.paper.closedPositions().filter(p => p.scannerId === req.scannerId), req.symbol, now, stopCd);
-      if (last) return reject(`re-entry cooldown: ${req.symbol} stopped by ${last.scannerId} ${Math.round((now - last.exitAt!) / 60_000)} min ago (this scanner waits ${stopCd} min)`);
+      const last = recentPairStop(this.paper.closedPositions(), req.symbol, now, stopCd);
+      if (last) return reject(`re-entry cooldown: ${req.symbol} stopped by ${last.scannerId} ${Math.round((now - last.exitAt!) / 60_000)} min ago (all scanners wait ${stopCd} min)`);
     }
     const burst = c.burstWindowSec ?? 0;
     if (burst > 0) {

@@ -554,7 +554,7 @@ export interface RiskConfig {
   /** After this many consecutive losing trades a scanner pauses for cooldownMinutes (0 = off). */
   cooldownAfterLosses: number;
   cooldownMinutes: number;
-  /** After a stop on (scanner, market), that scanner waits this long before re-entry (0 = off). */
+  /** After any account stop on a market, all scanners and directions wait this long before re-entry (0 = off). */
   reentryCooldownMinutes: number;
   /** One entry per side per window across the account (0 = off): the 06:00 IST triples were three same-side entries inside two minutes. */
   burstWindowSec: number;
