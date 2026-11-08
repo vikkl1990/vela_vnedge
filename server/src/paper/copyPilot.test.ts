@@ -42,3 +42,16 @@ test('horizon quotas validate as reservations within the unchanged global budget
  p.byHorizon.swing.maxOpenPositions=1;p.byHorizon.swing.maxDailyEntries=3;assert.ok(validateConfig(c).some(e=>e.includes('horizon maxDailyEntries')));
  p.byHorizon.swing.maxDailyEntries=-1;assert.ok(validateConfig(c).some(e=>e.includes('non-negative')));
 });
+
+test('removing a horizon split admits another swing without resetting pilot daily reservations',async t=>{
+ const{db,c,paper,ingest}=setup(t);
+ c.incubator.mirror!.pilot={sizeScale:1/3,maxDailyEntries:10,maxOpenPositions:2,byHorizon:{scalp:{maxDailyEntries:8,maxOpenPositions:1},swing:{maxDailyEntries:2,maxOpenPositions:1}}};
+ c.paper.fillSource='tape';await ingest('BTCUSD','first swing','1h');await ingest('ETHUSD','blocked swing','1h');
+ assert.equal(paper.pendingEntries().length,1);assert.equal(db.kvGet<any>('incubator.copyPilot').entries,1);
+ delete c.incubator.mirror!.pilot!.byHorizon;
+ await ingest('ETHUSD','shared slot','1h');assert.equal(paper.pendingEntries().length,2);
+ assert.equal(db.kvGet<any>('incubator.copyPilot').entries,2);
+ paper.cancelPending(paper.pendingEntries().find(p=>p.symbol==='BTCUSD')!.id,'test');
+ await ingest('SOLUSD','third swing today','4h');assert.equal(paper.pendingEntries().length,2);
+ assert.equal(db.kvGet<any>('incubator.copyPilot').entries,3,'no 2-swing daily ceiling and no daily counter reset');
+});

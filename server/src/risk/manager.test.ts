@@ -218,7 +218,7 @@ test('risk state endpoint shape and rejection log', t => {
   assert.equal(st.exposure.limitPct, 0);
 });
 
-test('pair cooldown spans scanners and directions; unrelated markets and the burst guard remain independent', t => {
+test('scanner cooldown does not impose a blanket block on other scanners; the burst guard remains independent', t => {
   const { mgr, paper, clock } = setup(t, { reentryCooldownMinutes: 60, burstWindowSec: 120, regime: { enabled: false, minAtrPct: 0.3, noWeekend: false, exempt: [] } } as any);
   const req = (symbol: string, side: 'long' | 'short', scannerId = 's') => ({ scannerId, symbol, tf: '15m', side, price: 100, sl: side === 'long' ? 95 : 105, atr: 1, at: clock.now });
   const entry = (symbol: string, side: 'long' | 'short') => paper.onEntry({ kind: 'entry', side, price: 100, sl: side === 'long' ? 95 : 105, tp: side === 'long' ? [105, 110, 115] : [95, 90, 85], label: 'e', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: 's', scannerName: 's', symbol, tf: '15m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: clock.now, signalId: null, exitMode: 'both' });
@@ -232,28 +232,29 @@ test('pair cooldown spans scanners and directions; unrelated markets and the bur
   paper.onBar('BTCUSD', { time: clock.now, high: 100, low: 90, close: 92 }, clock.now);
   assert.equal(a.position!.exitReason, 'sl');
   assert.match(mgr.gate(req('BTCUSD', 'long')).reject ?? '', /^re-entry cooldown: BTCUSD stopped by s/, 'no re-entry after a stop');
-  assert.match(mgr.gate(req('BTCUSD', 'long', 'other')).reject ?? '', /all scanners wait 60/, 'another scanner cannot repeat the failed setup');
-  assert.match(mgr.gate({...req('BTCUSD', 'short', 'other'),tf:'1h'}).reject ?? '', /all scanners wait 60/, 'direction and timeframe changes do not bypass it');
+  assert.equal(mgr.gate(req('BTCUSD', 'long', 'other')).reject, undefined, 'another scanner is judged independently');
+  assert.equal(mgr.gate({...req('BTCUSD', 'short', 'other'),tf:'1h'}).reject, undefined, 'another scanner may take the opposite setup');
+  assert.match(mgr.gate({...req('BTCUSD', 'short'),tf:'1h'}).reject ?? '', /this scanner waits 60/, 'the original per-scanner cooldown still applies');
   assert.equal(mgr.gate(req('ETHUSD', 'long', 'other')).reject, undefined, 'other pairs remain available');
   clock.now += 60 * 60_000;
   assert.equal(mgr.gate(req('BTCUSD', 'long')).reject, undefined, 'an hour later it may');
 });
 
-for (const limit of [false,true]) test(`a cross-scanner stop cancels an already queued ${limit?'limit':'market'} entry at fill time${limit?' after restart':''}`, t => {
+for (const limit of [false,true]) for (const sameScanner of [false,true]) test(`${sameScanner?'same':'other'}-scanner stop ${sameScanner?'blocks':'allows'} queued ${limit?'limit':'market'} fill${limit?' after restart':''}`, t => {
   const {db,cfg,paper,clock,entry}=setup(t,{reentryCooldownMinutes:60,maxPositionsPerSymbol:2,maxPositionsTotal:8,perScannerMaxPositions:8});
   const first=entry({scannerId:'first'}).position!;
   cfg.paper.fillSource='tape';cfg.paper.latencyMs=1000;
-  cfg.paper.limitEntry={enabled:limit,atr:.1,bars:2,tfs:['15m'],books:['account']};
+  cfg.paper.limitEntry={enabled:limit,atr:.1,bars:2,tfs:['15m','1h'],books:['account']};
   clock.now+=1000;
-  assert.equal(entry({scannerId:'second',atr:10}).action,'pending');
+  assert.equal(entry({scannerId:sameScanner?'first':'second',tf:sameScanner?'1h':'15m',atr:10}).action,'pending');
   clock.now+=1000;paper.setMark('BTCUSD',94);paper.closeManual(first.id,'sl',clock.now);
   const restored=limit?new PaperEngine(db,()=>cfg,{now:()=>clock.now}):paper;
   restored.risk=new RiskManager({db,paper:restored,candles:null,cfgRef:()=>cfg,now:()=>clock.now});
   const cancelled: string[] = []; restored.on('pending', e => { if (e.type === 'cancelled') cancelled.push(e.reason); });
   clock.now+=1000;restored.onTrade('BTCUSD',limit?98:100,1,clock.now,clock.now);
-  assert.equal(restored.openPositions().length,0);
+  assert.equal(restored.openPositions().length,sameScanner?0:1);
   assert.equal(restored.pendingEntries().length,0);
-  assert.ok(cancelled.some(reason=>/re-entry cooldown.*stopped by first/.test(reason)));
+  assert.equal(cancelled.some(reason=>/re-entry cooldown.*stopped by first/.test(reason)),sameScanner);
 });
 
 test('scanner ATR floor override preserves chop and weekend guards and other scanners floors',async()=>{

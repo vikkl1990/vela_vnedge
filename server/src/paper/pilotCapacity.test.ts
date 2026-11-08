@@ -30,3 +30,17 @@ test('daily reservations persist by horizon and rollover once, with conservative
   const reserved=reservePilotEntry(legacy,'15m');
   assert.equal(reserved.entries,4);assert.equal(reserved.unclassified,3);assert.deepEqual(reserved.byHorizon,{scalp:1,swing:0});
 });
+
+test('shared capacity has no scalp/swing quota and retains the global counters after removing a split',()=>{
+ const shared={sizeScale:1/3,maxDailyEntries:10,maxOpenPositions:2};
+ let usage=pilotUsage(undefined,1);
+ for(let i=0;i<8;i++)usage=reservePilotEntry(usage,'15m');
+ assert.equal(pilotCapacityRefusal(shared,'15m',[],usage),null,'a ninth scalp is not blocked by the old 8/2 split');
+ assert.equal(pilotCapacityRefusal(shared,'1h',[pilot('4h')],usage),null,'two swings may share the pool');
+ assert.equal(pilotCapacityRefusal(shared,'15m',[pilot('5m')],usage),null,'two scalps may share the pool');
+ const legacy=pilotUsage({day:1,entries:7},1);
+ assert.equal(pilotCapacityRefusal(shared,'1h',[],legacy),null,'legacy unclassified usage no longer blocks a horizon');
+ usage=reservePilotEntry(reservePilotEntry(usage,'1h'),'15m');
+ assert.match(pilotCapacityRefusal(shared,'15m',[],usage)!,/copy pilot daily entry limit/,'global daily accounting is preserved');
+ assert.match(pilotCapacityRefusal(shared,'15m',[pilot('1h'),pilot('4h')],pilotUsage(undefined,1))!,/copy pilot open position limit/,'global capacity is preserved');
+});
