@@ -48,7 +48,7 @@ export function DeltaConnectionPanel() {
   return (
     <section id="delta-connection" aria-label="Delta India API connection">
       <Panel title="Delta India connection" right={<Pill tone={status?.check?.ok ? 'ok' : status?.configured ? 'warn' : 'muted'}>{query.isPending ? 'Loading…' : query.isError ? 'Status unavailable' : status?.check?.ok ? 'Read access verified' : status?.configured ? 'Saved · verify access' : 'Not connected'}</Pill>}>
-        <p className="small">Save an API key and its secret, then verify wallet and position reads. Use a key with <b>Read Data</b> permission. This panel does not enable trading or change the account’s execution mode.</p>
+        <p className="small">Save a production API key and its secret with <b>Read Data</b> permission. The Exchange page will observe balances, positions, orders and recent history automatically. Saving credentials does not enable trading or change the account’s execution mode.</p>
         <div className="grid-2">
           <form onSubmit={save} autoComplete="off" className="form" aria-label="Save Delta credentials">
             <label className="field"><span className="field-label">Key environment</span>

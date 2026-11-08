@@ -24,7 +24,6 @@ import { duplicateGroups } from '../scanners/identity.ts';
 import { overlapClusters } from '../incubator/overlap.ts';
 import { lockStudy } from '../analytics/lockStudy.ts';
 import { ContributionService } from '../scanners/contributions.ts';
-import { DeltaConnection } from '../connections/delta.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
 
 const log = logger.scoped('api');
@@ -52,7 +51,7 @@ export class ApiServer {
     this.auth = new AuthStore(app.db);
     this.authCtx = createAuth(this.auth);
     authRoutes((m, r, h) => this.add(m, r, h), this.authCtx, req => this.userFor(req));
-    deltaConnectionRoutes((m, r, h) => this.add(m, r, h), new DeltaConnection(DATA_DIR));
+    deltaConnectionRoutes((m, r, h) => this.add(m, r, h), app.deltaConnection);
     setInterval(() => { try { this.auth.sweep(); } catch { /* ignore */ } }, 3600_000).unref?.();
     this.defineRoutes();
     for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);
@@ -456,7 +455,7 @@ export class ApiServer {
       lockCache.set(k, { at: Date.now(), v });
       return v;
     });
-    this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, fillSource: a.config.get().paper.fillSource, quotes: a.marks.quoteSummary(a.config.get().paper.quoteMaxAgeMs), funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), account: a.accountAudit.summary() }));
+    this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, fillSource: a.config.get().paper.fillSource, quotes: a.marks.quoteSummary(a.config.get().paper.quoteMaxAgeMs), funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), account: a.accountAudit.summary(), observer: a.accountObserver.summary() }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     for (const route of ['/api/order-flow', '/api/footprints']) this.add('GET', route, (_r, _s, _p, url) => {
       let q; try { q = flowQuery(url.searchParams); } catch (e: any) { throw new HttpError(400, e.message); }

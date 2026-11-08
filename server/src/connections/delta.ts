@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DeltaRest, DeltaRequestError, DELTA_INDIA_PROD, DELTA_INDIA_TESTNET } from '../delta/rest.ts';
+import { productionReader, type AccountReader } from './reader.ts';
+
+export type ObservationSession = { revision: string; reader: AccountReader; current: () => boolean };
 
 export type DeltaEnvironment = 'production' | 'testnet';
 type Credentials = { version: 1; revision: string; environment: DeltaEnvironment; apiKey: string; apiSecret: string; savedAt: number };
@@ -100,6 +103,19 @@ export class DeltaConnection {
     const c = this.read();
     return { configured: !!c, environment: c?.environment ?? null, savedAt: c?.savedAt ?? null,
       check: c && this.last?.revision === c.revision ? this.last.result : null };
+  }
+
+  /** Internal capability only; neither secrets nor a general REST client leave this store. */
+  observationRevision(): { revision: string; environment: DeltaEnvironment } | null {
+    const c = this.read();
+    return c ? { revision: c.revision, environment: c.environment } : null;
+  }
+
+  observationSession(): ObservationSession | null {
+    const c = this.read();
+    if (!c || c.environment !== 'production') return null;
+    const current = () => this.read()?.revision === c.revision;
+    return { revision: c.revision, reader: productionReader(c.apiKey, c.apiSecret, current), current };
   }
 
   save(input: unknown): ConnectionStatus {

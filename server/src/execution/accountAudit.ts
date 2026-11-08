@@ -6,7 +6,7 @@ const FEE_FIELDS = ['effective_commission_rate', 'total_commission_in_settling_a
  'liquidation_fee_in_settling_asset', 'rack_commision', 'commission_deto', 'commission_deto_in_settling_asset',
  'liquidation_fee_deto', 'liquidation_fee_deto_in_settling_asset'] as const;
 /** Preserve exact reported amounts; omitted fields remain unknown, never zero. */
-function feeDetails(metadata: unknown): Record<string, string | number> | null {
+export function feeDetails(metadata: unknown): Record<string, string | number> | null {
  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
  const out: Record<string, string | number> = {};
  for (const key of FEE_FIELDS) {

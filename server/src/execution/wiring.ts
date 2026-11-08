@@ -1,5 +1,6 @@
 import { FundingJournal } from './fundingJournal.ts';
 import { AccountAudit } from './accountAudit.ts';
+import { AccountObserver } from '../connections/observer.ts';
 import { DepthRecorder } from './depthRecorder.ts';
 import { OrderFlowStore, FLOW_SETTLE_MS } from '../orderflow/store.ts';
 import { TF_SECONDS } from '../config.ts';
@@ -75,6 +76,7 @@ export function wireRealtime(app: App): void {
   };
   const funding = app.fundingJournal = new FundingJournal(app.db);
   const audit = app.accountAudit = new AccountAudit(app.db);
+  app.accountObserver = new AccountObserver(app.db, app.deltaConnection);
   const depth = app.depthRecorder = new DepthRecorder(app.db, undefined, symbol => {
     app.feed.unsubscribe('ob_updates', [symbol]); app.feed.subscribe('ob_updates', [symbol]);
   });
@@ -97,7 +99,7 @@ export function wireRealtime(app: App): void {
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
   },5000);
   for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=()=>{stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
+  app.stopExecutionAudit=()=>{app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);

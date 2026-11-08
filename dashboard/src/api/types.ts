@@ -917,12 +917,27 @@ export interface ReclaimTrialsView {
 }
 
 export interface ExecutionQuality {
+  observer: AccountObservation;
   at: number; mode: string;
   fillSource?: 'candles' | 'tape';
   quotes?: {at:number;total:number;fresh:number;l1:number;fallback:number;rows:Array<{symbol:string;source:string;bid:number;ask:number;bidSize:number|null;askSize:number|null;receivedAt:number;exchangeAt:number|null;bookAt:number|null;ageMs:number;fresh:boolean}>};
   funding: {method:string;counts:{status:string;n:number}[]; recent:{symbol:string;at:number;status:string;source:string;rate:number|null;mark:number|null;error:string|null}[]};
   depth: {books:{symbol:string;at:number|null;valid:boolean;fresh:boolean}[];gaps:{symbol:string;n:number;lastAt:number}[];symbols:string[];validBooks:string[];failures:number;queued:number;droppedPending:number;retention:string;stored:{n:number;oldest:number|null;newest:number|null;bytes:number|null}};
   account: {cursors:{host:string;from_at:number;through_at:number;error:string|null}[];comparisons:{orderId:number;complete:boolean;quantityMatches:boolean|null}[];rows:{host:string;kind:string;n:number}[]};
+}
+export interface AccountObservation {
+  at: number; state: string; message: string; syncing: boolean;
+  account: null | {
+    label: string; environment: string; snapshotStartedAt: number; completedAt: number;
+    historyFrom: number; historyThrough: number; historyLagMs: number; accountingStatus: string; limitations: string;
+    counts: {kind: string; n: number}[];
+    snapshot: {
+      balances: {asset: string; balance: string | null; available: string | null; tradingFeeCredit: string | null}[];
+      positions: {productId: string; symbol: string | null; size: number; entryPrice: string | null}[];
+      orders: {id: string; productId: string; symbol: string | null; side: string; size: number; unfilled: number; state: string; reduceOnly: boolean | null; stopPrice: string | null}[];
+    };
+    recent: {kind: string; at: number; id: string; transactionType?: string | null; asset?: string | null; amount?: string | null; commission?: string | null; feeDetails?: Record<string, string | number> | null}[];
+  };
 }
 export interface PerformanceFilter { from?: number; to?: number; scanner?: string; symbol?: string; tf?: string; side?: string; reason?: string }
 export interface PerformanceStats {

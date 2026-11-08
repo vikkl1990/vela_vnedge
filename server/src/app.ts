@@ -41,6 +41,8 @@ import { createExecutor, type ExchangeExecutor } from './execution/testnet.ts';
 import { subscribeRealtime, wireRealtime } from './execution/wiring.ts';
 import type { FundingJournal } from './execution/fundingJournal.ts';
 import type { AccountAudit } from './execution/accountAudit.ts';
+import { DeltaConnection } from './connections/delta.ts';
+import type { AccountObserver } from './connections/observer.ts';
 import type { DepthRecorder } from './execution/depthRecorder.ts';
 import type { OrderFlowStore } from './orderflow/store.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
@@ -99,6 +101,8 @@ export class App {
   tapeAudit!: TapeAudit;
   fundingJournal!: FundingJournal;
   accountAudit!: AccountAudit;
+  readonly deltaConnection = new DeltaConnection(DATA_DIR);
+  accountObserver!: AccountObserver;
   depthRecorder!: DepthRecorder;
   orderFlow!: OrderFlowStore;
   stopExecutionAudit?: () => void;
@@ -297,6 +301,7 @@ export class App {
   }
 
   async start(): Promise<void> {
+    this.accountObserver.start();
     this.feed.start();
     // positions of removed scanners keep running to their levels (the engine manages exits regardless of scanner state)
     await this.resolveUniverse();

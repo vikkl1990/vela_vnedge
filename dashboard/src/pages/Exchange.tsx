@@ -9,6 +9,7 @@ import { ExecutionQualityPanel } from '../components/ExecutionQuality'
 import { TapeAuditPanel } from '../components/TapeAuditPanel'
 import { ExecutionHandoffPanel } from '../components/ExecutionHandoff'
 import { ExecutionAccountingPanel } from '../components/ExecutionAccounting'
+import { AccountObserverPanel } from '../components/AccountObserver'
 
 /**
  * The exchange side of the book: what the executor believes the exchange holds, the last time it
@@ -48,9 +49,10 @@ export function Exchange() {
       </div>
 
       <Panel title="Live readiness" right={<Pill tone="warn">Certification pending</Pill>}>
-        <p className="small">Paper trading is available. Before live use, this release still needs testnet evidence for protective orders, emergency closure and restart recovery, plus complete account fee and balance reconciliation.</p>
+        <p className="small">Paper trading is available. Live readiness requires production account observation, isolated fault tests for protective orders, emergency closure and restart recovery, and complete fee and balance reconciliation. Real order behavior must then be verified in an approved production pilot.</p>
         <p className="small muted">A successful API connection check verifies read access only. It does not certify trading permission or live execution.</p>
       </Panel>
+      <AccountObserverPanel />
       <ExecutionQualityPanel />
       <ExecutionAccountingPanel data={e.accounting} dryRun={e.dryRun} />
       <div className="grid-2">
@@ -62,10 +64,10 @@ export function Exchange() {
             <div><dt>Brackets</dt><dd>{e.host === 'production' ? 'Production resting stops and targets are not certified in this release' : e.bracket ? 'Enabled — verify each order’s acknowledged state below' : 'Off'}</dd></div>
             <div><dt>Products known</dt><dd className="mono">{e.products ?? '–'}</dd></div>
           </dl>
-          {auth.isAdmin && <p className="small"><Link to="/settings#delta-connection">Set up a Delta API connection</Link> for a read-only check. Saved connection credentials are separate from the executor.</p>}
+          {auth.isAdmin && <p className="small"><Link to="/settings#delta-connection">Set up a Delta API connection</Link> to start production account observation. Saved connection credentials are separate from the executor.</p>}
         </Panel>
 
-        <Panel title="Last reconciliation">
+        <Panel title="Order executor reconciliation">
           {!e.lastReconcile ? (
             <p className="muted small">Not run yet{e.hasKeys ? '' : ' — needs API keys'}.</p>
           ) : (
