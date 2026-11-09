@@ -13,6 +13,21 @@ export function admissionCostPct(cfg: FeeConfig, crossingPct = 0, entry: EntryEx
 export function crossingSlippageBps(cfg: PaperConfig, crossingPct: number): number {
   return Math.max(0, crossingPct) * 50 + (cfg.quotedSlippageBps ?? 0);
 }
-export function offerStatus(cfg: PaperConfig): 'disabled' | 'enrollment-recorded' | 'unverified-full-fees' {
-  return !cfg.scalperOffer?.enabled ? 'disabled' : Number.isFinite(cfg.scalperOffer.joinedAt) && cfg.scalperOffer.joinedAt! >= 0 ? 'enrollment-recorded' : 'unverified-full-fees';
+/** A verified-current flag establishes future eligibility, never the original enrollment date. */
+export function offerEffectiveFrom(cfg: PaperConfig): number | undefined {
+  const o=cfg.scalperOffer;
+  if(!o?.enabled)return undefined;
+  if(o.joinedAt!==undefined&&(!Number.isFinite(o.joinedAt)||o.joinedAt<0))return undefined;
+  if(o.verification){
+    const v=o.verification;
+    return v.source==='delta-india-trading-preferences' && /^[a-f0-9]{64}$/.test(v.accountHash) && !!v.connectionRevision &&
+      Number.isSafeInteger(v.verifiedAt) && v.verifiedAt>0 && Number.isSafeInteger(v.effectiveFrom) && v.effectiveFrom>=v.verifiedAt
+      ? Math.max(v.effectiveFrom,o.joinedAt??0) : undefined;
+  }
+  return Number.isFinite(o.joinedAt)&&o.joinedAt!>=0 ? o.joinedAt : undefined;
+}
+export function offerStatus(cfg: PaperConfig): 'disabled' | 'enrollment-recorded' | 'exchange-verified' | 'unverified-full-fees' {
+  if(!cfg.scalperOffer?.enabled)return 'disabled';
+  if(offerEffectiveFrom(cfg)===undefined)return 'unverified-full-fees';
+  return cfg.scalperOffer.verification?'exchange-verified':'enrollment-recorded';
 }

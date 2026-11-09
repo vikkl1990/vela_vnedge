@@ -341,7 +341,7 @@ export class ApiServer {
       const view=a.planComparisons.view(),marks=a.incubatorStore.liveMarks()??{};
       return {...view,cohorts:view.cohorts.map(p=>({...p,scannerName:a.registry.get(p.sourceScannerId)?.name??p.sourceScannerId})),
         configured:view.configured.map(p=>({...p,scannerName:a.registry.get(p.scannerId)?.name??p.scannerId,sourceStatus:a.registry.get(p.scannerId)?.status??'missing',
-        lastSourceBar:marks[`${p.scannerId}:${p.symbol}:${p.tf}`]??null})),costs:costAudit(a.db,a.config.get())};
+        lastSourceBar:marks[`${p.scannerId}:${p.symbol}:${p.tf}`]??null})),costs:costAudit(a.db,{...a.config.get(),paper:a.paper.offerConfigFor?.(a.config.get().paper)??a.config.get().paper})};
     });
     this.add('GET', '/api/decision-trace', () => a.db.all<any>(
       'SELECT * FROM decision_trace WHERE book=0 ORDER BY id DESC LIMIT 100').map(r=>({...r,snapshot:JSON.parse(r.snapshot)})));

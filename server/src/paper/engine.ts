@@ -160,6 +160,7 @@ export class PaperEngine extends EventEmitter {
    */
   readonly priceSource = { quote: 0, slippage: 0, rejectedNoQuote: 0 };
 
+  offerConfigFor?: (cfg:PaperConfig)=>PaperConfig;
   marketFeesFor?: (symbol:string)=>ProductFees|undefined;
   marketDepthPrice?: (symbol:string,side:Side,qty:number)=>{price?:number;reject?:string}|undefined;
   prepareEntryDepth?: (symbol: string) => Promise<void>;
@@ -229,7 +230,8 @@ export class PaperEngine extends EventEmitter {
   }
   policyForCell(cell:{scannerId:string;symbol:string;tf:string;exitMode?:ExitMode;market?:MarketInfo}, legacy=false):TradePolicy {
     const cfg=this.cfgRef(), exitMode=cell.exitMode??cfg.scanners[cell.scannerId]?.exitMode??'both';
-    const sizing=legacy?this.entryPaper(cell):withProductFees(this.entryPaper(cell),cell.market?.productFees??this.marketFeesFor?.(cell.symbol),cell.symbol);
+    const entryCfg=this.entryPaper(cell);
+    const sizing=legacy?entryCfg:withProductFees(this.offerConfigFor?.(entryCfg)??entryCfg,cell.market?.productFees??this.marketFeesFor?.(cell.symbol),cell.symbol);
     const paper=scannerEntryConfig(exitConfigFor(sizing,cell.symbol,
       this.scannerExit?.(cell.scannerId)??scannerExitPolicy(cfg,cell.scannerId),cell.tf),cfg.scanners[cell.scannerId],cell.tf);
     return makeTradePolicy(cfg,{...cell,exitMode},paper,sizing,this.sourceHashFor?.(cell.scannerId)??null,this.book);
@@ -1217,6 +1219,8 @@ export class PaperEngine extends EventEmitter {
       const pnl = reason === 'entry' ? 0 : pnlOf(pos, price, fill.qty);
       pos.realizedPnl += pnl - fill.pnl; pos.fees += fee - fill.fee;
       Object.assign(fill, { orderId,price,fee,pnl });
+      // Actual cash commission alone cannot prove a waiver or voucher use. Drop modeled attribution.
+      delete fill.feeGross;delete fill.feeDiscount;delete fill.feeWaived;
       if (pos.status === 'closed' && pos.fills.at(-1) === fill) pos.exitPrice = price;
       this.db.run("UPDATE orders SET price=?, fee=?, price_source='exchange' WHERE id=? AND bt=?", price, fee, orderId,this.book);
       this.persist(pos);commit?.();

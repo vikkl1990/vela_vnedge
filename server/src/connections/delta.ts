@@ -1,3 +1,4 @@
+import {readScalperEligibility,type ScalperEligibility} from './scalperOffer.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -8,9 +9,9 @@ export type ObservationSession = { revision: string; reader: AccountReader; curr
 
 export type DeltaEnvironment = 'production' | 'testnet';
 type Credentials = { version: 1; revision: string; environment: DeltaEnvironment; apiKey: string; apiSecret: string; savedAt: number };
-export type ConnectionCheck = { ok: boolean; at: number; latencyMs: number; message: string };
+export type ConnectionCheck = { ok: boolean; at: number; latencyMs: number; message: string; scalperOffer?: {active:boolean|null; checkedAt:number} };
 export type ConnectionStatus = { configured: boolean; environment: DeltaEnvironment | null; savedAt: number | null; check: ConnectionCheck | null };
-type Probe = (credentials: Readonly<Credentials>) => Promise<void>;
+type Probe = (credentials: Readonly<Credentials>) => Promise<ScalperEligibility | void>;
 
 export class ConnectionError extends Error {
   readonly status: number;
@@ -25,13 +26,14 @@ function credential(value: unknown): string {
 }
 
 /** Fixed hosts and authenticated reads only. Never constructs an executor. */
-export async function probeDelta(c: Readonly<Credentials>): Promise<void> {
+export async function probeDelta(c: Readonly<Credentials>): Promise<ScalperEligibility | void> {
   const rest = new DeltaRest({ baseUrl: c.environment === 'production' ? DELTA_INDIA_PROD : DELTA_INDIA_TESTNET,
     apiKey: c.apiKey, apiSecret: c.apiSecret, timeoutMs: 8_000 });
   for (const endpoint of ['/v2/wallet/balances', '/v2/positions/margined']) {
     const result = await rest.request('GET', endpoint, { auth: true, retries: 0 });
     if (!Array.isArray(result)) throw new Error('unexpected_response');
   }
+  if(c.environment==='production')return readScalperEligibility(rest,c.revision);
 }
 
 /** Upstream responses can contain key identifiers: never return their text or arbitrary codes. */
@@ -151,6 +153,17 @@ export class DeltaConnection {
     return this.status();
   }
 
+  /** Internal read-only evidence for explicit fee-model activation. Never returns credentials. */
+  async scalperEligibility():Promise<ScalperEligibility> {
+    const c=this.read();
+    if(!c || c.environment!=='production')throw new ConnectionError(400,'Save a Delta India production connection first.');
+    let result:ScalperEligibility;
+    try {result=await readScalperEligibility(new DeltaRest({baseUrl:DELTA_INDIA_PROD,apiKey:c.apiKey,apiSecret:c.apiSecret,timeoutMs:8000}),c.revision);}
+    catch(e){throw new ConnectionError(503,failureMessage(e));}
+    if(this.read()?.revision!==c.revision)throw new ConnectionError(409,'Credentials changed during the eligibility check.');
+    return result;
+  }
+
   async check(): Promise<ConnectionStatus> {
     const c = this.read();
     if (!c) throw new ConnectionError(400, 'Save a Delta API key and secret first.');
@@ -162,9 +175,10 @@ export class DeltaConnection {
     this.lastStarted = Date.now();
     const promise = (async () => {
       let ok = true, message = 'Authenticated wallet and position reads verified. Trading permission was not tested.';
-      try { await this.probe(c); } catch (e) { ok = false; message = failureMessage(e); }
+      let eligibility:ScalperEligibility|void;
+      try { eligibility=await this.probe(c); } catch (e) { ok = false; message = failureMessage(e); }
       if (this.read()?.revision !== c.revision) throw new ConnectionError(409, 'Credentials changed during the check. Check the saved credentials again.');
-      this.last = { revision: c.revision, result: { ok, at: Date.now(), latencyMs: Date.now() - this.lastStarted, message } };
+      this.last = { revision: c.revision, result: { ok, at: Date.now(), latencyMs: Date.now() - this.lastStarted, message, ...(eligibility?{scalperOffer:{active:eligibility.active,checkedAt:eligibility.checkedAt}}:{}) } };
       return this.status();
     })();
     this.active = { revision: c.revision, promise };

@@ -7084,3 +7084,41 @@ position overlays, editable inputs, themes, live updates, replay and chart teard
 Fixtures are not a profitability backtest. No strategy-profit improvement is claimed.
 
 Evidence: `docs/research/vela-product-fees-2026-11-09.json`.
+
+
+## 230. Verify account-specific scalper enrollment and activate future fee waivers (10 November 2026)
+
+An authenticated production GET of `/v2/users/trading_preferences` returned
+`futures_scalper_offer_enabled: true` for the saved API account. VIP and referral
+discount factors were zero. Authentication alone was never sufficient evidence;
+the explicit account flag resolves the enrollment gap. Delta does not return the
+original consent time in this response.
+
+Store the first successful verification as a future-only effective date, separate
+from an unknown `joinedAt`. Bind the proof to the saved credential revision and a
+hash of the exchange account identity. Removing/replacing credentials prevents
+new orders from inheriting another account's offer. Reverification of the same
+connection is idempotent. The operator tool uses authenticated GETs only and backs
+up the config before changing only `paper.scalperOffer`; it neither joins an offer
+nor creates/cancels orders.
+
+Eligible new account and shadow closing fills pay zero commission (including the
+associated GST): BTCUSD/ETHUSD within 30 minutes, other eligible perpetuals within
+15. Partial closes qualify individually; late fills, liquidations and PAXGUSD,
+SLVONUSD and XAUTUSD retain fees. Opening fees, funding and price friction remain.
+Admission and sizing reserve full exit fees because holding time is uncertain.
+Existing policies and historical fills are not repriced. Research comparison
+plans continue to use full fees.
+
+Record gross modeled commission and waived amount beside the charged fee. Clear
+model attribution when an exchange cash fill restates a fee: zero cash commission
+alone cannot distinguish a waiver from a fee voucher. BTC opening-fee vouchers
+remain separate credits, not trading P&L; grants/caps/expiry are not synthesized
+from the public offer. Settings exposes the authenticated enrollment flag, and
+Paper execution costs shows the effective date and observed modeled fee savings.
+
+Validation: 1,054 server tests, 16 dashboard tests, lint and production build pass.
+New tests cover explicit/missing/false enrollment, account and credential binding,
+exact windows, product exclusions, partial fills, opening-fee preservation,
+non-retroactive history, both books across restarts, and exchange fee restatement.
+Browser fixtures verify the eligibility and waived-fee displays.

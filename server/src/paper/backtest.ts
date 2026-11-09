@@ -1,3 +1,4 @@
+import {offerStatus} from './costs.ts';
 import {withProductFees,type ProductFees} from './productFees.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import {selectiveReclaimRule,trialRiskConfig,expansionRatio} from './selectiveEntry.ts';
@@ -100,7 +101,7 @@ export interface BacktestResult {
   equity: Array<{ at: number; equity: number }>;
   rejected: Record<string, number>;
   entryFlow?: Record<string, number>;
-  costCoverage: { feeSchedule?:ProductFees & {basis:'current-product-scenario'}; crossing: 'observed' | 'fallback'; funding: 'provided' | 'not-modelled' | 'disabled'; depthImpact: 'modelled' | 'not-modelled'; feeWaiver: 'disabled' | 'enrollment-dated' | 'unverified-full-fees' };
+  costCoverage: { feeSchedule?:ProductFees & {basis:'current-product-scenario'}; crossing: 'observed' | 'fallback'; funding: 'provided' | 'not-modelled' | 'disabled'; depthImpact: 'modelled' | 'not-modelled'; feeWaiver: 'disabled' | 'enrollment-dated' | 'verified-from' | 'unverified-full-fees' };
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
@@ -115,6 +116,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const feeCfg=inp.executionPlan ? {...inp.cfg,feeRatePct:inp.executionPlan.paper.feeRatePct,makerFeeRatePct:inp.executionPlan.paper.makerFeeRatePct,feeTaxPct:inp.executionPlan.paper.feeTaxPct} : withProductFees(inp.cfg,inp.productFees,inp.symbol);
   const cfg0 = exitConfigFor(trialRiskConfig(feeCfg,trial), inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit, inp.tf);
   const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: crossingSlippageBps(cfg0, inp.spreadPct) } : cfg0;
+  const feeOffer=offerStatus(cfg);
   const funding = [...(inp.funding ?? [])].sort((a, b) => a.at - b.at);
   if (funding.some(f => !Number.isFinite(f.at) || !Number.isFinite(f.ratePct) || !Number.isFinite(f.markPrice) || f.markPrice <= 0)) throw new Error('invalid historical funding settlement');
   let fi = 0;
@@ -403,7 +405,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   stats.open = open ? 1 : 0;
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
-    version: SIMULATION_VERSION, costCoverage: { ...(inp.productFees&&!inp.executionPlan?{feeSchedule:{...inp.productFees,basis:'current-product-scenario' as const}}:{}), crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: !cfg.scalperOffer?.enabled ? 'disabled' : cfg.scalperOffer.joinedAt === undefined ? 'unverified-full-fees' : 'enrollment-dated' }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
+    version: SIMULATION_VERSION, costCoverage: { ...(inp.productFees&&!inp.executionPlan?{feeSchedule:{...inp.productFees,basis:'current-product-scenario' as const}}:{}), crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: feeOffer==='exchange-verified'?'verified-from':feeOffer==='enrollment-recorded'?'enrollment-dated':feeOffer }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
     stats, trades: closed.map(p => ({...tradeOf(p), setupAt: setupTimes.get(p.id)!})).reverse(), equity: curve, rejected, ...(inp.entry?.reclaim || trial ? {entryFlow: {...entryFlow, pendingAtEnd: reclaim ? 1 : 0}} : {}),
   };
 }

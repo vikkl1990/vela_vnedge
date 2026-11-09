@@ -1,14 +1,14 @@
 import type {Db} from '../db.ts';
 import type {AppConfig} from '../config.ts';
 import type {Fill} from './logic.ts';
-import {offerStatus} from './costs.ts';
+import {offerEffectiveFrom,offerStatus} from './costs.ts';
 
 /** Only observed costs are called realized; price impact without a reference is unknown. */
 export function costAudit(db:Db,cfg:AppConfig) {
   const rows=db.all<any>(`SELECT p.*,d.snapshot FROM positions p LEFT JOIN decision_trace d ON d.id=(
     SELECT MAX(t.id) FROM decision_trace t WHERE t.position_id=p.id AND t.stage='filled')
     WHERE p.bt=0 AND p.status IN ('open','closed') ORDER BY p.entry_at DESC LIMIT 30`);
-  return {offer:offerStatus(cfg.paper),joinedAt:cfg.paper.scalperOffer?.joinedAt??null,
+  return {offer:offerStatus(cfg.paper),joinedAt:cfg.paper.scalperOffer?.joinedAt??null,effectiveFrom:offerEffectiveFrom(cfg.paper)??null,verifiedAt:cfg.paper.scalperOffer?.verification?.verifiedAt??null,
     rows:rows.map(p=>{
       const fills:Fill[]=JSON.parse(p.fills)?.fills??[];
       const budget=p.snapshot?JSON.parse(p.snapshot):null;
@@ -20,6 +20,7 @@ export function costAudit(db:Db,cfg:AppConfig) {
         estimatedExitFee:budget?.standardExitFeeAtEntry??null,
         exitFees:fills.filter(f=>f.reason!=='entry'&&f.reason!=='funding').reduce((n,f)=>n+f.fee,0),
         fundingCost:-fills.filter(f=>f.reason==='funding').reduce((n,f)=>n+f.pnl,0),
+        waivedFees:fills.reduce((n,f)=>n+(f.feeDiscount??0),0),
         waivedCloses:fills.filter(f=>f.reason!=='entry'&&f.feeWaived===true).length,
         breakEvenPrice:budget?.breakEvenPrice??null,
         priceShortfall:referenced.length?referenced.reduce((n,o)=>n+(o.price-o.ref_price)*(o.side==='buy'?1:-1)*o.qty*p.contract_value,0):null,

@@ -1,3 +1,4 @@
+import {bindScalperConnection} from './connections/scalperOffer.ts';
 import {productFees,withProductFees} from './paper/productFees.ts';
 import {currentPolicyIds,policyHealth} from './analytics/policyHealth.ts';
 import {BoundExits} from './scanners/boundExits.ts';
@@ -155,6 +156,12 @@ export class App {
     this.paper.sourceHashFor = this.shadow.sourceHashFor = (sid: string) => this.sourceHashFor(sid);
     this.paper.sourceCodeFor=this.shadow.sourceCodeFor=(sid)=>this.registry.get(sid)?.patched;
     this.paper.adoptLegacyPolicies();this.shadow.adoptLegacyPolicies();
+    this.paper.offerConfigFor=this.shadow.offerConfigFor=paper=>{
+      if(!paper.scalperOffer?.verification)return paper;
+      let revision:string|null=null;
+      try{revision=this.deltaConnection.observationRevision()?.revision??null;}catch{/* unavailable credentials cannot establish a new offer policy */}
+      return bindScalperConnection(paper,revision);
+    };
     this.paper.marketFeesFor=this.shadow.marketFeesFor=symbol=>productFees(this.rest.cachedProduct(symbol));
     // the same trend both books and the backtest use: closes of the position's own timeframe
     const trendFor = (symbol: string, tf: string, emaLen?:number) => {

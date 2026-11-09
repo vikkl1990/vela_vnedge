@@ -1,7 +1,7 @@
 import {useQuery} from '@tanstack/react-query'
 import {Link} from 'react-router-dom'
 import {api} from '../api/client'
-import {Panel, QueryState, Pill} from './ui'
+import {Panel, QueryState, Pill, Time} from './ui'
 const money=(v:number|null|undefined)=>v==null?'—':`$${v.toFixed(2)}`
 const pct=(v:number|null|undefined)=>v==null?'—':`${(v*100).toFixed(1)}%`
 
@@ -34,10 +34,11 @@ export function CostAudit() {
   const q=useQuery({queryKey:['execution-plans'],queryFn:api.executionPlans,refetchInterval:30000})
   return <Panel title="Paper execution costs">
     <QueryState {...q} data={q.data} onRetry={()=>q.refetch()} empty="Cost audit unavailable.">{({costs:d})=><>
-      <p className="small muted">{d.offer==='unverified-full-fees'?'Fee waiver enrollment is unverified: new closes pay full fees.':d.offer==='enrollment-recorded'?'Fee offer enrollment is recorded; each closing fill still checks its timing and exclusions.':'Fee waiver is off: full fees apply.'} Historical booked results are preserved.</p>
+      <p className="small muted">{d.offer==='unverified-full-fees'?'Fee waiver enrollment is unverified: new closes pay full fees.':d.offer==='exchange-verified'?'Delta API verified enrollment; eligible new closing fills receive the waiver.':d.offer==='enrollment-recorded'?'Fee offer enrollment is recorded; each closing fill still checks its timing and exclusions.':'Fee waiver is off: full fees apply.'} Historical booked results are preserved.</p>
+      {d.effectiveFrom!==null&&<p className="small">Applies to entries from <Time t={d.effectiveFrom} mode="full" />. BTC/ETH: 30 minutes; other eligible futures: 15 minutes. Entry fees remain payable. BTC fee vouchers are separate credits and are not booked as profit.</p>}
       <p className="small muted">Latest 30 account positions. Break-even is the original full quantity plus standard exit commission; it excludes future funding and exit impact. Funding below is recorded funding. Price shortfall is already included in trade P&amp;L—do not subtract it again.</p>
       <div className="table-wrap"><table className="table table-dense"><thead><tr><th>Position</th><th>Entry / notional</th><th>Entry fee</th><th>Exit fee estimate / paid</th><th>Funding cost</th><th>Initial break-even</th><th>Observed price shortfall</th></tr></thead><tbody>{d.rows.map(r=><tr key={r.id}>
-        <td><Link to={`/trades/${r.id}/replay`}>#{r.id} · {r.symbol} {r.tf}</Link><div className="small muted">{r.status} · {r.scannerId}</div></td><td>{r.entryLiquidity}<div>{money(r.notional)}</div></td><td>{money(r.entryFee)}</td><td>{money(r.estimatedExitFee)} / {money(r.exitFees)}{r.waivedCloses>0&&<div className="small muted">{r.waivedCloses} eligible waived fills</div>}</td><td>{money(r.fundingCost)}</td><td>{r.breakEvenPrice?.toLocaleString(undefined,{maximumFractionDigits:6})??'Not recorded'}</td><td>{money(r.priceShortfall)}<div className="small muted">{Math.round(r.priceCoverage*100)}% of fills have a reference</div></td>
+        <td><Link to={`/trades/${r.id}/replay`}>#{r.id} · {r.symbol} {r.tf}</Link><div className="small muted">{r.status} · {r.scannerId}</div></td><td>{r.entryLiquidity}<div>{money(r.notional)}</div></td><td>{money(r.entryFee)}</td><td>{money(r.estimatedExitFee)} / {money(r.exitFees)}{r.waivedCloses>0&&<div className="small muted">{r.waivedCloses} eligible waived fills · {money(r.waivedFees)} saved</div>}</td><td>{money(r.fundingCost)}</td><td>{r.breakEvenPrice?.toLocaleString(undefined,{maximumFractionDigits:6})??'Not recorded'}</td><td>{money(r.priceShortfall)}<div className="small muted">{Math.round(r.priceCoverage*100)}% of fills have a reference</div></td>
       </tr>)}</tbody></table></div>
     </>}</QueryState>
   </Panel>

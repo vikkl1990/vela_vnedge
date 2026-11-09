@@ -66,12 +66,13 @@ test('check sends signed GETs only to the selected official host and rejects red
     const headers = init.headers as Record<string, string>;
     assert.equal(headers['api-key'], credentials.apiKey);
     assert.equal(headers.signature, createHmac('sha256', credentials.apiSecret).update('GET' + headers.timestamp + new URL(url).pathname).digest('hex'));
-    return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+    return new Response(JSON.stringify({ success: true, result: url.endsWith('/trading_preferences') ? {user_id:123,futures_scalper_offer_enabled:true} : [] }), { status: 200 });
   });
   for (const [environment, host] of [['testnet', 'https://cdn-ind.testnet.deltaex.org'], ['production', 'https://api.india.delta.exchange']]) {
     const c = new DeltaConnection(root); c.save({ ...credentials, environment });
     const result = await c.check(); assert.equal(result.check?.ok, true); noSecrets(result);
-    assert.deepEqual(calls.splice(0), [`${host}/v2/wallet/balances`, `${host}/v2/positions/margined`]);
+    assert.equal(result.check?.scalperOffer?.active,environment==='production'?true:undefined);
+    assert.deepEqual(calls.splice(0), [`${host}/v2/wallet/balances`, `${host}/v2/positions/margined`,...(environment==='production'?[`${host}/v2/users/trading_preferences`]:[])]);
   }
 });
 

@@ -1,4 +1,4 @@
-import { commissionRatePct, admissionCostPct, type EntryExecution } from './costs.ts';
+import { offerEffectiveFrom, commissionRatePct, admissionCostPct, type EntryExecution } from './costs.ts';
 /**
  * Pure paper-trading position logic shared by the live engine and the backtester.
  * No I/O, no timers: every function takes explicit inputs and returns explicit results.
@@ -15,7 +15,7 @@ import type { Side, ExitType } from '../scanners/extractor.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import type { TradePolicy } from './tradePolicy.ts';
 
-export interface Fill { orderId?: number; liquidity?: 'maker' | 'taker'; feeWaived?: boolean; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
+export interface Fill { orderId?: number; liquidity?: 'maker' | 'taker'; feeWaived?: boolean; feeGross?: number; feeDiscount?: number; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
 
 export interface Position {
   policy?: TradePolicy;
@@ -434,9 +434,10 @@ export interface OpenParams {
  */
 export function closingFeeWaived(pos: Position, at: number, reason: string, cfg: PaperConfig): boolean {
   const o = cfg.scalperOffer;
-  if (!o?.enabled || !Number.isFinite(o.joinedAt) || o.joinedAt! < 0 || reason === 'liquidation' || o.excluded?.includes(pos.symbol)) return false;
+  const effectiveFrom=offerEffectiveFrom(cfg);
+  if (!o?.enabled || effectiveFrom===undefined || reason === 'liquidation' || o.excluded?.includes(pos.symbol)) return false;
   const opened = pos.openedAt ?? pos.entryAt;
-  if (at < opened || (o.joinedAt !== undefined && opened < o.joinedAt)) return false;
+  if (at < opened || opened < effectiveFrom) return false;
   const minutes = o.majors.includes(pos.symbol) ? o.majorsMinutes : o.othersMinutes;
   return at - (pos.openedAt ?? pos.entryAt) <= minutes * 60_000;
 }
@@ -452,7 +453,7 @@ export function openPosition(p: OpenParams): Position {
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
     levelsSource: p.levelsSource, leverage: p.leverage ?? 0, marginLeverage: p.marginLeverage ?? p.leverage ?? 0, maintenanceMarginPct: p.maintenanceMarginPct, liqPrice: liquidationPrice(p.side, fillPrice, p.marginLeverage ?? p.leverage ?? 0, p.cfg, p.maintenanceMarginPct), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
-    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0, liquidity: p.maker ? 'maker' : 'taker', feeWaived: false }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar, openedAt: p.openedAt ?? p.at,
+    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0, liquidity: p.maker ? 'maker' : 'taker', feeWaived: false, feeGross:fee, feeDiscount:0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar, openedAt: p.openedAt ?? p.at,
   };
 }
 
@@ -475,12 +476,14 @@ export function fillExit(pos: Position, price: number, qty: number, reason: stri
   }
   // take-profit legs rest as limit orders → maker fee; everything else crosses the spread → taker fee
   const pnl = pnlOf(pos, px, q);
-  const quotedFee = closingFeeWaived(pos, at, reason, cfg) ? 0 : feeFor(px, q, pos.contractValue, cfg, /^tp[123]$/.test(reason) && !withSlippage);
+  const feeGross=feeFor(px,q,pos.contractValue,cfg,/^tp[123]$/.test(reason)&&!withSlippage);
+  const feeWaived=closingFeeWaived(pos,at,reason,cfg);
+  const quotedFee = feeWaived ? 0 : feeGross;
   const fee = reason === 'liquidation' ? Math.min(quotedFee, Math.max(0, margin + pnl)) : quotedFee;
   pos.qtyOpen -= q;
   pos.realizedPnl += pnl;
   pos.fees += fee;
-  const fill: Fill = { at, price: px, qty: q, reason, fee, pnl, liquidity: /^tp[123]$/.test(reason) && !withSlippage ? 'maker' : 'taker', feeWaived: closingFeeWaived(pos, at, reason, cfg) };
+  const fill: Fill = { at, price: px, qty: q, reason, fee, pnl, liquidity: /^tp[123]$/.test(reason) && !withSlippage ? 'maker' : 'taker', feeWaived, feeGross, feeDiscount:feeWaived?feeGross:0 };
   pos.fills.push(fill);
   if (pos.qtyOpen <= 0) {
     pos.status = 'closed'; pos.exitAt = at; pos.exitPrice = px;

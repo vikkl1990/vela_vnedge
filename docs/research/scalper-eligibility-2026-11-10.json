@@ -1,0 +1,52 @@
+{
+  "checkedAt": "2026-11-09T18:58:46.167Z",
+  "clientDate": "2026-11-10",
+  "baseCommit": "412228af4d8e1c84301614278f9bd748bdfb43e9",
+  "evidence": {
+    "host": "https://api.india.delta.exchange",
+    "endpoint": "/v2/users/trading_preferences",
+    "method": "authenticated GET",
+    "futures_scalper_offer_enabled": true,
+    "vip_discount_factor": "0.00",
+    "referral_discount_factor": "0",
+    "originalEnrollmentTimeReturned": false,
+    "rawCredentialsOrIdentityRecorded": false
+  },
+  "termsSource": "https://www.delta.exchange/support/solutions?articleId=80001172745",
+  "feeSource": "https://www.delta.exchange/fees",
+  "feePolicy": {
+    "windowsMinutes": {
+      "BTCUSD": 30,
+      "ETHUSD": 30,
+      "others": 15
+    },
+    "exclusions": [
+      "PAXGUSD",
+      "SLVONUSD",
+      "XAUTUSD"
+    ],
+    "liquidationsEligible": false,
+    "partialClosesEligible": true,
+    "effectiveFrom": "first verified application time; stored on VM",
+    "openingFees": "unchanged",
+    "admissionAndSizingBudget": "full exit fees",
+    "vouchers": "separate credit; not cash trading profit",
+    "history": "unchanged",
+    "existingPositions": "saved policies retained"
+  },
+  "validation": {
+    "serverTestsPassed": 1054,
+    "dashboardTestsPassed": 16,
+    "failures": 0,
+    "lint": "passed",
+    "build": "passed",
+    "ui": "synthetic fixture passed; no credential submission"
+  },
+  "activationTool": "ops/verify-scalper-offer.ts --data-dir=/opt/vnedge/data --apply",
+  "deploymentConstraints": [
+    "paper mode",
+    "allowProduction false",
+    "$150 margin",
+    "risk/capital/entry/exit settings unchanged except verified fee waiver"
+  ]
+}

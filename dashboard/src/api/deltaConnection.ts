@@ -3,5 +3,5 @@ export interface DeltaConnectionStatus {
   configured: boolean
   environment: DeltaEnvironment | null
   savedAt: number | null
-  check: { ok: boolean; at: number; latencyMs: number; message: string } | null
+  check: { ok: boolean; at: number; latencyMs: number; message: string; scalperOffer?: {active:boolean|null; checkedAt:number} } | null
 }
