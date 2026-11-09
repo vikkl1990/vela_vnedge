@@ -1,3 +1,4 @@
+import {scannerPairs} from './allocation.ts';
 import type {Db} from '../db.ts';
 import {TF_SECONDS,type AppConfig} from '../config.ts';
 import type {CandleStore} from '../data/candleStore.ts';
@@ -24,8 +25,7 @@ export class BoundExits {
   private needed(p:Position,book:PaperEngine){
     if(!p.policy?.sourceHash||p.policy.exitMode==='levels')return false;
     const s=this.d.registry.get(p.scannerId),sc=this.d.cfg().scanners[p.scannerId];
-    const allocated=book.book===2 || !!sc?.enabled&&(sc.pairs?.length?sc.pairs.some(c=>c.symbol===p.symbol&&c.tf===p.tf):
-      (sc.symbols??this.d.cfg().symbols).includes(p.symbol)&&(sc.timeframes??this.d.cfg().timeframes).includes(p.tf));
+    const allocated=book.book===2 || !!sc?.enabled&&!sc.hidden&&scannerPairs(sc,this.d.cfg().timeframes).some(c=>c.symbol===p.symbol&&c.tf===p.tf);
     return !allocated||!sameExitSource(p.policy,s?sourceHash(s.patched):null,policyReading(sc));
   }
   async run(symbol:string,tf:string){

@@ -107,6 +107,8 @@ export interface SizingInputs {
   /** Margin sizing: the leverage the cell's record asks for (recordLeverage); the config's base when absent. */
   wantedLeverage?: number;
   entryExecution?: EntryExecution;
+  /** Fraction of the intended trade, before shared-wallet capacity is applied. */
+  sizeScale?: number;
 }
 
 /**
@@ -291,6 +293,8 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   const wanted = margin ? (s.wantedLeverage ?? s.cfg.marginLeverage?.base ?? 5) : s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : maxLeverage;
   const marginLeverage = leverageForStop(entry, sl, Math.min(maxLeverage, wanted), s.cfg, maint);
   const rejected = (reason: string) => ({ qty: 0, riskAmount: 0, leverage: 0, marginLeverage, reason });
+  const scale = s.sizeScale ?? 1;
+  if (!(Number.isFinite(scale) && scale > 0 && scale <= 1)) return rejected('invalid entry size scale');
   if (![entry, sl, s.equity, s.contractValue, marginLeverage].every(v => Number.isFinite(v) && v > 0) || entry === sl) return rejected('invalid sizing inputs');
   if (s.cfg.liquidation && 1 / marginLeverage <= maint / 100) return rejected('initial margin must exceed maintenance margin');
   const long = sl < entry;
@@ -314,7 +318,10 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   // stop-risk ceiling in every sizing mode, independently of liquidation clearance.
   const stopCapPct = s.cfg.maxStopLossPct ?? 0;
   const stopCapQty = stopCapPct > 0 ? Math.floor((s.equity * stopCapPct / 100) / perContractRisk) : Infinity;
-  let qty = Math.min(desired, maxQty, stopCapQty);
+  // Capacity belongs to the actual requested allocation. Scaling an already capacity-limited
+  // full-size order rejects affordable pilots and applies the reduction twice.
+  const intended = Math.floor(Math.min(desired, stopCapQty) * scale);
+  let qty = Math.min(intended, maxQty);
   if (!Number.isFinite(qty) || qty < 1) {
     if (stopCapQty < 1) return rejected(`stop too wide for the ${stopCapPct}% max stop-loss cap`);
     return rejected(maxQty < 1 ? 'margin or leverage cap exhausted' : 'risk budget too small for one contract');
@@ -322,14 +329,13 @@ export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNo
   // The margin left after the open positions can fund only a fraction of what the strategy asked
   // for. Below `minSizeShare` that fraction is a scrap: it pays the same fees and cannot earn the
   // trade's R in dollars, so it is refused rather than taken (decision 53).
-  const intended = Math.min(desired, stopCapQty);
   const minShare = s.cfg.minSizeShare ?? 0;
   if (minShare > 0 && Number.isFinite(intended) && intended >= 1 && qty < intended * minShare) return rejected(`margin funds only ${Math.round(qty / intended * 100)}% of the intended size (min ${Math.round(minShare * 100)}%)`);
   // With depth impact the cost of a fill grows with its size, so the per-contract figure above
   // understates the loss of a large order. Price the stop-out exactly as the fills will (entry and
   // exit impact on the order's own notional) and shrink the order until it fits the budget.
   if ((s.cfg.depthUsdPerBp ?? 0) > 0) {
-    const budget = Math.min(s.cfg.sizingMode === 'risk' ? s.equity * (s.cfg.riskPerTradePct / 100) : Infinity, stopCapPct > 0 ? s.equity * stopCapPct / 100 : Infinity);
+    const budget = Math.min(s.cfg.sizingMode === 'risk' ? s.equity * (s.cfg.riskPerTradePct / 100) : Infinity, stopCapPct > 0 ? s.equity * stopCapPct / 100 : Infinity) * scale;
     const lossAt = (n: number) => {
       const fe = entryFill(entry, entry * n * s.contractValue);
       const fs = slip(sl, long ? 'sell' : 'buy', s.cfg, sl * n * s.contractValue);

@@ -2,6 +2,7 @@ import {sameExitSource} from './boundExits.ts';
 import { pilotCapacityRefusal, pilotUsage, reservePilotEntry, type PilotUsage } from '../paper/pilotCapacity.ts';
 import {policyReading,stablePolicy} from '../paper/tradePolicy.ts';
 import {EntryCoordinator} from './entryCoordinator.ts';
+import {scannerPairs} from './allocation.ts';
 import { SignalInbox, type Delivery, type InboxRow } from './inbox.ts';
 import { configFingerprint, sourceHash } from '../paper/fingerprint.ts';
 import {ScanRecovery} from './recovery.ts';
@@ -175,12 +176,7 @@ export class ScannerEngine extends EventEmitter {
     // A scanner runs only where it was explicitly put (decision 79): its pairs, or the symbols listed in
     // its own config × its timeframes. The global symbol list never feeds a scanner: seventy scanners
     // bulk-enabled with no symbols of their own once became 1,260 live cells overnight.
-    const c = this.scannerConfig(id);
-    if (c.pairs?.length) return c.pairs.map(p => ({ symbol: p.symbol, tf: p.tf }));
-    if (!c.symbols?.length) return [];
-    const out: Array<{ symbol: string; tf: string }> = [];
-    for (const symbol of c.symbols) for (const tf of c.timeframes ?? this.cfgRef().timeframes) out.push({ symbol, tf });
-    return out;
+    return scannerPairs(this.scannerConfig(id),this.cfgRef().timeframes);
   }
   runsOn(id: string, symbol: string, tf: string): boolean { return this.pairsFor(id).some(p => p.symbol === symbol && p.tf === tf); }
   /** Quarantined scripts are not scheduled: they failed in a way that repeats (see health.ts). */

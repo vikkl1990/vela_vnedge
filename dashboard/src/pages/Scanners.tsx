@@ -198,13 +198,13 @@ export function Scanners() {
         key: 'symbols',
         header: 'Symbols',
         sortable: false,
-        render: (s) => (s.pairs?.length ? <span className="mono small" title="Explicit (market, timeframe) pairs (decision 70); edit on the scanner page">{s.pairs.map((p) => `${p.symbol.replace(/USD$/, '')} ${p.tf}`).join(' · ')}</span> : <ChipSelect compact options={symbolOptions} value={s.symbols ?? []} onChange={(v) => patch(s, { symbols: v })} emptyLabel="global" disabled={busy} />),
+        render: (s) => (Array.isArray(s.pairs) ? <span className="mono small" title="Explicit pair assignments. Add pairs through the Incubator.">{s.pairs.length ? s.pairs.map((p) => `${p.symbol.replace(/USD$/, '')} ${p.tf}`).join(' · ') : 'No pairs assigned'}</span> : <ChipSelect compact options={symbolOptions} value={s.symbols ?? []} onChange={(v) => patch(s, { symbols: v })} emptyLabel="none assigned" disabled={busy} />),
       },
       {
         key: 'tfs',
         header: 'Timeframes',
         sortable: false,
-        render: (s) => (s.pairs?.length ? <span className="muted small">per pair</span> : <span className="muted small" title="Explicit pairs are the whole schedule (decision 79). Pairs are added by promoting a shadow pair or through the API.">{s.enabled ? 'no pairs: runs nothing' : 'no pairs'}</span>),
+        render: (s) => <span className="muted small">{Array.isArray(s.pairs) ? s.pairs.length ? 'per pair' : 'no scheduled frames' : s.symbols?.length ? (s.timeframes ?? config.data?.timeframes ?? []).join(' · ') : 'no scheduled frames'}</span>,
       },
       {
         key: 'exit',
@@ -271,7 +271,7 @@ export function Scanners() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [symbolOptions, busy, run.isPending],
+    [symbolOptions, busy, run.isPending, config.data?.timeframes],
   )
 
   return (

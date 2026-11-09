@@ -1,3 +1,4 @@
+import {scannerPairs} from '../scanners/allocation.ts';
 import {shadowCapacity, selectAdmissions} from './capacity.ts';
 import {rotateIdleCells} from './rotation.ts';
 import {admissionEvidence} from './evidencePriority.ts';
@@ -151,11 +152,8 @@ export function diversityRefusal(cfg: AppConfig, scannerId: string, symbol: stri
 }
 
 export function livePairs(cfg: AppConfig): PairKey[] {
-  // decision 79: a scanner is in the fleet only where it was explicitly put — its pairs, or its own symbol
-  // list at the incubator timeframe. The global symbol list never puts a scanner anywhere.
-  const tf = cfg.incubator.tf;
   return Object.entries(cfg.scanners).filter(([, v]) => v.enabled && !v.hidden)
-    .flatMap(([id, v]) => v.pairs?.length ? v.pairs.map(p => ({ scannerId: id, symbol: p.symbol, tf: p.tf })) : (v.symbols ?? []).map(symbol => ({ scannerId: id, symbol, tf })));
+    .flatMap(([id, v]) => scannerPairs(v,cfg.timeframes).map(p=>({scannerId:id,...p})));
 }
 
 /** Make the incubator's `live` rows match the config: the config is the record of what trades. */
@@ -550,16 +548,10 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
   return own && own.trades >= inc.gate.minMarketTrades && own.avgR > 0 ? null : 'this market no longer has the required positive trade sample';
 }
 
-/** Take one (market, timeframe) off a scanner: from its explicit pairs when it has them, else from its symbol list; the scanner is switched off when it was the last. */
-function removePair(sc: ScannerConfig | undefined, r: { scannerId: string; symbol: string; tf: string }, setScanner: (id: string, patch: Partial<ScannerConfig>) => void) {
-  if (sc?.pairs?.length) {
-    const rest = sc.pairs.filter(p => !(p.symbol === r.symbol && p.tf === r.tf));
-    setScanner(r.scannerId, rest.length ? { pairs: rest } : { enabled: false });
-    return;
-  }
-  // a legacy scanner listed by symbols: take the market off its own list (never the global one)
-  const rest = (sc?.symbols ?? []).filter(s => s !== r.symbol);
-  setScanner(r.scannerId, rest.length ? { symbols: rest } : { enabled: false });
+/** Remove exactly one tuple; materialize legacy cross-products so other frames survive. */
+function removePair(sc: ScannerConfig | undefined, r: { scannerId: string; symbol: string; tf: string }, setScanner: (id: string, patch: Partial<ScannerConfig>) => void, fallbackTimeframes:string[]) {
+  const rest=scannerPairs(sc,fallbackTimeframes).filter(p=>!(p.symbol===r.symbol&&p.tf===r.tf));
+  setScanner(r.scannerId,{pairs:rest,...(!rest.length?{enabled:false}:{})});
 }
 
 /**
@@ -582,14 +574,14 @@ export function approve(store: IncubatorStore, cfg: AppConfig, id: number, actor
     if (refusal) throw new IncubatorError(`proposal no longer qualifies: ${refusal}`);
     const stats = pairStats(store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2, now), r.since, now);
     // Converting a running legacy symbol list to explicit pairs must retain its current allocation.
-    const existing = sc?.pairs?.length ? sc.pairs : livePairs(cfg).filter(p => p.scannerId === r.scannerId).map(({symbol, tf}) => ({symbol, tf}));
+    const existing = sc?.enabled&&!sc.hidden?scannerPairs(sc,cfg.timeframes):[];
     setScanner(r.scannerId, { enabled: true, hidden: false, pairs: [...existing.filter(p => !(p.symbol === r.symbol && p.tf === r.tf)), { symbol: r.symbol, tf: r.tf }] });
     return store.move(r, 'live', actor, { shadow: stats, gate: r.gate, policy: store.policyEvidence(r,now) }, 'promoted from the shadow book', now);
   }
   if (r.stage === 'demote_proposed') {
     const assessment = liveAssessment(store, cfg, r, now, { ...store.marketOut() });
     if (assessment.decision !== 'demote') throw new IncubatorError('demotion no longer qualifies: re-judge the pair before deciding');
-    removePair(sc, r, setScanner);
+    removePair(sc, r, setScanner,cfg.timeframes);
     return store.move(r, 'shadow', actor, { live: assessment.stats, reason: assessment.reason }, 'demoted: back to the shadow book', now, { since: store.admittedAt(r.id) ?? undefined });
   }
   throw new IncubatorError(`nothing to approve: the pair is ${r.stage}`);
@@ -605,7 +597,7 @@ export function demote(store: IncubatorStore, cfg: AppConfig, id: number, actor:
   if (!r) throw Object.assign(new IncubatorError('unknown incubator pair'), { status: 404 });
   if (r.stage !== 'live' && r.stage !== 'demote_proposed') throw new IncubatorError(`nothing to demote: the pair is ${r.stage}`);
   const sc = cfg.scanners[r.scannerId];
-  removePair(sc, r, setScanner);
+  removePair(sc, r, setScanner,cfg.timeframes);
   // decision 132: a cell that comes back from the account keeps the shadow evidence it earned before promotion
   // decision 132: a cell that comes back from the account keeps the shadow evidence it earned before promotion; the
   // demotion's own reason rides in the event (decision 184), so it is never read off an older, rejected proposal

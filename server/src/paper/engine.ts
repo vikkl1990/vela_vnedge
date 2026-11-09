@@ -705,11 +705,7 @@ export class PaperEngine extends EventEmitter {
     const openNotional = others.reduce((a, p) => a + notionalOf(p), 0)+reservations.reduce((a,r)=>a+r.notional,0);
     const reservedMargin = others.reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0)+reservations.reduce((a,r)=>a+r.margin,0);
     const wallet = this.book === 0 ? this.initialEquity + this.realizedPnl() : this.initialEquity;
-    const base = sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, maintenanceMarginPct: market.maintenanceMarginPct, maxLeverage: market.maxLeverage, cfg, wantedLeverage, entryExecution }, openNotional, score);
-    if(sizeScale >= 1 || base.qty < 1)return base;
-    // Scale quantity after the normal risk/lot calculation; leverage tiers and stop clearance stay intact.
-    const qty=Math.floor(base.qty*sizeScale), fraction=qty/base.qty;
-    return {...base,qty,riskAmount:base.riskAmount*fraction,leverage:base.leverage*fraction,...(qty<1?{reason:'copy pilot quantity below one contract'}:{})};
+    return sizeContracts(price, sl, { equity: this.equity(), availableMargin: wallet - reservedMargin, contractValue: market.contractValue, tickSize: market.tickSize, maintenanceMarginPct: market.maintenanceMarginPct, maxLeverage: market.maxLeverage, cfg, wantedLeverage, entryExecution, sizeScale }, openNotional, score);
   }
 
   private capReserved(pe:PendingEntry,size:ReturnType<typeof sizeContracts>) {

@@ -1,3 +1,4 @@
+import {scannerPairs} from '../scanners/allocation.ts';
 /**
  * The state of the system, read from the machine that trades it.
  *
@@ -32,7 +33,7 @@ console.log(`Generated ${iso(now)} from \`${DATA_DIR}\`. Do not edit: run \`npm 
 const fleet = Object.entries(cfg.scanners)
   .filter(([, v]) => v.enabled && !v.hidden)
   // decision 79: explicit pairs, else the scanner's own symbols × timeframes; the global list never counts
-  .flatMap(([id, v]) => v.pairs?.length ? v.pairs.map(p => ({ id, symbol: p.symbol, tf: p.tf })) : (v.symbols ?? []).flatMap(s => (v.timeframes ?? cfg.timeframes).map(tf => ({ id, symbol: s, tf }))));
+  .flatMap(([id, v]) => scannerPairs(v,cfg.timeframes).map(p=>({id,...p})));
 const registry = new ScannerRegistry();
 console.log(`## Live fleet — ${fleet.length} pairs\n`);
 console.log('| scanner | market | tf | live trades | net $ | last trade |');

@@ -132,7 +132,7 @@ test('a losing live pair is proposed for demotion; approving it removes the mark
   const patches: any[] = [];
   const r = approve(store, cfg, store.find('live1', 'BTCUSD', '15m')!.id, 'admin', (id, patch) => patches.push({ id, patch }), T0 + 21 * DAY);
   assert.equal(r.stage, 'shadow');
-  assert.deepEqual(patches, [{ id: 'live1', patch: { enabled: false } }]);
+  assert.deepEqual(patches, [{ id: 'live1', patch: { pairs: [], enabled: false } }]);
 });
 
 test('the operator can demote a live pair without a gate proposal; the market leaves the scanner and the pair returns to shadow', () => {
@@ -141,7 +141,7 @@ test('the operator can demote a live pair without a gate proposal; the market le
   const patches: any[] = [];
   const r = demote(store, cfg, store.find('live1', 'BTCUSD', '15m')!.id, 'admin', (id, patch) => patches.push({ id, patch }), 'misread script', T0 + DAY);
   assert.equal(r.stage, 'shadow');
-  assert.deepEqual(patches, [{ id: 'live1', patch: { enabled: false } }]);
+  assert.deepEqual(patches, [{ id: 'live1', patch: { pairs: [], enabled: false } }]);
   assert.throws(() => demote(store, cfg, r.id, 'admin', () => {}, null, T0 + DAY), /nothing to demote/);
 });
 
@@ -263,7 +263,7 @@ test('pairs-aware fleet: a scanner with explicit pairs is promoted and demoted p
   assert.deepEqual(patches as unknown[], [{ id: 'live1', patch: { pairs: [{ symbol: 'ETHUSD', tf: '4h' }] } }], 'only that pair leaves; the other stays');
   cfg.scanners.live1.pairs = [{ symbol: 'ETHUSD', tf: '4h' }];
   const last = demote(store, cfg, store.find('live1', 'ETHUSD', '4h')!.id, 'admin', (id, patch) => patches.push({ id, patch }), null, T0 + DAY);
-  assert.equal(last.stage, 'shadow'); assert.deepEqual(patches.at(-1) as unknown, { id: 'live1', patch: { enabled: false } }, 'the last pair switches the scanner off');
+  assert.equal(last.stage, 'shadow'); assert.deepEqual(patches.at(-1) as unknown, { id: 'live1', patch: { pairs: [], enabled: false } }, 'the last pair switches the scanner off and clears its allocation');
 });
 
 test('decision 79: an enabled scanner without pairs is not in the fleet, and a save above the fleet cap is refused', () => {

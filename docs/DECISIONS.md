@@ -7015,3 +7015,42 @@ unchanged reduced sizing, retained account capacity and risk refusals, independe
 cap restoration, configuration validation and preservation of unrelated settings.
 Removing a quota increases access to future eligible signals; it is not evidence
 of higher profitability or a guarantee of a particular daily trade count.
+
+## 228. Unify scanner allocations and size the intended pilot before checking capacity (9 November 2026)
+
+The scheduler expanded legacy scanner symbols over their configured timeframes,
+but the incubator expanded them only over its screening timeframe. Demoting one
+legacy tuple could remove that symbol on every timeframe. An explicit empty pair
+list fell back to old symbols, and the bound-exit runner could mistake an empty
+or hidden allocation for a scheduled scanner. Promotion could also reactivate
+dormant explicit pairs along with the one approved pair.
+
+Use one deduplicating allocation resolver for scheduling, incubator synchronization,
+promotion/demotion, fleet limits, CLI reporting and bound exits. An explicit empty
+list means no allocation. Demotion materializes and removes exactly one tuple;
+the final removal clears the list and disables the scanner. Existing held trades
+retain their source-bound exits. The scanner UI shows empty assignments and legacy
+frames accurately. The VM's current 43 configured tuples are identical before and
+after this correction; no pair is automatically promoted or retired.
+
+Pilot sizing previously tested wallet capacity against a full order, then divided
+the surviving quantity by three. A $40 pilot could be rejected with $50 available,
+and a partially funded normal order could be reduced twice. Apply the fraction to
+the intended fee-inclusive, stop-capped quantity first, then apply available cash,
+aggregate leverage and minimum-size-share checks. Reprice depth impact against the
+reduced risk budget. Preserve lot rounding, leverage, pending reservations and
+fill-time checks. Four sizing regressions fail on the previous engine and pass now.
+
+Validation: 1,042 server tests and 16 dashboard tests, dashboard lint/build, and an
+18-cell, two-period shared-wallet candle replay against frozen commit 2a1af60.
+Both cost assumptions (0.04% and 0.10% crossing) and both signal orders match the
+baseline exactly in final trades, net, fees and drawdown. The historical sample
+did not exercise the constrained-wallet pilot bug: no historical profit gain is
+claimed. Current sources/allocation were applied retrospectively; historical L2,
+worker ordering, promotion eligibility and complete older funding are unavailable.
+
+A separate candidate reducing losing cells after five comparable closes improved
+the earlier period but reduced later profits in all four comparisons. It was removed
+from the deployment, rather than selecting a favorable backtest. No loss-based
+allocation gate, pilot quota, exit-policy change or risk increase is introduced.
+Details: `docs/research/allocation-entry-validation-2026-11-09.json`.
