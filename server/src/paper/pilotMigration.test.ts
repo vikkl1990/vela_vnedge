@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {enablePilotHorizons,PILOT_HORIZONS} from '../../../ops/enable-pilot-horizons.ts';
+
+test('removing pilot caps changes only quotas, with a private backup, dry run and idempotency',async t=>{
+ const {removePilotCaps}=await import('../../../ops/remove-pilot-caps.ts');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'vnedge-no-pilot-caps-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'config.json'),cfg=structuredClone(DEFAULT_CONFIG);
+ cfg.paper.marginPerTrade=150;cfg.paper.maxOpenPositions=8;cfg.paper.maxStopLossPct=3;cfg.risk.reentryCooldownMinutes=60;
+ cfg.incubator.mirror={enabled:true,minTrades:5,minNetR:0,pilot:{sizeScale:1/3,maxOpenPositions:2,maxDailyEntries:10,byHorizon:structuredClone(PILOT_HORIZONS)}};
+ const before=JSON.stringify(cfg);fs.writeFileSync(file,before);
+ assert.equal(removePilotCaps(file,true).changed,true);assert.equal(fs.readFileSync(file,'utf8'),before);assert.equal(fs.readdirSync(dir).length,1);
+ const result=removePilotCaps(file);assert.equal(fs.readFileSync(result.backup!,'utf8'),before);assert.equal(fs.statSync(result.backup!).mode&0o777,0o600);
+ const expected=structuredClone(cfg);Object.assign(expected.incubator.mirror!.pilot!,{maxOpenPositions:0,maxDailyEntries:0});delete expected.incubator.mirror!.pilot!.byHorizon;
+ assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),expected);assert.equal(removePilotCaps(file).changed,false);
+ cfg.execution.mode='live';fs.writeFileSync(file,JSON.stringify(cfg));assert.throws(()=>removePilotCaps(file),/paper/);
+ assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),cfg);
+});
 test('pilot split migration is narrow, backed up, idempotent and rejects capital/mode drift',t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'vnedge-pilot-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  const file=path.join(dir,'config.json'),cfg=structuredClone(DEFAULT_CONFIG);

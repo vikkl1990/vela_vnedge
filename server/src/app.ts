@@ -34,6 +34,7 @@ import { filledEntries, proposalTimes, sizingDescription } from './api/uiMetrics
 import { bookPaperConfig, scannerExitPolicy } from './paper/policy.ts';
 import { readingOf } from './scanners/reading.ts';
 import { PaperEngine } from './paper/engine.ts';
+import { pilotLimitReached } from './paper/pilotCapacity.ts';
 import { PinePool } from './pine/pool.ts';
 import { ScannerEngine } from './scanners/engine.ts';
 import { ScannerRegistry } from './scanners/registry.ts';
@@ -450,7 +451,7 @@ export class App {
     const pilotSaved = this.db.kvGet<{day:number;entries:number}>('incubator.copyPilot');
     const pilotEntries = pilotSaved?.day === Math.floor(now/86400_000) ? pilotSaved.entries : 0;
     const pilotOpen = [...this.paper.openPositions(),...this.paper.pendingEntries()].filter(p=>p.features?.copy_pilot===1).length;
-    if(pilot)g.push({key:'copy-pilot',group:'Pipeline',name:'Paper copy pilot',state:!inc.mirror?.enabled?'off':pilotEntries>=pilot.maxDailyEntries||pilotOpen>=pilot.maxOpenPositions?'blocking':'armed',value:`${Math.round(pilot.sizeScale*100)}% normal size · ${pilotEntries}/${pilot.maxDailyEntries} entries today · ${pilotOpen}/${pilot.maxOpenPositions} open or pending`,rule:'Qualified shadow cells only; watch-only tracker entries are excluded. The paper-only pilot retains all account entry gates. Pending reservations consume the daily allowance even if cancelled.',next:'Settings → Incubator; switch mirror off to stop new copies',href:'/settings'});
+    if(pilot)g.push({key:'copy-pilot',group:'Pipeline',name:'Paper copy pilot',state:!inc.mirror?.enabled?'off':pilotLimitReached(pilotEntries,pilot.maxDailyEntries)||pilotLimitReached(pilotOpen,pilot.maxOpenPositions)?'blocking':'armed',value:`${Math.round(pilot.sizeScale*100)}% normal size · ${pilotEntries}${pilot.maxDailyEntries>0?`/${pilot.maxDailyEntries}`:''} entries today${pilot.maxDailyEntries===0?' (no pilot cap)':''} · ${pilotOpen}${pilot.maxOpenPositions>0?`/${pilot.maxOpenPositions}`:''} open or pending${pilot.maxOpenPositions===0?' (shared account capacity)':''}`,rule:'Qualified shadow cells only; watch-only tracker entries are excluded. All account entry, sizing, margin and risk checks still apply. Accepted order reservations are counted even if cancelled; a zero pilot cap disables that quota.',next:'Settings → Incubator; switch mirror off to stop new copies',href:'/settings'});
     g.push({ key: 'shadow', group: 'Pipeline', name: 'Shadow book capacity', state: shadowN != null && shadowN >= inc.maxShadow ? 'attention' : 'open', value: shadowN != null ? `${shadowN} pairs of ${inc.maxShadow}` : `cap ${inc.maxShadow}`, rule: 'Candidates enter only while there is room', next: shadowN != null && shadowN >= inc.maxShadow ? 'Raise incubator.maxShadow in Settings, or wait for retirements' : 'Room for new candidates', href: '/incubator' });
     const start = this.db.kvGet<{ at: number }>('incubator.lastStart'), run = this.db.kvGet<{ at: number; finishedAt?: number }>('incubator.lastRun');
     // decision 176: a run's `at` is when it started; its `finishedAt` (stamped since today) is what says it finished

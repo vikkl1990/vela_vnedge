@@ -2,6 +2,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG, validateConfig } from '../config.ts';
 
+test('pilot caps support zero independently and still reject invalid values or live mode',()=>{
+ const cfg=structuredClone(DEFAULT_CONFIG);
+ cfg.incubator.mirror={enabled:true,pilot:{sizeScale:1/3,maxDailyEntries:0,maxOpenPositions:0}};
+ assert.deepEqual(validateConfig(cfg),[]);
+ for(const key of ['maxDailyEntries','maxOpenPositions'] as const){
+  for(const value of [-1,0.5,NaN,Infinity]){
+   const next=structuredClone(cfg);next.incubator.mirror!.pilot![key]=value;
+   assert.ok(validateConfig(next).some(e=>e.includes('pilot limits')));
+  }
+  const next=structuredClone(cfg);next.incubator.mirror!.pilot![key]=2;assert.deepEqual(validateConfig(next),[]);
+ }
+ const live=structuredClone(cfg);live.execution.mode='live';assert.ok(validateConfig(live).some(e=>e.includes('pilot requires paper')));
+ cfg.incubator.mirror!.pilot!.byHorizon={scalp:{maxOpenPositions:1,maxDailyEntries:8},swing:{maxOpenPositions:1,maxDailyEntries:2}};
+ assert.deepEqual(validateConfig(cfg),[],'explicit quotas can coexist with disabled global pilot caps');
+ cfg.incubator.mirror!.pilot!.maxOpenPositions=1;assert.ok(validateConfig(cfg).some(e=>e.includes('quotas must fit')));
+});
+
 test('rejects invalid calculation settings even when split weights sum to one', () => {
   for (const paper of [{ tpSplit: [-1, 1, 1] }, { fallbackRR: [1, 0, -1] }, { slippageBps: -1 }, { slippageBps: Infinity }, { fallbackAtrSl: 0 }]) {
     const cfg = structuredClone(DEFAULT_CONFIG);

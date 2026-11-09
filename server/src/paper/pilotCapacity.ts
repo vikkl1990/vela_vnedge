@@ -4,6 +4,8 @@ export type PilotHorizon = 'scalp' | 'swing';
 export type PilotConfig = NonNullable<NonNullable<IncubatorConfig['mirror']>['pilot']>;
 export interface PilotUsage { day: number; entries: number; byHorizon?: Record<PilotHorizon, number>; unclassified?: number }
 export interface PilotHolding { tf: string; features?: Record<string, number> }
+/** Zero disables only this pilot-specific cap; account risk and capital checks still apply. */
+export const pilotLimitReached = (used: number, limit: number): boolean => limit > 0 && used >= limit;
 export function pilotHorizon(tf: string): PilotHorizon | null {
   const seconds = TF_SECONDS[tf];
   return seconds > 0 ? seconds < 3600 ? 'scalp' : 'swing' : null;
@@ -22,13 +24,13 @@ export function pilotCapacityRefusal(cfg: PilotConfig, tf: string, holdings: Pil
   if (!horizon) return 'copy pilot unsupported timeframe';
   const held = holdings.filter(p => p.features?.copy_pilot === 1);
   const state = pilotUsage(usage, usage.day), quota = cfg.byHorizon?.[horizon];
-  if (state.entries >= cfg.maxDailyEntries) return 'copy pilot daily entry limit';
+  if (pilotLimitReached(state.entries, cfg.maxDailyEntries)) return 'copy pilot daily entry limit';
   if (quota) {
     if (state.byHorizon[horizon] + state.unclassified >= quota.maxDailyEntries) return `copy pilot ${horizon} daily entry limit`;
     const used = held.filter(p => pilotHorizon(p.tf) === horizon).length;
     if (used >= quota.maxOpenPositions) return `copy pilot ${horizon} open position limit (${used}/${quota.maxOpenPositions})`;
   }
-  if (held.length >= cfg.maxOpenPositions) return 'copy pilot open position limit';
+  if (pilotLimitReached(held.length, cfg.maxOpenPositions)) return 'copy pilot open position limit';
   return null;
 }
 

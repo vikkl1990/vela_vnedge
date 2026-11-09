@@ -1,8 +1,19 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {pilotHorizon,pilotUsage,pilotCapacityRefusal,reservePilotEntry,type PilotConfig} from './pilotCapacity.ts';
+import {pilotHorizon,pilotUsage,pilotCapacityRefusal,reservePilotEntry,pilotLimitReached,type PilotConfig} from './pilotCapacity.ts';
 const cfg:PilotConfig={sizeScale:1/3,maxDailyEntries:10,maxOpenPositions:2,byHorizon:{scalp:{maxDailyEntries:8,maxOpenPositions:1},swing:{maxDailyEntries:2,maxOpenPositions:1}}};
 const pilot=(tf:string)=>({tf,features:{copy_pilot:1}});
+
+test('disabled pilot caps admit beyond both old limits, track reservations and can be restored independently',()=>{
+ const shared={sizeScale:1/3,maxDailyEntries:0,maxOpenPositions:0};
+ const usage=pilotUsage({day:1,entries:10},1),held=[pilot('1h'),pilot('4h'),pilot('15m')];
+ for(const tf of ['15m','1h','4h'])assert.equal(pilotCapacityRefusal(shared,tf,held,usage),null);
+ assert.equal(pilotLimitReached(10,0),false,'dashboard and admission agree that zero is uncapped');
+ assert.equal(reservePilotEntry(usage,'15m').entries,11,'counting continues while the quota is off');
+ assert.match(pilotCapacityRefusal({...shared,maxDailyEntries:10},'15m',held,usage)!,/daily entry limit/);
+ assert.match(pilotCapacityRefusal({...shared,maxOpenPositions:2},'15m',held,usage)!,/open position limit/);
+ assert.match(pilotCapacityRefusal({...shared,byHorizon:cfg.byHorizon},'15m',[pilot('15m')],pilotUsage(undefined,1))!,/scalp open/,'explicit horizon quotas retain their original semantics');
+});
 
 test('timeframe boundaries assign pilots to scalp or swing and reject unknown frames',()=>{
   for(const tf of ['1m','3m','5m','15m','30m'])assert.equal(pilotHorizon(tf),'scalp');

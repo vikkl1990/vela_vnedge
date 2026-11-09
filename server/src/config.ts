@@ -461,9 +461,9 @@ export interface IncubatorConfig {
     minTrades?: number; minNetR?: number;
     /** Decision 177: no copy on a market under this 24h turnover (0 turns it off). */
     minTurnoverUsd?: number;
-    /** Bounded exploration in the paper account only; normal allocations retain normal sizing. */
+    /** Reduced-size exploration in paper only. Each global pilot cap accepts 0 to disable it; account limits still apply. */
     pilot?: { sizeScale: number; maxDailyEntries: number; maxOpenPositions: number;
-      /** Reserved quotas within the totals: frames below 1h scalp, 1h and above swing. */
+      /** Optional reserved quotas within enabled totals: frames below 1h scalp, 1h and above swing. A zero horizon quota blocks that horizon. */
       byHorizon?: Record<'scalp' | 'swing', { maxDailyEntries: number; maxOpenPositions: number }> } };
   /**
    * Largest share of the risk budget one contract may consume before a market is skipped: contracts
@@ -855,11 +855,11 @@ export function validateConfig(c: AppConfig): string[] {
   if (copyPilot) {
     if (c.execution.mode !== 'paper') errs.push('incubator.mirror.pilot requires paper execution');
     if (!(Number.isFinite(copyPilot.sizeScale) && copyPilot.sizeScale > 0 && copyPilot.sizeScale <= 1)) errs.push('copy pilot sizeScale must be >0 and <=1');
-    for (const n of [copyPilot.maxDailyEntries, copyPilot.maxOpenPositions]) if (!Number.isInteger(n) || n < 1) errs.push('copy pilot limits must be positive integers');
+    for (const n of [copyPilot.maxDailyEntries, copyPilot.maxOpenPositions]) if (!Number.isInteger(n) || n < 0) errs.push('copy pilot limits must be non-negative integers (0 disables the cap)');
     if (copyPilot.byHorizon !== undefined) {
       const buckets = ['scalp', 'swing'].map(k => copyPilot.byHorizon?.[k as 'scalp' | 'swing']);
       if (buckets.some(b => !b || [b.maxDailyEntries,b.maxOpenPositions].some(n => !Number.isInteger(n) || n < 0))) errs.push('copy pilot horizon limits must include scalp and swing with non-negative integer quotas');
-      else for (const key of ['maxDailyEntries','maxOpenPositions'] as const) if (buckets.reduce((n,b) => n + b![key],0) > copyPilot[key]) errs.push(`copy pilot horizon ${key} quotas must fit within the total`);
+      else for (const key of ['maxDailyEntries','maxOpenPositions'] as const) if (copyPilot[key] > 0 && buckets.reduce((n,b) => n + b![key],0) > copyPilot[key]) errs.push(`copy pilot horizon ${key} quotas must fit within the total`);
     }
   }
   if (p.trendGate) {

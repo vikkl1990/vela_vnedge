@@ -100,8 +100,8 @@ const SECTIONS: Section[] = [
     fields: [
       { path: 'incubator.mirror.enabled', label: 'Mirror: the account takes every shadow pair\'s signals under its own gates', kind: 'bool' },
       { path: 'incubator.mirror.pilot.sizeScale', label: 'Paper copy pilot: fraction of normal size', hint: 'Applies to copied, unallocated cells. Native allocations keep normal sizing. Paper mode only.', kind: 'number', step: '0.05', validate: num(0.01, 1) },
-      { path: 'incubator.mirror.pilot.maxDailyEntries', label: 'Paper copy pilot: entries per UTC day', hint: 'Accepted pending orders reserve allowance; cancellation does not refund it.', kind: 'number', step: '1', validate: num(1, 100) },
-      { path: 'incubator.mirror.pilot.maxOpenPositions', label: 'Paper copy pilot: total open or pending positions', hint: 'Shared by scalp and swing entries, with no fixed timeframe allocation. Account capital limits still apply.', kind: 'number', step: '1', validate: num(1, 8) },
+      { path: 'incubator.mirror.pilot.maxDailyEntries', label: 'Paper copy pilot: daily entry cap (0 = no pilot cap)', hint: 'Counts accepted order reservations, including later cancellations. At 0, entries are still counted but there is no pilot daily quota.', kind: 'number', step: '1', validate: num(0, 100) },
+      { path: 'incubator.mirror.pilot.maxOpenPositions', label: 'Paper copy pilot: open or pending cap (0 = account capacity)', hint: 'At 0, pilots share the account position and margin limits with native trades. No fixed scalp/swing allocation.', kind: 'number', step: '1', validate: num(0, 8) },
       { path: 'incubator.tfs', label: 'Screen timeframes', kind: 'tfs' },
       { path: 'incubator.maxShadow', label: 'Shadow book cap (pairs)', kind: 'number', step: '10', validate: num(1, 2000) },
       { path: 'incubator.promote.maxFleet', label: 'Fleet cap (cells)', kind: 'number', step: '1', validate: num(1, 1000) },

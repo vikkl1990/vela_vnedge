@@ -6993,3 +6993,25 @@ depth is missing and identify quote/model fallbacks explicitly. The existing
 32 MiB ring is too short for full-day 20-pair replay: use bounded segments,
 checkpoints and gap manifests, not just a larger symbol list. No strategy or VM
 configuration changed during validation, and no profit uplift is claimed.
+
+## 227. Remove pilot-only position and daily quotas (9 November 2026)
+
+At the user's request, remove the two-position and ten-reservation daily limits
+for paper copy pilots. A zero global pilot cap now disables that specific quota;
+explicit positive caps retain their behavior. The account's overall position,
+margin, liquidity, cost, risk and pair-wide stop-cooldown checks continue to apply.
+Pilot quantity remains one-third of normal sizing. No scalp/swing reservations
+or quotas are enabled, and no additional aggregate-risk rule is introduced.
+
+Keep counting accepted orders while the pilot quota is disabled. Do not reset
+the counter, erase history or submit historical blocked signals. The Gates view
+shows "no pilot cap" and "shared account capacity" rather than treating zero as
+full; Settings explains both values. The dedicated migration backs up the exact
+configuration, changes only the pilot cap fields (and removes any horizon split),
+validates paper mode, and supports a dry run and repeat execution.
+
+Tests exercise admissions beyond the former limits for filled and pending orders,
+unchanged reduced sizing, retained account capacity and risk refusals, independent
+cap restoration, configuration validation and preservation of unrelated settings.
+Removing a quota increases access to future eligible signals; it is not evidence
+of higher profitability or a guarantee of a particular daily trade count.
