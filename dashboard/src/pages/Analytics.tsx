@@ -30,9 +30,9 @@ function BookCard({ title, sub, stats: s, shadow = false }: { title: string; sub
     </div>
     <dl className="performance-metrics">
       <div><dt>{shadow ? 'Net P&L · simulated USD' : 'Net P&L · USD'}</dt><dd className={`mono ${tone(s.net)}`}>{fmtPnl(s.net)}</dd></div>
-      <div><dt>Win rate · after costs</dt><dd className="mono">{fmtPct(s.winRate)}</dd></div>
-      <div><dt>Stop losses</dt><dd className="mono">{fmtInt(s.stops)} <small className="muted">/ {fmtPct(s.stopRate)}</small></dd></div>
-      <div><dt>Profit factor · USD</dt><dd className="mono">{s.noLosses ? 'No losses' : s.profitFactor === null ? '–' : s.profitFactor.toFixed(2)}</dd></div>
+      <div><dt>Win rate · after costs</dt><dd className="mono">{s.trades ? fmtPct(s.winRate) : '–'}</dd></div>
+      <div><dt>Stop losses</dt><dd className="mono">{fmtInt(s.stops)} <small className="muted">/ {s.trades ? fmtPct(s.stopRate) : '–'}</small></dd></div>
+      <div><dt>Profit factor · USD</dt><dd className="mono">{!s.trades ? '–' : s.noLosses ? 'No losses' : s.profitFactor === null ? '–' : s.profitFactor.toFixed(2)}</dd></div>
     </dl>
     <div className="performance-costs" aria-label={`${title} cost breakdown`}>
       <div className="performance-cost-r"><span>Commission / trade</span><b className="mono">{s.avgCommissionR === null ? '–' : `${s.avgCommissionR.toFixed(3)}R`}</b></div>
@@ -94,7 +94,6 @@ export function Analytics() {
   const includesToday = d && (from === undefined || from <= d.at) && (to === undefined || to > d.at)
   const periodText = d ? `${from === undefined ? 'All available history' : day(from)} → ${day((to ?? d.to) - 1)} UTC${includesToday ? ' · today partial' : ''}` : ''
   return <div className="page performance-page">
-    <PolicyHealthPanel />
     <PageTitle pre="Paper & shadow," accent="in perspective." sub="One closing period. Two books. Compare results after costs, then find which markets, timeframes and scanners contribute." />
     <Panel title="Compare performance" right={<div className="row gap"><Link className="btn btn-sm" to="/daily">Daily report</Link><button className="btn btn-sm" onClick={() => { setParams({period:'7d'}); setScannerSearch(''); setSearch('') }}>Reset filters</button></div>}>
       <div className="performance-filters">
@@ -142,6 +141,6 @@ export function Analytics() {
         <p className="small muted performance-note">SL % counts exits labelled stop loss. Trailing stops and break-even exits are separate. Small samples can be noisy; a positive average is not a promotion recommendation.</p>
       </Panel>
     </>}
-    <section className="performance-advanced"><button className="btn" aria-expanded={advanced} aria-controls="performance-advanced" onClick={() => setAdvanced(!advanced)}>{advanced ? 'Hide' : 'Open'} advanced diagnostics</button><p className="muted small">Separate research views with their own windows; the comparison filters above do not apply.</p>{advanced && <div id="performance-advanced"><p className="banner small">Learning uses up to 5,000 paper closes and up to 20,000 shadow closes from the last 30 days. Allocation uses its own evidence windows.</p><AllocationAuditPanel /><LearningSection /></div>}</section>
+    <section className="performance-advanced"><button className="btn" aria-expanded={advanced} aria-controls="performance-advanced" onClick={() => setAdvanced(!advanced)}>{advanced ? 'Hide' : 'Open'} advanced diagnostics</button><p className="muted small">Separate research views with their own windows; the comparison filters above do not apply.</p>{advanced && <div id="performance-advanced"><p className="banner small">Learning uses up to 5,000 paper closes and up to 20,000 shadow closes from the last 30 days. Allocation uses its own evidence windows.</p><PolicyHealthPanel /><AllocationAuditPanel /><LearningSection /></div>}</section>
   </div>
 }

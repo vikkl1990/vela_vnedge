@@ -1,7 +1,8 @@
+import { useAuth } from '../auth/AuthGate'
 import { memo, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useClosePosition, useExecution, useMarkets } from '../api/queries'
-import { protectionText, quantityText, targetR } from '../lib/protection'
+import { positionTargets, protectionText, quantityText, targetR } from '../lib/protection'
 import type { Position } from '../api/types'
 import { fmtAge, fmtInt, fmtMoney, fmtPrice, fmtR } from '../lib/format'
 import { useToast } from '../lib/toast'
@@ -52,6 +53,19 @@ function stopState(p: Position): { badge: string | null; tone: 'muted' | 'ok'; t
   return {badge:null,tone:'muted',title:protectionText(p)};
 }
 
+function PositionTargets({ p, tick }: { p: Position; tick?: number }) {
+  const targets = positionTargets(p)
+  const active = targets.filter(t => t.state === 'active')
+  const rLabel = (price: number) => { const r = targetR(p, price); return r == null ? 'R unavailable' : fmtR(r) }
+  return <div className="position-targets">
+    {active.length ? active.map(t => <span className="mono" key={t.index}>TP{t.index + 1} {fmtPrice(t.price, tick)} <small className="muted">{rLabel(t.price)}</small></span>) : <span className="muted">No allocated target</span>}
+    <details><summary>Exit details</summary>
+      {targets.map(t => <div key={t.index}>TP{t.index + 1}: {fmtPrice(t.price, tick)} · {rLabel(t.price)} · {t.state === 'active' ? `${t.qty} contracts allocated` : t.state === 'reference' ? 'reference only; no contracts' : t.state === 'hit' ? 'already hit' : 'allocation unknown'}</div>)}
+      <p>{protectionText(p)}</p>
+    </details>
+  </div>
+}
+
 export function PositionsTable({ positions, compact = false }: { positions: Position[]; compact?: boolean }) {
   const [pathOf, setPathOf] = useState<{ id: number; title: string } | null>(null)
   // Eighteen columns need about 1500px. Below that, drop the derived values rather than making
@@ -73,7 +87,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
   const close = useClosePosition()
   const toast = useToast()
   const [closing, setClosing] = useState<Position | null>(null)
-  const pending = close.isPending
+  const auth = useAuth()
+  const pending = close.isPending || !auth.canTrade
 
   const cols = useMemo<Column<Position>[]>(() => {
     const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
@@ -152,33 +167,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         numeric: true,
         sortable: false,
         render: (p) => {
-          // Only a target carrying contracts can fill. With the fleet's 100%-at-TP3 split that is
-          // one price, and showing three invites the question of why two of them never do anything
-          // (decision 38: every ladder tested was worse than riding to TP3). The unfunded levels stay
-          // in the tooltip, because they are still where the script drew them.
-          const dir = p.side === 'long' ? 1 : -1
-          const risk = Math.abs(p.entryPrice - (p.slOriginal ?? p.sl ?? p.entryPrice))
-          const rOf = (x: number) => (risk > 0 ? ((x - p.entryPrice) * dir) / risk : 0)
-          const all = [0, 1, 2].filter((i) => typeof p.tp?.[i] === 'number')
-          const funded = all.filter((i) => (p.legs?.[i] ?? 1) > 0)
-          const shown = funded.length ? funded : all
-          const dormant = all.filter((i) => !funded.includes(i))
-          const title = [
-            ...shown.map((i) => `TP${i + 1} ${fmtPrice(p.tp![i] as number, tick(p.symbol))} (+${rOf(p.tp![i] as number).toFixed(1)}R)${p.tpHit?.[i] ? ' — hit' : ''}`),
-            ...(dormant.length ? [`${dormant.map((i) => `TP${i + 1} ${fmtPrice(p.tp![i] as number, tick(p.symbol))}`).join(', ')} — no contracts allocated, cannot fill`] : []),
-            'The trail usually ends these trades before a target is reached.',
-          ].join('\n')
-          return (
-            <span className="mono small tp-list" title={title}>
-              {shown.map((i) => (
-                <span key={i} className={p.tpHit?.[i] ? 'tp-hit' : ''}>
-                  {fmtPrice(p.tp![i] as number, tick(p.symbol))}
-                  <sup className="tp-share">+{rOf(p.tp![i] as number).toFixed(1)}R</sup>
-                </span>
-              ))}
-              {dormant.length ? <span className="tp-dormant">+{dormant.length}</span> : null}
-            </span>
-          )
+          return <PositionTargets p={p} tick={tick(p.symbol)} />
         },
       },
       { key: 'upnl', header: 'Unrealized', numeric: true, value: (p) => p.unrealizedPnl, render: (p) => <LiveUpnl p={p} /> },
@@ -237,19 +226,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
               <div><dt>Realized P&L before commission (USD)</dt><dd><Pnl value={p.realizedPnl} /></dd></div>
               <div><dt>Risk (USD)</dt><dd>{fmtMoney(p.riskAmount)}</dd></div>
             </dl>
-            <div className="small">
-              Targets (only a funded one can fill):{' '}
-              {[0, 1, 2].map((i) => {
-                const size = p.legs?.[i]
-                const funded = size === undefined ? true : size > 0
-                return (
-                  <span key={i} className={`${p.tpHit?.[i] ? 'tp-hit' : ''} ${funded ? '' : 'tp-unfunded'}`} title={funded ? undefined : 'no contracts allocated to this target'}>
-                    {' '}{fmtPrice(p.tp?.[i], tick)}{p.tp?.[i] != null && targetR(p, p.tp[i]!) != null ? ` (${fmtR(targetR(p, p.tp[i]!)!)})` : ''}{p.tpHit?.[i] ? ' (hit)' : ''}{i < 2 ? ' /' : ''}
-                  </span>
-                )
-              })}
-            </div>
-            <p className="small muted">{protectionText(p)}</p>
+            <PositionTargets p={p} tick={tick} />
             <div className="position-card-actions">
               <button className="btn" onClick={() => setPathOf({id:p.id,title:`${p.symbol} ${p.side} · ${p.scannerName}`})}>View trade path</button>
               <button className="btn btn-danger-outline" onClick={() => setClosing(p)} disabled={pending} aria-label={`Close ${p.symbol} position`}>Close position</button>

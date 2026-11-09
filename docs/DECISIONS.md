@@ -7122,3 +7122,40 @@ New tests cover explicit/missing/false enrollment, account and credential bindin
 exact windows, product exclusions, partial fills, opening-fee preservation,
 non-retroactive history, both books across restarts, and exchange fee restatement.
 Browser fixtures verify the eligibility and waived-fee displays.
+
+## 231 · Operator UI clarity and workflow order (2026-11-10)
+
+Incubator starts with capacity, proposals and account cells. Contribution ledgers,
+execution experiments and screening diagnostics open on demand instead of polling
+while hidden. A compact summary keeps current account faults and held-position
+exit errors visible; quarantined historical evidence is labeled separately.
+Performance starts with its shared paper/shadow filters and shows unavailable
+rates when there are no closes. Detailed policy evidence stays in diagnostics.
+
+Scanner cards distinguish disabled paper scheduling, missing allocations,
+quarantine, disabled entry readers and scheduled runs. An explicitly empty reader
+must never display as automatic. Book selection follows URL navigation; status
+filters and reset controls make the large library usable. Missing authors are
+unknown rather than attributed to Willy. Viewer controls are disabled in Settings,
+scanner management and position closing; server authorization remains authoritative.
+
+Active TP allocations are labeled by TP number. Unfunded references, completed
+targets and unknown allocations appear in expandable exit details on desktop and
+mobile. R is calculated from the recorded original stop, never a moved trail.
+Header daily equity change says UTC; signal and connection dates are explicit.
+Settings describes product fees taking precedence over fallback rates and links
+to effective scalper eligibility and the position fee audit. It no longer makes
+an undated claim that the ML model cannot help.
+
+The phone drawer has a close control, keyboard focus containment, Escape/return
+focus and an inert background; hidden navigation cannot receive focus. A dropped
+UI event stream is distinguished from a failed server health check. Resuming
+entries explains the existing daily/weekly loss-window reset before submitting.
+Paper reset is offered only in paper mode. No execution, allocation or risk logic
+changes in this release.
+
+Validation: 1,054 server tests and 22 dashboard tests pass, including empty-reader,
+allocation, quarantine, target allocation and original-risk regressions. Dashboard
+lint/build pass. Browser fixtures cover desktop/mobile, filters, empty performance,
+refresh failure/recovery, viewer permissions and menu keyboard behavior. Production
+assets can be published atomically without restarting the trading service.

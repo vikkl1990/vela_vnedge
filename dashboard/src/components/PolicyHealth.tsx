@@ -2,6 +2,23 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Panel, ErrorState, Loading } from './ui'
 import { fmtMoney } from '../lib/format'
+import { Link } from 'react-router-dom'
+import { useHealth } from '../api/queries'
+
+/** Keep operational faults visible even while the full evidence table is collapsed. */
+export function PolicyHealthStatus() {
+  const health = useHealth()
+  const q = useQuery({ queryKey: ['policy-health'], queryFn: api.policyHealth, refetchInterval: 60_000 })
+  if (!q.data) return q.isError ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : <p className="muted small">Loading execution reliability…</p>
+  const d = q.data
+  const quarantined = d.books.reduce((n, b) => n + b.quarantined, 0)
+  return <div className={`banner small ${d.boundExits.failures || health.data?.attention?.length ? 'banner-warn' : ''}`} role="status">
+    <b>Evidence quality</b> · {quarantined} historical trades quarantined from evidence in the last {d.windowDays} days.
+    <span className={d.boundExits.failures ? 'loss' : 'muted'}> {d.boundExits.failures} held positions with archived-exit errors.</span>
+    {(health.data?.attention ?? []).map(item => <span key={item.key} className="loss"> {item.text} · <Link to={item.href}>Inspect</Link></span>)}
+    <span className="muted"> Policy versions and reserved margin are in the evidence section below.</span>
+  </div>
+}
 
 export function PolicyHealthPanel() {
   const q = useQuery({ queryKey: ['policy-health'], queryFn: api.policyHealth, refetchInterval: 60_000 })

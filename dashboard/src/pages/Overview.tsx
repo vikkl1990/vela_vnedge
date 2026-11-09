@@ -55,7 +55,7 @@ export function Overview() {
   const signals24 = activity.data?.entries
 
   return (
-    <div className="page">
+    <div className="page overview-page">
       <TickerTape />
       <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account on Delta India data; fills and P&L simulated. ${visibleScanners} scripts in the visible library, ${(scanners.data ?? []).filter(s => s.enabled).length} account-enabled. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
       <AttentionBanner />
@@ -69,7 +69,7 @@ export function Overview() {
               label="Equity (USD)"
               value={fmtMoney(s.equity, 2)}
               tone={day ? (pnlClass(day.pnl) as 'gain' | 'loss' | 'neutral') : 'neutral'}
-              sub={<span>{day ? <span className={pnlClass(day.pnl)}>{fmtPnl(day.pnl)} today</span> : null}<span className="muted"> · net {fmtPnl(net)} on {fmtMoney(s.initialEquity, 0)} · drawdown −{fmtPct(s.drawdownPct)} from the peak</span></span>}
+              sub={<span>{day ? <span className={pnlClass(day.pnl)}>{fmtPnl(day.pnl)} since 00:00 UTC</span> : null}<span className="muted"> · net {fmtPnl(net)} on {fmtMoney(s.initialEquity, 0)} · drawdown −{fmtPct(s.drawdownPct)} from the peak</span></span>}
             />
             <KpiTile
               label="Open PnL (USD)"
@@ -127,7 +127,7 @@ export function Overview() {
           }
           pad={false}
         >
-          <QueryState {...signals} data={signals.data} empty="No signals yet." hint="Enable a scanner and wait for the next closed bar." skeleton="cards" skeletonRows={4} onRetry={() => signals.refetch()}>
+          <QueryState {...signals} data={signals.data} empty="No signals yet." hint="No recorded events yet. Check scheduled pairs and signal conditions on Scanners." skeleton="cards" skeletonRows={4} onRetry={() => signals.refetch()}>
             {(d) => <AlertsFeed signals={d} limit={15} />}
           </QueryState>
         </Panel>

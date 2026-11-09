@@ -1,7 +1,8 @@
+import { useMediaQuery } from '../lib/useMediaQuery'
 import { QueryFreshness } from './QueryFreshness'
 import { WorkflowGuide } from './WorkflowGuide'
 import { BrandMark } from './Brand'
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useBackendOnline, useHealth, useKill, usePositions, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
 import { RiskBanner } from './RiskBanner'
@@ -144,6 +145,7 @@ export function Layout() {
   const reset = useResetPaper()
   const navigate = useNavigate()
   const [confirmReset, setConfirmReset] = useState(false)
+  const [confirmResume, setConfirmResume] = useState(false)
   const [confirmPause, setConfirmPause] = useState(false)
   const risk = useRisk()
   const kill = useKill()
@@ -159,6 +161,9 @@ export function Layout() {
   // ---- sidebar: collapsed to icons on a desktop (remembered), a drawer on a phone ----
   const [collapsed, setCollapsed] = useState(readSidebar)
   const [drawer, setDrawer] = useState(false)
+  const mobile = useMediaQuery('(max-width: 900px)')
+  const sidebarRef = useRef<HTMLElement>(null)
+  const menuRef = useRef<HTMLButtonElement>(null)
   const toggleSidebar = useCallback(() => {
     setCollapsed((c) => {
       try {
@@ -170,11 +175,22 @@ export function Layout() {
     })
   }, [])
   useEffect(() => {
-    if (!drawer) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawer(false) }
+    if (!drawer || !mobile) return
+    const menuButton = menuRef.current
+    const priorOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    sidebarRef.current?.querySelector<HTMLButtonElement>('.sidebar-close')?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDrawer(false)
+      if (e.key !== 'Tab') return
+      const items = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled)') ?? []).filter(el => el.getClientRects().length > 0)
+      const first = items[0], last = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus() }
+    }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [drawer])
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = priorOverflow; menuButton?.focus() }
+  }, [drawer, mobile])
 
   const h = health.data
   // "not loaded yet" is not "down": defaulting to false flashed a red FEED UNAVAILABLE on every page load
@@ -196,7 +212,8 @@ export function Layout() {
   const sseTone = sse.status === 'connected' ? 'ok' : sse.status === 'offline' ? 'danger' : 'warn'
   const sseLabel =
     sse.status === 'connected' ? 'Stream live' : sse.status === 'connecting' ? 'Stream connecting' : sse.status === 'reconnecting' ? `Stream reconnecting (${sse.attempts})` : 'Stream offline'
-  const backendDown = (checked && !online) || sse.status === 'offline' || sse.status === 'reconnecting'
+  const backendDown = checked && !online
+  const streamInterrupted = sse.status === 'offline' || sse.status === 'reconnecting'
   // Freshness is time-derived, so it lives in leaf components with their own 1 s clock.
   // Keeping that clock in Layout re-rendered <Outlet/> — the whole active page — every second.
   const live = sse.status === 'connected' && feedConnected
@@ -224,10 +241,11 @@ export function Layout() {
         Skip to content
       </a>
       <div className="sidebar-backdrop" onClick={() => setDrawer(false)} aria-hidden />
-      <aside className="sidebar" aria-label="Sections">
+      <aside ref={sidebarRef} className="sidebar" id="primary-sidebar" aria-label="Sections" inert={mobile && !drawer}>
         <div className="sidebar-brand">
           <BrandMark />
           <span className="brand-name _lbl">VN EDGE</span>
+          <button className="iconbtn sidebar-close" aria-label="Close navigation" onClick={() => setDrawer(false)}>×</button>
           <button className="iconbtn sidebar-collapse" onClick={toggleSidebar} aria-label={collapsed ? 'Expand the sidebar' : 'Collapse the sidebar'} title={`${collapsed ? 'Expand' : 'Collapse'} ( [ )`} aria-expanded={!collapsed}>
             <IconPanelLeft />
           </button>
@@ -239,7 +257,7 @@ export function Layout() {
               {g.items.map((n) => {
                 const Icon = n.icon
                 return (
-                  <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `sidebar-link ${isActive ? 'on' : ''}`} title={collapsed ? `${n.label} (g ${n.key})` : undefined} onClick={() => setDrawer(false)}>
+                  <NavLink key={n.to} aria-label={n.label} to={n.to} end={n.end} className={({ isActive }) => `sidebar-link ${isActive ? 'on' : ''}`} title={collapsed ? `${n.label} (g ${n.key})` : undefined} onClick={() => setDrawer(false)}>
                     <Icon size={17} />
                     <span className="_lbl">{n.label}</span>
                     <kbd className="sidebar-key _lbl" aria-hidden>g {n.key}</kbd>
@@ -269,9 +287,9 @@ export function Layout() {
         </div>
       </aside>
 
-      <div className="frame">
+      <div className="frame" inert={mobile && drawer}>
         <header className="topbar">
-          <button className="iconbtn topbar-menu" onClick={() => setDrawer(true)} aria-label="Open the menu" aria-expanded={drawer}>
+          <button ref={menuRef} aria-controls="primary-sidebar" className="iconbtn topbar-menu" onClick={() => setDrawer(true)} aria-label="Open the menu" aria-expanded={drawer}>
             <IconMenu />
           </button>
           <span className="mobile-brand" aria-label="VN EDGE"><BrandMark /></span>
@@ -295,7 +313,7 @@ export function Layout() {
               <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
             </span>
             <span className="topstat topstat-day" title="Equity change since 00:00 UTC, open positions included: the figure the daily kill switch watches">
-              <span className="topstat-label">Day</span>
+              <span className="topstat-label">Day · UTC</span>
               <span className={`mono ${pnlClass(risk.data?.day?.pnl)}`}>{risk.data?.day ? fmtPnl(risk.data.day.pnl) : '–'}</span>
             </span>
             <span className="topstat" title="Open positions">
@@ -318,15 +336,15 @@ export function Layout() {
 
           <div className="topbar-actions">
             {auth.canTrade && (paused ? (
-              <button className="btn btn-sm btn-entries" title={`Entries halted — ${risk.data?.haltReason ?? 'risk limit'}. Resuming clears the halt and restarts the day and week windows from the current equity. Open positions keep running their exits.`} onClick={() => resume.mutate()} disabled={!online || resume.isPending}>
+              <button className="btn btn-sm btn-entries" title={`Entries halted — ${risk.data?.haltReason ?? 'risk limit'}. Resuming clears the halt and restarts the day and week windows from the current equity. Open positions keep running their exits.`} onClick={() => setConfirmResume(true)} disabled={!online || !risk.data || risk.isError || resume.isPending}>
                 {resume.isPending ? 'Resuming…' : '▶ Resume entries'}
               </button>
             ) : (
-              <button className="btn btn-sm btn-danger-outline btn-entries" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || kill.isPending}>
+              <button className="btn btn-sm btn-danger-outline btn-entries" title="Kill switch: no new entries until resumed. Open positions keep running their exits." onClick={() => setConfirmPause(true)} disabled={!online || !risk.data || risk.isError || kill.isPending}>
                 Pause entries
               </button>
             ))}
-            {auth.canTrade && (
+            {auth.canTrade && h?.mode === 'paper' && (
               <button className="btn btn-sm btn-danger-outline hide-narrow" onClick={() => setConfirmReset(true)} disabled={!online || reset.isPending}>
                 Reset paper account
               </button>
@@ -345,10 +363,11 @@ export function Layout() {
         {backendDown && (
           <div className="banner banner-danger" role="alert">
             <StatusDot tone="danger" /> Backend offline — reconnecting{sse.attempts > 0 ? ` (attempt ${sse.attempts})` : ''}…
-            <span className="muted"> Pages keep the last known data until <code>/api</code> on localhost:8787 answers.</span>
+            <span className="muted"> Showing the last received data. Trading status cannot be confirmed until the server responds.</span>
             {health.error?.message ? <span className="muted"> ({health.error.message})</span> : null}
           </div>
         )}
+        {!backendDown && streamInterrupted && <div className="banner banner-warn" role="status">Live updates interrupted — reconnecting. The server may still be running; displayed prices can be delayed.</div>}
         <StaleBanner getLastEventAt={sse.getLastEventAt} enabled={!backendDown && sse.status === 'connected'} />
         {h?.lastError && (
           <div className="banner banner-warn" role="status">
@@ -368,11 +387,20 @@ export function Layout() {
         <nav className="bottombar" aria-label="Phone">
           <NavLink to="/" end className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Overview</NavLink>
           <NavLink to="/decisions" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Decisions</NavLink>
-          <NavLink to="/trades" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Positions</NavLink>
+          <NavLink to="/trades" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Journals</NavLink>
           <NavLink to="/signals" className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>Signals</NavLink>
         </nav>
       </div>
 
+      <ConfirmDialog
+        open={confirmResume}
+        title="Resume entries and reset loss windows?"
+        body={<p>Current halt: {risk.data?.haltReason ?? 'risk limit'}. Resuming clears the halt and starts new daily and weekly loss windows from current equity. Open positions continue their existing exits.</p>}
+        confirmLabel="Resume entries"
+        busy={resume.isPending}
+        onCancel={() => setConfirmResume(false)}
+        onConfirm={() => resume.mutate(undefined, { onSuccess: () => setConfirmResume(false), onError: e => toast.error('Could not resume entries', e.message) })}
+      />
       <ConfirmDialog
         open={confirmPause}
         title="Pause all new entries?"

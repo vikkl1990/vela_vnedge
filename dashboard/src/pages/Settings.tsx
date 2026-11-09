@@ -1,3 +1,5 @@
+import { useAuth } from '../auth/AuthGate'
+import { Disclosure } from '../components/Disclosure'
 import { useMemo, useState, type ReactNode } from 'react'
 import { useConfig, useConfigDefaults, useMarkets, useStats, useUpdateConfig } from '../api/queries'
 import type { ConfigPatch } from '../api/types'
@@ -5,6 +7,7 @@ import { ChipSelect, ConfirmDialog, ErrorState, Loading, PageTitle, Panel, Pill,
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { MEASURED } from '../lib/measured'
 import { useToast } from '../lib/toast'
+import { CostAudit } from '../components/ExecutionPlans'
 import { DeltaConnectionPanel } from '../components/DeltaConnectionPanel'
 
 /**
@@ -58,12 +61,12 @@ const SECTIONS: Section[] = [
     ],
   },
   {
-    key: 'costs', title: 'Costs and fills', risk: 'high', intro: 'What a round trip costs and the rule that refuses a stop too tight to pay it. The cost rule is the filter the account\'s loss is made of.',
+    key: 'costs', title: 'Costs and fills', risk: 'high', intro: 'Delta product-specific maker/taker rates take precedence. The rates below are fallbacks when product rates are unavailable. Tax applies to commission. Admission reserves full costs; an eligible closing fill may receive the verified scalper waiver.',
     fields: [
-      { path: 'paper.feeRatePct', label: 'Taker fee (%)', kind: 'number', step: '0.01', validate: num(0, 5) },
-      { path: 'paper.makerFeeRatePct', label: 'Maker fee (%)', kind: 'number', step: '0.01', validate: num(0, 5) },
+      { path: 'paper.feeRatePct', label: 'Fallback taker fee (%)', kind: 'number', step: '0.01', validate: num(0, 5) },
+      { path: 'paper.makerFeeRatePct', label: 'Fallback maker fee (%)', kind: 'number', step: '0.01', validate: num(0, 5) },
       { path: 'paper.feeTaxPct', label: 'Tax on fees (%)', kind: 'number', step: '1', hint: 'GST', validate: num(0, 100) },
-      { path: 'paper.slippageBps', label: 'Slippage (bps)', kind: 'number', step: '1', hint: 'on top of the measured book cost', validate: num(0, 1000) },
+      { path: 'paper.slippageBps', label: 'Fallback slippage (bps)', kind: 'number', step: '1', hint: 'used when no executable quote is available; quoted fills use their separate impact setting', validate: num(0, 1000) },
       { path: 'paper.minRiskFeeRatio', label: 'Stop must cover this many round trips', kind: 'number', step: '0.5', hint: '0 turns the cost rule off', validate: num(0, 50) },
       { path: 'paper.requireQuote', label: 'Require an executable quote to enter', kind: 'bool' },
     ],
@@ -120,7 +123,7 @@ const SECTIONS: Section[] = [
     ],
   },
   {
-    key: 'model', title: 'Model', risk: 'low', intro: 'Advisory. The Learn page\'s yardstick says whether a gate would have paid; today it would not.',
+    key: 'model', title: 'Model', risk: 'low', intro: 'A zero probability threshold disables the ML entry gate. Sizing can use the model independently. Review current evidence on Learn before changing either setting.',
     fields: [
       { path: 'ml.minProb', label: 'Refuse entries under P(win)', kind: 'number', step: '0.05', hint: '0 = no gate', validate: num(0, 0.95) },
       { path: 'ml.useAsScore', label: 'Use P(win) as the score for sizing', kind: 'bool' },
@@ -156,6 +159,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const show = (v: unknown) => (v === undefined || v === null ? 'unset' : Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'on' : 'off') : typeof v === 'number' ? (Math.abs(v) >= 10_000 ? v.toLocaleString() : String(v)) : String(v))
 
 export function Settings() {
+  const { canTrade, isAdmin } = useAuth()
   const stats = useStats()
   const config = useConfig()
   const defaults = useConfigDefaults()
@@ -249,15 +253,18 @@ export function Settings() {
           <Pill tone="muted">execution: {config.data?.execution?.mode ?? 'paper'}</Pill>
           {dirty && <Pill tone="warn">{changes.length} unsaved change{changes.length === 1 ? '' : 's'}</Pill>}
           <button className="btn" onClick={() => setDraft(null)} disabled={!dirty || update.isPending}>Revert</button>
-          <button className="btn btn-cta" onClick={save} disabled={!dirty || update.isPending || Object.keys(errors).length > 0}>{update.isPending ? 'Saving…' : highRisk.length ? 'Review and save' : 'Save settings'}</button>
+          <button className="btn btn-cta" onClick={save} disabled={!canTrade || !dirty || update.isPending || Object.keys(errors).length > 0}>{update.isPending ? 'Saving…' : highRisk.length ? 'Review and save' : 'Save settings'}</button>
         </div>
       </div>
 
+      <nav className="section-links" aria-label="Settings sections">{isAdmin && <a href="#delta-connection">Delta connection</a>}{SECTIONS.map(sec => <a key={sec.key} href={`#settings-${sec.key}`}>{sec.title}</a>)}<a href="#fee-audit">Fee audit</a></nav>
       <DeltaConnectionPanel />
+      <Disclosure id="fee-audit" title="Effective fees and scalper eligibility" hint="Read the active offer status and recent position fee breakdown"><CostAudit /></Disclosure>
 
-      <div className="settings-grid">
+      {!canTrade && <p className="banner small" role="note">Read-only access. Your role can inspect settings but cannot change trading configuration.</p>}
+      <fieldset className="settings-grid" disabled={!canTrade || update.isPending} aria-label="Trading settings">
         {SECTIONS.map((sec) => (
-          <Panel key={sec.key} title={<span>{sec.title} <Pill tone={RISK_TONE[sec.risk]}>{RISK_LABEL[sec.risk]}</Pill></span>} right={changes.some((c) => c.section.key === sec.key) ? <Pill tone="warn">edited</Pill> : undefined}>
+          <section key={sec.key} id={`settings-${sec.key}`}><Panel title={<span>{sec.title} <Pill tone={RISK_TONE[sec.risk]}>{RISK_LABEL[sec.risk]}</Pill></span>} right={changes.some((c) => c.section.key === sec.key) ? <Pill tone="warn">edited</Pill> : undefined}>
             <p className="muted small" style={{ marginTop: 0 }}>{sec.intro}</p>
             {sec.key === 'sizing' && <p className="small" role="status">Active: {String(getPath(form,'paper.sizingMode') ?? 'risk')} · {(Number(getPath(form,'paper.maxStopLossPct')) > 0 && stats.data) ? `modeled stop-risk ceiling $${(stats.data.equity * Number(getPath(form,'paper.maxStopLossPct')) / 100).toFixed(2)} at current equity` : 'stop-risk cap unavailable or off'}. Margin budget can be reduced by caps and contract rounding.</p>}
             <div className="form form-2">
@@ -271,9 +278,9 @@ export function Settings() {
                 </div>
               )}
             </div>
-          </Panel>
+          </Panel></section>
         ))}
-      </div>
+      </fieldset>
 
       <Panel title="Per-scanner overrides" right={<span className="muted small">edited on each scanner's page and on the Scanners page</span>}>
         <div className="muted small">{Object.keys(config.data?.scanners ?? {}).length} scanner override(s) stored: reading, exit mode, pairs, inputs. They layer over the sections above.</div>

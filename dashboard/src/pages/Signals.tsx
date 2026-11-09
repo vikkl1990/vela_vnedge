@@ -1,3 +1,4 @@
+import { Disclosure } from '../components/Disclosure'
 import {CostAudit} from '../components/ExecutionPlans'
 import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
@@ -35,7 +36,7 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
   const cols = useMemo<Column<Signal>[]>(() => {
     const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
     return [
-      { key: 'at', header: 'Time', value: (s) => s.at, render: (s) => <Time t={s.at} className="small" />, width: 84 },
+      { key: 'at', header: 'Received · local', value: (s) => s.at, render: (s) => <Time t={s.at} mode="datetime" className="small" />, width: 130 },
       ...(hideScanner
         ? []
         : ([
@@ -129,7 +130,7 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
       emptyLabel={
         <span>
           No signals
-          <span className="empty-hint">Enable a scanner and wait for the next closed bar.</span>
+          <span className="empty-hint">No events match this selection. Check filters, scanner scheduling and the decision trace below.</span>
         </span>
       }
       maxHeight={maxHeight}
@@ -226,7 +227,8 @@ export function Signals() {
         {signals.isError && !signals.data && <ErrorState error={signals.error} onRetry={() => signals.refetch()} />}
         {signals.data && (view === 'flat' ? <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" /> : <GroupedSignals signals={rows} />)}
       </Panel>
-      <details className="panel diagnostics"><summary>Decision trace and scanner pipeline</summary><CostAudit/><DecisionTrace/><ScannerPipelinePanel/></details>
+      <Disclosure id="signal-diagnostics" title="Decision trace and scanner pipeline" hint="Inspect admission decisions and where processing stopped"><DecisionTrace/><ScannerPipelinePanel/></Disclosure>
+      <Disclosure id="execution-costs" title="Fees and execution costs" hint="Verified offer status and recorded costs for recent paper positions"><CostAudit/></Disclosure>
     </div>
   )
 }
@@ -237,7 +239,7 @@ function summarizeOutcomes(rows: Signal[]) {
   const defs: Array<{ key: string; label: string; tone: 'ok' | 'danger' | 'warn' | 'muted' | 'accent'; hint: string; test: (a: string, s: Signal) => boolean }> = [
     { key: 'opened', label: 'opened', tone: 'ok', hint: 'became a position', test: (a) => a === 'opened' },
     { key: 'market', label: 'market not suitable', tone: 'warn', hint: 'the markets-today gate: illiquid, too quiet to pay the round trip, or not paying recently (decision 56)', test: (a) => a.startsWith('rejected:market') },
-    { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'the stop is closer than the configured multiple of round-trip costs; taking the trade loses money', test: (a) => /stop too tight/.test(a) },
+    { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'The modeled stop distance is below the configured multiple of round-trip costs. This is an admission rule, not a prediction of the trade outcome.', test: (a) => /stop too tight/.test(a) },
     { key: 'capacity', label: 'margin / position cap', tone: 'warn', hint: 'no room in the account: margin, position limits, or a scrap-sized fill refused (decision 53)', test: (a) => /margin|max positions|position cap|intended size|budget/.test(a) },
     { key: 'received', label: 'awaiting decision', tone: 'warn', hint: 'Saved receipt waiting for processing or recovery', test: (a) => a.startsWith('received:') },
     { key: 'stale', label: 'stale (scan too late)', tone: 'danger', hint: 'the scan finished after the signal aged out', test: (a) => /stale/.test(a) },
@@ -306,7 +308,7 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
   }, [signals])
   const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
   const toggle = (k: string) => setOpen((o) => { const n = new Set(o); if (n.has(k)) n.delete(k); else n.add(k); return n })
-  if (!groups.length) return <div className="empty"><span>No signals<span className="empty-hint">Enable a scanner and wait for the next closed bar.</span></span></div>
+  if (!groups.length) return <div className="empty"><span>No signals<span className="empty-hint">No events match this selection. Check filters, scanner scheduling and the decision trace below.</span></span></div>
   return (
     <div className="table-wrap">
       <div className="row gap" style={{ padding: '8px 12px' }}>

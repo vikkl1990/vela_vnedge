@@ -65,8 +65,8 @@ export function DeltaConnectionPanel() {
             {query.isError && <p className="text-danger small" role="alert">{query.error.message} <button className="btn btn-sm" onClick={() => void query.refetch()}>Retry</button></p>}
             <dl className="kv-list">
               <div><dt>Saved connection</dt><dd>{status?.configured ? `Delta India ${status.environment}` : 'None'}</dd></div>
-              <div><dt>Saved</dt><dd>{status?.savedAt ? <Time t={status.savedAt} /> : '—'}</dd></div>
-              <div><dt>Last check</dt><dd>{status?.check ? <Time t={status.check.at} /> : 'Not checked since server start'}</dd></div>
+              <div><dt>Saved</dt><dd>{status?.savedAt ? <Time t={status.savedAt} mode="full" /> : '—'}</dd></div>
+              <div><dt>Last check</dt><dd>{status?.check ? <Time t={status.check.at} mode="full" /> : 'Not checked since server start'}</dd></div>
               {status?.check?.scalperOffer && <div><dt>Scalper enrollment</dt><dd>{status.check.scalperOffer.active===true?'Verified active at Delta':status.check.scalperOffer.active===false?'Not active at Delta':'Not returned by Delta'} · <Time t={status.check.scalperOffer.checkedAt} mode="full" /></dd></div>}
               <div><dt>Trading permission</dt><dd>Not tested</dd></div>
             </dl>

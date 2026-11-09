@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-10",
+  "baseCommit": "bdc5068b51b6325b807f7521287c43da162f8c2c",
+  "scope": "Dashboard presentation only; no server, execution or configuration changes",
+  "tests": {
+    "server": 1054,
+    "dashboard": 22,
+    "lint": "pass",
+    "build": "pass"
+  },
+  "browserChecks": [
+    "Desktop overview target expansion",
+    "Scanner empty-reader status and activity filter",
+    "Scanner refresh failure shows stale-data banner and recovers",
+    "Viewer scanner controls and settings disabled",
+    "Incubator summary precedes diagnostics",
+    "Performance no-trade metrics show unavailable rates",
+    "390px mobile layout without horizontal overflow",
+    "Mobile focus wraps, Escape returns to menu, hidden drawer inert",
+    "Verified scalper fee explanation opens from Settings"
+  ],
+  "notClaimed": [
+    "No trading-performance improvement inferred from UI changes",
+    "No claim that every dashboard feature has been exhaustively exercised"
+  ]
+}

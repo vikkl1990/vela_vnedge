@@ -1,4 +1,5 @@
-import { PolicyHealthPanel } from '../components/PolicyHealth'
+import { Disclosure } from '../components/Disclosure'
+import { PolicyHealthPanel, PolicyHealthStatus } from '../components/PolicyHealth'
 import {ExecutionPlans} from '../components/ExecutionPlans'
 import {ScannerContributions} from '../components/ScannerContributions'
 import { Fragment, useDeferredValue, useEffect, useState } from 'react'
@@ -41,10 +42,7 @@ export default function Incubator() {
 
   return (
     <>
-      <PolicyHealthPanel />
       <PageTitle pre="From signals," accent="to evidence." sub="Screening finds candidates. Forward shadow results determine gate eligibility; review the evidence, blockers and account pairs below." />
-      <ScannerContributions compact />
-      <ExecutionPlans />
       <QueryState {...q} data={q.data} empty="Incubator unavailable." onRetry={() => q.refetch()}>
         {(d) => {
           const by = (st: IncubatorPair['stage']) => d.pairs.filter((p) => p.stage === st)
@@ -97,6 +95,7 @@ export default function Incubator() {
                 })()}
               </div>
 
+              <PolicyHealthStatus />
               <Panel
                 title="Waiting for your decision"
                 right={auth.canTrade ? <button className="btn btn-sm" onClick={() => evaluate.mutate()} disabled={evaluate.isPending}>{evaluate.isPending ? 'Judging…' : 'Re-judge now'}</button> : null}
@@ -253,9 +252,8 @@ export default function Incubator() {
                 )}
               </Panel>
 
-              <ScreenQueuePanel />
-
-              <OverlapPanel />
+              <Disclosure id="screen-queue" title="Screening queue" hint="Candidate coverage and screening progress"><ScreenQueuePanel /></Disclosure>
+              <Disclosure id="overlap" title="Scanner overlap" hint="Find overlapping research cells"><OverlapPanel /></Disclosure>
 
               <Panel title="History">
                 {d.events.length === 0 ? <Empty label="No moves yet." /> : (
@@ -289,6 +287,9 @@ export default function Incubator() {
           )
         }}
       </QueryState>
+      <Disclosure id="incubator-evidence" title="Evidence and execution reliability" hint="Policy versions, quarantine counts and reserved margin"><PolicyHealthPanel /></Disclosure>
+      <Disclosure id="incubator-contributions" title="Scanner contributions" hint="See which scanner families supply paper and shadow activity"><ScannerContributions compact /></Disclosure>
+      <Disclosure id="execution-plans" title="Entry and exit experiments" hint="Separate research policies; these results are not account returns"><ExecutionPlans /></Disclosure>
     </>
   )
 }

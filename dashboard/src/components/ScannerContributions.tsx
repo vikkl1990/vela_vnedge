@@ -19,7 +19,7 @@ export function ScannerContributions({compact=false}:{compact?:boolean}){
   const rows=d.rows.filter(r=>(author==='All'||r.author===author)&&(!term||`${r.name} ${r.id} ${r.author}`.toLowerCase().includes(term))&&(filter==='all'||filter==='working'&&(r.cells.paper+r.cells.shadow+r.cells.candidate+r.cells.tracked>0)||filter==='unverified'&&!r.profiles.matching&&!r.aliasOf&&!r.hidden&&r.status==='ok'||filter==='context'&&r.entryDisabled||filter==='blocked'&&r.status!=='ok'||filter==='duplicates'&&!!r.aliasOf||filter==='archived'&&r.hidden)).sort((a,b)=>b.cells.paper-a.cells.paper||b.paper.signals-a.paper.signals||b.cells.shadow-a.cells.shadow||a.name.localeCompare(b.name))
   const pageNo=Math.min(page,Math.max(0,Math.ceil(rows.length/20)-1)),visible=rows.slice(pageNo*20,pageNo*20+20),chosen=d.rows.find(r=>r.id===selected)
   const changeAuthor=(value:string)=>{setAuthor(value);setPage(0)}
-  return <section className="contribution-panel" id="contributions" aria-label="Scanner contribution ledger">
+  return <section className="contribution-panel" id="contribution-ledger" aria-label="Scanner contribution ledger">
     <div className="contribution-heading"><div><span className="eyebrow">SCANNER INTELLIGENCE</span><h2>Know what each scanner contributes.</h2><p className="muted">Source → observed output → shadow evidence → paper execution. Updated {timeAgo(d.at)}.</p></div>{compact?<Link className="btn" to="/scanners#contributions">Open contribution ledger</Link>:<button className="btn" onClick={()=>q.refetch()} disabled={q.isFetching}>Refresh evidence</button>}</div>
     <div className="contribution-kpis">
       <div><strong>{d.summary.matching}<small> / {d.summary.total}</small></strong><span>Current behavior evidence</span></div>

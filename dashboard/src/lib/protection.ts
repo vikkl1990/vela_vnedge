@@ -21,3 +21,13 @@ export function targetR(p:Position, price:number):number|null {
   const distance=p.slOriginal==null?0:Math.abs(p.entryPrice-p.slOriginal);
   return distance>0?(price-p.entryPrice)*(p.side==='long'?1:-1)/distance:null;
 }
+
+/** Missing allocation is unknown, never evidence that a target can execute. */
+export function positionTargets(p: Pick<Position, 'tp' | 'legs' | 'tpHit'>) {
+  return (p.tp ?? []).flatMap((price, index) => {
+    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return []
+    const qty = p.legs?.[index]
+    const state = p.tpHit?.[index] ? 'hit' : typeof qty !== 'number' || !Number.isFinite(qty) ? 'unknown' : qty > 0 ? 'active' : 'reference'
+    return [{ index, price, qty, state }]
+  })
+}
