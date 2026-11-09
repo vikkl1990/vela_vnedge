@@ -28,7 +28,7 @@ export function freshDepthGate(inp:{now:number;deadlineAt?:number;receivedAt:num
 
 import type {AppConfig} from '../config.ts';
 import {toMs} from '../delta/ws.ts';
-export interface EntryDepthRequest {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;book?:number;virtualQty?:number}
+export interface EntryDepthRequest {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;book?:number;virtualQty?:number;fees?:{feeRatePct:number;makerFeeRatePct?:number;feeTaxPct?:number}}
 type RawBook={buy:Array<{price:string|number;size:string|number}>;sell:Array<{price:string|number;size:string|number}>;timestamp?:unknown;last_updated_at?:unknown};
 /** Bounded public reads, coalesced per symbol; checks always use the final sized quantity. */
 export class EntryDepthGate {
@@ -71,7 +71,7 @@ export class EntryDepthGate {
   if(!this.enabled(req.symbol))return {};
   const c=this.deps.cfg(),snapshot=this.cache.get(req.symbol),at=this.now();
   const side=(ls:RawBook['buy'])=>ls.map(l=>[Number(l.price),Number(l.size)*req.contractValue]as[number,number]);
-  const result=freshDepthGate({now:at,receivedAt:snapshot?.receivedAt??0,exchangeAt:snapshot?.exchangeAt??0,maxAgeMs:c.paper.quoteMaxAgeMs,qty:req.qty,contractValue:req.contractValue,maker:req.maker,book:snapshot?{bids:side(snapshot.book.buy??[]),asks:side(snapshot.book.sell??[])}:null,maxCostPct:c.risk.marketGate!.maxBookCostPct!,fees:{...c.paper,feeTaxPct:c.paper.feeTaxPct??0}});
+  const result=freshDepthGate({now:at,receivedAt:snapshot?.receivedAt??0,exchangeAt:snapshot?.exchangeAt??0,maxAgeMs:c.paper.quoteMaxAgeMs,qty:req.qty,contractValue:req.contractValue,maker:req.maker,book:snapshot?{bids:side(snapshot.book.buy??[]),asks:side(snapshot.book.sell??[])}:null,maxCostPct:c.risk.marketGate!.maxBookCostPct!,fees:{...(req.fees??c.paper),feeTaxPct:(req.fees??c.paper).feeTaxPct??0}});
   this.counts.checks++;if(!result.allowed)this.counts.blocked++;
   this.last=[{at,symbol:req.symbol,qty:req.qty,book:req.book??null,virtualQty:req.virtualQty??null,maker:!!req.maker,...result},...this.last].slice(0,30);
   try{this.deps.save?.(this.stats);}catch{/* advisory telemetry cannot affect entry eligibility */}

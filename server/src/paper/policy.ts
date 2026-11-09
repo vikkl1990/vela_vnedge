@@ -7,6 +7,7 @@
  * a script-exit trade gets in the books (decision 159). This module resolves the effective policy once; the books and
  * the backtests take it from here.
  */
+import {withProductFees,type ProductFees} from './productFees.ts';
 import type { AppConfig, PaperConfig, ScannerConfig } from '../config.ts';
 import type { ExitOverride } from '../config.ts';
 import { scriptModeExit, scriptModeProtection } from './logic.ts';
@@ -44,10 +45,11 @@ export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { exec
 }
 
 /** Everything a backtest needs to trade a scanner the way `book` trades it today. */
-export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number } = {}) {
+export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number; productFees?:ProductFees } = {}) {
   const sc: Partial<ScannerConfig> = cfg.scanners[scannerId] ?? {};
   return {
-    cfg: scannerEntryConfig({...bookPaperConfig(cfg, book),...(opts.executor || cfg.execution.mode!=='paper' ? {reclaimTrials:undefined} : {})},sc,tf),
+    cfg: withProductFees(scannerEntryConfig({...bookPaperConfig(cfg, book),...(opts.executor || cfg.execution.mode!=='paper' ? {reclaimTrials:undefined} : {})},sc,tf),opts.productFees,opts.productFees?.symbol??''),
+    ...(opts.productFees?{productFees:opts.productFees}:{}),
     entryProtection: sc.entryProtection,
     requireAtrStop: book === 'account' && Boolean(cfg.paper.skipScriptStops) && sc.entryProtection !== 'native',
     exitMode: sc.exitMode ?? 'both',

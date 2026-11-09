@@ -1,4 +1,5 @@
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
+import {withProductFees,type ProductFees} from './productFees.ts';
 import { createHash } from 'node:crypto';
 import type { AppConfig, PaperConfig, ExitMode } from '../config.ts';
 import {protectEntry} from './entryProtection.ts';
@@ -56,12 +57,12 @@ export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfi
 }
 const stable = (v: unknown) => JSON.stringify(v, (_k,x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))) : x);
 export const planScannerId = (p: Pick<ExecutionPlanSnapshot,'id'|'revision'|'signature'>) => `plan:${p.id}:v${p.revision}:${p.signature}`;
-export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: string | null = null): ExecutionPlanSnapshot {
+export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: string | null = null, fees?:ProductFees): ExecutionPlanSnapshot {
   const sc = cfg.scanners[p.scannerId];
   const exitMode = p.variant === 'current' ? sc?.exitMode ?? 'both' : 'levels';
   const base = p.variant === 'current' ? scannerExitPolicy(cfg,p.scannerId) : sc?.exit;
   const entry = entryPolicy(cfg,p.tf,'account',{scannerId:p.scannerId});
-  const paper = structuredClone(exitConfigFor(cfg.paper,p.symbol,base,p.tf));
+  const paper = structuredClone(withProductFees(exitConfigFor(cfg.paper,p.symbol,base,p.tf),fees,p.symbol));
   // Resolved settings must not be layered a second time in the backtester.
   delete paper.exitBySymbol;delete paper.exitByTf;
   Object.assign(paper, { initialEquity:p.referenceEquity, sizingMode:'margin', maxOpenPositions:100_000,

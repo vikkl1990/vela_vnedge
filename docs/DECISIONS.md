@@ -7054,3 +7054,33 @@ the earlier period but reduced later profits in all four comparisons. It was rem
 from the deployment, rather than selecting a favorable backtest. No loss-based
 allocation gate, pilot quota, exit-policy change or risk increase is introduced.
 Details: `docs/research/allocation-entry-validation-2026-11-09.json`.
+
+
+## 229. Upgrade Vela and bind contract-specific fees to new trade policies (9 November 2026)
+
+Pin Vela 0.10.2 and its PineTS bridge 0.3.3; retain PineTS 0.13.1. The lockfile
+resolves one shared Vela installation, including the new Vela UI dependency.
+
+Delta India's public product catalogue lists OILUSD maker and taker commission
+as 0.0002 of notional (0.02%), while BTC/ETH/SOL taker remains 0.0005 (0.05%).
+Previously market specifications dropped these fields, so OIL inherited the crypto
+taker rate. Convert valid catalogue fractions once, keep GST separate, and bind
+the rates to each new account/shadow trade's immutable policy. Entry sizing, cost
+admission, actual-size depth checks, execution, comparison plans and current-cost
+screening now agree. Invalid/missing fields retain the configured fallback.
+
+Existing pending orders, held trades, frozen research plans and historical ledgers
+retain their saved fees. Changed rates create a separate policy evidence cohort;
+unchanged crypto rates preserve identity. Backtests explicitly label these rates
+as a current-product scenario, not historical fee backfill. No offer eligibility,
+voucher accounting, risk threshold, sizing setting or execution mode is changed.
+
+Validation: clean npm install; 1,048 server tests and 16 dashboard tests passed;
+dashboard lint, TypeScript and production build passed. Six product-fee regression
+tests cover both books, pending/restart/exit invariance, legacy adoption, unchanged
+crypto identity, replay provenance and depth/cached-market economics. Browser
+fixtures verified four frames, pinned/transitive Pine libraries, footprint requests,
+position overlays, editable inputs, themes, live updates, replay and chart teardown.
+Fixtures are not a profitability backtest. No strategy-profit improvement is claimed.
+
+Evidence: `docs/research/vela-product-fees-2026-11-09.json`.

@@ -194,10 +194,9 @@ export class ScannerEngine extends EventEmitter {
   }
 
   async marketInfo(symbol: string): Promise<MarketInfo> {
-    let m = this.markets.get(symbol);
-    if (m) return m;
+    // DeltaRest owns the ten-minute catalogue cache; do not freeze rates for the process lifetime.
     const p = await this.rest.product(symbol);
-    m = marketSpec(p);
+    const m = marketSpec(p);
     this.markets.set(symbol, m);
     return m;
   }
@@ -525,10 +524,10 @@ export class ScannerEngine extends EventEmitter {
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, plots: res.plots, rule, bars: btBars, mode: 'backtest', ...READ.rule });
         const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
         // decision 191: the account's own policy — entry model, exit rules with script protection, trend and chop gates
-        const policy=backtestPolicy(this.cfgRef(),s.id,tf,'account',{executor:this.executorAttached?.()});
+        const policy=backtestPolicy(this.cfgRef(),s.id,tf,'account',{executor:this.executorAttached?.(),productFees:market.productFees});
         const selective=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf});
         const subBars=selective?await this.history?.getHistory(symbol,'1m',Math.ceil((Date.now()-btBars[0].time)/60_000)):undefined;
-        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
+        const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars: btBars, subBars, events, ...policy, exitMode, contractValue:market.contractValue, tickSize:market.tickSize });
         this.backtests.set(key, bt);
         if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? ''), resolvedAt: t.exitAt ?? null })));
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));

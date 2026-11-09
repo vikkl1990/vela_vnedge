@@ -1,3 +1,4 @@
+import {admissionCostPct} from '../paper/costs.ts';
 import {resolveTradePolicy} from '../paper/tradePolicy.ts';
 /**
  * The incubator's daily job: screen one slice of the script library on every liquid market, then
@@ -34,6 +35,7 @@ import { IncubatorStore } from '../incubator/store.ts';
 import { tooQuietForTf, evaluate, recordScreen, screenTf, screenVerdict, syncLive, type ScreenResult } from '../incubator/cycle.ts';
 import { compareRepaint, repaintReason, REPAINT_CUT } from '../scanners/repaint.ts';
 import { sliceOf } from '../incubator/gate.ts';
+import {productFees,withProductFees} from '../paper/productFees.ts';
 import { backtestPolicy, entryPolicy } from '../paper/policy.ts';
 import { aliasMap, duplicateGroups } from '../scanners/identity.ts';
 import { readingOf } from '../scanners/reading.ts';
@@ -42,7 +44,6 @@ import { probeMarketOrder } from '../incubator/probeOrder.ts';
 import { createHash } from 'node:crypto';
 import { sourceHash } from '../paper/fingerprint.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
-import { crossingPct } from '../risk/marketGate.ts';
 import type { MarketsToday } from '../risk/marketGate.ts';
 import { screenUniverse } from '../incubator/screenUniverse.ts';
 import { coverageSignature, recordCoverage } from '../incubator/pairAgents.ts';
@@ -120,13 +121,18 @@ while (sliceArg !== 'none') {
   summary.walked.push(`${TF} slice ${slice}${cursor.scriptIdx ? ` from ${cursor.scriptIdx}` : ''}`);
   // ---- universe: every market the gate allows today (decision 56b: a book cheap enough to cross,
   //      not dead, not too quiet), most liquid first; the turnover top-N only when the gate has no verdicts ----
-  const tickers = await rest.tickers();
+  const [tickers,products] = await Promise.all([rest.tickers(),rest.products()]);
+  const feesFor=(symbol:string)=>withProductFees(cfg.paper,productFees(products.get(symbol)),symbol);
   const today = db.kvGet<MarketsToday>('risk.marketsToday');
   // decision 109: the screen pays each market's measured round-trip book cost, as the account does (decision 96's honest
   // base), so a cell whose stop the live cost rule would refuse is not admitted on a backtest that never paid the book
   const bookCost = new Map((today?.markets ?? []).filter(m => typeof m.bookCostPct === 'number' && m.bookCostPct! > 0).map(m => [m.symbol, m.bookCostPct as number]));
   // decision 202: what the backtest is charged on top of its own fees — the book crossing only
-  const crossing = new Map([...bookCost].map(([s, c]) => [s, crossingPct(c, cfg.paper)]));
+  const priorCosts = new Map((today?.markets ?? []).map(m => [m.symbol, m]));
+  const crossing = new Map([...bookCost].map(([symbol, cost]) => {
+    const prior = priorCosts.get(symbol);
+    return [symbol, prior?.bookCrossingPct ?? Math.max(0, cost - (prior?.feeRoundTripPct ?? admissionCostPct(cfg.paper)))];
+  }));
   // MARKETS=BTCUSD,ETHUSD: a hand run on just these markets (a 4h screen of the whole universe pulls a million 1m bars per market)
   const onlyMarkets = process.env.MARKETS ? new Set(process.env.MARKETS.split(',').map(x => x.trim()).filter(Boolean)) : null;
   const selection=screenUniverse(tickers,{today,freshDepth:!!cfg.risk.marketGate?.freshDepth,onlyMarkets,top:inc.universeTop,floor:inc.minTurnoverUsd});
@@ -137,7 +143,7 @@ while (sliceArg !== 'none') {
   // A market-wide prefilter must not exclude a scanner with a cheaper passive entry.
   // Every actual run still applies its own cost policy in the backtest and admission.
   const anyMaker=!!entryPolicy(cfg,TF,'shadow') || Object.keys(cfg.scanners).some(scannerId=>!!entryPolicy(cfg,TF,'shadow',{scannerId}));
-  const quiet = quietTfs.has(TF) && !onlyMarkets ? universe.filter(sym => { const v = verdictOf.get(sym); return v ? tooQuietForTf(v.atrPct, v.bookCostPct, TF, cfg.paper, { maker: anyMaker }) !== null : false; }) : [];
+  const quiet = quietTfs.has(TF) && !onlyMarkets ? universe.filter(sym => { const v = verdictOf.get(sym); return v ? tooQuietForTf(v.atrPct, (crossing.get(sym)??0)+admissionCostPct(feesFor(sym)), TF, feesFor(sym), { maker: anyMaker }) !== null : false; }) : [];
   for (const sym of quiet) universe.splice(universe.indexOf(sym), 1);
   summary.quiet = quiet.length;
   if (quiet.length) out(`${TF}: ${quiet.length} markets too quiet for this timeframe's cost floor, not screened: ${quiet.slice(0, 12).join(', ')}${quiet.length > 12 ? ', …' : ''}`);
@@ -301,7 +307,7 @@ while (sliceArg !== 'none') {
           // A completed re-screen with no entries supersedes an old passing screen.
           const empty = screenVerdict([], [], d.bars, inc, Date.now(), 0);
           empty.reason = `no entry events under the current reading (${observed.profile.kind})`;
-          empty.provenance = screenProvenance(s.patched, READ, backtestPolicy(cfg, s.id, TF, 'shadow'));
+          empty.provenance = screenProvenance(s.patched, READ, backtestPolicy(cfg, s.id, TF, 'shadow', {productFees:d.market.productFees}));
           if (!dry) {recordCoverage(db,s.id,symbol,TF,coverageSignature(cfg,s,TF),empty);recordScreen(store, { scannerId: s.id, symbol, tf: TF }, empty, inc);}
           if (shadowOnly) verdicts.push({scannerId:s.id,symbol,tf:TF,pass:false,reason:empty.reason,pf:0,trades:0,avgR:0});
           continue;
@@ -309,14 +315,14 @@ while (sliceArg !== 'none') {
         sawEntry = true;
         // decision 191: the screen trades the scanner the way the shadow book it admits to will — the entry model (a maker
         // limit on 1h/4h), the scanner's exit rules with the script-exit protection, its trend gate and the regime's chop gate
-        const policy = backtestPolicy(cfg, s.id, TF, 'shadow');
+        const policy = backtestPolicy(cfg, s.id, TF, 'shadow', {productFees:d.market.productFees});
         const base = { scannerId: s.id, scannerName: s.name, symbol, tf: TF, bars: d.bars, events, ...policy, contractValue: d.market.contractValue, tickSize: d.market.tickSize, maintenanceMarginPct: d.market.maintenanceMarginPct, maxLeverage: d.market.maxLeverage, subBars: d.m1, spreadPct: crossing.get(symbol) } as const;
         const bt = runBacktest(base);
         const stressed = runBacktest({ ...base, cfg: { ...policy.cfg, slippageBps: inc.screen.stressBps, quotedSlippageBps: inc.screen.stressBps } });
         const r = screenVerdict(bt.trades as any[], stressed.trades as any[], d.bars, inc, Date.now(), events.filter(e => e.kind === 'entry').length);
         // decision 114: a strategy is also screened on its own exits, so the gate can say which exit mode its evidence prefers
         if (s.scriptType === 'strategy') {
-          const asScript = backtestPolicy({ ...cfg, scanners: { ...cfg.scanners, [s.id]: { ...(cfg.scanners[s.id] ?? { enabled: false, symbols: null, timeframes: null }), exitMode: 'script' } as any } }, s.id, TF, 'shadow');
+          const asScript = backtestPolicy({ ...cfg, scanners: { ...cfg.scanners, [s.id]: { ...(cfg.scanners[s.id] ?? { enabled: false, symbols: null, timeframes: null }), exitMode: 'script' } as any } }, s.id, TF, 'shadow', {productFees:d.market.productFees});
           const sc = runBacktest({ ...base, ...asScript });
           const rs = screenVerdict(sc.trades as any[], sc.trades as any[], d.bars, inc, Date.now());
           r.scriptExit = { trades: rs.trades, avgR: rs.avgR, avgR1: rs.avgR1 ?? 0, avgR2: rs.avgR2 ?? 0, sumR: rs.avgR * rs.trades };

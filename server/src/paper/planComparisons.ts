@@ -50,7 +50,7 @@ export class PlanComparisons {
     const cfg=this.cfg();
     for(const definition of cfg.executionPlans??[]) {
       if(!definition.enabled||definition.scannerId!==input.scannerId||definition.symbol!==input.symbol||definition.tf!==input.tf)continue;
-      const p=planSnapshot(cfg,definition,this.sourceHash(input.scannerId)), scannerId=planScannerId(p);
+      const p=planSnapshot(cfg,definition,this.sourceHash(input.scannerId),input.market.productFees??this.paper.marketFeesFor?.(input.symbol)), scannerId=planScannerId(p);
       this.db.run('INSERT OR IGNORE INTO execution_plan_cohorts VALUES(?,?,?,?,?,?,?,?)',scannerId,p.id,p.revision,p.signature,p.symbol,p.tf,input.at,JSON.stringify(p));
       const eventKey=JSON.stringify([input.scannerId,input.symbol,input.tf,ev.barTime,ev.side,ev.label]);
       const added=this.db.run("INSERT OR IGNORE INTO execution_plan_events(at,plan_id,scanner_id,source_event,action) VALUES(?,?,?,?,'processing')",input.at,p.id,scannerId,eventKey);
@@ -72,7 +72,7 @@ export class PlanComparisons {
   }
 
   view() {
-    const configured=(this.cfg().executionPlans??[]).map(p=>{const snapshot=planSnapshot(this.cfg(),p,this.sourceHash(p.scannerId));return {...p,signature:snapshot.signature,takeProfitLabel:takeProfitLabel(snapshot)};});
+    const configured=(this.cfg().executionPlans??[]).map(p=>{const snapshot=planSnapshot(this.cfg(),p,this.sourceHash(p.scannerId),this.paper.marketFeesFor?.(p.symbol));return {...p,signature:snapshot.signature,takeProfitLabel:takeProfitLabel(snapshot)};});
     const eventsByCohort=new Map<string,any[]>();
     const cohorts=this.db.all<any>('SELECT * FROM execution_plan_cohorts ORDER BY first_at DESC').map(row=>{
       const p=JSON.parse(row.snapshot) as ExecutionPlanSnapshot;

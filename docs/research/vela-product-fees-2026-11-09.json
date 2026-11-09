@@ -1,0 +1,100 @@
+{
+  "validatedAt": "2026-11-09T18:25:55.685601+00:00",
+  "baseCommit": "f1f1904a11d7d2f638a85cbe4edbce6043717431",
+  "dependencies": {
+    "vela": {
+      "from": "0.9.4",
+      "to": "0.10.2"
+    },
+    "vela-pinets": {
+      "from": "0.3.2",
+      "to": "0.3.3"
+    },
+    "pinets": "0.13.1"
+  },
+  "officialSources": [
+    "https://registry.npmjs.org/@luxalgo%2fvela",
+    "https://registry.npmjs.org/@luxalgo%2fvela-pinets",
+    "https://github.com/LuxAlgo/Vela/blob/main/CHANGELOG.md",
+    "https://github.com/LuxAlgo/Vela-pinets/blob/main/CHANGELOG.md",
+    "https://api.india.delta.exchange/v2/products"
+  ],
+  "publicRates": {
+    "checkedAt": "2026-11-09T18:25:10.537904+00:00",
+    "source": "https://api.india.delta.exchange/v2/products",
+    "products": [
+      {
+        "symbol": "OILUSD",
+        "contract_type": "perpetual_futures",
+        "state": "live",
+        "trading_status": "operational",
+        "taker_commission_rate": "0.0002",
+        "maker_commission_rate": "0.0002"
+      },
+      {
+        "symbol": "SOLUSD",
+        "contract_type": "perpetual_futures",
+        "state": "live",
+        "trading_status": "operational",
+        "taker_commission_rate": "0.0005",
+        "maker_commission_rate": "0.0002"
+      },
+      {
+        "symbol": "ETHUSD",
+        "contract_type": "perpetual_futures",
+        "state": "live",
+        "trading_status": "operational",
+        "taker_commission_rate": "0.0005",
+        "maker_commission_rate": "0.0002"
+      },
+      {
+        "symbol": "BTCUSD",
+        "contract_type": "perpetual_futures",
+        "state": "live",
+        "trading_status": "operational",
+        "taker_commission_rate": "0.0005",
+        "maker_commission_rate": "0.0002"
+      }
+    ]
+  },
+  "tests": {
+    "server": {
+      "pass": 1048,
+      "fail": 0
+    },
+    "dashboard": {
+      "pass": 16,
+      "fail": 0
+    },
+    "lint": "passed",
+    "productionBuild": "passed",
+    "cleanInstall": "passed",
+    "duplicateVelaCopies": 0,
+    "browserSmoke": [
+      "four frames",
+      "dark/light theme",
+      "pinned imports including transitive dependency",
+      "footprint requests including uncovered bars",
+      "entry/SL/TP overlays",
+      "editable inputs",
+      "timeframe switching",
+      "mount/unmount/remount",
+      "live tick",
+      "replay step and return live"
+    ],
+    "browserConsoleErrorsAfterFixtureCorrection": 0
+  },
+  "invariants": [
+    "paper mode",
+    "execution configuration unchanged",
+    "risk configuration unchanged",
+    "$150 margin unchanged",
+    "held/pending fee policies retained",
+    "historical trade ledgers unchanged"
+  ],
+  "limitations": [
+    "Current product rates are not historical rate history. Backtests disclose current-product-scenario.",
+    "Browser candles, footprints and position are deterministic UI fixtures; no strategy profitability inference.",
+    "Existing trade fee assumptions are preserved rather than retroactively corrected."
+  ]
+}

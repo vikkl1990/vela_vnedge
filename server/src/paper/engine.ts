@@ -12,6 +12,7 @@ import {selectiveReclaimRule,trialRiskConfig,expansionRatio} from './selectiveEn
 import { protectEntry, scannerEntryConfig } from './entryProtection.ts';
 import {initReclaimAudit,recordReclaimEvent} from './reclaimAudit.ts';
 import type {Bar} from '../data/candleStore.ts';
+import { withProductFees, type ProductFees } from './productFees.ts';
 import { offerStatus, type EntryExecution } from './costs.ts';
 import { EventEmitter } from 'node:events';
 import type { Db } from '../db.ts';
@@ -28,7 +29,7 @@ const log = logger.scoped('paper');
 /** Pricing provenance belongs to one fill, never to an engine-wide pending context. */
 interface FillContext { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' | 'candle-model' }
 
-export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number }
+export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number; productFees?:ProductFees }
 export type EntryContext = {policy?: TradePolicy;executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; signalBar?: Pick<Bar,'time'|'high'|'low'|'close'>; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
 type ReclaimTrial = NonNullable<PaperConfig['reclaimTrials']>[number];
 type PlannedReclaim = {price: number; expiresAt: number; ruleKey: string};
@@ -159,11 +160,12 @@ export class PaperEngine extends EventEmitter {
    */
   readonly priceSource = { quote: 0, slippage: 0, rejectedNoQuote: 0 };
 
+  marketFeesFor?: (symbol:string)=>ProductFees|undefined;
   marketDepthPrice?: (symbol:string,side:Side,qty:number)=>{price?:number;reject?:string}|undefined;
   prepareEntryDepth?: (symbol: string) => Promise<void>;
-  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number;executionPlan?:ExecutionPlanSnapshot}) => {reject?:string;crossingPct?:number};
+  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number;executionPlan?:ExecutionPlanSnapshot;fees:PaperConfig}) => {reject?:string;crossingPct?:number};
   private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker:boolean,cell:{scannerId:string;tf:string;market:MarketInfo;score?:number;executionPlan?:ExecutionPlanSnapshot}):string|null {
-    const d=this.entryDepthGate?.({symbol,qty,contractValue:cv,maker,at,price,sl,...cell});
+    const d=this.entryDepthGate?.({symbol,qty,contractValue:cv,maker,at,price,sl,...cell,fees:cfg});
     if(d?.reject)return d.reject;
     return d?.crossingPct!==undefined?checkRiskVsFees(price,sl,cfg,symbol,d.crossingPct,{maker}):null;
   }
@@ -225,9 +227,9 @@ export class PaperEngine extends EventEmitter {
   private configFor(cell: {scannerId:string;symbol:string;tf:string;entryAt?:number;at?:number;policy?:TradePolicy;executionPlan?:ExecutionPlanSnapshot}): PaperConfig {
     return cell.policy?.paper ?? cell.executionPlan?.paper ?? scannerEntryConfig(exitConfigFor(this.entryPaper(cell),cell.symbol,this.scannerExit?.(cell.scannerId,cell.entryAt ?? cell.at),cell.tf),this.cfgRef().scanners[cell.scannerId],cell.tf);
   }
-  policyForCell(cell:{scannerId:string;symbol:string;tf:string;exitMode?:ExitMode}):TradePolicy {
+  policyForCell(cell:{scannerId:string;symbol:string;tf:string;exitMode?:ExitMode;market?:MarketInfo}, legacy=false):TradePolicy {
     const cfg=this.cfgRef(), exitMode=cell.exitMode??cfg.scanners[cell.scannerId]?.exitMode??'both';
-    const sizing=this.entryPaper(cell);
+    const sizing=legacy?this.entryPaper(cell):withProductFees(this.entryPaper(cell),cell.market?.productFees??this.marketFeesFor?.(cell.symbol),cell.symbol);
     const paper=scannerEntryConfig(exitConfigFor(sizing,cell.symbol,
       this.scannerExit?.(cell.scannerId)??scannerExitPolicy(cfg,cell.scannerId),cell.tf),cfg.scanners[cell.scannerId],cell.tf);
     return makeTradePolicy(cfg,{...cell,exitMode},paper,sizing,this.sourceHashFor?.(cell.scannerId)??null,this.book);
@@ -240,7 +242,7 @@ export class PaperEngine extends EventEmitter {
     let n=0;
     this.commitDecision(()=>{
       for(const p of [...this.open.values(),...this.pending.values()])if(!p.policy&&!p.executionPlan){
-        p.policy={...this.policyForCell(p),adoptedAt:at};saveTradePolicy(this.db,p.policy);
+        p.policy={...this.policyForCell(p,true),adoptedAt:at};saveTradePolicy(this.db,p.policy);
         const source=this.sourceCodeFor?.(p.scannerId);if(source&&p.policy.sourceHash)this.db.run('INSERT OR IGNORE INTO scanner_source_versions(hash,source) VALUES(?,?)',p.policy.sourceHash,source);
         this.db.run('UPDATE positions SET policy_id=?,policy_adopted_at=? WHERE id=?',p.policy.id,at,p.id);
         if('limit' in p && p.limit)this.db.run('UPDATE positions SET fills=? WHERE id=?',JSON.stringify({limitEntry:p}),p.id);
@@ -447,6 +449,7 @@ export class PaperEngine extends EventEmitter {
     if(!ctx.executionPlan&&!ctx.policy)ctx={...ctx,policy:this.policyForCell(ctx)};
     if(ctx.policy){saveTradePolicy(this.db,ctx.policy);const source=this.sourceCodeFor?.(ctx.scannerId);
       if(source&&ctx.policy.sourceHash)this.db.run('INSERT OR IGNORE INTO scanner_source_versions(hash,source) VALUES(?,?)',ctx.policy.sourceHash,source);}
+    const feeConfig=this.configFor(ctx);
     const protection = ctx.executionPlan ? undefined : ctx.policy?.reading.entryProtection;
     const auditConfig = configFingerprint(this.cfgRef(),ctx.scannerId,ctx.tf,{source:this.sourceHashFor?.(ctx.scannerId)??null,book:this.book,plan:ctx.executionPlan});
     this.db.run('INSERT OR IGNORE INTO config_fingerprints(fp,parts,first_at) VALUES(?,?,?)',auditConfig.fp,JSON.stringify(auditConfig.parts),this.now());
@@ -455,8 +458,8 @@ export class PaperEngine extends EventEmitter {
       this.now(),this.book,ctx.signalId,positionId,ctx.scannerId,ctx.symbol,ctx.tf,stage,reason,
       JSON.stringify({version:3,policyId:ctx.policy?.id??null,strategyId:ctx.policy?.strategyId??null,executionPlan:ctx.executionPlan ? {id:ctx.executionPlan.id,revision:ctx.executionPlan.revision,signature:ctx.executionPlan.signature} : null,configFp:auditConfig.fp,signalAt:ctx.at,reference:ctx.refPrice,side:ev.side,atr:ctx.atr??null,
         scannerStop:ev.sl??null,scannerTargets:ev.tp??[],entryProtection:protection??'inherit',quote:this.quotes?.markState?.(ctx.symbol)??null,
-        market:ctx.market,sizeScale:ctx.sizeScale??1,feeRatePct:this.paper.feeRatePct,
-        makerFeeRatePct:this.paper.makerFeeRatePct,feeTaxPct:this.paper.feeTaxPct,
+        market:ctx.market,sizeScale:ctx.sizeScale??1,feeRatePct:feeConfig.feeRatePct,
+        makerFeeRatePct:feeConfig.makerFeeRatePct,feeTaxPct:feeConfig.feeTaxPct,
         minRiskFeeRatio:this.paper.minRiskFeeRatio,maxStopLossPct:this.entryPaper(ctx).maxStopLossPct,signalBar:ctx.signalBar??null,offerConfigured:!!this.paper.scalperOffer?.enabled,
         offerEligibility:offerStatus(this.paper),sourceHash:this.sourceHashFor?.(ctx.scannerId)??null}));
     write('received',null);
@@ -687,7 +690,7 @@ export class PaperEngine extends EventEmitter {
 
   /** Deployable single-entry size for shadow liquidity checks, independent of occupied account slots. */
   previewDepthQuantity(req:{symbol:string;tf:string;scannerId:string;price:number;sl:number;market:MarketInfo;score?:number;at:number;maker?:boolean}):number {
-    const cfg=this.scaledCfg(this.risk?.leverageMult?.()??1);
+    const cfg=this.scaledCfg(this.risk?.leverageMult?.()??1,this.policyForCell(req).sizing);
     const equity=this.equity();
     const wantedLeverage=cfg.sizingMode==='margin'?this.cellLeverage(req,cfg).leverage:undefined;
     return sizeContracts(req.price,req.sl,{equity,availableMargin:equity,contractValue:req.market.contractValue,tickSize:req.market.tickSize,maintenanceMarginPct:req.market.maintenanceMarginPct,maxLeverage:req.market.maxLeverage,cfg,wantedLeverage,entryExecution:{maker:req.maker}},0,req.score).qty;

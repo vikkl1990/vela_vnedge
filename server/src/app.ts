@@ -1,3 +1,4 @@
+import {productFees,withProductFees} from './paper/productFees.ts';
 import {currentPolicyIds,policyHealth} from './analytics/policyHealth.ts';
 import {BoundExits} from './scanners/boundExits.ts';
 import { createValidation, type ValidationModule } from './validation/runtime.ts';
@@ -154,6 +155,7 @@ export class App {
     this.paper.sourceHashFor = this.shadow.sourceHashFor = (sid: string) => this.sourceHashFor(sid);
     this.paper.sourceCodeFor=this.shadow.sourceCodeFor=(sid)=>this.registry.get(sid)?.patched;
     this.paper.adoptLegacyPolicies();this.shadow.adoptLegacyPolicies();
+    this.paper.marketFeesFor=this.shadow.marketFeesFor=symbol=>productFees(this.rest.cachedProduct(symbol));
     // the same trend both books and the backtest use: closes of the position's own timeframe
     const trendFor = (symbol: string, tf: string, emaLen?:number) => {
       const len = emaLen ?? cfg().paper.trendExit?.emaLen ?? 20;
@@ -226,6 +228,7 @@ export class App {
     });
     this.marketGate = new MarketGate({
       db: this.db, candles: this.candles, markets: () => this.markets(), cfgRef: cfg,
+      feesFor:symbol=>withProductFees(cfg().paper,this.paper.marketFeesFor?.(symbol),symbol),
       book: async symbol => {
         const cv = (await this.markets()).find(m => m.symbol === symbol)?.contractValue || 1;
         const ob = await this.rest.orderbook(symbol, 25);
@@ -508,7 +511,7 @@ export class App {
 
   async markets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 30_000) return this.marketCache.list;
-    const tickers = await this.rest.tickers();
+    const [tickers] = await Promise.all([this.rest.tickers(),this.rest.products()]);
     const list = tickers.filter(t => t.contract_type === 'perpetual_futures' || !t.contract_type).map(t => ({
       symbol: t.symbol, description: t.description ?? t.symbol, tickSize: Number(t.tick_size ?? 0), contractValue: Number(t.contract_value ?? 0),
       markPrice: Number(t.mark_price ?? t.close), price: Number(t.close ?? t.mark_price), change24hPct: Number(t.mark_change_24h ?? 0), volume24h: Number(t.turnover_usd ?? 0),

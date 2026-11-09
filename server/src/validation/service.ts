@@ -169,7 +169,7 @@ export class ValidationService {
       const events = extractEvents(res.alerts, res.shapes, { barMs: (TF_SECONDS[tf] ?? 0) * 1000, drawn: res.labels, scannerId: s.id, derived, ...READ.extract });
       const wf = cfg.validation.walkForward;
       // decision 191: validated under the account's own policy (entry model, exit rules with script protection, gates)
-      const policy=backtestPolicy(cfg,s.id,tf,'account',{executor:this.deps.scanners.executorAttached?.()});
+      const policy=backtestPolicy(cfg,s.id,tf,'account',{executor:this.deps.scanners.executorAttached?.(),productFees:market.productFees});
       const subBars=selectiveReclaimRule(policy.cfg,{scannerId:s.id,symbol,tf})?await this.deps.cache.getHistory(symbol,'1m',{from:bars[0].time,to:bars.at(-1)!.time+(TF_SECONDS[tf]??0)*1000-60_000}):undefined;
       const r = walkForward({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, subBars, events, ...policy, exitMode: sc.exitMode, contractValue: market.contractValue, tickSize: market.tickSize,
         opts: { trainDays: wf.trainDays, testDays: wf.testDays, stepDays: wf.stepDays, minTrades: cfg.autoTune.minTrades, minProfitFactor: cfg.autoTune.minProfitFactor } });

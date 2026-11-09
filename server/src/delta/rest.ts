@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { productFees, type ProductFees } from '../paper/productFees.ts';
 import { logger } from '../log.ts';
 
 const log = logger.scoped('delta.rest');
@@ -25,6 +26,7 @@ export interface DeltaProduct {
   /** Percent of notional: initial margin sets the maximum leverage (100 / initial), maintenance sets the liquidation distance. */
   trading_status?: string;
   initial_margin?: string; maintenance_margin?: string; max_leverage_notional?: string;
+  taker_commission_rate?: string; maker_commission_rate?: string;
 }
 
 /**
@@ -33,12 +35,13 @@ export interface DeltaProduct {
  * 0.5% and 50× (the config's fallback) put an alt's modelled liquidation two percent further from
  * the entry than the exchange's, which is most of the buffer between the stop and liquidation.
  */
-export function marketSpec(p: DeltaProduct | undefined): { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number } {
-  const maint = Number(p?.maintenance_margin), init = Number(p?.initial_margin);
+export function marketSpec(p: DeltaProduct | undefined): { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number; productFees?:ProductFees } {
+  const maint = Number(p?.maintenance_margin), init = Number(p?.initial_margin), fees = productFees(p);
   return {
     contractValue: Number(p?.contract_value ?? 0.001), tickSize: Number(p?.tick_size ?? 0.5),
     ...(Number.isFinite(maint) && maint > 0 ? { maintenanceMarginPct: maint } : {}),
     ...(Number.isFinite(init) && init > 0 ? { maxLeverage: Math.floor(100 / init) } : {}),
+    ...(fees ? {productFees:fees} : {}),
   };
 }
 export interface DeltaTicker {
@@ -132,6 +135,9 @@ export class DeltaRest {
   }
 
   // ---- public market data ----
+
+  /** Last public catalogue observation; synchronous policy resolution never performs network IO. */
+  cachedProduct(symbol:string):DeltaProduct|undefined { return this.productCache?.get(symbol); }
 
   /** Perpetual futures products (cached 10 min). */
   async products(force = false): Promise<Map<string, DeltaProduct>> {

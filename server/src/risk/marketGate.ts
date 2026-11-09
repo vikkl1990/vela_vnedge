@@ -17,7 +17,7 @@ import { admissionCostPct } from '../paper/costs.ts';
  * The verdicts refresh every `refreshMinutes` and are kept in `kv` for the dashboard. A market the
  * bot has no candles for gets no volatility opinion rather than a block.
  */
-import type { AppConfig } from '../config.ts';
+import type { AppConfig, PaperConfig } from '../config.ts';
 import type { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
@@ -29,7 +29,7 @@ const KV_KEY = 'risk.marketsToday';
 export const NOT_CRYPTO = /xStock|bStocks?|Gold Token|Silver|\bETF\b/i;
 export const isCrypto = (description: string | undefined) => !NOT_CRYPTO.test(description ?? '');
 
-export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; spreadPct: number | null; bookCostPct: number | null; trades: number; pf: number | null; netUsd: number }
+export interface MarketVerdict { symbol: string; allowed: boolean; tracked: boolean; reasons: string[]; atrPct: number | null; turnoverUsd: number | null; spreadPct: number | null; bookCostPct: number | null; feeRoundTripPct?:number; bookCrossingPct?:number; trades: number; pf: number | null; netUsd: number }
 export interface MarketsToday { freshDepth?: boolean; probeNotionalUsd?: number; policyKey?: string; at: number; enabled: boolean; markets: MarketVerdict[] }
 
 /** Cached depth is screening context when final entry quantity has its own mandatory check. */
@@ -46,6 +46,7 @@ export interface MarketGateDeps {
   /** Level-2 book as [price, quantity in base units] per level, best first; absent or throwing → no book opinion. */
   book?: (symbol: string) => Promise<{ bids: Array<[number, number]>; asks: Array<[number, number]> }>;
   cfgRef: () => AppConfig;
+  feesFor?: (symbol:string)=>PaperConfig;
   now?: () => number;
 }
 
@@ -61,7 +62,7 @@ export class MarketGate {
   get today(): MarketsToday { return this.state; }
   private policyKey(): string {
     const p=this.deps.cfgRef().paper;
-    return JSON.stringify([this.cfg,p.feeRatePct,p.makerFeeRatePct,p.feeTaxPct]);
+    return JSON.stringify(['product-fees-v1',this.cfg,p.feeRatePct,p.makerFeeRatePct,p.feeTaxPct]);
   }
   needsRefresh(): boolean { return this.state.policyKey !== this.policyKey(); }
   private get cfg() { return this.deps.cfgRef().risk.marketGate; }
@@ -104,12 +105,12 @@ export class MarketGate {
     let tickers = new Map<string, { volume24h: number; price: number; description?: string }>();
     try { tickers = new Map((await this.deps.markets()).map(m => [m.symbol, { volume24h: m.volume24h, price: m.price, description: m.description }])); }
     catch (e: any) { log.warn(`tickers unavailable: ${e?.message ?? e}; turnover not judged`); }
-    const feeRoundTripPct = admissionCostPct(paper);
     const since = now - c.lookbackDays * 86_400_000;
     const list = [...new Set(symbols)].sort();
     const books = await this.readBooks(list.filter(s => !(c.exempt ?? []).includes(s)), c.probeNotionalUsd ?? 0);
     const markets: MarketVerdict[] = [];
     for (const symbol of list) {
+      const feeRoundTripPct=admissionCostPct(this.deps.feesFor?.(symbol)??paper);
       if ((c.exempt ?? []).includes(symbol)) { markets.push({ symbol, allowed: true, tracked: own.has(symbol), reasons: ['exempt'], atrPct: null, turnoverUsd: null, spreadPct: null, bookCostPct: null, trades: 0, pf: null, netUsd: 0 }); continue; }
       const reasons: string[] = [];
       const t = tickers.get(symbol);
@@ -140,7 +141,7 @@ export class MarketGate {
       const gp = rows.filter(r => r.pnl > 0).reduce((a, r) => a + r.pnl, 0), gl = -rows.filter(r => r.pnl <= 0).reduce((a, r) => a + r.pnl, 0);
       const pf = rows.length ? (gl > 0 ? gp / gl : gp > 0 ? 99 : 0) : null;
       if (rows.length >= c.minTrades && pf !== null && pf < c.minPf) reasons.push(`not paying: PF ${pf.toFixed(2)} over ${rows.length} trades in ${c.lookbackDays}d`);
-      markets.push({ symbol, allowed: reasons.length === 0, tracked: own.has(symbol), reasons, atrPct, turnoverUsd, spreadPct, bookCostPct, trades: rows.length, pf, netUsd: gp - gl });
+      markets.push({ symbol, allowed: reasons.length === 0, tracked: own.has(symbol), reasons, atrPct, turnoverUsd, spreadPct, bookCostPct, feeRoundTripPct, ...(book?{bookCrossingPct:book.crossPct}:{}), trades: rows.length, pf, netUsd: gp - gl });
     }
     this.state = { at: now, enabled: true, markets, probeNotionalUsd:c.probeNotionalUsd, freshDepth:!!c.freshDepth && (c.maxBookCostPct??0)>0, policyKey };
     this.deps.db.kvSet(KV_KEY, this.state);
