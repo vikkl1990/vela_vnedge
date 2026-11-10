@@ -9,6 +9,8 @@ export interface Delivery {
   version: 1; scannerId: string; scannerName: string; symbol: string; tf: string;
   ev: ScanEvent; bars: Bar[]; market: MarketInfo; exitMode: ExitMode; lastBar: Bar;
   copied: boolean; pilotRequested: boolean; fingerprint: string;
+  /** Original source at receipt; older receipts explicitly have unknown provenance. */
+  sourceHash?: string|null;
   accountResetAt: number | null;
   targetPositionId: number | null; targetPendingIds: number[];
 }

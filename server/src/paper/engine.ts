@@ -1,6 +1,8 @@
+import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
+import {recordGatedSignal,type GateStage} from '../evidence/gatedSignals.ts';
 import { transientTradingBlock } from '../delta/tradingStatus.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
-import {makeTradePolicy,saveTradePolicy,loadTradePolicy,evidenceCoverage,eligibleEvidence,type TradePolicy} from './tradePolicy.ts';
+import {makeTradePolicy,saveTradePolicy,loadTradePolicy,type TradePolicy} from './tradePolicy.ts';
 import {scannerExitPolicy} from './policy.ts';
 import {applyFundingSettlement, restingEntryStop} from './logic.ts';
 import {recordFillBudget} from './decisionTrace.ts';
@@ -19,7 +21,7 @@ import type { Db } from '../db.ts';
 import { TF_SECONDS, type AppConfig, type ExitMode, type ExitOverride, type PaperConfig } from '../config.ts';
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
-import { configFingerprint } from './fingerprint.ts';
+import { configFingerprint, sourceHash } from './fingerprint.ts';
 import {
   giveBackPct, type Position, type Fill, type PriceBar, type LevelResult, applyLiveBar, openR, reversalAllowed, applyScriptExit, applyTrade, applyMark, applyFunding, checkRiskVsFees, trendExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, recordLeverage, unrealized, notionalOf, rMultiple, type TradeStats, exitConfigFor, earlyStallExit, splitLegs, liquidationPrice, pnlOf, modelTrail } from './logic.ts';
 import type { StructureLevel } from './luxExits.ts';
@@ -33,6 +35,10 @@ export interface MarketInfo { contractValue: number; tickSize: number; maintenan
 export type EntryContext = {policy?: TradePolicy;executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; signalBar?: Pick<Bar,'time'|'high'|'low'|'close'>; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
 type ReclaimTrial = NonNullable<PaperConfig['reclaimTrials']>[number];
 type PlannedReclaim = {price: number; expiresAt: number; ruleKey: string};
+
+const entryObservation=(event:ScanEvent,ctx:EntryContext):NonNullable<PendingEntry['observation']> => ({
+  event:structuredClone(event),context:{signalBar:ctx.signalBar,atr:ctx.atr,refPrice:ctx.refPrice,at:ctx.at}
+});
 
 export interface EntryDecision {
   action: 'opened' | 'ignored' | 'rejected' | 'reversed' | 'pending';
@@ -67,6 +73,7 @@ export const QUIET_FILL_MS = 1000;
 
 /** Tape-mode entry waiting for its first print after signal time + latency. */
 export interface PendingEntry {
+  observation?: {event:ScanEvent; context:Pick<EntryContext,'signalBar'|'atr'|'refPrice'|'at'>};
   policy?: TradePolicy;
   reservation?: {qty:number;notional:number;margin:number;riskAmount:number};
   executionPlan?: ExecutionPlanSnapshot;
@@ -209,9 +216,10 @@ export class PaperEngine extends EventEmitter {
     for (const row of db.all<any>(`SELECT id, signal_id, fills FROM positions WHERE status='pending' AND bt=${this.book}`)) {
       let kept: PendingEntry | null = null;
       let trial:PendingEntry|undefined;
-      try { const j = JSON.parse(row.fills ?? 'null'); if (j?.limitEntry?.limit && j.limitEntry.limit.expiresAt > this.now()) kept = { ...j.limitEntry, id: row.id }; trial=j?.limitEntry??j?.reclaimSetup; } catch { kept = null; }
+      try { const j = JSON.parse(row.fills ?? 'null'); if (j?.limitEntry?.limit && j.limitEntry.limit.expiresAt > this.now()) kept = { ...j.limitEntry, id: row.id }; trial=j?.limitEntry??j?.reclaimSetup??j?.pendingEntry; } catch { kept = null; }
       // A short reclaim order cannot assume continuity through missed tape during downtime.
       if (kept && !kept.features?.reclaim_trial) { this.pending.set(kept.id, kept); continue; }
+      if(trial)this.recordPendingGate(trial,'pending entry dropped on restart');
       if(trial?.features?.reclaim_trial)this.auditReclaim(trial,'cancelled',this.now(),'restart cancelled short trial setup/order');
       db.run('DELETE FROM positions WHERE id=?', row.id);
       if (row.signal_id) db.updateSignalAction(row.signal_id, 'rejected:pending entry dropped on restart', null);
@@ -260,7 +268,7 @@ export class PaperEngine extends EventEmitter {
     });return n;
   }
   policyCoverage(cell:{scannerId:string;symbol:string;tf:string},book=this.book,at=this.now()) {
-    return evidenceCoverage(this.db,cell,book,this.policyForCell(cell).strategyId,at);
+    return evidenceCoverage(this.db,cell,book,this.policyForCell(cell),at);
   }
   private planEnabled(p: ExecutionPlanSnapshot | undefined): boolean {
     return !p || (this.book===2 && this.cfgRef().executionPlans?.some(x=>x.enabled&&x.id===p.id&&x.revision===p.revision)===true);
@@ -446,6 +454,22 @@ export class PaperEngine extends EventEmitter {
     const saved=this.db.kvGet<{day:number;entries:number}>(key);
     return {key,day,entries:saved?.day===day?saved.entries:0};
   }
+  /** Record a blocked observation, never an order or a synthetic training trade. */
+  recordGatedEntry(ev:ScanEvent,ctx:EntryContext,reason:string,stage:GateStage='execution',book=this.book) {
+    if(ctx.executionPlan||ev.kind!=='entry'||!ev.side||![0,2].includes(book))return;
+    const policy=ctx.policy??this.policyForCell(ctx);
+    saveTradePolicy(this.db,policy);
+    const source=this.sourceCodeFor?.(ctx.scannerId);
+    if(source&&sourceHash(source)===policy.sourceHash)this.db.run('INSERT OR IGNORE INTO scanner_source_versions(hash,source) VALUES(?,?)',policy.sourceHash,source);
+    const fee=this.configFor({...ctx,policy});
+    recordGatedSignal(this.db,{...ctx,at:this.now(),book,event:ev,stage,reason,policyId:policy.id,sourceHash:policy.sourceHash,
+      snapshot:{policyId:policy.id,strategyId:policy.strategyId,signalAt:ctx.at,reference:ctx.refPrice,atr:ctx.atr??null,
+        signalBar:ctx.signalBar??null,market:ctx.market,quote:this.quotes?.markState?.(ctx.symbol)??null,
+        features:ctx.features??null,mlProb:ctx.mlProb??null,sizeScale:ctx.sizeScale??1,
+        fees:{takerPct:fee.feeRatePct,makerPct:fee.makerFeeRatePct,taxPct:fee.feeTaxPct},
+        offerEligibility:offerStatus(fee)}});
+  }
+
   onEntry(ev: ScanEvent, ctx: EntryContext): EntryDecision {
     if (!this.planEnabled(ctx.executionPlan)) return {action:"rejected",reason:"research plan disabled or wrong book"};
     if(!ctx.executionPlan&&!ctx.policy)ctx={...ctx,policy:this.policyForCell(ctx)};
@@ -468,6 +492,7 @@ export class PaperEngine extends EventEmitter {
     try {
       const decision = this.decideEntry(protectEntry(ev,protection),ctx);
       write(decision.action,decision.reason??null,decision.position?.id??decision.pendingId??null);
+      if(decision.action==='rejected'||decision.action==='ignored')this.recordGatedEntry(ev,ctx,decision.reason??decision.action);
       return decision;
     } catch (error) {
       write('error','entry processing failed; inspect service log');
@@ -512,7 +537,7 @@ export class PaperEngine extends EventEmitter {
     if (block) return refuse(block);
     const state=createReclaim({side:ev.side!,at:ctx.at,reference:ctx.refPrice,atr:ctx.atr,stop:levels.sl,tick:ctx.market.tickSize},rule);
     const id=this.nextId(), ruleKey=JSON.stringify(rule);
-    const pe:PendingEntry={id,...ctx,side:ev.side!,signalPrice:ctx.refPrice,levels,dueAt:ctx.at,mlProb:ctx.mlProb??null,leverageMult:1,
+    const pe:PendingEntry={id,...ctx,observation:entryObservation(ev,ctx),side:ev.side!,signalPrice:ctx.refPrice,levels,dueAt:ctx.at,mlProb:ctx.mlProb??null,leverageMult:1,
       features:{...ctx.features,reclaim_trial:1},sizeScale:Math.min(ctx.sizeScale??1,rule.sizeScale),reclaim:{state,event:ev,context:ctx,ruleKey}};
     this.pending.set(id,pe);
     this.auditReclaim(pe,'setup',ctx.at);
@@ -652,7 +677,7 @@ export class PaperEngine extends EventEmitter {
     if (willRestLimit && le) {
       const off = limitOffset;
       const id = this.nextId();
-      const pe: PendingEntry = { id, policy:ctx.policy, reservation:this.reservation(size,price,ctx.market.contractValue), executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
+      const pe: PendingEntry = { id, observation:entryObservation(ev,ctx), policy:ctx.policy, reservation:this.reservation(size,price,ctx.market.contractValue), executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
         reclaimRuleKey:planned?.ruleKey,limit: { price: limitPrice!, expiresAt: planned?.expiresAt ?? ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
       this.pending.set(id, pe);
       this.emit('pending', { type: 'placed', entry: pe });   // decision 190: the tape audit registers the order at once
@@ -664,10 +689,10 @@ export class PaperEngine extends EventEmitter {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
       // first price after that — a tape print, or in candles mode the next 1m candle update, or the mark once the feed is quiet
       const id = this.nextId();
-      const pe: PendingEntry = { id, policy:ctx.policy, reservation:this.reservation(size,price,ctx.market.contractValue), executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
+      const pe: PendingEntry = { id, observation:entryObservation(ev,ctx), policy:ctx.policy, reservation:this.reservation(size,price,ctx.market.contractValue), executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
         ...(deferReversal ? { replacingId: replacing!.id } : {}) };
       this.pending.set(id, pe);
-      this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, price, pe.at, pe.signalId, JSON.stringify({ pending: { dueAt: pe.dueAt, levels } }), id);
+      this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, price, pe.at, pe.signalId, JSON.stringify({ pending: { dueAt: pe.dueAt, levels }, pendingEntry:pe }), id);
       this.logInfo(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
       return { action: 'pending', reason: cfg.fillSource === 'tape' ? 'awaiting tape fill' : 'awaiting fill after the latency window', pendingId: id, closed };
     }
@@ -679,14 +704,10 @@ export class PaperEngine extends EventEmitter {
    * Decision 144: the leverage the cell's shadow record asks for under margin sizing. The record is the scanner's last
    * closed shadow trades on the same market and timeframe, net of fees, closed before `at`.
    */
-  cellLeverage(cell: { scannerId: string; symbol: string; tf: string; at: number }, cfg: PaperConfig): { leverage: number; avgR: number | null; n: number } {
+  cellLeverage(cell: { scannerId: string; symbol: string; tf: string; at: number; policy?:TradePolicy }, cfg: PaperConfig): { leverage: number; avgR: number | null; n: number } {
     const m = cfg.marginLeverage ?? { base: 5, strong: 20, weak: 5, strongAboveR: 0.05, weakBelowR: -0.05, minTrades: 5, lookback: 30 };
-    const policy=this.policyForCell(cell);
-    const rows = this.db.all<{r:number}>(
-      `SELECT (p.realized_pnl-p.fees)/p.risk_amount r FROM positions p JOIN trade_policies t ON t.id=p.policy_id
-       WHERE p.bt=2 AND p.status='closed' AND p.scanner_id=? AND p.symbol=? AND p.tf=? AND p.exit_at<=? AND p.risk_amount>0
-       AND t.strategy_id=? AND ${eligibleEvidence} ${policy.paper.skipScriptStops&&policy.reading.entryProtection!=='native'?"AND p.levels_source='atr-fallback'":''}
-       ORDER BY p.exit_at DESC LIMIT ?`,cell.scannerId,cell.symbol,cell.tf,cell.at,policy.strategyId,m.lookback);
+    const policy=cell.policy??this.policyForCell(cell);
+    const rows=qualifiedEvidence(this.db,cell,policy,{at:cell.at,limit:m.lookback});
     return recordLeverage(rows.map(x => x.r), m);
   }
 
@@ -892,11 +913,19 @@ export class PaperEngine extends EventEmitter {
     return pos;
   }
 
+  private recordPendingGate(pe:PendingEntry,reason:string) {
+    const observation=pe.observation??pe.reclaim;
+    if(!observation)return; // Legacy orders did not retain their source event; do not invent it.
+    this.recordGatedEntry(observation.event,{...pe,...observation.context,policy:pe.policy,
+      exitMode:pe.policy?.exitMode??'both'},reason,'pending');
+  }
+
   /** Cancel a pending entry (manual or expiry). */
   cancelPending(id: number, reason = 'cancelled'): boolean {
     const pe = this.pending.get(id);
     if (!pe) return false;
     if (!this.decisionActive) return this.commitDecision(()=>this.cancelPending(id,reason));
+    this.recordPendingGate(pe,reason);
     this.auditReclaim(pe,'cancelled',this.now(),reason);
     this.pending.delete(id);
     this.db.run('DELETE FROM positions WHERE id=?', id);

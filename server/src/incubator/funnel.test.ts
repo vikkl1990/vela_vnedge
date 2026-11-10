@@ -65,7 +65,7 @@ test('decision 201: with copying off, an exit still reaches the account when it 
   const bars = Array.from({ length: 80 }, (_, i) => ({ time: last - (79 - i) * H, open: 1, high: 1, low: 1, close: 1, volume: 1 }));
   let alerts: any[] = [];
   const forwarded: any[] = [];
-  const paper: any = new EventEmitter(); paper.onEntry = () => ({ action: 'opened' }); paper.onScriptExit = () => {}; paper.findOpen = () => undefined; paper.openPositions = () => []; paper.mark = () => 1;
+  const paper: any = new EventEmitter(); paper.onEntry = () => ({ action: 'opened' }); paper.onScriptExit = () => {}; paper.findOpen = () => undefined; paper.openPositions = () => []; paper.mark = () => 1; paper.recordGatedEntry = () => {};
   let holds = true;
   const runner = new ShadowRunner({
     store: { shadowFunnel: () => ({}), setShadowFunnel: () => {}, liveMarks: () => undefined, setLiveMarks: () => {}, get: () => pair, trades: () => [] },
@@ -125,7 +125,7 @@ test('shadow waves wait fairly instead of dropping whole symbols behind a resear
 
 test('held positions stay urgent; unqualified mirror cells use bounded shadow scheduling',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.enabled=true;cfg.incubator.mirror={enabled:true,minTrades:5,minNetR:0,minTurnoverUsd:0};
- const runner=new ShadowRunner({store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},trades:()=>[],marketsToday:()=>new Map()},cfgRef:()=>cfg,paper:{openPositions:()=>[{scannerId:'held',symbol:'BTCUSD',tf:'15m'}]},mirror:()=>{},pool:{size:8,reserved:2,stats:{queued:0,queuedLive:0},rssReader:()=>0,memoryGuardBytes:1}}as any)as any;
+ const runner=new ShadowRunner({store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},qualifiedTrades:()=>[],marketsToday:()=>new Map()},cfgRef:()=>cfg,paper:{openPositions:()=>[{scannerId:'held',symbol:'BTCUSD',tf:'15m'}]},mirror:()=>{},pool:{size:8,reserved:2,stats:{queued:0,queuedLive:0},rssReader:()=>0,memoryGuardBytes:1}}as any)as any;
  runner.pairs=['held','research'].map((scannerId,id)=>({id,scannerId,symbol:'BTCUSD',tf:'15m',stage:'shadow'}));
  const got:Array<[string,boolean]>=[];runner.run=async(r:any,_bar:any,live:boolean)=>{got.push([r.scannerId,live]);};runner.onBarClosed('BTCUSD','15m',Date.now());assert.deepEqual(got,[['held',true]]);
  t.mock.timers.tick(20_000);await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['held',true],['research',false]]);runner.stop();

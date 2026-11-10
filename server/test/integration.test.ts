@@ -334,6 +334,17 @@ test('journal endpoints isolate books, validate filters and export authenticated
   assert.equal((await fetch(base+'/api/journal/export')).status,401);
 });
 
+test('gated signal journal is authenticated, bounded and explicitly ineligible for promotion',async()=>{
+  const {recordGatedSignal}=await import('../src/evidence/gatedSignals.ts');
+  recordGatedSignal(app.db,{scannerId:'tiny',symbol:'BTCUSD',tf:'5m',book:2,at:NOW,stage:'admission',reason:'test gate',snapshot:{atr:100},
+    event:{kind:'entry',side:'long',barTime:NOW,barIndex:0,price:50000,tp:[],label:'test diagnostic',message:'',source:'alert'}});
+  assert.equal((await fetch(base+'/api/evidence/gated-signals')).status,401);
+  const page=await getJson('/api/evidence/gated-signals?book=shadow&scannerId=tiny&since=0&limit=1');
+  assert.equal(page.status,200);assert.equal(page.body.scope,'diagnostic-only');assert.equal(page.body.promotionEligible,false);
+  assert.equal(page.body.rows.length,1);assert.equal(page.body.rows[0].reason,'test gate');
+  assert.equal(page.body.rows[0].snapshot.outcome,'not-executed');assert.equal(page.body.rows[0].promotion_eligible,0);
+});
+
 test('authorisation is enforced by the server, not just hidden in the UI', async () => {
   // an unauthenticated caller gets nothing, not even read access
   for (const [method, path] of [['GET', '/api/stats'], ['GET', '/api/scanners'], ['POST', '/api/paper/reset'], ['GET', '/api/users']] as const) {

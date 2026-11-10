@@ -213,7 +213,7 @@ export class ShadowRunner {
     const canEnter = (r: PairRow) => !!focus && !focus.full && !focus.held.has(r.symbol) && this.deps.marketVerdict?.(r.symbol)?.allowed !== false;
     const rank = (r: PairRow) => (r.stage === 'live' || focus?.held.has(r.symbol) ? 0 : canEnter(r) ? 1 : 2);
     // In copy mode, unqualified research cells must not consume the urgent lane.
-    const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !mirrorRefusal(this.deps.cfgRef().incubator.mirror,this.deps.store.trades(r.scannerId,r.symbol,r.tf,2),this.turnoverOf(r.symbol)));
+    const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !mirrorRefusal(this.deps.cfgRef().incubator.mirror,this.deps.store.qualifiedTrades(r.scannerId,r.symbol,r.tf,2),this.turnoverOf(r.symbol)));
     const urgent=due.filter(r=>holds(r)||(mirror&&copyable(r))).sort((a,b)=>rank(a)-rank(b));
     const later = due.filter(r => !urgent.includes(r));
     const launch = (rows: PairRow[], live: boolean) => {
@@ -334,8 +334,14 @@ export class ShadowRunner {
       } else if (cfg.incubator.mirror?.enabled && this.deps.mirror && r.stage !== 'tracked' && (ev.kind === 'entry' || ev.kind === 'exit')) {
         // decision 177: an entry is copied only once the pair has a record of its own and its market is deep enough; an
         // exit always goes through, since the account may hold the position
-        const held = ev.kind === 'entry' && r.stage !== 'live' ? mirrorRefusal(cfg.incubator.mirror, this.deps.store.trades(r.scannerId, r.symbol, r.tf, 2), this.turnoverOf(r.symbol)) : null;
-        if (held) { this.stats.mirrorHeld++; log.debug(`${held}: ${s.id} ${r.symbol} ${r.tf} ${ev.side ?? ''}`); }
+        const held = ev.kind === 'entry' && r.stage !== 'live' ? mirrorRefusal(cfg.incubator.mirror, this.deps.store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2, now), this.turnoverOf(r.symbol)) : null;
+        if (held) {
+          this.stats.mirrorHeld++;
+          this.deps.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,market,
+            atr:lastAtr(bars,14),refPrice:this.deps.paper.mark(r.symbol)??lastBar.close,at:now,signalId:null,exitMode,signalBar:lastBar,
+            policy:this.deps.store.policyFor?.(r)},held,'copy',0);
+          log.debug(`${held}: ${s.id} ${r.symbol} ${r.tf} ${ev.side ?? ''}`);
+        }
         else {
           this.stats.mirrored++;
           try { await this.deps.mirror(s, r.symbol, r.tf, ev, bars, market, exitMode, lastBar); } catch (e: any) { log.warn(`mirror ${s.id} ${r.symbol}: ${e?.message ?? e}`); }
@@ -359,6 +365,8 @@ export class ShadowRunner {
         const refusal = shadowRefusal({ regime: cfg.risk?.regime, scannerId: s.id, symbol: r.symbol, at: now, price: ev.price && ev.price > 0 ? ev.price : refPrice, atr, bars, market: this.deps.marketVerdict?.(r.symbol) });
         this.deps.compare?.({scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,event:ev,bars,market,at:now,refPrice,refusal:trendReason??refusal?.reason});
         if(r.id<0)continue;
+        if(trendReason||refusal)this.deps.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,
+          market,atr,refPrice,at:now,signalId:null,exitMode,signalBar:lastBar},trendReason??refusal!.reason,'admission');
         if(trendReason){this.stats.refused++;this.note(fkey,'regime',now,trendReason);continue;}
         if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now, refusal.reason); continue; }
         // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
@@ -373,7 +381,7 @@ export class ShadowRunner {
             mlProb = this.deps.ml.score(s.id, features, { record: false, tf: r.tf })?.prob ?? null;
           }
         }
-        const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
+        const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
         const kind: FunnelKind = d.action === 'opened' || d.action === 'reversed' ? 'opened' : funnelClass(`${d.action}:${d.reason ?? ''}`);
         this.note(fkey, kind, now, `${d.action}${d.reason ? ':'+d.reason : ''}`);

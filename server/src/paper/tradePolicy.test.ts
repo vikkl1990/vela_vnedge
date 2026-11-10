@@ -88,7 +88,7 @@ test('coverage separates matching, changed and quarantined policies without rewr
  cfg.paper.floorAtR=.5;cfg.paper.floorKeepR=.1;
  const b=engine.onEntry(event,{...ctx,at:T+2}).position!;engine.closeManual(b.id,'manual',T+3);
  const id=engine.policyForCell(ctx).strategyId;
- assert.deepEqual(evidenceCoverage(db,ctx,0,id,T+4),{total:2,matching:1,changed:1,legacy:0,quarantined:0});
+ assert.deepEqual(evidenceCoverage(db,ctx,0,id,T+4),{total:2,matching:1,changed:1,legacy:0,quarantined:0,excluded:0});
  db.run("INSERT INTO evidence_flags VALUES(?,?,'quarantined','test','test',?)",b.id,b.entryAt,T+4);
- assert.deepEqual(evidenceCoverage(db,ctx,0,id,T+5),{total:2,matching:0,changed:1,legacy:0,quarantined:1});
+ assert.deepEqual(evidenceCoverage(db,ctx,0,id,T+5),{total:2,matching:0,changed:1,legacy:0,quarantined:1,excluded:0});
 });

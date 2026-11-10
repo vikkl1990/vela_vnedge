@@ -1,3 +1,4 @@
+import {recordGatedSignal} from '../evidence/gatedSignals.ts';
 import {sameExitSource} from './boundExits.ts';
 import { pilotCapacityRefusal, pilotUsage, reservePilotEntry, type PilotUsage } from '../paper/pilotCapacity.ts';
 import {policyReading,stablePolicy} from '../paper/tradePolicy.ts';
@@ -628,7 +629,7 @@ export class ScannerEngine extends EventEmitter {
     const now=Date.now();
     const delivery:Delivery={version:1,scannerId:s.id,scannerName:s.name,symbol,tf,ev,bars,market,exitMode,lastBar,copied,
       pilotRequested:copied&&!(this.isActive(s)&&this.runsOn(s.id,symbol,tf))&&Boolean(this.cfgRef().incubator.mirror?.pilot),
-      fingerprint:this.deliveryFingerprint(s,tf),
+      fingerprint:this.deliveryFingerprint(s,tf),sourceHash:sourceHash(s.patched),
       accountResetAt:this.db.kvGet<number>('paper.resetAt')??null,
       targetPositionId:this.paper.openPositions().find(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side))?.id??null,
       targetPendingIds:this.paper.pendingEntries().filter(p=>p.scannerId===s.id&&p.symbol===symbol&&p.tf===tf&&(!ev.side||p.side===ev.side)).map(p=>p.id)};
@@ -674,6 +675,11 @@ export class ScannerEngine extends EventEmitter {
         if(this.stopping)throw Error('scanner stopped before allocation');
         const refused=invalidEntry();
         const result=refused?{action:refused,positionId:null}:this.applyDelivery(scanner,delivery,row.signal_id,recovery);
+        if(refused)recordGatedSignal(this.db,{scannerId:delivery.scannerId,symbol:delivery.symbol,tf:delivery.tf,
+          book:0,at:Date.now(),event:delivery.ev,stage:'recovery',reason:refused,signalId:row.signal_id,sourceHash:delivery.sourceHash??null,
+          snapshot:{receivedAt:row.received_at,deliveryFingerprint:delivery.fingerprint,reference:delivery.lastBar.close,
+            atr:lastAtr(delivery.bars,14)??null,signalBar:delivery.lastBar,market:delivery.market,
+            policyUnavailable:true,fees:null}});
         this.inbox.complete(row,result.action,result.positionId);return result;
       });
       if(delivery.ev.kind==='entry'&&!blocked)await this.entryCoordinator.enqueue({key:row.event_key,scannerId:delivery.scannerId,symbol:delivery.symbol,tf:delivery.tf,barTime:delivery.ev.barTime},decide);
@@ -725,6 +731,9 @@ export class ScannerEngine extends EventEmitter {
         action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
         positionId = d.position?.id ?? d.pendingId ?? null;
       }
+      if(pilotBlock||trendBlock||(gate&&!gate.ok)||(mlCfg.minProb>0&&mlProb!==null&&mlProb<mlCfg.minProb))
+        this.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol,tf,market,signalBar:lastBar,atr,refPrice,at:now,
+          signalId:sigId,exitMode,features,mlProb,sizeScale:pilot?.sizeScale},action,'admission');
       if (mlProb !== null) this.db.run('UPDATE signals SET ml_prob=? WHERE id=?', mlProb, sigId);
     } else if (ev.kind === 'exit') {
       const held=this.paper.findOpen(s.id,symbol,tf);

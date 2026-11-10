@@ -74,17 +74,5 @@ export function loadTradePolicy(db:Db,id:string|null|undefined,adoptedAt?:number
   return {...p,...(adoptedAt!=null?{adoptedAt}:{})};
 }
 
-export interface EvidenceCoverage {total:number;matching:number;changed:number;legacy:number;quarantined:number}
-/** SQL-safe fixed predicates, shared by qualification, sizing and reporting. */
-export const eligibleEvidence = `p.policy_adopted_at IS NULL AND p.policy_id IS NOT NULL AND t.source_hash IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM evidence_flags f WHERE f.position_id=p.id AND f.entry_at=p.entry_at AND f.status='quarantined')`;
-export function evidenceCoverage(db:Db,cell:{scannerId:string;symbol:string;tf:string},book:number,strategyId:string,at=Date.now()):EvidenceCoverage {
-  const rows=db.all<{strategy_id:string|null;source_hash:string|null;adopted:number|null;quarantined:number}>(
-    `SELECT t.strategy_id,t.source_hash,p.policy_adopted_at adopted,
-    EXISTS(SELECT 1 FROM evidence_flags f WHERE f.position_id=p.id AND f.entry_at=p.entry_at AND f.status='quarantined') quarantined
-    FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id
-    WHERE p.bt=? AND p.status='closed' AND p.risk_amount>0 AND p.scanner_id=? AND p.symbol=? AND p.tf=? AND p.exit_at<=?`,book,cell.scannerId,cell.symbol,cell.tf,at);
-  const result={total:rows.length,matching:0,changed:0,legacy:0,quarantined:0};
-  for(const r of rows)result[r.quarantined?'quarantined':!r.strategy_id||!r.source_hash||r.adopted!=null?'legacy':r.strategy_id===strategyId?'matching':'changed']++;
-  return result;
-}
+// Backwards-compatible exports; all consumers share the evidence module.
+export { eligibleEvidence, evidenceCoverage, type EvidenceCoverage } from '../evidence/trades.ts';

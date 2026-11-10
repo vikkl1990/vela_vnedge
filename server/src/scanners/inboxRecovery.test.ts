@@ -1,3 +1,4 @@
+import {sourceHash} from '../paper/fingerprint.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,rmSync } from 'node:fs';
@@ -132,11 +133,18 @@ for(const reason of ['expired','policy changed','source changed','fresh price','
  x.paper.prepareEntryDepth=async()=>{throw Error('interrupt preparation');};await assert.rejects(x.submit());x.paper.prepareEntryDepth=undefined;
  if(reason==='expired')x.db.run('UPDATE signal_inbox SET received_at=received_at-120000');
  if(reason==='policy changed')x.cfg.paper.marginPerTrade=151;
+ const originalSourceHash=sourceHash(x.source.patched);
  if(reason==='source changed')x.source.patched='source v2';
  await x.engine.recoverSignals();assert.equal(x.paper.openPositions().length,0);
  if(reason==='fresh price'){
   assert.equal(x.engine.inbox.status().pending,1);x.paper.setMark('BTCUSD',100);await x.engine.recoverSignals();assert.equal(x.paper.openPositions().length,1);
- }else {assert.equal(x.engine.inbox.status().pending,0);assert.match(x.db.signals({})[0].action,reason==='expired'?/expired/:/policy changed/);}
+ }else {
+  assert.equal(x.engine.inbox.status().pending,0);assert.match(x.db.signals({})[0].action,reason==='expired'?/expired/:/policy changed/);
+  const observation=x.db.get<any>("SELECT * FROM gated_signals WHERE stage='recovery'");
+  assert.equal(observation.source_hash,originalSourceHash,'old receipt must not be attributed to replacement source');
+  assert.equal(observation.policy_id,null,'an unavailable original policy is not invented from current settings');
+  assert.equal(observation.promotion_eligible,0);
+ }
 });
 
 test('nested commit observers run only after outer success; listener failure does not undo a commit',()=>{

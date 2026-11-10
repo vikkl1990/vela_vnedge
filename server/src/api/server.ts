@@ -1,3 +1,4 @@
+import {gatedSignalPage} from '../evidence/gatedSignals.ts';
 import { pineLibraries } from '../pine/libraries.ts';
 import { costAudit } from '../paper/costAudit.ts';
 import { allocationAudit } from '../analytics/allocationAudit.ts';
@@ -393,6 +394,7 @@ export class ApiServer {
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), ...tradeFilter(url) }));
     this.add('GET', '/api/trades/page', (_r, _s, _p, url) => a.paper.tradesPage({ limit: Number(url.searchParams.get('limit') ?? 300), offset: Number(url.searchParams.get('offset') ?? 0), ...tradeFilter(url) }));
     const journal = new Journal(a.db);
+    this.add('GET', '/api/evidence/gated-signals', (_r, _s, _p, url) => gatedSignalPage(a.db,url.searchParams));
     this.add('GET', '/api/journal', (_r, _s, _p, url) => journal.page(journalFilter(url.searchParams)));
     this.add('GET', '/api/journal/export', (_r, res, _p, url) => {
       const filter = journalFilter(url.searchParams), fills = url.searchParams.get('kind') === 'fills';

@@ -53,6 +53,18 @@ CREATE INDEX IF NOT EXISTS idx_decision_trace_book_id ON decision_trace(book,id 
 CREATE INDEX IF NOT EXISTS idx_decision_trace_signal ON decision_trace(signal_id,id);
 CREATE INDEX IF NOT EXISTS idx_decision_trace_position ON decision_trace(position_id,stage,id);
 
+-- Rejected observations are deliberately separate from all executable/training books.
+CREATE TABLE IF NOT EXISTS gated_signals (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE,
+ at INTEGER NOT NULL, book INTEGER NOT NULL CHECK(book IN (0,2)), scanner_id TEXT NOT NULL,
+ symbol TEXT NOT NULL, tf TEXT NOT NULL, bar_time INTEGER NOT NULL, side TEXT NOT NULL,
+ stage TEXT NOT NULL CHECK(stage IN ('copy','admission','execution','recovery','pending')), reason TEXT NOT NULL,
+ signal_id INTEGER, policy_id TEXT, source_hash TEXT, snapshot TEXT NOT NULL,
+ promotion_eligible INTEGER NOT NULL DEFAULT 0 CHECK(promotion_eligible=0)
+);
+CREATE INDEX IF NOT EXISTS idx_gated_signals_book ON gated_signals(book,id DESC);
+CREATE INDEX IF NOT EXISTS idx_gated_signals_cell ON gated_signals(scanner_id,symbol,tf,at);
+
 CREATE TABLE IF NOT EXISTS evidence_flags (
  position_id INTEGER NOT NULL,entry_at INTEGER NOT NULL,status TEXT NOT NULL CHECK(status IN ('quarantined','cleared')),
  reason TEXT NOT NULL,source TEXT NOT NULL,checked_at INTEGER NOT NULL,PRIMARY KEY(position_id,entry_at)
@@ -75,6 +87,7 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status, bt);
 CREATE INDEX IF NOT EXISTS idx_positions_journal ON positions(bt,status,exit_at,id);
+CREATE INDEX IF NOT EXISTS idx_positions_evidence ON positions(bt,scanner_id,symbol,tf,status,exit_at,id);
 CREATE TRIGGER IF NOT EXISTS trace_position_status AFTER UPDATE OF status ON positions
 WHEN OLD.status != NEW.status
 BEGIN

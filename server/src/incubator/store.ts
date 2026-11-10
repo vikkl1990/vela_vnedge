@@ -1,5 +1,6 @@
 import {emptyRotation, type RotationState} from './rotation.ts';
-import {eligibleEvidence,evidenceCoverage,type TradePolicy} from '../paper/tradePolicy.ts';
+import type {TradePolicy} from '../paper/tradePolicy.ts';
+import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {withoutCachedBookVeto} from '../risk/marketGate.ts';
 /**
  * Incubator state: which stage each scanner/market pair is in, and an audit trail of every move.
@@ -229,16 +230,11 @@ export class IncubatorStore {
     // Missing runtime policy cannot certify trades. Offline gate research must opt in explicitly.
     if(!this.policyFor)return this.historicalResearch?this.trades(scannerId,symbol,tf,book):[];
     const p=this.policyFor({scannerId,symbol,tf});
-    const atrOnly=p.paper.skipScriptStops&&p.reading.entryProtection!=='native';
-    return this.db.all<any>(`SELECT p.* FROM positions p JOIN trade_policies t ON t.id=p.policy_id
-      WHERE p.bt=? AND p.status='closed' AND p.risk_amount>0 AND p.scanner_id=? AND p.symbol=? AND p.tf=?
-      AND p.exit_at<=? AND t.strategy_id=? AND ${eligibleEvidence} ${atrOnly?"AND p.levels_source='atr-fallback'":''} ORDER BY p.exit_at`,
-      book,scannerId,symbol,tf,at,p.strategyId)
-      .map(r=>({entryAt:r.entry_at,exitAt:r.exit_at,r:(r.realized_pnl-r.fees)/r.risk_amount,side:r.side,peakR:r.peak_r??undefined}));
+    return qualifiedEvidence(this.db,{scannerId,symbol,tf},p,{book,at});
   }
   policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor)return {mode:'unconfigured' as const};
-    const p=this.policyFor(cell),coverage=evidenceCoverage(this.db,cell,2,p.strategyId,at);
+    const p=this.policyFor(cell),coverage=evidenceCoverage(this.db,cell,2,p,at);
     return {mode:'compatible' as const,policyId:p.id,strategyId:p.strategyId,...coverage,
       qualified:this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at).length};
   }
