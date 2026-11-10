@@ -194,6 +194,7 @@ export class App {
     this.shadow.limitEntryAllowed = () => true;
     this.incubatorStore = new IncubatorStore(this.db);
     this.incubatorStore.policyFor=cell=>this.paper.policyForCell(cell);
+    this.incubatorStore.evidenceConfig=cfg;
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.ml.excluded = () => this.scanners.health.quarantined();
     this.enricher = new FeatureEnricher(this.db, this.candles);
@@ -351,6 +352,7 @@ export class App {
     // the incubator's live rows follow the config from the first second (decision 83): a fleet edited on disk and restarted used to
     // keep its new cells in the shadow stage until the next hunt
     { const synced = incubatorSyncLive(this.incubatorStore, this.config.get()); if (synced.added || synced.removed) log.info(`incubator live rows synced to the config: +${synced.added} −${synced.removed}`); }
+    this.incubatorStore.startRestorations();
     this.incubator.start();
   }
 
@@ -912,6 +914,7 @@ export class App {
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       return {
         ...r, rotationUntil: r.stage === 'candidate' ? rotation.paused[r.id]?.until ?? null : null, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
+        restoration: this.incubatorStore.restoration(r,now),
         admissionEvidence: r.screen ? admissionEvidence(r,cfg.incubator) : null,
         stats: judged ? pairStats(trades, r.since, now) : null,
         openShadow: openShadow.get(key) ?? 0,

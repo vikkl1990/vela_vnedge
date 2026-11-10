@@ -1,6 +1,9 @@
 import {emptyRotation, type RotationState} from './rotation.ts';
 import type {TradePolicy} from '../paper/tradePolicy.ts';
-import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
+import {enrollRestoration,restorationAssessment} from '../evidence/restoration.ts';
+import type {AppConfig} from '../config.ts';
+import {mirrorRefusal} from './gate.ts';
+import {qualifiedEvidence,readEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {withoutCachedBookVeto} from '../risk/marketGate.ts';
 /**
  * Incubator state: which stage each scanner/market pair is in, and an audit trail of every move.
@@ -49,6 +52,7 @@ export class IncubatorStore {
   private db: Db;
   /** Installed by the runtime/screen composition root. Raw history stays available for audit. */
   policyFor?: (cell:{scannerId:string;symbol:string;tf:string})=>TradePolicy;
+  evidenceConfig?:()=>AppConfig;
   private historicalResearch=false;
   constructor(db: Db, opts:{evidenceMode?:'historical-research'}={}) { this.db = db;this.historicalResearch=opts.evidenceMode==='historical-research'; }
 
@@ -230,7 +234,32 @@ export class IncubatorStore {
     // Missing runtime policy cannot certify trades. Offline gate research must opt in explicitly.
     if(!this.policyFor)return this.historicalResearch?this.trades(scannerId,symbol,tf,book):[];
     const p=this.policyFor({scannerId,symbol,tf});
+    if(book===2)this.ensureRestoration({scannerId,symbol,tf},p,at);
     return qualifiedEvidence(this.db,{scannerId,symbol,tf},p,{book,at});
+  }
+  private ensureRestoration(cell:{scannerId:string;symbol:string;tf:string},policy:TradePolicy,at:number) {
+    if(!this.evidenceConfig || this.db.get('SELECT 1 FROM evidence_restorations WHERE strategy_id=?',policy.strategyId))return;
+    const exact=readEvidence(this.db,cell,policy,{at});
+    const compatible=readEvidence(this.db,cell,policy,{at,compatibility:'full-fee'});
+    enrollRestoration(this.db,cell,policy,this.evidenceConfig(),exact,compatible,at);
+  }
+  startRestorations(at=Date.now()) {
+    if(!this.policyFor)return;
+    for(const cell of this.list(['shadow','proposed']))this.ensureRestoration(cell,this.policyFor(cell),at);
+  }
+  restoration(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
+    if(!this.policyFor || !this.db.get('SELECT 1 FROM evidence_restorations WHERE scanner_id=? AND symbol=? AND tf=?',cell.scannerId,cell.symbol,cell.tf))return null;
+    const policy=this.policyFor(cell);
+    return restorationAssessment(this.db,cell,policy,readEvidence(this.db,cell,policy,{at}),at);
+  }
+  restorationRefusal(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()):string|null {
+    if(!this.policyFor)return null;
+    this.ensureRestoration(cell,this.policyFor(cell),at);
+    const r=this.restoration(cell,at);
+    return r&&!r.passed?`restored cell in forward shadow evaluation: ${r.reasons.join('; ')}`:null;
+  }
+  copyRefusal(cell:{scannerId:string;symbol:string;tf:string},mirror:AppConfig['incubator']['mirror'],turnover:number|null,at=Date.now()) {
+    return this.restorationRefusal(cell,at)??mirrorRefusal(mirror,this.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,at),turnover);
   }
   policyEvidence(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor)return {mode:'unconfigured' as const};

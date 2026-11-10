@@ -1,3 +1,4 @@
+import {RestorationPanel} from '../components/RestorationPanel'
 import { Disclosure } from '../components/Disclosure'
 import { PolicyHealthPanel, PolicyHealthStatus } from '../components/PolicyHealth'
 import {ExecutionPlans} from '../components/ExecutionPlans'
@@ -96,6 +97,7 @@ export default function Incubator() {
               </div>
 
               <PolicyHealthStatus />
+              <RestorationPanel pairs={d.pairs} />
               <Panel
                 title="Waiting for your decision"
                 right={auth.canTrade ? <button className="btn btn-sm" onClick={() => evaluate.mutate()} disabled={evaluate.isPending}>{evaluate.isPending ? 'Judging…' : 'Re-judge now'}</button> : null}

@@ -32,7 +32,6 @@ import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import { protectEntry } from '../paper/entryProtection.ts';
 import type { Features, FeatureInputs } from '../ml/features.ts';
 import { logger } from '../log.ts';
-import { mirrorRefusal } from './gate.ts';
 import { IncubatorStore, funnelClass, type PairRow, type SignalFunnel } from './store.ts';
 import { ACTIVE_STAGES } from './cycle.ts';
 import { readingOf } from '../scanners/reading.ts';
@@ -213,7 +212,7 @@ export class ShadowRunner {
     const canEnter = (r: PairRow) => !!focus && !focus.full && !focus.held.has(r.symbol) && this.deps.marketVerdict?.(r.symbol)?.allowed !== false;
     const rank = (r: PairRow) => (r.stage === 'live' || focus?.held.has(r.symbol) ? 0 : canEnter(r) ? 1 : 2);
     // In copy mode, unqualified research cells must not consume the urgent lane.
-    const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !mirrorRefusal(this.deps.cfgRef().incubator.mirror,this.deps.store.qualifiedTrades(r.scannerId,r.symbol,r.tf,2),this.turnoverOf(r.symbol)));
+    const copyable=(r:PairRow)=>r.stage!=='tracked' && (r.stage==='live' || !this.deps.store.copyRefusal(r,this.deps.cfgRef().incubator.mirror,this.turnoverOf(r.symbol)));
     const urgent=due.filter(r=>holds(r)||(mirror&&copyable(r))).sort((a,b)=>rank(a)-rank(b));
     const later = due.filter(r => !urgent.includes(r));
     const launch = (rows: PairRow[], live: boolean) => {
@@ -334,7 +333,7 @@ export class ShadowRunner {
       } else if (cfg.incubator.mirror?.enabled && this.deps.mirror && r.stage !== 'tracked' && (ev.kind === 'entry' || ev.kind === 'exit')) {
         // decision 177: an entry is copied only once the pair has a record of its own and its market is deep enough; an
         // exit always goes through, since the account may hold the position
-        const held = ev.kind === 'entry' && r.stage !== 'live' ? mirrorRefusal(cfg.incubator.mirror, this.deps.store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2, now), this.turnoverOf(r.symbol)) : null;
+        const held = ev.kind === 'entry' && r.stage !== 'live' ? this.deps.store.copyRefusal(r,cfg.incubator.mirror,this.turnoverOf(r.symbol),now) : null;
         if (held) {
           this.stats.mirrorHeld++;
           this.deps.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol:r.symbol,tf:r.tf,market,

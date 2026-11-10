@@ -1,3 +1,5 @@
+import {stablePolicy,strategyIdFor} from './strategyIdentity.ts';
+export {stablePolicy} from './strategyIdentity.ts';
 /** Immutable strategy settings. Runtime account halts remain outside this snapshot. */
 import {createHash} from 'node:crypto';
 import type {AppConfig, PaperConfig, ScannerConfig, ExitMode} from '../config.ts';
@@ -9,8 +11,6 @@ import {scannerEntryConfig} from './entryProtection.ts';
 import {trialRiskConfig,selectiveReclaimRule} from './selectiveEntry.ts';
 
 export const POLICY_VERSION = 1;
-export const stablePolicy = (value:unknown):string => JSON.stringify(value,(_key,v)=>
-  v && typeof v==='object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))) : v);
 const hash=(v:unknown)=>createHash('sha256').update(stablePolicy(v)).digest('hex');
 
 /** Allocation and presentation do not change a scanner's interpretation. */
@@ -46,11 +46,7 @@ export function makeTradePolicy(cfg:AppConfig,cell:{scannerId:string;symbol:stri
     paper:resolved,sizing:structuredClone(sizing),risk:structuredClone(cfg.risk),ml:structuredClone(cfg.ml)};
   // Cross-book strategy evidence is separate from capital feasibility. Preserve execution,
   // cost and stop restrictions; remove only the book's purse and sizing controls.
-  const economic={...resolved} as Partial<PaperConfig>;
-  for(const k of ['initialEquity','sizingMode','riskPerTradePct','marginPerTrade','marginLeverage','minLeverage','maxLeverage','maxStopLossPct','maxOpenPositions'] as const)delete economic[k];
-  if(economic.limitEntry)economic.limitEntry={...economic.limitEntry,books:['account','shadow']};
-  const strategyId=hash({version:body.version,sim:body.sim,scannerId:cell.scannerId,symbol:cell.symbol,tf:cell.tf,
-    sourceHash,reading:body.reading,exitMode:cell.exitMode,paper:economic,regime:cfg.risk.regime});
+  const strategyId=strategyIdFor(body);
   return {...body,strategyId,id:hash(body)};
 }
 

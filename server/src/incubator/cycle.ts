@@ -523,6 +523,8 @@ function promotionRefusal(store: IncubatorStore, cfg: AppConfig, r: PairRow, now
   if (cfg.risk.marketGate?.enabled && !markets.size) return 'market eligibility has not been judged';
   const market = marketRefusal(markets, r.symbol, inc.gate.minTurnoverUsd);
   if (market) return market;
+  const restoration = store.restorationRefusal(r,now);
+  if(restoration)return restoration;
   const cooling = demotionAnswered(store, cfg, r, now);
   if (cooling) return cooling;
   if (inc.gate.pool !== 'cohort') {

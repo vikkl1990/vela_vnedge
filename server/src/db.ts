@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS trade_policies (
  id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL, source_hash TEXT, snapshot TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_trade_policies_strategy ON trade_policies(strategy_id);
+-- A restoration starts now, never at the date of its favourable historical sample.
+CREATE TABLE IF NOT EXISTS evidence_restorations (
+ strategy_id TEXT PRIMARY KEY, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL,
+ started_at INTEGER NOT NULL, requirements TEXT NOT NULL, seed TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_restorations_cell ON evidence_restorations(scanner_id,symbol,tf);
+CREATE TRIGGER IF NOT EXISTS evidence_restoration_immutable BEFORE UPDATE ON evidence_restorations
+BEGIN SELECT RAISE(ABORT,'restoration enrollment is immutable'); END;
 CREATE TABLE IF NOT EXISTS pair_screen_evidence (
  scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL,
  signature TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(scanner_id,symbol,tf)

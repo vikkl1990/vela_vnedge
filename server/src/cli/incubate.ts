@@ -58,6 +58,7 @@ const cfg = new ConfigStore().get();
 const inc = cfg.incubator;
 const db = new Db();
 const store = new IncubatorStore(db);
+store.evidenceConfig=()=>cfg;
 const registry = new ScannerRegistry();
 store.policyFor=cell=>resolveTradePolicy(cfg,cell,sourceHash(registry.get(cell.scannerId)?.patched));
 const health = new ScriptHealth(db);

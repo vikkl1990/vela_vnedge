@@ -7159,3 +7159,11 @@ allocation, quarantine, target allocation and original-risk regressions. Dashboa
 lint/build pass. Browser fixtures cover desktop/mobile, filters, empty performance,
 refresh failure/recovery, viewer permissions and menu keyboard behavior. Production
 assets can be published atomically without restarting the trading service.
+
+## 232. Preserve full-fee evidence without reopening unproven cells (10 November 2026)
+
+Scalper Offer verification alone changed the strategy identity and excluded otherwise identical full-fee results. Accept that history only in the conservative direction, with complete fills proving the original commissions were paid. Preserve historical net R, policy hashes and all other evidence exclusions.
+
+Restored cells begin an immutable, prospective shadow window before copying, promotion or evidence-based sizing can use the compatible history. Keep current exact qualifiers; require the existing timeframe promotion standards, at least 20 new closes, positive chronological halves and positive forward R after 5bp extra round-trip friction. Reassess after losses and quarantine; changed strategies need a new window. Gated signals never qualify. The Incubator shows progress and blockers.
+
+This does not establish a profit improvement or change $150 margin, leverage settings, risk caps or paper mode. The 22-hour retrospective restoration lift was too fragile to authorize immediate additional paper trades. Details and validation: [rollout record](research/evidence-restoration-rollout-2026-11-10.md).

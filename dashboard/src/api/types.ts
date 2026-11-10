@@ -673,7 +673,14 @@ export interface IncubatorScreen {
 }
 /** Decision 201: each account cell's runs, failures and skips over a window. */
 export interface RunHealthRow { scannerId: string; symbol: string; tf: string; ok: number; failed: number; skipped: number; lastFailAt: number | null; lastError: string | null }
+export interface RestorationView {
+  state:'evaluating'|'passed'|'policy-changed'|'invalid'; passed:boolean; reasons:string[]
+  startedAt?:number; at?:number
+  requirements?:{minTrades:number;minDays:number;minPfR:number;minAvgR:number;minT:number;stressBps:number}
+  seed?:{exact:number;compatible:number;netR:number};stats?:IncubatorStats;halves?:number[];stressedR?:number|null;invalidFills?:number
+}
 export interface IncubatorPair {
+  restoration?:RestorationView|null
   rotationUntil?: number | null
   admissionEvidence?: {score:number;qualityScore:number;estimatedDays:number|null;factor:number;requiredTrades:number;horizonDays:number} | null
   /** The market gate's verdict on this pair's market today; null when the gate has not judged it. */
