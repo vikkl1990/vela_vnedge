@@ -460,17 +460,17 @@ export function openPosition(p: OpenParams): Position {
 export interface FillEvent { position: Position; fill: Fill; closed: boolean }
 
 /** Reduce/close a position at `price`. Mutates and returns the fill. */
-export function fillExit(pos: Position, price: number, qty: number, reason: string, at: number, cfg: PaperConfig, withSlippage: boolean | 'quoted'): Fill {
+export function fillExit(pos: Position, price: number, qty: number, reason: string, at: number, cfg: PaperConfig, withSlippage: boolean | 'quoted' | 'depth'): Fill {
   let q = Math.min(qty, pos.qtyOpen);
   // an exchange would have liquidated before any exit could print beyond the liquidation price
-  if (pos.liqPrice !== null && (pos.side === 'long' ? price <= pos.liqPrice : price >= pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; q = pos.qtyOpen; withSlippage = true; }
+  if (withSlippage!=='depth' && pos.liqPrice !== null && (pos.side === 'long' ? price <= pos.liqPrice : price >= pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; q = pos.qtyOpen; withSlippage = true; }
   const exitSide = pos.side === 'long' ? 'sell' : 'buy';
   // 'quoted' means the caller already crossed the real spread, so only depth impact is added
-  let px = withSlippage === 'quoted' ? impactOnly(price, exitSide, cfg, price * q * pos.contractValue)
+  let px = withSlippage === 'depth' ? price : withSlippage === 'quoted' ? impactOnly(price, exitSide, cfg, price * q * pos.contractValue)
     : withSlippage ? slip(price, exitSide, cfg, price * q * pos.contractValue) : price;
   const marginLeverage = pos.marginLeverage ?? pos.leverage;
   const margin = marginLeverage > 0 ? pos.entryPrice * q * pos.contractValue / marginLeverage : Infinity;
-  if (reason === 'liquidation' && marginLeverage > 0) {
+  if (withSlippage!=='depth' && reason === 'liquidation' && marginLeverage > 0) {
     const bankruptcy = Math.max(0, pos.entryPrice * (1 + (pos.side === 'long' ? -1 : 1) / marginLeverage));
     px = pos.side === 'long' ? Math.max(px, bankruptcy) : Math.min(px, bankruptcy);
   }

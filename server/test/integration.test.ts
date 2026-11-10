@@ -63,6 +63,7 @@ const rest1m = new Map(history1m.map(c => [c.time, c]));
 
 class FakeRest extends DeltaRest {
   calls: string[] = [];
+  override async orderbook(){return {last_updated_at:NOW*1000,buy:[{price:'50300',size:1000000}],sell:[{price:'50301',size:1000000}]};}
   override async products() { return new Map([['BTCUSD', { id: 1, symbol: 'BTCUSD', description: 'Bitcoin Perpetual', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', tick_size: '0.5', contract_value: '0.001' }]]); }
   override async product(symbol: string) { return (await this.products()).get(symbol); }
   override async tickers() { return [{ symbol: 'BTCUSD', product_id: 1, close: 50_470, mark_price: '50470', timestamp: NOW * 1000, contract_type: 'perpetual_futures', tick_size: '0.5', contract_value: '0.001' }]; }
@@ -175,13 +176,15 @@ test('bar close → scanner run → signal → paper position (exactly one close
   assert.match(text, /vnedge_script_runs_total\{status="ok"\} \d+/);
 });
 
-test('1m feed fills TP1..TP3 and closes the trade; the trade alert goes out', async () => {
+test('observed trades fill TP1..TP3; candle extremes alone cannot fill resting targets', {timeout:10000}, async () => {
   const pos = app.paper.openPositions()[0];
   const trade = once(app.paper, 'trade');
   let t = T0 + TF;
   for (const px of [50_575, 50_625, 50_680]) {
     t += 60_000; setNow(t + 5_000);
     feed.push('1m', bar(t, px - 5, px));
+    assert.equal(app.paper.openPositions().length,1,'a candle alone cannot establish a maker target fill');
+    feed.emit('trade',{symbol:'BTCUSD',price:px,qty:1000000,timeMs:NOW,timeKnown:true,aggressor:'buy'});
   }
   const [closed] = await trade;
   assert.equal(closed.positionId, pos.id);
@@ -192,6 +195,20 @@ test('1m feed fills TP1..TP3 and closes the trade; the trade alert goes out', as
   assert.equal(trades.body.length, 1);
   await waitFor(() => sentAlerts.length >= 1, 'trade alert');
   assert.match(sentAlerts[0], /LONG BTCUSD 5m closed \(tp3\)/);
+});
+
+test('paper close API retains pending exposure until public depth reports a fill', {timeout:10000}, async()=>{
+  setNow(NOW+10000);
+  const d=app.paper.onEntry({kind:'entry',side:'long',price:50500,sl:50400,tp:[50600,50700,50800],label:'test',message:'',source:'alert',barTime:NOW,barIndex:0},
+    {scannerId:'tiny',scannerName:'Tiny',symbol:'BTCUSD',tf:'5m',market:{contractValue:.001,tickSize:.5},refPrice:50500,at:NOW,signalId:null,exitMode:'both'});
+  assert.equal(d.action,'pending');setNow(NOW+3000);app.paper.onBar('BTCUSD',{time:Math.floor(NOW/60000)*60000,high:50500,low:50500,close:50500},NOW);
+  const p=app.paper.position(d.pendingId!)!;assert.equal(p.status,'open');const qty=p.qtyOpen;
+  const requested=await getJson(`/api/positions/${p.id}/close`,{method:'POST'});
+  assert.equal(requested.status,200);assert.equal(requested.body.execution.pending.status,'waiting');assert.equal(p.qtyOpen,qty);
+  const waiting=await getJson(`/api/positions/${p.id}/path`);assert.equal(waiting.body.position.executionReports.length,0);
+  setNow(NOW+2000);await waitFor(()=>p.status==='closed','depth-priced paper exit',5000);
+  assert.equal(p.exitPrice,50300);assert.equal(app.db.get<any>('SELECT price_source FROM orders WHERE position_id=? AND reason=?',p.id,'manual')!.price_source,'depth');
+  const replay=await getJson(`/api/positions/${p.id}/path`);assert.equal(replay.body.position.execution.pending,null);assert.equal(replay.body.position.executionReports.length,1);
 });
 
 test('a gap on bar close is detected and backfilled from REST; closes stay exactly-once', async () => {

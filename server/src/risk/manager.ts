@@ -155,7 +155,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     this.db.run('INSERT OR IGNORE INTO risk_halts(at,kind,period_start,reset_at,pnl_pct) VALUES(?,?,?,?,?)',now,which,p.start,this.st.paperResetAt??0,pnlPct);
     log.error(`KILL SWITCH: ${which} loss ${pnlPct.toFixed(2)}% reached the limit — no new entries until the ${which === 'daily' ? 'UTC day' : 'week'} rolls`);
     this.emit('kill', { which, pnlPct, at: now });
-    if (this.cfg.closeAllOnKill) { const n = this.paper.closeAll('risk-kill', now); log.warn(`closed ${n} position(s) on ${which} kill switch`); }
+    if (this.cfg.closeAllOnKill) { const n = this.paper.closeAll('risk-kill', now); log.warn(`requested closure of ${n} position(s) on ${which} kill switch`); }
   }
 
   private recoverClosedTrades() {
@@ -323,7 +323,7 @@ export class RiskManager extends EventEmitter implements RiskGate {
     this.save();
     this.db.afterCommit(()=>log.error(`MANUAL HALT: ${reason}`));
     this.emit('kill', { which: 'manual', reason, at: this.st.manualHalt.at });
-    if (closeAll) { const n = this.paper.closeAll('risk-kill', this.now()); log.warn(`closed ${n} position(s) on manual halt`); }
+    if (closeAll) { const n = this.paper.closeAll('risk-kill', this.now()); log.warn(`requested closure of ${n} position(s) on manual halt`); }
   }
 
   /** Clear the manual halt, tripped kill switches and cooldowns; restart the period windows from the current equity. */

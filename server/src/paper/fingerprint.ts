@@ -35,7 +35,8 @@ const stable = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof
 // 207: held-position candle stops execute through opening gaps; Role Reversal uses confirmed flip events.
 // 208: explicit per-scanner entry protection/maker policies and repaired directional readers.
 // 209: decimal-price rounding no longer misses profit-protection R thresholds.
-export const SIM_VERSION = 210;
+// 211: causal, durable paper market exits priced from observed depth after latency.
+export const SIM_VERSION = 211;
 
 /** A short, stable hash of a scanner's patched Pine source: library imports change outside the commit. */
 export function sourceHash(patched: string | undefined | null): string | null {

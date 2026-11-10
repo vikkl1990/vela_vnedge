@@ -49,16 +49,16 @@ export function Trades() {
       <ConfirmDialog
         open={confirmCloseAll}
         title={`Close all ${openCount} open position${openCount === 1 ? '' : 's'}?`}
-        body={<p>Every open position is closed at market {mirrored ? `— paper book and ${exec.data?.host ?? mode} account` : mode === 'paper' ? '(paper only)' : `(paper only; ${mode} is in dry-run)`}. This cannot be undone.{mirrored && <><br /><span className="muted small">The paper book closes immediately; exchange orders follow and are confirmed separately on the exchange.</span></>}</p>}
+        body={<p>Requests a market exit for every open position {mirrored ? `— paper book and ${exec.data?.host ?? mode} account` : mode === 'paper' ? '(paper only)' : `(paper only; ${mode} is in dry-run)`}. This cannot be undone.{mirrored && <><br /><span className="muted small">The paper book closes immediately; exchange orders follow and are confirmed separately on the exchange.</span></>}</p>}
         confirmLabel="Close all"
         danger
         busy={closeAll.isPending}
         onCancel={() => setConfirmCloseAll(false)}
         onConfirm={() =>
           closeAll.mutate(undefined, {
-            onSuccess: () => {
+            onSuccess: (result) => {
               setConfirmCloseAll(false)
-              toast.success(mirrored ? 'Close requested: the paper book is flat' : 'All positions closed')
+              toast.success(result.pending ? `${result.pending} exits pending; remaining exposure is held` : mirrored ? 'Close requested: the paper book is flat' : 'All positions closed')
             },
             onError: (e) => toast.error('Close all failed', e.message),
           })

@@ -129,6 +129,12 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
       </div>
 
       <p className="muted small">Trade timeframe {lv.tf ?? '15m'} · replay {tf}. Recorded path samples and candle bars cannot establish tick ordering or exact hypothetical fills.</p>
+      {lv.execution && <details className="panel"><summary>Paper execution · model {lv.execution.version}</summary>
+        <p className="muted small">Market exits use observed depth after the configured latency. Reports below are simulated fills, not exchange confirmations.</p>
+        {lv.execution.pending && <p role="status">Exit {lv.execution.pending.status} · {lv.execution.pending.reason} · {lv.execution.pending.last_error ?? 'awaiting executable depth'}. Remaining quantity and margin are still held.</p>}
+        {lv.execution.desiredStop != null && <p>Requested stop {fmtPrice(lv.execution.desiredStop)}; active stop {fmtPrice(lv.sl)}.</p>}
+        {(lv.executionReports ?? []).map((r,i)=><p className="mono small" key={`${r.at}:${i}`}>{fmtDateTime(r.at)} · {r.reason} · {r.qty} contracts @ {fmtPrice(r.price)} · {((r.at-r.trigger_at)/1000).toFixed(2)}s after trigger</p>)}
+      </details>}
       <label className="field-inline">Replay detail <select className="select" aria-label="Replay detail" value={execution ? 'execution' : 'strategy'} onChange={(e) => onResolution(e.target.value as 'strategy' | 'execution')}><option value="execution">Execution · 1m</option><option value="strategy">Strategy candle overview</option></select></label>
       <div className="replay-grid">
         <div className="replay-chart">

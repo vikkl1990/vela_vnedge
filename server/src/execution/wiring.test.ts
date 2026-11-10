@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { subscribeRealtime, wireTradingStatus } from './wiring.ts';
+import { subscribeRealtime, wireTradingStatus, readPaperExitBook } from './wiring.ts';
 import { EventEmitter } from 'node:events';
 import { TradingStatus } from '../delta/tradingStatus.ts';
 
@@ -67,4 +67,12 @@ test('a newly activated paper allocation gets execution feeds on configuration r
   required.push({symbol: 'AAVEUSD', tf: '15m'});
   subscribeRealtime(app as any);
   for (const channel of channels) assert.deepEqual(seen.get(channel), ['BTCUSD', 'AAVEUSD'], channel);
+});
+
+test('paper exit source prefers validated post-arrival depth, otherwise performs one bounded public read',async()=>{
+ const T=1_800_000_000_000;let receivedAt=T;let calls=0;
+ const app={depthRecorder:{bookAt:()=>({receivedAt,exchangeAt:receivedAt,bids:[{price:99,size:2}],asks:[{price:101,size:2}]})},
+  rest:{orderbook:async(symbol:string,depth:number,options:any)=>{calls++;assert.equal(symbol,'BTCUSD');assert.equal(depth,100);assert.deepEqual(options,{retries:0,timeoutMs:2000});return {last_updated_at:T*1000,buy:[{price:'98',size:2}],sell:[{price:'102',size:2}]};}}} as any;
+ assert.equal((await readPaperExitBook(app,'BTCUSD',T-1,()=>T)).source,'l2-websocket');assert.equal(calls,0);
+ receivedAt=T-2;const r=await readPaperExitBook(app,'BTCUSD',T-1,()=>T);assert.equal(r.source,'l2-rest');assert.equal(r.exchangeAt,T);assert.equal(calls,1);
 });

@@ -1,4 +1,5 @@
 import { FundingJournal } from './fundingJournal.ts';
+import {PaperExitPump} from './paperExitPump.ts';
 import { AccountAudit } from './accountAudit.ts';
 import { AccountObserver } from '../connections/observer.ts';
 import { DepthRecorder } from './depthRecorder.ts';
@@ -63,6 +64,16 @@ export function wireRealtime(app: App): void {
   // The incubator's shadow book gets exactly the same market data as the live book, so its evidence
   // describes the same fills, liquidation and funding a promoted pair would see.
   const books = [app.paper, app.shadow];
+  for(const b of books)b.causalExits=app.config.get().execution.mode==='paper';
+  // Freeze the deployable quantity at entry; shadow's research purse must not
+  // consume fictitious millions of dollars of depth or change size at exit.
+  app.shadow.exitQuantity=(p,market)=>app.paper.previewDepthQuantity({scannerId:p.scannerId,symbol:p.symbol,tf:p.tf,price:p.entryPrice,sl:p.slOriginal!,at:p.entryAt,market,maker:p.fills[0]?.liquidity==='maker'});
+  const exitPump=new PaperExitPump({
+    pending:()=>books.flatMap(b=>b.pendingExits()).sort((a,b)=>a.ready_at-b.ready_at||a.id-b.id),
+    fetch:(symbol,readyAt)=>readPaperExitBook(app,symbol,readyAt),
+    apply:(symbol,book,at)=>{for(const b of books)b.settleExits(symbol,book,at);}
+  });
+  const exitTimer=setInterval(()=>exitPump.tick(),100);exitTimer.unref();
   const flow = app.orderFlow = new OrderFlowStore(app.db);
   app.feed.subscribe('all_trades', flow.symbols);
   app.pool.footprintLoader = async job => {
@@ -99,7 +110,7 @@ export function wireRealtime(app: App): void {
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
   },5000);
   for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=()=>{app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
+  app.stopExecutionAudit=()=>{exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
@@ -175,4 +186,15 @@ export function subscribeRealtime(app: App): void {
   app.feed.subscribe('all_trades', [...new Set([...symbols, ...app.orderFlow.symbols])]);
   app.feed.subscribe('mark_price', symbols);
   app.feed.subscribe('funding_rate', symbols);
+}
+
+/** Prefer the verified stream already retained for majors; REST supplies the other markets.
+ * Neither source may backdate an observation across the simulated order's arrival.
+ */
+export async function readPaperExitBook(app:Pick<App,'rest'|'depthRecorder'>,symbol:string,readyAt:number,now:()=>number=()=>Date.now()) {
+  const cached=app.depthRecorder?.bookAt(symbol,now(),1000);
+  if(cached&&cached.receivedAt>=readyAt)return {...cached,source:'l2-websocket'};
+  const raw=await app.rest.orderbook(symbol,100,{retries:0,timeoutMs:2000});
+  return {receivedAt:now(),exchangeAt:toMs(raw.timestamp??raw.last_updated_at,0),source:'l2-rest',
+    bids:raw.buy.map(x=>({price:Number(x.price),size:Number(x.size)})),asks:raw.sell.map(x=>({price:Number(x.price),size:Number(x.size)}))};
 }

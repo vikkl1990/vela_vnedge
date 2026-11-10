@@ -53,6 +53,14 @@ function stopState(p: Position): { badge: string | null; tone: 'muted' | 'ok'; t
   return {badge:null,tone:'muted',title:protectionText(p)};
 }
 
+function ExecutionState({p}: {p:Position}) {
+  const e=p.execution
+  if(!e)return null
+  if(e.pending)return <div className="small" role="status">Exit {e.pending.status === 'partial' ? 'partially filled' : 'pending'} · {e.pending.reason}<br /><span className="muted">{e.pending.last_error ?? 'Awaiting executable depth'} · remaining exposure held</span></div>
+  if(e.desiredStop != null)return <div className="muted small">Stop update pending: {fmtPrice(e.desiredStop)}. Current SL remains active.</div>
+  return null
+}
+
 function PositionTargets({ p, tick }: { p: Position; tick?: number }) {
   const targets = positionTargets(p)
   const active = targets.filter(t => t.state === 'active')
@@ -106,6 +114,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
                 <Link to={`/scanners/${p.scannerId}`} className="link">
                   {p.scannerName}
                 </Link>
+                <ExecutionState p={p} />
               </div>
             </span>
           </span>
@@ -211,6 +220,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           return <article className="position-card" key={p.id}>
             <div className="row gap"><b>{p.symbol} {p.tf}</b><SidePill side={p.side} /></div>
             <Link className="link" to={`/scanners/${p.scannerId}`}>{p.scannerName}</Link>
+            <ExecutionState p={p} />
             <dl className="position-metrics">
               <div><dt>Unrealized P&L (USD)</dt><dd><LiveUpnl p={p} /></dd></div>
               <div><dt>Mark price</dt><dd><LiveMark p={p} tick={tick} /></dd></div>
@@ -262,8 +272,8 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
         onConfirm={() => {
           if (!closing) return
           close.mutate(closing.id, {
-            onSuccess: () => {
-              toast.success(venue.mirrored ? `Close requested: ${closing.symbol} closed in the paper book` : `Closed ${closing.symbol}`)
+            onSuccess: (result) => {
+              toast.success(result.execution?.pending ? `Close pending: ${closing.symbol} is awaiting executable depth` : venue.mirrored ? `Close requested: ${closing.symbol} closed in the paper book` : `Closed ${closing.symbol}`)
               setClosing(null)
             },
             onError: (e) => toast.error('Close failed', e.message),

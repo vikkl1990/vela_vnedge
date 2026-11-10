@@ -186,8 +186,8 @@ export const api = {
   // signals / positions / trades
   signals: (q: SignalQuery = {}) => get<Signal[]>(`/signals${qs(q)}`),
   positions: () => get<Position[]>('/positions'),
-  closePosition: (id: number) => post<unknown>(`/positions/${id}/close`),
-  closeAll: () => post<unknown>('/paper/close-all'),
+  closePosition: (id: number) => post<Position>(`/positions/${id}/close`),
+  closeAll: () => post<{requested:number;closed:number;pending:number}>('/paper/close-all'),
   trades: (q: TradeQuery = {}) => get<Trade[]>(`/trades${qs(q)}`),
   tradesPage: (q: TradeQuery = {}) => get<TradePage>(`/trades/page${qs(q)}`),
   journal: (q: import('./journal').JournalQuery) => get<import('./journal').JournalPage>(`/journal${qs(q)}`),

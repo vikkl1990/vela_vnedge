@@ -25,7 +25,7 @@ const STOP_REASONS = new Set(['sl', 'trail', 'be']);
 
 type Print = { t: number; p: number; q: number };
 type Fill = { at: number; positionId: number; symbol: string; side: 'buy' | 'sell'; qty: number; price: number; reason: string };
-type Open = { book: number; fill: Fill; kind: string; level: number; riskUnit: number | null; tf: string; due: number; giveUpAt: number };
+type Open = { execution?:Record<string,unknown>; book: number; fill: Fill; kind: string; level: number; riskUnit: number | null; tf: string; due: number; giveUpAt: number };
 type Limit = { book: number; id: number; symbol: string; tf: string; side: 'long' | 'short'; price: number; since: number; expiresAt: number | null; tick: number; volAt: number; volBeforeThrough: number | null; throughAt: number | null; touchAt: number | null; dirty?: boolean; recovered?: boolean };
 type PendingLike = { id: number; symbol: string; tf: string; side: 'long' | 'short'; at: number; market: { tickSize: number }; limit?: { price: number; expiresAt: number } };
 
@@ -119,9 +119,10 @@ export class TapeAudit {
       }
       // decision 201: funding is a cash adjustment, not an order — nothing on the tape to compare it with
       if (o.reason === 'funding') return;
-      const kind = o.reason === 'entry' ? 'market entry' : STOP_REASONS.has(o.reason) ? `stop (${o.reason})` : /^tp\d$/.test(o.reason) ? 'target' : `market exit (${o.reason})`;
+      const report=engine.exitExecution?.state(o.positionId) && o.reason!=='entry' ? this.db.get<any>('SELECT i.id,i.trigger_at,i.ready_at,r.at FROM paper_exit_reports r JOIN paper_exit_intents i ON i.id=r.intent_id WHERE i.position_id=? AND r.at=? ORDER BY r.id DESC LIMIT 1',o.positionId,o.at) : undefined;
+      const kind = report ? `depth exit (${o.reason})` : o.reason === 'entry' ? 'market entry' : STOP_REASONS.has(o.reason) ? `stop (${o.reason})` : /^tp\d$/.test(o.reason) ? 'target' : `market exit (${o.reason})`;
       if (kind === 'target') return;   // a resting take-profit fills at its level or not at all; nothing to compare
-      this.open.push({ book, fill: o, kind, level: o.price, riskUnit, tf: pos?.tf ?? '', due: o.at + AFTER_MS + 500, giveUpAt: o.at + GRACE_MS });
+      this.open.push({ execution:report?{model:211,intentId:report.id,triggerAt:report.trigger_at,readyAt:report.ready_at,benchmark:'public prints after observed depth fill; not executable proof'}:undefined, book, fill: o, kind, level: o.price, riskUnit, tf: pos?.tf ?? '', due: o.at + AFTER_MS + 500, giveUpAt: o.at + GRACE_MS });
     } catch (e: any) { log.warn(`fill not audited: ${e?.message ?? e}`); }
   }
 
@@ -185,6 +186,7 @@ export class TapeAudit {
   }
 
   private insert(o: Open, tape: number | null, first: number | null, worst: number | null, prints: number, extra?: Record<string, unknown>) {
+    extra=o.execution?{...extra,execution:o.execution}:extra;
     const f = o.fill, sell = f.side === 'sell';
     const diff = tape === null ? null : sell ? f.price - tape : tape - f.price;   // positive: the tape was worse than paper
     const bps = diff === null ? null : (diff / f.price) * 1e4;

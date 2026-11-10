@@ -86,7 +86,7 @@ export class DeltaRest {
     return createHmac('sha256', this.apiSecret!).update(prehash).digest('hex');
   }
 
-  async request<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, opts: { query?: Record<string, any>; body?: any; auth?: boolean; retries?: number; raw?: boolean } = {}): Promise<T> {
+  async request<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, opts: { query?: Record<string, any>; body?: any; auth?: boolean; retries?: number; timeoutMs?:number; raw?: boolean } = {}): Promise<T> {
     const qs = opts.query ? '?' + new URLSearchParams(Object.entries(opts.query).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])).toString() : '';
     const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
     const headers: Record<string, string> = { 'User-Agent': this.ua, 'Content-Type': 'application/json', Accept: 'application/json' };
@@ -101,7 +101,7 @@ export class DeltaRest {
       headers['signature'] = this.sign(method, path, qs, bodyStr, ts);
     }
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+      const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? this.timeoutMs);
       try {
         const res = await fetch(this.baseUrl + path + qs, { method, headers, body: bodyStr || undefined, signal: ctrl.signal, redirect: 'error' });
         const text = await res.text();
@@ -188,8 +188,8 @@ export class DeltaRest {
   }
 
   /** Level-2 order book, `depth` levels a side; prices and sizes (in contracts) come back as strings. */
-  async orderbook(symbol: string, depth = 25): Promise<{ timestamp?: number | string; last_updated_at?: number | string; buy: Array<{ price: string; size: string | number }>; sell: Array<{ price: string; size: string | number }> }> {
-    return this.request<any>('GET', `/v2/l2orderbook/${symbol}`, { query: { depth } });
+  async orderbook(symbol: string, depth = 25, options: {retries?:number;timeoutMs?:number} = {}): Promise<{ timestamp?: number | string; last_updated_at?: number | string; buy: Array<{ price: string; size: string | number }>; sell: Array<{ price: string; size: string | number }> }> {
+    return this.request<any>('GET', `/v2/l2orderbook/${symbol}`, { query: { depth }, ...options });
   }
 
   async ticker(symbol: string): Promise<DeltaTicker> {

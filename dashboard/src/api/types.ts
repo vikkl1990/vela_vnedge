@@ -322,7 +322,15 @@ export interface Protection {
   trailAtrMult: number; trailDistanceR: number; trailGiveBackPct: number;
   trailSteps: [number, number][]; trailStall: {minutes:number;factor:number} | null; peakR: number;
 }
+export interface PaperExecution {
+  version: number
+  marketQty: number
+  desiredStop: number | null
+  ackAt: number | null
+  pending: { status: string; reason: string; last_error: string | null; trigger_at: number; ready_at: number; qty: number; filled_qty: number } | null
+}
 export interface Position {
+  execution?: PaperExecution
   protection?: Protection | null
   funding?: number
   grossTradingPnl?: number
@@ -775,6 +783,8 @@ export interface ExecutionStatus {
 
 /** The levels a path is read against: break even, the stop it opened with, and the targets. */
 export interface PathLevels {
+  execution?: PaperExecution
+  executionReports?: Array<{at:number;qty:number;price:number;reason:string;trigger_at:number;ready_at:number}>
   /** decision 156: the trade's context, for the replay page */
   tf?: string
   scannerId?: string

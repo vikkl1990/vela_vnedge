@@ -363,7 +363,7 @@ export class ApiServer {
       });
     });
     this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => a.paper.view(p, a.marks.mark(p.symbol) ?? null)));
-    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return positionView(pos); });
+    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return a.paper.view(pos); });
     // the path a trade took, for the forensic view: samples plus level events (decision 35)
     this.add('GET', '/api/positions/:id/path', (_r, _s, p) => {
       const id = Number(p.id);
@@ -379,9 +379,12 @@ export class ApiServer {
         tf: row.tf, scannerId: row.scanner_id, scannerName: row.scanner_name, book: [0,-1].includes(row.bt) ? 'paper' : [2,-3].includes(row.bt) ? 'shadow' : 'backtest',
         status: row.status, levelsSource: row.levels_source ?? null, realizedPnl: row.realized_pnl, fees: row.fees, riskAmount: row.risk_amount,
       };
-      return { position: levels, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
+      const engine = [2,-3].includes(row.bt) ? a.shadow : a.paper;
+      const execution = engine.exitExecution.view(id);
+      const reports = a.db.all('SELECT r.at,r.qty,r.price,i.reason,i.trigger_at,i.ready_at FROM paper_exit_reports r JOIN paper_exit_intents i ON i.id=r.intent_id WHERE i.position_id=? ORDER BY r.at,r.id',id);
+      return { position: {...levels,execution,executionReports:reports}, path: a.db.all('SELECT at, price, r, sl, event, note FROM position_path WHERE position_id=? ORDER BY at', id) };
     });
-    this.add('POST', '/api/paper/close-all', () => ({ closed: a.paper.closeAll() }));
+    this.add('POST', '/api/paper/close-all', () => { const before=a.paper.openPositions().length,requested=a.paper.closeAll();return {requested,closed:before-a.paper.openPositions().length,pending:a.paper.pendingExits().length}; });
     this.add('POST', '/api/paper/reset', () => {
       // an exchange-backed book is not reset while the exchange holds anything for it (review finding 3)
       if (a.executor && !a.executor.transport.dryRun && a.executor.hasExposure()) throw new HttpError(409, 'the exchange still holds positions or resting orders for this book: flatten the exchange account first (Exchange page), then reset');
