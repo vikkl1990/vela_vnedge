@@ -681,6 +681,9 @@ export interface RestorationView {
 }
 export interface IncubatorPair {
   restoration?:RestorationView|null
+  collection?:{status:string;active:boolean;lastSuccessBar:number|null;nextCloseAt:number;
+    scan:{bar_time:number;at:number;status:string;reason:string|null;last_success_bar:number|null;last_success_at:number|null;entry_signals:number}|null;
+    entries:{filled:number;open:number;pending:number};funnel:NonNullable<IncubatorPair['funnel']>}|null
   rotationUntil?: number | null
   admissionEvidence?: {score:number;qualityScore:number;estimatedDays:number|null;factor:number;requiredTrades:number;horizonDays:number} | null
   /** The market gate's verdict on this pair's market today; null when the gate has not judged it. */

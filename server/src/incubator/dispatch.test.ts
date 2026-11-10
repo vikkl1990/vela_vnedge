@@ -31,3 +31,10 @@ test('evidence priority preserves an exploration turn under repeated priority ar
  assert.deepEqual(seen,['high0','high1','high2','low']);assert.equal(d.stats.fairTurns,1);
  d.stop();releases.shift()!();await flush();
 });
+
+test('expired and retired work reports an explicit collection outcome without starting a run',()=>{
+ const dropped:Array<[number,string]>=[];let now=0;let ran=0;
+ const d=new ShadowDispatch<number>({limit:()=>1,ready:()=>false,now:()=>now,run:async()=>{ran++;},dropped:(v,r)=>dropped.push([v,r])});
+ d.enqueue('a',1,10);d.enqueue('b',2,20);now=10;d.drain();d.prune(new Set());
+ assert.deepEqual(dropped,[[1,'expired'],[2,'removed']]);assert.equal(ran,0);
+});

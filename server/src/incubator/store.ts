@@ -56,6 +56,30 @@ export class IncubatorStore {
   private historicalResearch=false;
   constructor(db: Db, opts:{evidenceMode?:'historical-research'}={}) { this.db = db;this.historicalResearch=opts.evidenceMode==='historical-research'; }
 
+  /** Scan receipts cannot create positions, enter qualification, or increment forward closes. */
+  noteShadowScan(cell:{scannerId:string;symbol:string;tf:string},barTime:number,status:string,reason:string|null=null,entries=0,at=Date.now()) {
+    if(!Number.isFinite(barTime)||!Number.isFinite(at))return;
+    this.db.run(`INSERT INTO shadow_scan_activity VALUES(?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(scanner_id,symbol,tf) DO UPDATE SET
+      bar_time=max(shadow_scan_activity.bar_time,excluded.bar_time),
+      at=CASE WHEN excluded.bar_time>=shadow_scan_activity.bar_time THEN excluded.at ELSE shadow_scan_activity.at END,
+      status=CASE WHEN excluded.bar_time>=shadow_scan_activity.bar_time THEN excluded.status ELSE shadow_scan_activity.status END,
+      reason=CASE WHEN excluded.bar_time>=shadow_scan_activity.bar_time THEN excluded.reason ELSE shadow_scan_activity.reason END,
+      last_success_bar=CASE WHEN excluded.last_success_bar IS NOT NULL AND excluded.last_success_bar>=coalesce(shadow_scan_activity.last_success_bar,0) THEN excluded.last_success_bar ELSE shadow_scan_activity.last_success_bar END,
+      last_success_at=CASE WHEN excluded.last_success_bar IS NOT NULL AND excluded.last_success_bar>=coalesce(shadow_scan_activity.last_success_bar,0) THEN excluded.last_success_at ELSE shadow_scan_activity.last_success_at END,
+      entry_signals=CASE WHEN excluded.bar_time>=shadow_scan_activity.bar_time THEN excluded.entry_signals ELSE shadow_scan_activity.entry_signals END`,
+      cell.scannerId,cell.symbol,cell.tf,barTime,at,status,reason?.slice(0,300)??null,status==='scanned'?barTime:null,status==='scanned'?at:null,entries);
+  }
+  shadowScanActivity(cell:{scannerId:string;symbol:string;tf:string}) {
+    return this.db.get<{bar_time:number;at:number;status:string;reason:string|null;last_success_bar:number|null;last_success_at:number|null;entry_signals:number}>(
+      'SELECT bar_time,at,status,reason,last_success_bar,last_success_at,entry_signals FROM shadow_scan_activity WHERE scanner_id=? AND symbol=? AND tf=?',cell.scannerId,cell.symbol,cell.tf)??null;
+  }
+  shadowEntriesSince(cell:{scannerId:string;symbol:string;tf:string},since:number) {
+    return this.db.get<{filled:number;open:number;pending:number}>(`SELECT
+      coalesce(sum(status IN ('open','closed') AND qty>0),0) filled,
+      coalesce(sum(status='open' AND qty_open>0),0) open,coalesce(sum(status='pending'),0) pending
+      FROM positions WHERE bt=2 AND scanner_id=? AND symbol=? AND tf=? AND entry_at>=?`,cell.scannerId,cell.symbol,cell.tf,since)!;
+  }
   get(id: number): PairRow | null { const r = this.db.get('SELECT * FROM incubator_pairs WHERE id=?', id); return r ? toPair(r) : null; }
   /**
    * The market gate's verdict per market as the risk layer last wrote it (decision 104): `true`

@@ -7167,3 +7167,7 @@ Scalper Offer verification alone changed the strategy identity and excluded othe
 Restored cells begin an immutable, prospective shadow window before copying, promotion or evidence-based sizing can use the compatible history. Keep current exact qualifiers; require the existing timeframe promotion standards, at least 20 new closes, positive chronological halves and positive forward R after 5bp extra round-trip friction. Reassess after losses and quarantine; changed strategies need a new window. Gated signals never qualify. The Incubator shows progress and blockers.
 
 This does not establish a profit improvement or change $150 margin, leverage settings, risk caps or paper mode. The 22-hour retrospective restoration lift was too fragile to authorize immediate additional paper trades. Details and validation: [rollout record](research/evidence-restoration-rollout-2026-11-10.md).
+
+## 233. Recover fresh shadow closes and expose collection status (10 November 2026)
+
+Recover the newest still-fresh close after startup or verified candle repair, once per cell, with the original age deadline and worker limits. Do not replay stale entries or use interrupted candles. Persist per-cell scan receipts and show successful bars, waiting/errors, forward fills and entry refusals alongside restored-cell qualification. Operational activity never counts as promotion evidence. Keep all enrollment clocks, evidence standards, $150 margin and risk settings intact. See the [collection audit](research/restored-shadow-collection-2026-11-10.md).

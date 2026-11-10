@@ -13,8 +13,7 @@ import { ShadowDispatch } from './dispatch.ts';
  * executor or the alerts. Those trades are the incubator's evidence: they happened after the pair
  * was picked, so they are free of the selection bias that makes a backtest screen unreliable.
  *
- * Live scanners always go first: shadow runs are queued a little after each bar close and are
- * skipped entirely when the worker queue is backed up.
+ * Account scans go first; shadow work waits in a bounded queue and expires at the unchanged entry deadline.
  */
 import { TF_SECONDS, type AppConfig, type RiskConfig } from '../config.ts';
 import { BarWatermark } from '../scanners/watermark.ts';
@@ -63,6 +62,17 @@ const RUN_ALLOWANCE_MS = 5_000;
 
 export class ShadowRunner {
   private pairs: PairRow[] = [];
+  private scheduledBars=new Map<string,number>();
+  private syncing:Promise<void>|null=null;
+  private releaseScheduled(r:PairRow,barAt:number) {
+    const key=`${r.scannerId}:${r.symbol}:${r.tf}`;
+    if(this.scheduledBars.get(key)===barAt)this.scheduledBars.delete(key);
+  }
+  private async runScheduled(r:PairRow,barAt:number,live:boolean,seenAt:number) {
+    try{await this.run(r,barAt,live,seenAt);}
+    catch(e){this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',String((e as Error)?.message??e));throw e;}
+    finally{this.releaseScheduled(r,barAt);}
+  }
   private dispatch: ShadowDispatch<{r:PairRow;barAt:number;seenAt:number}>;
   private dispatchTimer: NodeJS.Timeout | null = null;
   private nextDispatchSave=0;
@@ -94,7 +104,8 @@ export class ShadowRunner {
       limit:()=>Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
       ready:()=>!deps.pool.stats.queuedLive && deps.pool.rssReader()<deps.pool.memoryGuardBytes*SHADOW_MEMORY_SHARE,
       priority:({r})=>evidencePriority(r,this.deps.cfgRef().incubator),
-      run:({r,barAt,seenAt})=>this.run(r,barAt,false,seenAt),
+      run:({r,barAt,seenAt})=>this.runScheduled(r,barAt,false,seenAt),
+      dropped:({r,barAt},reason)=>{this.releaseScheduled(r,barAt);this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,reason,reason==='expired'?'scan could not start within the unchanged signal-age window':'cell no longer scheduled');},
       error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
     });
     this.funnel = new Map(Object.entries(deps.store.shadowFunnel()));
@@ -147,6 +158,20 @@ export class ShadowRunner {
     return f;
   }
 
+  /** Collection diagnostics are deliberately separate from qualified forward evidence. */
+  collectionOf(r:PairRow,since:number,now=Date.now()) {
+    const key=`${r.scannerId}:${r.symbol}:${r.tf}`,tfMs=TF_SECONDS[r.tf]*1000;
+    const scan=this.deps.store.shadowScanActivity(r);
+    const latestDueBar=Math.floor(now/tfMs)*tfMs-tfMs;
+    const lastSuccessBar=scan?.last_success_bar??this.marks.get(key)??null;
+    const active=this.pairs.some(p=>p.scannerId===r.scannerId&&p.symbol===r.symbol&&p.tf===r.tf);
+    const readiness=this.deps.candles.scanReadiness(r.symbol,r.tf);
+    const deadline=latestDueBar+tfMs+(this.deps.cfgRef().paper.maxSignalAgeSec??300)*1000;
+    const status=!active?'not scheduled':readiness??(lastSuccessBar!==null&&lastSuccessBar>=latestDueBar?'up to date':now>deadline?'scan overdue':scan?.status??'awaiting scan');
+    return {status,active,lastSuccessBar,nextCloseAt:latestDueBar+2*tfMs,scan,
+      entries:this.deps.store.shadowEntriesSince(r,since),funnel:this.funnelOf(`${r.scannerId}|${r.symbol}|${r.tf}`,since)};
+  }
+
   get active(): PairRow[] { return this.pairs; }
 
   /** Markets the shadow book needs live data for: its pairs, plus any with an open shadow position. */
@@ -155,7 +180,9 @@ export class ShadowRunner {
   start() {
     // each pair runs on its own timeframe: the daily screen is 15m, but a survey can admit 1h or 4h pairs
     this.deps.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar; historical?: boolean }) => {
-      if (!e.historical && this.pairs.some(r => r.tf === e.tf)) this.onBarClosed(e.symbol, e.tf, e.bar.time + TF_SECONDS[e.tf] * 1000);
+      if (!this.pairs.some(r => r.tf === e.tf))return;
+      if(e.historical)this.recoverFreshClose(e.symbol,e.tf);
+      else this.onBarClosed(e.symbol,e.tf,e.bar.time+TF_SECONDS[e.tf]*1000);
     });
     this.dispatchTimer=setInterval(()=>{this.dispatch.drain();if(Date.now()>=this.nextDispatchSave){try{this.deps.store.setDispatchStats?.({...this.dispatchStats,at:Date.now()});}catch(e){log.warn(`shadow dispatch metrics save failed: ${String(e)}`);}this.nextDispatchSave=Date.now()+5000;}},100);this.dispatchTimer.unref();
     void this.sync();
@@ -175,7 +202,11 @@ export class ShadowRunner {
   }
 
   /** Pick up stage changes made by the daily job or the API, and make sure their candles are live. */
-  async sync(): Promise<void> {
+  sync(): Promise<void> {
+    if(!this.syncing)this.syncing=this.syncInside().finally(()=>{this.syncing=null;});
+    return this.syncing;
+  }
+  private async syncInside(): Promise<void> {
     const cfg = this.deps.cfgRef();
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
     this.pairs = this.deps.store.list([...ACTIVE_STAGES, 'tracked']).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
@@ -186,18 +217,38 @@ export class ShadowRunner {
     this.deps.subscribe?.([...symbols]);
     for (const symbol of symbols) {
       try {
-        for (const tf of new Set(this.pairs.filter(r => r.symbol === symbol).map(r => r.tf))) if (!this.deps.candles.has(symbol, tf)) await this.deps.candles.track(symbol, tf, cfg.historyBars);
+        for (const tf of new Set(this.pairs.filter(r => r.symbol === symbol).map(r => r.tf))) {
+          if (!this.deps.candles.has(symbol, tf)) await this.deps.candles.track(symbol, tf, cfg.historyBars);
+          this.recoverFreshClose(symbol,tf);
+        }
         if (!this.deps.candles.has(symbol, '1m')) await this.deps.candles.track(symbol, '1m', 300);
       } catch (e: any) { log.warn(`shadow: cannot track ${symbol}: ${e?.message ?? e}`); }
     }
   }
 
+  /** Recover only a still-fresh, integrity-checked close missed during startup/sync.
+   * Neither stale entries nor forming/recovering candles are replayed. */
+  private recoverFreshClose(symbol:string,tf:string) {
+    if(this.deps.candles.scanReadiness?.(symbol,tf)!==null)return;
+    const bar=this.deps.candles.get(symbol,tf,{closedOnly:true,limit:1}).at(-1);
+    if(!bar)return;
+    const closedAt=bar.time+TF_SECONDS[tf]*1000;
+    if(closedAt>Date.now()||this.budgetMs(this.deps.cfgRef(),closedAt)<=DELAY_MS)return;
+    this.onBarClosed(symbol,tf,closedAt);
+  }
+
   private onBarClosed(symbol: string, tf: string, closedAt = Date.now()) {
-    const due = this.pairs.filter(r => r.symbol === symbol && r.tf === tf);
+    const due = this.pairs.filter(r => r.symbol === symbol && r.tf === tf
+      && (this.marks.get(`${r.scannerId}:${symbol}:${tf}`)??-Infinity)<closedAt-TF_SECONDS[tf]*1000
+      && (this.scheduledBars.get(`${r.scannerId}:${symbol}:${tf}`)??-Infinity)<closedAt);
     if (!due.length) return;
     // measured from when the bar actually closed, not from now: tracking a new market announces its
     // newest closed bar mid-cycle, and a scan of a bar that old could never be traded
     const barAt = closedAt, seenAt = Date.now();
+    for(const r of due){
+      this.scheduledBars.set(`${r.scannerId}:${symbol}:${tf}`,barAt);
+      this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[tf]*1000,'scheduled');
+    }
     // decision 165: a pair the account may copy is scanned at once, in the pool's `mirror` tier (after the account's own
     // scans, before background work); the 20 s wait and the background queue had put the account's mirrored entries a
     // median 54 s after the bar's close
@@ -223,7 +274,7 @@ export class ShadowRunner {
         for(const r of rows)this.dispatch.enqueue(`${r.scannerId}:${r.symbol}:${r.tf}`,{r,barAt,seenAt},deadline);
         this.dispatch.drain();return;
       }
-      for (const r of rows) this.run(r, barAt, live, seenAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
+      for (const r of rows) this.runScheduled(r, barAt, live, seenAt).catch(e => { this.noteError(r, String(e?.message ?? e)); log.warn(`shadow ${r.scannerId} ${symbol}: ${e?.message ?? e}`); });
     };
     launch(urgent, true);
     if (later.length) setTimeout(() => launch(later, false), DELAY_MS).unref();
@@ -273,16 +324,18 @@ export class ShadowRunner {
   private async run(rAtStart: PairRow, barAt = Date.now(), live = false, seenAt = Date.now()): Promise<void> {
     let r = rAtStart;
     const s = this.deps.registry.get(r.scannerId);
-    if (!s || s.status !== 'ok') return;
+    if (!s || s.status !== 'ok') {this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'unavailable','scanner unavailable');return;}
     const cfg = this.deps.cfgRef();
     const scannerCfgAtStart = JSON.stringify(cfg.scanners[s.id] ?? null);
     const bars = this.deps.candles.get(r.symbol, r.tf, { closedOnly: true, limit: cfg.historyBars });
-    if (bars.length < 50) return;
+    const readiness=this.deps.candles.scanReadiness?.(r.symbol,r.tf);
+    if(readiness || bars.length<50){this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'waiting',readiness??'fewer than 50 candles');return;}
+    this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'running');
     const market = await this.deps.marketInfo(r.symbol);
     // the scanner's configured input overrides, exactly as a live run of it would use
     const inputs = cfg.scanners[s.id]?.inputs;
     const budget = this.budgetMs(cfg, barAt);
-    if (budget <= 0) { this.stats.expired++; return; }
+    if (budget <= 0) { this.stats.expired++;this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'expired','scan reached the unchanged signal-age deadline'); return; }
     const tPool = Date.now();
     // decision 193: output back to the watermark (capped), so a stall's exits are still there to read
     const win = this.marks.window(`${r.scannerId}:${r.symbol}:${r.tf}`, bars.at(-1)!.time, r.tf);
@@ -291,7 +344,7 @@ export class ShadowRunner {
       { deadlineMs: budget, priority: live ? 'mirror' : 'shadow' });
     this.stats.runs++; this.stats.lastBarAt = bars.at(-1)!.time;
     if (live) this.noteWave(r.tf, barAt, seenAt, tPool, Date.now(), res.ms ?? 0);
-    if (!res.ok) { if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
+    if (!res.ok) { this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'failed',res.error??'unknown scanner error'); if (/too late to be useful/.test(res.error ?? '')) this.stats.expired++; else this.noteError(r, res.error ?? 'unknown'); return; }
     // decision 193: the run waited in the queue; the pair may have been retired or re-staged, the scanner re-configured
     // or its source replaced meanwhile. As the account's engine does, act only if all of that still holds — and on the
     // pair's current stage, which decides whether the account is offered the event
@@ -300,6 +353,7 @@ export class ShadowRunner {
     if (!cur || !([...ACTIVE_STAGES, 'tracked'] as string[]).includes(cur.stage) || !cfgNow.incubator?.enabled
         || JSON.stringify(cfgNow.scanners[s.id] ?? null) !== scannerCfgAtStart || this.deps.registry.get(s.id)?.patched !== s.patched) {
       this.stats.superseded++;
+      this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,'superseded','allocation, source or configuration changed during scan');
       return;
     }
     r = cur;
@@ -393,5 +447,6 @@ export class ShadowRunner {
         this.deps.paper.onScriptExit(s.id, r.symbol, r.tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
       }
     }
+    this.deps.store.noteShadowScan?.(r,lastBar.time,'scanned',null,events.filter(e=>e.kind==='entry').length);
   }
 }

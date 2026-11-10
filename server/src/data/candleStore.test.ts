@@ -102,3 +102,11 @@ test('a periodic REST refresh while disconnected cannot clear the reconnect repa
   assert.equal(f.cs.announceDueCloses(f.now),0);assert.equal(f.closed.length,0);
   await f.cs.resync('BTCUSD','1m');assert.equal(f.closed.length,1);
 });
+
+test('scan readiness requires loaded history, connected feed and completed repair',async t=>{
+ const f=recoveryFixture(t);assert.equal(f.cs.scanReadiness('ETHUSD','1m'),'candle history is loading');
+ assert.equal(f.cs.scanReadiness('BTCUSD','1m'),null);f.disconnect();assert.equal(f.cs.scanReadiness('BTCUSD','1m'),'market feed disconnected');
+ f.connect();assert.equal(f.cs.scanReadiness('BTCUSD','1m'),'candle repair in progress');
+ (f.cs as any).rest.candles=async()=>[{time:f.open/1000,open:100,high:110,low:98,close:109,volume:10}];
+ await f.cs.resync('BTCUSD','1m');assert.equal(f.cs.scanReadiness('BTCUSD','1m'),null);
+});

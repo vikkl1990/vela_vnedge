@@ -140,6 +140,15 @@ export class CandleStore extends EventEmitter {
 
   has(symbol: string, tf: string): boolean { return this.series.get(CandleStore.key(symbol, tf))?.loaded ?? false; }
 
+  /** A fresh recovery scan must not read a disconnected or partly repaired candle window. */
+  scanReadiness(symbol:string,tf:string):string|null {
+    const s=this.series.get(CandleStore.key(symbol,tf));
+    if(!s?.loaded)return 'candle history is loading';
+    if(this.feed.connected===false)return 'market feed disconnected';
+    if(s.backfilling||this.recovery.has(CandleStore.key(symbol,tf)))return 'candle repair in progress';
+    return null;
+  }
+
   /** Ensure a series is tracked and backfilled; subscribes the feed. */
   async track(symbol: string, tf: string, bars = this.maxBars): Promise<Bar[]> {
     const key = CandleStore.key(symbol, tf);

@@ -134,6 +134,13 @@ CREATE TABLE IF NOT EXISTS equity (
 );
 CREATE INDEX IF NOT EXISTS idx_equity_at ON equity(scanner_id, at);
 
+-- Latest shadow collection receipt per cell; diagnostic only, never qualification evidence.
+CREATE TABLE IF NOT EXISTS shadow_scan_activity (
+ scanner_id TEXT NOT NULL,symbol TEXT NOT NULL,tf TEXT NOT NULL,
+ bar_time INTEGER NOT NULL,at INTEGER NOT NULL,status TEXT NOT NULL,reason TEXT,
+ last_success_bar INTEGER,last_success_at INTEGER,entry_signals INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(scanner_id,symbol,tf)
+);
 CREATE TABLE IF NOT EXISTS scanner_runs (
   scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL, ms INTEGER NOT NULL, error TEXT, bar_time INTEGER,
   PRIMARY KEY (scanner_id, symbol, tf)

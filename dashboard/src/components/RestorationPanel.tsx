@@ -9,11 +9,18 @@ export function RestorationPanel({pairs}:{pairs:IncubatorPair[]}) {
   return <Panel title="Restored cells · forward shadow evaluation" right={<Pill tone={passed?'ok':'warn'}>{passed}/{enrolled.length} passed</Pill>}>
     <p className="small muted">Comparable full-fee history is retained with its original costs. These cells need new shadow trades after enrollment before they can qualify for paper copying, promotion or evidence-based sizing. Passing this test still requires the normal liquidity, execution and risk checks.</p>
     <p className="small muted">The test keeps the timeframe’s promotion requirements, with at least 20 new closes, positive results in both time halves and positive net R after an extra 0.05% round-trip cost. Restarting does not reset it. Gated signals and old trades do not count as forward results.</p>
+    <p className="small muted">Collection: {enrolled.filter(p=>p.collection?.status==='up to date').length}/{enrolled.length} scans up to date · {enrolled.reduce((n,p)=>n+(p.collection?.entries.filled??0),0)} new filled shadow trades. Entry outcomes below are measured since each cell’s enrollment.</p>
     <div className="table-wrap"><table className="table">
-      <thead><tr><th>Scanner / market</th><th>Started</th><th>Forward sample</th><th>Net R</th><th>After cost stress</th><th>Status / remaining evidence</th></tr></thead>
+      <thead><tr><th>Scanner / market</th><th>Started</th><th>Shadow collection</th><th>Forward sample</th><th>Net R</th><th>After cost stress</th><th>Status / remaining evidence</th></tr></thead>
       <tbody>{enrolled.map(p=>{const e=p.restoration!;return <tr key={p.id}>
         <td>{p.scannerName}<div className="small mono muted">{p.symbol} · {p.tf} · {p.stage}</div></td>
         <td title={e.startedAt?new Date(e.startedAt).toISOString():undefined}>{e.startedAt?timeAgo(e.startedAt):'New window required'}</td>
+        <td>{p.collection?<><Pill tone={p.collection.status==='up to date'?'ok':'warn'}>{p.collection.status}</Pill>
+          <div className="small muted">{p.collection.lastSuccessBar!==null?`Last scanned bar ${new Date(p.collection.lastSuccessBar).toISOString().slice(0,16).replace('T',' ')} UTC`:'No completed scan recorded'}</div>
+          <div className="small mono">{p.collection.funnel.entries} signals · {p.collection.entries.filled} filled · {p.collection.entries.open} open · {p.collection.entries.pending} pending</div>
+          {p.collection.scan?.reason&&<div className="small muted">{p.collection.scan.reason}</div>}
+          <details className="small muted"><summary>Entry outcomes since enrollment</summary>{Object.entries(p.collection.funnel.reasons??{}).map(([reason,n])=><div key={reason}>{n} × {reason}</div>)}{!p.collection.funnel.entries&&<div>No new entry signals recorded in this window.</div>}<div>Filled trades include open trades. Only qualified closed trades count toward the forward sample.</div></details>
+        </>:'—'}</td>
         <td className="mono">{e.stats&&e.requirements?<>{e.stats.trades}/{e.requirements.minTrades} closes<div className="small muted">{e.stats.days.toFixed(1)}/{e.requirements.minDays} days</div></>:'—'}</td>
         <td className="mono">{e.stats?fmtR(e.stats.netR):'—'}</td>
         <td className="mono">{typeof e.stressedR==='number'?fmtR(e.stressedR):'Unverified'}</td>
