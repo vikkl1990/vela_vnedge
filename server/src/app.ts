@@ -18,7 +18,7 @@ import { PairAgents } from './incubator/pairAgents.ts';
 import { aliasMap, duplicateGroups } from './scanners/identity.ts';
 import { ShadowRunner } from './incubator/shadow.ts';
 import { dailyReport } from './analytics/daily.ts';
-import { listTrackers, removeTracker, saveTracker, trackerView } from './incubator/tracker.ts';
+import { listTrackers, removeTracker, saveTracker, trackerView, timelyTrackerKeys } from './incubator/tracker.ts';
 import { approve as incubatorApprove, demote as incubatorDemote, reject as incubatorReject, evaluate as incubatorEvaluate, admitOnly as incubatorAdmitOnly, candidateBlockers, syncLive as incubatorSyncLive, autoPromote as incubatorAutoPromote, livePairs } from './incubator/cycle.ts';
 import { pairStats } from './incubator/gate.ts';
 import { ConfigStore, type ScannerConfig, DATA_DIR, ROOT_DIR, type AppConfig } from './config.ts';
@@ -203,6 +203,7 @@ export class App {
     this.resolvedSymbols = cfg().symbols;
     this.planComparisons = new PlanComparisons(this.db,cfg,this.shadow,id=>this.sourceHashFor(id));
     this.incubator = new ShadowRunner({
+      timelyResearch: () => timelyTrackerKeys(listTrackers(this.db)),
       compare: input=>this.planComparisons.observe(input),
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
@@ -786,7 +787,7 @@ export class App {
   /** Account exits by reason and the totals, in dollars (decision 108): the cuts the journal does not already give in R. */
   /** Decision 139: the operator's trackers with each member cell's shadow record since the tracker began. */
   trackers() { return listTrackers(this.db).map(t => trackerView(this.db, this.incubatorStore, t)); }
-  saveTracker(def: { id: string; name: string; scanners: string[]; symbols: string[]; tfs: string[] }) { const r = saveTracker(this.db, this.incubatorStore, def); void this.incubator.sync(); return r; }
+  saveTracker(def: { id: string; name: string; scanners: string[]; symbols: string[]; tfs: string[]; scanPriority?: 'normal' | 'timely' }) { const r = saveTracker(this.db, this.incubatorStore, def); void this.incubator.sync(); return r; }
   removeTracker(id: string) { const n = removeTracker(this.db, this.incubatorStore, id); void this.incubator.sync(); return { removed: n }; }
 
   /** Decision 136: one row per UTC day for the books and the incubator, newest first, today partial. */

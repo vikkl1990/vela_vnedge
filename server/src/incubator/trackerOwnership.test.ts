@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Db} from '../db.ts';
 import {IncubatorStore} from './store.ts';
-import {saveTracker,removeTracker,listTrackers,trackerView} from './tracker.ts';
+import {saveTracker,removeTracker,listTrackers,trackerView,timelyTrackerKeys} from './tracker.ts';
 const def=(id:string)=>({id,name:id,scanners:['s'],symbols:['BTCUSD'],tfs:['15m']});
 function setup(t:any){const db=new Db(':memory:');t.after(()=>db.db.close());return {db,store:new IncubatorStore(db)};}
 test('removing or narrowing one tracker retains shared cells until the last subscription leaves',t=>{
@@ -30,4 +30,20 @@ test('tracker updates roll back both membership and cell transitions on failure'
 test('nested transaction failure can be caught without committing its partial writes',t=>{
  const {db}=setup(t);db.transaction(()=>{db.kvSet('outer',1);assert.throws(()=>db.transaction(()=>{db.kvSet('inner',1);throw Error('abort');}));db.kvSet('after',1);});
  assert.equal(db.kvGet('outer'),1);assert.equal(db.kvGet('after'),1);assert.equal(db.kvGet('inner'),undefined);
+});
+
+test('timely scheduling preserves tracker age, membership and research-only stage through legacy edits',t=>{
+ const {db,store}=setup(t);saveTracker(db,store,def('watched'),1000);
+ const before=store.find('s','BTCUSD','15m')!;
+ const result=saveTracker(db,store,{...def('watched'),scanPriority:'timely'},2000);
+ assert.equal(result.added,0);assert.equal(result.kept,1);assert.equal(result.released,0);
+ assert.deepEqual(store.find('s','BTCUSD','15m'),before);
+ saveTracker(db,store,{...def('watched'),name:'renamed'},3000);
+ assert.equal(listTrackers(db)[0].createdAt,1000);assert.equal(listTrackers(db)[0].scanPriority,'timely');
+ assert.deepEqual([...timelyTrackerKeys(listTrackers(db))],['s:BTCUSD:15m']);
+ assert.equal(store.trades('s','BTCUSD','15m',2).length,0);
+ saveTracker(db,store,{...def('watched'),scanPriority:'normal'},4000);
+ assert.equal(timelyTrackerKeys(listTrackers(db)).size,0);assert.equal(store.find('s','BTCUSD','15m')!.stage,'tracked');
+ assert.throws(()=>saveTracker(db,store,{...def('watched'),scanPriority:'urgent' as any}),/scanPriority/);
+ assert.equal(listTrackers(db)[0].scanPriority,'normal');
 });

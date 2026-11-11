@@ -61,3 +61,19 @@ test('collection status distinguishes a completed zero-signal scan from overdue 
  f.block('candle repair in progress');assert.equal(f.runner.collectionOf(f.pair,CLOSE).status,'candle repair in progress');
  assert.equal(f.runner.collectionOf(f.pair,CLOSE).funnel.entries,0);
 });
+
+test('a fresh research close starts without the former 20-second sleep',async t=>{
+ const f=fixture(t),at=Date.now();await f.runner.sync();await flush();
+ assert.deepEqual(f.seen,[CLOSE]);assert.equal(Date.now(),at);assert.equal(f.runner.dispatchStats.started,1);
+});
+
+test('research yields to queued account work, mirrored exits and memory pressure',async t=>{
+ const f=fixture(t),pool=f.runner.deps.pool;
+ f.runner.deps.timelyResearch=()=>new Set(['s:BTCUSD:15m']);
+ f.store.move(f.pair,'tracked','test');pool.stats.queuedLive=1;
+ await f.runner.sync();await flush();assert.deepEqual(f.seen,[]);
+ pool.stats.queuedLive=0;pool.stats.queuedMirror=1;f.runner.dispatch.drain();await flush();assert.deepEqual(f.seen,[]);
+ pool.stats.queuedMirror=0;pool.rssReader=()=>.86;f.runner.dispatch.drain();await flush();assert.deepEqual(f.seen,[]);
+ pool.rssReader=()=>.84;f.runner.dispatch.drain();await flush();assert.deepEqual(f.seen,[CLOSE]);
+ assert.equal(f.runner.dispatchStats.timelyTurns,1);assert.equal(f.cfg.paper.marginPerTrade,150);
+});

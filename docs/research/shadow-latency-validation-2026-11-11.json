@@ -1,0 +1,126 @@
+{
+  "at": "2026-11-11T05:38:47.130Z",
+  "kind": "deterministic scheduling replay, not a profit backtest",
+  "baselineCommit": "05b74f0",
+  "cells": 1149,
+  "measuredRuntimeCells": 313,
+  "assumptions": "Current active non-live 15m/1h cells, prior 15m wave served first; latest per-scanner VM mean runtime where available, 1000ms fallback, 500ms BigBeluga and 1500ms Willy. Six slots. Old fixed 20s wait; new starts at 15s to conservatively allow urgent account work. Bars assumed to arrive together. Both keep the 295s dispatch deadline. Scale 1.5 stresses every runtime.",
+  "comparisons": [
+    {
+      "scale": 1,
+      "before": {
+        "watched": {
+          "n": 12,
+          "p50Ms": 160667.80952380953,
+          "p95Ms": 264185.4999999999,
+          "maxMs": 264318.25595238095
+        },
+        "all": {
+          "n": 1149,
+          "p50Ms": 136533.21428571426,
+          "p95Ms": 251905.50595238098,
+          "maxMs": 264318.25595238095
+        },
+        "evidence": {
+          "n": 673,
+          "p50Ms": 80110.57142857142,
+          "p95Ms": 193845.5892857143,
+          "maxMs": 200221.80952380953
+        },
+        "expired": 0,
+        "maxActive": 6
+      },
+      "after": {
+        "watched": {
+          "n": 12,
+          "p50Ms": 19500,
+          "p95Ms": 23000,
+          "maxMs": 23500
+        },
+        "all": {
+          "n": 1149,
+          "p50Ms": 123759.9761904762,
+          "p95Ms": 247652.9821428571,
+          "maxMs": 259608.2321428571
+        },
+        "evidence": {
+          "n": 673,
+          "p50Ms": 76913.86309523809,
+          "p95Ms": 189845.36309523808,
+          "maxMs": 196332.19642857136
+        },
+        "expired": 0,
+        "maxActive": 6
+      }
+    },
+    {
+      "scale": 1.5,
+      "before": {
+        "watched": {
+          "n": 6,
+          "p50Ms": 229046.38392857142,
+          "p95Ms": 230985.29464285713,
+          "maxMs": 231001.7142857143
+        },
+        "all": {
+          "n": 924,
+          "p50Ms": 144158.60714285716,
+          "p95Ms": 282268.3839285714,
+          "maxMs": 302807.8839285714
+        },
+        "evidence": {
+          "n": 673,
+          "p50Ms": 110165.85714285714,
+          "p95Ms": 280768.3839285714,
+          "maxMs": 290332.7142857143
+        },
+        "expired": 225,
+        "maxActive": 6
+      },
+      "after": {
+        "watched": {
+          "n": 12,
+          "p50Ms": 21750,
+          "p95Ms": 27000,
+          "maxMs": 27750
+        },
+        "all": {
+          "n": 940,
+          "p50Ms": 141080.25,
+          "p95Ms": 280920.29464285716,
+          "maxMs": 299307.54464285716
+        },
+        "evidence": {
+          "n": 673,
+          "p50Ms": 107870.79464285714,
+          "p95Ms": 277268.04464285716,
+          "maxMs": 286998.29464285716
+        },
+        "expired": 209,
+        "maxActive": 6
+      }
+    }
+  ],
+  "tests": {
+    "serverPassed": 1158,
+    "dashboardPassed": 22,
+    "dashboardLint": "passed",
+    "dashboardBuild": "passed"
+  },
+  "changes": [
+    "Remove fixed 20-second delay before bounded shadow dispatch",
+    "For tracker cells explicitly marked timely, reserve one scheduling preference turn in four; retain two evidence-priority turns and the unconditional fourth fairness turn",
+    "Yield research dispatch to queued account scans and mirrored exits, retaining two reserved workers and existing memory guard",
+    "Preserve tracker age, membership, stage and evidence exclusions when editing scheduling metadata"
+  ],
+  "deployment": {
+    "tracker": "families-20261111",
+    "scanPriority": "timely",
+    "configHashMustRemain": "c7477e83c384b20cce34db7ed32aaffe9f0381f1fee02942662e405e42def71c",
+    "paperMode": true,
+    "marginPerTrade": 150,
+    "riskCaps": "unchanged",
+    "signalAgeSec": 300,
+    "actualBarCloseTiming": "to be measured after deployment; simulation is not a live latency guarantee"
+  }
+}

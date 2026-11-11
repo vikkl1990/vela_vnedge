@@ -8,7 +8,7 @@
 import type { Db } from '../db.ts';
 import type { IncubatorStore } from './store.ts';
 
-export interface TrackerDef { id: string; name: string; scanners: string[]; symbols: string[]; tfs: string[]; createdAt: number }
+export interface TrackerDef { id: string; name: string; scanners: string[]; symbols: string[]; tfs: string[]; createdAt: number; scanPriority?: 'normal' | 'timely' }
 export interface CellStat { scannerId: string; symbol: string; tf: string; stage: string; trades: number; sumR: number; avgR: number; wins: number; stops: number; open: number; lastAt: number | null }
 export interface TrackerView { tracker: TrackerDef; cells: CellStat[]; totals: { cells: number; trading: number; trades: number; sumR: number; avgR: number; winRate: number; open: number } }
 
@@ -18,6 +18,11 @@ export const listTrackers = (db: Db): TrackerDef[] => db.kvGet<TrackerDef[]>(KEY
 
 const cellsOf=(t:Pick<TrackerDef,'scanners'|'symbols'|'tfs'>)=>[...new Set(t.scanners)].flatMap(scannerId=>[...new Set(t.symbols)].flatMap(symbol=>[...new Set(t.tfs)].map(tf=>({scannerId,symbol,tf}))));
 const keyOf=(c:{scannerId:string;symbol:string;tf:string})=>JSON.stringify([c.scannerId,c.symbol,c.tf]);
+
+/** Scheduler preference only. Tracked stages still cannot be copied or promoted. */
+export function timelyTrackerKeys(trackers:TrackerDef[]):Set<string> {
+  return new Set(trackers.filter(t=>t.scanPriority==='timely').flatMap(t=>cellsOf(t).map(c=>`${c.scannerId}:${c.symbol}:${c.tf}`)));
+}
 
 /** A watch list owns a subscription, never an account allocation. Shared cells have multiple owners. */
 function releaseMembership(store:IncubatorStore,id:string,next:TrackerDef[],now:number):number {
@@ -36,8 +41,9 @@ function releaseMembership(store:IncubatorStore,id:string,next:TrackerDef[],now:
 export function saveTracker(db:Db,store:IncubatorStore,def:Omit<TrackerDef,'createdAt'>,now=Date.now()):{tracker:TrackerDef;added:number;kept:number;released:number}{
   if(!/^[a-z0-9-]{2,40}$/.test(def.id))throw new Error('tracker id: 2–40 lowercase letters, digits or dashes');
   if(![def.scanners,def.symbols,def.tfs].every(a=>Array.isArray(a)&&a.length&&a.every(v=>typeof v==='string'&&v.trim())))throw new Error('a tracker needs scanners, markets and timeframes');
+  if(def.scanPriority!==undefined&&!['normal','timely'].includes(def.scanPriority))throw new Error('scanPriority must be normal or timely');
   const all=listTrackers(db),prev=all.find(t=>t.id===def.id);
-  const tracker:TrackerDef={...def,scanners:[...new Set(def.scanners)],symbols:[...new Set(def.symbols)],tfs:[...new Set(def.tfs)],createdAt:prev?.createdAt??now};
+  const tracker:TrackerDef={...def,scanPriority:def.scanPriority??prev?.scanPriority,scanners:[...new Set(def.scanners)],symbols:[...new Set(def.symbols)],tfs:[...new Set(def.tfs)],createdAt:prev?.createdAt??now};
   const next=[...all.filter(t=>t.id!==def.id),tracker];
   return db.transaction(()=>{
     const released=releaseMembership(store,def.id,next,now);let added=0,kept=0;

@@ -38,3 +38,36 @@ test('expired and retired work reports an explicit collection outcome without st
  d.enqueue('a',1,10);d.enqueue('b',2,20);now=10;d.drain();d.prune(new Set());
  assert.deepEqual(dropped,[[1,'expired'],[2,'removed']]);assert.equal(ran,0);
 });
+
+test('watched research gets one priority turn without starving evidence or exploration',async()=>{
+ const releases:Array<()=>void>=[],seen:string[]=[];
+ const d=new ShadowDispatch<string>({limit:()=>1,ready:()=>true,now:()=>0,
+  timely:v=>v.startsWith('watch'),priority:v=>v.startsWith('high')?1:0,
+  run:async v=>{seen.push(v);await new Promise<void>(r=>releases.push(r));}});
+ d.enqueue('low','low',10000);
+ for(let i=0;i<12;i++){d.enqueue('h'+i,'high'+i,10000);d.enqueue('w'+i,'watch'+i,10000);}
+ d.drain();await flush();for(let i=0;i<7;i++){releases.shift()!();await flush();}
+ assert.deepEqual(seen.slice(0,5),['watch0','high0','high1','low','watch1']);
+ assert.equal(d.stats.timelyTurns,2);assert.equal(d.stats.evidenceTurns,4);assert.equal(d.stats.fairTurns,2);
+ while(d.stats.pending||d.stats.inFlight){releases.splice(0).forEach(r=>r());await flush();}
+ assert.equal(new Set(seen).size,25);assert.equal(d.stats.expired,0);
+});
+
+test('watched cells from the previous 15m wave do not wait behind untouched hourly cells',async()=>{
+ const seen:string[]=[];let ready=true;
+ const d=new ShadowDispatch<string>({limit:()=>1,ready:()=>ready,now:()=>0,timely:v=>v==='watched',priority:()=>0,run:async v=>{seen.push(v);}});
+ for(const v of ['watched','prior1','prior2','prior3']){d.enqueue(v,v,10000);d.drain();await flush();}
+ ready=false;for(let i=0;i<1000;i++)d.enqueue('hour'+i,'hour'+i,10000);
+ d.enqueue('watched','watched',10000);ready=true;d.drain();await flush();
+ assert.equal(seen[4],'watched');assert.equal(seen.length,1005);
+});
+
+test('timely preference cannot bypass readiness, expiry, coalescing or capacity',async()=>{
+ const releases:Array<()=>void>=[],seen:number[]=[];let now=0,ready=false;
+ const d=new ShadowDispatch<number>({limit:()=>2,ready:()=>ready,now:()=>now,timely:()=>true,
+  run:async v=>{seen.push(v);await new Promise<void>(r=>releases.push(r));}});
+ d.enqueue('stale',0,10);d.enqueue('updated',1,100);d.enqueue('updated',2,100);
+ d.enqueue('third',3,100);d.enqueue('fourth',4,100);d.drain();await flush();assert.deepEqual(seen,[]);
+ now=10;ready=true;d.drain();await flush();assert.deepEqual(seen,[2,3]);assert.equal(d.stats.inFlight,2);assert.equal(d.stats.expired,1);
+ d.stop();releases.splice(0).forEach(r=>r());await flush();assert.deepEqual(seen,[2,3]);
+});

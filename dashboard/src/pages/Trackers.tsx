@@ -29,6 +29,7 @@ function Tracker({ v }: { v: TrackerView }) {
     <>
       <h2>{t.name}</h2>
       <p className="muted small">Forward paper results · {allocated ? `${allocated} ${allocated === 1 ? 'cell allocated' : 'cells allocated'} to the paper account` : 'No direct account allocation'}</p>
+      {t.scanPriority === 'timely' && <p className="muted small">Priority research scans after each bar closes. Account scans and protective exits run first; evidence and entry rules still apply.</p>}
       <div className="stat-strip" role="list">
         <span role="listitem"><span className="stat-k">Cells</span> <span className="mono">{v.totals.cells}</span> <span className="muted">· {v.totals.trading} have traded</span></span>
         <span role="listitem"><span className="stat-k">Trades</span> <span className="mono">{v.totals.trades}</span> <span className="muted">· {v.totals.open} open</span></span>
