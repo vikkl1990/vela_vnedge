@@ -1,0 +1,252 @@
+{
+  "date": "2026-11-11",
+  "testedBase": "a73e050579bfc479b1b96e58d64ba96a1946083b",
+  "packages": {
+    "vela": {
+      "before": "0.10.2",
+      "after": "0.10.5"
+    },
+    "vela-pinets": {
+      "before": "0.3.3",
+      "after": "0.3.4"
+    },
+    "pinets": "0.13.1"
+  },
+  "scope": "Shadow research only; no account promotion or profitability claim. Existing account configuration and risk settings unchanged.",
+  "tracker": {
+    "id": "families-20261111",
+    "name": "New BigBeluga + Willy · 11 Nov",
+    "scanners": [
+      "smart-money-trap-detector",
+      "htf-sweep-cisd-market"
+    ],
+    "symbols": [
+      "BTCUSD",
+      "ETHUSD",
+      "SOLUSD"
+    ],
+    "tfs": [
+      "15m",
+      "1h"
+    ]
+  },
+  "readers": {
+    "smart-money-trap-detector": {
+      "contract": "Entry conditions emitted inside existing confirmed trap branch; actual high rejection is short, low reclaim long. ATR protection; bot owns fills and exits.",
+      "sourceUnmodified": true,
+      "nativeLabelParity": [
+        {
+          "symbol": "BTCUSD",
+          "tf": "15m",
+          "matched": 27
+        },
+        {
+          "symbol": "BTCUSD",
+          "tf": "1h",
+          "matched": 23
+        },
+        {
+          "symbol": "ETHUSD",
+          "tf": "15m",
+          "matched": 24
+        },
+        {
+          "symbol": "ETHUSD",
+          "tf": "1h",
+          "matched": 27
+        },
+        {
+          "symbol": "SOLUSD",
+          "tf": "15m",
+          "matched": 17
+        },
+        {
+          "symbol": "SOLUSD",
+          "tf": "1h",
+          "matched": 24
+        }
+      ]
+    },
+    "htf-sweep-cisd-market": {
+      "contract": "Explicit Market/Conservative/JSON variant. Accept valid schema-1 market order intents only; fills/cancels/BE/TP/SL from script simulator are informational. Native protection; bot owns fills and exits.",
+      "fleetLimitOverride": "Scanner-specific explicit market execution in both engine and backtest; no other scanner changes.",
+      "sourceUnmodified": true,
+      "license": "No explicit license declaration found in supplied open-source Pine; manifest leaves license unknown."
+    }
+  },
+  "tests": {
+    "server": {
+      "passed": 1140,
+      "failed": 0
+    },
+    "dashboard": {
+      "passed": 22,
+      "failed": 0
+    },
+    "dashboardLint": "pass",
+    "dashboardBuild": "pass",
+    "serverTypecheck": {
+      "baselineDiagnostics": 31,
+      "currentDiagnostics": 31,
+      "newDiagnostics": 0
+    },
+    "browser": "Vela/bridge four-frame render, pinned library import, footprint missing-data gaps, position overlay, decision marks, theme switching, frame switching, live tick and unmount/remount passed. Both new scripts rendered on BTC 15m and 1h without script errors.",
+    "runtime": {
+      "fixtureCapturedAt": 1794366847329,
+      "verificationAt": "2026-11-11T04:24:05.814Z",
+      "barsPerCell": 1000,
+      "prefixBars": 800,
+      "rows": [
+        {
+          "id": "smart-money-trap-detector",
+          "symbol": "BTCUSD",
+          "tf": "15m",
+          "bars": 1000,
+          "ms": 106,
+          "rawAlerts": 27,
+          "entries": 27,
+          "info": 0,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "smart-money-trap-detector",
+          "symbol": "BTCUSD",
+          "tf": "1h",
+          "bars": 1000,
+          "ms": 101,
+          "rawAlerts": 23,
+          "entries": 23,
+          "info": 0,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "smart-money-trap-detector",
+          "symbol": "ETHUSD",
+          "tf": "15m",
+          "bars": 1000,
+          "ms": 105,
+          "rawAlerts": 24,
+          "entries": 24,
+          "info": 0,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "smart-money-trap-detector",
+          "symbol": "ETHUSD",
+          "tf": "1h",
+          "bars": 1000,
+          "ms": 102,
+          "rawAlerts": 27,
+          "entries": 27,
+          "info": 0,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "smart-money-trap-detector",
+          "symbol": "SOLUSD",
+          "tf": "15m",
+          "bars": 1000,
+          "ms": 101,
+          "rawAlerts": 17,
+          "entries": 17,
+          "info": 0,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "smart-money-trap-detector",
+          "symbol": "SOLUSD",
+          "tf": "1h",
+          "bars": 1000,
+          "ms": 102,
+          "rawAlerts": 24,
+          "entries": 24,
+          "info": 0,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "htf-sweep-cisd-market",
+          "symbol": "BTCUSD",
+          "tf": "15m",
+          "bars": 1000,
+          "ms": 1008,
+          "rawAlerts": 14,
+          "entries": 6,
+          "info": 8,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "htf-sweep-cisd-market",
+          "symbol": "BTCUSD",
+          "tf": "1h",
+          "bars": 1000,
+          "ms": 996,
+          "rawAlerts": 22,
+          "entries": 6,
+          "info": 16,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "htf-sweep-cisd-market",
+          "symbol": "ETHUSD",
+          "tf": "15m",
+          "bars": 1000,
+          "ms": 989,
+          "rawAlerts": 22,
+          "entries": 7,
+          "info": 15,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "htf-sweep-cisd-market",
+          "symbol": "ETHUSD",
+          "tf": "1h",
+          "bars": 1000,
+          "ms": 983,
+          "rawAlerts": 12,
+          "entries": 3,
+          "info": 9,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "htf-sweep-cisd-market",
+          "symbol": "SOLUSD",
+          "tf": "15m",
+          "bars": 1000,
+          "ms": 994,
+          "rawAlerts": 20,
+          "entries": 8,
+          "info": 12,
+          "exits": 0,
+          "prefixStable": true
+        },
+        {
+          "id": "htf-sweep-cisd-market",
+          "symbol": "SOLUSD",
+          "tf": "1h",
+          "bars": 1000,
+          "ms": 997,
+          "rawAlerts": 16,
+          "entries": 5,
+          "info": 11,
+          "exits": 0,
+          "prefixStable": true
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Closed-bar OHLC runtime and prefix tests are not proof of live profitability or tick-level execution.",
+    "Research tracker is excluded from automatic account copying and promotion; it must collect prospective evidence.",
+    "No earlier trade history is backfilled into the prospective tracker."
+  ]
+}

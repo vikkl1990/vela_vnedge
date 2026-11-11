@@ -9,6 +9,7 @@
  */
 import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
 import { readingLegacy } from './legacy.ts';
+import { WILLY_HTF_MARKET, readWillyHtfAlert } from './willyHtf.ts';
 
 export type Side = 'long' | 'short';
 export type EventKind = 'entry' | 'exit' | 'info';
@@ -405,7 +406,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   for (const a of alerts) {
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     if (a.type === 'alertcondition') continue; // handled below, at lower priority than alert()
-    for (const ev of parseAlertAll(a)) {
+    for (const ev of opts.scannerId === WILLY_HTF_MARKET ? readWillyHtfAlert(a) : parseAlertAll(a)) {
     if (ev.kind === 'entry' && !allow('alert')) { drop('alert(): channel excluded'); continue; }
     if (ev.kind === 'entry' && !labelOk(ev.label)) { drop('alert(): label not in allow-list'); continue; }
     // an alert() entry that is actually kept owns its bar (its alertcondition twin would be a duplicate);

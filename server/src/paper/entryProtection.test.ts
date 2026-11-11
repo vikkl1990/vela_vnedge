@@ -7,6 +7,7 @@ import {protectEntry} from './entryProtection.ts';
 import {backtestPolicy} from './policy.ts';
 import {runBacktest} from './backtest.ts';
 import {configFingerprint} from './fingerprint.ts';
+import {resolveTradePolicy} from './tradePolicy.ts';
 const H=3600_000,T=Date.UTC(2026,9,1);
 function setup(t:any,book:0|2=0){
   const db=new Db(':memory:');t.after(()=>db.db.close());const c=structuredClone(DEFAULT_CONFIG);
@@ -74,4 +75,18 @@ test('malformed passive policies and ATR-floor overrides are rejected',t=>{
     c.scanners.s.entryLimit=v;assert.ok(validateConfig(c).some(e=>e.includes('entryLimit')));
   }
   c.risk.regime.minAtrPctByScanner={s:-1};assert.ok(validateConfig(c).some(e=>e.includes('minAtrPctByScanner')));
+});
+
+for(const book of [0,2]as const)test(`explicit market variant overrides fleet limits consistently in book ${book}`,t=>{
+ const{c,e,ev,ctx}=setup(t,book);c.scanners.s.entryProtection='native';
+ c.paper.limitEntry={enabled:true,tfs:['1h'],books:['account','shadow'],atr:.1,bars:2};
+ const old=configFingerprint(c,'s','1h').fp;c.scanners.s.entryExecution='market';
+ assert.notEqual(configFingerprint(c,'s','1h').fp,old);
+ const p=resolveTradePolicy(c,{scannerId:'s',symbol:'BTCUSD',tf:'1h'},null,book);
+ assert.equal(p.paper.limitEntry,undefined);assert.equal(p.paper.marginPerTrade,c.paper.marginPerTrade);assert.deepEqual(p.risk,c.risk);
+ assert.equal(backtestPolicy(c,'s','1h',book===0?'account':'shadow').entry,undefined);
+ assert(backtestPolicy(c,'other','1h',book===0?'account':'shadow').entry,'other scanners inherit fleet limits');
+ assert.equal(e.onEntry(ev,ctx).action,'opened');assert.equal(e.pendingEntries().length,0);
+ c.scanners.s.entryLimit={tfs:['1h'],atr:.1,minutes:5};assert(validateConfig(c).some(e=>e.includes('entryExecution')));
+ delete c.scanners.s.entryLimit;c.scanners.s.entryExecution='ignore' as any;assert(validateConfig(c).some(e=>e.includes('entryExecution')));
 });

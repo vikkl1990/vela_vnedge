@@ -21,6 +21,21 @@ const TA_LIBRARY_OWN = ['ao', 'aroon', 'atr2', 'cagr', 'chandelier', 'chandelier
 
 export const PATCH_RULES: PatchRule[] = [
   {
+    id: 'bigbeluga-trap-confirmed-signals',
+    description: 'Expose the existing confirmed sweep/reclaim branches as entry conditions; preserve raw source and never infer a trade from back-anchored drawings or rank text.',
+    only: ['0gfYLkX9-Smart-Money-Bull-Bear-Trap-Detector'],
+    apply: src => {
+      if (src.includes('vnedgeTrapLong')) return src;
+      const code = src.replace(/\r\n?/g, '\n');
+      const gate = 'if barstate.isconfirmed and array.size(activeL) > 0';
+      const trigger = '            lvl.trig := true';
+      if (code.split(gate).length !== 2 || code.split(trigger).length !== 2) throw new Error('BigBeluga trap source changed: review its signal adapter');
+      return code.replace(gate, 'bool vnedgeTrapLong = false\nbool vnedgeTrapShort = false\n' + gate)
+        .replace(trigger, trigger + '\n            vnedgeTrapLong := vnedgeTrapLong or not lvl.isHigh\n            vnedgeTrapShort := vnedgeTrapShort or lvl.isHigh')
+        + '\nalertcondition(vnedgeTrapLong, "VN EDGE Trap Long", "Confirmed support sweep and reclaim")\nalertcondition(vnedgeTrapShort, "VN EDGE Trap Short", "Confirmed resistance sweep and rejection")\n';
+    },
+  },
+  {
     id: 'trend-step-confirmed-signals',
     description: 'Expose Efficient Trend Step’s existing direction-flip booleans as confirmed conditions; its numeric price labels cannot safely express trade direction.',
     only: ['ihf781Bu-Efficient-Trend-Step-Noise-Detection'],

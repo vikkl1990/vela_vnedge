@@ -287,6 +287,8 @@ export interface ScannerConfig {
   enabled: boolean;
   /** Entry protection only: convert to ATR, permit native levels, or inherit the legacy policy when absent. */
   entryProtection?: 'atr' | 'native';
+  /** Explicit market variant; absence inherits the fleet's entry policy. */
+  entryExecution?: 'market';
   /** Scanner-specific passive entry; expiry is wall-clock minutes, not a whole signal candle. */
   entryLimit?: { tfs:string[]; atr:number; minutes:number };
   /** Removed from the dashboard list (kept disabled); restorable. */
@@ -776,6 +778,7 @@ export function validateConfig(c: AppConfig): string[] {
   const p = c.paper;
   if(p.entryBatchMs!==undefined&&(!Number.isInteger(p.entryBatchMs)||p.entryBatchMs<0||p.entryBatchMs>5000))errs.push('paper.entryBatchMs must be 0..5000 milliseconds');
   for (const [id,sc] of Object.entries(c.scanners??{})) if (sc.entryProtection !== undefined && !['atr','native'].includes(sc.entryProtection)) errs.push(`scanner ${id}: entryProtection must be atr|native`);
+  for (const [id,sc] of Object.entries(c.scanners??{})) if (sc.entryExecution !== undefined && (sc.entryExecution !== 'market' || sc.entryLimit)) errs.push(`scanner ${id}: entryExecution must be market without entryLimit`);
   for (const [id,sc] of Object.entries(c.scanners??{})) if (sc.entryLimit && (!Array.isArray(sc.entryLimit.tfs) || !sc.entryLimit.tfs.length || sc.entryLimit.tfs.some(tf=>!(tf in TF_SECONDS)) || !Number.isFinite(sc.entryLimit.atr) || sc.entryLimit.atr<0 || sc.entryLimit.atr>2 || !Number.isFinite(sc.entryLimit.minutes) || sc.entryLimit.minutes<1 || sc.entryLimit.minutes>240)) errs.push(`scanner ${id}: invalid entryLimit`);
   const fg = p.fundingGuard;
   if (fg && (typeof fg.enabled !== "boolean" || !Number.isFinite(fg.leadMinutes) || fg.leadMinutes < 1 || fg.leadMinutes > 60 || !Number.isFinite(fg.maxAgeSec) || fg.maxAgeSec < 10 || fg.maxAgeSec > 600 || !Number.isFinite(fg.scalpMaxR) || fg.scalpMaxR <= 0 || fg.scalpMaxR > 2 || !Number.isFinite(fg.swingMaxR) || fg.swingMaxR <= 0 || fg.swingMaxR > 2)) errs.push("invalid paper.fundingGuard settings");

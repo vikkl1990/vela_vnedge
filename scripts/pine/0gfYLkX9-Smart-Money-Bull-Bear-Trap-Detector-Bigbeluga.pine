@@ -1,0 +1,184 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Smart Money Bull/Bear Trap Detector [Bigbeluga]", shorttitle="SMC Bull/Bear Trap Detector [Bigbeluga]", overlay=true, max_boxes_count=500, max_labels_count=500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+g_piv         = "Pivot & Trap Detection Settings"
+pLegs         = input.int(10, "Pivot Strength (Left/Right)", minval=2, group=g_piv, tooltip="Number of bars to left/right required to confirm pivot high/low.")
+zSegs         = input.int(10, "Gradient Segments per Zone", minval=2, maxval=15, group=g_piv, tooltip="Number of dynamic box segments created per zone for fade-out.")
+zLen          = input.int(35, "Base Zone Length (Bars)", minval=10, group=g_piv, tooltip="Horizontal length of pivot resistance/support gradient boxes in bars.")
+useZlenExpire = input.bool(true, "Stop Detection After Zone Expiration", group=g_piv, tooltip="If enabled, stops detecting sweep signals after Base Zone Length (zLen) bars expire.")
+vThresh       = input.float(1.2, "High Volume Multiplier", minval=0.5, step=0.1, group=g_piv, tooltip="Multiplier for 20-period Volume SMA for volume score.")
+
+g_sig   = "Chart Signal Settings"
+lblSz   = input.string("normal", "Signal Label Size", options=["auto", "tiny", "small", "normal", "large", "huge"], group=g_sig, tooltip="Font size of A, B, and C signal labels on price candles.")
+
+g_col   = "Color Settings"
+cRes    = input.color(#FF2E63, "Resistance (Bear Trap Zone)", group=g_col, tooltip="Base color used for resistance zones (Pivot Highs) and Bear table theme.")
+cSup    = input.color(#00F5D4, "Support (Bull Trap Zone)", group=g_col, tooltip="Base color used for support zones (Pivot Lows) and Bull table theme.")
+cRankA  = input.color(#FFE600, "Rank A Signal (Radiant Gold)", group=g_col, tooltip="Color assigned to Rank A (highest strength) signals.")
+cRankB  = input.color(#FF9F1C, "Rank B Signal (Warm Amber)", group=g_col, tooltip="Color assigned to Rank B (moderate strength) signals.")
+cRankC  = input.color(#E76F51, "Rank C Signal (Muted Rust)", group=g_col, tooltip="Color assigned to Rank C (lowest strength) signals.")
+
+g_dash  = "Dashboard UI Settings"
+sDash   = input.bool(true, "Show Dashboard", group=g_dash, tooltip="Toggle visibility of historical signals dashboard table.")
+dPos    = input.string("top_right", "Dashboard Position", options=["top_left", "top_center", "top_right", "middle_left", "middle_center", "middle_right", "bottom_left", "bottom_center", "bottom_right"], group=g_dash, tooltip="Dashboard table location on chart.")
+dTxtSz  = input.string("small", "Dashboard Size", options=["auto", "tiny", "small", "normal", "large", "huge"], group=g_dash, tooltip="Font size of data cells inside dashboard table.")
+dHdrSz  = dTxtSz
+
+g_dCol  = "Dashboard Color Scheme"
+dBgCol  = input.color(#0B0E14, "Table Main Background Color", group=g_dCol, tooltip="Primary background color for overall table canvas.")
+dHdrTxt = input.color(#94A3B8, "Header Text Color", group=g_dCol, tooltip="Text color for table headers.")
+dBrdCol = input.color(#2A3447, "Table Border Color", group=g_dCol, tooltip="Color for outer frame and inner cell grid borders.")
+dBullTx = input.color(#00F5D4, "Bull Trap Text Color", group=g_dCol, tooltip="Text color for Bull Trap indicators in table.")
+dBearTx = input.color(#FF2E63, "Bear Trap Text Color", group=g_dCol, tooltip="Text color for Bear Trap indicators in table.")
+dAgeTxt = input.color(#CBD5E1, "Age Text Color", group=g_dCol, tooltip="Text color for elapsed bar count (AGE column).")
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+type Pvl
+    float price
+    int   bIdx
+    bool  isHigh
+    bool  trig
+    box[] boxes
+
+type Sig
+    bool   isHigh
+    string rk
+    int    tBar
+
+var Pvl[] activeL = array.new<Pvl>()
+var Sig[] trigS   = array.new<Sig>()
+
+pH = ta.pivothigh(high, pLegs, pLegs)
+pL = ta.pivotlow(low, pLegs, pLegs)
+vMa = ta.sma(volume, 20)
+
+f_grad(float pLvl, int sBar, bool isHigh, float bRange) =>
+    box[] boxArr = array.new_box()
+    int sLen = math.floor(zLen / zSegs)
+    color bCol = isHigh ? cRes : cSup
+    float top = isHigh ? pLvl : pLvl + bRange * 0.15
+    float bot = isHigh ? pLvl - bRange * 0.15 : pLvl
+    
+    for i = 0 to zSegs - 1
+        int b1 = sBar + (i * sLen)
+        int b2 = b1 + sLen
+        int trp = math.floor(30 + (i * (70 / zSegs)))
+        box b = box.new(left=b1, top=top, right=b2, bottom=bot, xloc=xloc.bar_index, bgcolor=color.new(bCol, trp), border_color=na, border_width = 0)
+        array.push(boxArr, b)
+    boxArr
+
+if not na(pH)
+    int pBar = bar_index - pLegs
+    float bRange = high[pLegs] - low[pLegs]
+    box[] bx = f_grad(pH, pBar, true, bRange)
+    array.push(activeL, Pvl.new(pH, pBar, true, false, bx))
+
+if not na(pL)
+    int pBar = bar_index - pLegs
+    float bRange = high[pLegs] - low[pLegs]
+    box[] bx = f_grad(pL, pBar, false, bRange)
+    array.push(activeL, Pvl.new(pL, pBar, false, false, bx))
+
+if barstate.isconfirmed and array.size(activeL) > 0
+    int sz = array.size(activeL)
+    for i = sz - 1 to 0
+        Pvl lvl = array.get(activeL, i)
+        int age = bar_index - lvl.bIdx
+        
+        // Remove level from search queue once triggered or expired (boxes persist on chart)
+        int maxAge = useZlenExpire ? zLen : zLen * 2
+        if lvl.trig or age > maxAge
+            array.remove(activeL, i)
+            continue
+        
+        // Only check for traps if within allowed expiration limit
+        bool canDetect = not useZlenExpire or (age <= zLen)
+        bool isTrap = false
+        
+        if canDetect
+            if lvl.isHigh
+                // Bear Trap: Wick high penetrates pivot level, close stays below level
+                if high > lvl.price and close < lvl.price
+                    isTrap := true
+            else
+                // Bull Trap: Wick low penetrates pivot level, close stays above level
+                if low < lvl.price and close > lvl.price
+                    isTrap := true
+        
+        if isTrap
+            lvl.trig := true
+            
+
+            // ────────────────────────────────────────────────────────────
+            int ageTerm = age <= zLen / 3 ? 2 : age <= (2 * zLen) / 3 ? 1 : 0
+            int volTerm = volume > (vMa * vThresh) ? 2 : volume > vMa ? 1 : 0
+            int pts     = ageTerm + volTerm
+            string rk   = pts >= 3 ? "A" : pts == 2 ? "B" : "C"
+            
+            // Record signal in permanent array
+            array.push(trigS, Sig.new(lvl.isHigh, rk, bar_index))
+            
+            color sigCol = (rk == "A") ? cRankA : (rk == "B") ? cRankB : cRankC
+            string dTxt = lvl.isHigh ? (rk + "\n▼") : ("▲\n" + rk)
+            
+            string sType = lvl.isHigh ? "Bull Trap" : "Bear Trap"
+            float sigPrc = lvl.isHigh ? high : low
+            string tTip = sType + "\nVolume: " + str.tostring(volume, "#.##") + "\nPrice: " + str.tostring(sigPrc, "#.#####") + "\nAge: " + str.tostring(age) + "b\nScore: " + str.tostring(pts)
+            
+            label.new(
+              bar_index, 
+              sigPrc, 
+              text=dTxt, 
+              style=lvl.isHigh ? label.style_label_down : label.style_label_up, 
+              color=color.new(color.white, 100), 
+              textcolor=sigCol, 
+              size=lblSz,
+              tooltip=tTip
+              )
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+var table dash = table.new(
+  position = dPos, 
+  columns = 3, 
+  rows = 6, 
+  bgcolor = dBgCol, 
+  border_width = 1, 
+  border_color = dBrdCol,
+  frame_width = 1,
+  frame_color = dBrdCol
+  )
+
+if sDash and barstate.islast
+    table.cell(dash, 0, 0, "SIGNAL", text_color=dHdrTxt, bgcolor=dBgCol, text_size=dHdrSz)
+    table.cell(dash, 1, 0, "RANK",   text_color=dHdrTxt, bgcolor=dBgCol, text_size=dHdrSz)
+    table.cell(dash, 2, 0, "AGE",    text_color=dHdrTxt, bgcolor=dBgCol, text_size=dHdrSz)
+    
+    int totTrig = array.size(trigS)
+    if totTrig > 0
+        int rIdx = 1
+        for i = totTrig - 1 to math.max(0, totTrig - 5)
+            Sig s = array.get(trigS, i)
+            
+            string tTyp = s.isHigh ? "▼ BEAR" : "▲ BULL"
+            color tCol  = s.isHigh ? dBearTx : dBullTx
+            color rCol  = (s.rk == "A") ? cRankA : (s.rk == "B") ? cRankB : cRankC
+            
+            color baseLevelCol = s.isHigh ? cRes : cSup
+            color cBg = color.new(baseLevelCol, 92)
+            
+            table.cell(dash, 0, rIdx, tTyp, text_color=tCol, bgcolor=cBg, text_size=dTxtSz)
+            table.cell(dash, 1, rIdx, "[" + s.rk + "]", text_color=rCol, bgcolor=cBg, text_size=dTxtSz)
+            table.cell(dash, 2, rIdx, str.tostring(bar_index - s.tBar) + "b ago", text_color=dAgeTxt, bgcolor=cBg, text_size=dTxtSz)
+            rIdx += 1
+
+// }

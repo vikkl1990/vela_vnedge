@@ -639,5 +639,39 @@
     },
     "exitMode": "both",
     "enabled": false
+  },
+  "smart-money-trap-detector": {
+    "enabled": false,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "VN EDGE Trap Long",
+      "VN EDGE Trap Short"
+    ],
+    "sides": {
+      "VN EDGE Trap Long": "long",
+      "VN EDGE Trap Short": "short"
+    },
+    "exitMode": "levels",
+    "entryProtection": "atr"
+  },
+  "htf-sweep-cisd-market": {
+    "enabled": false,
+    "entryExecution": "market",
+    "sources": [
+      "alert"
+    ],
+    "labels": [
+      "HTF CISD market"
+    ],
+    "exitMode": "levels",
+    "entryProtection": "native",
+    "inputs": {
+      "entryModeInput": "Market",
+      "webhookInput": true,
+      "intrabarModelInput": "Conservative",
+      "showPreviewInput": false
+    }
   }
 }

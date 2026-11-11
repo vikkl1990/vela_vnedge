@@ -1,0 +1,27 @@
+[
+  {
+    "id": "smart-money-trap-detector",
+    "sourceVersion": "1.0",
+    "sha256": "8a41947dd77fb98c43ab7c5bdd1a8b599e2d3bf8971a5776572e2a6febdfc96d",
+    "sourceUpdated": "2026-11-10T09:39:14.609259Z",
+    "url": "https://www.tradingview.com/script/0gfYLkX9-Smart-Money-Bull-Bear-Trap-Detector-Bigbeluga/",
+    "researchOnly": true,
+    "reader": "confirmed trap conditions",
+    "inputs": {}
+  },
+  {
+    "id": "htf-sweep-cisd-market",
+    "sourceVersion": "1.0",
+    "sha256": "74b56106cc0313d933c385de2cd64d5b8ccdf11db63089f22ef72f10614e3e84",
+    "sourceUpdated": "2026-11-08T15:45:12.438625Z",
+    "url": "https://www.tradingview.com/script/M0FCXfZC-HTF-Sweep-CISD-Setups-WillyAlgoTrader/",
+    "researchOnly": true,
+    "reader": "strict market order JSON; simulated lifecycle is informational",
+    "inputs": {
+      "entryModeInput": "Market",
+      "webhookInput": true,
+      "intrabarModelInput": "Conservative",
+      "showPreviewInput": false
+    }
+  }
+]

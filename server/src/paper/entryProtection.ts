@@ -8,6 +8,7 @@ export function protectEntry(ev: ScanEvent, mode?: EntryProtection): ScanEvent {
 }
 
 export function scannerEntryConfig(paper:PaperConfig, scanner:Partial<ScannerConfig>|undefined, tf:string):PaperConfig {
+  if(scanner?.entryExecution==='market')return {...paper,limitEntry:undefined};
   const le=scanner?.entryLimit;
   if(!le?.tfs.includes(tf))return paper;
   return {...paper,limitEntry:{enabled:true,tfs:[tf],books:['account','shadow'],atr:le.atr,bars:le.minutes*60/TF_SECONDS[tf]}};
