@@ -1,3 +1,4 @@
+import {recoverPendingFunnel} from './pendingFunnel.ts';
 import {emptyRotation, type RotationState} from './rotation.ts';
 import type {TradePolicy} from '../paper/tradePolicy.ts';
 import {enrollRestoration,restorationAssessment} from '../evidence/restoration.ts';
@@ -119,7 +120,7 @@ export class IncubatorStore {
   rotationState(): RotationState { return this.db.kvGet<RotationState>('incubator.rotation') ?? emptyRotation(); }
   rotate(old: PairRow, next: PairRow, state: RotationState, now: number): PairRow {
     return this.db.transaction(() => {
-      if (this.get(old.id)?.stage !== 'shadow' || this.get(next.id)?.stage !== 'candidate' || this.shadowHolds(old) || this.shadowLastEntryAt(old, old.since) !== null) throw new Error('rotation state changed');
+      if (this.get(old.id)?.stage !== 'shadow' || this.get(next.id)?.stage !== 'candidate' || this.shadowHolds(old) || this.shadowLastEntryAt(old, this.evaluationSince(old,now)) !== null) throw new Error('rotation state changed');
       const budget = this.rotationState();
       if ((budget.day === state.day ? budget.used : 0) !== state.used - 1) throw new Error('rotation budget changed');
       const evidence = { replacementId: next.id, until: state.paused[old.id].until, since: old.since, reason: 'no filled shadow trade during observation; research slot rotated, not a performance rejection' };
@@ -254,6 +255,9 @@ export class IncubatorStore {
     return this.db.all<any>(`SELECT side, entry_at, exit_at, realized_pnl, fees, risk_amount, peak_r FROM positions WHERE bt=? AND status='closed' AND scanner_id=? AND symbol=? AND tf=? AND risk_amount > 0 AND NOT EXISTS (SELECT 1 FROM evidence_flags f WHERE f.position_id=positions.id AND f.entry_at=positions.entry_at AND f.status='quarantined') ORDER BY exit_at`, book, scannerId, symbol, tf)
       .map(r => ({ entryAt: r.entry_at, exitAt: r.exit_at, r: (r.realized_pnl - r.fees) / r.risk_amount, side: r.side, peakR: r.peak_r ?? undefined }));
   }
+  pendingFunnelRecovery(observations:Array<{key:string;at:number}>,at=Date.now()) {
+    return recoverPendingFunnel(this.db,observations,at);
+  }
   qualifiedTrades(scannerId:string,symbol:string,tf:string,book=2,at=Date.now()):TradeR[] {
     // Missing runtime policy cannot certify trades. Offline gate research must opt in explicitly.
     if(!this.policyFor)return this.historicalResearch?this.trades(scannerId,symbol,tf,book):[];
@@ -288,6 +292,21 @@ export class IncubatorStore {
     if(!this.policyFor || !this.db.get('SELECT 1 FROM evidence_restorations WHERE scanner_id=? AND symbol=? AND tf=?',cell.scannerId,cell.symbol,cell.tf))return null;
     const policy=this.policyFor(cell);
     return restorationAssessment(this.db,cell,policy,readEvidence(this.db,cell,policy,{at}),at);
+  }
+  /** A new policy's forward test owns its lifecycle clock. Historical admission is audit metadata. */
+  evaluationSince(cell:{scannerId:string;symbol:string;tf:string;since:number},at=Date.now()):number {
+    if(!this.policyFor)return cell.since;
+    const row=this.db.get<{started_at:number}>('SELECT started_at FROM evidence_restorations WHERE strategy_id=? AND started_at<=?',this.policyFor(cell).strategyId,at);
+    return Math.max(cell.since,row?.started_at??cell.since);
+  }
+  /** Retirement can see negative forward evidence even while qualification is held.
+   * This never supplies promotion, copying or leverage with unqualified trades. */
+  shadowEvaluation(cell:{scannerId:string;symbol:string;tf:string;since:number},at=Date.now()) {
+    const restoration=this.restoration(cell,at),since=this.evaluationSince(cell,at);
+    const trades=restoration && this.policyFor
+      ? readEvidence(this.db,cell,this.policyFor(cell),{at})
+      : this.trades(cell.scannerId,cell.symbol,cell.tf,2);
+    return {restoration,since,trades:trades.filter(t=>t.entryAt>=since&&t.exitAt<at)};
   }
   restorationRefusal(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()):string|null {
     if(!this.policyFor)return null;

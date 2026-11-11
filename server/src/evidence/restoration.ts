@@ -78,7 +78,7 @@ export function restorationAssessment(db:Db,cell:EvidenceCell,policy:TradePolicy
     if(stressedR===null||!(stressedR>0))reasons.push('forward profit must remain positive after 0.05% extra round-trip cost');
     const passed=reasons.length===0;
     const seed=JSON.parse(row.seed);
-    return {state:passed?'passed' as const:'evaluating' as const,passed,startedAt:row.started_at,at,
+    return {state:passed?'passed' as const:'evaluating' as const,passed,startedAt:row.started_at,at,gateDecision:verdict.decision,
       requirements:{minTrades:rules.gate.minTrades,minDays:rules.gate.minDays,minPfR:rules.gate.minPfR,minAvgR:rules.gate.minAvgR,minT:rules.gate.minT??0,stressBps:rules.stressBps},
       seed:{exact:seed.exact,compatible:seed.compatible,netR:seed.netR},stats,halves,stressedR,invalidFills,reasons};
   }catch{return {state:'invalid' as const,passed:false,reasons:['invalid forward evaluation record; qualification held']};}

@@ -265,6 +265,7 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
       store.move(r, 'retired', 'library', { reasons: [why] }, why, now); rep.retired.push(name(r));
     }
   }
+  store.startRestorations(now);
   let active = store.list(['shadow', 'proposed']);
   // decision 104: a pair on a market the account's gate refuses today is never proposed; one already proposed goes back to brewing
   const markets = store.marketsToday(now);
@@ -297,10 +298,10 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (store.shadowHolds(r)) continue;
     const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
     if (!(staleDays > 0)) continue;
-    const t = store.trades(r.scannerId, r.symbol, r.tf, 2).filter(x => x.entryAt >= r.since);
+    const {trades:t,since} = store.shadowEvaluation(r,now);
     // decision 184: a pair back from the account is given the stale cap from its demotion, not from an admission it has
     // been live since (the shadow runner does not trade a live cell, so its last shadow trade predates the whole stint)
-    const lastAt = Math.max(r.since, store.lastDemotion(r.id)?.at ?? 0, ...t.map(x => x.entryAt));
+    const lastAt = Math.max(since, store.lastDemotion(r.id)?.at ?? 0, ...t.map(x => x.entryAt));
     if (now - lastAt > staleDays * DAY) { const why = `stale: no shadow trade in ${Math.round((now - lastAt) / DAY)} days (cap ${staleDays})`; store.move(r, 'retired', 'gate', { reasons: [why] }, why, now); rep.retired.push(name(r)); }
   }
 
@@ -312,8 +313,8 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
   for (const r of store.list(['shadow'])) {
     if (store.shadowHolds(r)) continue;
     const sc = r.screen as any;
-    if (!sc || sc.pass !== false || !(typeof sc.at === 'number' && sc.at > r.since)) continue;
-    const fwd = store.trades(r.scannerId, r.symbol, r.tf, 2).filter(t => t.entryAt >= r.since);
+    const {trades:fwd,since} = store.shadowEvaluation(r,now);
+    if (!sc || sc.pass !== false || !(typeof sc.at === 'number' && sc.at > since)) continue;
     const fwdR = fwd.reduce((a, t) => a + t.r, 0);
     if (fwd.length < RESCREEN_RETIRE_MIN_TRADES || fwdR > 0) continue;
     const why = `screen no longer passes (re-screened ${new Date(sc.at).toISOString().slice(0, 10)}: ${sc.reason ?? `PF ${Number(sc.profitFactor ?? 0).toFixed(2)}, ${sc.trades ?? 0} trades`}) and the shadow record agrees (${fwd.length} trades, ${fwdR >= 0 ? '+' : ''}${fwdR.toFixed(2)}R)`;
@@ -364,13 +365,16 @@ function returningGate(store: IncubatorStore, g: ReturnType<typeof gateFor>, row
 
 /** One market judged on its own: the original gate, kept for `gate.pool: 'pair'`. */
 function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: CycleReport, now: number): void {
-  const trades = store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2);
-  const stats = pairStats(trades, r.since, now);
-  const dv = deliveryVerdict(r.screen, pairStats(store.trades(r.scannerId,r.symbol,r.tf,2),r.since,now));
+  const forward = store.shadowEvaluation(r,now), restoration=forward.restoration;
+  const trades = store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2, now);
+  const stats = restoration&&!restoration.passed && restoration.stats
+    ? restoration.stats : pairStats(trades, forward.since, now);
+  const dv = deliveryVerdict(r.screen, pairStats(forward.trades,forward.since,now));
   if (dv.retire && r.stage === 'shadow' && !store.shadowHolds(r)) { store.move(r, 'retired', 'gate', { stats, reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return; }
-  const overlap = overlapPct(trades.filter(t => t.entryAt >= r.since), store.liveTradesOn(r.symbol, r.scannerId));
+  const overlap = overlapPct(trades.filter(t => t.entryAt >= forward.since), store.liveTradesOn(r.symbol, r.scannerId));
   let v = gateVerdict(stats, returningGate(store, gateFor(cfg.incubator, r.tf), [r]), overlap);
-  if (v.decision === 'retire' && store.policyFor && stats.trades<store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=r.since).length) v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
+  if (restoration&&!restoration.passed) v={decision:restoration.gateDecision==='retire'?'retire':'brewing',reasons:restoration.reasons};
+  if (!restoration && v.decision === 'retire' && store.policyFor && stats.trades<store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=r.since).length) v={...v,decision:'brewing',reasons:['collecting compatible policy evidence']};
   if (v.decision === 'retire' && store.shadowHolds(r)) v = {...v, decision:'brewing', reasons:['retirement deferred: shadow position or order still active', ...v.reasons]};
   store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v }, now);
   if (v.decision === 'propose' && r.stage === 'shadow' && marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)) { store.setGate(r.id, { at: now, stats, overlapPct: overlap, ...v, decision: 'brewing', reasons: [marketRefusal(store.marketsToday(now), r.symbol, cfg.incubator.gate.minTurnoverUsd)!] }, now); rep.brewing++; }
@@ -391,18 +395,22 @@ function judgePair(store: IncubatorStore, cfg: AppConfig, r: PairRow, rep: Cycle
 function judgeCohorts(store: IncubatorStore, cfg: AppConfig, active: PairRow[], rep: CycleReport, now: number): void {
   const inc = cfg.incubator;
   const groups = new Map<string, PairRow[]>();
-  for (const r of active) { const k = `${r.scannerId}|${r.tf}`; const g = groups.get(k); g ? g.push(r) : groups.set(k, [r]); }
+  for (const r of active) {
+    const restoration=store.restoration(r,now);
+    if(restoration&&!restoration.passed){judgePair(store,cfg,r,rep,now);continue;}
+    const k = `${r.scannerId}|${r.tf}`; const g = groups.get(k); g ? g.push(r) : groups.set(k, [r]); }
 
   for (const rowsAll of groups.values()) {
     // promise versus delivery per market first (decision 90): a member retired by its own record leaves the cohort
     const rows = rowsAll.filter(r => {
       if (r.stage !== 'shadow') return true;
-      const dv = deliveryVerdict(r.screen, pairStats(store.trades(r.scannerId, r.symbol, r.tf, 2), r.since, now));
+      const forward=store.shadowEvaluation(r,now);
+      const dv = deliveryVerdict(r.screen, pairStats(forward.trades, forward.since, now));
       if (!dv.retire || store.shadowHolds(r)) return true;
       store.move(r, 'retired', 'gate', { reasons: [dv.reason] }, dv.reason!, now); rep.retired.push(name(r)); return false;
     });
     if (!rows.length) continue;
-    const members = rows.map(r => ({ row: r, symbol: r.symbol, since: r.since, trades: store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2) }));
+    const members = rows.map(r => ({ row: r, symbol: r.symbol, since: store.evaluationSince(r,now), trades: store.qualifiedTrades(r.scannerId, r.symbol, r.tf, 2,now) }));
     const stats = cohortStats(members, now, inc.gate.minMarketTrades);
     let hit = 0, n = 0;
     for (const m of members) {

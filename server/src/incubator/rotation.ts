@@ -23,12 +23,12 @@ export function rotateIdleCells(store: IncubatorStore, cfg: AppConfig, waiting: 
   const candidates = [...waiting].sort((a, b) => a.since - b.since || admissionEvidence(b, inc).score - admissionEvidence(a, inc).score || a.id - b.id);
   for (const old of [...active].sort((a, b) => a.since - b.since || a.id - b.id)) {
     if (state.used >= policy.maxPerDay) break;
-    const days = policy.idleDaysByTf[old.tf];
+    const days = policy.idleDaysByTf[old.tf],since=store.evaluationSince(old,now);
     const lastScan = marks[`${old.scannerId}:${old.symbol}:${old.tf}`] ?? 0;
     // Successful, recent execution is required: starvation, failures and downtime are not silence.
-    if (old.stage !== 'shadow' || !(days > 0) || now - old.since < days * DAY || unavailable?.(old.scannerId)
+    if (old.stage !== 'shadow' || !(days > 0) || now - since < days * DAY || unavailable?.(old.scannerId)
       || now - lastScan > Math.max(3600_000, 3 * (TF_SECONDS[old.tf] ?? 0) * 1000)
-      || store.shadowHolds(old) || store.shadowLastEntryAt(old, old.since) !== null) continue;
+      || store.shadowHolds(old) || store.shadowLastEntryAt(old, since) !== null) continue;
     const before = shadowCapacity(active, inc), remaining = active.filter(r => r.id !== old.id);
     const capacity = shadowCapacity(remaining, inc);
     const next = candidates.find(r => {

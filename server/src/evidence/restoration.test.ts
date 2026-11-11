@@ -8,7 +8,7 @@ import {DEFAULT_CONFIG} from '../config.ts';
 import {resolveTradePolicy,saveTradePolicy} from '../paper/tradePolicy.ts';
 import {PaperEngine} from '../paper/engine.ts';
 import {IncubatorStore} from '../incubator/store.ts';
-import {approve} from '../incubator/cycle.ts';
+import {approve,evaluate,admitOnly} from '../incubator/cycle.ts';
 import {readEvidence,qualifiedEvidence} from './trades.ts';
 import {recordGatedSignal} from './gatedSignals.ts';
 
@@ -68,6 +68,27 @@ test('timely forward collection requires a current enrolled shadow policy and ne
  f.store.move(cell,'tracked','test');assert.equal(f.store.forwardCollectionKeys(T+DAY).size,0);
  f.store.move(cell,'live','test');assert.equal(f.store.forwardCollectionKeys(T+DAY).size,0);
  assert.deepEqual(f.db.all('SELECT * FROM evidence_restorations'),frozen);
+});
+test('restored forward collection is not retired by incompatible historical losses or an old failed screen',t=>{
+ t.mock.timers.enable({apis:['Date'],now:T+DAY});
+ const f=setup(t);f.cfg.incubator.maxShadow=100;f.cfg.incubator.admit.rotation!.enabled=false;
+ for(let i=0;i<21;i++)f.add(T-5*DAY+i*1000,-1,{policyId:null});
+ f.db.run('UPDATE incubator_pairs SET screen=? WHERE id=?',JSON.stringify({pass:true,at:T-40*DAY,avgR:.34}),f.pair.id);
+ f.enroll();f.add(T+1000,-1);f.add(T+3000,-1);
+ evaluate(f.store,f.cfg,T+DAY);
+ assert.equal(f.store.get(f.pair.id)!.stage,'shadow','two forward losses cannot become 28 qualified closes');
+ assert.equal(f.store.get(f.pair.id)!.gate.stats.trades,2);
+ assert.match(f.store.copyRefusal(cell,f.cfg.incubator.mirror,1e8,T+DAY)!,/forward shadow evaluation/);
+ f.db.run('UPDATE incubator_pairs SET screen=? WHERE id=?',JSON.stringify({pass:false,at:T-DAY,avgR:-.1}),f.pair.id);
+ evaluate(f.store,f.cfg,T+DAY);assert.equal(f.store.get(f.pair.id)!.stage,'shadow','pre-enrollment failed screen cannot end the new window');
+});
+test('restoration inactivity starts at enrollment and a full failing forward sample still retires',t=>{
+ t.mock.timers.enable({apis:['Date'],now:T+DAY});const f=setup(t);f.cfg.incubator.admit.rotation!.enabled=false;
+ f.db.run('UPDATE incubator_pairs SET since=? WHERE id=?',T-100*DAY,f.pair.id);f.enroll();
+ evaluate(f.store,f.cfg,T+DAY);assert.equal(f.store.get(f.pair.id)!.stage,'shadow');
+ for(let i=0;i<30;i++)f.add(T+1000+i*2000,-1);
+ evaluate(f.store,f.cfg,T+DAY);assert.equal(f.store.get(f.pair.id)!.stage,'retired','unchanged full-sample failure threshold is enforced');
+ assert.equal(f.store.qualifiedTrades('s','BTCUSD','15m',2,T+DAY).length,0);
 });
 
 test('the forward clock survives process restart without counting prior or still-open trades',t=>{
@@ -186,4 +207,35 @@ test('actual shadow dispatch records the restoration hold, continues shadow eval
   await runner.run(f.store.get(f.pair.id),Date.now(),false,Date.now());
   assert.equal(forwarded.length,1);
  }finally{runner.stop();}
+});
+
+for(const pool of ['pair','cohort'] as const)test(`${pool}: current forward losses stay visible and active orders defer retirement`,t=>{
+ t.mock.timers.enable({apis:['Date'],now:T+DAY});const f=setup(t);f.cfg.incubator.gate.pool=pool;f.cfg.incubator.admit.rotation!.enabled=false;
+ f.enroll();f.add(T+1000,-1);evaluate(f.store,f.cfg,T+DAY);
+ assert.equal(f.store.get(f.pair.id)!.stage,'shadow');assert.equal(f.store.get(f.pair.id)!.gate.stats.trades,1);
+ assert.equal(f.store.get(f.pair.id)!.gate.stats.netR,-1);
+ for(let i=0;i<29;i++)f.add(T+5000+i*2000,-1);
+ const held=f.add(T+90000,0,{status:'pending'});evaluate(f.store,f.cfg,T+DAY);
+ assert.equal(f.store.get(f.pair.id)!.stage,'shadow');assert.match(f.store.get(f.pair.id)!.gate.reasons[0],/retirement deferred/);
+ f.db.run('DELETE FROM positions WHERE id=?',held);evaluate(f.store,f.cfg,T+DAY);
+ assert.equal(f.store.get(f.pair.id)!.stage,'retired');
+});
+test('only a post-enrollment failed screen with three current losses can retire the new test',t=>{
+ const f=setup(t);f.cfg.incubator.admit.rotation!.enabled=false;f.enroll();
+ for(let i=0;i<3;i++)f.add(T+1000+i*2000,-1);
+ f.db.run('UPDATE incubator_pairs SET screen=? WHERE id=?',JSON.stringify({pass:false,at:T-DAY}),f.pair.id);
+ evaluate(f.store,f.cfg,T+DAY);assert.equal(f.store.get(f.pair.id)!.stage,'shadow');
+ f.db.run('UPDATE incubator_pairs SET screen=? WHERE id=?',JSON.stringify({pass:false,at:T+10000}),f.pair.id);
+ evaluate(f.store,f.cfg,T+DAY);assert.equal(f.store.get(f.pair.id)!.stage,'retired');
+});
+test('idle rotation gives a new forward window its existing inactivity allowance',t=>{
+ const f=setup(t);f.cfg.incubator.maxShadow=1;f.cfg.incubator.admit.reserve=[];
+ f.cfg.incubator.admit.rotation={enabled:true,maxPerDay:1,idleDaysByTf:{'15m':7},cooldownDays:3};
+ const next=f.store.move({scannerId:'next',symbol:'ETHUSD',tf:'15m'},'candidate','test',null,null,T-DAY);
+ f.db.run('UPDATE incubator_pairs SET screen=? WHERE id=?',JSON.stringify({pass:true,at:T,trades:40,profitFactor:2,avgR:.2,days:20,fill:'close'}),next.id);
+ f.store.setLiveMarks({'s:BTCUSD:15m':T+DAY-900000});f.enroll();
+ assert.deepEqual(admitOnly(f.store,f.cfg,T+DAY),[]);assert.equal(f.store.get(f.pair.id)!.stage,'shadow');
+ assert.equal(f.store.evaluationSince(f.store.get(f.pair.id)!,T+DAY),T);
+ f.store.setLiveMarks({'s:BTCUSD:15m':T+8*DAY-900000});
+ assert.deepEqual(admitOnly(f.store,f.cfg,T+8*DAY),['next ETHUSD 15m']);
 });

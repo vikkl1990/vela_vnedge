@@ -112,17 +112,24 @@ export class ShadowRunner {
       error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
     });
     this.funnel = new Map(Object.entries(deps.store.shadowFunnel()));
+    const now=Date.now(),pending=[...this.funnel].flatMap(([key,rows])=>rows
+      .filter(([at,kind])=>kind==='pending'&&at>=now-FUNNEL_MS&&at<=now).map(([at])=>({key,at})));
+    for(const p of deps.store.pendingFunnelRecovery?.(pending,now)??[]){
+      this.pendingFunnel.set(p.id,{key:p.key,at:p.at});
+      if(p.kind!=='pending')this.resolvePending(p.id,p.kind,false);
+    }
+    this.saveFunnel();
     // decision 190: a resting order is `pending` until the book fills or cancels it; then its funnel entry is rewritten
     deps.paper.on?.('order', (o: { positionId: number; reason: string }) => { if (o.reason === 'entry') this.resolvePending(o.positionId, 'opened'); });
     deps.paper.on?.('pending', (ev: { type: string; id?: number }) => { if (ev.type === 'cancelled' && ev.id !== undefined) this.resolvePending(ev.id, 'other'); });
   }
 
   private pendingFunnel = new Map<number, { key: string; at: number }>();
-  private resolvePending(id: number, kind: FunnelKind): void {
+  private resolvePending(id: number, kind: FunnelKind, countSinceRestart=true): void {
     const p = this.pendingFunnel.get(id);
     if (!p) return;
     this.pendingFunnel.delete(id);
-    if (kind === 'opened') this.stats.entries++;
+    if (kind === 'opened' && countSinceRestart) this.stats.entries++;
     const list = this.funnel.get(p.key);
     const i = list?.findIndex(x => x[0] === p.at && x[1] === 'pending') ?? -1;
     if (list && i >= 0) { list[i] = list[i][2] ? [p.at, kind, kind === 'opened' ? 'opened:deferred fill' : 'cancelled:pending order did not fill'] : [p.at, kind]; this.funnelDirty = true; this.saveFunnelSoon(); }
