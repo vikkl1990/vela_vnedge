@@ -1,4 +1,5 @@
 import type {ExecutionPlansView} from './executionPlans'
+import type {TradeMonitorView} from './tradeMonitor'
 import { fetchJournalCsv } from '../lib/journalExport'
 import type { DeltaConnectionStatus, DeltaEnvironment } from './deltaConnection'
 import type {PairAgentsView} from './pairAgents'
@@ -98,6 +99,7 @@ const put = <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT'
 const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
 
 export const api = {
+  tradeMonitor:()=>get<TradeMonitorView>('/trade-monitor'),
   deltaConnection: () => get<DeltaConnectionStatus>('/connections/delta'),
   saveDeltaConnection: (body: { environment: DeltaEnvironment; apiKey: string; apiSecret: string }) => put<DeltaConnectionStatus>('/connections/delta', body),
   checkDeltaConnection: () => post<DeltaConnectionStatus>('/connections/delta/check', {}),

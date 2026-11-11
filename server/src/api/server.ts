@@ -211,6 +211,8 @@ export class ApiServer {
   private defineRoutes() {
     const a = this.app;
     this.add('GET', '/api/health', () => a.health());
+    this.add('GET', '/api/trade-monitor', () => a.tradeMonitor.view());
+    this.add('GET', '/api/trade-monitor/positions/:id', (_r,_s,p) => {const id=Number(p.id);if(!Number.isSafeInteger(id)||id<1)throw new HttpError(400,'Invalid position');return a.tradeMonitor.monitor.detail(id);});
     this.add('GET', '/api/config', () => ({ ...a.config.get(), resolvedSymbols: a.resolvedSymbols }));
     // decision 119: the measured defaults, so the Settings page can show every value as a diff against them
     this.add('GET', '/api/config/defaults', () => DEFAULT_CONFIG);

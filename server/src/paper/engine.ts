@@ -352,6 +352,12 @@ export class PaperEngine extends EventEmitter {
   view(p: Position, exchangeMark?: number | null) {
     return {...positionView(p, this.mark(p.symbol), exchangeMark, this.configFor(p), this.now()),execution:this.exitExecution.view(p.id)};
   }
+  /** Detached assumptions for research. This grants no execution or configuration authority. */
+  advisoryObservation(p:Position){
+    const frozen=this.exitExecution.state(p.id);
+    return {config:structuredClone(this.configFor(p)),marketQty:this.book===0?p.qtyOpen:frozen?Math.max(1,Math.ceil(frozen.market_qty*p.qtyOpen/p.qty)):null,
+      exitPending:!!this.exitExecution.active(p.id)};
+  }
   private causal(p:Position){return this.causalExits&&!this.executionIntent&&this.cfgRef().execution.mode==='paper'&&(p.policy?.sim??0)>=CAUSAL_EXIT_VERSION;}
   pendingExits(){return this.exitExecution.pending().filter(i=>{const p=this.open.get(i.position_id);return !!p&&this.causal(p);});}
   /** Reports and position accounting share one transaction and rollback checkpoint. */

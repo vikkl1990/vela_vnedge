@@ -55,6 +55,7 @@ export function aggregateFlow(minutes: FlowMinute[], duration: number, from: num
 export class OrderFlowStore {
   private db: Db;
   readonly symbols: string[];
+  private observed = new Map<string, number>();
   private pending = new Map<string, FlowMinute>();
   private since: number | null = null;
   private cursor: number | null = null;
@@ -65,10 +66,32 @@ export class OrderFlowStore {
   private dropped = 0;
   constructor(db: Db, symbols = FLOW_SYMBOLS) {
     this.db = db; this.symbols = symbols;
+    for (const s of symbols) this.observed.set(s, 0);
     db.db.exec(`CREATE TABLE IF NOT EXISTS order_flow_minutes (
       symbol TEXT NOT NULL, open_time INTEGER NOT NULL, covered INTEGER NOT NULL,
       payload TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(symbol,open_time));
       CREATE INDEX IF NOT EXISTS order_flow_time ON order_flow_minutes(open_time);`);
+    db.db.exec(`CREATE TABLE IF NOT EXISTS advisory_flow_minutes (
+      symbol TEXT NOT NULL,open_time INTEGER NOT NULL,available_at INTEGER NOT NULL,covered INTEGER NOT NULL,
+      buy REAL NOT NULL,sell REAL NOT NULL,unknown REAL NOT NULL,trades INTEGER NOT NULL,PRIMARY KEY(symbol,open_time));
+      CREATE INDEX IF NOT EXISTS advisory_flow_time ON advisory_flow_minutes(open_time);`);
+  }
+
+  /** Compact observations expand independently of the footprint inputs used by existing scanners. */
+  observeSymbols(symbols: string[], now = Date.now()) {
+    const wanted = new Set([...this.symbols, ...symbols]);
+    for (const s of wanted) if (!this.observed.has(s)) { this.observed.set(s, now); this.firstPrint.delete(s); }
+    for (const s of this.observed.keys()) if (!wanted.has(s)) this.observed.delete(s);
+  }
+  summary(symbol: string, now = Date.now()) {
+    const end = Math.floor((now - SETTLE) / MINUTE) * MINUTE;
+    const rows = this.db.all<{open_time:number;available_at:number;covered:number;buy:number;sell:number;unknown:number;trades:number}>(
+      'SELECT * FROM advisory_flow_minutes WHERE symbol=? AND open_time>=? AND open_time<? ORDER BY open_time', symbol, end-5*MINUTE,end);
+    const covered = this.since !== null && rows.length === 5 && rows.every((r,i)=>r.open_time===end-(5-i)*MINUTE && !!r.covered && !r.unknown && r.available_at<=now);
+    const buy=rows.reduce((a,r)=>a+r.buy,0),sell=rows.reduce((a,r)=>a+r.sell,0);
+    return {observed:this.observed.has(symbol),covered,minutes:rows.length,throughAt:rows.at(-1)?.open_time ? rows.at(-1)!.open_time+MINUTE : null,
+      availableAt:rows.length?Math.max(...rows.map(r=>r.available_at)):null,lastTradeAt:this.lastTrade.get(symbol)??null,
+      buy:covered?buy:null,sell:covered?sell:null,imbalance:covered&&buy+sell>0?(buy-sell)/(buy+sell):null};
   }
 
   connection(connected: boolean, now = Date.now()) {
@@ -85,14 +108,14 @@ export class OrderFlowStore {
     let m = this.pending.get(key);
     if (!m) {
       m = { openTime: at, levels: [], buy: 0, sell: 0, unknown: 0, trades: 0,
-        covered: this.since !== null && this.since <= at };
+        covered: this.since !== null && this.since <= at && (this.observed.get(symbol)??Infinity)<=at };
       this.pending.set(key, m);
     }
     return m;
   }
 
   onTrade(t: WsTrade, now = Date.now()) {
-    if (!this.symbols.includes(t.symbol)) return;
+    if (!this.observed.has(t.symbol)) return;
     if (t.timeKnown === false || !(Number.isFinite(t.price) && t.price > 0 && Number.isFinite(t.qty) && t.qty > 0 && Number.isFinite(t.timeMs) && t.timeMs > 0)) {
       this.minute(t.symbol, Math.floor(now / MINUTE) * MINUTE).covered = false; this.dropped++; return;
     }
@@ -103,6 +126,7 @@ export class OrderFlowStore {
     // A late arrival cannot silently rewrite an interval already used by a scanner.
     if (at + MINUTE <= now - SETTLE) {
       this.db.run('UPDATE order_flow_minutes SET covered=0 WHERE symbol=? AND open_time=?', t.symbol, at);
+      this.db.run('UPDATE advisory_flow_minutes SET covered=0 WHERE symbol=? AND open_time=?', t.symbol, at);
       const pending = this.pending.get(`${t.symbol}:${at}`); if (pending) pending.covered = false;
       this.dropped++; return;
     }
@@ -113,6 +137,12 @@ export class OrderFlowStore {
     m.trades++;
     if (!t.aggressor) { m.unknown += t.qty; m.covered = false; }
     else {
+      if (!this.symbols.includes(t.symbol)) {
+        if (t.aggressor === 'buy') m.buy += t.qty; else m.sell += t.qty;
+        this.lastTrade.set(t.symbol, now);
+        while (this.ids.size > 20000) this.ids.delete(this.ids.keys().next().value!);
+        return;
+      }
       let level = m.levels.find(l => l.price === t.price);
       if (!level && m.levels.length >= MAX_LEVELS) { m.covered = false; this.dropped++; return; }
       if (!level) { level = { price: t.price, buyVolume: 0, sellVolume: 0 }; m.levels.push(level); }
@@ -131,7 +161,7 @@ export class OrderFlowStore {
         this.since = now; this.cursor = Math.floor(now / MINUTE) * MINUTE;
       }
       while (this.cursor + MINUTE <= now - SETTLE) {
-        for (const symbol of this.symbols) this.minute(symbol, this.cursor);
+        for (const symbol of this.observed.keys()) this.minute(symbol, this.cursor);
         this.cursor += MINUTE;
       }
     }
@@ -143,10 +173,14 @@ export class OrderFlowStore {
         // delivered anything. Never label a never-seen channel as zero-volume flow.
         if ((this.firstPrint.get(symbol) ?? Infinity) >= m.openTime + MINUTE) m.covered = false;
         const payload = JSON.stringify(m);
-        this.db.run(`INSERT INTO order_flow_minutes(symbol,open_time,covered,payload,bytes) VALUES(?,?,?,?,?)
+        if(this.symbols.includes(symbol)) this.db.run(`INSERT INTO order_flow_minutes(symbol,open_time,covered,payload,bytes) VALUES(?,?,?,?,?)
           ON CONFLICT(symbol,open_time) DO UPDATE SET covered=0`, symbol, m.openTime, Number(m.covered), payload, Buffer.byteLength(payload));
+        this.db.run(`INSERT INTO advisory_flow_minutes VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(symbol,open_time) DO UPDATE SET covered=0`,
+          symbol,m.openTime,now,Number(m.covered),m.buy,m.sell,m.unknown,m.trades);
       }
       if (now - this.lastPrune >= 600_000) {
+        this.db.run('DELETE FROM advisory_flow_minutes WHERE open_time<?', now-KEEP);
+        this.db.run('DELETE FROM advisory_flow_minutes WHERE rowid IN (SELECT rowid FROM advisory_flow_minutes ORDER BY open_time DESC LIMIT -1 OFFSET 500000)');
         this.db.run('DELETE FROM order_flow_minutes WHERE open_time<?', now - KEEP);
         this.db.run('DELETE FROM order_flow_minutes WHERE rowid IN (SELECT rowid FROM order_flow_minutes ORDER BY open_time DESC LIMIT -1 OFFSET 16000)');
         const rows = this.db.all<{ rowid: number; bytes: number }>('SELECT rowid,bytes FROM order_flow_minutes ORDER BY open_time DESC');

@@ -1,4 +1,5 @@
 import { FundingJournal } from './fundingJournal.ts';
+import { MonitorRuntime } from '../research/monitorRuntime.ts';
 import {PaperExitPump} from './paperExitPump.ts';
 import { AccountAudit } from './accountAudit.ts';
 import { AccountObserver } from '../connections/observer.ts';
@@ -92,6 +93,7 @@ export function wireRealtime(app: App): void {
     app.feed.unsubscribe('ob_updates', [symbol]); app.feed.subscribe('ob_updates', [symbol]);
   });
   depth.disconnect();
+  app.tradeMonitor=new MonitorRuntime(app,app.advisoryFeedFactory);
   app.feed.on('depth', (m:unknown) => depth.onDepth(m));
   let auditing=false, staging=false;
   const auditTimer=setInterval(() => {
@@ -110,7 +112,7 @@ export function wireRealtime(app: App): void {
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
   },5000);
   for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=()=>{exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
+  app.stopExecutionAudit=()=>{app.tradeMonitor.stop();exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
@@ -186,6 +188,7 @@ export function subscribeRealtime(app: App): void {
   app.feed.subscribe('all_trades', [...new Set([...symbols, ...app.orderFlow.symbols])]);
   app.feed.subscribe('mark_price', symbols);
   app.feed.subscribe('funding_rate', symbols);
+  app.tradeMonitor?.setSymbols(symbols);
 }
 
 /** Prefer the verified stream already retained for majors; REST supplies the other markets.

@@ -48,6 +48,7 @@ import { DeltaConnection } from './connections/delta.ts';
 import type { AccountObserver } from './connections/observer.ts';
 import type { DepthRecorder } from './execution/depthRecorder.ts';
 import type { OrderFlowStore } from './orderflow/store.ts';
+import type { MonitorRuntime } from './research/monitorRuntime.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
 import { MarketGate } from './risk/marketGate.ts';
@@ -66,6 +67,7 @@ const log = logger.scoped('app');
 
 /** Optional replacements for the network/file-backed collaborators (integration tests inject recorded feeds). */
 export interface AppDeps {
+  advisoryFeedFactory?:()=>DeltaFeed;
   rest?: DeltaRest;
   feed?: DeltaFeed;
   registry?: ScannerRegistry;
@@ -108,6 +110,8 @@ export class App {
   accountObserver!: AccountObserver;
   depthRecorder!: DepthRecorder;
   orderFlow!: OrderFlowStore;
+  tradeMonitor!: MonitorRuntime;
+  readonly advisoryFeedFactory:(()=>DeltaFeed)|undefined;
   stopExecutionAudit?: () => void;
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
@@ -128,6 +132,8 @@ export class App {
     const cfg = () => this.config.get();
     this.rest = deps.rest ?? new DeltaRest();
     this.feed = deps.feed ?? new DeltaFeed();
+    // A recorded/synthetic feed must never silently start a real research socket in tests.
+    this.advisoryFeedFactory=deps.advisoryFeedFactory??(deps.feed?()=>{const f=new DeltaFeed();f.start=()=>{};return f;}:undefined);
     this.registry = deps.registry ?? new ScannerRegistry();
     this.profiles = new ProfileStore(this.db);
     this.candles = new CandleStore(this.rest, this.feed, cfg().historyBars + 50);

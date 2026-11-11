@@ -146,6 +146,16 @@ test('boot: API listens, history backfills and warm-up runs the scanner once', a
   assert.equal(h.body.integrity.gapsFound, 0);
 });
 
+test('trade monitor is authenticated, read-only and lists exchange pairs without changing configuration',async()=>{
+ const before=JSON.stringify(app.config.get());
+ assert.equal((await fetch(base+'/api/trade-monitor')).status,401);
+ const r=await getJson('/api/trade-monitor');assert.equal(r.status,200);assert.equal(r.body.mode,'advisory');
+ assert.ok(r.body.pairs.some((p:any)=>p.symbol==='BTCUSD'));
+ assert.equal((await getJson('/api/trade-monitor/positions/invalid')).status,400);
+ assert.equal((await getJson('/api/trade-monitor',{method:'POST'})).status,404);
+ assert.equal(JSON.stringify(app.config.get()),before);
+});
+
 test('bar close → scanner run → signal → paper position (exactly one close per bar)', async () => {
   // finish the forming bar bullish, then start the next bar → `closed` for T0
   feed.push('5m', bar(T0, 50_480, 50_520));

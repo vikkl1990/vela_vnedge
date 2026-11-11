@@ -54,6 +54,7 @@ const GROUPS: Array<{ label: string; items: NavItem[] }> = [
       { to: '/', label: 'Overview', icon: IconActivity, end: true, key: 'o' },
       { to: '/signals', label: 'Signals', icon: IconBell, key: 'i' },
       { to: '/radar', label: 'Radar', icon: IconGrid, key: 'w' },
+      { to: '/monitor', label: 'Trade health', icon: IconActivity, key: 'h' },
       { to: '/trades', label: 'Journals', icon: IconTrades, key: 't' },
       { to: '/chart', label: 'Chart', icon: IconCandles, key: 'c' },
     ],

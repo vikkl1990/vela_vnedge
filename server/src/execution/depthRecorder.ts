@@ -6,9 +6,12 @@ type Book={at:number;exchangeAt:number;seq:number;asks:Map<number,[string,string
 /** Bounded diagnostic ring, independent of the execution path. A replay must start at a retained snapshot. */
 export class DepthRecorder {
  private books=new Map<string,Book>();private queue:Array<[number,string,string,string,number]>=[];private dropped=0;private failures=0;private lastRetry=new Map<string,number>();
- private db:Db; readonly symbols:string[]; private retry:(symbol:string)=>void;
- constructor(db:Db,symbols=['BTCUSD','ETHUSD','SOLUSD'],retry:(symbol:string)=>void=()=>{}){this.db=db;this.symbols=symbols;this.retry=retry;db.db.exec(`CREATE TABLE IF NOT EXISTS depth_tape(id INTEGER PRIMARY KEY AUTOINCREMENT,received_at INTEGER NOT NULL,symbol TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,bytes INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS depth_tape_at ON depth_tape(received_at);`);}
- private record(symbol:string,kind:string,value:unknown,now:number){const payload=JSON.stringify(value),bytes=Buffer.byteLength(payload);if(bytes>MAX_BYTES||this.queue.length>=2000){this.dropped++;return;}this.queue.push([now,symbol,kind,payload,bytes]);}
+ private db:Db; readonly symbols:string[]; private retry:(symbol:string)=>void; private raw:boolean;
+ constructor(db:Db,symbols=['BTCUSD','ETHUSD','SOLUSD'],retry:(symbol:string)=>void=()=>{},raw=true){this.db=db;this.symbols=[...symbols];this.retry=retry;this.raw=raw;db.db.exec(`CREATE TABLE IF NOT EXISTS depth_tape(id INTEGER PRIMARY KEY AUTOINCREMENT,received_at INTEGER NOT NULL,symbol TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,bytes INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS depth_tape_at ON depth_tape(received_at);`);}
+ private record(symbol:string,kind:string,value:unknown,now:number){if(!this.raw)return;const payload=JSON.stringify(value),bytes=Buffer.byteLength(payload);if(bytes>MAX_BYTES||this.queue.length>=2000){this.dropped++;return;}this.queue.push([now,symbol,kind,payload,bytes]);}
+ setSymbols(symbols:string[]){const wanted=new Set(symbols);for(const s of this.symbols)if(!wanted.has(s)){this.books.delete(s);this.lastRetry.delete(s);}this.symbols.splice(0,this.symbols.length,...wanted);}
+ invalidateSymbols(symbols:string[],now=Date.now()){for(const s of symbols){this.books.delete(s);this.record(s,'gap',{why:'connection unavailable'},now);}}
+ observedAt(symbol:string){return this.books.get(symbol)?.at??null;}
  private invalid(symbol:string,why:string,now:number){this.books.delete(symbol);this.failures++;this.record(symbol,'gap',{why},now);if(now-(this.lastRetry.get(symbol)??0)>=5000){this.lastRetry.set(symbol,now);this.retry(symbol);}}
  disconnect(now=Date.now()){for(const s of this.symbols){this.books.delete(s);this.record(s,'gap',{why:'disconnect or restart'},now);}}
  onDepth(m:any,now=Date.now()){

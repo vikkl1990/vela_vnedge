@@ -23,6 +23,7 @@ import { Signals } from './pages/Signals'
 import { Trades } from './pages/Trades'
 import { Exchange } from './pages/Exchange'
 import { Gates } from './pages/Gates'
+import { TradeMonitor } from './pages/TradeMonitor'
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="scanners/:id" element={<ScannerDetail />} />
           <Route path="signals" element={<Signals />} />
           <Route path="radar" element={<Radar />} />
+          <Route path="monitor" element={<TradeMonitor />} />
           <Route path="trades" element={<Trades />} />
           <Route path="trades/:id/replay" element={<TradeReplay />} />
           <Route path="chart" element={<ChartPage />} />
