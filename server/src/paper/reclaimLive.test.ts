@@ -36,12 +36,12 @@ test('live reclaim cannot enter on tape/partial bars; after closed confirmation 
   assert.equal(a.e.openPositions()[0].qty,Math.floor(full.e.openPositions()[0].qty/3));
   assert.equal(a.e.onEntry(a.ev,{...a.ctx,at:order.at+1001}).action,'ignored');
 });
-test('reclaim reservations survive cancellation and restart; pending setups and short trial orders do not replay after restart',t=>{
+test('reclaim reservations survive restart; pre-order setups recover but short trial orders cannot replay',t=>{
   const a=setup(t);a.cfg.paper.reclaimTrials![0].maxDailyEntries=1;
   a.e.onEntry(a.ev,a.ctx);a.confirm();assert.ok(a.e.pendingEntries()[0].limit);
   const restarted=new PaperEngine(a.db,()=>a.cfg);assert.equal(restarted.pendingEntries().length,0);
   assert.match(restarted.onEntry(a.ev,a.ctx).reason!,/daily order limit/);
-  const b=setup(t);b.e.onEntry(b.ev,b.ctx);assert.equal(new PaperEngine(b.db,()=>b.cfg).pendingEntries().length,0);
+  const b=setup(t);b.e.onEntry(b.ev,b.ctx);assert.equal(new PaperEngine(b.db,()=>b.cfg,{now:()=>b.ctx.at+1000}).pendingEntries().length,1);
 });
 test('reclaim mode, allocation and config checks apply again at fill',t=>{
   for(const change of ['disabled','executor','mode','allocation']as const){

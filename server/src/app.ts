@@ -234,6 +234,8 @@ export class App {
     };
     this.candles.on('bar', onMinute);
     this.candles.on('closed', onMinute);
+    this.paper.reclaimHistory=(symbol,from,to)=>this.candles.scanReadiness(symbol,'1m')?null:
+      this.candles.get(symbol,'1m',{from,to,closedOnly:true});
     this.candles.on('closed', (e: {symbol:string;tf:string;bar:import('./data/candleStore.ts').Bar;historical?:boolean}) => {
       if(e.tf==='1m') this.paper.onClosedMinute(e.symbol,e.bar,Date.now(),e.historical===true);
     });
@@ -327,7 +329,7 @@ export class App {
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
     // decision 184: a position outlives its pair (a demoted cell, a retired shadow pair, a narrowed universe); after a
     // restart its symbol may be in no tracked set, and without 1m bars its stop, trail and targets are never evaluated
-    const held = [...new Set([...this.paper.openPositions(), ...this.shadow.openPositions()].map(p => p.symbol))];
+    const held = [...new Set([...this.paper.openPositions(), ...this.shadow.openPositions(), ...this.paper.pendingEntries().filter(p=>p.reclaim)].map(p => p.symbol))];
     for (const s of held) if (!this.candles.has(s, '1m')) await this.candles.track(s, '1m', 300);
     if (held.length) this.feed.subscribe('v2/ticker', held);
     subscribeRealtime(this);

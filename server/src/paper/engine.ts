@@ -1,3 +1,4 @@
+import {reclaimRestoreRefusal,recoverReclaim,nextReclaimMinute,type ReclaimCheckpoint} from './reclaimRecovery.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume} from './makerPricing.ts';
 import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {PaperExitExecution,CAUSAL_EXIT_VERSION,type ExitBook} from './exitExecution.ts';
@@ -85,7 +86,7 @@ export interface PendingEntry {
   limit?: { price: number; expiresAt: number; atr: number; sl?: number; tp?: number[]; bars: number; quoteAnchor?: number };
   /** Decision 186: a reversal's held position, closed only when this entry fills (a cancelled reversal keeps it). */
   replacingId?: number;
-  reclaim?: {state: ReclaimState; event: ScanEvent; context: EntryContext; ruleKey: string};
+  reclaim?: {state: ReclaimState; event: ScanEvent; context: EntryContext; ruleKey: string; checkpoint?:ReclaimCheckpoint; recovery?:{startedAt:number}};
   reclaimRuleKey?: string;
 }
 
@@ -139,6 +140,8 @@ export class PaperEngine extends EventEmitter {
    * never see each other's positions. (1 is the in-memory backtest and never reaches the table.)
    */
   readonly book: number;
+  /** Ready, complete local history; null means the feed/history is still recovering. */
+  reclaimHistory?: (symbol:string,from:number,to:number)=>Bar[]|null;
   /** Live exchange status veto, also rechecked when a pending order fills. */
   fundingEntryBlock?: (symbol: string, side: Side, tf: string, notional: number, risk: number, at: number) => string | null;
   entryBlock?: (symbol: string, at: number) => string | null;
@@ -227,12 +230,26 @@ export class PaperEngine extends EventEmitter {
       let kept: PendingEntry | null = null;
       let trial:PendingEntry|undefined;
       try { const j = JSON.parse(row.fills ?? 'null'); if (j?.limitEntry?.limit && j.limitEntry.limit.expiresAt > this.now()) kept = { ...j.limitEntry, id: row.id }; trial=j?.limitEntry??j?.reclaimSetup??j?.pendingEntry; } catch { kept = null; }
-      // A short reclaim order cannot assume continuity through missed tape during downtime.
+      // A setup has no exchange order yet. Recover only committed pre-order progress;
+      // short resting trial orders still cannot infer what filled while we were down.
       if (kept && !kept.features?.reclaim_trial) { this.pending.set(kept.id, kept); continue; }
-      if(trial)this.recordPendingGate(trial,'pending entry dropped on restart');
-      if(trial?.features?.reclaim_trial)this.auditReclaim(trial,'cancelled',this.now(),'restart cancelled short trial setup/order');
+      let reason='pending entry dropped on restart';
+      if(trial?.reclaim && !trial.limit){
+        const r=trial.reclaim;
+        const invalid=reclaimRestoreRefusal(r.state,r.checkpoint,this.now());
+        if(!invalid && JSON.stringify(r.state.options)===r.ruleKey && trial.policy && r.context?.policy?.id===trial.policy.id && trial.at===r.state.at
+          && this.reclaimAvailable(trial,r.ruleKey)){
+          const restored={...trial,id:row.id,reclaim:{...r,recovery:{startedAt:this.now()}}};
+          this.pending.set(row.id,restored);
+          this.auditReclaim(restored,'restored',this.now(),'waiting for complete minute continuity and a fresh confirmation');
+          continue;
+        }
+        reason=`pending entry dropped on restart: ${invalid??'reclaim policy or allocation changed'}`;
+      }
+      if(trial)this.recordPendingGate(trial,reason);
+      if(trial?.features?.reclaim_trial)this.auditReclaim(trial,'cancelled',this.now(),`restart cancelled short trial setup/order: ${reason}`);
       db.run('DELETE FROM positions WHERE id=?', row.id);
-      if (row.signal_id) db.updateSignalAction(row.signal_id, 'rejected:pending entry dropped on restart', null);
+      if (row.signal_id) db.updateSignalAction(row.signal_id, `rejected:${reason}`, null);
     }
     this.logInfo(`loaded ${this.open.size} open ${this.book === 0 ? 'paper' : 'shadow'} positions`);
   }
@@ -609,7 +626,7 @@ export class PaperEngine extends EventEmitter {
     const state=createReclaim({side:ev.side!,at:ctx.at,reference:ctx.refPrice,atr:ctx.atr,stop:levels.sl,tick:ctx.market.tickSize},rule);
     const id=this.nextId(), ruleKey=JSON.stringify(rule);
     const pe:PendingEntry={id,...ctx,observation:entryObservation(ev,ctx),side:ev.side!,signalPrice:ctx.refPrice,levels,dueAt:ctx.at,mlProb:ctx.mlProb??null,leverageMult:1,
-      features:{...ctx.features,reclaim_trial:1},sizeScale:Math.min(ctx.sizeScale??1,rule.sizeScale),reclaim:{state,event:ev,context:ctx,ruleKey}};
+      features:{...ctx.features,reclaim_trial:1},sizeScale:Math.min(ctx.sizeScale??1,rule.sizeScale),reclaim:{state,event:ev,context:ctx,ruleKey,checkpoint:{version:1,at:ctx.at}}};
     this.pending.set(id,pe);
     this.auditReclaim(pe,'setup',ctx.at);
     this.db.run("UPDATE positions SET scanner_id=?,scanner_name=?,symbol=?,tf=?,side=?,entry_price=?,entry_at=?,signal_id=?,fills=? WHERE id=?",ctx.scannerId,ctx.scannerName,ctx.symbol,ctx.tf,ev.side,ctx.refPrice,ctx.at,ctx.signalId,JSON.stringify({reclaimSetup:pe}),id);
@@ -629,10 +646,29 @@ export class PaperEngine extends EventEmitter {
     for (const pe of [...this.pending.values()]) {
       if (pe.symbol!==symbol || !pe.reclaim) continue;
       if (!this.reclaimAvailable(pe,pe.reclaim.ruleKey)) {this.cancelPending(pe.id,'reclaim trial disabled or changed');continue;}
-      const r=pe.reclaim, before=r.state.phase, step=advanceReclaim(r.state,bar,at,this.paper.limitFill==='through');
+      const r=pe.reclaim, before=r.state.phase, previousMinute=r.state.last?.time;
+      const through=this.configFor(pe).limitFill==='through';
+      if(r.recovery){
+        // Even a recently closed candle cannot place an order if it closed offline.
+        if(bar.time+60_000<=r.recovery.startedAt || bar.time<nextReclaimMinute(r.state))continue;
+        if(!pe.policy || pe.policy.strategyId!==this.policyForCell(pe).strategyId){this.cancelPending(pe.id,'reclaim policy changed during restart');continue;}
+        const history=this.reclaimHistory?.(symbol,nextReclaimMinute(r.state),bar.time-60_000);
+        if(history===null)continue; // Original setup deadline remains in housekeeping.
+        const recovered=recoverReclaim(r.state,r.checkpoint!, (TF_SECONDS[pe.tf]??0)*1000,bar.time,history??[],through);
+        if('reject'in recovered){this.cancelPending(pe.id,recovered.reject);continue;}
+        r.state=recovered.state;delete r.recovery;
+        this.auditReclaim(pe,'recovered',at,`${recovered.minutes} completed minutes checked; no historical order or fill`);
+      }
+      const step=advanceReclaim(r.state,bar,at,through);
       if(before==='pullback'&&r.state.phase==='reclaim')this.auditReclaim(pe,'pullback',at);
       if (step.kind==='cancelled') {this.cancelPending(pe.id,`reclaim ${step.reason}`);continue;}
-      if (step.kind!=='placed') continue;
+      if (step.kind!=='placed') {
+        if(r.state.last?.time!==previousMinute){
+          r.checkpoint={version:1,at};
+          this.db.run('UPDATE positions SET fills=? WHERE id=?',JSON.stringify({reclaimSetup:pe}),pe.id);
+        }
+        continue;
+      }
       this.auditReclaim(pe,'confirmed',at);
       const rule=this.reclaimRule(pe)!, count=this.reclaimCount(pe,at);
       if (count.entries>=rule.maxDailyEntries) {this.cancelPending(pe.id,'reclaim trial daily order limit');continue;}

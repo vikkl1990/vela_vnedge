@@ -19,7 +19,7 @@ export function reclaimStatus(db:Db,cfg:AppConfig,paper:Pick<PaperEngine,'pendin
     const counts=Object.fromEntries(db.all<{event:string;n:number}>('SELECT event,count(*) n FROM reclaim_events WHERE scanner_id=? AND symbol=? AND tf=? AND rule_key=? GROUP BY event',...args).map(r=>[r.event,r.n]));
     const events=db.all<{at:number;event:string;reason:string|null;signal_id:number|null}>('SELECT at,event,reason,signal_id FROM reclaim_events WHERE scanner_id=? AND symbol=? AND tf=? AND rule_key=? ORDER BY id DESC LIMIT 8',...args);
     const matches=(p:{scannerId:string;symbol:string;tf:string})=>p.scannerId===rule.scannerId&&p.symbol===rule.symbol&&p.tf===rule.tf;
-    const pending=paper.pendingEntries().filter(p=>matches(p)&&p.features?.reclaim_trial===1).map(p=>({id:p.id,phase:p.reclaim?.state.phase??'order',expiresAt:p.limit?.expiresAt??(p.reclaim?p.reclaim.state.at+p.reclaim.state.options.setupMinutes*60_000:null),price:p.limit?.price??null}));
+    const pending=paper.pendingEntries().filter(p=>matches(p)&&p.features?.reclaim_trial===1).map(p=>({id:p.id,phase:p.reclaim?.state.phase??'order',recovering:!!p.reclaim?.recovery,expiresAt:p.limit?.expiresAt??(p.reclaim?p.reclaim.state.at+p.reclaim.state.options.setupMinutes*60_000:null),price:p.limit?.price??null}));
     const open=paper.openPositions().filter(p=>matches(p)&&p.features?.reclaim_trial===1).length;
     const totals=db.get<{closed:number;net:number;sumR:number}>(`SELECT count(*) closed,coalesce(sum(p.realized_pnl-p.fees),0) net,
       coalesce(sum(CASE WHEN p.risk_amount>0 THEN (p.realized_pnl-p.fees)/p.risk_amount ELSE 0 END),0) sumR
@@ -32,7 +32,7 @@ export function reclaimStatus(db:Db,cfg:AppConfig,paper:Pick<PaperEngine,'pendin
     let scanNote:string|null=null;
     try {const f=JSON.parse(run?.funnel??'{}');scanNote=run?.error??f.note??(f.events?.entries===0?'No fresh entry event on the last scan':null);}catch{scanNote=run?.error??null;}
     const active=rule.enabled&&allocated&&cfg.execution.mode==='paper';
-    const state=!rule.enabled?'Disabled':!allocated?'Not allocated':cfg.execution.mode!=='paper'?'Paper mode required':open?'Position open':pending.length?(pending[0].phase==='order'?'Maker order resting':pending[0].phase==='reclaim'?'Pullback seen; waiting for reclaim':'Waiting for pullback'):usedToday>=rule.maxDailyEntries?(rule.minSignalBarAtr!==undefined?'Retest order limit reached; ordinary entries active':'Daily order limit reached'):rule.minSignalBarAtr!==undefined?'Watching expansion signals; ordinary entries active':'Waiting for a fresh setup';
+    const state=!rule.enabled?'Disabled':!allocated?'Not allocated':cfg.execution.mode!=='paper'?'Paper mode required':open?'Position open':pending.length?(pending[0].recovering?'Checking setup continuity':pending[0].phase==='order'?'Maker order resting':pending[0].phase==='reclaim'?'Pullback seen; waiting for reclaim':'Waiting for pullback'):usedToday>=rule.maxDailyEntries?(rule.minSignalBarAtr!==undefined?'Retest order limit reached; ordinary entries active':'Daily order limit reached'):rule.minSignalBarAtr!==undefined?'Watching expansion signals; ordinary entries active':'Waiting for a fresh setup';
     return {rule,active,state,counts,pending,open,usedToday,closed:totals.closed,net:totals.net,sumR:totals.sumR,events,lastScan:run?{at:run.at,barTime:run.bar_time,note:scanNote}:null};
   })};
 }

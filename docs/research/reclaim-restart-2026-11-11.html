@@ -1,0 +1,27 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VN EDGE · Reclaim restart recovery</title>
+<style>body{font:16px/1.55 system-ui;max-width:1100px;margin:40px auto;padding:0 24px;color:#22334b;background:#f5f8fc}h1,h2{color:#12375c}table{border-collapse:collapse;width:100%;background:white}th,td{padding:12px;border:1px solid #d2deea;text-align:left;vertical-align:top}th{background:#e8f0fa}.note{padding:18px;background:#fff3da;border-left:4px solid #b98421}code{background:#e8eef6;padding:2px 5px}a{color:#1263b4}</style>
+<h1>Reclaim setups can survive a restart</h1>
+<p>11 November 2026 · Baseline <code>588a5d1</code> · Scope: account paper reclaim setups before an order exists.</p>
+<h2>The defect and the repair</h2>
+<p>The engine saved a reclaim setup when its signal arrived, but kept subsequent completed-minute progress in memory. A restart therefore discarded the setup. It now commits the state and its checkpoint after every processed minute, in the same transaction as the audit. Recovery keeps the original signal, policy, stop, size scale, expiry and daily counter.</p>
+<p>A restarted setup waits for ready candle history and a fresh completed minute. Missing minutes may advance or invalidate the setup. They cannot place an order or create a fill. A confirmation that occurred while observations were interrupted cancels the setup. A missed source-timeframe close also cancels it, because an unseen script exit or replacement signal cannot be ruled out.</p>
+<table><thead><tr><th>Recovery case</th><th>Result</th></tr></thead><tbody>
+<tr><td>Committed setup, complete history, no missed confirmation</td><td>Resume; a fresh confirmation may submit an order now, after all normal admission checks.</td></tr>
+<tr><td>History is still loading or the feed is repairing</td><td>Wait within the original setup deadline. No order, fill or daily order debit.</td></tr>
+<tr><td>Missing/duplicate/invalid minute or stop invalidated during downtime</td><td>Cancel with an explicit audit reason.</td></tr>
+<tr><td>Confirmation or source-timeframe close missed during downtime</td><td>Cancel. No retrospective order or fill.</td></tr>
+<tr><td>Rule, allocation or strategy identity changed</td><td>Cancel; no policy substitution.</td></tr>
+<tr><td>Setup expired or snapshot lacks a trustworthy checkpoint</td><td>Cancel. No inferred legacy progress or reset expiry.</td></tr>
+<tr><td>Short reclaim order already resting before restart</td><td>Retain the existing cancellation safeguard. Its possible downtime fill remains unknown.</td></tr>
+<tr><td>Database write fails during progress or recovered confirmation</td><td>Roll back memory, saved state, audit, order and daily counter together.</td></tr>
+</tbody></table>
+<h2>Recorded SOL regression</h2>
+<p>Smart Money Breakout / SOLUSD / 15m signalled at 13:15:03 UTC. Its pullback was observed at 13:20; the setup was cancelled by restart at 13:22:52. With durable minute progress, the replay validates the missing 13:22 candle, then places the 84.393 limit only after the fresh 13:23 candle closes at 13:24. Entry remains pending until a subsequent eligible live observation. Old tape prints and historical candles cannot fill that new order.</p>
+<div class="note">This demonstrates recovery correctness, not a guaranteed missed profit. The recorded minute path cannot establish historical executable depth or queue position. No old SOL trade is inserted or reactivated on the VM.</div>
+<h2>Validation</h2>
+<p>The recorded SOL regression fails against the original engine and passes after the repair. An uninterrupted-versus-restarted comparison matches the limit, levels, reservation, fill price, quantity and bound policy. Tests cover repeated restarts, atomic checkpoint rollback, recovery rollback, expiry, delayed/mislabelled history, gaps, duplicate minutes, invalidation, source changes and quote/risk/depth refusals.</p>
+<p>Full server suite: <strong>1,214 passed</strong>. Dashboard: <strong>25 passed</strong>; lint and production build passed. Static typecheck retains the same 32 pre-existing diagnostics, with no new diagnostics.</p>
+<h2>Deployment boundaries</h2>
+<p>No configuration migration. Keep paper mode, $150 margin, risk caps, evidence standards and all restoration clocks unchanged. Bound positions and ordinary pending limits preserve their existing rules. The API describes a restored setup as “Checking setup continuity”. Existing pending setups without checkpoints cannot be safely upgraded, so check that no legacy setup or short reclaim order is active before rollout.</p>
+<p>Implementation: <code>paper/reclaimRecovery.ts</code>, transactional progress and restart handling in <code>paper/engine.ts</code>, readiness-checked CandleStore history in <code>app.ts</code>, and recovery status in <code>paper/reclaimAudit.ts</code>. Regression fixture: <code>paper/fixtures/reclaim-sol-20261111.json</code>. Local execution logs and deployment verification live under <code>work/reclaim-restart-20261111</code>.</p>
+</html>
