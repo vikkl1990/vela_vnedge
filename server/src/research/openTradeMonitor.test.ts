@@ -4,7 +4,7 @@ import {Db} from '../db.ts';
 import {DEFAULT_CONFIG} from '../config.ts';
 import {PaperEngine} from '../paper/engine.ts';
 import {fillExit} from '../paper/logic.ts';
-import {OpenTradeMonitor,type MarketObservation} from './openTradeMonitor.ts';
+import {OpenTradeMonitor,estimateExit,type MarketObservation} from './openTradeMonitor.ts';
 const T=1_800_000_000_000;
 const depth=(at:number,bid=97,ask=98,size=10000)=>({receivedAt:at,exchangeAt:at,bids:[{price:bid,size}],asks:[{price:ask,size}]});
 function setup(t:any,side:'long'|'short'='long'){
@@ -32,6 +32,10 @@ test('latency and fresh causal depth are mandatory; exit uses bid, not trigger',
  const row=x.db.get<any>('SELECT * FROM advisory_exits')!;const payload=JSON.parse(row.payload);assert.equal(payload.reports[0].price,96);assert.equal(row.net,-8);
 });
 test('short hypothetical exit pays the ask',t=>{const x=setup(t,'short');x.observe(T+300,102.6);x.settle(T+400,depth(T+400,102,103));assert.equal(x.monitor.view().trials[0].net,-6);});
+test('retained market context older than one second cannot become an executable quote',t=>{
+ const x=setup(t);assert.equal(estimateExit(x.input(),depth(T+300),T+2000).netR,null);
+ assert.equal(estimateExit(x.input(),depth(T+2000),T+2000).netR,-.6);
+});
 test('existing stop or pending real exit takes precedence over a new hypothetical decision',t=>{
  const x=setup(t);x.observe(T+300,94);x.observe(T+400,97.4,true);assert.equal(x.monitor.view().trials.length,0);
 });

@@ -41,7 +41,9 @@ export class MonitorRuntime {
   for(const symbol of this.symbols){
    const q=snapshot.get(symbol),fresh=q?.fresh&&q.exchangeAt!==null&&q.exchangeAt<=now&&q.receivedAt<=now;
    this.markets.set(symbol,{symbol,at:now,price:fresh?(q.bid+q.ask)/2:null,priceAt:fresh?q.receivedAt:null,
-    depth:this.depth.recorder.bookAt(symbol,now,1000),depthAt:this.depth.recorder.observedAt(symbol),flow:this.app.orderFlow.summary(symbol,now),funding:this.app.marks.funding(symbol)??null});
+    // Retain observed context for quieter pairs with its age. Executable quotes/fills
+    // still apply their own stricter one-second limit in priceExit.
+    depth:this.depth.recorder.bookAt(symbol,now,10000),depthAt:this.depth.recorder.observedAt(symbol),flow:this.app.orderFlow.summary(symbol,now),funding:this.app.marks.funding(symbol)??null});
   }
   this.monitor.observe(inputs,this.markets,p=>this.setup(p),now);
   if(now-this.lastSample>=60000){
