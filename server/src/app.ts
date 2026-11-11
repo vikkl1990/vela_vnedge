@@ -232,15 +232,24 @@ export class App {
     // so they must not fill new entries or move the live mark (audit: current-time fills from old candles)
     const onMinute = (e: { symbol: string; tf: string; bar: any; historical?: boolean }) => {
       if (e.tf !== '1m') return;
-      this.paper.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true });
-      this.shadow.onBar(e.symbol, e.bar, Date.now(), { historical: e.historical === true });
+      for (const [book,engine] of [[0,this.paper],[2,this.shadow]] as const) {
+        const at=Date.now(),historical=e.historical===true;
+        // Retain the actual partial/closed observation and its arrival. Final OHLC
+        // cannot reconstruct when a maker fill or candle fallback became possible.
+        this.replayArchive?.record(e.symbol,'paper_bar',{book,bar:e.bar,historical},at,'paper-input');
+        engine.onBar(e.symbol,e.bar,at,{historical});
+      }
     };
     this.candles.on('bar', onMinute);
     this.candles.on('closed', onMinute);
     this.paper.reclaimHistory=(symbol,from,to)=>this.candles.scanReadiness(symbol,'1m')?null:
       this.candles.get(symbol,'1m',{from,to,closedOnly:true});
     this.candles.on('closed', (e: {symbol:string;tf:string;bar:import('./data/candleStore.ts').Bar;historical?:boolean}) => {
-      if(e.tf==='1m') this.paper.onClosedMinute(e.symbol,e.bar,Date.now(),e.historical===true);
+      if(e.tf==='1m') {
+        const at=Date.now(),historical=e.historical===true;
+        this.replayArchive?.record(e.symbol,'paper_closed_minute',{book:0,bar:e.bar,historical},at,'paper-input');
+        this.paper.onClosedMinute(e.symbol,e.bar,at,historical);
+      }
     });
     this.feed.on('ticker', (t: WsTicker) => { this.paper.setMark(t.symbol, t.price); this.shadow.setMark(t.symbol, t.price); this.marks.onWsTicker(t); });
     this.feed.on('status', async (s: { connected: boolean }) => {

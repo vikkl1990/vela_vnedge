@@ -167,7 +167,10 @@ test('audit 5: a print past the expiry deadline cancels instead of filling', t =
   const { engine, queue } = tapeSetup(t);
   assert.equal(queue(1_000).action, 'pending');
   engine.onTrade('BTCUSD', 100, 1, 2_000, 1_000 + 61_000);
-  assert.equal(engine.openPositions().length, 0, 'expiry is enforced in the fill path, not only by housekeeping');
+  assert.equal(engine.openPositions().length, 0, 'a stale print cannot fill or consume a pending entry');
+  assert.equal(engine.pendingEntries().length, 1);
+  engine.onTrade('BTCUSD', 100, 1, 62_000, 62_000);
+  assert.equal(engine.openPositions().length, 0, 'a fresh post-expiry print cancels instead of filling');
   assert.equal(engine.pendingEntries().length, 0);
 });
 

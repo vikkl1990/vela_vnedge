@@ -119,3 +119,13 @@ test('uncertain or malformed tape observations cannot execute paper trades',()=>
   const [unknown]=read({type:'trades',sy:'BTCUSD',p:100,s:1,ts:T*1000,r:'m'},'trade');
   assert.equal(unknown.timeKnown,false);assert.equal(isExecutableTrade(unknown,T),false);
 });
+
+test('arrival age is bounded without treating quiet markets as stale trades',()=>{
+  const good={symbol:'PARTIUSD',price:100,qty:1,timeMs:T,aggressor:null};
+  assert.equal(isExecutableTrade(good,T+5000),true);
+  assert.equal(isExecutableTrade(good,T+5001),false);
+  assert.equal(isExecutableTrade(good,T+600000),false);
+  for(const at of [NaN,Infinity,0,-1])assert.equal(isExecutableTrade(good,at),false);
+  // There is no minimum trading frequency: a new print after a quiet hour is fresh.
+  assert.equal(isExecutableTrade({...good,timeMs:T+3600000},T+3600100),true);
+});

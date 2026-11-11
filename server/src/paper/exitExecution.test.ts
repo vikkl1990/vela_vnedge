@@ -35,6 +35,27 @@ test('new candle-mode positions react to live trades and shorts buy executable a
  assert.equal(x.e.pendingExits()[0].trigger_at,T+300);assert.equal(x.p.status,'open');
  x.at(T+400);x.e.settleExits('BTCUSD',book(T+400,106,107),T+400);assert.equal(x.p.exitPrice,107);
 });
+
+test('late ticks cannot trigger exits, ratchet stops, refresh marks or suppress candle fallback',t=>{
+ for(const side of ['long','short'] as const){
+  const x=setup(t,true,side,{trailAfterR:.5,trailGiveBackPct:10,floorAtR:0});
+  x.at(T+20000);const stop=x.p.sl,mark=x.e.mark('BTCUSD');
+  for(const price of [94,106])x.e.onTrade('BTCUSD',price,1,T+1000,x.now);
+  assert.equal(x.e.pendingExits().length,0);assert.equal(x.p.sl,stop);
+  assert.equal(x.e.view(x.p).execution!.desiredStop,null);
+  assert.equal(x.e.mark('BTCUSD'),mark);assert.equal(x.e.tapeActive('BTCUSD',x.now),false);
+  const price=side==='long'?94:106;
+  x.e.onBar('BTCUSD',{time:T,high:106,low:94,close:price},x.now);
+  assert.equal(x.e.pendingExits()[0].trigger_at,x.now,'fresh candle close remains available');
+ }
+});
+
+test('a delayed packet after restart cannot invent an exit; the next fresh tick still acts',t=>{
+ const x=setup(t);x.at(T+600000);const p=x.restart();
+ x.e.onTrade('BTCUSD',94,1,T+1000,x.now);assert.equal(x.e.pendingExits().length,0);
+ assert.equal(p.status,'open');assert.equal(x.e.tapeActive('BTCUSD',x.now),false);
+ x.e.onTrade('BTCUSD',94,1,x.now-100,x.now);assert.equal(x.e.pendingExits()[0].trigger_at,x.now);
+});
 test('missing, stale, future and pre-arrival depth cannot close an exit or release margin',t=>{
  const x=setup(t);x.at(T+300);x.e.onTrade('BTCUSD',94,1,T+300,T+300);const qty=x.p.qtyOpen,fees=x.p.fees;
  for(const b of [null,book(T+399),book(T+401),{...book(T+400),exchangeAt:T-10000}])x.e.settleExits('BTCUSD',b,T+400);

@@ -294,11 +294,8 @@ export function parseTrade(symbol: string, x: any): WsTrade | null {
     ...(x?.id != null ? { id: String(x.id) } : {}) };
 }
 
-/** Unknown trade times remain diagnostic observations, never execution triggers. */
-export function isExecutableTrade(t: WsTrade, receivedAt = Date.now()): boolean {
-  return t.timeKnown !== false && Number.isFinite(t.timeMs) && t.timeMs > 0 && t.timeMs <= receivedAt + 2000 &&
-    Number.isFinite(t.price) && t.price > 0 && Number.isFinite(t.qty) && t.qty > 0;
-}
+/** Preserve the public helper; paper also checks this at its execution boundary. */
+export {isExecutableTrade} from '../execution/tradeFreshness.ts';
 
 
 /** Normalize the public compact schemas to the existing internal events; legacy payloads remain supported. */

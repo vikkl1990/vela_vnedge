@@ -19,10 +19,14 @@ async function rows(dir:string){const out:ReplayEvent[]=[];for await(const r of 
 test('sealed replay preserves receipt time, ignores unselected pairs and verifies manifests',async t=>{
  const {dir,archive}=await fixture(t);archive.setSymbols(['INITUSD']);
  archive.record('INITUSD','trade',{timeMs:T-20,price:1,qty:4},T,'execution-feed');
+ archive.record('INITUSD','trade_rejected',{reason:'stale trade arrival',eventAt:T-6000,ageMs:6000},T,'execution-feed');
+ archive.record('INITUSD','paper_bar',{book:0,bar:{time:T-30000,open:1,high:2,low:.5,close:1,volume:4},historical:false},T,'paper-input');
  archive.record('OTHERUSD','trade',{price:2},T);await archive.flush();
  assert.equal(archive.status().lastSyncAt,T);await archive.close();
  const result=await rows(dir),trade=result.find(r=>r.kind==='trade')!;
  assert.equal(trade.receivedAt,T);assert.equal((trade.payload as any).timeMs,T-20);
+ assert.equal(result.find(r=>r.kind==='trade_rejected')!.source,'execution-feed');
+ assert.deepEqual(result.find(r=>r.kind==='paper_bar')!.payload,{book:0,bar:{time:T-30000,open:1,high:2,low:.5,close:1,volume:4},historical:false});
  assert.equal(result.filter(r=>r.symbol==='OTHERUSD').length,0);
  assert.equal(result[0].kind,'gap','startup boundary precedes the first captured event');
  const manifest=await replayManifests(dir);assert.equal(manifest.length,1);assert.equal(manifest[0].events,result.length);assert.equal(manifest[0].gaps,2);

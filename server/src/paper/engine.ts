@@ -1,4 +1,5 @@
 import {reclaimRestoreRefusal,recoverReclaim,nextReclaimMinute,type ReclaimCheckpoint} from './reclaimRecovery.ts';
+import {isExecutableTrade} from '../execution/tradeFreshness.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell,freshMakerPrint} from './makerPricing.ts';
 import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {PaperExitExecution,CAUSAL_EXIT_VERSION,type ExitBook} from './exitExecution.ts';
@@ -1077,7 +1078,9 @@ export class PaperEngine extends EventEmitter {
 
   /** One print from the tape. Fills due pending entries, then checks liquidation (on mark), stop and resting targets. */
   onTrade(symbol: string, price: number, qty: number, time: number, observedAt = this.now()): void {
-    if (!(price > 0) || !Number.isFinite(time) || time < (this.lastTradeTime.get(symbol) ?? -Infinity)) return;
+    // Reject before marks, tape liveness, pending orders or stops can change.
+    // A delayed packet is history, even if it is the first print after a restart.
+    if (!isExecutableTrade({price,qty,timeMs:time},observedAt) || time < (this.lastTradeTime.get(symbol) ?? -Infinity)) return;
     this.lastTradeTime.set(symbol, time);
     this.lastTradeAt.set(symbol, observedAt);
     this.marks.set(symbol, price);

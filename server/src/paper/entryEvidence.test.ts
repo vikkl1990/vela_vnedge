@@ -100,6 +100,15 @@ test('tape timing refuses unknown quantity, stale, future, pre-placement and exp
  ])assert.equal(freshMakerPrint(qty,event,observed,from,expiry,maxAge),false);
 });
 
+test('ordinary tape maker also ignores delayed prints without consuming its valid order',t=>{
+ const f=setup(t);f.cfg.paper.fillSource='tape';f.enter();f.setNow(T+20000);
+ f.engine.onTrade(cell.symbol,99.8,20,T+1000,f.getNow());
+ assert.equal(f.engine.openPositions().length,0);assert.equal(f.engine.pendingEntries().length,1);
+ assert.equal(f.engine.tapeActive(cell.symbol,f.getNow()),false);
+ f.engine.onTrade(cell.symbol,99.8,20,f.getNow()-100,f.getNow());
+ assert.equal(f.engine.openPositions().length,1);assert.equal(f.engine.pendingEntries().length,0);
+});
+
 test('restart preserves price and expiry but never fills from downtime or stale tape',t=>{
  const f=setup(t,true);f.enter();const pending=f.engine.pendingEntries()[0];f.setNow(T+5000);
  const restored=new PaperEngine(f.db,()=>f.cfg,{now:f.getNow});restored.quotes=f.quotes;

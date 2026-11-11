@@ -17,6 +17,7 @@ import { depthFill } from '../paper/entryExecution.ts';
  */
 import { TradingStatus } from '../delta/tradingStatus.ts';
 import { toMs, isExecutableTrade } from '../delta/ws.ts';
+import {tradeRefusal} from './tradeFreshness.ts';
 import type { App } from '../app.ts';
 import type { WsFunding, WsMark, WsTrade } from '../delta/ws.ts';
 import { logger } from '../log.ts';
@@ -159,6 +160,7 @@ export function wireRealtime(app: App): void {
     const receivedAt = Date.now();
     replay.record(t.symbol,'trade',t,receivedAt,'execution-feed');
     if (isExecutableTrade(t, receivedAt)) { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs, receivedAt); }
+    else replay.record(t.symbol,'trade_rejected',{reason:tradeRefusal(t,receivedAt),eventAt:t.timeMs,ageMs:receivedAt-t.timeMs},receivedAt,'execution-feed');
     try { flow.onTrade(t); } catch(e:any) { log.warn(`order flow print: ${e.message}`); }
   });
   app.feed.on('mark', (m: WsMark) => { replay.record(m.symbol,'mark',m,Date.now(),'execution-feed');funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
