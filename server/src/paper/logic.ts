@@ -805,7 +805,7 @@ export function staleExit(pos: Position, bar: { time: number; close: number }, c
   return fillExit(pos, bar.close, pos.qtyOpen, 'stale', bar.time, cfg, true);
 }
 
-export interface PriceBar { time: number; open?: number; high: number; low: number; close: number }
+export interface PriceBar { time: number; open?: number; high: number; low: number; close: number; volume?: number }
 
 /** A limit resting before this minute must cross its entry before its adverse stop.
  * A favourable extreme has no such ordering guarantee. Charge only the stop here;

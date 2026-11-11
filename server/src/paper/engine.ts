@@ -1,3 +1,4 @@
+import {quoteMakerCell,passiveMakerPrice,tradedVolume} from './makerPricing.ts';
 import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {PaperExitExecution,CAUSAL_EXIT_VERSION,type ExitBook} from './exitExecution.ts';
 import {recordGatedSignal,type GateStage} from '../evidence/gatedSignals.ts';
@@ -81,7 +82,7 @@ export interface PendingEntry {
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; signalPrice: number; levels: LevelResult;
   market: MarketInfo; at: number; dueAt: number; signalId: number | null; features?: Record<string, number>; mlProb: number | null; score?: number; leverageMult: number; sizeScale?: number;
   /** Decision 185: a resting maker limit — its price, when it lapses, and what the levels are resolved from at the fill. */
-  limit?: { price: number; expiresAt: number; atr: number; sl?: number; tp?: number[]; bars: number };
+  limit?: { price: number; expiresAt: number; atr: number; sl?: number; tp?: number[]; bars: number; quoteAnchor?: number };
   /** Decision 186: a reversal's held position, closed only when this entry fills (a cancelled reversal keeps it). */
   replacingId?: number;
   reclaim?: {state: ReclaimState; event: ScanEvent; context: EntryContext; ruleKey: string};
@@ -688,15 +689,15 @@ export class PaperEngine extends EventEmitter {
     const quoted = this.entryPrice(ctx.symbol, ev.side === 'long' ? 'buy' : 'sell', reference, cfg, ctx.at);
     if ('reject' in quoted) return refused(`unpriceable: ${quoted.reject}`);
     // Admit a resting order at its intended price, not at a market price it will never pay.
+    const quoteAnchor = willRestLimit && !planned && quoteMakerCell(cfg,ctx);
+    if(quoteAnchor && !quoted.quoted)return refused('unpriceable: quote-anchored maker entry requires a fresh executable quote');
+    const limitReference=quoteAnchor?quoted.price:reference;
     const limitOffset = le?.atrByTf?.[ctx.tf] ?? le?.atr ?? 0;
     let limitPrice: number | undefined;
     if (willRestLimit) {
       const tick = ctx.market.tickSize;
       if (!(tick > 0)) return refused('maker entry requires a positive tick size');
-      const raw = planned?.price ?? (ev.side === 'long' ? reference - limitOffset * ctx.atr! : reference + limitOffset * ctx.atr!);
-      // A stale signal reference can cross the current quote. Keep the order passive.
-      const passive = quoted.quoted ? (ev.side === 'long' ? Math.min(raw, quoted.price - tick) : Math.max(raw, quoted.price + tick)) : raw;
-      limitPrice = Number(((ev.side === 'long' ? Math.floor(passive / tick + 1e-9) : Math.ceil(passive / tick - 1e-9)) * tick).toPrecision(14));
+      limitPrice = passiveMakerPrice(ev.side!,planned?.price??limitReference,planned?0:limitOffset,ctx.atr!,tick,quoted.quoted?quoted.price:undefined);
       if (!(limitPrice > 0 && Number.isFinite(limitPrice))) return refused('invalid maker entry price');
     }
     let price = limitPrice ?? quoted.price;
@@ -748,12 +749,12 @@ export class PaperEngine extends EventEmitter {
       const off = limitOffset;
       const id = this.nextId();
       const pe: PendingEntry = { id, observation:entryObservation(ev,ctx), policy:ctx.policy, reservation:this.reservation(size,price,ctx.market.contractValue), executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: reference, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at, signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
-        reclaimRuleKey:planned?.ruleKey,limit: { price: limitPrice!, expiresAt: planned?.expiresAt ?? ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars } };
+        reclaimRuleKey:planned?.ruleKey,limit: { price: limitPrice!, expiresAt: planned?.expiresAt ?? ctx.at + le.bars * tfMs, atr: ctx.atr!, sl: ev.sl, tp: ev.tp, bars: le.bars, ...(quoteAnchor?{quoteAnchor:quoted.price}:{}) } };
       this.pending.set(id, pe);
       this.emit('pending', { type: 'placed', entry: pe });   // decision 190: the tape audit registers the order at once
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, limitPrice, pe.at, pe.signalId, JSON.stringify({ limitEntry: pe }), id);
-      this.logInfo(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${reference}), rests ${le.bars} bars [${ctx.scannerId}]`);
-      return { action: 'pending', reason: planned ? `reclaim trial: maker limit at ${limitPrice}, expires in ${Math.round((planned.expiresAt-ctx.at)/60_000)} minutes` : `resting limit at ${limitPrice}, ${off} ATR back, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
+      this.logInfo(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${quoteAnchor?'quote ':'signal '}${limitReference}), rests ${le.bars} bars [${ctx.scannerId}]`);
+      return { action: 'pending', reason: planned ? `reclaim trial: maker limit at ${limitPrice}, expires in ${Math.round((planned.expiresAt-ctx.at)/60_000)} minutes` : `resting limit at ${limitPrice}, ${off} ATR back${quoteAnchor?' from executable quote':''}, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
     }
     if (cfg.fillSource === 'tape' || (cfg.latencyMs ?? 0) > 0) {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
@@ -1036,6 +1037,7 @@ export class PaperEngine extends EventEmitter {
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
       if (this.configFor(pe).fillSource !== 'tape' || pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
+      if (pe.limit?.quoteAnchor!==undefined && !tradedVolume(qty)) continue;
       if (pe.limit && !(time >= pe.at && this.limitTouched(pe, price, price))) continue;
       const fill = () => {
         if (pe.limit) {
@@ -1174,7 +1176,7 @@ export class PaperEngine extends EventEmitter {
         if (pe.limit) {
           // A partial candle observed before expiry is usable; an OHLC range spanning
           // the deadline cannot prove that the touch happened while the order rested.
-          if (bar.time >= pe.at && bar.time < pe.limit.expiresAt && Math.min(observedAt, barClosedAt) <= pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) {
+          if ((pe.limit.quoteAnchor===undefined || tradedVolume(bar.volume)) && bar.time >= pe.at && bar.time < pe.limit.expiresAt && Math.min(observedAt, barClosedAt) <= pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) {
             const fill = () => {
               const pos = this.fillLimit(pe, observedAt, bar.time);
               if (pos) {

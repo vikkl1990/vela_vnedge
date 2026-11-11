@@ -1,0 +1,685 @@
+{
+  "at": 1794407007375,
+  "method": "23 timestamped accepted setups; current exit settings under full fees, positive-volume minute fills only, finish before next signal, 5bp extra cost; OHLC approximation, missing historical depth/queues/funding; research only.",
+  "groups": {
+    "all": {
+      "n": 23,
+      "current": {
+        "closed": 20,
+        "open": 0,
+        "unfilled": 3,
+        "netR": 0.4571342418909836,
+        "stressR": 0.030379500242435853,
+        "stops": 5
+      },
+      "quote": {
+        "closed": 21,
+        "open": 1,
+        "unfilled": 1,
+        "netR": 1.2171050684903433,
+        "stressR": 0.7653766746610895,
+        "stops": 5
+      }
+    },
+    "earlier": {
+      "n": 11,
+      "current": {
+        "closed": 10,
+        "open": 0,
+        "unfilled": 1,
+        "netR": 0.7664636057750045,
+        "stressR": 0.551846674756449,
+        "stops": 2
+      },
+      "quote": {
+        "closed": 11,
+        "open": 0,
+        "unfilled": 0,
+        "netR": 1.4764332390368153,
+        "stressR": 1.2419990708795265,
+        "stops": 2
+      }
+    },
+    "later": {
+      "n": 12,
+      "current": {
+        "closed": 10,
+        "open": 0,
+        "unfilled": 2,
+        "netR": -0.3093293638840212,
+        "stressR": -0.5214671745140131,
+        "stops": 3
+      },
+      "quote": {
+        "closed": 10,
+        "open": 1,
+        "unfilled": 1,
+        "netR": -0.2593281705464723,
+        "stressR": -0.47662239621843727,
+        "stops": 3
+      }
+    }
+  },
+  "rows": [
+    {
+      "at": 1793368913036,
+      "side": "short",
+      "oldPrice": 0.04508,
+      "quotePrice": 0.04496,
+      "bid": 0.04486,
+      "ask": 0.04488,
+      "reference": 0.04498,
+      "atr": 0.0009804873121040758,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793373360000,
+        "exitAt": 1793375520000,
+        "exitReason": "trail",
+        "netR": 0.5204217235166021,
+        "stressR": 0.5056033995683059,
+        "volume": 10
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793371260000,
+        "exitAt": 1793375520000,
+        "exitReason": "trail",
+        "netR": 0.44085357610764514,
+        "stressR": 0.4260541828925786,
+        "volume": 4441
+      }
+    },
+    {
+      "at": 1793520096926,
+      "side": "long",
+      "oldPrice": 0.04544,
+      "quotePrice": 0.04545,
+      "bid": 0.04549,
+      "ask": 0.04551,
+      "reference": 0.0455,
+      "atr": 0.000516334662755746,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793524560000,
+        "exitAt": 1793537340000,
+        "exitReason": "trail",
+        "netR": 0.376587096304032,
+        "stressR": 0.3483462095241607,
+        "volume": 1310
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793524560000,
+        "exitAt": 1793537760000,
+        "exitReason": "trail",
+        "netR": 0.4248271131014097,
+        "stressR": 0.39656825290880293,
+        "volume": 1310
+      }
+    },
+    {
+      "at": 1793563294306,
+      "side": "short",
+      "oldPrice": 0.04524,
+      "quotePrice": 0.0452,
+      "bid": 0.04512,
+      "ask": 0.04514,
+      "reference": 0.04516,
+      "atr": 0.0007047416744788567,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793564400000,
+        "exitAt": 1793572380000,
+        "exitReason": "trail",
+        "netR": 0.27689425655330047,
+        "stressR": 0.25635899438825,
+        "volume": 12
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793564400000,
+        "exitAt": 1793594340000,
+        "exitReason": "trail",
+        "netR": 0.42286297439469206,
+        "stressR": 0.402381780954438,
+        "volume": 12
+      }
+    },
+    {
+      "at": 1793595658184,
+      "side": "short",
+      "oldPrice": 0.04488,
+      "quotePrice": 0.04484,
+      "bid": 0.04478,
+      "ask": 0.0448,
+      "reference": 0.04482,
+      "atr": 0.0005610910896022686,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793596260000,
+        "exitAt": 1793600400000,
+        "exitReason": "trail",
+        "netR": 0.4267382286366754,
+        "stressR": 0.4012702493554568,
+        "volume": 400
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793596260000,
+        "exitAt": 1793600400000,
+        "exitReason": "trail",
+        "netR": 0.3811570019829495,
+        "stressR": 0.3556994652819105,
+        "volume": 400
+      }
+    },
+    {
+      "at": 1793642438207,
+      "side": "short",
+      "oldPrice": 0.04337,
+      "quotePrice": 0.04328,
+      "bid": 0.04321,
+      "ask": 0.04323,
+      "reference": 0.0433,
+      "atr": 0.0006994450362883216,
+      "current": {
+        "state": "unfilled"
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793642640000,
+        "exitAt": 1793648520000,
+        "exitReason": "trail",
+        "netR": 0.4015373324493502,
+        "stressR": 0.3817149476718996,
+        "volume": 11
+      }
+    },
+    {
+      "at": 1793685637953,
+      "side": "long",
+      "oldPrice": 0.04567,
+      "quotePrice": 0.04561,
+      "bid": 0.04566,
+      "ask": 0.04568,
+      "reference": 0.04575,
+      "atr": 0.0006815730659693709,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793685780000,
+        "exitAt": 1793685960000,
+        "exitReason": "trail",
+        "netR": 0.07851323212640698,
+        "stressR": 0.0568958512802875,
+        "volume": 237
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793686440000,
+        "exitAt": 1793687580000,
+        "exitReason": "trail",
+        "netR": 0.4319019678258896,
+        "stressR": 0.41022355147550343,
+        "volume": 3418
+      }
+    },
+    {
+      "at": 1793728832543,
+      "side": "short",
+      "oldPrice": 0.04564,
+      "quotePrice": 0.04561,
+      "bid": 0.04553,
+      "ask": 0.04555,
+      "reference": 0.04556,
+      "atr": 0.0007795936551263759,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793730120000,
+        "exitAt": 1793754480000,
+        "exitReason": "trail",
+        "netR": 0.42528030052265237,
+        "stressR": 0.40649891479549777,
+        "volume": 50
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793728980000,
+        "exitAt": 1793754480000,
+        "exitReason": "trail",
+        "netR": 0.4004537454838953,
+        "stressR": 0.38167818467147535,
+        "volume": 1584
+      }
+    },
+    {
+      "at": 1793764839263,
+      "side": "short",
+      "oldPrice": 0.04541,
+      "quotePrice": 0.04547,
+      "bid": 0.0454,
+      "ask": 0.04542,
+      "reference": 0.045,
+      "atr": 0.0006716607932691406,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793765100000,
+        "exitAt": 1793767260000,
+        "exitReason": "trail",
+        "netR": 0.356785433334746,
+        "stressR": 0.3352082852279228,
+        "volume": 775
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793765100000,
+        "exitAt": 1793767260000,
+        "exitReason": "trail",
+        "netR": 0.41403108953695816,
+        "stressR": 0.3924406432322173,
+        "volume": 775
+      }
+    },
+    {
+      "at": 1793779241275,
+      "side": "long",
+      "oldPrice": 0.04601,
+      "quotePrice": 0.04609,
+      "bid": 0.04614,
+      "ask": 0.04616,
+      "reference": 0.04608,
+      "atr": 0.00068651978125156,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793780040000,
+        "exitAt": 1793803800000,
+        "exitReason": "trail",
+        "netR": 0.32068328566404136,
+        "stressR": 0.29905398991572674,
+        "volume": 421
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793780040000,
+        "exitAt": 1793803800000,
+        "exitReason": "trail",
+        "netR": 0.2457443347785487,
+        "stressR": 0.22409765184566238,
+        "volume": 421
+      }
+    },
+    {
+      "at": 1793804422672,
+      "side": "long",
+      "oldPrice": 0.04664,
+      "quotePrice": 0.04669,
+      "bid": 0.04673,
+      "ask": 0.04676,
+      "reference": 0.04671,
+      "atr": 0.0006845298875056826,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793806020000,
+        "exitAt": 1793812500000,
+        "exitReason": "sl",
+        "netR": -1.007963239874375,
+        "stressR": -1.0295446041562506,
+        "volume": 4
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793806020000,
+        "exitAt": 1793812500000,
+        "exitReason": "sl",
+        "netR": -1.0079722849111228,
+        "stressR": -1.0295762085772655,
+        "volume": 4
+      }
+    },
+    {
+      "at": 1793833230326,
+      "side": "long",
+      "oldPrice": 0.04609,
+      "quotePrice": 0.04602,
+      "bid": 0.04608,
+      "ask": 0.0461,
+      "reference": 0.04649,
+      "atr": 0.000719335782803813,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793835420000,
+        "exitAt": 1793840400000,
+        "exitReason": "sl",
+        "netR": -1.0074767110090774,
+        "stressR": -1.0278446151429086,
+        "volume": 100
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793835420000,
+        "exitAt": 1793840820000,
+        "exitReason": "sl",
+        "netR": -1.0789636117134003,
+        "stressR": -1.0992833814776959,
+        "volume": 100
+      }
+    },
+    {
+      "at": 1793894429979,
+      "side": "short",
+      "oldPrice": 0.0422,
+      "quotePrice": 0.04197,
+      "bid": 0.04186,
+      "ask": 0.04188,
+      "reference": 0.04209,
+      "atr": 0.0010974877383148716,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793895060000,
+        "exitAt": 1793901960000,
+        "exitReason": "trail",
+        "netR": 0.41979249570824173,
+        "stressR": 0.4073792345131683,
+        "volume": 9750
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793894640000,
+        "exitAt": 1793902140000,
+        "exitReason": "trail",
+        "netR": 0.33681180044567094,
+        "stressR": 0.3244446292010141,
+        "volume": 200
+      }
+    },
+    {
+      "at": 1793948426225,
+      "side": "long",
+      "oldPrice": 0.04686,
+      "quotePrice": 0.04685,
+      "bid": 0.04695,
+      "ask": 0.04697,
+      "reference": 0.04698,
+      "atr": 0.0011449629579311559,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793948580000,
+        "exitAt": 1793957700000,
+        "exitReason": "trail",
+        "netR": 0.47263835067953075,
+        "stressR": 0.4591923237941785,
+        "volume": 1159
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1793948580000,
+        "exitAt": 1793957700000,
+        "exitReason": "trail",
+        "netR": 0.47832793662539197,
+        "stressR": 0.46488326809473285,
+        "volume": 1159
+      }
+    },
+    {
+      "at": 1793988151323,
+      "side": "short",
+      "oldPrice": 0.04556,
+      "quotePrice": 0.04547,
+      "bid": 0.04537,
+      "ask": 0.04539,
+      "reference": 0.04546,
+      "atr": 0.000995916539083466,
+      "current": {
+        "state": "closed",
+        "entryAt": 1793989140000,
+        "exitAt": 1794034980000,
+        "exitReason": "trail",
+        "netR": 0.4233986841011029,
+        "stressR": 0.4085986635058361,
+        "volume": 74
+      },
+      "quote": {
+        "state": "open",
+        "entryAt": 1793988480000,
+        "exitAt": null,
+        "exitReason": null,
+        "netR": -0.007024884459068253,
+        "stressR": -0.01446649935214903,
+        "volume": 1
+      }
+    },
+    {
+      "at": 1794052843622,
+      "side": "short",
+      "oldPrice": 0.04512,
+      "quotePrice": 0.0451,
+      "bid": 0.04504,
+      "ask": 0.04506,
+      "reference": 0.04506,
+      "atr": 0.0005731509575059223,
+      "current": {
+        "state": "closed",
+        "entryAt": 1794054240000,
+        "exitAt": 1794057900000,
+        "exitReason": "sl",
+        "netR": -1.0108204165546184,
+        "stressR": -1.0362055529560583,
+        "volume": 1000
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794054240000,
+        "exitAt": 1794057900000,
+        "exitReason": "sl",
+        "netR": -1.0108161550938923,
+        "stressR": -1.0361906126323825,
+        "volume": 1000
+      }
+    },
+    {
+      "at": 1794060023004,
+      "side": "long",
+      "oldPrice": 0.04595,
+      "quotePrice": 0.04589,
+      "bid": 0.04594,
+      "ask": 0.04596,
+      "reference": 0.04605,
+      "atr": 0.0006074107745841882,
+      "current": {
+        "state": "closed",
+        "entryAt": 1794060240000,
+        "exitAt": 1794061980000,
+        "exitReason": "trail",
+        "netR": 0.35081904962336713,
+        "stressR": 0.3264848873474694,
+        "volume": 6719
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794060360000,
+        "exitAt": 1794061980000,
+        "exitReason": "trail",
+        "netR": 0.41414980294336373,
+        "stressR": 0.3898301927553654,
+        "volume": 120
+      }
+    },
+    {
+      "at": 1794106824610,
+      "side": "short",
+      "oldPrice": 0.04567,
+      "quotePrice": 0.04571,
+      "bid": 0.04566,
+      "ask": 0.04568,
+      "reference": 0.04554,
+      "atr": 0.00048626924408472867,
+      "current": {
+        "state": "closed",
+        "entryAt": 1794106920000,
+        "exitAt": 1794117420000,
+        "exitReason": "trail",
+        "netR": 0.39521229173913847,
+        "stressR": 0.3655795289402647,
+        "volume": 1027
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794106920000,
+        "exitAt": 1794117420000,
+        "exitReason": "trail",
+        "netR": 0.4472828431036642,
+        "stressR": 0.41763833057165634,
+        "volume": 1027
+      }
+    },
+    {
+      "at": 1794204037060,
+      "side": "long",
+      "oldPrice": 0.04239,
+      "quotePrice": 0.04234,
+      "bid": 0.04237,
+      "ask": 0.0424,
+      "reference": 0.0425,
+      "atr": 0.0005790508250461139,
+      "current": {
+        "state": "closed",
+        "entryAt": 1794204180000,
+        "exitAt": 1794205860000,
+        "exitReason": "sl",
+        "netR": -1.008602960214523,
+        "stressR": -1.0317798621798338,
+        "volume": 235
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794204180000,
+        "exitAt": 1794205920000,
+        "exitReason": "sl",
+        "netR": -1.0196336364304626,
+        "stressR": -1.0427812117764805,
+        "volume": 235
+      }
+    },
+    {
+      "at": 1794207629764,
+      "side": "short",
+      "oldPrice": 0.04161,
+      "quotePrice": 0.04158,
+      "bid": 0.04151,
+      "ask": 0.04153,
+      "reference": 0.04154,
+      "atr": 0.0006205471946856773,
+      "current": {
+        "state": "unfilled"
+      },
+      "quote": {
+        "state": "unfilled"
+      }
+    },
+    {
+      "at": 1794229232181,
+      "side": "long",
+      "oldPrice": 0.04185,
+      "quotePrice": 0.04184,
+      "bid": 0.04188,
+      "ask": 0.04191,
+      "reference": 0.04192,
+      "atr": 0.0006022693170247915,
+      "current": {
+        "state": "closed",
+        "entryAt": 1794231720000,
+        "exitAt": 1794244680000,
+        "exitReason": "trail",
+        "netR": 0.3068863330986837,
+        "stressR": 0.2844102920268773,
+        "volume": 5118
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794231720000,
+        "exitAt": 1794244680000,
+        "exitReason": "trail",
+        "netR": 0.31759179512785174,
+        "stressR": 0.2951182304602325,
+        "volume": 5118
+      }
+    },
+    {
+      "at": 1794276172769,
+      "side": "short",
+      "oldPrice": 0.04055,
+      "quotePrice": 0.0405,
+      "bid": 0.04045,
+      "ask": 0.04047,
+      "reference": 0.0405,
+      "atr": 0.0004901888534510382,
+      "current": {
+        "state": "closed",
+        "entryAt": 1794278520000,
+        "exitAt": 1794281100000,
+        "exitReason": "trail",
+        "netR": 0.3602402149052734,
+        "stressR": 0.334128824685591,
+        "volume": 1285
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794278520000,
+        "exitAt": 1794281880000,
+        "exitReason": "trail",
+        "netR": 0.39914353205689923,
+        "stressR": 0.37307277210121986,
+        "volume": 1285
+      }
+    },
+    {
+      "at": 1794330026620,
+      "side": "short",
+      "oldPrice": 0.03995,
+      "quotePrice": 0.04001,
+      "bid": 0.03994,
+      "ask": 0.03996,
+      "reference": 0.03985,
+      "atr": 0.0006394808594211718,
+      "current": {
+        "state": "closed",
+        "entryAt": 1794330180000,
+        "exitAt": 1794356100000,
+        "exitReason": "sl",
+        "netR": -1.018893406970218,
+        "stressR": -1.0392555141915063,
+        "volume": 10
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794330180000,
+        "exitAt": 1794356520000,
+        "exitReason": "sl",
+        "netR": -1.0390604762753444,
+        "stressR": -1.0594568163283444,
+        "volume": 10
+      }
+    },
+    {
+      "at": 1794366033512,
+      "side": "short",
+      "oldPrice": 0.03983,
+      "quotePrice": 0.03964,
+      "bid": 0.03957,
+      "ask": 0.03959,
+      "reference": 0.03976,
+      "atr": 0.000631872634394561,
+      "current": {
+        "state": "unfilled"
+      },
+      "quote": {
+        "state": "closed",
+        "entryAt": 1794366300000,
+        "exitAt": 1794378240000,
+        "exitReason": "trail",
+        "netR": 0.41687438695038526,
+        "stressR": 0.39681882133454915,
+        "volume": 1
+      }
+    }
+  ]
+}

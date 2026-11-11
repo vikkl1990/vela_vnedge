@@ -52,6 +52,8 @@ export interface PaperConfig {
   maxStopLossPct: number;
   /** Explicit scanner/market/entry-frame rules; context must agree on closed bars. */
   entryAlignments?: Array<{ scannerId: string; symbol: string; tf: string; contextTf: string; emaLen: number }>;
+  /** Cells whose ordinary maker offset is anchored to a fresh executable quote; fresh evidence required. */
+  makerQuoteCells?: Array<{scannerId:string;symbol:string;tf:string}>;
   /** Small account-only paper trials of the completed-minute reclaim entry. */
   reclaimTrials?: Array<{enabled: boolean; scannerId: string; symbol: string; tf: '15m'; pullbackAtr: number; setupMinutes: number; orderMinutes: number; sizeScale: number; maxDailyEntries: number; minSignalBarAtr?: number; maxStopLossPct?: number}>;
   /**
@@ -796,6 +798,19 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.maintenanceMarginPct >= 0 && p.maintenanceMarginPct < 5)) errs.push('paper.maintenanceMarginPct must be 0..5');
   if (!(Number.isFinite(p.minRiskFeeRatio) && p.minRiskFeeRatio >= 0)) errs.push('paper.minRiskFeeRatio must be ≥ 0');
   if (!(Number.isFinite(p.maxStopLossPct) && p.maxStopLossPct >= 0 && p.maxStopLossPct <= 100)) errs.push('paper.maxStopLossPct must be 0..100');
+  if (p.makerQuoteCells !== undefined) {
+    if (!Array.isArray(p.makerQuoteCells)) errs.push('paper.makerQuoteCells must be an array');
+    else {
+      const seen=new Set<string>();
+      for(const r of p.makerQuoteCells) {
+        if(!r || typeof r.scannerId!=='string' || !r.scannerId.trim() || !/^[A-Z0-9]+USD$/.test(r.symbol) || !TF_SECONDS[r.tf]) errs.push('invalid paper.makerQuoteCells rule');
+        const key=`${r?.scannerId}|${r?.symbol}|${r?.tf}`;
+        if(seen.has(key)) errs.push('duplicate paper.makerQuoteCells rule');
+        seen.add(key);
+      }
+      if(p.makerQuoteCells.length && (!p.useSpread || !(p.quoteMaxAgeMs>0))) errs.push('paper.makerQuoteCells requires executable quotes and quoteMaxAgeMs > 0');
+    }
+  }
   if (p.entryAlignments !== undefined) {
     if (!Array.isArray(p.entryAlignments)) errs.push('paper.entryAlignments must be an array');
     else {

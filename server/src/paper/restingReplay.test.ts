@@ -53,3 +53,18 @@ test('a candle spanning expiry cannot prove a fill before the deadline', () => {
   const coarse=input();delete coarse.subBars;coarse.entry!.pullbackBars=1/3;
   assert.equal(runBacktest(coarse).entries,0,'a whole 15m bar cannot locate a fill within five minutes');
 });
+
+
+test('quote-relative maker replay requires causal fresh historical quotes and traded volume',()=>{
+ const base=input();base.cfg.makerQuoteCells=[{scannerId:base.scannerId,symbol:base.symbol,tf:base.tf}];
+ base.cfg.quoteMaxAgeMs=1000;
+ for(const quotes of [undefined,[],[{at:21*TF+1,bid:99.9,ask:100}],[{at:21*TF-1001,bid:99.9,ask:100}],[{at:21*TF,bid:101,ask:100}]]){
+  const r=runBacktest({...base,entryQuotes:quotes});assert.equal(r.entries,0);
+  assert.ok(r.rejected['quote-anchored maker requires historical executable quote']>0);
+ }
+ for(const volume of [0,1]){
+  const x=structuredClone(base);x.entryQuotes=[{at:21*TF,bid:99.9,ask:100}];
+  x.subBars![0]={time:21*TF,open:100,high:100.1,low:99.8,close:100,volume};
+  const r=runBacktest(x);assert.equal(r.entries,volume===1?1:0);
+ }
+});

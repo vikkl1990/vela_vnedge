@@ -239,3 +239,16 @@ test('idle rotation gives a new forward window its existing inactivity allowance
  f.store.setLiveMarks({'s:BTCUSD:15m':T+8*DAY-900000});
  assert.deepEqual(admitOnly(f.store,f.cfg,T+8*DAY),['next ETHUSD 15m']);
 });
+
+
+test('quote-relative pricing requires a fresh prospective window and cannot reuse profitable signal-anchor evidence',t=>{
+ const f=setup(t);f.enroll();f.forward();assert.equal(f.store.restoration(cell,T+15*DAY)?.passed,true);
+ const requirements=f.db.get<any>('SELECT requirements FROM evidence_restorations').requirements;
+ f.cfg.paper.makerQuoteCells=[cell];f.setPolicy(resolveTradePolicy(f.cfg,cell,'source'));
+ assert.equal(qualifiedEvidence(f.db,cell,f.policy,{at:T+15*DAY}).length,0);
+ f.store.qualifiedTrades(cell.scannerId,cell.symbol,cell.tf,2,T+15*DAY);
+ const r=f.store.restoration(cell,T+15*DAY)!;
+ assert.equal(r.startedAt,T+15*DAY);assert.equal(r.stats?.trades,0);assert.equal(r.passed,false);
+ assert.equal(f.db.get<any>('SELECT requirements FROM evidence_restorations ORDER BY started_at DESC LIMIT 1').requirements,requirements);
+ assert.match(f.store.copyRefusal(cell,f.cfg.incubator.mirror,1e8,T+15*DAY)!,/forward shadow evaluation/);
+});

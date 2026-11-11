@@ -1,3 +1,4 @@
+import {quoteMakerCell,passiveMakerPrice,tradedVolume} from './makerPricing.ts';
 import {offerStatus} from './costs.ts';
 import {withProductFees,type ProductFees} from './productFees.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
@@ -29,6 +30,8 @@ import { computeFeatures } from '../ml/features.ts';
 export interface BacktestInput {
   /** Current-product cost scenario, not a historical fee backfill. Frozen plans keep their own rates. */
   productFees?:ProductFees;
+  /** Recorded historical quotes only; quote-relative maker cells fail closed without a fresh as-of quote. */
+  entryQuotes?: Array<{at:number;bid:number;ask:number}>;
   executionPlan?: ExecutionPlanSnapshot;
   scannerId: string; scannerName: string; symbol: string; tf: string;
   bars: Bar[];                // closed bars, ascending — the same bars the script ran on
@@ -116,6 +119,13 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const feeCfg=inp.executionPlan ? {...inp.cfg,feeRatePct:inp.executionPlan.paper.feeRatePct,makerFeeRatePct:inp.executionPlan.paper.makerFeeRatePct,feeTaxPct:inp.executionPlan.paper.feeTaxPct} : withProductFees(inp.cfg,inp.productFees,inp.symbol);
   const cfg0 = exitConfigFor(trialRiskConfig(feeCfg,trial), inp.symbol, inp.scannerExitResolved ? inp.scannerExit : inp.exitMode === 'script' ? { ...(inp.scannerExit ?? {}), ...scriptModeExit(inp.cfg) } : inp.scannerExit, inp.tf);
   const cfg = inp.spreadPct && inp.spreadPct > 0 ? { ...cfg0, slippageBps: crossingSlippageBps(cfg0, inp.spreadPct) } : cfg0;
+  const quoteMaker=quoteMakerCell(cfg,inp);
+  const quotes=[...(inp.entryQuotes??[])].sort((a,b)=>a.at-b.at);let qi=-1;
+  const quoteAt=(at:number)=>{
+    while(qi+1<quotes.length&&quotes[qi+1].at<=at)qi++;
+    const q=quotes[qi];
+    return q && Number.isFinite(q.at) && cfg.quoteMaxAgeMs>0 && at-q.at<=cfg.quoteMaxAgeMs && Number.isFinite(q.bid) && Number.isFinite(q.ask) && q.bid>0 && q.ask>=q.bid?q:undefined;
+  };
   const feeOffer=offerStatus(cfg);
   const funding = [...(inp.funding ?? [])].sort((a, b) => a.at - b.at);
   if (funding.some(f => !Number.isFinite(f.at) || !Number.isFinite(f.ratePct) || !Number.isFinite(f.markPrice) || f.markPrice <= 0)) throw new Error('invalid historical funding settlement');
@@ -177,7 +187,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const refuse = (why: string) => { rejected[why] = (rejected[why] ?? 0) + 1; };
   // decision 191: the books' limit fill rule — `through` needs a price beyond the limit, `touch` the limit itself
   const through = (cfg.limitFill ?? 'through') === 'through';
-  const limitHit = (side: string, limit: number, b: { high: number; low: number }) => side === 'long' ? (through ? b.low < limit : b.low <= limit) : (through ? b.high > limit : b.high >= limit);
+  const limitHit = (side: string, limit: number, b: { high: number; low: number; volume?:number }) => (!quoteMaker || tradedVolume(b.volume)) && (side === 'long' ? (through ? b.low < limit : b.low <= limit) : (through ? b.high > limit : b.high >= limit));
   /** Whether a market entry at `price` would be admitted (levels, fees, size), without opening it: a reversal asks before it closes the held trade. */
   const admissible = (price: number, ev: ScanEvent, sigI: number): boolean => {
     if(alignmentBlock(ev.side!,bars[sigI].time+tfMs))return false;
@@ -261,7 +271,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       if (bar.time >= pending.expiresAt) { refuse('no pullback'); pending = null; }
       else if (pending.kind === 'stop' ? (pending.ev.side === 'long' ? bar.high >= pending.limit : bar.low <= pending.limit) : limitHit(pending.ev.side!, pending.limit, bar)) {
         const { ev, limit, sigI, expiresAt } = pending; const isStop = pending.kind === 'stop';
-        const touched = (b: { high: number; low: number }) => isStop ? (ev.side === 'long' ? b.high >= limit : b.low <= limit) : limitHit(ev.side!, limit, b);
+        const touched = (b: { high: number; low: number; volume?:number }) => isStop ? (ev.side === 'long' ? b.high >= limit : b.low <= limit) : limitHit(ev.side!, limit, b);
         if (sub) {
           while (si < sub.length && sub[si].time < bar.time) si++;
           let j = si;
@@ -386,9 +396,10 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
         continue;
       }
       if (em?.pullbackAtr != null && em.pullbackAtr >= 0 && atr[i] > 0) {
-        const raw = ev.side === 'long' ? price - em.pullbackAtr * atr[i] : price + em.pullbackAtr * atr[i];
-        // Match passive live planning; historical candles have no contemporaneous bid/ask.
-        const limit = inp.tickSize > 0 ? Number(((ev.side === 'long' ? Math.floor(raw / inp.tickSize + 1e-9) : Math.ceil(raw / inp.tickSize - 1e-9)) * inp.tickSize).toPrecision(14)) : raw;
+        const q=quoteMaker?quoteAt(bar.time+tfMs):undefined;
+        if(quoteMaker && !q){refuse('quote-anchored maker requires historical executable quote');continue;}
+        const executable=q?(ev.side==='long'?q.ask:q.bid):undefined;
+        const limit=passiveMakerPrice(ev.side,executable??price,em.pullbackAtr,atr[i],inp.tickSize,executable);
         pending = { ev, limit, sigI: i, expiresAt: bar.time + tfMs * (1 + Math.max(0, em.pullbackBars ?? 3)) };
         continue;
       }
