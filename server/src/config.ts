@@ -54,6 +54,8 @@ export interface PaperConfig {
   entryAlignments?: Array<{ scannerId: string; symbol: string; tf: string; contextTf: string; emaLen: number }>;
   /** Cells whose ordinary maker offset is anchored to a fresh executable quote; fresh evidence required. */
   makerQuoteCells?: Array<{scannerId:string;symbol:string;tf:string}>;
+  /** Explicit prospective policy: maker fills require fresh post-placement tape, never candle inference. */
+  makerTapeCells?: Array<{scannerId:string;symbol:string;tf:string}>;
   /** Small account-only paper trials of the completed-minute reclaim entry. */
   reclaimTrials?: Array<{enabled: boolean; scannerId: string; symbol: string; tf: '15m'; pullbackAtr: number; setupMinutes: number; orderMinutes: number; sizeScale: number; maxDailyEntries: number; minSignalBarAtr?: number; maxStopLossPct?: number}>;
   /**
@@ -809,6 +811,18 @@ export function validateConfig(c: AppConfig): string[] {
         seen.add(key);
       }
       if(p.makerQuoteCells.length && (!p.useSpread || !(p.quoteMaxAgeMs>0))) errs.push('paper.makerQuoteCells requires executable quotes and quoteMaxAgeMs > 0');
+    }
+  }
+  if (p.makerTapeCells !== undefined) {
+    if (!Array.isArray(p.makerTapeCells)) errs.push('paper.makerTapeCells must be an array');
+    else {
+      const seen=new Set<string>();
+      for(const r of p.makerTapeCells){
+        if(!r||typeof r.scannerId!=='string'||!r.scannerId.trim()||!/^[A-Z0-9]+USD$/.test(r.symbol)||!TF_SECONDS[r.tf])errs.push('invalid paper.makerTapeCells rule');
+        const key=`${r?.scannerId}|${r?.symbol}|${r?.tf}`;
+        if(seen.has(key))errs.push('duplicate paper.makerTapeCells rule');seen.add(key);
+      }
+      if(p.makerTapeCells.length&&(!p.requireQuote||!p.useSpread||!(p.quoteMaxAgeMs>0)))errs.push('paper.makerTapeCells requires fresh executable quotes');
     }
   }
   if (p.entryAlignments !== undefined) {

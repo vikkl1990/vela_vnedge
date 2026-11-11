@@ -6,6 +6,15 @@ export function quoteMakerCell(cfg:PaperConfig,cell:{scannerId:string;symbol:str
   return cfg.makerQuoteCells?.some(r=>r.scannerId===cell.scannerId&&r.symbol===cell.symbol&&r.tf===cell.tf)??false;
 }
 
+/** Timing changes have their own scoped evidence identity; absent means unchanged. */
+export function makerTapeCell(cfg:PaperConfig,cell:{scannerId:string;symbol:string;tf:string}):boolean {
+  return cfg.makerTapeCells?.some(r=>r.scannerId===cell.scannerId&&r.symbol===cell.symbol&&r.tf===cell.tf)??false;
+}
+export function freshMakerPrint(qty:number,time:number,observedAt:number,from:number,expiresAt:number,maxAgeMs:number):boolean {
+  return tradedVolume(qty)&&Number.isFinite(time)&&Number.isFinite(observedAt)&&time>=from&&time<=observedAt
+    && observedAt<expiresAt&&time<expiresAt&&maxAgeMs>0&&observedAt-time<=Math.min(1000,maxAgeMs);
+}
+
 /** Directional ticks and the executable opposite quote keep an order strictly passive. */
 export function passiveMakerPrice(side:Side,reference:number,offset:number,atr:number,tick:number,executable?:number):number {
   const raw=side==='long'?reference-offset*atr:reference+offset*atr;

@@ -21,7 +21,15 @@ export function allocationAudit(db: Db, allocations: Allocation[], now = Date.no
     const verdict = account.recent.n < 30 || shadow.recent.n < 30 ? 'insufficient evidence' : account.recent.netR < 0 && shadow.recent.netR < 0 ? 'review losses in both books' : account.recent.grossR > 0 && account.recent.netR < 0 ? 'review cost drag' : 'observe';
     return { ...a, account, shadow, verdict };
   });
-  const execution = db.all<any>('SELECT * FROM entry_execution ORDER BY entry_at DESC LIMIT 20');
+  const hasEvidence=!!db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='entry_fill_evidence'");
+  const execution = db.all<any>('SELECT * FROM entry_execution ORDER BY entry_at DESC LIMIT 20').map(row=>{
+    const evidence=hasEvidence?db.get<any>('SELECT * FROM entry_fill_evidence WHERE position_id=? AND book=?',row.position_id,row.book):null;
+    const admission=evidence?.admission_depth?JSON.parse(evidence.admission_depth):null;
+    const depth=evidence?.depth?JSON.parse(evidence.depth):null,limit=evidence?.limit_observation?JSON.parse(evidence.limit_observation):null;
+    return {...row,fillEvidence:evidence?{role:evidence.role,source:evidence.source,
+      admissionDepth:admission?{checkedQty:admission.checkedQty,receivedAt:admission.receivedAt,exchangeAt:admission.exchangeAt}:null,
+      depth:depth?{receivedAt:depth.receivedAt,exchangeAt:depth.exchangeAt,requestedQty:depth.requestedQty,vwap:depth.vwap}:null,limit}:null};
+  });
   return { at: now, since, split, rows, execution,
-    note: 'Current account allocations, exact scanner/symbol/1h tuples. Trades grouped by entry date. Each window is seven days. Historical settings may differ; cohorts count distinct recorded fingerprints. No automatic promotion or disabling. Depth is sampled after entry, not available to that entry decision.' };
+    note: 'Current account allocations, exact scanner/symbol/1h tuples. Trades grouped by entry date. Each window is seven days. Historical settings may differ; cohorts count distinct recorded fingerprints. No automatic promotion or disabling. Saved pricing depth and maker triggers are separate from the asynchronous post-entry depth diagnostic.' };
 }

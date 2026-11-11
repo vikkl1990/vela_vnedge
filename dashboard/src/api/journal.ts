@@ -20,8 +20,8 @@ export interface JournalPage {
 export interface JournalDetail {
   row: JournalRow; signal: import('./types').Signal | null;
   policy: { id: string; strategyId: string; sourceHash: string; snapshot: unknown } | null;
-  features: Record<string, number> | null; entryExecution: Record<string, unknown> | null;
-  orders: {id: number; at: number; side: string; qty: number; price: number; fee: number; reason: string; price_source: string | null; ref_price: number | null; bid: number | null; ask: number | null; quote_at: number | null}[];
+  features: Record<string, number> | null; entryExecution: Record<string, unknown> | null; entryFillEvidence: Record<string, unknown> | null;
+  orders: {liquidity?:'maker'|'taker'|null;id: number; at: number; side: string; qty: number; price: number; fee: number; reason: string; price_source: string | null; ref_price: number | null; bid: number | null; ask: number | null; quote_at: number | null}[];
   decisions: {at: number; stage: string; reason: string | null; snapshot: unknown}[];
   pathCoverage: {samples: number; fromAt: number | null; throughAt: number | null}; caveats: string[];
 }

@@ -1,0 +1,47 @@
+{
+  "at": "2026-11-11T16:29:09.248Z",
+  "baseline": "98fc52b638624b50b1502b73b42c20ff9db751b3",
+  "policyIdentitiesCompared": 1603,
+  "retainedTradeScenarios": 638,
+  "financialDifferences": 0,
+  "openedScenarios": 633,
+  "ordersCompared": 1190,
+  "method": "Deterministic compatibility regression using retained 24h trades, frozen policies and recorded entry quotes. Admission drawdown held fixed. Sparse path/event reconstruction is deliberately not a causal backtest and is not used to qualify the timing policy.",
+  "deploymentScope": "Audit labels, transactional entry pricing/admission snapshots, and disabled opt-in timing implementation. No timing cells enabled.",
+  "timingDecision": "Not qualified: no complete causal entry-depth and queue history to establish unchanged or better net profit. No performance claim.",
+  "serverTests": 1226,
+  "dashboardTests": 25,
+  "focusedTests": 96,
+  "baselineConfigSha256": "109a088e7037c4bdb6c9f60339187b6b2baf7d157241d3be73965baec655f36d",
+  "configChange": false,
+  "solReplay": [
+    {
+      "variant": "baseline",
+      "status": "expired",
+      "price": 84.0946,
+      "position": null,
+      "checks": 1
+    },
+    {
+      "variant": "audit",
+      "status": "expired",
+      "price": 84.0946,
+      "position": null,
+      "checks": 1
+    },
+    {
+      "variant": "timing",
+      "status": "expired",
+      "price": 84.0946,
+      "position": null,
+      "checks": 1
+    }
+  ],
+  "controls": {
+    "mode": "paper",
+    "baseMargin": 150,
+    "stopRiskCapPct": 3,
+    "riskAndEvidenceRules": "unchanged",
+    "makerTapeCells": []
+  }
+}

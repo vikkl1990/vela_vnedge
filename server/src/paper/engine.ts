@@ -1,5 +1,5 @@
 import {reclaimRestoreRefusal,recoverReclaim,nextReclaimMinute,type ReclaimCheckpoint} from './reclaimRecovery.ts';
-import {quoteMakerCell,passiveMakerPrice,tradedVolume} from './makerPricing.ts';
+import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell,freshMakerPrint} from './makerPricing.ts';
 import {qualifiedEvidence,evidenceCoverage} from '../evidence/trades.ts';
 import {PaperExitExecution,CAUSAL_EXIT_VERSION,type ExitBook} from './exitExecution.ts';
 import {recordGatedSignal,type GateStage} from '../evidence/gatedSignals.ts';
@@ -10,7 +10,7 @@ import {scannerExitPolicy} from './policy.ts';
 import {applyFundingSettlement, restingEntryStop} from './logic.ts';
 import {recordFillBudget} from './decisionTrace.ts';
 import {depthPlan} from './depthPlan.ts';
-import { initEntryExecution, recordEntryExecution } from './entryExecution.ts';
+import { initEntryExecution, recordEntryExecution, recordEntryFillEvidence, type EntryFillEvidence, type EntryDepthSnapshot, type EntryAdmissionDepth, type LimitFillObservation } from './entryExecution.ts';
 import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
 import {createReclaim, advanceReclaim, type ReclaimState} from './reclaim.ts';
 import {selectiveReclaimRule,trialRiskConfig,expansionRatio} from './selectiveEntry.ts';
@@ -32,7 +32,7 @@ import type { StructureLevel } from './luxExits.ts';
 const log = logger.scoped('paper');
 
 /** Pricing provenance belongs to one fill, never to an engine-wide pending context. */
-interface FillContext { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' | 'candle-model' | 'tape-limit-model' }
+interface FillContext extends EntryFillEvidence { ref?: number; source?: 'quote' | 'depth' | 'slippage' | 'exchange' | 'candle-model' | 'tape-limit-model' | 'limit-candle-model' | 'limit-tape-model' }
 
 export interface MarketInfo { contractValue: number; tickSize: number; maintenanceMarginPct?: number; maxLeverage?: number; productFees?:ProductFees }
 export type EntryContext = {policy?: TradePolicy;executionPlan?: ExecutionPlanSnapshot;scannerId: string; scannerName: string; symbol: string; tf: string; market: MarketInfo; signalBar?: Pick<Bar,'time'|'high'|'low'|'close'>; atr?: number; refPrice: number; at: number; signalId: number | null; exitMode: ExitMode; features?: Record<string, number>; mlProb?: number | null; scoreOverride?: number; sizeScale?: number};
@@ -76,6 +76,8 @@ export const QUIET_FILL_MS = 1000;
 
 /** Tape-mode entry waiting for its first print after signal time + latency. */
 export interface PendingEntry {
+  /** Fresh observations only after recovery; not persisted as an inferred exchange fill. */
+  makerObservedFrom?:number;
   observation?: {event:ScanEvent; context:Pick<EntryContext,'signalBar'|'atr'|'refPrice'|'at'>};
   policy?: TradePolicy;
   reservation?: {qty:number;notional:number;margin:number;riskAmount:number};
@@ -181,12 +183,13 @@ export class PaperEngine extends EventEmitter {
 
   offerConfigFor?: (cfg:PaperConfig)=>PaperConfig;
   marketFeesFor?: (symbol:string)=>ProductFees|undefined;
-  marketDepthPrice?: (symbol:string,side:Side,qty:number)=>{price?:number;reject?:string}|undefined;
+  marketDepthPrice?: (symbol:string,side:Side,qty:number)=>{price?:number;reject?:string;depth?:EntryDepthSnapshot}|undefined;
   prepareEntryDepth?: (symbol: string) => Promise<void>;
-  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number;executionPlan?:ExecutionPlanSnapshot;fees:PaperConfig}) => {reject?:string;crossingPct?:number};
-  private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker:boolean,cell:{scannerId:string;tf:string;market:MarketInfo;score?:number;executionPlan?:ExecutionPlanSnapshot}):string|null {
+  entryDepthGate?: (req: {symbol:string;qty:number;contractValue:number;maker?:boolean;at:number;price:number;sl:number;market:MarketInfo;scannerId:string;tf:string;score?:number;executionPlan?:ExecutionPlanSnapshot;fees:PaperConfig}) => {reject?:string;crossingPct?:number;admissionDepth?:EntryAdmissionDepth};
+  private depthRefusal(symbol:string,qty:number,cv:number,price:number,sl:number,cfg:PaperConfig,at:number,maker:boolean,cell:{scannerId:string;tf:string;market:MarketInfo;score?:number;executionPlan?:ExecutionPlanSnapshot},evidence?:EntryFillEvidence):string|null {
     const d=this.entryDepthGate?.({symbol,qty,contractValue:cv,maker,at,price,sl,...cell,fees:cfg});
     if(d?.reject)return d.reject;
+    if(evidence&&d?.admissionDepth)evidence.admissionDepth=d.admissionDepth;
     return d?.crossingPct!==undefined?checkRiskVsFees(price,sl,cfg,symbol,d.crossingPct,{maker}):null;
   }
 
@@ -232,7 +235,7 @@ export class PaperEngine extends EventEmitter {
       try { const j = JSON.parse(row.fills ?? 'null'); if (j?.limitEntry?.limit && j.limitEntry.limit.expiresAt > this.now()) kept = { ...j.limitEntry, id: row.id }; trial=j?.limitEntry??j?.reclaimSetup??j?.pendingEntry; } catch { kept = null; }
       // A setup has no exchange order yet. Recover only committed pre-order progress;
       // short resting trial orders still cannot infer what filled while we were down.
-      if (kept && !kept.features?.reclaim_trial) { this.pending.set(kept.id, kept); continue; }
+      if (kept && !kept.features?.reclaim_trial) { if(this.makerTape(kept))kept.makerObservedFrom=this.now();this.pending.set(kept.id, kept); continue; }
       let reason='pending entry dropped on restart';
       if(trial?.reclaim && !trial.limit){
         const r=trial.reclaim;
@@ -758,14 +761,14 @@ export class PaperEngine extends EventEmitter {
     if(!willRestLimit&&this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&(this.book===0||!!ctx.executionPlan)&&this.marketDepthPrice?.(ctx.symbol,ev.side!,size.qty)!==undefined){
       const plan=depthPlan(size,price,ev.side!,n=>this.marketDepthPrice!(ctx.symbol,ev.side!,n)!,p=>this.size(p,levels.sl,ctx.market,ev.score??ctx.scoreOverride,leverageMult,replacing?.id,{scannerId:ctx.scannerId,symbol:ctx.symbol,tf:ctx.tf,at:ctx.at,policy:ctx.policy,executionPlan:ctx.executionPlan},{quoted:true},ctx.sizeScale));
       if('reject'in plan)return refused(plan.reject);
-      price=plan.price;size=plan.size;quoted.quoted=true;entryContext.source='depth';
+      price=plan.price;size=plan.size;quoted.quoted=true;entryContext.source='depth';entryContext.depth=plan.depth;
       if(levels.tp.some(tp=>ev.side==='long'?price>=tp:price<=tp))return refused('depth price moved past target');
       const valid=resolveLevels({side:ev.side!,price,sl:levels.sl,tp:levels.tp},cfg,ctx.market.tickSize);
       if('error'in valid)return refused(`depth price moved past levels (${valid.error})`);
       const g=this.risk?.gate({scannerId:ctx.scannerId,symbol:ctx.symbol,tf:ctx.tf,side:ev.side!,price,sl:levels.sl,atr:ctx.atr,at:ctx.at,replacing:replacing?.id});
       if(g?.reject)return refused(`risk ${g.reject}`);
     }
-    const depthBlock=this.depthRefusal(ctx.symbol,size.qty,ctx.market.contractValue,price,levels.sl,cfg,ctx.at,willRestLimit,{...ctx,score:ev.score??ctx.scoreOverride});
+    const depthBlock=this.depthRefusal(ctx.symbol,size.qty,ctx.market.contractValue,price,levels.sl,cfg,ctx.at,willRestLimit,{...ctx,score:ev.score??ctx.scoreOverride},entryContext);
     if(depthBlock)return refused(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(ctx.symbol, ev.side!, ctx.tf, size.qty * ctx.market.contractValue * price, size.riskAmount, ctx.at);
     if (fundingBlock) return refused(fundingBlock);
@@ -867,6 +870,7 @@ export class PaperEngine extends EventEmitter {
       this.persist(pos);
       recordFillBudget(this.db,pos,this.book,cfg);
       recordEntryExecution(this.db, pos, this.book, cfg, context.source, this.quotes?.markState?.(pos.symbol));
+      recordEntryFillEvidence(this.db,pos,this.book,context.source,context.ref,context);
       if(pos.features?.reclaim_trial)recordReclaimEvent(this.db,pos,JSON.stringify(this.reclaimRule(pos)),'filled',pos.entryAt);
       if (pos.signalId) this.db.updateSignalAction(pos.signalId, 'opened', pos.id);
     });
@@ -878,6 +882,8 @@ export class PaperEngine extends EventEmitter {
     return pos;
   }
 
+  private makerTape(pe:PendingEntry,cfg=this.configFor(pe)){return !!cfg.makerTapeCells?.length&&this.cfgRef().execution.mode==='paper'&&!this.executionIntent&&makerTapeCell(cfg,pe);}
+
   /** Decision 185: whether prices between `low` and `high` filled a resting limit (through it, or touching it, per `limitFill`). */
   private limitTouched(pe: PendingEntry, low: number, high: number): boolean {
     const L = pe.limit!.price, through = (this.configFor(pe).limitFill ?? 'through') === 'through';
@@ -885,7 +891,7 @@ export class PaperEngine extends EventEmitter {
   }
 
   /** Decision 185: fill a resting limit at its own price as a maker; levels from the fill, every gate asked again. */
-  private fillLimit(pe: PendingEntry, at: number, eventAt = at): Position | null {
+  private fillLimit(pe: PendingEntry, at: number, eventAt:number, observation:LimitFillObservation['trigger']): Position | null {
     this.pending.delete(pe.id);
     // the scanner's and the market's own stop and exit rules, as at entry (decision 190: the global ones were used)
     const cfg = this.configFor(pe), L = pe.limit!;
@@ -912,6 +918,10 @@ export class PaperEngine extends EventEmitter {
       if (transientTradingBlock(exchangeBlock)) { this.pending.set(pe.id, pe); return null; }
       return cancel(exchangeBlock);
     }
+    if(this.makerTape(pe)){
+      const quote=this.entryPrice(pe.symbol,pe.side==='long'?'buy':'sell',L.price,cfg,at);
+      if('reject'in quote)return cancel(`unpriceable maker observation: ${quote.reject}`);
+    }
     const levels = resolveLevels({ side: pe.side, price: L.price, sl: L.sl, tp: L.tp, atr: L.atr }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`limit filled past its levels (${levels.error})`);
     // a maker entry crosses no spread; the exit still pays it, as checkRiskVsFees counts
@@ -926,7 +936,8 @@ export class PaperEngine extends EventEmitter {
     }
     const size = this.capReserved(pe,this.size(L.price, levels.sl, pe.market, pe.score, leverageMult, undefined, { scannerId: pe.scannerId, symbol: pe.symbol, tf: pe.tf, at, policy:pe.policy, executionPlan:pe.executionPlan }, { maker: true }, pe.sizeScale));
     if (size.qty < 1) return cancel(size.reason ?? 'size');
-    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,L.price,levels.sl,cfg,at,true,pe);
+    const evidence:EntryFillEvidence={};
+    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,L.price,levels.sl,cfg,at,true,pe,evidence);
     if(depthBlock)return cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * L.price, size.riskAmount, at);
     if (fundingBlock) return cancel(fundingBlock);
@@ -934,7 +945,7 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: pe.symbol, side: pe.side, tf: pe.tf, notional: size.qty * pe.market.contractValue * L.price });
       if (x) return cancel(`risk ${x}`);
     }
-    return this.openAt(pe.id, { market:pe.market, policy:pe.policy, executionPlan:pe.executionPlan, scannerId: pe.scannerId, maker: true, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: L.price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} limit +${Math.round((at - pe.at) / 60_000)}m` }, cfg, { ref: L.price, source: 'quote' });
+    return this.openAt(pe.id, { market:pe.market, policy:pe.policy, executionPlan:pe.executionPlan, scannerId: pe.scannerId, maker: true, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: L.price, at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} limit +${Math.round((at - pe.at) / 60_000)}m` }, cfg, { ...evidence, ref: L.price, source:observation.kind==='trade'?'limit-tape-model':'limit-candle-model',limit:{placedAt:pe.at,expiresAt:L.expiresAt,eventAt,observedAt:at,trigger:observation} });
   }
 
   /** Fill a pending entry at `price` (first print after the latency window, or the 1m close when the tape is silent). */
@@ -997,7 +1008,7 @@ export class PaperEngine extends EventEmitter {
     if(this.cfgRef().execution.mode==='paper'&&(this.limitEntryAllowed?.()??true)&&(this.book===0||!!pe.executionPlan)&&this.marketDepthPrice?.(pe.symbol,pe.side,size.qty)!==undefined){
       const plan=depthPlan(size,price,pe.side,n=>this.marketDepthPrice!(pe.symbol,pe.side,n)!,p=>this.size(p,levels.sl,pe.market,pe.score,leverageMult,held?.id,{scannerId:pe.scannerId,symbol:pe.symbol,tf:pe.tf,at:receivedAt,policy:pe.policy,executionPlan:pe.executionPlan},{quoted:true},pe.sizeScale));
       if('reject'in plan)return cancel(plan.reject);
-      price=plan.price;size=plan.size;quoted=true;context.source='depth';
+      price=plan.price;size=plan.size;quoted=true;context.source='depth';context.depth=plan.depth;
       if(levels.tp.some(tp=>pe.side==='long'?price>=tp:price<=tp))return cancel('depth price moved past target');
       const valid=resolveLevels({side:pe.side,price,sl:levels.sl,tp:levels.tp},cfg,pe.market.tickSize);
       if('error'in valid)return cancel(`depth price moved past levels (${valid.error})`);
@@ -1005,7 +1016,7 @@ export class PaperEngine extends EventEmitter {
       if(g?.reject)return cancel(`risk ${g.reject}`);
     }
     size=this.capReserved(pe,size);
-    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,price,levels.sl,cfg,receivedAt,false,pe);
+    const depthBlock=this.depthRefusal(pe.symbol,size.qty,pe.market.contractValue,price,levels.sl,cfg,receivedAt,false,pe,context);
     if(depthBlock)return cancel(depthBlock);
     const fundingBlock = this.fundingEntryBlock?.(pe.symbol, pe.side, pe.tf, size.qty * pe.market.contractValue * price, size.riskAmount, receivedAt);
     if (fundingBlock) return cancel(fundingBlock);
@@ -1072,12 +1083,14 @@ export class PaperEngine extends EventEmitter {
     this.marks.set(symbol, price);
     const filled = new Set<number>();
     for (const pe of [...this.pending.values()]) {
-      if (this.configFor(pe).fillSource !== 'tape' || pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
+      const cfg=this.configFor(pe),makerTape=!!pe.limit&&this.makerTape(pe,cfg);
+      if ((cfg.fillSource !== 'tape'&&!makerTape) || pe.reclaim || pe.symbol !== symbol || time < pe.dueAt) continue;
+      if(makerTape&&!freshMakerPrint(qty,time,observedAt,Math.max(pe.at,pe.makerObservedFrom??pe.at),pe.limit!.expiresAt,cfg.quoteMaxAgeMs))continue;
       if (pe.limit?.quoteAnchor!==undefined && !tradedVolume(qty)) continue;
       if (pe.limit && !(time >= pe.at && this.limitTouched(pe, price, price))) continue;
       const fill = () => {
         if (pe.limit) {
-          const pos = this.fillLimit(pe, observedAt, time);
+          const pos = this.fillLimit(pe, observedAt, time,{kind:'trade',price,qty});
           if (pos) {
             // A gap can cross both the resting entry and its stop. Do not give the
             // new position a free recovery until the next print. Only adverse stops
@@ -1210,11 +1223,12 @@ export class PaperEngine extends EventEmitter {
         // began after the order was placed — the placing minute's low may have printed before the order existed, and the
         // tape audit showed limits filled that no trade after placement ever reached (thin coins, where this fallback runs)
         if (pe.limit) {
+          if(this.makerTape(pe))continue; // Tape policy cannot infer a fill from historical/partial candle extrema.
           // A partial candle observed before expiry is usable; an OHLC range spanning
           // the deadline cannot prove that the touch happened while the order rested.
           if ((pe.limit.quoteAnchor===undefined || tradedVolume(bar.volume)) && bar.time >= pe.at && bar.time < pe.limit.expiresAt && Math.min(observedAt, barClosedAt) <= pe.limit.expiresAt && this.limitTouched(pe, bar.low, bar.high)) {
             const fill = () => {
-              const pos = this.fillLimit(pe, observedAt, bar.time);
+              const pos = this.fillLimit(pe, observedAt, bar.time,{kind:'candle',...bar});
               if (pos) {
                 const stop = restingEntryStop(pos, bar, this.configFor(pos), observedAt);
                 if (stop && this.applyFills(pos, [stop], { source: 'candle-model' })) this.recordPath(pos, stop.price, observedAt, stop.reason, 'resting entry minute crossed stop (candle)');
@@ -1638,7 +1652,7 @@ export class PaperEngine extends EventEmitter {
 
   orders(limit = 200) {
     const rows = this.db.all<any>(`SELECT o.id, o.at, o.position_id positionId, o.scanner_id scannerId, o.symbol, o.side, o.qty, o.price, o.fee, o.reason, o.price_source priceSource, a.state accountingState,a.confirmed_qty confirmedQty,a.expected_qty expectedQty, p.fills positionFills FROM orders o LEFT JOIN positions p ON p.id=o.position_id LEFT JOIN execution_accounting a ON a.source_order_id=o.id WHERE o.bt=${this.book} ORDER BY o.at DESC, o.id DESC LIMIT ?`, limit);
-    return rows.map(({positionFills,...o}) => ({...o, pnl: o.reason === 'funding' ? (safe(positionFills, {fills:[]}).fills as Fill[]).find(f=>f.reason==='funding' && f.at===o.at)?.pnl ?? null : null}));
+    return rows.map(({positionFills,...o}) => ({...o, liquidity:(safe(positionFills,{fills:[]}).fills as Fill[]).find(f=>f.orderId===o.id)?.liquidity??null, pnl: o.reason === 'funding' ? (safe(positionFills, {fills:[]}).fills as Fill[]).find(f=>f.reason==='funding' && f.at===o.at)?.pnl ?? null : null}));
   }
 
   trades(opts: TradeFilter & { limit?: number } = {}) {

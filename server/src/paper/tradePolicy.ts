@@ -39,6 +39,8 @@ export function makeTradePolicy(cfg:AppConfig,cell:{scannerId:string;symbol:stri
     ? {...le,atr:le.atrByTf?.[cell.tf]??le.atr,atrByTf:undefined,tfs:[cell.tf],books:[book===0?'account':'shadow']} : undefined;
   resolved.makerQuoteCells=resolved.makerQuoteCells?.filter(r=>r.scannerId===cell.scannerId&&r.symbol===cell.symbol&&r.tf===cell.tf);
   if(!resolved.makerQuoteCells?.length)delete resolved.makerQuoteCells;
+  resolved.makerTapeCells=resolved.makerTapeCells?.filter(r=>r.scannerId===cell.scannerId&&r.symbol===cell.symbol&&r.tf===cell.tf);
+  if(!resolved.makerTapeCells?.length)delete resolved.makerTapeCells;
   resolved.entryAlignments=resolved.entryAlignments?.filter(r=>r.scannerId===cell.scannerId&&r.symbol===cell.symbol&&r.tf===cell.tf);
   resolved.reclaimTrials=resolved.reclaimTrials?.filter(r=>r.scannerId===cell.scannerId&&r.symbol===cell.symbol&&r.tf===cell.tf);
   if(!resolved.reclaimTrials?.length)delete resolved.reclaimTrials;

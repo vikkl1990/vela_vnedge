@@ -413,7 +413,8 @@ export interface Order {
   expectedQty?: number | null
   pnl?: number | null
   /** Where the fill price came from: 'exchange' (restated from the exchange's fill), 'quote' (crossed the live spread), 'slippage' (modelled), or null. */
-  priceSource?: 'exchange' | 'quote' | 'depth' | 'slippage' | 'candle-model' | null
+  priceSource?: 'exchange' | 'quote' | 'depth' | 'slippage' | 'candle-model' | 'tape-limit-model' | 'limit-candle-model' | 'limit-tape-model' | null
+  liquidity?: 'maker' | 'taker' | null
   id: number
   at: number
   positionId: number
@@ -921,7 +922,7 @@ export interface AllocationStats { n: number; netR: number; grossR: number; feeR
 export interface AllocationAudit {
  at: number; since: number; split: number; note: string;
  rows: Array<{ scannerId: string; scannerName: string; symbol: string; tf: string; verdict: string; account: {recent: AllocationStats;prior: AllocationStats}; shadow: {recent: AllocationStats;prior: AllocationStats} }>;
- execution: Array<{position_id:number;book:number;symbol:string;tf:string;entry_at:number;source:string|null;spread_bps:number|null;quote_at:number|null;quote_exchange_at:number|null;entry_fee:number;expected_exit_fee:number;signal_delay_ms:number|null;depth_state:string;depth_lag_ms:number|null;depth_vwap:number|null;depth_impact_bps:number|null;depth_coverage:number|null}>;
+ execution: Array<{position_id:number;book:number;symbol:string;tf:string;entry_at:number;source:string|null;spread_bps:number|null;quote_at:number|null;quote_exchange_at:number|null;entry_fee:number;expected_exit_fee:number;signal_delay_ms:number|null;depth_state:string;depth_lag_ms:number|null;depth_vwap:number|null;depth_impact_bps:number|null;depth_coverage:number|null;fillEvidence?:{role:string;source:string;admissionDepth:{checkedQty:number;receivedAt:number;exchangeAt:number}|null;depth:{receivedAt:number;exchangeAt:number;requestedQty:number;vwap:number}|null;limit:{placedAt:number;eventAt:number;observedAt:number;trigger:{kind:string}}|null}|null}>;
 }
 
 export interface ReclaimTrialsView {

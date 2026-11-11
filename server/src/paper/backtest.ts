@@ -1,4 +1,4 @@
-import {quoteMakerCell,passiveMakerPrice,tradedVolume} from './makerPricing.ts';
+import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell} from './makerPricing.ts';
 import {offerStatus} from './costs.ts';
 import {withProductFees,type ProductFees} from './productFees.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
@@ -109,6 +109,7 @@ export interface BacktestResult {
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
   const { bars } = inp;
+  if(makerTapeCell(inp.cfg,inp))throw Error('tape-timed maker policy requires recorded trades and depth; candle backtests cannot qualify it');
   const trial=selectiveReclaimRule(inp.cfg,inp);
   if(trial && !inp.subBars?.length)throw Error('selective reclaim requires minute history');
   if(inp.executionPlan?.maxHoldMinutes&&!inp.subBars?.length)throw Error('timed execution plans require minute subBars');

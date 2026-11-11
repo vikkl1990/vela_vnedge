@@ -130,9 +130,12 @@ export class Journal {
     const raw = this.db.get<Raw>('SELECT fills FROM positions WHERE id=? AND bt=?', id, bt);
     const meta = parsed(raw?.fills);
     const entry = this.db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='entry_execution'") ? this.db.get('SELECT * FROM entry_execution WHERE position_id=? AND book=?', id, currentBook) ?? null : null;
+    const evidence=this.db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='entry_fill_evidence'")?this.db.get<Raw>('SELECT * FROM entry_fill_evidence WHERE position_id=? AND book=?',id,currentBook):null;
+    const entryFillEvidence=evidence?{...evidence,depth:parsed(evidence.depth),admission_depth:parsed(evidence.admission_depth),limit_observation:parsed(evidence.limit_observation)}:null;
     return { row, signal, policy: rawPolicy ? { id: rawPolicy.id, strategyId: rawPolicy.strategy_id, sourceHash: rawPolicy.source_hash, snapshot: parsed(rawPolicy.snapshot) } : null,
       features: meta?.features ?? null, entryExecution: entry,
-      orders: this.db.all('SELECT id,at,side,qty,price,fee,reason,price_source,ref_price,bid,ask,quote_at FROM orders WHERE position_id=? AND bt=? ORDER BY at,id', id, bt),
+      entryFillEvidence,
+      orders: this.db.all('SELECT id,at,side,qty,price,fee,reason,price_source,ref_price,bid,ask,quote_at FROM orders WHERE position_id=? AND bt=? ORDER BY at,id', id, bt).map((o:any)=>({...o,liquidity:meta?.fills?.find((f:any)=>f.orderId===o.id)?.liquidity??null})),
       decisions: this.db.all('SELECT at,stage,reason,snapshot FROM decision_trace WHERE position_id=? AND book=? ORDER BY at,id', id, currentBook).map((r: any) => ({ ...r, snapshot: parsed(r.snapshot) })),
       pathCoverage: this.db.get('SELECT count(*) samples,min(at) fromAt,max(at) throughAt FROM position_path WHERE position_id=?', id),
       caveats: ['All values come from retained records. Reset archives are available; previously erased records cannot be recreated.', 'Shadow dollars are simulated evidence, not account profit.', 'Recorded funding is not proof of complete historical settlement coverage. Missing fields remain unknown.'],
