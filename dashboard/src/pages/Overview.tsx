@@ -83,7 +83,7 @@ export function Overview() {
               value={mt ? (mt.enabled ? `${allowedN} of ${tracked.length}` : 'gate off') : '–'}
               tone={mt?.enabled && allowedN === 0 ? 'loss' : 'neutral'}
               hint="The market gate's verdict: turnover, book cost and quote, judged every hour"
-              sub={<span className="muted"><span title={activity.data ? `Journal count as of ${new Date(activity.data.at).toISOString()}` : 'Loading journal count'}>{signals24 ?? '–'} entry signals in 24 h</span> · <Link to="/gates">every gate</Link></span>}
+              sub={<span className="muted"><span title={activity.data ? `Journal count as of ${new Date(activity.data.at).toISOString()}` : 'Loading journal count'}>{signals24 ?? '–'} signals reached account admission in 24 h</span> · <Link to="/signals">{activity.data?.copyHeld ?? '–'} held before admission</Link> · <Link to="/gates">every gate</Link></span>}
             />
           </div>
           <EdgeVerdictLine />

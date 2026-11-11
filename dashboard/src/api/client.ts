@@ -107,7 +107,7 @@ export const api = {
   pineLibrary: (path: string, hash: string) => request<{path: string; sha256: string; source: string}>(`/pine-library${qs({path, hash})}`),
   orderFlow: (symbol: string, tf: string) => request<OrderFlowView>(`/order-flow${qs({symbol, tf, limit: 120})}`),
   footprints: (symbol: string, tf: string, range: {from?: number; to?: number; limit?: number}) => request<Footprint[]>(`/footprints${qs({symbol, tf, ...range})}`),
-  signalActivity: () => get<{at:number;since:number;entries:number}>('/signals/activity'),
+  signalActivity: () => get<{at:number;since:number;entries:number;candidates:number;copyHeld:number;held:Array<{reason:string;n:number}>;copyRecordedSince:number|null;paperFilled:number;shadowFilled:number}>('/signals/activity'),
   executionQuality: () => get<import('./types').ExecutionQuality>('/execution-quality'),
   // health / config
   health: () => get<Health>('/health'),

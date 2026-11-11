@@ -62,6 +62,7 @@ const RUN_ALLOWANCE_MS = 5_000;
 export class ShadowRunner {
   private pairs: PairRow[] = [];
   private timelyCells:ReadonlySet<string>=new Set();
+  private forwardCells:ReadonlySet<string>=new Set();
   private scheduledBars=new Map<string,number>();
   private syncing:Promise<void>|null=null;
   private releaseScheduled(r:PairRow,barAt:number) {
@@ -104,7 +105,8 @@ export class ShadowRunner {
       limit:()=>Math.max(1,(deps.pool.size??1)-(deps.pool.reserved??0)),
       ready:()=>!deps.pool.stats.queuedLive && !deps.pool.stats.queuedMirror && deps.pool.rssReader()<deps.pool.memoryGuardBytes*SHADOW_MEMORY_SHARE,
       priority:({r})=>evidencePriority(r,this.deps.cfgRef().incubator),
-      timely:({r})=>r.stage==='tracked'&&this.timelyCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`),
+      timely:({r})=>(r.stage==='tracked'&&this.timelyCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`))
+        || (['shadow','proposed'].includes(r.stage)&&this.forwardCells.has(`${r.scannerId}:${r.symbol}:${r.tf}`)),
       run:({r,barAt,seenAt})=>this.runScheduled(r,barAt,false,seenAt),
       dropped:({r,barAt},reason)=>{this.releaseScheduled(r,barAt);this.deps.store.noteShadowScan?.(r,barAt-TF_SECONDS[r.tf]*1000,reason,reason==='expired'?'scan could not start within the unchanged signal-age window':'cell no longer scheduled');},
       error:(e,{r})=>{this.noteError(r,String((e as any)?.message??e));log.warn(`shadow ${r.scannerId} ${r.symbol}: ${String(e)}`);}
@@ -210,6 +212,7 @@ export class ShadowRunner {
   private async syncInside(): Promise<void> {
     const cfg = this.deps.cfgRef();
     this.timelyCells=this.deps.timelyResearch?.()??new Set();
+    this.forwardCells=this.deps.store.forwardCollectionKeys?.()??new Set();
     if (!cfg.incubator?.enabled) { this.pairs = [];this.dispatch.prune(new Set()); return; }
     this.pairs = this.deps.store.list([...ACTIVE_STAGES, 'tracked']).filter(r => r.tf in TF_SECONDS && this.deps.registry.get(r.scannerId)?.status === 'ok');
     for(const p of this.planSources())if(this.deps.registry.get(p.scannerId)?.status==='ok'&&!this.pairs.some(x=>x.scannerId===p.scannerId&&x.symbol===p.symbol&&x.tf===p.tf))this.pairs.push(p);

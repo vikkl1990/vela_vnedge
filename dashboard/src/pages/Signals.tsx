@@ -4,7 +4,7 @@ import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useHealth, useMarkets, useScannerIndex, useSignals } from '../api/queries'
+import { useHealth, useMarkets, useScannerIndex, useSignalActivity, useSignals } from '../api/queries'
 import type { Signal, SignalKind, Side } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { ActionPill, ErrorState, Loading, PageTitle, Panel, Pill, ScoreBadge, Segmented, SidePill, StatusDot, Time } from '../components/ui'
@@ -142,6 +142,8 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
 }
 
 export function Signals() {
+  const activity = useSignalActivity()
+  const flow = activity.data
   const health=useHealth()
   const recovery=health.data?.signalRecovery
   const scanners = useScannerIndex()
@@ -169,12 +171,27 @@ export function Signals() {
     <div className="page">
       <div className="banner small" role="note"><b>View only.</b> Signals record received alerts and their decisions. An interrupted decision stays pending until recovery completes; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
       <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Every alert the account's scanners raised and what the account did with it. Shadow-book runs are judged in the Incubator, not here." />
+      <Panel title="Entry signal flow · last 24 hours" right={<span className="muted small">All scanners and markets · independent of table filters</span>}>
+        {activity.isError ? <ErrorState error={activity.error} onRetry={()=>activity.refetch()}/> : !flow ? <Loading/> : <>
+          <div className="chips">
+            <Pill tone="accent">{flow.candidates} candidates observed</Pill>
+            <Pill tone={flow.copyHeld?'warn':'muted'}>{flow.copyHeld} held before account admission</Pill>
+            <Pill tone="accent">{flow.entries} reached account admission</Pill>
+            <Pill tone="ok">{flow.paperFilled} paper entries filled</Pill>
+            <Pill tone="muted">{flow.shadowFilled} regular shadow entries filled</Pill>
+          </div>
+          <p className="small muted">Candidates include account entry signals and shadow signals held from copying. A copy hold is a detected signal, not a scanner failure. Tracker-only signals are outside this count. Filled entries use fill time, so they can originate from earlier signals.</p>
+          {flow.held.length>0&&<div className="chips">{flow.held.map(r=><Pill key={r.reason} tone="warn">{r.reason}: {r.n}</Pill>)}</div>}
+          <p className="small muted"><Link to="/incubator">Review cell evidence in the Incubator</Link>. Held signals remain diagnostic observations and never count toward promotion.</p>
+          {(flow.copyRecordedSince===null||flow.copyRecordedSince>flow.since)&&<p className="small muted">Copy-hold history does not cover this entire window; observed candidates are a lower bound.</p>}
+        </>}
+      </Panel>
       {recovery&&<Panel title="Signal recovery" right={<Pill tone={recovery.pending?'warn':'ok'}>{recovery.pending?`${recovery.pending} awaiting decision`:'No pending decisions'}</Pill>}>
         <p className="small muted">Interrupted paper decisions resume from their saved receipt. Completed decisions are not repeated. Entries expire after at most 60 seconds and recheck current admission rules; exits stay tied to their original position and wait for a fresh price.</p>
         {recovery.pending>0&&<div className="table-wrap"><table className="table small"><thead><tr><th>Signal</th><th>Market</th><th>Received</th><th>Attempts</th><th>Waiting on</th></tr></thead><tbody>{recovery.recent.map(r=><tr key={r.signal_id}><td>#{r.signal_id} · {r.kind}</td><td>{r.symbol} · {r.tf}</td><td><Time t={r.received_at}/></td><td>{r.attempts}</td><td>{r.last_error??'Decision in progress'}</td></tr>)}</tbody></table></div>}
       </Panel>}
       {outcomes.total > 0 && (
-        <Panel title={`What became of the last ${outcomes.total} signals`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
+        <Panel title={`What became of the last ${outcomes.total} account signals`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
           <div className="chips">
             {outcomes.buckets.map((b) => (
               <Pill key={b.key} tone={b.tone} title={b.hint}>{b.label} <span className="mono">{b.n}</span></Pill>

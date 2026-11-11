@@ -130,3 +130,15 @@ test('held positions stay urgent; unqualified mirror cells use bounded shadow sc
  const got:Array<[string,boolean]>=[];runner.run=async(r:any,_bar:any,live:boolean)=>{got.push([r.scannerId,live]);};runner.onBarClosed('BTCUSD','15m',Date.now());assert.deepEqual(got,[['held',true]]);
  t.mock.timers.tick(20_000);await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['held',true],['research',false]]);runner.stop();
 });
+test('enrolled forward cells get timely research service while copy holds and worker limits remain intact',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.enabled=true;cfg.incubator.mirror={enabled:true,minTrades:5};
+ const runner=new ShadowRunner({store:{shadowFunnel:()=>({}),liveMarks:()=>undefined,setLiveMarks:()=>{},setShadowFunnel:()=>{},copyRefusal:()=>'restored cell in forward shadow evaluation',marketsToday:()=>new Map()},cfgRef:()=>cfg,paper:{openPositions:()=>[]},mirror:()=>assert.fail('unqualified entry copied'),pool:{size:3,reserved:2,stats:{queuedLive:0},rssReader:()=>0,memoryGuardBytes:1}}as any)as any;
+ runner.pairs=['ordinary','forward'].map((scannerId,id)=>({id,scannerId,symbol:'BTCUSD',tf:'15m',stage:'shadow'}));
+ runner.forwardCells=new Set(['forward:BTCUSD:15m']);
+ const got:Array<[string,boolean]>=[],releases:Array<()=>void>=[];
+ runner.run=async(r:any,_bar:any,live:boolean)=>{got.push([r.scannerId,live]);await new Promise<void>(resolve=>releases.push(resolve));};
+ runner.onBarClosed('BTCUSD','15m',Date.now());await new Promise<void>(r=>setImmediate(r));
+ assert.deepEqual(got,[['forward',false]]);assert.equal(runner.dispatchStats.inFlight,1);assert.equal(runner.dispatchStats.pending,1);
+ releases.shift()!();await new Promise<void>(r=>setImmediate(r));assert.deepEqual(got,[['forward',false],['ordinary',false]]);
+ releases.shift()!();await new Promise<void>(r=>setImmediate(r));runner.stop();
+});

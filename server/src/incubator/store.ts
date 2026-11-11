@@ -271,6 +271,19 @@ export class IncubatorStore {
     if(!this.policyFor)return;
     for(const cell of this.list(['shadow','proposed']))this.ensureRestoration(cell,this.policyFor(cell),at);
   }
+  /** Enrolled forward experiments need timely collection even while copying is held.
+   * This is scheduling metadata only: no new enrollment, qualification or stage change. */
+  forwardCollectionKeys(at=Date.now()):ReadonlySet<string> {
+    const keys=new Set<string>();
+    if(!this.policyFor)return keys;
+    const rows=this.db.all<{scannerId:string;symbol:string;tf:string;strategyId:string}>(`SELECT
+      r.scanner_id scannerId,r.symbol,r.tf,r.strategy_id strategyId
+      FROM evidence_restorations r JOIN incubator_pairs p
+      ON p.scanner_id=r.scanner_id AND p.symbol=r.symbol AND p.tf=r.tf
+      WHERE p.stage IN ('shadow','proposed') AND r.started_at<=?`,at);
+    for(const r of rows)if(this.policyFor(r).strategyId===r.strategyId)keys.add(`${r.scannerId}:${r.symbol}:${r.tf}`);
+    return keys;
+  }
   restoration(cell:{scannerId:string;symbol:string;tf:string},at=Date.now()) {
     if(!this.policyFor || !this.db.get('SELECT 1 FROM evidence_restorations WHERE scanner_id=? AND symbol=? AND tf=?',cell.scannerId,cell.symbol,cell.tf))return null;
     const policy=this.policyFor(cell);

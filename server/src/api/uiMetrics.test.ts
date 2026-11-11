@@ -7,6 +7,7 @@ import {signalActivity,filledEntries,proposalTimes,sizingDescription} from './ui
 import {positionView} from '../paper/engine.ts';
 import {exitConfigFor} from '../paper/logic.ts';
 import {quantityText,targetR,protectionText} from '../../../dashboard/src/lib/protection.ts';
+import {recordGatedSignal} from '../evidence/gatedSignals.ts';
 
 test('activity counts the full rolling window, excluding exits and future events',t=>{
  const db=new Db(':memory:');t.after(()=>db.db.close());const now=2*86400000;
@@ -15,6 +16,31 @@ test('activity counts the full rolling window, excluding exits and future events
  add(now-86400001,'entry');add(now+1,'entry');add(now-200,'exit');
  assert.equal(signalActivity(db,now).entries,111);
  assert.equal(signalActivity(db,now+86400001).entries,1);
+});
+test('entry activity exposes copy holds without double counting received events or changing evidence',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());const now=2*86400000;
+ const hold=(barTime:number,options:any={})=>recordGatedSignal(db,{book:0,at:now-1,scannerId:'s',symbol:'ETHUSD',tf:'15m',
+  stage:'copy',reason:'mirror held: 0/5 shadow closes',snapshot:{},event:{kind:'entry',side:'long',barTime,label:'Long',tp:[],message:'',source:'alert'},...options});
+ hold(1);hold(1,{sourceHash:'new-source'}); // same candidate across a source reload
+ hold(2,{reason:'restored cell in forward shadow evaluation: 1/30 trades'});
+ hold(3,{reason:'mirror held: -0.5R over 8 shadow closes (need > 0R)'});
+ hold(4,{reason:'thin market: below floor'});
+ hold(5);db.run("INSERT INTO signals(at,bar_time,scanner_id,scanner_name,symbol,tf,kind,side,label,message,source,action) VALUES(?,5,'s','s','ETHUSD','15m','entry','long','Long','','alert','rejected:costs')",now);
+ hold(6,{book:2});hold(7,{stage:'admission'});hold(8,{at:now+1});hold(9,{at:now-86400001});
+ const before=db.get<any>('SELECT count(*) n FROM gated_signals').n;
+ const result=signalActivity(db,now);
+ assert.equal(result.entries,1);assert.equal(result.copyHeld,4);assert.equal(result.candidates,5);
+ assert.deepEqual(new Set(result.held.map(r=>r.reason)),new Set(['Forward evaluation','Insufficient matching closes','Non-positive matching evidence','Turnover below copy floor']));
+ assert.equal(result.copyRecordedSince,now-86400001);
+ assert.equal(db.get<any>('SELECT count(*) n FROM gated_signals').n,before);
+ assert.equal(db.get<any>('SELECT count(*) n FROM positions').n,0);
+ assert.equal(db.get<any>('SELECT count(*) n FROM gated_signals WHERE promotion_eligible!=0').n,0);
+});
+test('entry activity separates filled regular shadow from trackers and unfilled orders',t=>{
+ const db=new Db(':memory:');t.after(()=>db.db.close());
+ for(const [scope,book,status,qty] of [['account',0,'open',1],['shadow',2,'closed',1],['legacy-shadow',2,'open',1],['tracker',2,'closed',1],['shadow',2,'pending',0],['shadow',2,'voided',1]] as const)
+ db.run("INSERT INTO positions(status,scanner_id,scanner_name,symbol,tf,side,qty,qty_open,contract_value,entry_price,entry_at,bt,evidence_scope) VALUES(?,'s','s','ETHUSD','1h','long',?,0,1,100,100,?,?)",status,qty,book,scope);
+ const result=signalActivity(db,200);assert.equal(result.shadowFilled,2);assert.equal(result.paperFilled,1);assert.equal(result.copyRecordedSince,null);
 });
 test('filled entries exclude pending, voided and other books, including across restart',t=>{
  const db=new Db(':memory:');t.after(()=>db.db.close());

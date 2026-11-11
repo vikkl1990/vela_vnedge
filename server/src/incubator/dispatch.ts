@@ -24,7 +24,7 @@ export class ShadowDispatch<T> {
   for(const [key,p]of this.pending)if(p.deadline<=now){this.pending.delete(key);this.counts.expired++;this.opts.dropped?.(p.value,'expired');}
   const limit=Math.max(1,this.opts.limit());
   while(this.pending.size>0&&this.busy.size<limit&&this.opts.ready()){
-   // One of four starts can serve an explicitly watched research cell. Two retain
+   // One of four starts can serve watched research or an enrolled forward test. Two retain
    // evidence priority; the fourth remains unconditional exploration. Unused turns
    // fall back to the original policy. This changes order, never admission/evidence.
    const timelyTurn=this.counts.started%4===0 && !!this.opts.timely &&

@@ -56,6 +56,19 @@ test('enrollment freezes a forward clock and requirements, preserves money/setti
  assert.equal(f.db.get<any>('SELECT requirements FROM evidence_restorations').requirements,row.requirements);
  assert.throws(()=>f.db.run('UPDATE evidence_restorations SET started_at=?',T-DAY),/immutable/);
 });
+test('timely forward collection requires a current enrolled shadow policy and never qualifies a cell',t=>{
+ const f=setup(t);assert.equal(f.store.forwardCollectionKeys(T).size,0);f.enroll();
+ const frozen=f.db.all('SELECT * FROM evidence_restorations');
+ assert.equal(f.store.forwardCollectionKeys(T-1).size,0);
+ assert.deepEqual([...f.store.forwardCollectionKeys(T)],['s:BTCUSD:15m']);
+ assert.match(f.store.copyRefusal(cell,f.cfg.incubator.mirror,1e8,T+DAY)!,/forward shadow evaluation/);
+ assert.equal(f.store.qualifiedTrades('s','BTCUSD','15m',2,T+DAY).length,0);
+ const original=f.policy;f.setPolicy({...original,strategyId:'changed'});
+ assert.equal(f.store.forwardCollectionKeys(T+DAY).size,0);f.setPolicy(original);
+ f.store.move(cell,'tracked','test');assert.equal(f.store.forwardCollectionKeys(T+DAY).size,0);
+ f.store.move(cell,'live','test');assert.equal(f.store.forwardCollectionKeys(T+DAY).size,0);
+ assert.deepEqual(f.db.all('SELECT * FROM evidence_restorations'),frozen);
+});
 
 test('the forward clock survives process restart without counting prior or still-open trades',t=>{
  const dir=mkdtempSync(join(tmpdir(),'vnedge-restoration-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
