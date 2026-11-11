@@ -36,7 +36,13 @@ export class MonitorRuntime {
  tick(now=Date.now()){
   if(this.stopped)return;
   const snapshot=new Map(this.app.marks.quoteSummary(10000,now).rows.map(q=>[q.symbol,q])),inputs=this.inputs();
-  const wanted=[...new Set([...this.symbols,...inputs.map(x=>x.position.symbol)])];
+  // Selected research capture reuses advisory sockets; execution book sources stay unchanged.
+  const capture=[...new Set(['BTCUSD','ETHUSD','SOLUSD','INITUSD','PARTIUSD',
+   ...this.app.scanners.requiredSeries().map(s=>s.symbol),...inputs.map(x=>x.position.symbol),
+   ...this.app.paper.pendingEntries().map(x=>x.symbol),...this.app.shadow.pendingEntries().map(x=>x.symbol),
+   ...(this.app.config.get().executionPlans??[]).filter(p=>p.enabled).map(p=>p.symbol)])];
+  this.app.replayArchive?.setSymbols(capture,now);
+  const wanted=[...new Set([...this.symbols,...inputs.map(x=>x.position.symbol),...capture])];
   if(wanted.length!==this.symbols.length)this.setSymbols(wanted);
   for(const symbol of this.symbols){
    const q=snapshot.get(symbol),fresh=q?.fresh&&q.exchangeAt!==null&&q.exchangeAt<=now&&q.receivedAt<=now;
@@ -95,7 +101,7 @@ export class MonitorRuntime {
     researchOpen:positions.filter(p=>p.book===2&&!['shadow','legacy-shadow'].includes(p.scope)).length,
     worstOpenR:positions.length&&positions.some(p=>p.r!==null)?Math.min(...positions.filter(p=>p.r!==null).map(p=>p.r!)):null};
   });
-  return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Raw execution tape unchanged.'};
+  return {...monitor,generatedAt:now,pairs,connections:this.depth.summary(),marketError,replay:this.app.replayArchive?.status(),retention:'Compact flow/depth: 72h, up to 500k rows each. Checkpoints/trials: 90d, up to 200k/50k. Durable replay: selected active/experiment pairs, 14-day target bounded by 16 GiB; gaps remain explicit.'};
  }
  stop(){this.stopped=true;clearInterval(this.timer);clearInterval(this.pump);this.depth.stop();}
 }

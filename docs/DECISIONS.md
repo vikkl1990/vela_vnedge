@@ -7205,3 +7205,11 @@ Record maker crossing provenance as a candle or tape model, with placement, expi
 The optional `paper.makerTapeCells` rule fills only from a positive-volume fresh post-placement/recovery print before expiry. It has a scoped strategy identity and cannot qualify through candle-only backtests. No cells are enabled in this release: retained causal depth is insufficient to establish the required profit condition. Do not backdate existing fills or substitute future depth. Paper mode, $150 margin, risk caps, fee rules and evidence windows remain unchanged.
 
 Validation: 1,603 unchanged policy identities; 638 retained-trade regression scenarios with 1,190 identical financial ledger rows; 1,226 server and 25 dashboard tests, lint and build pass. The retained-trade comparison is compatibility validation, not a profitability backtest. See the [execution-evidence validation](research/maker-fill-evidence-2026-11-11.html).
+
+## 239. Retain causal replay and separate verifiable evaluation (11 November 2026)
+
+Capture selected active and experimental markets in bounded compressed journals with checksummed manifests, periodic observed depth checkpoints and explicit capture/restart gaps. Keep execution pricing and the diagnostic ring unchanged. Target 14 days within 16 GiB and a 2 GiB free-disk reserve; report actual coverage instead of assuming it. Capture failures remain advisory.
+
+Compare the full scanner entry/exit plan at the existing numeric prefix thresholds, and provide reproducible research checks at multiple closed-bar cutoffs and warm-up lengths. Insufficient or unfrozen external inputs are unknown. Trend Impulse's INIT/PARTI checks exposed warm-up sensitivity despite stable hidden-bar prefixes; no allocation change follows from that research result alone.
+
+Separate ML scores saved at entry from later rescoring, share the existing executed-evidence exclusions, and persist new model/training/features/decision/policy receipts. Only verified prospective receipts can propose a research candidate. Missing old provenance is not inferred; no historical threshold search authorizes a gate. Preserve paper mode, $150 margin, risk caps, evidence thresholds and forward clocks. See the [validation and operating record](research/replay-evaluation-2026-11-11.md).

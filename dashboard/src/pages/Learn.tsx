@@ -69,9 +69,9 @@ export function Learn() {
     <div className="page">
       <div className="banner banner-warn small" role="note">
         {d?.config && d.config.minProb > 0 ? (
-          <>The gate is on at <span className="mono">{pct(d.config.minProb)}</span>: entries the model rates below it are refused. The yardstick below is what earned it, and what would take it away.</>
+          <>The gate is on at <span className="mono">{pct(d.config.minProb)}</span>: entries the model rates below it are refused. The yardstick is exploratory; it does not certify that setting.</>
         ) : (
-          <>Advisory only: the model gates nothing (<span className="mono">ml.minProb 0</span>). The yardstick below says, on trades that really happened, whether a gate would have paid — the shadow book is the out-of-sample judge, since its trades never train the model (decision 108). Measured on backtests it only ever raised the average by discarding trades (decision 37).</>
+          <>Advisory only: the model gates nothing (<span className="mono">ml.minProb 0</span>). Threshold comparisons use saved entry predictions on eligible executed trades. Later rescoring is separate. A threshold selected here needs a frozen forward evaluation before use.</>
         )}
       </div>
       <PageTitle pre="Every trade," accent="learned" post="from." sub="Entry-time features of every backtest and account trade train a win-probability model per scanner; bucket analysis turns the data into concrete rules." />
@@ -228,7 +228,7 @@ function Yardstick() {
   const b: YardBook = y[book]
   return (
     <Panel
-      title={<span>Would the gate have paid? <Pill tone={y.call.minProb != null ? 'ok' : 'warn'}>{y.call.minProb != null ? `gate at ${pct(y.call.minProb)}` : 'no gate'}</Pill></span>}
+      title={<span>Would the gate have paid? <Pill tone="warn">{y.call.candidateMinProb != null ? `research candidate ${pct(y.call.candidateMinProb)}` : 'no candidate'}</Pill></span>}
       right={<span className="muted small">last {y.windowDays} days · model trained {y.model.trainedAt ? <Time t={y.model.trainedAt} mode="datetime" /> : 'never'} · holdout AUC {y.model.holdoutAuc?.toFixed(2) ?? '–'}</span>}
     >
       <p className="small" style={{ marginTop: 0 }}>{y.call.text}</p>
@@ -243,9 +243,11 @@ function Yardstick() {
           ]}
         />
         <span className="muted small">
-          {book === 'shadow' ? 'out of sample: these trades never train the model' : 'in sample: the account trains the model, so it may only veto'} · {b.scored} scored ({b.scoredAtEntry} at entry, {b.scored - b.scoredAtEntry} after the fact), {b.unscored} unscored · ranking AUC {b.auc?.toFixed(2) ?? '–'}
+          Saved entry predictions only · {b.scoredAtEntry} scored, {b.unscored} without an entry score (kept by every hypothetical gate) · ranking AUC {b.auc?.toFixed(2) ?? '–'}
         </span>
       </div>
+      <p className="small muted">{b.verifiedAtEntry??0} entry predictions have verified model, training-cutoff, feature and policy receipts. Only these can propose a research candidate. Older saved scores remain descriptive; missing provenance is not reconstructed. No candidate becomes a gate without a frozen forward evaluation.</p>
+      {!!b.later?.trades && <details className="mb"><summary>Later rescoring · {b.later.trades} trades · excluded from threshold evaluation</summary><p className="small muted">These probabilities were calculated after entry with a later model. They are exploratory and cannot establish an executable historical gate. Ranking AUC {b.later.auc?.toFixed(2) ?? '–'}.</p><table className="table small"><thead><tr><th>Later P(win)</th><th>Trades</th><th>Average R</th></tr></thead><tbody>{b.later.buckets.map(x=><tr key={x.label}><td>{x.label}</td><td>{x.n}</td><td>{x.n?r(x.avgR):'–'}</td></tr>)}</tbody></table></details>}
       <div className="grid-2">
         <div>
           <div className="muted small mb">By the probability at entry</div>

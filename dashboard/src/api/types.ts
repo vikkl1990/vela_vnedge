@@ -565,13 +565,14 @@ export interface MlSnapshot {
 export interface YardBucket { label: string; lo: number; hi: number; n: number; avgR: number; winRatePct: number; sumR: number }
 export interface YardThreshold { minProb: number; kept: number; keptAvgR: number; keptSumR: number; dropped: number; droppedAvgR: number; droppedSumR: number; deltaSumR: number }
 export interface YardBook {
-  trades: number; scored: number; scoredAtEntry: number; unscored: number; allAvgR: number; allSumR: number; auc: number | null
+  trades: number; scored: number; scoredAtEntry: number; unscored: number;verifiedAtEntry:number; allAvgR: number; allSumR: number; auc: number | null
+  later: {trades:number;avgR:number;sumR:number;auc:number|null;buckets:YardBucket[]}
   buckets: YardBucket[]; thresholds: YardThreshold[]; verdict: { pays: boolean; minProb: number | null; text: string }
 }
 export interface MlYardstick {
   at: number; windowDays: number; model: { trainedAt: number | null; holdoutAuc: number | null; samples: number }
   config: { minProb: number; useAsScore: boolean }; enriched: { cached: number; unscorable: number }
-  live: YardBook; shadow: YardBook; call: { minProb: number | null; text: string }
+  live: YardBook; shadow: YardBook; call: { minProb: number | null; candidateMinProb?:number; text: string }
 }
 
 // ---- analytics ----
@@ -944,6 +945,7 @@ export interface ExecutionQuality {
   quotes?: {at:number;total:number;fresh:number;l1:number;fallback:number;rows:Array<{symbol:string;source:string;bid:number;ask:number;bidSize:number|null;askSize:number|null;receivedAt:number;exchangeAt:number|null;bookAt:number|null;ageMs:number;fresh:boolean}>};
   funding: {method:string;counts:{status:string;n:number}[]; recent:{symbol:string;at:number;status:string;source:string;rate:number|null;mark:number|null;error:string|null}[]};
   depth: {books:{symbol:string;at:number|null;valid:boolean;fresh:boolean}[];gaps:{symbol:string;n:number;lastAt:number}[];symbols:string[];validBooks:string[];failures:number;queued:number;droppedPending:number;retention:string;stored:{n:number;oldest:number|null;newest:number|null;bytes:number|null}};
+  replay?: {enabled:boolean;ready:boolean;symbols:string[];queuedBytes:number;dropped:number;failures:number;lastError:string|null;lastSyncAt:number|null;lastEventAt:number|null;segments:number;bytes:number;oldest:number|null;newest:number|null;openEvents:number;prunedSegments:number;retention:{targetDays:number;maxBytes:number;minFreeBytes:number};coverage:string};
   account: {cursors:{host:string;from_at:number;through_at:number;error:string|null}[];comparisons:{orderId:number;complete:boolean;quantityMatches:boolean|null}[];rows:{host:string;kind:string;n:number}[]};
 }
 export interface AccountObservation {

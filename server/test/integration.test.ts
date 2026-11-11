@@ -103,7 +103,7 @@ class FakeRegistry extends ScannerRegistry {
 const sentAlerts: string[] = [];
 const rest = new FakeRest();
 const feed = new FakeFeed();
-const app = new App({ rest, feed, registry: new FakeRegistry(), alertTransport: async text => { sentAlerts.push(text); } });
+const app = new App({ rest, feed, registry: new FakeRegistry(), advisoryFeedFactory:()=>new FakeFeed(),alertTransport: async text => { sentAlerts.push(text); } });
 const api = new ApiServer(app);
 assert.equal(attachRawMetrics((api as any).server, app), true);
 const port = 20_000 + Math.floor(Math.random() * 10_000);
@@ -153,6 +153,17 @@ test('trade monitor is authenticated, read-only and lists exchange pairs without
  assert.ok(r.body.pairs.some((p:any)=>p.symbol==='BTCUSD'));
  assert.equal((await getJson('/api/trade-monitor/positions/invalid')).status,400);
  assert.equal((await getJson('/api/trade-monitor',{method:'POST'})).status,404);
+ assert.equal(JSON.stringify(app.config.get()),before);
+});
+
+test('durable capture status and prospective ML reporting preserve execution configuration',async()=>{
+ const before=JSON.stringify(app.config.get());app.tradeMonitor.tick(NOW);await app.replayArchive.flush();
+ assert.equal((await fetch(base+'/api/execution-quality')).status,401);
+ const quality=await getJson('/api/execution-quality');assert.equal(quality.status,200);
+ assert.equal(quality.body.replay.retention.targetDays,14);
+ assert.ok(quality.body.replay.symbols.includes('INITUSD'));assert.ok(quality.body.replay.symbols.includes('PARTIUSD'));
+ const ml=await getJson('/api/ml/yardstick');assert.equal(ml.status,200);assert.equal(ml.body.call.minProb,null);
+ for(const b of [ml.body.live,ml.body.shadow]){assert.equal(b.scored,b.scoredAtEntry);assert.equal(typeof b.later.trades,'number');}
  assert.equal(JSON.stringify(app.config.get()),before);
 });
 

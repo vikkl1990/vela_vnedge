@@ -473,7 +473,7 @@ export class ApiServer {
       lockCache.set(k, { at: Date.now(), v });
       return v;
     });
-    this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, fillSource: a.config.get().paper.fillSource, quotes: a.marks.quoteSummary(a.config.get().paper.quoteMaxAgeMs), funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), account: a.accountAudit.summary(), observer: a.accountObserver.summary() }));
+    this.add('GET', '/api/execution-quality', () => ({ at: Date.now(), mode: a.config.get().execution.mode, fillSource: a.config.get().paper.fillSource, quotes: a.marks.quoteSummary(a.config.get().paper.quoteMaxAgeMs), funding: a.fundingJournal.summary(), depth: a.depthRecorder.summary(), replay: a.replayArchive.status(), account: a.accountAudit.summary(), observer: a.accountObserver.summary() }));
     this.add('GET', '/api/tape-audit', (_r, _s, _p, url) => a.tapeAudit.summary(Date.now() - Math.min(90, Math.max(1, Number(url.searchParams.get('days') ?? 14))) * 86_400_000));
     for (const route of ['/api/order-flow', '/api/footprints']) this.add('GET', route, (_r, _s, _p, url) => {
       let q; try { q = flowQuery(url.searchParams); } catch (e: any) { throw new HttpError(400, e.message); }

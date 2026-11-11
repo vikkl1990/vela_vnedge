@@ -42,6 +42,7 @@ import { readingOf } from '../scanners/reading.ts';
 import { ProfileStore, observeHistoricalRun } from '../scanners/profile.ts';
 import { probeMarketOrder } from '../incubator/probeOrder.ts';
 import { createHash } from 'node:crypto';
+import {contractIdentity} from '../scanners/certification.ts';
 import { sourceHash } from '../paper/fingerprint.ts';
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { MarketsToday } from '../risk/marketGate.ts';
@@ -337,7 +338,13 @@ while (sliceArg !== 'none') {
           const cutBars = d.bars.slice(0, d.bars.length - REPAINT_CUT);
           const r2 = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf: TF, tickSize: d.market.tickSize, bars: cutBars, tailBars: 'all', plotTail: cutBars.length, inputs: inputs && Object.keys(inputs).length ? inputs : undefined, timezone: cfg.scanners[s.id]?.timezone });
           if (r2.ok) {
-            const rc = compareRepaint(res, d.bars, r2, cutBars, s.id, cfg.scanners[s.id] ?? {});
+            const rc = {...compareRepaint(res, d.bars, r2, cutBars, s.id, cfg.scanners[s.id] ?? {},s.patched,s.variantOf),identity:contractIdentity({scannerId:s.id,source:s.patched,symbol,tf:TF,tickSize:d.market.tickSize,bars:d.bars,tailBars:'all',plotTail:d.bars.length,inputs,timezone:cfg.scanners[s.id]?.timezone},cfg.scanners[s.id]??{},s.variantOf)};
+            if(!dry){
+              db.run('CREATE TABLE IF NOT EXISTS scanner_prefix_checks(id INTEGER PRIMARY KEY,at INTEGER NOT NULL,scanner_id TEXT NOT NULL,symbol TEXT NOT NULL,tf TEXT NOT NULL,source_hash TEXT NOT NULL,reading TEXT NOT NULL,from_at INTEGER NOT NULL,full_to INTEGER NOT NULL,prefix_to INTEGER NOT NULL,result TEXT NOT NULL)');
+              db.run('INSERT INTO scanner_prefix_checks(at,scanner_id,symbol,tf,source_hash,reading,from_at,full_to,prefix_to,result) VALUES(?,?,?,?,?,?,?,?,?,?)',Date.now(),s.id,symbol,TF,screenProvenance(s.patched,READ,policy).source,JSON.stringify(READ,(_k,v)=>v instanceof Set?[...v].sort():v),d.bars[0].time,d.bars.at(-1)!.time,cutBars.at(-1)!.time,JSON.stringify(rc));
+              db.run('DELETE FROM scanner_prefix_checks WHERE id<(SELECT max(id)-10000 FROM scanner_prefix_checks)');
+            }
+            if(rc.coverage==='insufficient')out(`  ${s.id} ${symbol}: prefix coverage insufficient (${rc.prefix} entries); this is not a full-plan certification`);
             if (rc.repaints) { r.pass = false; summary.repaint = (summary.repaint ?? 0) + 1; health.quarantine(s.id, repaintReason(rc)); out(`  ${s.id}: quarantined — ${repaintReason(rc)}`); if (!dry) recordScreen(store, { scannerId: s.id, symbol, tf: TF }, r, inc); else verdicts.push({ scannerId: s.id, symbol, tf: TF, pass: false, reason: repaintReason(rc), pf: r.profitFactor, trades: r.trades, avgR: r.avgR }); break; }
           }
         }

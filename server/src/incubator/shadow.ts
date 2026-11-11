@@ -29,7 +29,8 @@ import { applyRules, labelKey } from '../scanners/rules.ts';
 import { lastAtr } from '../data/indicators.ts';
 import { resolveLevels, trendGateReason, trendNow } from '../paper/logic.ts';
 import { protectEntry } from '../paper/entryProtection.ts';
-import type { Features, FeatureInputs } from '../ml/features.ts';
+import type { Features } from '../ml/features.ts';
+import type { MlService } from '../ml/service.ts';
 import { logger } from '../log.ts';
 import { IncubatorStore, funnelClass, type PairRow, type SignalFunnel } from './store.ts';
 import { ACTIVE_STAGES } from './cycle.ts';
@@ -81,7 +82,7 @@ export class ShadowRunner {
   private seen = new Set<string>();
   private labels = new Map<string, Set<string>>();
   private timer: NodeJS.Timeout | null = null;
-  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: { features(inp: FeatureInputs): Features; score(scannerId: string, f: Features, opts?: { record?: boolean; tf?: string }): { prob: number } | null }; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
+  private deps: { timelyResearch?: () => ReadonlySet<string>; compare?: PlanComparisons['observe']; store: IncubatorStore; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; registry: ScannerRegistry; paper: PaperEngine; marketInfo: (symbol: string) => Promise<MarketInfo>; /** Decision 116: the account takes the shadow pair's events too, under its own gates, when `incubator.mirror.enabled`. */ mirror?: (s: LoadedScanner, symbol: string, tf: string, ev: ScanEvent, bars: Bar[], market: MarketInfo, exitMode: ExitMode, lastBar: Bar) => void | Promise<void>; /** Decision 112: the market gate's verdict on a symbol today, as the account reads it. */ marketVerdict?: (symbol: string) => { allowed: boolean; reasons: string[] } | null; /** Decision 108: every shadow entry carries the model's features and probability, as a live entry does. */ ml?: Pick<MlService,'features'|'scoreEntry'|'bindPrediction'>; subscribe?: (symbols: string[]) => void; /** Decision 166: what the account can act on now, to order a wave's scans by it. */ accountFocus?: () => { held: Set<string>; full: boolean }; /** Decision 201: whether the account holds an open position on this scanner, market and timeframe — its exits must reach the account whatever the copy setting. */ accountHolds?: (scannerId: string, symbol: string, tf: string) => boolean };
   private marketsCache: { at: number; map: Map<string, { turnoverUsd: number | null }> } | null = null;
   /** The market gate's 24h turnover for a symbol (null when unjudged), read at most once a minute. */
   private turnoverOf(symbol: string): number | null {
@@ -437,18 +438,19 @@ export class ShadowRunner {
         if(trendReason){this.stats.refused++;this.note(fkey,'regime',now,trendReason);continue;}
         if (refusal) { this.stats.refused++; this.note(fkey, refusal.kind, now, refusal.reason); continue; }
         // decision 108: the same entry-time features and probability a live entry gets, so the shadow book can
-        // judge the model out of sample; scored without feeding the drift monitor, which watches the account
-        let features: Features | undefined; let mlProb: number | null = null;
+        // compare saved predictions; chronological receipts are still required for prospective evidence.
+        let features: Features | undefined; let mlProb: number | null = null;let predictionId:string|undefined;
         if (this.deps.ml && atr) {
           const price = ev.price && ev.price > 0 ? ev.price : refPrice;
           const plan = protectEntry(ev,cfg.scanners[s.id]?.entryProtection);
           const levels = resolveLevels({ side: ev.side, price, sl: plan.sl, tp: plan.tp, atr }, cfg.paper, market.tickSize);
           if (!('error' in levels)) {
             features = this.deps.ml.features({ bars, i: bars.length - 1, ev, entry: price, sl: levels.sl, tp1: levels.tp[0], atr, levelsSource: levels.source });
-            mlProb = this.deps.ml.score(s.id, features, { record: false, tf: r.tf })?.prob ?? null;
+            const score=this.deps.ml.scoreEntry(s.id,features,{tf:r.tf,symbol:r.symbol,book:this.deps.paper.book,startedAt:now},false);mlProb=score?.prob??null;predictionId=score?.receiptId;
           }
         }
         const d = this.deps.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol: r.symbol, tf: r.tf, market, signalBar:lastBar, atr, refPrice, at: now, signalId: null, exitMode, features, mlProb });
+        if(['opened','reversed','pending'].includes(d.action))this.deps.ml?.bindPrediction(predictionId,this.deps.paper.book,d.position?.id??d.pendingId,d.position?.policy?.id??this.deps.paper.pendingEntries().find(p=>p.id===d.pendingId)?.policy?.id);
         if (d.action === 'opened' || d.action === 'reversed') this.stats.entries++;
         const kind: FunnelKind = d.action === 'opened' || d.action === 'reversed' ? 'opened' : funnelClass(`${d.action}:${d.reason ?? ''}`);
         this.note(fkey, kind, now, `${d.action}${d.reason ? ':'+d.reason : ''}`);

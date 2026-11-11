@@ -3,12 +3,19 @@ import {toMs,type WsTrade} from '../delta/ws.ts';
 const MAX_LEVELS=10000,MAX_BYTES=128*1024;
 export function crc32(s:string):number {let c=0xffffffff;for(const v of Buffer.from(s)){c^=v;for(let j=0;j<8;j++)c=(c>>>1)^((c&1)?0xedb88320:0);}return (c^0xffffffff)>>>0;}
 type Book={at:number;exchangeAt:number;seq:number;asks:Map<number,[string,string]>;bids:Map<number,[string,string]>};
+export type DepthCapture=(symbol:string,kind:string,payload:unknown,receivedAt:number)=>void;
 /** Bounded diagnostic ring, independent of the execution path. A replay must start at a retained snapshot. */
 export class DepthRecorder {
  private books=new Map<string,Book>();private queue:Array<[number,string,string,string,number]>=[];private dropped=0;private failures=0;private lastRetry=new Map<string,number>();
  private db:Db; readonly symbols:string[]; private retry:(symbol:string)=>void; private raw:boolean;
+ private capture?:DepthCapture;private checkpointAt=new Map<string,number>();
  constructor(db:Db,symbols=['BTCUSD','ETHUSD','SOLUSD'],retry:(symbol:string)=>void=()=>{},raw=true){this.db=db;this.symbols=[...symbols];this.retry=retry;this.raw=raw;db.db.exec(`CREATE TABLE IF NOT EXISTS depth_tape(id INTEGER PRIMARY KEY AUTOINCREMENT,received_at INTEGER NOT NULL,symbol TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,bytes INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS depth_tape_at ON depth_tape(received_at);`);}
- private record(symbol:string,kind:string,value:unknown,now:number){if(!this.raw)return;const payload=JSON.stringify(value),bytes=Buffer.byteLength(payload);if(bytes>MAX_BYTES||this.queue.length>=2000){this.dropped++;return;}this.queue.push([now,symbol,kind,payload,bytes]);}
+ setCapture(capture:DepthCapture){this.capture=capture;this.checkpointAt.clear();}
+ private record(symbol:string,kind:string,value:unknown,now:number){
+  // Research capture must never throw into the price/execution feed.
+  try{this.capture?.(symbol,kind,value,now);}catch{this.failures++;}
+  if(!this.raw)return;const payload=JSON.stringify(value),bytes=Buffer.byteLength(payload);if(bytes>MAX_BYTES||this.queue.length>=2000){this.dropped++;return;}this.queue.push([now,symbol,kind,payload,bytes]);
+ }
  setSymbols(symbols:string[]){const wanted=new Set(symbols);for(const s of this.symbols)if(!wanted.has(s)){this.books.delete(s);this.lastRetry.delete(s);}this.symbols.splice(0,this.symbols.length,...wanted);}
  invalidateSymbols(symbols:string[],now=Date.now()){for(const s of symbols){this.books.delete(s);this.record(s,'gap',{why:'connection unavailable'},now);}}
  observedAt(symbol:string){return this.books.get(symbol)?.at??null;}
@@ -31,6 +38,11 @@ export class DepthRecorder {
   if((asks.length&&bids.length&&asks[0][0]<=bids[0][0])||crc32(encode(asks)+'|'+encode(bids))!==(m.cs>>>0)){this.invalid(symbol,'checksum or crossed book',now);return;}
   if(!toMs(m.ts,0)||Math.abs(now-toMs(m.ts,0))>10000){this.invalid(symbol,'stale depth',now);return;}
   book.seq=m.seq;book.at=now;book.exchangeAt=toMs(m.ts,0);this.books.set(symbol,book);this.record(symbol,m.action,m,now);
+  if(this.capture&&(m.action==='snapshot'||now-(this.checkpointAt.get(symbol)??0)>=60000)){
+   // A checkpoint is the verified book AFTER this event; never assign it an earlier receipt time.
+   try{this.capture(symbol,'checkpoint',{sy:symbol,action:'snapshot',seq:book.seq,ts:book.exchangeAt*1000,
+    a:asks.map(([,v])=>v),b:bids.map(([,v])=>v),cs:m.cs},now);this.checkpointAt.set(symbol,now);}catch{this.failures++;}
+  }
  }
  /** Causal, detached research view. No book is backdated across a gap or an observation. */
  bookAt(symbol:string,now:number,maxAgeMs=1000){

@@ -28,7 +28,7 @@ import { extractEvents, type ScanEvent } from '../scanners/extractor.ts';
 import { applyRules } from '../scanners/rules.ts';
 import { runBacktest, type BacktestInput } from '../paper/backtest.ts';
 import { luxTrailModels } from '../paper/luxExits.ts';
-import { compareRepaint, REPAINT_CUT } from '../scanners/repaint.ts';
+import { compareRepaint, REPAINT_CUT,type RepaintCheck } from '../scanners/repaint.ts';
 import { ConfigStore, TF_SECONDS, type PaperConfig } from '../config.ts';
 import { Db } from '../db.ts';
 import type { Bar } from '../data/candleStore.ts';
@@ -212,15 +212,15 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   const res = await pool.run({ scannerId: id, source: s.patched, symbol: sym, tf, tickSize: m.tickSize, bars: b, tailBars: 'all', plotTail: b.length, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
   if (!res.ok) { md.push(`- ${id} · ${sym} ${tf}: **did not run** — ${res.error}`); return null; }
   // the same script with the last REPAINT_CUT bars hidden: its view of the earlier bars must not change
-  let repaint: { prefix: number; changed: number } | undefined;
+  let repaint: RepaintCheck | undefined;
   if (REPAINT_CUT > 0 && b.length > REPAINT_CUT + 200) {
     const bt = b.slice(0, b.length - REPAINT_CUT); const cutAt = bt[bt.length - 1].time;
     const r2 = await pool.run({ scannerId: id, source: s.patched, symbol: sym, tf, tickSize: m.tickSize, bars: bt, tailBars: 'all', plotTail: bt.length, inputs: sc.inputs && Object.keys(sc.inputs).length ? sc.inputs : undefined, timezone: sc.timezone });
-    if (r2.ok) { const rc = compareRepaint(res, b, r2, bt, id, sc); repaint = { prefix: rc.prefix, changed: rc.changed }; }
+    if (r2.ok) repaint = compareRepaint(res, b, r2, bt, id, sc,s.patched,s.variantOf);
   }
   if (REPAINT_ONLY) {
     const empty = stat([], b, TF_SECONDS[tf] * 1000);
-    if (repaint) { const share = repaint.prefix ? repaint.changed / repaint.prefix : 0; row(id, tf, sym, 'repaint', { ...empty, trades: repaint.prefix }, `${repaint.changed} of ${repaint.prefix} earlier entries changed when the last ${REPAINT_CUT} bars were hidden (${(share * 100).toFixed(0)}%)`); }
+    if (repaint) row(id, tf, sym, 'repaint', { ...empty, trades: repaint.prefix }, `${repaint.coverage} prefix coverage; ${repaint.timingChanged} timing/direction, ${repaint.planChanged} entry-plan, ${repaint.exitChanged} exit-plan key differences`);
     return { id, tf, sym, variants: { base: empty }, labels: [], verdict: repaint ? 'repaint checked' : 'repaint not checked', fix: '', repaint };
   }
   const READ = readingOf(sc, id, (TF_SECONDS[tf] ?? 0) * 1000, s.patched, s.variantOf);   // decision 195
@@ -461,9 +461,8 @@ async function cell(id: string, tf: string, sym: string): Promise<CellResult | n
   for (const [k, st] of labels) row(id, tf, sym, `label:${k}`, st);
   let { verdict, fix } = diagnose(variants, labels);
   if (repaint) {
-    const share = repaint.prefix ? repaint.changed / repaint.prefix : 0;
-    row(id, tf, sym, 'repaint', { ...variants.base, trades: repaint.prefix }, `${repaint.changed} of ${repaint.prefix} earlier entries changed when the last ${REPAINT_CUT} bars were hidden (${(share * 100).toFixed(0)}%)`);
-    if (share > 0.10 && repaint.prefix >= 5) { verdict = `REPAINTS: ${(share * 100).toFixed(0)}% of earlier entries move or vanish when later bars are hidden`; fix = 'do not screen or trade it: its history is not what a live run would have seen'; }
+    row(id, tf, sym, 'repaint', { ...variants.base, trades: repaint.prefix }, `${repaint.coverage} prefix coverage; ${repaint.timingChanged} timing/direction, ${repaint.planChanged} entry-plan, ${repaint.exitChanged} exit-plan key differences`);
+    if (repaint.repaints) { verdict = `REPAINTS: earlier entry/exit plans differ when later bars are hidden`; fix = 'do not screen or trade it: its history is not what a live run would have seen'; }
   }
   row(id, tf, sym, 'verdict', variants.base, `${verdict} → ${fix}`);
   return { id, tf, sym, variants, labels, verdict, fix, repaint };

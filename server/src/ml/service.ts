@@ -7,6 +7,7 @@ import type { Db } from '../db.ts';
 import { logger } from '../log.ts';
 import { computeFeatures, FEATURE_LABELS, FEATURE_NAMES, featureVector, type Features, type FeatureInputs } from './features.ts';
 import { deriveRules, predict, trainLogReg, type LogRegModel, type Rule, type Sample } from './model.ts';
+import {PredictionEvidence,type ModelEvidence,type PredictionContext} from './predictionEvidence.ts';
 
 const log = logger.scoped('ml');
 const MIN_SCANNER_SAMPLES = 40;
@@ -35,6 +36,8 @@ export interface MlSnapshot {
 }
 
 export class MlService {
+  readonly predictionEvidence:PredictionEvidence;
+  private modelEvidence:ModelEvidence|null=null;
   private db: Db;
   private globalModel: LogRegModel | null = null;
   private models = new Map<string, LogRegModel>();
@@ -46,6 +49,7 @@ export class MlService {
 
   constructor(db: Db, names: () => Record<string, string>) {
     this.db = db; this.names = names;
+    this.predictionEvidence=new PredictionEvidence(db);
     db.db.exec(`CREATE TABLE IF NOT EXISTS ml_samples (
       id INTEGER PRIMARY KEY AUTOINCREMENT, scanner_id TEXT NOT NULL, symbol TEXT NOT NULL, tf TEXT NOT NULL, at INTEGER NOT NULL,
       features TEXT NOT NULL, win INTEGER NOT NULL, r REAL NOT NULL, pnl REAL NOT NULL, exit_reason TEXT NOT NULL, bt INTEGER NOT NULL DEFAULT 1,
@@ -72,6 +76,7 @@ export class MlService {
     }
     const saved = db.kvGet<{ global: LogRegModel | null; models: Record<string, LogRegModel>; snapshot: MlSnapshot; version?: number; timeframeModels?: Record<string, LogRegModel> }>('ml.model');
     if (saved?.version === TRAINING_VERSION) { for (const [k, v] of Object.entries(saved.timeframeModels ?? {})) this.timeframeModels.set(k, v); this.globalModel = saved.global; for (const [k, v] of Object.entries(saved.models ?? {})) this.models.set(k, v); this.snapshot = saved.snapshot; log.info(`loaded ML models: global ${saved.global ? 'yes' : 'no'}, ${this.models.size} scanner models`); }
+    if(saved?.version===TRAINING_VERSION)this.modelEvidence=(saved as typeof saved&{evidence?:ModelEvidence}).evidence??null;
     if (saved && saved.version !== TRAINING_VERSION) this.scheduleTrain();
     this.liveFeatures = db.kvGet<Array<{ at: number; f: Features }>>('ml.liveFeatures') ?? [];
     // a model trained before the feature set grew predicts without the new columns until it is retrained
@@ -120,8 +125,9 @@ export class MlService {
 
   train(): MlSnapshot {
     const t0 = Date.now();
+    this.modelEvidence=null;
     const ex = this.excluded();
-    const all = this.samples(undefined, 100_000).filter(s => !ex.has(s.scannerId) && s.resolvedAt != null && Number.isFinite(s.resolvedAt) && s.resolvedAt >= s.at);
+    const all = this.samples(undefined, 100_000).filter(s => !ex.has(s.scannerId) && s.resolvedAt != null && Number.isFinite(s.resolvedAt) && s.resolvedAt >= s.at && s.resolvedAt<=t0);
     const names = this.names();
     const byScanner = new Map<string, Sample[]>();
     for (const s of all) { const l = byScanner.get(s.scannerId) ?? []; l.push(s); byScanner.set(s.scannerId, l); }
@@ -154,7 +160,9 @@ export class MlService {
       global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
       scanners,
     };
-    this.db.kvSet('ml.model', { version: TRAINING_VERSION, timeframeModels: Object.fromEntries(this.timeframeModels), global: this.globalModel, models: Object.fromEntries(this.models), snapshot: this.snapshot });
+    const bundle={version:TRAINING_VERSION,timeframeModels:Object.fromEntries(this.timeframeModels),global:this.globalModel,models:Object.fromEntries(this.models),snapshot:this.snapshot};
+    this.modelEvidence=this.predictionEvidence.saveModel(bundle,this.snapshot.trainedAt!,all.reduce((v,s)=>Math.max(v,s.resolvedAt!),0));
+    this.db.kvSet('ml.model', {...bundle,evidence:this.modelEvidence});
     log.info(`trained on ${all.length} samples (${this.models.size} scanner models, global AUC ${this.globalModel ? this.globalModel.metrics.auc.toFixed(2) : '-'}) in ${Date.now() - t0}ms`);
     return this.snapshot;
   }
@@ -170,6 +178,18 @@ export class MlService {
     const m = this.models.get(scannerKey) ?? (opts.tf ? this.timeframeModels.get(opts.tf) : this.globalModel);
     if (!m) return null;
     return { prob: predict(m, f, true), raw: predict(m, f, false), model: this.models.has(scannerKey) ? 'scanner' : 'global', calibrated: Boolean(m.calibration) };
+  }
+
+  scoreEntry(scannerId:string,f:Features,ctx:PredictionContext,record=true){
+    const score=this.score(scannerId,f,{tf:ctx.tf,record});if(!score)return null;
+    let receiptId:string|undefined;
+    try{receiptId=this.predictionEvidence.record(scannerId,f,score.prob,`${score.model}:${ctx.tf}`,this.modelEvidence,ctx);}
+    catch(e){log.warn(`prediction receipt unavailable: ${String(e)}`);}
+    return {...score,receiptId};
+  }
+  bindPrediction(id:string|undefined,book:number,positionId:number|undefined|null,policyId:string|undefined){
+    if(!id||positionId==null||!policyId)return;
+    try{this.predictionEvidence.bind(id,book,positionId,policyId);}catch(e){log.warn(`prediction binding unavailable: ${String(e)}`);}
   }
 
   private recordLive(f: Features) {

@@ -698,14 +698,14 @@ export class ScannerEngine extends EventEmitter {
     if (ev.kind === 'entry' && ev.side) {
       const atr = lastAtr(bars, 14);
       // entry-time features + ML probability (levels are provisional here: script levels or ATR fallback)
-      let features: Record<string, number> | undefined; let mlProb: number | null = null;
+      let features: Record<string, number> | undefined; let mlProb: number | null = null;let predictionId:string|undefined;
       if (this.ml && atr) {
         const price = ev.price && ev.price > 0 ? ev.price : refPrice;
         const plan = protectEntry(ev,this.scannerConfig(s.id).entryProtection);
         const levels = resolveLevels({ side: ev.side, price, sl: plan.sl, tp: plan.tp, atr }, this.cfgRef().paper, market.tickSize);
         if (!('error' in levels)) {
           features = this.ml.features({ bars, i: bars.length - 1, ev, entry: price, sl: levels.sl, tp1: levels.tp[0], atr, levelsSource: levels.source });
-          const sc = this.ml.score(s.id, features as any, { tf }); mlProb = sc?.prob ?? null;
+          const sc = this.ml.scoreEntry(s.id, features as any, {tf,symbol,book:this.paper.book,startedAt:now}); mlProb = sc?.prob ?? null;predictionId=sc?.receiptId;
         }
       }
       const mlCfg = this.cfgRef().ml;
@@ -730,6 +730,7 @@ export class ScannerEngine extends EventEmitter {
         if (pilot && ['opened','reversed','pending'].includes(d.action)) this.db.kvSet('incubator.copyPilot',reservePilotEntry(pilotState,tf));
         action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
         positionId = d.position?.id ?? d.pendingId ?? null;
+        if(['opened','reversed','pending'].includes(d.action))this.ml?.bindPrediction(predictionId,this.paper.book,positionId,d.position?.policy?.id??this.paper.pendingEntries().find(p=>p.id===d.pendingId)?.policy?.id);
       }
       if(pilotBlock||trendBlock||(gate&&!gate.ok)||(mlCfg.minProb>0&&mlProb!==null&&mlProb<mlCfg.minProb))
         this.paper.recordGatedEntry(ev,{scannerId:s.id,scannerName:s.name,symbol,tf,market,signalBar:lastBar,atr,refPrice,at:now,

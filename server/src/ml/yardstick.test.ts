@@ -49,10 +49,29 @@ test('yardstick: unscored trades are kept by every gate and counted apart', () =
 test('theCall: the shadow book decides, the account may only veto', () => {
   const paying = yardstick([...Array.from({ length: 40 }, () => t(0.42, -1)), ...Array.from({ length: 60 }, () => t(0.62, 0.5))]);
   const neutral = yardstick(Array.from({ length: 50 }, () => t(0.62, 0.2)));
-  assert.equal(theCall(neutral, paying).minProb, 0.45);
+  assert.equal(theCall(neutral, paying).minProb, null);
+  assert.equal(theCall(neutral, paying).candidateMinProb, 0.45);
+  assert.match(theCall(neutral,paying).text,/forward window/);
   assert.equal(theCall(paying, neutral).minProb, null, 'the account paying alone is in-sample evidence');
   // the account would have lost R under the shadow book's threshold: veto
   const hurt = yardstick([...Array.from({ length: 10 }, () => t(0.42, 1)), ...Array.from({ length: 10 }, () => t(0.62, 0.2))]);
   const call = theCall(hurt, paying);
   assert.equal(call.minProb, null); assert.match(call.text, /would have lost/);
+});
+
+test('later rescoring cannot produce a prospective verdict, even with perfect hindsight',()=>{
+ const later=yardstick([...Array.from({length:20},()=>t(.4,-1,'later')),...Array.from({length:20},()=>t(.8,1,'later'))]);
+ assert.equal(later.scoredAtEntry,0);assert.equal(later.scored,0);assert.equal(later.verdict.pays,false);
+ assert.equal(later.later.auc,1);assert.equal(later.later.trades,40);assert.equal(later.unscored,40);
+ assert.ok(later.thresholds.every(x=>x.dropped===0&&x.kept===40&&x.deltaSumR===0));
+ assert.equal(theCall(later,later).minProb,null);
+});
+test('later scores never change entry-score buckets or dropped-trade decisions',()=>{
+ const saved=[...Array.from({length:25},()=>t(.4,-1)),...Array.from({length:25},()=>t(.8,1))];
+ const baseline=yardstick(saved),mixed=yardstick([...saved,...Array.from({length:100},()=>t(.01,-2,'later'))]);
+ assert.deepEqual(mixed.buckets,baseline.buckets);assert.equal(mixed.auc,baseline.auc);assert.equal(mixed.scored,50);
+ for(let i=0;i<mixed.thresholds.length;i++){assert.equal(mixed.thresholds[i].dropped,baseline.thresholds[i].dropped);assert.equal(mixed.thresholds[i].deltaSumR,baseline.thresholds[i].deltaSumR);}
+});
+test('invalid or unknown-origin probabilities are unscored, not prospective evidence',()=>{
+ const y=yardstick([t(-.1,-1),t(1.1,-1),t(NaN,-1),t(.1,-1,null)]);assert.equal(y.scored,0);assert.equal(y.unscored,4);assert.equal(y.verdict.pays,false);
 });

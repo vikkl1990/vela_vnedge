@@ -2,8 +2,8 @@
  * The yardstick for the model's gate (decision 108): would refusing entries below a probability
  * have paid, on trades that really happened?
  *
- * Every closed trade of a book carries the probability the model gave it at entry (or, for trades
- * opened without one, the probability the current model gives the same entry after the fact).
+ * Only saved entry predictions enter threshold comparisons. Later rescoring is a separate
+ * exploratory summary; it cannot contribute to a prospective verdict.
  * The trades are bucketed by that probability, and for each candidate threshold the book is split
  * into what a gate at that level would have kept and what it would have dropped. A gate pays when
  * the trades it drops are a losing set large enough to matter — not when it merely raises the
@@ -12,7 +12,7 @@
  * Pure functions over (probability, R) pairs; the app supplies the trades, the page shows the table.
  */
 
-export interface YardTrade { r: number; prob: number | null; scored: 'entry' | 'later' | null }
+export interface YardTrade { r: number; prob: number | null; scored: 'entry' | 'later' | null;verified?:boolean }
 export interface YardBucket { label: string; lo: number; hi: number; n: number; avgR: number; winRatePct: number; sumR: number }
 export interface YardThreshold {
   minProb: number; kept: number; keptAvgR: number; keptSumR: number;
@@ -22,7 +22,8 @@ export interface YardThreshold {
 }
 export interface YardVerdict { pays: boolean; minProb: number | null; text: string }
 export interface YardBook {
-  trades: number; scored: number; scoredAtEntry: number; unscored: number;
+  trades: number; scored: number; scoredAtEntry: number; unscored: number;verifiedAtEntry:number;
+  later: {trades:number;avgR:number;sumR:number;auc:number|null;buckets:YardBucket[]};
   allAvgR: number; allSumR: number;
   /** Rank agreement between probability and outcome on the scored trades: 0.5 is a coin flip. */
   auc: number | null;
@@ -61,15 +62,17 @@ export function rankAuc(pairs: Array<{ prob: number; win: boolean }>): number | 
 
 export function yardstick(trades: YardTrade[]): YardBook {
   const all = trades.filter(t => Number.isFinite(t.r));
-  const scored = all.filter(t => typeof t.prob === 'number' && Number.isFinite(t.prob));
+  const valid=(t:YardTrade)=>typeof t.prob==='number'&&Number.isFinite(t.prob)&&t.prob>=0&&t.prob<=1;
+  const scored = all.filter(t => t.scored==='entry'&&valid(t));
+  const later=all.filter(t=>t.scored==='later'&&valid(t));
   const rs = all.map(t => t.r);
-  const buckets: YardBucket[] = LABELS.map((label, i) => {
-    const g = scored.filter(t => t.prob! >= EDGES[i] && t.prob! < EDGES[i + 1]);
+  const bucketize=(rows:YardTrade[]):YardBucket[]=>LABELS.map((label, i) => {
+    const g = rows.filter(t => t.prob! >= EDGES[i] && t.prob! < EDGES[i + 1]);
     const r = g.map(t => t.r);
     return { label, lo: EDGES[i], hi: Math.min(1, EDGES[i + 1]), n: g.length, avgR: mean(r), winRatePct: g.length ? g.filter(t => t.r > 0).length / g.length * 100 : 0, sumR: sum(r) };
   });
   // an unscored trade is taken by every gate: there is nothing to refuse it on (the shadow ledger's rule)
-  const unscored = all.filter(t => !(typeof t.prob === 'number' && Number.isFinite(t.prob)));
+  const unscored = all.filter(t => !(t.scored==='entry'&&valid(t)));
   const thresholds: YardThreshold[] = THRESHOLDS.map(minProb => {
     const kept = [...scored.filter(t => t.prob! >= minProb), ...unscored], dropped = scored.filter(t => t.prob! < minProb);
     const keptR = kept.map(t => t.r), dropR = dropped.map(t => t.r);
@@ -77,9 +80,11 @@ export function yardstick(trades: YardTrade[]): YardBook {
   });
   return {
     trades: all.length, scored: scored.length, scoredAtEntry: scored.filter(t => t.scored === 'entry').length, unscored: unscored.length,
+    verifiedAtEntry:scored.filter(t=>t.verified).length,
+    later:{trades:later.length,avgR:mean(later.map(t=>t.r)),sumR:sum(later.map(t=>t.r)),auc:rankAuc(later.map(t=>({prob:t.prob!,win:t.r>0}))),buckets:bucketize(later)},
     allAvgR: mean(rs), allSumR: sum(rs),
     auc: rankAuc(scored.map(t => ({ prob: t.prob!, win: t.r > 0 }))),
-    buckets, thresholds,
+    buckets:bucketize(scored), thresholds,
     verdict: verdictOf(thresholds, all.length),
   };
 }
@@ -97,15 +102,15 @@ export function verdictOf(thresholds: YardThreshold[], n: number): YardVerdict {
 }
 
 /**
- * One call across the books: the shadow book is the out-of-sample test (its trades never train the
- * model), so it decides; the live book, which does train it, may only veto a gate that would have
- * cost it R.
+ * Threshold search uses this very window, so a favorable result is only a research candidate.
+ * Saved-at-entry scores prevent hindsight scoring; they do not make threshold selection an
+ * untouched forward test. No configuration recommendation is authorized here.
  */
-export function theCall(live: YardBook, shadow: YardBook): { minProb: number | null; text: string } {
+export function theCall(live: YardBook, shadow: YardBook): { minProb: number | null; candidateMinProb?:number; text: string } {
   if (!shadow.verdict.pays || shadow.verdict.minProb === null) return { minProb: null, text: `the shadow book does not pay a gate: ${shadow.verdict.text}` };
   const at = live.thresholds.find(t => t.minProb === shadow.verdict.minProb);
   if (at && at.dropped >= 5 && at.deltaSumR < -1) return { minProb: null, text: `the shadow book pays a gate at ${pct(shadow.verdict.minProb)} but the account would have lost ${fmtR(-at.deltaSumR)} under it; no gate` };
-  return { minProb: shadow.verdict.minProb, text: `set ml.minProb to ${shadow.verdict.minProb}: ${shadow.verdict.text}` };
+  return { minProb:null,candidateMinProb:shadow.verdict.minProb,text:`Research candidate ${pct(shadow.verdict.minProb)} from saved entry predictions: ${shadow.verdict.text}. Selected on this window; freeze it and evaluate a new forward window before enabling any gate.` };
 }
 
 const pct = (p: number) => `${Math.round(p * 100)}%`;

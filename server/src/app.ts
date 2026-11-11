@@ -49,6 +49,8 @@ import type { AccountObserver } from './connections/observer.ts';
 import type { DepthRecorder } from './execution/depthRecorder.ts';
 import type { OrderFlowStore } from './orderflow/store.ts';
 import type { MonitorRuntime } from './research/monitorRuntime.ts';
+import type { ReplayArchive } from './research/replayArchive.ts';
+import {eligibleEvidence} from './evidence/trades.ts';
 import { TapeAudit } from './execution/tapeAudit.ts';
 import { TF_SECONDS } from './config.ts';
 import { MarketGate } from './risk/marketGate.ts';
@@ -111,8 +113,9 @@ export class App {
   depthRecorder!: DepthRecorder;
   orderFlow!: OrderFlowStore;
   tradeMonitor!: MonitorRuntime;
+  replayArchive!: ReplayArchive;
   readonly advisoryFeedFactory:(()=>DeltaFeed)|undefined;
-  stopExecutionAudit?: () => void;
+  stopExecutionAudit?: () => void | Promise<void>;
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
   readonly ops: OpsService;
@@ -772,24 +775,28 @@ export class App {
 
   /**
    * Would the model's gate have paid (decision 108)? Every closed trade of the last `days` in both books,
-   * with the probability it had at entry or, failing that, the one the current model gives its entry
-   * after the fact; the shadow book is the out-of-sample judge.
+   * with saved entry predictions only for threshold evaluation. Current-model rescoring is
+   * shown separately, and thresholds selected on this window remain exploratory candidates.
    */
   mlYardstick(days = 60) {
     const since = Date.now() - days * 86_400_000;
+    const eligible=new Set(this.db.all<{id:number}>(`SELECT p.id FROM positions p JOIN trade_policies t ON t.id=p.policy_id WHERE p.status='closed' AND p.exit_at>=? AND ${eligibleEvidence}`,since).map(r=>r.id));
+    const verified=this.ml.predictionEvidence.verified(since);
     const collect = (engine: PaperEngine): YardTrade[] => engine.trades({ limit: 20000 })
-      .filter(t => !t.scannerId.startsWith('plan:') && Number.isFinite(t.exitAt) && (t.exitAt ?? 0) >= since && Number.isFinite(t.rMultiple))
+      .filter(t => eligible.has(t.id) && Number.isFinite(t.exitAt) && (t.exitAt ?? 0) >= since && Number.isFinite(t.rMultiple))
       .map(t => {
         const r = t.rMultiple as number;
-        if (typeof t.mlProb === 'number' && Number.isFinite(t.mlProb)) return { r, prob: t.mlProb, scored: 'entry' as const };
+        if (typeof t.mlProb === 'number' && Number.isFinite(t.mlProb)) return { r, prob: t.mlProb, scored: 'entry' as const,verified:verified.has(t.id) };
         const f = this.featuresOf(engine.book, t);
         const prob = f ? this.ml.score(t.scannerId, f as any, { record: false, tf: t.tf })?.prob ?? null : null;
         return { r, prob, scored: prob === null ? null : ('later' as const) };
       });
-    const live = yardstick(collect(this.paper)), shadow = yardstick(collect(this.shadow));
+    const liveRows=collect(this.paper),shadowRows=collect(this.shadow);
+    const live = yardstick(liveRows), shadow = yardstick(shadowRows);
+    const prospective={live:yardstick(liveRows.filter(t=>t.verified)),shadow:yardstick(shadowRows.filter(t=>t.verified))};
     this.enricher.flush();
     const snap = this.ml.insights();
-    return { at: Date.now(), windowDays: days, model: { trainedAt: snap.trainedAt, holdoutAuc: snap.global?.model?.auc ?? null, samples: snap.samples }, config: this.config.get().ml, enriched: this.enricher.size(), live, shadow, call: theCall(live, shadow) };
+    return { at: Date.now(), windowDays: days, evaluation:'saved-entry-predictions; candidates require verified model/time/policy receipts; threshold search is exploratory',model: { trainedAt: snap.trainedAt, holdoutAuc: snap.global?.model?.auc ?? null, samples: snap.samples }, config: this.config.get().ml, enriched: this.enricher.size(), live, shadow,prospective,call: theCall(prospective.live,prospective.shadow) };
   }
 
   /** Account exits by reason and the totals, in dollars (decision 108): the cuts the journal does not already give in R. */
@@ -1004,7 +1011,7 @@ export class App {
     this.pairAgents.stop();
     this.scanners.stop();this.boundExits.stop();
     this.validation.stop();
-    this.stopExecutionAudit?.();
+    const auditStopped=this.stopExecutionAudit?.();
     this.screenQueue.stop();
     this.incubator.stop();
     this.executor?.stop();
@@ -1012,6 +1019,7 @@ export class App {
     if (this.huntTimer) clearInterval(this.huntTimer);
     this.feed.stop();
     await this.pool.stop();
+    await auditStopped;
   }
 }
 

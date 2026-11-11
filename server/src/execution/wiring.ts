@@ -1,11 +1,13 @@
 import { FundingJournal } from './fundingJournal.ts';
 import { MonitorRuntime } from '../research/monitorRuntime.ts';
+import {ReplayArchive} from '../research/replayArchive.ts';
+import path from 'node:path';
 import {PaperExitPump} from './paperExitPump.ts';
 import { AccountAudit } from './accountAudit.ts';
 import { AccountObserver } from '../connections/observer.ts';
 import { DepthRecorder } from './depthRecorder.ts';
 import { OrderFlowStore, FLOW_SETTLE_MS } from '../orderflow/store.ts';
-import { TF_SECONDS } from '../config.ts';
+import { TF_SECONDS,DATA_DIR } from '../config.ts';
 import { fundingAssessment } from '../paper/fundingGuard.ts';
 import { depthFill } from '../paper/entryExecution.ts';
 /**
@@ -93,7 +95,9 @@ export function wireRealtime(app: App): void {
     app.feed.unsubscribe('ob_updates', [symbol]); app.feed.subscribe('ob_updates', [symbol]);
   });
   depth.disconnect();
+  const replay=app.replayArchive=new ReplayArchive({dir:path.join(DATA_DIR,'replay')});
   app.tradeMonitor=new MonitorRuntime(app,app.advisoryFeedFactory);
+  app.tradeMonitor.depth.recorder.setCapture((symbol,kind,payload,at)=>replay.record(symbol,kind,payload,at,'advisory-depth'));
   app.feed.on('depth', (m:unknown) => depth.onDepth(m));
   let auditing=false, staging=false;
   const auditTimer=setInterval(() => {
@@ -110,9 +114,10 @@ export function wireRealtime(app: App): void {
   const depthTimer=setInterval(()=>{
     try{depth.flush();}catch(e:any){log.warn(`depth audit: ${e.message}`);}
     try{flow.flush();}catch(e:any){log.warn(`order flow: ${e.message}`);}
+    void replay.flush();
   },5000);
   for(const t of [auditTimer,historyTimer,depthTimer])t.unref();
-  app.stopExecutionAudit=()=>{app.tradeMonitor.stop();exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}};
+  app.stopExecutionAudit=async()=>{app.tradeMonitor.stop();exitPump.stop();clearInterval(exitTimer);app.accountObserver.stop();stopStatus();for(const t of [auditTimer,historyTimer,depthTimer,timer])clearInterval(t);depth.disconnect();try{depth.flush();flow.connection(false);}catch(e:any){log.warn(`audit shutdown flush: ${e.message}`);}await replay.close();};
   const status = app.exchangeStatus ?? new TradingStatus();
   const stopStatus = wireTradingStatus(app, status);
   for (const b of books) b.entryBlock = (symbol, at) => status.block(symbol, at);
@@ -123,8 +128,8 @@ export function wireRealtime(app: App): void {
     const a=fundingAssessment(app.marks.funding(symbol),app.config.get().paper,side,tf,notional,risk,at);
     return a.trigger?`funding guard: next payment ${a.costR!.toFixed(3)}R exceeds ${a.limitR}R budget`:null;
   };
-  app.feed.on('status', ({ connected }: { connected: boolean }) => { try { flow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { depth.disconnect(); app.marks.invalidateQuotes(); } });
-  app.feed.on('quote', q => app.marks.onWsQuote(q));
+  app.feed.on('status', ({ connected }: { connected: boolean }) => { try { flow.connection(connected); } catch(e:any) { log.warn(`order flow connection: ${e.message}`); } if (!connected) { replay.record('*','gap',{reason:'execution feed disconnected; trades/marks/funding unavailable'},Date.now(),'execution-feed');depth.disconnect(); app.marks.invalidateQuotes(); } });
+  app.feed.on('quote', q => {replay.record(q.symbol,'quote',q,Date.now(),'execution-feed');app.marks.onWsQuote(q);});
   app.feed.on('quoteGap', ({ symbols }: { symbols: string[] }) => app.marks.invalidateQuotes(symbols));
   // Depth observation is deliberately asynchronous and labelled post-entry; it never changes an entry.
   const queue: Array<{ id: number; symbol: string; side: 'long' | 'short'; qty: number; entryAt: number }> = [];
@@ -152,11 +157,12 @@ export function wireRealtime(app: App): void {
   // decision 190: the audit sees each print before the books do, so the print that fills a limit is counted as its through
   app.feed.on('trade', (t: WsTrade) => { depth.onTrade(t);
     const receivedAt = Date.now();
+    replay.record(t.symbol,'trade',t,receivedAt,'execution-feed');
     if (isExecutableTrade(t, receivedAt)) { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs, receivedAt); }
     try { flow.onTrade(t); } catch(e:any) { log.warn(`order flow print: ${e.message}`); }
   });
-  app.feed.on('mark', (m: WsMark) => { funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
-  app.feed.on('funding', (f: WsFunding) => { funding.observe(f); app.marks.onWsFunding(f); });
+  app.feed.on('mark', (m: WsMark) => { replay.record(m.symbol,'mark',m,Date.now(),'execution-feed');funding.mark(m); app.marks.onWsMark(m); for (const b of books) b.onMarkPrice(m.symbol, m.markPrice, m.timeMs); });
+  app.feed.on('funding', (f: WsFunding) => { replay.record(f.symbol,'funding',f,Date.now(),'execution-feed');funding.observe(f); app.marks.onWsFunding(f); });
   const timer = setInterval(() => {
     const now = Date.now();
     try {
