@@ -3,7 +3,7 @@ export interface SourceCall { name: string; line: number; condition: string; tit
 export interface SourceFacts { lines: number; channels: string[]; inputs: number; calls: SourceCall[]; totalCalls: number; dependencies: string[]; cautions: string[]; strategy: boolean }
 
 /** Replace comments (and optionally string contents) with spaces, preserving line numbers. */
-function mask(source: string, strings: boolean): string {
+export function mask(source: string, strings: boolean): string {
   let out = '', quote = '', comment = false;
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
@@ -18,7 +18,7 @@ function mask(source: string, strings: boolean): string {
   }
   return out;
 }
-function argumentsOf(s: string): string[] {
+export function argumentsOf(s: string): string[] {
   const parts: string[] = []; let depth = 0, quote = '', start = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
