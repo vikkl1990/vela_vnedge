@@ -40,5 +40,23 @@
     "base": "trend-impulse-channels-zeiierman",
     "name": "Trend Impulse Channels | continuation maker",
     "why": "Decision 215: preserve the measured Upper Retest long / Lower Retest short continuation reading with a 0.1-ATR passive entry and five-minute expiry."
+  },
+  {
+    "id": "liquidity-trail-matrix-reader2",
+    "base": "liquidity-trail-matrix",
+    "name": "Liquidity Trail Matrix | WillyAlgoTrader (reversal exits fixed)",
+    "why": "Decision 242: the same source read with the decision 241 reader (reader 2), whose REVERSAL alert ('Long → Short') closes the long it names instead of the short. Compared with the base reading under one policy; nothing else changes."
+  },
+  {
+    "id": "machine-learning-rsi-ai-classification-ranking-zeiierman-entries",
+    "base": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+    "name": "Machine Learning RSI | Zeiierman (classifier entries only)",
+    "why": "Decision 242: the script's entries are its gated Long/Short signals (rank, confidence, cooldown). Its trend-flip and SuperTrend-flip markers are its trailing stop turning, which the base reading also trades as entries; this variant maps them to none."
+  },
+  {
+    "id": "supertrend-cluster-zeiierman-consensus",
+    "base": "supertrend-cluster-zeiierman",
+    "name": "SuperTrend Cluster | Zeiierman (cluster consensus only)",
+    "why": "Decision 242: the script's entries are the weighted cluster flips (Long/Short, Major Long/Short). 'Base ST Long/Short' mark one SuperTrend flipping without the cluster vote, which the base reading also trades; this variant maps them to none."
   }
 ]

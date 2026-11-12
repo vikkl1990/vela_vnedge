@@ -271,3 +271,27 @@ test('renaming a plan preserves its policy cohort while a trailing change create
  p.trailing!.giveBackPct=25;
  assert.notEqual(planSnapshot(c,p,'source-a').signature,before.signature);
 });
+
+test('a reading comparison pairs two scanners under one policy and matches the signals they share',t=>{
+ const {c,e,service,ctx}=setup(t);
+ c.scanners.v={enabled:false,symbols:null,timeframes:null,exitMode:'both'};
+ const common={revision:1,enabled:true,symbol:'ETHUSD',tf:'15m',variant:'current' as const,referenceEquity:1000};
+ c.executionPlans=[{...common,id:'read-control',scannerId:'s',comparison:{group:'read',role:'control',axis:'reading'}},
+  {...common,id:'read-candidate',scannerId:'v',comparison:{group:'read',role:'candidate',axis:'reading'}}];
+ assert.deepEqual(validateConfig(c),[]);
+ // the policy must be the same on both sides, and the scanners must differ
+ const bad=structuredClone(c);bad.executionPlans![1].referenceEquity=2000;
+ assert.ok(validateConfig(bad).some(x=>x.includes('comparison read')));
+ const same=structuredClone(c);same.executionPlans![1].scannerId='s';
+ assert.ok(validateConfig(same).some(x=>x.includes('two different scanners')));
+ const policy=structuredClone(c);policy.executionPlans!.forEach(p=>delete p.comparison!.axis);
+ assert.ok(validateConfig(policy).some(x=>x.includes('comparison read')),'a policy comparison still needs one scanner');
+ // one signal both readings produce, and one only the control produces
+ service.observe(ctx);service.observe({...ctx,scannerId:'v'});
+ service.observe({...ctx,event:{...ctx.event,barTime:ctx.event.barTime+H,label:'Other'},at:T+H});
+ const view=service.view(),cmp=view.comparisons[0];
+ assert.equal(cmp.axis,'reading');assert.equal(cmp.sharedSignals,1);assert.equal(cmp.controlOnly,1);assert.equal(cmp.candidateOnly,0);
+ // each reading is its own cohort, admitted under the same policy (here both refuse the script's own stop)
+ assert.deepEqual(view.cohorts.map(x=>[x.id,x.signals]).sort(),[['read-candidate',1],['read-control',2]]);
+ assert.deepEqual(new Set(view.cohorts.map(x=>Object.keys(x.reasons).join())).size,1);assert.equal(e.openPositions().length,0);
+});

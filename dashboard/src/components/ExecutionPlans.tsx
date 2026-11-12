@@ -13,9 +13,9 @@ export function ExecutionPlans() {
     <QueryState {...q} data={q.data} onRetry={()=>q.refetch()} empty="Plan comparisons unavailable.">{d=><>
       {d.configured.length===0&&<p>No comparison plans configured.</p>}
       {(d.comparisons??[]).map(c=><div key={c.group} style={{marginBottom:20}}>
-        <strong>{c.symbol} {c.tf} · Profit-capture comparison</strong> <Pill>{c.enabled?'Forward paper test':'Disabled'}</Pill>
+        <strong>{c.symbol} {c.tf} · {c.axis==='reading'?'Reading comparison':'Profit-capture comparison'}</strong> <Pill>{c.enabled?'Forward paper test':'Disabled'}</Pill>
         <p className="small">{c.controlLabel}: {money(c.controlNet)} · {c.candidateLabel}: {money(c.candidateNet)} <span className="muted">closed net, current policy versions</span></p>
-        <p className="small">{c.sharedSignals} shared source signals · {c.unresolvedSignals} awaiting outcomes · {c.differentAdmissions} with different fill status · {c.controlOnly+c.candidateOnly} seen by only one policy.</p>
+        <p className="small">{c.sharedSignals} shared source signals · {c.unresolvedSignals} awaiting outcomes · {c.differentAdmissions} with different fill status · {c.controlOnly+c.candidateOnly} seen by only one {c.axis==='reading'?'reading':'policy'}.</p>
         <p className="small">Both trades closed on {c.matchedClosed} matched signals · candidate difference {money(c.matchedDeltaNet)}.</p>
         <p className="small muted">The matched subset excludes unfilled and unfinished trades. Assess it alongside each plan’s full net result, missed entries and drawdown. A historical improvement is not forward proof.</p>
       </div>)}
