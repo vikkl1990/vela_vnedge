@@ -380,7 +380,7 @@ export class PaperEngine extends EventEmitter {
     return {config:structuredClone(this.configFor(p)),marketQty:this.book===0?p.qtyOpen:frozen?Math.max(1,Math.ceil(frozen.market_qty*p.qtyOpen/p.qty)):null,
       exitPending:!!this.exitExecution.active(p.id)};
   }
-  private causal(p:Position){return this.causalExits&&!this.executionIntent&&this.cfgRef().execution.mode==='paper'&&(p.policy?.sim??0)>=CAUSAL_EXIT_VERSION;}
+  private causal(p:Position){return this.causalExits&&!this.executionIntent&&this.cfgRef().execution.mode==='paper'&&(p.executionPlan?.executionVersion??p.policy?.sim??0)>=CAUSAL_EXIT_VERSION;}
   pendingExits(){return this.exitExecution.pending().filter(i=>{const p=this.open.get(i.position_id);return !!p&&this.causal(p);});}
   /** Reports and position accounting share one transaction and rollback checkpoint. */
   settleExits(symbol:string,book:ExitBook|null,at=this.now()):number {
@@ -866,7 +866,7 @@ export class PaperEngine extends EventEmitter {
     // the position, its entry fill and the signal's outcome commit together; events go out only after the commit
     // (decision 77: a crash between the writes used to leave a position without its order, or a signal pointing nowhere)
     this.db.transaction(() => {
-      if(this.causalExits&&!this.executionIntent&&this.cfgRef().execution.mode==='paper'&&(pos.policy?.sim??0)>=CAUSAL_EXIT_VERSION)this.exitExecution.register(pos,this.exitQuantity?.(pos,p.market)??pos.qty);
+      if(this.causal(pos))this.exitExecution.register(pos,pos.executionPlan?pos.qty:this.exitQuantity?.(pos,p.market)??pos.qty);
       this.persistFill(pos, pos.fills[0], context);
       this.persist(pos);
       recordFillBudget(this.db,pos,this.book,cfg);

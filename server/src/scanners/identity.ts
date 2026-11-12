@@ -19,7 +19,8 @@ export function strategyIdentity(patched: string, cfg: AppConfig, scannerId: str
   const read = { sources: empty(sc?.sources), edge: sc?.edge ?? null, labels: empty(sc?.labels), invert: Boolean(sc?.invert), rule: sc?.rule ?? null, inputs: empty(sc?.inputs), timezone: sc?.timezone ?? null, exitMode: sc?.exitMode ?? 'both', exit: empty(sc?.exit), trendGate: sc?.trendGate ?? null, sides: empty(sc?.sides), rulePin: sc?.rulePin ?? null,
     entryProtection: sc?.entryProtection ?? null, entryLimit: empty(sc?.entryLimit),
     regime: {minAtrPct:cfg.risk.regime.minAtrPctByScanner?.[scannerId] ?? cfg.risk.regime.minAtrPct, exempt:cfg.risk.regime.exempt.includes(scannerId)} };
-  return createHash('sha1').update(patched).update('\u0000').update(stable(read)).digest('hex').slice(0, 16);
+  // Unset/1 preserves every historical identity; a new reader must not alias its control.
+  return createHash('sha1').update(patched).update('\u0000').update(stable({...read,...(sc?.reader===2?{reader:2}:{})})).digest('hex').slice(0, 16);
 }
 
 export interface DuplicateGroup { identity: string; canonical: string; aliases: string[] }

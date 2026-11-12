@@ -214,6 +214,7 @@ export class App {
     this.incubator = new ShadowRunner({
       timelyResearch: () => timelyTrackerKeys(listTrackers(this.db)),
       compare: input=>this.planComparisons.observe(input),
+      compareScan: input=>this.planComparisons.observeScan(input),
       store: this.incubatorStore, cfgRef: cfg, candles: this.candles, pool: this.pool, registry: this.registry, paper: this.shadow, marketInfo: s => this.scanners.marketInfo(s), ml: this.ml,
       marketVerdict: s => { const v = this.marketGate?.verdict(s); return v ? { allowed: v.allowed, reasons: v.reasons } : null; },
       mirror: (s, symbol, tf, ev, bars, market, exitMode, lastBar) => this.scanners.ingestEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar),

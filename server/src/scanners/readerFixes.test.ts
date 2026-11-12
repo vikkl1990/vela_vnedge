@@ -50,7 +50,7 @@ test('failure titles are not entries on any channel', () => {
   assert.deepEqual(extractEvents(titles.map(t => cond(t)), [], { ...v2, drops }), []);
   assert.equal(drops['condition: a failed pattern or a closed trade, not an entry'], 4);
   // a shape is not rescued by its geometry
-  assert.deepEqual(extractEvents([], [shape('Salida Long', { shape: 'triangleup', location: 'belowbar' })], v2), []);
+  assert.deepEqual(brief(extractEvents([], [shape('Salida Long', { shape: 'triangleup', location: 'belowbar' })], v2)), ['exit:long:close']);
   assert.deepEqual(brief(extractEvents([], [shape('Salida Long', { shape: 'triangleup', location: 'belowbar' })], v1)), ['entry:long']);
   const label: WorkerLabel = { time: T, createdAt: T, y: 1, text: 'Support lost', style: 'label_up' } as WorkerLabel;
   assert.deepEqual(extractEvents([], [], { ...v2, drawn: [label], sources: ['label'] }), []);
@@ -87,4 +87,19 @@ test('the reader revision travels with the reading, so opting in is part of the 
   const errs = validateConfig(cfg);
   assert.equal(errs.some(e => e.startsWith('scanners.a.')), false);
   assert.ok(errs.includes('scanners.b.reader must be 1 or 2'));
+});
+
+test('closing shape and label titles cannot create entries; explicit contracts keep precedence',()=>{
+ for(const title of ['Long Win','Short Loss','Salida Long']){
+  assert.equal(extractEvents([], [shape(title)],v2)[0].kind,'exit');
+  assert.equal(extractEvents([],[],{...v2,sources:['label'],drawn:[{text:title,time:T,createdAt:T,y:1} as WorkerLabel]})[0].kind,'exit');
+  assert.deepEqual(extractEvents([cond(title)],[],{...v2,sides:{[title]:'none'}}),[]);
+ }
+});
+
+test('opted-in label closes pass entry-channel filters while timestamp-less labels never invent exits',()=>{
+ const drawn=[{text:'Long Win',time:T-900000,createdAt:T,y:1} as WorkerLabel];
+ assert.deepEqual(brief(extractEvents([],[],{...v2,sources:['shape'],declared:new Set(['shape']),drawn})),['exit:long:close']);
+ assert.deepEqual(extractEvents([],[],{...v1,sources:['shape'],drawn}),[]);
+ assert.deepEqual(extractEvents([],[],{...v2,drawn:[{...drawn[0],createdAt:undefined}]}),[]);
 });

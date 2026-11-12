@@ -1,3 +1,4 @@
+import {readerContractError} from './scanners/readerFixes.ts';
 import {scannerPairs} from './scanners/allocation.ts';
 import { validateExecutionPlans, type ExecutionPlan } from './paper/executionPlans.ts';
 import fs from 'node:fs';
@@ -1208,6 +1209,7 @@ export function validateExtendedConfig(c: AppConfig): string[] {
     if (sc?.sources != null && (!Array.isArray(sc.sources) || sc.sources.some(x => !['alert', 'alertcondition', 'shape', 'derived', 'label'].includes(x)))) errs.push(`scanners.${id}.sources must list alert|alertcondition|shape|derived|label`);
     if (sc?.sides != null && (typeof sc.sides !== 'object' || Object.values(sc.sides).some(v => !['long', 'short', 'none'].includes(v as string)))) errs.push(`scanners.${id}.sides must map titles to long|short|none`);
     if (sc?.reader != null && ![1, 2].includes(sc.reader as number)) errs.push(`scanners.${id}.reader must be 1 or 2`);
+    const readerError=readerContractError(id,sc?.reader,sc?.sides);if(readerError)errs.push(`scanners.${id}: ${readerError}`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
   }

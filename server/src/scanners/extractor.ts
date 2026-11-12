@@ -440,7 +440,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     const title = String(a.title ?? a.message ?? '').trim();
     // decision 195: an exit condition protects an open trade whatever the entry filters say — neither an excluded
     // condition channel nor an alert() entry owning the bar may silence the close of the previous trade
-    const exit = conditionExit(title) ?? (fixed ? closesSide(title) : undefined);
+    const named = sideByContract(title);
+    const exit = conditionExit(title) ?? (fixed && named===undefined ? closesSide(title) : undefined);
     if (!exit && !allow('alertcondition')) { drop('condition: channel excluded'); continue; }
     if (!exit && alertBars.has(a.time)) { drop('condition: an alert() entry owned the bar'); continue; }
     if (exit) {
@@ -451,7 +452,6 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       events.push({ kind: 'exit', side: exit.side, exitType: exit.exitType, tp: [], label: title.slice(0, 60), message: `alertcondition "${title}"`.slice(0, 500), source: 'alertcondition', barTime: a.time, barIndex: a.barIndex });
       continue;
     }
-    const named = sideByContract(title);
     if (named === 'none') { drop('condition: not an entry by the scanner contract'); continue; }
     if (fixed && !named && NOT_AN_ENTRY.test(title)) { drop('condition: a failed pattern or a closed trade, not an entry'); continue; }
     const side = named ?? directionalTitle(title, !legacy, fixed);
@@ -482,9 +482,19 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     events.push(d);
   }
   for (const s of shapes) {
-    if (!allow('shape')) break;
     const named = sideByContract(s.title);
     if (named === 'none') { drop('shape: not an entry by the scanner contract'); continue; }
+    const exit = fixed && named===undefined ? closesSide(s.title) : undefined;
+    if(exit){
+      for(const t of s.times){
+        if(opts.sinceBarTime!==undefined&&t<opts.sinceBarTime)continue;
+        const key=`exit:${exit.side}:${t}:${exit.exitType}`;
+        if(seenEntry.has(key))continue;seenEntry.add(key);
+        events.push({kind:'exit',...exit,tp:[],label:s.title,message:`plotshape ${s.title}`,source:'shape',barTime:t,barIndex:-1});
+      }
+      continue;
+    }
+    if (!allow('shape')) continue;
     if (fixed && !named && NOT_AN_ENTRY.test(s.title)) { drop('shape: a failed pattern or a closed trade, not an entry'); continue; }
     const side = named ?? shapeSide(s.title, fixed) ?? (legacy ? undefined : geometrySide(s));
     if (!side) { drop('shape: no direction in title'); continue; }
@@ -510,10 +520,19 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   // other entry happens to appear in this window — a later alert must not erase an earlier label signal
   const declaresOther = opts.declared ? [...opts.declared].some(c => allow(c)) : null;
   const readLabels = opts.sources?.includes('label') || (declaresOther === null ? !events.some(e => e.kind === 'entry') : !declaresOther);
-  if (!legacy && opts.drawn?.length && allow('label') && readLabels) {
+  if (opts.drawn?.length && (fixed || (!legacy && allow('label') && readLabels))) {
     for (const l of opts.drawn) {
       const named = sideByContract(l.text);
       if (named === 'none') { drop('label: not an entry by the scanner contract'); continue; }
+      const exit=fixed&&named===undefined?closesSide(l.text):undefined;
+      if(exit){
+        if(l.createdAt===undefined||(opts.sinceBarTime!==undefined&&l.createdAt<opts.sinceBarTime))continue;
+        const key=`exit:${exit.side}:${l.createdAt}:${exit.exitType}`;
+        if(seenEntry.has(key))continue;seenEntry.add(key);
+        events.push({kind:'exit',...exit,tp:[],label:l.text,message:`label ${l.text}`,source:'label',barTime:l.createdAt,barIndex:-1});
+        continue;
+      }
+      if (legacy || !allow('label') || !readLabels) continue;
       if (fixed && !named && NOT_AN_ENTRY.test(l.text)) { drop('label: a failed pattern or a closed trade, not an entry'); continue; }
       const side = named ?? labelSide(l.text, l.style, fixed);
       if (!side) { drop('label: no direction in text'); continue; }

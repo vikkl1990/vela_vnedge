@@ -13,7 +13,7 @@ test('pilot caps support zero independently and still reject invalid values or l
   }
   const next=structuredClone(cfg);next.incubator.mirror!.pilot![key]=2;assert.deepEqual(validateConfig(next),[]);
  }
- const live=structuredClone(cfg);live.execution.mode='live';assert.ok(validateConfig(live).some(e=>e.includes('pilot requires paper')));
+ const live=structuredClone(cfg);live.execution.mode='live' as any;assert.ok(validateConfig(live).some(e=>e.includes('pilot requires paper')));
  cfg.incubator.mirror!.pilot!.byHorizon={scalp:{maxOpenPositions:1,maxDailyEntries:8},swing:{maxOpenPositions:1,maxDailyEntries:2}};
  assert.deepEqual(validateConfig(cfg),[],'explicit quotas can coexist with disabled global pilot caps');
  cfg.incubator.mirror!.pilot!.maxOpenPositions=1;assert.ok(validateConfig(cfg).some(e=>e.includes('quotas must fit')));

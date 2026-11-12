@@ -15,7 +15,7 @@ test('removing pilot caps changes only quotas, with a private backup, dry run an
  const result=removePilotCaps(file);assert.equal(fs.readFileSync(result.backup!,'utf8'),before);assert.equal(fs.statSync(result.backup!).mode&0o777,0o600);
  const expected=structuredClone(cfg);Object.assign(expected.incubator.mirror!.pilot!,{maxOpenPositions:0,maxDailyEntries:0});delete expected.incubator.mirror!.pilot!.byHorizon;
  assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),expected);assert.equal(removePilotCaps(file).changed,false);
- cfg.execution.mode='live';fs.writeFileSync(file,JSON.stringify(cfg));assert.throws(()=>removePilotCaps(file),/paper/);
+ cfg.execution.mode='live' as any;fs.writeFileSync(file,JSON.stringify(cfg));assert.throws(()=>removePilotCaps(file),/paper/);
  assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),cfg);
 });
 test('pilot split migration is narrow, backed up, idempotent and rejects capital/mode drift',t=>{
@@ -28,7 +28,7 @@ test('pilot split migration is narrow, backed up, idempotent and rejects capital
  const done=enablePilotHorizons(file);assert.equal(fs.readFileSync(done.backup!,'utf8'),before);assert.equal(fs.statSync(done.backup!).mode&0o777,0o600);
  const next=JSON.parse(fs.readFileSync(file,'utf8'));assert.deepEqual(next.incubator.mirror.pilot.byHorizon,PILOT_HORIZONS);delete next.incubator.mirror.pilot.byHorizon;assert.deepEqual(next,cfg);
  assert.equal(enablePilotHorizons(file).changed,false);
- for(const mutate of [(c:typeof cfg)=>c.execution.mode='live',(c:typeof cfg)=>c.paper.marginPerTrade=200,(c:typeof cfg)=>c.incubator.mirror!.pilot!.maxOpenPositions=3]){
+ for(const mutate of [(c:typeof cfg)=>c.execution.mode='live' as any,(c:typeof cfg)=>c.paper.marginPerTrade=200,(c:typeof cfg)=>c.incubator.mirror!.pilot!.maxOpenPositions=3]){
   const changed=structuredClone(cfg);mutate(changed);fs.writeFileSync(file,JSON.stringify(changed));assert.throws(()=>enablePilotHorizons(file));assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),changed);
  }
 });
@@ -44,5 +44,5 @@ test('removing horizon quotas preserves every other setting, backs up and is ide
  const expected=structuredClone(cfg);delete expected.incubator.mirror!.pilot!.byHorizon;
  assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),expected);assert.equal(restoreSharedPilot(file).changed,false);
  assert.equal(fs.statSync(done.backup!).mode&0o777,0o600);
- cfg.execution.mode='live';fs.writeFileSync(file,JSON.stringify(cfg));assert.throws(()=>restoreSharedPilot(file),/paper/);
+ cfg.execution.mode='live' as any;fs.writeFileSync(file,JSON.stringify(cfg));assert.throws(()=>restoreSharedPilot(file),/paper/);
 });

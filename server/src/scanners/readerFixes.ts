@@ -25,7 +25,7 @@ export const REVERSAL_ARROW = /\b(LONG|SHORT)\b\s*(?:→|->|=>|⇒|➔|➜)\s*\b
 const CLOSES = /\b(?:cierre|cerrar|salida)\s+(?:de\s+)?(long|short|buy|sell|compra|venta)\b|\b(long|short)\s+(?:win|loss)\b/i;
 
 /** A pattern or state that failed or ended, or a closing word: never an entry, whatever direction word it carries. */
-export const NOT_AN_ENTRY = /\b(?:invalidat\w*|ended|lost|brake|cierre|cerrar|salida)\b/i;
+export const NOT_AN_ENTRY = /\b(?:invalidat\w*|ended|lost|brake|cierre|cerrar|salida)\b|\b(?:long|short)\s+(?:win|loss)\b/i;
 
 const sideOf = (w: string): Side => (/^(long|buy|compra)$/i.test(w) ? 'long' : 'short');
 
@@ -39,4 +39,11 @@ export function closesSide(text: string): { side: Side; exitType: ExitType } | u
 export function reversalClosed(text: string): Side | undefined {
   const m = REVERSAL_ARROW.exec(text);
   return m ? sideOf(m[1]) : undefined;
+}
+
+/** A direction vocabulary change must not activate the classifier's regime markers. */
+export function readerContractError(scannerId:string,reader:number|undefined,sides:Record<string,string>|undefined):string|null {
+  if(reader!==2||!scannerId.startsWith('machine-learning-rsi-ai-classification-ranking-zeiierman'))return null;
+  const map=new Map(Object.entries(sides??{}).map(([k,v])=>[k.trim().toLowerCase(),v]));
+  return ['st flip up','st flip dn','trend flip up','trend flip down'].every(k=>map.get(k)==='none')?null:'reader 2 requires all ML RSI flip markers mapped to none';
 }

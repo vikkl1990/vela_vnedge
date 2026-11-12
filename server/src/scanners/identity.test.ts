@@ -46,3 +46,13 @@ test('passive-entry/protection variants and scoped ATR floors are not suppressed
  c.risk.regime.minAtrPctByScanner.a=0;assert.equal(duplicateGroups(lib,c).length,1);
  c.risk.regime.exempt=['b'];assert.equal(duplicateGroups(lib,c).length,0);
 });
+
+test('reader revisions separate aliases and evidence only for the opted-in scanner',async()=>{
+ const {strategyIdentity}=await import('./identity.ts');const {resolveTradePolicy}=await import('../paper/tradePolicy.ts');
+ const c=structuredClone(DEFAULT_CONFIG),base={enabled:false,symbols:null,timeframes:null,exitMode:'both' as const};c.scanners.a={...base};c.scanners.b={...base};
+ const a=strategyIdentity('source',c,'a'),b=strategyIdentity('source',c,'b'),cell={scannerId:'a',symbol:'ETHUSD',tf:'15m'};
+ const policy=resolveTradePolicy(c,cell,'source').strategyId,other=resolveTradePolicy(c,{...cell,scannerId:'b'},'source').strategyId;
+ c.scanners.a.reader=1;assert.equal(strategyIdentity('source',c,'a'),a);
+ c.scanners.a.reader=2;assert.notEqual(strategyIdentity('source',c,'a'),a);assert.equal(strategyIdentity('source',c,'b'),b);
+ assert.notEqual(resolveTradePolicy(c,cell,'source').strategyId,policy);assert.equal(resolveTradePolicy(c,{...cell,scannerId:'b'},'source').strategyId,other);
+});
