@@ -93,8 +93,13 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
   const versioned = {...result,...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
   // Presentation/grouping edits must not reset evidence for an identical policy.
-  const identity={...versioned};delete identity.label;delete identity.comparison;
-  const signature = createHash('sha256').update(stable({result:identity,sourceHash,reading:sc,regime:cfg.risk.regime})).digest('hex').slice(0,12);
+  // A reading experiment chooses its own cell and enabled state. Account allocation edits
+  // must not split its evidence or make a held position look like a different policy.
+  // Keep full metadata in the snapshot; exclude only these non-behavioural fields from its
+  // identity. Legacy exit experiments keep their historical signature convention.
+  const readingIdentity=p.readingOverride&&sc?Object.fromEntries(Object.entries(sc).filter(([k])=>!['enabled','hidden','symbols','timeframes','pairs'].includes(k))):sc;
+  const identity={...versioned,...(p.readingOverride?{reading:readingIdentity}:{})};delete identity.label;delete identity.comparison;
+  const signature = createHash('sha256').update(stable({result:identity,sourceHash,reading:readingIdentity,regime:cfg.risk.regime})).digest('hex').slice(0,12);
   return {...versioned,signature};
 }
 export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSnapshot): ScanEvent[] {

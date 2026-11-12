@@ -13,6 +13,29 @@ import { planSnapshot, planScannerId, planEvents, takeProfitLabel, type Executio
 type Observation={scannerId:string;scannerName:string;symbol:string;tf:string;event:ScanEvent;bars:Bar[];market:MarketInfo;at:number;refPrice:number;refusal?:string|null};
 export type ComparisonScan=Omit<Observation,'event'|'refusal'> & {result:WorkerResult;patched:string;variantOf?:string;since:number;newLabelKeys:Set<string>;refusal:(event:ScanEvent)=>string|null|undefined};
 
+/** Reporting only: these titles are the same Pine condition on different output channels.
+ * Preserve the stored marker and admission identity. Never pair unrelated flips just because
+ * they happened on the same bar, and leave opposite retest readings paired by their raw marker.
+ */
+function matchedReadingKey(raw:string):string {
+  let parts:unknown;try{parts=JSON.parse(raw);}catch{return raw;}
+  if(!Array.isArray(parts)||parts.length!==6)return raw;
+  const [scanner,symbol,tf,bar,channel,label]=parts;
+  if(typeof label!=='string')return raw;
+  const title=label.replace(/^[🟢🔴]\s*/u,'').trim().toLowerCase();
+  let match:RegExpMatchArray|null=null,kind='';
+  if(scanner==='machine-learning-rsi-ai-classification-ranking-zeiierman'){
+    match=channel==='alertcondition'?title.match(/^(long|short) signal$/):
+      channel==='alert'||channel==='shape'?title.match(/^(long|short)$/):null;
+    kind='classifier-entry';
+  }else if(scanner==='supertrend-cluster-zeiierman'){
+    match=channel==='alertcondition'?title.match(/^(long|short)$/):
+      channel==='shape'?title.match(/^major (long|short)$/):null;
+    kind='cluster-vote';
+  }
+  return match?JSON.stringify([scanner,symbol,tf,bar,kind,match[1]]):raw;
+}
+
 /** Fan-out of ONE live source run into isolated plans inside the existing shadow engine. */
 export class PlanComparisons {
   private db:Db; private cfg:()=>AppConfig; private paper:PaperEngine; private sourceHash:(id:string)=>string|null;
@@ -145,7 +168,8 @@ export class PlanComparisons {
       const candidate=configured.find(p=>p.comparison?.group===group&&p.comparison.role==='candidate');
       if(!control||!candidate)continue;
       const ce=eventsByCohort.get(planScannerId(control))??[],ve=eventsByCohort.get(planScannerId(candidate))??[];
-      const cm=new Map(ce.map(e=>[e.source_event,e])),vm=new Map(ve.map(e=>[e.source_event,e]));
+      const key=(e:any,p:typeof control)=>p.readingOverride?matchedReadingKey(e.source_event):e.source_event;
+      const cm=new Map(ce.map(e=>[key(e,control),e])),vm=new Map(ve.map(e=>[key(e,candidate),e]));
       const shared=[...cm.keys()].filter(k=>vm.has(k));
       const paired=shared.map(k=>[cm.get(k)!,vm.get(k)!]).filter(([a,b])=>a.status==='closed'&&b.status==='closed');
       const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));

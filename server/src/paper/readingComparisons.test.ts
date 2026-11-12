@@ -6,7 +6,7 @@ import {DEFAULT_CONFIG,validateConfig} from '../config.ts';
 import {PaperEngine} from './engine.ts';
 import {PlanComparisons,type ComparisonScan} from './planComparisons.ts';
 import {planSnapshot,planScannerId} from './executionPlans.ts';
-import {READER_COMPARISONS,enableReaderComparisons} from '../../../ops/enable-reader-comparisons.ts';
+import {READER_COMPARISONS,ACTIVE_READER_COMPARISONS,enableReaderComparisons} from '../../../ops/enable-reader-comparisons.ts';
 import {eligibleEvidence} from '../evidence/trades.ts';
 const T=1_800_000_000_000,H=900000;
 function setup(t:any,family='impulse'){
@@ -44,6 +44,26 @@ test('cluster candidate reads only vote markers; a blocked control event does no
  const x=setup(t,'cluster');x.input.result.shapes=[x.shape('Base ST Long')];x.svc.observeScan(x.input);x.fill();assert.equal(x.e.openPositions().length,1);
  const y=setup(t,'cluster');y.cfg.executionPlans![0].readingOverride!.labels=['Base ST Long'];y.input.result.shapes=[y.shape('Major Short')];y.svc.observeScan(y.input);y.fill();assert.equal(y.e.openPositions().length,1);assert.equal(y.e.openPositions()[0].executionPlan!.comparison!.role,'candidate');
 });
+test('equivalent classifier and cluster entries pair across alert and shape channels without merging flip markers',t=>{
+ for(const side of ['Long','Short']){
+  const x=setup(t,'ml-rsi'),bar=x.input.bars.at(-1)!.time;
+  x.input.result.alerts=[{type:'alert',time:bar,barIndex:59,message:`${side==='Long'?'🟢':'🔴'} ${side.toUpperCase()} | Rank 90 / Conf 90`},
+   {type:'alertcondition',title:`${side} Signal`,message:'Classifier entry',time:bar,barIndex:59}];
+  x.input.result.shapes=[x.shape(side)];x.svc.observeScan(x.input);x.fill();
+  assert.equal(x.e.openPositions().length,2);
+  assert.equal(x.svc.view().comparisons[0].sharedSignals,1,'one classifier entry, two reporting channels');
+  const y=setup(t,'cluster');
+  y.input.result.alerts=[{type:'alertcondition',title:side,message:'Clustered SuperTrend signal',time:bar,barIndex:59}];
+  y.input.result.shapes=[y.shape(`Major ${side}`)];y.svc.observeScan(y.input);y.fill();
+  assert.equal(y.e.openPositions().length,2);
+  assert.equal(y.svc.view().comparisons[0].sharedSignals,1,'one vote, condition and shape');
+ }
+ const z=setup(t,'cluster');z.cfg.executionPlans![0].readingOverride!.labels=['Base ST Long'];
+ z.input.result.shapes=[z.shape('Base ST Long'),z.shape('Major Long')];z.svc.observeScan(z.input);z.fill();
+ assert.equal(z.e.openPositions().length,2);
+ assert.equal(z.svc.view().comparisons[0].sharedSignals,0,'a base flip is not a cluster vote even on the same side and bar');
+ assert.equal(z.svc.view().comparisons[0].controlOnly,1);assert.equal(z.svc.view().comparisons[0].candidateOnly,1);
+});
 test('each raw-reading arm passes the same side-aware admission gates',t=>{
  const x=setup(t);x.input.result.shapes=[x.shape('Upper Retest')];const seen:string[]=[];
  x.input.refusal=ev=>{seen.push(ev.side!);return 'market: unavailable';};x.svc.observeScan(x.input);
@@ -75,10 +95,50 @@ test('old plan cohorts keep historical execution while new signatures explicitly
  const pos=x.e.position(d.pendingId!)!;assert.ok(pos);assert.equal(x.e.exitExecution.state(pos.id),undefined);
  x.e.onTrade('ETHUSD',80,1e6,T+300,T+300);assert.equal(pos.status,'closed');assert.equal(x.e.pendingExits().length,0);
 });
+test('unrelated scanner allocation changes cannot split a reading cohort or freeze it behind a held version',t=>{
+ const x=setup(t),d=x.cfg.executionPlans![0],source=x.cfg.scanners[d.scannerId];
+ const before=planSnapshot(x.cfg,d,'source');x.svc.observeScan(x.input);
+ Object.assign(source,{enabled:true,hidden:true,symbols:['INITUSD'],timeframes:['4h'],pairs:[{symbol:'AINUSD',tf:'15m'}]});
+ assert.equal(planSnapshot(x.cfg,d,'source').signature,before.signature,'allocation is not interpretation or execution');
+ x.input.at+=H;x.input.bars=x.input.bars.map(b=>({...b,time:b.time+H}));x.input.since=x.input.bars.at(-1)!.time;
+ x.svc.observeScan(x.input);assert.equal(x.svc.view().cohorts.length,2);assert.ok(x.svc.view().cohorts.every(c=>c.scans===2));
+ source.sides={'upper retest':'short'};assert.notEqual(planSnapshot(x.cfg,d,'source').signature,before.signature,'real reading changes remain isolated');
+ assert.notEqual(planSnapshot(x.cfg,d,'new-source').signature,planSnapshot(x.cfg,d,'source').signature);
+ const sameReading=planSnapshot(x.cfg,d,'source').signature;x.cfg.paper.minRiskFeeRatio+=1;
+ assert.notEqual(planSnapshot(x.cfg,d,'source').signature,sameReading,'economics changes remain isolated');
+});
 test('rollout adds exactly eight arms, preserves every existing setting and is idempotent',t=>{
  const x=setup(t);x.cfg.executionPlans=[];const dir=fs.mkdtempSync(path.join(os.tmpdir(),'reader-rollout-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'config.json');fs.writeFileSync(file,JSON.stringify(x.cfg));const before=fs.readFileSync(file,'utf8');
  assert.equal(enableReaderComparisons(file,true).changed,true);assert.equal(fs.readFileSync(file,'utf8'),before);enableReaderComparisons(file);const next=JSON.parse(fs.readFileSync(file,'utf8'));assert.equal(next.executionPlans.length,8);delete next.executionPlans;const old=JSON.parse(before);delete old.executionPlans;assert.deepEqual(next,old);assert.equal(enableReaderComparisons(file).changed,false);
  for(const d of READER_COMPARISONS){const p=planSnapshot(x.cfg,d);assert.equal(p.paper.marginPerTrade,150);assert.equal(p.paper.maxStopLossPct,3);}
+});
+test('active-market rollout replaces only the unedited ETH arms, keeps eight plans and never duplicates a comparison',t=>{
+ const x=setup(t);const dir=fs.mkdtempSync(path.join(os.tmpdir(),'reader-markets-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'config.json');
+ const unrelated={id:'unrelated',revision:1,enabled:false,scannerId:'unrelated',symbol:'BTCUSD',tf:'1h',variant:'current',referenceEquity:1000};
+ x.cfg.executionPlans=[unrelated as any,...structuredClone(READER_COMPARISONS)];fs.writeFileSync(file,JSON.stringify(x.cfg));const before=fs.readFileSync(file,'utf8');
+ assert.equal(enableReaderComparisons(file,true,true).changed,true);assert.equal(fs.readFileSync(file,'utf8'),before);
+ enableReaderComparisons(file,false,true);const next=JSON.parse(fs.readFileSync(file,'utf8'));
+ assert.equal(next.executionPlans.length,9);assert.deepEqual(next.executionPlans[0],unrelated);
+ assert.deepEqual(next.executionPlans.slice(1),ACTIVE_READER_COMPARISONS);
+ const protectedBefore=JSON.parse(before);delete protectedBefore.executionPlans;delete next.executionPlans;assert.deepEqual(next,protectedBefore);
+ assert.equal(enableReaderComparisons(file,false,true).changed,false);
+ assert.throws(()=>enableReaderComparisons(file),/already relocated/);
+ const edited=JSON.parse(before);edited.executionPlans[1].referenceEquity=2000;fs.writeFileSync(file,JSON.stringify(edited));
+ assert.throws(()=>enableReaderComparisons(file,false,true),/differs; no overwrite/);
+ for(const p of ACTIVE_READER_COMPARISONS){const s=planSnapshot(x.cfg,p);assert.equal(s.paper.marginPerTrade,150);assert.equal(s.paper.maxStopLossPct,3);}
+});
+test('both Liquidity maker readings require a fresh post-placement trade-through and pay maker fees only at the fill',t=>{
+ const x=setup(t,'liquidity');x.cfg.scanners[x.input.scannerId].entryLimit={tfs:['15m'],atr:.1,minutes:5};
+ x.cfg.paper.limitFill='through';x.cfg.paper.feeRatePct=.05;x.cfg.paper.makerFeeRatePct=.02;x.cfg.paper.feeTaxPct=18;
+ x.input.result.alerts=[{type:'alert',time:x.input.bars.at(-1)!.time,barIndex:59,message:'LONG | Price: 100'}];
+ x.svc.observeScan(x.input);assert.equal(x.e.pendingEntries().length,2);assert.equal(x.e.openPositions().length,0);
+ assert.equal(x.db.get<any>('SELECT count(*) n FROM orders')!.n,0);
+ const price=x.e.pendingEntries()[0].limit!.price;
+ x.setAt(T+200);x.e.onTrade('ETHUSD',price-.01,1e6,T-1,T+200);assert.equal(x.e.openPositions().length,0,'pre-placement tape cannot fill');
+ x.e.onTrade('ETHUSD',price,1e6,T+200,T+200);assert.equal(x.e.openPositions().length,0,'touch is not through');
+ x.setAt(T+300);x.e.onTrade('ETHUSD',price-.01,1e6,T+300,T+300);assert.equal(x.e.openPositions().length,2);
+ for(const p of x.e.openPositions()){assert.equal(p.entryPrice,price);assert.equal(p.entryAt,T+300);assert.ok(p.fees>0);assert.ok(p.riskAmount<=30);}
+ assert.equal(x.svc.view().comparisons[0].sharedSignals,1);assert.ok(x.svc.view().cohorts.every(c=>c.filled===1));
 });
 
 import {ShadowRunner} from '../incubator/shadow.ts';
