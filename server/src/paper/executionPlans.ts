@@ -23,7 +23,12 @@ export interface ProfitCapturePlan {
   floorAtR: number;
   floorKeepR: number;
 }
-export interface PlanComparison { group: string; role: 'control' | 'candidate' }
+/**
+ * A matched pair of plans. `policy` (the default) compares two exit or entry policies on one scanner's signals.
+ * Decision 242: `reading` compares two readings of one source, a scanner and its variant, under one policy: their
+ * signals may differ, so the comparison is of outcomes over the same cell and time, matched where the signal is the same.
+ */
+export interface PlanComparison { group: string; role: 'control' | 'candidate'; axis?: 'policy' | 'reading' }
 export interface ExecutionPlan {
   id: string; revision: number; enabled: boolean;
   scannerId: string; symbol: string; tf: string;
@@ -111,7 +116,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
       if(!t||![t.afterR,t.giveBackPct,t.floorAtR,t.floorKeepR].every(Number.isFinite)||t.afterR<=0||t.afterR>10||t.giveBackPct<=0||t.giveBackPct>=100||t.floorAtR<0||t.floorAtR>10||t.floorKeepR<0||(t.floorAtR===0?t.floorKeepR!==0:t.floorKeepR>=t.floorAtR))errors.push(`executionPlans.${p.id}: invalid profit-capture trail or floor`);
       if(p.takeProfit?.trailAfterR!==undefined)errors.push(`executionPlans.${p.id}: specify trail activation in only one place`);
     }
-    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)))errors.push(`executionPlans.${p.id}: invalid comparison group or role`);
+    if(p.comparison!==undefined&&(!p.comparison||!/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.comparison.group??'')||!['control','candidate'].includes(p.comparison.role)||![undefined,'policy','reading'].includes(p.comparison.axis)))errors.push(`executionPlans.${p.id}: invalid comparison group, role or axis`);
     if(p.takeProfit!==undefined){
       const tp=p.takeProfit;
       if(!tp||!['native','r'].includes(tp.mode)||p.variant==='current')errors.push(`executionPlans.${p.id}: target experiments require a native/ATR level-exit plan`);
@@ -123,7 +128,10 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   }
   for(const group of new Set(plans.filter(p=>p?.comparison).map(p=>p.comparison!.group))){
     const pair=plans.filter(p=>p?.comparison?.group===group);
-    const comparable=(p:ExecutionPlan)=>[p.scannerId,p.symbol,p.tf,p.variant,p.referenceEquity,p.maxStopLossPct,p.maxHoldMinutes,p.enabled,p.takeProfit];
+    const reading=pair[0]?.comparison?.axis==='reading';
+    // a reading comparison holds the policy fixed and changes only which scanner reads the source
+    const comparable=(p:ExecutionPlan)=>[reading?null:p.scannerId,p.comparison?.axis??'policy',p.symbol,p.tf,p.variant,p.referenceEquity,p.maxStopLossPct,p.maxHoldMinutes,p.enabled,p.takeProfit,reading?p.trailing??null:null];
+    if(reading&&pair.length===2&&pair[0].scannerId===pair[1].scannerId)errors.push(`executionPlans comparison ${group}: a reading comparison needs two different scanners`);
     if(pair.length!==2||new Set(pair.map(p=>p.comparison!.role)).size!==2||stable(comparable(pair[0]))!==stable(comparable(pair[1])))errors.push(`executionPlans comparison ${group}: control and candidate must share source, entry/target policy, sizing and enabled state`);
   }
   return errors;

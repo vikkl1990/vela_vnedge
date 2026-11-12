@@ -103,13 +103,15 @@ export class PlanComparisons {
       const candidate=configured.find(p=>p.comparison?.group===group&&p.comparison.role==='candidate');
       if(!control||!candidate)continue;
       const ce=eventsByCohort.get(planScannerId(control))??[],ve=eventsByCohort.get(planScannerId(candidate))??[];
-      const cm=new Map(ce.map(e=>[e.source_event,e])),vm=new Map(ve.map(e=>[e.source_event,e]));
+      // decision 242: two readings of one source name their own scanner in the event key; the signal is the rest of it
+      const axis=control.comparison?.axis??'policy',signal=(e:any)=>axis==='reading'?JSON.stringify((JSON.parse(e.source_event) as unknown[]).slice(1)):e.source_event;
+      const cm=new Map(ce.map(e=>[signal(e),e])),vm=new Map(ve.map(e=>[signal(e),e]));
       const shared=[...cm.keys()].filter(k=>vm.has(k));
       const paired=shared.map(k=>[cm.get(k)!,vm.get(k)!]).filter(([a,b])=>a.status==='closed'&&b.status==='closed');
       const unresolved=(e:any)=>e.status!=='closed'&&(e.status==='open'||e.status==='pending'||['pending','processing','error','interrupted'].includes(e.action));
       const controlNet=cohorts.find(c=>c.id===control.id&&c.signature===control.signature)?.net??0;
       const candidateNet=cohorts.find(c=>c.id===candidate.id&&c.signature===candidate.signature)?.net??0;
-      comparisons.push({group,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
+      comparisons.push({group,axis,symbol:control.symbol,tf:control.tf,enabled:control.enabled&&candidate.enabled,
         controlId:control.id,candidateId:candidate.id,controlLabel:control.label??control.id,candidateLabel:candidate.label??candidate.id,
         controlSignature:control.signature,candidateSignature:candidate.signature,controlNet,candidateNet,
         sharedSignals:shared.length,controlOnly:cm.size-shared.length,candidateOnly:vm.size-shared.length,
