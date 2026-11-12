@@ -11,7 +11,7 @@ import type { RuleContext } from './rules.ts';
 const declaredCache = new Map<string, { src: string; set: ReturnType<typeof declaredChannels> }>();
 
 export function readingOf(sc: Partial<ScannerConfig> | undefined, scannerId: string, barMs: number | undefined, patched?: string, variantOf?: string): {
-  extract: Pick<ExtractOptions, 'scannerId' | 'barMs' | 'sources' | 'edge' | 'labels' | 'invert' | 'sides' | 'declared'>;
+  extract: Pick<ExtractOptions, 'scannerId' | 'barMs' | 'sources' | 'edge' | 'labels' | 'invert' | 'sides' | 'declared' | 'reader'>;
   rule: Pick<RuleContext, 'rule' | 'inputs' | 'pin' | 'ruleFor'>;
 } {
   let declared: ReturnType<typeof declaredChannels> | undefined;
@@ -21,7 +21,7 @@ export function readingOf(sc: Partial<ScannerConfig> | undefined, scannerId: str
     else { declared = declaredChannels(patched); declaredCache.set(scannerId, { src: patched, set: declared }); }
   }
   return {
-    extract: { scannerId, barMs: barMs && barMs > 0 ? barMs : undefined, sources: sc?.sources, edge: sc?.edge, labels: sc?.labels, invert: sc?.invert, sides: sc?.sides, declared },
+    extract: { scannerId, barMs: barMs && barMs > 0 ? barMs : undefined, sources: sc?.sources, edge: sc?.edge, labels: sc?.labels, invert: sc?.invert, sides: sc?.sides, declared, reader: sc?.reader },
     rule: { rule: sc?.rule ?? null, inputs: sc?.inputs, pin: sc?.rulePin ?? null, ruleFor: variantOf },
   };
 }

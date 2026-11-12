@@ -324,6 +324,12 @@ export interface ScannerConfig {
   rulePin?: { plot: string; mode?: 'zero' | 'obos'; ob?: number; os?: number } | null;
   /** Rising edge only: a condition or shape true on consecutive bars is one entry, on its first bar (decision 57). */
   edge?: boolean;
+  /**
+   * Decision 241: the reader revision this scanner's outputs are read with. Unset or 1: the reader its record was earned
+   * under. 2: reversal alerts close the side they name first, closing and failure titles are not entries, "Dn" is a
+   * direction. Part of the reading, so opting in starts a new record.
+   */
+  reader?: 1 | 2;
   /** IANA timezone the script's sessions and clock functions run in (default Etc/UTC; session scripts usually mean America/New_York). */
   timezone?: string;
   /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
@@ -1201,6 +1207,7 @@ export function validateExtendedConfig(c: AppConfig): string[] {
     if (sc?.rule != null && !GENERIC_RULES.includes(sc.rule)) errs.push(`scanners.${id}.rule must be ${GENERIC_RULES.join('|')}`);
     if (sc?.sources != null && (!Array.isArray(sc.sources) || sc.sources.some(x => !['alert', 'alertcondition', 'shape', 'derived', 'label'].includes(x)))) errs.push(`scanners.${id}.sources must list alert|alertcondition|shape|derived|label`);
     if (sc?.sides != null && (typeof sc.sides !== 'object' || Object.values(sc.sides).some(v => !['long', 'short', 'none'].includes(v as string)))) errs.push(`scanners.${id}.sides must map titles to long|short|none`);
+    if (sc?.reader != null && ![1, 2].includes(sc.reader as number)) errs.push(`scanners.${id}.reader must be 1 or 2`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
   }

@@ -10,6 +10,7 @@
 import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
 import { readingLegacy } from './legacy.ts';
 import { WILLY_HTF_MARKET, readWillyHtfAlert } from './willyHtf.ts';
+import { NOT_AN_ENTRY, READER_FIXES, closesSide, reversalClosed } from './readerFixes.ts';
 
 export type Side = 'long' | 'short';
 export type EventKind = 'entry' | 'exit' | 'info';
@@ -143,7 +144,7 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
  * Every action an alert carries (decision 195): a structured packet can close one trade and open another on one bar.
  * JSON is parsed once and routed on its fields, so formatting (pretty-printed or compact) never changes the meaning.
  */
-export function parseAlertAll(a: WorkerAlert): ScanEvent[] {
+export function parseAlertAll(a: WorkerAlert, fixed = false): ScanEvent[] {
   const msg = a.message.replace(/\s+/g, ' ').trim();
   if (!msg) return [];
   const head = msg.split('|')[0].trim();
@@ -170,11 +171,11 @@ export function parseAlertAll(a: WorkerAlert): ScanEvent[] {
     }
     return out.length ? out : [{ ...base, kind: 'info' }];
   }
-  const one = parseAlertOne(msg, head, base);
+  const one = parseAlertOne(msg, head, base, fixed);
   return one ? [one] : [];
 }
 
-function parseAlertOne(msg: string, head: string, base: ScanEvent): ScanEvent | null {
+function parseAlertOne(msg: string, head: string, base: ScanEvent, fixed = false): ScanEvent | null {
   const upper = msg.toUpperCase();
   // ----- JSON webhook payloads (STRAT Trap & VWAP Engine: {"ind":"STRAT","action":"trigger_bull",...}) -----
   if (msg.startsWith('{') && msg.endsWith('}')) {
@@ -233,14 +234,23 @@ function parseAlertOne(msg: string, head: string, base: ScanEvent): ScanEvent | 
       return { ...base, kind: 'info', label: 'BREAK-EVEN', sl: sl ?? num(new RegExp(String.raw`moved to(?: entry)?:?\s*${NUM}`, 'i'), msg) };
     }
     const side: Side | undefined = /\bLONG\b/i.test(msg) ? 'long' : /\bSHORT\b/i.test(msg) ? 'short' : undefined;
-    // "REVERSAL → LONG" means the previous (short) trade was closed
-    const revSide: Side | undefined = exitType === 'flip' && side ? (side === 'long' ? 'short' : 'long') : side;
+    // "REVERSAL → LONG" means the previous (short) trade was closed; decision 241: "Long → Short" names the closed
+    // trade first, so it closes the long (the old reading filed it for the short)
+    const named = fixed && exitType === 'flip' ? reversalClosed(msg) : undefined;
+    const revSide: Side | undefined = named ?? (exitType === 'flip' && side ? (side === 'long' ? 'short' : 'long') : side);
     const tpIdx = tpHit ? Number(tpHit[1]) - 1 : -1;
     // Entry is context in exit messages, never an execution price. Prefer the hit level.
     const quotedExit = num(new RegExp(String.raw`(?:Price|Level|@)\s*:?\s*\$?\s*${NUM}`, 'i'), msg) ?? num(new RegExp(String.raw`\|\s*\$${NUM}`), msg);
     const hitLevel = exitType === 'sl' || exitType === 'be' ? sl : tpIdx >= 0 ? tp[tpIdx] : exitType === 'tp1' ? tpSingle : undefined;
     const exitPrice = hitLevel ?? quotedExit;
     return { ...base, kind: 'exit', exitType, side: revSide, price: exitPrice, sl, tp: cleanTp, score };
+  }
+
+  // decision 241: "Cierre LONG", "Salida Short", "Long Win" close a position; a pattern that failed or ended is information
+  if (fixed) {
+    const closed = closesSide(head);
+    if (closed) return { ...base, kind: 'exit', exitType: closed.exitType, side: closed.side, price, sl, tp: cleanTp, score };
+    if (NOT_AN_ENTRY.test(head)) return { ...base, kind: 'info', side: emojiSide(msg), price, sl, tp: cleanTp, score };
   }
 
   // ----- entries -----
@@ -274,23 +284,23 @@ export function conditionExit(title: string): { side: Side; exitType: ExitType }
 }
 
 /** Plotshape titles that clearly denote an entry. */
-export function shapeSide(title: string): Side | undefined {
+export function shapeSide(title: string, fixed = false): Side | undefined {
   const t = title.trim();
   if (/^(buy|long|bull(ish)?( abcd| sweep)?|swing bullish|bull cross)( signal)?$/i.test(t)) return 'long';
   if (/^(sell|short|bear(ish)?( abcd| sweep)?|swing bearish|bear cross)( signal)?$/i.test(t)) return 'short';
-  return directionalTitle(t);
+  return directionalTitle(t, false, fixed);
 }
 
 /**
  * Direction of a free-form title such as "Bullish Internal OB Breakout", "Upward Breakout",
  * "Upper Break", "Lower Break", "Bearish CHoCH". Undefined when ambiguous or neutral.
  */
-export function directionalTitle(title: string, extended = false): Side | undefined {
+export function directionalTitle(title: string, extended = false, fixed = false): Side | undefined {
   const t = title.trim();
   if (!t || /\b(exit|close|stop|target|tp\d?|take profit|equal|divergence|alert|any|bias|regime|interval|sampling|noise)\b/i.test(t)) return undefined;
   // decision 172: "Price Crossed Above R1" / "Breakout Below Range" carry their direction in above / below
   const up = /\b(bull(ish)?|upward|upper|up|long|buy|higher|rising|crossover|cross up|breakout up|break up|support)\b/i.test(t) || (extended && /\babove\b/i.test(t));
-  const dn = /\b(bear(ish)?|downward|lower|down|short|sell|falling|crossunder|cross down|breakout down|break down|resistance)\b/i.test(t) || (extended && /\bbelow\b/i.test(t));
+  const dn = /\b(bear(ish)?|downward|lower|down|short|sell|falling|crossunder|cross down|breakout down|break down|resistance)\b/i.test(t) || (extended && /\bbelow\b/i.test(t)) || (fixed && /\bdn\b/i.test(t));
   if (up && !dn) return 'long';
   if (dn && !up) return 'short';
   return undefined;
@@ -316,7 +326,7 @@ export function geometrySide(s: Pick<WorkerShape, 'title' | 'shape' | 'location'
  * takes its side from where the label sits: a label drawn under the bar (style label_up, lower_*) marks a low, a
  * long; one above the bar a high, a short.
  */
-export function labelSide(text: string, style?: string): Side | undefined {
+export function labelSide(text: string, style?: string, fixed = false): Side | undefined {
   const t = text.trim();
   if (!t || t.length > 40) return undefined;
   if (/[▲△⬆↑🔼]/.test(t) && !/[▼▽⬇↓🔽]/.test(t)) return 'long';
@@ -324,7 +334,7 @@ export function labelSide(text: string, style?: string): Side | undefined {
   const word = t.replace(/[0-9.,%+\-:#()]/g, ' ').trim();
   if (/^(buy|long|achat|b|l|le)$/i.test(word)) return 'long';
   if (/^(sell|short|vente|s|se)$/i.test(word)) return 'short';
-  const d = directionalTitle(word, true);
+  const d = directionalTitle(word, true, fixed);
   if (d) return d;
   if (/\b(bos|choch|mss|break|sweep|ob)\b/i.test(word)) {
     const st = String(style ?? '').toLowerCase();
@@ -376,6 +386,8 @@ export interface ExtractOptions {
    * entry erase an earlier label signal from the history.
    */
   declared?: ReadonlySet<'alert' | 'alertcondition' | 'shape'>;
+  /** Decision 241: the reader revision the scanner's reading opts into (2: reversal sides, closing and failure titles, "Dn"). */
+  reader?: number;
 }
 
 /** Decision 195: the entry channels a Pine source declares, read from the source text once. */
@@ -392,6 +404,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   const allow = (src: 'alert' | 'alertcondition' | 'shape' | 'derived' | 'label') => !opts.sources || opts.sources.includes(src);
   // decision 172: the newer reading rules are withheld from a scanner whose record predates them
   const legacy = opts.scannerId ? readingLegacy().has(opts.scannerId) : false;
+  // decision 241: the reader fixes apply to a scanner whose reading opts into them
+  const fixed = (opts.reader ?? 1) >= READER_FIXES;
   const events: ScanEvent[] = [];
   const seenEntry = new Set<string>();
   const alertBars = new Set<number>();
@@ -406,7 +420,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   for (const a of alerts) {
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
     if (a.type === 'alertcondition') continue; // handled below, at lower priority than alert()
-    for (const ev of opts.scannerId === WILLY_HTF_MARKET ? readWillyHtfAlert(a) : parseAlertAll(a)) {
+    for (const ev of opts.scannerId === WILLY_HTF_MARKET ? readWillyHtfAlert(a) : parseAlertAll(a, fixed)) {
     if (ev.kind === 'entry' && !allow('alert')) { drop('alert(): channel excluded'); continue; }
     if (ev.kind === 'entry' && !labelOk(ev.label)) { drop('alert(): label not in allow-list'); continue; }
     // an alert() entry that is actually kept owns its bar (its alertcondition twin would be a duplicate);
@@ -426,7 +440,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     const title = String(a.title ?? a.message ?? '').trim();
     // decision 195: an exit condition protects an open trade whatever the entry filters say — neither an excluded
     // condition channel nor an alert() entry owning the bar may silence the close of the previous trade
-    const exit = conditionExit(title);
+    const exit = conditionExit(title) ?? (fixed ? closesSide(title) : undefined);
     if (!exit && !allow('alertcondition')) { drop('condition: channel excluded'); continue; }
     if (!exit && alertBars.has(a.time)) { drop('condition: an alert() entry owned the bar'); continue; }
     if (exit) {
@@ -439,7 +453,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     }
     const named = sideByContract(title);
     if (named === 'none') { drop('condition: not an entry by the scanner contract'); continue; }
-    const side = named ?? directionalTitle(title, !legacy);
+    if (fixed && !named && NOT_AN_ENTRY.test(title)) { drop('condition: a failed pattern or a closed trade, not an entry'); continue; }
+    const side = named ?? directionalTitle(title, !legacy, fixed);
     if (!side) { drop('condition: no direction in title'); continue; }
     // the same word means the same thing on every channel: a BOS or CHoCH condition is context, like a BOS alert() —
     // unless the operator's allow-list names it, which is the explicit opt-in (or the scanner contract names it)
@@ -470,7 +485,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     if (!allow('shape')) break;
     const named = sideByContract(s.title);
     if (named === 'none') { drop('shape: not an entry by the scanner contract'); continue; }
-    const side = named ?? shapeSide(s.title) ?? (legacy ? undefined : geometrySide(s));
+    if (fixed && !named && NOT_AN_ENTRY.test(s.title)) { drop('shape: a failed pattern or a closed trade, not an entry'); continue; }
+    const side = named ?? shapeSide(s.title, fixed) ?? (legacy ? undefined : geometrySide(s));
     if (!side) { drop('shape: no direction in title'); continue; }
     // a shape drawn on every bar of a state is one signal per run: the bar spacing is the smallest
     // gap between its own prints, and a print one spacing after the previous one continues the run
@@ -498,7 +514,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     for (const l of opts.drawn) {
       const named = sideByContract(l.text);
       if (named === 'none') { drop('label: not an entry by the scanner contract'); continue; }
-      const side = named ?? labelSide(l.text, l.style);
+      if (fixed && !named && NOT_AN_ENTRY.test(l.text)) { drop('label: a failed pattern or a closed trade, not an entry'); continue; }
+      const side = named ?? labelSide(l.text, l.style, fixed);
       if (!side) { drop('label: no direction in text'); continue; }
       // a label can be drawn at a past bar; the signal is the bar it appeared on, and without that bar it is not read
       if (l.createdAt === undefined) { drop('label: creation bar unknown'); continue; }
