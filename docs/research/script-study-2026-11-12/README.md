@@ -23,7 +23,7 @@ No reading, config or trade was changed. Everything here is a proposal.
 |---|---|
 | Can run as their author designed them | 258 (102 of them trade today) |
 | Tradeable after the listed changes | 1,219 |
-| Context only: no entry concept | 1,019 |
+| Context only: no entry concept | 1,022 |
 | Should not be traded | 134 |
 
 | Misread | Claims | On trading scripts | Confirmed by the check | Refuted |
@@ -35,20 +35,22 @@ No reading, config or trade was changed. Everything here is a proposal.
 | An exit or reversal read on the wrong side or as an entry | 197 | 45 | 37 | 6 |
 | One side traded, its mirror not | 31 | 14 | 13 | 1 |
 
-Claims on scripts that do not trade were not checked; treat them as first reads. The check refuted 11% of claims.
+The table counts a claim once per scanner id, so a claim on a source shared by two ids counts twice. Counted once each,
+582 claims on trading scripts were in scope: 511 confirmed, 69 refuted, 2 not reached by the check (12% refuted).
+Claims on scripts that do not trade were not checked; treat them as first reads.
 
 ## The 17 enabled scanners
 
 | Scanner | Verdict | Confirmed corrections |
 |---|---|---|
-| Trend Impulse Channels, base and maker | needs changes | Both retests traded on the side opposite to how they are drawn |
+| Trend Impulse Channels, base and maker | needs changes | Both retests traded opposite to how they are drawn. Deliberate (decision 195, a breakout-continuation reading); the as-drawn reading exists as the native variant. Compare, do not overwrite |
 | Liquidity Trail Matrix, ATR maker | run as designed | Its reversal alert closes the wrong side (reader fault 1) |
 | Machine Learning RSI | needs changes | Trend-flip markers, the script's exit, traded as entries |
 | AI Predictive Flow | needs changes | Background colour traded as an entry; the drawn cross entries are not read |
 | SuperTrend Cluster | needs changes | "Base ST" markers traded without the cluster vote |
 | Smart Swing VWAP | needs changes | AVWAP crosses traded as entries; the author's entries are the retests and polarity flips |
-| Pivot Channel Breaks | needs changes | Short break switched off |
-| Smart Money Breakout Signals | needs changes | Bearish breakout not traded |
+| Pivot Channel Breaks | needs changes | Short break switched off; the two-sided variant exists |
+| Smart Money Breakout Signals | needs changes | Bearish breakout not traded, by an allow-list from decision 67's label test |
 | Session Killzones, Asia only | needs changes | The Asia bearish breakout is not traded (the all-sessions scanner reads all six) |
 | Kinetic Momentum Vectors | context only | "Bull Spike" is not an entry; the spike has no direction |
 | Structure-Anchored VWAP, RSI Volume Ladder, Alphamojo | run as designed | None; the bot reads them right but discards their stops and exits |
@@ -76,7 +78,13 @@ These come from the readers tracing alert text through `server/src/scanners/extr
 
 ## What I propose, in order
 
-1. Fix reader faults 1 to 3, with tests, before any reading change: they affect scripts that trade today.
+Several "misreads" above are deliberate choices recorded in docs/DECISIONS.md (decision 195 for Trend Impulse, decision 67
+for the label allow-lists). The readers judged against the author's intent, not against those decisions. Old evidence
+does not prove those choices still pay, but changing them needs a side-by-side comparison, not an overwrite.
+
+1. Fix reader faults 1 to 3, with tests, before any reading change: they affect scripts that trade today. Keep
+   genuine SELL entries; tell a pattern's invalidation apart from closing a position; and add "Dn" only together with
+   contracts that keep non-entry flip markers (Machine Learning RSI's ST Flip Up/Dn) switched off.
 2. Run the corrected readings for the enabled scanners as shadow variants beside the current ones and compare at
    real prints. `proposed-readings.json` holds each one with its evidence.
 3. Put the 102 trading scripts that can run as designed into shadow with their own stop and exit, not the bot's
