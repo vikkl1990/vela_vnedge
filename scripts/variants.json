@@ -40,5 +40,35 @@
     "base": "trend-impulse-channels-zeiierman",
     "name": "Trend Impulse Channels | continuation maker",
     "why": "Decision 215: preserve the measured Upper Retest long / Lower Retest short continuation reading with a 0.1-ATR passive entry and five-minute expiry."
+  },
+  {
+    "id": "synapse-trail-pro-author-native",
+    "base": "synapse-trail-pro",
+    "name": "Synapse Trail Pro | author-native lifecycle",
+    "why": "Versioned author-intent reading with explicit lifecycle; disabled until independent evidence passes."
+  },
+  {
+    "id": "liquidity-trail-matrix-author-native",
+    "base": "liquidity-trail-matrix",
+    "name": "Liquidity Trail Matrix | author-native lifecycle",
+    "why": "Versioned author-intent reading with explicit lifecycle; disabled until independent evidence passes."
+  },
+  {
+    "id": "high-volume-pivot-support-resistance-zones-author-signals",
+    "base": "high-volume-pivot-support-resistance-zones",
+    "name": "High Volume Pivot Support Resistance Zones | author signals",
+    "why": "Exact source-direction contract; independent evidence, disabled by default. Author provides signal/structure; exits remain the bot policy, not a claimed native lifecycle."
+  },
+  {
+    "id": "dynamic-trend-bands-anchored-vwap-signals-author-signals",
+    "base": "dynamic-trend-bands-anchored-vwap-signals",
+    "name": "Dynamic Trend Bands Anchored Vwap Signals | author signals",
+    "why": "Exact source-direction contract; independent evidence, disabled by default. Author provides signal/structure; exits remain the bot policy, not a claimed native lifecycle."
+  },
+  {
+    "id": "triangular-hull-moving-average-volatility-author-signals",
+    "base": "triangular-hull-moving-average-volatility",
+    "name": "Triangular Hull Moving Average Volatility | author signals",
+    "why": "Exact source-direction contract; independent evidence, disabled by default. Author provides signal/structure; exits remain the bot policy, not a claimed native lifecycle."
   }
 ]

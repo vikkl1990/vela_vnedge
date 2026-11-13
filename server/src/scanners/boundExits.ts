@@ -56,7 +56,7 @@ export class BoundExits {
     const exits=extractEvents(result.alerts,result.shapes,{drawn:result.labels,derived,sinceBarTime:since,...reading.extract})
       .filter(e=>e.kind==='exit'&&e.barTime+barMs>p.entryAt&&e.barTime<=last.time);
     book.commitDecision(()=>{
-      for(const e of exits)book.onScriptExit(p.scannerId,p.symbol,p.tf,e.exitType??'close',undefined,Date.now(),policy.exitMode,e.side,{positionId:p.id,pendingIds:[]});
+      for(const e of exits)book.onScriptExit(p.scannerId,p.symbol,p.tf,e.exitType??'close',e.exitType==='stop_update'?e.price:undefined,Date.now(),policy.exitMode,e.side,{positionId:p.id,pendingIds:[]});
       this.d.db.kvSet(key,{bar:last.time,labels:result.labels.map(labelKey)});
       this.d.db.kvSet(`${key}:error`,null);
     });

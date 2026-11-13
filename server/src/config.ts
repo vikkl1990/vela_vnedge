@@ -1,4 +1,5 @@
 import {readerContractError} from './scanners/readerFixes.ts';
+import {willyNativeReady} from './scanners/willyContracts.ts';
 import {scannerPairs} from './scanners/allocation.ts';
 import { validateExecutionPlans, type ExecutionPlan } from './paper/executionPlans.ts';
 import fs from 'node:fs';
@@ -283,7 +284,7 @@ export interface PaperConfig {
  */
 export type ExitOverride = Partial<Pick<PaperConfig,
   'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'earlyCut' |
-  'fallbackRR' | 'tpSplit' | 'scriptTargets' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
+  'breakEvenAfterTp1' | 'trendExit' | 'structureTrail' | 'fallbackRR' | 'tpSplit' | 'scriptTargets' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
 
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
 export type TrendGateMode = 'follow' | 'fade' | 'off';
@@ -330,7 +331,8 @@ export interface ScannerConfig {
    * under. 2: reversal alerts close the side they name first, closing and failure titles are not entries, "Dn" is a
    * direction. Part of the reading, so opting in starts a new record.
    */
-  reader?: 1 | 2;
+  /** 3: explicit author lifecycle; only validated adapters or context-only roles. */
+  reader?: 1 | 2 | 3;
   /** IANA timezone the script's sessions and clock functions run in (default Etc/UTC; session scripts usually mean America/New_York). */
   timezone?: string;
   /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
@@ -922,6 +924,9 @@ export function validateConfig(c: AppConfig): string[] {
     ...Object.entries(p.exitBySymbol??{}).map(([k,v])=>[`paper.exitBySymbol.${k}`,v] as const),
     ...Object.entries(c.scanners??{}).filter(([,v])=>v.exit!==undefined).map(([k,v])=>[`scanners.${k}.exit`,v.exit!] as const)];
   for(const [name,o] of targetOverrides){
+    if(o.breakEvenAfterTp1!==undefined&&typeof o.breakEvenAfterTp1!=='boolean')errs.push(`${name}.breakEvenAfterTp1 must be boolean`);
+    if(o.trendExit&&!(typeof o.trendExit.enabled==='boolean'&&o.trendExit.emaLen>=2&&o.trendExit.minR>=0))errs.push(`${name}.trendExit is invalid`);
+    if(o.structureTrail&&!(typeof o.structureTrail.enabled==='boolean'&&Number.isInteger(o.structureTrail.pivot)&&o.structureTrail.pivot>=1&&o.structureTrail.incrPct>=0&&Array.isArray(o.structureTrail.books)&&o.structureTrail.books.every(b=>['account','shadow'].includes(b))))errs.push(`${name}.structureTrail is invalid`);
     if(o.scriptTargets!==undefined&&!['use','widen','ignore'].includes(o.scriptTargets))errs.push(`${name}.scriptTargets must be use|widen|ignore`);
     if(o.fallbackRR!==undefined&&(!Array.isArray(o.fallbackRR)||o.fallbackRR.length!==3||!o.fallbackRR.every((n,i,a)=>Number.isFinite(n)&&n>0&&(i===0||n>a[i-1]))))errs.push(`${name}.fallbackRR must be three increasing positive values`);
     if(o.tpSplit!==undefined&&(!Array.isArray(o.tpSplit)||o.tpSplit.length!==3||!o.tpSplit.every(n=>Number.isFinite(n)&&n>=0&&n<=1)||Math.abs(o.tpSplit.reduce((a,b)=>a+b,0)-1)>1e-6))errs.push(`${name}.tpSplit must be three fractions summing to one`);
@@ -1208,7 +1213,9 @@ export function validateExtendedConfig(c: AppConfig): string[] {
     if (sc?.rule != null && !GENERIC_RULES.includes(sc.rule)) errs.push(`scanners.${id}.rule must be ${GENERIC_RULES.join('|')}`);
     if (sc?.sources != null && (!Array.isArray(sc.sources) || sc.sources.some(x => !['alert', 'alertcondition', 'shape', 'derived', 'label'].includes(x)))) errs.push(`scanners.${id}.sources must list alert|alertcondition|shape|derived|label`);
     if (sc?.sides != null && (typeof sc.sides !== 'object' || Object.values(sc.sides).some(v => !['long', 'short', 'none'].includes(v as string)))) errs.push(`scanners.${id}.sides must map titles to long|short|none`);
-    if (sc?.reader != null && ![1, 2].includes(sc.reader as number)) errs.push(`scanners.${id}.reader must be 1 or 2`);
+    if (sc?.reader != null && ![1, 2, 3].includes(sc.reader as number)) errs.push(`scanners.${id}.reader must be 1, 2 or 3`);
+    if(sc?.reader===3&&!willyNativeReady(id))errs.push(`scanners.${id}: reader 3 requires a validated Willy adapter or non-trading role`);
+    if(sc?.reader===3&&(sc.invert||sc.rule))errs.push(`scanners.${id}: native reader cannot invert or substitute a derived rule`);
     const readerError=readerContractError(id,sc?.reader,sc?.sides);if(readerError)errs.push(`scanners.${id}: ${readerError}`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);

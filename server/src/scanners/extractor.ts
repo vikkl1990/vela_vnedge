@@ -11,10 +11,11 @@ import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
 import { readingLegacy } from './legacy.ts';
 import { WILLY_HTF_MARKET, readWillyHtfAlert } from './willyHtf.ts';
 import { NOT_AN_ENTRY, READER_FIXES, closesSide, reversalClosed } from './readerFixes.ts';
+import { readWillyNative } from './willyNative.ts';
 
 export type Side = 'long' | 'short';
 export type EventKind = 'entry' | 'exit' | 'info';
-export type ExitType = 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'flip' | 'close';
+export type ExitType = 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'flip' | 'close' | 'stop_update';
 
 export interface ScanEvent {
   kind: EventKind;
@@ -401,6 +402,7 @@ export function declaredChannels(source: string): Set<'alert' | 'alertcondition'
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
+  if (opts.reader === 3) return readWillyNative(alerts, shapes, opts, parseAlertAll);
   const allow = (src: 'alert' | 'alertcondition' | 'shape' | 'derived' | 'label') => !opts.sources || opts.sources.includes(src);
   // decision 172: the newer reading rules are withheld from a scanner whose record predates them
   const legacy = opts.scannerId ? readingLegacy().has(opts.scannerId) : false;
@@ -576,7 +578,7 @@ export function describeEvent(ev: ScanEvent): string {
     return parts.join(' · ');
   }
   if (ev.kind === 'exit') {
-    const what: Record<string, string> = { tp1: 'Take-profit 1 hit', tp2: 'Take-profit 2 hit', tp3: 'Take-profit 3 hit', sl: 'Stop-loss hit', be: 'Stopped out at break-even', flip: 'Trend flipped — trade closed', close: 'Trade closed by script' };
+    const what: Record<string, string> = { tp1: 'Take-profit 1 hit', tp2: 'Take-profit 2 hit', tp3: 'Take-profit 3 hit', sl: 'Stop-loss hit', be: 'Stopped out at break-even', flip: 'Trend flipped — trade closed', close: 'Trade closed by script', stop_update: 'Stop amendment requested' };
     parts.push(`${what[ev.exitType ?? 'close']}${side ? ` on ${side}` : ''}${price ? ` at ${price}` : ''}`);
     return parts.join(' · ');
   }

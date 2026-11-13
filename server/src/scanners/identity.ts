@@ -20,7 +20,7 @@ export function strategyIdentity(patched: string, cfg: AppConfig, scannerId: str
     entryProtection: sc?.entryProtection ?? null, entryLimit: empty(sc?.entryLimit),
     regime: {minAtrPct:cfg.risk.regime.minAtrPctByScanner?.[scannerId] ?? cfg.risk.regime.minAtrPct, exempt:cfg.risk.regime.exempt.includes(scannerId)} };
   // Unset/1 preserves every historical identity; a new reader must not alias its control.
-  return createHash('sha1').update(patched).update('\u0000').update(stable({...read,...(sc?.reader===2?{reader:2}:{})})).digest('hex').slice(0, 16);
+  return createHash('sha1').update(patched).update('\u0000').update(stable({...read,...((sc?.reader??1)>1?{reader:sc!.reader}:{})})).digest('hex').slice(0, 16);
 }
 
 export interface DuplicateGroup { identity: string; canonical: string; aliases: string[] }

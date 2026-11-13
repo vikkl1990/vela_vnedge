@@ -673,5 +673,207 @@
       "intrabarModelInput": "Conservative",
       "showPreviewInput": false
     }
+  },
+  "structure-anchored-vwap-upstream-2-0": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "alertTpHitInput": true,
+      "showSlHitAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "synapse-trail-pro-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "alertTpHitInput": true,
+      "alertSlHitInput": true,
+      "alertFlipInput": true,
+      "enableAlertsInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0.3333333333333333,
+        0.3333333333333333,
+        0.3333333333333333
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "liquidity-trail-matrix-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": false,
+      "alertTpHitInput": true,
+      "showSlHitAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "high-volume-pivot-support-resistance-zones-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Resistance Breakout",
+      "Support Breakdown",
+      "Support Hold Retest",
+      "Resistance Hold Retest",
+      "Flipped Res Retest",
+      "Flipped Sup Retest"
+    ],
+    "sides": {
+      "Resistance Breakout": "long",
+      "Support Breakdown": "short",
+      "Support Hold Retest": "long",
+      "Resistance Hold Retest": "short",
+      "Flipped Res Retest": "long",
+      "Flipped Sup Retest": "short"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "dynamic-trend-bands-anchored-vwap-signals-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Break Up Triangle",
+      "Break Dn Triangle"
+    ],
+    "sides": {
+      "Break Up Triangle": "long",
+      "Break Dn Triangle": "short"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "triangular-hull-moving-average-volatility-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Up",
+      "Dn"
+    ],
+    "sides": {
+      "Up": "long",
+      "Dn": "short"
+    },
+    "edge": true,
+    "exitMode": "levels"
   }
 }

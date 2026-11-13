@@ -943,6 +943,15 @@ export function applyFundingSettlement(pos: Position, ratePct: number, markPrice
 /** Script-emitted exit event applied according to the scanner's exit mode. */
 export function applyScriptExit(pos: Position, exitType: ExitType, price: number | undefined, at: number, cfg: PaperConfig, mode: ExitMode, fallbackPrice: number, execution?: { marketPrice: number; quoted: boolean }): Fill[] {
   if (pos.status !== 'open' || mode === 'levels') return [];
+  if (exitType === 'stop_update') {
+    // An amendment is not a fill. Replay applies it after this bar's management;
+    // the live engine uses its durable acknowledgement clock instead.
+    if (price && price > 0 && Number.isFinite(price) && Number.isFinite(at) && at >= pos.entryAt && (pos.sl === null || (pos.side === 'long' ? price > pos.sl : price < pos.sl))) {
+      pos.sl = price;
+      if (pos.side === 'long' ? price >= pos.entryPrice : price <= pos.entryPrice) pos.breakEven = true;
+    }
+    return [];
+  }
   const px = price && Number.isFinite(price) && price > 0 ? price : fallbackPrice;
   const m = exitType.match(/^tp(\d)$/);
   if (m) {

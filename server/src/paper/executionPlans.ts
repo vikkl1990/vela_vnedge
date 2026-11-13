@@ -3,6 +3,7 @@ import {withProductFees,type ProductFees} from './productFees.ts';
 import { createHash } from 'node:crypto';
 import type { AppConfig, PaperConfig, ExitMode, ScannerConfig } from '../config.ts';
 import {readerContractError} from '../scanners/readerFixes.ts';
+import {willyNativeReady} from '../scanners/willyContracts.ts';
 import {CAUSAL_EXIT_VERSION} from './exitExecution.ts';
 import {scannerEntryConfig} from './entryProtection.ts';
 import {protectEntry} from './entryProtection.ts';
@@ -121,8 +122,10 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     if(p.readingOverride!==undefined){
       const r=p.readingOverride;
       if(!r||!Number.isInteger(r.version)||r.version<1||Object.keys(r).some(k=>!['version','reader','sources','labels','sides','invert','edge'].includes(k))||p.variant!=='current')errors.push(`executionPlans.${p.id}: invalid reading version or override`);
+      if(r?.reader===3&&!willyNativeReady(p.scannerId))errors.push(`executionPlans.${p.id}: reader 3 requires a validated Willy adapter or non-trading role`);
+      if(r?.reader===3&&r.invert)errors.push(`executionPlans.${p.id}: native reader cannot invert its contract`);
       const readerError=readerContractError(p.scannerId,r?.reader,r?.sides);if(readerError)errors.push(`executionPlans.${p.id}: ${readerError}`);
-      if(r?.reader!==undefined&&![1,2].includes(r.reader))errors.push(`executionPlans.${p.id}: invalid reader`);
+      if(r?.reader!==undefined&&![1,2,3].includes(r.reader))errors.push(`executionPlans.${p.id}: invalid reader`);
       if(r?.sources!==undefined&&(!Array.isArray(r.sources)||r.sources.some(v=>!['alert','alertcondition','shape','derived','label'].includes(v))))errors.push(`executionPlans.${p.id}: invalid reading sources`);
       if(r?.labels!==undefined&&(!Array.isArray(r.labels)||r.labels.some(v=>typeof v!=='string'||!v.trim())))errors.push(`executionPlans.${p.id}: invalid reading labels`);
       if(r?.sides!==undefined&&(!r.sides||Array.isArray(r.sides)||typeof r.sides!=='object'||Object.values(r.sides).some(v=>!['long','short','none'].includes(v))))errors.push(`executionPlans.${p.id}: invalid reading sides`);

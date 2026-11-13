@@ -83,10 +83,10 @@ test('the reader revision travels with the reading, so opting in is part of the 
   assert.equal(readingOf({ reader: 2 } as any, 'x', 900_000).extract.reader, 2);
   assert.equal(readingOf({}, 'x', 900_000).extract.reader, undefined);
   const cfg = structuredClone(DEFAULT_CONFIG);
-  cfg.scanners = { a: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 2 }, b: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 3 as any } };
+  cfg.scanners = { a: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 2 }, b: { enabled: false, symbols: null, timeframes: null, exitMode: 'both', reader: 4 as any } };
   const errs = validateConfig(cfg);
   assert.equal(errs.some(e => e.startsWith('scanners.a.')), false);
-  assert.ok(errs.includes('scanners.b.reader must be 1 or 2'));
+  assert.ok(errs.includes('scanners.b.reader must be 1, 2 or 3'));
 });
 
 test('closing shape and label titles cannot create entries; explicit contracts keep precedence',()=>{
