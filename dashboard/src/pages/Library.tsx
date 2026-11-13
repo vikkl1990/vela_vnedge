@@ -273,7 +273,7 @@ function Detail({ id, family, fav, canFav, onFav, onClose }: { id: string; famil
               <div className="lib-detail-meta">{family(d.family)}{d.updated ? ` · ${fmtDay(d.updated)}` : ''}</div>
               <h2 className="lib-detail-title">{d.name}</h2>
               <div className="muted small">
-                {d.author} · {d.scriptType ?? 'script'} · Pine v{d.pineVersion ?? '?'}{d.lines ? ` · ${d.lines.toLocaleString()} lines` : ''}{d.overlay ? ' · on the price pane' : ' · own pane'}
+                {d.authorReview?.publication?.author ?? d.author} · {d.scriptType ?? 'script'} · Pine v{d.pineVersion ?? '?'}{d.lines ? ` · ${d.lines.toLocaleString()} lines` : ''}{d.overlay ? ' · on the price pane' : ' · own pane'}
               </div>
               <StageChips e={d} />
               {d.status !== 'runs' && <p className="lib-error small">{d.status === 'quarantined' ? 'Quarantined: ' : "Doesn't run: "}{d.health?.reason ?? d.health?.lastError ?? d.reason ?? 'no reason recorded'}</p>}
@@ -283,7 +283,7 @@ function Detail({ id, family, fav, canFav, onFav, onClose }: { id: string; famil
                 <button className={`btn ${fav ? 'btn-on' : ''}`} disabled={!canFav} onClick={onFav} aria-pressed={fav}>{fav ? 'Favorited' : 'Favorite'}</button>
                 <Link className="btn" to={`/scanners/${encodeURIComponent(d.id)}`}>Scanner page</Link>
                 {d.status !== 'fails' && <ScreenNow ids={[d.id]} label={d.name} />}
-                {d.status !== 'fails' && <ScreenNow author={d.author} label={`everything by ${d.author}`} compact />}
+                {d.status !== 'fails' && <ScreenNow author={d.author} label={d.authorReview?.publication?.author && d.authorReview.publication.author !== d.author ? `import group ${d.author}` : `everything by ${d.author}`} compact />}
                 {d.url && <a className="btn" href={d.url} target="_blank" rel="noreferrer">{d.origin === 'luxalgo' ? 'LuxAlgo Library' : d.origin === 'tradingview' ? 'TradingView' : 'Source'} <IconExternal /></a>}
               </div>
 
