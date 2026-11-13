@@ -6,6 +6,7 @@ import { useAuth } from '../auth/AuthGate'
 import { IconChart, IconExternal, IconX } from '../components/Icons'
 import { Pill, QueryState } from '../components/ui'
 import { ScreenNow } from '../components/ScreenNow'
+import { AuthorReview } from '../components/AuthorReview'
 
 /**
  * Decision 153: the Library. Every script the bot holds, browsed the way a chart platform's indicator library is
@@ -291,6 +292,8 @@ function Detail({ id, family, fav, canFav, onFav, onClose }: { id: string; famil
                 <Fact k="Paper, all time" v={d.paper ? fmtUsd(d.paper.net) : '–'} tone={d.paper ? (d.paper.net >= 0 ? 'gain' : 'loss') : ''} sub={d.paper ? `${d.paper.n} trades · ${fmtR(d.paper.r)}` : 'never traded'} />
                 <Fact k="Pairs" v={String(d.pairs.length)} sub={Object.entries(stages).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(' · ') || 'none'} />
               </div>
+
+              {d.authorReview && <AuthorReview review={d.authorReview} />}
 
               {d.pairs.length > 0 && (
                 <div className="lib-sub">
