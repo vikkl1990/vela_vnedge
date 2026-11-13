@@ -873,6 +873,16 @@ export interface LibraryDetail extends LibraryEntry {
   license: string | null; pineVersion: string | null; lines: number | null; patches: string[]; reason: string | null
   health: { fails: number; lastError: string | null; quarantined: boolean; reason: string | null } | null
   pairs: LibraryPair[]; recent: LibraryTrade[]
+  authorReview?: AuthorReview
+}
+
+export interface AuthorReview {
+  asOf: string; sourceStatus: 'unreviewed' | 'matches' | 'changed'; sourceReviewedAt: string | null
+  sourceHash: string; reviewedSourceHash: string | null; descriptionStatus: 'unavailable' | 'retrieved' | 'changed' | 'reviewed'
+  publication: { url: string; author: string | null; retrievedAt: string | null; updatedAt: string | null; version: number | null; reviewedAt: string | null; role: string | null; summary: string | null; requirements: string | null } | null
+  contract: { type: string; idea: string; entries: Array<{ marker: string; channel: string; side: string; line: number; condition: string }>; notEntries: Array<{ marker: string; channel: string; role: string; line: number }>; stop: { has: boolean; how: string }; targets: { has: boolean; how: string }; exit: { has: boolean; how: string }; timing: { note: string; knownAtClose: boolean; pivotLagBars: number; lookahead: string; repaints: boolean }; claims: Array<{ marker: string; problem: string; line: number; evidence: string }> } | null
+  claimMeaning: string; integrationNotes: string[]; patches: string[]; admission: string
+  reading: { reader: number; sources: string[] | null; labels: string[] | null; sides: Record<string, string> | null; exitMode: string; entryProtection: string }
 }
 
 /** Decision 174: screening on demand. */

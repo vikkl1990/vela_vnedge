@@ -1461,6 +1461,9 @@ body { overflow-x: clip; }
 .lib-fact-v { font-size: 17px; font-variant-numeric: tabular-nums; }
 .lib-fact-v.gain { color: var(--gain); } .lib-fact-v.loss { color: var(--loss); }
 .lib-sub h3 { margin: 6px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+.author-review details { margin: 12px 0; }
+.author-review summary { cursor: pointer; }
+.author-review li { margin: 10px 0; }
 .scroll-x { overflow-x: auto; }
 .lib-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 .lib-table col.c-mkt { width: 30%; } .lib-table col.c-stage { width: 22%; } .lib-table col.c-screen { width: 28%; } .lib-table col.c-30 { width: 20%; }
