@@ -1186,6 +1186,16 @@ export class PaperEngine extends EventEmitter {
     exitMode=bound?.policy?.exitMode??exitMode;
     // Level-only scanners ignore script exits for both pending setups and held positions.
     if (exitMode === 'levels') return undefined;
+    if (exitType === 'stop_update') {
+      if (!bound || (targets && bound.id !== targets.positionId) || (side && side !== bound.side) ||
+          typeof price !== 'number' || !(price > 0) || !Number.isFinite(price) || !Number.isFinite(at) || at < bound.entryAt) return undefined;
+      // A stop notification neither cancels an unfilled setup nor books a close.
+      if (this.exitExecution.state(bound.id)) this.exitExecution.amend(bound,price,at,this.configFor(bound).latencyMs);
+      else applyScriptExit(bound,exitType,price,at,this.configFor(bound),exitMode,bound.entryPrice);
+      this.persist(bound);
+      this.emit('position',{type:'updated',position:bound});
+      return bound;
+    }
     for (const pe of [...this.pending.values()]) if ((!targets||targets.pendingIds.includes(pe.id)) && pe.features?.reclaim_trial && pe.scannerId===scannerId && pe.symbol===symbol && pe.tf===tf && (!side||pe.side===side)) this.cancelPending(pe.id,'script cancelled reclaim');
     const pos = this.findOpen(scannerId, symbol, tf);
     if (!pos) return undefined;
