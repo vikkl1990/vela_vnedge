@@ -6,6 +6,7 @@ import {profileSignature, summarizeKind, type ProfileRow} from './profile.ts';
 import {sourceFacts, type SourceFacts} from './sourceFacts.ts';
 import {funnelClass} from '../incubator/store.ts';
 import {setImmediate as yieldToRuntime} from 'node:timers/promises';
+import type {ContractRegistry} from './contracts.ts';
 
 type Dependencies = Pick<App,'db'|'registry'|'config'|'profiles'|'incubatorStore'|'scanners'>;
 export type EvidenceState = 'matching'|'changed'|'legacy';
@@ -25,10 +26,11 @@ export interface ContributionRow {
 /** Read-only coverage ledger. Runtime evidence stays distinct from static source inventory. */
 export class ContributionService {
   private a:Dependencies;
+  private contracts?:ContractRegistry;
   private cache:{at:number;value:Awaited<ReturnType<ContributionService['build']>>}|null=null;
   private pending:Promise<Awaited<ReturnType<ContributionService['build']>>>|null=null;
   private facts=new Map<string,{hash:string;facts:SourceFacts}>();
-  constructor(a:Dependencies){this.a=a;}
+  constructor(a:Dependencies,contracts?:ContractRegistry){this.a=a;this.contracts=contracts;}
   private source(id:string){
     const s=this.a.registry.get(id);if(!s)return null;
     const hash=createHash('sha256').update(s.patched).digest('hex').slice(0,16),cached=this.facts.get(id);
@@ -44,7 +46,7 @@ export class ContributionService {
   detail(id:string){
     const s=this.a.registry.get(id);if(!s)return null;
     const sc=this.a.config.get().scanners[id];
-    return {id,name:s.name,url:s.url,...this.source(id),reading:{sources:sc?.sources??null,labels:sc?.labels??null,rule:sc?.rule??null,inputs:sc?.inputs??{},edge:sc?.edge??null,invert:sc?.invert??false,sides:sc?.sides??null,labelStyles:sc?.labelStyles??null,timezone:sc?.timezone??'Etc/UTC'},
+    return {id,name:s.name,url:s.url,contract:this.contracts?.get(s,sc??{}).summary??null,...this.source(id),reading:{sources:sc?.sources??null,labels:sc?.labels??null,rule:sc?.rule??null,inputs:sc?.inputs??{},edge:sc?.edge??null,invert:sc?.invert??false,sides:sc?.sides??null,labelStyles:sc?.labelStyles??null,timezone:sc?.timezone??'Etc/UTC'},
       profiles:this.a.profiles.forScanner(id).map(p=>({...p,evidence:evidenceState(p,profileSignature(s,sc,p.tf))}))};
   }
   private async build(now:number){

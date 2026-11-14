@@ -25,6 +25,8 @@ import { duplicateGroups } from '../scanners/identity.ts';
 import { overlapClusters } from '../incubator/overlap.ts';
 import { lockStudy } from '../analytics/lockStudy.ts';
 import { ContributionService } from '../scanners/contributions.ts';
+import { ReadinessService } from '../scanners/readiness.ts';
+import { ContractRegistry } from '../scanners/contracts.ts';
 import { deltaConnectionRoutes } from '../connections/routes.ts';
 import { Journal, journalFilter } from '../analytics/journal.ts';
 
@@ -264,7 +266,15 @@ export class ApiServer {
     this.add('GET', '/api/markets/today', () => a.marketGate.today);
     this.add('POST', '/api/markets/today/refresh', async () => { const own = [...new Set([...a.resolvedSymbols, ...a.incubator.symbols()])]; return a.marketGate.refresh(await a.marketGate.universe(own), undefined, own); });
     this.add('GET', '/api/scanners', (_r, _s, _p, url) => (url.searchParams.get('view') === 'lite' ? a.scannerIndex() : a.scannerViews()));
-    const contributions = new ContributionService(a);
+    const contracts = new ContractRegistry();
+    const contributions = new ContributionService(a,contracts);
+    const readiness = new ReadinessService(a,contracts);
+    this.add('GET', '/api/scanners/readiness', () => readiness.view());
+    this.add('GET', '/api/scanners/:id/contract', (_r, _s, p, url) => {
+      const detail=readiness.detail(p.id,url.searchParams.get('plan')??undefined);
+      if(!detail)throw new HttpError(404,'unknown scanner or plan');
+      return detail;
+    });
     this.add('GET', '/api/scanners/contributions', () => contributions.view());
     this.add('GET', '/api/scanners/:id/contribution', (_r, _s, p) => { const detail=contributions.detail(p.id); if(!detail) throw new HttpError(404,'unknown scanner'); return detail; });
     this.add('POST', '/api/scanners/auto-tune', async (_r, _s, _p, _u, body) => {

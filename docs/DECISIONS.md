@@ -7431,3 +7431,38 @@ mechanics only, not executable historical profit or readiness for promotion.
 Further native adapters (including AlgoAlpha target geometry, stop-entry expiry,
 external-series and per-pattern invalidation) still require their own tests; this
 release does not claim that all library execution gaps have been fixed.
+
+### 251. Shared observational contracts and scanner readiness (2026-11-14)
+
+The source-pinned author catalogue now feeds one `ContractRegistry`, shared by
+scanner contract details, the contribution ledger and the active readiness matrix.
+The matrix covers enabled account scanners, shadow/proposed/live/tracked cells,
+and each enabled execution plan separately. It records source and patched hashes,
+reader revision, intent, effective reading, native/basket support, remaining review
+gaps and per-cell scan receipts. Author context is not treated as a failed entry
+scanner. Historical audit notes are explicitly historical, since newer adapters
+can have resolved them. Unmatched source bytes hide old entry/exit conditions.
+
+Research rows resolve the same `planSnapshot` and product fees as execution and
+join observations by the exact current plan signature. A raw source scan cannot
+stand in for a reading-comparison receipt. Mixed base-scanner activity is labelled
+as historical activity, never qualified evidence. A matching behavior probe is
+distinct from profitability, causal certification, promotion or live readiness.
+The diagnostic contract version is separate from all existing evidence identities.
+
+`GET /api/scanners/readiness` and `GET /api/scanners/:id/contract?plan=...` are
+read-only, authenticated through the existing API. Scanners → Contract registry &
+readiness exposes filters, pagination, every allocated cell, refusals, author
+conditions, effective policies and source versions. No new execution gate is added.
+The existing contribution detail links to the same registry. Source processing is
+cached; the matrix yields between scanner batches and reads only allocated
+scanners' probes instead of loading the full 136k-observation library.
+
+Tests cover stale source/publication handling, role separation, per-profile native
+and basket capabilities, reading/exit identity changes, exact research cohorts,
+quiet versus failed scans, context data dependencies, UI filters, and zero writes
+to configuration/database during inspection. A read-only VM fixture exercises
+509 enabled/shadow scanner IDs plus 34 research plans; VM-only library imports
+are absent from this local fixture and must be checked on deployment. This is a
+visibility change, not a profitability improvement. Paper mode, $150 margin, risk
+caps, scanner allocations, all execution plans and evidence rules remain unchanged.

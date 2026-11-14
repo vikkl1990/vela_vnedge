@@ -8,6 +8,7 @@ export interface ContributionRow {
 }
 export interface Contributions {at:number;from:number;to:number;summary:ContributionSummary;authors:Array<ContributionSummary&{author:string;major:boolean}>;rows:ContributionRow[];notes:string[];lastScreen:{runs?:number;finishedAt?:number;silentSkipped?:number}|null}
 export interface ContributionDetail {
+ contract?:import('../../../shared/scannerContracts').ContractSummary|null;
  id:string;name:string;url:string;hash:string;
  facts:{lines:number;inputs:number;channels:string[];totalCalls:number;calls:Array<{name:string;line:number;condition:string;title:string;code:string}>;cautions:string[];dependencies:string[]};
  reading:{sources:string[]|null;labels:string[]|null;rule:string|null;inputs:Record<string,unknown>;edge:boolean|null;invert:boolean;sides:string[]|null;timezone:string};

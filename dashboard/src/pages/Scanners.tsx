@@ -1,5 +1,6 @@
 import { Disclosure } from '../components/Disclosure'
 import {ScannerContributions} from '../components/ScannerContributions'
+import {ScannerReadinessMatrix} from '../components/ScannerReadinessMatrix'
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
@@ -302,6 +303,7 @@ export function Scanners() {
         </div>
       </div>
 
+      <Disclosure id="readiness" title="Contract registry & readiness" hint="Enabled scanners, shadow allocations and experimental readings: intent, execution support and live coverage"><ScannerReadinessMatrix /></Disclosure>
       <Disclosure id="contributions" title="Scanner contribution ledger" hint="Source evidence, family coverage and detailed signal blockers"><ScannerContributions /></Disclosure>
       <div className="toolbar">
         <div className="cat-tabs" role="tablist" aria-label="Category">

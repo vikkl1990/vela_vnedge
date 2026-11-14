@@ -53,6 +53,7 @@ export function ScannerContributions({compact=false}:{compact?:boolean}){
         {detail.isError&&<ErrorState error={detail.error} onRetry={()=>detail.refetch()}/>}
         {detail.isFetching&&!detail.data&&<p>Loading source evidence…</p>}
         {detail.data&&<>
+          {detail.data.contract&&<p>Contract: {detail.data.contract.adapter} · source review {detail.data.contract.sourceStatus}. <Link className="link" to="/scanners#readiness">Open readiness matrix</Link></p>}
           <p className="muted">{detail.data.facts.lines} source lines · {detail.data.facts.inputs} inputs · source {detail.data.hash} · channels: {detail.data.reading.sources===null?'automatic':detail.data.reading.sources.join(', ')||'entries disabled'} · timezone {detail.data.reading.timezone}</p>
           {!!detail.data.facts.cautions.length&&<ul>{detail.data.facts.cautions.map(c=><li key={c}>{c}</li>)}</ul>}
           {!!detail.data.facts.dependencies.length&&<details><summary>Requested data dependencies</summary><pre>{detail.data.facts.dependencies.join('\n')}</pre></details>}
