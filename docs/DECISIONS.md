@@ -7744,3 +7744,38 @@ no new endpoint, and no control that arms live.
   thresholds are a proposed rule, labelled as such, until the model beats taking every signal on unseen weeks).
 
 - **Release corrections (15 November).** Book selection follows route changes and browser history through `bookScope`, while existing catalogue and journal filters keep their meanings. Journal tabs and the global selector agree. Runtime status and book navigation have regression coverage. No server, execution, risk, capital or evidence configuration changed.
+
+## 266. Own exits: grade a script by its own ledger, test it in shadow (14 November 2026)
+
+**Why.** The script-perspective study (`docs/research/script-perspective-2026-11-14/`) ran 513 `strategy()` scripts as their
+authors wrote them and charged Delta's costs: the library as a whole has no edge, trades held under a day lose in every slice,
+and all the profit is in multi-day holds. Ten scripts held up (stop-and-reverse or ride-the-trend, positive on both sides, in
+nearly every market and timeframe, with a one-bar delay). The bot's recipe (1.5 ATR stop, trail arming at +0.5R, floor, 3% cap)
+closes trades within hours, which is the part of the distribution that loses. The edge exists only as a pair: the script's own
+entry with the script's own exit. The bot had never traded that pair.
+
+**What.**
+- **A shadow execution policy, `exitPolicy: 'own-exits'`** on an execution plan (`paper/executionPlans.ts`, `ownExitsOverride` in
+  `paper/policy.ts`). The plan reads the script's current reading and applies none of the bot's additions: no R ladder, trail,
+  profit floor, early cut, early stall, break-even move, trend exit, structure trail or stale close. Script targets are used as
+  written and the script's own stop is kept (the account's refusal of script stops does not apply). The only thing kept is the
+  wide disaster stop (`scriptDisasterStopAtr`, 3 ATR) so sizing has a basis. Validation allows only the current reading with no
+  target, trail, basket, hold limit or inversion, and `maxStopLossPct` may still only tighten the account ceiling. Plans are
+  shadow research cells: they cannot enter the account book, and the policy is part of the plan's signature, so it never shares
+  evidence with the same cell under the account's recipe.
+- **An own-ledger grader** (`research/ownLedger.ts`, `cli/ownledger.ts`). The Pine worker returns the strategy's closed and open
+  trades on request (`WorkerJob.ledger`; off for the live scan). The grader charges 15.8 bps a round trip and applies the stress
+  ladder of the study: open trades marked to market, a one-bar delay (two where the script fills on close), positive in both
+  halves, positive beyond the market's drift, a positive long and short record, t above 2, entries inside their own bar, and
+  enough trades. It names the gate that failed.
+- **A plan proposer** (`cli/ownexitsplans.ts`) for the ten survivors. It reads a copy of the config, validates with the config
+  validator, respects `MAX_RESEARCH_PLANS`, lists what does not fit and writes a file. It applies nothing.
+
+**What it does not do.** It does not touch the account, live execution, allocation or sizing. It does not enable a plan: the
+output file is applied by the operator through the config route. It does not change the 3% ceiling. It does not model funding
+(a multi-day hold pays it; the shadow book charges it, the grader does not). Returns in the grader are bps of notional, not R,
+because a script with a wide or absent stop has no stable R.
+
+**What decides.** A forward shadow record of the pair against the same cell under the account's recipe. Ten of 513 survived the
+screen, so the screen alone is not evidence; the forward record is. Capacity is the practical limit: the 37 existing plans and
+up to 18 paired studies leave little of the 73 research slots, so the proposer lists what does not fit.

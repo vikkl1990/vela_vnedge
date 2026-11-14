@@ -1,10 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {DEFAULT_CONFIG,validateConfig,type AppConfig} from '../config.ts';
+import {DEFAULT_CONFIG,TF_SECONDS,validateConfig,type AppConfig} from '../config.ts';
 import {Db} from '../db.ts';
 import {PaperEngine} from './engine.ts';
 import {bookPaperConfig} from './policy.ts';
-import {planSnapshot,planScannerId,planEvents,planBacktest,type ExecutionPlan} from './executionPlans.ts';
+import {planSnapshot,planScannerId,planEvents,planBacktest,validateExecutionPlans,type ExecutionPlan} from './executionPlans.ts';
 import {PlanComparisons} from './planComparisons.ts';
 import {runBacktest} from './backtest.ts';
 import {costAudit} from './costAudit.ts';
@@ -293,4 +293,36 @@ test('invalid basket configuration is rejected at save and cannot hide other pla
  assert.ok(validateConfig(c).some(e=>e.includes('bad-basket')&&e.includes('stop cap')));
  c.executionPlans!.at(-1)!.maxStopLossPct=3;
  assert.equal(validateConfig(c).filter(e=>e.includes('executionPlans')).length,0,'an explicit plan cap satisfies the same snapshot guard');
+});
+test('own-exits plan: the author\'s exit as written, no ladder, trail, floor or early cut, and the script\'s own stop is kept',t=>{
+ const {c,e,service,ctx}=setup(t);
+ // the account's recipe is as loud as it gets here: trail, floor, early cut and the script-stop refusal are all on
+ Object.assign(c.paper,{trailAfterR:.5,trailGiveBackPct:10,floorAtR:.5,floorKeepR:.25,earlyCut:{r:-.5,minutes:30},skipScriptStops:true});
+ c.executionPlans=[{id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,exitPolicy:'own-exits'} as ExecutionPlan];
+ assert.deepEqual(validateConfig(c).filter(x=>/own/.test(x)),[]);
+ const snap=planSnapshot(c,c.executionPlans[0]);
+ assert.equal(snap.exitMode,'script');assert.equal(snap.exitPolicy,'own-exits');
+ assert.equal(snap.paper.scriptTargets,'use');assert.deepEqual(snap.paper.fallbackRR,[0,0,0]);
+ assert.equal(snap.paper.trailAfterR,0);assert.equal(snap.paper.floorAtR,0);assert.equal(snap.paper.earlyCut,undefined);
+ assert.equal(snap.paper.skipScriptStops,false);assert.equal(snap.requireAtrStop,false);
+ assert.equal(snap.paper.fallbackAtrSl,c.paper.scriptDisasterStopAtr);
+ // identity: it is a different experiment from the same cell under the account's recipe
+ const control=planSnapshot(c,{...c.executionPlans[0],id:'ctl',exitPolicy:undefined});
+ assert.notEqual(snap.signature,control.signature);assert.equal(control.paper.trailAfterR,.5);
+ // behaviour: the script's stop (98) and targets are what the position carries; the account recipe would have refused this stop
+ service.observe(ctx);
+ const p=e.openPositions().find(x=>x.executionPlan?.id==='own');
+ assert.ok(p,'the own-exits plan takes the entry');
+ assert.equal(p!.sl,98);assert.deepEqual(p!.tp.slice(0,3),[110,120,130]);
+});
+test('own-exits plan validation: only the current reading, nothing layered on top',()=>{
+ const c=structuredClone(DEFAULT_CONFIG);
+ const base={id:'own',revision:1,enabled:true,scannerId:'s',symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,exitPolicy:'own-exits'} as ExecutionPlan;
+ const tfs=TF_SECONDS;
+ assert.deepEqual(validateExecutionPlans([base],tfs,c),[]);
+ for(const bad of [{variant:'native'},{variant:'atr'},{takeProfit:{mode:'r',rr:[1,2,3],split:[0,0,1]}},{trailing:{afterR:1,giveBackPct:10,floorAtR:0,floorKeepR:0}},{maxHoldMinutes:60},{comparison:{group:'g',role:'control',kind:'exit-policy'}}])
+  assert.ok(validateExecutionPlans([{...base,...bad} as ExecutionPlan],tfs,c).some(x=>/own exits|exit-policy|control/.test(x)),JSON.stringify(bad));
+ // the stop ceiling may only tighten, as for every research plan
+ assert.ok(validateExecutionPlans([{...base,maxStopLossPct:5}],tfs,c).some(x=>/ceiling/.test(x)));
+ assert.equal(validateExecutionPlans([{...base,maxStopLossPct:2}],tfs,c).length,0);
 });
