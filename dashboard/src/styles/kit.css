@@ -93,3 +93,44 @@
 .needs-list li { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--warn) 18%, transparent); flex-wrap: wrap; }
 .needs-list li:first-child { border-top: 0; }
 .needs-text { flex: 1 1 320px; font-size: var(--fs-sm); line-height: 1.45; }
+
+/* ---------- the four books: identity that does not rely on colour alone ---------- */
+.book-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--muted); }
+.book-dot-live { background: var(--book-live); } .book-dot-paper { background: var(--book-paper); }
+.book-dot-shadow { background: transparent; box-shadow: inset 0 0 0 2px var(--book-shadow); } .book-dot-backtest { background: var(--book-backtest); border-radius: 2px; }
+.book-chip { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: var(--pill); font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; border: 1px solid currentColor; white-space: nowrap; line-height: 1.5; }
+.book-chip-live { color: var(--book-live); } .book-chip-paper { color: var(--book-paper); }
+.book-chip-shadow { color: var(--book-shadow); border-style: dashed; }
+.book-chip-backtest { color: var(--book-backtest); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--book-backtest) 14%, transparent) 0 5px, transparent 5px 10px); }
+
+.book-switch { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); flex: 0 0 auto; }
+.book-seg { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 11px; border-radius: 7px; border: 0; background: transparent; color: var(--muted); font-weight: 650; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.book-seg:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.book-seg.on { background: var(--surface-3); color: var(--text); box-shadow: var(--shadow-1); }
+.book-seg-state { font: 700 9.5px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-2); }
+.book-seg-state.armed { color: var(--book-live); }
+.ml-lens { display: inline-flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 12px; border-radius: var(--pill); border: 1px solid color-mix(in srgb, var(--book-ml) 55%, transparent); background: transparent; color: var(--book-ml); font-weight: 700; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.ml-lens-state { padding: 1px 7px; border-radius: var(--pill); background: color-mix(in srgb, var(--book-ml) 16%, transparent); }
+.ml-lens.on { background: color-mix(in srgb, var(--book-ml) 16%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--book-ml) 18%, transparent); }
+
+.ladder-pips { display: inline-flex; align-items: center; gap: 5px; }
+.ladder-pip { width: 11px; height: 11px; border-radius: 50%; background: var(--surface-3); box-sizing: border-box; }
+.ladder-pip-live.done { background: var(--book-live); } .ladder-pip-paper.done { background: var(--book-paper); } .ladder-pip-shadow.done { background: var(--book-shadow); } .ladder-pip-backtest.done { background: var(--book-backtest); }
+.ladder-pip.now { background: transparent; border: 2px solid currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+.ladder-pip-live.now { color: var(--book-live); } .ladder-pip-paper.now { color: var(--book-paper); } .ladder-pip-shadow.now { color: var(--book-shadow); } .ladder-pip-backtest.now { color: var(--book-backtest); }
+
+.book-card { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 12px; border-radius: var(--radius); border: 1px solid var(--border); border-top: 3px solid var(--book-color, var(--border)); background: var(--surface-2); min-width: 0; }
+.book-card-live { --book-color: var(--book-live); border-color: color-mix(in srgb, var(--book-live) 45%, transparent); border-top-color: var(--book-live); }
+.book-card-paper { --book-color: var(--book-paper); }
+.book-card-shadow { --book-color: var(--book-shadow); border-style: dashed; border-color: color-mix(in srgb, var(--book-shadow) 55%, transparent); border-top: 3px solid var(--book-shadow); }
+.book-card-backtest { --book-color: var(--book-backtest); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--book-backtest) 7%, transparent) 0 8px, transparent 8px 16px), var(--surface-2); }
+.book-card-head { display: flex; align-items: center; gap: 8px; }
+.book-card-head h2 { margin: 0; flex: 1 1 auto; font-size: 12px; font-weight: 800; letter-spacing: 0.12em; color: var(--book-color); }
+.book-card-state { padding: 2px 9px; border-radius: var(--pill); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; background: color-mix(in srgb, var(--book-color) 14%, transparent); color: var(--book-color); }
+.book-card-headline { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+.book-card-sub { color: var(--muted); font-size: var(--fs-sm); min-height: 36px; }
+.book-card-foot { margin-top: 2px; font-weight: 650; font-size: var(--fs-sm); }
+.tone-ml { color: var(--book-ml); }
+
+@media (max-width: 1640px) { .book-seg:not(.on) .book-seg-label { display: none; } .book-seg:not(.on) .book-seg-state { display: none; } .book-seg { padding: 0 9px; } .ml-lens-long { display: none; } .ml-lens { padding: 0 9px; } }
+@media (max-width: 640px) { .book-switch { max-width: 100%; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; } .book-switch::-webkit-scrollbar { display: none; } .book-seg:not(.on) .book-seg-label { display: inline; } .book-seg-state { display: none; } }

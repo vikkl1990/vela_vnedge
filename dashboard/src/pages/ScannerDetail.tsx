@@ -12,6 +12,7 @@ import { Callout, EmptyState, PageHeader, Stat, StatGrid, TabPanel, Tabs, Toolba
 import { ScreenNow } from '../components/ScreenNow'
 import { ChipSelect, ErrorState, ExitReasonPill, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
 import { SignalsTable } from './Signals'
+import { StrategyBooks } from './StrategyBooks'
 import { fmtInt, fmtMs, fmtProfitFactor, fmtPct, fmtPrice, fmtR } from '../lib/format'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
@@ -51,7 +52,7 @@ export function ScannerDetail() {
   const auth = useAuth()
   const run = useRunScanner()
   const release = useReleaseScanner()
-  const [tab, setTab] = useState<DetailTab>('overview')
+  const [tab, setTab] = useState<DetailTab>('books')
   const backtest = useBacktest(id, symbol, tf)
   const runBt = useRunBacktest()
   const tick = markets.data?.find((m) => m.symbol === symbol)?.tickSize
@@ -90,6 +91,7 @@ export function ScannerDetail() {
   ]
   const lr = s.lastRun
   const tabItems = [
+    { id: 'books' as const, label: 'Books' },
     { id: 'overview' as const, label: 'Overview' },
     { id: 'chart' as const, label: 'Chart' },
     { id: 'activity' as const, label: 'Signals and trades', count: signals.data ? signals.data.length : undefined },
@@ -143,6 +145,10 @@ export function ScannerDetail() {
       {s.enabled && !s.symbols.length && <Callout tone="warn" title="No pairs assigned.">Turning a scanner on does not schedule paper scans. Assign pairs on the Incubator.</Callout>}
 
       <Tabs value={tab} onChange={setTab} items={tabItems} label="Scanner sections" idPrefix="sd" />
+
+      <TabPanel id="books" value={tab} idPrefix="sd">
+        <StrategyBooks id={id} s={s} onOpenReading={() => setTab('reading')} />
+      </TabPanel>
 
       <TabPanel id="overview" value={tab} idPrefix="sd">
         <div className="sc-page">
@@ -289,7 +295,7 @@ export function ScannerDetail() {
   )
 }
 
-type DetailTab = 'overview' | 'chart' | 'activity' | 'backtest' | 'reading' | 'source'
+type DetailTab = 'books' | 'overview' | 'chart' | 'activity' | 'backtest' | 'reading' | 'source'
 
 function TradesMini({ trades, tick, maxHeight }: { trades: Trade[]; tick?: number; maxHeight?: number }) {
   const cols = useMemo<Column<Trade>[]>(

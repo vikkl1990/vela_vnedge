@@ -89,7 +89,7 @@
 .crumb .pill { margin-left: 6px; cursor: help; }
 
 .search-trigger {
-  display: inline-flex; align-items: center; gap: 9px; height: 34px; min-width: 200px; flex: 0 1 300px; padding: 0 8px 0 11px;
+  display: inline-flex; align-items: center; gap: 9px; height: 34px; min-width: 150px; flex: 0 1 240px; padding: 0 8px 0 11px;
   border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); color: var(--muted-2); cursor: pointer;
   transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), color var(--dur-1);
 }
@@ -172,7 +172,7 @@
 .banner code { font-size: 11.5px; }
 
 /* ---------- narrower screens ---------- */
-@media (max-width: 1180px) {
+@media (max-width: 1640px) {
   .search-trigger { flex: 0 0 auto; min-width: 0; padding: 0 10px; }
   .search-trigger-text, .search-trigger-kbd { display: none; }
 }
@@ -197,9 +197,8 @@
 /* ---------- desktop top bar: one row; the breadcrumb and the search give way first ---------- */
 @media (min-width: 901px) {
   .topbar { flex-wrap: nowrap; }
-  .crumb { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+  .crumb { flex: 0 1 auto; min-width: 96px; overflow: hidden; }
   .crumb-title { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 30ch; }
-  .search-trigger { flex: 0 1 240px; min-width: 150px; }
   .topbar-status { flex-wrap: nowrap; flex: 0 0 auto; gap: 14px; }
   .topbar-actions { flex-wrap: nowrap; flex: 0 0 auto; }
 }
@@ -212,10 +211,17 @@
 @media (max-width: 640px) {
   .topbar { gap: 8px; padding: 6px 12px; }
   .mobile-brand, .crumb .pill, .crumb-sep { display: none; }
-  .crumb { flex: 1 1 auto; min-width: 0; overflow: hidden; }
   .crumb-title { overflow: hidden; text-overflow: ellipsis; }
   .topbar-actions { margin-left: auto; gap: 8px; flex-wrap: nowrap; }
   .btn-entries { min-width: 0; padding: 0 10px; }
+  /* the book switch and the ML lens share one row; the bar scrolls away instead of covering a fifth of the screen */
+  .topbar { position: static; }
+  .crumb { order: 1; flex: 1 1 40px; min-width: 40px; }
+  .search-trigger { order: 2; }
+  .topbar-actions { order: 3; }
+  .topbar-status { order: 10; }
+  .book-switch { order: 11; }
+  .ml-lens { order: 12; flex: 0 0 auto; }
   .topbar-status { order: 10; flex: 1 1 100%; margin-left: 0; justify-content: space-between; flex-wrap: nowrap; gap: 8px; padding: 3px 0 2px; border-top: 1px solid var(--border-subtle); }
   .topstat { gap: 4px; font-size: 12px; white-space: nowrap; }
   .topstat-label { font-size: 8.5px; letter-spacing: 0.06em; }

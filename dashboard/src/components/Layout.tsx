@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import { useBackendOnline, useHealth, usePositions, useKill, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
+import { useBackendOnline, useHealth, useKill, useResetPaper, useResume, useRisk, useScannerIndex, useStats } from '../api/queries'
 import { useAuth } from '../auth/AuthGate'
 import { useDensity } from '../lib/density'
 import type { PaletteItem } from '../lib/commandSearch'
@@ -55,7 +55,6 @@ export function Layout() {
   const sse = useSSE()
   const health = useHealth()
   const stats = useStats()
-  const positions = usePositions()
   const scanners = useScannerIndex()
   const { online, checked } = useBackendOnline()
   const toast = useToast()
@@ -116,7 +115,6 @@ export function Layout() {
   const feedConnected = h?.feed.connected ?? false
   const lastTick = sse.lastTickAt ?? h?.feed.lastTickAt ?? null
   const s = stats.data
-  const openCount = positions.data?.length ?? s?.openPositions
 
   // ---- route meta: document.title + breadcrumb ----
   const scannerId = /^\/scanners\/([^/]+)/.exec(loc.pathname)?.[1]
@@ -236,10 +234,8 @@ export function Layout() {
           onOpenPalette={() => setShowPalette(true)}
           mode={h?.mode}
           equity={s?.equity}
-          openCount={openCount}
           risk={risk.data}
           riskReady={Boolean(risk.data) && !risk.isError}
-          queue={h ? `${h.worker.queued}/${h.worker.busy}/${h.worker.size}` : null}
           online={online}
           canTrade={auth.canTrade}
           paused={paused}
@@ -290,6 +286,7 @@ export function Layout() {
           {PHONE_TABS.map((t) => (
             <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => `bottombar-item ${isActive ? 'on' : ''}`}>{t.label}</NavLink>
           ))}
+          <button type="button" className="bottombar-item" onClick={() => setDrawer(true)} aria-controls="primary-sidebar" aria-expanded={drawer}>More</button>
         </nav>
       </div>
 

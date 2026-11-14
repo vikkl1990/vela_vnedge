@@ -1,3 +1,4 @@
+import { BookProvider } from './lib/bookScope'
 import { lazy, type ComponentType, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthGate, useAuth } from './auth/AuthGate'
@@ -19,6 +20,9 @@ const Users = pageDefault(() => import('./pages/Users'))
 const Incubator = pageDefault(() => import('./pages/Incubator'))
 const Radar = pageDefault(() => import('./pages/Radar'))
 const Overview = page(() => import('./pages/Overview'), 'Overview')
+const Strategies = page(() => import('./pages/Strategies'), 'Strategies')
+const Lab = page(() => import('./pages/Lab'), 'Lab')
+const Live = page(() => import('./pages/Live'), 'Live')
 const Decisions = page(() => import('./pages/Decisions'), 'Decisions')
 const ChartPage = page(() => import('./pages/ChartPage'), 'ChartPage')
 const Analytics = page(() => import('./pages/Analytics'), 'Analytics')
@@ -40,11 +44,15 @@ const TradeMonitor = page(() => import('./pages/TradeMonitor'), 'TradeMonitor')
 export default function App() {
   return (
     <BrowserRouter>
+      <BookProvider>
       <AuthGate>
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<Terminal />} />
           <Route path="overview" element={<Overview />} />
+          <Route path="strategies" element={<Strategies />} />
+          <Route path="lab" element={<Lab />} />
+          <Route path="live" element={<Live />} />
           <Route path="scanners" element={<Scanners />} />
           <Route path="scanners/:id" element={<ScannerDetail />} />
           <Route path="signals" element={<Signals />} />
@@ -70,6 +78,7 @@ export default function App() {
         </Route>
       </Routes>
       </AuthGate>
+    </BookProvider>
     </BrowserRouter>
   )
 }

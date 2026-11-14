@@ -35,9 +35,9 @@ createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <DensityProvider>
           <ToastProvider>
-            <SSEProvider>
-              <App />
-            </SSEProvider>
+              <SSEProvider>
+                <App />
+              </SSEProvider>
           </ToastProvider>
         </DensityProvider>
       </ThemeProvider>

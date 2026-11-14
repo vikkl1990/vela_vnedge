@@ -7723,3 +7723,24 @@ API, data hook, query key, server code, risk rule or evidence rule changed.
 
 Guide: [UI-DESIGN-SYSTEM.md](UI-DESIGN-SYSTEM.md).
 
+
+## 265. Four books on one ladder, with ML as a lens (14 November 2026)
+
+The same strategy appeared on different pages with different numbers, and no screen said whether it was showing money
+or a simulation. The dashboard now reads the product as four books (Backtest, Shadow, Paper, Live) on one ladder, and
+ML as a lens on every number that has a score. Presentation and composition of existing data only: no server change,
+no new endpoint, and no control that arms live.
+
+- A dashboard-wide **book scope** and **ML lens** in the top bar. Each book has a colour and a second cue (shadow
+  dashed, backtest hatched, live a state word). Live status comes from the runtime execution transport: production host, authenticated keys and dry-run state. Missing status is unknown; global connection status never implies that a strategy traded live.
+- **Home** (`/overview`): a card per book, the promotion ladder, book evidence (backtest screen, shadow and paper, with their different populations labelled; matched real-print profit stays unavailable without joined closed-trade fills), Needs you and the ML advisor. **Strategies** (`/strategies`): one list with the
+  ladder per script. **Strategy** (`/scanners/:id`, Books tab): the same strategy in each book, its execution contract
+  and its ML lens. **Lab** (`/lab`): the standard backtest and the ML workbench. **Live control** (`/live`): the real
+  go-live checks, the gates and what changes from paper.
+- Navigation regroups as Work, Markets, Lab and Control. Every earlier page stays reachable.
+- **Not built, on purpose:** an arm-live control (production stays double-locked in server configuration); a
+  run-with-own-exits backtest, stress test and walk-forward folds (planned; the research is in
+  `docs/research/script-perspective-2026-11-14/`); the ML advisor modes beyond Off (the 0.55, 0.58 and 0.62 AUC
+  thresholds are a proposed rule, labelled as such, until the model beats taking every signal on unseen weeks).
+
+- **Release corrections (15 November).** Book selection follows route changes and browser history through `bookScope`, while existing catalogue and journal filters keep their meanings. Journal tabs and the global selector agree. Runtime status and book navigation have regression coverage. No server, execution, risk, capital or evidence configuration changed.

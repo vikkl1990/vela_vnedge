@@ -1,3 +1,4 @@
+import { useBook } from '../lib/bookScope'
 import { useSearchParams } from 'react-router-dom'
 import { useJournal, useMarkets, useScannerIndex } from '../api/queries'
 import type { JournalQuery, JournalRow } from '../api/journal'
@@ -17,13 +18,17 @@ type Book = 'paper' | 'shadow'
 
 /** The journal: a book switch, filters, the totals for every match, and the rows. `exportOpen` is owned by the page so its header can open it. */
 export function TradeJournal({ exportOpen = false, onExportClose }: { exportOpen?: boolean; onExportClose?: () => void }) {
-  const [params, setParams] = useSearchParams(), f = journalFilters(params, useNow(60_000))
+  const [urlParams, setParams] = useSearchParams()
+  const { scope: bookScope } = useBook()
+  const params = new URLSearchParams(urlParams)
+  if (bookScope === 'paper' || bookScope === 'shadow') params.set('book', bookScope)
+  const f = journalFilters(params, useNow(60_000))
   const book = params.get('book') ?? 'paper', status = params.get('status') ?? 'closed', scope = params.get('scope') ?? 'all'
   const history = params.get('history') ?? 'current'
   const dateBy = params.get('dateBy') ?? 'exit', sort = params.get('sort') ?? 'newest'
   const query: JournalQuery = { ...f.query, book, status, scope, history, dateBy, sort }
   const q = useJournal(query, !f.error), scanners = useScannerIndex(), markets = useMarkets()
-  const update = (values: Record<string, string>) => { const next = updateJournalFilters(params, values); next.delete('trade'); setParams(next) }
+  const update = (values: Record<string, string>) => { const next = updateJournalFilters(params, values); next.delete('trade'); if (values.book) next.set('bookScope', values.book); setParams(next) }
   const selected = Number(params.get('trade')), id = Number.isSafeInteger(selected) && selected > 0 ? selected : null
   const show = (r: JournalRow) => { const next = new URLSearchParams(params); next.set('trade', String(r.id)); setParams(next) }
   const symbols = [...new Set([...(markets.data ?? []).map(m => m.symbol), ...(q.data?.rows ?? []).map(r => r.symbol), ...(f.symbol ? [f.symbol] : [])])].sort()

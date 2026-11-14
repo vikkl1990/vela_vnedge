@@ -1,16 +1,20 @@
 import { useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { TradeJournal } from '../components/TradeJournal'
 import { useCloseAll, useExecution, usePositions } from '../api/queries'
 import { PositionsTable } from '../components/PositionsTable'
 import { BookBadge, ConfirmDialog, ErrorState, Loading, Panel } from '../components/ui'
-import { PageHeader } from '../components/kit'
+import { EmptyState, PageHeader } from '../components/kit'
+import { useBook } from '../lib/bookScope'
 import { useToast } from '../lib/toast'
+
+type BookScopeKey = 'live' | 'backtest'
 
 export function Trades() {
   const positions = usePositions()
   const [params] = useSearchParams()
-  const shadow = params.get('book') === 'shadow'
+  const { scope } = useBook()
+  const shadow = scope === 'shadow' || (scope !== 'paper' && params.get('book') === 'shadow')
   const closeAll = useCloseAll()
   const exec = useExecution()
   const mode = exec.data?.mode ?? 'paper'
@@ -19,16 +23,29 @@ export function Trades() {
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const openCount = positions.data?.length ?? 0
+  // Live and backtest have no journal: say so, and let the operator look at the paper journal anyway for this scope only.
+  const [peek, setPeek] = useState<BookScopeKey | null>(null)
+  const noJournal = (scope === 'live' || scope === 'backtest') && peek !== scope
 
   return (
     <div className="page trades-page">
       <PageHeader
-        title="Journals"
+        title="Trades"
         subtitle={shadow ? 'The shadow book: signals the library took on paper, with synthetic dollars. It never touches the account.' : 'Every trade with its signal, sizing, stops, targets, costs and fills. Paper and shadow books are kept apart.'}
         meta={<BookBadge book={shadow ? 'shadow' : 'account'} mode={mode} short />}
         actions={<button className="btn btn-sm" aria-expanded={exportOpen} onClick={() => setExportOpen((v) => !v)}>{exportOpen ? 'Hide export' : 'Export CSV'}</button>}
       />
 
+      {noJournal ? (
+        <EmptyState
+          title={scope === 'live' ? 'Live executions are tracked on Exchange' : 'A backtest has no trades in the journal'}
+          hint={scope === 'live' ? 'This journal does not provide a separate, reconciled live-trade history. Check production orders and fills on Exchange; paper and shadow records remain separate.' : 'Backtests replay history in the Lab and do not write journal rows. Paper and shadow trades are kept in their own journals.'}
+          action={<div className="row gap" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
+            <Link to={scope === 'live' ? '/live' : '/lab'} className="btn btn-sm">{scope === 'live' ? 'Open the go-live checklist' : 'Open the Lab'}</Link>
+            <button className="btn btn-sm" onClick={() => setPeek(scope as BookScopeKey)}>Show the paper and shadow journals</button>
+          </div>}
+        />
+      ) : <>
       <TradeJournal exportOpen={exportOpen} onExportClose={() => setExportOpen(false)} />
 
       {!shadow && <Panel
@@ -52,6 +69,7 @@ export function Trades() {
           <PositionsTable positions={positions.data ?? []} />
         )}
       </Panel>}
+      </>}
 
       <ConfirmDialog
         open={confirmCloseAll}
