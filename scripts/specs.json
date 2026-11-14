@@ -1220,5 +1220,107 @@
       "Any ranked AVWAP event": "none"
     },
     "exitMode": "levels"
+  },
+  "smart-money-breakout-signals-author-native-v1": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "derived"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {},
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      },
+      "trailSteps": [],
+      "trailStall": {
+        "minutes": 0,
+        "factor": 1
+      }
+    }
+  },
+  "machine-learning-rsi-ai-classification-ranking-zeiierman-author-native-v1": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "derived"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {},
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      },
+      "trailSteps": [],
+      "trailStall": {
+        "minutes": 0,
+        "factor": 1
+      }
+    },
+    "sides": {
+      "ST Flip Up": "none",
+      "ST Flip Dn": "none",
+      "Trend Flip Up": "none",
+      "Trend Flip Down": "none"
+    }
   }
 }

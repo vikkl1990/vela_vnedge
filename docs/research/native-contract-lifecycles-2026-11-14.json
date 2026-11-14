@@ -1,0 +1,86 @@
+{
+  "verifiedAt": "2026-11-14T10:43:25.676Z",
+  "scope": "mechanics only: synthetic OHLC tape/depth; NOT executable historical fills or profitability evidence",
+  "simulation": {
+    "fillSource": "tape",
+    "latencyMs": 100,
+    "marginPerTrade": 150,
+    "maxStopLossPct": 3,
+    "referenceEquity": 1000
+  },
+  "datasetHash": "75eabd2afeee88398d1ad4e801d296c7bc6939b6905513a36ed2d226ee9a3233",
+  "bars": 1019,
+  "from": 1793729700000,
+  "to": 1794645900000,
+  "continuousActivation": "two isolated profiles; existing 34 plans retained within 36 research slots; no account/risk/evidence changes",
+  "reports": [
+    {
+      "id": "smart-money-breakout-signals-author-native-v1",
+      "control": "smart-money-breakout-signals",
+      "sourceHash": "a53b2da7072b9189f89b77e5269ff4d36628f1a28979a2fcfe5388d911bd82e2",
+      "currentReading": {
+        "entries": 2,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 6,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "prefixChecks": 6,
+      "restarts": 7,
+      "filled": 4,
+      "closed": 4,
+      "open": 0,
+      "maxRisk": 29.209026830977013,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "ignored",
+          "reason": "already in position",
+          "n": 1
+        },
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 4
+        },
+        {
+          "action": "rejected",
+          "reason": "target invalid after tick rounding",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "id": "machine-learning-rsi-ai-classification-ranking-zeiierman-author-native-v1",
+      "control": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+      "sourceHash": "5fae64f313478e76f14b61874591cded734228f89fd0fa8999ad5690f5f31b27",
+      "currentReading": {
+        "entries": 32,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 6,
+        "exits": 27,
+        "stopAmendments": 1010
+      },
+      "prefixChecks": 48,
+      "restarts": 7,
+      "filled": 6,
+      "closed": 6,
+      "open": 0,
+      "maxRisk": 10.466767848107931,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 6
+        }
+      ]
+    }
+  ]
+}

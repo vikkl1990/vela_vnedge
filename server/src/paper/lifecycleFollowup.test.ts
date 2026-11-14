@@ -78,7 +78,7 @@ test('authorized 34-plan rollout preserves all 30 existing experiments, never en
  raw.execution.mode='paper';raw.paper.sizingMode='margin';raw.paper.marginPerTrade=150;raw.paper.maxStopLossPct=3;raw.incubator.enabled=true;
  raw.executionPlans=Array.from({length:30},(_,i)=>({id:`existing-${i}`,revision:1,enabled:true,scannerId:'control',symbol:'BTCUSD',tf:'15m',variant:'current',referenceEquity:1000}));
  fs.writeFileSync(file,JSON.stringify(raw));const original=fs.readFileSync(file,'utf8');
- assert.equal(MAX_RESEARCH_PLANS,34);assert.equal(enableLifecycleShadow(file,true).totalPlans,34);assert.equal(fs.readFileSync(file,'utf8'),original);
+ assert.ok(MAX_RESEARCH_PLANS>=34);assert.equal(enableLifecycleShadow(file,true).totalPlans,34);assert.equal(fs.readFileSync(file,'utf8'),original);
  assert.equal(enableLifecycleShadow(file).changed,true);
  const next=JSON.parse(fs.readFileSync(file,'utf8'));
  assert.deepEqual(next.executionPlans.slice(0,30),raw.executionPlans);
@@ -88,8 +88,8 @@ test('authorized 34-plan rollout preserves all 30 existing experiments, never en
  for(const p of LIFECYCLE_SHADOW_PLANS){assert.equal(cfg.scanners[p.scannerId].enabled,false);assert.equal(planSnapshot(cfg,p).paper.marginPerTrade,150);}
  next.executionPlans[33].label='operator edit';fs.writeFileSync(file,JSON.stringify(next));
  assert.throws(()=>enableLifecycleShadow(file),/will not be overwritten/);
- next.executionPlans=raw.executionPlans.concat({...raw.executionPlans[0],id:'occupied-31'});fs.writeFileSync(file,JSON.stringify(next));
- assert.throws(()=>enableLifecycleShadow(file),/34/);assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),next);
+ next.executionPlans=Array.from({length:MAX_RESEARCH_PLANS-3},(_,i)=>({...raw.executionPlans![0],id:`occupied-${i}`}));fs.writeFileSync(file,JSON.stringify(next));
+ assert.throws(()=>enableLifecycleShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)));assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),next);
  raw.scanners[ids[0]]={enabled:true,symbols:null,timeframes:null,exitMode:'both'};fs.writeFileSync(file,JSON.stringify(raw));
  assert.throws(()=>enableLifecycleShadow(file),/Reviewed profile differs/);
 });

@@ -7466,3 +7466,31 @@ to configuration/database during inspection. A read-only VM fixture exercises
 are absent from this local fixture and must be checked on deployment. This is a
 visibility change, not a profitability improvement. Paper mode, $150 margin, risk
 caps, scanner allocations, all execution plans and evidence rules remain unchanged.
+
+
+## 252. Source-pinned breakout and ML RSI lifecycles in experimental shadow (14 November 2026)
+
+The readiness matrix identifies enabled scanners whose native management is not
+consumed. Add two independent v1 profiles: Smart Money Breakout reads confirmed
+breakouts plus its own SL/three targets (full exit at TP3); ML RSI reads confirmed
+classifier entries, Supertrend stops/amendments and opposite-side flip exits, with
+no fixed target. SHA-guarded observation plots expose source-calculated series;
+legacy source/readings and deliberate one-sided contracts are unchanged.
+
+Native geometry must remain valid at the quote, after rounding and at deferred
+fill. Never replace these stops with ATR or silently delete crossed targets.
+Management uses existing causal execution, durable partial/stop state and full
+fees. Scanner-specific IDs and research policy identities isolate evidence.
+
+Two ETHUSD 15m experimental plans extend research capacity from 34 to 36, retaining
+all existing plans and leaving account capacity, paper mode, $150 margin, risk
+caps, fee gate and promotion/copy/sizing rules unchanged. Guarded activation only
+appends plans; it neither enables an account scanner nor promotes an experiment.
+
+The source replay checks original alert/shape parity, 54 prefix cases and 14
+restart recoveries over 1,019 closed candles. Native profiles produce four and six
+simulated fills respectively. This OHLC-derived tape/depth run tests mechanics,
+not executable profitability. Nine additional regression tests cover extraction,
+geometry, causal execution, registry descriptions and rollout isolation. See
+[the validation record](research/native-contract-lifecycles-2026-11-14.md). Other
+readiness gaps stay visible and require their own tested correction.
