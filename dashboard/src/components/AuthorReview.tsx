@@ -7,10 +7,10 @@ export function AuthorReview({ review: r }: { review: Review }) {
   return <section className="lib-sub author-review" aria-label="Author intent and bot reading">
     <h3>Author intent and bot reading</h3>
     {r.variant && <p className="small"><strong>This reading’s purpose:</strong> {r.variant.reason ?? `Separate reading of ${r.variant.base}.`} Historical findings below may describe the base reading; this variant still needs its own execution tests and evidence.</p>}
-    <p className="small">{source}{r.sourceReviewedAt ? ` · ${r.sourceReviewedAt}` : ''}<br />{description}</p>
+    <p className="small">{source}{r.sourceReviewedAt ? ` · ${r.sourceReviewedAt}` : ''}<br />{!p ? 'No external author publication linked to this source.' : p.reviewBlocker ? 'Author review blocked — see the reason below' : description}</p>
     {p && <p className="small"><a href={p.url} target="_blank" rel="noreferrer">{p.author ?? 'Author publication'}</a>{p.role ? ` · ${p.role}` : ''}{p.version != null ? ` · publication v${p.version}` : ''}<br /><span className="muted">Page checked {p.retrievedAt ? new Date(p.retrievedAt).toLocaleString() : 'not verified'}</span></p>}
     {p?.summary && <p className="small">{p.summary}</p>}
-    {p?.reviewBlocker && <p className="small">Review blocked: {p.reviewBlocker.blocker}</p>}
+    {p?.reviewBlocker && <p className="small">Review blocked: {p.reviewBlocker.blocker}{p.reviewBlocker.checkedAt ? ` Checked ${new Date(p.reviewBlocker.checkedAt).toLocaleString()}.` : ''}</p>}
     {r.integrationNotes.map((n, i) => <p key={i} className="small">{n}</p>)}
     {p?.requirements && <details><summary>Author guidance and integration requirements</summary><p className="small">{p.requirements}</p></details>}
     {r.reconciliation ? <details><summary>Author and source reconciliation ({r.reconciliation.findings.length} findings)</summary>
@@ -26,7 +26,8 @@ export function AuthorReview({ review: r }: { review: Review }) {
       <details><summary>Earlier context and management interpretations ({c.notEntries.length})</summary>
         <ul className="small">{c.notEntries.map((e, i) => <li key={i}>{e.marker} · {e.role} · {e.channel} · source line {e.line}</li>)}</ul>
       </details>
-      <details><summary>Author protection, exits and timing</summary>
+      <details><summary>Earlier protection, exit and timing interpretations</summary>
+        <p className="small muted">Later reconciliation findings above may correct these earlier interpretations.</p>
         <p className="small"><strong>Stop:</strong> {c.stop.how}<br /><strong>Targets:</strong> {c.targets.how}<br /><strong>Exit:</strong> {c.exit.how}</p>
         <p className="small">{c.timing.note}</p>
       </details>

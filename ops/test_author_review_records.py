@@ -47,9 +47,22 @@ class ReviewReceipts(unittest.TestCase):
         self.write(r)
         reviewed, blocked = load_records(self.root, self.root)
         self.assertEqual(reviewed, {}); self.assertIn('pub', blocked)
+        self.assertEqual(blocked['pub']['checkedAt'], r['reviewedAt'])
         (self.root / 'reviews-2.jsonl').write_text(json.dumps(r)+'\n')
         with self.assertRaisesRegex(ValueError, 'duplicate'):
             load_records(self.root, self.root)
+
+    def test_blocked_check_time_is_retained_without_claiming_a_review(self):
+        r = {'key': 'pub', 'status': 'blocked', 'blocker': 'Description contains only a title',
+            'checkedAt': '2026-01-03T00:00:00Z'}
+        self.write(r)
+        reviewed, blocked = load_records(self.root, self.root)
+        self.assertEqual(reviewed, {})
+        self.assertEqual(blocked['pub']['checkedAt'], r['checkedAt'])
+        for value in [None, '2026-01-03', '2999-01-03T00:00:00Z']:
+            self.write({**r, 'checkedAt': value})
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                load_records(self.root, self.root)
 
 
 if __name__ == '__main__':
