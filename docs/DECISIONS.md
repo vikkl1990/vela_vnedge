@@ -7674,7 +7674,7 @@ API, data hook, query key, server code, risk rule or evidence rule changed.
   and Incubator. Approvals and Re-judge live on Decisions only, so the Incubator keeps its demotion action and
   links there.
 - **Weight.** Every page except the landing page loads on first visit (`React.lazy`): the JavaScript on first
-  paint fell from 1,238 KB to 786 KB before the merge. Dashboard unit tests (command-palette ranking, navigation
+  paint fell from 1,238 KB to 422 KB (the landing workspace loads no chart library). Dashboard unit tests (command-palette ranking, navigation
   model) run in CI.
 
 Guide: [UI-DESIGN-SYSTEM.md](UI-DESIGN-SYSTEM.md).
