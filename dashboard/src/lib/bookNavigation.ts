@@ -1,5 +1,13 @@
 import { parseScope, SCOPES, type BookScope } from './books.ts'
 
+/** Show controls only on pages that actually consume them. Other pages keep their own labelled filters. */
+export function bookControlsForPath(pathname: string) {
+  return {
+    scope: ['/overview', '/strategies', '/trades'].includes(pathname),
+    mlLens: pathname === '/strategies' || /^\/scanners\/[^/]+$/.test(pathname),
+  }
+}
+
 /** Legacy book links belong to these pages only; /scanners?book=shadow is a catalogue filter. */
 export function scopeFromLocation(path: string, search: string, fallback: BookScope): BookScope {
   const p = new URLSearchParams(search)

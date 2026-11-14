@@ -1,6 +1,7 @@
+import { bookControlsForPath } from '../../lib/bookNavigation'
 import { useExecution } from '../../api/queries'
 import { liveStatus } from '../../lib/liveStatus'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { BrandMark } from '../Brand'
 import { IconMenu, IconSearch } from '../Icons'
 import { BookBadge } from '../ui'
@@ -47,6 +48,7 @@ export function Topbar({
   onResetPaper?: () => void
   onSignOut: () => void
 }) {
+  const controls = bookControlsForPath(useLocation().pathname)
   const execution = useExecution()
   const live = liveStatus(execution.isError ? undefined : execution.data)
   const bookLabel = !mode ? 'loading' : mode === 'paper' ? 'paper account' : mode
@@ -69,8 +71,8 @@ export function Topbar({
         <span className="pill pill-muted hide-mid" title="Times are shown in your local zone; hover any time for UTC">{LOCAL_TZ}</span>
       </nav>
 
-      <BookSwitch liveState={live.label} />
-      <MlLensToggle />
+      {controls.scope && <BookSwitch liveState={live.label} />}
+      {controls.mlLens && <MlLensToggle />}
 
       <button type="button" className="search-trigger" onClick={onOpenPalette} aria-label="Search pages, scanners and actions" aria-keyshortcuts="Control+K Meta+K">
         <IconSearch size={15} />

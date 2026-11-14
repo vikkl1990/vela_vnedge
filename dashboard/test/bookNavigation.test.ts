@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scopeFromLocation, scopeLocation, rememberScopeLocation } from '../src/lib/bookNavigation.ts'
+import { scopeFromLocation, scopeLocation, rememberScopeLocation, bookControlsForPath } from '../src/lib/bookNavigation.ts'
 
 test('client navigation and browser history resolve each explicit book link independently', () => {
   assert.equal(scopeFromLocation('/strategies', '?book=shadow', 'paper'), 'shadow')
@@ -48,4 +48,13 @@ test('Back restores an inherited shadow selection after switching the journal to
   assert.equal(p.get('page'), '2')
   assert.equal(p.get('symbol'), 'ETHUSD')
   assert.equal(rememberScopeLocation('/trades', previous.search, '', 'paper'), null)
+})
+
+test('global book and lens controls are shown only where the page applies them', () => {
+  assert.deepEqual(bookControlsForPath('/strategies'), { scope: true, mlLens: true })
+  assert.deepEqual(bookControlsForPath('/overview'), { scope: true, mlLens: false })
+  assert.deepEqual(bookControlsForPath('/scanners/abc'), { scope: false, mlLens: true })
+  for (const route of ['/daily', '/lab', '/live', '/learn', '/signals', '/scanners', '/incubator', '/trades/1/replay']) {
+    assert.deepEqual(bookControlsForPath(route), { scope: false, mlLens: false })
+  }
 })

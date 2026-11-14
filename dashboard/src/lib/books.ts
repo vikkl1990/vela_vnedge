@@ -1,7 +1,7 @@
 /**
  * The four books and the ladder between them. Pure data and functions, so the rules are tested and every page uses
  * the same words: a backtest is history, shadow is live prices without money, paper is the simulated account, live is
- * real money. A strategy climbs backtest -> shadow -> paper -> live and never skips a step.
+ * real money. Book participation is a display summary, not proof of current eligibility.
  */
 export type Book = 'live' | 'paper' | 'shadow' | 'backtest'
 export type BookScope = Book | 'all'
@@ -36,6 +36,9 @@ export interface LadderInput {
   shadowTrades?: number | null
   /** paper-account trades, when known */
   paperTrades?: number | null
+  /** Account scanner availability, when reported. */
+  enabled?: boolean
+  runs?: boolean
   /** Verified production trades for THIS strategy, never inferred from global mode. */
   liveTrades?: number | null
 }
@@ -49,21 +52,22 @@ export interface Ladder {
 const n = (x: number | undefined | null) => (typeof x === 'number' && x > 0 ? x : 0)
 
 /**
- * Where a strategy sits. Screened and passed = backtest done. In the shadow book (or proposed for promotion) = shadow
- * now; in the account = shadow done and paper now. Live is never "now" until it is armed.
+ * Incubator stages identify allocations, while trades establish recorded participation.
+ * Current allocation and scanner availability determine "now". Tracking alone does not prove a passed screen.
  */
 export function ladderOf(i: LadderInput): Ladder {
   const s = i.stages
-  const screened = n(s.candidate) + n(s.shadow) + n(s.proposed) + n(s.live) + n(s.demote_proposed) + n(s.tracked) > 0
-  const inAccount = n(s.live) + n(s.demote_proposed) > 0 || n(i.paperTrades) > 0
-  const inShadow = n(s.shadow) + n(s.proposed) > 0 || n(i.shadowTrades) > 0
+  const screened = n(s.candidate) + n(s.shadow) + n(s.proposed) + n(s.live) + n(s.demote_proposed) > 0
+  const allocated = n(s.live) + n(s.demote_proposed) > 0
+  const inShadow = n(s.shadow) + n(s.proposed) > 0
+  const available = i.runs !== false
   const steps: Record<Book, StepState> = {
-    backtest: screened || inAccount || inShadow ? 'done' : 'todo',
-    shadow: inAccount ? 'done' : inShadow ? 'now' : 'todo',
-    paper: inAccount ? 'now' : 'todo',
-    live: n(i.liveTrades) > 0 ? 'now' : 'todo',
+    backtest: screened ? 'done' : 'todo',
+    shadow: inShadow && available ? 'now' : inShadow || n(i.shadowTrades) > 0 ? 'done' : 'todo',
+    paper: allocated && i.enabled !== false && available ? 'now' : allocated || n(i.paperTrades) > 0 ? 'done' : 'todo',
+    live: n(i.liveTrades) > 0 ? 'done' : 'todo',
   }
-  const reached = steps.live === 'now' ? 'live' : steps.paper === 'now' ? 'paper' : steps.shadow !== 'todo' ? 'shadow' : steps.backtest === 'done' ? 'backtest' : null
+  const reached = [...BOOK_ORDER].reverse().find(book => steps[book] !== 'todo') ?? null
   return { steps, reached }
 }
 
@@ -73,11 +77,14 @@ export function nextStep(i: LadderInput & { runs?: boolean; quarantined?: boolea
   if (i.runs === false) return 'Does not run'
   const s = i.stages
   if (n(s.proposed) + n(s.demote_proposed) > 0) return 'A decision is waiting'
-  if (n(s.live) > 0) return 'Trading in paper; live opens after the go-live checks'
+  if (n(s.live) > 0) return i.enabled === false ? 'Paper allocation exists; account scanner disabled' : 'Allocated to paper; entries still require admission'
   if (n(s.shadow) > 0) return 'Collecting shadow evidence'
-  if (n(s.candidate) > 0) return 'Passed the screen, waiting for a shadow slot'
+  if (n(s.candidate) > 0) return 'Candidate; needs current screening and a shadow slot'
   if (n(s.retired) > 0) return 'Retired from research'
-  return 'Not screened yet'
+  if (n(i.paperTrades) > 0) return 'Paper history; account allocation not reported here'
+  if (n(i.shadowTrades) > 0) return 'Shadow history; no current shadow allocation'
+  if (n(s.tracked) > 0) return 'Tracked; no passed screen recorded'
+  return 'No screening evidence recorded'
 }
 
 /** The money books that exist in the trade journal today. */

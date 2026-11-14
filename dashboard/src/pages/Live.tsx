@@ -1,3 +1,4 @@
+import { mlState } from '../lib/mlPresentation'
 import { liveStatus } from '../lib/liveStatus'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
@@ -212,14 +213,6 @@ function GatesSummary({ q }: { q: ReturnType<typeof useGates> }) {
 
 // ---------- 4. what changes from paper ----------
 
-function mlWord(m: MlCfg): string {
-  const filter = m.minProb > 0
-  if (filter && m.useAsScore) return `Skips entries under P(win) ${plain(m.minProb)} and scores size`
-  if (filter) return `Skips entries under P(win) ${plain(m.minProb)}`
-  if (m.useAsScore) return 'Score only: P(win) scales size, nothing is skipped'
-  return 'Off'
-}
-
 function ParitySection({ paper, status, mlCfg, tape, configLoading }: {
   paper: PaperX | undefined
   status: ReturnType<typeof useExecution>['data']
@@ -259,14 +252,14 @@ function ParitySection({ paper, status, mlCfg, tape, configLoading }: {
       paper: (
         <>
           Fallback model {plain(paper.slippageBps)} bps.{' '}
-          {entry ? <>Audited against the tape (30 days): market entries sit a median {entry.medianBps!.toFixed(1)} bps off the prints, {entry.n} fills.</> : <span className="muted">No audited market entries in the last 30 days.</span>}
+          {entry ? <>Audited against the tape (30 days): market-entry fill slippage has a median {entry.medianBps!.toFixed(1)} bps against prints. {entry.n} total audit records; unmatched records do not contribute to that median.</> : <span className="muted">No audited market entries in the last 30 days.</span>}
         </>
       ),
       live: <>Whatever the real fill is; {exchange}</>,
     },
     {
       k: 'ML advice',
-      paper: mlCfg ? mlWord(mlCfg) : <span className="muted">not reported</span>,
+      paper: mlState(mlCfg).detail,
       live: <>The same global setting; there is no separate live switch. <Link to="/learn">Learn</Link></>,
     },
   ]
@@ -308,8 +301,9 @@ function EngineSection({ paper, mlCfg, auc, sizeScale, learning, loading }: {
     )
   }
   const minProb = mlCfg?.minProb ?? 0
-  const filterOn = minProb > 0
-  const scoreOn = mlCfg?.useAsScore === true
+  const ml = mlState(mlCfg)
+  const filterOn = ml.gate === true
+  const scoreOn = ml.score === true
   const cur = learning?.current
   const exitEvidence = cur
     ? cur.trades > 0
@@ -318,7 +312,7 @@ function EngineSection({ paper, mlCfg, auc, sizeScale, learning, loading }: {
     : 'Closed-trade evidence has not loaded.'
 
   let sizeRule: string
-  if (paper.sizingMode === 'margin') sizeRule = `A fixed ${num(paper.marginPerTrade) ? money(paper.marginPerTrade) : 'margin'} per trade, at a leverage chosen from the scanner's own shadow record.`
+  if (paper.sizingMode === 'margin') sizeRule = `Base margin ${num(paper.marginPerTrade) ? money(paper.marginPerTrade) : 'margin'} per trade, at a leverage chosen from the scanner's own shadow record.`
   else if (paper.sizingMode === 'quality') sizeRule = `Notional is equity × leverage, scaled from ${plain(paper.minLeverage)}× to ${plain(paper.maxLeverage)}× by the signal's score.`
   else sizeRule = `Sized so the stop loses ${plain(paper.riskPerTradePct)}% of equity, up to ${plain(paper.maxLeverage)}× leverage.`
   const cap = num(paper.maxStopLossPct) && paper.maxStopLossPct > 0 ? `Modelled loss at the stop is capped at ${plain(paper.maxStopLossPct)}% of equity.` : 'No cap on modelled loss at the stop is set.'
@@ -338,31 +332,31 @@ function EngineSection({ paper, mlCfg, auc, sizeScale, learning, loading }: {
   const cards: Array<{ name: string; state: string; rule: ReactNode; evidence: ReactNode }> = [
     {
       name: 'Entry',
-      state: filterOn ? 'Script signal, model skip filter on' : 'Script signal, no model filter',
-      rule: `The script's confirmed signal opens the trade.${paper.skipScriptStops ? ' Entries whose stop the script placed itself are refused.' : ''}${filterOn ? ` A model skips signals under P(win) ${plain(minProb)}.` : ''}`,
-      evidence: <>ML skip filter: {filterOn ? `on at ${plain(minProb)}` : 'off'}. {num(auc) ? <>Model held-out AUC {auc.toFixed(2)} (0.50 is no skill). <Link to="/learn">Learn</Link></> : 'No model score reported.'}</>,
+      state: mlCfg ? filterOn ? 'ML gate configured' : 'ML gate off; other gates still apply' : 'ML settings unavailable',
+      rule: `A confirmed scanner signal is evaluated for eligibility, risk, costs and entry pricing; it does not guarantee a fill.${paper.skipScriptStops ? ' The default account policy requires an ATR fallback stop; explicit native-policy exceptions are evaluated separately.' : ''}${filterOn ? ` A model skips signals under P(win) ${plain(minProb)}.` : ''}`,
+      evidence: <>ML skip filter: {!mlCfg ? 'unknown' : filterOn ? `on at ${plain(minProb)}` : 'off'}. {num(auc) ? <>Model held-out AUC {auc.toFixed(2)} (0.50 is no skill). <Link to="/learn">Learn</Link></> : 'No model score reported.'}</>,
     },
     {
       name: 'Size',
       state: `${paper.sizingMode === 'margin' ? 'Margin' : paper.sizingMode === 'quality' ? 'Quality' : 'Risk'} sizing`,
       rule: `${sizeRule} ${cap}`,
-      evidence: `${num(sizeScale) ? `New positions are sized at ${Math.round(sizeScale * 100)}% of the rule right now.` : 'Current size scale not reported.'} P(win) as the sizing score: ${scoreOn ? 'on' : 'off'}.`,
+      evidence: `${num(sizeScale) ? `New positions are sized at ${Math.round(sizeScale * 100)}% of the rule right now.` : 'Current size scale not reported.'} ML score fallback: ${!mlCfg ? 'unknown' : scoreOn ? 'on when the scanner has no score' : 'off'}; its sizing effect depends on the policy.`,
     },
     {
       name: 'Exit',
       state: trail ? 'Trailing exit' : 'Fixed targets',
-      rule: <>{exitRule}<span className="live-planned"> A replacement that runs each strategy&rsquo;s own exits is planned, not active.</span></>,
+      rule: <>{exitRule}<span className="live-planned"> These are base defaults. Scanner, timeframe and research-plan overrides can differ; each trade records its resolved exit policy. Native-exit research plans are evaluated separately in shadow.</span></>,
       evidence: <>{exitEvidence} <Link to="/learn">Where the R goes</Link></>,
     },
     {
       name: 'ML',
-      state: filterOn ? (scoreOn ? 'Skip filter and score' : 'Skip filter') : scoreOn ? 'Score only' : 'Off',
-      rule: !mlCfg ? 'The model settings are not reported.' : filterOn ? `Signals the model rates under ${plain(minProb)} P(win) are skipped${scoreOn ? ', and P(win) also scales size' : ''}.` : scoreOn ? 'P(win) scales size; no signal is skipped.' : 'The model advises nothing: no signal is skipped and size ignores it.',
+      state: ml.label,
+      rule: ml.detail,
       evidence: num(auc) ? `Held-out AUC ${auc.toFixed(2)}; 0.50 is no better than a coin.` : 'No model score reported.',
     },
   ]
   return (
-    <Section title="Smart execution" hint="What the order engine does today, read from the saved settings. Planned work is labelled planned.">
+    <Section title="Smart execution" hint="Base settings, with current size scaling. Scanner, timeframe and research-plan policies may override these defaults; trade details show the resolved policy.">
       <div className="live-engine">
         {cards.map((c) => (
           <article key={c.name} className="live-card" aria-label={c.name}>

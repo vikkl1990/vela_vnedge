@@ -41,7 +41,7 @@ export const GROUPS: NavGroup[] = [
   {
     label: 'Lab',
     items: [
-      { to: '/lab', label: 'Lab', key: 'j', keywords: 'backtest ml model train validate experiment', blurb: 'Backtest, stress-test and train' },
+      { to: '/lab', label: 'Lab', key: 'j', keywords: 'backtest ml model train validate experiment', blurb: 'Run configured backtests and manage ML training' },
       { to: '/scanners', label: 'Scanners', key: 's', keywords: 'strategies enable settings', blurb: 'The scanners that trade and their records' },
       { to: '/library', label: 'Library', key: 'b', keywords: 'catalogue scripts author', blurb: 'Every script with the bot’s measured record' },
       { to: '/incubator', label: 'Incubator', key: 'n', keywords: 'shadow promote pairs evidence', blurb: 'Where pairs earn their way to the account' },
@@ -54,7 +54,7 @@ export const GROUPS: NavGroup[] = [
   {
     label: 'Control',
     items: [
-      { to: '/live', label: 'Live control', key: 'f', keywords: 'go-live real money arm kill switch readiness', blurb: 'The only place real money is armed' },
+      { to: '/live', label: 'Live control', key: 'f', keywords: 'go-live real money arm kill switch readiness', blurb: 'Read-only production status and go-live readiness' },
       { to: '/gates', label: 'Gates', key: 'k', keywords: 'admission risk checks', blurb: 'Why entries are allowed or refused' },
       { to: '/exchange', label: 'Exchange', key: 'x', keywords: 'delta connection orders', blurb: 'Exchange connection and reconciliation' },
       { to: '/settings', label: 'Settings', key: 'e', keywords: 'config risk sizing fees', blurb: 'Every number the system runs on' },
@@ -86,7 +86,7 @@ export type RouteMeta = { title: string; section: string | null; parent?: { labe
 /** Route → title, section and parent crumb. Scanner detail resolves the scanner's name once it is loaded. */
 export function routeMeta(pathname: string, scannerName?: string): RouteMeta {
   const m = /^\/scanners\/([^/]+)/.exec(pathname)
-  if (m) return { title: scannerName ?? decodeURIComponent(m[1]), section: 'Research', parent: { label: 'Scanners', to: '/scanners' } }
+  if (m) return { title: scannerName ?? decodeURIComponent(m[1]), section: 'Lab', parent: { label: 'Scanners', to: '/scanners' } }
   const r = /^\/trades\/(\d+)\/replay/.exec(pathname)
   if (r) return { title: `Trade #${r[1]} replay`, section: 'Work', parent: { label: 'Trades', to: '/trades' } }
   const seg = pathname === '/' ? '/' : `/${pathname.replace(/^\//, '').split('/')[0]}`

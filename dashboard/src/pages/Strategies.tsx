@@ -30,7 +30,7 @@ export function Strategies() {
   const q = useLibrary()
   return (
     <div className="page st-page">
-      <PageTitle sub="One list for every script. The ladder shows how far each has climbed: backtest, shadow, paper, live. A strategy moves up only when its evidence says so." />
+      <PageTitle sub="One list for every script. Book participation shows current allocations and historical trades separately. It does not certify current promotion eligibility; Incubator reports that evidence." />
       <QueryState {...q} data={q.data} skeleton="table" skeletonRows={8} skeletonCols={8} empty="The library is empty." onRetry={() => q.refetch()}>
         {(d) => <StrategiesBody data={d} />}
       </QueryState>
@@ -44,7 +44,7 @@ function inBook(scope: BookScope, r: Row): boolean {
   switch (scope) {
     case 'all': return true
     case 'shadow': return Boolean(e.shadow) || Boolean(e.stages.shadow) || Boolean(e.stages.proposed)
-    case 'paper': return Boolean(e.paper) || Boolean(e.stages.live)
+    case 'paper': return ladder.steps.paper !== 'todo'
     case 'backtest': return ladder.steps.backtest !== 'todo'
     case 'live': return ladder.steps.live === 'now'
   }
@@ -65,9 +65,9 @@ function StrategiesBody({ data }: { data: LibraryList }) {
   const rows = useMemo<Row[]>(
     () =>
       data.scripts.map((e) => {
-        const ladder = ladderOf({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n })
+        const ladder = ladderOf({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n, enabled: e.enabled, runs: e.status === 'runs' })
         const rank = ladder.reached ? RANK[ladder.reached] : 0
-        return { e, ladder, rank, next: nextStep({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n, runs: e.status !== 'fails', quarantined: e.status === 'quarantined' }) }
+        return { e, ladder, rank, next: nextStep({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n, enabled: e.enabled, runs: e.status === 'runs', quarantined: e.status === 'quarantined' }) }
       }),
     [data.scripts],
   )
@@ -80,7 +80,7 @@ function StrategiesBody({ data }: { data: LibraryList }) {
   const noShadowCell = useMemo(() => rows.filter((r) => r.ladder.steps.backtest !== 'todo' && r.ladder.steps.shadow === 'todo').length, [rows])
 
   const scoped = useMemo(() => rows.filter((r) => inBook(scope, r)), [rows, scope])
-  const climbing = (r: Row) => r.ladder.steps.shadow !== 'todo'
+  const climbing = (r: Row) => r.ladder.steps.shadow !== 'todo' || r.ladder.steps.paper !== 'todo'
   const tabOf: Record<TabId, (r: Row) => boolean> = {
     climbing: climbing,
     candidates: (r) => Boolean(r.e.stages.candidate) && r.ladder.steps.shadow === 'todo',
@@ -91,7 +91,7 @@ function StrategiesBody({ data }: { data: LibraryList }) {
   const counts = useMemo(() => {
     const c: Record<TabId, number> = { climbing: 0, candidates: 0, library: scoped.length, quarantined: 0, fails: 0 }
     for (const r of scoped) {
-      if (r.ladder.steps.shadow !== 'todo') c.climbing++
+      if (climbing(r)) c.climbing++
       if (r.e.stages.candidate && r.ladder.steps.shadow === 'todo') c.candidates++
       if (r.e.status === 'quarantined') c.quarantined++
       if (r.e.status === 'fails') c.fails++
@@ -113,7 +113,7 @@ function StrategiesBody({ data }: { data: LibraryList }) {
   }, [scoped, tab, family, runsAs, needle])
 
   const tabItems = [
-    { id: 'climbing' as const, label: 'Climbing', count: fmtInt(counts.climbing) },
+    { id: 'climbing' as const, label: 'Book records', count: fmtInt(counts.climbing) },
     { id: 'candidates' as const, label: 'Candidates', count: fmtInt(counts.candidates) },
     { id: 'library' as const, label: 'Library', count: fmtInt(counts.library) },
     { id: 'quarantined' as const, label: 'Quarantined', count: fmtInt(counts.quarantined) },
@@ -128,8 +128,8 @@ function StrategiesBody({ data }: { data: LibraryList }) {
           <li key={b} className={`st-total st-total-${b}`}>
             <BookDot book={b} />
             <span className="st-total-label">{BOOKS[b].short}</span>
-            <span className="st-total-n mono">{fmtInt(totals[b])}</span>
-            <span className="st-total-what">{b === 'backtest' ? 'screened' : b === 'shadow' ? 'reached' : b === 'paper' ? 'reached' : 'armed'}</span>
+            <span className="st-total-n mono">{b === 'live' ? '–' : fmtInt(totals[b])}</span>
+            <span className="st-total-what">{b === 'backtest' ? 'screened' : b === 'shadow' ? 'reached' : b === 'paper' ? 'reached' : 'not reported'}</span>
           </li>
         ))}
       </ul>
@@ -145,7 +145,7 @@ function StrategiesBody({ data }: { data: LibraryList }) {
       ) : (
         <>
           <Tabs value={tab} onChange={setTab} items={tabItems} label="Strategy lists" idPrefix="st" />
-          <Toolbar end={<span className="st-note">Sorted by evidence, strongest first</span>}>
+          <Toolbar end={<span className="st-note">Sorted by book reached, then shadow sample size</span>}>
             <label className="st-find">Find <input type="search" className="input" placeholder="Name, author or id" value={text} onChange={(e) => setText(e.target.value)} aria-label="Find a strategy" /></label>
             <label className="st-field">Family
               <select className="select" value={family} onChange={(e) => setFamily(e.target.value)}>
@@ -205,7 +205,7 @@ function StrategiesBody({ data }: { data: LibraryList }) {
 
       {noShadowCell > 0 && (
         <Callout tone="info" title={`${fmtInt(noShadowCell)} screened ${noShadowCell === 1 ? 'script has' : 'scripts have'} no shadow cell yet.`} actions={<Link className="btn btn-sm" to="/library">Browse the library</Link>}>
-          They passed or were recorded by the backtest screen but have no research trades on live prices, so they cannot climb yet.
+          They passed or were have screening or allocation records, but no shadow participation is reported in this view. Incubator shows current admission reasons.
         </Callout>
       )}
     </>
@@ -247,7 +247,7 @@ function StrategyRow({ r, mlLens }: { r: Row; mlLens: boolean }) {
           </>
         ) : <span className="muted">–</span>}
       </td>
-      {mlLens && <td className="st-ml" title="The list carries no per-strategy model score. The strategy's own page shows its model.">no skill</td>}
+      {mlLens && <td className="st-ml" title="The list carries no per-strategy model score. The strategy's own page shows its model.">not reported</td>}
       <td className={`st-next ${nextTone}`}>{r.next}</td>
     </tr>
   )
