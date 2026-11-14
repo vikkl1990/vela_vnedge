@@ -19,6 +19,9 @@ const Users = pageDefault(() => import('./pages/Users'))
 const Incubator = pageDefault(() => import('./pages/Incubator'))
 const Radar = pageDefault(() => import('./pages/Radar'))
 const Overview = page(() => import('./pages/Overview'), 'Overview')
+const Strategies = page(() => import('./pages/Strategies'), 'Strategies')
+const Lab = page(() => import('./pages/Lab'), 'Lab')
+const Live = page(() => import('./pages/Live'), 'Live')
 const Decisions = page(() => import('./pages/Decisions'), 'Decisions')
 const ChartPage = page(() => import('./pages/ChartPage'), 'ChartPage')
 const Analytics = page(() => import('./pages/Analytics'), 'Analytics')
@@ -45,6 +48,9 @@ export default function App() {
         <Route element={<Layout />}>
           <Route index element={<Terminal />} />
           <Route path="overview" element={<Overview />} />
+          <Route path="strategies" element={<Strategies />} />
+          <Route path="lab" element={<Lab />} />
+          <Route path="live" element={<Live />} />
           <Route path="scanners" element={<Scanners />} />
           <Route path="scanners/:id" element={<ScannerDetail />} />
           <Route path="signals" element={<Signals />} />

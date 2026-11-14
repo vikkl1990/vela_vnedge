@@ -16,9 +16,9 @@ test('single-key shortcuts used elsewhere (t, d, [, ?, /) never collide with a c
 })
 
 test('the navigation keeps the three groups and every page that existed before the redesign', () => {
-  assert.deepEqual(GROUPS.map((g) => g.label), ['Trade', 'Research', 'Control'])
+  assert.deepEqual(GROUPS.map((g) => g.label), ['Work', 'Markets', 'Lab', 'Control'])
   const routes = new Set(all.map((n) => n.to))
-  for (const r of ['/', '/overview', '/signals', '/radar', '/monitor', '/trades', '/chart', '/scanners', '/library', '/incubator', '/trackers', '/analytics', '/daily', '/learn', '/decisions', '/gates', '/exchange', '/settings', '/logs', '/profile', '/users']) {
+  for (const r of ['/', '/overview', '/strategies', '/lab', '/live', '/signals', '/radar', '/monitor', '/trades', '/chart', '/scanners', '/library', '/incubator', '/trackers', '/analytics', '/daily', '/learn', '/decisions', '/gates', '/exchange', '/settings', '/logs', '/profile', '/users']) {
     assert.ok(routes.has(r), `${r} is still reachable`)
   }
 })
@@ -29,16 +29,17 @@ test('Users is hidden from anyone who is not an administrator', () => {
 })
 
 test('route titles come from the navigation, scanner pages from the scanner', () => {
-  assert.deepEqual(routeMeta('/'), { title: 'Workspace', section: 'Trade' })
-  assert.deepEqual(routeMeta('/overview'), { title: 'Operations', section: 'Trade' })
+  assert.deepEqual(routeMeta('/'), { title: 'Workspace', section: 'Work' })
+  assert.deepEqual(routeMeta('/overview'), { title: 'Home', section: 'Work' })
+  assert.deepEqual(routeMeta('/live'), { title: 'Live control', section: 'Control' })
   assert.deepEqual(routeMeta('/settings'), { title: 'Settings', section: 'Control' })
   assert.deepEqual(routeMeta('/profile'), { title: 'Profile', section: 'Account' })
   assert.deepEqual(routeMeta('/scanners/abc', 'Trend Lines'), { title: 'Trend Lines', section: 'Research', parent: { label: 'Scanners', to: '/scanners' } })
-  assert.deepEqual(routeMeta('/trades/42/replay'), { title: 'Trade #42 replay', section: 'Trade', parent: { label: 'Journals', to: '/trades' } })
+  assert.deepEqual(routeMeta('/trades/42/replay'), { title: 'Trade #42 replay', section: 'Work', parent: { label: 'Trades', to: '/trades' } })
   assert.deepEqual(routeMeta('/nope'), { title: 'Not found', section: null })
 })
 
 test('the phone bar keeps the four daily views and every one is a real page', () => {
-  assert.equal(PHONE_TABS.length, 4)
+  assert.equal(PHONE_TABS.length, 4) // a fifth button opens the full menu
   for (const t of PHONE_TABS) assert.ok(all.some((n) => n.to === t.to))
 })

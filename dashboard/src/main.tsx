@@ -10,6 +10,7 @@ import './styles/kit.css'
 import './styles/polish.css'
 import './styles/pages.css'
 import './terminal.css'
+import { BookProvider } from './lib/bookScope'
 import { DensityProvider } from './lib/density'
 import { ThemeProvider } from './lib/theme'
 import { ToastProvider } from './lib/toast'
@@ -35,9 +36,11 @@ createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <DensityProvider>
           <ToastProvider>
-            <SSEProvider>
-              <App />
-            </SSEProvider>
+            <BookProvider>
+              <SSEProvider>
+                <App />
+              </SSEProvider>
+            </BookProvider>
           </ToastProvider>
         </DensityProvider>
       </ThemeProvider>

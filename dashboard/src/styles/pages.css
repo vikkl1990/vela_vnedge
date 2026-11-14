@@ -197,8 +197,8 @@
 /* ---------- decision 121: the phone — a bottom bar for the four views an operator checks in on, cards instead of sideways tables ---------- */
 .bottombar { display: none; }
 @media (max-width: 720px) {
-  .bottombar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; background: var(--surface); border-top: 1px solid var(--border); padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); }
-  .bottombar-item { text-align: center; font-size: 12px; padding: 8px 4px; border-radius: 8px; color: var(--muted); text-decoration: none; }
+  .bottombar { display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; background: var(--surface); border-top: 1px solid var(--border); padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); }
+  .bottombar-item { border: 0; background: transparent; font: inherit; cursor: pointer; text-align: center; font-size: 12px; padding: 8px 4px; border-radius: 8px; color: var(--muted); text-decoration: none; }
   .bottombar-item.on { color: var(--text); background: var(--surface-2); font-weight: 600; }
   .main { padding-bottom: 76px; }
   .signals-grouped thead { display: none; }

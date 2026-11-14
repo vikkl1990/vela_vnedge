@@ -13,25 +13,36 @@ export type NavItem = {
 }
 export type NavGroup = { label: string; items: NavItem[] }
 
-/** The pages in three groups. Profile and Users live in the account menu, not the sidebar. */
+/**
+ * The pages in four groups, named for how the product is used: Work (what is happening now), Markets (what the
+ * scanners see), Lab (building and judging strategies) and Control (what stands between a setup and real money).
+ * Profile and Users live in the account menu, not the sidebar.
+ */
 export const GROUPS: NavGroup[] = [
   {
-    label: 'Trade',
+    label: 'Work',
     items: [
-      { to: '/', label: 'Workspace', end: true, key: 'o', keywords: 'home terminal chart market canvas', blurb: 'Markets, decisions and execution policy in one view' },
-      { to: '/overview', label: 'Operations', key: 'v', keywords: 'overview account equity risk needs you dashboard', blurb: 'Account, risk and what needs you' },
+      { to: '/overview', label: 'Home', key: 'v', keywords: 'overview operations books account equity risk needs you dashboard', blurb: 'Four books, one view' },
+      { to: '/', label: 'Workspace', end: true, key: 'o', keywords: 'terminal chart market canvas', blurb: 'Markets, decisions and execution policy in one view' },
+      { to: '/strategies', label: 'Strategies', key: 'q', keywords: 'ladder books backtest shadow paper live scripts', blurb: 'Every script and how far it has climbed' },
       { to: '/decisions', label: 'Decisions', key: 'd', keywords: 'proposals approve queue', blurb: 'Proposals waiting for a yes or no' },
+      { to: '/trades', label: 'Trades', key: 't', keywords: 'journals history fills paper shadow', blurb: 'The trade journal for each book' },
+    ],
+  },
+  {
+    label: 'Markets',
+    items: [
       { to: '/signals', label: 'Signals', key: 'i', keywords: 'alerts entries refused', blurb: 'Every signal and what became of it' },
       { to: '/radar', label: 'Radar', key: 'w', keywords: 'heatmap markets', blurb: 'Signals across markets at a glance' },
       { to: '/monitor', label: 'Trade health', key: 'h', keywords: 'positions advisory monitor', blurb: 'How open trades are behaving' },
-      { to: '/trades', label: 'Journals', key: 't', keywords: 'trades history journal fills', blurb: 'Paper and shadow trade journals' },
       { to: '/chart', label: 'Chart', key: 'c', keywords: 'price frames vela', blurb: 'Price charts with scripts and positions' },
     ],
   },
   {
-    label: 'Research',
+    label: 'Lab',
     items: [
-      { to: '/scanners', label: 'Scanners', key: 's', keywords: 'strategies scripts enable', blurb: 'The scanners that trade and their records' },
+      { to: '/lab', label: 'Lab', key: 'j', keywords: 'backtest ml model train validate experiment', blurb: 'Backtest, stress-test and train' },
+      { to: '/scanners', label: 'Scanners', key: 's', keywords: 'strategies enable settings', blurb: 'The scanners that trade and their records' },
       { to: '/library', label: 'Library', key: 'b', keywords: 'catalogue scripts author', blurb: 'Every script with the bot’s measured record' },
       { to: '/incubator', label: 'Incubator', key: 'n', keywords: 'shadow promote pairs evidence', blurb: 'Where pairs earn their way to the account' },
       { to: '/trackers', label: 'Trackers', key: 'r', keywords: 'family cells', blurb: 'Tracked scanner families and cells' },
@@ -43,6 +54,7 @@ export const GROUPS: NavGroup[] = [
   {
     label: 'Control',
     items: [
+      { to: '/live', label: 'Live control', key: 'f', keywords: 'go-live real money arm kill switch readiness', blurb: 'The only place real money is armed' },
       { to: '/gates', label: 'Gates', key: 'k', keywords: 'admission risk checks', blurb: 'Why entries are allowed or refused' },
       { to: '/exchange', label: 'Exchange', key: 'x', keywords: 'delta connection orders', blurb: 'Exchange connection and reconciliation' },
       { to: '/settings', label: 'Settings', key: 'e', keywords: 'config risk sizing fees', blurb: 'Every number the system runs on' },
@@ -57,12 +69,12 @@ export const ACCOUNT_PAGES: NavItem[] = [
   { to: '/users', label: 'Users', key: 'u', adminOnly: true, keywords: 'admin people roles', blurb: 'Who can sign in and what they can do' },
 ]
 
-/** The four views an operator checks from a phone. */
+/** The four views an operator checks from a phone; a fifth button opens the full menu. */
 export const PHONE_TABS: Array<{ to: string; label: string; end?: boolean }> = [
-  { to: '/', label: 'Workspace', end: true },
-  { to: '/decisions', label: 'Decisions' },
-  { to: '/trades', label: 'Journals' },
-  { to: '/signals', label: 'Signals' },
+  { to: '/overview', label: 'Home' },
+  { to: '/strategies', label: 'Strategies' },
+  { to: '/trades', label: 'Trades' },
+  { to: '/lab', label: 'Lab' },
 ]
 
 export function visibleGroups(isAdmin: boolean): NavGroup[] {
@@ -76,7 +88,7 @@ export function routeMeta(pathname: string, scannerName?: string): RouteMeta {
   const m = /^\/scanners\/([^/]+)/.exec(pathname)
   if (m) return { title: scannerName ?? decodeURIComponent(m[1]), section: 'Research', parent: { label: 'Scanners', to: '/scanners' } }
   const r = /^\/trades\/(\d+)\/replay/.exec(pathname)
-  if (r) return { title: `Trade #${r[1]} replay`, section: 'Trade', parent: { label: 'Journals', to: '/trades' } }
+  if (r) return { title: `Trade #${r[1]} replay`, section: 'Work', parent: { label: 'Trades', to: '/trades' } }
   const seg = pathname === '/' ? '/' : `/${pathname.replace(/^\//, '').split('/')[0]}`
   const group = GROUPS.find((g) => g.items.some((n) => n.to === seg))
   const nav = group?.items.find((n) => n.to === seg)

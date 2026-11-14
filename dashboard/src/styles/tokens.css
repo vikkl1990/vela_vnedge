@@ -30,6 +30,13 @@
   --action-hover: #0d56b8;
   --gradient-accent: linear-gradient(135deg, #1a7bf5 0%, #4d9fff 100%);
 
+  /* --- the four books and the ML lens: each has its own colour so a number is never mistaken for money --- */
+  --book-live: #ff8f5a;
+  --book-paper: #4499ff;
+  --book-shadow: #9a9cff;
+  --book-backtest: #8fa1bb;
+  --book-ml: #e879c6;
+
   /* --- meaning: gain, loss, caution, information --- */
   --gain: #52c48a;
   --gain-soft: hsla(146, 45%, 48%, 0.14);
@@ -104,6 +111,11 @@
   /* darker semantic colours so 11–13px text on white clears 4.5:1 */
   --accent-2: #1266d2;
   --accent-3: #125cb3;
+  --book-live: #b4501f;
+  --book-paper: #1266d2;
+  --book-shadow: #5b5de0;
+  --book-backtest: #586b82;
+  --book-ml: #a8327f;
   --gain: hsl(146 48% 28%);
   --loss: hsl(354 70% 42%);
   --warn: #8a6512;
