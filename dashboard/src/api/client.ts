@@ -5,6 +5,7 @@ import type { DeltaConnectionStatus, DeltaEnvironment } from './deltaConnection'
 import type {PairAgentsView} from './pairAgents'
 import type {Footprint, OrderFlowView} from './orderFlow'
 import type {Contributions, ContributionDetail} from './contributions'
+import type {ScannerReadiness, ScannerContractDetail} from '../../../shared/scannerContracts'
 import type {
   ReclaimTrialsView,
   ExecutionStatus,
@@ -169,6 +170,8 @@ export const api = {
 
   scanners: () => get<Scanner[]>('/scanners'),
   scannerContributions: () => get<Contributions>('/scanners/contributions'),
+  scannerReadiness: () => get<ScannerReadiness>('/scanners/readiness'),
+  scannerContract: (id:string,planId?:string|null) => get<ScannerContractDetail>(`/scanners/${encodeURIComponent(id)}/contract${planId?`?plan=${encodeURIComponent(planId)}`:''}`),
   scannerContribution: (id:string) => get<ContributionDetail>(`/scanners/${encodeURIComponent(id)}/contribution`),
   /** id/name/status/category/enabled/hidden only — the full list carries per-scanner stats for ~2000 scripts. */
   scannerIndex: () => get<ScannerIndexEntry[]>('/scanners?view=lite'),
