@@ -53,3 +53,17 @@ test('unresolved library imports cannot inherit a stale compatible verdict', asy
   assert.match(missing.reason!, /alodis\/OKLCh\/1/);
   assert.equal(registry.runnable().some(s => s.id === missing.id), false);
 });
+
+test('research drawing compatibility is source-pinned and leaves the legacy scanner untouched', async()=>{
+  const {ScannerRegistry}=await import('./registry.ts');
+  const {applyPatches}=await import('../pine/patches.ts');
+  const {variantCompatibleSource}=await import('./variantCompat.ts');
+  const registry=new ScannerRegistry(),base=registry.get('breaker-blocks-with-signals')!,variant=registry.get('breaker-blocks-with-signals-author-retests')!;
+  assert.equal(variant.source,base.source,'raw author source stays preserved');
+  assert.equal(base.patched,applyPatches(base.source,base.file).source,'base execution source is unchanged');
+  assert.equal(variant.status,'ok');
+  assert.notEqual(variant.patched,base.patched);
+  assert.ok(variant.patches.includes('breaker-drawing-methods-v1'));
+  assert.throws(()=>variantCompatibleSource(variant.id,base.source+'\n'),/source changed/);
+  assert.deepEqual(variantCompatibleSource(base.id,base.source),{source:base.source});
+});

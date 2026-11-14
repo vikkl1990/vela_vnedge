@@ -40,7 +40,7 @@ export function authorReviewCatalog(): AuthorReviewCatalog {
   return cached;
 }
 
-export function authorReview(s: Pick<LoadedScanner, 'id' | 'variantOf' | 'file' | 'source' | 'patches'>,
+export function authorReview(s: Pick<LoadedScanner, 'id' | 'variantOf' | 'variantReason' | 'file' | 'source' | 'patches'>,
   sc: Partial<ScannerConfig> = {}, catalog = authorReviewCatalog()) {
   const record = catalog.scripts[s.id] ?? (s.variantOf ? catalog.scripts[s.variantOf] : undefined);
   // The source filename alone is insufficient: a new import must be reconciled explicitly.
@@ -63,6 +63,7 @@ export function authorReview(s: Pick<LoadedScanner, 'id' | 'variantOf' | 'file' 
     asOf: catalog.generatedAt, sourceStatus, sourceHash: hash, reviewedSourceHash: historical?.sha256 ?? null,
     sourceReviewedAt: historical?.reviewedAt ?? null, contract,
     publication, descriptionStatus,
+    variant: s.variantOf ? { base: s.variantOf, reason: s.variantReason ?? null } : null,
     reconciliationStatus,
     reconciliation: reconciliationStatus === 'matches' || reconciliationStatus === 'description only' ? reconciliation : null,
     // These are historical research claims, not assertions that today's configured reader still has the fault.
@@ -70,7 +71,7 @@ export function authorReview(s: Pick<LoadedScanner, 'id' | 'variantOf' | 'file' 
     integrationNotes: record?.integrationNotes ?? [],
     patches: s.patches ?? [],
     reading: { reader: sc.reader ?? 1, sources: sc.sources ?? null, labels: sc.labels ?? null,
-      sides: sc.sides ?? null, exitMode: sc.exitMode ?? 'both', entryProtection: sc.entryProtection ?? 'inherited' },
+      sides: sc.sides ?? null, labelStyles:sc.labelStyles??null, exitMode: sc.exitMode ?? 'both', entryProtection: sc.entryProtection ?? 'inherited' },
     admission: 'Research only. This record neither enables a scanner nor supplies promotion evidence.',
   };
 }

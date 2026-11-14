@@ -1,0 +1,186 @@
+{
+  "at": "2026-11-14T04:31:17.228Z",
+  "symbol": "ETHUSD",
+  "tf": "15m",
+  "bars": 2000,
+  "from": 1792123200000,
+  "to": 1793922300000,
+  "scope": "Historical source-output and prefix stability checks only; not an execution/profit backtest and not promotion evidence. All production risk settings remain unchanged.",
+  "rows": [
+    {
+      "id": "false-breakout-expo-author-signals",
+      "sourceSha256": "d63070fb8f7c17addc6869dc6ce8e7db801f680065f92652d5c71d6cbf649479",
+      "sourceChangedAgainstControl": false,
+      "control": "false-breakout-expo",
+      "entries": 22,
+      "longs": 12,
+      "shorts": 10,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 22,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792548000000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"False Breakout Up\",\"alertcondition\",1792548000000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"False Breakout Up\",\"alertcondition\",1792548000000]"
+          ]
+        },
+        {
+          "at": 1793486700000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"False Breakout Up\",\"alertcondition\",1793486700000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"False Breakout Up\",\"alertcondition\",1793486700000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adaptive-smart-money-liquidity-sweep-levels-author-signals",
+      "sourceSha256": "dae1e1b22ac072ada93a25b6cf5aac1cadc56b2f18dc0f363638846a92b168a5",
+      "sourceChangedAgainstControl": false,
+      "control": "adaptive-smart-money-liquidity-sweep-levels",
+      "entries": 170,
+      "longs": 83,
+      "shorts": 87,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 711,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792485900000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,null,null,[],\"Lower Liquidity Wick Sweep\",\"alertcondition\",1792485900000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,null,null,[],\"Lower Liquidity Wick Sweep\",\"alertcondition\",1792485900000]"
+          ]
+        },
+        {
+          "at": 1792557000000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,null,null,[],\"Lower Liquidity Wick Sweep\",\"alertcondition\",1792557000000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,null,null,[],\"Lower Liquidity Wick Sweep\",\"alertcondition\",1792557000000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "zero-lag-ma-trend-levels-author-retests",
+      "sourceSha256": "11fe3b96e098f7bc83c159ba37a55109981deb02255332ee2aa318eeb923b26d",
+      "sourceChangedAgainstControl": false,
+      "control": "zero-lag-ma-trend-levels",
+      "entries": 44,
+      "longs": 21,
+      "shorts": 23,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 0,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792502100000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,null,null,[],\"\u25b2\",\"label\",1792502100000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,null,null,[],\"\u25b2\",\"label\",1792502100000]"
+          ]
+        },
+        {
+          "at": 1792751400000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"\u25bc\",\"label\",1792751400000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"\u25bc\",\"label\",1792751400000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "swing-failure-zones-and-signals-author-signals",
+      "sourceSha256": "8f2643930b5154ecac238cd496811c9f72385b47419e40eb1c9d8c32447a372b",
+      "sourceChangedAgainstControl": false,
+      "control": "swing-failure-zones-and-signals",
+      "entries": 18,
+      "longs": 9,
+      "shorts": 9,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 36,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792639800000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,null,null,[],\"Bullish Signal\",\"shape\",1792639800000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,null,null,[],\"Bullish Signal\",\"shape\",1792639800000]"
+          ]
+        },
+        {
+          "at": 1793472300000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"Bearish Signal\",\"shape\",1793472300000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"Bearish Signal\",\"shape\",1793472300000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "zone-shift-author-retests",
+      "sourceSha256": "6a0c9e39adb27a61c85d62dc23e152da9fd6754fe377790dbb3e8c115b92ef58",
+      "sourceChangedAgainstControl": false,
+      "control": "zone-shift",
+      "entries": 43,
+      "longs": 14,
+      "shorts": 29,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 0,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792501200000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"\u2bc1\",\"label\",1792501200000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"\u2bc1\",\"label\",1792501200000]"
+          ]
+        },
+        {
+          "at": 1792827000000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"\u2bc1\",\"label\",1792827000000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"\u2bc1\",\"label\",1792827000000]"
+          ]
+        }
+      ]
+    }
+  ]
+}

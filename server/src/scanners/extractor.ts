@@ -10,7 +10,7 @@
 import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
 import { readingLegacy } from './legacy.ts';
 import { WILLY_HTF_MARKET, readWillyHtfAlert } from './willyHtf.ts';
-import { NOT_AN_ENTRY, READER_FIXES, closesSide, reversalClosed } from './readerFixes.ts';
+import { NOT_AN_ENTRY, READER_FIXES, closesSide, reversalClosed, labelStyleSide, type LabelStyleSides } from './readerFixes.ts';
 import { readWillyNative } from './willyNative.ts';
 
 export type Side = 'long' | 'short';
@@ -380,6 +380,8 @@ export interface ExtractOptions {
    * word and geometry inference, which is a guess; this is the documented contract.
    */
   sides?: Record<string, 'long' | 'short' | 'none'>;
+  /** Reader-2 opt-in: exact label text plus source drawing style, never colour inference. */
+  labelStyles?: LabelStyleSides;
   /**
    * Decision 195: which entry channels the script's source declares (`declaredChannels`). Labels are the last resort:
    * read only when the source declares no alert(), alertcondition() or shape outputs, or when `sources` names 'label'.
@@ -524,7 +526,7 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   const readLabels = opts.sources?.includes('label') || (declaresOther === null ? !events.some(e => e.kind === 'entry') : !declaresOther);
   if (opts.drawn?.length && (fixed || (!legacy && allow('label') && readLabels))) {
     for (const l of opts.drawn) {
-      const named = sideByContract(l.text);
+      const named = sideByContract(l.text) ?? (fixed ? labelStyleSide(opts.labelStyles,l.text,l.style) : undefined);
       if (named === 'none') { drop('label: not an entry by the scanner contract'); continue; }
       const exit=fixed&&named===undefined?closesSide(l.text):undefined;
       if(exit){

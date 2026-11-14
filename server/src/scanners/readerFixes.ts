@@ -18,6 +18,22 @@ import type { ExitType, Side } from './extractor.ts';
 /** The reader revision a scanner's reading opts into; 1 (or unset) is the reader its record was earned under. */
 export const READER_FIXES = 2;
 
+/** Explicit source contract for scripts that reuse one label glyph on both sides. */
+export type LabelStyleSides = Record<string, Record<string, Side | 'none'>>;
+export function labelStyleContractError(reader: number | undefined, value: unknown): string | null {
+  if(value==null)return null;
+  if(reader!==2)return 'labelStyles requires reader 2';
+  const record=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
+  const keys=(x:Record<string,unknown>)=>Object.keys(x).every(k=>!!k.trim())&&new Set(Object.keys(x).map(k=>k.trim().toLowerCase())).size===Object.keys(x).length;
+  if(!record(value)||!keys(value)||Object.values(value).some(v=>!record(v)||!keys(v)||Object.values(v).some(s=>typeof s!=='string'||!['long','short','none'].includes(s))))return 'labelStyles must map unique label texts and exact styles to long|short|none';
+  return null;
+}
+export function labelStyleSide(contract: LabelStyleSides | undefined, text: string, style: string | undefined): Side | 'none' | undefined {
+  const entry=Object.entries(contract??{}).find(([k])=>k.trim().toLowerCase()===text.trim().toLowerCase());
+  // A known glyph with an absent/unrecognised style must never fall back to generic direction inference.
+  return entry?Object.entries(entry[1]).find(([k])=>k.trim().toLowerCase()===String(style??'').trim().toLowerCase())?.[1]??'none':undefined;
+}
+
 /** "Long → Short": the side before the arrow is the trade being closed. */
 export const REVERSAL_ARROW = /\b(LONG|SHORT)\b\s*(?:→|->|=>|⇒|➔|➜)\s*\b(LONG|SHORT)\b/i;
 

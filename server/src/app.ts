@@ -600,7 +600,7 @@ export class App {
       entryLimit: c.entryLimit ?? null,
       minAtrPct: regime.minAtrPctByScanner?.[id] ?? regime.minAtrPct,
       // how the script is read (decision 48): its entry channel, timezone, derivation rule, input overrides and exit overrides
-      reads: { sources: c.sources ?? null, timezone: c.timezone ?? null, rule: c.rule ?? null, inputs: c.inputs ?? null, exit: c.exit ?? null, labels: c.labels ?? null, edge: c.edge ?? null, invert: Boolean(c.invert), sides: c.sides ?? null, variantOf: s.variantOf ?? null },
+      reads: { sources: c.sources ?? null, timezone: c.timezone ?? null, rule: c.rule ?? null, inputs: c.inputs ?? null, exit: c.exit ?? null, labels: c.labels ?? null, edge: c.edge ?? null, invert: Boolean(c.invert), sides: c.sides ?? null, labelStyles:c.labelStyles??null, variantOf: s.variantOf ?? null },
       // what it produced when last profiled, and whether the runtime has given up on it
       kind: prof?.kind ?? null, profiledAt: prof?.at ?? null, health: health ? { fails: health.fails, lastAt: health.lastAt, lastError: health.lastError, reason: health.reason, quarantined: health.quarantined } : null,
       lastRun: idx ? (idx.lastRun.get(id) ?? null) : this.scanners.getLastRun(id), stats,

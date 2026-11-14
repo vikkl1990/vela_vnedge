@@ -1,4 +1,4 @@
-import {readerContractError} from './scanners/readerFixes.ts';
+import {readerContractError,labelStyleContractError,type LabelStyleSides} from './scanners/readerFixes.ts';
 import {willyNativeReady} from './scanners/willyContracts.ts';
 import {scannerPairs} from './scanners/allocation.ts';
 import { validateExecutionPlans, type ExecutionPlan } from './paper/executionPlans.ts';
@@ -322,6 +322,8 @@ export interface ScannerConfig {
    * inference, which is a guess.
    */
   sides?: Record<string, 'long' | 'short' | 'none'>;
+  /** Reader-2 exact label-text/style contract for ambiguous glyphs. */
+  labelStyles?: LabelStyleSides;
   /** Decision 195: the plot (and oscillator mode/levels) a generic rule reads; a live run will not trade an unpinned generic rule. */
   rulePin?: { plot: string; mode?: 'zero' | 'obos'; ob?: number; os?: number } | null;
   /** Rising edge only: a condition or shape true on consecutive bars is one entry, on its first bar (decision 57). */
@@ -1217,6 +1219,7 @@ export function validateExtendedConfig(c: AppConfig): string[] {
     if(sc?.reader===3&&!willyNativeReady(id))errs.push(`scanners.${id}: reader 3 requires a validated Willy adapter or non-trading role`);
     if(sc?.reader===3&&(sc.invert||sc.rule))errs.push(`scanners.${id}: native reader cannot invert or substitute a derived rule`);
     const readerError=readerContractError(id,sc?.reader,sc?.sides);if(readerError)errs.push(`scanners.${id}: ${readerError}`);
+    const styleError=labelStyleContractError(sc?.reader,sc?.labelStyles);if(styleError)errs.push(`scanners.${id}: ${styleError}`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
   }
