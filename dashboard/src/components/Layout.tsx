@@ -276,7 +276,7 @@ export function Layout() {
         <main className="main" id="main" tabIndex={-1}>
           <QueryFreshness />
           <RiskBanner />
-          <WorkflowGuide />
+          {loc.pathname !== '/' && <WorkflowGuide />}
           <RouteErrorBoundary>
             <Suspense fallback={<Loading kind="cards" label="Loading the page" />}>
               <div className="route" key={loc.pathname}>

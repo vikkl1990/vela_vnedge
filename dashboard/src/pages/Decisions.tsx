@@ -1,3 +1,4 @@
+import { useNow } from '../lib/useNow'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -28,10 +29,10 @@ export function Decisions() {
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['incubator'] }); void qc.invalidateQueries({ queryKey: ['scanners'] }) }
   const decide = useMutation({ mutationFn: api.incubatorDecide, onSuccess: invalidate })
   const [confirm, setConfirm] = useState<{ pair: IncubatorPair; action: Action } | null>(null)
-  const [renderedAt] = useState(() => Date.now())
+  const now = useNow(60_000)
+  const evaluate = useMutation({ mutationFn: api.incubatorEvaluate, onSuccess: invalidate })
   const attention = health.data?.attention ?? []
   const d = q.data
-  const now = d?.lastRun?.at ?? renderedAt
 
   const cards = useMemo(() => {
     if (!d) return { proposals: [] as IncubatorPair[], clocks: [] as Array<{ p: IncubatorPair; rank: number }> }
@@ -47,8 +48,13 @@ export function Decisions() {
     <div className="page decisions-page">
       <PageTitle
         sub="Everything that waits for a decision, with its evidence and controls on the same card. Proposals first, then live cells whose clock is running out, then faults."
-        actions={<><Link to="/incubator" className="btn btn-sm">Incubator</Link><Link to="/gates" className="btn btn-sm">Gates</Link></>}
+        actions={<>
+          <button className="btn btn-sm" disabled={!auth.canTrade || evaluate.isPending || !d} onClick={() => evaluate.mutate()}>{evaluate.isPending ? 'Judging…' : 'Re-judge now'}</button>
+          <Link to="/incubator" className="btn btn-sm">Incubator</Link>
+          <Link to="/gates" className="btn btn-sm">Gates</Link>
+        </>}
       />
+      {evaluate.isError && <Callout tone="danger" title="Re-judge failed">{(evaluate.error as Error).message}</Callout>}
       <QueryState {...q} data={d} empty="Incubator unavailable." onRetry={() => q.refetch()}>
         {(v) => (
           <>
@@ -96,8 +102,9 @@ export function Decisions() {
                           <Pill tone={promote ? 'ok' : 'danger'}>{promote ? 'Promote?' : 'Demote?'}</Pill>
                         </div>
                         <div className="dq-evidence">
-                          <div className="small">{promote ? <Evidence s={p.gate?.stats ?? p.stats} g={gateFor(v.config.gate, p.tf)} /> : <span>{p.gate?.reasons?.[0] ?? 'The gate proposes demotion.'}</span>}</div>
+                          <div className="small">{promote ? <Evidence s={p.gate?.stats ?? p.stats} g={gateFor(v.config.gate, p.tf)} /> : <span>{p.gate?.reasons?.[0] ?? p.note ?? 'Re-judge to refresh demotion evidence.'}</span>}</div>
                           {p.gate?.cohort && <div className="muted small">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}
+                          <div className="small">{(!promote || p.gate?.cohort) && <><span className="muted">Cell record · </span><Evidence s={p.stats} g={gateFor(v.config.gate, p.tf)} /></>}{p.gate?.overlapPct !== undefined && <span className="muted"> · {p.gate.overlapPct.toFixed(0)}% overlap with an account pair</span>}</div>
                           <div className="small"><Funnel f={p.funnel} pair={p} /></div>
                           {p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}
                           {p.market && !p.market.allowed && <div className="small"><Pill tone="danger">market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 120)}</span></div>}

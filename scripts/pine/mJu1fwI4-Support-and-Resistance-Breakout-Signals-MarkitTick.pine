@@ -1,0 +1,273 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © [MarkitTick]
+
+//@version=6
+indicator("Support and Resistance Breakout Signals [MarkitTick]", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// -----------------------------------------------------------------------------
+// 1. Constants & Configuration
+// -----------------------------------------------------------------------------
+var color C_RES     = color.new(color.red, 0)
+var color C_SUP     = color.new(color.green, 0)      
+var color C_TXT     = color.white                   
+var color C_BRK     = color.new(color.blue, 0)
+var color C_HTF_RES = color.new(color.fuchsia, 0)
+var color C_HTF_SUP = color.new(color.aqua, 0)
+
+// [Inputs]
+// Group: Swing Settings
+int leftBars     = input.int(5, "Left Bars", minval = 1, group = "Swing Settings")
+int rightBars    = input.int(5, "Right Bars", minval = 1, group = "Swing Settings")
+int maxLevels    = input.int(5, "Max Stored Levels", group = "Swing Settings")
+int maxLabels    = input.int(10, "Max Break Labels", minval = 1, group = "Swing Settings")
+
+// Group: Usability
+string tf_input  = input.timeframe("", "Multi-Timeframe", group = "Usability")
+bool use_decay   = input.bool(false, "Enable Time Decay", group = "Usability")
+int decay_bars   = input.int(50, "Decay Period (Bars)", minval = 1, group = "Usability")
+
+// Group: HTF Levels
+bool   use_htf       = input.bool(false, "Enable HTF Levels", group = "HTF Levels")
+string htf_tf        = input.timeframe("D", "HTF Timeframe", group = "HTF Levels")
+int    htf_left      = input.int(3, "HTF Left Bars", minval = 1, group = "HTF Levels")
+int    htf_right     = input.int(3, "HTF Right Bars", minval = 1, group = "HTF Levels")
+int    htf_max       = input.int(3, "HTF Max Levels", minval = 1, maxval = 10, group = "HTF Levels")
+int    htf_linewidth = input.int(2, "HTF Line Width", minval = 1, maxval = 4, group = "HTF Levels")
+bool   hide_ltf      = input.bool(false, "Hide Current TF When HTF Active", group = "HTF Levels")
+
+// Group: Analysis
+bool use_vol     = input.bool(false, "Volume Confirmation", group = "Analysis")
+int vol_len      = input.int(20, "Volume MA Length", minval = 1, group = "Analysis")
+
+// Group: Visuals
+bool show_struct = input.bool(true, "Show Market Structure (HH/LL)", group = "Visuals")
+bool show_ext    = input.bool(false, "Show Extended Lines", group = "Visuals")
+
+// -----------------------------------------------------------------------------
+// 2. User-Defined Types (UDT) & State Management
+// -----------------------------------------------------------------------------
+
+type PivotLevel
+    float price
+    int   start_bar
+    line  l_obj
+    bool  is_resistance
+
+type SwingState
+    PivotLevel[] res_levels
+    PivotLevel[] sup_levels
+    label[]      break_labels
+    float        prev_ph
+    float        prev_pl
+    int          res_break_count
+    int          sup_break_count
+
+var SwingState state = SwingState.new(
+      array.new<PivotLevel>(), 
+      array.new<PivotLevel>(), 
+      array.new<label>(), 
+      na, 
+      na, 
+      0, 
+      0
+  )
+
+var SwingState htf_state = SwingState.new(
+      array.new<PivotLevel>(), 
+      array.new<PivotLevel>(), 
+      array.new<label>(), 
+      na, 
+      na, 
+      0, 
+      0
+  )
+
+var float last_htf_ph = na
+var float last_htf_pl = na
+
+// -----------------------------------------------------------------------------
+// 3. Methods 
+// -----------------------------------------------------------------------------
+
+method manage_level(SwingState s, float price, int bar_idx, bool is_res, int max_len, bool draw_line, color c_line, int lw = 1) =>
+    line new_l = na 
+    if draw_line
+        new_l := line.new(bar_idx, price, bar_index, price, color = c_line, width = lw)
+    
+    PivotLevel new_lvl = PivotLevel.new(price, bar_idx, new_l, is_res)
+    PivotLevel[] target_arr = is_res ? s.res_levels : s.sup_levels
+    
+    target_arr.unshift(new_lvl)
+    
+    if target_arr.size() > max_len
+        PivotLevel old_lvl = target_arr.pop() 
+        if not na(old_lvl.l_obj)
+            line.delete(old_lvl.l_obj)
+
+method check_breaks(SwingState s, bool is_res, float curr_close, float prev_close, bool vol_ok, int decay_lim, bool use_decay_flag, bool draw_ext) =>
+    PivotLevel[] arr = is_res ? s.res_levels : s.sup_levels
+    int breaks_found = 0
+    int arr_len = arr.size() 
+    
+    if arr_len > 0
+        for i = arr_len - 1 to 0
+            PivotLevel lvl = arr.get(i)
+            
+            if draw_ext and not na(lvl.l_obj)
+                line.set_x2(lvl.l_obj, bar_index)
+            
+            bool expired = use_decay_flag and (bar_index - lvl.start_bar > decay_lim)
+            bool broken = false
+            
+            if is_res
+                broken := vol_ok and curr_close > lvl.price and prev_close <= lvl.price  
+            else
+                broken := vol_ok and curr_close < lvl.price and prev_close >= lvl.price
+
+            if broken
+                breaks_found += 1
+                if is_res 
+                    s.res_break_count += 1
+                else 
+                    s.sup_break_count += 1
+                arr.remove(i)
+            else if expired
+                if not na(lvl.l_obj)
+                    line.delete(lvl.l_obj)
+                arr.remove(i)
+    breaks_found
+
+// -----------------------------------------------------------------------------
+// 4. Global Calculations 
+// -----------------------------------------------------------------------------
+
+calc_pivots(int l, int r) =>
+    float h  = ta.pivothigh(high, l, r)  
+    float l_ = ta.pivotlow(low, l, r)
+    [h, l_]
+
+[raw_ph, raw_pl] = request.security(syminfo.tickerid, tf_input, calc_pivots(leftBars, rightBars))
+[htf_ph, htf_pl] = request.security(syminfo.tickerid, htf_tf, calc_pivots(htf_left, htf_right))
+
+float vol_ma_val = use_vol ? ta.sma(volume, vol_len) : na
+bool vol_confirmed = not use_vol or volume > vol_ma_val
+
+bool show_ltf = not (use_htf and hide_ltf)
+
+bool is_new_htf_ph = not na(htf_ph) and (na(last_htf_ph) or htf_ph != last_htf_ph)
+bool is_new_htf_pl = not na(htf_pl) and (na(last_htf_pl) or htf_pl != last_htf_pl)
+
+// -----------------------------------------------------------------------------
+// 5. Execution Logic 
+// -----------------------------------------------------------------------------
+
+var float visual_ph = na
+var float visual_pl = na
+var float visual_htf_ph = na
+var float visual_htf_pl = na
+
+if show_ltf
+    if not na(raw_ph)
+        visual_ph := raw_ph 
+        
+        if show_struct
+            string txt = "EH" 
+            if not na(state.prev_ph)
+                txt := raw_ph > state.prev_ph ? "HH" : "LH"
+            label.new(bar_index - rightBars, raw_ph, text = txt + "\n" + str.tostring(raw_ph, format.mintick), color = color(na), textcolor = C_RES, style = label.style_label_down, size = size.normal)
+        
+        state.prev_ph := raw_ph
+        state.manage_level(raw_ph, bar_index - rightBars, true, maxLevels, show_ext, C_RES, 1)
+
+    if not na(raw_pl)
+        visual_pl := raw_pl
+
+        if show_struct
+            string txt = "EL"
+            if not na(state.prev_pl)
+                txt := raw_pl < state.prev_pl ? "LL" : "HL"
+            label.new(bar_index - rightBars, raw_pl, text = txt + "\n" + str.tostring(raw_pl, format.mintick), color = color(na), textcolor = C_SUP, style = label.style_label_up, size = size.normal)
+
+        state.prev_pl := raw_pl
+        state.manage_level(raw_pl, bar_index - rightBars, false, maxLevels, show_ext, C_SUP, 1)
+
+if use_htf
+    if is_new_htf_ph
+        visual_htf_ph := htf_ph
+        
+        if show_struct
+            string htf_txt = "HTF-R"
+            if not na(htf_state.prev_ph)
+                htf_txt := htf_ph > htf_state.prev_ph ? "HTF-HH" : "HTF-LH"
+            label.new(bar_index, htf_ph, text = htf_txt + "\n" + str.tostring(htf_ph, format.mintick), color = color(na), textcolor = C_HTF_RES, style = label.style_label_down, size = size.large)
+        
+        htf_state.prev_ph := htf_ph
+        htf_state.manage_level(htf_ph, bar_index, true, htf_max, true, C_HTF_RES, htf_linewidth)
+        last_htf_ph := htf_ph
+
+    if is_new_htf_pl
+        visual_htf_pl := htf_pl
+        
+        if show_struct
+            string htf_txt = "HTF-S"
+            if not na(htf_state.prev_pl)
+                htf_txt := htf_pl < htf_state.prev_pl ? "HTF-LL" : "HTF-HL"
+            label.new(bar_index, htf_pl, text = htf_txt + "\n" + str.tostring(htf_pl, format.mintick), color = color(na), textcolor = C_HTF_SUP, style = label.style_label_up, size = size.large)
+        
+        htf_state.prev_pl := htf_pl
+        htf_state.manage_level(htf_pl, bar_index, false, htf_max, true, C_HTF_SUP, htf_linewidth)
+        last_htf_pl := htf_pl
+
+int res_breaks_now = show_ltf ? state.check_breaks(true, close, close[1], vol_confirmed, decay_bars, use_decay, show_ext) : 0
+int sup_breaks_now = show_ltf ? state.check_breaks(false, close, close[1], vol_confirmed, decay_bars, use_decay, show_ext) : 0
+
+int htf_res_breaks = use_htf ? htf_state.check_breaks(true, close, close[1], true, 9999, false, true) : 0
+int htf_sup_breaks = use_htf ? htf_state.check_breaks(false, close, close[1], true, 9999, false, true) : 0
+
+bool needs_any_break = res_breaks_now > 0 or sup_breaks_now > 0 or htf_res_breaks > 0 or htf_sup_breaks > 0
+float gap_base = needs_any_break ? nz(ta.atr(14), syminfo.mintick * 10) : 0.0
+
+if res_breaks_now > 0
+    float offset = gap_base * (0.5 + (0.1 * res_breaks_now))
+    label lbl = label.new(bar_index, low - offset, text = "▲\n" + str.tostring(res_breaks_now), color = C_BRK, textcolor = C_TXT, style = label.style_label_up, size = size.small)  
+    state.break_labels.push(lbl)
+
+if sup_breaks_now > 0
+    float offset = gap_base * (0.5 + (0.1 * sup_breaks_now))
+    label lbl = label.new(bar_index, high + offset, text = "▼\n" + str.tostring(sup_breaks_now), color = C_BRK, textcolor = C_TXT, style = label.style_label_down, size = size.small)  
+    state.break_labels.push(lbl)
+
+if htf_res_breaks > 0
+    float offset = gap_base * 1.5 * (0.8 + (0.15 * htf_res_breaks))
+    label lbl = label.new(bar_index, low - offset, text = "▲ HTF\n" + str.tostring(htf_res_breaks), color = C_HTF_RES, textcolor = C_TXT, style = label.style_label_up, size = size.normal)
+    htf_state.break_labels.push(lbl)
+
+if htf_sup_breaks > 0
+    float offset = gap_base * 1.5 * (0.8 + (0.15 * htf_sup_breaks))
+    label lbl = label.new(bar_index, high + offset, text = "▼ HTF\n" + str.tostring(htf_sup_breaks), color = C_HTF_SUP, textcolor = C_TXT, style = label.style_label_down, size = size.normal)
+    htf_state.break_labels.push(lbl)
+
+if state.break_labels.size() > maxLabels
+    label.delete(state.break_labels.shift())
+
+if htf_state.break_labels.size() > maxLabels
+    label.delete(htf_state.break_labels.shift())
+
+// -----------------------------------------------------------------------------
+// 6. Visuals 
+// -----------------------------------------------------------------------------
+
+plot(show_ltf ? visual_ph : na, "Pivot High Extension", style = plot.style_cross, color = C_RES, linewidth = 1, offset = -rightBars, display = display.all - display.price_scale - display.status_line)
+plot(show_ltf ? visual_pl : na, "Pivot Low Extension", style = plot.style_cross, color = C_SUP, linewidth = 1, offset = -rightBars, display = display.all - display.price_scale - display.status_line)
+
+plot(use_htf ? visual_htf_ph : na, "HTF Pivot High", style = plot.style_cross, color = C_HTF_RES, linewidth = 3, display = display.all - display.price_scale - display.status_line)
+plot(use_htf ? visual_htf_pl : na, "HTF Pivot Low", style = plot.style_cross, color = C_HTF_SUP, linewidth = 3, display = display.all - display.price_scale - display.status_line)
+
+// -----------------------------------------------------------------------------
+// 7. Alerts
+// -----------------------------------------------------------------------------
+alertcondition(res_breaks_now > 0, title = "Resistance Breakout", message = "Resistance Level Broken!")
+alertcondition(sup_breaks_now > 0, title = "Support Breakout", message = "Support Level Broken!")
+alertcondition(htf_res_breaks > 0, title = "HTF Resistance Breakout", message = "HTF Resistance Level Broken!")
+alertcondition(htf_sup_breaks > 0, title = "HTF Support Breakout", message = "HTF Support Level Broken!")

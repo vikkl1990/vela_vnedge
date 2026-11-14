@@ -1,0 +1,287 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("TetraTrend Engine [MarkitTick]", overlay = true)
+
+// =============================================================================
+// ARCHITECTURE & TYPES
+// =============================================================================
+type MovingAverages
+    float ma1
+    float ma2
+    float ma3
+    float ma4
+
+type FrozenLevels
+    float level1
+    float level2
+    float level3
+    float level4
+    float frozen_atr
+    bool  is_frozen
+
+type RiskManager
+    float entry_price
+    float sl_price
+    float tp1_price
+    float tp2_price
+    float tp3_price
+    float pos_size
+    bool  is_valid_trend
+    bool  is_ranging
+    bool  matrix_green
+
+// =============================================================================
+// CHART VALIDATION
+// =============================================================================
+bool isNonStandardChart = chart.is_heikinashi or chart.is_renko or chart.is_kagi or chart.is_linebreak or chart.is_pnf
+if isNonStandardChart
+    runtime.error("Warning: Non-standard chart detected. Script calculations may repaint.")
+
+// =============================================================================
+// USER INPUTS (CLASSIC)
+// =============================================================================
+int    end_time     = input.time(timestamp("2025-12-31 23:59"), "Fixed Date/Time (Freeze Point)", confirm = true)
+
+string MA_GROUP     = "Moving Average Settings"
+string COLOR_GROUP  = "Appearance Configuration"
+string FILTER_GROUP = "Advanced Filters & Risk"
+
+int    length1 = input.int(20,  title = 'Length 1', group = MA_GROUP, minval = 1)
+int    length2 = input.int(50,  title = 'Length 2', group = MA_GROUP, minval = 1)
+int    length3 = input.int(100, title = 'Length 3', group = MA_GROUP, minval = 1)
+int    length4 = input.int(200, title = 'Length 4', group = MA_GROUP, minval = 1)
+string ma_type = input.string('SMA', title = 'MA Type', options = ['SMA', 'EMA', 'WMA', 'VWMA'], group = MA_GROUP)
+
+color color1     = input.color(#00E5FF, title = 'MA 1 Color', group = COLOR_GROUP)
+color color2     = input.color(#14B5CB, title = 'MA 2 Color', group = COLOR_GROUP)
+color color3     = input.color(#2979FF, title = 'MA 3 Color', group = COLOR_GROUP)
+color color4     = input.color(#AA00FF, title = 'MA 4 Color', group = COLOR_GROUP)
+int   line_width = input.int(2, title = 'MA Line Width', group = COLOR_GROUP, minval = 1, maxval = 4)
+
+color  vline_color = input.color(color.new(#90A4AE, 25), title = 'Freeze Marker Color', group = COLOR_GROUP)
+string vline_style = input.string('Dashed', title = 'Freeze Marker Style', options = ['Solid', 'Dashed', 'Dotted'], group = COLOR_GROUP)
+int    vline_width = input.int(2, title = 'Freeze Marker Width', group = COLOR_GROUP, minval = 1, maxval = 4)
+
+string mtf_res        = input.timeframe("D",    title = "Primary HTF Filter",              group = FILTER_GROUP)
+float  adx_threshold  = input.float(20.0,       title = "ADX Chop Filter Threshold",           group = FILTER_GROUP)
+int    vol_length     = input.int(20,           title = "Volume MA Length",                    group = FILTER_GROUP)
+float  rr_ratio       = input.float(2.0,        title = "Risk/Reward Ratio (TP Calculation)",  group = FILTER_GROUP)
+
+// =============================================================================
+// INSTITUTIONAL FEATURES (OPTIONAL MODULES)
+// =============================================================================
+string INST_GROUP   = "Institutional Features (Optional)"
+
+bool use_avwap      = input.bool(false, "Enable Auto-Anchored VWAP", group = INST_GROUP, tooltip = "Anchors a VWAP strictly starting from the Freeze Date.")
+bool use_liq_zones  = input.bool(false, "Enable Dynamic Liquidity Zones", group = INST_GROUP, tooltip = "Draws shaded liquidity bands (± ATR) around the frozen levels.")
+
+bool use_mtf_matrix = input.bool(false, "Enable MTF Confluence Matrix", group = INST_GROUP, tooltip = "Requires 3 Timeframes to agree before validating a signal.")
+string matrix_tf1   = input.timeframe("240", "Matrix TF 1", group = INST_GROUP)
+string matrix_tf2   = input.timeframe("D",   "Matrix TF 2", group = INST_GROUP)
+string matrix_tf3   = input.timeframe("W",   "Matrix TF 3", group = INST_GROUP)
+
+bool use_pos_sizing = input.bool(false, "Enable Dynamic Position Sizing", group = INST_GROUP, tooltip = "Calculates exact contract size based on Risk % and Stop Loss distance.")
+float account_size  = input.float(10000, "Account Size ($)", group = INST_GROUP)
+float risk_percent  = input.float(1.0,   "Risk Per Trade (%)", group = INST_GROUP, step = 0.5)
+
+// =============================================================================
+// GLOBAL PRE-COMPUTATION (VECTORIZED)
+// =============================================================================
+float _sma1  = ta.sma (close, length1)
+float _ema1  = ta.ema (close, length1)
+float _wma1  = ta.wma (close, length1)
+float _vwma1 = ta.vwma(close, length1)
+
+float _sma2  = ta.sma (close, length2)
+float _ema2  = ta.ema (close, length2)
+float _wma2  = ta.wma (close, length2)
+float _vwma2 = ta.vwma(close, length2)
+
+float _sma3  = ta.sma (close, length3)
+float _ema3  = ta.ema (close, length3)
+float _wma3  = ta.wma (close, length3)
+float _vwma3 = ta.vwma(close, length3)
+
+float _sma4  = ta.sma (close, length4)
+float _ema4  = ta.ema (close, length4)
+float _wma4  = ta.wma (close, length4)
+float _vwma4 = ta.vwma(close, length4)
+
+selectMa(string t, float sma, float ema, float wma, float vwma) =>
+    switch t
+        'EMA'  => ema
+        'WMA'  => wma
+        'VWMA' => vwma
+        =>        sma   
+
+getLineStyle(string s) =>
+    switch s
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+        =>          line.style_solid
+
+// =============================================================================
+// CORE LOGIC ENGINE & STATE CAPTURE (QUANT ENGINE)
+// =============================================================================
+var MovingAverages ma_data     = MovingAverages.new(na, na, na, na)
+var FrozenLevels   frozen_data = FrozenLevels.new(na, na, na, na, na, false)
+var RiskManager    risk_data   = RiskManager.new(na, na, na, na, na, na, false, true, false)
+var line           v_marker    = na
+
+var float cum_vol_price = 0.0
+var float cum_vol       = 0.0
+var float anchored_vwap = na
+
+ma_data.ma1 := selectMa(ma_type, _sma1, _ema1, _wma1, _vwma1)
+ma_data.ma2 := selectMa(ma_type, _sma2, _ema2, _wma2, _vwma2)
+ma_data.ma3 := selectMa(ma_type, _sma3, _ema3, _wma3, _vwma3)
+ma_data.ma4 := selectMa(ma_type, _sma4, _ema4, _wma4, _vwma4)
+
+[diplus, diminus, adx_val] = ta.dmi(14, 14)
+float vol_sma              = ta.sma(volume, vol_length)
+float atr_val              = ta.atr(14)
+float swing_low            = ta.lowest(low, 10)
+
+if time >= end_time and not frozen_data.is_frozen
+    frozen_data.level1     := ma_data.ma1
+    frozen_data.level2     := ma_data.ma2
+    frozen_data.level3     := ma_data.ma3
+    frozen_data.level4     := ma_data.ma4
+    frozen_data.frozen_atr := atr_val
+    frozen_data.is_frozen  := true
+    
+    v_marker := line.new(x1 = time, y1 = low, x2 = time, y2 = high, xloc = xloc.bar_time, extend = extend.both, color = vline_color, style = getLineStyle(vline_style), width = vline_width)
+
+if use_avwap and frozen_data.is_frozen
+    cum_vol_price += hlc3 * volume
+    cum_vol       += volume
+    anchored_vwap := cum_vol_price / cum_vol
+
+float htf_close  = request.security(syminfo.tickerid, mtf_res,    close[1], lookahead = barmerge.lookahead_on)
+float mtf1_close = request.security(syminfo.tickerid, matrix_tf1, close[1], lookahead = barmerge.lookahead_on)
+float mtf2_close = request.security(syminfo.tickerid, matrix_tf2, close[1], lookahead = barmerge.lookahead_on)
+float mtf3_close = request.security(syminfo.tickerid, matrix_tf3, close[1], lookahead = barmerge.lookahead_on)
+
+risk_data.is_valid_trend := not na(htf_close) and close > htf_close
+risk_data.is_ranging     := na(adx_val) ? true : (adx_val < adx_threshold or volume < vol_sma)
+
+bool t1_bullish        = not na(mtf1_close) and close > mtf1_close
+bool t2_bullish        = not na(mtf2_close) and close > mtf2_close
+bool t3_bullish        = not na(mtf3_close) and close > mtf3_close
+risk_data.matrix_green := t1_bullish and t2_bullish and t3_bullish
+
+bool price_cross_ma1   = ta.cross(close, frozen_data.level1)
+bool mtf_condition     = use_mtf_matrix ? risk_data.matrix_green : true
+bool is_valid_long     = frozen_data.is_frozen and price_cross_ma1 and close > frozen_data.level1 and risk_data.is_valid_trend and not risk_data.is_ranging and mtf_condition
+
+if is_valid_long
+    risk_data.entry_price := close
+    risk_data.sl_price    := swing_low - atr_val * 0.1
+    float risk_dist       = risk_data.entry_price - risk_data.sl_price
+    
+    risk_data.tp1_price   := risk_data.entry_price + (risk_dist * rr_ratio * 0.5)
+    risk_data.tp2_price   := risk_data.entry_price + (risk_dist * rr_ratio)
+    risk_data.tp3_price   := risk_data.entry_price + (risk_dist * rr_ratio * 1.5)
+    
+    if use_pos_sizing and risk_dist > 0
+        float risk_amount  = account_size * (risk_percent / 100)
+        risk_data.pos_size := risk_amount / risk_dist
+    else
+        risk_data.pos_size := 0.0
+
+// =============================================================================
+// VISUALIZATION (FROZEN HORIZONTAL LEVELS, ZONES, & AVWAP)
+// =============================================================================
+plot(use_avwap and frozen_data.is_frozen ? anchored_vwap : na, color = #FFB74D, linewidth = 2, title = 'Anchored VWAP')
+
+float zone_dist = use_liq_zones and frozen_data.is_frozen ? (frozen_data.frozen_atr * 0.5) : na
+
+p1_up = plot(frozen_data.level1 + zone_dist, color = na, display = display.none)
+p1_dn = plot(frozen_data.level1 - zone_dist, color = na, display = display.none)
+fill(p1_up, p1_dn, color = color.new(color1, 85), title = "L1 Liquidity Zone")
+
+p4_up = plot(frozen_data.level4 + zone_dist, color = na, display = display.none)
+p4_dn = plot(frozen_data.level4 - zone_dist, color = na, display = display.none)
+fill(p4_up, p4_dn, color = color.new(color4, 85), title = "L4 Liquidity Zone")
+
+plot(frozen_data.is_frozen ? frozen_data.level1 : na, color = color1, title = 'Frozen Level 1', linewidth = line_width, style = plot.style_line, display = display.pane)
+plot(frozen_data.is_frozen ? frozen_data.level2 : na, color = color2, title = 'Frozen Level 2', linewidth = line_width, style = plot.style_line, display = display.pane)
+plot(frozen_data.is_frozen ? frozen_data.level3 : na, color = color3, title = 'Frozen Level 3', linewidth = line_width, style = plot.style_line, display = display.pane)
+plot(frozen_data.is_frozen ? frozen_data.level4 : na, color = color4, title = 'Frozen Level 4', linewidth = line_width, style = plot.style_line, display = display.pane)
+
+plotshape(is_valid_long,
+          title    = "Long Signal Validated",
+          style    = shape.triangleup,
+          location = location.belowbar,
+          color    = #00E676,
+          size     = size.small)
+
+var label lbl_ma1 = na
+var label lbl_ma2 = na
+var label lbl_ma3 = na
+var label lbl_ma4 = na
+
+if barstate.islast and frozen_data.is_frozen
+    string txt1 = "MA " + str.tostring(length1) + " | " + str.tostring(frozen_data.level1, format.mintick)
+    string txt2 = "MA " + str.tostring(length2) + " | " + str.tostring(frozen_data.level2, format.mintick)
+    string txt3 = "MA " + str.tostring(length3) + " | " + str.tostring(frozen_data.level3, format.mintick)
+    string txt4 = "MA " + str.tostring(length4) + " | " + str.tostring(frozen_data.level4, format.mintick)
+
+    if na(lbl_ma1)
+        lbl_ma1 := label.new(bar_index, frozen_data.level1, txt1, color = color.new(color.black, 100), textcolor = color1, style = label.style_label_left, size = size.normal)
+        lbl_ma2 := label.new(bar_index, frozen_data.level2, txt2, color = color.new(color.black, 100), textcolor = color2, style = label.style_label_left, size = size.normal)
+        lbl_ma3 := label.new(bar_index, frozen_data.level3, txt3, color = color.new(color.black, 100), textcolor = color3, style = label.style_label_left, size = size.normal)
+        lbl_ma4 := label.new(bar_index, frozen_data.level4, txt4, color = color.new(color.black, 100), textcolor = color4, style = label.style_label_left, size = size.normal)
+    else
+        label.set_xy(lbl_ma1, bar_index, frozen_data.level1)
+        label.set_text(lbl_ma1, txt1)
+        label.set_xy(lbl_ma2, bar_index, frozen_data.level2)
+        label.set_text(lbl_ma2, txt2)
+        label.set_xy(lbl_ma3, bar_index, frozen_data.level3)
+        label.set_text(lbl_ma3, txt3)
+        label.set_xy(lbl_ma4, bar_index, frozen_data.level4)
+        label.set_text(lbl_ma4, txt4)
+
+// =============================================================================
+// ANALYTICS DASHBOARD
+// =============================================================================
+
+var table dashboard = table.new(
+     position.top_right, 2, 7,
+     bgcolor      = color.rgb(13, 17, 23, 10),
+     border_color = color.rgb(48, 54, 61),
+     border_width = 1)
+
+if barstate.islast and frozen_data.is_frozen
+    table.cell(dashboard, 0, 0, "Metric [MarkitTick]", text_color = color.rgb(139, 148, 158), text_halign = text.align_left,  bgcolor = color.rgb(22, 33, 48))
+    table.cell(dashboard, 1, 0, "Status",              text_color = color.rgb(139, 148, 158), text_halign = text.align_right, bgcolor = color.rgb(22, 33, 48))
+
+    table.cell(dashboard, 0, 1, "HTF Trend (" + mtf_res + ")", text_color = color.rgb(230, 237, 243), text_halign = text.align_left)
+    table.cell(dashboard, 1, 1, risk_data.is_valid_trend ? "Bullish" : "Bearish", text_color = risk_data.is_valid_trend ? #00E676 : #FF5252, text_halign = text.align_right)
+
+    table.cell(dashboard, 0, 2, "Market State", text_color = color.rgb(230, 237, 243), text_halign = text.align_left)
+    table.cell(dashboard, 1, 2, risk_data.is_ranging ? "Chop / Low Vol" : "Trending / Active", text_color = risk_data.is_ranging ? #FFB300 : #00E676, text_halign = text.align_right)
+
+    table.cell(dashboard, 0, 3, "Volatility (ATR)", text_color = color.rgb(230, 237, 243), text_halign = text.align_left)
+    table.cell(dashboard, 1, 3, str.tostring(atr_val, format.mintick), text_color = #80D8FF, text_halign = text.align_right)
+
+    table.cell(dashboard, 0, 4, "ADX (Strength)", text_color = color.rgb(230, 237, 243), text_halign = text.align_left)
+    table.cell(dashboard, 1, 4, str.tostring(adx_val, "#.##"), text_color = not na(adx_val) and adx_val > adx_threshold ? #00E676 : #FF5252, text_halign = text.align_right)
+    
+    if use_mtf_matrix
+        table.cell(dashboard, 0, 5, "MTF Matrix Status", text_color = color.rgb(230, 237, 243), text_halign = text.align_left)
+        table.cell(dashboard, 1, 5, risk_data.matrix_green ? "Aligned (Bullish)" : "Mixed/Bearish", text_color = risk_data.matrix_green ? #00E676 : #FFB300, text_halign = text.align_right)
+
+    if use_pos_sizing
+        table.cell(dashboard, 0, 6, "Dynamic Pos Size", text_color = color.rgb(230, 237, 243), text_halign = text.align_left)
+        table.cell(dashboard, 1, 6, str.tostring(risk_data.pos_size, "#.##") + " Units", text_color = #80D8FF, text_halign = text.align_right)
+
+// =============================================================================
+// AUTOMATION & ALERTS (INSTITUTIONAL JSON PAYLOAD)
+// =============================================================================
+if is_valid_long
+    string json_payload = '{"action": "long", "symbol": "' + syminfo.ticker + '", "entry": ' + str.tostring(risk_data.entry_price, format.mintick) + ', "sl": ' + str.tostring(risk_data.sl_price, format.mintick) + ', "tp1": ' + str.tostring(risk_data.tp1_price, format.mintick) + ', "tp2": ' + str.tostring(risk_data.tp2_price, format.mintick) + ', "tp3": ' + str.tostring(risk_data.tp3_price, format.mintick) + ', "qty": ' + str.tostring(risk_data.pos_size, "#.##") + '}'
+    alert(json_payload, alert.freq_once_per_bar)

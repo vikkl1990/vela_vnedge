@@ -1,0 +1,229 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Dow Jones Institutional [MarkitTick]", overlay = false, dynamic_requests = true)
+
+
+// ═══════════════════════════════════════════════════════════
+// 🔍 INPUTS
+// ═══════════════════════════════════════════════════════════
+var string g_general = 'General Settings'
+string metric_option = input.string(
+     'McClellan Z-Score (Inst)', 'Select Metric',
+     options = ['Advance/Decline Line', 'McClellan Oscillator',
+                'McClellan Z-Score (Inst)', 'Arms Index (TRIN)',
+                'Cumulative Weighted Liq'],
+     group = g_general)
+
+var string g_auto    = 'Timeframe Configuration'
+bool enableAutoConfig = input.bool(true, '▶️ Enable Automatic Timeframe Configuration', group = g_auto)
+
+var string g_manual  = '⚙️ Manual Overrides'
+int manual_ma_length        = input.int(21,  'MA Length',          minval = 1,  group = g_manual)
+int mcc_fast_length_manual  = input.int(19,  'McClellan Fast EMA', minval = 1,  group = g_manual)
+int mcc_slow_length_manual  = input.int(39,  'McClellan Slow EMA', minval = 1,  group = g_manual)
+int z_score_lookback        = input.int(100, 'Z-Score Lookback',   minval = 10, group = g_manual)
+int div_lookback            = input.int(5,   'Divergence Pivot Size', minval = 2, group = g_manual,
+     tooltip = 'Number of bars for Pivot High/Low detection')
+
+var string g_dash   = 'Stats Bar Settings'
+bool show_stats     = input.bool(true, '📊 Show Stats Bar', group = g_dash)
+
+var string g_colors = 'Visual Configuration'
+color c_main         = input.color(color.new(#5b9cf6,      0), 'Main Value Color',     group = g_colors)
+color c_ma           = input.color(color.new(color.orange,  0), 'Moving Average Color', group = g_colors)
+color c_div_bull     = input.color(color.new(color.green,   0), 'Regular Bullish Div',  group = g_colors)
+color c_div_bear     = input.color(color.new(color.red,     0), 'Regular Bearish Div',  group = g_colors)
+color c_div_bull_hid = input.color(color.new(color.teal,    0), 'Hidden Bullish Div',   group = g_colors)
+color c_div_bear_hid = input.color(color.new(color.maroon,  0), 'Hidden Bearish Div',   group = g_colors)
+color c_adv_text     = input.color(color.new(color.green,   0), 'Advancing Color',      group = g_colors)
+color c_decl_text    = input.color(color.new(color.red,     0), 'Declining Color',      group = g_colors)
+color c_neutral      = input.color(color.new(color.gray,    0), 'Neutral Color',        group = g_colors)
+
+// ═══════════════════════════════════════════════════════════
+// ⚙️ AUTOMATIC PARAMETER ASSIGNMENT
+// ═══════════════════════════════════════════════════════════
+int unified_ma_length = enableAutoConfig ? timeframe.isintraday ? 40 : timeframe.isdaily ? 21 : timeframe.isweekly ? 12 : 9  : manual_ma_length
+int mcc_fast_length   = enableAutoConfig ? timeframe.isintraday ? 30 : timeframe.isdaily ? 19 : timeframe.isweekly ? 10 : 5  : mcc_fast_length_manual
+int mcc_slow_length   = enableAutoConfig ? timeframe.isintraday ? 60 : timeframe.isdaily ? 39 : timeframe.isweekly ? 20 : 10 : mcc_slow_length_manual
+
+bool is_ad_mode        = metric_option == 'Advance/Decline Line'
+bool is_mcclellan_mode = metric_option == 'McClellan Oscillator'
+bool is_zscore_mode    = metric_option == 'McClellan Z-Score (Inst)'
+bool is_arms_mode      = metric_option == 'Arms Index (TRIN)'
+bool is_weighted_mode  = metric_option == 'Cumulative Weighted Liq'
+
+var array<string> tickers = array.from(
+     'NASDAQ:AAPL', 'NASDAQ:AMGN', 'NASDAQ:AMZN', 'NYSE:AXP',   'NYSE:BA',    'NYSE:CAT',
+     'NYSE:CRM',    'NASDAQ:CSCO', 'NYSE:CVX',    'NYSE:DIS',   'NYSE:DOW',   'NYSE:GS',
+     'NYSE:HD',     'NASDAQ:HON',  'NYSE:IBM',    'NYSE:JNJ',   'NYSE:JPM',   'NYSE:KO',
+     'NYSE:MCD',    'NYSE:MRK',    'NASDAQ:MSFT', 'NYSE:NKE',   'NASDAQ:NVDA','NYSE:PG',
+     'NYSE:SHW',    'NYSE:TRV',    'NYSE:UNH',    'NYSE:V',     'NYSE:VZ',    'NASDAQ:WMT')
+
+var array<float> weights = array.from(
+     3.25, 4.10, 3.11, 4.24, 2.48, 5.38,
+     4.81, 0.82, 2.19, 1.60, 0.64, 7.50,
+     5.52, 3.25, 3.25, 2.19, 3.61, 0.89,
+     4.24, 1.41, 6.08, 1.06, 1.94, 2.41,
+     5.24, 3.68, 8.77, 4.39, 0.57, 1.36)
+
+var float ad_line                 = 0.0
+var float cumulative_weighted_liq = 0.0
+
+int   advancing           = 0
+int   declining           = 0
+int   unchanged           = 0
+float advancing_volume    = 0.0
+float declining_volume    = 0.0
+float advancing_liquidity = 0.0
+float declining_liquidity = 0.0
+float total_traded_value  = 0.0
+float total_volume        = 0.0
+
+// ═══════════════════════════════════════════════════════════
+// 🔄 SINGLE-PASS DATA LOOP (Strict Anti-Repainting)
+// ═══════════════════════════════════════════════════════════
+for i = 0 to 29
+    string sym = array.get(tickers, i)
+    float  w   = array.get(weights, i)
+
+    [sign, vol, pclose, pprev] = request.security(
+         sym, timeframe.period,
+         [math.sign(close[1] - close[2]), volume[1], close[1], close[2]],
+         lookahead = barmerge.lookahead_on)
+
+    float vol_nz               = nz(vol)
+    float current_traded_value = nz(pclose) * vol_nz
+
+    if not na(sign)
+        if sign > 0
+            advancing           += 1
+            advancing_volume    += vol_nz
+            advancing_liquidity += current_traded_value
+            cumulative_weighted_liq += (current_traded_value * w)
+        else if sign < 0
+            declining           += 1
+            declining_volume    += vol_nz
+            declining_liquidity += current_traded_value
+            cumulative_weighted_liq -= (current_traded_value * w)
+        else
+            unchanged += 1
+
+    total_volume       += vol_nz
+    total_traded_value += current_traded_value
+
+
+int   net_advances  = advancing  - declining
+float net_volume    = advancing_volume    - declining_volume
+float net_liquidity = advancing_liquidity - declining_liquidity
+ad_line += net_advances
+
+int   total_issues = advancing + declining
+float ad_ratio     = total_issues > 0 ? float(net_advances) / total_issues : 0.0
+float mcc_fast_ema = ta.ema(ad_ratio, mcc_fast_length)
+float mcc_slow_ema = ta.ema(ad_ratio, mcc_slow_length)
+float mcclellan_oscillator = mcc_fast_ema - mcc_slow_ema
+
+float mcc_sma    = ta.sma(mcclellan_oscillator, z_score_lookback)
+float mcc_stdev  = ta.stdev(mcclellan_oscillator, z_score_lookback)
+float mcc_zscore = mcc_stdev > 0 ? (mcclellan_oscillator - mcc_sma) / mcc_stdev : 0.0
+
+float ad_ratio_trin = declining > 0 ? float(advancing) / declining : na
+float vol_ratio     = declining_volume > 0 ? advancing_volume / declining_volume : na
+float arms_index    = vol_ratio > 0 and not na(ad_ratio_trin) ? ad_ratio_trin / vol_ratio : na
+
+float scaled_liq = cumulative_weighted_liq / 1000000000000.0
+float display_value = is_ad_mode ? ad_line : is_mcclellan_mode ? mcclellan_oscillator : is_zscore_mode ? mcc_zscore : is_arms_mode ? arms_index : scaled_liq
+float display_ma    = ta.sma(display_value, unified_ma_length)
+
+
+plot(display_value, 'Main Series',   c_main, 2)
+plot(display_ma,    'Moving Average', c_ma,  1)
+
+hline(2.0,  'Inst Overbought', c_decl_text, hline.style_dashed, display = is_zscore_mode ? display.all : display.none)
+hline(-2.0, 'Inst Oversold',   c_adv_text,  hline.style_dashed, display = is_zscore_mode ? display.all : display.none)
+
+[dji_h, dji_l] = request.security('DJ:DJI', timeframe.period, [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+var int   prev_pl_bar = na
+var float prev_pl_val = na
+var float prev_dji_l  = na
+
+var int   prev_ph_bar = na
+var float prev_ph_val = na
+var float prev_dji_h  = na
+
+float pl_ind = ta.pivotlow(display_value, div_lookback, div_lookback)
+if not na(pl_ind)
+    float current_dji_l = dji_l[div_lookback]
+    if not na(prev_pl_val)
+        bool is_reg_bull = current_dji_l < prev_dji_l and pl_ind > prev_pl_val
+        bool is_hid_bull = current_dji_l > prev_dji_l and pl_ind < prev_pl_val
+        if is_reg_bull
+            line.new(prev_pl_bar, prev_pl_val, bar_index - div_lookback, pl_ind, color = c_div_bull,     width = 2, style = line.style_dashed)
+        else if is_hid_bull
+            line.new(prev_pl_bar, prev_pl_val, bar_index - div_lookback, pl_ind, color = c_div_bull_hid, width = 2, style = line.style_dotted)
+    prev_pl_bar := bar_index - div_lookback
+    prev_pl_val := pl_ind
+    prev_dji_l  := current_dji_l
+
+float ph_ind = ta.pivothigh(display_value, div_lookback, div_lookback)
+if not na(ph_ind)
+    float current_dji_h = dji_h[div_lookback]
+    if not na(prev_ph_val)
+        bool is_reg_bear = current_dji_h > prev_dji_h and ph_ind < prev_ph_val
+        bool is_hid_bear = current_dji_h < prev_dji_h and ph_ind > prev_ph_val
+        if is_reg_bear
+            line.new(prev_ph_bar, prev_ph_val, bar_index - div_lookback, ph_ind, color = c_div_bear,     width = 2, style = line.style_dashed)
+        else if is_hid_bear
+            line.new(prev_ph_bar, prev_ph_val, bar_index - div_lookback, ph_ind, color = c_div_bear_hid, width = 2, style = line.style_dotted)
+    prev_ph_bar := bar_index - div_lookback
+    prev_ph_val := ph_ind
+    prev_dji_h  := current_dji_h
+
+
+var color C_HEAD = color.new(#2962FF, 60)
+var color C_STAT = color.new(#1E222D, 30)
+
+var table stats = table.new(position.bottom_right, 9, 2,
+     color.new(color.black, 100),
+     border_width = 1,
+     frame_color  = color.new(color.white, 80),
+     frame_width  = 1)
+
+if barstate.islast and show_stats
+    float n_vol_pct = total_volume > 0 ? (net_volume / total_volume) * 100 : 0.0
+    float n_liq_pct = total_traded_value > 0 ? (net_liquidity / total_traded_value) * 100 : 0.0
+
+    table.cell(stats, 0, 0, 'Adv',      text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 1, 0, 'Decl',     text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 2, 0, 'Unch',     text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 3, 0, 'Net Adv',  text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 4, 0, 'Net Vol%', text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 5, 0, 'Net Liq%', text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 6, 0, 'Tot Vol',  text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 7, 0, 'Tot Liq',  text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+    table.cell(stats, 8, 0, 'TRIN',     text_color = color.white, text_size = size.small, bgcolor = C_HEAD)
+
+    table.cell(stats, 0, 1, str.tostring(advancing),                                   text_color = c_adv_text,                                  text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 1, 1, str.tostring(declining),                                   text_color = c_decl_text,                                 text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 2, 1, str.tostring(unchanged),                                   text_color = c_neutral,                                   text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 3, 1, str.tostring(net_advances),                                text_color = net_advances >= 0 ? c_adv_text : c_decl_text, text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 4, 1, str.tostring(n_vol_pct, '#.##') + '%',                    text_color = n_vol_pct    >= 0 ? c_adv_text : c_decl_text, text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 5, 1, str.tostring(n_liq_pct, '#.##') + '%',                    text_color = n_liq_pct    >= 0 ? c_adv_text : c_decl_text, text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 6, 1, str.tostring(total_volume,       format.volume),           text_color = color.white,                                 text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 7, 1, str.tostring(total_traded_value, format.volume),           text_color = c_main,                                      text_size = size.small, bgcolor = C_STAT)
+    table.cell(stats, 8, 1, not na(arms_index) ? str.tostring(arms_index, '#.##') : 'n/a', text_color = color.white,                            text_size = size.small, bgcolor = C_STAT)
+
+// ═══════════════════════════════════════════════════════════
+// 🔔 ALERTS
+// ═══════════════════════════════════════════════════════════
+bool trigger_buy  = ta.crossover(mcc_zscore,  -2.0)
+bool trigger_sell = ta.crossunder(mcc_zscore,  2.0)
+
+if trigger_buy and is_zscore_mode
+    alert('DJ Institutional: Z-Score crossed below -2 → Institutional OVERSOLD signal', alert.freq_once_per_bar_close)
+
+if trigger_sell and is_zscore_mode
+    alert('DJ Institutional: Z-Score crossed above +2 → Institutional OVERBOUGHT signal', alert.freq_once_per_bar_close)

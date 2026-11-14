@@ -728,7 +728,7 @@ export interface IncubatorView {
       /** Decision 196: how the gate judges (cohort of markets, or each pair), and its per-timeframe minimums. */
       pool?: 'cohort' | 'pair'; minTradesByTf?: Record<string, number>; minDaysByTf?: Record<string, number>; maxDaysByTf?: Record<string, number>
     }
-    promote: { maxPerWeek: number; maxFleet: number }
+    promote: { maxPerWeek: number; maxFleet: number; auto?: boolean; reviewMinutes?: number }
     demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; silentDaysByTf?: Record<string, number>; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
   }
   counts: Partial<Record<IncubatorStage, number>>
@@ -736,7 +736,8 @@ export interface IncubatorView {
   lastRun: { at: number; slice: string; scripts: number; symbols: number; runs: number; passed: number; new: number; ms: number; truncated?: number; report?: { admitted: string[]; proposed: string[]; retired: string[]; demoteProposed: string[] } } | null
   /** When the daily job last announced itself; newer than lastRun.at means that run never finished. */
   lastStart?: { at: number; slice: string } | null
-  /** The last hunt: judge + auto-promotion + digest, run when the daily screen finished or on a click. */
+  automation?: { attemptAt:number; successAt:number; evidenceAt:number; screenAt:number; actor:string|null; error:string|null; enabled:boolean; paper:boolean; running:boolean; intervalMinutes:number; evidenceMinutes:number; nextAt:number }
+  /** Last evidence review, including automatic promotion results and blockers. */
   lastHunt?: { at: number; actor: string; screen: { at: number; slice: string; runs: number; passed: number; newCandidates: number; quarantined: number; minutes: number } | null; admitted: string[]; proposed: string[]; promoted: string[]; blocked: string[]; retired: string[]; demoteProposed: string[]; brewing: number; free: number; auto: boolean } | null
   runner: { startedAt?: number; runs: number; skipped: number; errors: number; entries: number; lastBarAt: number; active: number }
   pairs: IncubatorPair[]; events: IncubatorEvent[]
@@ -883,7 +884,7 @@ export interface AuthorReview {
   publication: { url: string; author: string | null; retrievedAt: string | null; updatedAt: string | null; version: number | null; reviewedAt: string | null; role: string | null; summary: string | null; requirements: string | null; reviewBlocker?: { blocker: string; checkedAt: string | null } } | null
   reconciliationStatus: 'unreviewed' | 'publication changed' | 'description only' | 'matches' | 'source changed or not inspected'
   reconciliation: { sourceChecked: boolean; scope: string; findings: Array<{ kind: string; marker: string; evidence: string; sourceLine: number | null; action: string }> } | null
-  contract: { type: string; idea: string; entries: Array<{ marker: string; channel: string; side: string; line: number; condition: string }>; notEntries: Array<{ marker: string; channel: string; role: string; line: number }>; stop: { has: boolean; how: string }; targets: { has: boolean; how: string }; exit: { has: boolean; how: string }; timing: { note: string; knownAtClose: boolean; pivotLagBars: number; lookahead: string; repaints: boolean }; claims: Array<{ marker: string; problem: string; line: number; evidence: string }> } | null
+  contract: { type: string; idea: string; reviewScope?: string; entries: Array<{ marker: string; channel: string; side: string; line: number | null; condition: string }>; notEntries: Array<{ marker: string; channel: string; role: string; line: number }>; stop: { has: boolean | null; how: string }; targets: { has: boolean | null; how: string }; exit: { has: boolean | null; how: string }; timing: { note: string; knownAtClose: boolean | null; pivotLagBars: number | null; lookahead: string; repaints: boolean | null }; claims: Array<{ marker: string; problem: string; line: number; evidence: string }> } | null
   claimMeaning: string; integrationNotes: string[]; patches: string[]; admission: string
   reading: { reader: number; sources: string[] | null; labels: string[] | null; sides: Record<string, string> | null; labelStyles?: Record<string, Record<string,string>> | null; exitMode: string; entryProtection: string }
 }

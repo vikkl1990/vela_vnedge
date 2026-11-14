@@ -1,0 +1,468 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Candle Volume Decomposition [MarkitTick]", overlay = false, format = format.volume, precision = 0)
+
+// ─────────────────────────────────────────────────────────────
+//  SAFE TICKER 
+// ─────────────────────────────────────────────────────────────
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+
+// ─────────────────────────────────────────────────────────────
+//  THEME DETECTION
+// ─────────────────────────────────────────────────────────────
+f_is_light() =>
+    color c = chart.bg_color
+    (0.2126 * color.r(c) / 255.0 + 0.7152 * color.g(c) / 255.0 + 0.0722 * color.b(c) / 255.0) > 0.5
+
+bool is_light = f_is_light()
+
+// ─────────────────────────────────────────────────────────────
+//  DASHBOARD VISUAL HELPERS
+// ─────────────────────────────────────────────────────────────
+f_blockBar(float score) =>
+    int    _n = math.min(math.max(math.round(score), 0), 10)
+    string s  = ''
+    for i = 1 to 10
+        s += i <= _n ? '█' : '░'
+    s
+
+f_blockColor(float score) =>
+    score >= 8.0 ? color.rgb(0, 255, 100)  :
+     score >= 6.0 ? color.rgb(80, 230, 0)  :
+     score >= 4.5 ? color.rgb(200, 255, 0) :
+     score >= 3.0 ? color.rgb(255, 180, 0) :
+     score >= 1.5 ? color.rgb(255, 80, 40) :
+     color.rgb(80, 80, 95)
+
+// ─────────────────────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────────────────────
+grp_vp      = "📊 Volume Profile"
+grp_colors  = "🎨 Neon Colors"
+grp_bar     = "🕯️ Price Candle Coloring"
+grp_disp    = "⚙️ Display"
+grp_metrics = "📈 Advanced Metrics"
+string GRP_DASH = '📊 Dashboard Settings'
+grp_div     = "🔀 Volume Divergence"
+
+ltf = input.timeframe("",
+     title   = "Lower Timeframe",
+     tooltip = "Must be strictly lower than the chart timeframe.\n1m → for 5m/15m/1H charts\n5m → for 1H/4H charts\n1H → for Daily charts",
+     group   = grp_vp)
+
+upper_color = input.color(color.new(#FF2020, 10), "Upper Wick — Vivid Red",       group = grp_colors)
+lower_color = input.color(color.new(#00E5FF, 10), "Lower Wick — Vivid Cyan",      group = grp_colors)
+bear_color  = input.color(color.new(#AA0000, 10), "Bearish Body — Deep Red",      group = grp_colors)
+bull_color  = input.color(color.new(#00B4CC, 10), "Bullish Body — Deep Teal",     group = grp_colors)
+
+bar_col_mode   = input.string("Net Signed Volume", "Coloring Mode",
+     options    = ["Off", "Net Signed Volume", "Body Direction"],
+     tooltip    = "Net Signed Volume: colours candles by LowerWick+ / Body± / UpperWick− net.\nBody Direction: standard bull/bear split.",
+     group      = grp_bar)
+bar_bull_col   = input.color(color.new(#00B4CC,  0), "Bull Candle",               group = grp_bar)
+bar_bear_col   = input.color(color.new(#AA0000,  0), "Bear Candle",               group = grp_bar)
+bar_dyn_transp = input.bool(true,
+     "Dynamic Transparency  (fades on weak signal)",
+     tooltip = "Opacity scales with |net_signed| / total_vol — strong dominance = fully opaque.",
+     group   = grp_bar)
+show_labels  = input.bool(true,  "Show % Labels on Last Bar", group = grp_disp)
+label_offset = input.int(1,      "Label Horizontal Offset",   group = grp_disp)
+show_signed  = input.bool(true, "Signed Volume Mode  (▲Body+ / ▼Body− / UpperWick− / LowerWick+)", group = grp_disp)
+
+show_delta     = input.bool(true,  "Delta Pressure Index  [-1…+1]",
+     tooltip  = "Positive = net buying pressure (lower wick dominated). Negative = selling pressure.",
+     group    = grp_metrics)
+show_asymmetry = input.bool(true,  "Wick Asymmetry Ratio  (Upper ÷ Lower)",
+     tooltip  = ">1 = selling pressure concentrated in upper wick. <1 = buying pressure in lower wick.",
+     group    = grp_metrics)
+show_cvd       = input.bool(true,  "Cumulative Net Signed Volume  (CVD)",
+     tooltip  = "Running sum of net_signed across all bars — directional volume delta accumulator.",
+     group    = grp_metrics)
+show_efficiency= input.bool(true,  "Body Efficiency Score  [0…100 %]",
+     tooltip  = "% of total volume inside the body zone. High value = committed directional move.",
+     group    = grp_metrics)
+show_wtb       = input.bool(true,  "Wick-to-Body Ratio",
+     tooltip  = "Total wick volume ÷ body volume. >1 = more volume absorbed in wicks than body.",
+     group    = grp_metrics)
+show_hhi       = input.bool(true,  "Volume Concentration  (HHI)",
+     tooltip  = "Herfindahl index across 3 zones [0.33…1.0]. Near 1.0 = one zone completely dominates.",
+     group    = grp_metrics)
+show_exhaust   = input.bool(true,  "Wick Exhaustion Flag  (pane bgcolor flash)",
+     tooltip  = "Highlights bars where combined wick volume exceeds body volume × threshold — potential reversal signal.",
+     group    = grp_metrics)
+exhaust_mult   = input.float(1.5,  "  └ Exhaustion Threshold ×",
+     minval   = 0.5, maxval = 10.0, step = 0.1,
+     tooltip  = "Multiplier applied to body volume. Wick vol > body vol × this value triggers the flag.",
+     group    = grp_metrics)
+show_absorb    = input.bool(true,  "Absorption Score  [0…1]",
+     tooltip  = "High wick volume combined with a narrow body range = institutional absorption signal. Near 1.0 = maximum absorption.",
+     group    = grp_metrics)
+show_coverage  = input.bool(true,  "LTF Coverage Ratio  [%]",
+     tooltip  = "Actual LTF bars received vs. theoretically expected per HTF bar. <80% = data gap — metric reliability degraded.",
+     group    = grp_metrics)
+show_dominant  = input.bool(true,  "Dominant Zone Label  (appended to % labels)",
+     tooltip  = "Appends the zone with the highest volume share to the upper percentage label on the last bar.",
+     group    = grp_metrics)
+
+color dash_bg_color  = input.color(color.rgb(8, 8, 16, 5),     'Background Color', group = GRP_DASH)
+color dash_txt_color = input.color(color.rgb(230, 230, 245, 0), 'Text Color',       group = GRP_DASH)
+
+show_div      = input.bool(true,  "Show Volume Divergence",                                  group = grp_div)
+div_lookback  = input.int(3,      "Lookback Bars",    minval = 1, maxval = 50,               group = grp_div)
+div_bull_col  = input.color(color.new(#00E5FF, 0),    "Bullish Divergence Color",            group = grp_div)
+div_bear_col  = input.color(color.new(#FF2020, 0),    "Bearish Divergence Color",            group = grp_div)
+
+// ─────────────────────────────────────────────────────────────
+//  FETCH LOWER TIMEFRAME DATA
+// ─────────────────────────────────────────────────────────────
+ltf_highs = request.security_lower_tf(clean_ticker, ltf, high)
+ltf_lows  = request.security_lower_tf(clean_ticker, ltf, low)
+ltf_vols  = request.security_lower_tf(clean_ticker, ltf, volume)
+
+// ─────────────────────────────────────────────────────────────
+//  HTF ZONE BOUNDARIES
+// ─────────────────────────────────────────────────────────────
+float body_top    = math.max(open, close)
+float body_bottom = math.min(open, close)
+
+// ─────────────────────────────────────────────────────────────
+//  VOLUME PROFILE CALCULATION
+// ─────────────────────────────────────────────────────────────
+float upper_vol = 0.0
+float body_vol  = 0.0
+float lower_vol = 0.0
+
+int n = array.size(ltf_highs)
+
+if n > 0
+    for i = 0 to n - 1
+        float lh = array.get(ltf_highs, i)
+        float ll = array.get(ltf_lows,  i)
+        float lv = array.get(ltf_vols,  i)
+        float lr = lh - ll
+
+        if lr > 0.0
+            float _bt_clamped = math.max(ll, body_top)
+            float _bb_clamped = math.max(ll, body_bottom)
+            float _lh_top     = math.min(lh, body_top)
+            float _lh_bot     = math.min(lh, body_bottom)
+
+            float upper_overlap = math.max(0.0, lh - _bt_clamped)
+            float body_overlap  = math.max(0.0, _lh_top - _bt_clamped)
+            float _body_lo      = math.max(ll, body_bottom)
+            float body_ov2      = math.max(0.0, math.min(lh, body_top) - _body_lo)
+            float lower_overlap = math.max(0.0, _lh_bot - ll)
+
+            upper_vol += lv * (upper_overlap / lr)
+            body_vol  += lv * (body_ov2      / lr)
+            lower_vol += lv * (lower_overlap / lr)
+
+        else
+            float mid = (lh + ll) / 2.0
+            if mid >= body_top
+                upper_vol += lv
+            else if mid <= body_bottom
+                lower_vol += lv
+            else
+                body_vol  += lv
+
+float total_vol = upper_vol + body_vol + lower_vol
+
+float _inv_total = total_vol > 0.0 ? 1.0 / total_vol : 0.0
+float upper_ratio = total_vol > 0.0 ? upper_vol * _inv_total : 0.0
+float body_ratio  = total_vol > 0.0 ? body_vol  * _inv_total : 1.0
+float lower_ratio = total_vol > 0.0 ? lower_vol * _inv_total : 0.0
+
+// ─────────────────────────────────────────────────────────────
+//  CANDLE DIRECTION & BODY COLOR
+// ─────────────────────────────────────────────────────────────
+bool  is_bull  = close >= open
+color body_col = is_bull ? bull_color : bear_color
+
+// ─────────────────────────────────────────────────────────────
+//  PAINTER'S ALGORITHM — STACKED COLUMNS
+// ─────────────────────────────────────────────────────────────
+float level_1 = lower_vol
+float level_2 = lower_vol + body_vol
+
+float net_signed     = total_vol > 0.0 ? lower_vol + (is_bull ? body_vol : -body_vol) - upper_vol : na
+color net_signed_col = total_vol > 0.0 and net_signed >= 0 ? bull_color : bear_color
+
+// ─────────────────────────────────────────────────────────────
+//  ADVANCED METRICS
+// ─────────────────────────────────────────────────────────────
+float delta_pressure  = total_vol > 0.0 ? (lower_vol - upper_vol) * _inv_total : 0.0
+
+float wick_asymmetry  = lower_vol > 0.0 ? upper_vol / lower_vol : upper_vol > 0.0 ? 999.0 : 1.0
+
+var float cvd = 0.0
+cvd += nz(net_signed)
+
+float body_efficiency = total_vol > 0.0 ? body_vol * _inv_total * 100.0 : 0.0
+
+float wtb_ratio       = body_vol > 0.0 ? (upper_vol + lower_vol) / body_vol : na
+
+float _ur2 = upper_ratio * upper_ratio
+float _br2 = body_ratio  * body_ratio
+float _lr2 = lower_ratio * lower_ratio
+float hhi  = _ur2 + _br2 + _lr2
+
+bool  wick_exhaust = body_vol > 0.0 and (upper_vol + lower_vol) > body_vol * exhaust_mult
+
+float _price_range = math.max(high[1] - low[1], syminfo.mintick)
+float _body_range  = math.max(open[1], close[1]) - math.min(open[1], close[1])
+float absorb_score = total_vol > 0.0 ?
+     ((upper_vol + lower_vol) * _inv_total) * (1.0 - math.min(_body_range / _price_range, 1.0)) : 0.0
+
+float _tf_secs   = timeframe.in_seconds()
+float _ltf_secs  = timeframe.in_seconds(ltf)
+float ltf_coverage = _ltf_secs > 0.0 and _tf_secs > 0.0 ?
+     math.min(float(n) / (_tf_secs / _ltf_secs) * 100.0, 100.0) : na
+
+string dominant_zone = upper_vol >= body_vol and upper_vol >= lower_vol ? "▲ Upper" :
+     lower_vol >= body_vol and lower_vol >= upper_vol ? "▼ Lower" : "● Body"
+
+// ─────────────────────────────────────────────────────────────
+//  DASHBOARD — SCORE NORMALIZATIONS
+// ─────────────────────────────────────────────────────────────
+float dash_delta_score  = (delta_pressure + 1.0) * 5.0
+float dash_eff_score    = body_efficiency / 10.0
+float dash_absorb_score = absorb_score * 10.0
+float dash_hhi_score    = (hhi - 0.33) / 0.67 * 10.0
+
+string dash_delta_pfx = delta_pressure > 0.0 ? '▲ ' : delta_pressure < 0.0 ? '▼ ' : '● '
+
+color dash_dom_col = dominant_zone == '▲ Upper' ? color.rgb(255, 32, 32) :
+     dominant_zone == '▼ Lower' ? color.rgb(0, 229, 255) : color.rgb(180, 180, 220)
+
+bool  dash_cvd_bull  = cvd >= 0.0
+color dash_cvd_col   = dash_cvd_bull ? color.rgb(0, 255, 100) : color.rgb(255, 50, 70)
+
+color dash_exhaust_col = wick_exhaust ? color.rgb(255, 170, 0) : color.rgb(80, 80, 95)
+
+bool   dash_cov_ok  = not na(ltf_coverage) and ltf_coverage >= 80.0
+color  dash_cov_col = dash_cov_ok ? color.rgb(0, 255, 100) : color.rgb(255, 50, 70)
+string dash_cov_str = na(ltf_coverage) ? '— na' :
+     dash_cov_ok ? str.tostring(math.round(ltf_coverage)) + '% ✓' :
+     str.tostring(math.round(ltf_coverage)) + '% ⚠'
+
+// ─────────────────────────────────────────────────────────────
+//  ZONE PCT 
+// ─────────────────────────────────────────────────────────────
+int _u = math.round(upper_ratio * 100)
+int _l = math.round(lower_ratio * 100)
+int _b = 100 - _u - _l
+
+// ─────────────────────────────────────────────────────────────
+//  DASHBOARD — TABLE
+// ─────────────────────────────────────────────────────────────
+var table dash = table.new(position.top_right, 2, 10,
+     border_width  = 1,
+     border_color  = color.rgb(60, 60, 90, 15),
+     frame_width   = 1,
+     frame_color   = color.rgb(80, 80, 120, 8),
+     force_overlay = true)
+
+color hdrBg = color.rgb(18, 18, 32, 8)
+color altBg = color.rgb(14, 14, 22, 8)
+color oddBg = dash_bg_color
+
+table.cell(dash, 0, 0, '  Vol Profile',
+     bgcolor = hdrBg, text_color = color.rgb(200, 200, 255),
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 0, clean_ticker + ' · ' + timeframe.period,
+     bgcolor = hdrBg, text_color = color.rgb(200, 200, 255),
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 1, '  Delta Pressure',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 1, dash_delta_pfx + f_blockBar(dash_delta_score),
+     bgcolor = altBg, text_color = f_blockColor(dash_delta_score),
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 2, '  Dominant Zone',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 2, dominant_zone,
+     bgcolor = oddBg, text_color = dash_dom_col,
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 3, '  CVD Bias',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 3, dash_cvd_bull ? '▲ Bull CVD' : '▼ Bear CVD',
+     bgcolor = altBg, text_color = dash_cvd_col,
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 4, '  Body Efficiency',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 4, f_blockBar(dash_eff_score),
+     bgcolor = oddBg, text_color = f_blockColor(dash_eff_score),
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 5, '  Absorption',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 5, f_blockBar(dash_absorb_score),
+     bgcolor = altBg, text_color = f_blockColor(dash_absorb_score),
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 6, '  Wick Exhaustion',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 6, wick_exhaust ? '⚡ ACTIVE' : '○ None',
+     bgcolor = oddBg, text_color = dash_exhaust_col,
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 7, '  Zone Concentration',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 7, f_blockBar(dash_hhi_score),
+     bgcolor = altBg, text_color = f_blockColor(dash_hhi_score),
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 8, '  LTF Coverage',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 8, dash_cov_str,
+     bgcolor = oddBg, text_color = dash_cov_col,
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 9, '  Zone Ratios',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left, text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 9,
+     '▲ ' + str.tostring(_u) + '%  ● ' + str.tostring(_b) + '%  ▼ ' + str.tostring(_l) + '%',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+// ─────────────────────────────────────────────────────────────
+//  PRICE CANDLE COLORING
+// ─────────────────────────────────────────────────────────────
+float _sig_pos = bar_col_mode == "Net Signed Volume" ?
+     (total_vol > 0.0 ? nz(net_signed) / total_vol : 0.0) :
+     (is_bull ? 1.0 : -1.0)
+
+color _gc = bar_col_mode != "Off" ?
+     color.from_gradient(_sig_pos, -1.0, 1.0, bar_bear_col, bar_bull_col) : na
+
+int   _transp = bar_dyn_transp ? int(math.round((1.0 - math.abs(_sig_pos)) * 75)) : 0
+color _cc     = bar_col_mode != "Off" ? color.new(_gc, _transp) : na
+
+bool _col_on = bar_col_mode != "Off"
+plotcandle(_col_on ? open  : na,
+           _col_on ? high  : na,
+           _col_on ? low   : na,
+           _col_on ? close : na,
+           title         = "Price Candles",
+           color         = _cc,
+           wickcolor     = _cc,
+           bordercolor   = _cc,
+           force_overlay = true)
+
+bgcolor(show_exhaust and wick_exhaust and n > 0 ? color.new(#7B2FFF, 88) : na,
+     title        = "Wick Exhaustion Highlight",
+     force_overlay = true)
+
+plot(show_signed ? na : (total_vol > 0.0 ? total_vol : na),
+     title    = "Upper Wick Volume (Visual)",
+     style    = plot.style_columns,
+     color    = upper_color,
+     histbase = 0,
+     display  = display.pane)
+
+plot(show_signed ? na : (level_2 > 0.0 ? level_2 : na),
+     title    = "Body Volume (Visual)",
+     style    = plot.style_columns,
+     color    = body_col,
+     histbase = 0,
+     display  = display.pane)
+
+plot(show_signed ? na : (level_1 > 0.0 ? level_1 : na),
+     title    = "Lower Wick Volume (Visual)",
+     style    = plot.style_columns,
+     color    = lower_color,
+     histbase = 0,
+     display  = display.pane)
+
+plot(show_signed ? net_signed : na,
+     title    = "Net Signed Volume",
+     style    = plot.style_columns,
+     color    = net_signed_col,
+     histbase = 0,
+     display  = display.pane)
+
+
+// ─────────────────────────────────────────────────────────────
+//  DATA WINDOW & STATUS LINE
+// ─────────────────────────────────────────────────────────────
+plot(_u, "Upper Wick %",  display = display.data_window, color = upper_color)
+plot(_b, "Body %",        display = display.data_window, color = body_col)
+plot(_l, "Lower Wick %",  display = display.data_window, color = lower_color)
+
+plot(upper_vol, "Upper Wick Vol", display = display.data_window + display.status_line + display.price_scale, color = upper_color)
+plot(body_vol,  "Body Vol",       display = display.data_window + display.status_line + display.price_scale, color = body_col)
+plot(lower_vol, "Lower Wick Vol", display = display.data_window + display.status_line + display.price_scale, color = lower_color)
+plot(n,         "LTF Bars Used",  display = display.data_window, color = color.gray)
+
+// ─────────────────────────────────────────────────────────────
+//  ADVANCED METRICS — DATA WINDOW
+// ─────────────────────────────────────────────────────────────
+plot(show_delta      ? delta_pressure  : na, "Delta Pressure Index",
+     display = display.data_window, color = color.yellow)
+plot(show_asymmetry  ? wick_asymmetry  : na, "Wick Asymmetry Ratio  (U÷L)",
+     display = display.data_window, color = color.orange)
+plot(show_cvd        ? cvd             : na, "Cumulative Net Signed (CVD)",
+     display = display.data_window + display.status_line, color = net_signed_col)
+plot(show_efficiency ? body_efficiency : na, "Body Efficiency %",
+     display = display.data_window, color = body_col)
+plot(show_wtb        ? wtb_ratio       : na, "Wick-to-Body Ratio",
+     display = display.data_window, color = color.gray)
+plot(show_hhi        ? hhi             : na, "Volume Concentration (HHI)",
+     display = display.data_window, color = color.purple)
+plot(show_exhaust    ? (wick_exhaust ? 1.0 : 0.0) : na, "Wick Exhaustion  (1=Active)",
+     display = display.data_window, color = color.orange)
+plot(show_absorb     ? absorb_score    : na, "Absorption Score",
+     display = display.data_window, color = color.white)
+plot(show_coverage   ? ltf_coverage    : na, "LTF Coverage %",
+     display = display.data_window, color = color.gray)
+
+int   _lb        = div_lookback
+float _vol_cur   = total_vol[1]
+float _vol_prev  = total_vol[1 + _lb]
+float _high_cur  = high[1]
+float _high_prev = high[1 + _lb]
+
+bool _bull_div = show_div and _vol_cur > _vol_prev and _high_cur < _high_prev
+bool _bear_div = show_div and _vol_cur < _vol_prev and _high_cur > _high_prev
+
+var label _div_lbl = na
+label.delete(_div_lbl)
+_div_lbl := na
+
+if _bull_div
+    _div_lbl := label.new(
+         x             = bar_index,
+         y             = low[1] - (high[1] - low[1]) * 0.5,
+         text          = "Vol ▲Div",
+         style         = label.style_label_up,
+         color         = color.new(div_bull_col, 70),
+         textcolor     = div_bull_col,
+         size          = size.small,
+         force_overlay = true)
+
+else if _bear_div
+    _div_lbl := label.new(
+         x             = bar_index,
+         y             = high[1] + (high[1] - low[1]) * 0.5,
+         text          = "Vol ▼Div",
+         style         = label.style_label_down,
+         color         = color.new(div_bear_col, 70),
+         textcolor     = div_bear_col,
+         size          = size.small,
+         force_overlay = true)

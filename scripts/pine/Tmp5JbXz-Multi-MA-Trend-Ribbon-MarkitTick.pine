@@ -1,0 +1,448 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator('Multi-MA Trend Ribbon [MarkitTick]', overlay = true, max_bars_back = 500)
+
+// ── INPUTS ──────────────────────────────────────────────────
+string GRP_MA  = '⚙️ Core'
+string GRP_RIB = '🌊 Ribbon'
+string GRP_ADV = '🔧 Advanced'
+string GRP_FLT = '🕯️ Filters'
+string GRP_TRD = '📐 Trade Tools'
+string GRP_VIS = '🎨 Visuals'
+string GRP_DSH = '📊 Dashboard'
+string GRP_ALR = '🔔 Alerts'
+string GRP_CLR = '🌈 Colors'
+string i_type = input.string('HMA', 'Type', options = ['SMA', 'EMA', 'RMA', 'WMA', 'DWMA', 'TWMA', 'VWMA', 'DVWMA', 'TVWMA', 'HMA', 'EHMA', 'THMA', 'DEMA', 'TEMA', 'ZLEMA', 'TRIMA', 'ALMA', 'LSMA', 'SWMA', 'KAMA', 'FRAMA', 'VIDYA', 'JMA', 'T3', 'McGinley', 'Kalman', 'LLAMA', 'SSF', 'Median'], group = GRP_MA)
+float i_src = input.source(close, 'Src', group = GRP_MA)
+int i_base = input.int(20, 'Base', minval = 2, maxval = 1000, group = GRP_MA)
+int i_step = input.int(10, 'Step', minval = 1, maxval = 200, group = GRP_MA)
+int i_off = input.int(0, 'Shift', minval = -500, maxval = 500, group = GRP_MA)
+int i_lines = input.int(6, 'Lines', minval = 2, maxval = 8, group = GRP_RIB)
+float i_almaOff = input.float(0.85, 'ALMA Off', minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_ADV)
+float i_almaSig = input.float(6.0, 'ALMA Sig', minval = 1.0, maxval = 20.0, step = 0.5, group = GRP_ADV)
+float i_t3vf = input.float(0.7, 'T3 Vf', minval = 0.01, maxval = 1.0, step = 0.05, group = GRP_ADV)
+int i_kFast = input.int(2, 'KAMA Fast', minval = 1, maxval = 50, group = GRP_ADV)
+int i_kSlow = input.int(30, 'KAMA Slow', minval = 2, maxval = 200, group = GRP_ADV)
+float i_jPhase = input.float(50.0, 'JMA Phase', minval = -100.0, maxval = 100.0, step = 5.0, group = GRP_ADV)
+float i_jPow = input.float(2.0, 'JMA Pow', minval = 1.0, maxval = 5.0, step = 0.5, group = GRP_ADV)
+float i_kalQ = input.float(1.0, 'Kal Q', minval = 0.001, maxval = 100.0, step = 0.1, group = GRP_ADV)
+float i_kalR = input.float(10.0, 'Kal R', minval = 0.001, maxval = 500.0, step = 0.5, group = GRP_ADV)
+int i_llLb = input.int(30, 'LLAMA LB', minval = 5, maxval = 200, group = GRP_ADV)
+float i_llRng = input.float(0.5, 'LLAMA Rng', minval = 0.1, maxval = 0.9, step = 0.05, group = GRP_ADV)
+bool i_fAdx = input.bool(false, 'ADX', group = GRP_FLT, inline = 'A', tooltip = 'Require trend strength above Min')
+int i_adxLen = input.int(14, 'Len', minval = 1, maxval = 100, group = GRP_FLT, inline = 'A')
+float i_adxMin = input.float(20.0, 'Min', minval = 0.0, maxval = 100.0, step = 0.5, group = GRP_FLT, inline = 'A')
+bool i_fHtf = input.bool(false, 'HTF', group = GRP_FLT, inline = 'H', tooltip = 'Require HTF ribbon bias to agree')
+string i_htfTf = input.timeframe('240', 'TF', group = GRP_FLT, inline = 'H')
+bool i_fVol = input.bool(false, 'Vol', group = GRP_FLT, inline = 'V', tooltip = 'Require volume above Mult × average')
+int i_volLen = input.int(20, 'Len', minval = 1, maxval = 500, group = GRP_FLT, inline = 'V')
+float i_volMult = input.float(1.5, 'Mult', minval = 0.1, maxval = 10.0, step = 0.1, group = GRP_FLT, inline = 'V')
+bool i_lockSignal = input.bool(false, '🔒 Lock Signal', group = GRP_TRD, tooltip = 'Freeze current signal · block new ones')
+bool i_grad = input.bool(true, 'Trend Col', group = GRP_VIS)
+bool i_fill = input.bool(true, 'Fill', group = GRP_VIS, inline = 'F')
+int i_fillT = input.int(88, 'T', minval = 0, maxval = 100, group = GRP_VIS, inline = 'F')
+int i_lw = input.int(2, 'Width', minval = 1, maxval = 5, group = GRP_VIS)
+bool i_bars = input.bool(true, 'Bars', group = GRP_VIS)
+bool i_sig = input.bool(true, 'Signals', group = GRP_VIS)
+bool i_dash = input.bool(true, 'Show', group = GRP_DSH)
+string i_dashPos = input.string('Top Right', 'Pos', options = ['Top Right', 'Top Left', 'Bottom Right', 'Bottom Left', 'Middle Right'], group = GRP_DSH)
+bool i_alFlip = input.bool(true, 'Flip', group = GRP_ALR)
+bool i_alCross = input.bool(true, 'Cross', group = GRP_ALR)
+string i_actionLong = input.string('long', '↑ Long Action', group = GRP_ALR)
+string i_actionShort = input.string('short', '↓ Short Action', group = GRP_ALR)
+string i_actionCloseLong = input.string('closelong', '✕ Close Long Action', group = GRP_ALR)
+string i_actionCloseShort = input.string('closeshort', '✕ Close Short Action', group = GRP_ALR)
+string i_actionCrossUp = input.string('crossup', '⤴ Cross Up Action', group = GRP_ALR)
+string i_actionCrossDn = input.string('crossdn', '⤵ Cross Dn Action', group = GRP_ALR)
+color i_cBull = input.color(color.rgb(0, 230, 118), 'Bull', group = GRP_CLR, inline = 'T')
+color i_cBear = input.color(color.rgb(255, 82, 82), 'Bear', group = GRP_CLR, inline = 'T')
+color i_cFast = input.color(color.rgb(0, 229, 255), 'Fast', group = GRP_CLR, inline = 'S')
+color i_cSlow = input.color(color.rgb(124, 77, 255), 'Slow', group = GRP_CLR, inline = 'S')
+color C_DASH_HDR = input.color(color.new(#3a2a6d, 55), 'Dash Hdr', group = GRP_CLR)
+color C_DASH_BG = input.color(color.new(#0a0f1a, 10), 'Dash BG', group = GRP_CLR)
+color C_DASH_TXT = input.color(color.new(#ffffff, 0), 'Dash Txt', group = GRP_CLR)
+color i_cCndBull = input.color(color.rgb(0, 230, 118), 'Cndl Bull', group = GRP_CLR, inline = 'C')
+color i_cCndBear = input.color(color.rgb(255, 82, 82), 'Bear', group = GRP_CLR, inline = 'C')
+color i_cCndBdrBull = input.color(color.rgb(0, 230, 118), 'Cndl Bdr Bull', group = GRP_CLR, inline = 'D')
+color i_cCndBdrBear = input.color(color.rgb(255, 82, 82), 'Bear', group = GRP_CLR, inline = 'D')
+color C_BAR_HI = input.color(color.new(#26a69a, 0), 'Bar Hi', group = GRP_CLR, inline = 'B')
+color C_BAR_MID = input.color(color.new(#f9a825, 0), 'Mid', group = GRP_CLR, inline = 'B')
+color C_BAR_LO = input.color(color.new(#ef5350, 0), 'Lo', group = GRP_CLR, inline = 'B')
+
+// ── CORE LOGIC ──────────────────────────────────────────────
+f_ema(series float src, simple int len) =>
+    float a = 2.0 / (len + 1)
+    var float e = na
+    e := na(e) ? src : a * src + (1.0 - a) * e
+    e
+f_zlema(series float src, simple int len) =>
+    simple int lag = (len - 1) / 2
+    float d = 2.0 * src - src[lag]
+    f_ema(d, len)
+f_ehma(series float src, simple int len) =>
+    simple int lh = math.max(math.round(len / 2.0), 1)
+    simple int ls = math.max(math.round(math.sqrt(len)), 1)
+    f_ema(2.0 * f_ema(src, lh) - f_ema(src, len), ls)
+f_thma(series float src, simple int len) =>
+    simple int l3 = math.max(math.round(len / 3.0), 1)
+    simple int l2 = math.max(math.round(len / 2.0), 1)
+    float w3 = ta.wma(src, l3)
+    float w2 = ta.wma(src, l2)
+    float w1 = ta.wma(src, len)
+    ta.wma(w3 * 3.0 - w2 - w1, len)
+f_t3(series float src, simple int len, simple float vf) =>
+    float g1 = f_ema(src, len)
+    float g2 = f_ema(g1, len)
+    float g3 = f_ema(g2, len)
+    float g4 = f_ema(g3, len)
+    float g5 = f_ema(g4, len)
+    float g6 = f_ema(g5, len)
+    float v2 = vf * vf
+    float v3 = v2 * vf
+    float c1 = -v3
+    float c2 = 3.0 * v2 + 3.0 * v3
+    float c3 = -6.0 * v2 - 3.0 * vf - 3.0 * v3
+    float c4 = 1.0 + 3.0 * vf + v3 + 3.0 * v2
+    c1 * g6 + c2 * g5 + c3 * g4 + c4 * g3
+f_kama(series float src, simple int len, simple int fst, simple int slw) =>
+    float mom = math.abs(src - src[len])
+    float vol = math.sum(math.abs(src - src[1]), len)
+    float er = vol > 0.0 ? mom / vol : 0.0
+    float fa = 2.0 / (fst + 1)
+    float sa = 2.0 / (slw + 1)
+    float sc = math.pow(er * (fa - sa) + sa, 2)
+    var float k = na
+    k := na(k) ? src : k + sc * (src - k)
+    k
+f_vidya(series float src, simple int len) =>
+    float cm = ta.cmo(src, len)
+    float a = 2.0 / (len + 1) * math.abs(nz(cm)) / 100.0
+    var float v = na
+    v := na(v) ? src : a * src + (1.0 - a) * v
+    v
+f_frama(series float src, simple int len) =>
+    simple int n = len % 2 == 0 ? len : len + 1
+    simple int n2 = math.max(n / 2, 1)
+    float hh1 = ta.highest(high, n2)
+    float ll1 = ta.lowest(low, n2)
+    float hh3 = ta.highest(high, n)
+    float ll3 = ta.lowest(low, n)
+    float hh2 = hh1[n2]
+    float ll2 = ll1[n2]
+    float d1 = (hh1 - ll1) / n2
+    float d2 = (hh2 - ll2) / n2
+    float d3 = (hh3 - ll3) / n
+    bool ok = d1 > 0.0 and d2 > 0.0 and d3 > 0.0
+    float dim = ok ? (math.log(d1 + d2) - math.log(d3)) / math.log(2.0) : 1.0
+    float raw = math.exp(-4.6 * (dim - 1.0))
+    float sc = math.max(math.min(raw, 1.0), 0.01)
+    var float f = na
+    f := na(f) ? src : sc * src + (1.0 - sc) * f
+    f
+f_jma(series float src, simple int len, simple float ph, simple float pw) =>
+    float pr = ph < -100.0 ? 0.5 : ph > 100.0 ? 2.5 : ph / 100.0 + 1.5
+    float bt = 0.45 * (len - 1) / (0.45 * (len - 1) + 2.0)
+    float al = math.pow(bt, pw)
+    var float x0 = 0.0
+    var float x1 = 0.0
+    var float x2 = 0.0
+    var float jm = 0.0
+    x0 := (1.0 - al) * src + al * nz(x0[1])
+    x1 := (src - x0) * (1.0 - bt) + bt * nz(x1[1])
+    x2 := (x0 + pr * x1 - nz(jm[1])) * math.pow(1.0 - al, 2) + math.pow(al, 2) * nz(x2[1])
+    jm := x2 + nz(jm[1])
+    jm
+f_mcg(series float src, simple int len) =>
+    var float m = na
+    float rt = src / nz(m, src)
+    float dn = len * math.pow(nz(rt, 1.0), 4)
+    m := na(m) ? src : m + (src - m) / math.max(dn, 1e-10)
+    m
+f_kalman(series float src, simple int len, simple float q, simple float r) =>
+    var float st = na
+    var float pc = 1.0
+    float qs = q / len
+    float pri = na(st) ? src : st
+    float pp = nz(pc, 1.0) + qs
+    float kg = pp / math.max(pp + r, 1e-10)
+    st := pri + kg * (src - pri)
+    pc := (1.0 - kg) * pp
+    st
+f_ssf(series float src, simple int len) =>
+    float ar = math.exp(-1.414 * 3.14159265 / math.max(len, 2))
+    float b1 = 2.0 * ar * math.cos(1.414 * 3.14159265 / math.max(len, 2))
+    float c2 = b1
+    float c3 = -ar * ar
+    float c1 = 1.0 - c2 - c3
+    var float s = na
+    float p1 = nz(s, src)
+    float p2 = nz(s[1], src)
+    s := c1 * (src + nz(src[1], src)) * 0.5 + c2 * p1 + c3 * p2
+    s
+f_llamaPred(simple int lb) =>
+    float f1 = ta.rsi(close, 14)
+    float f2 = ta.rsi(close, 28)
+    float nf1 = nz(f1)
+    float nf2 = nz(f2)
+    float acc = 0.0
+    float wgt = 0.0
+    for i = 1 to lb
+        float ds = math.log(1.0 + math.abs(nf1 - nz(f1[i]))) + math.log(1.0 + math.abs(nf2 - nz(f2[i])))
+        float w = 1.0 / (1.0 + ds)
+        float lb1 = close[i - 1] > close[i] ? 1.0 : close[i - 1] < close[i] ? -1.0 : 0.0
+        acc += w * lb1
+        wgt += w
+    wgt > 0.0 ? acc / wgt : 0.0
+f_llama(series float src, series float dyn) =>
+    float a = 2.0 / (math.max(dyn, 1.0) + 1.0)
+    var float l = na
+    l := na(l) ? src : a * src + (1.0 - a) * l
+    l
+f_dyn(simple int len, series float pred, simple float rng) =>
+    float lo = len * (1.0 - rng)
+    float hi = len * (1.0 + rng)
+    math.max(lo + (hi - lo) * (nz(pred) + 1.0) * 0.5, 2.0)
+f_ma(series float src, simple int len, series float dyn, series float swm) =>
+    float _sma = ta.sma(src, len)
+    float _tri = ta.sma(_sma, len)
+    float _rma = ta.rma(src, len)
+    float _wma = ta.wma(src, len)
+    float _dwma = ta.wma(_wma, len)
+    float _twma = ta.wma(_dwma, len)
+    float _vwma = ta.vwma(src, len)
+    float _dvwma = ta.vwma(_vwma, len)
+    float _tvwma = ta.vwma(_dvwma, len)
+    float _hma = ta.hma(src, len)
+    float _alma = ta.alma(src, len, i_almaOff, i_almaSig)
+    float _lsma = ta.linreg(src, len, 0)
+    float _med = ta.median(src, len)
+    float _e1 = f_ema(src, len)
+    float _e2 = f_ema(_e1, len)
+    float _e3 = f_ema(_e2, len)
+    float _dema = 2.0 * _e1 - _e2
+    float _tema = 3.0 * _e1 - 3.0 * _e2 + _e3
+    float _zlema = f_zlema(src, len)
+    float _ehma = f_ehma(src, len)
+    float _thma = f_thma(src, len)
+    float _kama = f_kama(src, len, i_kFast, i_kSlow)
+    float _frama = f_frama(src, len)
+    float _vidya = f_vidya(src, len)
+    float _jma = f_jma(src, len, i_jPhase, i_jPow)
+    float _t3 = f_t3(src, len, i_t3vf)
+    float _mcg = f_mcg(src, len)
+    float _kal = f_kalman(src, len, i_kalQ, i_kalR)
+    float _llama = f_llama(src, dyn)
+    float _ssf = f_ssf(src, len)
+    switch i_type
+        'SMA' => _sma
+        'EMA' => _e1
+        'RMA' => _rma
+        'WMA' => _wma
+        'DWMA' => _dwma
+        'TWMA' => _twma
+        'VWMA' => _vwma
+        'DVWMA' => _dvwma
+        'TVWMA' => _tvwma
+        'HMA' => _hma
+        'EHMA' => _ehma
+        'THMA' => _thma
+        'DEMA' => _dema
+        'TEMA' => _tema
+        'ZLEMA' => _zlema
+        'TRIMA' => _tri
+        'ALMA' => _alma
+        'LSMA' => _lsma
+        'SWMA' => swm
+        'KAMA' => _kama
+        'FRAMA' => _frama
+        'VIDYA' => _vidya
+        'JMA' => _jma
+        'T3' => _t3
+        'McGinley' => _mcg
+        'Kalman' => _kal
+        'LLAMA' => _llama
+        'SSF' => _ssf
+        'Median' => _med
+        => _sma
+f_htfBias() =>
+    float _sw = ta.swma(i_src)
+    float _pd = f_llamaPred(i_llLb)
+    simple int _lf = i_base
+    simple int _ls = i_base + i_step * (i_lines - 1)
+    float _df = f_dyn(_lf, _pd, i_llRng)
+    float _ds = f_dyn(_ls, _pd, i_llRng)
+    f_ma(i_src, _lf, _df, _sw) > f_ma(i_src, _ls, _ds, _sw)
+simple int L1 = i_base
+simple int L2 = i_base + i_step
+simple int L3 = i_base + i_step * 2
+simple int L4 = i_base + i_step * 3
+simple int L5 = i_base + i_step * 4
+simple int L6 = i_base + i_step * 5
+simple int L7 = i_base + i_step * 6
+simple int L8 = i_base + i_step * 7
+float swmaG = ta.swma(i_src)
+float llPred = f_llamaPred(i_llLb)
+float D1 = f_dyn(L1, llPred, i_llRng)
+float D2 = f_dyn(L2, llPred, i_llRng)
+float D3 = f_dyn(L3, llPred, i_llRng)
+float D4 = f_dyn(L4, llPred, i_llRng)
+float D5 = f_dyn(L5, llPred, i_llRng)
+float D6 = f_dyn(L6, llPred, i_llRng)
+float D7 = f_dyn(L7, llPred, i_llRng)
+float D8 = f_dyn(L8, llPred, i_llRng)
+float M1 = f_ma(i_src, L1, D1, swmaG)
+float M2 = f_ma(i_src, L2, D2, swmaG)
+float M3 = f_ma(i_src, L3, D3, swmaG)
+float M4 = f_ma(i_src, L4, D4, swmaG)
+float M5 = f_ma(i_src, L5, D5, swmaG)
+float M6 = f_ma(i_src, L6, D6, swmaG)
+float M7 = f_ma(i_src, L7, D7, swmaG)
+float M8 = f_ma(i_src, L8, D8, swmaG)
+float MS = i_lines >= 8 ? M8 : i_lines == 7 ? M7 : i_lines == 6 ? M6 : i_lines == 5 ? M5 : i_lines == 4 ? M4 : i_lines == 3 ? M3 : M2
+bool bull = M1 > MS
+bool bullC = M1[1] > MS[1]
+bool bullP = M1[2] > MS[2]
+[_diP, _diM, _adx] = ta.dmi(i_adxLen, i_adxLen)
+float _volAvg = ta.sma(volume, i_volLen)
+bool _htfBull = request.security(syminfo.tickerid, i_htfTf, f_htfBias()[1], lookahead = barmerge.lookahead_on)
+bool _fAdxOk = not i_fAdx or nz(_adx[1]) >= i_adxMin
+bool _fVolOk = not i_fVol or nz(volume[1]) >= nz(_volAvg[1]) * i_volMult
+bool _fLong = _fAdxOk and _fVolOk and (not i_fHtf or _htfBull)
+bool _fShort = _fAdxOk and _fVolOk and (not i_fHtf or not _htfBull)
+bool flipUp = bullC and not bullP and _fLong
+bool flipDn = not bullC and bullP and _fShort
+bool xUp = close[1] > M1[1] and close[2] <= M1[2] and _fLong
+bool xDn = close[1] < M1[1] and close[2] >= M1[2] and _fShort
+string _biasTxt = bullC ? 'BULL' : 'BEAR'
+bool _locked = i_lockSignal and barstate.islast
+
+// ── ALERTS ──────────────────────────────────────────────────
+string _entryStr = str.tostring(close[1], format.mintick)
+string _longInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","entry":"{3}","ma":"{4}","bias":"{5}"', i_actionLong, syminfo.tickerid, timeframe.period, _entryStr, i_type, _biasTxt)
+string longPayload = '{' + _longInner + '}'
+string _shortInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","entry":"{3}","ma":"{4}","bias":"{5}"', i_actionShort, syminfo.tickerid, timeframe.period, _entryStr, i_type, _biasTxt)
+string shortPayload = '{' + _shortInner + '}'
+string _clLongInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","entry":"{3}","ma":"{4}","bias":"{5}"', i_actionCloseLong, syminfo.tickerid, timeframe.period, _entryStr, i_type, _biasTxt)
+string closeLongPayload = '{' + _clLongInner + '}'
+string _clShortInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","entry":"{3}","ma":"{4}","bias":"{5}"', i_actionCloseShort, syminfo.tickerid, timeframe.period, _entryStr, i_type, _biasTxt)
+string closeShortPayload = '{' + _clShortInner + '}'
+string _xUpInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","entry":"{3}","ma":"{4}","bias":"{5}"', i_actionCrossUp, syminfo.tickerid, timeframe.period, _entryStr, i_type, _biasTxt)
+string crossUpPayload = '{' + _xUpInner + '}'
+string _xDnInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","entry":"{3}","ma":"{4}","bias":"{5}"', i_actionCrossDn, syminfo.tickerid, timeframe.period, _entryStr, i_type, _biasTxt)
+string crossDnPayload = '{' + _xDnInner + '}'
+if i_alFlip and flipUp and barstate.isconfirmed and not _locked
+    alert(longPayload, alert.freq_once_per_bar_close)
+if i_alFlip and flipDn and barstate.isconfirmed and not _locked
+    alert(shortPayload, alert.freq_once_per_bar_close)
+if i_alFlip and flipDn and barstate.isconfirmed and not _locked
+    alert(closeLongPayload, alert.freq_once_per_bar_close)
+if i_alFlip and flipUp and barstate.isconfirmed and not _locked
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+if i_alCross and xUp and barstate.isconfirmed and not _locked
+    alert(crossUpPayload, alert.freq_once_per_bar_close)
+if i_alCross and xDn and barstate.isconfirmed and not _locked
+    alert(crossDnPayload, alert.freq_once_per_bar_close)
+alertcondition(flipUp and barstate.isconfirmed, 'BUY Signal', 'MarkitTick — Ribbon Bull Flip Fired')
+alertcondition(flipDn and barstate.isconfirmed, 'SELL Signal', 'MarkitTick — Ribbon Bear Flip Fired')
+alertcondition(flipDn and barstate.isconfirmed, 'Close Long Signal', 'MarkitTick — Close Long')
+alertcondition(flipUp and barstate.isconfirmed, 'Close Short Signal', 'MarkitTick — Close Short')
+alertcondition(xUp and barstate.isconfirmed, 'Cross Above Signal', 'MarkitTick — Cross Above MA1')
+alertcondition(xDn and barstate.isconfirmed, 'Cross Below Signal', 'MarkitTick — Cross Below MA1')
+
+// ── VISUALS ─────────────────────────────────────────────────
+color cTrend = bull ? i_cBull : i_cBear
+color cTail = color.new(cTrend, 55)
+color C1 = i_grad ? color.from_gradient(1, 1, i_lines, cTrend, cTail) : color.from_gradient(1, 1, i_lines, i_cFast, i_cSlow)
+color C2 = i_grad ? color.from_gradient(2, 1, i_lines, cTrend, cTail) : color.from_gradient(2, 1, i_lines, i_cFast, i_cSlow)
+color C3 = i_grad ? color.from_gradient(3, 1, i_lines, cTrend, cTail) : color.from_gradient(3, 1, i_lines, i_cFast, i_cSlow)
+color C4 = i_grad ? color.from_gradient(4, 1, i_lines, cTrend, cTail) : color.from_gradient(4, 1, i_lines, i_cFast, i_cSlow)
+color C5 = i_grad ? color.from_gradient(5, 1, i_lines, cTrend, cTail) : color.from_gradient(5, 1, i_lines, i_cFast, i_cSlow)
+color C6 = i_grad ? color.from_gradient(6, 1, i_lines, cTrend, cTail) : color.from_gradient(6, 1, i_lines, i_cFast, i_cSlow)
+color C7 = i_grad ? color.from_gradient(7, 1, i_lines, cTrend, cTail) : color.from_gradient(7, 1, i_lines, i_cFast, i_cSlow)
+color C8 = i_grad ? color.from_gradient(8, 1, i_lines, cTrend, cTail) : color.from_gradient(8, 1, i_lines, i_cFast, i_cSlow)
+P1 = plot(i_lines >= 1 ? M1 : na, 'MA1', C1, i_lw, offset = i_off)
+P2 = plot(i_lines >= 2 ? M2 : na, 'MA2', C2, i_lw, offset = i_off)
+P3 = plot(i_lines >= 3 ? M3 : na, 'MA3', C3, i_lw, offset = i_off)
+P4 = plot(i_lines >= 4 ? M4 : na, 'MA4', C4, i_lw, offset = i_off)
+P5 = plot(i_lines >= 5 ? M5 : na, 'MA5', C5, i_lw, offset = i_off)
+P6 = plot(i_lines >= 6 ? M6 : na, 'MA6', C6, i_lw, offset = i_off)
+P7 = plot(i_lines >= 7 ? M7 : na, 'MA7', C7, i_lw, offset = i_off)
+P8 = plot(i_lines >= 8 ? M8 : na, 'MA8', C8, i_lw, offset = i_off)
+color cFill = color.new(cTrend, i_fill ? i_fillT : 100)
+fill(P1, P2, color = cFill, title = 'F1')
+fill(P2, P3, color = cFill, title = 'F2')
+fill(P3, P4, color = cFill, title = 'F3')
+fill(P4, P5, color = cFill, title = 'F4')
+fill(P5, P6, color = cFill, title = 'F5')
+fill(P6, P7, color = cFill, title = 'F6')
+fill(P7, P8, color = cFill, title = 'F7')
+plotshape(i_sig and flipUp and not _locked, 'Bull Flip', shape.triangleup, location.belowbar, i_cBull, offset = -1, size = size.small)
+plotshape(i_sig and flipDn and not _locked, 'Bear Flip', shape.triangledown, location.abovebar, i_cBear, offset = -1, size = size.small)
+color bodyColor = bull ? i_cCndBull : i_cCndBear
+color borderColor = bull ? i_cCndBdrBull : i_cCndBdrBear
+plotcandle(i_bars ? open : na, i_bars ? high : na, i_bars ? low : na, i_bars ? close : na, title = 'Heatmap Candles', color = bodyColor, wickcolor = borderColor, bordercolor = borderColor)
+
+// ── DASHBOARD ───────────────────────────────────────────────
+f_bar(float val, float maxVal) =>
+    float ratio = math.min(val / maxVal, 1.0)
+    int filled = math.round(ratio * 10)
+    string bar = ''
+    for i = 1 to 10
+        bar += i <= filled ? '█' : '░'
+    bar + '  ' + str.tostring(math.round(ratio * 100)) + '%'
+f_barColor(float pct) =>
+    pct >= 0.66 ? C_BAR_HI : pct >= 0.33 ? C_BAR_MID : C_BAR_LO
+string _dPos = i_dashPos == 'Top Left' ? position.top_left : i_dashPos == 'Bottom Right' ? position.bottom_right : i_dashPos == 'Bottom Left' ? position.bottom_left : i_dashPos == 'Middle Right' ? position.middle_right : position.top_right
+var table dash = table.new(_dPos, 2, 18, bgcolor = C_DASH_BG, border_width = 1, border_color = color.new(#2a3040, 40), frame_width = 1, frame_color = color.new(#3a2a6d, 40))
+color _rowA = C_DASH_BG
+color _rowB = color.new(C_DASH_BG, 40)
+color _lblC = color.new(C_DASH_TXT, 25)
+color _biasC = bullC ? i_cBull : i_cBear
+float _linePct = i_lines / 8.0
+float _predPct = (nz(llPred) + 1.0) / 2.0
+float _spread = M1 - MS
+int _fCount = (i_fAdx ? 1 : 0) + (i_fHtf ? 1 : 0) + (i_fVol ? 1 : 0)
+float _adxV = nz(_adx[1])
+float _volAvgP = nz(_volAvg[1])
+float _volRatio = _volAvgP > 0.0 ? nz(volume[1]) / _volAvgP : 0.0
+float _diPp = nz(_diP[1])
+float _diMp = nz(_diM[1])
+if i_dash
+    table.cell(dash, 0, 0, 'MARP', text_color = C_DASH_TXT, text_size = size.small, text_halign = text.align_left, bgcolor = C_DASH_HDR)
+    table.cell(dash, 1, 0, syminfo.ticker + '  ·  ' + timeframe.period, text_color = C_DASH_TXT, text_size = size.small, text_halign = text.align_right, bgcolor = C_DASH_HDR)
+    table.cell(dash, 0, 1, '  Lock', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 1, i_lockSignal ? 'ACTIVE  ' : 'OFF  ', text_color = i_lockSignal ? i_cBear : C_DASH_TXT, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 2, '  Bias', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 2, _biasTxt + '  ', text_color = _biasC, text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 3, '  MA Type', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 3, i_type + '  ', text_color = C_DASH_TXT, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 4, '  Base Len', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 4, str.tostring(i_base) + '  ', text_color = C_DASH_TXT, text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 5, '  Step', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 5, str.tostring(i_step) + '  ', text_color = C_DASH_TXT, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 6, '  Lines', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 6, f_bar(i_lines, 8.0) + '  ', text_color = f_barColor(_linePct), text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 7, '  Fast MA', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 7, str.tostring(M1, format.mintick) + '  ', text_color = _biasC, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 8, '  Slow MA', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 8, str.tostring(MS, format.mintick) + '  ', text_color = _biasC, text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 9, '  Spread', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 9, str.tostring(_spread, format.mintick) + '  ', text_color = _spread >= 0.0 ? i_cBull : i_cBear, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 10, '  Trend Pred', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 10, f_bar(nz(llPred) + 1.0, 2.0) + '  ', text_color = f_barColor(_predPct), text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 11, '  Last Flip', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 11, (flipUp ? 'UP' : flipDn ? 'DOWN' : '—') + '  ', text_color = flipUp ? i_cBull : flipDn ? i_cBear : C_DASH_TXT, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 12, '  Price Cross', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 12, (xUp ? 'ABOVE' : xDn ? 'BELOW' : '—') + '  ', text_color = xUp ? i_cBull : xDn ? i_cBear : C_DASH_TXT, text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 13, '  Filters', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 13, f_bar(_fCount, 3.0) + '  ', text_color = f_barColor(_fCount / 3.0), text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 14, '  ADX', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 14, f_bar(_adxV, 100.0) + '  ', text_color = f_barColor(_adxV / 100.0), text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 15, '  DI +/-', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 15, str.tostring(_diPp, '#.0') + ' / ' + str.tostring(_diMp, '#.0') + '  ', text_color = _diPp >= _diMp ? i_cBull : i_cBear, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)
+    table.cell(dash, 0, 16, '  Vol Ratio', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowB)
+    table.cell(dash, 1, 16, f_bar(_volRatio, 3.0) + '  ', text_color = f_barColor(_volRatio / 3.0), text_size = size.small, text_halign = text.align_right, bgcolor = _rowB)
+    table.cell(dash, 0, 17, '  HTF Bias', text_color = _lblC, text_size = size.small, text_halign = text.align_left, bgcolor = _rowA)
+    table.cell(dash, 1, 17, (i_fHtf ? _htfBull ? 'BULL' : 'BEAR' : 'OFF') + '  ', text_color = not i_fHtf ? C_DASH_TXT : _htfBull ? i_cBull : i_cBear, text_size = size.small, text_halign = text.align_right, bgcolor = _rowA)

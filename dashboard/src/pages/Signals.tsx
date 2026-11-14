@@ -2,9 +2,13 @@ import {CostAudit} from '../components/ExecutionPlans'
 import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
-import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
+import { choice } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
+import { summarizeOutcomes, gateOf } from '../lib/signalOutcomes'
+import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useHealth, useMarkets, useScannerIndex, useSignalActivity, useSignals } from '../api/queries'
-import type { Signal, SignalKind, Side } from '../api/types'
+import type { Signal } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { ActionPill, ErrorState, Loading, PageTitle, Panel, Pill, ScoreBadge, Segmented, SidePill, StatusDot, Time } from '../components/ui'
 import { Callout, EmptyState, Section, Stat, StatGrid, TabPanel, Tabs, Toolbar } from '../components/kit'
@@ -151,29 +155,29 @@ export function Signals() {
   const recovery = health.data?.signalRecovery
   const scanners = useScannerIndex()
   const markets = useMarkets()
-  const [params] = useSearchParams()
-  const { hash } = useLocation()
-  const [scanner, setScanner] = useState(params.get('scanner') ?? '')
-  const [symbol, setSymbol] = useState(params.get('symbol') ?? '')
-  const [tf, setTf] = useState(params.get('tf') ?? '')
-  const [kind, setKind] = useState<'' | SignalKind>((params.get('kind') as SignalKind) || '')
-  const [side, setSide] = useState<'' | Side>('')
-  const [view, setView] = useState<'grouped' | 'flat'>('grouped')
-  // A bookmarked #signal-diagnostics or #execution-costs opens straight to its tab.
-  const [tab, setTab] = useState<SignalTab>(hash === '#signal-diagnostics' ? 'trace' : hash === '#execution-costs' ? 'costs' : 'signals')
+  // filters live in the URL so a link, Back and Forward keep them; defaults stay out of it
+  const { params, set, hash } = useResearchFilters()
+  const scanner = params.get('scanner') ?? '', symbol = params.get('symbol') ?? '', tf = params.get('tf') ?? ''
+  const kind = choice(params.get('kind'), ['', 'entry', 'exit', 'info'], '')
+  const side = choice(params.get('side'), ['', 'long', 'short'], '')
+  const view = choice(params.get('view'), ['grouped', 'flat'], 'grouped')
+  // A bookmarked #signal-diagnostics or #execution-costs (or ?section=diagnostics|costs) opens straight to its tab.
+  const sectionTab: SignalTab | null = hash === '#signal-diagnostics' || params.get('section') === 'diagnostics' ? 'trace' : hash === '#execution-costs' || params.get('section') === 'costs' ? 'costs' : null
+  const [tab, setTab] = useState<SignalTab>(sectionTab ?? 'signals')
   const q = useMemo(() => ({ limit: 500, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined, tf: tf || undefined }), [scanner, symbol, kind, tf])
   const signals = useSignals(q)
 
   const rows = useMemo(() => (signals.data ?? []).filter((s) => !side || s.side === side), [signals.data, side])
   const symbolOptions = useMemo(() => {
-    const set = new Set<string>((markets.data ?? []).map((m) => m.symbol))
-    for (const s of signals.data ?? []) set.add(s.symbol)
-    return Array.from(set)
-  }, [markets.data, signals.data])
+    const names = new Set<string>((markets.data ?? []).map((m) => m.symbol))
+    for (const s of signals.data ?? []) names.add(s.symbol)
+    if (symbol) names.add(symbol)
+    return Array.from(names).sort()
+  }, [markets.data, signals.data, symbol])
 
   const outcomes = useMemo(() => summarizeOutcomes(rows), [rows])
   const filtered = Boolean(scanner || symbol || tf || kind || side)
-  const clearFilters = () => { setScanner(''); setSymbol(''); setTf(''); setKind(''); setSide('') }
+  const clearFilters = () => set({ scanner: null, symbol: null, tf: null, kind: null, side: null })
   const pending = recovery?.pending ?? 0
 
   return (
@@ -230,24 +234,28 @@ export function Signals() {
       <TabPanel id="signals" value={tab} idPrefix="sig">
         <div className="sig-stack">
           <Toolbar
-            end={<Segmented ariaLabel="View" value={view} onChange={(v) => setView(v as 'grouped' | 'flat')} options={[{ value: 'grouped', label: 'By cell' }, { value: 'flat', label: 'Flat' }]} />}
+            end={<Segmented ariaLabel="View" value={view} onChange={(v) => set({ view: v })} options={[{ value: 'grouped', label: 'By cell' }, { value: 'flat', label: 'Flat' }]} />}
           >
-            <select className="select select-sm" value={scanner} onChange={(e) => setScanner(e.target.value)} aria-label="Scanner">
+            <select className="select select-sm" value={scanner} onChange={(e) => set({ scanner: e.target.value })} aria-label="Scanner">
               <option value="">All scanners</option>
+              {scanner && !scanners.data?.some((x) => x.id === scanner) && <option value={scanner}>{scanner}</option>}
               {(scanners.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            <select className="select select-sm" value={symbol} onChange={(e) => setSymbol(e.target.value)} aria-label="Symbol">
+            <select className="select select-sm" value={symbol} onChange={(e) => set({ symbol: e.target.value })} aria-label="Symbol">
               <option value="">All symbols</option>
               {symbolOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
-            <input className="input input-sm sig-tf" aria-label="Timeframe" placeholder="All timeframes" value={tf} onChange={(e) => setTf(e.target.value)} />
-            <select className="select select-sm" value={kind} onChange={(e) => setKind(e.target.value as '' | SignalKind)} aria-label="Kind">
+            <select className="select select-sm" value={tf} onChange={(e) => set({ tf: e.target.value })} aria-label="Timeframe">
+              <option value="">All timeframes</option>
+              {[...new Set([...DELTA_TIMEFRAMES, ...(tf ? [tf] : [])])].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <select className="select select-sm" value={kind} onChange={(e) => set({ kind: e.target.value })} aria-label="Kind">
               <option value="">All kinds</option>
               <option value="entry">entry</option>
               <option value="exit">exit</option>
               <option value="info">info</option>
             </select>
-            <select className="select select-sm" value={side} onChange={(e) => setSide(e.target.value as '' | Side)} aria-label="Side">
+            <select className="select select-sm" value={side} onChange={(e) => set({ side: e.target.value })} aria-label="Side">
               <option value="">Both sides</option>
               <option value="long">long</option>
               <option value="short">short</option>
@@ -316,59 +324,6 @@ export function Signals() {
 }
 
 
-/** The fate of a batch of signals, in the operator's words: how many became trades, and what refused the rest. */
-function summarizeOutcomes(rows: Signal[]) {
-  const defs: Array<{ key: string; label: string; tone: 'ok' | 'danger' | 'warn' | 'muted' | 'accent'; hint: string; test: (a: string, s: Signal) => boolean }> = [
-    { key: 'opened', label: 'opened', tone: 'ok', hint: 'became a position', test: (a) => a === 'opened' },
-    { key: 'market', label: 'market not suitable', tone: 'warn', hint: 'the markets-today gate: illiquid, too quiet to pay the round trip, or not paying recently (decision 56)', test: (a) => a.startsWith('rejected:market') },
-    { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'The modeled stop distance is below the configured multiple of round-trip costs. This is an admission rule, not a prediction of the trade outcome.', test: (a) => /stop too tight/.test(a) },
-    { key: 'capacity', label: 'margin / position cap', tone: 'warn', hint: 'no room in the account: margin, position limits, or a scrap-sized fill refused (decision 53)', test: (a) => /margin|max positions|position cap|intended size|budget/.test(a) },
-    { key: 'received', label: 'awaiting decision', tone: 'warn', hint: 'Saved receipt waiting for processing or recovery', test: (a) => a.startsWith('received:') },
-    { key: 'stale', label: 'stale (scan too late)', tone: 'danger', hint: 'the scan finished after the signal aged out', test: (a) => /stale/.test(a) },
-    { key: 'halted', label: 'halted / loss limit', tone: 'danger', hint: 'kill switch, daily or weekly loss limit, cooldown', test: (a) => /halt|loss limit|cooldown/.test(a) },
-    { key: 'regime', label: 'regime', tone: 'muted', hint: 'weekend or ATR floor', test: (a) => /regime/.test(a) },
-    { key: 'exitnopos', label: 'exit, no position', tone: 'muted', hint: 'an exit signal with nothing open to close', test: (a) => /no position/.test(a) },
-    { key: 'inpos', label: 'already in position', tone: 'muted', hint: 'the scanner already holds this market', test: (a) => /already in position/.test(a) },
-    { key: 'reset', label: 'before the last reset', tone: 'muted', hint: 'the paper account was reset after this signal; whatever it did is no longer in the journal', test: (a) => a === 'reset' },
-    { key: 'info', label: 'info only', tone: 'muted', hint: 'a marker or note the script drew, not a trade call', test: (a, s) => a === 'info' || s.kind === 'info' },
-  ]
-  const counts = new Map<string, number>()
-  let entries = 0
-  for (const s of rows) {
-    const a = String(s.action ?? '')
-    if (s.kind === 'entry') entries++
-    const d = defs.find((x) => x.test(a, s))
-    const k = d ? d.key : a.startsWith('rejected') ? 'other-rejected' : 'other'
-    counts.set(k, (counts.get(k) ?? 0) + 1)
-  }
-  const buckets = defs.filter((d) => counts.get(d.key)).map((d) => ({ ...d, n: counts.get(d.key)! }))
-  if (counts.get('other-rejected')) buckets.push({ key: 'other-rejected', label: 'rejected (other)', tone: 'warn', hint: 'see the Action column', n: counts.get('other-rejected')!, test: () => false })
-  if (counts.get('other')) buckets.push({ key: 'other', label: 'other', tone: 'muted', hint: '', n: counts.get('other')!, test: () => false })
-  return { total: rows.length, entries, opened: counts.get('opened') ?? 0, buckets }
-}
-
-
-/** The gate an action names, in the operator's words, with where to read about it (decision 120). */
-function gateOf(action: string | null | undefined): { key: string; label: string; tone: 'ok' | 'danger' | 'warn' | 'muted' | 'accent'; href?: string } {
-  const a = String(action ?? '')
-  if (a === 'opened' || a === 'reversed' || a.startsWith('pending')) return { key: 'opened', label: 'opened', tone: 'ok' }
-  if (a.startsWith('rejected:risk regime')) return { key: 'regime', label: 'regime gate', tone: 'warn', href: '/gates' }
-  if (a.startsWith('rejected:stop too tight')) return { key: 'cost', label: 'cost rule', tone: 'warn', href: '/gates' }
-  if (a.startsWith('rejected:risk market')) return { key: 'market', label: 'market gate', tone: 'warn', href: '/gates' }
-  if (a.startsWith('rejected:unpriceable')) return { key: 'quote', label: 'no quote', tone: 'warn', href: '/gates' }
-  if (/rejected:(risk )?(max |margin|budget)/.test(a) || /positions on|position budget/.test(a)) return { key: 'capacity', label: 'capacity', tone: 'warn', href: '/gates' }
-  if (/rejected:risk (burst|re-entry|cooldown)/.test(a)) return { key: 'guard', label: 'guard', tone: 'muted', href: '/gates' }
-  if (/halt|loss limit/.test(a)) return { key: 'halt', label: 'halted', tone: 'danger', href: '/gates' }
-  if (/stale/.test(a)) return { key: 'stale', label: 'stale', tone: 'danger' }
-  if (/rejected:ml/.test(a)) return { key: 'model', label: 'model gate', tone: 'warn', href: '/learn' }
-  if (/trend/.test(a)) return { key: 'trend', label: 'trend gate', tone: 'warn', href: '/gates' }
-  if (a.startsWith('ignored')) return { key: 'ignored', label: 'ignored', tone: 'muted' }
-  if (a === 'reset') return { key: 'reset', label: 'before reset', tone: 'muted' }
-  if (a === 'closed' || a === 'reduced') return { key: 'exit', label: a, tone: 'accent' }
-  if (a === 'info') return { key: 'info', label: 'info', tone: 'muted' }
-  return { key: 'other', label: a.replace(/^rejected:/, '').slice(0, 24) || '—', tone: 'muted' }
-}
-
 /**
  * Decision 120: the log grouped by cell — one scanner on one market and timeframe — with the cell's funnel on the
  * group row and each signal's gate as a short name, the full reason one click away. Read-only by design.
@@ -400,7 +355,7 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
       </div>
       <table className="table small signals-grouped">
         <caption className="sr-only">Signals grouped by cell</caption>
-        <thead><tr><th scope="col">Cell</th><th scope="col">Signals</th><th scope="col">Opened</th><th scope="col">Refused by</th><th scope="col">Last</th></tr></thead>
+        <thead><tr><th scope="col">Cell</th><th scope="col">Signals</th><th scope="col">Opened</th><th scope="col">Other outcomes</th><th scope="col">Last</th></tr></thead>
         <tbody>
           {groups.map((g) => (
             <Fragment key={g.k}>
@@ -408,7 +363,7 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
                 <th scope="rowgroup"><span className="muted mono">{open.has(g.k) ? '▾' : '▸'}</span> <Link to={`/scanners/${g.scannerId}`} className="strong" onClick={(e) => e.stopPropagation()}>{g.scannerName}</Link> <span className="mono">{g.symbol} {g.tf}</span></th>
                 <td className="mono" data-label="signals">{g.entries}{g.list.length !== g.entries ? <span className="muted"> +{g.list.length - g.entries} exits/info</span> : null}</td>
                 <td className={`mono ${g.opened ? 'gain' : 'muted'}`} data-label="opened">{g.opened}</td>
-                <td data-label="refused by">{[...g.counts.entries()].filter(([k]) => k !== 'opened').sort((a, b) => b[1] - a[1]).map(([k, n]) => { const sample = g.list.find((s) => gateOf(s.action).key === k); const gg = gateOf(sample?.action); return <Pill key={k} tone={gg.tone} title={sample?.action ?? ''}>{n} {gg.label}</Pill> })}</td>
+                <td data-label="other outcomes">{[...g.counts.entries()].filter(([k]) => k !== 'opened').sort((a, b) => b[1] - a[1]).map(([k, n]) => { const sample = g.list.find((s) => gateOf(s.action).key === k); const gg = gateOf(sample?.action); return <Pill key={k} tone={gg.tone} title={sample?.action ?? ''}>{n} {gg.label}</Pill> })}</td>
                 <td className="muted" data-label="last"><Time t={g.last} /></td>
               </tr>
               {open.has(g.k) && g.list.slice(0, 60).map((s) => {

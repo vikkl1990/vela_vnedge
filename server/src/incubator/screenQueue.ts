@@ -1,3 +1,4 @@
+import {candleReplayBlock} from '../paper/basket.ts';
 /**
  * Decision 174: screening on demand. A queue of hand runs of the nightly screen (`cli/incubate.ts` with `IDS=`): one at a
  * time, never while the nightly itself is running, each inside a capped user scope (6 GB, two workers, nice 19) so the
@@ -103,6 +104,7 @@ export class ScreenQueue extends EventEmitter {
     if(req.budgetMinutes!==undefined&&(!Number.isInteger(req.budgetMinutes)||req.budgetMinutes<1||req.budgetMinutes>30))throw Object.assign(new Error('screen budget must be 1..30 minutes'),{status:400});
     if(req.markets)req={...req,markets:[...new Set(req.markets)].sort()};
     const ids = [...new Set(req.ids)].sort();
+    for(const id of ids){const blocked=candleReplayBlock(id);if(blocked)throw Object.assign(Error(blocked),{status:400});}
     if (!ids.length) throw Object.assign(new Error('nothing to screen: no runnable script matched'), { status: 400 });
     const key = `${ids.join(',')}|${req.tf}|${(req.markets ?? []).join(',')}`;
     const same = [this.running, ...this.queued].find(j => j && `${[...j.ids].sort().join(',')}|${j.tf}|${(j.markets ?? []).join(',')}` === key);

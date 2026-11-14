@@ -170,7 +170,7 @@ export const api = {
 
   scanners: () => get<Scanner[]>('/scanners'),
   scannerContributions: () => get<Contributions>('/scanners/contributions'),
-  scannerReadiness: () => get<ScannerReadiness>('/scanners/readiness'),
+  scannerReadiness: (refresh=false) => get<ScannerReadiness>(`/scanners/readiness${refresh?'?refresh=1':''}`),
   scannerContract: (id:string,planId?:string|null) => get<ScannerContractDetail>(`/scanners/${encodeURIComponent(id)}/contract${planId?`?plan=${encodeURIComponent(planId)}`:''}`),
   scannerContribution: (id:string) => get<ContributionDetail>(`/scanners/${encodeURIComponent(id)}/contribution`),
   /** id/name/status/category/enabled/hidden only — the full list carries per-scanner stats for ~2000 scripts. */

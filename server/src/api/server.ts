@@ -269,7 +269,7 @@ export class ApiServer {
     const contracts = new ContractRegistry();
     const contributions = new ContributionService(a,contracts);
     const readiness = new ReadinessService(a,contracts);
-    this.add('GET', '/api/scanners/readiness', () => readiness.view());
+    this.add('GET', '/api/scanners/readiness', (_r,_s,_p,url) => readiness.view(Date.now(),url.searchParams.get('refresh')==='1'));
     this.add('GET', '/api/scanners/:id/contract', (_r, _s, p, url) => {
       const detail=readiness.detail(p.id,url.searchParams.get('plan')??undefined);
       if(!detail)throw new HttpError(404,'unknown scanner or plan');

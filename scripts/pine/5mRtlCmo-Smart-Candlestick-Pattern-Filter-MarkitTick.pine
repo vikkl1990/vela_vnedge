@@ -1,0 +1,394 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © [MarkitTick]
+
+//@version=6
+indicator('Smart Candlestick Pattern Filter [MarkitTick]', overlay = true, max_bars_back = 1000, max_lines_count = 400, max_labels_count = 400)
+
+// -----------------------------------------------------------------------------
+// Constants & Inputs
+// -----------------------------------------------------------------------------
+// Group: General Settings
+var string GRP_GEN = 'General Settings'
+int maxPattern = input.int(20, 'Max Patterns to Display', minval = 1, maxval = 400, group = GRP_GEN)
+int maxCheck = input.int(10, 'Max candles to check engulfing', minval = 1, maxval = 50, group = GRP_GEN)
+int trendPeriod = input.int(20, 'Trend Detection Period', minval = 5, group = GRP_GEN)
+bool showTrendContext = input.bool(true, 'Show Only Trend-Appropriate Patterns', group = GRP_GEN)
+
+// Group: Strength Filter Settings 
+var string GRP_STR = 'Strength Filters'
+bool showS1 = input.bool(false, 'Show Strength 1 (Indecision)', group = GRP_STR)
+bool showS2 = input.bool(false, 'Show Strength 2 (Weak)', group = GRP_STR)
+bool showS3 = input.bool(false, 'Show Strength 3 (Moderate)', group = GRP_STR)
+bool showS4 = input.bool(true, 'Show Strength 4 (Strong)', group = GRP_STR)
+bool showS5 = input.bool(true, 'Show Strength 5 (Very Strong)', group = GRP_STR)
+
+// Group: Style Settings 
+var string GRP_STY = 'Style Settings'
+color col_indecision = input.color(color.gray, 'Indecision/Neutral Color', group = GRP_STY)
+color col_weak = input.color(color.white, 'Weak Pattern Color', group = GRP_STY)
+color col_moderate = input.color(color.gray, 'Moderate Pattern Color', group = GRP_STY)
+color col_bullish = input.color(color.green, 'Strong Bullish Color', group = GRP_STY)
+color col_bearish = input.color(color.red, 'Strong Bearish Color', group = GRP_STY)
+color col_special = input.color(color.yellow, 'Special/Exhaustion Color', group = GRP_STY)
+color col_text_dark = input.color(color.black, 'Text Color (Dark)', group = GRP_STY)
+color col_text_light = input.color(color.white, 'Text Color (Light)', group = GRP_STY)
+
+const float DOJI_RATIO = 0.05
+const float SPIN_TOP_RATIO = 0.4
+const float EDGE_RATIO = 0.1
+const float SHADOW_MULT = 2.0
+const float MARUBOZU_RATIO = 0.9
+const float BODY_RATIO_MIN = 0.6
+const float STRONG_BODY_RATIO = 0.7
+const float TOLERANCE = 0.001
+const float TOLERANCE_2 = 0.002
+const float DC_BODY_RATIO = 0.6
+const float SMALL_BODY_RATIO = 0.3
+const float SHADOW_LIMIT_RATIO = 0.2
+const float BODY_POSITION_THRESHOLD = 0.66
+
+// -----------------------------------------------------------------------------
+// Types & Variables
+// -----------------------------------------------------------------------------
+type PatternCandidate
+    int strength = 0
+    string shortTxt = ""
+    string fullTxt = ""
+    color col = color.white
+    string loc = ""
+
+var PatternCandidate bestPattern = PatternCandidate.new()
+var int bullEngulfCount = 0
+var int bearEngulfCount = 0
+var array<label> patternLabels = array.new_label()
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+f_getStrengthText(int strength) =>
+    switch strength
+        1 => 'Indecision'
+        2 => 'Weak'
+        3 => 'Moderate'
+        4 => 'Strong'
+        5 => 'Very Strong'
+        => ''
+
+f_isStrengthEnabled(int strength) =>
+    switch strength
+        1 => showS1
+        2 => showS2
+        3 => showS3
+        4 => showS4
+        5 => showS5
+        => false
+
+f_addPattern(bool cond, string shortTxt, string fullTxt, color col, string loc, int strength) =>
+    if cond and f_isStrengthEnabled(strength) and strength > bestPattern.strength
+        bestPattern.strength := strength
+        bestPattern.shortTxt := shortTxt
+        bestPattern.fullTxt := fullTxt
+        bestPattern.col := col
+        bestPattern.loc := loc
+
+f_getCandleMetrics(int offset) =>
+    float o = open[offset]
+    float c = close[offset]
+    float h = high[offset]
+    float l = low[offset]
+    float bodySize = math.abs(c - o)
+    float rng = h - l
+    float bodyRatio = rng != 0 ? bodySize / rng : 0.0
+    float upperShadow = h - math.max(o, c)
+    float lowerShadow = math.min(o, c) - l
+    [bodySize, rng, bodyRatio, upperShadow, lowerShadow]
+
+// -----------------------------------------------------------------------------
+// Main Logic
+// -----------------------------------------------------------------------------
+bestPattern.strength := 0
+
+[body_size, ohlc_range, body_ratio, upper_shadow, lower_shadow] = f_getCandleMetrics(0)
+[body_size_1, ohlc_range_1, body_ratio_1, upper_shadow_1, lower_shadow_1] = f_getCandleMetrics(1)
+[body_size_2, ohlc_range_2, body_ratio_2, upper_shadow_2, lower_shadow_2] = f_getCandleMetrics(2)
+[body_size_3, ohlc_range_3, body_ratio_3, upper_shadow_3, lower_shadow_3] = f_getCandleMetrics(3)
+
+float trendSMA = ta.sma(close, trendPeriod)
+float trendSMA_5 = trendSMA[5]
+bool isUptrend = not na(trendSMA) and not na(trendSMA_5) and close > trendSMA and trendSMA > trendSMA_5
+bool isDowntrend = not na(trendSMA) and not na(trendSMA_5) and close < trendSMA and trendSMA < trendSMA_5
+bool trendUpCond = not showTrendContext or isUptrend
+bool trendDownCond = not showTrendContext or isDowntrend
+
+float o = open
+float c = close
+float h = high
+float l = low
+float o1 = open[1]
+float c1 = close[1]
+float h1 = high[1]
+float l1 = low[1]
+
+bool isBullish = c > o
+bool isBearish = o > c
+bool isBullish_1 = c1 > o1
+bool isBearish_1 = o1 > c1
+
+bool isDoji = body_ratio <= DOJI_RATIO
+bool isDoji_1 = body_ratio_1 <= DOJI_RATIO
+bool isDoji_2 = body_ratio_2 <= DOJI_RATIO
+
+bool bodyInUpperThird = ohlc_range > 0 and math.min(o, c) >= l + ohlc_range * BODY_POSITION_THRESHOLD
+bool bodyInLowerThird = ohlc_range > 0 and math.max(o, c) <= l + ohlc_range * (1.0 - BODY_POSITION_THRESHOLD)
+
+// ------------------------------------
+// Single Candle Patterns (Strength 1)
+// ------------------------------------
+bool isSpinTopBull = isBullish and body_ratio < SPIN_TOP_RATIO and (h - c) > body_size and (o - l) > body_size
+bool isSpinTopBear = isBearish and body_ratio < SPIN_TOP_RATIO and (h - o) > body_size and (c - l) > body_size
+bool isDragonflyDoji = isDoji and (h - c) <= ohlc_range * EDGE_RATIO and (h - o) <= ohlc_range * EDGE_RATIO and ohlc_range > body_size * 3
+bool isGravestoneDoji = isDoji and (c - l) <= ohlc_range * EDGE_RATIO and (o - l) <= ohlc_range * EDGE_RATIO and ohlc_range > body_size * 3
+bool isLongLeggedDoji = isDoji and upper_shadow > body_size * SHADOW_MULT and lower_shadow > body_size * SHADOW_MULT
+
+f_addPattern(isDoji, 'D', 'Doji - Indecision', col_indecision, location.abovebar, 1)
+f_addPattern(isSpinTopBull, 'ST+', 'Bullish Spinning Top - Indecision', col_indecision, location.belowbar, 1)
+f_addPattern(isSpinTopBear, 'ST-', 'Bearish Spinning Top - Indecision', col_indecision, location.abovebar, 1)
+f_addPattern(isDragonflyDoji, 'DD', 'Dragonfly Doji - Bullish Indecision', col_indecision, location.belowbar, 1)
+f_addPattern(isGravestoneDoji, 'GD', 'Gravestone Doji - Bearish Indecision', col_indecision, location.abovebar, 1)
+f_addPattern(isLongLeggedDoji, 'LLD', 'Long-Legged Doji - Strong Indecision', col_indecision, location.abovebar, 1)
+
+// ------------------------------------
+// Single Candle Patterns (Strength 2)
+// ------------------------------------
+bool isHangingMan = lower_shadow >= body_size * SHADOW_MULT and upper_shadow <= ohlc_range * EDGE_RATIO and body_ratio < SMALL_BODY_RATIO and bodyInUpperThird and trendUpCond and not isDoji
+bool isInvHammer = upper_shadow >= body_size * SHADOW_MULT and lower_shadow <= ohlc_range * EDGE_RATIO and body_ratio < SMALL_BODY_RATIO and bodyInLowerThird and trendDownCond and not isDoji
+bool isBullishBelt = math.abs(l - o) <= TOLERANCE * c and o < c1 and isBullish and body_ratio >= BODY_RATIO_MIN and trendDownCond
+bool isBearishBelt = math.abs(h - o) <= TOLERANCE * c and o > c1 and isBearish and body_ratio >= BODY_RATIO_MIN and trendUpCond
+
+f_addPattern(isHangingMan, 'HM', 'Hanging Man - Weak Bearish Reversal', col_weak, location.abovebar, 2)
+f_addPattern(isInvHammer, 'IH', 'Inverted Hammer - Weak Bullish Reversal', col_weak, location.belowbar, 2)
+f_addPattern(isBullishBelt, 'BB+', 'Bullish Belt Hold - Weak Bullish Reversal', col_weak, location.belowbar, 2)
+f_addPattern(isBearishBelt, 'BB-', 'Bearish Belt Hold - Weak Bearish Reversal', col_weak, location.abovebar, 2)
+
+// Long Shadow Patterns (Strength 2)
+bool isLongLowerShadow = lower_shadow > body_size * SHADOW_MULT and body_ratio > EDGE_RATIO and not isDoji
+bool isLongUpperShadow = upper_shadow > body_size * SHADOW_MULT and body_ratio > EDGE_RATIO and not isDoji
+
+f_addPattern(isLongLowerShadow, 'LLS', 'Long Lower Shadow - Weak Bullish Signal', col_weak, location.belowbar, 2)
+f_addPattern(isLongUpperShadow, 'LUS', 'Long Upper Shadow - Weak Bearish Signal', col_weak, location.abovebar, 2)
+
+// ------------------------------------
+// Two Candle Patterns (Strength 2-3)
+// ------------------------------------
+bool isBearHarami = isBullish_1 and isBearish and o <= c1 and o1 <= c and body_size < body_size_1 and trendUpCond
+bool isBullHarami = isBearish_1 and isBullish and c <= o1 and c1 <= o and body_size < body_size_1 and trendDownCond
+bool isBearEngulf = isBullish_1 and isBearish and o >= c1 and o1 >= c and body_size > body_size_1 and trendUpCond
+bool isBullEngulf = isBearish_1 and isBullish and c >= o1 and c1 >= o and body_size > body_size_1 and trendDownCond
+float c1_midpoint = (c1 + o1) * 0.5
+bool isOnNeck = isBearish_1 and isBullish and o < c1 and math.abs(c - l1) <= TOLERANCE * c and body_ratio_1 >= BODY_RATIO_MIN and trendDownCond
+bool isInNeck = isBearish_1 and isBullish and o < l1 and c >= c1 and c <= c1 + body_size_1 * 0.1 and body_ratio_1 >= BODY_RATIO_MIN and trendDownCond
+bool isThrusting = isBearish_1 and isBullish and o < l1 and c >= c1 + body_size_1 * 0.1 and c < c1_midpoint and body_ratio_1 >= BODY_RATIO_MIN and trendDownCond
+bool isPiercing = isBearish_1 and isBullish and o < l1 and c > c1 + body_size_1 * 0.5 and c < o1 and body_ratio_1 >= BODY_RATIO_MIN and trendDownCond
+bool isDarkCloud = isBullish_1 and o > h1 and c < c1_midpoint and isBearish and c > o1 and body_size / ohlc_range > DC_BODY_RATIO and trendUpCond
+bool isTweezerBottom = math.abs(l - l1) <= TOLERANCE * c and isBullish and trendDownCond
+bool isTweezerTop = math.abs(h - h1) <= TOLERANCE * c and isBearish and trendUpCond
+bool isMatchingLow = math.abs(l - l1) <= TOLERANCE * c and isBearish_1 and isBearish and trendDownCond
+bool isMatchingHigh = math.abs(h - h1) <= TOLERANCE * c and isBullish_1 and isBullish and trendUpCond
+bool isSeparatingLinesBull = isBearish_1 and isBullish and math.abs(o - o1) <= TOLERANCE_2 * c and body_ratio >= BODY_RATIO_MIN and trendUpCond
+bool isSeparatingLinesBear = isBullish_1 and isBearish and math.abs(o - o1) <= TOLERANCE_2 * c and body_ratio >= BODY_RATIO_MIN and trendDownCond
+bool isCounterattackBull = isBearish_1 and isBullish and math.abs(c - c1) <= TOLERANCE_2 * c and body_ratio >= BODY_RATIO_MIN and trendDownCond
+bool isCounterattackBear = isBullish_1 and isBearish and math.abs(c - c1) <= TOLERANCE_2 * c and body_ratio >= BODY_RATIO_MIN and trendUpCond
+bool isBullKicker = isBearish_1 and o > h1 and isBullish and body_ratio >= BODY_RATIO_MIN and body_ratio_1 >= BODY_RATIO_MIN
+bool isBearKicker = isBullish_1 and o < l1 and isBearish and body_ratio >= BODY_RATIO_MIN and body_ratio_1 >= BODY_RATIO_MIN
+
+f_addPattern(isOnNeck, 'ON', 'On-Neck - Weak Bearish Continuation', col_weak, location.abovebar, 2)
+f_addPattern(isInNeck, 'IN', 'In-Neck - Weak Bearish Continuation', col_weak, location.abovebar, 2)
+f_addPattern(isThrusting, 'TH', 'Thrusting - Weak Bearish Continuation', col_weak, location.abovebar, 2)
+
+// ------------------------------------
+// Two Candle Patterns (Strength 3)
+// ------------------------------------
+bool isHammer = lower_shadow >= body_size * SHADOW_MULT and upper_shadow <= ohlc_range * EDGE_RATIO and body_ratio < SMALL_BODY_RATIO and bodyInUpperThird and trendDownCond and not isDoji
+bool isShootingStar = isBullish_1 and o > c1 and body_ratio < SMALL_BODY_RATIO and upper_shadow >= body_size * SHADOW_MULT and lower_shadow <= ohlc_range * EDGE_RATIO and bodyInLowerThird and trendUpCond and not isDoji
+
+f_addPattern(isHammer, 'H', 'Hammer - Moderate Bullish Reversal', col_moderate, location.belowbar, 3)
+f_addPattern(isShootingStar, 'SS', 'Shooting Star - Moderate Bearish Reversal', col_moderate, location.abovebar, 3)
+f_addPattern(isBearHarami, 'BH', 'Bearish Harami - Moderate Bearish Reversal', col_moderate, location.abovebar, 3)
+f_addPattern(isBullHarami, 'BH', 'Bullish Harami - Moderate Bullish Reversal', col_moderate, location.belowbar, 3)
+f_addPattern(isPiercing, 'PL', 'Piercing Line - Moderate Bullish Reversal', col_moderate, location.belowbar, 3)
+f_addPattern(isDarkCloud, 'DC', 'Dark Cloud Cover - Moderate Bearish Reversal', col_moderate, location.abovebar, 3)
+f_addPattern(isTweezerBottom, 'TB', 'Tweezer Bottom - Moderate Bullish Reversal', col_moderate, location.belowbar, 3)
+f_addPattern(isTweezerTop, 'TT', 'Tweezer Top - Moderate Bearish Reversal', col_moderate, location.abovebar, 3)
+f_addPattern(isMatchingLow, 'ML', 'Matching Low - Moderate Bullish Support', col_moderate, location.belowbar, 3)
+f_addPattern(isMatchingHigh, 'MH', 'Matching High - Moderate Bearish Resistance', col_moderate, location.abovebar, 3)
+f_addPattern(isSeparatingLinesBull, 'SL+', 'Separating Lines Bullish - Moderate Continuation', col_moderate, location.belowbar, 3)
+f_addPattern(isSeparatingLinesBear, 'SL-', 'Separating Lines Bearish - Moderate Continuation', col_moderate, location.abovebar, 3)
+f_addPattern(isCounterattackBull, 'CA+', 'Counterattack Bullish - Moderate Reversal', col_moderate, location.belowbar, 3)
+f_addPattern(isCounterattackBear, 'CA-', 'Counterattack Bearish - Moderate Reversal', col_moderate, location.abovebar, 3)
+
+bool isDojiStar = body_size_1 > body_size * 3 and isDoji and ((isBearish_1 and h < l1) or (isBullish_1 and l > h1))
+f_addPattern(isDojiStar, 'DS', 'Doji Star - Moderate Reversal Signal', col_moderate, location.abovebar, 3)
+
+bool isHaramiCrossBull = isBearish_1 and isDoji and h <= o1 and l >= c1 and trendDownCond
+bool isHaramiCrossBear = isBullish_1 and isDoji and h <= c1 and l >= o1 and trendUpCond
+f_addPattern(isHaramiCrossBull, 'HC+', 'Harami Cross Bullish - Moderate Bullish Reversal', col_moderate, location.belowbar, 3)
+f_addPattern(isHaramiCrossBear, 'HC-', 'Harami Cross Bearish - Moderate Bearish Reversal', col_moderate, location.abovebar, 3)
+
+bool isRisingWindow = l > h1 and trendUpCond
+bool isFallingWindow = h < l1 and trendDownCond
+f_addPattern(isRisingWindow, 'RW', 'Rising Window - Moderate Bullish Continuation', col_moderate, location.belowbar, 3)
+f_addPattern(isFallingWindow, 'FW', 'Falling Window - Moderate Bearish Continuation', col_moderate, location.abovebar, 3)
+
+// ------------------------------------
+// Three Candle Patterns (Strength 3-4)
+// ------------------------------------
+bool isThreeInsideUp = isBullHarami[1] and isBullish and c > c1 and c > open[2] and trendDownCond
+bool isThreeInsideDown = isBearHarami[1] and isBearish and c < c1 and c < open[2] and trendUpCond
+bool isThreeOutsideUp = isBullEngulf[1] and isBullish and c > c1 and trendDownCond
+bool isThreeOutsideDown = isBearEngulf[1] and isBearish and c < c1 and trendUpCond
+
+float o2 = open[2]
+float c2 = close[2]
+float h2 = high[2]
+float l2 = low[2]
+float firstCandleMidpoint = (c2 + o2) * 0.5
+
+bool isEveningStar = c2 > o2 and body_ratio_1 < SMALL_BODY_RATIO and math.min(o1, c1) > h2 and o < math.min(o1, c1) and isBearish and c < firstCandleMidpoint and trendUpCond
+bool isMorningStar = c2 < o2 and body_ratio_1 < SMALL_BODY_RATIO and math.max(o1, c1) < l2 and o > math.max(o1, c1) and isBullish and c > firstCandleMidpoint and trendDownCond
+bool isAbandonedBabyBull = c2 < o2 and h1 < low[2] and h1 < l and isBullish and isDoji_1 and trendDownCond
+bool isAbandonedBabyBear = c2 > o2 and l1 > high[2] and l1 > h and isBearish and isDoji_1 and trendUpCond
+
+bool similarBodySizeBull = body_size >= body_size_1 * 0.7 and body_size_1 >= body_size_2 * 0.7
+bool similarBodySizeBear = body_size >= body_size_1 * 0.7 and body_size_1 >= body_size_2 * 0.7
+
+bool smallUpperShadow_2 = (high[2] - close[2]) <= (close[2] - open[2]) * SHADOW_LIMIT_RATIO
+bool smallUpperShadow_1 = (h1 - c1) <= (c1 - o1) * SHADOW_LIMIT_RATIO
+bool smallUpperShadow_0 = (h - c) <= (c - o) * SHADOW_LIMIT_RATIO
+
+bool is3WhiteSoldiers = c2 > o2 and c1 > o1 and isBullish and c > c1 and c1 > c2 and o1 > o2 and o1 < c2 and o > o1 and o < c1 and smallUpperShadow_2 and smallUpperShadow_1 and smallUpperShadow_0 and similarBodySizeBull and trendDownCond
+
+bool smallLowerShadow_2 = (close[2] - low[2]) <= (open[2] - close[2]) * SHADOW_LIMIT_RATIO
+bool smallLowerShadow_1 = (c1 - l1) <= (o1 - c1) * SHADOW_LIMIT_RATIO
+bool smallLowerShadow_0 = (c - l) <= (o - c) * SHADOW_LIMIT_RATIO
+
+bool is3BlackCrows = c2 < o2 and c1 < o1 and isBearish and c < c1 and c1 < c2 and o1 < o2 and o1 > c2 and o < o1 and o > c1 and smallLowerShadow_2 and smallLowerShadow_1 and smallLowerShadow_0 and similarBodySizeBear and trendUpCond
+
+f_addPattern(isThreeInsideUp, '3IU', 'Three Inside Up - Moderate Bullish Reversal', col_moderate, location.belowbar, 3)
+f_addPattern(isThreeInsideDown, '3ID', 'Three Inside Down - Moderate Bearish Reversal', col_moderate, location.abovebar, 3)
+
+// ------------------------------------
+// Engulfing Count
+// ------------------------------------
+bullEngulfCount := 0
+bearEngulfCount := 0
+if isBullEngulf or isBearEngulf
+    float currentMax = math.max(o, c)
+    float currentMin = math.min(o, c)
+    
+    if isBullEngulf
+        for i = 1 to maxCheck
+            float prevMax = math.max(open[i], close[i])
+            float prevMin = math.min(open[i], close[i])
+            float prevBodySize = math.abs(open[i] - close[i])
+            
+            if currentMax >= prevMax and currentMin <= prevMin and body_size > prevBodySize
+                bullEngulfCount += 1
+            else
+                break
+    if isBearEngulf
+        for i = 1 to maxCheck
+            float prevMax = math.max(open[i], close[i])
+            float prevMin = math.min(open[i], close[i])
+            float prevBodySize = math.abs(open[i] - close[i])
+            
+            if currentMax >= prevMax and currentMin <= prevMin and body_size > prevBodySize
+                bearEngulfCount += 1
+            else
+                break
+
+// ------------------------------------
+// Strong Patterns (Strength 4)
+// ------------------------------------
+int bullEngulfStrength = bullEngulfCount > 1 ? 5 : 4
+int bearEngulfStrength = bearEngulfCount > 1 ? 5 : 4
+bool isMarubozuBull = isBullish and body_ratio >= MARUBOZU_RATIO
+bool isMarubozuBear = isBearish and body_ratio >= MARUBOZU_RATIO
+
+f_addPattern(isBullEngulf, 'BE+', 'Bullish Engulfing', col_bullish, location.belowbar, bullEngulfStrength)
+f_addPattern(isBearEngulf, 'BE-', 'Bearish Engulfing', col_bearish, location.abovebar, bearEngulfStrength)
+f_addPattern(isMorningStar, 'MS', 'Morning Star - Strong Bullish Reversal', col_bullish, location.belowbar, 4)
+f_addPattern(isEveningStar, 'ES', 'Evening Star - Strong Bearish Reversal', col_bearish, location.abovebar, 4)
+f_addPattern(isMarubozuBull, 'MZ+', 'Bullish Marubozu - Strong Bullish', col_bullish, location.belowbar, 4)
+f_addPattern(isMarubozuBear, 'MZ-', 'Bearish Marubozu - Strong Bearish', col_bearish, location.abovebar, 4)
+f_addPattern(isThreeOutsideUp, '3OU', 'Three Outside Up - Strong Bullish Reversal', col_bullish, location.belowbar, 4)
+f_addPattern(isThreeOutsideDown, '3OD', 'Three Outside Down - Strong Bearish Reversal', col_bearish, location.abovebar, 4)
+f_addPattern(isAbandonedBabyBull, 'ABB', 'Abandoned Baby Bullish - Strong Bullish Reversal', col_bullish, location.belowbar, 4)
+f_addPattern(isAbandonedBabyBear, 'ABB', 'Abandoned Baby Bearish - Strong Bearish Reversal', col_bearish, location.abovebar, 4)
+
+bool isMorningDojiStar = c2 < o2 and isDoji_1 and math.max(o1, c1) < c2 and o > math.max(o1, c1) and isBullish and c > firstCandleMidpoint and trendDownCond
+bool isEveningDojiStar = c2 > o2 and isDoji_1 and math.min(o1, c1) > c2 and o < math.min(o1, c1) and isBearish and c < firstCandleMidpoint and trendUpCond
+f_addPattern(isMorningDojiStar, 'MDS', 'Morning Doji Star - Strong Bullish Reversal', col_bullish, location.belowbar, 4)
+f_addPattern(isEveningDojiStar, 'EDS', 'Evening Doji Star - Strong Bearish Reversal', col_bearish, location.abovebar, 4)
+
+bool isTriStarBull = isDoji_2 and isDoji_1 and isDoji and l1 < l2 and l1 < l and h1 < h2 and h1 < h and trendDownCond
+bool isTriStarBear = isDoji_2 and isDoji_1 and isDoji and h1 > h2 and h1 > h and l1 > l2 and l1 > l and trendUpCond
+f_addPattern(isTriStarBull, 'TS+', 'Tri-Star Bullish - Strong Bullish Reversal', col_bullish, location.belowbar, 4)
+f_addPattern(isTriStarBear, 'TS-', 'Tri-Star Bearish - Strong Bearish Reversal', col_bearish, location.abovebar, 4)
+
+// ------------------------------------
+// Very Strong Patterns (Strength 5)
+// ------------------------------------
+float o3 = open[3]
+float c3 = close[3]
+float h3 = high[3]
+float l3 = low[3]
+
+bool isThreeLineStrikeBull = c3 < o3 and c2 < o2 and c1 < o1 and c2 < c3 and c1 < c2 and isBullish and c > o3 and o <= c1 and body_ratio >= STRONG_BODY_RATIO and trendDownCond
+bool isThreeLineStrikeBear = c3 > o3 and c2 > o2 and c1 > o1 and c2 > c3 and c1 > c2 and isBearish and c < o3 and o >= c1 and body_ratio >= STRONG_BODY_RATIO and trendUpCond
+
+float o4 = open[4]
+float c4 = close[4]
+float h4 = high[4]
+float l4 = low[4]
+
+bool isRisingThreeMethods = c4 > o4 and c3 < o3 and c2 < o2 and c1 < o1 and h3 < h4 and l3 > l4 and h2 < h4 and l2 > l4 and h1 < h4 and l1 > l4 and isBullish and c > c4 and trendUpCond
+bool isFallingThreeMethods = c4 < o4 and c3 > o3 and c2 > o2 and c1 > o1 and h3 < h4 and l3 > l4 and h2 < h4 and l2 > l4 and h1 < h4 and l1 > l4 and isBearish and c < c4 and trendDownCond
+
+bool isUpsideTasukiGap = c2 > o2 and c1 > o1 and l1 > h2 and isBearish and o < c1 and o > o1 and c > h2 and c <= l1 and trendUpCond
+bool isDownsideTasukiGap = c2 < o2 and c1 < o1 and h1 < l2 and isBullish and o > c1 and o < o1 and c < l2 and c >= h1 and trendDownCond
+
+bool gapDownAtStart = h3 < l4
+bool gapUpAtStart = l3 > h4
+bool isBreakawayBull = c4 < o4 and gapDownAtStart and c3 <= c4 and c2 <= c3 and c1 <= c2 and isBullish and c > o4 and body_ratio >= STRONG_BODY_RATIO and trendDownCond
+bool isBreakawayBear = c4 > o4 and gapUpAtStart and c3 >= c4 and c2 >= c3 and c1 >= c2 and isBearish and c < o4 and body_ratio >= STRONG_BODY_RATIO and trendUpCond
+
+f_addPattern(is3WhiteSoldiers, '3WS', 'Three White Soldiers - Very Strong Bullish', col_bullish, location.belowbar, 5)
+f_addPattern(is3BlackCrows, '3BC', 'Three Black Crows - Very Strong Bearish', col_bearish, location.abovebar, 5)
+f_addPattern(isBullKicker, 'BK+', 'Bullish Kicker - Very Strong Bullish', col_bullish, location.belowbar, 5)
+f_addPattern(isBearKicker, 'BK-', 'Bearish Kicker - Very Strong Bearish', col_bearish, location.abovebar, 5)
+f_addPattern(isThreeLineStrikeBull, '3LS+', 'Three Line Strike - Potential Trend Exhaustion (Bullish)', col_special, location.belowbar, 4)
+f_addPattern(isThreeLineStrikeBear, '3LS-', 'Three Line Strike - Potential Trend Exhaustion (Bearish)', col_special, location.abovebar, 4)
+f_addPattern(isRisingThreeMethods, 'R3M', 'Rising Three Methods - Very Strong Bullish Continuation', col_bullish, location.belowbar, 5)
+f_addPattern(isFallingThreeMethods, 'F3M', 'Falling Three Methods - Very Strong Bearish Continuation', col_bearish, location.abovebar, 5)
+f_addPattern(isUpsideTasukiGap, 'UTG', 'Upside Tasuki Gap - Very Strong Bullish Continuation', col_bullish, location.belowbar, 5)
+f_addPattern(isDownsideTasukiGap, 'DTG', 'Downside Tasuki Gap - Very Strong Bearish Continuation', col_bearish, location.abovebar, 5)
+f_addPattern(isBreakawayBull, 'BRK+', 'Breakaway Bullish - Very Strong Bullish Reversal', col_bullish, location.belowbar, 5)
+f_addPattern(isBreakawayBear, 'BRK-', 'Breakaway Bearish - Very Strong Bearish Reversal', col_bearish, location.abovebar, 5)
+
+// -----------------------------------------------------------------------------
+// Display the STRONGEST pattern found
+// -----------------------------------------------------------------------------
+if bestPattern.strength > 0
+    if array.size(patternLabels) >= maxPattern
+        label.delete(array.shift(patternLabels))
+    
+    float y_pos = bestPattern.loc == location.belowbar ? l * 0.999 : h * 1.001
+    string style = bestPattern.loc == location.belowbar ? label.style_label_up : label.style_label_down
+    string strengthText = f_getStrengthText(bestPattern.strength)
+    string displayText = bestPattern.shortTxt + '\n' + strengthText
+    string tooltipText = bestPattern.fullTxt + ' - Strength: ' + strengthText
+    color textColor = bestPattern.col == col_weak ? col_text_dark : col_text_light
+    
+    label lbl = label.new(bar_index, y_pos, text = displayText, style = style, color = bestPattern.col, textcolor = textColor, size = size.small, tooltip = tooltipText)
+    array.push(patternLabels, lbl)

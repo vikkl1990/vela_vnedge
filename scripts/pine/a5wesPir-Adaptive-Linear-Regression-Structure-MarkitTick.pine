@@ -1,0 +1,231 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Adaptive Linear Regression Structure [MarkitTick]", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back = 2000)
+
+// -----------------------------------------------------------------------------
+// SYSTEM CONFIGURATION & CONSTANTS
+// -----------------------------------------------------------------------------
+string G_PARAMS = "Algorithmic Core"
+string G_FILTER = "Signal Processing"
+string G_RENDER = "Visual Interface"
+string G_DASH   = "Telemetry Dashboard"
+
+// -----------------------------------------------------------------------------
+// USER INTERFACE 
+// -----------------------------------------------------------------------------
+int    cfg_scan_horizon = input.int(20, "Scan Horizon", minval = 5, group = G_PARAMS, tooltip = "Define the historical pivot search horizon.")
+float  cfg_dev_mult     = input.float(2.0, "Deviation Factor", minval = 0.1, step = 0.1, group = G_PARAMS, tooltip = "Standard deviation multiplier for channel volatility bands.")
+int    cfg_struct_len   = input.int(5, "Structural Sensitivity", minval = 2, group = G_PARAMS, tooltip = "Lookback period for identifying market structure points.")
+float  cfg_min_qual     = input.float(0.5, "Quality Threshold (R²)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_FILTER, tooltip = "Minimum coefficient of determination required.")
+
+color  in_clr_up        = input.color(#00bcd4, "Bullish Theme", group = G_RENDER)
+color  in_clr_dn        = input.color(#FF6D00, "Bearish Theme", group = G_RENDER)
+color  in_text_clr      = input.color(color.white, "Text/Label Color", group = G_RENDER)
+bool   in_show_dash     = input.bool(true, "Show HUD Dashboard", group = G_DASH)
+string in_dash_pos      = input.string("Top Right", "Dashboard Position", options = ["Top Right", "Bottom Right", "Bottom Left", "Top Left"], group = G_DASH)
+
+// -----------------------------------------------------------------------------
+// ADVANCED DATA STRUCTURES (UDTs)
+// -----------------------------------------------------------------------------
+type StatisticalModel
+    float   beta_slope
+    float   alpha_offset
+    float   coeff_deter     
+    float   std_deviation
+    float   z_metric
+    int     origin_idx
+    int     duration
+    float   perf_score
+    bool    is_valid
+
+type MarketStructureRegistry
+    int[]   timestamps
+
+type ChannelRenderer
+    line     median_vector
+    line     upper_bound_1
+    line     lower_bound_1
+    linefill fill_core
+
+// -----------------------------------------------------------------------------
+// COMPUTATIONAL KERNEL (CORE LOGIC ENGINE)
+// -----------------------------------------------------------------------------
+method perform_ols(int start_bar, int end_bar) =>
+    int N = end_bar - start_bar
+    StatisticalModel model = StatisticalModel.new(is_valid = false)
+    
+    if N >= 5
+        float s_x  = 0.0
+        float s_y  = 0.0
+        float s_xy = 0.0
+        float s_xx = 0.0
+        float s_yy = 0.0
+        
+        for i = 0 to N - 1
+            float prc = close[i]
+            float loc = N - 1 - i 
+             
+            s_x  += loc
+            s_y  += prc
+            s_xy += loc * prc
+            s_xx += loc * loc
+            s_yy += prc * prc
+        
+        float det_x = N * s_xx - (s_x * s_x)
+        float det_y = N * s_yy - (s_y * s_y)
+        
+        if det_x > 0 and det_y > 0
+            float beta  = (N * s_xy - s_x * s_y) / det_x
+            float alpha = (s_y - beta * s_x) / N
+             
+            float num = (N * s_xy - s_x * s_y)
+            float den = math.sqrt(det_x * det_y)
+            float r   = den != 0 ? num / den : 0
+            float r2  = r * r
+            
+            float sse = 0.0
+            for i = 0 to N - 1
+                float prc_i = close[i]
+                float loc_i = N - 1 - i
+                float pred  = beta * loc_i + alpha
+                float err   = prc_i - pred
+                sse += err * err
+            
+            float std_err = math.sqrt(sse / math.max(1, N - 2))
+            float h_score = r2 * math.log(N)
+            float curr_est = beta * (N - 1) + alpha
+            float z_val    = std_err != 0 ? (close - curr_est) / std_err : 0.0
+            
+            model := StatisticalModel.new(beta, alpha, r2, std_err, z_val, start_bar, N, h_score, true)
+    model
+
+method sync_structure(MarketStructureRegistry self, int len) =>
+    float p_high = ta.pivothigh(len, len)
+    float p_low  = ta.pivotlow(len, len)
+    
+    if not na(p_high)
+        self.timestamps.push(bar_index[len])
+    if not na(p_low)
+        self.timestamps.push(bar_index[len])
+        
+    if self.timestamps.size() > 2000
+        self.timestamps.shift()
+
+method purge_graphics(ChannelRenderer[] repo) =>
+    if repo.size() > 0
+        for i = 0 to repo.size() - 1
+            ChannelRenderer item = repo.get(i)
+            item.median_vector.delete()
+            item.upper_bound_1.delete()
+            item.lower_bound_1.delete()
+            item.fill_core.delete()
+        repo.clear()
+
+// -----------------------------------------------------------------------------
+// MAIN EXECUTION THREAD & STATE MANAGEMENT
+// -----------------------------------------------------------------------------
+var MarketStructureRegistry struct_reg = MarketStructureRegistry.new(array.new<int>())
+var ChannelRenderer[]       render_reg = array.new<ChannelRenderer>()
+var label[]                 active_labels = array.new<label>() // Track all generated labels
+
+struct_reg.sync_structure(cfg_struct_len)
+
+StatisticalModel optimal_model = StatisticalModel.new(is_valid = false)
+float max_heuristic = -1.0
+
+int total_pivots = struct_reg.timestamps.size()
+int search_depth = math.min(total_pivots, cfg_scan_horizon)
+
+if search_depth > 0
+    for k = 1 to search_depth
+        int idx_ptr = total_pivots - k
+        if idx_ptr >= 0
+            int anchor_idx = struct_reg.timestamps.get(idx_ptr)
+            StatisticalModel trial = perform_ols(anchor_idx, bar_index)
+            
+            if trial.is_valid and trial.coeff_deter >= cfg_min_qual
+                if trial.perf_score > max_heuristic
+                    max_heuristic := trial.perf_score
+                    optimal_model := trial
+
+// -----------------------------------------------------------------------------
+// LIVE SIGNALS & ALERTS (Evaluated dynamically bar-by-bar)
+// -----------------------------------------------------------------------------
+float current_est = na
+float upper_band  = na
+float lower_band  = na
+
+if optimal_model.is_valid
+    current_est := optimal_model.beta_slope * (optimal_model.duration - 1) + optimal_model.alpha_offset
+    float dev    = optimal_model.std_deviation * cfg_dev_mult
+    upper_band  := current_est + dev
+    lower_band  := current_est - dev
+
+bool signal_long  = ta.crossover(close, lower_band)
+bool signal_short = ta.crossunder(close, upper_band)
+float atr_val     = ta.atr(14)
+
+if signal_long
+    float sl_val = lower_band - atr_val
+    string msg_long = '{"action": "LONG", "symbol": "' + syminfo.ticker + '", "entry": ' + str.tostring(close, format.mintick) + ', "tp": ' + str.tostring(current_est, format.mintick) + ', "sl": ' + str.tostring(sl_val, format.mintick) + '}'
+    alert(msg_long, alert.freq_once_per_bar_close)
+    
+    label lbl = label.new(bar_index, low, "LONG\nEP: " + str.tostring(close, format.mintick) + "\nTP: " + str.tostring(current_est, format.mintick) + "\nSL: " + str.tostring(sl_val, format.mintick), color=in_clr_up, textcolor=in_text_clr, style=label.style_label_up, size=size.small)
+    active_labels.push(lbl)
+
+if signal_short
+    float sl_val = upper_band + atr_val
+    string msg_short = '{"action": "SHORT", "symbol": "' + syminfo.ticker + '", "entry": ' + str.tostring(close, format.mintick) + ', "tp": ' + str.tostring(current_est, format.mintick) + ', "sl": ' + str.tostring(sl_val, format.mintick) + '}'
+    alert(msg_short, alert.freq_once_per_bar_close)
+    
+    label lbl = label.new(bar_index, high, "SHORT\nEP: " + str.tostring(close, format.mintick) + "\nTP: " + str.tostring(current_est, format.mintick) + "\nSL: " + str.tostring(sl_val, format.mintick), color=in_clr_dn, textcolor=in_text_clr, style=label.style_label_down, size=size.small)
+    active_labels.push(lbl)
+
+// -----------------------------------------------------------------------------
+// INSTITUTIONAL DASHBOARD & GRAPHICS CLEANUP
+// -----------------------------------------------------------------------------
+string t_pos = in_dash_pos == "Top Right" ? position.top_right : in_dash_pos == "Bottom Right" ? position.bottom_right : in_dash_pos == "Bottom Left" ? position.bottom_left : position.top_left
+var table hud = table.new(t_pos, 2, 4, color.new(color.black, 100), color.new(color.gray, 80), 1, color.new(color.gray, 80), 1)
+
+if barstate.islast and optimal_model.is_valid
+    if in_show_dash
+        color trend_clr = optimal_model.beta_slope >= 0 ? in_clr_up : in_clr_dn
+        string trend_txt = optimal_model.beta_slope >= 0 ? "BULLISH" : "BEARISH"
+        
+        table.cell(hud, 0, 0, "Model Quality (R²)", text_color=color.gray, text_size=size.small, bgcolor=color.new(color.black, 40))
+        table.cell(hud, 1, 0, str.tostring(optimal_model.coeff_deter, "#.##"), text_color=in_text_clr, text_size=size.small, bgcolor=color.new(color.black, 40))
+        
+        table.cell(hud, 0, 1, "Trend Bias", text_color=color.gray, text_size=size.small, bgcolor=color.new(color.black, 40))
+        table.cell(hud, 1, 1, trend_txt, text_color=trend_clr, text_size=size.small, bgcolor=color.new(color.black, 40))
+        
+        table.cell(hud, 0, 2, "Deviation (Z-Score)", text_color=color.gray, text_size=size.small, bgcolor=color.new(color.black, 40))
+        table.cell(hud, 1, 2, str.tostring(optimal_model.z_metric, "#.##"), text_color=in_text_clr, text_size=size.small, bgcolor=color.new(color.black, 40))
+        
+        table.cell(hud, 0, 3, "Duration (Bars)", text_color=color.gray, text_size=size.small, bgcolor=color.new(color.black, 40))
+        table.cell(hud, 1, 3, str.tostring(optimal_model.duration), text_color=in_text_clr, text_size=size.small, bgcolor=color.new(color.black, 40))
+
+    render_reg.purge_graphics()
+    int   t1 = optimal_model.origin_idx
+    int   t2 = bar_index + 5
+    float p1 = optimal_model.alpha_offset
+    float p2 = optimal_model.beta_slope * (optimal_model.duration + 5) + optimal_model.alpha_offset
+    float dev_width = optimal_model.std_deviation * cfg_dev_mult
+    
+    color theme_base = optimal_model.beta_slope >= 0 ? in_clr_up : in_clr_dn
+    color c_solid    = color.new(theme_base, 0)
+    color c_trans1   = color.new(theme_base, 85)
+    
+    line l_mid = line.new(t1, p1, t2, p2, xloc.bar_index, extend.none, c_solid, line.style_solid, 1)
+    line l_u1  = line.new(t1, p1 + dev_width, t2, p2 + dev_width, xloc.bar_index, extend.none, c_solid, line.style_solid, 1)
+    line l_d1  = line.new(t1, p1 - dev_width, t2, p2 - dev_width, xloc.bar_index, extend.none, c_solid, line.style_solid, 1)
+    linefill lf_inner = linefill.new(l_u1, l_d1, c_trans1)
+    render_reg.push(ChannelRenderer.new(l_mid, l_u1, l_d1, lf_inner))
+
+    if active_labels.size() > 0
+        for i = active_labels.size() - 1 to 0
+            label lbl = active_labels.get(i)
+            if label.get_x(lbl) < optimal_model.origin_idx
+                label.delete(lbl)
+                active_labels.remove(i)

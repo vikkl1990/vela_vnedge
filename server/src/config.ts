@@ -1,3 +1,4 @@
+import {candleReplayBlock} from './paper/basket.ts';
 import {readerContractError,labelStyleContractError,type LabelStyleSides} from './scanners/readerFixes.ts';
 import {willyNativeReady} from './scanners/willyContracts.ts';
 import {scannerPairs} from './scanners/allocation.ts';
@@ -461,7 +462,9 @@ export interface IncubatorConfig {
     /** Decision 106: no more live cells than this on one market, or for one scanner, so the fleet spreads across pairs. */
     maxPerMarket?: number; maxPerScanner?: number;
     /** Promote gate proposals into the fleet without the owner's click, within maxPerWeek and maxFleet (decision 55). */
-    auto?: boolean };
+    auto?: boolean;
+    /** Paper-only evidence review cadence; fresh closes can request a review after five minutes. */
+    reviewMinutes?: number };
   demote: { window: number; minTrades: number; maxPfR: number;
     /** Decision 106: a live cell with no account trade for this many days is proposed for demotion; it holds a slot and does nothing. */
     silentDays?: number;
@@ -639,7 +642,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     admit: { rotation: { enabled: false, maxPerDay: 12, idleDaysByTf: { '15m': 7, '1h': 14, '4h': 28 }, cooldownDays: 3 }, cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
       reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
-    promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
+    promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6, reviewMinutes: 15 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, silentDaysByTf: { '1h': 30, '4h': 60 }, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
     mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
@@ -935,7 +938,8 @@ export function validateConfig(c: AppConfig): string[] {
   }
   if (p.minSizeShare !== undefined && !(Number.isFinite(p.minSizeShare) && p.minSizeShare >= 0 && p.minSizeShare <= 1)) errs.push('paper.minSizeShare must be 0..1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
-  errs.push(...validateExecutionPlans(c.executionPlans, TF_SECONDS));
+  for(const [id,sc] of Object.entries(c.scanners??{}))if(sc.enabled&&candleReplayBlock(id))errs.push(`scanner ${id}: requires an isolated basket shadow execution plan; ordinary scanning is unsupported`);
+  errs.push(...validateExecutionPlans(c.executionPlans, TF_SECONDS, c));
   if (p.scalperOffer?.joinedAt !== undefined && !(Number.isFinite(p.scalperOffer.joinedAt) && p.scalperOffer.joinedAt >= 0)) errs.push('paper.scalperOffer.joinedAt must be an epoch timestamp in milliseconds');
   const offerProof=p.scalperOffer?.verification;
   if(offerProof && (offerProof.source!=='delta-india-trading-preferences'||!/^[a-f0-9]{64}$/.test(offerProof.accountHash)||typeof offerProof.connectionRevision!=='string'||!offerProof.connectionRevision||![offerProof.verifiedAt,offerProof.effectiveFrom].every(n=>Number.isSafeInteger(n)&&n>0)||offerProof.effectiveFrom<offerProof.verifiedAt)) errs.push('paper.scalperOffer.verification must contain account-bound evidence with no backdating');
@@ -974,6 +978,7 @@ export function validateConfig(c: AppConfig): string[] {
     if (inc.gate?.staleDaysByTf !== undefined && !Object.values(inc.gate.staleDaysByTf).every(v => v > 0 && v <= 365)) errs.push('incubator.gate.staleDaysByTf values must be 1..365 days');
     if (inc.screen?.retryPerNight !== undefined && !(Number.isInteger(inc.screen.retryPerNight) && inc.screen.retryPerNight >= 0 && inc.screen.retryPerNight <= 200)) errs.push('incubator.screen.retryPerNight must be 0..200');
     if (!(inc.promote?.maxPerWeek >= 0 && inc.promote?.maxFleet >= 1)) errs.push('incubator.promote needs maxPerWeek ≥ 0 and maxFleet ≥ 1');
+    if(inc.promote?.reviewMinutes!==undefined&&(!Number.isInteger(inc.promote.reviewMinutes)||inc.promote.reviewMinutes<5||inc.promote.reviewMinutes>1440))errs.push('incubator.promote.reviewMinutes must be an integer from 5 to 1440');
     if (!(inc.screen?.slices >= 1 && inc.screen?.slices <= 31)) errs.push('incubator.screen.slices must be 1..31');
   }
   return errs;

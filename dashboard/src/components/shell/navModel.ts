@@ -18,7 +18,8 @@ export const GROUPS: NavGroup[] = [
   {
     label: 'Trade',
     items: [
-      { to: '/', label: 'Overview', end: true, key: 'o', keywords: 'home dashboard equity risk', blurb: 'Account, risk and what needs you' },
+      { to: '/', label: 'Trading workspace', end: true, key: 'o', keywords: 'home terminal chart market canvas', blurb: 'Markets, decisions and execution policy in one view' },
+      { to: '/overview', label: 'Operations', key: 'v', keywords: 'overview account equity risk needs you dashboard', blurb: 'Account, risk and what needs you' },
       { to: '/decisions', label: 'Decisions', key: 'd', keywords: 'proposals approve queue', blurb: 'Proposals waiting for a yes or no' },
       { to: '/signals', label: 'Signals', key: 'i', keywords: 'alerts entries refused', blurb: 'Every signal and what became of it' },
       { to: '/radar', label: 'Radar', key: 'w', keywords: 'heatmap markets', blurb: 'Signals across markets at a glance' },
@@ -58,7 +59,7 @@ export const ACCOUNT_PAGES: NavItem[] = [
 
 /** The four views an operator checks from a phone. */
 export const PHONE_TABS: Array<{ to: string; label: string; end?: boolean }> = [
-  { to: '/', label: 'Overview', end: true },
+  { to: '/', label: 'Workspace', end: true },
   { to: '/decisions', label: 'Decisions' },
   { to: '/trades', label: 'Journals' },
   { to: '/signals', label: 'Signals' },

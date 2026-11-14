@@ -18,7 +18,7 @@ test('single-key shortcuts used elsewhere (t, d, [, ?, /) never collide with a c
 test('the navigation keeps the three groups and every page that existed before the redesign', () => {
   assert.deepEqual(GROUPS.map((g) => g.label), ['Trade', 'Research', 'Control'])
   const routes = new Set(all.map((n) => n.to))
-  for (const r of ['/', '/signals', '/radar', '/monitor', '/trades', '/chart', '/scanners', '/library', '/incubator', '/trackers', '/analytics', '/daily', '/learn', '/decisions', '/gates', '/exchange', '/settings', '/logs', '/profile', '/users']) {
+  for (const r of ['/', '/overview', '/signals', '/radar', '/monitor', '/trades', '/chart', '/scanners', '/library', '/incubator', '/trackers', '/analytics', '/daily', '/learn', '/decisions', '/gates', '/exchange', '/settings', '/logs', '/profile', '/users']) {
     assert.ok(routes.has(r), `${r} is still reachable`)
   }
 })
@@ -29,7 +29,8 @@ test('Users is hidden from anyone who is not an administrator', () => {
 })
 
 test('route titles come from the navigation, scanner pages from the scanner', () => {
-  assert.deepEqual(routeMeta('/'), { title: 'Overview', section: 'Trade' })
+  assert.deepEqual(routeMeta('/'), { title: 'Trading workspace', section: 'Trade' })
+  assert.deepEqual(routeMeta('/overview'), { title: 'Operations', section: 'Trade' })
   assert.deepEqual(routeMeta('/settings'), { title: 'Settings', section: 'Control' })
   assert.deepEqual(routeMeta('/profile'), { title: 'Profile', section: 'Account' })
   assert.deepEqual(routeMeta('/scanners/abc', 'Trend Lines'), { title: 'Trend Lines', section: 'Research', parent: { label: 'Scanners', to: '/scanners' } })

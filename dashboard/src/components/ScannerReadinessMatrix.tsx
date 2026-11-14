@@ -1,4 +1,6 @@
-import {useState} from 'react'
+import {useResearchFilters} from '../lib/useResearchFilters'
+import {choice} from '../lib/researchNavigation'
+import {useRef,useState} from 'react'
 import {useQuery} from '@tanstack/react-query'
 import {Link} from 'react-router-dom'
 import {api} from '../api/client'
@@ -8,18 +10,22 @@ import {filterReadiness,ROLE_LABELS} from '../lib/scannerReadiness'
 import type {ReadinessRow} from '../../../shared/scannerContracts'
 
 export function ScannerReadinessMatrix(){
-  const q=useQuery({queryKey:['scanner-readiness'],queryFn:api.scannerReadiness,staleTime:60_000,refetchInterval:60_000})
-  const [search,setSearch]=useState(''),[scope,setScope]=useState('all'),[page,setPage]=useState(0),[selected,setSelected]=useState<ReadinessRow|null>(null)
+  const forceRefresh=useRef(false)
+  const q=useQuery({queryKey:['scanner-readiness'],queryFn:()=>api.scannerReadiness(forceRefresh.current),staleTime:60_000,refetchInterval:60_000})
+  const {params,set}=useResearchFilters()
+  const search=params.get('readinessQ')??''
+  const scope=choice(params.get('readinessScope'),['all','paper','shadow','research','review','held'],'all')
+  const [page,setPage]=useState(0),[selected,setSelected]=useState<ReadinessRow|null>(null)
   const detail=useQuery({queryKey:['scanner-contract',selected?.scannerId,selected?.planId],queryFn:()=>api.scannerContract(selected!.scannerId,selected?.planId),enabled:!!selected,staleTime:60_000})
   if(!q.data)return q.isError?<ErrorState error={q.error} onRetry={()=>q.refetch()}/>:<p aria-busy="true">Loading contracts and current scan coverage…</p>
   const d=q.data,rows=filterReadiness(d.rows,search,scope),pageNo=Math.min(page,Math.max(0,Math.ceil(rows.length/15)-1)),visible=rows.slice(pageNo*15,pageNo*15+15)
   const current=d.rows.find(r=>r.key===selected?.key)
   return <section className="contribution-panel" aria-label="Scanner contract readiness">
-    <div className="contribution-heading"><div><h2>Contracts and readiness</h2><p className="muted">What each scanner is meant to do, what the bot supports, and how much it has been scanned. Read only. Updated {timeAgo(d.at)}. Activity covers 24 hours.</p></div><button className="btn" onClick={()=>{void q.refetch();if(selected)void detail.refetch()}} disabled={q.isFetching}>Refresh readiness</button></div>
+    <div className="contribution-heading"><div><h2>Contracts and readiness</h2><p className="muted">What each scanner is meant to do, what the bot supports, and how much it has been scanned. Read only. Updated {timeAgo(d.at)}. Activity covers 24 hours.</p></div><button className="btn" onClick={()=>{forceRefresh.current=true;void q.refetch().finally(()=>{forceRefresh.current=false});if(selected)void detail.refetch()}} disabled={q.isFetching}>Refresh readiness</button></div>
     {q.isError&&<ErrorState error={q.error} onRetry={()=>q.refetch()}/>}
     <div className="contribution-kpis"><div><strong>{d.summary.scanners}</strong><span>Enabled / shadow scanners</span></div><div><strong>{d.summary.plans}</strong><span>Independent research profiles</span></div><div><strong>{d.summary.sourceMatched}</strong><span>Source-matched reviews</span></div><div><strong>{d.summary.reviewNeeded}</strong><span>Have review gaps</span></div></div>
     <p className="contribution-note">A review gap is not automatically a trading block. “Collecting” means a recent scan on at least one cell. Eligibility remains with the existing evidence rules.</p>
-    <div className="contribution-controls"><label>Scope<select className="input" value={scope} onChange={e=>{setScope(e.target.value);setPage(0)}}><option value="all">All active profiles</option><option value="paper">Enabled for paper</option><option value="shadow">Shadow / trackers</option><option value="research">Research plans</option><option value="review">Review gaps</option><option value="held">Runtime holds</option></select></label><label className="contribution-search">Find scanner or pair<input className="input" placeholder="Name, family or symbol…" value={search} onChange={e=>{setSearch(e.target.value);setPage(0)}}/></label></div>
+    <div className="contribution-controls"><label>Scope<select className="input" value={scope} onChange={e=>{set({readinessScope:e.target.value});setPage(0)}}><option value="all">All active profiles</option><option value="paper">Enabled for paper</option><option value="shadow">Shadow / trackers</option><option value="research">Research plans</option><option value="review">Review gaps</option><option value="held">Runtime holds</option></select></label><label className="contribution-search">Find scanner or pair<input className="input" placeholder="Name, family or symbol…" value={search} onChange={e=>{set({readinessQ:e.target.value},true);setPage(0)}}/></label></div>
     <div className="contribution-table-wrap"><table className="contribution-table"><thead><tr><th>Scanner / intent</th><th>Contract & reader</th><th>Scan coverage</th><th>Activity · 24h</th><th>Review / runtime gaps</th></tr></thead><tbody>{visible.map(r=><tr key={r.key} className={selected?.key===r.key?'selected':''}>
       <td><button className="contribution-name" onClick={()=>setSelected(selected?.key===r.key?null:r)} aria-expanded={selected?.key===r.key}>{r.name}</button><span className="contribution-sub">{r.author} · {ROLE_LABELS[r.contract.role]}</span><Pill tone={r.planId?'accent':'muted'}>{r.planId?'Research only':r.enabled?'Paper enabled':'Shadow / tracker'}</Pill></td>
       <td>{r.contract.adapter}<span className="contribution-sub">Source review: {r.contract.sourceStatus} · reader {r.contract.reader}</span><span className="contribution-sub">{r.profiles.matching} matching cell probes</span><code>{r.contract.contractVersion.slice(0,10)}</code></td>
@@ -30,7 +36,7 @@ export function ScannerReadinessMatrix(){
     {!rows.length&&<p>No profiles match this filter.</p>}
     <div className="contribution-pagination"><button className="btn btn-xs" disabled={pageNo===0} onClick={()=>setPage(pageNo-1)}>Previous</button><span>{rows.length?`${pageNo*15+1}–${Math.min(rows.length,pageNo*15+15)} of ${rows.length}`:'0 results'}</span><button className="btn btn-xs" disabled={(pageNo+1)*15>=rows.length} onClick={()=>setPage(pageNo+1)}>Next</button></div>
     {selected&&<div className="contribution-detail"><div className="contribution-heading"><h3>{selected.name}</h3><button className="btn btn-xs" onClick={()=>setSelected(null)}>Close contract</button></div>
-      <div className="contribution-links"><Link className="btn btn-xs" to={`/scanners/${selected.scannerId}`}>Scanner settings & source</Link><Link className="btn btn-xs" to="/incubator">Evidence & promotion</Link></div>
+      <div className="contribution-links"><Link className="btn btn-xs" to={`/scanners/${selected.scannerId}`}>Scanner settings & source</Link><Link className="btn btn-xs" to={`/incubator?q=${encodeURIComponent(selected.scannerId)}`}>Evidence & promotion</Link></div>
       {!current&&<p>This allocation is no longer in the current matrix.</p>}
       {current&&<><p>{current.policy.promotion}</p><p className="muted">{current.activity.scope}</p><details open><summary>Every allocated cell ({current.cells.length})</summary><div className="contribution-observations">{current.cells.map(c=><div key={`${c.book}:${c.symbol}:${c.tf}`}><strong>{c.symbol} · {c.tf} · {c.book}</strong><span>{c.state} · {c.lastAt?timeAgo(c.lastAt):'No recorded scan'}</span>{c.reason&&<span>{c.reason}</span>}</div>)}</div></details>
       {Object.keys(current.activity.reasons).length>0&&<details open><summary>Recorded entry decisions</summary><ul>{Object.entries(current.activity.reasons).sort((a,b)=>b[1]-a[1]).map(([reason,n])=><li key={reason}>{n} × {reason}</li>)}</ul></details>}

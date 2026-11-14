@@ -1,3 +1,5 @@
+import { choice, researchHref } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useRadar } from '../api/queries'
@@ -24,11 +26,11 @@ function Cell({ c, symbol, tf, maxDensity }: { c: RadarCell | null; symbol: stri
   const peak = Math.max(1, ...c.bins.map((b) => Math.max(b.opened, b.stops)))
   return (
     <td className="radar-td">
-      <Link className={`radar-cell radar-l${level}`} to={`/incubator?symbol=${symbol}&tf=${tf}`} title={`${symbol} ${tf}: ${c.signals} account signals, ${c.shadowSignals} shadow signals, ${c.opened} entries, ${c.stops} stops, ${r1(c.netR)}R`}>
+      <Link className={`radar-cell radar-l${level}`} to={researchHref('/incubator', { symbol, tf, section: c.shadow > 0 ? 'shadow' : c.live > 0 ? 'account' : 'candidates' })} title={`${symbol} ${tf}: ${c.signals} account signals, ${c.shadowSignals} shadow signals, ${c.opened} entries, ${c.stops} stops, ${r1(c.netR)}R`}>
         <div className="radar-chips">
-          {c.live > 0 && <span className="radar-chip radar-live">{c.live} live</span>}
-          {c.shadow > 0 && <span className="radar-chip radar-shadow">{c.shadow}</span>}
-          {c.candidate > 0 && <span className="radar-chip radar-cand">{c.candidate}</span>}
+          {c.live > 0 && <span className="radar-chip radar-live">{c.live} account</span>}
+          {c.shadow > 0 && <span className="radar-chip radar-shadow">{c.shadow} shadow</span>}
+          {c.candidate > 0 && <span className="radar-chip radar-cand">{c.candidate} candidates</span>}
           {c.tracked > 0 && <span className="radar-chip radar-trk">{c.tracked} tracked</span>}
         </div>
         <div className="radar-spark" aria-hidden="true">
@@ -49,10 +51,12 @@ function Cell({ c, symbol, tf, maxDensity }: { c: RadarCell | null; symbol: stri
 }
 
 export default function Radar() {
-  const [hours, setHours] = useState(24)
-  const [group, setGroup] = useState<'all' | 'majors' | 'alts'>('all')
-  const [sort, setSort] = useState<'turnover' | 'signals' | 'netR' | 'pairs'>('turnover')
-  const [onlyActive, setOnlyActive] = useState(true)
+  // the filters live in the URL so a link, Back and Forward all keep them (defaults stay out of it)
+  const { params, set } = useResearchFilters()
+  const hours = Number(choice(params.get('hours'), ['6', '24', '72', '168'], '24'))
+  const group = choice(params.get('group'), ['all', 'majors', 'alts'], 'all')
+  const sort = choice(params.get('sort'), ['turnover', 'signals', 'netR', 'pairs'], 'turnover')
+  const onlyActive = params.get('active') !== '0'
   const [tab, setTab] = useState<'radar' | 'agents'>('radar')
   const q = useRadar(hours)
   const view = useMemo(() => {
@@ -74,7 +78,7 @@ export default function Radar() {
         actions={
           <label className="radar-window small muted">
             Window
-            <select className="select select-sm" value={hours} onChange={(e) => setHours(Number(e.target.value))} aria-label="Window">{[6, 24, 72, 168].map((h) => <option key={h} value={h}>{h < 48 ? `last ${h} h` : `last ${h / 24} d`}</option>)}</select>
+            <select className="select select-sm" value={hours} onChange={(e) => set({ hours: e.target.value })} aria-label="Window">{[6, 24, 72, 168].map((h) => <option key={h} value={h}>{h < 48 ? `last ${h} h` : `last ${h / 24} d`}</option>)}</select>
           </label>
         }
       />
@@ -105,15 +109,15 @@ export default function Radar() {
                 })}
               </StatGrid>
               <Toolbar end={<span className="muted small">{v.markets.length} markets</span>}>
-                <select className="select select-sm" value={group} onChange={(e) => setGroup(e.target.value as typeof group)} aria-label="Markets"><option value="all">All markets</option><option value="majors">Majors</option><option value="alts">Alts</option></select>
-                <select className="select select-sm" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Sort"><option value="turnover">By turnover</option><option value="signals">By signals</option><option value="netR">By net R</option><option value="pairs">By pairs</option></select>
-                <label className="small muted radar-check"><input type="checkbox" checked={onlyActive} onChange={(e) => setOnlyActive(e.target.checked)} /> Active only</label>
+                <select className="select select-sm" value={group} onChange={(e) => set({ group: e.target.value })} aria-label="Markets"><option value="all">All markets</option><option value="majors">Majors</option><option value="alts">Alts</option></select>
+                <select className="select select-sm" value={sort} onChange={(e) => set({ sort: e.target.value })} aria-label="Sort"><option value="turnover">By turnover</option><option value="signals">By signals</option><option value="netR">By net R</option><option value="pairs">By pairs</option></select>
+                <label className="small muted radar-check"><input type="checkbox" checked={onlyActive} onChange={(e) => set({ active: e.target.checked ? null : '0' })} /> Active only</label>
               </Toolbar>
               <Panel pad={false}>
                 {v.markets.length === 0 ? (
-                  <EmptyState title="No markets match" hint="Nothing is active in this window. Untick Active only or choose a longer window." action={<button type="button" className="btn btn-sm" onClick={() => setOnlyActive(false)}>Show inactive markets</button>} />
+                  <EmptyState title="No markets match" hint="Nothing is active in this window. Untick Active only or choose a longer window." action={<button type="button" className="btn btn-sm" onClick={() => set({ active: '0' })}>Show inactive markets</button>} />
                 ) : (
-                  <div className="table-wrap"><table className="table small radar-table" style={{ minWidth: 140 + v.tfs.length * 220 }}>
+                  <div className="table-wrap"><table className="table small radar-table" style={{ minWidth: 140 + v.tfs.length * 220 }}><caption className="sr-only">Market coverage by timeframe; signals are separate from fills</caption>
                     <thead><tr><th>Market</th>{v.tfs.map((tf) => <th key={tf}>{tf}</th>)}</tr></thead>
                     <tbody>{v.markets.map((m) => (
                       <tr key={m.symbol}>

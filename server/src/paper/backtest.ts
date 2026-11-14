@@ -1,3 +1,4 @@
+import {candleReplayBlock} from './basket.ts';
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell} from './makerPricing.ts';
 import {offerStatus} from './costs.ts';
@@ -113,6 +114,7 @@ export interface BacktestResult {
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
+  const blocked=candleReplayBlock(inp.executionPlan?.sourceScannerId??inp.scannerId);if(blocked||inp.executionPlan?.basket)throw Error(blocked??'Basket execution requires stateful shadow replay');
   const { bars } = inp;
   if(makerTapeCell(inp.cfg,inp))throw Error('tape-timed maker policy requires recorded trades and depth; candle backtests cannot qualify it');
   const trial=selectiveReclaimRule(inp.cfg,inp);

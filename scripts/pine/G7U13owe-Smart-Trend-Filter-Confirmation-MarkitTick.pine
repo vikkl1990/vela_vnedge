@@ -1,0 +1,479 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Smart Trend Filter Confirmation [MarkitTick]", overlay=true, max_bars_back=500, behind_chart=false)
+
+// ── INPUTS ──────────────────────────────────────────────────
+var string GRP_ST = "⚙️ Core"
+i_lockSignal = input.bool (false, "🔒 Lock Signal", group=GRP_ST, tooltip="Freeze current signal · block new ones")
+i_ce_p1  = input.int   (14,  "ATR Len",     minval=2,             group=GRP_ST)
+i_ce_gam = input.float (2.0, "Band Mult",   minval=0.1, step=0.1, group=GRP_ST)
+i_ce_phi = input.float (1.0, "ATR Weight",  minval=0.1,           group=GRP_ST)
+i_ce_tau = input.float (5.0, "Move Weight", minval=0.1,           group=GRP_ST)
+i_ce_kap = input.int   (1,   "Smooth Len",  minval=1,             group=GRP_ST)
+i_af_on   = input.bool  (true,     "Adaptive Filter", group=GRP_ST)
+i_af_type = input.string("LLAMA", "  Filter Type",   options=["Kalman", "LLAMA"], group=GRP_ST, active=i_af_on)
+i_af_q    = input.float (0.010,    "  Kalman Q",      minval=0.0001, maxval=1.0,  step=0.001, group=GRP_ST, active=i_af_on and i_af_type == "Kalman")
+i_af_r    = input.float (0.100,    "  Kalman R",      minval=0.001,  maxval=10.0, step=0.010, group=GRP_ST, active=i_af_on and i_af_type == "Kalman")
+i_af_len  = input.int   (20,       "  LLAMA Len",     minval=2,      maxval=200,              group=GRP_ST, active=i_af_on and i_af_type == "LLAMA")
+
+var string GRP_FG = "🛡️ Filters"
+i_am_ca   = input.bool (true,  "Stall Filter",   group=GRP_FG)
+i_am_ca_q = input.float(0.05,  "  Flatness",     minval=0.001, maxval=1.0,   step=0.005, group=GRP_FG, active=i_am_ca)
+i_am_cb   = input.bool (true,  "Slope Filter",   group=GRP_FG)
+i_am_cb_n = input.int  (5,     "  Reg Len",      minval=3,     maxval=20,                group=GRP_FG, active=i_am_cb)
+i_am_cb_z = input.float(0.05,  "  Slope Thr",    minval=0.001, maxval=1.0,   step=0.005, group=GRP_FG, active=i_am_cb)
+i_am_cc   = input.bool (true,  "Volume Filter",  group=GRP_FG)
+i_am_cc_n = input.int  (20,    "  Vol MA Len",   minval=5,     maxval=100,               group=GRP_FG, active=i_am_cc)
+i_am_cd   = input.bool (true,  "Range Filter",   group=GRP_FG)
+i_am_cd_n = input.int  (100,   "  Pctile Len",   minval=20,    maxval=500,               group=GRP_FG, active=i_am_cd)
+i_am_cd_p = input.float(20.0,  "  Range Pct",    minval=5.0,   maxval=50.0,  step=1.0,   group=GRP_FG, active=i_am_cd)
+i_am_ce   = input.bool (true,  "BPS Filter",     group=GRP_FG)
+i_am_ce_q = input.float(1.0,   "  Min BPS",      minval=0.1,   maxval=100.0, step=0.1,   group=GRP_FG, active=i_am_ce)
+i_am_cg   = input.bool (true,  "ADX Filter",     group=GRP_FG)
+i_am_cg_n = input.int  (14,    "  ADX Len",      minval=2,     maxval=100,               group=GRP_FG, active=i_am_cg)
+i_am_cg_z = input.float(20.0,  "  ADX Thr",      minval=5.0,   maxval=60.0,  step=0.5,   group=GRP_FG, active=i_am_cg)
+i_am_cf   = input.bool (true,  "Breakout Ovr",   group=GRP_FG)
+i_am_cf_q = input.float(1.5,   "  Ovr ATR Mult", minval=0.5,   maxval=10.0,  step=0.1,   group=GRP_FG, active=i_am_cf)
+
+var string GRP_TRADE = "📐 Trade Tools"
+i_useLevels  = input.bool (false, "📐 Show Trade Levels", group=GRP_TRADE, tooltip="Draw Entry/SL/TP lines and labels on signal")
+i_slAtrMult  = input.float(1.5,   "SL ATR Mult",  minval=0.1, step=0.1, group=GRP_TRADE, active=i_useLevels)
+i_tp1AtrMult = input.float(1.5,   "TP1 ATR Mult", minval=0.1, step=0.1, group=GRP_TRADE, active=i_useLevels)
+i_tp2AtrMult = input.float(3.0,   "TP2 ATR Mult", minval=0.1, step=0.1, group=GRP_TRADE, active=i_useLevels)
+i_tp3AtrMult = input.float(4.5,   "TP3 ATR Mult", minval=0.1, step=0.1, group=GRP_TRADE, active=i_useLevels)
+
+var string GRP_VIS = "🎨 Visuals"
+i_vis_bc    = input.bool (true, "Bar Coloring",   group=GRP_VIS)
+i_vis_sx    = input.bool (true, "Bull/Bear Marks", group=GRP_VIS)
+i_cf_show   = input.bool (true, "Cloud Fill",     group=GRP_VIS)
+i_cf_len    = input.int  (8,    "  Cloud MA Len", minval=1, maxval=50, group=GRP_VIS, active=i_cf_show)
+i_cf_transp = input.int  (65,   "  Cloud Transp", minval=0, maxval=95, group=GRP_VIS, active=i_cf_show)
+
+var string GRP_DSH = "📊 Dashboard"
+i_vis_dx = input.bool  (true,    "Show Dash", group=GRP_DSH)
+i_dsh_x  = input.string("Right", "Dash X",    options=["Left", "Center", "Right"],  group=GRP_DSH, active=i_vis_dx)
+i_dsh_y  = input.string("Top",   "Dash Y",    options=["Top", "Middle", "Bottom"],  group=GRP_DSH, active=i_vis_dx)
+
+var string GRP_WH = "🔔 Alerts"
+i_actionLong       = input.string("long",       "↑ Long Action",        group=GRP_WH)
+i_actionShort      = input.string("short",      "↓ Short Action",       group=GRP_WH)
+i_actionCloseLong  = input.string("closelong",  "✕ Close Long Action",  group=GRP_WH)
+i_actionCloseShort = input.string("closeshort", "✕ Close Short Action", group=GRP_WH)
+
+var string GRP_COL = "🌈 Colors"
+i_vis_ua   = input.color(#00E5FF,                "Bull",       group=GRP_COL, inline="c1")
+i_vis_da   = input.color(#E040FB,                "Bear",       group=GRP_COL, inline="c1")
+i_vis_cn   = input.color(#546E7A,                "Neutral",    group=GRP_COL, inline="c1")
+i_c_txt    = input.color(color.white,            "Label Text", group=GRP_COL, inline="c2")
+i_c_warn   = input.color(color.red,              "Warning",    group=GRP_COL, inline="c2")
+C_DASH_HDR = input.color(color.new(#3a2a6d, 55), "Dash Hdr",   group=GRP_COL, inline="c3")
+C_DASH_BG  = input.color(color.new(#0a0f1a, 10), "Dash BG",    group=GRP_COL, inline="c3")
+C_DASH_TXT = input.color(#FFFFFF,                "Dash Txt",   group=GRP_COL, inline="c3")
+i_c_bhi    = input.color(#26a69a,                "Bar Hi",     group=GRP_COL, inline="c4")
+i_c_bmid   = input.color(#f9a825,                "Bar Mid",    group=GRP_COL, inline="c4")
+i_c_blo    = input.color(#ef5350,                "Bar Lo",     group=GRP_COL, inline="c4")
+i_c_sl     = input.color(#ef5350,                "SL",         group=GRP_COL, inline="c5")
+i_c_entry  = input.color(#2196f3,                "Entry",      group=GRP_COL, inline="c5")
+i_c_tp     = input.color(#26a69a,                "TP",         group=GRP_COL, inline="c5")
+
+// ── UDTs ────────────────────────────────────────────────────
+type SignalState
+    bool  longSignal  = false
+    bool  shortSignal = false
+    int   direction   = 1
+    float trendLine   = na
+
+// ── CORE LOGIC ──────────────────────────────────────────────
+f_kalman(float src) =>
+    var float _x = na
+    var float _p = 1.0
+    float _xPrev = na(_x[1]) ? src : _x[1]
+    float _pPred = nz(_p[1], 1.0) + i_af_q
+    float _gain  = _pPred / (_pPred + i_af_r)
+    _x := _xPrev + _gain * (src - _xPrev)
+    _p := (1.0 - _gain) * _pPred
+    _x
+
+f_llama(float src) =>
+    int   _lag  = math.max(1, math.round((i_af_len - 1) / 2.0))
+    float _dl   = src + (src - src[_lag])
+    float _chg  = math.abs(_dl - _dl[i_af_len])
+    float _vol  = math.sum(math.abs(_dl - _dl[1]), i_af_len)
+    float _er   = _vol <= 0.0 ? 0.0 : math.min(_chg / _vol, 1.0)
+    float _fast = 2.0 / 3.0
+    float _slow = 2.0 / 31.0
+    float _sc   = math.pow(_er * (_fast - _slow) + _slow, 2)
+    var float _ma = na
+    _ma := na(_ma[1]) ? _dl : _ma[1] + _sc * (_dl - _ma[1])
+    _ma
+
+float atr = ta.atr(i_ce_p1)[1]
+
+float _pmRaw    = math.abs(close[1] - close[2]) / math.max(close[2], syminfo.mintick)
+float _pmP95    = ta.percentile_nearest_rank(_pmRaw, 100, 95)
+float priceMove = math.min(_pmRaw, nz(_pmP95, _pmRaw))
+
+float _mt741a = i_ce_gam + (atr / close[1]) * i_ce_phi + priceMove * i_ce_tau
+
+float _alpha        = 2.0 / (i_ce_kap + 1.0)
+float _rawHalf      = _mt741a * atr
+var float _bandHalf = na
+_bandHalf          := na(_bandHalf[1]) ? _rawHalf : _alpha * _rawHalf + (1.0 - _alpha) * _bandHalf[1]
+
+float _srcRaw   = (high[1] + low[1]) / 2.0
+float _srcKal   = f_kalman(_srcRaw)
+float _srcLla   = f_llama(_srcRaw)
+float _hl2_conf = not i_af_on ? _srcRaw : i_af_type == "Kalman" ? nz(_srcKal, _srcRaw) : nz(_srcLla, _srcRaw)
+float upperBand = _hl2_conf + _bandHalf
+float lowerBand = _hl2_conf - _bandHalf
+
+var float trendLine = na
+var int   direction = 1
+
+if na(trendLine)
+    trendLine := upperBand
+
+if close[1] > trendLine[1]
+    direction := 1
+    trendLine := math.max(lowerBand, trendLine)
+else
+    direction := -1
+    trendLine := math.min(upperBand, trendLine)
+
+bool vtfFlat = i_am_ca ? (math.abs(trendLine[1] - trendLine[2]) < atr * i_am_ca_q) : false
+
+float _lrCurr    = ta.linreg(trendLine[1], i_am_cb_n, 0)
+float _lrPrev    = ta.linreg(trendLine[1], i_am_cb_n, 1)
+float _lrSlope   = _lrCurr - _lrPrev
+float _mt741b = math.abs(_lrSlope) / math.max(atr, syminfo.mintick)
+bool  tifFlat    = i_am_cb ? (_mt741b < i_am_cb_z) : false
+
+float _volSma    = ta.sma(volume, i_am_cc_n)
+bool  lqfFlat    = i_am_cc ? (volume[1] <= nz(_volSma[1], volume[1] + 1)) : false
+
+float _hlRange  = high[1] - low[1]
+float _hlPctile = ta.percentile_nearest_rank(_hlRange, i_am_cd_n, i_am_cd_p)
+bool  cdfFlat   = i_am_cd ? (_hlRange <= nz(_hlPctile, _hlRange + 1)) : false
+
+float _bpsDelta = math.abs(trendLine[1] - trendLine[2]) / math.max(close[2], syminfo.mintick) * 10000.0
+bool  bpfFlat   = i_am_ce ? (_bpsDelta < i_am_ce_q) : false
+
+[_diPlus, _diMinus, _adxRaw] = ta.dmi(i_am_cg_n, i_am_cg_n)
+float adxVal = nz(_adxRaw[1])
+bool  adxFlat = i_am_cg ? (adxVal < i_am_cg_z) : false
+
+bool breakoutDetected = i_am_cf and (math.abs(close[1] - close[2]) > atr * i_am_cf_q)
+
+bool isFlatGuard = (vtfFlat or tifFlat or lqfFlat or cdfFlat or bpfFlat or adxFlat) and not breakoutDetected
+
+var int displayDirection = 1
+if not isFlatGuard
+    displayDirection := direction
+
+float _signalTrendLine = trendLine[0]
+bool longSignal  = displayDirection[0] == 1  and displayDirection[1] == -1
+bool shortSignal = displayDirection[0] == -1 and displayDirection[1] == 1
+
+SignalState ss = SignalState.new(
+     longSignal  = longSignal,
+     shortSignal = shortSignal,
+     direction   = displayDirection,
+     trendLine   = trendLine)
+
+bool _locked = i_lockSignal and barstate.islast
+
+float entryPriceLong  = close[1]
+float slPriceLong     = entryPriceLong - atr * i_slAtrMult
+float tp1PriceLong    = entryPriceLong + atr * i_tp1AtrMult
+float tp2PriceLong    = entryPriceLong + atr * i_tp2AtrMult
+float tp3PriceLong    = entryPriceLong + atr * i_tp3AtrMult
+
+float entryPriceShort = close[1]
+float slPriceShort    = entryPriceShort + atr * i_slAtrMult
+float tp1PriceShort   = entryPriceShort - atr * i_tp1AtrMult
+float tp2PriceShort   = entryPriceShort - atr * i_tp2AtrMult
+float tp3PriceShort   = entryPriceShort - atr * i_tp3AtrMult
+
+var line  slLine    = na
+var line  entryLine = na
+var line  tp1Line   = na
+var line  tp2Line   = na
+var line  tp3Line   = na
+var label slLbl     = na
+var label entryLbl  = na
+var label tp1Lbl    = na
+var label tp2Lbl    = na
+var label tp3Lbl    = na
+var linefill riskFill   = na
+var linefill rewardFill = na
+
+f_deleteLevels() =>
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    linefill.delete(riskFill)
+    linefill.delete(rewardFill)
+
+if i_useLevels and (ss.longSignal or ss.shortSignal) and not _locked
+    f_deleteLevels()
+    float _entry = ss.longSignal ? entryPriceLong : entryPriceShort
+    float _sl    = ss.longSignal ? slPriceLong    : slPriceShort
+    float _tp1   = ss.longSignal ? tp1PriceLong   : tp1PriceShort
+    float _tp2   = ss.longSignal ? tp2PriceLong   : tp2PriceShort
+    float _tp3   = ss.longSignal ? tp3PriceLong   : tp3PriceShort
+    int   _x2    = bar_index + 10
+    slLine    := line.new(bar_index, _sl,    _x2, _sl,    color=i_c_sl,    style=line.style_solid,  width=2)
+    entryLine := line.new(bar_index, _entry, _x2, _entry, color=i_c_entry, style=line.style_dashed, width=1)
+    tp1Line   := line.new(bar_index, _tp1,   _x2, _tp1,   color=color.new(i_c_tp, 40), style=line.style_dashed, width=1)
+    tp2Line   := line.new(bar_index, _tp2,   _x2, _tp2,   color=color.new(i_c_tp, 20), style=line.style_dashed, width=1)
+    tp3Line   := line.new(bar_index, _tp3,   _x2, _tp3,   color=color.new(i_c_tp, 0),  style=line.style_dashed, width=1)
+    slLbl     := label.new(_x2, _sl,    "✕ SL "    + str.tostring(_sl,    format.mintick), style=label.style_label_left, color=i_c_sl,    textcolor=i_c_txt, size=size.small)
+    entryLbl  := label.new(_x2, _entry, "▶ Entry " + str.tostring(_entry, format.mintick), style=label.style_label_left, color=i_c_entry, textcolor=i_c_txt, size=size.small)
+    tp1Lbl    := label.new(_x2, _tp1,   "◆ TP1 "   + str.tostring(_tp1,   format.mintick), style=label.style_label_left, color=i_c_tp,    textcolor=i_c_txt, size=size.small)
+    tp2Lbl    := label.new(_x2, _tp2,   "✦ TP2 "   + str.tostring(_tp2,   format.mintick), style=label.style_label_left, color=i_c_tp,    textcolor=i_c_txt, size=size.small)
+    tp3Lbl    := label.new(_x2, _tp3,   "◆ TP3 "   + str.tostring(_tp3,   format.mintick), style=label.style_label_left, color=i_c_tp,    textcolor=i_c_txt, size=size.small)
+    riskFill   := linefill.new(slLine, entryLine, color.new(i_c_sl, 80))
+    rewardFill := linefill.new(entryLine, tp3Line, color.new(i_c_tp, 85))
+
+if i_useLevels and not na(slLine) and barstate.islast
+    int _extX = i_lockSignal ? bar_index + 10 : last_bar_index + 10
+    line.set_x2(slLine,    _extX)
+    line.set_x2(entryLine, _extX)
+    line.set_x2(tp1Line,   _extX)
+    line.set_x2(tp2Line,   _extX)
+    line.set_x2(tp3Line,   _extX)
+    label.set_x(slLbl,     _extX)
+    label.set_x(entryLbl,  _extX)
+    label.set_x(tp1Lbl,    _extX)
+    label.set_x(tp2Lbl,    _extX)
+    label.set_x(tp3Lbl,    _extX)
+
+// ── ALERTS ──────────────────────────────────────────────────
+string _regimeTxt = isFlatGuard ? "flat" : "trending"
+string _entryTxt  = str.tostring(close[1], format.mintick)
+string _adxTxt    = str.tostring(adxVal, "#.##")
+string _filterTxt = i_af_on ? i_af_type : "off"
+
+string _longInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","regime":"{3}","entry":"{4}","adx":"{5}","filter":"{6}"',
+     i_actionLong, syminfo.tickerid, timeframe.period, _regimeTxt, _entryTxt, _adxTxt, _filterTxt)
+string longPayload = "{" + _longInner + "}"
+
+string _shortInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","regime":"{3}","entry":"{4}","adx":"{5}","filter":"{6}"',
+     i_actionShort, syminfo.tickerid, timeframe.period, _regimeTxt, _entryTxt, _adxTxt, _filterTxt)
+string shortPayload = "{" + _shortInner + "}"
+
+string _closeLongInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closelong","reason":"trend_flip","regime":"{3}","entry":"{4}","adx":"{5}","filter":"{6}"',
+     i_actionCloseLong, syminfo.tickerid, timeframe.period, _regimeTxt, _entryTxt, _adxTxt, _filterTxt)
+string closeLongPayload = "{" + _closeLongInner + "}"
+
+string _closeShortInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closeshort","reason":"trend_flip","regime":"{3}","entry":"{4}","adx":"{5}","filter":"{6}"',
+     i_actionCloseShort, syminfo.tickerid, timeframe.period, _regimeTxt, _entryTxt, _adxTxt, _filterTxt)
+string closeShortPayload = "{" + _closeShortInner + "}"
+
+if ss.longSignal and barstate.isconfirmed and not _locked
+    alert(longPayload,       alert.freq_once_per_bar_close)
+if ss.shortSignal and barstate.isconfirmed and not _locked
+    alert(shortPayload,      alert.freq_once_per_bar_close)
+if ss.shortSignal and barstate.isconfirmed and not _locked
+    alert(closeLongPayload,  alert.freq_once_per_bar_close)
+if ss.longSignal and barstate.isconfirmed and not _locked
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+
+alertcondition(ss.longSignal  and barstate.isconfirmed and not _locked, "Bull Signal",         "MarkitTick — Bull Signal Fired")
+alertcondition(ss.shortSignal and barstate.isconfirmed and not _locked, "Bear Signal",        "MarkitTick — Bear Signal Fired")
+alertcondition(ss.shortSignal and barstate.isconfirmed and not _locked, "Close Long Signal",  "MarkitTick — Close Long")
+alertcondition(ss.longSignal  and barstate.isconfirmed and not _locked, "Close Short Signal", "MarkitTick — Close Short")
+
+// ── VISUALS ─────────────────────────────────────────────────
+bool _isNonStdChart = chart.is_heikinashi or chart.is_renko or
+     chart.is_linebreak or chart.is_kagi or chart.is_pnf
+
+var table _warnTbl = table.new(
+     position.top_left, 1, 1,
+     border_color = color.new(i_c_warn, 0),
+     border_width = 2,
+     frame_color  = color.new(i_c_warn, 0),
+     frame_width  = 2)
+
+if _isNonStdChart
+    table.cell(_warnTbl, 0, 0,
+         "⚠ NON-STANDARD CHART DETECTED\n" +
+         "Signals may repaint. Switch to Standard Candlestick.",
+         bgcolor    = color.new(i_c_warn, 15),
+         text_color = i_c_txt,
+         text_size  = size.normal)
+
+float _rawStrength   = math.abs(close[1] - trendLine[1]) / math.max(atr, syminfo.mintick)
+float _trendStrength = math.min(1.0, _rawStrength / 3.0)
+
+color _cGrad = ss.direction == 1
+     ? color.from_gradient(_trendStrength, 0.0, 1.0, i_vis_cn, i_vis_ua)
+     : color.from_gradient(_trendStrength, 0.0, 1.0, i_vis_cn, i_vis_da)
+
+barcolor(i_vis_bc ? _cGrad : na)
+plotcandle(
+     i_vis_bc ? open  : na,
+     i_vis_bc ? high  : na,
+     i_vis_bc ? low   : na,
+     i_vis_bc ? close : na,
+     color       = i_vis_bc ? _cGrad : na,
+     bordercolor = i_vis_bc ? _cGrad : na,
+     wickcolor   = i_vis_bc ? _cGrad : na)
+
+plot_up = plot(
+     ss.direction == 1  ? ss.trendLine : na,
+     "Up Trend",
+     color     = i_vis_ua,
+     linewidth = 2,
+     style     = plot.style_linebr,
+     display   = display.all - display.price_scale - display.status_line)
+
+plot_down = plot(
+     ss.direction == -1 ? ss.trendLine : na,
+     "Down Trend",
+     color     = i_vis_da,
+     linewidth = 2,
+     style     = plot.style_linebr,
+     display   = display.all - display.price_scale - display.status_line)
+
+float _cloudRef = ta.sma(hlc3, i_cf_len)
+
+plot_tl  = plot(ss.trendLine, "TL Anchor", color=color.new(chart.fg_color, 100), display=display.none)
+plot_ref = plot(_cloudRef,    "Cloud Ref", color=color.new(chart.fg_color, 100), display=display.none)
+
+color _cloudClr = i_cf_show
+     ? (ss.direction == 1
+         ? color.new(i_vis_ua, i_cf_transp)
+         : ss.direction == -1
+             ? color.new(i_vis_da, i_cf_transp)
+             : na)
+     : na
+
+fill(plot_tl, plot_ref, ss.trendLine, _cloudRef, _cloudClr, color(na))
+
+plotshape(
+     i_vis_sx and ss.longSignal and not _locked  ? _signalTrendLine : na,
+     title     = "Bull Signal",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = color.new(i_vis_ua, 20),
+     textcolor = i_c_txt,
+     text      = "Bull",
+     size      = size.small,
+     offset    = 0)
+
+plotshape(
+     i_vis_sx and ss.shortSignal and not _locked ? _signalTrendLine : na,
+     title     = "Bear Signal",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = color.new(i_vis_da, 20),
+     textcolor = i_c_txt,
+     text      = "Bear",
+     size      = size.small,
+     offset    = 0)
+
+// ── DASHBOARD ───────────────────────────────────────────────
+var string _mt741c = switch
+    i_dsh_x == "Left"   and i_dsh_y == "Top"    => position.top_left
+    i_dsh_x == "Left"   and i_dsh_y == "Middle" => position.middle_left
+    i_dsh_x == "Left"   and i_dsh_y == "Bottom" => position.bottom_left
+    i_dsh_x == "Center" and i_dsh_y == "Top"    => position.top_center
+    i_dsh_x == "Center" and i_dsh_y == "Middle" => position.middle_center
+    i_dsh_x == "Center" and i_dsh_y == "Bottom" => position.bottom_center
+    i_dsh_x == "Right"  and i_dsh_y == "Middle" => position.middle_right
+    i_dsh_x == "Right"  and i_dsh_y == "Bottom" => position.bottom_right
+    => position.top_right
+
+var table dash = table.new(_mt741c, 2, 21,
+     bgcolor      = C_DASH_BG,
+     border_width = 1,
+     border_color = color.new(#2a3040, 40),
+     frame_width  = 1,
+     frame_color  = color.new(#3a2a6d, 40))
+
+color row_a   = C_DASH_BG
+color row_b   = color.new(C_DASH_BG, 40)
+color lbl_col = color.new(C_DASH_TXT, 25)
+color dim_col = color.new(C_DASH_TXT, 40)
+
+f_barColor(float pct) =>
+    pct >= 0.66 ? color.new(i_c_bhi, 0) : pct >= 0.33 ? color.new(i_c_bmid, 0) : color.new(i_c_blo, 0)
+
+f_bar(float val, float maxVal) =>
+    float  _m      = math.max(nz(maxVal), 0.000001)
+    float  _ratio  = nz(val) / _m
+    int    _filled = math.round(math.min(_ratio, 1.0) * 10)
+    string _b      = ""
+    for i = 1 to 10
+        _b += i <= _filled ? "█" : "░"
+    _b + "  " + str.tostring(math.round(_ratio * 100)) + "%"
+
+f_row(int row, string lbl, string val, color vc) =>
+    color _bg = row % 2 == 1 ? row_a : row_b
+    table.cell(dash, 0, row, "  " + lbl, bgcolor = _bg, text_color = lbl_col, text_halign = text.align_left,  text_size = size.small)
+    table.cell(dash, 1, row, val + "  ", bgcolor = _bg, text_color = vc,      text_halign = text.align_right, text_size = size.small)
+
+f_prog(int row, string lbl, float val, float maxVal) =>
+    float _m = math.max(nz(maxVal), 0.000001)
+    f_row(row, lbl, f_bar(val, _m), f_barColor(math.min(nz(val) / _m, 1.0)))
+
+f_pillar(bool enabled, bool isFlat) =>
+    string _txt = enabled ? (isFlat ? "Flat" : "Active") : "Off"
+    color  _clr = enabled ? (isFlat ? i_vis_da : i_vis_ua) : dim_col
+    [_txt, _clr]
+
+if i_vis_dx
+    table.cell(dash, 0, 0, "Smart Trend Filter",
+         bgcolor = C_DASH_HDR, text_color = C_DASH_TXT, text_halign = text.align_left,  text_size = size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + timeframe.period,
+         bgcolor = C_DASH_HDR, text_color = C_DASH_TXT, text_halign = text.align_right, text_size = size.small)
+
+    f_row(1, "Lock", i_lockSignal ? "ACTIVE" : "OFF", i_lockSignal ? i_vis_da : C_DASH_TXT)
+    f_row(2, "Direction", ss.direction == 1 ? "Bullish" : "Bearish", ss.direction == 1 ? i_vis_ua : i_vis_da)
+
+    string _sigTxt = ss.longSignal ? "Bull" : ss.shortSignal ? "Bear" : "Wait"
+    color  _sigClr = ss.longSignal ? i_vis_ua : ss.shortSignal ? i_vis_da : dim_col
+    f_row(3, "Signal", _sigTxt, _sigClr)
+    f_row(4, "Regime", isFlatGuard ? "Flat" : "Trending", isFlatGuard ? i_vis_da : i_vis_ua)
+
+    string _boTxt = not i_am_cf ? "Off" : breakoutDetected ? "Engaged" : "Nominal"
+    color  _boClr = not i_am_cf ? dim_col : breakoutDetected ? i_vis_ua : C_DASH_TXT
+    f_row(5, "Override", _boTxt, _boClr)
+    f_row(6, "Adaptive", i_af_on ? i_af_type : "Off", i_af_on ? C_DASH_TXT : dim_col)
+
+    f_row(7, "Trend Line", str.tostring(ss.trendLine, format.mintick), C_DASH_TXT)
+    f_row(8, "ATR",        str.tostring(atr,          format.mintick), C_DASH_TXT)
+
+    f_prog(9,  "Strength",  _trendStrength, 1.0)
+    f_prog(10, "Slope",     _mt741b,     i_am_cb_z)
+    f_prog(11, "Volume",    volume[1],      nz(_volSma[1],  volume[1]))
+    f_prog(12, "Range",     _hlRange,       nz(_hlPctile,   _hlRange))
+    f_prog(13, "BPS Delta", _bpsDelta,      i_am_ce_q)
+    f_prog(14, "ADX",       adxVal,         100.0)
+
+    [_p1t, _p1c] = f_pillar(i_am_ca, vtfFlat)
+    f_row(15, "Stall Filter", _p1t, _p1c)
+    [_p2t, _p2c] = f_pillar(i_am_cb, tifFlat)
+    f_row(16, "Slope Filter", _p2t, _p2c)
+    [_p3t, _p3c] = f_pillar(i_am_cc, lqfFlat)
+    f_row(17, "Volume Filter", _p3t, _p3c)
+    [_p4t, _p4c] = f_pillar(i_am_cd, cdfFlat)
+    f_row(18, "Range Filter", _p4t, _p4c)
+    [_p5t, _p5c] = f_pillar(i_am_ce, bpfFlat)
+    f_row(19, "BPS Filter", _p5t, _p5c)
+    [_p6t, _p6c] = f_pillar(i_am_cg, adxFlat)
+    f_row(20, "ADX Filter", _p6t, _p6c)

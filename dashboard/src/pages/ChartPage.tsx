@@ -28,8 +28,10 @@ export function ChartPage() {
   const markets = useMarkets()
   const config = useConfig()
   const scanners = useScannerIndex()
+  const [params, setParams] = useSearchParams()
 
   const [symbolSel, setSymbol] = useState<string>(() => {
+    if (params.get('symbol')) return params.get('symbol')!
     try {
       return JSON.parse(localStorage.getItem(LS_KEY) ?? '{}').symbol ?? ''
     } catch {
@@ -37,6 +39,8 @@ export function ChartPage() {
     }
   })
   const [tf, setTf] = useState<string>(() => {
+    const linked = params.get('tf')
+    if (linked && ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '1d'].includes(linked)) return linked
     try {
       return JSON.parse(localStorage.getItem(LS_KEY) ?? '{}').tf ?? '15m'
     } catch {
@@ -52,7 +56,6 @@ export function ChartPage() {
   })
   const [selected, setSelected] = useState<string[]>([])
   // decision 153: the Library's "Add to chart" hands scripts over as ?add=<id>[,<id>], any runnable script, enabled or not
-  const [params, setParams] = useSearchParams()
   const addedIds = useMemo(() => (params.get('add') ?? '').split(',').map((x) => x.trim()).filter(Boolean), [params])
   const removeAdded = (id: string) => {
     const left = addedIds.filter((x) => x !== id)

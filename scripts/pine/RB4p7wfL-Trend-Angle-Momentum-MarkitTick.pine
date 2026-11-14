@@ -1,0 +1,186 @@
+//@version=6
+// © MarkitTick
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+indicator("Trend Angle Momentum [MarkitTick]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+var string G_CORE = "⚙️ Core"
+var string G_COL  = "🌈 Colors"
+i_leftBars    = input.int(5, "Left Bars", minval = 1, group = G_CORE)
+i_rightBars   = input.int(5, "Right Bars", minval = 1, group = G_CORE)
+i_showHigh    = input.bool(true, "Show High Swing Lines", group = G_CORE)
+i_showLow     = input.bool(true, "Show Low Swing Lines", group = G_CORE)
+i_showCross   = input.bool(true, "Show Swing Point Dots", group = G_CORE)
+i_normByTime  = input.bool(false, "Normalize Angle by Bars", group = G_CORE)
+i_useAngMom   = input.bool(false, "Use Angle Momentum", group = G_CORE)
+i_angMomLen   = input.int(5, "Angle Momentum Length", minval = 2, group = G_CORE)
+var string _mt741a = "📊 Dashboard"
+i_dashPos = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = _mt741a)
+i_showDash = input.bool(true, "Show Dashboard", group = _mt741a)
+var string G_WH = "🔔 Alerts"
+i_actionHighPivot = input.string("highpivot", "High Pivot Action", group = G_WH)
+i_actionLowPivot  = input.string("lowpivot", "Low Pivot Action", group = G_WH)
+i_colHighLine = input.color(color.new(#ff0014, 0), "High Swing Line", group = G_COL)
+i_colLowLine  = input.color(color.new(#00ff0a, 0), "Low Swing Line", group = G_COL)
+i_colHighTxt  = input.color(color.new(#ff0014, 0), "High Angle Text", group = G_COL)
+i_colLowTxt   = input.color(color.new(#00ff0a, 0), "Low Angle Text", group = G_COL)
+i_colStepHigh = input.color(color.new(#ff0014, 0), "Pivot High Cross", group = G_COL)
+i_colStepLow  = input.color(color.new(#00ff0a, 0), "Pivot Low Cross", group = G_COL)
+i_colAngPos   = input.color(color.new(#00ff0a, 0), "Positive Angle Color", group = G_COL)
+i_colAngNeg   = input.color(color.new(#ff0014, 0), "Negative Angle Color", group = G_COL)
+i_colMomHigh  = input.color(color.new(#ffaa00, 0), "High Angle Momentum Text", group = G_COL)
+i_colMomLow   = input.color(color.new(#00aaff, 0), "Low Angle Momentum Text", group = G_COL)
+i_colDashHdr  = input.color(color.new(#3a2a6d, 55), "Dash Header", group = G_COL)
+i_colDashBg   = input.color(color.new(#0a0f1a, 10), "Dash BG", group = G_COL)
+i_colDashTxt  = input.color(color.new(#ffffff, 0), "Dash Text", group = G_COL)
+
+// ── CORE LOGIC ──────────────────────────────────────────────────
+f_pivotHigh(int left, int right) =>
+    float pivotVal = na
+    if bar_index >= left + right
+        float candidate = high[right]
+        bool isPivot = true
+        for i = 1 to left
+            if high[right + i] >= candidate
+                isPivot := false
+        for i = 1 to right
+            if high[right - i] >= candidate
+                isPivot := false
+        if isPivot
+            pivotVal := candidate
+    pivotVal
+
+f_pivotLow(int left, int right) =>
+    float pivotVal = na
+    if bar_index >= left + right
+        float candidate = low[right]
+        bool isPivot = true
+        for i = 1 to left
+            if low[right + i] <= candidate
+                isPivot := false
+        for i = 1 to right
+            if low[right - i] <= candidate
+                isPivot := false
+        if isPivot
+            pivotVal := candidate
+    pivotVal
+
+calculate_p2p_angle(p1, p2, bars, normByTime) =>
+    pct_change = p1 != 0 ? (p2 - p1) / p1 * 100 : 0.0
+    rate = normByTime and bars > 0 ? pct_change / bars : pct_change
+    angle_rad = math.atan(rate)
+    angle_rad * (180 / math.pi)
+
+f_angleMomentum(array<float> arr, float ang, int len) =>
+    array.push(arr, ang)
+    if array.size(arr) > len
+        array.shift(arr)
+    array.avg(arr)
+
+var array<float> highAngles = array.new_float(0)
+var array<float> lowAngles  = array.new_float(0)
+
+float labelOffset = ta.atr(14) * 0.5
+
+float ph_val = f_pivotHigh(i_leftBars, i_rightBars)
+float pl_val = f_pivotLow(i_leftBars, i_rightBars)
+
+var int   prevHighBar = na
+var float prevHighPrc = na
+var int   prevLowBar  = na
+var float prevLowPrc  = na
+var bool  highPivotSignal = false
+var bool  lowPivotSignal  = false
+
+highPivotSignal := false
+lowPivotSignal  := false
+
+if not na(ph_val) and barstate.isconfirmed
+    int   thisHighBar = bar_index - i_rightBars
+    float thisHighPrc = ph_val
+    if not na(prevHighBar)
+        highPivotSignal := true
+        int   barsBetween = thisHighBar - prevHighBar
+        float ang = calculate_p2p_angle(prevHighPrc, thisHighPrc, barsBetween, i_normByTime)
+        color angCol = ang >= 0 ? i_colAngPos : i_colAngNeg
+        float angMomHigh = i_useAngMom ? f_angleMomentum(highAngles, ang, i_angMomLen) : na
+        if i_showHigh
+            line.new(prevHighBar, prevHighPrc, thisHighBar, thisHighPrc, color = angCol, style = line.style_solid, width = 2)
+            int   midBar = math.round((prevHighBar + thisHighBar) / 2)
+            float midPrc = math.max(prevHighPrc, thisHighPrc)
+            label.new(midBar, midPrc, text = str.tostring(ang, "#.##") + "°", style = label.style_label_up, color = color.new(color.black, 100), textcolor = angCol, size = size.small)
+            if i_useAngMom and not na(angMomHigh)
+                label.new(thisHighBar, thisHighPrc + labelOffset, text = "Mom " + str.tostring(angMomHigh, "#.##") + "°", style = label.style_label_down, color = color.new(color.black, 100), textcolor = i_colMomHigh, size = size.small)
+    prevHighBar := thisHighBar
+    prevHighPrc := thisHighPrc
+
+if not na(pl_val) and barstate.isconfirmed
+    int   thisLowBar = bar_index - i_rightBars
+    float thisLowPrc = pl_val
+    if not na(prevLowBar)
+        lowPivotSignal := true
+        int   barsBetween = thisLowBar - prevLowBar
+        float ang = calculate_p2p_angle(prevLowPrc, thisLowPrc, barsBetween, i_normByTime)
+        color angCol = ang >= 0 ? i_colAngPos : i_colAngNeg
+        float angMomLow = i_useAngMom ? f_angleMomentum(lowAngles, ang, i_angMomLen) : na
+        if i_showLow
+            line.new(prevLowBar, prevLowPrc, thisLowBar, thisLowPrc, color = angCol, style = line.style_solid, width = 2)
+            int   midBar = math.round((prevLowBar + thisLowBar) / 2)
+            float midPrc = math.min(prevLowPrc, thisLowPrc)
+            label.new(midBar, midPrc, text = str.tostring(ang, "#.##") + "°", style = label.style_label_down, color = color.new(color.black, 100), textcolor = angCol, size = size.small)
+            if i_useAngMom and not na(angMomLow)
+                label.new(thisLowBar, thisLowPrc - labelOffset, text = "Mom " + str.tostring(angMomLow, "#.##") + "°", style = label.style_label_up, color = color.new(color.black, 100), textcolor = i_colMomLow, size = size.small)
+    prevLowBar := thisLowBar
+    prevLowPrc := thisLowPrc
+
+// ── ALERTS ───────────────────────────────────────────
+string _highInner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","price":"{3}"',
+ i_actionHighPivot, syminfo.tickerid, timeframe.period,
+ str.tostring(ph_val, format.mintick))
+string highPivotPayload = "{" + _highInner + "}"
+string _lowInner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","price":"{3}"',
+ i_actionLowPivot, syminfo.tickerid, timeframe.period,
+ str.tostring(pl_val, format.mintick))
+string lowPivotPayload = "{" + _lowInner + "}"
+if highPivotSignal
+    alert(highPivotPayload, alert.freq_once_per_bar_close)
+if lowPivotSignal
+    alert(lowPivotPayload, alert.freq_once_per_bar_close)
+alertcondition(highPivotSignal, "High Pivot", "MarkitTick — High Pivot Formed")
+alertcondition(lowPivotSignal, "Low Pivot", "MarkitTick — Low Pivot Formed")
+
+float ph_filled = fixnan(ph_val)
+float pl_filled = fixnan(pl_val)
+
+var float phs = 0.0
+var float pls = 0.0
+
+if barstate.isconfirmed
+    phs := ph_filled
+    pls := pl_filled
+
+// ── VISUALS ───────────────────────────────────────────
+plot(i_showCross ? phs : na, "Pivot High", style = plot.style_cross, color = i_colStepHigh, linewidth = 1, offset = -i_rightBars, display = display.all - display.price_scale - display.status_line)
+plot(i_showCross ? pls : na, "Pivot Low", style = plot.style_cross, color = i_colStepLow, linewidth = 1, offset = -i_rightBars, display = display.all - display.price_scale - display.status_line)
+
+// ── DASHBOARD ─────────────────────────────────────
+f_dashPos(string p) =>
+    p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : position.top_right
+var table dash = table.new(f_dashPos(i_dashPos), 2, 6, border_width = 1, border_color = color.new(#2a3040, 40), frame_width = 1, frame_color = color.new(#3a2a6d, 40))
+lastAngHigh = array.size(highAngles) > 0 ? array.get(highAngles, array.size(highAngles) - 1) : na
+lastAngLow  = array.size(lowAngles) > 0 ? array.get(lowAngles, array.size(lowAngles) - 1) : na
+if i_showDash
+    table.cell(dash, 0, 0, "Trend Angle Momentum", text_color = i_colDashTxt, bgcolor = i_colDashHdr, text_size = size.small, text_halign = text.align_left)
+    table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + timeframe.period, text_color = i_colDashTxt, bgcolor = i_colDashHdr, text_size = size.small, text_halign = text.align_right)
+    table.cell(dash, 0, 1, "  Last High Pivot", text_color = color.new(i_colDashTxt, 25), bgcolor = i_colDashBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(dash, 1, 1, (na(phs) ? "—" : str.tostring(phs, format.mintick)) + "  ", text_color = i_colDashTxt, bgcolor = i_colDashBg, text_size = size.small, text_halign = text.align_right)
+    table.cell(dash, 0, 2, "  Last Low Pivot", text_color = color.new(i_colDashTxt, 25), bgcolor = color.new(i_colDashBg, 40), text_size = size.small, text_halign = text.align_left)
+    table.cell(dash, 1, 2, (na(pls) ? "—" : str.tostring(pls, format.mintick)) + "  ", text_color = i_colDashTxt, bgcolor = color.new(i_colDashBg, 40), text_size = size.small, text_halign = text.align_right)
+    table.cell(dash, 0, 3, "  High Angle", text_color = color.new(i_colDashTxt, 25), bgcolor = i_colDashBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(dash, 1, 3, (na(lastAngHigh) ? "—" : str.tostring(lastAngHigh, "#.##") + "°") + "  ", text_color = na(lastAngHigh) ? i_colDashTxt : (lastAngHigh >= 0 ? i_colAngPos : i_colAngNeg), bgcolor = i_colDashBg, text_size = size.small, text_halign = text.align_right)
+    table.cell(dash, 0, 4, "  Low Angle", text_color = color.new(i_colDashTxt, 25), bgcolor = color.new(i_colDashBg, 40), text_size = size.small, text_halign = text.align_left)
+    table.cell(dash, 1, 4, (na(lastAngLow) ? "—" : str.tostring(lastAngLow, "#.##") + "°") + "  ", text_color = na(lastAngLow) ? i_colDashTxt : (lastAngLow >= 0 ? i_colAngPos : i_colAngNeg), bgcolor = color.new(i_colDashBg, 40), text_size = size.small, text_halign = text.align_right)
+    table.cell(dash, 0, 5, "  Ang Momentum", text_color = color.new(i_colDashTxt, 25), bgcolor = i_colDashBg, text_size = size.small, text_halign = text.align_left)
+    table.cell(dash, 1, 5, (i_useAngMom ? "ON  " : "OFF  "), text_color = i_useAngMom ? i_colAngPos : i_colDashTxt, bgcolor = i_colDashBg, text_size = size.small, text_halign = text.align_right)

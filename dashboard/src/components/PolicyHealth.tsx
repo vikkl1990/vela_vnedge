@@ -19,7 +19,7 @@ export function PolicyHealthStatus() {
       {quarantined} historical trades quarantined from evidence in the last {d.windowDays} days.
       <span className={d.boundExits.failures ? 'loss' : ''}> {d.boundExits.failures} held positions with archived-exit errors.</span>
       {(health.data?.attention ?? []).map(item => <span key={item.key} className="loss"> {item.text} · <Link to={item.href}>Inspect</Link>.</span>)}
-      {' '}Policy versions and reserved margin are under Research tools below.
+      {' '}Policy versions and reserved margin: <Link to="/incubator?section=operations#incubator-evidence">evidence details</Link>.
     </span>
   </Callout>
 }

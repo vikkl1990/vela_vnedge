@@ -12,7 +12,7 @@ export type NavItem = ModelItem & { icon: (p: { size?: number }) => ReactElement
 export type NavGroup = Omit<ModelGroup, 'items'> & { items: NavItem[] }
 
 const ICONS: Record<string, NavItem['icon']> = {
-  '/': IconActivity, '/decisions': IconBookmark, '/signals': IconBell, '/radar': IconGrid, '/monitor': IconActivity, '/trades': IconTrades, '/chart': IconCandles,
+  '/': IconCandles, '/overview': IconActivity, '/decisions': IconBookmark, '/signals': IconBell, '/radar': IconGrid, '/monitor': IconActivity, '/trades': IconTrades, '/chart': IconCandles,
   '/scanners': IconScan, '/library': IconBook, '/incubator': IconFlask, '/trackers': IconTarget, '/analytics': IconBars, '/daily': IconCalendar, '/learn': IconGraduation,
   '/gates': IconShield, '/exchange': IconExchange, '/settings': IconSettings, '/logs': IconTerminal,
 }

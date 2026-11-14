@@ -110,6 +110,8 @@ const SECTIONS: Section[] = [
       { path: 'incubator.mirror.pilot.maxOpenPositions', label: 'Paper copy pilot: open or pending cap (0 = account capacity)', hint: 'At 0, pilots share the account position and margin limits with native trades. No fixed scalp/swing allocation.', kind: 'number', step: '1', validate: num(0, 8) },
       { path: 'incubator.tfs', label: 'Screen timeframes', kind: 'tfs' },
       { path: 'incubator.maxShadow', label: 'Shadow book cap (pairs)', kind: 'number', step: '10', validate: num(1, 2000) },
+      { path: 'incubator.promote.auto', label: 'Automatically promote qualified cells to paper', kind: 'bool', hint: 'Uses the existing forward-evidence gate. Does not promote experimental plans or place live exchange orders.' },
+      { path: 'incubator.promote.reviewMinutes', label: 'Evidence review interval (minutes)', kind: 'number', step: '1', validate: num(5, 1440), hint: 'Fresh closed trades can trigger an earlier review, at most once every five minutes.' },
       { path: 'incubator.promote.maxFleet', label: 'Fleet cap (cells)', kind: 'number', step: '1', validate: num(1, 1000) },
       { path: 'incubator.promote.maxPerWeek', label: 'Promotions per week', kind: 'number', step: '1', validate: num(0, 1000) },
       { path: 'incubator.promote.maxPerMarket', label: 'Live cells per market', kind: 'number', step: '1', validate: num(1, 1000) },

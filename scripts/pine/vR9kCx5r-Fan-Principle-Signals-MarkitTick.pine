@@ -1,0 +1,362 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Fan Principle Signals [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=500)
+
+// ── INPUTS ─────────────────────────────────────────────────
+var string GRP_CORE = "⚙️ Core"
+var string GRP_FILT = "🕯️ Filters"
+var string GRP_TT   = "📐 Trade Tools"
+var string GRP_VIS  = "🎨 Visuals"
+var string GRP_DASH = "📊 Dashboard"
+var string GRP_WH   = "🔔 Alerts"
+var string GRP_COL  = "🌈 Colors"
+i_pivLen      = input.int(5, "Pivot Len", minval=2, group=GRP_CORE)
+i_lockSignal  = input.bool(false, "🔒 Lock Signal", group=GRP_TT, tooltip="Freeze current signal · block new ones")
+i_maxFanBars  = input.int(300, "Max Fan Lookback", minval=50, group=GRP_CORE)
+i_minLegPct   = input.float(0.1, "Min Leg %", minval=0.0, step=0.05, group=GRP_CORE)
+i_useVolFilt  = input.bool(false, "Use Vol Filt", group=GRP_FILT)
+i_volLen      = input.int(20, "Vol Avg Len", minval=5, group=GRP_FILT)
+i_volMult     = input.float(1.2, "Vol Mult", minval=0.5, step=0.1, group=GRP_FILT)
+i_useHtfFilt  = input.bool(false, "Use HTF Filt", group=GRP_FILT)
+i_htfTf       = input.timeframe("60", "HTF", group=GRP_FILT)
+i_slBufAtr    = input.float(0.1, "SL ATR Buf", minval=0.0, step=0.05, group=GRP_TT)
+i_slMaxAtr    = input.float(3.0, "SL Max ATR", minval=0.5, step=0.5, group=GRP_TT)
+i_atrLen      = input.int(14, "ATR Len", minval=1, group=GRP_TT)
+i_tp1R        = input.float(1.0, "TP1 R", minval=0.1, step=0.1, group=GRP_TT)
+i_tp2R        = input.float(2.0, "TP2 R", minval=0.1, step=0.1, group=GRP_TT)
+i_tp3R        = input.float(3.0, "TP3 R", minval=0.1, step=0.1, group=GRP_TT)
+i_showFanLn   = input.bool(false, "Show Fan Lines", group=GRP_VIS)
+i_showLevels  = input.bool(true, "Show Trade Levels", group=GRP_VIS)
+i_showLbl     = input.bool(true, "Show Labels", group=GRP_VIS)
+i_showDash    = input.bool(true, "Show Dash", group=GRP_DASH)
+i_dashPos     = input.string("Top Right", "Dash Pos", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=GRP_DASH)
+i_actionLong        = input.string("long", "↑ Long Act", group=GRP_WH)
+i_actionShort       = input.string("short", "↓ Short Act", group=GRP_WH)
+i_actionCloseLong   = input.string("closelong", "✕ CloseLong Act", group=GRP_WH)
+i_actionCloseShort  = input.string("closeshort", "✕ CloseShort Act", group=GRP_WH)
+c_fanBull     = input.color(color.new(#26a69a, 0), "Bull Fan", group=GRP_COL)
+c_fanBear     = input.color(color.new(#ef5350, 0), "Bear Fan", group=GRP_COL)
+c_sl          = input.color(#ef5350, "SL Line", group=GRP_COL)
+c_entry       = input.color(#2196f3, "Entry Line", group=GRP_COL)
+c_tp1         = input.color(color.new(#26a69a, 40), "TP1 Line", group=GRP_COL)
+c_tp2         = input.color(color.new(#26a69a, 20), "TP2 Line", group=GRP_COL)
+c_tp3         = input.color(color.new(#26a69a, 0), "TP3 Line", group=GRP_COL)
+c_riskFill    = input.color(color.new(#ef5350, 80), "Risk Fill", group=GRP_COL)
+c_rewardFill  = input.color(color.new(#26a69a, 85), "Reward Fill", group=GRP_COL)
+c_buyLbl      = input.color(#26a69a, "BUY Label", group=GRP_COL)
+c_sellLbl     = input.color(#ef5350, "SELL Label", group=GRP_COL)
+C_DASH_HDR    = input.color(color.new(#3a2a6d, 55), "Dash Hdr", group=GRP_COL)
+_mt741a     = input.color(color.new(#0a0f1a, 10), "Dash BG", group=GRP_COL)
+C_DASH_TXT    = input.color(color.new(#ffffff, 0), "Dash Txt", group=GRP_COL)
+
+// ── CORE LOGIC ──────────────────────────────────────────
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 0 to len * 2
+        if i != len and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 0 to len * 2
+        if i != len and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+float ph = f_pivotHigh(high, i_pivLen)
+float pl = f_pivotLow(low, i_pivLen)
+var int phBar = na
+var int plBar = na
+var float phVal = na
+var float plVal = na
+if not na(ph)
+    phBar := bar_index - i_pivLen
+    phVal := ph
+if not na(pl)
+    plBar := bar_index - i_pivLen
+    plVal := pl
+atrVal = ta.atr(i_atrLen)
+volAvg = ta.sma(volume, i_volLen)
+bool volOk = i_useVolFilt ? volume > volAvg * i_volMult : true
+float htfClose = request.security(syminfo.tickerid, i_htfTf, close[1], lookahead=barmerge.lookahead_on)
+float htfCloseNow = i_useHtfFilt ? htfClose : na
+var array<int> loBarArr = array.new<int>()
+var array<float> loValArr = array.new<float>()
+var array<int> hiBarArr = array.new<int>()
+var array<float> hiValArr = array.new<float>()
+if not na(pl) and barstate.isconfirmed
+    array.push(loBarArr, plBar)
+    array.push(loValArr, plVal)
+    if array.size(loBarArr) > 20
+        array.shift(loBarArr)
+        array.shift(loValArr)
+if not na(ph) and barstate.isconfirmed
+    array.push(hiBarArr, phBar)
+    array.push(hiValArr, phVal)
+    if array.size(hiBarArr) > 20
+        array.shift(hiBarArr)
+        array.shift(hiValArr)
+f_slope(int x1, float y1, int x2, float y2) =>
+    x2 != x1 ? (y2 - y1) / (x2 - x1) : 0.0
+f_lineValAt(int x1, float y1, float m, int xTarget) =>
+    y1 + m * (xTarget - x1)
+var int originBar = na
+var float originVal = na
+var int fanDir = 0
+var int fL1Bar = na
+var float fL1Val = na
+var int fL2Bar = na
+var float fL2Val = na
+var int fL3Bar = na
+var float fL3Val = na
+var float fanM1 = na
+var float fanM2 = na
+var float fanM3 = na
+bool canBuildBullFan = array.size(loBarArr) >= 4
+bool canBuildBearFan = array.size(hiBarArr) >= 4
+if barstate.isconfirmed and canBuildBullFan
+    int n = array.size(loBarArr)
+    int oB = array.get(loBarArr, n - 4)
+    float oV = array.get(loValArr, n - 4)
+    int b1 = array.get(loBarArr, n - 3)
+    float v1 = array.get(loValArr, n - 3)
+    int b2 = array.get(loBarArr, n - 2)
+    float v2 = array.get(loValArr, n - 2)
+    int b3 = array.get(loBarArr, n - 1)
+    float v3 = array.get(loValArr, n - 1)
+    bool freshEnough = (bar_index - oB) <= i_maxFanBars
+    bool _mt741b = math.abs(v1 - oV) / oV * 100.0 >= i_minLegPct
+    if freshEnough and _mt741b and b1 > oB and b2 > b1 and b3 > b2 and (na(fanDir) or fanDir != -1 or b3 > fL3Bar)
+        originBar := oB
+        originVal := oV
+        fanDir := 1
+        fL1Bar := b1
+        fL1Val := v1
+        fL2Bar := b2
+        fL2Val := v2
+        fL3Bar := b3
+        fL3Val := v3
+        fanM1 := f_slope(oB, oV, b1, v1)
+        fanM2 := f_slope(oB, oV, b2, v2)
+        fanM3 := f_slope(oB, oV, b3, v3)
+if barstate.isconfirmed and canBuildBearFan
+    int n = array.size(hiBarArr)
+    int oB = array.get(hiBarArr, n - 4)
+    float oV = array.get(hiValArr, n - 4)
+    int b1 = array.get(hiBarArr, n - 3)
+    float v1 = array.get(hiValArr, n - 3)
+    int b2 = array.get(hiBarArr, n - 2)
+    float v2 = array.get(hiValArr, n - 2)
+    int b3 = array.get(hiBarArr, n - 1)
+    float v3 = array.get(hiValArr, n - 1)
+    bool freshEnough = (bar_index - oB) <= i_maxFanBars
+    bool _mt741b = math.abs(v1 - oV) / oV * 100.0 >= i_minLegPct
+    if freshEnough and _mt741b and b1 > oB and b2 > b1 and b3 > b2 and (na(fanDir) or fanDir != 1 or b3 > fL3Bar)
+        originBar := oB
+        originVal := oV
+        fanDir := -1
+        fL1Bar := b1
+        fL1Val := v1
+        fL2Bar := b2
+        fL2Val := v2
+        fL3Bar := b3
+        fL3Val := v3
+        fanM1 := f_slope(oB, oV, b1, v1)
+        fanM2 := f_slope(oB, oV, b2, v2)
+        fanM3 := f_slope(oB, oV, b3, v3)
+float fan3ValNow = na(fanM3) ? na : f_lineValAt(originBar, originVal, fanM3, bar_index)
+float fan3ValPrev = na(fanM3) ? na : f_lineValAt(originBar, originVal, fanM3, bar_index - 1)
+bool bullBreak = fanDir == 1 and not na(fan3ValNow) and close[1] > fan3ValPrev and close[2] <= f_lineValAt(originBar, originVal, fanM3, bar_index - 2) and volOk and (not i_useHtfFilt or (not na(htfCloseNow) and close[1] > htfCloseNow)) and barstate.isconfirmed
+bool bearBreak = fanDir == -1 and not na(fan3ValNow) and close[1] < fan3ValPrev and close[2] >= f_lineValAt(originBar, originVal, fanM3, bar_index - 2) and volOk and (not i_useHtfFilt or (not na(htfCloseNow) and close[1] < htfCloseNow)) and barstate.isconfirmed
+var float lowestOfTrend = na
+var float highestOfTrend = na
+if fanDir == 1 and not na(originBar)
+    lowestOfTrend := math.min(originVal, math.min(fL1Val, math.min(fL2Val, fL3Val)))
+if fanDir == -1 and not na(originBar)
+    highestOfTrend := math.max(originVal, math.max(fL1Val, math.max(fL2Val, fL3Val)))
+var int lastSignalBar = na
+var int signalDir = 0
+var float entryPrice = na
+var float slPrice = na
+var float tp1Price = na
+var float tp2Price = na
+var float tp3Price = na
+var float riskDist = na
+if bullBreak
+    lastSignalBar := bar_index
+    signalDir := 1
+    entryPrice := close[1]
+    float nearestLegLow = math.min(fL2Val, fL3Val)
+    float rawSl = nearestLegLow - atrVal[1] * i_slBufAtr
+    float slFloor = entryPrice - atrVal[1] * i_slMaxAtr
+    slPrice := math.max(rawSl, slFloor)
+    riskDist := entryPrice - slPrice
+    tp1Price := entryPrice + riskDist * i_tp1R
+    tp2Price := entryPrice + riskDist * i_tp2R
+    tp3Price := entryPrice + riskDist * i_tp3R
+if bearBreak
+    lastSignalBar := bar_index
+    signalDir := -1
+    entryPrice := close[1]
+    float nearestLegHigh = math.max(fL2Val, fL3Val)
+    float rawSl = nearestLegHigh + atrVal[1] * i_slBufAtr
+    float slCeil = entryPrice + atrVal[1] * i_slMaxAtr
+    slPrice := math.min(rawSl, slCeil)
+    riskDist := slPrice - entryPrice
+    tp1Price := entryPrice - riskDist * i_tp1R
+    tp2Price := entryPrice - riskDist * i_tp2R
+    tp3Price := entryPrice - riskDist * i_tp3R
+bool tp1Hit = not na(tp1Price) and signalDir == 1 ? high >= tp1Price : not na(tp1Price) and signalDir == -1 ? low <= tp1Price : false
+bool tp2Hit = not na(tp2Price) and signalDir == 1 ? high >= tp2Price : not na(tp2Price) and signalDir == -1 ? low <= tp2Price : false
+bool tp3Hit = not na(tp3Price) and signalDir == 1 ? high >= tp3Price : not na(tp3Price) and signalDir == -1 ? low <= tp3Price : false
+// ── VISUALS ─────────────────────────────────────────
+var line fanLn1 = na
+var line fanLn2 = na
+var line fanLn3 = na
+f_deleteFan() =>
+    line.delete(fanLn1)
+    line.delete(fanLn2)
+    line.delete(fanLn3)
+if i_showFanLn and barstate.isconfirmed and (bullBreak or bearBreak or (not na(fanM3) and fanDir != 0 and (na(fL3Bar[1]) or fL3Bar != fL3Bar[1])))
+    f_deleteFan()
+    color fanClr = fanDir == 1 ? c_fanBull : c_fanBear
+    fanLn1 := line.new(originBar, originVal, fL1Bar, fL1Val, color=fanClr, style=line.style_dotted, width=1)
+    fanLn2 := line.new(originBar, originVal, fL2Bar, fL2Val, color=fanClr, style=line.style_dotted, width=1)
+    fanLn3 := line.new(originBar, originVal, fL3Bar, fL3Val, color=fanClr, style=line.style_solid, width=2)
+    line.set_extend(fanLn3, extend.right)
+var line slLine = na
+var line entryLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+var label slLbl = na
+var label entryLbl = na
+var label tp1Lbl = na
+var label tp2Lbl = na
+var label tp3Lbl = na
+var linefill riskFill = na
+var linefill rewardFill = na
+f_deleteLevels() =>
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    linefill.delete(riskFill)
+    linefill.delete(rewardFill)
+bool newSignal = bullBreak or bearBreak
+bool _locked = i_lockSignal and barstate.islast
+if i_showLevels and newSignal and not _locked
+    f_deleteLevels()
+    int _x2 = bar_index + 50
+    slLine := line.new(bar_index, slPrice, _x2, slPrice, color=c_sl, style=line.style_solid, width=2)
+    entryLine := line.new(bar_index, entryPrice, _x2, entryPrice, color=c_entry, style=line.style_dashed, width=1)
+    tp1Line := line.new(bar_index, tp1Price, _x2, tp1Price, color=c_tp1, style=line.style_dashed, width=1)
+    tp2Line := line.new(bar_index, tp2Price, _x2, tp2Price, color=c_tp2, style=line.style_dashed, width=1)
+    tp3Line := line.new(bar_index, tp3Price, _x2, tp3Price, color=c_tp3, style=line.style_dashed, width=1)
+    riskFill := linefill.new(slLine, entryLine, c_riskFill)
+    rewardFill := linefill.new(entryLine, tp3Line, c_rewardFill)
+    if i_showLbl
+        slLbl := label.new(bar_index, slPrice, "✕ SL " + str.tostring(slPrice, format.mintick), style=label.style_label_left, color=c_sl, textcolor=color.white, size=size.small)
+        entryLbl := label.new(bar_index, entryPrice, "▶ Entry " + str.tostring(entryPrice, format.mintick), style=label.style_label_left, color=c_entry, textcolor=color.white, size=size.small)
+        tp1Lbl := label.new(bar_index, tp1Price, "◆ TP1 " + str.tostring(tp1Price, format.mintick), style=label.style_label_left, color=c_tp1, textcolor=color.white, size=size.small)
+        tp2Lbl := label.new(bar_index, tp2Price, "✦ TP2 " + str.tostring(tp2Price, format.mintick), style=label.style_label_left, color=c_tp2, textcolor=color.white, size=size.small)
+        tp3Lbl := label.new(bar_index, tp3Price, "◆ TP3 " + str.tostring(tp3Price, format.mintick), style=label.style_label_left, color=c_tp3, textcolor=color.white, size=size.small)
+if i_showLevels and not na(slLine) and not na(lastSignalBar) and (i_lockSignal or bar_index <= lastSignalBar + 50)
+    int _extX = i_lockSignal ? bar_index + 50 : lastSignalBar + 50
+    line.set_x2(slLine, _extX)
+    line.set_x2(entryLine, _extX)
+    line.set_x2(tp1Line, _extX)
+    line.set_x2(tp2Line, _extX)
+    line.set_x2(tp3Line, _extX)
+    if i_showLbl
+        label.set_x(slLbl, _extX)
+        label.set_x(entryLbl, _extX)
+        label.set_x(tp1Lbl, _extX)
+        label.set_x(tp2Lbl, _extX)
+        label.set_x(tp3Lbl, _extX)
+if i_showLbl and bullBreak
+    label.new(bar_index - 1, low[1], "▲ BUY", style=label.style_label_up, color=c_buyLbl, textcolor=color.white, size=size.small)
+if i_showLbl and bearBreak
+    label.new(bar_index - 1, high[1], "▼ SELL", style=label.style_label_down, color=c_sellLbl, textcolor=color.white, size=size.small)
+
+// ── ALERTS ────────────────────────────────────────────
+string _longInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","entry":"{3}","sl":"{4}","tp1":"{5}","tp2":"{6}","tp3":"{7}"', i_actionLong, syminfo.tickerid, timeframe.period, str.tostring(entryPrice, format.mintick), str.tostring(slPrice, format.mintick), str.tostring(tp1Price, format.mintick), str.tostring(tp2Price, format.mintick), str.tostring(tp3Price, format.mintick))
+string longPayload = "{" + _longInner + "}"
+string _shortInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","entry":"{3}","sl":"{4}","tp1":"{5}","tp2":"{6}","tp3":"{7}"', i_actionShort, syminfo.tickerid, timeframe.period, str.tostring(entryPrice, format.mintick), str.tostring(slPrice, format.mintick), str.tostring(tp1Price, format.mintick), str.tostring(tp2Price, format.mintick), str.tostring(tp3Price, format.mintick))
+string shortPayload = "{" + _shortInner + "}"
+string _clInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}"', i_actionCloseLong, syminfo.tickerid, timeframe.period)
+string closeLongPayload = "{" + _clInner + "}"
+string _csInner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}"', i_actionCloseShort, syminfo.tickerid, timeframe.period)
+string closeShortPayload = "{" + _csInner + "}"
+string _tp1Inner = str.format('"action":"tp1hit","ticker":"{0}","tf":"{1}","price":"{2}"', syminfo.tickerid, timeframe.period, str.tostring(tp1Price, format.mintick))
+string tp1Payload = "{" + _tp1Inner + "}"
+string _tp2Inner = str.format('"action":"tp2hit","ticker":"{0}","tf":"{1}","price":"{2}"', syminfo.tickerid, timeframe.period, str.tostring(tp2Price, format.mintick))
+string tp2Payload = "{" + _tp2Inner + "}"
+string _tp3Inner = str.format('"action":"tp3hit","ticker":"{0}","tf":"{1}","price":"{2}"', syminfo.tickerid, timeframe.period, str.tostring(tp3Price, format.mintick))
+string tp3Payload = "{" + _tp3Inner + "}"
+if bullBreak and barstate.isconfirmed
+    alert(longPayload, alert.freq_once_per_bar_close)
+if bearBreak and barstate.isconfirmed
+    alert(shortPayload, alert.freq_once_per_bar_close)
+if bearBreak and barstate.isconfirmed
+    alert(closeLongPayload, alert.freq_once_per_bar_close)
+if bullBreak and barstate.isconfirmed
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+if tp1Hit
+    alert(tp1Payload, alert.freq_once_per_bar)
+if tp2Hit
+    alert(tp2Payload, alert.freq_once_per_bar)
+if tp3Hit
+    alert(tp3Payload, alert.freq_once_per_bar)
+alertcondition(bullBreak and barstate.isconfirmed, "BUY Signal", "FanPro — BUY Signal Fired")
+alertcondition(bearBreak and barstate.isconfirmed, "SELL Signal", "FanPro — SELL Signal Fired")
+alertcondition(bearBreak and barstate.isconfirmed, "Close Long Signal", "FanPro — Close Long")
+alertcondition(bullBreak and barstate.isconfirmed, "Close Short Signal", "FanPro — Close Short")
+// ── DASHBOARD ──────────────────────────────────────
+string _mt741c = i_dashPos == "Top Left" ? position.top_left : i_dashPos == "Bottom Right" ? position.bottom_right : i_dashPos == "Bottom Left" ? position.bottom_left : position.top_right
+var table dash = table.new(_mt741c, 2, 10, border_width=1, border_color=color.new(#2a3040, 40), frame_width=1, frame_color=color.new(#3a2a6d, 40))
+f_bar(float val, float maxVal) =>
+    int filled = math.round(math.min(math.max(val, 0.0) / maxVal, 1.0) * 10)
+    string barStr = ""
+    for i = 1 to 10
+        barStr += i <= filled ? "█" : "░"
+    barStr + "  " + str.tostring(math.round(math.min(math.max(val, 0.0) / maxVal, 1.0) * 100)) + "%"
+f_barColor(float pct) =>
+    pct >= 0.66 ? color.new(#26a69a, 0) : pct >= 0.33 ? color.new(#f9a825, 0) : color.new(#ef5350, 0)
+if i_showDash
+    row_a = _mt741a
+    row_b = color.new(_mt741a, 40)
+    table.cell(dash, 0, 0, "FanPro", text_color=C_DASH_TXT, bgcolor=C_DASH_HDR, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + timeframe.period, text_color=C_DASH_TXT, bgcolor=C_DASH_HDR, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 1, "  Lock", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_a, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, (i_lockSignal ? "ACTIVE" : "OFF") + "  ", text_color=i_lockSignal ? color.new(#ef5350, 0) : C_DASH_TXT, bgcolor=row_a, text_halign=text.align_right, text_size=size.small)
+    string fanState = fanDir == 1 ? "▲ Bull" : fanDir == -1 ? "▼ Bear" : "○ None"
+    color fanStCol = fanDir == 1 ? c_fanBull : fanDir == -1 ? c_fanBear : C_DASH_TXT
+    table.cell(dash, 0, 2, "  Fan State", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_b, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, fanState + "  ", text_color=fanStCol, bgcolor=row_b, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 3, "  Origin", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_a, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, (na(originVal) ? "n/a" : str.tostring(originVal, format.mintick)) + "  ", text_color=C_DASH_TXT, bgcolor=row_a, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 4, "  Fan3 Lvl", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_b, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, (na(fan3ValNow) ? "n/a" : str.tostring(fan3ValNow, format.mintick)) + "  ", text_color=C_DASH_TXT, bgcolor=row_b, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 5, "  Entry", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_a, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, (na(entryPrice) ? "n/a" : str.tostring(entryPrice, format.mintick)) + "  ", text_color=C_DASH_TXT, bgcolor=row_a, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 6, "  SL", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_b, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 6, (na(slPrice) ? "n/a" : str.tostring(slPrice, format.mintick)) + "  ", text_color=color.new(#ef5350, 0), bgcolor=row_b, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 7, "  R:R Prog", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_a, text_halign=text.align_left, text_size=size.small)
+    float rrNow = na(riskDist) or riskDist == 0 ? na : signalDir == 1 ? (high - entryPrice) / riskDist : signalDir == -1 ? (entryPrice - low) / riskDist : na
+    float rrPct = na(rrNow) ? 0.0 : math.min(math.max(rrNow, 0.0), i_tp3R) / i_tp3R
+    string rrBarStr = na(rrNow) ? "░░░░░░░░░░  0%" : f_bar(rrNow, i_tp3R)
+    table.cell(dash, 1, 7, rrBarStr + "  ", text_color=f_barColor(rrPct), bgcolor=row_a, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 8, "  Vol Filt", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_b, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 8, (volOk ? "✓ OK" : "✕ Block") + "  ", text_color=volOk ? color.new(#26a69a, 0) : color.new(#ef5350, 0), bgcolor=row_b, text_halign=text.align_right, text_size=size.small)
+    table.cell(dash, 0, 9, "  Bars Since Sig", text_color=color.new(C_DASH_TXT, 25), bgcolor=row_a, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 9, (na(lastSignalBar) ? "n/a" : str.tostring(bar_index - lastSignalBar)) + "  ", text_color=C_DASH_TXT, bgcolor=row_a, text_halign=text.align_right, text_size=size.small)

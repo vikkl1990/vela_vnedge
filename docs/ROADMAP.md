@@ -1,6 +1,52 @@
-# Next phases: making VNEdge robust
+# Execution-contract implementation — 14 November 2026
 
-State today: 1,031 scripts catalogued, 14 scanners live on tuned pairs, paper engine with
+The current development sequence extends the existing reader, PaperEngine, contract registry,
+research plans and shared evidence rules. It does not introduce a second execution engine.
+Production market data remains the source; paper execution and existing risk caps remain in force.
+
+| Work | Status | Acceptance boundary |
+| --- | --- | --- |
+| EC-01 Reproducible execution evidence | Built | Read-only SQLite snapshot, explicit UTC window, exact medians, separate policies/books/scopes, unknown cost and ownership retained |
+| EC-02 Confirm high-impact gaps | Queue built; verification in progress | All active profiles plus top 150 by activity; exact-contract decisions, source evidence and regression references; unknown claims stay unknown |
+| EC-03 Executable-contract specification | Manifest/proof foundation built | Source/runtime/reading/implementation identity, lifecycle ownership and required mechanics proofs; no automatic runtime adoption |
+| EC-04 Causal order intents | Pending verified adapter changes | Reuse existing entry/outbox/exit lifecycle; no historical fills, duplicate actions or fills during downtime |
+| EC-05 Parity and capital feasibility | Pending per-contract proofs | Closed-bar/HTF/pivot causality, real tape/depth coverage, full costs and a shared $1,000 portfolio; no risk-cap relaxation |
+| EC-06 Bounded research | Pending | Frozen inputs, checkpoints, API/CPU/I/O budgets; pause dispatch if live scans degrade |
+| EC-07 Native/current shadow | Existing MarkitTick comparison remains active; broader rollout pending | Same signal and initial stop for exit-only studies; all fills, misses and open trades counted; experiments excluded from promotion |
+| EC-08 Qualification | Existing rules unchanged | Prospective ordinary shadow evidence for the exact selected policy; existing evidence and risk criteria must pass |
+| EC-09 UI consolidation | Pending | One backend readiness state across Library, Scanner, Incubator, Decisions and Journal |
+| EC-10 ML | Deferred | Advisory, later-period net-return improvement beyond the non-ML baseline; no LLM in the order path |
+
+A source ledger is a reference, not an executable fill history. The 3% stop cap limits modeled
+loss relative to equity, not the price distance to the stop. Wider source stops can be expressed
+with smaller quantity; no cap needs to be lifted merely because a source stop is wider than 3%.
+The user's future allocation design may use flexible margin; this foundation changes no current
+margin, leverage, capacity, fees, stops, targets or admission setting.
+
+Reproducible research commands (outputs must not already exist):
+
+```sh
+npm run research:execution-evidence -- --db /path/to/vnedge.db --from 2026-10-15T15:50:00Z --as-of 2026-11-14T15:50:00Z --out /path/to/new-evidence.json
+npm run research:contract-review -- --evidence /path/to/new-evidence.json --config /path/to/research-config.json --decisions scripts/execution-contract-decisions.json --reviewed-at 2026-11-14T15:59:36.266Z --out /path/to/new-review-directory
+```
+
+Run against a read-only local snapshot or use the exporter with a read-only database connection.
+Do not create an application `Db` instance against production for this research: that constructor
+performs migrations. The CLI performs no migrations, order operations, config writes or promotion.
+Preserve the evidence JSON, producer/data hashes, code revision and selected configuration with the
+report. A fixed cutoff does not reconstruct corrections posted later: the exported snapshot is the
+reproducible input. Funding rows show booked cashflows, not proof that historical funding is complete.
+
+The report's contract validation is for proposed adoption. Missing proof does not become an extra
+runtime gate on current scanners. A `shadow-ready` mechanics result still cannot authorize paper:
+experimental outcomes remain excluded and ordinary prospective evidence must pass existing rules.
+Do not transfer claims or tests between source/reader/implementation versions. Review files are
+annotative, never admission inputs. Full implementation hashes intentionally invalidate research
+mechanics receipts when shared scanner/execution code changes; existing strategy IDs are untouched.
+
+# Historical roadmap (retained for context)
+
+Earlier baseline: 1,031 scripts catalogued, 14 scanners live on tuned pairs, paper engine with
 isolated margin and liquidation, ML trade-learning, auto-tune, analytics. Everything below is
 what stands between "works on ten days of data" and "trustworthy".
 

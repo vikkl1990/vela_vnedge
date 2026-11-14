@@ -153,6 +153,7 @@ test('decision 116: a mirrored shadow event goes down the live path — signal r
 });
 
 test('depth preparation completes before entry gates and expiry are rechecked',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.UTC(2026,10,14,12,0,5)});
  const db=new Db(':memory:');t.after(()=>db.db.close());const cfg=structuredClone(DEFAULT_CONFIG);cfg.incubator.mirror!.enabled=true;
  Object.assign(cfg.paper,{latencyMs:0,requireQuote:false,useSpread:false,minRiskFeeRatio:0,skipScriptStops:false,trendGate:{enabled:false,emaLen:50,tf:'',mode:'follow'},maxSignalAgeSec:60});
  cfg.risk.regime.enabled=false;

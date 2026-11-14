@@ -21,6 +21,11 @@ export class PartialExits {
   this.db.run(`INSERT INTO paper_partial_requests(position_id,target,at,reference,full_reason,full_at,full_reference) VALUES(?,-1,?,?,?,?,?)
    ON CONFLICT(position_id,target) DO UPDATE SET full_reason=coalesce(full_reason,excluded.full_reason),full_at=coalesce(full_at,excluded.full_at),full_reference=coalesce(full_reference,excluded.full_reference)`,p.id,at,reference,reason,at,reference);
  }
+ /** Only an already-requested full close frees the native state machine for re-entry.
+  * A TP1/TP2 reduction or a stop amendment is not a close. Actual margin stays held. */
+ closing(p:Position):boolean {
+  return !!this.db.get('SELECT 1 FROM paper_partial_requests WHERE position_id=? AND (full_reason IS NOT NULL OR target=?)',p.id,p.tp.length-1);
+ }
  /** Fill ledger is authoritative, including partial depth and earlier resting fills. */
  refresh(p:Position){
   for(let i=0;i<p.tp.length;i++){

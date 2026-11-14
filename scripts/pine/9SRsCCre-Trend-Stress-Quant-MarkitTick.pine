@@ -1,0 +1,259 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Trend Stress Quant [MarkitTick]", overlay = true, max_lines_count = 100, max_labels_count = 500, max_bars_back = 5000)
+
+// -----------------------------------------------------------------------------
+// 1. Constants & Inputs
+// -----------------------------------------------------------------------------
+
+// --- Group: Exhaustion Model ---
+string G_EXH = "Exhaustion & Stress Model"
+int   IN_LEN_TREND    = input.int(50, "Trend Filter Length", minval=10, group=G_EXH)
+int   IN_LEN_STATS    = input.int(20, "Statistical Lookback", minval=5, group=G_EXH)
+float IN_THRESH_SIGMA = input.float(2.0, "Stress Threshold (Sigma)", step=0.1, group=G_EXH)
+
+// --- Group: Channel Configuration ---
+string G_CHAN_LOOK = "Channel: Configuration"
+bool  IN_USE_DYN_LEN  = input.bool(false, "Dynamic Pivot Mode", group=G_CHAN_LOOK, tooltip="Adjusts regression length based on recent pivots.")
+int   IN_FIX_LEN      = input.int(50, "Fixed Length", minval=5, group=G_CHAN_LOOK)
+int   IN_PIV_LEFT     = input.int(20, "Pivot Left", minval=2, group=G_CHAN_LOOK)
+int   IN_PIV_RIGHT    = input.int(20, "Pivot Right", minval=1, group=G_CHAN_LOOK)
+int   IN_MAX_LOOKBACK = input.int(300, "Max Lookback Cap", minval=50, group=G_CHAN_LOOK)
+string IN_EXT_MODE    = input.string("None", "Line Extension", options = ["None", "Left", "Right", "Both"], group=G_CHAN_LOOK)
+
+// --- Group: Channel Bands ---
+string G_CHAN_DEV  = "Channel: Bands"
+float IN_DEV_IN       = input.float(1.0, "Inner Deviation", step=0.1, group=G_CHAN_DEV)
+float IN_DEV_OUT      = input.float(2.0, "Outer Deviation", step=0.1, group=G_CHAN_DEV)
+
+// --- Group: Quality Filter ---
+string G_CHAN_FILT = "Channel: Quality Filter"
+bool  IN_USE_R_FILT   = input.bool(true, "Filter Weak Correlations", group=G_CHAN_FILT)
+float IN_R_THRESH     = input.float(0.5, "Pearson R Threshold", step=0.05, group=G_CHAN_FILT)
+
+// --- Group: Visuals ---
+string G_CHAN_VIS  = "Channel: Visuals"
+bool  IN_SHOW_METRICS = input.bool(true, "Show Metrics Label", group=G_CHAN_VIS)
+float IN_WIDTH_HIGH   = input.float(3.0, "High Volatility Width %", minval=0.1, step=0.1, group=G_CHAN_VIS)
+float IN_WIDTH_LOW    = input.float(1.0, "Low Volatility Width %", minval=0.1, step=0.1, group=G_CHAN_VIS)
+
+// --- Group: Styling ---
+string G_STYLE = "Visual Styling"
+color IN_C_BULL = input.color(#4caf50, "Bullish / Seller Exhaustion", group=G_STYLE)
+color IN_C_BEAR = input.color(#f23645, "Bearish / Buyer Exhaustion", group=G_STYLE)
+color IN_C_NEUT = input.color(#B2B5BE, "Neutral / Weak Correlation", group=G_STYLE)
+color IN_C_TXT  = input.color(#FFFFFF, "Text Color", group=G_STYLE)
+color IN_C_BG   = input.color(#131722, "Label Background", group=G_STYLE)
+
+// -----------------------------------------------------------------------------
+// 2. Types & Object Definitions
+// -----------------------------------------------------------------------------
+
+type StressEngine
+    float raw_illiquidity
+    float z_score
+    bool  is_high_stress
+
+type RegMetrics
+    float startPrice
+    float endPrice
+    float stdDev
+    float pearsonR
+    bool  isValid
+    int   length
+
+type ChannelDrawings
+    line     mid
+    line     topOut
+    line     botOut
+    line     topIn
+    line     botIn
+    linefill fill
+    label    stats
+
+// -----------------------------------------------------------------------------
+// 3. Methods & Functions
+// -----------------------------------------------------------------------------
+
+method update(StressEngine self, int len, float threshold) =>
+    float vol_safe = (na(volume) or volume == 0) ? 1.0 : volume
+    float impact = ta.tr(true) / vol_safe
+    
+    self.raw_illiquidity := math.log(impact + 1)
+    
+    float mean = ta.sma(self.raw_illiquidity, len)
+    float std  = ta.stdev(self.raw_illiquidity, len)
+    
+    self.z_score := (std == 0 or na(std)) ? 0.0 : (self.raw_illiquidity - mean) / std
+    self.is_high_stress := (self.z_score > threshold)
+
+get_ext_mode(string s) =>
+    switch s
+        "Left"  => extend.left
+        "Right" => extend.right
+        "Both"  => extend.both
+        => extend.none
+
+calc_regression_metrics(int length) =>
+    if length < 2
+        RegMetrics.new(na, na, na, na, false, length)
+    else
+        int actual_len = 0
+ 
+        for i = 0 to length - 1
+            if not na(hlc3[i])
+                actual_len := i + 1
+            else
+                break
+        
+        if actual_len < 2
+            RegMetrics.new(na, na, na, na, false, 0)
+        else
+            float n       = float(actual_len)
+            float n_minus = n - 1.0
+            
+            float sum_x   = (n * n_minus) / 2.0
+            float sum_x2  = (n * n_minus * (2.0 * n - 1.0)) / 6.0
+            
+            float sum_y   = 0.0
+            float sum_xy  = 0.0
+            float sum_y2  = 0.0
+            
+            for i = 0 to actual_len - 1
+                float val   = hlc3[i]
+                float x_val = n_minus - float(i)
+                
+                if not na(val)
+                    sum_y  += val
+                    sum_xy += x_val * val
+                    sum_y2 += val * val
+
+            float denom = n * sum_x2 - sum_x * sum_x
+            float slope = denom != 0 ? (n * sum_xy - sum_x * sum_y) / denom : 0.0
+            float inter = (sum_y - slope * sum_x) / n
+            
+            float var_val = (sum_y2 - (sum_y * sum_y) / n) / n
+            float std_dev = math.sqrt(math.max(0.0, var_val))
+             
+            float r_num   = n * sum_xy - sum_x * sum_y
+            float r_den_y = n * sum_y2 - sum_y * sum_y
+            float r_den   = math.sqrt(math.max(0.0, denom * r_den_y))
+            float r_coef  = r_den != 0 ? r_num / r_den : 0.0
+            
+            float y_start = inter
+            float y_end   = inter + slope * n_minus
+
+            RegMetrics.new(y_start, y_end, std_dev, r_coef, true, actual_len)
+
+// -----------------------------------------------------------------------------
+// 4. Execution Logic
+// -----------------------------------------------------------------------------
+
+var StressEngine stress_eng = StressEngine.new(0.0, 0.0, false)
+stress_eng.update(IN_LEN_STATS, IN_THRESH_SIGMA)
+
+float trend_ema = ta.ema(close, IN_LEN_TREND)
+bool is_downtrend = close < trend_ema
+bool is_uptrend   = close > trend_ema
+
+bool seller_exhaustion = stress_eng.is_high_stress and is_downtrend and (close < open)
+bool buyer_exhaustion  = stress_eng.is_high_stress and is_uptrend and (close > open)
+
+// -----------------------------------------------------------------------------
+// 5. Channel Logic & Visualization
+// -----------------------------------------------------------------------------
+
+var int piv_idx = na
+float ph = ta.pivothigh(high, IN_PIV_LEFT, IN_PIV_RIGHT)
+float pl = ta.pivotlow(low, IN_PIV_LEFT, IN_PIV_RIGHT)
+
+if not na(ph) or not na(pl)
+    piv_idx := bar_index[IN_PIV_RIGHT]
+
+var ChannelDrawings draw = ChannelDrawings.new()
+var table hud = table.new(position.top_right, 2, 5, color.new(color.black, 100), color.new(color.gray, 90), 1, color.gray, 1)
+
+if barstate.islast
+    int raw_len = (IN_USE_DYN_LEN and not na(piv_idx)) ? (bar_index - piv_idx + 1) : IN_FIX_LEN
+    int requested_len = math.min(IN_MAX_LOOKBACK, math.max(5, raw_len))
+    
+    RegMetrics ch_reg = calc_regression_metrics(requested_len)
+
+    float abs_r   = math.abs(ch_reg.pearsonR)
+    bool is_weak  = IN_USE_R_FILT and (abs_r < IN_R_THRESH)
+    float dev_in  = ch_reg.stdDev * IN_DEV_IN
+    float dev_out = ch_reg.stdDev * IN_DEV_OUT
+    
+    color base_color = is_downtrend ? IN_C_BEAR : IN_C_BULL
+    color f_main = is_weak ? IN_C_NEUT : base_color
+    color f_fill = is_weak ? color.new(IN_C_NEUT, 90) : color.new(base_color, 92)
+    
+    if ch_reg.isValid and ch_reg.length >= 2
+        string mode_ext = get_ext_mode(IN_EXT_MODE)
+        int x1 = bar_index - ch_reg.length + 1
+        int x2 = bar_index
+        float y1 = ch_reg.startPrice
+        float y2 = ch_reg.endPrice
+        
+        if na(draw.mid)
+            draw.mid    := line.new(x1, y1, x2, y2, xloc.bar_index, extend=mode_ext, color=f_main, width=2, style=line.style_dashed)
+            draw.topOut := line.new(x1, y1 + dev_out, x2, y2 + dev_out, xloc.bar_index, extend=mode_ext, color=f_main, width=2)
+            draw.botOut := line.new(x1, y1 - dev_out, x2, y2 - dev_out, xloc.bar_index, extend=mode_ext, color=f_main, width=2)
+            draw.topIn  := line.new(x1, y1 + dev_in, x2, y2 + dev_in, xloc.bar_index, extend=mode_ext, color=f_main, width=1, style=line.style_dotted)
+            draw.botIn  := line.new(x1, y1 - dev_in, x2, y2 - dev_in, xloc.bar_index, extend=mode_ext, color=f_main, width=1, style=line.style_dotted)
+            draw.fill   := linefill.new(draw.topIn, draw.botIn, f_fill)
+            
+            if IN_SHOW_METRICS
+                draw.stats := label.new(bar_index + 5, high + ta.tr(true), "", xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_down, color=IN_C_BG, textcolor=IN_C_TXT, size=size.normal)
+        else
+            line.set_xy1(draw.mid, x1, y1), line.set_xy2(draw.mid, x2, y2), line.set_color(draw.mid, f_main), line.set_extend(draw.mid, mode_ext)
+            
+            line.set_xy1(draw.topOut, x1, y1 + dev_out), line.set_xy2(draw.topOut, x2, y2 + dev_out), line.set_color(draw.topOut, f_main), line.set_extend(draw.topOut, mode_ext)
+            line.set_xy1(draw.botOut, x1, y1 - dev_out), line.set_xy2(draw.botOut, x2, y2 - dev_out), line.set_color(draw.botOut, f_main), line.set_extend(draw.botOut, mode_ext)
+            
+            line.set_xy1(draw.topIn, x1, y1 + dev_in), line.set_xy2(draw.topIn, x2, y2 + dev_in), line.set_color(draw.topIn, f_main), line.set_extend(draw.topIn, mode_ext)
+            line.set_xy1(draw.botIn, x1, y1 - dev_in), line.set_xy2(draw.botIn, x2, y2 - dev_in), line.set_color(draw.botIn, f_main), line.set_extend(draw.botIn, mode_ext)
+            
+            linefill.set_color(draw.fill, f_fill)
+
+        if IN_SHOW_METRICS and not na(draw.stats)
+            string txt = "STATS\nLen: " + str.tostring(ch_reg.length) + "\nR: " + str.tostring(ch_reg.pearsonR, "#.###") + "\nσ: " + str.tostring(stress_eng.z_score, "#.##")
+            label.set_xy(draw.stats, bar_index + 5, high + ta.tr(true))
+            label.set_text(draw.stats, txt)
+    
+        for i = 0 to ch_reg.length - 1
+            if not na(close[i]) and not na(open[i]) and not na(high[i]) and not na(low[i])
+                if seller_exhaustion[i]
+                    label.new(bar_index[i], low[i], text="SE", style=label.style_label_up, color=IN_C_BULL, textcolor=IN_C_TXT, size=size.normal, yloc=yloc.belowbar)
+                    
+                if buyer_exhaustion[i]
+                    label.new(bar_index[i], high[i], text="BE", style=label.style_label_down, color=IN_C_BEAR, textcolor=IN_C_TXT, size=size.normal, yloc=yloc.abovebar)
+
+    // Dashboard
+    table.cell(hud, 0, 0, "Liquidity Analytics", text_color=IN_C_NEUT, text_size=size.small, text_halign=text.align_left)
+        
+    string regime = is_downtrend ? "Bearish" : "Bullish"
+    color regime_col = is_downtrend ? IN_C_BEAR : IN_C_BULL
+    table.cell(hud, 0, 1, "Trend Regime", text_color=IN_C_TXT, text_halign=text.align_left, text_size=size.normal) 
+    table.cell(hud, 1, 1, regime, text_color=regime_col, text_halign=text.align_right, text_size=size.normal) 
+
+    string s_status = seller_exhaustion ? "EXHAUSTED" : "Normal"
+    color s_col = seller_exhaustion ? IN_C_BULL : color.gray
+    table.cell(hud, 0, 2, "Seller Status", text_color=IN_C_TXT, text_halign=text.align_left, text_size=size.normal) 
+    table.cell(hud, 1, 2, s_status, text_color=s_col, text_halign=text.align_right, text_size=size.normal) 
+
+    string b_status = buyer_exhaustion ? "EXHAUSTED" : "Normal"
+    color b_col = buyer_exhaustion ? IN_C_BEAR : color.gray
+    table.cell(hud, 0, 3, "Buyer Status", text_color=IN_C_TXT, text_halign=text.align_left, text_size=size.normal) 
+    table.cell(hud, 1, 3, b_status, text_color=b_col, text_halign=text.align_right, text_size=size.normal) 
+
+    float ch_width_raw = ch_reg.stdDev * IN_DEV_OUT * 2
+    float ch_width_pct = (ch_width_raw / ch_reg.endPrice) * 100
+
+    color vol_col = ch_width_pct > IN_WIDTH_HIGH ? color.new(IN_C_BEAR, 0) : ch_width_pct < IN_WIDTH_LOW ? color.new(IN_C_NEUT, 0) : IN_C_TXT
+
+    table.cell(hud, 0, 4, "Channel Width %", text_color=IN_C_NEUT, text_halign=text.align_left, text_size=size.normal) 
+    table.cell(hud, 1, 4, str.tostring(ch_width_pct, "#.##") + "%", text_color=vol_col, text_halign=text.align_right, text_size=size.normal) 

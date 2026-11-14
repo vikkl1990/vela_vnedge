@@ -1,0 +1,463 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Cardwell RSI Trade Navigator [MarkitTick]", overlay = true)
+
+// =============================================================================
+// 1. CONSTANTS & INPUTS
+// =============================================================================
+
+const string _mt741a         = "RSI Candles"
+const string G_MA          = "Relative Moving Average"
+
+int    rsiLen         = input.int(14, "RSI Length", minval = 2, group = _mt741a)
+
+int    rmaFastLen     = input.int(9, "Fast Length", minval = 2, group = G_MA)
+int    rmaSlowLen     = input.int(45, "Slow Length", minval = 2, group = G_MA)
+string maType         = input.string("RMA", "Filter Type", options = ["RMA", "Kalman", "LLAMA"], tooltip = "", group = G_MA)
+
+const string G_TRADE       = "Trade Setup"
+int    atrLen         = input.int(14, "ATR Length", minval = 1, group = G_TRADE)
+float  atrMultSl      = input.float(1.5, "ATR SL Multiplier", minval = 0.1, step = 0.1, group = G_TRADE)
+float  rr1            = input.float(1.0, "TP1 Risk:Reward", minval = 0.1, step = 0.1, group = G_TRADE)
+float  rr2            = input.float(2.0, "TP2 Risk:Reward", minval = 0.1, step = 0.1, group = G_TRADE)
+float  rr3            = input.float(3.0, "TP3 Risk:Reward", minval = 0.1, step = 0.1, group = G_TRADE)
+
+const string G_DASH         = "Dash"
+bool   showDash       = input.bool(true, "Show Dashboard", group = G_DASH)
+
+const string G_HTF          = "HTF Filter"
+bool   useHtfFilter   = input.bool(false, "Enable HTF Trend Filter", group = G_HTF)
+string htfTimeframe   = input.timeframe("240", "HTF Timeframe", group = G_HTF)
+
+const string G_TRAIL         = "Trail Stop"
+bool   useTrailStop   = input.bool(false, "Enable Breakeven on TP1", group = G_TRAIL)
+
+const string G_ALERTS         = "Alerts"
+string i_actionBuy   = input.string("buy",        "Action — Buy Signal",  group = G_ALERTS)
+string i_actionSell  = input.string("sell",       "Action — Sell Signal", group = G_ALERTS)
+string i_actionSl    = input.string("close",      "Action — SL Hit",      group = G_ALERTS)
+string i_actionTp1   = input.string("tp",         "Action — TP1 Hit",     group = G_ALERTS)
+string i_actionTp2   = input.string("tp",         "Action — TP2 Hit",     group = G_ALERTS)
+string i_actionTp3   = input.string("tp",         "Action — TP3 Hit",     group = G_ALERTS)
+
+const string G_STRENGTH         = "Signal Strength"
+bool   showStrength    = input.bool(true, "Show Signal Strength Score", group = G_STRENGTH)
+
+const string G_CHOP         = "Choppiness Filter"
+bool   useChopFilter   = input.bool(false, "Enable Choppiness/ADX Filter", group = G_CHOP)
+int    adxLen          = input.int(14, "ADX Length", minval = 1, group = G_CHOP)
+float  adxMinLevel     = input.float(20.0, "Minimum ADX to Allow Signal", minval = 1.0, step = 1.0, group = G_CHOP)
+
+const string G_VIS          = "Visuals"
+bool   showCandleColoring = input.bool(true, "Enable Momentum Candle Coloring", group = G_VIS)
+color  candleBullColor    = input.color(color.rgb(0, 255, 120), "Candle Bull Color", group = G_VIS)
+color  candleBearColor    = input.color(color.rgb(255, 80, 80), "Candle Bear Color", group = G_VIS)
+color  candleNeutralColor = input.color(color.rgb(120, 120, 120), "Candle Neutral Color", group = G_VIS)
+bool   showHtfCloud       = input.bool(false, "Show HTF Trend Cloud", group = G_VIS)
+color  htfCloudBullColor  = input.color(color.rgb(0, 200, 150), "HTF Cloud Bull Color", group = G_VIS)
+color  htfCloudBearColor  = input.color(color.rgb(220, 60, 60), "HTF Cloud Bear Color", group = G_VIS)
+bool   showLiveR          = input.bool(true, "Show Live R-Multiple Label", group = G_VIS)
+bool   showBuySellLabels  = input.bool(true, "Show BUY/SELL Labels", group = G_VIS)
+color  buyLabelColor      = input.color(color.rgb(0, 200, 100), "BUY Label Color", group = G_VIS)
+color  sellLabelColor     = input.color(color.rgb(220, 60, 60), "SELL Label Color", group = G_VIS)
+
+// =============================================================================
+// 2. MAIN CALCULATION LOGIC
+// =============================================================================
+
+float rsiValue = ta.rsi(close, rsiLen)
+var float _kfFastX = na
+var float _kfFastP = 1.0
+var float _kfSlowX = na
+var float _kfSlowP = 1.0
+float _kfQ = 0.001
+float _kfR = 0.01
+float _kfFastK = _kfFastP / (_kfFastP + _kfR)
+_kfFastX := nz(_kfFastX, rsiValue) + _kfFastK * (rsiValue - nz(_kfFastX, rsiValue))
+_kfFastP := (1.0 - _kfFastK) * _kfFastP + _kfQ
+float _kfSlowK = _kfSlowP / (_kfSlowP + _kfR * (rmaSlowLen / rmaFastLen))
+_kfSlowX := nz(_kfSlowX, rsiValue) + _kfSlowK * (rsiValue - nz(_kfSlowX, rsiValue))
+_kfSlowP := (1.0 - _kfSlowK) * _kfSlowP + _kfQ
+float rmaFast  = maType == "Kalman" ? _kfFastX : maType == "LLAMA" ? ta.linreg(rsiValue, rmaFastLen, 0) : ta.rma(rsiValue, rmaFastLen)
+float rmaSlow  = maType == "Kalman" ? _kfSlowX : maType == "LLAMA" ? ta.linreg(rsiValue, rmaSlowLen, 0) : ta.rma(rsiValue, rmaSlowLen)
+
+bool rawBullCross = rmaFast[1] > rmaSlow[1] and rmaFast[2] <= rmaSlow[2]
+bool rawBearCross = rmaFast[1] < rmaSlow[1] and rmaFast[2] >= rmaSlow[2]
+
+float atrValue = ta.atr(atrLen)
+float atrValue1 = nz(atrValue[1], atrValue)  
+
+float htfRmaFast = request.security(syminfo.tickerid, htfTimeframe, ta.rma(ta.rsi(close, rsiLen), rmaFastLen)[1], lookahead = barmerge.lookahead_on)
+float htfRmaSlow = request.security(syminfo.tickerid, htfTimeframe, ta.rma(ta.rsi(close, rsiLen), rmaSlowLen)[1], lookahead = barmerge.lookahead_on)
+bool  htfBullBias = htfRmaFast > htfRmaSlow
+bool  htfBearBias = htfRmaFast < htfRmaSlow
+
+bool bullCross = rawBullCross and (not useHtfFilter or htfBullBias)
+bool bearCross = rawBearCross and (not useHtfFilter or htfBearBias)
+
+[adxPlusDi, adxMinusDi, adxValue] = ta.dmi(adxLen, adxLen)
+bool chopOk = not useChopFilter or adxValue[1] >= adxMinLevel
+
+bool bullSignal = bullCross and chopOk
+bool bearSignal = bearCross and chopOk
+
+float rmaDistRaw    = math.abs(rmaFast[1] - rmaSlow[1])  
+float rmaDistNorm   = math.min(100.0, rmaDistRaw / math.max(rsiValue[1], 1.0) * 300.0)
+float atrPctRaw      = atrValue1 / math.max(close[1], syminfo.mintick) * 100.0  
+float atrPctNorm     = math.min(100.0, atrPctRaw * 20.0)
+float strengthScore = math.round((rmaDistNorm * 0.6) + (atrPctNorm * 0.4))
+
+float candleRawStrength = math.abs(rmaFast[1] - rmaSlow[1]) / math.max(rsiValue[1], 1.0)
+float candleStrength    = math.min(1.0, candleRawStrength / 0.5)
+color candleDirColor    = rmaFast[1] > rmaSlow[1] ? candleBullColor : rmaFast[1] < rmaSlow[1] ? candleBearColor : candleNeutralColor
+color candleGradColor   = color.from_gradient(candleStrength, 0.0, 1.0, candleNeutralColor, candleDirColor)
+
+color htfCloudColor = useHtfFilter and showHtfCloud ? color.new(htfBullBias ? htfCloudBullColor : htfCloudBearColor, 85) : na
+float htfCloudTop   = high + atrValue * 1.5
+float htfCloudBot   = low - atrValue * 1.5
+
+var bool  tradeActive  = false
+var bool  tradeIsLong  = true
+var bool  tp1Done      = false
+var bool  tp2Done      = false
+var bool  tp3Done      = false
+var float trkSl        = na
+var float trkTp1       = na
+var float trkTp2       = na
+var float trkTp3       = na
+var float trkEntry     = na
+
+f_blockBar(float rawVal, float domainMax) =>
+    float  pct = math.min(math.max(rawVal / domainMax * 100.0, 0.0), 100.0)
+    int    n   = math.round(pct / 10.0)
+    string s   = ''
+    for i = 1 to 10
+        s += i <= n ? '█' : '░'
+    s + ' ' + str.tostring(math.round(pct), '##0') + '%'
+
+f_blockColor(float rawVal, float lo, float mid, float hi) =>
+    rawVal >= hi  ? color.rgb(0, 255, 120) :
+     rawVal >= mid ? color.rgb(80, 255, 0)  :
+     rawVal >= lo  ? color.rgb(200, 200, 0) :
+                     color.rgb(110, 110, 110)
+
+// =============================================================================
+// 3. VISUALS
+// =============================================================================
+
+plot(rmaFast, "Fast RMA", color = #797a7a, linewidth = 2, display = display.none)
+plot(rmaSlow, "Slow RMA", color = #ffffff, linewidth = 2, display = display.none)
+
+barcolor(showCandleColoring ? candleGradColor : na)
+plotcandle(
+     showCandleColoring ? open  : na,
+     showCandleColoring ? high  : na,
+     showCandleColoring ? low   : na,
+     showCandleColoring ? close : na,
+     title       = "Momentum Candles",
+     color       = showCandleColoring ? candleGradColor : na,
+     bordercolor = showCandleColoring ? candleGradColor : na,
+     wickcolor   = showCandleColoring ? candleGradColor : na)
+
+htfCloudTopId = plot(showHtfCloud ? htfCloudTop : na, "HTF Cloud Top", color = na, display = display.none)
+htfCloudBotId = plot(showHtfCloud ? htfCloudBot : na, "HTF Cloud Bottom", color = na, display = display.none)
+fill(htfCloudTopId, htfCloudBotId, color = htfCloudColor, title = "HTF Trend Cloud")
+
+
+var line  slLine    = na
+var line  entryLine = na
+var line  tp1Line   = na
+var line  tp2Line   = na
+var line  tp3Line   = na
+var line  beLine    = na
+
+var linefill fillSlEntry  = na
+var linefill fillEntryTp1 = na
+var linefill fillTp1Tp2   = na
+var linefill fillTp2Tp3   = na
+
+var label slLbl     = na
+var label entryLbl  = na
+var label tp1Lbl    = na
+var label tp2Lbl    = na
+var label tp3Lbl    = na
+var label beLbl     = na
+var label strengthLbl = na
+var label liveRLbl    = na
+var label buySellLbl  = na
+
+int lineExtendBars = 5
+int beLabelOffset  = 30
+
+color colSl      = #7a1f1f
+color colEntry   = #1f3a5c
+color colTp1     = #0e5c4a
+color colTp2     = #0e6e52
+color colTp3     = #12a382
+color colBe       = #c08a1f
+
+color zoneSlEntry  = color.new(colSl,  60)
+color zoneEntryTp1 = color.new(colTp1, 40)
+color zoneTp1Tp2   = color.new(colTp2, 60)
+color zoneTp2Tp3   = color.new(colTp3, 90)
+
+if not na(slLine)
+    line.set_x2(slLine, bar_index + lineExtendBars)
+    line.set_x2(entryLine, bar_index + lineExtendBars)
+    line.set_x2(tp1Line, bar_index + lineExtendBars)
+    line.set_x2(tp2Line, bar_index + lineExtendBars)
+    line.set_x2(tp3Line, bar_index + lineExtendBars)
+    label.set_x(slLbl, bar_index + lineExtendBars)
+    label.set_x(entryLbl, bar_index + lineExtendBars)
+    label.set_x(tp1Lbl, bar_index + lineExtendBars)
+    label.set_x(tp2Lbl, bar_index + lineExtendBars)
+    label.set_x(tp3Lbl, bar_index + lineExtendBars)
+    if not na(beLine)
+        line.set_x2(beLine, bar_index + lineExtendBars)
+        label.set_x(beLbl, bar_index + lineExtendBars + beLabelOffset)
+
+bool touchTp1 = tradeActive and not tp1Done and not na(trkTp1) and (tradeIsLong ? high[1] >= trkTp1 : low[1] <= trkTp1)
+bool touchTp2 = tradeActive and not tp2Done and not na(trkTp2) and (tradeIsLong ? high[1] >= trkTp2 : low[1] <= trkTp2)
+bool touchTp3 = tradeActive and not tp3Done and not na(trkTp3) and (tradeIsLong ? high[1] >= trkTp3 : low[1] <= trkTp3)
+bool touchSl  = tradeActive and not na(trkSl) and (tradeIsLong ? low[1] <= trkSl : high[1] >= trkSl)
+
+bool liveTouchTp1 = tradeActive and not tp1Done and not na(trkTp1) and (tradeIsLong ? high >= trkTp1 : low <= trkTp1)
+bool liveTouchTp2 = tradeActive and not tp2Done and not na(trkTp2) and (tradeIsLong ? high >= trkTp2 : low <= trkTp2)
+bool liveTouchTp3 = tradeActive and not tp3Done and not na(trkTp3) and (tradeIsLong ? high >= trkTp3 : low <= trkTp3)
+bool liveTouchSl  = tradeActive and not na(trkSl) and (tradeIsLong ? low <= trkSl : high >= trkSl)
+
+if useTrailStop and touchTp1
+    tp1Done := true
+    line.delete(beLine)
+    label.delete(beLbl)
+    int _mt741b = bar_index
+    int xb2 = bar_index + lineExtendBars
+    beLine := line.new(_mt741b, trkEntry, xb2, trkEntry, color = colBe, width = 1, style = line.style_dotted)
+    beLbl  := label.new(xb2 + beLabelOffset, trkEntry, "⚑ BE  " + str.tostring(trkEntry, format.mintick), style = label.style_label_left, color = colBe, textcolor = color.white, size = size.small)
+
+if not useTrailStop and touchTp1
+    tp1Done := true
+
+if touchTp2
+    tp2Done := true
+
+if touchTp3
+    tp3Done := true
+    tradeActive := false
+
+if touchSl
+    tradeActive := false
+
+string alertMsgSl   = "{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"action\":\"{2}\",\"event\":\"sl\",\"price\":\"{3}\"", syminfo.tickerid, timeframe.period, i_actionSl, str.tostring(trkSl, format.mintick)) + "}"
+string alertMsgTp1  = "{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"action\":\"{2}\",\"event\":\"tp1\",\"price\":\"{3}\"", syminfo.tickerid, timeframe.period, i_actionTp1, str.tostring(trkTp1, format.mintick)) + "}"
+string alertMsgTp2  = "{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"action\":\"{2}\",\"event\":\"tp2\",\"price\":\"{3}\"", syminfo.tickerid, timeframe.period, i_actionTp2, str.tostring(trkTp2, format.mintick)) + "}"
+string alertMsgTp3  = "{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"action\":\"{2}\",\"event\":\"tp3\",\"price\":\"{3}\"", syminfo.tickerid, timeframe.period, i_actionTp3, str.tostring(trkTp3, format.mintick)) + "}"
+
+if liveTouchSl
+    alert(alertMsgSl, alert.freq_once_per_bar)
+if liveTouchTp1
+    alert(alertMsgTp1, alert.freq_once_per_bar)
+if liveTouchTp2
+    alert(alertMsgTp2, alert.freq_once_per_bar)
+if liveTouchTp3
+    alert(alertMsgTp3, alert.freq_once_per_bar)
+alertcondition(liveTouchSl,  title = "SL Hit",  message = "SL Hit")
+alertcondition(liveTouchTp1, title = "TP1 Hit", message = "TP1 Hit")
+alertcondition(liveTouchTp2, title = "TP2 Hit", message = "TP2 Hit")
+alertcondition(liveTouchTp3, title = "TP3 Hit", message = "TP3 Hit")
+
+var string alertMsgBuy  = na
+var string alertMsgSell = na
+
+if bullSignal
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    line.delete(beLine)
+    linefill.delete(fillSlEntry)
+    linefill.delete(fillEntryTp1)
+    linefill.delete(fillTp1Tp2)
+    linefill.delete(fillTp2Tp3)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    label.delete(beLbl)
+
+    float entryPrice = close[1]
+    float riskDist   = atrValue1 * atrMultSl
+    float slPrice    = entryPrice - riskDist
+    float tp1Price   = entryPrice + riskDist * rr1
+    float tp2Price   = entryPrice + riskDist * rr2
+    float tp3Price   = entryPrice + riskDist * rr3
+
+    int x1 = bar_index
+    int x2 = bar_index + lineExtendBars
+
+    slLine    := line.new(x1, slPrice, x2, slPrice, color = color.white, width = 1, style = line.style_dashed)
+    entryLine := line.new(x1, entryPrice, x2, entryPrice, color = color.white, width = 1, style = line.style_dashed)
+    tp1Line   := line.new(x1, tp1Price, x2, tp1Price, color = color.white, width = 1, style = line.style_dashed)
+    tp2Line   := line.new(x1, tp2Price, x2, tp2Price, color = color.white, width = 1, style = line.style_dashed)
+    tp3Line   := line.new(x1, tp3Price, x2, tp3Price, color = color.white, width = 1, style = line.style_dashed)
+
+    fillSlEntry  := linefill.new(slLine, entryLine, zoneSlEntry)
+    fillEntryTp1 := linefill.new(entryLine, tp1Line, zoneEntryTp1)
+    fillTp1Tp2   := linefill.new(tp1Line, tp2Line, zoneTp1Tp2)
+    fillTp2Tp3   := linefill.new(tp2Line, tp3Line, zoneTp2Tp3)
+
+    slLbl    := label.new(x2, slPrice, "✕ SL  " + str.tostring(slPrice, format.mintick), style = label.style_label_left, color = colSl, textcolor = color.white, size = size.small)
+    entryLbl := label.new(x2, entryPrice, "▶ Entry  " + str.tostring(entryPrice, format.mintick), style = label.style_label_left, color = colEntry, textcolor = color.white, size = size.small)
+    tp1Lbl   := label.new(x2, tp1Price, "● TP1  " + str.tostring(tp1Price, format.mintick), style = label.style_label_left, color = colTp1, textcolor = color.white, size = size.small)
+    tp2Lbl   := label.new(x2, tp2Price, "★ TP2  " + str.tostring(tp2Price, format.mintick), style = label.style_label_left, color = colTp2, textcolor = color.white, size = size.small)
+    tp3Lbl   := label.new(x2, tp3Price, "◆ TP3  " + str.tostring(tp3Price, format.mintick), style = label.style_label_left, color = colTp3, textcolor = color.white, size = size.small)
+
+    if showStrength
+        label.delete(strengthLbl)
+        strengthLbl := label.new(x1, entryPrice + (atrValue1 * 2), str.tostring(strengthScore, '##0') + "%", style = label.style_label_down, color = f_blockColor(strengthScore, 30.0, 55.0, 75.0), textcolor = color.white, size = size.small)
+
+    if showBuySellLabels
+        label.delete(buySellLbl)
+        buySellLbl := label.new(x1, low[1], "BUY", yloc = yloc.belowbar, style = label.style_label_up, color = buyLabelColor, textcolor = color.white, size = size.small)
+
+    tradeActive  := true
+    tradeIsLong  := true
+    tp1Done      := false
+    tp2Done      := false
+    tp3Done      := false
+    trkSl        := slPrice
+    trkTp1       := tp1Price
+    trkTp2       := tp2Price
+    trkTp3       := tp3Price
+    trkEntry     := entryPrice
+
+    alertMsgBuy := "{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"action\":\"{2}\",\"side\":\"buy\",\"entry\":\"{3}\",\"sl\":\"{4}\",\"tp1\":\"{5}\",\"tp2\":\"{6}\",\"tp3\":\"{7}\"", syminfo.tickerid, timeframe.period, i_actionBuy, str.tostring(entryPrice, format.mintick), str.tostring(slPrice, format.mintick), str.tostring(tp1Price, format.mintick), str.tostring(tp2Price, format.mintick), str.tostring(tp3Price, format.mintick)) + "}"
+
+if bullSignal and barstate.isconfirmed
+    alert(alertMsgBuy, alert.freq_once_per_bar_close)
+alertcondition(bullSignal, title = "Buy Signal",  message = "Buy Signal")
+
+if bearSignal
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    line.delete(beLine)
+    linefill.delete(fillSlEntry)
+    linefill.delete(fillEntryTp1)
+    linefill.delete(fillTp1Tp2)
+    linefill.delete(fillTp2Tp3)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    label.delete(beLbl)
+
+    float entryPrice = close[1]
+    float riskDist   = atrValue1 * atrMultSl
+    float slPrice    = entryPrice + riskDist
+    float tp1Price   = entryPrice - riskDist * rr1
+    float tp2Price   = entryPrice - riskDist * rr2
+    float tp3Price   = entryPrice - riskDist * rr3
+
+    int x1 = bar_index
+    int x2 = bar_index + lineExtendBars
+
+    slLine    := line.new(x1, slPrice, x2, slPrice, color = color.white, width = 1, style = line.style_dashed)
+    entryLine := line.new(x1, entryPrice, x2, entryPrice, color = color.white, width = 1, style = line.style_dashed)
+    tp1Line   := line.new(x1, tp1Price, x2, tp1Price, color = color.white, width = 1, style = line.style_dashed)
+    tp2Line   := line.new(x1, tp2Price, x2, tp2Price, color = color.white, width = 1, style = line.style_dashed)
+    tp3Line   := line.new(x1, tp3Price, x2, tp3Price, color = color.white, width = 1, style = line.style_dashed)
+
+    fillSlEntry  := linefill.new(slLine, entryLine, zoneSlEntry)
+    fillEntryTp1 := linefill.new(entryLine, tp1Line, zoneEntryTp1)
+    fillTp1Tp2   := linefill.new(tp1Line, tp2Line, zoneTp1Tp2)
+    fillTp2Tp3   := linefill.new(tp2Line, tp3Line, zoneTp2Tp3)
+
+    slLbl    := label.new(x2, slPrice, "✕ SL  " + str.tostring(slPrice, format.mintick), style = label.style_label_left, color = colSl, textcolor = color.white, size = size.small)
+    entryLbl := label.new(x2, entryPrice, "▶ Entry  " + str.tostring(entryPrice, format.mintick), style = label.style_label_left, color = colEntry, textcolor = color.white, size = size.small)
+    tp1Lbl   := label.new(x2, tp1Price, "● TP1  " + str.tostring(tp1Price, format.mintick), style = label.style_label_left, color = colTp1, textcolor = color.white, size = size.small)
+    tp2Lbl   := label.new(x2, tp2Price, "★ TP2  " + str.tostring(tp2Price, format.mintick), style = label.style_label_left, color = colTp2, textcolor = color.white, size = size.small)
+    tp3Lbl   := label.new(x2, tp3Price, "◆ TP3  " + str.tostring(tp3Price, format.mintick), style = label.style_label_left, color = colTp3, textcolor = color.white, size = size.small)
+
+    if showStrength
+        label.delete(strengthLbl)
+        strengthLbl := label.new(x1, entryPrice - (atrValue1 * 2), str.tostring(strengthScore, '##0') + "%", style = label.style_label_up, color = f_blockColor(strengthScore, 30.0, 55.0, 75.0), textcolor = color.white, size = size.small)
+
+    if showBuySellLabels
+        label.delete(buySellLbl)
+        buySellLbl := label.new(x1, high[1], "SELL", yloc = yloc.abovebar, style = label.style_label_down, color = sellLabelColor, textcolor = color.white, size = size.small)
+
+    tradeActive  := true
+    tradeIsLong  := false
+    tp1Done      := false
+    tp2Done      := false
+    tp3Done      := false
+    trkSl        := slPrice
+    trkTp1       := tp1Price
+    trkTp2       := tp2Price
+    trkTp3       := tp3Price
+    trkEntry     := entryPrice
+
+    alertMsgSell := "{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"action\":\"{2}\",\"side\":\"sell\",\"entry\":\"{3}\",\"sl\":\"{4}\",\"tp1\":\"{5}\",\"tp2\":\"{6}\",\"tp3\":\"{7}\"", syminfo.tickerid, timeframe.period, i_actionSell, str.tostring(entryPrice, format.mintick), str.tostring(slPrice, format.mintick), str.tostring(tp1Price, format.mintick), str.tostring(tp2Price, format.mintick), str.tostring(tp3Price, format.mintick)) + "}"
+
+if bearSignal and barstate.isconfirmed
+    alert(alertMsgSell, alert.freq_once_per_bar_close)
+alertcondition(bearSignal, title = "Sell Signal", message = "Sell Signal")
+
+// --- Dashboard Table ---
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+color  hdrBg = color.rgb(30,30,45,10)
+color  rowBg = color.rgb(20,20,25,10)
+var int barsSinceSignal = 0
+if bullSignal or bearSignal
+    barsSinceSignal := 0
+else if barstate.isconfirmed
+    barsSinceSignal := nz(barsSinceSignal) + 1
+
+var table dash = table.new(position.top_right, 2, 7, border_width = 1, border_color = color.rgb(50,50,70,20), frame_width = 1, frame_color = color.rgb(60,60,90,10))
+
+if showDash
+    table.cell(dash, 0, 0, clean_ticker, text_color = color.white, text_halign = text.align_left, bgcolor = hdrBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 0, 0, font.family_monospace)
+    table.cell(dash, 1, 0, "", bgcolor = hdrBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 1, 0, font.family_monospace)
+    table.cell(dash, 0, 1, "Trend", text_color = color.white, text_halign = text.align_left, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 0, 1, font.family_monospace)
+    table.cell(dash, 1, 1, rmaFast > rmaSlow ? "▲ Bull" : "▼ Bear", text_color = color.white, text_halign = text.align_right, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 1, 1, font.family_monospace)
+    table.cell(dash, 0, 2, "ATR", text_color = color.white, text_halign = text.align_left, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 0, 2, font.family_monospace)
+    table.cell(dash, 1, 2, str.tostring(atrValue, format.mintick), text_color = color.white, text_halign = text.align_right, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 1, 2, font.family_monospace)
+    table.cell(dash, 0, 3, "ADX", text_color = color.white, text_halign = text.align_left, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 0, 3, font.family_monospace)
+    table.cell(dash, 1, 3, f_blockBar(adxValue, 50.0), text_color = color.white, text_halign = text.align_right, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 1, 3, font.family_monospace)
+    table.cell(dash, 0, 4, "Strength", text_color = color.white, text_halign = text.align_left, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 0, 4, font.family_monospace)
+    table.cell(dash, 1, 4, f_blockBar(strengthScore, 100.0), text_color = color.white, text_halign = text.align_right, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 1, 4, font.family_monospace)
+    table.cell(dash, 0, 5, "HTF Bias", text_color = color.white, text_halign = text.align_left, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 0, 5, font.family_monospace)
+    table.cell(dash, 1, 5, useHtfFilter ? (htfBullBias ? "📈 Bullish" : "📉 Bearish") : "Off", text_color = color.white, text_halign = text.align_right, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 1, 5, font.family_monospace)
+    table.cell(dash, 0, 6, "Since Signal", text_color = color.white, text_halign = text.align_left, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 0, 6, font.family_monospace)
+    table.cell(dash, 1, 6, "⏳ " + str.tostring(barsSinceSignal) + " Bars", text_color = color.white, text_halign = text.align_right, bgcolor = rowBg, text_size = size.small)
+    table.cell_set_text_font_family(dash, 1, 6, font.family_monospace)
+
+float riskUnit = math.abs(trkEntry - trkSl)
+float currentR = tradeActive and not na(riskUnit) and riskUnit > 0 ? (tradeIsLong ? (close - trkEntry) / riskUnit : (trkEntry - close) / riskUnit) : na
+color _mt741c = na(currentR) ? color.gray : currentR >= 0 ? color.rgb(0, 255, 120) : color.rgb(255, 80, 80)
+
+label.delete(liveRLbl)
+if showLiveR and tradeActive and not na(currentR)
+    liveRLbl := label.new(bar_index, tradeIsLong ? high + atrValue : low - atrValue, (currentR >= 0 ? "+" : "") + str.tostring(currentR, '#.##') + "R", style = tradeIsLong ? label.style_label_down : label.style_label_up, color = _mt741c, textcolor = color.white, size = size.small)

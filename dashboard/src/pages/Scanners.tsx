@@ -1,5 +1,7 @@
+import { choice } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
 import { useMemo, useState } from 'react'
-import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScannerPipeline, useScanners, useUpdateScanner } from '../api/queries'
 import { api } from '../api/client'
@@ -25,7 +27,9 @@ const EXIT_MODES: ExitMode[] = ['levels', 'script', 'both']
 export function Scanners() {
   const scanners = useScanners()
   const auth = useAuth()
-  const [activity, setActivity] = useState('all')
+  // filters live in the URL so a link, Back and Forward keep them; defaults stay out of it
+  const { params, set, hash } = useResearchFilters()
+  const activity = choice(params.get('activity'), ['all', 'scheduled', 'fault', 'unallocated', 'context', 'off', 'unknown'], 'all')
   const config = useConfig()
   const markets = useMarkets()
   const update = useUpdateScanner()
@@ -36,23 +40,21 @@ export function Scanners() {
   // narrow screens start on cards: a wide table is the wrong first look on a phone
   const [view, setView] = useState<'list' | 'cards' | 'table'>(() => (typeof window !== 'undefined' && window.matchMedia?.('(max-width: 700px)').matches ? 'cards' : 'list'))
   const pipeline = useScannerPipeline()
-  const [cat, setCat] = useState<Category>('All')
-  const [filter, setFilter] = useState('')
+  const cat = choice(params.get('category'), CATEGORIES, 'All') as Category
+  const filter = params.get('q') ?? ''
   const [bulkBusy, setBulkBusy] = useState(false)
   const [confirmDisableAll, setConfirmDisableAll] = useState(false)
   const [removing, setRemoving] = useState<Scanner | null>(null)
   const qc = useQueryClient()
-  const [showHidden, setShowHidden] = useState(false)
-  const [author, setAuthor] = useState<string>('All')
+  const showHidden = params.get('removed') === '1'
+  const author = params.get('author') ?? 'All'
   // `?book=account` from the Overview's attention line lands on the right tab
-  const [params, setParams] = useSearchParams()
   const book = params.get('book')
   const bookFilter = book === 'account' || book === 'shadow' || book === 'none' ? book : 'all'
-  const setBookFilter = (value: string) => setParams(prev => { const next = new URLSearchParams(prev); if (value === 'all') next.delete('book'); else next.set('book', value); return next })
+  const setBookFilter = (value: string) => set({ book: value === 'all' ? null : value })
   const busy = !auth.canTrade || update.isPending || bulkBusy
   // The tab is local state; a link to #readiness or #contributions (the Incubator uses them) opens that tab.
-  const { hash } = useLocation()
-  const [tab, setTab] = useState<ScTab>(() => tabFromHash(hash) ?? (book ? 'catalogue' : 'trading'))
+  const [tab, setTab] = useState<ScTab>(() => tabFromHash(hash) ?? tabFromSection(params.get('section')) ?? (book ? 'catalogue' : 'trading'))
   const [seenHash, setSeenHash] = useState(hash)
   if (hash !== seenHash) {
     setSeenHash(hash)
@@ -106,7 +108,7 @@ export function Scanners() {
     const cells = pipeline.data?.cells
     return cells ? { runs: cells.reduce((n, c) => n + c.runs, 0), failures: cells.reduce((n, c) => n + c.failures, 0) } : null
   }, [pipeline.data])
-  const resetFilters = () => { setFilter(''); setCat('All'); setAuthor('All'); setActivity('all'); setShowHidden(false); setBookFilter('all') }
+  const resetFilters = () => set({ q: null, category: null, author: null, activity: null, removed: null, book: null })
   const filtersActive = !!filter || cat !== 'All' || author !== 'All' || activity !== 'all' || bookFilter !== 'all'
 
   const patch = (s: Scanner, body: Parameters<typeof update.mutate>[0]['body'], okMsg?: string) =>
@@ -506,7 +508,7 @@ export function Scanners() {
                 </>
               }
             >
-              <input className="input sc-search" type="search" placeholder="Search scanners" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search scanners by name or id" />
+              <input className="input sc-search" type="search" placeholder="Search scanners" value={filter} onChange={(e) => set({ q: e.target.value }, true)} aria-label="Search scanners by name or id" />
               <Segmented
                 ariaLabel="Book"
                 value={bookFilter}
@@ -518,14 +520,14 @@ export function Scanners() {
                   { value: 'none', label: 'Not trading' },
                 ]}
               />
-              <select className="select" value={author} onChange={(e) => setAuthor(e.target.value)} aria-label="Author" style={{ width: 'auto', maxWidth: 200 }}>
+              <select className="select" value={author} onChange={(e) => set({ author: e.target.value === 'All' ? null : e.target.value })} aria-label="Author" style={{ width: 'auto', maxWidth: 200 }}>
                 {authors.map((a) => (
                   <option key={a} value={a}>{a === 'All' ? 'All authors' : a}</option>
                 ))}
               </select>
               <label className="sc-field">
                 <span>Paper activity</span>
-                <select className="select" value={activity} onChange={(e) => setActivity(e.target.value)}>
+                <select className="select" value={activity} onChange={(e) => set({ activity: e.target.value === 'all' ? null : e.target.value })}>
                   <option value="all">All states</option>
                   <option value="scheduled">Scheduled</option>
                   <option value="fault">Errors / quarantine</option>
@@ -536,13 +538,13 @@ export function Scanners() {
                 </select>
               </label>
               <label className="sc-check" title="Removed scanners stay disabled; restore any from here">
-                <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} disabled={!scanners.data} /> Show removed{scanners.data ? ` (${hiddenCount})` : ''}
+                <input type="checkbox" checked={showHidden} onChange={(e) => set({ removed: e.target.checked ? '1' : null })} disabled={!scanners.data} /> Show removed{scanners.data ? ` (${hiddenCount})` : ''}
               </label>
               {(filtersActive || showHidden) && <button className="btn btn-sm" onClick={resetFilters}>Clear filters</button>}
             </Toolbar>
             <div className="sc-chips" role="group" aria-label="Category">
               {CATEGORIES.map((c) => (
-                <button key={c} type="button" className="sc-chip" aria-pressed={cat === c} onClick={() => setCat(c)}>
+                <button key={c} type="button" className="sc-chip" aria-pressed={cat === c} onClick={() => set({ category: c === 'All' ? null : c })}>
                   {c}{c !== 'All' && counts.get(c) ? <span className="sc-chip-n">{counts.get(c)}</span> : null}
                 </button>
               ))}
@@ -742,6 +744,7 @@ function BookCells({ s }: { s: Scanner }) {
 // ---------- tabs and fleet numbers ----------
 
 type ScTab = 'trading' | 'catalogue' | 'quarantined' | 'readiness' | 'contributions'
+const tabFromSection = (v: string | null): ScTab | null => (v === 'readiness' ? 'readiness' : v === 'contributions' ? 'contributions' : null)
 const tabFromHash = (h: string): ScTab | null => (h === '#readiness' ? 'readiness' : h === '#contributions' || h === '#contribution-ledger' ? 'contributions' : null)
 /** On in the account, or allocated in the account, shadow or proposed books. */
 const isTrading = (s: Scanner) => s.enabled || !!(s.books && (s.books.account.length || s.books.shadow.length || s.books.proposed.length))

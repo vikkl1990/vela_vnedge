@@ -1,0 +1,432 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Cardwell Dual Confluence [MarkitTick]", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+var string GRP_CORE = "⚙️ Core Settings"
+i_rsiLenX       = input.int(14, "Cross: RSI Len", minval=1, group=GRP_CORE)
+i_rmaFastLen    = input.int(9, "Cross: Fast Len", minval=1, group=GRP_CORE)
+i_rmaSlowLen    = input.int(45, "Cross: Slow Len", minval=1, group=GRP_CORE)
+i_trendLen      = input.int(50, "Trend: MA Len", minval=1, group=GRP_CORE)
+i_trendSrc      = input.source(close, "Trend: Src", group=GRP_CORE)
+i_rsiLenT       = input.int(14, "Trend: RSI Len", minval=1, group=GRP_CORE)
+i_rsiSrcT       = input.source(close, "Trend: RSI Src", group=GRP_CORE)
+i_confirmBars   = input.int(2, "Trend: Confirm Bars", minval=1, group=GRP_CORE)
+i_bullLo        = input.int(40, "Trend: Bull Lo", minval=0, maxval=100, group=GRP_CORE)
+i_bullHi        = input.int(80, "Trend: Bull Hi", minval=0, maxval=100, group=GRP_CORE)
+i_bearLo        = input.int(20, "Trend: Bear Lo", minval=0, maxval=100, group=GRP_CORE)
+i_bearHi        = input.int(60, "Trend: Bear Hi", minval=0, maxval=100, group=GRP_CORE)
+i_gapBars       = input.int(10, "Signal Gap (Bars)", minval=0, group=GRP_CORE)
+i_reqBoth       = input.bool(false, "Require Cross + Regime Together", group=GRP_CORE)
+i_reqBothWin    = input.int(3, "Cross+Regime Window (Bars)", minval=0, group=GRP_CORE)
+
+var string GRP_FILT = "🕯️ Filters"
+i_useHtf        = input.bool(false, "Use HTF Confirmation", group=GRP_FILT)
+i_htfTF         = input.timeframe("240", "HTF Timeframe", group=GRP_FILT)
+i_useAdx        = input.bool(false, "Use Chop Filter", group=GRP_FILT)
+i_adxLen        = input.int(14, "ADX Length", minval=1, group=GRP_FILT)
+i_adxMin        = input.int(20, "ADX Min Strength", minval=0, maxval=100, group=GRP_FILT)
+
+var string GRP_TT = "📐 Trade Tools"
+i_atrLen        = input.int(14, "ATR Len", minval=1, group=GRP_TT)
+i_slMult        = input.float(1.5, "SL ATR Mult", minval=0.1, step=0.1, group=GRP_TT)
+i_tp1Mult       = input.float(1.0, "TP1 ATR Mult", minval=0.1, step=0.1, group=GRP_TT)
+i_tp2Mult       = input.float(2.0, "TP2 ATR Mult", minval=0.1, step=0.1, group=GRP_TT)
+i_tp3Mult       = input.float(3.0, "TP3 ATR Mult", minval=0.1, step=0.1, group=GRP_TT)
+i_lineExtBars   = input.int(50, "Line Extend Bars", minval=1, group=GRP_TT)
+
+var string GRP_VIS = "🎨 Visuals"
+i_showCandles   = input.bool(true, "Color Candles", group=GRP_VIS)
+i_showSignals   = input.bool(true, "Show Buy/Sell Signals", group=GRP_VIS)
+i_showLevels    = input.bool(true, "Show Trade Levels", group=GRP_VIS)
+
+var string _mt741a = "📊 Dashboard"
+i_showDash      = input.bool(true, "Show Dashboard", group=_mt741a)
+i_dashPos       = input.string(position.top_right, "Dashboard Position", options=[position.top_right, position.top_left, position.bottom_right, position.bottom_left], group=_mt741a)
+
+var string GRP_WH = "🔔 Alerts"
+i_actionLong        = input.string("long",        "↑ Long Action",        group=GRP_WH)
+i_actionShort       = input.string("short",       "↓ Short Action",       group=GRP_WH)
+i_actionCloseLong   = input.string("closelong",   "✕ Close Long Action",  group=GRP_WH)
+i_actionCloseShort  = input.string("closeshort",  "✕ Close Short Action", group=GRP_WH)
+i_actionSl          = input.string("close",       "⛔ SL Hit Action",      group=GRP_WH)
+i_actionTp1         = input.string("tp",          "🎯 TP1 Hit Action",     group=GRP_WH)
+i_actionTp2         = input.string("tp",          "🎯 TP2 Hit Action",     group=GRP_WH)
+i_actionTp3         = input.string("tp",          "🎯 TP3 Hit Action",     group=GRP_WH)
+
+var string GRP_COL = "🌈 Colors"
+c_bullCandle    = input.color(color.new(#26a69a, 0), "Bull Candle", group=GRP_COL)
+c_bearCandle    = input.color(color.new(#ef5350, 0), "Bear Candle", group=GRP_COL)
+c_neutCandle    = input.color(color.new(#787b86, 0), "Neutral Candle", group=GRP_COL)
+c_wickBorder    = input.color(color.new(#000000, 0), "Candle Border", group=GRP_COL)
+c_buySig        = input.color(#2196f3, "Buy Signal", group=GRP_COL)
+c_sellSig       = input.color(#ff9800, "Sell Signal", group=GRP_COL)
+c_slColor       = input.color(#ef5350, "SL Line", group=GRP_COL)
+c_entryColor    = input.color(#2196f3, "Entry Line", group=GRP_COL)
+c_tp1Color      = input.color(color.new(#26a69a, 40), "TP1 Line", group=GRP_COL)
+c_tp2Color      = input.color(color.new(#26a69a, 20), "TP2 Line", group=GRP_COL)
+c_tp3Color      = input.color(color.new(#26a69a, 0), "TP3 Line", group=GRP_COL)
+c_riskFill      = input.color(color.new(#ef5350, 80), "Risk Fill", group=GRP_COL)
+c_rewardFill    = input.color(color.new(#26a69a, 85), "Reward Fill", group=GRP_COL)
+c_dashBg        = input.color(color.new(#0a0f1a, 10), "Dash BG", group=GRP_COL)
+c_dashHeaderBg  = input.color(color.new(#14b5cb, 20), "Dash Header BG", group=GRP_COL)
+c_dashLabelTxt  = input.color(color.new(#ffffff, 30), "Dash Label Txt", group=GRP_COL)
+c_dashValBg     = input.color(color.new(#0d1117, 0), "Dash Value BG", group=GRP_COL)
+c_dashValTxt    = input.color(color.new(#ffffff, 0), "Dash Value Txt", group=GRP_COL)
+
+// ── CORE LOGIC ──────────────────────────────────────────────────
+rsiValX      = ta.rsi(close, i_rsiLenX)
+rmaFast      = ta.rma(rsiValX, i_rmaFastLen)
+rmaSlow      = ta.rma(rsiValX, i_rmaSlowLen)
+bullCrossRaw = rmaFast[1] > rmaSlow[1] and rmaFast[2] <= rmaSlow[2]
+bearCrossRaw = rmaFast[1] < rmaSlow[1] and rmaFast[2] >= rmaSlow[2]
+
+trendMA       = ta.sma(i_trendSrc, i_trendLen)
+isUptrend     = i_trendSrc[1] > trendMA[1]
+isDowntrend   = i_trendSrc[1] < trendMA[1]
+rsiValT       = ta.rsi(i_rsiSrcT, i_rsiLenT)
+inBullRange   = rsiValT[1] >= i_bullLo and rsiValT[1] <= i_bullHi
+inBearRange   = rsiValT[1] >= i_bearLo and rsiValT[1] <= i_bearHi
+bullRegimeRaw = isUptrend and inBullRange
+bearRegimeRaw = isDowntrend and inBearRange
+
+var int bullConfirmCount = 0
+var int bearConfirmCount = 0
+if barstate.isconfirmed
+    bullConfirmCount := bullRegimeRaw ? bullConfirmCount + 1 : 0
+    bearConfirmCount := bearRegimeRaw ? bearConfirmCount + 1 : 0
+bullRegime      = bullRegimeRaw and bullConfirmCount >= i_confirmBars
+bearRegime      = bearRegimeRaw and bearConfirmCount >= i_confirmBars
+regimeState     = bullRegime ? 1 : bearRegime ? -1 : 0
+prevRegimeState = regimeState[1]
+longRegimeRaw   = regimeState == 1  and prevRegimeState != 1
+shortRegimeRaw  = regimeState == -1 and prevRegimeState != -1
+
+var int barsSinceBullCross  = 1000000
+var int barsSinceBearCross  = 1000000
+var int barsSinceLongRegime = 1000000
+var int barsSinceShortRegime = 1000000
+barsSinceBullCross   := bullCrossRaw   ? 0 : barsSinceBullCross + 1
+barsSinceBearCross   := bearCrossRaw   ? 0 : barsSinceBearCross + 1
+barsSinceLongRegime  := longRegimeRaw  ? 0 : barsSinceLongRegime + 1
+barsSinceShortRegime := shortRegimeRaw ? 0 : barsSinceShortRegime + 1
+
+longConfluence  = (bullCrossRaw and barsSinceLongRegime <= i_reqBothWin) or (longRegimeRaw and barsSinceBullCross <= i_reqBothWin)
+shortConfluence = (bearCrossRaw and barsSinceShortRegime <= i_reqBothWin) or (shortRegimeRaw and barsSinceBearCross <= i_reqBothWin)
+
+longSignal  = i_reqBoth ? longConfluence  : (bullCrossRaw or longRegimeRaw)
+shortSignal = i_reqBoth ? shortConfluence : (bearCrossRaw or shortRegimeRaw)
+
+var int    lastSignalBar = na
+var string lastSignalSrc = "None"
+barsSinceSignal = na(lastSignalBar) ? 1000000 : bar_index - lastSignalBar
+cooldownOk      = na(lastSignalBar) or barsSinceSignal >= i_gapBars
+
+f_cardwellRegime() =>
+    _trendMA = ta.sma(i_trendSrc, i_trendLen)
+    _mt741b    = i_trendSrc[1] > _trendMA[1]
+    _isDown  = i_trendSrc[1] < _trendMA[1]
+    _rsiT    = ta.rsi(i_rsiSrcT, i_rsiLenT)
+    _inBull  = _rsiT[1] >= i_bullLo and _rsiT[1] <= i_bullHi
+    _inBear  = _rsiT[1] >= i_bearLo and _rsiT[1] <= i_bearHi
+    _bullRaw = _mt741b and _inBull
+    _bearRaw = _isDown and _inBear
+    var int _bullCnt = 0
+    var int _bearCnt = 0
+    _bullCnt := _bullRaw ? _bullCnt + 1 : 0
+    _bearCnt := _bearRaw ? _bearCnt + 1 : 0
+    _bull    = _bullRaw and _bullCnt >= i_confirmBars
+    _bear    = _bearRaw and _bearCnt >= i_confirmBars
+    _bull ? 1 : _bear ? -1 : 0
+
+htfRegimeState = request.security(syminfo.tickerid, i_htfTF, f_cardwellRegime()[1], lookahead=barmerge.lookahead_on)
+htfBullOk      = not i_useHtf or htfRegimeState == 1
+htfBearOk      = not i_useHtf or htfRegimeState == -1
+
+[diPlusVal, diMinusVal, adxVal] = ta.dmi(i_adxLen, i_adxLen)
+chopOk = not i_useAdx or adxVal >= i_adxMin
+
+acceptedLong  = longSignal  and cooldownOk and htfBullOk and chopOk
+acceptedShort = shortSignal and cooldownOk and htfBearOk and chopOk
+
+atrVal        = ta.atr(i_atrLen)
+entryPrice    = close[1]
+slLongPrice   = entryPrice - atrVal * i_slMult
+tp1LongPrice  = entryPrice + atrVal * i_tp1Mult
+tp2LongPrice  = entryPrice + atrVal * i_tp2Mult
+tp3LongPrice  = entryPrice + atrVal * i_tp3Mult
+slShortPrice  = entryPrice + atrVal * i_slMult
+tp1ShortPrice = entryPrice - atrVal * i_tp1Mult
+tp2ShortPrice = entryPrice - atrVal * i_tp2Mult
+tp3ShortPrice = entryPrice - atrVal * i_tp3Mult
+
+var bool  tradeActive = false
+var bool  tradeIsLong = true
+var bool  tp1Done = false
+var bool  tp2Done = false
+var bool  tp3Done = false
+var float trkSl = na
+var float trkTp1 = na
+var float trkTp2 = na
+var float trkTp3 = na
+var float trkEntry = na
+
+touchTp1 = tradeActive and not tp1Done and not na(trkTp1) and (tradeIsLong ? high[1] >= trkTp1 : low[1] <= trkTp1)
+touchTp2 = tradeActive and not tp2Done and not na(trkTp2) and (tradeIsLong ? high[1] >= trkTp2 : low[1] <= trkTp2)
+touchTp3 = tradeActive and not tp3Done and not na(trkTp3) and (tradeIsLong ? high[1] >= trkTp3 : low[1] <= trkTp3)
+touchSl  = tradeActive and not na(trkSl) and (tradeIsLong ? low[1] <= trkSl : high[1] >= trkSl)
+
+if touchTp1
+    tp1Done := true
+if touchTp2
+    tp2Done := true
+if touchTp3
+    tp3Done := true
+    tradeActive := false
+if touchSl
+    tradeActive := false
+
+liveTouchTp1 = tradeActive and not tp1Done and not na(trkTp1) and (tradeIsLong ? high >= trkTp1 : low <= trkTp1)
+liveTouchTp2 = tradeActive and not tp2Done and not na(trkTp2) and (tradeIsLong ? high >= trkTp2 : low <= trkTp2)
+liveTouchTp3 = tradeActive and not tp3Done and not na(trkTp3) and (tradeIsLong ? high >= trkTp3 : low <= trkTp3)
+liveTouchSl  = tradeActive and not na(trkSl) and (tradeIsLong ? low <= trkSl : high >= trkSl)
+
+if (acceptedLong or acceptedShort) and barstate.isconfirmed
+    lastSignalBar := bar_index
+    lastSignalSrc := acceptedLong ? (bullCrossRaw and longRegimeRaw ? "Cross+Trend ↑" : bullCrossRaw ? "Cross ↑" : "Trend ↑") : (bearCrossRaw and shortRegimeRaw ? "Cross+Trend ↓" : bearCrossRaw ? "Cross ↓" : "Trend ↓")
+    tradeActive := true
+    tradeIsLong := acceptedLong
+    tp1Done := false
+    tp2Done := false
+    tp3Done := false
+    trkSl    := acceptedLong ? slLongPrice  : slShortPrice
+    trkTp1   := acceptedLong ? tp1LongPrice : tp1ShortPrice
+    trkTp2   := acceptedLong ? tp2LongPrice : tp2ShortPrice
+    trkTp3   := acceptedLong ? tp3LongPrice : tp3ShortPrice
+    trkEntry := entryPrice
+
+bodyColor = bullRegime ? c_bullCandle : bearRegime ? c_bearCandle : c_neutCandle
+
+// ── ALERTS ──────────────────────────────────────────────────────
+sourceLongTxt  = bullCrossRaw and longRegimeRaw ? "Cross+Trend" : bullCrossRaw ? "Cross" : "Trend"
+sourceShortTxt = bearCrossRaw and shortRegimeRaw ? "Cross+Trend" : bearCrossRaw ? "Cross" : "Trend"
+
+string _longInner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","source":"{3}","entry":"{4}","sl":"{5}","tp1":"{6}","tp2":"{7}","tp3":"{8}"',
+ i_actionLong, syminfo.tickerid, timeframe.period, sourceLongTxt,
+ str.tostring(entryPrice, format.mintick),
+ str.tostring(slLongPrice, format.mintick),
+ str.tostring(tp1LongPrice, format.mintick),
+ str.tostring(tp2LongPrice, format.mintick),
+ str.tostring(tp3LongPrice, format.mintick))
+string longPayload = "{" + _longInner + "}"
+
+string _mt741c = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","source":"{3}","entry":"{4}","sl":"{5}","tp1":"{6}","tp2":"{7}","tp3":"{8}"',
+ i_actionShort, syminfo.tickerid, timeframe.period, sourceShortTxt,
+ str.tostring(entryPrice, format.mintick),
+ str.tostring(slShortPrice, format.mintick),
+ str.tostring(tp1ShortPrice, format.mintick),
+ str.tostring(tp2ShortPrice, format.mintick),
+ str.tostring(tp3ShortPrice, format.mintick))
+string shortPayload = "{" + _mt741c + "}"
+
+string _closeLongInner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closelong"',
+ i_actionCloseLong, syminfo.tickerid, timeframe.period)
+string closeLongPayload = "{" + _closeLongInner + "}"
+
+string _closeShortInner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closeshort"',
+ i_actionCloseShort, syminfo.tickerid, timeframe.period)
+string closeShortPayload = "{" + _closeShortInner + "}"
+
+string _slInner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","event":"sl","price":"{3}"',
+ i_actionSl, syminfo.tickerid, timeframe.period, str.tostring(trkSl, format.mintick))
+string slPayload = "{" + _slInner + "}"
+
+string _tp1Inner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","event":"tp1","price":"{3}"',
+ i_actionTp1, syminfo.tickerid, timeframe.period, str.tostring(trkTp1, format.mintick))
+string tp1Payload = "{" + _tp1Inner + "}"
+
+string _tp2Inner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","event":"tp2","price":"{3}"',
+ i_actionTp2, syminfo.tickerid, timeframe.period, str.tostring(trkTp2, format.mintick))
+string tp2Payload = "{" + _tp2Inner + "}"
+
+string _tp3Inner = str.format(
+ '"action":"{0}","ticker":"{1}","tf":"{2}","event":"tp3","price":"{3}"',
+ i_actionTp3, syminfo.tickerid, timeframe.period, str.tostring(trkTp3, format.mintick))
+string tp3Payload = "{" + _tp3Inner + "}"
+
+if acceptedLong and barstate.isconfirmed
+    alert(longPayload, alert.freq_once_per_bar_close)
+if acceptedShort and barstate.isconfirmed
+    alert(shortPayload, alert.freq_once_per_bar_close)
+if acceptedShort and barstate.isconfirmed
+    alert(closeLongPayload, alert.freq_once_per_bar_close)
+if acceptedLong and barstate.isconfirmed
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+
+if liveTouchSl
+    alert(slPayload, alert.freq_once_per_bar)
+if liveTouchTp1
+    alert(tp1Payload, alert.freq_once_per_bar)
+if liveTouchTp2
+    alert(tp2Payload, alert.freq_once_per_bar)
+if liveTouchTp3
+    alert(tp3Payload, alert.freq_once_per_bar)
+
+alertcondition(acceptedLong  and barstate.isconfirmed, "BUY Signal",         "MarkitTick — BUY Signal Fired")
+alertcondition(acceptedShort and barstate.isconfirmed, "SELL Signal",        "MarkitTick — SELL Signal Fired")
+alertcondition(acceptedShort and barstate.isconfirmed, "Close Long Signal",  "MarkitTick — Close Long")
+alertcondition(acceptedLong  and barstate.isconfirmed, "Close Short Signal", "MarkitTick — Close Short")
+alertcondition(liveTouchSl,  "SL Hit",  "MarkitTick — SL Hit")
+alertcondition(liveTouchTp1, "TP1 Hit", "MarkitTick — TP1 Hit")
+alertcondition(liveTouchTp2, "TP2 Hit", "MarkitTick — TP2 Hit")
+alertcondition(liveTouchTp3, "TP3 Hit", "MarkitTick — TP3 Hit")
+
+// ── VISUALS ─────────────────────────────────────────────────────
+plotcandle(open, high, low, close,
+ title       = "Heatmap Candles",
+ color       = i_showCandles ? bodyColor : na,
+ wickcolor   = i_showCandles ? bodyColor : na,
+ bordercolor = i_showCandles ? c_wickBorder : na)
+
+var label sigLbl = na
+if i_showSignals and (acceptedLong or acceptedShort) and barstate.isconfirmed
+    label.delete(sigLbl)
+    sigLbl := acceptedLong ? label.new(bar_index, low, "BUY", style=label.style_label_up, yloc=yloc.belowbar, color=c_buySig, textcolor=color.white, size=size.small) : label.new(bar_index, high, "SELL", style=label.style_label_down, yloc=yloc.abovebar, color=c_sellSig, textcolor=color.white, size=size.small)
+
+var line slLine = na
+var line entryLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+var label slLbl = na
+var label entryLbl = na
+var label tp1Lbl = na
+var label tp2Lbl = na
+var label tp3Lbl = na
+var linefill riskFill = na
+var linefill rewardFill = na
+
+f_deleteLevels() =>
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    linefill.delete(riskFill)
+    linefill.delete(rewardFill)
+
+if i_showLevels and (acceptedLong or acceptedShort) and barstate.isconfirmed
+    f_deleteLevels()
+    float slP  = acceptedLong ? slLongPrice  : slShortPrice
+    float tp1P = acceptedLong ? tp1LongPrice : tp1ShortPrice
+    float tp2P = acceptedLong ? tp2LongPrice : tp2ShortPrice
+    float tp3P = acceptedLong ? tp3LongPrice : tp3ShortPrice
+    int extX = bar_index + i_lineExtBars
+    slLine    := line.new(bar_index, slP, extX, slP, color=c_slColor, style=line.style_solid, width=2)
+    entryLine := line.new(bar_index, entryPrice, extX, entryPrice, color=c_entryColor, style=line.style_dashed, width=1)
+    tp1Line   := line.new(bar_index, tp1P, extX, tp1P, color=c_tp1Color, style=line.style_dashed, width=1)
+    tp2Line   := line.new(bar_index, tp2P, extX, tp2P, color=c_tp2Color, style=line.style_dashed, width=1)
+    tp3Line   := line.new(bar_index, tp3P, extX, tp3P, color=c_tp3Color, style=line.style_dashed, width=1)
+    slLbl    := label.new(extX, slP, "✕ SL " + str.tostring(slP, format.mintick), style=label.style_label_left, color=c_slColor, textcolor=color.white, size=size.small)
+    entryLbl := label.new(extX, entryPrice, "▶ Entry " + str.tostring(entryPrice, format.mintick), style=label.style_label_left, color=c_entryColor, textcolor=color.white, size=size.small)
+    tp1Lbl   := label.new(extX, tp1P, "◆ TP1 " + str.tostring(tp1P, format.mintick), style=label.style_label_left, color=c_tp1Color, textcolor=color.white, size=size.small)
+    tp2Lbl   := label.new(extX, tp2P, "✦ TP2 " + str.tostring(tp2P, format.mintick), style=label.style_label_left, color=c_tp2Color, textcolor=color.white, size=size.small)
+    tp3Lbl   := label.new(extX, tp3P, "◆ TP3 " + str.tostring(tp3P, format.mintick), style=label.style_label_left, color=c_tp3Color, textcolor=color.white, size=size.small)
+    riskFill   := linefill.new(slLine, entryLine, c_riskFill)
+    rewardFill := linefill.new(entryLine, tp3Line, c_rewardFill)
+
+if not na(slLine) and not na(lastSignalBar) and bar_index <= lastSignalBar + i_lineExtBars
+    int extX2 = lastSignalBar + i_lineExtBars
+    line.set_x2(slLine, extX2)
+    line.set_x2(entryLine, extX2)
+    line.set_x2(tp1Line, extX2)
+    line.set_x2(tp2Line, extX2)
+    line.set_x2(tp3Line, extX2)
+    label.set_x(slLbl, extX2)
+    label.set_x(entryLbl, extX2)
+    label.set_x(tp1Lbl, extX2)
+    label.set_x(tp2Lbl, extX2)
+    label.set_x(tp3Lbl, extX2)
+
+// ── DASHBOARD ───────────────────────────────────────────────────
+f_barColor(float pct) =>
+    pct >= 0.66 ? color.new(#26a69a, 0) : pct >= 0.33 ? color.new(#f9a825, 0) : color.new(#ef5350, 0)
+
+f_bar(float val, float maxVal) =>
+    int filled = math.round(math.min(val / maxVal, 1.0) * 10)
+    string bar = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar + "  " + str.tostring(math.round(val / maxVal * 100)) + "%"
+
+var table dash = table.new(i_dashPos, 2, 13, border_width=1, border_color=color.new(#2a3040, 40), frame_width=1, frame_color=color.new(#3a2a6d, 40))
+
+if i_showDash
+    row_a = c_dashBg
+    row_b = color.new(c_dashBg, 40)
+    table.cell(dash, 0, 0, "MarkitTick — Cardwell Confluence", text_color=c_dashValTxt, bgcolor=c_dashHeaderBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + timeframe.period, text_color=c_dashValTxt, bgcolor=c_dashHeaderBg, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 1, "  Cross Trend", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_a, text_size=size.small, text_halign=text.align_left)
+    string crossTxt = rmaFast > rmaSlow ? "BULL" : "BEAR"
+    color crossClr = rmaFast > rmaSlow ? c_bullCandle : c_bearCandle
+    table.cell(dash, 1, 1, crossTxt + "  ", text_color=crossClr, bgcolor=row_a, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 2, "  Trend Regime", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_b, text_size=size.small, text_halign=text.align_left)
+    string regimeTxt = bullRegime ? "BULLISH" : bearRegime ? "BEARISH" : "NEUTRAL"
+    color regimeClr = bullRegime ? c_bullCandle : bearRegime ? c_bearCandle : c_neutCandle
+    table.cell(dash, 1, 2, regimeTxt + "  ", text_color=regimeClr, bgcolor=row_b, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 3, "  Trend RSI", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_a, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 3, f_bar(rsiValT, 100) + "  ", text_color=f_barColor(rsiValT / 100), bgcolor=row_a, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 4, "  Confirm Bars", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_b, text_size=size.small, text_halign=text.align_left)
+    int confCnt = bullRegimeRaw ? bullConfirmCount : bearRegimeRaw ? bearConfirmCount : 0
+    float confPct = math.min(confCnt, i_confirmBars) / i_confirmBars
+    table.cell(dash, 1, 4, f_bar(math.min(confCnt, i_confirmBars), i_confirmBars) + "  ", text_color=f_barColor(confPct), bgcolor=row_b, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 5, "  Signal Gap", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_a, text_size=size.small, text_halign=text.align_left)
+    float gapPct = i_gapBars == 0 ? 1.0 : math.min(barsSinceSignal, i_gapBars) / i_gapBars
+    table.cell(dash, 1, 5, f_bar(math.min(barsSinceSignal, i_gapBars), math.max(i_gapBars, 1)) + "  ", text_color=f_barColor(gapPct), bgcolor=row_a, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 6, "  Last Signal", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_b, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 6, lastSignalSrc + "  ", text_color=c_dashValTxt, bgcolor=row_b, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 7, "  Trade Status", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_a, text_size=size.small, text_halign=text.align_left)
+    string tradeTxt = tradeActive ? (tradeIsLong ? "LONG ACTIVE" : "SHORT ACTIVE") : "FLAT"
+    color tradeClr = tradeActive ? (tradeIsLong ? c_bullCandle : c_bearCandle) : c_neutCandle
+    table.cell(dash, 1, 7, tradeTxt + "  ", text_color=tradeClr, bgcolor=row_a, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 8, "  ATR Value", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_b, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 8, str.tostring(atrVal, format.mintick) + "  ", text_color=c_dashValTxt, bgcolor=row_b, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 9, "  Last Price", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_a, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 9, str.tostring(close, format.mintick) + "  ", text_color=c_dashValTxt, bgcolor=row_a, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 10, "  TP3:SL Ratio", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_b, text_size=size.small, text_halign=text.align_left)
+    float rrRatio = i_slMult != 0 ? i_tp3Mult / i_slMult : 0.0
+    table.cell(dash, 1, 10, f_bar(rrRatio, 5.0) + "  ", text_color=f_barColor(math.min(rrRatio / 5.0, 1.0)), bgcolor=row_b, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 11, "  HTF Regime", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_a, text_size=size.small, text_halign=text.align_left)
+    string htfTxt = not i_useHtf ? "OFF" : htfRegimeState == 1 ? "BULLISH" : htfRegimeState == -1 ? "BEARISH" : "NEUTRAL"
+    color htfClr = not i_useHtf ? c_neutCandle : htfRegimeState == 1 ? c_bullCandle : htfRegimeState == -1 ? c_bearCandle : c_neutCandle
+    table.cell(dash, 1, 11, htfTxt + "  ", text_color=htfClr, bgcolor=row_a, text_size=size.small, text_halign=text.align_right)
+
+    table.cell(dash, 0, 12, "  Chop Filter", text_color=color.new(c_dashLabelTxt, 25), bgcolor=row_b, text_size=size.small, text_halign=text.align_left)
+    string chopTxt = not i_useAdx ? "OFF" : chopOk ? "PASS" : "BLOCKED"
+    color chopClr = not i_useAdx ? c_neutCandle : chopOk ? c_bullCandle : c_bearCandle
+    table.cell(dash, 1, 12, chopTxt + "  ", text_color=chopClr, bgcolor=row_b, text_size=size.small, text_halign=text.align_right)

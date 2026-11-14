@@ -1,0 +1,412 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Inducement Engine Liquidity Targets [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+// ─── Chart Guard: reject non-standard chart types ───
+if syminfo.type == "heikinashi" or syminfo.type == "renko" or syminfo.type == "linebreak" or syminfo.type == "kagi" or syminfo.type == "pointfigure"
+    runtime.error("Non-standard chart. Use standard candlesticks.")
+// ─── Input Group Labels ───
+string GRP_CORE  = "IDM Core"
+string GRP_ENTRY = "Entry & Risk"
+string GRP_FLT   = "Smart Filters"
+string GRP_VIS   = "Vis"
+string GRP_ALERT = "Alerts"
+string GRP_DASH  = "Dash"
+// ─── Core Inputs ───
+int   swing_len      = input.int(5,     "Swing Length",          minval=2,              group=GRP_CORE)
+int   atr_len        = input.int(14,     "ATR Length",            minval=1,              group=GRP_CORE)
+int   ind_max        = input.int(50,     "Max IDM Memory",        minval=10, maxval=200, group=GRP_CORE)
+// ─── Entry & Risk Inputs ───
+bool  use_atr_sl     = input.bool(true,  "ATR-Adaptive SL",                              group=GRP_ENTRY)
+float atr_sl_mult    = input.float(1.0,  "ATR SL Mult",           minval=0.1, step=0.1,  group=GRP_ENTRY)
+float rr_ratio       = input.float(1.0,  "TP1 R:R",               minval=0.5, step=0.1,  group=GRP_ENTRY)
+float rr_tp2         = input.float(2.0,  "TP2 Void Ext 1",        minval=1.0, step=0.5,  group=GRP_ENTRY)
+float rr_tp3         = input.float(3.0,  "TP3 Void Ext 2",        minval=1.5, step=0.5,  group=GRP_ENTRY)
+bool  show_tp_line   = input.bool(true,  "Show Target Lines",                             group=GRP_ENTRY)
+bool  show_sl_line   = input.bool(true,  "Show SL Line",                                  group=GRP_ENTRY)
+bool  show_entry_line= input.bool(true,  "Show Entry Line",                               group=GRP_ENTRY)
+// ─── Smart Filters Inputs ───
+bool   use_time_filter = input.bool(false,     "Session Time Filter",                   group=GRP_FLT)
+string sess_time       = input.session("0800-1700", "Trading Session",                  group=GRP_FLT)
+bool   use_htf_filter  = input.bool(false,     "HTF Trend Alignment",                   group=GRP_FLT)
+string htf_res         = input.timeframe("60", "HTF Timeframe",                         group=GRP_FLT)
+int    htf_ema_len     = input.int(20,         "HTF EMA Length",                        minval=1, group=GRP_FLT)
+bool   use_fvg_filter  = input.bool(false,     "FVG / Imbalance Confluence",            group=GRP_FLT)
+bool   use_rej_filter  = input.bool(false,     "Rejection Quality (Pinbar)",            group=GRP_FLT)
+bool   use_vol_filter  = input.bool(false,     "Volatility Chop Filter",                group=GRP_FLT)
+int    vol_len         = input.int(20,         "Volatility SMA Length",                 minval=1, group=GRP_FLT)
+// ─── Visual Inputs ───
+bool  show_idm_label = input.bool(true,  "Show IDM Label",                                group=GRP_VIS)
+bool  show_pending   = input.bool(true,  "Show Pending IDM",                              group=GRP_VIS)
+color col_bull       = input.color(color.rgb(30, 215, 96),                "Bull Color",         group=GRP_VIS)
+color col_bear       = input.color(color.rgb(255, 92, 51),                "Bear Color",         group=GRP_VIS)
+color col_ind_up     = input.color(color.rgb(30, 215, 96),                "IDM ↑ Color (Bull)", group=GRP_VIS)
+color col_ind_down   = input.color(color.rgb(255, 92, 51),                "IDM ↓ Color (Bear)", group=GRP_VIS)
+color col_entry_bull = input.color(color.new(color.rgb(30, 215, 96), 82), "Bull Entry Fill",    group=GRP_VIS)
+color col_entry_bear = input.color(color.new(color.rgb(255, 92, 51), 82), "Bear Entry Fill",    group=GRP_VIS)
+color col_tp         = input.color(color.new(color.rgb(0, 200, 255), 55), "TP Line Color",      group=GRP_VIS)
+color col_sl         = input.color(color.new(color.rgb(220, 40, 80),  55), "SL Line Color",     group=GRP_VIS)
+color col_text       = input.color(color.rgb(230, 235, 255),               "Text Color",        group=GRP_VIS)
+// ─── Alert & Webhook Action Strings ───
+string cfg_action_long        = input.string("long",       "Long Action",    group=GRP_ALERT, tooltip="")
+string cfg_action_short       = input.string("short",      "Short Action",   group=GRP_ALERT, tooltip="")
+string cfg_action_close_long  = input.string("closelong",  "Close Long",     group=GRP_ALERT, tooltip="")
+string cfg_action_close_short = input.string("closeshort", "Close Short",    group=GRP_ALERT, tooltip="")
+// ─── Dashboard Color Inputs ───
+color  dash_bg_color  = input.color(color.rgb(10,10,18,5),    "BG",   group=GRP_DASH)
+color  dash_txt_color = input.color(color.rgb(220,220,235,0), "Text", group=GRP_DASH)
+// ─── User-Defined Types ───
+type InducementPoint
+    int   index
+    float price
+    float candle_sl
+    bool  is_bull
+    bool  broken
+
+type SwingPoint
+    int   index
+    float price
+    bool  is_active
+
+type MarketStructure
+    int   trend
+    float last_high
+    float last_low
+
+type SignalState
+    string action
+    float  entry
+    float  sl
+    float  tp
+    float  tp2
+    float  tp3
+    bool   trigger
+
+// ─── Non-Repainting Pivot Utilities ───
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+
+// ─── Webhook JSON Payload Builder ───
+method gen_payload(SignalState this) =>
+    string inner = str.format(
+         '"ticker":"{0}","action":"{1}","entry":{2},"tp1":{3},"tp2":{4},"tp3":{5},"sl":{6},"tf":"{7}"',
+         syminfo.prefix + ':' + syminfo.ticker, this.action,
+         str.tostring(this.entry, format.mintick),
+         str.tostring(this.tp,    format.mintick),
+         str.tostring(this.tp2,   format.mintick),
+         str.tostring(this.tp3,   format.mintick),
+         str.tostring(this.sl,    format.mintick),
+         timeframe.period)
+    "{" + inner + "}"
+
+// ─── Persistent State & Drawing Object Variables ───
+var SwingPoint             last_ph       = SwingPoint.new(0, 0.0, false)
+var SwingPoint             last_pl       = SwingPoint.new(0, 0.0, false)
+var MarketStructure        ms            = MarketStructure.new(0, 0.0, 0.0)
+var SignalState            sig           = SignalState.new("", 0.0, 0.0, 0.0, 0.0, 0.0, false)
+var array<InducementPoint> ind_list      = array.new<InducementPoint>()
+var int   ind_bull_count  = 0
+var int   ind_bear_count  = 0
+var int   last_bull_bar   = -1
+var int   last_bear_bar   = -1
+var label pend_bull_lbl   = na
+var label pend_bear_lbl   = na
+var line  pend_bull_ln    = na
+var line  pend_bear_ln    = na
+var label idm_broken_lbl  = na
+var label tp_lbl          = na
+var label tp2_lbl         = na
+var label tp3_lbl         = na
+var label sl_lbl          = na
+var label entry_lbl       = na
+var line  tp_ln           = na
+var line  tp2_ln          = na
+var line  tp3_ln          = na
+var line  sl_ln           = na
+var line  entry_ln        = na
+var box   box_sl          = na
+var box   box_entry       = na
+var box   box_tp1         = na
+var box   box_tp2         = na
+var box   box_tp3         = na
+// ─── Dashboard Table Declaration (top-right, 2 cols × 11 rows) ───
+var table dash = table.new(position.top_right, 2, 11,
+     border_width=1, border_color=color.rgb(50,50,70,20),
+     frame_width=1,  frame_color=color.rgb(60,60,90,10))
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+
+// ─── Filter Calculations (Evaluated on [1] closed trigger bar) ───
+bool  is_sess = not na(time(timeframe.period, sess_time))
+bool  f_time  = use_time_filter ? is_sess : true
+
+float htf_ema = request.security(syminfo.tickerid, htf_res, ta.ema(close, htf_ema_len)[1], lookahead=barmerge.lookahead_on)
+bool  f_htf_l = use_htf_filter ? close[1] > htf_ema : true
+bool  f_htf_s = use_htf_filter ? close[1] < htf_ema : true
+
+float atr_val = ta.atr(atr_len)
+float atr_sma = ta.sma(atr_val, vol_len)
+bool  f_vol   = use_vol_filter ? atr_val > atr_sma : true
+
+bool  f_rej_l = use_rej_filter ? close[1] > low[1]  + (high[1] - low[1]) * 0.5 : true
+bool  f_rej_s = use_rej_filter ? close[1] < high[1] - (high[1] - low[1]) * 0.5 : true
+
+bool  fvg_bull = low[1] > high[3]
+bool  fvg_bear = high[1] < low[3]
+bool  f_fvg_l  = use_fvg_filter ? ta.highest(fvg_bull ? 1 : 0, 3) > 0 : true
+bool  f_fvg_s  = use_fvg_filter ? ta.highest(fvg_bear ? 1 : 0, 3) > 0 : true
+
+// ─── Per-Bar Calculations: Confirmed Pivots ───
+float ph = f_pivotHigh(high, swing_len)
+float pl = f_pivotLow(low,  swing_len)
+// ─── Swing Point Tracking & Market Structure Update ───
+if not na(ph)
+    last_ph.index     := bar_index[swing_len]
+    last_ph.price     := ph
+    last_ph.is_active := true
+    if ph > ms.last_high
+        ms.last_high := ph
+if not na(pl)
+    last_pl.index     := bar_index[swing_len]
+    last_pl.price     := pl
+    last_pl.is_active := true
+    if pl < ms.last_low or ms.last_low == 0.0
+        ms.last_low := pl
+// ─── Initial Trend Bias Seeding ───
+if ms.trend == 0 and ms.last_high != 0.0 and ms.last_low != 0.0
+    ms.trend := 1
+// ─── Inducement Point Registration ───
+if ms.trend != 0 and not na(ph)
+    if ph < ms.last_high and ph > ms.last_low
+        array.push(ind_list, InducementPoint.new(bar_index[swing_len], ph, high[swing_len], true, false))
+        label.delete(pend_bull_lbl)
+        line.delete(pend_bull_ln)
+        if show_pending
+            pend_bull_lbl := label.new(bar_index[swing_len], ph, "IDM", color=color.new(col_bull, 72), textcolor=col_bull, style=label.style_label_down, size=size.small)
+            pend_bull_ln  := line.new(bar_index[swing_len], ph, bar_index + 1, ph, color=color.new(col_bull, 50), style=line.style_dotted, width=1)
+if ms.trend != 0 and not na(pl)
+    if pl > ms.last_low and pl < ms.last_high
+        array.push(ind_list, InducementPoint.new(bar_index[swing_len], pl, low[swing_len], false, false))
+        label.delete(pend_bear_lbl)
+        line.delete(pend_bear_ln)
+        if show_pending
+            pend_bear_lbl := label.new(bar_index[swing_len], pl, "IDM", color=color.new(col_bear, 72), textcolor=col_bear, style=label.style_label_up, size=size.small)
+            pend_bear_ln  := line.new(bar_index[swing_len], pl, bar_index + 1, pl, color=color.new(col_bear, 50), style=line.style_dotted, width=1)
+// ─── Array Memory Cap & Pending Line Extension ───
+if array.size(ind_list) > ind_max
+    array.shift(ind_list)
+if not na(pend_bull_ln)
+    line.set_x2(pend_bull_ln, bar_index + 1)
+if not na(pend_bear_ln)
+    line.set_x2(pend_bear_ln, bar_index + 1)
+// ─── IDM Sweep Detection Loop ───
+bool  ind_bull_broken = false
+bool  ind_bear_broken = false
+int   ind_broken_idx  = 0
+float ind_bull_sl     = 0.0
+float ind_bear_sl     = 0.0
+int _ind_sz = array.size(ind_list)
+if _ind_sz > 0
+    for i = 0 to _ind_sz - 1
+        InducementPoint ip = array.get(ind_list, i)
+        if not ip.broken
+            if ip.is_bull and low[1] < ip.price
+                ip.broken       := true
+                ind_bull_broken := true
+                ind_broken_idx  := ip.index
+                ind_bull_sl     := ip.candle_sl
+                ind_bull_count  := ind_bull_count + 1
+                last_bull_bar   := bar_index
+                array.set(ind_list, i, ip)
+                label.delete(pend_bull_lbl)
+                line.delete(pend_bull_ln)
+                pend_bull_lbl := na
+                pend_bull_ln  := na
+                if show_idm_label
+                    label.delete(idm_broken_lbl)
+                    idm_broken_lbl := label.new(ip.index, ip.price, "IDM ↓", color=color.new(col_ind_down, 100), textcolor=col_ind_down, style=label.style_label_down, size=size.normal)
+            else if not ip.is_bull and high[1] > ip.price
+                ip.broken       := true
+                ind_bear_broken := true
+                ind_broken_idx  := ip.index
+                ind_bear_sl     := ip.candle_sl
+                ind_bear_count  := ind_bear_count + 1
+                last_bear_bar   := bar_index
+                array.set(ind_list, i, ip)
+                label.delete(pend_bear_lbl)
+                line.delete(pend_bear_ln)
+                pend_bear_lbl := na
+                pend_bear_ln  := na
+                if show_idm_label
+                    label.delete(idm_broken_lbl)
+                    idm_broken_lbl := label.new(ip.index, ip.price, "IDM ↑", color=color.new(col_ind_up, 100), textcolor=col_ind_up, style=label.style_label_up, size=size.normal)
+// ─── Signal Derivation: Filter Application & TP Levels ───
+bool  short_signal = ind_bull_broken and f_time and f_htf_s and f_vol and f_rej_s and f_fvg_s
+bool  long_signal  = ind_bear_broken and f_time and f_htf_l and f_vol and f_rej_l and f_fvg_l
+float entry_price  = close[1]
+
+float raw_sl_short = use_atr_sl ? ind_bull_sl + (atr_val * atr_sl_mult) : ind_bull_sl
+float raw_sl_long  = use_atr_sl ? ind_bear_sl - (atr_val * atr_sl_mult) : ind_bear_sl
+float sl_short     = math.max(raw_sl_short, entry_price + syminfo.mintick)
+float sl_long      = math.min(raw_sl_long,  entry_price - syminfo.mintick)
+
+float risk_short   = sl_short - entry_price
+float risk_long    = entry_price - sl_long
+float tp_short     = entry_price - (risk_short * rr_ratio)
+float tp_long      = entry_price + (risk_long  * rr_ratio)
+float tp2_short    = tp_short - (risk_short * (rr_tp2 - rr_ratio))
+float tp3_short    = tp_short - (risk_short * (rr_tp3 - rr_ratio))
+float tp2_long     = tp_long  + (risk_long  * (rr_tp2 - rr_ratio))
+float tp3_long     = tp_long  + (risk_long  * (rr_tp3 - rr_ratio))
+int   lbl_offset   = 40
+sig.trigger := false
+// ─── Short Signal: Drawing & State Update ───
+if short_signal and risk_short > 0
+    line.delete(tp_ln)
+    line.delete(tp2_ln)
+    line.delete(tp3_ln)
+    line.delete(sl_ln)
+    line.delete(entry_ln)
+    label.delete(tp_lbl)
+    label.delete(tp2_lbl)
+    label.delete(tp3_lbl)
+    label.delete(sl_lbl)
+    label.delete(entry_lbl)
+    box.delete(box_sl)
+    box.delete(box_entry)
+    box.delete(box_tp1)
+    box.delete(box_tp2)
+    box.delete(box_tp3)
+    int draw_left = math.max(ind_broken_idx, bar_index - 499)
+    box_sl    := box.new(draw_left, sl_short,    bar_index + lbl_offset, entry_price, bgcolor=color.new(col_sl,  68), border_color=color.new(color.black, 100))
+    box_entry := box.new(draw_left, entry_price, bar_index + lbl_offset, entry_price, bgcolor=color.new(color.black, 100), border_color=color.new(color.black, 100))
+    box_tp1   := box.new(draw_left, tp_short,    bar_index + lbl_offset, entry_price, bgcolor=color.new(col_tp,  68), border_color=color.new(color.black, 100))
+    box_tp2   := box.new(draw_left, tp2_short,   bar_index + lbl_offset, tp_short,    bgcolor=color.new(col_tp,  82), border_color=color.new(color.black, 100))
+    box_tp3   := box.new(draw_left, tp3_short,   bar_index + lbl_offset, tp2_short,   bgcolor=color.new(col_tp,  93), border_color=color.new(color.black, 100))
+    if show_entry_line
+        entry_ln  := line.new(draw_left, entry_price, bar_index + lbl_offset, entry_price, color=col_bear, style=line.style_solid, width=1)
+        entry_lbl := label.new(bar_index + lbl_offset, entry_price, "Entry " + str.tostring(entry_price, format.mintick), color=color.new(col_bear, 78), textcolor=col_text, style=label.style_label_left, size=size.small)
+    if show_tp_line
+        tp_ln   := line.new(draw_left, tp_short,  bar_index + lbl_offset, tp_short,  color=col_tp, style=line.style_dashed, width=1)
+        tp_lbl  := label.new(bar_index + lbl_offset, tp_short,  "TP1 " + str.tostring(tp_short,  format.mintick), color=color.new(col_tp, 78), textcolor=col_text, style=label.style_label_left, size=size.small)
+        tp2_ln  := line.new(draw_left, tp2_short, bar_index + lbl_offset, tp2_short, color=color.new(col_tp, 38), style=line.style_dotted, width=1)
+        tp2_lbl := label.new(bar_index + lbl_offset, tp2_short, "TP2 " + str.tostring(tp2_short, format.mintick), color=color.new(col_tp, 83), textcolor=color.new(col_text, 10), style=label.style_label_left, size=size.small)
+        tp3_ln  := line.new(draw_left, tp3_short, bar_index + lbl_offset, tp3_short, color=color.new(col_tp, 58), style=line.style_dotted, width=1)
+        tp3_lbl := label.new(bar_index + lbl_offset, tp3_short, "TP3 " + str.tostring(tp3_short, format.mintick), color=color.new(col_tp, 88), textcolor=color.new(col_text, 20), style=label.style_label_left, size=size.small)
+    if show_sl_line
+        sl_ln  := line.new(draw_left, sl_short, bar_index + lbl_offset, sl_short, color=col_sl, style=line.style_dashed, width=1)
+        sl_lbl := label.new(bar_index + lbl_offset, sl_short, "SL " + str.tostring(sl_short, format.mintick), color=color.new(col_sl, 78), textcolor=col_text, style=label.style_label_left, size=size.small)
+    ms.trend     := -1
+    ms.last_high := last_ph.price
+    sig.action   := cfg_action_short
+    sig.entry    := entry_price
+    sig.sl       := sl_short
+    sig.tp       := tp_short
+    sig.tp2      := tp2_short
+    sig.tp3      := tp3_short
+    sig.trigger  := true
+// ─── Long Signal: Drawing & State Update ───
+if long_signal and risk_long > 0
+    line.delete(tp_ln)
+    line.delete(tp2_ln)
+    line.delete(tp3_ln)
+    line.delete(sl_ln)
+    line.delete(entry_ln)
+    label.delete(tp_lbl)
+    label.delete(tp2_lbl)
+    label.delete(tp3_lbl)
+    label.delete(sl_lbl)
+    label.delete(entry_lbl)
+    box.delete(box_sl)
+    box.delete(box_entry)
+    box.delete(box_tp1)
+    box.delete(box_tp2)
+    box.delete(box_tp3)
+    int draw_left2 = math.max(ind_broken_idx, bar_index - 499)
+    box_sl    := box.new(draw_left2, entry_price, bar_index + lbl_offset, sl_long,     bgcolor=color.new(col_sl,  68), border_color=color.new(color.black, 100))
+    box_entry := box.new(draw_left2, entry_price, bar_index + lbl_offset, entry_price, bgcolor=color.new(color.black, 100), border_color=color.new(color.black, 100))
+    box_tp1   := box.new(draw_left2, entry_price, bar_index + lbl_offset, tp_long,     bgcolor=color.new(col_tp,  58), border_color=color.new(color.black, 100))
+    box_tp2   := box.new(draw_left2, tp_long,     bar_index + lbl_offset, tp2_long,    bgcolor=color.new(col_tp,  70), border_color=color.new(color.black, 100))
+    box_tp3   := box.new(draw_left2, tp2_long,    bar_index + lbl_offset, tp3_long,    bgcolor=color.new(col_tp,  80), border_color=color.new(color.black, 100))
+    if show_entry_line
+        entry_ln  := line.new(draw_left2, entry_price, bar_index + lbl_offset, entry_price, color=col_bull, style=line.style_solid, width=1)
+        entry_lbl := label.new(bar_index + lbl_offset, entry_price, "Entry " + str.tostring(entry_price, format.mintick), color=color.new(col_bull, 78), textcolor=col_text, style=label.style_label_left, size=size.small)
+    if show_tp_line
+        tp_ln   := line.new(draw_left2, tp_long,  bar_index + lbl_offset, tp_long,  color=col_tp, style=line.style_dashed, width=1)
+        tp_lbl  := label.new(bar_index + lbl_offset, tp_long,  "TP1 " + str.tostring(tp_long,  format.mintick), color=color.new(col_tp, 78), textcolor=col_text, style=label.style_label_left, size=size.small)
+        tp2_ln  := line.new(draw_left2, tp2_long, bar_index + lbl_offset, tp2_long, color=color.new(col_tp, 38), style=line.style_dotted, width=1)
+        tp2_lbl := label.new(bar_index + lbl_offset, tp2_long, "TP2 " + str.tostring(tp2_long, format.mintick), color=color.new(col_tp, 83), textcolor=color.new(col_text, 10), style=label.style_label_left, size=size.small)
+        tp3_ln  := line.new(draw_left2, tp3_long, bar_index + lbl_offset, tp3_long, color=color.new(col_tp, 58), style=line.style_dotted, width=1)
+        tp3_lbl := label.new(bar_index + lbl_offset, tp3_long, "TP3 " + str.tostring(tp3_long, format.mintick), color=color.new(col_tp, 88), textcolor=color.new(col_text, 20), style=label.style_label_left, size=size.small)
+    if show_sl_line
+        sl_ln  := line.new(draw_left2, sl_long, bar_index + lbl_offset, sl_long, color=col_sl, style=line.style_dashed, width=1)
+        sl_lbl := label.new(bar_index + lbl_offset, sl_long, "SL " + str.tostring(sl_long, format.mintick), color=color.new(col_sl, 78), textcolor=col_text, style=label.style_label_left, size=size.small)
+    ms.trend    := 1
+    ms.last_low := last_pl.price
+    sig.action  := cfg_action_long
+    sig.entry   := entry_price
+    sig.sl      := sl_long
+    sig.tp      := tp_long
+    sig.tp2     := tp2_long
+    sig.tp3     := tp3_long
+    sig.trigger := true
+// ─── Alert Dispatch (confirmed bar only) ───
+if sig.trigger and barstate.isconfirmed
+    alert(sig.gen_payload(), alert.freq_once_per_bar_close)
+// ─── Dashboard Live Data Preparation ───
+float pending_count   = array.size(ind_list) > 0 ? float(array.size(ind_list)) : 0.0
+float bars_since_bull = last_bull_bar >= 0 ? float(bar_index - last_bull_bar) : na
+float bars_since_bear = last_bear_bar >= 0 ? float(bar_index - last_bear_bar) : na
+string dash_trend_val   = ms.trend == 1 ? '▲ Bullish' : ms.trend == -1 ? '▼ Bearish' : '○ Neutral'
+color  dash_trend_col   = ms.trend == 1 ? color.rgb(30,215,96) : ms.trend == -1 ? color.rgb(255,92,51) : color.rgb(140,140,140)
+string dash_last_val    = sig.action == cfg_action_long ? '▲ Long IDM' : sig.action == cfg_action_short ? '▼ Short IDM' : '○ None'
+color  dash_last_col    = sig.action == cfg_action_long ? color.rgb(30,215,96) : sig.action == cfg_action_short ? color.rgb(255,92,51) : color.rgb(140,140,140)
+string dash_entry_val   = sig.entry != 0.0 ? str.tostring(sig.entry, format.mintick) : '—'
+string dash_tp_val      = sig.tp    != 0.0 ? str.tostring(sig.tp,    format.mintick) : '—'
+string dash_tp2_val     = sig.tp2   != 0.0 ? str.tostring(sig.tp2,   format.mintick) : '—'
+string dash_tp3_val     = sig.tp3   != 0.0 ? str.tostring(sig.tp3,   format.mintick) : '—'
+string dash_sl_val      = sig.sl    != 0.0 ? str.tostring(sig.sl,    format.mintick) : '—'
+string dash_bull_bar    = not na(bars_since_bull) ? '⏳ ' + str.tostring(math.round(bars_since_bull)) + ' Bars' : '—'
+string dash_bear_bar    = not na(bars_since_bear) ? '⏳ ' + str.tostring(math.round(bars_since_bear)) + ' Bars' : '—'
+string dash_pending     = str.tostring(math.round(pending_count)) + ' Active'
+color  dash_pending_col = pending_count > 5 ? color.rgb(255,92,51) : pending_count > 2 ? color.rgb(255,200,0) : color.rgb(30,215,96)
+// ─── Dashboard Table Rendering ───
+color hdr_bg = color.rgb(18, 22, 38, 8)
+color alt_bg = color.rgb(14, 17, 28, 8)
+color odd_bg = dash_bg_color
+table.cell(dash, 0, 0,  '  IDM Pro',                              bgcolor=hdr_bg, text_color=color.rgb(0,200,255,15),   text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 0,  clean_ticker + ' · ' + timeframe.period, bgcolor=hdr_bg, text_color=color.rgb(160,175,220),    text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 1,  '  Bias',                                  bgcolor=alt_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 1,  dash_trend_val,                            bgcolor=alt_bg, text_color=dash_trend_col,            text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 2,  '  Last IDM',                              bgcolor=odd_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 2,  dash_last_val,                             bgcolor=odd_bg, text_color=dash_last_col,             text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 3,  '  Entry',                                 bgcolor=alt_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 3,  dash_entry_val,                            bgcolor=alt_bg, text_color=color.rgb(255,210,60),     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 4,  '  TP1',                                   bgcolor=odd_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 4,  dash_tp_val,                               bgcolor=odd_bg, text_color=color.rgb(0,200,255),      text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 5,  '  TP2 (Void Ext 1)',                      bgcolor=alt_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 5,  dash_tp2_val,                              bgcolor=alt_bg, text_color=color.rgb(0,200,255, 18),  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 6,  '  TP3 (Void Ext 2)',                      bgcolor=odd_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 6,  dash_tp3_val,                              bgcolor=odd_bg, text_color=color.rgb(0,200,255, 35),  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 7,  '  SL',                                    bgcolor=alt_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 7,  dash_sl_val,                               bgcolor=alt_bg, text_color=color.rgb(220,40,80),      text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 8,  '  Bull IDM Since',                        bgcolor=odd_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 8,  dash_bull_bar,                             bgcolor=odd_bg, text_color=color.rgb(100,200,255),    text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 9,  '  Bear IDM Since',                        bgcolor=alt_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 9,  dash_bear_bar,                             bgcolor=alt_bg, text_color=color.rgb(100,200,255),    text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 0, 10, '  Pending IDM',                           bgcolor=odd_bg, text_color=dash_txt_color,            text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 10, dash_pending,                              bgcolor=odd_bg, text_color=dash_pending_col,          text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)

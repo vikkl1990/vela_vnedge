@@ -1,0 +1,231 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © [MarkitTick]
+
+//@version=6
+indicator("Smart Gap Concepts [MarkitTick]", overlay = true, max_boxes_count = 500, max_lines_count = 500)
+
+// -----------------------------------------------------------------------------
+// --- Configuration & Inputs ---
+// -----------------------------------------------------------------------------
+
+// Group: Logic & Filters
+string G_LOGIC      = 'Algorithmic Filters'
+float  I_MIN_GAP    = input.float(0.0, 'Min Gap Size (Points)', minval = 0.0, group = G_LOGIC)
+int    I_PIVOT_L    = input.int(5, 'Structure Lookback Left', minval = 1, group = G_LOGIC)
+int    I_PIVOT_R    = input.int(5, 'Structure Lookback Right', minval = 1, group = G_LOGIC)
+int    I_VOL_LEN    = input.int(20, 'Volume Avg Length', minval = 1, group = G_LOGIC)
+float  I_VOL_MULT   = input.float(1.5, 'Volume Spike Multiplier', minval = 1.0, group = G_LOGIC)
+int    I_TREND_MAT  = input.int(20, 'Trend Maturity (Bars)', minval = 5, group = G_LOGIC, tooltip = "Minimum bars since the last pivot start to consider a gap as 'Exhaustion'.")
+
+// Group: Multi-Timeframe Settings
+string G_MTF        = 'Multi-Timeframe'
+bool   I_HTF_ON     = input.bool(false, 'Enable Higher Timeframe Gaps', group = G_MTF)
+string I_HTF_TF     = input.timeframe('D', 'Higher Timeframe', group = G_MTF)
+color  I_HTF_TXT_C  = input.color(color.yellow, 'HTF Label Color', group = G_MTF)
+
+// Group: Visual Settings (FVG Types)
+string G_VISUAL     = 'Gap Visualization Colors'
+color C_BREAKAWAY   = input.color(color.new(color.blue, 75), 'Breakaway Gap (Start)', group = G_VISUAL)
+color C_RUNAWAY     = input.color(color.new(color.orange, 75), 'Runaway Gap (Middle)', group = G_VISUAL)
+color C_EXHAUSTION  = input.color(color.new(color.red, 75), 'Exhaustion Gap (End)', group = G_VISUAL)
+int   I_EXTEND      = input.int(10, 'Box Extension (Bars)', minval = 1, group = G_VISUAL)
+
+// -----------------------------------------------------------------------------
+// --- Type Definitions (OOP Architecture) ---
+// -----------------------------------------------------------------------------
+
+type StructureEngine
+    float lastPivotHigh
+    float lastPivotLow
+    int   lastPivotHighIdx
+    int   lastPivotLowIdx
+    int   leftLen
+    int   rightLen
+
+type Gapmetrics
+    bool  isValid
+    bool  isBullish
+    float top
+    float bottom
+    string gapType
+    int   t_start 
+    int   t_end  
+
+// -----------------------------------------------------------------------------
+// --- Methods ---
+// -----------------------------------------------------------------------------
+
+method update(StructureEngine eng) =>
+    float ph = ta.pivothigh(high, eng.leftLen, eng.rightLen)
+    float pl = ta.pivotlow(low, eng.leftLen, eng.rightLen)
+    
+    if not na(ph)
+        eng.lastPivotHigh := ph
+        eng.lastPivotHighIdx := bar_index - eng.rightLen
+        
+    if not na(pl)
+        eng.lastPivotLow := pl
+        eng.lastPivotLowIdx := bar_index - eng.rightLen
+
+method analyzeGap(StructureEngine eng, float volAvg, float volMult, int maturityThreshold) =>
+    Gapmetrics result = Gapmetrics.new(false, false, na, na, "Standard", time[2], time)
+    
+    bool bullGap = low > high[2] and close[1] > open[1]
+    bool bearGap = high < low[2] and close[1] < open[1]
+    
+    float gapSize = 0.0
+    
+    if bullGap
+        gapSize := low - high[2]
+        result.isValid := true
+        result.isBullish := true
+        result.top := low
+        result.bottom := high[2]
+    else if bearGap
+        gapSize := low[2] - high
+        result.isValid := true
+        result.isBullish := false
+        result.top := low[2]
+        result.bottom := high
+        
+    if result.isValid and gapSize >= I_MIN_GAP
+        bool isBreakout = false
+        if result.isBullish and not na(eng.lastPivotHigh)
+            isBreakout := close[1] > eng.lastPivotHigh and close[2] <= eng.lastPivotHigh
+        else if not result.isBullish and not na(eng.lastPivotLow)
+            isBreakout := close[1] < eng.lastPivotLow and close[2] >= eng.lastPivotLow
+
+        bool isHighVolume = volume[1] > (volAvg * volMult)
+        int trendDuration = 0
+        
+        if result.isBullish
+            if not na(eng.lastPivotLowIdx)
+                trendDuration := bar_index - eng.lastPivotLowIdx
+        else
+            if not na(eng.lastPivotHighIdx)
+                trendDuration := bar_index - eng.lastPivotHighIdx
+        
+        bool isExtended = trendDuration > maturityThreshold
+        bool isExhaustionSig = isHighVolume and isExtended
+
+        if isBreakout
+            result.gapType := "Breakaway"
+        else if isExhaustionSig
+            result.gapType := "Exhaustion"
+        else 
+            result.gapType := "Runaway"
+            
+    else
+        result.isValid := false
+        
+    result
+
+// -----------------------------------------------------------------------------
+// --- Encapsulated Logic Function ---
+// -----------------------------------------------------------------------------
+
+f_calculateGapLogic(int pLeft, int pRight, int vLen, float vMult, int tMat, float minGap) =>
+    var StructureEngine localEngine = StructureEngine.new(na, na, na, na, pLeft, pRight)
+    localEngine.update()
+    
+    float volMA = ta.sma(volume, vLen)
+    Gapmetrics g = localEngine.analyzeGap(volMA, vMult, tMat)
+    
+    if g.isValid and (g.top - g.bottom) < minGap 
+        g.isValid := false
+        
+    g
+
+// -----------------------------------------------------------------------------
+// --- State Management ---
+// -----------------------------------------------------------------------------
+
+var array<box>   activeBoxes     = array.new<box>()
+var array<line>  activeLines     = array.new<line>()
+var array<float> activeLevels    = array.new<float>()
+var array<bool>  activeIsBullish = array.new<bool>()
+var int          lastHTFTime     = 0 
+
+// -----------------------------------------------------------------------------
+// --- Calculation Logic (Current TF) ---
+// -----------------------------------------------------------------------------
+
+Gapmetrics currentGap = f_calculateGapLogic(I_PIVOT_L, I_PIVOT_R, I_VOL_LEN, I_VOL_MULT, I_TREND_MAT, I_MIN_GAP)
+
+// -----------------------------------------------------------------------------
+// --- Calculation Logic (Higher TF) ---
+// -----------------------------------------------------------------------------
+
+Gapmetrics htfGap = Gapmetrics.new(false, false, na, na, "", 0, 0)
+
+if I_HTF_ON
+    htfGap := request.security(syminfo.tickerid, I_HTF_TF, f_calculateGapLogic(I_PIVOT_L, I_PIVOT_R, I_VOL_LEN, I_VOL_MULT, I_TREND_MAT, I_MIN_GAP))
+
+// -----------------------------------------------------------------------------
+// --- Visualization Engine ---
+// -----------------------------------------------------------------------------
+
+f_drawGap(Gapmetrics g, int extPixels, string tag, color textColor, string tSize) =>
+    color boxColor = na
+    string txt = na
+    
+    if g.gapType == "Breakaway"
+        boxColor := C_BREAKAWAY
+        txt := "BREAKAWAY"
+    else if g.gapType == "Runaway"
+        boxColor := C_RUNAWAY
+        txt := "RUNAWAY"
+    else if g.gapType == "Exhaustion"
+        boxColor := C_EXHAUSTION
+        txt := "EXHAUSTION"
+    
+    txt := txt + tag
+        
+    int extensionTime = int(extPixels * timeframe.in_seconds(timeframe.period) * 1000)
+    
+    box b = box.new(left = g.t_start, top = g.top, bottom = g.bottom, right = time + extensionTime,
+         xloc = xloc.bar_time,
+         bgcolor = boxColor, 
+         border_color = na, 
+         text = txt, text_color = textColor, text_size = tSize)
+         
+    float mid = math.avg(g.top, g.bottom)
+    line l = line.new(x1 = g.t_start, y1 = mid, x2 = time + extensionTime, y2 = mid,
+         xloc = xloc.bar_time,
+         color = color.new(boxColor, 20), style = line.style_dotted)
+         
+    array.push(activeBoxes, b)
+    array.push(activeLines, l)
+    array.push(activeLevels, mid)
+    array.push(activeIsBullish, g.isBullish)
+
+if currentGap.isValid
+    f_drawGap(currentGap, I_EXTEND, "", color.white, size.small)
+
+if I_HTF_ON and htfGap.isValid and htfGap.t_start != lastHTFTime
+    f_drawGap(htfGap, I_EXTEND, " [HTF]", I_HTF_TXT_C, size.normal)
+    lastHTFTime := htfGap.t_start
+
+// -----------------------------------------------------------------------------
+// --- Garbage Collection ---
+// -----------------------------------------------------------------------------
+
+if array.size(activeBoxes) > 0
+    for i = array.size(activeBoxes) - 1 to 0
+        float level = array.get(activeLevels, i)
+        bool isBull = array.get(activeIsBullish, i)
+        bool remove = false
+        
+        if isBull and low <= level
+            remove := true
+        else if not isBull and high >= level
+            remove := true
+            
+        if remove
+            box.delete(array.get(activeBoxes, i))
+            line.delete(array.get(activeLines, i))
+            array.remove(activeBoxes, i)
+            array.remove(activeLines, i)
+            array.remove(activeLevels, i)
+            array.remove(activeIsBullish, i)

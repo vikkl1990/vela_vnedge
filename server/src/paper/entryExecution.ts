@@ -1,6 +1,6 @@
 import type { Db } from '../db.ts';
 import type { PaperConfig } from '../config.ts';
-import type { Position } from './logic.ts';
+import type { Position,Fill } from './logic.ts';
 import { commissionRatePct } from './costs.ts';
 
 /** Detached book actually used by the pricing pass, not the later diagnostic REST read. */
@@ -19,6 +19,19 @@ export interface EntryAdmissionDepth {
  bids:Array<{price:number;size:number}>; asks:Array<{price:number;size:number}>;
 }
 export interface EntryFillEvidence {depth?:EntryDepthSnapshot;admissionDepth?:EntryAdmissionDepth;limit?:LimitFillObservation}
+
+/** Basket legs use the same observed evidence fields as ordinary entry audits,
+ * stored with the leg ledger so they cannot overwrite the first-entry record. */
+export function entryFillAudit(p:Position,f:Fill,cfg:PaperConfig,source:string|undefined,reference:number|undefined,evidence:EntryFillEvidence,
+ q?:{bestBid:number|null;bestAsk:number|null;quoteAt?:number|null;quoteExchangeAt?:number|null}){
+ const bid=q?.bestBid??null,ask=q?.bestAsk??null,notional=f.price*f.qty*p.contractValue;
+ return {version:1,positionId:p.id,orderId:f.orderId,planEventId:f.planEventId??null,at:f.at,qty:f.qty,price:f.price,
+  contractValue:p.contractValue,notional,entryFee:f.fee,expectedExitFee:notional*commissionRatePct(cfg)/100,
+  exitFeeBasis:'standard taker plus configured tax; no offer assumed',role:f.liquidity??'unknown',source:source??null,reference:reference??null,
+  bid,ask,quoteAt:q?.quoteAt??null,quoteExchangeAt:q?.quoteExchangeAt??null,
+  spreadBps:bid&&ask&&ask>=bid?(ask-bid)/((ask+bid)/2)*10000:null,
+  depth:evidence.depth??null,admissionDepth:evidence.admissionDepth??null,limit:evidence.limit??null};
+}
 
 export function initEntryExecution(db: Db) {
   db.run(`CREATE TABLE IF NOT EXISTS entry_execution (

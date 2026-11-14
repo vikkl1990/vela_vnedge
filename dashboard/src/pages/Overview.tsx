@@ -64,7 +64,7 @@ export function Overview() {
   return (
     <div className="page overview-page">
       <PageHeader
-        title="Overview"
+        title="Operations"
         subtitle={scanners.data ? `Paper account on Delta India data; fills and P&L are simulated. ${visibleScanners} scripts in the library, ${(scanners.data ?? []).filter((x) => x.enabled).length} enabled on the account. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'}
         meta={health.data ? <BookBadge book="account" mode={health.data.mode} /> : undefined}
         actions={<Link to="/trades" className="btn btn-sm">Trade journal →</Link>}

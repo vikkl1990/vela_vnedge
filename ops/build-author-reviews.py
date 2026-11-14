@@ -11,7 +11,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from author_review_records import load_records
+from author_review_records import load_records, write_catalog_atomic
 
 
 def build(args):
@@ -88,7 +88,7 @@ def build(args):
         sourceStudy=dict(revision=revision, path='docs/research/script-study-2026-11-12/contracts.jsonl',
             limitation='Prior line-by-line study, not a fresh independent audit. Original verdicts and unchecked/refuted claims are not runtime approvals.'),
         scripts=scripts, sources=sources, publications=publications)
-    (repo / 'scripts/author-reviews.json').write_text(json.dumps(catalog, ensure_ascii=False, separators=(',', ':')) + '\n')
+    write_catalog_atomic(repo / 'scripts/author-reviews.json', catalog)
     counts = collections.Counter()
     for m in manifest:
         c = sources.get(m['file'])

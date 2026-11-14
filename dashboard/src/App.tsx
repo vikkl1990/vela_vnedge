@@ -2,10 +2,10 @@ import { lazy, type ComponentType, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthGate, useAuth } from './auth/AuthGate'
 import { Layout } from './components/Layout'
-import { Overview } from './pages/Overview'
+import { Terminal } from './pages/Terminal'
 
 /**
- * Every page except the landing one loads on first visit, so the first paint ships the shell and Overview instead of
+ * Every page except the landing one (the trading workspace) loads on first visit, so the first paint ships the shell and the workspace instead of
  * the chart engine, the Pine runtime and twenty pages nobody opened. The Layout wraps the outlet in <Suspense>.
  */
 function page<M extends Record<string, unknown>>(load: () => Promise<M>, name: keyof M & string) {
@@ -18,6 +18,7 @@ const Profile = pageDefault(() => import('./pages/Profile'))
 const Users = pageDefault(() => import('./pages/Users'))
 const Incubator = pageDefault(() => import('./pages/Incubator'))
 const Radar = pageDefault(() => import('./pages/Radar'))
+const Overview = page(() => import('./pages/Overview'), 'Overview')
 const Decisions = page(() => import('./pages/Decisions'), 'Decisions')
 const ChartPage = page(() => import('./pages/ChartPage'), 'ChartPage')
 const Analytics = page(() => import('./pages/Analytics'), 'Analytics')
@@ -42,7 +43,8 @@ export default function App() {
       <AuthGate>
       <Routes>
         <Route element={<Layout />}>
-          <Route index element={<Overview />} />
+          <Route index element={<Terminal />} />
+          <Route path="overview" element={<Overview />} />
           <Route path="scanners" element={<Scanners />} />
           <Route path="scanners/:id" element={<ScannerDetail />} />
           <Route path="signals" element={<Signals />} />
