@@ -16,7 +16,7 @@ export function PolicyHealthStatus() {
     <b>Evidence quality</b> · {quarantined} historical trades quarantined from evidence in the last {d.windowDays} days.
     <span className={d.boundExits.failures ? 'loss' : 'muted'}> {d.boundExits.failures} held positions with archived-exit errors.</span>
     {(health.data?.attention ?? []).map(item => <span key={item.key} className="loss"> {item.text} · <Link to={item.href}>Inspect</Link></span>)}
-    <span className="muted"> Policy versions and reserved margin are in the evidence section below.</span>
+    <span className="muted"> Policy versions and reserved margin: <Link to="/incubator?section=operations#incubator-evidence">evidence details</Link>.</span>
   </div>
 }
 

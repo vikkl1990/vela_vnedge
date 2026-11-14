@@ -1,8 +1,11 @@
+import { ResearchSections } from '../components/ResearchSections'
+import { choice, sectionFromUrl } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
 import { Disclosure } from '../components/Disclosure'
 import {ScannerContributions} from '../components/ScannerContributions'
 import {ScannerReadinessMatrix} from '../components/ScannerReadinessMatrix'
 import { useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -23,7 +26,9 @@ const EXIT_MODES: ExitMode[] = ['levels', 'script', 'both']
 export function Scanners() {
   const scanners = useScanners()
   const auth = useAuth()
-  const [activity, setActivity] = useState('all')
+  const { params, set, hash } = useResearchFilters()
+  const activity = choice(params.get('activity'), ['all', 'scheduled', 'fault', 'unallocated', 'context', 'off', 'unknown'], 'all')
+  const section = sectionFromUrl(params, hash, ['directory', 'readiness', 'contributions'], 'directory', { '#readiness': 'readiness', '#contributions': 'contributions' })
   const config = useConfig()
   const markets = useMarkets()
   const update = useUpdateScanner()
@@ -31,20 +36,19 @@ export function Scanners() {
   const release = useReleaseScanner()
   const releaseNow = (s: Scanner) => release.mutate(s.id, { onSuccess: () => toast.success(`${s.name} released: it runs again from its next bar`), onError: (e) => toast.error(String((e as Error).message ?? e)) })
   const toast = useToast()
-  const [view, setView] = useState<'cards' | 'table'>('cards')
-  const [cat, setCat] = useState<Category>('All')
-  const [filter, setFilter] = useState('')
+  const view = choice(params.get('view'), ['cards', 'table'], 'cards')
+  const cat = choice(params.get('category'), CATEGORIES, 'All')
+  const filter = params.get('q') ?? ''
   const [bulkBusy, setBulkBusy] = useState(false)
   const [confirmDisableAll, setConfirmDisableAll] = useState(false)
   const [removing, setRemoving] = useState<Scanner | null>(null)
   const qc = useQueryClient()
-  const [showHidden, setShowHidden] = useState(false)
-  const [author, setAuthor] = useState<string>('All')
+  const showHidden = params.get('removed') === '1'
+  const author = params.get('author') ?? 'All'
   // `?book=account` from the Overview's attention line lands on the right tab
-  const [params, setParams] = useSearchParams()
   const book = params.get('book')
   const bookFilter = book === 'account' || book === 'shadow' || book === 'none' ? book : 'all'
-  const setBookFilter = (value: string) => setParams(prev => { const next = new URLSearchParams(prev); if (value === 'all') next.delete('book'); else next.set('book', value); return next })
+  const setBookFilter = (value: string) => set({ book: value === 'all' ? null : value })
   const busy = !auth.canTrade || update.isPending || bulkBusy
 
   // Inline chips offer the globally configured symbols plus anything a scanner already uses
@@ -286,29 +290,18 @@ export function Scanners() {
   return (
     <div className="page">
       <div className="page-head">
-        <PageTitle pre="Every scanner," accent="one" post="terminal." sub={scanners.data ? `${scanners.data.filter((s) => !s.hidden).length} in list · ${enabledCount} enabled · ${scanners.data.filter(s => (s.scheduledCells ?? 0) > 0).length} scheduled · ${hiddenCount} removed` : undefined} />
-        <div className="page-actions">
-          <button className="btn" onClick={() => bulk(true)} disabled={busy || !scanners.data} title="Every runnable scanner on its own symbols: a fleet far above the cap, which the server refuses. Enable scanners one at a time or through the Incubator instead.">
-            {bulkBusy ? 'Working…' : 'Enable all runnable'}
-          </button>
-          <button className="btn" onClick={() => autoTune()} disabled={busy || !scanners.data} title="Review backtest recommendations. Advisory while Incubator is enabled; applies symbol allocations only when Incubator is off.">
-            Review backtests
-          </button>
-          <button className="btn" onClick={() => setShowHidden((v) => !v)} disabled={!scanners.data} title="Removed scanners stay disabled; restore any from here" aria-pressed={showHidden}>
-            {showHidden ? 'Hide removed' : `Show removed (${hiddenCount})`}
-          </button>
-          <button className="btn btn-danger-outline" onClick={() => setConfirmDisableAll(true)} disabled={busy || !scanners.data || enabledCount === 0}>
-            Disable all
-          </button>
-        </div>
+        <PageTitle pre="Scanners" sub={scanners.data ? `${scanners.data.filter((s) => !s.hidden).length} in list · ${enabledCount} enabled · ${scanners.data.filter(s => (s.scheduledCells ?? 0) > 0).length} scheduled · ${hiddenCount} removed` : undefined} />
+        <Link className="btn" to="/library">Browse script library →</Link>
       </div>
 
-      <Disclosure id="readiness" title="Contract registry & readiness" hint="Enabled scanners, shadow allocations and experimental readings: intent, execution support and live coverage"><ScannerReadinessMatrix /></Disclosure>
-      <Disclosure id="contributions" title="Scanner contribution ledger" hint="Source evidence, family coverage and detailed signal blockers"><ScannerContributions /></Disclosure>
+      <ResearchSections label="Scanner views" value={section} options={[{ value: 'directory', label: 'Directory & settings' }, { value: 'readiness', label: 'Contract readiness' }, { value: 'contributions', label: 'Signal contributions' }]} />
+      {section === 'readiness' && <section id="readiness"><ScannerReadinessMatrix /></section>}
+      {section === 'contributions' && <section id="contributions"><ScannerContributions /></section>}
+      {section === 'directory' && <>
       <div className="toolbar">
-        <div className="cat-tabs" role="tablist" aria-label="Category">
+        <div className="cat-tabs" role="group" aria-label="Category">
           {CATEGORIES.map((c) => (
-            <button key={c} role="tab" aria-selected={cat === c} className={`navpill ${cat === c ? 'navpill-on' : ''}`} onClick={() => setCat(c)}>
+            <button key={c} aria-pressed={cat === c} className={`navpill ${cat === c ? 'navpill-on' : ''}`} onClick={() => set({ category: c === 'All' ? null : c })}>
               {c} {c !== 'All' && counts.get(c) ? <span className="muted">{counts.get(c)}</span> : null}
             </button>
           ))}
@@ -324,18 +317,18 @@ export function Scanners() {
             { value: 'none', label: 'Not trading' },
           ]}
         />
-        <select className="input" value={author} onChange={(e) => setAuthor(e.target.value)} aria-label="Author" style={{ width: 'auto' }}>
+        <select className="input" value={author} onChange={(e) => set({ author: e.target.value === 'All' ? null : e.target.value })} aria-label="Author" style={{ width: 'auto' }}>
           {authors.map((a) => (
             <option key={a} value={a}>
               {a === 'All' ? 'All authors' : a}
             </option>
           ))}
         </select>
-        <input className="input" placeholder="Filter scanners…" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter scanners" />
+        <input className="input" placeholder="Filter scanners…" value={filter} onChange={(e) => set({ q: e.target.value }, true)} aria-label="Filter scanners" />
         <Segmented
           ariaLabel="View"
           value={view}
-          onChange={setView}
+          onChange={value => set({ view: value })}
           options={[
             { value: 'cards', label: <IconGrid />, ariaLabel: 'Card view' },
             { value: 'table', label: <IconRows />, ariaLabel: 'Table view' },
@@ -344,9 +337,10 @@ export function Scanners() {
       </div>
 
       <div className="filter-summary">
-        <label>Paper activity <select className="select" value={activity} onChange={e => setActivity(e.target.value)}><option value="all">All states</option><option value="scheduled">Scheduled</option><option value="fault">Errors / quarantine</option><option value="unallocated">No scheduled cells</option><option value="context">Entries disabled</option><option value="off">Paper disabled</option><option value="unknown">Schedule unknown</option></select></label>
+        <label>Paper activity <select className="select" value={activity} onChange={e => set({ activity: e.target.value === 'all' ? null : e.target.value })}><option value="all">All states</option><option value="scheduled">Scheduled</option><option value="fault">Errors / quarantine</option><option value="unallocated">No scheduled cells</option><option value="context">Entries disabled</option><option value="off">Paper disabled</option><option value="unknown">Schedule unknown</option></select></label>
+        <label><input type="checkbox" checked={showHidden} onChange={e => set({ removed: e.target.checked ? '1' : null })} /> Include removed ({hiddenCount})</label>
         <span className="muted small" role="status">{scanners.data ? `${rows.length} matching scanners` : 'Loading scanners…'}</span>
-        <button className="btn btn-sm" onClick={() => { setFilter(''); setCat('All'); setAuthor('All'); setActivity('all'); setShowHidden(false); setBookFilter('all') }}>Clear filters</button>
+        <button className="btn btn-sm" onClick={() => { set({ q: null, category: null, author: null, activity: null, removed: null, book: null }) }}>Clear filters</button>
       </div>
       {scanners.isLoading && !scanners.data && (view === 'table' ? <Loading kind="table" rows={10} cols={10} /> : <Loading kind="cards" rows={6} />)}
       {scanners.isError && !scanners.data && <ErrorState error={scanners.error} onRetry={() => scanners.refetch()} />}
@@ -390,6 +384,20 @@ export function Scanners() {
         </div>
       )}
 
+      <Disclosure id="scanner-management" title="Fleet management" hint="Bulk controls affect scanner operation. Review individual allocations in the directory below.">
+        <div className="page-actions">
+          <button className="btn" onClick={() => bulk(true)} disabled={busy || !scanners.data} title="Every runnable scanner on its own symbols: a fleet far above the cap, which the server refuses. Enable scanners one at a time or through the Incubator instead.">
+            {bulkBusy ? 'Working…' : 'Enable all runnable'}
+          </button>
+          <button className="btn" onClick={() => autoTune()} disabled={busy || !scanners.data} title="Review backtest recommendations. Advisory while Incubator is enabled; applies symbol allocations only when Incubator is off.">
+            Review backtests
+          </button>
+          <button className="btn btn-danger-outline" onClick={() => setConfirmDisableAll(true)} disabled={busy || !scanners.data || enabledCount === 0}>
+            Disable all
+          </button>
+        </div>
+      </Disclosure>
+      </>}
       <ConfirmDialog
         open={confirmDisableAll}
         title={`Disable all ${enabledCount} enabled scanner${enabledCount === 1 ? '' : 's'}?`}

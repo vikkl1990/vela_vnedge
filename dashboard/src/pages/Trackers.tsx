@@ -1,3 +1,6 @@
+import { ResearchSections } from '../components/ResearchSections'
+import { choice } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -28,7 +31,7 @@ function Tracker({ v }: { v: TrackerView }) {
   return (
     <>
       <h2>{t.name}</h2>
-      <p className="muted small">Forward paper results · {allocated ? `${allocated} ${allocated === 1 ? 'cell allocated' : 'cells allocated'} to the paper account` : 'No direct account allocation'}</p>
+      <p className="muted small">Forward shadow results · {allocated ? `${allocated} ${allocated === 1 ? 'cell allocated' : 'cells allocated'} to the paper account` : 'No direct account allocation'}</p>
       {t.scanPriority === 'timely' && <p className="muted small">Priority research scans after each bar closes. Account scans and protective exits run first; evidence and entry rules still apply.</p>}
       <div className="stat-strip" role="list">
         <span role="listitem"><span className="stat-k">Cells</span> <span className="mono">{v.totals.cells}</span> <span className="muted">· {v.totals.trading} have traded</span></span>
@@ -84,7 +87,7 @@ function Tracker({ v }: { v: TrackerView }) {
 function ReclaimTrials() {
   const q = useQuery({ queryKey: ['reclaim-trials'], queryFn: api.reclaimTrials, refetchInterval: 15_000 })
   return <QueryState {...q} data={q.data} empty="No paper trials configured." onRetry={() => q.refetch()}>
-    {(data) => <>{data.trials.map((t) => <Panel key={`${t.rule.scannerId}|${t.rule.symbol}|${t.rule.tf}`} title={`Paper account trial · ${t.rule.symbol} · ${t.rule.tf}`}>
+    {(data) => <>{data.trials.length === 0 && <Empty label="No paper account trials configured." />}{data.trials.map((t) => <Panel key={`${t.rule.scannerId}|${t.rule.symbol}|${t.rule.tf}`} title={`Paper account trial · ${t.rule.symbol} · ${t.rule.tf}`}>
       <p><Link to={`/scanners/${t.rule.scannerId}`}>{t.rule.scannerId}</Link> · <strong>{t.state}</strong></p>
       <p className="muted small">{Math.round(t.rule.sizeScale * 100)}% of normal size · {t.usedToday}/{t.rule.maxDailyEntries} daily order placements used (UTC) · {t.open} open</p>
       {t.rule.minSignalBarAtr !== undefined && <p className="muted small">Retest only after a signal candle larger than {t.rule.minSignalBarAtr} ATR. Ordinary signals keep their entry policy. Pullback {t.rule.pullbackAtr} ATR · confirmation within {t.rule.setupMinutes} min · maker order expires after {t.rule.orderMinutes} min. {t.rule.maxStopLossPct !== undefined && <>All new entries in this cell have a {t.rule.maxStopLossPct}% equity stop-risk ceiling, within the configured margin budget.</>}</p>}
@@ -99,14 +102,31 @@ function ReclaimTrials() {
 }
 
 export function Trackers() {
+  const { params, set } = useResearchFilters()
+  const section = choice(params.get('section'), ['shadow', 'paper'], 'shadow')
+  const selected = params.get('tracker')
   const q = useQuery({ queryKey: ['trackers'], queryFn: api.trackers, refetchInterval: 60_000, staleTime: 30_000 })
   return (
     <div className="page">
-      <PageTitle pre="Watched," accent="not judged." sub="Shadow-paper results for each named set of scanners, markets and timeframes, counted from its start date. Direct paper-account allocations are identified below and managed in Incubator and Scanners." />
-      <ReclaimTrials />
+      <PageTitle pre="Trackers" sub="Inspect named research groups separately from paper account trials. Shared shadow cells can appear in several groups; their totals must not be added together." />
+      <ResearchSections label="Tracker books" value={section} options={[{ value: 'shadow', label: 'Shadow groups' }, { value: 'paper', label: 'Paper account trials' }]} />
+      {section === 'paper' && <ReclaimTrials />}
+      {section === 'shadow' && <>
       <QueryState {...q} data={q.data} empty="No tracker yet." onRetry={() => q.refetch()}>
-        {(list) => list.length === 0 ? <Empty label="No tracker yet." /> : <>{[...list].sort((a, b) => b.tracker.createdAt - a.tracker.createdAt).map((v) => <Tracker key={v.tracker.id} v={v} />)}</>}
+        {(list) => {
+          if (!list.length) return <Empty label="No tracker yet." />
+          const ordered = [...list].sort((a, b) => b.tracker.createdAt - a.tracker.createdAt)
+          const current = selected ? ordered.find(v => v.tracker.id === selected) : ordered[0]
+          return <>
+            <div className="research-filters panel"><label>Research group<select className="select" value={selected ?? current?.tracker.id ?? ''} onChange={e => set({ tracker: e.target.value })}>
+              {selected && !current && <option value={selected}>Unavailable group: {selected}</option>}
+              {ordered.map(v => <option key={v.tracker.id} value={v.tracker.id}>{v.tracker.name} · {v.totals.cells} cells</option>)}
+            </select></label><span className="muted small">{list.length} groups · one group shown at a time</span></div>
+            {current ? <Tracker key={current.tracker.id} v={current} /> : <Empty label="This research group is no longer available." hint="Choose an existing group above." />}
+          </>
+        }}
       </QueryState>
+      </>}
     </div>
   )
 }
