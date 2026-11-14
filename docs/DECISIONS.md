@@ -7562,3 +7562,36 @@ Research capacity increases from 37 to 73 to hold 36 comparison arms, requiring 
 Both full cohorts and shared-signal closed comparisons are reported; unfilled, unfinished and different-admission cases remain visible. Native holding time changes later entry availability, so a favorable matched subset alone is insufficient. Experimental plans remain excluded from copying, promotion and sizing evidence. A chosen policy must subsequently collect ordinary prospective shadow evidence under the unchanged shared evidence rules before paper admission. No new scanner is enabled for the account by this rollout.
 
 Validation covers paired policy isolation, invalid mixed comparisons, equal causal entry fills and fees, distinct exit behavior, durable restart policies, experimental evidence exclusion, source deduplication, configuration preservation and bounded/idempotent activation. See [the dated study](research/markittick-shadow-2026-11-14.html).
+
+## 259. Reproducible execution evidence before contract-driven rollout (14 November 2026)
+
+The execution-contract study pooled historical policies and inferred author ownership from exit labels.
+The replacement exporter uses an explicitly bounded, read-only SQLite transaction and retains every
+closed row in the window, including trackers, experiments, quarantined records and invalid outcomes.
+It exports saved policies, per-fill fee components, funding, orders and available execution receipts.
+Book, frozen scope, policy and plan signature remain separate cohorts. Exact trade-level holding
+medians replace weighted medians of cell medians. Schema, producer and data hashes make runs auditable.
+Unknowns stay unknown: `sl` is not proof of a bot stop, `tp1` is not proof of an author target, an ATR
+stop does not establish the TP's origin, and missing gross fees or vouchers are not zero costs.
+
+A research contract manifest pins Pine bytes, patched source, effective reading and implementation.
+It names external versus adapter lifecycle control and requires source parity, closed-bar causality,
+accounting, restart and execution-pricing proofs. Proofs cannot be borrowed from another manifest,
+future time or failed/conflicting latest check. The readiness result applies to proposed contract
+adoption, not existing trading. It always grants no paper eligibility. Source reviews remain separate
+from executable mechanics and profitability evidence.
+
+The review builder covers active profiles and the top 150 by recorded trade activity, with explicit
+variant lineage from the existing registry. Historical claims require an exact-contract disposition:
+confirmed, intentional variant, fixed, unsupported or unknown. Confirmed/fixed decisions require a
+regression reference. Trend Impulse's preserved breakout reading is annotated as intentional; its
+separate as-drawn variant is fixed, backed by decision 195 and existing source/reader regression tests.
+A missing current scanner or a file/profile error is visible, never silently treated as validated.
+
+This release is offline research tooling. It changes no reader, execution path, fees, sizing, margin,
+risk cap, evidence identity or eligibility rule. It does not enable scanners, write the VM configuration,
+restart the bot, or claim that native author exits improve profit. Wider stops remain compatible with
+unchanged equity-risk limits through smaller positions. The next implementation step is to verify
+high-impact adapters and attach exact-version causal mechanics proofs before broader shadow rollout.
+
+Validation: 1,402 server tests, server typecheck and four author-record checks pass. The export CLI is exercised end to end against a read-only SQLite connection, including private output permissions, tamper detection and overwrite refusal. A 30-day production-data snapshot was exported without changing the VM service or configuration.
