@@ -14,6 +14,8 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
+// Decision 250: four additional isolated author profiles; account position capacity is separate.
+export const MAX_RESEARCH_PLANS = 34;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -62,6 +64,8 @@ export interface ExecutionPlanSnapshot {
   /** Absent on historical cohorts: their execution rules remain frozen. */
   executionVersion?: number;
   partialExitVersion?: 1;
+  /** Causal close-then-open reversal; scoped to newly validated author profiles. */
+  reversalEntryVersion?: 1;
 }
 export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'>): string {
   if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
@@ -98,7 +102,8 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
   if(p.basket && (paper.sizingMode!=='margin'||paper.marginPerTrade!==150||!(paper.maxStopLossPct!>0)||Object.keys(sc?.inputs??{}).length))throw Error('basket requires $150 margin, a stop cap and reviewed default inputs');
-  const versioned = {...result,...(sc?.reader===3||p.basket?{partialExitVersion:1 as const}:{}),...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
+  const reversalEntryVersion=sc?.reader===3&&['reactive-trail-system-author-native','reaction-level-matrix-author-native'].includes(p.scannerId)?1 as const:undefined;
+  const versioned = {...result,...(sc?.reader===3||p.basket?{partialExitVersion:1 as const}:{}),...(reversalEntryVersion?{reversalEntryVersion}:{}),...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
   // Presentation/grouping edits must not reset evidence for an identical policy.
   // A reading experiment chooses its own cell and enabled state. Account allocation edits
   // must not split its evidence or make a held position look like a different policy.
@@ -123,7 +128,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   if(plans===undefined)return [];
   if(!Array.isArray(plans))return ['executionPlans must be an array'];
   const errors:string[]=[],ids=new Set<string>();
-  if(plans.length>30)errors.push('executionPlans supports at most 30 research plans');
+  if(plans.length>MAX_RESEARCH_PLANS)errors.push(`executionPlans supports at most ${MAX_RESEARCH_PLANS} research plans`);
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);

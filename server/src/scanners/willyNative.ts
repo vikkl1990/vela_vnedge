@@ -10,6 +10,8 @@ const INFO=/^(?:new (?:bullish|bearish) leg|leg.turn|vwap.cross|close (?:above|b
 const heads:Record<string,RegExp>={
  'structure-anchored-vwap':/^(long|short)\b/,
  'liquidity-trail-matrix':/^(long|short)\b/,
+ 'reactive-trail-system':/^(long|short)\b/,
+ 'reaction-level-matrix':/^(long|short)\b/,
 };
 
 /** Unknown schemas return information; a version number alone never selects another script's adapter. */
@@ -54,6 +56,17 @@ export function readWillyNative(alerts:WorkerAlert[],shapes:WorkerShape[],opts:E
   if(contextual){push(a,{});continue;}
   let p:any;try{p=JSON.parse(a.message);}catch{}
   if(p&&typeof p==='object'){
+   if(baseId==='strat-trap-vwap-engine'){
+    // v1.9 distinguishes an armed/filtered trigger from a trade by its full risk payload.
+    // Do not turn plain trigger notices (trig/stop only) into orders or guess future schemas.
+    if(p.ind!=='STRAT'||p.v!=='1.9.0'){push(a,{label:'Unsupported author schema'});continue;}
+    const key=String(p.action??'');
+    if(!['trap_long','trap_short','trigger_bull','trigger_bear','setup_bull','setup_bear','be','tp1_hit','tp2_hit','tp3_close','sl_hit'].includes(key)){
+     push(a,{label:'Unsupported STRAT action'});continue;
+    }
+    if(/^trigger_(bull|bear)$/.test(key)&&p.entry===undefined){push(a,{label:'Author context: filtered trigger'});continue;}
+    action(a,p,key==='sl_hit'&&p.be_stop===true?'be_stop':key,sideOf(p.dir));continue;
+   }
    if(baseId==='synapse-trail-pro'&&p.schema==='stp.events.v1'&&Array.isArray(p.events)){
     for(const e of p.events)if(e&&typeof e==='object')action(a,e,String(e.action??''),sideOf(e.direction));continue;
    }
@@ -67,6 +80,16 @@ export function readWillyNative(alerts:WorkerAlert[],shapes:WorkerShape[],opts:E
   // Synapse's text fallback also contains several complete records, separated by newlines.
   for(const line of a.message.split(/\r?\n/).filter(x=>x.trim())){
    const msg={...a,message:line},head=clean(line.split('|')[0]);
+   if(baseId==='strat-trap-vwap-engine'){push(msg,{label:'STRAT native adapter requires JSON alerts'});continue;}
+   if(baseId==='reaction-level-matrix'&&/^level broken (up|down)\b/.test(head)){push(msg,{});continue;}
+   if(baseId==='reactive-trail-system'){
+    // This author's message inserts "entry:" before the number. Scope the parsing change
+    // to this new profile so existing reader-3 evidence retains its interpretation.
+    if(/^break-even\b/.test(head)&&!/^break-even stop/.test(head)){
+     const moved=line.match(/SL moved to entry:\s*([0-9.eE+-]+)/i);
+     action(msg,{new_sl:moved?Number(moved[1]):undefined},'stop_changed');continue;
+    }
+   }
    if(INFO.test(head)||/^(bull flip|bear flip|lvn break)\b/.test(head)){push(msg,{});continue;}
    if(/^break[-_ ]even\b/.test(head)&&!/^break[-_ ]even stop/.test(head)){
     const m=line.match(/(?:SL moved to|new_sl|SL\s*:)\s*([0-9.eE+-]+)/i);

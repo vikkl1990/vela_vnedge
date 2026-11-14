@@ -588,5 +588,6 @@ export function willyContract(id: string | undefined) { return WILLY_CONTRACTS.f
 export function willyNativeReady(id: string | undefined): boolean {
   const c = willyContract(id);
   return !!c && (c.role === 'Context' || c.role === 'Manual / restricted' ||
-    ['structure-anchored-vwap', 'liquidity-trail-matrix', 'synapse-trail-pro'].includes(c.scannerIds[0]));
+    ['structure-anchored-vwap', 'liquidity-trail-matrix', 'synapse-trail-pro',
+      'reactive-trail-system', 'reaction-level-matrix', 'strat-trap-vwap-engine'].includes(c.scannerIds[0]));
 }
