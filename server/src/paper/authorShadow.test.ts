@@ -9,7 +9,7 @@ import {PaperEngine} from './engine.ts';
 import {PlanComparisons,type ComparisonScan} from './planComparisons.ts';
 import {eligibleEvidence} from '../evidence/trades.ts';
 import {AUTHOR_SHADOW_PLANS,enableAuthorShadow} from '../../../ops/enable-author-shadow.ts';
-import {planBacktest,planSnapshot} from './executionPlans.ts';
+import {planBacktest,planSnapshot,MAX_RESEARCH_PLANS} from './executionPlans.ts';
 import {backtestPolicy} from './policy.ts';
 
 function fixture(t:any){
@@ -38,8 +38,8 @@ test('author shadow activation is atomic, idempotent, confined to free research 
  }
  next.executionPlans[29].label='operator edit';fs.writeFileSync(file,JSON.stringify(next));
  assert.throws(()=>enableAuthorShadow(file),/will not be overwritten/);
- next.executionPlans=raw.executionPlans.concat({...raw.executionPlans[0],id:'occupied-slot-26'});fs.writeFileSync(file,JSON.stringify(next));
- assert.throws(()=>enableAuthorShadow(file),/30/,'capacity is not silently expanded');
+ next.executionPlans=Array.from({length:MAX_RESEARCH_PLANS-4},(_,i)=>({...raw.executionPlans![0],id:`occupied-slot-${i}`}));fs.writeFileSync(file,JSON.stringify(next));
+ assert.throws(()=>enableAuthorShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)),'capacity is not silently expanded');
  assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),next);
 });
 

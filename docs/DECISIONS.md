@@ -7382,3 +7382,52 @@ using synthetic OHLC observations/depth, **not historical executable P&L or prof
 improvement**. Its 25 candidates produce three filled entries in two baskets, with
 seven restarts and zero eligible promotion trades. This is sufficient for deploying
 the isolated execution adapter, not for admitting the basket to the account.
+
+### 250. Four additional author profiles and causal reversal admission (2026-11-14)
+
+Add separate, disabled account-scanner profiles for Reactive Trail System, Reaction
+Level Matrix, STRAT Trap & VWAP Engine, and Smart Swing VWAP retests. No existing
+scanner spec or Pine source changes. The first three use reader 3, full native
+entry geometry, acknowledged script stop amendments, and the author's TP3 closure;
+TP1/TP2 are milestones, not invented partial sales. Their native exit profiles
+suppress unrelated bot trails, floors and stale exits. Reactive's `SL moved to
+entry:` message needs its own parser. Its destination-only reversal already uses
+the correct old-side parser and receives regression coverage, not a duplicate fix.
+Reaction level-break alerts remain context. STRAT accepts only the reviewed
+`STRAT` / `1.9.0` JSON actions; setups, filtered trigger notices, future schemas and
+text without complete geometry cannot enter. Default Trap Bar mode is retained,
+with the forming-HTF FTC admission filter off. Smart Swing's variant reads only
+polarity-aligned retests; its author supplies no native position exits, so its
+bot-managed exits are explicit research assumptions. The current broader reading
+keeps its original identity.
+
+The saved-candle shadow test exposed a causal reversal admission bug: an exit
+request returned `false` while waiting for a fill and the caller cancelled the
+valid replacement as though the close had failed. New Reactive/Reaction plan
+snapshots include `reversalEntryVersion: 1`. Only those experimental positions
+retain the replacement while a durable exit is outstanding. A fresh observation
+after full close rechecks levels, executable price, fees, sizing and risk. The
+original 60-second entry expiry remains; partial closes do not release the new
+entry, and restart still cancels unfilled market requests. Other cohorts and the
+account retain their previous execution identities.
+
+The user explicitly requested increasing research capacity during this work.
+`MAX_RESEARCH_PLANS` increases from 30 to 34, with no change to account position or
+daily-entry limits. `ops/enable-lifecycle-shadow.ts` installs four ETHUSD 15m plans
+through the existing guarded author-plan installer. It preserves all 30 old plans,
+supports a no-write dry run, backs up atomically, refuses edited profiles/plan IDs,
+and rejects overflow. The account scanner profiles remain disabled. These plans
+use the existing $1,000 experimental reference purse, $150 margin setting and 3%
+stop-risk ceiling with full research fees. Paper mode, all actual capital/risk
+settings, ML and promotion/copying/sizing evidence rules are unchanged; every
+result remains experimental and excluded from eligibility.
+
+Validation includes real Pine output and closed-bar prefix checks; current-reader
+counts; shadow entries, TP milestones, acknowledged BE, restart, actual-depth exit
+pricing and fees; baseline-vs-corrected reversal timing, partial closes, expiry,
+invalid levels and renewed risk refusal; atomic/idempotent capacity rollout.
+The saved ETH 15m replay uses synthetic OHLC observations/depth and demonstrates
+mechanics only, not executable historical profit or readiness for promotion.
+Further native adapters (including AlgoAlpha target geometry, stop-entry expiry,
+external-series and per-pattern invalidation) still require their own tests; this
+release does not claim that all library execution gaps have been fixed.

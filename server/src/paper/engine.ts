@@ -1126,7 +1126,15 @@ export class PaperEngine extends EventEmitter {
     }
     if (held && held.status === 'open') {
       const exitQuote = this.marketPrice(held.symbol, held.side === 'long' ? 'sell' : 'buy', priceIn, cfg, receivedAt);
-      if (!this.applyFills(held, [fillExit(held, exitQuote.price, held.qtyOpen, 'reversal', receivedAt, this.configFor(held), exitQuote.source === 'quote' ? 'quoted' : true)], { ref: priceIn, source: exitQuote.source })) return cancel('reversal: the held position could not be closed');
+      if (!this.applyFills(held, [fillExit(held, exitQuote.price, held.qtyOpen, 'reversal', receivedAt, this.configFor(held), exitQuote.source === 'quote' ? 'quoted' : true)], { ref: priceIn, source: exitQuote.source })) {
+        // A durable causal exit request is not a failed close. Keep only this versioned
+        // experimental replacement queued; its original deadline and every fill-time
+        // price/fee/risk check remain in force. No margin is freed before the exit report.
+        if(this.book===2&&pe.executionPlan?.reversalEntryVersion===1&&this.causal(held)&&this.exitExecution.active(held.id)){
+          this.pending.set(pe.id,pe);return null;
+        }
+        return cancel('reversal: the held position could not be closed');
+      }
     }
     const pos = this.openAt(pe.id, { market:pe.market, policy:pe.policy, executionPlan:pe.executionPlan, scannerId: pe.scannerId, quoted, scannerName: pe.scannerName, symbol: pe.symbol, tf: pe.tf, side: pe.side, qty: size.qty, contractValue: pe.market.contractValue, maintenanceMarginPct: pe.market.maintenanceMarginPct, entryPrice: price, at: receivedAt, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: pe.levels.source, signalId: pe.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: pe.features, mlProb: pe.mlProb, scannerTag: `${pe.scannerId} ${source} +${at - pe.at}ms` }, cfg, context);
     return pos;

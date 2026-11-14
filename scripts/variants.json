@@ -118,5 +118,29 @@
     "base": "rsi-volume-ladder",
     "name": "RSI Volume Ladder | basket research",
     "why": "Opt-in experimental basket adapter. Up to three actual-fill entries share one $150 margin budget and the existing stop-risk cap. Candidate marker excludes the Pine broker simulator state; production orders are not supported."
+  },
+  {
+    "id": "reactive-trail-system-author-native",
+    "base": "reactive-trail-system",
+    "name": "Reactive Trail System | author lifecycle (research)",
+    "why": "Confirmed trade entries with native SL and three target milestones; TP3 closes the position. Destination-only reversal closes the old side; entry-qualified flips only. Disabled separate-evidence research profile; no promotion or account activation."
+  },
+  {
+    "id": "reaction-level-matrix-author-native",
+    "base": "reaction-level-matrix",
+    "name": "Reaction Level Matrix | author lifecycle (research)",
+    "why": "Confirmed scored reaction entries, native stop and TP3 closure; TP1/TP2 milestones and acknowledged BE updates. Level-break notices remain context. Disabled separate-evidence research profile; no promotion or account activation."
+  },
+  {
+    "id": "strat-trap-vwap-engine-author-native",
+    "base": "strat-trap-vwap-engine",
+    "name": "STRAT Trap & VWAP Engine | author lifecycle (research)",
+    "why": "Versioned full-risk trade payloads only. Setups and filtered trigger notices never enter. Author default Trap Bar mode, reload-stable FTC filter off, native stop/BE and TP3 closure. Disabled separate-evidence research profile; no promotion or account activation."
+  },
+  {
+    "id": "smart-swing-vwap-zeiierman-author-retests",
+    "base": "smart-swing-vwap-zeiierman",
+    "name": "Smart Swing VWAP | polarity-aligned retests (research)",
+    "why": "Confirmed retests after price moves away and returns to polarity-aligned AVWAP. Crosses, polarity flips and anchor notices are context. Author defines no position exits; this research profile explicitly retains bot-managed exits with separate evidence."
   }
 ]

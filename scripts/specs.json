@@ -1052,5 +1052,173 @@
         "books": []
       }
     }
+  },
+  "reactive-trail-system-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "tpBeAlertInput": true,
+      "slRevAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "reaction-level-matrix-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "tpBeAlertInput": true,
+      "slRevAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "strat-trap-vwap-engine-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "alertFmtInput": "JSON",
+      "enableAlertsInput": true,
+      "entryAlertInput": true,
+      "tpBeAlertInput": true,
+      "slAlertInput": true,
+      "entryModeInput": "Trap Bar",
+      "minFtcAlignInput": 0
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    },
+    "timezone": "America/New_York"
+  },
+  "smart-swing-vwap-zeiierman-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Bullish AVWAP retest",
+      "Bearish AVWAP retest"
+    ],
+    "sides": {
+      "Bullish AVWAP retest": "long",
+      "Bearish AVWAP retest": "short",
+      "Bullish polarity flip": "none",
+      "Bearish polarity flip": "none",
+      "Cross above AVWAP": "none",
+      "Cross below AVWAP": "none",
+      "New ranked anchor": "none",
+      "Any ranked AVWAP event": "none"
+    },
+    "exitMode": "levels"
   }
 }
