@@ -15,8 +15,8 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Decision 252: two source-pinned lifecycle profiles added to 34 existing experiments; account capacity is separate.
-export const MAX_RESEARCH_PLANS = 36;
+// Decision 256: one reviewed basket added to 36 existing experiments; account/risk capacity is separate.
+export const MAX_RESEARCH_PLANS = 37;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
