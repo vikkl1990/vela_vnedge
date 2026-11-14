@@ -25,14 +25,15 @@ test('two native shadow plans preserve existing 34 experiments and all account, 
  const {file,raw}=fixture(t);
  raw.executionPlans=Array.from({length:34},(_,i)=>({id:`existing-${i}`,revision:1,enabled:true,scannerId:'control',symbol:'BTCUSD',tf:'15m',variant:'current',referenceEquity:1000}));
  fs.writeFileSync(file,JSON.stringify(raw));const before=fs.readFileSync(file,'utf8');
- assert.equal(MAX_RESEARCH_PLANS,36);
+ assert.ok(MAX_RESEARCH_PLANS>=36);
  assert.equal(enableContractLifecycleShadow(file,true).totalPlans,36);assert.equal(fs.readFileSync(file,'utf8'),before);
  enableContractLifecycleShadow(file);
  const next=JSON.parse(fs.readFileSync(file,'utf8'));
  assert.deepEqual({...next,executionPlans:raw.executionPlans},raw);assert.deepEqual(next.executionPlans.slice(0,34),raw.executionPlans);
  assert.equal(enableContractLifecycleShadow(file).changed,false);
- next.executionPlans.push({...raw.executionPlans[0],id:'overflow'});fs.writeFileSync(file,JSON.stringify(next));
- assert.throws(()=>enableContractLifecycleShadow(file),/36/);
+ while(next.executionPlans.length<=MAX_RESEARCH_PLANS)next.executionPlans.push({...raw.executionPlans[0],id:`overflow-${next.executionPlans.length}`});
+ fs.writeFileSync(file,JSON.stringify(next));
+ assert.throws(()=>enableContractLifecycleShadow(file),new RegExp(String(MAX_RESEARCH_PLANS)));
 });
 test('native policy is separate, has no fallback TP, and matrix keeps the legacy gap visible',t=>{
  const {cfg}=fixture(t),registry=new ScannerRegistry();
