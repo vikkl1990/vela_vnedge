@@ -13,6 +13,7 @@ import { TradingStatus } from './delta/tradingStatus.ts';
 import path from 'node:path';
 import { lastAtr } from './data/indicators.ts';
 import { trendSide } from './paper/logic.ts';
+import { EvidenceReview } from './incubator/reviewLoop.ts';
 import { IncubatorStore } from './incubator/store.ts';
 import { ScreenQueue } from './incubator/screenQueue.ts';
 import { PairAgents } from './incubator/pairAgents.ts';
@@ -101,7 +102,8 @@ export class App {
   readonly profiles: ProfileStore;
   readonly marketGate: MarketGate;
   private marketTimer: ReturnType<typeof setInterval> | null = null;
-  private huntSeenAt = 0;
+  readonly evidenceReview: EvidenceReview<{synced: ReturnType<typeof incubatorSyncLive>; report: ReturnType<typeof incubatorEvaluate>; promoted: string[]; blocked: string[]}>;
+  private lastAdmissionAt = 0;
   private huntTimer: ReturnType<typeof setInterval> | null = null;
   readonly marks = new MarkStore();
   readonly exchangeStatus = new TradingStatus();
@@ -305,6 +307,19 @@ export class App {
       pressure:()=>this.pool.stats.queuedLive>0||this.pool.stats.queued>this.pool.size*2,
       evaluate:()=>this.incubatorEvaluate('pair agents'),
     });
+    this.evidenceReview=new EvidenceReview({
+      settings:()=>{const c=cfg();return {enabled:c.incubator.enabled,paper:c.execution.mode==='paper',auto:!!c.incubator.promote.auto,minutes:c.incubator.promote.reviewMinutes};},
+      now:Date.now,
+      screenAt:()=>this.db.kvGet<{at:number}>('incubator.lastRun')?.at??0,
+      load:()=>this.db.kvGet('incubator.reviewState')??{
+        successAt:this.db.kvGet<{at:number}>('incubator.lastHunt')?.at??0,
+        screenAt:this.db.kvGet<number>('incubator.huntSeenAt')??0,
+      },
+      save:state=>this.db.kvSet('incubator.reviewState',state),
+      evaluate:actor=>this.performIncubatorEvaluate(actor),
+    });
+    this.paper.on('trade',()=>this.evidenceReview.noteEvidence());
+    this.shadow.on('trade',()=>this.evidenceReview.noteEvidence());
     this.validation=createValidation(this);
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
     process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
@@ -356,16 +371,17 @@ export class App {
     void refreshMarkets();
     this.marketTimer = setInterval(refreshMarkets, Math.max(1, this.config.get().risk.marketGate?.refreshMinutes ?? 60) * 60_000);
     this.marketTimer.unref?.();
-    // the daily screen runs in its own process; when it finishes, the hunt runs here so promotions land in the live config
-    // decision 184: the last hunted run is remembered across restarts, so a nightly that finished while the bot was down
-    // (a deploy during the screen) still gets its hunt — and its promotions — at the first tick
-    this.huntSeenAt = this.db.kvGet<number>('incubator.huntSeenAt') ?? this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
+    // Closed trades and the clock drive evidence reviews independently of screening.
+    // Reviews share one operation with manual and pair-agent calls; failed screens stay retryable.
+    this.lastAdmissionAt=Date.now();
     this.huntTimer = setInterval(() => {
-      const at = this.db.kvGet<any>('incubator.lastRun')?.at ?? 0;
-      if (at > this.huntSeenAt) { this.huntSeenAt = at; this.db.kvSet('incubator.huntSeenAt', at); this.incubatorEvaluate('hunter').catch(e => log.warn(`hunt failed: ${e?.message ?? e}`)); }
-      // decision 157: between hunts, free slots are filled as soon as a candidate can take one (a slot freed, a re-screen landed)
-      else this.incubatorAdmit('timer').catch(e => log.warn(`admission failed: ${e?.message ?? e}`));
-    }, 10 * 60_000);
+      void this.evidenceReview.tick().then(async reviewed=>{
+        if(reviewed)this.lastAdmissionAt=Date.now();
+        else if(!this.evidenceReview.view().running && Date.now()-this.lastAdmissionAt>=10*60_000){
+          this.lastAdmissionAt=Date.now();await this.incubatorAdmit('timer');
+        }
+      }).catch(e=>log.warn(`evidence review failed: ${e?.message??e}`));
+    }, 60_000);
     this.huntTimer.unref?.();
     this.ops.start();
     this.screenQueue.start();
@@ -957,6 +973,7 @@ export class App {
       };
     });
     return {
+      automation: this.evidenceReview.view(),
       capacity: shadowCapacity(pairs.filter(r => r.stage === 'shadow' || r.stage === 'proposed'), cfg.incubator),
       rotation: { enabled: cfg.incubator.admit.rotation?.enabled ?? false, maxPerDay: cfg.incubator.admit.rotation?.maxPerDay ?? 0, usedToday: rotation.day === Math.floor(now / 86400_000) ? rotation.used : 0, last: rotation.last },
       enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),
@@ -996,12 +1013,14 @@ export class App {
     return admitted;
   }
 
-  async incubatorEvaluate(actor: string) {
+  incubatorEvaluate(actor: string) { return this.evidenceReview.run(actor); }
+
+  private async performIncubatorEvaluate(actor: string) {
     const cfg = this.config.get();
     const synced = incubatorSyncLive(this.incubatorStore, cfg);
     const report = incubatorEvaluate(this.incubatorStore, cfg, Date.now(), { needsRescreen: id => this.registry.get(id)?.scriptType === 'strategy', unavailable: id => this.incubatorUnavailable(id) });
     let promoted: string[] = [], blocked: string[] = [];
-    if (cfg.incubator.promote.auto && report.proposed.length) {
+    if (cfg.incubator.enabled && cfg.execution.mode==='paper' && cfg.incubator.promote.auto) {
       ({ promoted, blocked } = incubatorAutoPromote(this.incubatorStore, cfg, (sid, patch) => { this.config.setScanner(sid, patch); }));
       if (promoted.length) await this.onConfigChanged();
     }

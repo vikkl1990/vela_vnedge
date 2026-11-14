@@ -475,7 +475,7 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
 }
 
 /**
- * Decision 157: admission on its own, outside the nightly hunt. Judging, promotion and demotion keep their daily pace;
+ * Decision 157: admission on its own, outside the evidence review;
  * this only fills free shadow slots with candidates whose blocker has cleared (the market gate allows the market again,
  * a re-screen landed, a slot was freed). Returns the pairs admitted.
  */
@@ -621,8 +621,15 @@ export function demote(store: IncubatorStore, cfg: AppConfig, id: number, actor:
  */
 export function autoPromote(store: IncubatorStore, cfg: AppConfig, setScanner: (id: string, patch: Partial<ScannerConfig>) => void, now = Date.now()): { promoted: string[]; blocked: string[] } {
   const promoted: string[] = [], blocked: string[] = [];
+  if(!cfg.incubator.enabled||!cfg.incubator.promote.auto||cfg.execution.mode!=='paper')return {promoted,blocked};
+  // ConfigStore replaces its snapshot on every write. Accumulate successful patches
+  // here so later approvals see prior allocations and enforce cumulative capacity.
+  const current=structuredClone(cfg);
   for (const r of store.list(['proposed'])) {
-    try { approve(store, cfg, r.id, 'auto', setScanner, now); promoted.push(name(r)); }
+    try { approve(store, current, r.id, 'auto', (id,patch)=>{
+      setScanner(id,patch);
+      current.scanners[id]={...(current.scanners[id]??{enabled:false,symbols:null,timeframes:null,exitMode:'both'}),...patch};
+    }, now); promoted.push(name(r)); }
     catch (e: any) { blocked.push(`${name(r)}: ${e?.message ?? e}`); }
   }
   return { promoted, blocked };
