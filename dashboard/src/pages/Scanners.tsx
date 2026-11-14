@@ -1,22 +1,24 @@
-import { Disclosure } from '../components/Disclosure'
-import {ScannerContributions} from '../components/ScannerContributions'
-import {ScannerReadinessMatrix} from '../components/ScannerReadinessMatrix'
 import { useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
+import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import { qk, useConfig, useMarkets, useReleaseScanner, useRunScanner, useScannerPipeline, useScanners, useUpdateScanner } from '../api/queries'
 import { api } from '../api/client'
 import type { ExitMode, Scanner } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
-import { IconExternal, IconGrid, IconPlay, IconRows } from '../components/Icons'
-import { BookBadge, ChipSelect, ConfirmDialog, Empty, ErrorState, Loading, PageTitle, Pill, Pnl, ScannerStatusPill, Segmented, Time } from '../components/ui'
-import { CATEGORIES, categorize, type Category } from '../lib/categories'
-import { fmtMs, fmtProfitFactor, fmtPct } from '../lib/format'
-
-const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', exits: 'muted', levels: 'muted', silent: 'warn', broken: 'danger' }
+import { IconExternal, IconPlay } from '../components/Icons'
+import { Callout, EmptyState, Stat, StatGrid, TabPanel, Tabs, Toolbar } from '../components/kit'
+import { RowMenu, type MenuItem } from '../components/RowMenu'
+import { ScannerContributions } from '../components/ScannerContributions'
+import { ScannerReadinessMatrix } from '../components/ScannerReadinessMatrix'
+import { BookBadge, ChipSelect, ConfirmDialog, ErrorState, Loading, PageTitle, Pill, Pnl, ScannerStatusPill, Segmented, Time } from '../components/ui'
 import { useAuth } from '../auth/AuthGate'
+import { CATEGORIES, categorize, type Category } from '../lib/categories'
+import { fmtMs, fmtProfitFactor, fmtPct, timeAgo } from '../lib/format'
 import { readerLabel, scannerActivity } from '../lib/scannerPresentation'
 import { useToast } from '../lib/toast'
+import '../styles/pages/scanners.css'
+
+const KIND_TONE: Record<string, 'ok' | 'accent' | 'muted' | 'warn' | 'danger'> = { plan: 'ok', signal: 'accent', exits: 'muted', levels: 'muted', silent: 'warn', broken: 'danger' }
 
 const EXIT_MODES: ExitMode[] = ['levels', 'script', 'both']
 
@@ -31,7 +33,9 @@ export function Scanners() {
   const release = useReleaseScanner()
   const releaseNow = (s: Scanner) => release.mutate(s.id, { onSuccess: () => toast.success(`${s.name} released: it runs again from its next bar`), onError: (e) => toast.error(String((e as Error).message ?? e)) })
   const toast = useToast()
-  const [view, setView] = useState<'cards' | 'table'>('cards')
+  // narrow screens start on cards: a wide table is the wrong first look on a phone
+  const [view, setView] = useState<'list' | 'cards' | 'table'>(() => (typeof window !== 'undefined' && window.matchMedia?.('(max-width: 700px)').matches ? 'cards' : 'list'))
+  const pipeline = useScannerPipeline()
   const [cat, setCat] = useState<Category>('All')
   const [filter, setFilter] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -46,6 +50,15 @@ export function Scanners() {
   const bookFilter = book === 'account' || book === 'shadow' || book === 'none' ? book : 'all'
   const setBookFilter = (value: string) => setParams(prev => { const next = new URLSearchParams(prev); if (value === 'all') next.delete('book'); else next.set('book', value); return next })
   const busy = !auth.canTrade || update.isPending || bulkBusy
+  // The tab is local state; a link to #readiness or #contributions (the Incubator uses them) opens that tab.
+  const { hash } = useLocation()
+  const [tab, setTab] = useState<ScTab>(() => tabFromHash(hash) ?? (book ? 'catalogue' : 'trading'))
+  const [seenHash, setSeenHash] = useState(hash)
+  if (hash !== seenHash) {
+    setSeenHash(hash)
+    const t = tabFromHash(hash)
+    if (t) setTab(t)
+  }
 
   // Inline chips offer the globally configured symbols plus anything a scanner already uses
   // (the full market list is hundreds of symbols — edit the global list on Settings).
@@ -65,12 +78,14 @@ export function Scanners() {
       (bookFilter === 'all' || (bookFilter === 'account' ? (s.books?.account.length ?? 0) > 0 : bookFilter === 'shadow' ? (s.books?.shadow.length ?? 0) + (s.books?.proposed.length ?? 0) > 0 : !(s.books?.account.length || s.books?.shadow.length || s.books?.proposed.length))) &&
       (!f || s.name.toLowerCase().includes(f) || s.id.toLowerCase().includes(f)))
   }, [scanners.data, filter, showHidden, author, bookFilter, activity])
-  const rows = useMemo(() => filteredScanners.filter((s) => cat === 'All' || categorize(s.name) === cat), [filteredScanners, cat])
+  const isListTab = tab === 'trading' || tab === 'catalogue' || tab === 'quarantined'
+  const scoped = useMemo(() => (tab === 'trading' ? filteredScanners.filter(isTrading) : tab === 'quarantined' ? filteredScanners.filter(isQuarantined) : filteredScanners), [filteredScanners, tab])
+  const rows = useMemo(() => scoped.filter((s) => cat === 'All' || categorize(s.name) === cat), [scoped, cat])
   // Render the grid in pages. Every scanner stays reachable, but a category with hundreds of
   // scripts no longer builds 20+ screens of cards before the page is usable.
   const PAGE = 60
   // the page count is keyed on what is being paged, so a new category or filter starts again at one page without an effect
-  const pageKey = `${cat}|${filteredScanners.map((x) => x.id).join(',')}`
+  const pageKey = `${tab}|${cat}|${scoped.map((x) => x.id).join(',')}`
   const [page, setPage] = useState<{ key: string; n: number }>({ key: pageKey, n: PAGE })
   const shown = page.key === pageKey ? page.n : PAGE
   const visibleRows = useMemo(() => rows.slice(0, shown), [rows, shown])
@@ -79,9 +94,20 @@ export function Scanners() {
   const enabledCount = (scanners.data ?? []).filter((s) => s.enabled).length
   const counts = useMemo(() => {
     const c = new Map<Category, number>()
-    for (const s of filteredScanners) c.set(categorize(s.name), (c.get(categorize(s.name)) ?? 0) + 1)
+    for (const s of scoped) c.set(categorize(s.name), (c.get(categorize(s.name)) ?? 0) + 1)
     return c
-  }, [filteredScanners])
+  }, [scoped])
+  const listed = useMemo(() => (scanners.data ?? []).filter((s) => showHidden || !s.hidden), [scanners.data, showHidden])
+  const tabCounts = useMemo(() => ({ trading: listed.filter(isTrading).length, catalogue: listed.length, quarantined: listed.filter(isQuarantined).length }), [listed])
+  const fleet = useMemo(() => fleetStats(scanners.data ?? []), [scanners.data])
+  const todo = useMemo(() => worthActingOn(scanners.data ?? []), [scanners.data])
+  const [todoAll, setTodoAll] = useState(false)
+  const pipe = useMemo(() => {
+    const cells = pipeline.data?.cells
+    return cells ? { runs: cells.reduce((n, c) => n + c.runs, 0), failures: cells.reduce((n, c) => n + c.failures, 0) } : null
+  }, [pipeline.data])
+  const resetFilters = () => { setFilter(''); setCat('All'); setAuthor('All'); setActivity('all'); setShowHidden(false); setBookFilter('all') }
+  const filtersActive = !!filter || cat !== 'All' || author !== 'All' || activity !== 'all' || bookFilter !== 'all'
 
   const patch = (s: Scanner, body: Parameters<typeof update.mutate>[0]['body'], okMsg?: string) =>
     update.mutate(
@@ -283,112 +309,301 @@ export function Scanners() {
     [symbolOptions, busy, run.isPending, config.data?.timeframes],
   )
 
-  return (
-    <div className="page">
-      <div className="page-head">
-        <PageTitle pre="Every scanner," accent="one" post="terminal." sub={scanners.data ? `${scanners.data.filter((s) => !s.hidden).length} in list · ${enabledCount} enabled · ${scanners.data.filter(s => (s.scheduledCells ?? 0) > 0).length} scheduled · ${hiddenCount} removed` : undefined} />
-        <div className="page-actions">
-          <button className="btn" onClick={() => bulk(true)} disabled={busy || !scanners.data} title="Every runnable scanner on its own symbols: a fleet far above the cap, which the server refuses. Enable scanners one at a time or through the Incubator instead.">
-            {bulkBusy ? 'Working…' : 'Enable all runnable'}
-          </button>
-          <button className="btn" onClick={() => autoTune()} disabled={busy || !scanners.data} title="Review backtest recommendations. Advisory while Incubator is enabled; applies symbol allocations only when Incubator is off.">
-            Review backtests
-          </button>
-          <button className="btn" onClick={() => setShowHidden((v) => !v)} disabled={!scanners.data} title="Removed scanners stay disabled; restore any from here" aria-pressed={showHidden}>
-            {showHidden ? 'Hide removed' : `Show removed (${hiddenCount})`}
-          </button>
-          <button className="btn btn-danger-outline" onClick={() => setConfirmDisableAll(true)} disabled={busy || !scanners.data || enabledCount === 0}>
-            Disable all
-          </button>
-        </div>
-      </div>
-
-      <Disclosure id="readiness" title="Contract registry & readiness" hint="Enabled scanners, shadow allocations and experimental readings: intent, execution support and live coverage"><ScannerReadinessMatrix /></Disclosure>
-      <Disclosure id="contributions" title="Scanner contribution ledger" hint="Source evidence, family coverage and detailed signal blockers"><ScannerContributions /></Disclosure>
-      <div className="toolbar">
-        <div className="cat-tabs" role="tablist" aria-label="Category">
-          {CATEGORIES.map((c) => (
-            <button key={c} role="tab" aria-selected={cat === c} className={`navpill ${cat === c ? 'navpill-on' : ''}`} onClick={() => setCat(c)}>
-              {c} {c !== 'All' && counts.get(c) ? <span className="muted">{counts.get(c)}</span> : null}
-            </button>
-          ))}
-        </div>
-        <Segmented
-          ariaLabel="Book"
-          value={bookFilter}
-          onChange={setBookFilter}
-          options={[
-            { value: 'all', label: 'All books' },
-            { value: 'account', label: 'In the account' },
-            { value: 'shadow', label: 'In the shadow book' },
-            { value: 'none', label: 'Not trading' },
-          ]}
-        />
-        <select className="input" value={author} onChange={(e) => setAuthor(e.target.value)} aria-label="Author" style={{ width: 'auto' }}>
-          {authors.map((a) => (
-            <option key={a} value={a}>
-              {a === 'All' ? 'All authors' : a}
-            </option>
-          ))}
-        </select>
-        <input className="input" placeholder="Filter scanners…" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter scanners" />
-        <Segmented
-          ariaLabel="View"
-          value={view}
-          onChange={setView}
-          options={[
-            { value: 'cards', label: <IconGrid />, ariaLabel: 'Card view' },
-            { value: 'table', label: <IconRows />, ariaLabel: 'Table view' },
-          ]}
-        />
-      </div>
-
-      <div className="filter-summary">
-        <label>Paper activity <select className="select" value={activity} onChange={e => setActivity(e.target.value)}><option value="all">All states</option><option value="scheduled">Scheduled</option><option value="fault">Errors / quarantine</option><option value="unallocated">No scheduled cells</option><option value="context">Entries disabled</option><option value="off">Paper disabled</option><option value="unknown">Schedule unknown</option></select></label>
-        <span className="muted small" role="status">{scanners.data ? `${rows.length} matching scanners` : 'Loading scanners…'}</span>
-        <button className="btn btn-sm" onClick={() => { setFilter(''); setCat('All'); setAuthor('All'); setActivity('all'); setShowHidden(false); setBookFilter('all') }}>Clear filters</button>
-      </div>
-      {scanners.isLoading && !scanners.data && (view === 'table' ? <Loading kind="table" rows={10} cols={10} /> : <Loading kind="cards" rows={6} />)}
-      {scanners.isError && !scanners.data && <ErrorState error={scanners.error} onRetry={() => scanners.refetch()} />}
-
-      {scanners.data && view === 'table' && (
-        <div className="panel">
-          <DataTable
-            columns={tableCols}
-            rows={rows}
-            rowKey={(s) => s.id}
-            defaultSort={{ key: 'name', dir: 'asc' }}
-            caption="Scanners"
-            emptyLabel={
-              <span>
-                No scanners match<span className="empty-hint">Try another category, author or filter.</span>
+  const totalEntries = fleet.totalEntries
+  const listCols = useMemo<Column<Scanner>[]>(
+    () => [
+      {
+        key: 'name', header: 'Scanner', value: (s) => s.name,
+        render: (s) => {
+          const tfs = Array.isArray(s.pairs) ? [...new Set(s.pairs.map((p) => p.tf))].join('/') : (s.timeframes ?? []).join('/')
+          return (
+            <span className="sc-name">
+              <span className={`dot ${s.enabled ? 'dot-ok' : s.status === 'ok' ? 'dot-neutral' : 'dot-danger'}`} aria-hidden />
+              <span className="sc-name-text">
+                <span className="sc-name-line">
+                  <Link to={`/scanners/${s.id}`} className="strong">{s.name}</Link>
+                  <a href={s.url} target="_blank" rel="noreferrer" className="link muted" title="Open on TradingView" aria-label={`Open ${s.name} on TradingView`}><IconExternal /></a>
+                </span>
+                <span className="sc-sub">{[s.author, tfs].filter(Boolean).join(' · ')}</span>
               </span>
-            }
-          />
-        </div>
+            </span>
+          )
+        },
+      },
+      {
+        key: 'status', header: 'Status', value: (s) => scannerActivity(s).label, title: 'Whether the paper account is scanning it, and why not if it is not',
+        render: (s) => {
+          const a = scannerActivity(s)
+          return (
+            <span className="sc-cell">
+              <Pill tone={a.tone} title={a.detail}>{a.label}</Pill>
+              <span className="sc-books">
+                {s.books && (s.books.account.length || s.books.shadow.length || s.books.proposed.length) ? <BookCells s={s} /> : null}
+                <span className="sc-sub" title={a.detail}>{a.key === 'scheduled' ? `${s.scheduledCells} ${s.scheduledCells === 1 ? 'cell' : 'cells'}` : a.detail}</span>
+              </span>
+            </span>
+          )
+        },
+      },
+      {
+        key: 'entries', header: 'Entries · 7d', numeric: true, value: (s) => s.week?.entries ?? 0,
+        title: 'Entry signals in the last seven days, how many opened a trade, and what stopped most of the rest',
+        render: (s) => {
+          const w = s.week
+          if (!w || !w.entries) return <span className="muted">–</span>
+          const top = weekBlockers(w)[0]
+          return (
+            <span className="sc-cell end" title={weekTitle(w)}>
+              <span className="mono">{w.entries}</span>
+              <span className="sc-sub"><b className={w.opened ? 'gain' : ''}>{w.opened} opened</b>{top ? ` · ${top[0]} ${top[1]}` : ''}</span>
+            </span>
+          )
+        },
+      },
+      {
+        key: 'share', header: 'Entry share', value: (s) => s.week?.entries ?? 0, title: 'This scanner\'s part of all entry signals in the last seven days',
+        render: (s) => (totalEntries && s.week?.entries ? <ShareBar pct={(s.week.entries / totalEntries) * 100} /> : <span className="muted">–</span>),
+      },
+      {
+        key: 'record', header: 'Record', value: (s) => s.stats?.trades ?? 0, title: 'Closed paper trades, win rate and profit factor. The second line is the backtest profit factor.',
+        render: (s) => {
+          const st = s.stats
+          return st?.trades ? (
+            <span className="sc-cell">
+              <span className="small"><span className="mono">{st.trades}</span> trades · <span className="mono">{fmtPct(st.winRatePct)}</span> win</span>
+              <span className="sc-sub">PF {fmtProfitFactor(st.profitFactor)} · backtest {fmtProfitFactor(st.backtest?.profitFactor)}</span>
+            </span>
+          ) : (
+            <span className="sc-cell"><span className="muted small">No trades yet</span><span className="sc-sub">backtest PF {fmtProfitFactor(st?.backtest?.profitFactor)}</span></span>
+          )
+        },
+      },
+      { key: 'pnl', header: 'PnL', numeric: true, value: (s) => s.stats?.pnl, render: (s) => <Pnl value={s.stats?.pnl} /> },
+      {
+        key: 'lastRun', header: 'Last run', value: (s) => s.lastRun?.at ?? null,
+        render: (s) =>
+          s.lastRun ? (
+            <span className="sc-cell" title={`${s.lastRun.symbol} ${s.lastRun.tf}`}>
+              <span className="small"><Time t={s.lastRun.at} mode="ago" /></span>
+              <span className="sc-sub">{s.lastRun.error ? <span className="loss">failed</span> : fmtMs(s.lastRun.ms)}</span>
+            </span>
+          ) : (
+            <span className="muted">never</span>
+          ),
+      },
+      {
+        key: 'enabled', header: 'On', value: (s) => (s.enabled ? 1 : 0),
+        render: (s) => (
+          <label className="switch" title={s.status !== 'ok' ? `Cannot enable: ${s.reason ?? s.status}` : s.enabled ? 'Enabled' : 'Disabled'}>
+            <input type="checkbox" checked={s.enabled} disabled={s.status !== 'ok' || busy} onChange={(e) => patch(s, { enabled: e.target.checked })} aria-label={`Enable ${s.name}`} />
+            <span className="switch-ui" />
+          </label>
+        ),
+      },
+      {
+        key: 'actions', header: <span className="sr-only">Actions</span>, sortable: false, align: 'right',
+        render: (s) => (
+          <span className="sc-actions">
+            {s.health?.quarantined && (
+              <button className="btn btn-xs btn-danger-outline" onClick={() => releaseNow(s)} disabled={busy || release.isPending} title={`Quarantined: ${s.health.reason ?? s.health.lastError}. Release it to schedule it again; a repeat failure quarantines it again.`}>Release</button>
+            )}
+            <RowMenu label={`Actions for ${s.name}`} items={rowMenuItems(s)} />
+          </span>
+        ),
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [busy, run.isPending, release.isPending, totalEntries, auth.canTrade],
+  )
+  const rowMenuItems = (s: Scanner): MenuItem[] => [
+    { key: 'open', label: 'Open details', to: `/scanners/${s.id}` },
+    { key: 'run', label: <><IconPlay /> Run now</>, onSelect: () => runNow(s), disabled: s.status !== 'ok' || !auth.canTrade || run.isPending, title: s.status !== 'ok' ? `Cannot run: ${s.reason ?? s.status}` : 'Queue one run now' },
+    { key: 'tv', label: 'Open on TradingView', href: s.url },
+    ...(s.health?.quarantined ? [{ key: 'release', label: 'Release from quarantine', onSelect: () => releaseNow(s), disabled: busy || release.isPending }] : []),
+    { key: 'hide', label: s.hidden ? 'Restore to the list' : 'Remove from the list', onSelect: () => onHide(s), disabled: busy, danger: !s.hidden, title: s.hidden ? undefined : 'Disables it and hides it. Restore it later with Show removed.' },
+  ]
+
+  const moreItems: MenuItem[] = [
+    { key: 'enable', label: bulkBusy ? 'Working…' : 'Enable all runnable', onSelect: () => bulk(true), disabled: busy || !scanners.data, title: 'Every runnable scanner on its own symbols: a fleet far above the cap, which the server refuses. Enable scanners one at a time or through the Incubator instead.' },
+    { key: 'disable', label: 'Disable all', onSelect: () => setConfirmDisableAll(true), disabled: busy || !scanners.data || enabledCount === 0, danger: true, title: 'Stops every enabled scanner. Open positions are kept.' },
+  ]
+  const subtitle = scanners.data ? `${tabCounts.trading} trading now, ${tabCounts.catalogue} in the catalogue, ${tabCounts.quarantined} quarantined${hiddenCount ? `, ${hiddenCount} removed` : ''}.` : 'Loading scanners.'
+  const tabItems = [
+    { id: 'trading' as const, label: 'Trading', count: scanners.data ? tabCounts.trading : undefined },
+    { id: 'catalogue' as const, label: 'Catalogue', count: scanners.data ? tabCounts.catalogue : undefined },
+    { id: 'quarantined' as const, label: 'Quarantined', count: scanners.data ? tabCounts.quarantined : undefined, attention: tabCounts.quarantined > 0 && todo.some((t) => t.tone === 'danger') },
+    { id: 'readiness' as const, label: 'Readiness' },
+    { id: 'contributions' as const, label: 'Contributions' },
+  ]
+  const shownTodo = todoAll ? todo : todo.slice(0, 5)
+
+  return (
+    <div className="page sc-page">
+      <PageTitle
+        sub={subtitle}
+        actions={
+          <>
+            <button className="btn" onClick={() => autoTune()} disabled={busy || !scanners.data} title="Review backtest recommendations. Advisory while Incubator is enabled; applies symbol allocations only when Incubator is off.">
+              Review backtests
+            </button>
+            <RowMenu label="Bulk actions" items={moreItems}>More</RowMenu>
+          </>
+        }
+      />
+
+      <StatGrid min={150}>
+        <Stat label="Entry signals · 7d" value={scanners.data ? fleet.totalEntries.toLocaleString() : '–'} sub={scanners.data ? `${fleet.opened} opened a trade` : undefined} title="Entry signals from every listed scanner in the last seven days" />
+        <Stat label="Largest share" value={fleet.top ? `${fleet.top.pct.toFixed(0)}%` : '–'} tone={fleet.top && fleet.top.pct >= 50 ? 'warn' : undefined} sub={fleet.top ? <span title={fleet.top.name}>{fleet.top.name}</span> : 'No entry signals yet'} title="The scanner with the biggest part of all entry signals" />
+        <Stat label="Runs · 24h" value={pipe ? pipe.runs.toLocaleString() : '–'} tone={pipe && pipe.failures > 0 ? 'warn' : undefined} sub={pipe ? `${pipe.failures} failed` : pipeline.isError ? 'Not available' : 'Loading'} title="Scans of scheduled scanner and market pairs in the last 24 hours" />
+        <Stat label="Last run" value={fleet.lastRunAt ? timeAgo(fleet.lastRunAt) : '–'} sub={fleet.lastRunName ?? 'Nothing has run yet'} title="The most recent scan by any scanner" />
+      </StatGrid>
+
+      <Tabs value={tab} onChange={setTab} items={tabItems} label="Scanner views" idPrefix="sc" />
+
+      {isListTab && (
+        <TabPanel id={tab} value={tab} idPrefix="sc">
+          {tab === 'trading' && scanners.data && (todo.length > 0 ? (
+            <div className="needs" style={{ marginBottom: 'var(--gap-page)' }}>
+              <div className="needs-head"><h2>Worth acting on</h2><span className="needs-count mono">{todo.length}</span></div>
+              <ul className="needs-list">
+                {shownTodo.map((t) => (
+                  <li key={t.s.id} className="sc-todo-item">
+                    <span className="needs-text"><span className={`sc-todo-tone ${t.tone}`} aria-hidden /><span><Link to={`/scanners/${t.s.id}`} className="strong">{t.s.name}</Link> {t.text}</span></span>
+                    <span className="sc-todo-actions">
+                      {t.release && <button className="btn btn-xs btn-danger-outline" onClick={() => releaseNow(t.s)} disabled={busy || release.isPending}>Release</button>}
+                      <Link to={`/scanners/${t.s.id}`} className="btn btn-xs">Open</Link>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {todo.length > 5 && <button type="button" className="btn btn-xs btn-quiet" style={{ marginTop: 6 }} onClick={() => setTodoAll((v) => !v)}>{todoAll ? 'Show fewer' : `Show all ${todo.length}`}</button>}
+            </div>
+          ) : (
+            <div style={{ marginBottom: 'var(--gap-page)' }}><Callout tone="ok" title="Nothing needs action.">Every scanner that is on is scheduled and running.</Callout></div>
+          ))}
+
+          {tab === 'quarantined' && (
+            <div style={{ marginBottom: 'var(--gap-page)' }}>
+              <Callout tone="warn" title="These scanners failed repeatedly and are not scheduled.">Release one to schedule it again. A repeat failure quarantines it again.</Callout>
+            </div>
+          )}
+
+          <div className="sc-filters">
+            <Toolbar
+              end={
+                <>
+                  <span className="sc-count" role="status">{scanners.data ? `${rows.length} shown` : 'Loading…'}</span>
+                  <Segmented
+                    ariaLabel="View"
+                    value={view}
+                    onChange={setView}
+                    options={[
+                      { value: 'list', label: 'List', ariaLabel: 'List view' },
+                      { value: 'cards', label: 'Cards', ariaLabel: 'Card view' },
+                      { value: 'table', label: 'All columns', ariaLabel: 'All columns, with symbol and exit editing' },
+                    ]}
+                  />
+                </>
+              }
+            >
+              <input className="input sc-search" type="search" placeholder="Search scanners" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search scanners by name or id" />
+              <Segmented
+                ariaLabel="Book"
+                value={bookFilter}
+                onChange={setBookFilter}
+                options={[
+                  { value: 'all', label: 'All books' },
+                  { value: 'account', label: 'In the account' },
+                  { value: 'shadow', label: 'In the shadow book' },
+                  { value: 'none', label: 'Not trading' },
+                ]}
+              />
+              <select className="select" value={author} onChange={(e) => setAuthor(e.target.value)} aria-label="Author" style={{ width: 'auto', maxWidth: 200 }}>
+                {authors.map((a) => (
+                  <option key={a} value={a}>{a === 'All' ? 'All authors' : a}</option>
+                ))}
+              </select>
+              <label className="sc-field">
+                <span>Paper activity</span>
+                <select className="select" value={activity} onChange={(e) => setActivity(e.target.value)}>
+                  <option value="all">All states</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="fault">Errors / quarantine</option>
+                  <option value="unallocated">No scheduled cells</option>
+                  <option value="context">Entries disabled</option>
+                  <option value="off">Paper disabled</option>
+                  <option value="unknown">Schedule unknown</option>
+                </select>
+              </label>
+              <label className="sc-check" title="Removed scanners stay disabled; restore any from here">
+                <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} disabled={!scanners.data} /> Show removed{scanners.data ? ` (${hiddenCount})` : ''}
+              </label>
+              {(filtersActive || showHidden) && <button className="btn btn-sm" onClick={resetFilters}>Clear filters</button>}
+            </Toolbar>
+            <div className="sc-chips" role="group" aria-label="Category">
+              {CATEGORIES.map((c) => (
+                <button key={c} type="button" className="sc-chip" aria-pressed={cat === c} onClick={() => setCat(c)}>
+                  {c}{c !== 'All' && counts.get(c) ? <span className="sc-chip-n">{counts.get(c)}</span> : null}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {scanners.isLoading && !scanners.data && (view === 'cards' ? <Loading kind="cards" rows={6} /> : <Loading kind="table" rows={10} cols={8} />)}
+          {scanners.isError && !scanners.data && <ErrorState error={scanners.error} onRetry={() => scanners.refetch()} />}
+
+          {scanners.data && rows.length === 0 && (
+            <div className="panel" style={{ marginTop: 'var(--gap-page)' }}>
+              <EmptyState
+                title={tab === 'trading' && !filtersActive ? 'No scanner is trading.' : tab === 'quarantined' && !filtersActive ? 'No scanner is quarantined.' : 'No scanners match these filters.'}
+                hint={tab === 'trading' && !filtersActive ? 'Turn one on from the Catalogue, or promote one through the Incubator.' : tab === 'quarantined' && !filtersActive ? 'Scanners land here after repeated failures.' : 'Clear a filter or pick another category.'}
+                action={
+                  <>
+                    {(filtersActive || showHidden) && <button className="btn btn-sm" onClick={resetFilters}>Clear filters</button>}
+                    {tab !== 'catalogue' && <button className="btn btn-sm" onClick={() => setTab('catalogue')}>Open the catalogue</button>}
+                  </>
+                }
+              />
+            </div>
+          )}
+
+          {scanners.data && rows.length > 0 && view !== 'cards' && (
+            <div className="panel sc-list" style={{ marginTop: 'var(--gap-page)' }}>
+              <DataTable
+                key={view}
+                columns={view === 'list' ? listCols : tableCols}
+                rows={rows}
+                rowKey={(s) => s.id}
+                defaultSort={view === 'list' ? (tab === 'quarantined' ? { key: 'name', dir: 'asc' } : { key: 'entries', dir: 'desc' }) : { key: 'name', dir: 'asc' }}
+                caption="Scanners"
+                rowHeight={view === 'list' ? 56 : 38}
+              />
+            </div>
+          )}
+
+          {scanners.data && rows.length > 0 && view === 'cards' && (
+            <div className="sc-cards" style={{ marginTop: 'var(--gap-page)' }}>
+              {visibleRows.map((s) => (
+                <ScannerCard key={s.id} s={s} onToggle={(v) => patch(s, { enabled: v })} onRun={() => runNow(s)} onHide={() => onHide(s)} onRelease={() => releaseNow(s)} busy={busy} runBusy={(!auth.canTrade || run.isPending)} />
+              ))}
+            </div>
+          )}
+          {scanners.data && view === 'cards' && rows.length > visibleRows.length && (
+            <div className="more-row">
+              <button type="button" className="btn" onClick={() => setPage({ key: pageKey, n: shown + PAGE })}>
+                Show {Math.min(PAGE, rows.length - visibleRows.length)} more
+              </button>
+              <button type="button" className="btn btn-quiet" onClick={() => setPage({ key: pageKey, n: rows.length })}>
+                Show all {rows.length}
+              </button>
+              <span className="muted small mono">{visibleRows.length} of {rows.length}</span>
+            </div>
+          )}
+        </TabPanel>
       )}
 
-      {scanners.data && view === 'cards' && (
-        <div className="cards-2">
-          {rows.length === 0 && <Empty label="No scanners match." hint="Try another category, author or filter." />}
-          {visibleRows.map((s) => (
-            <ScannerCard key={s.id} s={s} onToggle={(v) => patch(s, { enabled: v })} onRun={() => runNow(s)} onHide={() => onHide(s)} onRelease={() => releaseNow(s)} busy={busy} runBusy={(!auth.canTrade || run.isPending)} />
-          ))}
-        </div>
-      )}
-      {scanners.data && view === 'cards' && rows.length > visibleRows.length && (
-        <div className="more-row">
-          <button type="button" className="btn" onClick={() => setPage({ key: pageKey, n: shown + PAGE })}>
-            Show {Math.min(PAGE, rows.length - visibleRows.length)} more
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={() => setPage({ key: pageKey, n: rows.length })}>
-            Show all {rows.length}
-          </button>
-          <span className="muted small mono">
-            {visibleRows.length} of {rows.length}
-          </span>
-        </div>
-      )}
+      <TabPanel id="readiness" value={tab} idPrefix="sc"><ScannerReadinessMatrix /></TabPanel>
+      <TabPanel id="contributions" value={tab} idPrefix="sc"><ScannerContributions /></TabPanel>
 
       <ConfirmDialog
         open={confirmDisableAll}
@@ -523,3 +738,64 @@ function BookCells({ s }: { s: Scanner }) {
     </span>
   )
 }
+
+// ---------- tabs and fleet numbers ----------
+
+type ScTab = 'trading' | 'catalogue' | 'quarantined' | 'readiness' | 'contributions'
+const tabFromHash = (h: string): ScTab | null => (h === '#readiness' ? 'readiness' : h === '#contributions' || h === '#contribution-ledger' ? 'contributions' : null)
+/** On in the account, or allocated in the account, shadow or proposed books. */
+const isTrading = (s: Scanner) => s.enabled || !!(s.books && (s.books.account.length || s.books.shadow.length || s.books.proposed.length))
+const isQuarantined = (s: Scanner) => !!s.health?.quarantined
+
+type Week = NonNullable<Scanner['week']>
+/** What the entry signals of the last seven days ran into, largest first. */
+function weekBlockers(w: Week): Array<[string, number]> {
+  return ([['waiting', w.pending ?? 0], ['pilot cap', w.pilot ?? 0], ['stops', w.protection ?? 0], ['gate', w.gate], ['fee', w.fee], ['regime', w.regime], ['guard', w.guard], ['other', w.other]] as Array<[string, number]>)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+}
+const weekTitle = (w: Week) => `filled ${w.opened} · pending ${w.pending ?? 0} · pilot cap ${w.pilot ?? 0} · protection ${w.protection ?? 0} · gate ${w.gate} · fee ${w.fee} · regime ${w.regime} · guards ${w.guard} · other ${w.other}`
+
+function fleetStats(all: Scanner[]) {
+  let totalEntries = 0, opened = 0, lastRunAt = 0
+  let top: { name: string; entries: number } | null = null
+  let lastRunName: string | null = null
+  for (const s of all) {
+    if (s.hidden) continue
+    const n = s.week?.entries ?? 0
+    totalEntries += n
+    opened += s.week?.opened ?? 0
+    if (n > (top?.entries ?? 0)) top = { name: s.name, entries: n }
+    if (s.lastRun && s.lastRun.at > lastRunAt) { lastRunAt = s.lastRun.at; lastRunName = s.name }
+  }
+  return { totalEntries, opened, top: top && totalEntries ? { name: top.name, pct: (top.entries / totalEntries) * 100 } : null, lastRunAt: lastRunAt || null, lastRunName }
+}
+
+/** Scanners that are on (or held back) and need a look, worst first. */
+function worthActingOn(all: Scanner[]): Array<{ s: Scanner; tone: 'danger' | 'warn'; text: string; release?: boolean }> {
+  const out: Array<{ s: Scanner; tone: 'danger' | 'warn'; text: string; release?: boolean }> = []
+  for (const s of all) {
+    if (s.hidden || !isTrading(s)) continue
+    if (s.health?.quarantined) { out.push({ s, tone: 'danger', text: `is quarantined: ${s.health.reason ?? s.health.lastError}`, release: true }); continue }
+    const a = scannerActivity(s)
+    if (a.key === 'fault') out.push({ s, tone: 'danger', text: `${a.label.toLowerCase()}: ${a.detail}` })
+    else if (a.key === 'unallocated') out.push({ s, tone: 'warn', text: 'is on but has no paper cells scheduled. Assign pairs for it to run.' })
+    else if (a.key === 'context') out.push({ s, tone: 'warn', text: 'is on but its reader has no entry channels, so it cannot open trades.' })
+    else if (s.week && s.week.entries >= 3 && s.week.opened === 0) {
+      const top = weekBlockers(s.week)[0]
+      out.push({ s, tone: 'warn', text: `gave ${s.week.entries} entry signals in 7 days and none opened${top ? `. Most were held by ${top[0]}.` : '.'}` })
+    }
+  }
+  return out.sort((a, b) => (a.tone === b.tone ? 0 : a.tone === 'danger' ? -1 : 1))
+}
+
+function ShareBar({ pct }: { pct: number }) {
+  const label = pct < 10 ? pct.toFixed(1) : pct.toFixed(0)
+  return (
+    <span className="sc-share" role="img" aria-label={`${label}% of entry signals`}>
+      <span className="sc-share-track"><span className="sc-share-fill" style={{ width: `${Math.min(100, pct)}%` }} /></span>
+      <span className="mono small">{label}%</span>
+    </span>
+  )
+}
+

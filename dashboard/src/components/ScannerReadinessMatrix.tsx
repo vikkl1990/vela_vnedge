@@ -15,7 +15,7 @@ export function ScannerReadinessMatrix(){
   const d=q.data,rows=filterReadiness(d.rows,search,scope),pageNo=Math.min(page,Math.max(0,Math.ceil(rows.length/15)-1)),visible=rows.slice(pageNo*15,pageNo*15+15)
   const current=d.rows.find(r=>r.key===selected?.key)
   return <section className="contribution-panel" aria-label="Scanner contract readiness">
-    <div className="contribution-heading"><div><h2>Intent, implementation and evidence.</h2><p className="muted">Read-only registry · updated {timeAgo(d.at)} · activity over 24 hours</p></div><button className="btn" onClick={()=>{void q.refetch();if(selected)void detail.refetch()}} disabled={q.isFetching}>Refresh readiness</button></div>
+    <div className="contribution-heading"><div><h2>Contracts and readiness</h2><p className="muted">What each scanner is meant to do, what the bot supports, and how much it has been scanned. Read only. Updated {timeAgo(d.at)}. Activity covers 24 hours.</p></div><button className="btn" onClick={()=>{void q.refetch();if(selected)void detail.refetch()}} disabled={q.isFetching}>Refresh readiness</button></div>
     {q.isError&&<ErrorState error={q.error} onRetry={()=>q.refetch()}/>}
     <div className="contribution-kpis"><div><strong>{d.summary.scanners}</strong><span>Enabled / shadow scanners</span></div><div><strong>{d.summary.plans}</strong><span>Independent research profiles</span></div><div><strong>{d.summary.sourceMatched}</strong><span>Source-matched reviews</span></div><div><strong>{d.summary.reviewNeeded}</strong><span>Have review gaps</span></div></div>
     <p className="contribution-note">A review gap is not automatically a trading block. “Collecting” means a recent scan on at least one cell. Eligibility remains with the existing evidence rules.</p>

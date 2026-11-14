@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useBacktest, useConfig, useEquity, useMarkets, useProfileScanner, useReleaseScanner, useRunBacktest, useRunScanner, useScannerProfile, useScannerSource, useScanners, useSignals, useTrades, useUpdateScanner } from '../api/queries'
 import { useAuth } from '../auth/AuthGate'
@@ -8,12 +8,14 @@ import { ChartFrames } from '../chart/ChartFrames'
 import { EquityChart } from '../components/charts'
 import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconPlay } from '../components/Icons'
+import { Callout, EmptyState, PageHeader, Stat, StatGrid, TabPanel, Tabs, Toolbar } from '../components/kit'
 import { ScreenNow } from '../components/ScreenNow'
-import { ChipSelect, Collapsible, Empty, ErrorState, ExitReasonPill, KpiTile, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
+import { ChipSelect, ErrorState, ExitReasonPill, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
 import { SignalsTable } from './Signals'
 import { fmtInt, fmtMs, fmtProfitFactor, fmtPct, fmtPrice, fmtR } from '../lib/format'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
+import '../styles/pages/scanners.css'
 
 export function ScannerDetail() {
   const { id = '' } = useParams()
@@ -46,7 +48,10 @@ export function ScannerDetail() {
   const signals = useSignals({ scanner: id, limit: 100 })
   const trades = useTrades({ scanner: id, limit: 200 })
   const equity = useEquity(id)
+  const auth = useAuth()
   const run = useRunScanner()
+  const release = useReleaseScanner()
+  const [tab, setTab] = useState<DetailTab>('overview')
   const backtest = useBacktest(id, symbol, tf)
   const runBt = useRunBacktest()
   const tick = markets.data?.find((m) => m.symbol === symbol)?.tickSize
@@ -74,87 +79,118 @@ export function ScannerDetail() {
   const bt = st?.backtest
   const btRes = runBt.data ?? backtest.data
 
+  const h = s.health
+  const factPills: Array<[string, ReactNode]> = [
+    ['Exits', s.exitMode],
+    ['Paper cells', s.scheduledCells ?? 0],
+    ['Protection', s.entryProtection ?? 'inherit'],
+    ['ATR floor', `${s.minAtrPct ?? '–'}%`],
+    ...(s.entryLimit ? [['Maker', `${s.entryLimit.atr} ATR · ${s.entryLimit.minutes}m expiry`] as [string, ReactNode]] : []),
+    ['Source', <span className="mono" key="src">v{s.pineVersion} · {s.lines} lines</span>],
+  ]
+  const lr = s.lastRun
+  const tabItems = [
+    { id: 'overview' as const, label: 'Overview' },
+    { id: 'chart' as const, label: 'Chart' },
+    { id: 'activity' as const, label: 'Signals and trades', count: signals.data ? signals.data.length : undefined },
+    { id: 'backtest' as const, label: 'Backtest' },
+    { id: 'reading' as const, label: 'How it is read', attention: !!h?.quarantined },
+    { id: 'source' as const, label: 'Source' },
+  ]
+
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <nav className="crumbs small muted" aria-label="Breadcrumb">
-            <Link to="/scanners" className="link">
-              scanners
-            </Link>{' '}
-            / <span className="mono">{s.id}</span>
-          </nav>
-          <h1 className="h1">
-            {s.name}{' '}
-            <a href={s.url} target="_blank" rel="noreferrer" className="link muted" title="Open on TradingView" aria-label="Open on TradingView">
-              <IconExternal size={14} />
-            </a>
-          </h1>
-          <div className="row gap">
+    <div className="page sc-page">
+      <PageHeader
+        title={s.name}
+        subtitle={`Entry signals, results and settings for this scanner. File ${s.file}.`}
+        meta={
+          <>
             <ScannerStatusPill status={s.status} reason={s.reason} />
-            <Pill tone={s.enabled ? 'ok' : 'muted'}>{s.enabled ? 'ENABLED' : 'DISABLED'}</Pill>
-            <Pill tone="accent">{s.exitMode}</Pill>
-            <Pill tone={s.scheduledCells ? 'ok' : 'warn'}>{s.scheduledCells ?? 0} PAPER CELLS</Pill>
-            <Pill tone="muted">{s.entryProtection ?? 'inherit'} protection</Pill>
-            <Pill tone="muted">ATR floor {s.minAtrPct ?? '–'}%</Pill>
-            {s.entryLimit && <Pill tone="accent">Maker {s.entryLimit.atr} ATR · {s.entryLimit.minutes}m expiry</Pill>}
-            <span className="muted small mono">
-              v{s.pineVersion} · {s.lines} lines · {s.file}
-            </span>
+            <Pill tone={s.enabled ? 'ok' : 'muted'}>{s.enabled ? 'On' : 'Off'}</Pill>
+            {h?.quarantined && <Pill tone="danger" title={h.lastError}>Quarantined</Pill>}
+          </>
+        }
+        actions={
+          <>
             {s.status === 'ok' && <ScreenNow ids={[s.id]} label={s.name} />}
+            <a href={s.url} target="_blank" rel="noreferrer" className="btn" aria-label={`Open ${s.name} on TradingView`}>TradingView <IconExternal size={13} /></a>
+            <button
+              className="btn btn-cta"
+              onClick={() =>
+                run.mutate(s.id, {
+                  onSuccess: (r) => toast.success('Queued', `${r.queued} run(s)`),
+                  onError: (e) => toast.error('Run failed', e.message),
+                })
+              }
+              disabled={s.status !== 'ok' || run.isPending}
+            >
+              <IconPlay /> {run.isPending ? 'Queuing…' : 'Run now'}
+            </button>
+          </>
+        }
+      />
+
+      {h?.quarantined && (
+        <Callout
+          tone="danger"
+          title="Quarantined."
+          actions={auth.canTrade ? <button className="btn btn-sm btn-danger-outline" onClick={() => release.mutate(s.id, { onSuccess: () => toast.success('Released: it runs again from its next bar'), onError: (e) => toast.error(String((e as Error).message ?? e)) })} disabled={release.isPending} title="Lift the quarantine; a repeat failure quarantines it again">{release.isPending ? 'Releasing…' : 'Release'}</button> : undefined}
+        >
+          {h.reason ?? 'It failed repeatedly'}, so it is not scheduled. Release it to try again; a repeat failure quarantines it again.
+        </Callout>
+      )}
+      {s.reason && !h?.quarantined && <Callout tone="danger" title="Cannot run.">{s.reason}</Callout>}
+      {s.enabled && !s.symbols.length && <Callout tone="warn" title="No pairs assigned.">Turning a scanner on does not schedule paper scans. Assign pairs on the Incubator.</Callout>}
+
+      <Tabs value={tab} onChange={setTab} items={tabItems} label="Scanner sections" idPrefix="sd" />
+
+      <TabPanel id="overview" value={tab} idPrefix="sd">
+        <div className="sc-page">
+          <div className="sd-stats">
+          <StatGrid min={150}>
+            <Stat label="Signals" value={fmtInt(st?.signals)} />
+            <Stat label="Trades" value={fmtInt(st?.trades)} sub={`${st?.open ?? 0} open`} />
+            <Stat label="Win rate" value={fmtPct(st?.winRatePct)} sub={`${st?.wins ?? 0}W / ${st?.losses ?? 0}L`} />
+            <Stat label="Profit factor" value={fmtProfitFactor(st?.profitFactor)} tone={st?.profitFactor == null ? undefined : st.profitFactor >= 1 ? 'gain' : 'loss'} />
+            <Stat label="PnL" value={<Pnl value={st?.pnl} />} sub={fmtPct(st?.pnlPct, 1, true)} />
+            <Stat label="Average R" value={fmtR(st?.avgR)} tone={st?.avgR == null ? undefined : st.avgR >= 0 ? 'gain' : 'loss'} />
+            <Stat label="Max drawdown" value={`−${fmtPct(Math.abs(st?.maxDrawdownPct ?? 0))}`} tone="loss" />
+            <Stat label="Backtest PF" value={bt ? fmtProfitFactor(bt.profitFactor) : '–'} sub={bt ? <>{bt.trades} trades · {fmtPct(bt.winRatePct)}</> : 'No warm backtest'} title="Backtest profit factor" />
+          </StatGrid>
           </div>
-          {s.reason && <div className="small loss mt">{s.reason}</div>}
-          {s.enabled && !s.symbols.length && <p className="small loss">No pairs are assigned. Enabling a scanner alone does not schedule paper scans.</p>}
-          {!!s.reads?.labels?.length && <p className="small muted">Accepted entry labels: {s.reads.labels.join(', ')}</p>}
-          {s.lastRun && (
-            <div className="small muted mt">
-              last run <Time t={s.lastRun.at} mode="ago" /> on {s.lastRun.symbol} {s.lastRun.tf} in {fmtMs(s.lastRun.ms)}
-              {s.lastRun.error && <span className="loss"> · {s.lastRun.error}</span>}
+
+          <Panel title="Equity curve">
+            <QueryState {...equity} data={equity.data} empty="No equity points for this scanner." hint="The curve starts with its first closed trade." skeleton="chart" skeletonHeight={200} onRetry={() => equity.refetch()}>
+              {(d) => <EquityChart data={d} height={220} />}
+            </QueryState>
+          </Panel>
+
+          <Panel title="Setup and last run">
+            <div className="sd-facts" style={{ marginBottom: 10 }}>
+              {factPills.map(([k, v]) => <span className="sd-fact" key={k}>{k} <b>{v}</b></span>)}
             </div>
-          )}
-          {s.lastRun?.funnel && (
-            <div className="small muted mt" title="What the last live run produced and where it emptied: raw script outputs → events the reader kept → outputs dropped, with the reason → what became of this bar's signals">
-              funnel: {s.lastRun.funnel.raw.alerts} alert() · {s.lastRun.funnel.raw.conditions} conditions · {s.lastRun.funnel.raw.shapes} shapes · {s.lastRun.funnel.raw.labels} labels
-              {' → '}{s.lastRun.funnel.events.entries} entries, {s.lastRun.funnel.events.exits} exits, {s.lastRun.funnel.events.info} info
-              {Object.keys(s.lastRun.funnel.drops).length > 0 && <> · dropped: {Object.entries(s.lastRun.funnel.drops).map(([k, n]) => `${k} ×${n}`).join(', ')}</>}
-              {Object.keys(s.lastRun.funnel.actions).length > 0 && <> → {Object.entries(s.lastRun.funnel.actions).map(([k, n]) => `${k} ×${n}`).join(', ')}</>}
-              {s.lastRun.funnel.note && <> · {s.lastRun.funnel.note}</>}
+            <div className="sd-lastrun">
+              {lr ? (
+                <span>Last run <Time t={lr.at} mode="ago" /> on <span className="mono">{lr.symbol} {lr.tf}</span> in <span className="mono">{fmtMs(lr.ms)}</span>{lr.error && <span className="loss"> · {lr.error}</span>}</span>
+              ) : <span>This scanner has not run yet.</span>}
+              {lr?.funnel && (
+                <span title="What the last live run produced and where it emptied: raw script outputs, then events the reader kept, then outputs dropped with the reason, then what became of this bar's signals">
+                  Funnel: {lr.funnel.raw.alerts} alert() · {lr.funnel.raw.conditions} conditions · {lr.funnel.raw.shapes} shapes · {lr.funnel.raw.labels} labels
+                  {' → '}{lr.funnel.events.entries} entries, {lr.funnel.events.exits} exits, {lr.funnel.events.info} info
+                  {Object.keys(lr.funnel.drops).length > 0 && <> · dropped: {Object.entries(lr.funnel.drops).map(([k, n]) => `${k} ×${n}`).join(', ')}</>}
+                  {Object.keys(lr.funnel.actions).length > 0 && <> → {Object.entries(lr.funnel.actions).map(([k, n]) => `${k} ×${n}`).join(', ')}</>}
+                  {lr.funnel.note && <> · {lr.funnel.note}</>}
+                </span>
+              )}
+              {!!s.reads?.labels?.length && <span>Accepted entry labels: {s.reads.labels.join(', ')}</span>}
             </div>
-          )}
+          </Panel>
         </div>
-        <div className="page-actions">
-          <button
-            className="btn"
-            onClick={() =>
-              run.mutate(s.id, {
-                onSuccess: (r) => toast.success('Queued', `${r.queued} run(s)`),
-                onError: (e) => toast.error('Run failed', e.message),
-              })
-            }
-            disabled={s.status !== 'ok' || run.isPending}
-          >
-            <IconPlay /> {run.isPending ? 'Queuing…' : 'Run now'}
-          </button>
-        </div>
-      </div>
+      </TabPanel>
 
-      <div className="kpi-grid">
-        <KpiTile label="Signals" value={fmtInt(st?.signals)} />
-        <KpiTile label="Trades" value={fmtInt(st?.trades)} sub={<span className="muted">{st?.open ?? 0} open</span>} />
-        <KpiTile label="Win rate" value={fmtPct(st?.winRatePct)} sub={<span className="muted">{st?.wins ?? 0}W / {st?.losses ?? 0}L</span>} />
-        <KpiTile label="Profit factor" value={fmtProfitFactor(st?.profitFactor)} tone={(st?.profitFactor ?? 0) >= 1 ? 'gain' : 'loss'} />
-        <KpiTile label="PnL" value={<Pnl value={st?.pnl} />} sub={<span className="muted">{fmtPct(st?.pnlPct, 1, true)}</span>} />
-        <KpiTile label="Avg R" value={fmtR(st?.avgR)} tone={(st?.avgR ?? 0) >= 0 ? 'gain' : 'loss'} />
-        <KpiTile label="Max DD" value={`−${fmtPct(Math.abs(st?.maxDrawdownPct ?? 0))}`} tone="loss" />
-        <KpiTile label="Backtest PF" value={bt ? fmtProfitFactor(bt.profitFactor) : '–'} sub={bt ? <span className="muted">{bt.trades} trades · {fmtPct(bt.winRatePct)} · <Pnl value={bt.pnl} /></span> : <span className="muted">no warm backtest</span>} hint="Backtest profit factor" />
-      </div>
-
-      <ReadingPanel s={s} />
-
-      <Panel
-        title="Chart"
-        right={
-          <div className="row gap">
+      <TabPanel id="chart" value={tab} idPrefix="sd">
+        <div className="sc-page">
+          <Toolbar>
             <Segmented ariaLabel="Symbol" value={symbol} onChange={setSymbol} options={symbols} />
             <Segmented ariaLabel="Timeframe" value={tf} onChange={setTf} options={tfs.length ? tfs : [...DELTA_TIMEFRAMES]} />
             <label className="check">
@@ -163,106 +199,97 @@ export function ScannerDetail() {
             <label className="check" title="Every timeframe this scanner trades, side by side, each drawing the script">
               <input type="checkbox" checked={framesView} onChange={(e) => setFramesView(e.target.checked)} /> Frames
             </label>
-            {showScript && source.isLoading && <span className="muted small">loading source…</span>}
-            {showScript && source.isError && <span className="loss small">source unavailable</span>}
-          </div>
-        }
-        pad={false}
-      >
-        {symbol && tf ? (
-          // The chart swallows the wheel to zoom, which traps the page under the mouse. Here the page scrolls; hold Shift to zoom.
-          <div onWheelCapture={(e) => { if (!e.shiftKey) e.stopPropagation() }} title="Scroll moves the page; hold Shift to zoom the chart">
-            {framesView
-              ? <ChartFrames symbol={symbol} tfs={(tfs.length ? tfs : ['15m', '1h', '4h']).slice(0, 4)} scripts={scripts} tickSize={tick} height={tfs.length > 2 ? 760 : 420} />
-              : <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} tickSize={tick} />}
-          </div>
-        ) : <Loading kind="chart" height={520} />}
-      </Panel>
-
-      <div className="grid-2-1">
-        <Panel title="Equity curve (this scanner)">
-          <QueryState {...equity} data={equity.data} empty="No equity points for this scanner." hint="The curve starts with its first closed trade." skeleton="chart" skeletonHeight={200} onRetry={() => equity.refetch()}>
-            {(d) => <EquityChart data={d} height={200} />}
-          </QueryState>
-        </Panel>
-        <Panel
-          title="Backtest"
-          right={
-            <button
-              className="btn btn-sm btn-cta"
-              disabled={!symbol || !tf || runBt.isPending}
-              onClick={() =>
-                runBt.mutate(
-                  { scanner: s.id, symbol, tf },
-                  {
-                    onSuccess: (r) => toast.success('Backtest complete', `${r.trades?.length ?? 0} trades over ${r.bars} bars`),
-                    onError: (e) => toast.error('Backtest failed', e.message),
-                  },
-                )
-              }
-            >
-              {runBt.isPending ? 'Running…' : `Run backtest ${symbol} ${tf}`}
-            </button>
-          }
-        >
-          {backtest.isLoading && !btRes && <Loading rows={4} />}
-          {!btRes && !backtest.isLoading && <Empty label={`No backtest for ${symbol} ${tf} yet.`} hint="Run one with the button above." />}
-          {btRes && (
-            <div className="bt">
-              <div className="bt-stats">
-                <span className="stat-chip">
-                  <span className="stat-k">BARS</span>
-                  <span className="mono">{fmtInt(btRes.bars)}</span>
-                </span>
-                <span className="stat-chip">
-                  <span className="stat-k">TRADES</span>
-                  <span className="mono">{fmtInt(btRes.trades?.length ?? (btRes.stats?.trades as number))}</span>
-                </span>
-                <span className="stat-chip">
-                  <span className="stat-k">WIN</span>
-                  <span className="mono">{fmtPct(btRes.stats?.winRatePct as number)}</span>
-                </span>
-                <span className="stat-chip">
-                  <span className="stat-k">PF</span>
-                  <span className="mono">{fmtProfitFactor(btRes.stats?.profitFactor as number)}</span>
-                </span>
-                <span className="stat-chip">
-                  <span className="stat-k">PNL</span>
-                  <Pnl value={btRes.stats?.pnl as number} />
-                </span>
-                <span className="stat-chip">
-                  <span className="stat-k">MAX DD</span>
-                  <span className="mono">{fmtPct(btRes.stats?.maxDrawdownPct as number)}</span>
-                </span>
-                <span className="muted small">
-                  at <Time t={btRes.at} mode="datetime" />
-                </span>
+            {showScript && source.isLoading && <span className="muted small">Loading source…</span>}
+            {showScript && source.isError && <span className="loss small">Source unavailable</span>}
+          </Toolbar>
+          <Panel pad={false}>
+            {symbol && tf ? (
+              // The chart swallows the wheel to zoom, which traps the page under the mouse. Here the page scrolls; hold Shift to zoom.
+              <div onWheelCapture={(e) => { if (!e.shiftKey) e.stopPropagation() }} title="Scroll moves the page; hold Shift to zoom the chart">
+                {framesView
+                  ? <ChartFrames symbol={symbol} tfs={(tfs.length ? tfs : ['15m', '1h', '4h']).slice(0, 4)} scripts={scripts} tickSize={tick} height={tfs.length > 2 ? 760 : 420} />
+                  : <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} tickSize={tick} />}
               </div>
-              {btRes.equity?.length > 1 && <EquityChart data={btRes.equity.map((e) => ({ at: e.at, equity: e.equity, realized: 0, unrealized: 0 }))} height={140} />}
-              <TradesMini trades={btRes.trades ?? []} tick={tick} maxHeight={300} />
-            </div>
-          )}
+            ) : <Loading kind="chart" height={520} />}
+          </Panel>
+        </div>
+      </TabPanel>
+
+      <TabPanel id="activity" value={tab} idPrefix="sd">
+        <div className="sc-page">
+          <Panel title="Signals" right={<span className="muted small">{signals.data?.length ?? 0} latest</span>} pad={false}>
+            <QueryState {...signals} data={signals.data} empty="No signals from this scanner." hint="Signals appear after the next closed bar once it is enabled." skeleton="table" skeletonRows={5} skeletonCols={9} onRetry={() => signals.refetch()}>
+              {(d) => <SignalsTable signals={d} hideScanner maxHeight={360} />}
+            </QueryState>
+          </Panel>
+          <Panel title="Closed trades" pad={false}>
+            <QueryState {...trades} data={trades.data} empty="No closed trades from this scanner." hint="Trades land here once a TP, SL or script exit fires." skeleton="table" skeletonRows={5} skeletonCols={8} onRetry={() => trades.refetch()}>
+              {(d) => <TradesMini trades={d} tick={tick} maxHeight={360} />}
+            </QueryState>
+          </Panel>
+        </div>
+      </TabPanel>
+
+      <TabPanel id="backtest" value={tab} idPrefix="sd">
+        <div className="sc-page">
+          <Toolbar>
+            <Segmented ariaLabel="Symbol" value={symbol} onChange={setSymbol} options={symbols} />
+            <Segmented ariaLabel="Timeframe" value={tf} onChange={setTf} options={tfs.length ? tfs : [...DELTA_TIMEFRAMES]} />
+          </Toolbar>
+          <Panel
+            title={`Backtest ${symbol} ${tf}`}
+            right={
+              <button
+                className="btn btn-sm btn-cta"
+                disabled={!symbol || !tf || runBt.isPending}
+                onClick={() =>
+                  runBt.mutate(
+                    { scanner: s.id, symbol, tf },
+                    {
+                      onSuccess: (r) => toast.success('Backtest complete', `${r.trades?.length ?? 0} trades over ${r.bars} bars`),
+                      onError: (e) => toast.error('Backtest failed', e.message),
+                    },
+                  )
+                }
+              >
+                {runBt.isPending ? 'Running…' : `Run backtest ${symbol} ${tf}`}
+              </button>
+            }
+          >
+            {backtest.isLoading && !btRes && <Loading rows={4} />}
+            {!btRes && !backtest.isLoading && <EmptyState title={`No backtest for ${symbol} ${tf} yet.`} hint="Run one with the button above." />}
+            {btRes && (
+              <div className="bt">
+                <div className="sd-stats sd-stats-3">
+                <StatGrid min={120}>
+                  <Stat label="Bars" value={fmtInt(btRes.bars)} />
+                  <Stat label="Trades" value={fmtInt(btRes.trades?.length ?? (btRes.stats?.trades as number))} />
+                  <Stat label="Win rate" value={fmtPct(btRes.stats?.winRatePct as number)} />
+                  <Stat label="Profit factor" value={fmtProfitFactor(btRes.stats?.profitFactor as number)} />
+                  <Stat label="PnL" value={<Pnl value={btRes.stats?.pnl as number} />} />
+                  <Stat label="Max drawdown" value={fmtPct(btRes.stats?.maxDrawdownPct as number)} sub={<>Run <Time t={btRes.at} mode="datetime" /></>} />
+                </StatGrid>
+                </div>
+                {btRes.equity?.length > 1 && <EquityChart data={btRes.equity.map((e) => ({ at: e.at, equity: e.equity, realized: 0, unrealized: 0 }))} height={160} />}
+                <TradesMini trades={btRes.trades ?? []} tick={tick} maxHeight={300} />
+              </div>
+            )}
+          </Panel>
+        </div>
+      </TabPanel>
+
+      <TabPanel id="reading" value={tab} idPrefix="sd"><ReadingPanel s={s} /></TabPanel>
+
+      <TabPanel id="source" value={tab} idPrefix="sd">
+        <Panel title="Source">
+          <SourceViewer id={id} />
         </Panel>
-      </div>
-
-      <Panel title="Signals" right={<span className="muted small">{signals.data?.length ?? 0} latest</span>} pad={false}>
-        <QueryState {...signals} data={signals.data} empty="No signals from this scanner." hint="Signals appear after the next closed bar once it is enabled." skeleton="table" skeletonRows={5} skeletonCols={9} onRetry={() => signals.refetch()}>
-          {(d) => <SignalsTable signals={d} hideScanner maxHeight={360} />}
-        </QueryState>
-      </Panel>
-
-      <Panel title="Closed trades" pad={false}>
-        <QueryState {...trades} data={trades.data} empty="No closed trades from this scanner." hint="Trades land here once a TP, SL or script exit fires." skeleton="table" skeletonRows={5} skeletonCols={8} onRetry={() => trades.refetch()}>
-          {(d) => <TradesMini trades={d} tick={tick} maxHeight={360} />}
-        </QueryState>
-      </Panel>
-
-      <Collapsible title="Source" right={source.data ? <span className="muted small mono">{source.data.patches.length} patch(es)</span> : null}>
-        <SourceViewer id={id} />
-      </Collapsible>
+      </TabPanel>
     </div>
   )
 }
+
+type DetailTab = 'overview' | 'chart' | 'activity' | 'backtest' | 'reading' | 'source'
 
 function TradesMini({ trades, tick, maxHeight }: { trades: Trade[]; tick?: number; maxHeight?: number }) {
   const cols = useMemo<Column<Trade>[]>(
@@ -331,7 +358,6 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
   const auth = useAuth()
   const update = useUpdateScanner()
   const profile = useProfileScanner()
-  const release = useReleaseScanner()
   const rows = useScannerProfile(s.id)
   const toast = useToast()
   const [sources, setSources] = useState<EntrySource[]>(s.reads?.sources ?? [])
@@ -353,12 +379,6 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
       right={
         <div className="row gap">
           {s.kind ? <Pill tone={KIND_TONE[s.kind]} title={s.profiledAt ? `profiled ${new Date(s.profiledAt).toUTCString()}` : ''}>{s.kind}</Pill> : <span className="muted small">not profiled yet</span>}
-          {h?.quarantined && <Pill tone="danger" title={h.lastError}>quarantined: {h.reason ?? 'repeated failure'}</Pill>}
-          {h?.quarantined && (
-            <button className="btn btn-sm btn-danger-outline" onClick={() => release.mutate(s.id, { onSuccess: () => toast.success('Released: it runs again from its next bar'), onError: (e) => toast.error(String((e as Error).message ?? e)) })} disabled={release.isPending} title="Lift the quarantine; a repeat failure quarantines it again">
-              {release.isPending ? 'Releasing…' : 'Release'}
-            </button>
-          )}
           <button className="btn btn-sm" onClick={() => profile.mutate({ id: s.id }, { onError: (e) => toast.error(String((e as Error).message ?? e)) })} disabled={profile.isPending || s.status !== 'ok'} title="Run the script on ETHUSD 15m/1h/4h and classify what it produces">
             {profile.isPending ? 'Profiling…' : 'Profile now'}
           </button>
@@ -366,13 +386,12 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
       }
     >
       {(s.reads?.sides || s.reads?.variantOf) && (
-        <div className="callout small" role="note">
-          <b>Reading contract.</b>{' '}
+        <Callout tone="info" title="Reading contract.">
           {s.reads?.variantOf && <>A variant of <a className="link" href={`/scanners/${s.reads.variantOf}`}>{s.reads.variantOf}</a>: the same Pine source, read its own way, with its own record. </>}
           {s.reads?.sides && <>The account reads these outputs as written here, not as the chart's wording or arrows suggest: {Object.entries(s.reads.sides).map(([t, v], i) => <span key={t}>{i ? ' · ' : ''}<span className="mono">{t}</span> → <b>{v === 'none' ? 'not an entry' : v}</b></span>)}.</>}
-        </div>
+        </Callout>
       )}
-      <div className="grid-2">
+      <div className="sd-read-grid">
         <div>
           <ChipSelect label="Entry channel" options={SOURCES} value={sources} onChange={(v) => setSources(v as EntrySource[])} emptyLabel="all channels" disabled={!auth.canTrade} />
           <p className="muted small">Which of the script's outputs may open a trade. A plan script should read <b>alert</b> only; shapes and alertconditions on the same bars are markers, not trade calls.</p>
@@ -394,7 +413,7 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
         </div>
         <div>
           {rows.data?.rows?.length ? (
-            <table className="table">
+            <div className="sd-profile-wrap"><table className="table">
               <thead><tr><th>tf</th><th>kind</th><th className="num">entries</th><th className="num">with plan</th><th className="num">from alert</th><th className="num">alertconds</th><th className="num">shapes</th><th className="num">labels</th><th className="num">plots</th><th className="num">ms</th></tr></thead>
               <tbody>
                 {rows.data.rows.map((r) => (
@@ -405,12 +424,12 @@ function ReadingPanel({ s }: { s: NonNullable<ReturnType<typeof useScanners>['da
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           ) : (
             <p className="muted small">No profile yet. "Profile now" runs the script on ETHUSD across 15m, 1h and 4h and reports what it emits — the numbers the kind badge rests on.</p>
           )}
           {rows.data?.rows?.some((r) => r.entries > r.alertEntries && !s.reads?.sources?.length) && (
-            <p className="text-danger small">More entries than trade calls: shapes or alertconditions are being read as entries. Lock the entry channel to <b>alert</b> unless that is intended.</p>
+            <Callout tone="warn" title="More entries than trade calls.">Shapes or alertconditions are being read as entries. Lock the entry channel to <b>alert</b> unless that is intended.</Callout>
           )}
         </div>
       </div>
