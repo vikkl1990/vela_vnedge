@@ -25,20 +25,61 @@ export interface PublicationReview {
 }
 export interface AuthorReviewCatalog {
   schema: 1; generatedAt: string;
+  unavailableReason?: string;
   scripts: Record<string, { file: string; publication: string | null; integrationNotes: string[] }>;
   sources: Record<string, SourceContract>;
   publications: Record<string, PublicationReview>;
 }
-let cached: AuthorReviewCatalog | undefined;
-export function authorReviewCatalog(): AuthorReviewCatalog {
-  if (!cached) {
-    const file = path.join(SCRIPTS_DIR, 'author-reviews.json');
-    const data = JSON.parse(fs.readFileSync(file, 'utf8')) as AuthorReviewCatalog;
-    if (data.schema !== 1 || !data.scripts || !data.sources || !data.publications) throw new Error('Unsupported author review catalogue');
-    cached = data;
-  }
-  return cached;
+const object = (x: unknown): x is Record<string, any> => !!x && typeof x === 'object' && !Array.isArray(x);
+/** Check the shapes consumed by research views before publishing a new catalogue. */
+function validCatalog(x: unknown): x is AuthorReviewCatalog {
+  if (!object(x) || x.schema !== 1 || typeof x.generatedAt !== 'string' ||
+    !object(x.scripts) || !object(x.sources) || !object(x.publications)) return false;
+  const rows = (v: unknown) => Array.isArray(v) && v.every(object);
+  return Object.values(x.scripts).every(s => object(s) && typeof s.file === 'string' &&
+    (s.publication === null || typeof s.publication === 'string') && Array.isArray(s.integrationNotes) && s.integrationNotes.every((n: unknown) => typeof n === 'string')) &&
+    Object.values(x.sources).every(s => object(s) && typeof s.sha256 === 'string' &&
+      rows(s.entries) && rows(s.notEntries) && rows(s.claims) &&
+      ['stop', 'targets', 'exit'].every(k => object(s[k]) && typeof s[k].has === 'boolean') && object(s.timing)) &&
+    Object.values(x.publications).every(p => object(p) && (p.role == null || typeof p.role === 'string') &&
+      (!p.reconciliation || object(p.reconciliation) && object(p.reconciliation.sourceHashes) && rows(p.reconciliation.findings)));
 }
+
+/** Optional research data must never prevent startup. Failed versions are explicitly
+ * unavailable, not stale approvals; the next atomic replacement is picked up without restart. */
+export class AuthorReviewCatalogLoader {
+  private stamp: string | undefined;
+  private cached: AuthorReviewCatalog | undefined;
+  private file: string;
+  constructor(file: string) {this.file=file;}
+  load(): AuthorReviewCatalog {
+    let stamp: string;
+    try {
+      const s = fs.statSync(this.file);
+      stamp = `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+    } catch {
+      return this.unavailable('unreadable', 'Author review catalogue is missing or unreadable.');
+    }
+    if (stamp === this.stamp && this.cached) return this.cached;
+    try {
+      const data: unknown = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      if (!validCatalog(data)) throw new Error('Invalid catalogue');
+      this.stamp = stamp; this.cached = data;
+      return data;
+    } catch {
+      return this.unavailable(stamp, 'Author review catalogue is invalid or incomplete.');
+    }
+  }
+  private unavailable(stamp: string, reason: string): AuthorReviewCatalog {
+    if (this.stamp !== stamp || !this.cached) {
+      this.stamp = stamp;
+      this.cached = {schema: 1, generatedAt: '', unavailableReason: reason, scripts: {}, sources: {}, publications: {}};
+    }
+    return this.cached;
+  }
+}
+const catalogLoader = new AuthorReviewCatalogLoader(path.join(SCRIPTS_DIR, 'author-reviews.json'));
+export function authorReviewCatalog(): AuthorReviewCatalog { return catalogLoader.load(); }
 
 export function authorReview(s: Pick<LoadedScanner, 'id' | 'variantOf' | 'variantReason' | 'file' | 'source' | 'patches'>,
   sc: Partial<ScannerConfig> = {}, catalog = authorReviewCatalog()) {
@@ -60,6 +101,7 @@ export function authorReview(s: Pick<LoadedScanner, 'id' | 'variantOf' | 'varian
     : !reconciliation.sourceChecked ? 'description only'
     : reconciliation.sourceHashes[s.file] === hash ? 'matches' : 'source changed or not inspected';
   return {
+    unavailableReason: catalog.unavailableReason ?? null,
     asOf: catalog.generatedAt, sourceStatus, sourceHash: hash, reviewedSourceHash: historical?.sha256 ?? null,
     sourceReviewedAt: historical?.reviewedAt ?? null, contract,
     publication, descriptionStatus,

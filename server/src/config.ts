@@ -935,7 +935,7 @@ export function validateConfig(c: AppConfig): string[] {
   }
   if (p.minSizeShare !== undefined && !(Number.isFinite(p.minSizeShare) && p.minSizeShare >= 0 && p.minSizeShare <= 1)) errs.push('paper.minSizeShare must be 0..1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
-  errs.push(...validateExecutionPlans(c.executionPlans, TF_SECONDS));
+  errs.push(...validateExecutionPlans(c.executionPlans, TF_SECONDS, c));
   if (p.scalperOffer?.joinedAt !== undefined && !(Number.isFinite(p.scalperOffer.joinedAt) && p.scalperOffer.joinedAt >= 0)) errs.push('paper.scalperOffer.joinedAt must be an epoch timestamp in milliseconds');
   const offerProof=p.scalperOffer?.verification;
   if(offerProof && (offerProof.source!=='delta-india-trading-preferences'||!/^[a-f0-9]{64}$/.test(offerProof.accountHash)||typeof offerProof.connectionRevision!=='string'||!offerProof.connectionRevision||![offerProof.verifiedAt,offerProof.effectiveFrom].every(n=>Number.isSafeInteger(n)&&n>0)||offerProof.effectiveFrom<offerProof.verifiedAt)) errs.push('paper.scalperOffer.verification must contain account-bound evidence with no backdating');

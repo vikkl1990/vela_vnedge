@@ -141,7 +141,17 @@ export class PlanComparisons {
   }
 
   view() {
-    const configured=(this.cfg().executionPlans??[]).map(p=>{const snapshot=planSnapshot(this.cfg(),p,this.sourceHash(p.scannerId),this.paper.marketFeesFor?.(p.symbol));return {...p,signature:snapshot.signature,takeProfitLabel:takeProfitLabel(snapshot)};});
+    const cfg=this.cfg();
+    const configured=(cfg.executionPlans??[]).map(p=>{
+      try{
+        const snapshot=planSnapshot(cfg,p,this.sourceHash(p.scannerId),this.paper.marketFeesFor?.(p.symbol));
+        return {...p,signature:snapshot.signature,takeProfitLabel:takeProfitLabel(snapshot),configurationError:null};
+      }catch(error){
+        // Legacy/manual config edits must not hide other plans or historical results.
+        return {...p,signature:null,takeProfitLabel:'Policy unavailable',configurationError:error instanceof Error?error.message:'Invalid effective plan policy'};
+      }
+    });
+    const valid=configured.filter((p):p is typeof p & {signature:string}=>p.signature!==null);
     const eventsByCohort=new Map<string,any[]>();
     const cohorts=this.db.all<any>('SELECT * FROM execution_plan_cohorts ORDER BY first_at DESC').map(row=>{
       const p=JSON.parse(row.snapshot) as ExecutionPlanSnapshot;
@@ -169,9 +179,9 @@ export class PlanComparisons {
         drawdown,reasons,positionIds:positions.slice(-5).reverse().map(e=>e.position_id as number)};
     });
     const comparisons=[];
-    for(const group of new Set(configured.filter(p=>p.comparison).map(p=>p.comparison!.group))){
-      const control=configured.find(p=>p.comparison?.group===group&&p.comparison.role==='control');
-      const candidate=configured.find(p=>p.comparison?.group===group&&p.comparison.role==='candidate');
+    for(const group of new Set(valid.filter(p=>p.comparison).map(p=>p.comparison!.group))){
+      const control=valid.find(p=>p.comparison?.group===group&&p.comparison.role==='control');
+      const candidate=valid.find(p=>p.comparison?.group===group&&p.comparison.role==='candidate');
       if(!control||!candidate)continue;
       const ce=eventsByCohort.get(planScannerId(control))??[],ve=eventsByCohort.get(planScannerId(candidate))??[];
       const key=(e:any,p:typeof control)=>p.readingOverride?matchedReadingKey(e.source_event):e.source_event;
