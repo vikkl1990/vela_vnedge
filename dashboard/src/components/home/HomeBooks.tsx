@@ -161,12 +161,18 @@ export function PromotionLadder() {
   const now = learning.data?.at ?? 0
   const shadowQuiet = pairs && now > 0 ? quietShadowCount(pairs, now) : null
   const cand = inc.data?.candidates
-  const blocked = cand ? Math.max(0, cand.passed - cand.counts.admissible) : null
+  const candidateReasons = cand ? [
+    [cand.counts.noSlot + cand.counts.capped + cand.counts.cohort, 'waiting for capacity'],
+    [cand.counts.outside + cand.counts.refused, 'market checks'],
+    [cand.counts.expired + cand.counts.stale + cand.counts.rescreen, 'need fresh screening'],
+    [(cand.counts.cooldown ?? 0) + (cand.counts.unavailable ?? 0), 'cooldown or scanner unavailable'],
+    [cand.counts.admissible, 'ready for admission'],
+  ].filter(([count]) => Number(count) > 0).map(([count, label]) => `${count} ${label}`).join(' · ') : ''
 
   const stuck: Array<{ key: string; dot: Book; text: ReactNode; to: string; cta: string }> = []
   if (proposed) stuck.push({ key: 'proposed', dot: 'shadow', text: `${proposed} proposal${proposed === 1 ? ' waits' : 's wait'} for your decision`, to: '/decisions', cta: 'Decide' })
   if (shadowQuiet) stuck.push({ key: 'quiet', dot: 'shadow', text: `${shadowQuiet} shadow cell${shadowQuiet === 1 ? ' has' : 's have'} taken no trade in 30 days`, to: '/strategies?book=shadow', cta: 'See why' })
-  if (cand && cand.passed > 0) stuck.push({ key: 'cand', dot: 'backtest', text: `${cand.passed} pair${cand.passed === 1 ? '' : 's'} passed the backtest screen and ${cand.passed === 1 ? 'is' : 'are'} not in the shadow book${blocked ? `; ${blocked} blocked, ${cand.counts.admissible} can be admitted now` : ''}`, to: '/strategies?book=backtest', cta: 'See why' })
+  if (cand && cand.passed > 0) stuck.push({ key: 'cand', dot: 'backtest', text: `${cand.passed} scanner/market/timeframe cells passed screening and await shadow: ${candidateReasons}`, to: '/incubator?section=candidates', cta: 'Review admission' })
 
   return (
     <section className="home-panel" aria-label="Promotion ladder">

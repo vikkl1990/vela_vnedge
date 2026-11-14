@@ -11,7 +11,7 @@ export interface RotationState {
 }
 export const emptyRotation = (): RotationState => ({ day: 0, used: 0, paused: {}, last: [] });
 
-/** Only swap never-filled research cells. A timeout is not evidence of a losing strategy. */
+/** Reuse cells with no fills in the configured idle window. History remains evidence. */
 export function rotateIdleCells(store: IncubatorStore, cfg: AppConfig, waiting: PairRow[], now: number, unavailable?: (id: string) => string | null): PairRow[] {
   const inc = cfg.incubator, policy = inc.admit.rotation;
   if (!policy?.enabled || inc.gate.pool !== 'pair' || !waiting.length) return [];
@@ -19,16 +19,22 @@ export function rotateIdleCells(store: IncubatorStore, cfg: AppConfig, waiting: 
   if (state.day !== day) { state.day = day; state.used = 0; }
   if (state.used >= policy.maxPerDay) return [];
   let active = store.list(['shadow', 'proposed']);
+  const markets = store.marketsToday(now);
   const marks = store.liveMarks() ?? {}, admitted: PairRow[] = [];
   const candidates = [...waiting].sort((a, b) => a.since - b.since || admissionEvidence(b, inc).score - admissionEvidence(a, inc).score || a.id - b.id);
   for (const old of [...active].sort((a, b) => a.since - b.since || a.id - b.id)) {
     if (state.used >= policy.maxPerDay) break;
     const days = policy.idleDaysByTf[old.tf],since=store.evaluationSince(old,now);
+    const idleSince = now - days * DAY;
     const lastScan = marks[`${old.scannerId}:${old.symbol}:${old.tf}`] ?? 0;
     // Successful, recent execution is required: starvation, failures and downtime are not silence.
     if (old.stage !== 'shadow' || !(days > 0) || now - since < days * DAY || unavailable?.(old.scannerId)
       || now - lastScan > Math.max(3600_000, 3 * (TF_SECONDS[old.tf] ?? 0) * 1000)
-      || store.shadowHolds(old) || store.shadowLastEntryAt(old, since) !== null) continue;
+      || store.rotationHolds(old) || (store.shadowLastActivityAt(old) ?? -Infinity) >= idleSince) continue;
+    // Keep qualified paper-copy sources scanning even during a quiet spell. Rotating research
+    // capacity must not silently remove an approved source of account entries or exits.
+    if (inc.mirror?.enabled && store.policyFor
+      && !store.copyRefusal(old, inc.mirror, markets.get(old.symbol)?.turnoverUsd ?? null, now, {readOnly:true})) continue;
     const before = shadowCapacity(active, inc), remaining = active.filter(r => r.id !== old.id);
     const capacity = shadowCapacity(remaining, inc);
     const next = candidates.find(r => {
@@ -45,7 +51,7 @@ export function rotateIdleCells(store: IncubatorStore, cfg: AppConfig, waiting: 
     state.paused[old.id] = { at: now, until: now + policy.cooldownDays * DAY, since: old.since, replacementId: next.id };
     state.last = [...state.last, { at: now, out: old.id, in: next.id }].slice(-50);
     // Both moves, their audit events and the daily budget commit together.
-    const replacement = store.rotate(old, next, state, now);
+    const replacement = store.rotate(old, next, state, now, idleSince);
     admitted.push(replacement); active = [...remaining, replacement];
   }
   return admitted;
