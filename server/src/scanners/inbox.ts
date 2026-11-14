@@ -47,6 +47,13 @@ export class SignalInbox {
   pending():InboxRow[]{return this.db.all("SELECT * FROM signal_inbox WHERE state='pending' ORDER BY CASE kind WHEN 'exit' THEN 0 ELSE 1 END,COALESCE(last_attempt_at,0),received_at LIMIT 100");}
   attempt(r:InboxRow){this.db.run('UPDATE signal_inbox SET attempts=attempts+1,last_attempt_at=? WHERE event_key=? AND state=\'pending\'',Date.now(),r.event_key);}
   fail(r:InboxRow,error:unknown){this.db.run("UPDATE signal_inbox SET last_error=? WHERE event_key=? AND state='pending'",String((error as Error)?.message??error).slice(0,300),r.event_key);}
+  /** A temporary exchange wait keeps the original receipt/deadline, without inventing an order. */
+  defer(r:InboxRow,action:string){
+    this.db.transaction(()=>{
+      this.db.updateSignalAction(r.signal_id,action,null);
+      this.db.run("UPDATE signal_inbox SET last_error=NULL WHERE event_key=? AND state='pending'",r.event_key);
+    });
+  }
   complete(r:InboxRow,action:string,positionId:number|null){
     this.db.updateSignalAction(r.signal_id,action,positionId);
     this.db.run("UPDATE signal_inbox SET state='done',payload=NULL,completed_at=?,outcome=?,last_error=NULL WHERE event_key=?",Date.now(),action,r.event_key);
