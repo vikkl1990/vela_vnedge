@@ -7,7 +7,9 @@ import { useAuth } from '../auth/AuthGate'
 import type { IncubatorPair } from '../api/types'
 import { Clocks, Evidence, Funnel } from '../components/incubatorBits'
 import { clockRank } from '../lib/incubatorLogic'
-import { ConfirmDialog, Empty, PageTitle, Panel, Pill, QueryState } from '../components/ui'
+import { ConfirmDialog, PageTitle, Pill, QueryState } from '../components/ui'
+import { Callout, EmptyState, Section, Stat, StatGrid } from '../components/kit'
+import '../styles/pages/decisions.css'
 import { timeAgo } from '../lib/format'
 import { gateFor, gateMinimums } from '../lib/incubatorLogic'
 
@@ -38,87 +40,113 @@ export function Decisions() {
     return { proposals, clocks }
   }, [d, now])
 
-  const total = cards.proposals.length + cards.clocks.filter((c) => c.rank === 2).length + attention.length
+  const due = cards.clocks.filter((c) => c.rank === 2).length
+  const half = cards.clocks.filter((c) => c.rank === 1).length
+  const total = cards.proposals.length + due + attention.length
   return (
-    <div className="page">
-      <PageTitle pre="What waits" accent="for you," post="ranked." sub="Every decision with its evidence and its controls on one card: the gate's proposals first, then the live cells whose clock is about to run out, then what needs attention. The Incubator holds the full tables." />
+    <div className="page decisions-page">
+      <PageTitle
+        sub="Everything that waits for a decision, with its evidence and controls on the same card. Proposals first, then live cells whose clock is running out, then faults."
+        actions={<><Link to="/incubator" className="btn btn-sm">Incubator</Link><Link to="/gates" className="btn btn-sm">Gates</Link></>}
+      />
       <QueryState {...q} data={d} empty="Incubator unavailable." onRetry={() => q.refetch()}>
         {(v) => (
           <>
-            <div className="stat-strip" role="list">
-              <span role="listitem"><span className="stat-k">To decide</span> <span className={`mono ${total ? 'warn' : ''}`}>{total}</span></span>
-              <span role="listitem"><span className="stat-k">Proposals</span> <span className="mono">{cards.proposals.length}</span></span>
-              <span role="listitem"><span className="stat-k">Clocks due</span> <span className="mono">{cards.clocks.filter((c) => c.rank === 2).length}</span> <span className="muted">· {cards.clocks.filter((c) => c.rank === 1).length} half way</span></span>
-              <span role="listitem"><span className="stat-k">Attention</span> <span className="mono">{attention.length}</span></span>
-              <span role="listitem" className="muted">last judged {v.lastRun ? timeAgo(v.lastRun.at) : 'never'} · <Link to="/incubator">Incubator</Link> · <Link to="/gates">Gates</Link></span>
-            </div>
+            <StatGrid min={170}>
+              <Stat label="To decide" value={total} tone={total ? 'warn' : 'muted'} sub={`last judged ${v.lastRun ? timeAgo(v.lastRun.at) : 'never'}`} />
+              <Stat label="Proposals" value={cards.proposals.length} tone={cards.proposals.length ? 'accent' : 'muted'} sub="promote, reject or demote" />
+              <Stat label="Clocks due" value={due} tone={due ? 'warn' : 'muted'} sub={`${half} more half way`} />
+              <Stat label="Faults" value={attention.length} tone={attention.length ? 'loss' : 'muted'} sub="from the attention line" />
+            </StatGrid>
 
-            {total === 0 && cards.clocks.length === 0 && <Empty label="Nothing waits for you." hint="Proposals appear when a cohort clears the gate; a live cell appears when a demotion clock passes half way; faults appear from the attention line." />}
+            {total === 0 && (
+              <Callout tone="ok" title="Nothing waits for you.">
+                Proposals appear when a cohort clears the gate, a live cell shows up when its demotion clock passes half way, and faults come from the attention line.
+              </Callout>
+            )}
 
             {attention.length > 0 && (
-              <Panel title={`Needs attention (${attention.length})`}>
-                <div className="decision-cards">
+              <Section title={`Faults (${attention.length})`} hint="Something is wrong and needs a person.">
+                <div className="dq-list">
                   {attention.map((it) => (
-                    <article key={it.key} className="decision-card urgent">
-                      <div className="dc-head"><b>Fault</b><Pill tone="danger">attention</Pill></div>
-                      <div className="small">{it.text}</div>
-                      <div className="dc-actions"><Link to={it.href} className="btn btn-sm">Open</Link></div>
+                    <article key={it.key} className="dq-card dq-urgent">
+                      <div className="dq-head">
+                        <b className="dq-title">Fault</b>
+                        <Pill tone="danger">needs attention</Pill>
+                      </div>
+                      <p className="dq-text">{it.text}</p>
+                      <div className="dq-foot"><span /><div className="dq-actions"><Link to={it.href} className="btn btn-sm btn-primary">Open</Link></div></div>
                     </article>
                   ))}
                 </div>
-              </Panel>
+              </Section>
             )}
 
-            <Panel title={`Proposals (${cards.proposals.length})`} right={<span className="muted small">promote, reject, or confirm a demotion</span>}>
-              {cards.proposals.length === 0 ? <p className="muted small">No proposal waits. The gate proposes {v.config.gate.pool === 'cohort' ? 'a cohort' : 'a pair'} after {gateMinimums(v.config.gate)} with PF ≥ {v.config.gate.minPfR} and ≥{v.config.gate.minAvgR}R per trade.</p> : (
-                <div className="decision-cards">
-                  {cards.proposals.map((p) => (
-                    <article key={p.id} className={`decision-card ${p.stage === 'demote_proposed' ? 'soon' : ''}`}>
-                      <div className="dc-head">
-                        <span><Link to={`/scanners/${p.scannerId}`} className="strong">{p.scannerName}</Link> <span className="mono">{p.symbol} {p.tf}</span></span>
-                        <Pill tone={p.stage === 'proposed' ? 'ok' : 'danger'}>{p.stage === 'proposed' ? 'promote?' : 'demote?'}</Pill>
+            <Section title={`Proposals (${cards.proposals.length})`} hint="Promote, reject, or confirm a demotion.">
+              {cards.proposals.length === 0 ? (
+                <EmptyState title="No proposal waits" hint={`The gate proposes ${v.config.gate.pool === 'cohort' ? 'a cohort' : 'a pair'} after ${gateMinimums(v.config.gate)} with PF ≥ ${v.config.gate.minPfR} and ≥ ${v.config.gate.minAvgR}R per trade.`} />
+              ) : (
+                <div className="dq-list">
+                  {cards.proposals.map((p) => {
+                    const promote = p.stage === 'proposed'
+                    return (
+                      <article key={p.id} className={`dq-card ${promote ? '' : 'dq-soon'}`}>
+                        <div className="dq-head">
+                          <span className="dq-title"><Link to={`/scanners/${p.scannerId}`} className="strong">{p.scannerName}</Link> <span className="mono dq-market">{p.symbol} {p.tf}</span></span>
+                          <Pill tone={promote ? 'ok' : 'danger'}>{promote ? 'Promote?' : 'Demote?'}</Pill>
+                        </div>
+                        <div className="dq-evidence">
+                          <div className="small">{promote ? <Evidence s={p.gate?.stats ?? p.stats} g={gateFor(v.config.gate, p.tf)} /> : <span>{p.gate?.reasons?.[0] ?? 'The gate proposes demotion.'}</span>}</div>
+                          {p.gate?.cohort && <div className="muted small">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}
+                          <div className="small"><Funnel f={p.funnel} pair={p} /></div>
+                          {p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}
+                          {p.market && !p.market.allowed && <div className="small"><Pill tone="danger">market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 120)}</span></div>}
+                        </div>
+                        <div className="dq-foot">
+                          <span className="muted small">{p.proposedAt ? `Proposed ${timeAgo(p.proposedAt)}` : 'Proposal time unavailable'} · evidence since {new Date(p.since).toISOString().slice(0, 10)}</span>
+                          <div className="dq-actions">
+                            {auth.canTrade ? (
+                              <>
+                                <button type="button" className={`btn btn-sm ${promote ? 'btn-primary' : 'btn-danger'}`} onClick={() => setConfirm({ pair: p, action: 'approve' })}>{promote ? 'Promote' : 'Demote'}</button>
+                                <button type="button" className="btn btn-sm" onClick={() => setConfirm({ pair: p, action: 'reject' })}>{promote ? 'Reject' : 'Keep live'}</button>
+                              </>
+                            ) : <span className="muted small">Needs trade access</span>}
+                          </div>
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              )}
+            </Section>
+
+            <Section title={`Live cells on a clock (${cards.clocks.length})`} hint={`Clocks count time without an account trade, not time without signals. Market out ${v.config.demote.marketOutDays ?? '–'} d · no account trade ${v.config.demote.silentDays ?? '–'} d · cost-starved ${v.config.demote.costStarvedRefusals ?? '–'} refusals. Scanner faults need recovery before judging signal quality.`}>
+              {cards.clocks.length === 0 ? (
+                <EmptyState title="No live cell is near a demotion" hint="A cell appears here once a clock passes half way." />
+              ) : (
+                <div className="dq-list">
+                  {cards.clocks.map(({ p, rank }) => (
+                    <article key={p.id} className={`dq-card ${rank === 2 ? 'dq-urgent' : 'dq-soon'}`}>
+                      <div className="dq-head">
+                        <span className="dq-title"><Link to={`/scanners/${p.scannerId}`} className="strong">{p.scannerName}</Link> <span className="mono dq-market">{p.symbol} {p.tf}</span></span>
+                        <Pill tone={rank === 2 ? 'danger' : 'warn'}>{rank === 2 ? 'Clock due' : 'Half way'}</Pill>
                       </div>
-                      <div className="small">{p.stage === 'proposed' ? <Evidence s={p.gate?.stats ?? p.stats} g={gateFor(v.config.gate, p.tf)} /> : <span>{p.gate?.reasons?.[0] ?? 'the gate proposes demotion'}</span>}</div>
-                      {p.gate?.cohort && <div className="muted small">{p.gate.cohort}{p.gate.stats?.positiveMarkets !== undefined ? ` · ${p.gate.stats.positiveMarkets}/${p.gate.stats.marketsJudged} markets positive` : ''}</div>}
-                      <div className="small"><Funnel f={p.funnel} pair={p} /></div>
-                      {p.gate?.strategyComparison && <div className="small"><Pill tone={p.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'}>{p.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill> <span className="muted">{p.gate.strategyComparison.reason}</span></div>}
-                      {p.market && !p.market.allowed && <div className="small"><Pill tone="danger">market out today</Pill> <span className="muted">{p.market.reasons.join(' · ').slice(0, 120)}</span></div>}
-                      <div className="dc-head"><span className="muted small">{p.proposedAt ? `proposed ${timeAgo(p.proposedAt)}` : 'proposal time unavailable'} · evidence since {new Date(p.since).toISOString().slice(0, 10)}</span>
-                        <div className="dc-actions">
-                          {auth.canTrade ? (
-                            <>
-                              <button className="btn btn-sm btn-primary" onClick={() => setConfirm({ pair: p, action: 'approve' })}>{p.stage === 'proposed' ? 'Promote' : 'Demote'}</button>
-                              <button className="btn btn-sm" onClick={() => setConfirm({ pair: p, action: 'reject' })}>{p.stage === 'proposed' ? 'Reject' : 'Keep live'}</button>
-                            </>
-                          ) : <span className="muted small">needs trade access</span>}
+                      <div className="dq-evidence">
+                        <div className="small"><Clocks p={p} cfg={v.config.demote} now={now} /></div>
+                        <div className="small">{p.stats ? `${p.stats.trades} account trades · ${p.stats.netR >= 0 ? '+' : ''}${p.stats.netR.toFixed(1)}R` : 'No account trade yet'}{p.market && !p.market.allowed ? <span className="muted"> · {p.market.reasons.join(' · ').slice(0, 100)}</span> : null}</div>
+                        <div className="small"><Funnel f={p.funnel} pair={p} /></div>
+                      </div>
+                      <div className="dq-foot">
+                        <span />
+                        <div className="dq-actions">
+                          {auth.isAdmin ? <button type="button" className="btn btn-sm" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow now</button> : <span className="muted small">The gate proposes it when the clock runs out.</span>}
                         </div>
                       </div>
                     </article>
                   ))}
                 </div>
               )}
-            </Panel>
-
-            <Panel title={`Live cells on a clock (${cards.clocks.length})`} right={<span className="muted small">market out {v.config.demote.marketOutDays ?? '–'} d · no account trade {v.config.demote.silentDays ?? '–'} d · cost-starved {v.config.demote.costStarvedRefusals ?? '–'} refusals</span>}>
-              <p className="small muted">These clocks measure time without an account trade, not time without signals. Cost, regime and execution refusals are shown below. Scanner runtime faults are separate and need recovery before judging signal quality.</p>
-              {cards.clocks.length === 0 ? <p className="muted small">No live cell is near a demotion.</p> : (
-                <div className="decision-cards">
-                  {cards.clocks.map(({ p, rank }) => (
-                    <article key={p.id} className={`decision-card ${rank === 2 ? 'urgent' : 'soon'}`}>
-                      <div className="dc-head">
-                        <span><Link to={`/scanners/${p.scannerId}`} className="strong">{p.scannerName}</Link> <span className="mono">{p.symbol} {p.tf}</span></span>
-                        <span><Clocks p={p} cfg={v.config.demote} now={now} /></span>
-                      </div>
-                      <div className="small">{p.stats ? `${p.stats.trades} account trades · ${p.stats.netR >= 0 ? '+' : ''}${p.stats.netR.toFixed(1)}R` : 'no account trade yet'}{p.market && !p.market.allowed ? <span className="muted"> · {p.market.reasons.join(' · ').slice(0, 100)}</span> : null}</div>
-                      <div className="small"><Funnel f={p.funnel} pair={p} /></div>
-                      <div className="dc-actions">
-                        {auth.isAdmin ? <button className="btn btn-sm" onClick={() => setConfirm({ pair: p, action: 'demote' })}>To shadow now</button> : <span className="muted small">the gate proposes it when the clock runs out</span>}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </Panel>
+            </Section>
 
             <ConfirmDialog
               open={confirm !== null}
@@ -130,7 +158,7 @@ export function Decisions() {
               onConfirm={() => { if (confirm) decide.mutate({ id: confirm.pair.id, action: confirm.action }, { onSettled: () => setConfirm(null) }) }}
               onCancel={() => setConfirm(null)}
             />
-            {decide.isError && <div className="auth-error mt" role="alert">{(decide.error as Error).message}</div>}
+            {decide.isError && <Callout tone="danger" title="The decision did not go through">{(decide.error as Error).message}</Callout>}
           </>
         )}
       </QueryState>
