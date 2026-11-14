@@ -57,7 +57,7 @@ export default function Incubator() {
     return () => window.clearInterval(timer)
   }, [])
   // filters and the view live in the URL so a link, Back and Forward keep them; defaults stay out of it
-  const { params, set, hash } = useResearchFilters()
+  const { params, set, setSection, hash } = useResearchFilters()
   const search = params.get('q') ?? params.get('symbol') ?? ''
   const timeframe = params.get('tf') ?? 'all'
   const section = sectionFromUrl<IncTab>(params, hash, ['shadow', 'candidates', 'account', 'experiments', 'operations'], 'shadow', { '#execution-plans': 'experiments', '#screen-queue': 'operations', '#overlap': 'operations', '#incubator-evidence': 'operations', '#incubator-contributions': 'operations' })
@@ -128,10 +128,10 @@ export default function Incubator() {
               </div>}
 
               <ol className="inc-funnel" aria-label="Where pairs are in the pipeline">
-                <li><FunnelStage n="1" label="Candidates" value={candidates.length} sub={candidateLine(d.candidates, d.lastAdmit)} title={candidateHint(d.candidates)} on={tab === 'candidates'} onClick={() => set({ section: 'candidates' })} /></li>
-                <li><FunnelStage n="2" label="Shadow book" value={`${shadowN} / ${shadowCap}`} sub={`${d.capacity?.general.slots ?? d.config.maxShadow} general + ${d.capacity?.reserves.reduce((n,r)=>n+r.slots,0) ?? 0} reserved · ${d.runner.entries} entries since restart`} title={capHint} on={tab === 'shadow'} onClick={() => set({ section: null })} /></li>
+                <li><FunnelStage n="1" label="Candidates" value={candidates.length} sub={candidateLine(d.candidates, d.lastAdmit)} title={candidateHint(d.candidates)} on={tab === 'candidates'} onClick={() => setSection('candidates')} /></li>
+                <li><FunnelStage n="2" label="Shadow book" value={`${shadowN} / ${shadowCap}`} sub={`${d.capacity?.general.slots ?? d.config.maxShadow} general + ${d.capacity?.reserves.reduce((n,r)=>n+r.slots,0) ?? 0} reserved · ${d.runner.entries} entries since restart`} title={capHint} on={tab === 'shadow'} onClick={() => setSection(null)} /></li>
                 <li><FunnelStage n="3" label="Waiting for you" value={decisions.length} tone={decisions.length ? 'warn' : undefined} sub="proposals to approve or reject" on={false} to="/decisions" /></li>
-                <li><FunnelStage n="4" label="In the account" value={`${d.fleet} / ${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} on={tab === 'account'} onClick={() => set({ section: 'account' })} /></li>
+                <li><FunnelStage n="4" label="In the account" value={`${d.fleet} / ${d.config.promote.maxFleet}`} sub={`${d.promotionsThisWeek}/${d.config.promote.maxPerWeek} promotions this week`} on={tab === 'account'} onClick={() => setSection('account')} /></li>
               </ol>
               <p className={`inc-lastscreen small ${died || stale ? 'loss' : 'muted'}`}>
                 {(died || stale) && <b>The daily screen is not running. </b>}
@@ -144,7 +144,7 @@ export default function Incubator() {
                 idPrefix="inc"
                 label="Incubator stages"
                 value={tab}
-                onChange={(t) => set({ section: t === 'shadow' ? null : t })}
+                onChange={(t) => setSection(t === 'shadow' ? null : t)}
                 items={[
                   { id: 'shadow', label: 'Shadow evidence', count: shadowN },
                   { id: 'candidates', label: 'Candidates', count: candidates.length },

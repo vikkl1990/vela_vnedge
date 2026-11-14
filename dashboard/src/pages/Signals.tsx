@@ -3,7 +3,7 @@ import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { choice } from '../lib/researchNavigation'
+import { choice, signalSectionFromUrl } from '../lib/researchNavigation'
 import { useResearchFilters } from '../lib/useResearchFilters'
 import { summarizeOutcomes, gateOf } from '../lib/signalOutcomes'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
@@ -156,14 +156,13 @@ export function Signals() {
   const scanners = useScannerIndex()
   const markets = useMarkets()
   // filters live in the URL so a link, Back and Forward keep them; defaults stay out of it
-  const { params, set, hash } = useResearchFilters()
+  const { params, set, setSection, hash } = useResearchFilters()
   const scanner = params.get('scanner') ?? '', symbol = params.get('symbol') ?? '', tf = params.get('tf') ?? ''
   const kind = choice(params.get('kind'), ['', 'entry', 'exit', 'info'], '')
   const side = choice(params.get('side'), ['', 'long', 'short'], '')
   const view = choice(params.get('view'), ['grouped', 'flat'], 'grouped')
-  // A bookmarked #signal-diagnostics or #execution-costs (or ?section=diagnostics|costs) opens straight to its tab.
-  const sectionTab: SignalTab | null = hash === '#signal-diagnostics' || params.get('section') === 'diagnostics' ? 'trace' : hash === '#execution-costs' || params.get('section') === 'costs' ? 'costs' : null
-  const [tab, setTab] = useState<SignalTab>(sectionTab ?? 'signals')
+  const tab = signalSectionFromUrl(params, hash)
+  const setTab = (value: SignalTab) => setSection(value === 'signals' ? null : value)
   const q = useMemo(() => ({ limit: 500, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined, tf: tf || undefined }), [scanner, symbol, kind, tf])
   const signals = useSignals(q)
 
