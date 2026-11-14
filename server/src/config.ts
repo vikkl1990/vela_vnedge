@@ -720,8 +720,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     corrBars: 20,
     cooldownAfterLosses: 0,
     cooldownMinutes: 120,
-    reentryCooldownMinutes: 60,
-    burstWindowSec: 120,
+    // Decision 267: off. Measured on the books, neither guard selected better trades (see the decision).
+    reentryCooldownMinutes: 0,
+    burstWindowSec: 0,
     ddScale: [{ ddPct: 0, leverageMult: 0.5 }],
     ddFrom: 'capital',
     perScannerMaxPositions: 4,

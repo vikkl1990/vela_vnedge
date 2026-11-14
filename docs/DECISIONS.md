@@ -7744,3 +7744,33 @@ no new endpoint, and no control that arms live.
   thresholds are a proposed rule, labelled as such, until the model beats taking every signal on unseen weeks).
 
 - **Release corrections (15 November).** Book selection follows route changes and browser history through `bookScope`, while existing catalogue and journal filters keep their meanings. Journal tabs and the global selector agree. Runtime status and book navigation have regression coverage. No server, execution, risk, capital or evidence configuration changed.
+
+## 267. Three account entry guards that did not select better trades are off (15 November 2026)
+
+**Why.** The operator: "remove all unnecessary blockers". On 14 November the account saw about 104 entry signals and opened 28.
+Of the 76 refusals, 24 were the whipsaw gate, 21 the burst guard, 12 a budget too small for one contract, 4 stale exchange
+product status, 4 the re-entry cooldown. Each guard was measured against the books' own closed trades (R after fees, risk-sized):
+
+| guard | measurement | reading |
+|---|---|---|
+| burst (one entry per side per 120 s) | shadow book, which has no such guard: 9,303 trades that followed a same-side entry within 120 s, −0.022R; 5,882 isolated, −0.016R | no difference in R a trade |
+| re-entry cooldown (60 min after a pair's stop) | shadow book: 904 re-entries within 60 min of a stop, +0.060R; 14,281 other trades, −0.025R | the refused trades were, if anything, better |
+| whipsaw gate (`minEr` 0.1) | decision 147: it sets how many trades are taken, not how good they are | volume only |
+
+Means do not capture correlated drawdown, which the burst guard exists for. Exposure stays bounded by the position caps below, and
+this is the paper account.
+
+**What.** `risk.reentryCooldownMinutes` 60 → 0, `risk.burstWindowSec` 120 → 0 (new defaults), and `risk.regime.minEr` → 0 on the VM
+through `ops/relax-gates.ts` (a dry run is read-only; it backs the config up; paper only; run with the service stopped). The
+persisted config holds every key, so the new defaults alone change nothing on the VM.
+
+**Kept, deliberately.** Position caps (8 total, 1 a symbol, 4 a scanner), daily and weekly loss limits, the drawdown size cut
+(operator's rule, decision 188; it is also why "budget too small for one contract" appears: equity is under $1,000 so margin is
+$75), the ATR floor (`minAtrPct`), the market gate (dead and costly books; an unrealistic fill is not evidence), the stop-versus-fee
+test, the minimum size share, the exchange status check (it fires after reconnects and restarts; a stale product snapshot is a real
+unknown), the stale-signal age limit, and the copy pilot's hold for five shadow closes (the operator's choice).
+
+**Not a cure for fewer signals.** Entry signals fell from 174–242 a day on 8–10 November to 45–104 since 12 November, and 8 pairs
+were retired by the hunt on 14 November. Relaxing guards recovers a share of the refused entries, not the missing signals.
+
+**Reverse.** Restore the timestamped backup the script wrote, or set the three keys back: 60, 120 and 0.1.
