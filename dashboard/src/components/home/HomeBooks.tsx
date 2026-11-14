@@ -19,6 +19,9 @@ const DAY = 86_400_000
 // ---------- Live status ----------
 
 /** One sentence on whether anything can reach the exchange, with the way to the go-live checklist. */
+/** Fewest audited fills before 'paper at real prints' is shown. */
+const MIN_AUDITED_FILLS = 20
+
 export function LiveStatusStrip() {
   const health = useHealth()
   const learning = useLearning()
@@ -229,6 +232,8 @@ export function RealityGap() {
     if (trades <= 0) return null
     const watched = (f: (typeof fills)[number]) => Math.max(0, f.n - f.noPrints - (f.late ?? 0) - (f.unobserved ?? 0))
     const n = fills.reduce((a, f) => a + watched(f), 0)
+    // a handful of audited fills says nothing about the average: below this the figure stays n/a
+    if (n < MIN_AUDITED_FILLS) return null
     return { perTrade: fills.reduce((a, f) => a + (f.meanR as number) * watched(f), 0) / trades, fills: n, trades }
   }, [tape.data, l])
 

@@ -211,10 +211,17 @@
 @media (max-width: 640px) {
   .topbar { gap: 8px; padding: 6px 12px; }
   .mobile-brand, .crumb .pill, .crumb-sep { display: none; }
-  .crumb { flex: 1 1 auto; min-width: 0; overflow: hidden; }
   .crumb-title { overflow: hidden; text-overflow: ellipsis; }
   .topbar-actions { margin-left: auto; gap: 8px; flex-wrap: nowrap; }
   .btn-entries { min-width: 0; padding: 0 10px; }
+  /* the book switch and the ML lens share one row; the bar scrolls away instead of covering a fifth of the screen */
+  .topbar { position: static; }
+  .crumb { order: 1; flex: 1 1 40px; min-width: 40px; }
+  .search-trigger { order: 2; }
+  .topbar-actions { order: 3; }
+  .topbar-status { order: 10; }
+  .book-switch { order: 11; }
+  .ml-lens { order: 12; flex: 0 0 auto; }
   .topbar-status { order: 10; flex: 1 1 100%; margin-left: 0; justify-content: space-between; flex-wrap: nowrap; gap: 8px; padding: 3px 0 2px; border-top: 1px solid var(--border-subtle); }
   .topstat { gap: 4px; font-size: 12px; white-space: nowrap; }
   .topstat-label { font-size: 8.5px; letter-spacing: 0.06em; }

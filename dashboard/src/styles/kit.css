@@ -133,4 +133,4 @@
 .tone-ml { color: var(--book-ml); }
 
 @media (max-width: 1640px) { .book-seg:not(.on) .book-seg-label { display: none; } .book-seg:not(.on) .book-seg-state { display: none; } .book-seg { padding: 0 9px; } .ml-lens-long { display: none; } .ml-lens { padding: 0 9px; } }
-@media (max-width: 640px) { .book-switch { max-width: 100%; overflow-x: auto; } .book-seg:not(.on) .book-seg-label { display: inline; } .book-seg-state { display: none; } }
+@media (max-width: 640px) { .book-switch { max-width: 100%; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; } .book-switch::-webkit-scrollbar { display: none; } .book-seg:not(.on) .book-seg-label { display: inline; } .book-seg-state { display: none; } }
