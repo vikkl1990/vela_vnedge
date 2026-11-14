@@ -7615,3 +7615,36 @@ account reading, sizing, margin, fee gate, risk caps, or promotion/copy evidence
 The retained candle mechanics comparison shows 15 completed trades in each arm,
 not a demonstrated profit or fill-count uplift; forward shadow evidence is required.
 See [the scoped validation](research/native-reentry-corrections-2026-11-14.md).
+
+
+## 261. Review forward evidence independently of screening (14 November 2026)
+
+Automatic paper promotion was already enabled on the VM, but evaluation depended
+on completed nightly/pair-agent screens or a manual review. Fresh closed trades
+could leave a newly qualified cell waiting for hours. A persisted review loop now
+checks once a minute, judges every 15 minutes by default, and can judge five minutes
+after the preceding attempt when new account or shadow closes arrive. Nightly,
+pair-agent and manual requests share one in-flight evaluation. Failed reviews
+keep their screen unacknowledged and retry after five minutes, including across
+restart. The cadence is configurable from 5 to 1,440 minutes.
+
+Every review retries existing proposals as well as newly proposed cells. The
+existing approval path rechecks qualified forward evidence, market eligibility,
+restoration, overlap and allocation caps. Batch approvals now accumulate each
+successful scanner patch: ConfigStore replaces its snapshot, so using the original
+snapshot could overwrite a preceding market added to the same scanner and miss
+cumulative diversity limits. Automatic promotion is restricted to enabled paper
+incubators. Manual demotion decisions retain their existing ownership.
+
+This changes allocation timing, not strategy parameters or thresholds. The legacy
+backtest tuner remains advisory while the incubator owns allocations. Tracker,
+experimental-plan, old-reader, quarantined and unqualified historical outcomes
+cannot establish promotion evidence. Native execution experiments stay separate.
+Paper mode, margin, risk caps, fee gates, source/reading identities and evidence
+requirements are unchanged. Higher profit factor or win rate is not established
+by these correctness tests; promoted cells must be measured prospectively.
+
+Validation covers cumulative allocations/caps, failed writes, capacity retries,
+exact-policy qualification and excluded histories, disabled modes, single-flight
+reviews, cadence, closed-trade wakeups and durable failure recovery. The dashboard
+shows the current automatic-review status, last success, failure and next due time.

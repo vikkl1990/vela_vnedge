@@ -228,14 +228,19 @@ export default function Incubator() {
               {section === 'experiments' && <section id="execution-plans"><ExecutionPlans /></section>}
               {section === 'operations' && <>
               {d.rotation && <Panel title="Research rotation"><p className="small muted">{d.rotation.enabled ? `${d.rotation.usedToday}/${d.rotation.maxPerDay} slots rotated today (UTC).` : 'Rotation is off.'} Only cells with no filled trade and recent successful scans can rotate. Open positions, pending orders and forward trade evidence are protected. Rotation returns a cell to candidates with a cooldown; it is not a losing verdict.</p>{d.rotation.last.length > 0 && <div className="small">{d.rotation.last.slice(-5).reverse().map(x => {const old=d.pairs.find(p=>p.id===x.out), next=d.pairs.find(p=>p.id===x.in);return <p key={`${x.at}-${x.out}`}><span className="muted">{timeAgo(x.at)}</span> · {old ? `${old.scannerName} ${old.symbol} ${old.tf}` : `Cell ${x.out}`} → {next ? `${next.scannerName} ${next.symbol} ${next.tf}` : `Cell ${x.in}`}</p>})}</div>}</Panel>}
-              <Panel title="Daily hunt" right={<span className="muted small">{d.lastHunt?.auto ? 'auto-promotion ON: gate proposals go live within the weekly and fleet limits' : 'auto-promotion off: proposals wait for your click'}</span>}>
+              <Panel title="Automatic evidence review" right={<span className="muted small">{d.automation?.enabled ? 'Automatic paper promotion on' : 'Automatic paper promotion off'}</span>}>
+                {d.automation && <div className="small">
+                  <p>Reviews every {d.automation.intervalMinutes} minutes; fresh closed trades can bring the next review forward to {d.automation.evidenceMinutes} minutes after the last review. Qualified cells enter paper within the existing allocation limits. Experimental plans remain separate.</p>
+                  <p>{d.automation.running ? 'Review in progress' : d.automation.successAt ? `Last successful review ${timeAgo(d.automation.successAt)}` : 'Waiting for the first review'}{d.automation.enabled && !d.automation.running ? ` · Next check due ${new Date(d.automation.nextAt).toLocaleTimeString()}` : ''}</p>
+                  {d.automation.error && <p className="loss">Last review failed: {d.automation.error}. The review will retry.</p>}
+                </div>}
                 {!d.lastHunt ? (
-                  <p className="muted small">No hunt yet. The screen runs daily; when it finishes the shadow book is judged here and, with auto-promotion on, gate proposals go live.</p>
+                  <p className="muted small">No evidence review yet. Screening finds candidates; compatible forward shadow results determine promotion.</p>
                 ) : (
                   <div className="small">
                     <p><b>{timeAgo(d.lastHunt.at)}</b> by {d.lastHunt.actor}{d.lastHunt.screen ? <> · screen slice {d.lastHunt.screen.slice}: {d.lastHunt.screen.runs} runs, {d.lastHunt.screen.passed} passed, {d.lastHunt.screen.newCandidates} new candidates, {d.lastHunt.screen.quarantined} quarantined, {d.lastHunt.screen.minutes} min</> : null}</p>
                     <p>admitted to shadow <b>{d.lastHunt.admitted.length}</b> · proposed <b>{d.lastHunt.proposed.length}</b> · promoted <b className={d.lastHunt.promoted.length ? 'gain' : ''}>{d.lastHunt.promoted.length}</b> · retired {d.lastHunt.retired.length} · brewing {d.lastHunt.brewing} · free slots {d.lastHunt.free}</p>
-                    {d.lastHunt.promoted.map((p) => <p key={p} className="mono gain">+ LIVE {p}</p>)}
+                    {d.lastHunt.promoted.map((p) => <p key={p} className="mono gain">+ ACCOUNT {p}</p>)}
                     {d.lastHunt.blocked.map((b) => <p key={b} className="mono muted">! {b}</p>)}
                     {d.lastHunt.admitted.slice(0, 8).map((p) => <p key={p} className="mono muted">→ shadow {p}</p>)}
                   </div>
@@ -305,7 +310,7 @@ function candidateHint(c: IncubatorView['candidates']): string | undefined {
   if (!c) return undefined
   const k = c.counts
   return [
-    `Admission runs after every market-gate refresh (hourly) and every 10 minutes; the nightly hunt judges and promotes.`,
+    `Admission runs after every market-gate refresh (hourly) and every 10 minutes; automatic evidence reviews judge and promote qualified cells.`,
     `Market out today: ${k.outside} outside the gate's universe, ${k.refused} refused by it.`,
     `Awaiting a re-screen: ${k.expired} screened on the previous engine, ${k.rescreen} strategies screened before the fill fix.`,
     `Screen older than the candidate window: ${k.stale}. Scanner at its per-timeframe cap: ${k.capped}. ${c.free} shadow slots free.`,
