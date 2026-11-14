@@ -7648,3 +7648,33 @@ Validation covers cumulative allocations/caps, failed writes, capacity retries,
 exact-policy qualification and excluded histories, disabled modes, single-flight
 reviews, cadence, closed-trade wakeups and durable failure recovery. The dashboard
 shows the current automatic-review status, last success, failure and next due time.
+
+
+## 262. Dashboard revamp: one design system, one shell, one page recipe (14 November 2026)
+
+The dashboard had grown by accretion: a 1,849-line stylesheet with decision-numbered blocks appended to it, a
+420-line Layout, and pages that each opened with a tagline and stacked five to ten panels. Presentation only; no
+API, data hook, query key, server code, risk rule or evidence rule changed.
+
+- **Stylesheet layers.** `app.css` becomes `styles/` (tokens, base, shell, components, kit, polish, pages) imported
+  in that order, so the cascade is unchanged. Tokens add three surface depths, a type scale, elevation, motion and
+  layer values and keep every old variable name. New page CSS lives in `styles/pages/<page>.css`.
+- **Shell.** Sidebar, top bar, account menu and command palette are separate components over a navigation model
+  that is plain data (`navModel.ts`) and tested: one route and one `g` key per page, no page dropped, Users
+  admin-only. Three groups (Trade, Research, Control); Profile and Users move to the account menu. Cmd/Ctrl+K or
+  `/` searches pages, actions and every scanner; actions that change anything only open the existing confirmation
+  dialogs.
+- **Page recipe.** `components/kit` (PageHeader, Stat, Callout, Tabs, Section, Toolbar, EmptyState) and
+  `PageTitle`, whose title now comes from the route. Every page gets a plain title and one sentence of context,
+  the operator's next action first, and secondary evidence behind tabs. Nothing that was reachable became
+  unreachable; `#readiness`, `#contributions`, `#signal-diagnostics`, `#execution-costs`, `#delta-connection`
+  and `?section=` links still land on their view.
+- **Merged with the trading-workspace and URL-state work.** `/` is the workspace, `/overview` is Operations
+  (Overview renamed); research filters and section choice stay in the URL on Signals, Scanners, Radar, Trackers
+  and Incubator. Approvals and Re-judge live on Decisions only, so the Incubator keeps its demotion action and
+  links there.
+- **Weight.** Every page except the landing page loads on first visit (`React.lazy`): the JavaScript on first
+  paint fell from 1,238 KB to 786 KB before the merge. Dashboard unit tests (command-palette ranking, navigation
+  model) run in CI.
+
+Guide: [UI-DESIGN-SYSTEM.md](UI-DESIGN-SYSTEM.md).

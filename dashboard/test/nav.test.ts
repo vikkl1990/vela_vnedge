@@ -29,7 +29,7 @@ test('Users is hidden from anyone who is not an administrator', () => {
 })
 
 test('route titles come from the navigation, scanner pages from the scanner', () => {
-  assert.deepEqual(routeMeta('/'), { title: 'Trading workspace', section: 'Trade' })
+  assert.deepEqual(routeMeta('/'), { title: 'Workspace', section: 'Trade' })
   assert.deepEqual(routeMeta('/overview'), { title: 'Operations', section: 'Trade' })
   assert.deepEqual(routeMeta('/settings'), { title: 'Settings', section: 'Control' })
   assert.deepEqual(routeMeta('/profile'), { title: 'Profile', section: 'Account' })

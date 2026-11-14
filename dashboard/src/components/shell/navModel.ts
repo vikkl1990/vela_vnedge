@@ -18,7 +18,7 @@ export const GROUPS: NavGroup[] = [
   {
     label: 'Trade',
     items: [
-      { to: '/', label: 'Trading workspace', end: true, key: 'o', keywords: 'home terminal chart market canvas', blurb: 'Markets, decisions and execution policy in one view' },
+      { to: '/', label: 'Workspace', end: true, key: 'o', keywords: 'home terminal chart market canvas', blurb: 'Markets, decisions and execution policy in one view' },
       { to: '/overview', label: 'Operations', key: 'v', keywords: 'overview account equity risk needs you dashboard', blurb: 'Account, risk and what needs you' },
       { to: '/decisions', label: 'Decisions', key: 'd', keywords: 'proposals approve queue', blurb: 'Proposals waiting for a yes or no' },
       { to: '/signals', label: 'Signals', key: 'i', keywords: 'alerts entries refused', blurb: 'Every signal and what became of it' },
