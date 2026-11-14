@@ -1,8 +1,9 @@
+import { liveStatus } from '../../lib/liveStatus'
 import { useMemo, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
-import { useEquity, useHealth, useLearning, useLibrary, useMl, useMlYardstick, usePositions, useRisk, useScreenQueue, useStats, useTapeAudit } from '../../api/queries'
+import { useEquity, useExecution, useHealth, useLearning, useLibrary, useMl, useMlYardstick, usePositions, useRisk, useScreenQueue, useStats } from '../../api/queries'
 import type { Book } from '../../lib/books'
 import { useBook } from '../../lib/bookScope'
 import { fmtMoney, fmtPct, fmtPnl, fmtR, pnlClass } from '../../lib/format'
@@ -19,26 +20,20 @@ const DAY = 86_400_000
 // ---------- Live status ----------
 
 /** One sentence on whether anything can reach the exchange, with the way to the go-live checklist. */
-/** Fewest audited fills before 'paper at real prints' is shown. */
-const MIN_AUDITED_FILLS = 20
-
 export function LiveStatusStrip() {
-  const health = useHealth()
+  const execution = useExecution()
   const learning = useLearning()
-  const mode = health.data?.mode
+  const live = liveStatus(execution.isError ? undefined : execution.data)
   const checks = learning.data?.golive?.checks ?? []
   const ok = checks.filter((c) => c.ok).length
-  const armed = mode === 'live'
+  const armed = live.armed
   const link = (
     <Link to="/live" className="btn btn-sm">{checks.length ? `Go-live checklist, ${ok} of ${checks.length}` : 'Go-live checklist'}</Link>
   )
-  if (!mode) return null
   return (
     <section aria-label="Live status">
-      <Callout tone={armed ? 'info' : 'warn'} title={armed ? 'Live is armed.' : 'Live is off.'} actions={link}>
-        {armed
-          ? 'Orders reach the exchange with real money. Every trade in the Live book is real.'
-          : `Paper trades on Delta India prices and nothing reaches the exchange.${checks.length ? ` Live opens when all ${checks.length} go-live checks pass.` : ''}`}
+      <Callout tone={armed ? 'info' : 'warn'} title={`Live: ${live.label.toLowerCase()}.`} actions={link}>
+        {live.detail}
       </Callout>
     </section>
   )
@@ -59,7 +54,8 @@ export function BookCards() {
   const queue = useScreenQueue()
 
   const mode = health.data?.mode
-  const armed = mode === 'live'
+  const execution = useExecution()
+  const live = liveStatus(execution.isError ? undefined : execution.data)
   const l = learning.data
   const checks = l?.golive?.checks ?? []
   const s = stats.data
@@ -84,9 +80,9 @@ export function BookCards() {
       <div className={dim('live')}>
         <BookCard
           book="live"
-          state={armed ? 'Armed' : 'Off'}
-          headline={armed ? 'Armed' : 'Not armed'}
-          sub={checks.length ? `${checks.filter((c) => c.ok).length} of ${checks.length} go-live checks pass. ${armed ? 'Orders reach the exchange.' : 'No order can reach the exchange.'}` : armed ? 'Orders reach the exchange.' : 'No order can reach the exchange.'}
+          state={live.label}
+          headline={live.label}
+          sub={live.detail}
           footer={<Link to="/live">Open the go-live checklist</Link>}
         >
           {checks.length > 0 && (
@@ -100,7 +96,7 @@ export function BookCards() {
       <div className={dim('paper')}>
         <BookCard
           book="paper"
-          state={risk.data?.halted ? 'Halted' : mode === 'paper' || !mode ? 'Running' : 'Mirrored'}
+          state={!mode ? 'Unknown' : risk.data?.halted ? 'Halted' : mode === 'paper' ? 'Running' : 'Mirrored'}
           headline={s ? fmtMoney(s.equity, 2) : '–'}
           sub={s ? (
             <span>
@@ -155,11 +151,9 @@ function Stage({ book, name, count, what, gate }: { book: Book; name: string; co
 export function PromotionLadder() {
   const learning = useLearning()
   const inc = useIncubatorView()
-  const health = useHealth()
   const stages = learning.data?.funnel.stages ?? inc.data?.counts
   const cfg = inc.data?.config
   const checks = learning.data?.golive?.checks ?? []
-  const armed = health.data?.mode === 'live'
   const num = (k: string) => (stages ? ((stages as Record<string, number | undefined>)[k] ?? 0) : null)
   const proposed = stages ? (num('proposed') ?? 0) + (num('demote_proposed') ?? 0) : null
 
@@ -193,7 +187,7 @@ export function PromotionLadder() {
           book="paper" name="PAPER" count={num('live') ?? '–'} what="trading the paper account"
           gate={checks.length ? `all ${checks.length} go-live checks pass` : undefined}
         />
-        <Stage book="live" name="LIVE" count={armed ? (num('live') ?? '–') : 0} what={armed ? 'real money' : 'real money, not armed'} />
+        <Stage book="live" name="LIVE" count="–" what="strategy-level live evidence not reported" />
       </div>
       <div className="home-stuck">
         <div className="home-stuck-title">Where strategies are stuck</div>
@@ -217,42 +211,25 @@ interface GapRow { key: string; book: Book; label: string; value: number | null;
 export function RealityGap() {
   const learning = useLearning()
   const inc = useIncubatorView()
-  const tape = useTapeAudit(30)
   const l = learning.data
 
   const screens = (inc.data?.pairs ?? []).map((p) => p.screen).filter((x): x is NonNullable<typeof x> => !!x && x.pass && Number.isFinite(x.avgR))
   const screenAvg = screens.length ? screens.reduce((a, x) => a + x.avgR, 0) / screens.length : null
 
-  // Slip in R per paper trade: every audited account fill's mean slip, over the paper trades of the same 30 days.
-  const slip = useMemo(() => {
-    const fills = tape.data?.fills.filter((f) => f.book === 'account' && f.meanR != null) ?? []
-    if (!fills.length || !l?.live.daily) return null
-    const cutoff = new Date(l.at - 30 * DAY).toISOString().slice(0, 10)
-    const trades = l.live.daily.filter((d) => d.day >= cutoff).reduce((a, d) => a + d.n, 0)
-    if (trades <= 0) return null
-    const watched = (f: (typeof fills)[number]) => Math.max(0, f.n - f.noPrints - (f.late ?? 0) - (f.unobserved ?? 0))
-    const n = fills.reduce((a, f) => a + watched(f), 0)
-    // a handful of audited fills says nothing about the average: below this the figure stays n/a
-    if (n < MIN_AUDITED_FILLS) return null
-    return { perTrade: fills.reduce((a, f) => a + (f.meanR as number) * watched(f), 0) / trades, fills: n, trades }
-  }, [tape.data, l])
-
   const rows: GapRow[] = [
     { key: 'backtest', book: 'backtest', label: 'Backtest screen', value: screenAvg, tip: screenAvg == null ? 'No pair has passed its screen yet, so there is no screen average to show.' : `Mean of the screen's average R over ${screens.length} pairs that passed it` },
     { key: 'shadow', book: 'shadow', label: 'Shadow, forward', value: l && l.shadow.trades > 0 ? l.shadow.avgR : null, tip: l ? `${l.shadow.trades} shadow trades in ${l.shadow.windowDays ?? 30} days` : undefined },
-    { key: 'paper', book: 'paper', label: 'Paper', value: l && l.live.trades > 0 ? l.live.avgR : null, tip: l ? `${l.live.trades} paper trades` : undefined },
+    { key: 'paper', book: 'paper', label: 'Paper, available history', value: l && l.live.trades > 0 ? l.live.avgR : null, tip: l ? `${l.live.trades} paper trades` : undefined },
     {
-      key: 'real', book: 'paper', label: 'Paper, real prints',
-      value: l && l.live.trades > 0 && slip != null ? l.live.avgR - slip.perTrade : null,
-      tip: slip != null ? `Paper average R minus the mean slippage of ${fmtR(slip.perTrade)} a trade measured against Delta's real prints (audited account fills of the last 30 days, over that window's paper trades). Unaudited fills count as zero slip, so the true figure may be lower.` : 'n/a: the tape audit has no audited account fills in the last 30 days, or no paper trades in that window, so the slippage cannot be measured.',
+      key: 'real', book: 'paper', label: 'Paper, matched real prints', value: null,
+      tip: 'Unavailable: the aggregate tape audit does not match every entry and exit to the same closed-trade cohort. Aggregate fill slippage cannot be subtracted from book profit.',
     },
   ]
   const max = Math.max(0, ...rows.map((r) => (r.value == null ? 0 : Math.abs(r.value))))
-  const bt = rows[0].value, real = rows[3].value
   return (
-    <section className="home-panel" aria-label="The reality gap">
-      <div className="home-panel-head"><h2>The reality gap</h2></div>
-      <p className="home-note">The same strategies measured four ways, in R per trade. A backtest only counts once it survives each step down.</p>
+    <section className="home-panel" aria-label="Book evidence">
+      <div className="home-panel-head"><h2>Book evidence</h2></div>
+      <p className="home-note">These populations and time windows differ. Screen results cover passed pairs, shadow covers its forward window, and paper covers the available account history. These are not matched strategy comparisons.</p>
       <div className="home-gap">
         {rows.map((r) => {
           const w = r.value == null || max === 0 ? 0 : Math.max(3, (Math.abs(r.value) / max) * 100)
@@ -266,10 +243,7 @@ export function RealityGap() {
           )
         })}
       </div>
-      {slip != null && <p className="home-note">Real prints: slippage from {slip.fills} audited fill{slip.fills === 1 ? '' : 's'} over {slip.trades} paper trade{slip.trades === 1 ? '' : 's'} in the last 30 days. A small sample moves it a lot.</p>}
-      {bt != null && real != null && (
-        <div className="home-callout">Screens promise {fmtR(bt)}. Real prints deliver {fmtR(real)}. Everything in the Lab is judged against this gap.</div>
-      )}
+      <p className="home-note">Tape-adjusted profit needs matched closed trades with every fill audited. <Link to="/exchange">Review execution and tape evidence</Link>.</p>
     </section>
   )
 }

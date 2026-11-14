@@ -1,3 +1,4 @@
+import { BookProvider } from './lib/bookScope'
 import { lazy, type ComponentType, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthGate, useAuth } from './auth/AuthGate'
@@ -43,6 +44,7 @@ const TradeMonitor = page(() => import('./pages/TradeMonitor'), 'TradeMonitor')
 export default function App() {
   return (
     <BrowserRouter>
+      <BookProvider>
       <AuthGate>
       <Routes>
         <Route element={<Layout />}>
@@ -76,6 +78,7 @@ export default function App() {
         </Route>
       </Routes>
       </AuthGate>
+    </BookProvider>
     </BrowserRouter>
   )
 }

@@ -36,8 +36,8 @@ export interface LadderInput {
   shadowTrades?: number | null
   /** paper-account trades, when known */
   paperTrades?: number | null
-  /** is real money armed? (never true until the go-live checks pass) */
-  liveArmed?: boolean
+  /** Verified production trades for THIS strategy, never inferred from global mode. */
+  liveTrades?: number | null
 }
 
 export interface Ladder {
@@ -61,7 +61,7 @@ export function ladderOf(i: LadderInput): Ladder {
     backtest: screened || inAccount || inShadow ? 'done' : 'todo',
     shadow: inAccount ? 'done' : inShadow ? 'now' : 'todo',
     paper: inAccount ? 'now' : 'todo',
-    live: i.liveArmed && inAccount ? 'now' : 'todo',
+    live: n(i.liveTrades) > 0 ? 'now' : 'todo',
   }
   const reached = steps.live === 'now' ? 'live' : steps.paper === 'now' ? 'paper' : steps.shadow !== 'todo' ? 'shadow' : steps.backtest === 'done' ? 'backtest' : null
   return { steps, reached }

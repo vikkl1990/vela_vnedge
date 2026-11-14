@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useHealth, useLibrary } from '../api/queries'
+import { useLibrary } from '../api/queries'
 import type { LibraryEntry, LibraryList } from '../api/types'
 import { BookDot, LadderPips } from '../components/kit/books'
 import { Callout, EmptyState, TabPanel, Tabs, Toolbar } from '../components/kit'
@@ -52,9 +52,6 @@ function inBook(scope: BookScope, r: Row): boolean {
 
 function StrategiesBody({ data }: { data: LibraryList }) {
   const { scope, mlLens } = useBook()
-  const health = useHealth()
-  // Live is never "armed" until the health mode says so; until then the live count is zero
-  const liveArmed = health.data?.mode === 'live'
   const [tab, setTab] = useState<TabId>('climbing')
   const [text, setText] = useState('')
   const [family, setFamily] = useState('')
@@ -68,11 +65,11 @@ function StrategiesBody({ data }: { data: LibraryList }) {
   const rows = useMemo<Row[]>(
     () =>
       data.scripts.map((e) => {
-        const ladder = ladderOf({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n, liveArmed })
+        const ladder = ladderOf({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n })
         const rank = ladder.reached ? RANK[ladder.reached] : 0
-        return { e, ladder, rank, next: nextStep({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n, liveArmed, runs: e.status !== 'fails', quarantined: e.status === 'quarantined' }) }
+        return { e, ladder, rank, next: nextStep({ stages: e.stages, shadowTrades: e.shadow?.n, paperTrades: e.paper?.n, runs: e.status !== 'fails', quarantined: e.status === 'quarantined' }) }
       }),
-    [data.scripts, liveArmed],
+    [data.scripts],
   )
 
   const totals = useMemo(() => {
@@ -137,11 +134,11 @@ function StrategiesBody({ data }: { data: LibraryList }) {
         ))}
       </ul>
 
-      {scope === 'live' && !liveArmed ? (
+      {scope === 'live' ? (
         <div className="st-card">
           <EmptyState
-            title="Live is off"
-            hint="No strategy trades real money until the go-live checks pass. The ladder stops at paper for now."
+            title="Live strategy evidence is not available here"
+            hint="The library reports account and shadow history. A production connection does not prove that an individual strategy traded live; use Exchange for verified orders and fills."
             action={<Link className="btn" to="/live">Open Live control</Link>}
           />
         </div>

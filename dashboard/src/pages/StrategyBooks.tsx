@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { useHealth, useLibraryDetail, useMlScanner } from '../api/queries'
+import { useLibraryDetail, useMlScanner } from '../api/queries'
 import type { LibraryDetail, Scanner } from '../api/types'
 import { BookChip } from '../components/kit/books'
 import { EmptyState } from '../components/kit'
@@ -31,15 +31,13 @@ interface BookNumbers { trades: number | null; win: number | null; avgR: number 
 
 export function StrategyBooks({ id, s, onOpenReading }: { id: string; s: Scanner; onOpenReading: () => void }) {
   const detail = useLibraryDetail(id)
-  const health = useHealth()
   const d = detail.data
-  const liveArmed = health.data?.mode === 'live'
   if (detail.isLoading && !d) return <Loading rows={4} />
   if (!d) return <EmptyState title="The library has no record of this script yet." hint="The books fill in once it has been screened or has traded." />
-  return <BooksBody d={d} s={s} liveArmed={liveArmed} onOpenReading={onOpenReading} id={id} />
+  return <BooksBody d={d} s={s} onOpenReading={onOpenReading} id={id} />
 }
 
-function BooksBody({ d, s, liveArmed, onOpenReading, id }: { d: LibraryDetail; s: Scanner; liveArmed: boolean; onOpenReading: () => void; id: string }) {
+function BooksBody({ d, s, onOpenReading, id }: { d: LibraryDetail; s: Scanner; onOpenReading: () => void; id: string }) {
   const st = s.stats
   const warm = st?.backtest ?? null
   // backtest = the incubator's screen, summed over the pairs that were screened; the average is weighted by trades
@@ -51,8 +49,8 @@ function BooksBody({ d, s, liveArmed, onOpenReading, id }: { d: LibraryDetail; s
   const passed = screens.filter((p) => p.screen!.pass).length
 
   const paperN = st && st.trades > 0 ? st.trades : d.paper?.n ?? 0
-  const ladder = ladderOf({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN, liveArmed })
-  const next = nextStep({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN, liveArmed, runs: d.status !== 'fails', quarantined: d.status === 'quarantined' })
+  const ladder = ladderOf({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN })
+  const next = nextStep({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN, runs: d.status !== 'fails', quarantined: d.status === 'quarantined' })
 
   const nums: Record<Book, BookNumbers | null> = {
     backtest: screens.length
@@ -79,7 +77,7 @@ function BooksBody({ d, s, liveArmed, onOpenReading, id }: { d: LibraryDetail; s
     paper: paperN > 0
       ? { big: st && st.trades > 0 ? usd(st.pnl) : usd(d.paper!.net), sub: `${fmtInt(paperN)} ${paperN === 1 ? 'trade' : 'trades'}${st && st.trades > 0 ? ` · average ${fmtR(st.avgR)}` : ''}`, bigTone: tone(st && st.trades > 0 ? st.pnl : d.paper!.net) }
       : { big: '–', sub: ladder.steps.shadow === 'todo' ? 'Opens after shadow' : 'No paper trades yet' },
-    live: { big: liveArmed ? 'Armed' : 'Off', sub: liveArmed ? 'Real orders are enabled' : 'Opens after the go-live checks pass' },
+    live: { big: 'Not reported', sub: 'Strategy-level production fills are not available in this view' },
   }
   const stateWord = (b: Book, x: StepState) => (x === 'done' ? 'Reached' : x === 'now' ? (b === 'shadow' ? 'Collecting' : b === 'paper' ? 'Trading' : 'Armed') : b === 'backtest' ? 'Not screened' : 'Locked')
 

@@ -1,8 +1,9 @@
+import { liveStatus } from '../lib/liveStatus'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { useConfig, useExecution, useGates, useHealth, useLearning, useMl, useRisk, useTapeAudit } from '../api/queries'
+import { useConfig, useExecution, useGates, useLearning, useMl, useRisk, useTapeAudit } from '../api/queries'
 import type { GoLiveCheck, GoLiveVerdict, PaperConfig } from '../api/types'
-import { ACCOUNT_MODE_LABEL, Loading, PageTitle, Pill } from '../components/ui'
+import { Loading, PageTitle, Pill } from '../components/ui'
 import { EmptyState, Section, Stat, StatGrid } from '../components/kit'
 import { BookChip } from '../components/kit/books'
 import { fmtPct } from '../lib/format'
@@ -44,7 +45,6 @@ const FIX: Record<string, { to?: string; text: string }> = {
 const fixFor = (key: string) => FIX[key] ?? { to: '/gates', text: 'See the gates' }
 
 export function Live() {
-  const health = useHealth()
   const learning = useLearning()
   const risk = useRisk()
   const gates = useGates()
@@ -60,10 +60,10 @@ export function Live() {
   return (
     <div className="page live-page">
       <PageTitle
-        sub="Live is the only book with real money. It stays off until every go-live check passes, and a strategy reaches it only by climbing the ladder: backtest, shadow, paper, live."
+        sub="Live is the only book with real money. Runtime connection status and readiness checks are shown separately. A passing checklist does not arm production."
         actions={<BookChip book="live" />}
       />
-      <StatePanel mode={health.data?.mode} modeKnown={!!health.data} golive={learning.data?.golive} goliveLoading={learning.isLoading} risk={risk.data} allowProduction={exec?.allowProduction} />
+      <StatePanel status={execution.isError ? undefined : execution.data} golive={learning.data?.golive} goliveLoading={learning.isLoading} risk={risk.data} allowProduction={exec?.allowProduction} />
       <ChecksSection golive={learning.data?.golive} loading={learning.isLoading} failed={learning.isError} />
       <GatesSummary q={gates} />
       <ParitySection paper={paper} status={execution.data} mlCfg={mlCfg} tape={tape.data} configLoading={config.isLoading} />
@@ -74,17 +74,14 @@ export function Live() {
 
 // ---------- 1. state ----------
 
-function StatePanel({ mode, modeKnown, golive, goliveLoading, risk, allowProduction }: {
-  mode: string | undefined
-  modeKnown: boolean
+function StatePanel({ status, golive, goliveLoading, risk, allowProduction }: {
+  status: ReturnType<typeof useExecution>['data']
   golive: GoLiveVerdict | undefined
   goliveLoading: boolean
   risk: ReturnType<typeof useRisk>['data']
   allowProduction: boolean | undefined
 }) {
-  // The top bar's book switch uses the same rule: only the "live" account mode is armed.
-  const armed = mode === 'live'
-  const info = mode ? ACCOUNT_MODE_LABEL[mode] : undefined
+  const live = liveStatus(status)
   const passes = golive?.checks.filter((c) => c.ok).length ?? 0
   const total = golive?.checks.length ?? 0
   const halted = risk?.halted === true
@@ -92,13 +89,9 @@ function StatePanel({ mode, modeKnown, golive, goliveLoading, risk, allowProduct
     <section className="live-state" aria-label="Live state">
       <div className="live-state-main">
         <span className="live-eyebrow">LIVE BOOK</span>
-        <span className="live-state-word">{!modeKnown ? 'Unknown' : armed ? 'Armed' : 'Off'}</span>
+        <span className="live-state-word">{live.label}</span>
         <span className="live-state-line">
-          {!modeKnown
-            ? 'The server did not report its account mode, so nothing is claimed about real money.'
-            : info
-              ? <><b>{info.label}.</b> {info.hint}{armed ? '' : ' No real money is at risk.'}</>
-              : `Account mode "${mode}" is not one this page knows. Read the Exchange page before trusting it.`}
+          {live.detail}
         </span>
       </div>
 

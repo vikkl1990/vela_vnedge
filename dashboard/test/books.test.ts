@@ -27,10 +27,10 @@ test('the ladder climbs backtest, shadow, paper, live and never skips a step', (
   assert.equal(account.reached, 'paper')
 })
 
-test('live is never reached until it is armed, and only from the account', () => {
+test('account admission alone never implies verified live execution', () => {
   assert.equal(ladderOf({ stages: { live: 1 } }).steps.live, 'todo')
-  assert.equal(ladderOf({ stages: { live: 1 }, liveArmed: true }).steps.live, 'now')
-  assert.equal(ladderOf({ stages: { shadow: 1 }, liveArmed: true }).steps.live, 'todo')
+  assert.equal(ladderOf({ stages: { live: 1 }, liveTrades: 2 }).steps.live, 'now')
+  assert.equal(ladderOf({ stages: { shadow: 1 } }).steps.live, 'todo')
 })
 
 test('trades alone place a strategy even when the incubator has no pair for it', () => {

@@ -1,3 +1,5 @@
+import { useExecution } from '../../api/queries'
+import { liveStatus } from '../../lib/liveStatus'
 import { NavLink } from 'react-router-dom'
 import { BrandMark } from '../Brand'
 import { IconMenu, IconSearch } from '../Icons'
@@ -45,6 +47,8 @@ export function Topbar({
   onResetPaper?: () => void
   onSignOut: () => void
 }) {
+  const execution = useExecution()
+  const live = liveStatus(execution.isError ? undefined : execution.data)
   const bookLabel = !mode ? 'loading' : mode === 'paper' ? 'paper account' : mode
   return (
     <header className="topbar">
@@ -65,7 +69,7 @@ export function Topbar({
         <span className="pill pill-muted hide-mid" title="Times are shown in your local zone; hover any time for UTC">{LOCAL_TZ}</span>
       </nav>
 
-      <BookSwitch liveArmed={mode === 'live'} />
+      <BookSwitch liveState={live.label} />
       <MlLensToggle />
 
       <button type="button" className="search-trigger" onClick={onOpenPalette} aria-label="Search pages, scanners and actions" aria-keyshortcuts="Control+K Meta+K">

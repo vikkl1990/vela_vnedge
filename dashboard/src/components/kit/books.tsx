@@ -17,7 +17,7 @@ export function BookChip({ book, title }: { book: Book; title?: string }) {
  * The dashboard-wide scope: which book every page is looking at. Live shows "off" until real money is armed, so a
  * glance at the top bar says whether anything can reach the exchange.
  */
-export function BookSwitch({ liveArmed }: { liveArmed: boolean }) {
+export function BookSwitch({ liveState }: { liveState: string }) {
   const { scope, setScope } = useBook()
   return (
     <div className="book-switch" role="group" aria-label="Book">
@@ -28,7 +28,7 @@ export function BookSwitch({ liveArmed }: { liveArmed: boolean }) {
           <button key={s} type="button" className={`book-seg ${on ? 'on' : ''} ${s === 'all' ? '' : `book-seg-${s}`}`} aria-pressed={on} onClick={() => setScope(s)} title={s === 'all' ? 'Every book, each number labelled' : BOOKS[s].what}>
             {s !== 'all' && <BookDot book={s} />}
             <span className="book-seg-label">{label}</span>
-            {s === 'live' && <span className={`book-seg-state ${liveArmed ? 'armed' : ''}`}>{liveArmed ? 'armed' : 'off'}</span>}
+            {s === 'live' && <span className={`book-seg-state ${liveState === 'Armed' ? 'armed' : ''}`}>{liveState.toLowerCase()}</span>}
           </button>
         )
       })}

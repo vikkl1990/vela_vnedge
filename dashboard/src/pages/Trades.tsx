@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { TradeJournal } from '../components/TradeJournal'
 import { useCloseAll, useExecution, usePositions } from '../api/queries'
 import { PositionsTable } from '../components/PositionsTable'
 import { BookBadge, ConfirmDialog, ErrorState, Loading, Panel } from '../components/ui'
 import { EmptyState, PageHeader } from '../components/kit'
-import { journalBookFor } from '../lib/books'
 import { useBook } from '../lib/bookScope'
 import { useToast } from '../lib/toast'
 
@@ -13,10 +12,9 @@ type BookScopeKey = 'live' | 'backtest'
 
 export function Trades() {
   const positions = usePositions()
-  const [params, setParams] = useSearchParams()
+  const [params] = useSearchParams()
   const { scope } = useBook()
-  const followed = journalBookFor(scope)
-  const shadow = params.get('book') === 'shadow'
+  const shadow = scope === 'shadow' || (scope !== 'paper' && params.get('book') === 'shadow')
   const closeAll = useCloseAll()
   const exec = useExecution()
   const mode = exec.data?.mode ?? 'paper'
@@ -29,23 +27,6 @@ export function Trades() {
   const [peek, setPeek] = useState<BookScopeKey | null>(null)
   const noJournal = (scope === 'live' || scope === 'backtest') && peek !== scope
 
-  // The Paper/Shadow tabs follow the book scope: on mount only when the link did not name a book, then on every scope change.
-  const first = useRef(true)
-  const hadBook = useRef(params.get('book') !== null)
-  useEffect(() => {
-    const initial = first.current
-    first.current = false
-    if (!followed) return
-    if (initial && hadBook.current) return
-    setParams((prev) => {
-      if ((prev.get('book') ?? 'paper') === followed) return prev
-      const next = new URLSearchParams(prev)
-      next.set('book', followed)
-      next.delete('trade')
-      return next
-    }, { replace: true })
-  }, [followed, setParams])
-
   return (
     <div className="page trades-page">
       <PageHeader
@@ -57,8 +38,8 @@ export function Trades() {
 
       {noJournal ? (
         <EmptyState
-          title={scope === 'live' ? 'Live has no trades: real money is off' : 'A backtest has no trades in the journal'}
-          hint={scope === 'live' ? 'No order has reached the exchange. Live opens when the go-live checks pass; paper and shadow trades are kept in their own journals.' : 'Backtests replay history in the Lab and do not write journal rows. Paper and shadow trades are kept in their own journals.'}
+          title={scope === 'live' ? 'Live executions are tracked on Exchange' : 'A backtest has no trades in the journal'}
+          hint={scope === 'live' ? 'This journal does not provide a separate, reconciled live-trade history. Check production orders and fills on Exchange; paper and shadow records remain separate.' : 'Backtests replay history in the Lab and do not write journal rows. Paper and shadow trades are kept in their own journals.'}
           action={<div className="row gap" style={{ flexWrap: 'wrap', justifyContent: 'center' }}>
             <Link to={scope === 'live' ? '/live' : '/lab'} className="btn btn-sm">{scope === 'live' ? 'Open the go-live checklist' : 'Open the Lab'}</Link>
             <button className="btn btn-sm" onClick={() => setPeek(scope as BookScopeKey)}>Show the paper and shadow journals</button>
