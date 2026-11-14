@@ -1,0 +1,2184 @@
+{
+  "at": "2026-11-14T14:21:12.390Z",
+  "scope": "1000 real ETHUSD 15m closed bars; runtime only, not profitability or entry/exit certification",
+  "rows": [
+    {
+      "id": "24058509",
+      "name": "Quiet Range Tracker [MarkitTick]",
+      "sourceHash": "d245b106ee23be4f2f71a19c1fa6f23afc334bda39f4df4075ec40ab8ccb192f",
+      "patchedHash": "298074544b84fee8518d511f2a57ff98fddd246846f117d9bbb14b55ebd581ca",
+      "ok": true,
+      "error": null,
+      "ms": 909.5928329999999,
+      "alerts": 66,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Short Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "BUY Signal",
+        "SL Hit"
+      ]
+    },
+    {
+      "id": "24047840",
+      "name": "Fibonacci Swing Flip [MarkitTick]",
+      "sourceHash": "95b8ca1280396eef0344e960da2ea49c0b4267d463c5dd2760dbba7335fe3cce",
+      "patchedHash": "8efb0aef96aaad90e8ce489e24dab3cb7150c4b6cf3f6a4969c80fd05e7ca437",
+      "ok": true,
+      "error": null,
+      "ms": 208.76870800000006,
+      "alerts": 228,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BULL Signal",
+        "SL Hit",
+        "BEAR Signal",
+        "Close Short Signal",
+        "Close Long Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "24034835",
+      "name": "Banker & Hot Money Flow Tracker [MarkitTick]",
+      "sourceHash": "04b53ff40d50acd6261ba954e9fa00c1d97465cefdef58cf717fa9a47072a540",
+      "patchedHash": "ce38f541d5bec8ce6bf04088d1420869a2486777c62c5a0b3a28699896e62968",
+      "ok": true,
+      "error": null,
+      "ms": 65.43004099999985,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "24020145",
+      "name": "Value Area Trail [MarkitTick]",
+      "sourceHash": "579301736b43223f86da99d5ea5ecafd32a530e34d89e1a197807e0ae2974fa2",
+      "patchedHash": "91d7f9360e783b1d715fbad69d57c92e4b0e09bbb563cc259ee115ae13c41a4c",
+      "ok": false,
+      "error": "Undeclared identifier \"i_htfTf\"",
+      "ms": 93.5177920000001,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "24086959",
+      "name": "Early Swing Confirmation [MarkitTick]",
+      "sourceHash": "c74d8bb0dd045e86735045ddde6fc818f5b541a59d237907d73b61acbf1b8d83",
+      "patchedHash": "56101af556dfbc15ef03a3703aa93c299cdcc5358a87d211449a97c6bc1d60d3",
+      "ok": true,
+      "error": null,
+      "ms": 1297.484666,
+      "alerts": 284,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "BUY Signal",
+        "Close Short Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "Close Long Signal",
+        "SL Hit"
+      ]
+    },
+    {
+      "id": "23996714",
+      "name": "State Transition Matrix [MarkitTick]",
+      "sourceHash": "a401fac3917f60c9364ed067fa3dbe49f23156ff9a8ae7bcba5a0b818e1b4dda",
+      "patchedHash": "df856b1e40b7fcd79725e68a5d0e7b62e537ae8cbe908144b4ba45c7708bfdc2",
+      "ok": true,
+      "error": null,
+      "ms": 326.8030000000001,
+      "alerts": 310,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "State Changed"
+      ]
+    },
+    {
+      "id": "23942709",
+      "name": "Adaptive Range Filter [MarkitTick]",
+      "sourceHash": "56baab78c8b2e604f041f6a4b807cb51caea4e4a62bfb18ee8374249040534d8",
+      "patchedHash": "08cda114627fffd4136c937f649383c3c0498cd35efd3e6fcb254ac2abd3996a",
+      "ok": true,
+      "error": null,
+      "ms": 195.42162500000018,
+      "alerts": 172,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long Signal",
+        "BUY Signal",
+        "Close Short Signal"
+      ]
+    },
+    {
+      "id": "23930038",
+      "name": "Stochastic Range Regime [MarkitTick]",
+      "sourceHash": "9ceead24f643246ff2e483dfdc738e0831b8b56e8d5880ca5387e8d11a176704",
+      "patchedHash": "e1287e23c42ed0cf8e267df12abd2f1a5ae0933664b7b0a5389a4c16cf40b2f4",
+      "ok": true,
+      "error": null,
+      "ms": 282.75,
+      "alerts": 362,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Stop Hit",
+        "TP1 Hit",
+        "Close On New Signal",
+        "SELL Signal",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "24012771",
+      "name": "Momentum Confluence Engine [MarkitTick]",
+      "sourceHash": "f927e890c89c5234ac6b88be1ac9f54f8c5daa09e849b68bc3b80468700bef19",
+      "patchedHash": "02af53eab05c4f164b1cc4eb0cb48a04cc36eda1c580143051c6771359973c5e",
+      "ok": true,
+      "error": null,
+      "ms": 977.6029580000002,
+      "alerts": 299,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Long Signal",
+        "SL Hit",
+        "Partial Close Long",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "SELL Signal",
+        "Close Short Signal",
+        "Partial Close Short"
+      ]
+    },
+    {
+      "id": "23879820",
+      "name": "Aroon Money Flow Confluence [MarkitTick]",
+      "sourceHash": "985c83ac493efa6bb39e4827e26090cc858f6188efe68abacdc853fef2d44535",
+      "patchedHash": "e2a6ace452f33cd3a317ac05a1f5edd3163c6f89d53e0f43170f7e67ab077ce6",
+      "ok": true,
+      "error": null,
+      "ms": 281.4667919999997,
+      "alerts": 193,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "BUY Signal",
+        "Close Short Signal",
+        "Partial Close Long",
+        "Close Long Signal",
+        "Partial Close Short"
+      ]
+    },
+    {
+      "id": "23919027",
+      "name": "MACD Multi-MA [MarkitTick]",
+      "sourceHash": "366d03c68d80b35111cb91c90e1eef602963fec3cb1851c9e33f4f98ffefd7b9",
+      "patchedHash": "1df860229fefce5fb83707714cf38aabc0e79fe9fc3ecdf75101d5a19c1263e6",
+      "ok": true,
+      "error": null,
+      "ms": 603.8306670000002,
+      "alerts": 417,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "BUY Signal",
+        "Close Short Signal",
+        "Close Long Signal",
+        "Partial Close Short",
+        "Partial Close Long"
+      ]
+    },
+    {
+      "id": "23870170",
+      "name": "Trailing Reversal Trading System [MarkitTick]",
+      "sourceHash": "c83e0e3c8fa59f31b37bfbfc9279a519531f27165b32223361c9937963fb6c0f",
+      "patchedHash": "fd7a7a73d287f2a161caf68c7b584dff4e46df3265d0bcbca763a18b5ae614e0",
+      "ok": true,
+      "error": null,
+      "ms": 372.87595899999997,
+      "alerts": 64,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "BUY Signal",
+        "Reversal Close",
+        "Stop Hit"
+      ]
+    },
+    {
+      "id": "23862010",
+      "name": "Weinstein Stage Cycle Tracker [MarkitTick]",
+      "sourceHash": "83fa95f50710b894c1410441149e8faf0a76605ca28531fac2de47b4945acc2b",
+      "patchedHash": "5bbed2684b37ac079fa0fd7a8e4b810357bc475041dc3e473089b4681e2ccfb7",
+      "ok": true,
+      "error": null,
+      "ms": 797.5695419999997,
+      "alerts": 88,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "Stage 3 · Topping",
+        "Stage 4 · Declining",
+        "Stage 1 · Basing",
+        "Stage 2 · Advancing"
+      ]
+    },
+    {
+      "id": "23820257",
+      "name": "Turtle Soup Failed Breakout [MarkitTick]",
+      "sourceHash": "6af41bf2e6d5d09f57c754781ef19510c0da087f7e5bca3f181159482f7ee83c",
+      "patchedHash": "72e5b67ae640d0bc4aea43d3bfeb2fdf3bc1fc64040bfa06fe2a471741b9f312",
+      "ok": true,
+      "error": null,
+      "ms": 866.600958,
+      "alerts": 176,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long Signal",
+        "TP1 Hit",
+        "BUY Signal",
+        "Close Short Signal",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "23736835",
+      "name": "Trident Swing Projector [MarkitTick]",
+      "sourceHash": "1eb481f4de4c07a9b3bcf46c936cc9bd25b2a5311c697d26f7bfb447252b1d9d",
+      "patchedHash": "9d128d3a66af6ea9b1f6260ab09afec5a6fa9444fea4b49989251dfef64f2149",
+      "ok": true,
+      "error": null,
+      "ms": 269.4133340000003,
+      "alerts": 121,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "Trident Setup Armed",
+        "Trident Entry Triggered",
+        "Trident TP1 Hit",
+        "Trident Stop Hit",
+        "Trident TP2 Hit",
+        "Trident TP3 Hit",
+        "Trident Setup Cancelled"
+      ]
+    },
+    {
+      "id": "23777737",
+      "name": "DiNapoli Levels Confluence Targets [MarkitTick]",
+      "sourceHash": "75adab071db1969eff7558892821ca6d5f93346f33cbc22a3cb76d3f4ea911c2",
+      "patchedHash": "4695a545c5427c3f64712d8f5d8a60762046d8080aa7e87b3720b03c072dbb8b",
+      "ok": true,
+      "error": null,
+      "ms": 809.5674169999998,
+      "alerts": 264,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "COP Reached",
+        "BUY Signal",
+        "Close Short Signal",
+        "Stop Hit",
+        "OP Reached",
+        "XOP Reached",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23668283",
+      "name": "Coppock Curve Multi-Filter [MarkitTick]",
+      "sourceHash": "95a6c1bf55e7a706884199ab917cb66dbc9bbd6a0da30f8db4f5bbce3c4576da",
+      "patchedHash": "cab85d34270848641c9067e761be0f81afe84bc51c821d4ee1890b7571cb4108",
+      "ok": true,
+      "error": null,
+      "ms": 228.48441600000024,
+      "alerts": 942,
+      "shapes": [
+        {
+          "title": "Zero Up",
+          "count": 26
+        },
+        {
+          "title": "Zero Down",
+          "count": 27
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "Zero Cross Down",
+        "Bull Cross",
+        "Close Short Signal",
+        "Zero Cross Up",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "Bear Cross",
+        "Close Long Signal",
+        "SL Hit"
+      ]
+    },
+    {
+      "id": "23627655",
+      "name": "NRTR Adaptive Trailing Reverse [MarkitTick]",
+      "sourceHash": "0c631498f42d70f3d221a35d6a0a35c4ddcd0fc4e68dab8a67f0f34b5fb1fe0b",
+      "patchedHash": "3a34167a576946cbf69287fb61199c45dcf096697fa0db4f2d38c92243bcd26a",
+      "ok": true,
+      "error": null,
+      "ms": 253.22504200000003,
+      "alerts": 1078,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long Signal",
+        "BUY Signal",
+        "Close Short Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "23710761",
+      "name": "Williams Variable A/D Pressure [MarkitTick]",
+      "sourceHash": "27bc240d9aa15a63fe4f692d0944a62cde81370a42b77380af9c96c9bfa3de0b",
+      "patchedHash": "665cfccfcc29424cec242ae44469c8a20d3e5f2df59b5d382c5e3f99eee4c0fb",
+      "ok": true,
+      "error": null,
+      "ms": 758.154458,
+      "alerts": 468,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SL Hit",
+        "SELL Signal",
+        "Close Long Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "23597021",
+      "name": "SmartFit Trend Channels [MarkitTick]",
+      "sourceHash": "38e7f96421ee058893ced53dc063a96aa369a787d623fa1ae12e3b4ce59f94e7",
+      "patchedHash": "e79d6cc2e2394ffa61cea7c316997eaccc6d51af459ebe7efc0fbd08ad81f0ed",
+      "ok": true,
+      "error": null,
+      "ms": 734.3104590000003,
+      "alerts": 8,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long Signal",
+        "BUY Signal",
+        "Close Short Signal"
+      ]
+    },
+    {
+      "id": "23608929",
+      "name": "QQE Trend Confluence [MarkitTick]",
+      "sourceHash": "2bc8d2dcc70137311897a47aa1bc70b088b984002e3ea7d02a57332ab28f6a2d",
+      "patchedHash": "07d5887404d9210465e26503c1e3dcc8275cbb771aefb27bfb1f146f1fd9ef61",
+      "ok": true,
+      "error": null,
+      "ms": 933.471125,
+      "alerts": 240,
+      "shapes": [
+        {
+          "title": "Bull Signal",
+          "count": 30
+        },
+        {
+          "title": "Bear Signal",
+          "count": 30
+        },
+        {
+          "title": "Bull Signal (Candles)",
+          "count": 30
+        },
+        {
+          "title": "Bear Signal (Candles)",
+          "count": 30
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23540038",
+      "name": "Triple Supertrend Confluence [MarkitTick]",
+      "sourceHash": "9bcdb74fbcf430fe5ef7695892508fa6ec31f4a2cf7c70af3e9a88c96b88c31c",
+      "patchedHash": "4dc5eb834c3f5306d18e9fdfbb7e16aaf9b454053e9048893dfb20c81f1164c7",
+      "ok": true,
+      "error": null,
+      "ms": 255.03929100000005,
+      "alerts": 71,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "Downtrend to Uptrend",
+        "Close Short Signal",
+        "Trend Change",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "Uptrend to Downtrend",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23526393",
+      "name": "Trend Angle Momentum [MarkitTick]",
+      "sourceHash": "1cb9bd412032386f39408167c892ba2c8116394cd71d30453ef8a64f83bafa6d",
+      "patchedHash": "9d81d5002a0c5e352dc450afbf181ee45a458eced827a95bb651fe90dcd039cc",
+      "ok": true,
+      "error": null,
+      "ms": 362.99775000000045,
+      "alerts": 272,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "High Pivot",
+        "Low Pivot"
+      ]
+    },
+    {
+      "id": "23521333",
+      "name": "Bollinger-Fibonacci Trend Extension [MarkitTick]",
+      "sourceHash": "e5232a3424c0d3373befd8f521948637366f8372c78b91aa61bf5fa54dec4b9c",
+      "patchedHash": "f73f78048557e81222a94cb1d6fffb757c0eef955a94be016aa445ecaf90d8fa",
+      "ok": true,
+      "error": null,
+      "ms": 252.36441599999944,
+      "alerts": 122,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "SELL Signal",
+        "Close Long Signal",
+        "Close Short Signal"
+      ]
+    },
+    {
+      "id": "23583264",
+      "name": "Multi-MA Trend Ribbon [MarkitTick]",
+      "sourceHash": "c63dcc8650c9f4003a80cb50651fc0f9456762f791bff4cfecdc4b73c27f77c4",
+      "patchedHash": "a672c00c0e64da26b0b66e570cd87f20a7a9e7e849f202705a831f5d04f84537",
+      "ok": true,
+      "error": null,
+      "ms": 1279.6044999999995,
+      "alerts": 624,
+      "shapes": [
+        {
+          "title": "Bull Flip",
+          "count": 23
+        },
+        {
+          "title": "Bear Flip",
+          "count": 22
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "Cross Above Signal",
+        "Cross Below Signal",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23512110",
+      "name": "Smart Trend Filter Confirmation [MarkitTick]",
+      "sourceHash": "dd9b2aea7be294512f35b8315c94779222669c5c9267dfc435c08169392ba3f1",
+      "patchedHash": "4962879244cf9cb04339e9a3f93f323e2887a628dd8b9c9dc399a50ad59f433c",
+      "ok": true,
+      "error": null,
+      "ms": 321.8145420000001,
+      "alerts": 36,
+      "shapes": [
+        {
+          "title": "Bull Signal",
+          "count": 4
+        },
+        {
+          "title": "Bear Signal",
+          "count": 5
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "Bear Signal",
+        "Close Long Signal",
+        "Bull Signal",
+        "Close Short Signal"
+      ]
+    },
+    {
+      "id": "23497060",
+      "name": "Liquidity Stress Exhaustion [MarkitTick]",
+      "sourceHash": "8b9589a65238ae484a2be0dd0ae3256078e9638d871ef0d07a0a64cc5e70ce25",
+      "patchedHash": "63f662d169ff7a81e0c51f92b2dbfbd6e3855487d57adcc18bcbe3f3bd9d6103",
+      "ok": true,
+      "error": null,
+      "ms": 172.35758400000032,
+      "alerts": 5222,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "Buyer Exhaustion",
+        "SL Hit",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "Seller Exhaustion"
+      ]
+    },
+    {
+      "id": "23483519",
+      "name": "Chandelier Exit Trend Navigator [MarkitTick]",
+      "sourceHash": "4a9095ac9816b777a2037aa59471843899e9256f0aec9d4f0340bdf26ebe87a3",
+      "patchedHash": "aebba4594fe1e8e3d6e50683f5ac0ae4f0444fce323b49df064d1908e1aaf05b",
+      "ok": true,
+      "error": null,
+      "ms": 618.7496249999995,
+      "alerts": 112,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23479163",
+      "name": "McGinley Dynamic Fusion [MarkitTick]",
+      "sourceHash": "3143e7cdc35f2f58036fca226cf3a470b4b82b15bfe2831cb519c0227ff1e3ba",
+      "patchedHash": "c4e9d89ccbae130196e16d89d00dd6feac67a9ee40596da3d1dc2c7aca0ee68c",
+      "ok": true,
+      "error": null,
+      "ms": 779.7263750000002,
+      "alerts": 1799,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23460481",
+      "name": "Multi-Confluence Signal Engine [MarkitTick]",
+      "sourceHash": "dd9d7f98f399983ee5f66d0f97c875a09b9fb3693bec082044c337c758eeba61",
+      "patchedHash": "3610aedc79df6deb2804b61b7ee08056ad213d8689a9391909bad256ec8934b7",
+      "ok": true,
+      "error": null,
+      "ms": 614.7250829999994,
+      "alerts": 658,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23440169",
+      "name": "Fan Principle Signals [MarkitTick]",
+      "sourceHash": "6a09920ca655a5cc0f15e0562bccb7693ece9aa5b13c9545e782f79b6ed7fb77",
+      "patchedHash": "87ed527b24ef5c694f59baecdf705cf80d7cd0dc3aabc63edf049b4ceafeeb4e",
+      "ok": true,
+      "error": null,
+      "ms": 531.9163749999998,
+      "alerts": 1453,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23434575",
+      "name": "Percentage Price Oscillator Navigator [MarkitTick]",
+      "sourceHash": "224c4da519f734dde33151d62c89eba18cc3feccaf363e5598a0818e57c2a1f1",
+      "patchedHash": "1efa91d552be6eb4455be98983651133cc214059b8e73811c9a2f572793d5230",
+      "ok": true,
+      "error": null,
+      "ms": 243.2921669999996,
+      "alerts": 1704,
+      "shapes": [
+        {
+          "title": "Bull Cross",
+          "count": 39
+        },
+        {
+          "title": "Bear Cross",
+          "count": 39
+        },
+        {
+          "title": "Chart Bull Signal",
+          "count": 39
+        },
+        {
+          "title": "Chart Bear Signal",
+          "count": 39
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "PPO Bull Cross",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit",
+        "PPO Bear Cross",
+        "PPO Zero Cross Dn",
+        "PPO Zero Cross Up"
+      ]
+    },
+    {
+      "id": "23422976",
+      "name": "OBV Signal Confluence [MarkitTick]",
+      "sourceHash": "df6b1c45258eb63c870dc0956dc987c67d609c936eb74b5af5274c899452c234",
+      "patchedHash": "431a0d22d4249768f54f422e3bbfb46036a2309976980e353e41b23b766c3316",
+      "ok": true,
+      "error": null,
+      "ms": 305.33250000000044,
+      "alerts": 723,
+      "shapes": [
+        {
+          "title": "BearDiv",
+          "count": 7
+        },
+        {
+          "title": "BullDiv",
+          "count": 12
+        },
+        {
+          "title": "BearDivChart",
+          "count": 7
+        },
+        {
+          "title": "BullDivChart",
+          "count": 12
+        },
+        {
+          "title": "HidBearDiv",
+          "count": 17
+        },
+        {
+          "title": "HidBullDiv",
+          "count": 11
+        },
+        {
+          "title": "HidBearDivChart",
+          "count": 17
+        },
+        {
+          "title": "HidBullDivChart",
+          "count": 11
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long",
+        "TP1 Hit",
+        "BUY Signal",
+        "Close Short",
+        "TP2 Hit",
+        "TP3 Hit",
+        "Bear Divergence",
+        "Hidden Bull Divergence",
+        "Bull Divergence",
+        "Hidden Bear Divergence"
+      ]
+    },
+    {
+      "id": "23395628",
+      "name": "Session Seasonality Deviation [MarkitTick]",
+      "sourceHash": "6bded27bfc03a2ec3e2a7cbcb968f573443f3b10168faceafe2fa40e176df850",
+      "patchedHash": "83a9e96d11fff5cd7055122bf4deb555020f7d20925ec5c3a4be60b5f94f4d09",
+      "ok": true,
+      "error": null,
+      "ms": 154.15041700000074,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "23390764",
+      "name": "Cardwell Dual Confluence [MarkitTick]",
+      "sourceHash": "e6fba14a11b916cd95f6e9ef155a3b5aa0dfbb091601525e085bc12a6a038c49",
+      "patchedHash": "bdcf8d189990a9f76ee433abedbb308a84404877a4f6140cf5040b7b2d924762",
+      "ok": true,
+      "error": null,
+      "ms": 264.75987499999974,
+      "alerts": 242,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SL Hit",
+        "SELL Signal",
+        "Close Long Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "23378215",
+      "name": "Fractal Timeframe Collision Node [MarkitTick]",
+      "sourceHash": "8daa76703d6a756f9c46741945d6ccae343e75cdbd110730735f492e5cbe64ef",
+      "patchedHash": "2e99b6c257f81b0a96f1132790b22223703aece75c560e136c10724d1bebfc30",
+      "ok": false,
+      "error": "dynamic computed member access is not allowed",
+      "ms": 50.946208999999726,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "23407833",
+      "name": "Dynamic Market Metrics [MarkitTick]",
+      "sourceHash": "8f00d0fc246b714244b61777b7b18ee049d6d3846f74fd6df3e5c14f3b94ed8e",
+      "patchedHash": "e954c4000a6a724368065c0e8e040a1bf92c61c15c603af405f5288def398d08",
+      "ok": true,
+      "error": null,
+      "ms": 1059.2324169999993,
+      "alerts": 47,
+      "shapes": [
+        {
+          "title": "BULL",
+          "count": 7
+        },
+        {
+          "title": "BEAR",
+          "count": 8
+        },
+        {
+          "title": "HTF BULL",
+          "count": 0
+        },
+        {
+          "title": "HTF BEAR",
+          "count": 0
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long Signal",
+        "BUY Signal",
+        "Close Short Signal",
+        "TP1 Hit"
+      ]
+    },
+    {
+      "id": "23365493",
+      "name": "Volatility Squeeze Ignition [MarkitTick]",
+      "sourceHash": "2abe974cc0706fe4c9392261f88454f12374b694ee8beffd836da09cf0673a0e",
+      "patchedHash": "e5bdbaf9199909bdbdebbde1da68d6eaecd5a1fcbe4ede892047ea77882149e0",
+      "ok": true,
+      "error": null,
+      "ms": 505.49441599999955,
+      "alerts": 368,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "23348122",
+      "name": "Williams VIX Fix Elite [MarkitTick]",
+      "sourceHash": "6d9403796ac5f15333878ee22c5451f3b284733796f733de58d4fa74d216eebe",
+      "patchedHash": "0945d52c98c5a8af720291291b64525481f25d87093c3cf4e0059650ada05c42",
+      "ok": true,
+      "error": null,
+      "ms": 712.3919590000005,
+      "alerts": 1060,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "SELL Signal",
+        "Close Long Signal",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "23336216",
+      "name": "Dynamic MSS Navigator [MarkitTick]",
+      "sourceHash": "c0f35279b1c69ebdda9b978e7682a4b08a2c4cf8d8c0228727a92da3d6e501a0",
+      "patchedHash": "8d9e147cf2790020eab4edec601fcabe588a08a76fb16a0f3fba75c116853bb4",
+      "ok": true,
+      "error": null,
+      "ms": 357.6533339999987,
+      "alerts": 146,
+      "shapes": [
+        {
+          "title": "Sell Signal",
+          "count": 13
+        },
+        {
+          "title": "Buy Signal",
+          "count": 11
+        },
+        {
+          "title": "Bear Reinforcement",
+          "count": 3
+        },
+        {
+          "title": "Bull Reinforcement",
+          "count": 3
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long Signal",
+        "BUY Signal",
+        "Close Short Signal",
+        "Trail Update",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "23352593",
+      "name": "Liquidity Radar Engine [MarkitTick]",
+      "sourceHash": "7af22719e5ff6169aead408cfe8d0a288504b53bd784126a4443738ec0aca2d9",
+      "patchedHash": "4e8b3b03792ab83b89f4e6f112618ef311efef75fbe74a8788cd32f8bf615855",
+      "ok": false,
+      "error": "request.security(DXY): DXY is not a Delta market; external series are not supported",
+      "ms": 1298.9660000000003,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "23322692",
+      "name": "Liquidity Entry Signals [MarkitTick]",
+      "sourceHash": "93dd8b61066268f2a4f0112bb0e91aebb2e989332401f64e1005fccf2b437005",
+      "patchedHash": "12fd4bf1ebb050dde895df353975df294c660d0c44d6efeffcc02aaafa91637b",
+      "ok": true,
+      "error": null,
+      "ms": 257.02458399999887,
+      "alerts": 766,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "SELL Signal",
+        "Close Long Signal",
+        "TP1 Hit",
+        "BUY Signal",
+        "Close Short Signal",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "22305728",
+      "name": "Cardwell Range Analyze [MarkitTick]",
+      "sourceHash": "8fa31d44dd1b2639bd5a42da167618b8dc1bd1eb01f60040afda3f0dede90c9c",
+      "patchedHash": "77b8f735dfe19c43b194660885f2da21bea85549bfcdff6ac14ff997d32809a0",
+      "ok": true,
+      "error": null,
+      "ms": 269.72912499999984,
+      "alerts": 228,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "23310042",
+      "name": "Cumulative Rejection Heatmap [MarkitTick]",
+      "sourceHash": "b2193f5f9a4308bfb96d36c5b6702bafa4306f190dce43c7f8d33c7cf3264501",
+      "patchedHash": "5548a36e64b5edbe41dddd19cdeebe873f92c21cb794f8f34c205d719f8e22c1",
+      "ok": true,
+      "error": null,
+      "ms": 646.2352919999994,
+      "alerts": 1040,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "22293878",
+      "name": "Triple Confluence Navigator [MarkitTick]",
+      "sourceHash": "8e9f7a14734ad39642b10f88577fbd86c32b351690d632d1e45b99c446cd74b5",
+      "patchedHash": "fe64949224e282a8cd9d3ee3941a856f60ca23b47f8239701c9e6e9f6e83a2a0",
+      "ok": true,
+      "error": null,
+      "ms": 377.9821670000001,
+      "alerts": 104,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "22280413",
+      "name": "Multi-Indicator Confluence Strategy Automator [MarkitTick]",
+      "sourceHash": "6828058a86dd71554aebca300410cb9753cc5ccd3208293c614864f23d9f3b7b",
+      "patchedHash": "482cd40180f6f7da455c5070b86e8245528854d29fc13685451003f642c08f53",
+      "ok": false,
+      "error": "request.security(GC1!): GC1! is not a Delta market; external series are not supported",
+      "ms": 239.10141699999986,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "22267949",
+      "name": "Elliott Wave Scanner [MarkitTick]",
+      "sourceHash": "6119c8f7050ba099733a067a4ba429a948b6bdfaad4e99ad23dbdc5d86422ae8",
+      "patchedHash": "18bc27d5bb070c2b461f4df7527800295dd12a3691a632ab793accd064fe5ef3",
+      "ok": true,
+      "error": null,
+      "ms": 844.2487920000003,
+      "alerts": 15,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22263750",
+      "name": "Adaptive RSI Supertrend [MarkitTick]",
+      "sourceHash": "c0c6e349492220fb75b5d945d05a225200fc33b121fb27d12f575044c5eb6e6c",
+      "patchedHash": "2beeae85e900156c35630fe499f2b9d46b816879b59a7f052ff15e761a886740",
+      "ok": true,
+      "error": null,
+      "ms": 1420.515125,
+      "alerts": 518,
+      "shapes": [
+        {
+          "title": "Bullish Cross",
+          "count": 54
+        },
+        {
+          "title": "Bearish Cross",
+          "count": 54
+        }
+      ],
+      "alertTitles": [
+        "ST Flip Bull",
+        "alert",
+        "Bull Cross",
+        "ST Flip Bear",
+        "OB Entry",
+        "Bear Cross",
+        "Squeeze Breakout",
+        "OS Entry"
+      ]
+    },
+    {
+      "id": "22252133",
+      "name": "Dynamic Gravity Attractor (DGA) [MarkitTick]",
+      "sourceHash": "e0f25891de8c4373d0824f275673f13278e098f080b8684eec91c3fa82e0d712",
+      "patchedHash": "ecb85f99ea1e2aab5889f66352c43021739ed96acec7da7ceeab66700ff7454c",
+      "ok": true,
+      "error": null,
+      "ms": 689.8962920000013,
+      "alerts": 294,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22238608",
+      "name": "Cardwell RSI Trade Navigator [MarkitTick]",
+      "sourceHash": "63d3fbae99d3d96bc9595382ede6e7351a600241a462270a94d9945a7408e5a5",
+      "patchedHash": "74366219fc5d22dc916260f41a2a2bb0b807f08a78f73cb51c0ae2b5c5b03e0f",
+      "ok": true,
+      "error": null,
+      "ms": 718.2847090000014,
+      "alerts": 166,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "Buy Signal",
+        "SL Hit",
+        "Sell Signal",
+        "TP1 Hit",
+        "TP2 Hit",
+        "TP3 Hit"
+      ]
+    },
+    {
+      "id": "22221844",
+      "name": "Historical Pattern Projection [MarkitTick]",
+      "sourceHash": "2b9f1e4434d082aef5dce523dd37f94cc40f9af70b9a70877fe0220b7034b83c",
+      "patchedHash": "f4d5853917bba727f7b14ba388f10a3bbd87d871a8d1974fdde6394c99b7be0d",
+      "ok": true,
+      "error": null,
+      "ms": 212.5878329999996,
+      "alerts": 1,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22211364",
+      "name": "Market Weariness Spectrum Indicator [MarkitTick]",
+      "sourceHash": "47523c4198a87af67f103e45dfb0490d8dd5d741b257d351cf32b2221213bfd0",
+      "patchedHash": "d960f025bec260b404382978f56c65cd7457f7ce5d6f0917fb8d9a916917c631",
+      "ok": true,
+      "error": null,
+      "ms": 200.32608299999993,
+      "alerts": 88,
+      "shapes": [],
+      "alertTitles": [
+        "MWSI — Exh Level Cross",
+        "MWSI — Peak Exh: Rev Likely"
+      ]
+    },
+    {
+      "id": "22226043",
+      "name": "Intra-Candle Pressure Dissector [MarkitTick]",
+      "sourceHash": "fcf623065ff75b0f1edce9c06f055721c8a87bd9373d318e780eb443362716a9",
+      "patchedHash": "a4d36ede21e571293366ad996f4c6bfc5feeedde14a58d57b26802e164151512",
+      "ok": true,
+      "error": null,
+      "ms": 1249.428917000001,
+      "alerts": 408,
+      "shapes": [],
+      "alertTitles": [
+        "FLOW — Fake Bullish Move Detected",
+        "FLOW — Fake Bearish Move Detected",
+        "FLOW — Real Buying Pressure Confirmed",
+        "FLOW — Real Selling Pressure Confirmed",
+        "FLOW — Absorption Detected (Large Player)"
+      ]
+    },
+    {
+      "id": "22197913",
+      "name": "Alpha Signal Engine Pro [MarkitTick]",
+      "sourceHash": "da2744663bce4486dfc2b7af9f24e55ac2e2ceab7f3bb8f5c0cf2ca0d78f8c19",
+      "patchedHash": "f7d077b355ea174e8560202c5bbc17dee55018b6bfe9a966029fa050661b8992",
+      "ok": true,
+      "error": null,
+      "ms": 287.8221250000006,
+      "alerts": 32,
+      "shapes": [
+        {
+          "title": "Buy Signal",
+          "count": 4
+        },
+        {
+          "title": "Sell Signal",
+          "count": 4
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "22180135",
+      "name": "Liquidity Sweep Retracements [MarkitTick]",
+      "sourceHash": "dc21b83b6918b4eb70bb04685a9ad5437d3d656f9b93f771767ca264e0537ca5",
+      "patchedHash": "ab2686f742b15d98c7c1298b7b01c7b718c2af96554c12a4c0692e5eaf3aec0f",
+      "ok": true,
+      "error": null,
+      "ms": 359.41854199999943,
+      "alerts": 15,
+      "shapes": [
+        {
+          "title": "BSL Sweep",
+          "count": 25
+        },
+        {
+          "title": "SSL Sweep",
+          "count": 40
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22184375",
+      "name": "Quantum Imbalance Trap [MarkitTick]",
+      "sourceHash": "73ea4281e045b1bd67e033008057bfdba09e3a9053ceb4e2b1de3cb715003a3a",
+      "patchedHash": "c30eeab3891817c9ba2f30cb6a4597f7b1442f86406eb4d1cb21ea27b35a7335",
+      "ok": true,
+      "error": null,
+      "ms": 631.1650420000005,
+      "alerts": 61,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22169083",
+      "name": "Smart Money Renko Matrix [MarkitTick]",
+      "sourceHash": "3faa9faa8f27a92d03dce0a459399f0bf6f4733c48026ceaf0ac7cfd45b2a18f",
+      "patchedHash": "48ab31841e2e6f5ecd5b2f488231d57e2bae00a0a5e07635ded8dc07e1d59f64",
+      "ok": false,
+      "error": "Undeclared identifier \"_engine\"",
+      "ms": 249.88416700000016,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "22155379",
+      "name": "Inducement Engine Liquidity Targets [MarkitTick]",
+      "sourceHash": "966a803fd192ab0c25723ae96284230f6271c0b72b302efc183dfd3f778a5b34",
+      "patchedHash": "13f51f71b2bf7cf9565ed877ff44b559559b43e9398aa1131568ed6108e2e44b",
+      "ok": true,
+      "error": null,
+      "ms": 1043.679,
+      "alerts": 83,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22141499",
+      "name": "Auto Pattern Detector Targets [MarkitTick]",
+      "sourceHash": "01b4834fcdc20ec1d8eb464b37fd2adb67f10e903ce427803c7bbb4c9f6c0504",
+      "patchedHash": "2b860a70ed3da661ccbfa6dd55482bac15b4a99e9848fd27b4d89058cb3d2871",
+      "ok": true,
+      "error": null,
+      "ms": 991.5899170000012,
+      "alerts": 14,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22126241",
+      "name": "Market Structure Target Tracker [MarkitTick]",
+      "sourceHash": "c0106698f2a100fbb1496309cb9a8d74701353fb86440c522e1528bcf804c0fc",
+      "patchedHash": "41ac1ea412b634188c088a0ca50087264c0f301d27c88a35d1e495dbe8684019",
+      "ok": true,
+      "error": null,
+      "ms": 219.08249999999862,
+      "alerts": 84,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22136720",
+      "name": "Smart Gap & Support and Resistance Breakout [MarkitTick]",
+      "sourceHash": "101e70ac25d25fd279dfabe7162c9cf0ea2299e5ce79f5f642844608b507e79a",
+      "patchedHash": "b24bb7895a2f9c4b6f8d700da671d169ec38151f12bd1b88f396d8eb6ed87f13",
+      "ok": true,
+      "error": null,
+      "ms": 708.1303340000013,
+      "alerts": 76,
+      "shapes": [],
+      "alertTitles": [
+        "Resistance Breakout",
+        "Support Breakout"
+      ]
+    },
+    {
+      "id": "22088826",
+      "name": "Smart Trend Flow Pro [MarkitTick]",
+      "sourceHash": "a1e41e7fe9bad5743b7982070a0d7b6ab38d5fbca3a8f8787c4f734282bcbd06",
+      "patchedHash": "47e0fd787f8ba034772451028e16d213ae4e70717c66f15691f11bdafb81c849",
+      "ok": true,
+      "error": null,
+      "ms": 198.28804200000013,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "22083970",
+      "name": "Smart Money Sentiment Index [MarkitTick]",
+      "sourceHash": "af45bcafbf094e0ba90ce0a7c83a91ecfc0bba6dad0c7aa4ae965458ff1e814a",
+      "patchedHash": "7c9d6c6da9976245900bc7106a8a2efe91fc8504b513f6a7f0d0a06910c4bffd",
+      "ok": true,
+      "error": null,
+      "ms": 265.86162499999773,
+      "alerts": 58,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22076155",
+      "name": "Dynamic Pivot Fibo Analytics [MarkitTick]",
+      "sourceHash": "c12b86d8a45222fc502f7d086b757bdacdcb84ae32d9779dea2f13713aebd1c2",
+      "patchedHash": "dfa5711a4981708ea47204421cb1914b2dc62dbf47a5b4a8453a492c7145ec0e",
+      "ok": true,
+      "error": null,
+      "ms": 249.6984169999996,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "22070181",
+      "name": "Renko Heatmap Pro [MarkitTick]",
+      "sourceHash": "c3014d1636776d0504f9de617684951ff7504eb611fe5f52e910b81397e73bdd",
+      "patchedHash": "2e573a6f9c583b94911e32e3443b64e05c4aad5796977b8902d832b2b006ee9d",
+      "ok": true,
+      "error": null,
+      "ms": 311.07524999999805,
+      "alerts": 2184,
+      "shapes": [
+        {
+          "title": "▲ BUY",
+          "count": 273
+        },
+        {
+          "title": "▼ SELL",
+          "count": 273
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "REMOCC Cross Alert",
+        "REMOCC SELL",
+        "REMOCC BUY"
+      ]
+    },
+    {
+      "id": "22063148",
+      "name": "Twiggs Liquidity & Order Block Engine [MarkitTick]",
+      "sourceHash": "d54fd716d5fa399a8adf933a19b2d57f5eb602a9f0753b36104bb0cd907d11cf",
+      "patchedHash": "6cd07e08ea968af763cf3278030f888ea9548131b79342ad5848bb01d22d96a6",
+      "ok": true,
+      "error": null,
+      "ms": 670.5218750000022,
+      "alerts": 103,
+      "shapes": [
+        {
+          "title": "Zero Cross Up",
+          "count": 47
+        },
+        {
+          "title": "Zero Cross Down",
+          "count": 48
+        },
+        {
+          "title": "OB Breach",
+          "count": 1
+        },
+        {
+          "title": "OS Breach",
+          "count": 7
+        },
+        {
+          "title": "Chart: Zero Cross Up",
+          "count": 47
+        },
+        {
+          "title": "Chart: Zero Cross Down",
+          "count": 48
+        },
+        {
+          "title": "Chart: OB Breach",
+          "count": 1
+        },
+        {
+          "title": "Chart: OS Breach",
+          "count": 7
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22058020",
+      "name": "Candle Volume Decomposition [MarkitTick]",
+      "sourceHash": "11969604e5de48638d942a50317d635694e53796a6ff4934e1950b183b9bea11",
+      "patchedHash": "232371d7fe2257927a811931fa607418c1d03626c21faeedea95afa9de91f309",
+      "ok": true,
+      "error": null,
+      "ms": 325.24958400000105,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "22112672",
+      "name": "Sloped LinReg Volume Profile [MarkitTick]",
+      "sourceHash": "2aadbff1ea4cd0ec27b94437cf4aca8cbd2e840ce5bbb87ba77a03f4fdeaffee",
+      "patchedHash": "f47ef56b9e18c8361e4439460f35ca9740366c90f468a0676938c7407e56cc58",
+      "ok": true,
+      "error": null,
+      "ms": 2506.5662919999995,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "22049269",
+      "name": "Multi-Factor Regime Engine Pro [MarkitTick]",
+      "sourceHash": "a913e253836d9b4e7c3c02c0a149f4e6bc8da4a4830162babd71f595ebf69bc0",
+      "patchedHash": "22eacc5b91ade98562eee213d76dac5463344afad4b532c7edda4c3a2b2a6a50",
+      "ok": true,
+      "error": null,
+      "ms": 439.76174999999785,
+      "alerts": 82,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22042284",
+      "name": "SwingRegress Volatility Analytics [MarkitTick]",
+      "sourceHash": "f3280e9e8bd600e2e789eca6d5be15b5f7acc0d1491c7c5db20dc59ec7e426d9",
+      "patchedHash": "d6ed8c0e7d9a1494c2f139a8086008031d29b4e78984deb2519a68d981eb3e70",
+      "ok": true,
+      "error": null,
+      "ms": 426.843832999999,
+      "alerts": 30,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22053022",
+      "name": "SMC Liquidity Sweep & Fibonacci Extension [MarkitTick]",
+      "sourceHash": "6f37c0e968ce86a2a881f27aa171d40b13c8138fa575dcc48b18bbbed0b815ff",
+      "patchedHash": "17683fedac25a31a70f2f4e0d965d0c25142d6ca5f45f058c38e9579d302827a",
+      "ok": true,
+      "error": null,
+      "ms": 998.9394170000014,
+      "alerts": 121,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22034765",
+      "name": "Daily Bias Liquidity Profiler [MarkitTick]",
+      "sourceHash": "e523064dbcebc7017dec11425282535b555772797a5323dfd9605b10f38d7207",
+      "patchedHash": "d8ef01468c10faf7a6c0633c22fa939458ed579e153ac2cc58c18cf51233507f",
+      "ok": true,
+      "error": null,
+      "ms": 378.10299999999916,
+      "alerts": 42,
+      "shapes": [],
+      "alertTitles": [
+        "PDL Swept",
+        "alert",
+        "Day Type: Consolidation",
+        "Day Type: Expansion",
+        "Day Type: Reversal"
+      ]
+    },
+    {
+      "id": "21983005",
+      "name": "Squeeze Bollinger Bands Tracker [MarkitTick]",
+      "sourceHash": "bfa4f899f3b45bf8bc2e9b31d2c789d81a48e171de15e1c3e35576957d58f239",
+      "patchedHash": "4d44fd1f394db1e818611856cfdd5109fa9608299607169a65019f9ed2681121",
+      "ok": true,
+      "error": null,
+      "ms": 87.12979199999972,
+      "alerts": 70,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "22028151",
+      "name": "AlphaTrend Momentum Matrix [MarkitTick]",
+      "sourceHash": "c4426fc6bb17f9cec414c87b634ca624a87824fbc79a596f5064f8ef6a451aa9",
+      "patchedHash": "177bdf059f13a210104a200c2df0dac0a8004a981793ab45292526e8b294404a",
+      "ok": true,
+      "error": null,
+      "ms": 627.7755409999991,
+      "alerts": 30,
+      "shapes": [
+        {
+          "title": "BUY",
+          "count": 7
+        },
+        {
+          "title": "SELL",
+          "count": 8
+        },
+        {
+          "title": "HTF BUY",
+          "count": 0
+        },
+        {
+          "title": "HTF SELL",
+          "count": 0
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21938421",
+      "name": "Smart Money Concept: Liquidity Sweep [MarkitTick]",
+      "sourceHash": "12d88541cf18b701fe16dafdde78befb0a1d2763439c3f086cddcc9f3514fefa",
+      "patchedHash": "6be309e65b750c07cab447e62c32aea3cc4ccdc0cb0bea07e1d0a1b215bfded9",
+      "ok": true,
+      "error": null,
+      "ms": 225.93583299999955,
+      "alerts": 47,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21953024",
+      "name": "Parabolic SAR Smart Filter [MarkitTick]",
+      "sourceHash": "f093738cef5db106d6bd328e7986f16b34567b2e288ca5f03527006103c75a78",
+      "patchedHash": "c432ddac8f72687821447a3ff1079c9598be2eb92a8c1de3c615286b91542bd4",
+      "ok": true,
+      "error": null,
+      "ms": 526.1205840000002,
+      "alerts": 37,
+      "shapes": [
+        {
+          "title": "Early Warning Triangle Up",
+          "count": 10
+        },
+        {
+          "title": "Early Warning Triangle Down",
+          "count": 3
+        },
+        {
+          "title": "Liquidity Sweep Label (Below)",
+          "count": 20
+        },
+        {
+          "title": "Liquidity Sweep Label (Above)",
+          "count": 17
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21897331",
+      "name": "Sortino Ratio Oscillator [MarkitTick]",
+      "sourceHash": "d7753cdcadc17129884c2845dbae9f9cb89b79579611af35f08c0f3f404e5529",
+      "patchedHash": "ba869303e7b38d192b5b704cbf1b1c6a390afbe950bbb83a07fa740c8873383c",
+      "ok": true,
+      "error": null,
+      "ms": 127.77620799999931,
+      "alerts": 163,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21860009",
+      "name": "GARCH Volumetric Cloud [MarkitTick]",
+      "sourceHash": "22db7561400bee1289fedc4bf32317d1aaf339ed89eb80e814886c95c68fb8ae",
+      "patchedHash": "c74d88f30e432b801f93f50f103a8126aac06b4f539a2489e19a4cc3db337031",
+      "ok": true,
+      "error": null,
+      "ms": 85.67570899999919,
+      "alerts": 4,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21809466",
+      "name": "Dynamic FibTrend Signals [MarkitTick]",
+      "sourceHash": "3db68bf53258376392fedcd5ef1dbdb162121e41409d424ec0dbffa8a174e89f",
+      "patchedHash": "74fed477cb176fc8be55f4c39158d2e3af24a4b83e39e8c957b7d1fcee4ff8e8",
+      "ok": true,
+      "error": null,
+      "ms": 559.9853339999972,
+      "alerts": 16,
+      "shapes": [
+        {
+          "title": "Buy Signal",
+          "count": 8
+        },
+        {
+          "title": "Sell Signal",
+          "count": 8
+        },
+        {
+          "title": "Swing High",
+          "count": 38
+        },
+        {
+          "title": "Swing Low",
+          "count": 39
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21817342",
+      "name": "Regression-Aligned Candlestick Architect [MarkitTick]",
+      "sourceHash": "6f1f2963eb1eb7bd88c8b84855ed0d36e22b5c196be73f05c357a69a95583a70",
+      "patchedHash": "daf4d3b514f357bac36bfa74252edb3cf5c6420cc769b7ac780a292bd39437a1",
+      "ok": true,
+      "error": null,
+      "ms": 780.1967919999988,
+      "alerts": 99,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21765926",
+      "name": "Delta Absorption Scanner[MarkitTick]",
+      "sourceHash": "e8446832440e327da19b37119683c12fc28df13e0864760449edbec63fd27e31",
+      "patchedHash": "f005c8d2ba7cc2c5dd34562d96af766177165bd6f2c5c41c239c220cbd36b162",
+      "ok": false,
+      "error": "i.sum is not a function",
+      "ms": 897.9189589999987,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21738774",
+      "name": "Advanced Fibonacci Confluence Matrix [MarkitTick]",
+      "sourceHash": "9445683534e8171753d882de0b3e9d9b9289cd6dafad701c2d84329df87be02c",
+      "patchedHash": "85db74dcbfac98dee907a7c1ee9143423b6759d1f147cc32534a70bcb521ec8b",
+      "ok": true,
+      "error": null,
+      "ms": 888.5115000000005,
+      "alerts": 32,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21681731",
+      "name": "Alpha Signal Engine [MarkitTick]",
+      "sourceHash": "0b019a4e58ea2685538819217e35b11f1c8f7a6bebffa276d165b8a3c73eaafb",
+      "patchedHash": "709024f3e71549297e79df503fda7b3572ef48ca9e6058f55ef377e9d047230a",
+      "ok": true,
+      "error": null,
+      "ms": 196.7671249999985,
+      "alerts": 224,
+      "shapes": [
+        {
+          "title": "Buy Signal",
+          "count": 28
+        },
+        {
+          "title": "Sell Signal",
+          "count": 28
+        }
+      ],
+      "alertTitles": [
+        "alert",
+        "BUY Signal",
+        "Close Short Signal",
+        "SELL Signal",
+        "Close Long Signal"
+      ]
+    },
+    {
+      "id": "21652928",
+      "name": "MESA Adaptive Cycle Engine [MarkitTick]",
+      "sourceHash": "ec90bc45c6f7bf383d19ec0afeb46a5b6288b69ade9384aa6c94f9fd74064666",
+      "patchedHash": "cbc593c97c0606d7522b83699fd8b04c0e0c8e5be8f03b241372a1b18cd1169d",
+      "ok": true,
+      "error": null,
+      "ms": 66.68033400000058,
+      "alerts": 81,
+      "shapes": [
+        {
+          "title": "Buy Signal",
+          "count": 40
+        },
+        {
+          "title": "Sell Signal",
+          "count": 41
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21696088",
+      "name": "Multi-Pool Liquidity Confluence Scorer [MarkitTick]",
+      "sourceHash": "3858f51261fb5d6c29dff8405139e788e5643ab05ce49ca0a876b651b34a9bb2",
+      "patchedHash": "79d634a09bcceb8d0cac786826c2e856d5f71b0ad08b7bdccf3227f4fe0add10",
+      "ok": true,
+      "error": null,
+      "ms": 804.6760420000028,
+      "alerts": 2,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21638266",
+      "name": "Smart RSI Candles [MarkitTick]",
+      "sourceHash": "8f788aa90fc03bbc5cc02dc1aa9de22fd1cd85e3cec9940245c14eadba2c5247",
+      "patchedHash": "7b98755ef9293d334885b57ce7513d95e1bc833e739e4dfd516e6ed638d586ae",
+      "ok": true,
+      "error": null,
+      "ms": 96.5791250000002,
+      "alerts": 34,
+      "shapes": [
+        {
+          "title": "Bull Reg Div",
+          "count": 12
+        },
+        {
+          "title": "Bear Reg Div",
+          "count": 3
+        },
+        {
+          "title": "Bull Hid Div",
+          "count": 7
+        },
+        {
+          "title": "Bear Hid Div",
+          "count": 12
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21645901",
+      "name": "Volume Defense Zones [MarkitTick]",
+      "sourceHash": "1e6016d0a5e31de777357dfc04a04b119f05844a3f0e46ff2b3f0a08a71bcefc",
+      "patchedHash": "5ccd7ed87964303b0226e7c87470552b5e58b20bdcafe3a7ea0d72cfac0c5d68",
+      "ok": true,
+      "error": null,
+      "ms": 522.7354169999999,
+      "alerts": 3,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21624624",
+      "name": "TetraTrend Engine [MarkitTick]",
+      "sourceHash": "f1c8c1fc9419c48a377d50ef913cd9dd85fab38d961dae3b3e39a1c2081f3147",
+      "patchedHash": "48b955a09896d886cd8901d0e615fa89bf8ee2f0abe03a27e97feaaa4b88c001",
+      "ok": true,
+      "error": null,
+      "ms": 823.9762910000027,
+      "alerts": 0,
+      "shapes": [
+        {
+          "title": "Long Signal Validated",
+          "count": 0
+        }
+      ],
+      "alertTitles": []
+    },
+    {
+      "id": "21601280",
+      "name": "Adaptive Linear Regression Structure [MarkitTick]",
+      "sourceHash": "3641d352b1497f79914b70ee680e5b887a3c89af4f6895422f5f65b79de523a7",
+      "patchedHash": "23a47558e5225e5a065500dae280e84c38950dab2efa814648cf47a6bc8ed1b0",
+      "ok": true,
+      "error": null,
+      "ms": 737.8274999999994,
+      "alerts": 25,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21594239",
+      "name": "Institutional Order Flow Shield [MarkitTick]",
+      "sourceHash": "cf2628cd28493f73f1339bfa8791ad44efeaefd27005a18ba76aa858446e0321",
+      "patchedHash": "af591e0b41bfe5f1dc2319c65d96d9754d8d2aabe84497a47cb7b9c9165f245e",
+      "ok": false,
+      "error": "i.size is not a function",
+      "ms": 53.61216699999932,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21424886",
+      "name": "Adaptive Channel Breakout [MarkitTick]",
+      "sourceHash": "a391b5a51b1ca7c81f69cd74e5130b5f6c3e29d483c9f7db4c74f3f654132885",
+      "patchedHash": "0fa232e7ce29198f8c951fa7273804d8cb985c56ff3e5f5a05d1a0b556cdd484",
+      "ok": true,
+      "error": null,
+      "ms": 290.08362500000294,
+      "alerts": 85,
+      "shapes": [
+        {
+          "title": "Long Signal",
+          "count": 30
+        },
+        {
+          "title": "Short Signal",
+          "count": 28
+        },
+        {
+          "title": "Time Exit",
+          "count": 27
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21413375",
+      "name": "Bernoulli Process: Trend Probability & Entropy [MarkitTick]",
+      "sourceHash": "82103bcc0bab16a6e151be5f44655947a09c55ac40a871590ac2a18daf4ea3ef",
+      "patchedHash": "721e08c5b198681932ee5423d0396642c35f35745f84814ee323f41ef39862f0",
+      "ok": true,
+      "error": null,
+      "ms": 70.58420800000022,
+      "alerts": 0,
+      "shapes": [
+        {
+          "title": "Long Signal",
+          "count": 0
+        },
+        {
+          "title": "Short Signal",
+          "count": 0
+        }
+      ],
+      "alertTitles": []
+    },
+    {
+      "id": "21389366",
+      "name": "Multi-Session Volume Profile Suite [MarkitTick]",
+      "sourceHash": "a3d7aa04051d3262af135bffde32202d4a3d4be54204422ee83eeebf4d194616",
+      "patchedHash": "8e837cfd0b2c0980f42325fd65d9fa358f70583b761d4c5c8adbc6c5643fe9c9",
+      "ok": false,
+      "error": "Invalid session specification: \"America/New_York\"",
+      "ms": 121.47391700000298,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21580401",
+      "name": "Dow Jones Institutional [MarkitTick]",
+      "sourceHash": "79a408d147a370c3ef1a1cc93931b0344cd3162ee74e6f7edc4d6c8cf5700ed9",
+      "patchedHash": "bb045d0184d5c704f99edbbf395b423fec8081cf83517217266140a92656fbe6",
+      "ok": false,
+      "error": "request.security(AAPL): AAPL is not a Delta market; external series are not supported",
+      "ms": 547.2740830000002,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21382891",
+      "name": "Dynamic Trend-Based Fibonacci Extension",
+      "sourceHash": "43e6e3acaa398fbd3359c11043c1f3d43e27d65c82999ba57f5f4430fda0c377",
+      "patchedHash": "827a4f413da45e8148ed78cd84a7a5a5c95a381dbe27d780ab982368d7cfa67a",
+      "ok": true,
+      "error": null,
+      "ms": 146.28749999999854,
+      "alerts": 67,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21369096",
+      "name": "Smart SafeZone Stops [MarkitTick]",
+      "sourceHash": "454a7c6bd9409bc9d5c329f8c26a80fe5334b1367fa9dec0b412d1310d301c5f",
+      "patchedHash": "547ddcaad460a056c386f1db0d9dbde86c0298923a9dad5a863f78cb9868cd17",
+      "ok": true,
+      "error": null,
+      "ms": 390.96966699999757,
+      "alerts": 313,
+      "shapes": [
+        {
+          "title": "Bull Start",
+          "count": 76
+        },
+        {
+          "title": "Bear Start",
+          "count": 76
+        },
+        {
+          "title": "Exhaustion Long",
+          "count": 5
+        },
+        {
+          "title": "Exhaustion Short",
+          "count": 12
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21348049",
+      "name": "Multi-Session Volume Profile [MarkitTick]",
+      "sourceHash": "418d302edfe5fd5ac08d2ba77f52ffb7238249bb37c7ce64be4c192ae510370a",
+      "patchedHash": "c1e95c312a51b1085365ae3a5155998ae97fb8fb702d6b1f3cc0de7c624dd5e5",
+      "ok": true,
+      "error": null,
+      "ms": 179.2272499999999,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21305601",
+      "name": "Smart Fear & Greed Index [MarkitTick]",
+      "sourceHash": "bcbbc919cf9012a97daa453284a75c91cadce7be6afa7863d5f9cfc5107357d2",
+      "patchedHash": "0fa617599204a5d656609dea26649b94079115739232c8d6e50b8d7a9f7db91a",
+      "ok": true,
+      "error": null,
+      "ms": 109.98566700000083,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21286523",
+      "name": "Accumulation/Distribution Oscillator [MarkitTick]",
+      "sourceHash": "8f1938fdfde0008501a88f1e79607b8d38d2e368ac0ba5e2063a3c21b6b78ec0",
+      "patchedHash": "54fd95800cb7f3f7aa5733044106e4aad686d14f625c4e0ce3d95cd31c6bbd9d",
+      "ok": true,
+      "error": null,
+      "ms": 706.8468329999996,
+      "alerts": 19,
+      "shapes": [],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21265241",
+      "name": "Smart Fixed Volume Profile [MarkitTick]",
+      "sourceHash": "d2fb064079bccae5e1541a1ddc695e877bea3beebe9171d9fa4312b4ae05665b",
+      "patchedHash": "061461a968982564c1cea45908e78151fb03ad4606d60d76151f67b4a0d38ace",
+      "ok": true,
+      "error": null,
+      "ms": 160.8902909999997,
+      "alerts": 0,
+      "shapes": [
+        {
+          "title": "Seller Exhaustion",
+          "count": 34
+        },
+        {
+          "title": "Buyer Exhaustion",
+          "count": 15
+        }
+      ],
+      "alertTitles": []
+    },
+    {
+      "id": "21365855",
+      "name": "Daily Bias Trade Manager [MarkitTick]",
+      "sourceHash": "62cbbf15f216142896a13598f0e62ac09163eaf4adc6b91118a7fc8e034e104a",
+      "patchedHash": "3c98720d6a050429cf7f65d6e4ae91134b661b3f4208f5ccfa73626bfa431101",
+      "ok": true,
+      "error": null,
+      "ms": 1457.4226659999986,
+      "alerts": 2,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "Liquidity Sweep BUY"
+      ]
+    },
+    {
+      "id": "21224774",
+      "name": "Support and Resistance Breakout Signals [MarkitTick]",
+      "sourceHash": "373bb9552fbb994c484b5a2344ae1dc96b2c9897a145cb2e1aaf5000da4c3b2c",
+      "patchedHash": "da7144ae39d33f1fb138c2d737f994fa31cfc97ac89cec7c317876b918f33b55",
+      "ok": true,
+      "error": null,
+      "ms": 177.83687499999724,
+      "alerts": 65,
+      "shapes": [],
+      "alertTitles": [
+        "Resistance Breakout",
+        "Support Breakout"
+      ]
+    },
+    {
+      "id": "21217943",
+      "name": "Smart Money Flow Oscillator [MarkitTick]",
+      "sourceHash": "f56106c979125ac4bc057d3ce37ec924b3e679422bd8355d72b3c793201f6faf",
+      "patchedHash": "859715c68a0907d3929c643f8813bf84842222cd2ebea7f1dbabcddfe91c1e24",
+      "ok": true,
+      "error": null,
+      "ms": 283.70058300000164,
+      "alerts": 306,
+      "shapes": [],
+      "alertTitles": [
+        "LFA: Zero Cross Down",
+        "LFA: Zero Cross Up",
+        "LFA: Signal Cross Bull",
+        "LFA: Signal Cross Bear",
+        "LFA: Hidden Bearish Div",
+        "LFA: Bearish Divergence",
+        "LFA: Bullish Divergence",
+        "LFA: Hidden Bullish Div"
+      ]
+    },
+    {
+      "id": "21200529",
+      "name": "Accumulative Swing Cloud [MarkitTick]",
+      "sourceHash": "477b44ddaf8f059b1aab97f1fe2c6c0acccc2622d159f8a1bddd3be290d21943",
+      "patchedHash": "0b95d606b2002e6fe293d0b298925a41ee7380d30d7caf9d880061a72a6f02de",
+      "ok": true,
+      "error": null,
+      "ms": 216.63295799999833,
+      "alerts": 254,
+      "shapes": [],
+      "alertTitles": [
+        "alert",
+        "ASI Sell Signal",
+        "ASI Buy Signal"
+      ]
+    },
+    {
+      "id": "21183370",
+      "name": "Smart Candlestick Pattern Filter [MarkitTick]",
+      "sourceHash": "2bf6d6e81add48c6a85889d0d0ccc9a66b8fb561eb420de46f1e83ea7039de24",
+      "patchedHash": "3f89ba6d32c655d1ddbb17b8fdc59153c408baa33e997e99a020cae2aa0fd3a6",
+      "ok": true,
+      "error": null,
+      "ms": 221.99533299999894,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21171937",
+      "name": "Liquidity Strain Detector [MarkitTick]",
+      "sourceHash": "8dd22863db420b76e7fc55850a014af7c04127dd8144ea7006cb39bf20262901",
+      "patchedHash": "94c61f1f85fd82e2b2028d5963bd411b909eea778757a79df52461093773ca7b",
+      "ok": true,
+      "error": null,
+      "ms": 59.03954199999862,
+      "alerts": 86,
+      "shapes": [
+        {
+          "title": "Seller Exhaustion",
+          "count": 31
+        },
+        {
+          "title": "Buyer Exhaustion",
+          "count": 15
+        }
+      ],
+      "alertTitles": [
+        "alert"
+      ]
+    },
+    {
+      "id": "21156293",
+      "name": "Hybrid Smart Money Concepts [MarkitTick]",
+      "sourceHash": "2b24e14ac55d3341ddbdd5a0484908b9fe2d707af8eb6271d1d835152bfa024e",
+      "patchedHash": "b379cc1a137d562f762043954ad9a5073962174d755e8ce31fe0e4397b8ece24",
+      "ok": true,
+      "error": null,
+      "ms": 127.65604099999837,
+      "alerts": 0,
+      "shapes": [
+        {
+          "title": "Buyer Exhaustion",
+          "count": 15
+        },
+        {
+          "title": "Seller Exhaustion",
+          "count": 34
+        }
+      ],
+      "alertTitles": []
+    },
+    {
+      "id": "21151256",
+      "name": "Trend Stress Quant [MarkitTick]",
+      "sourceHash": "0378048e3b150bf022ed93f31355f1e481c79073a6121a05aa5918ffc0ff980a",
+      "patchedHash": "c65013c12a21835fe4f708858b98941b67731108262879e5f7747f75e9a407d0",
+      "ok": true,
+      "error": null,
+      "ms": 53.63275000000067,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21144716",
+      "name": "Smart Gap Concepts [MarkitTick]",
+      "sourceHash": "ea1adafd813c5c332ad05d49060899c9053ab813fdb20fbf85b88128af9ee9f5",
+      "patchedHash": "0c4e9b9ad28e89a562438976d380e4225327c87e6d68e739050239e827649443",
+      "ok": true,
+      "error": null,
+      "ms": 88.4600410000021,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21118529",
+      "name": "Amihud Illiquidity Ratio [MarkitTick]",
+      "sourceHash": "1906d5bfb652015aea52a23bbcc1f49dea39ae2a35046923b63507d79f749115",
+      "patchedHash": "4d36631c33b3504e54613b2c5d173da221ea495d825abe1df7677eb6c5f3fa5e",
+      "ok": true,
+      "error": null,
+      "ms": 37.42570899999919,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21177244",
+      "name": "Volume Flow and Delta Analysis [MarkitTick]",
+      "sourceHash": "5faf33cefb1a6125adcd35319e0047b85797484f499d95396419b0e37ae950bd",
+      "patchedHash": "322e3113b9e7b94aab3cf0946e23f47f54958a63a8f2422271d6582328f29ada",
+      "ok": false,
+      "error": "i.sum is not a function",
+      "ms": 581.1918750000004,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21101042",
+      "name": "Dynamic Pivot Point [MarkitTick]",
+      "sourceHash": "5f9402703ab6c49a492acbae304f0d426a06290e87b44c3941d9c6bf93a96fe0",
+      "patchedHash": "6149241ee44b9acad9d3606e3d1eade7fb47be8ac0c8678f9dc28e0ff20947be",
+      "ok": true,
+      "error": null,
+      "ms": 93.16858400000274,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21100416",
+      "name": "GARCH Volume Volatility [MarkitTick]",
+      "sourceHash": "1eabfb4cb7d8fbd99474c95944a42cc1924cdfe812a93fe2c2430d02d8767b4b",
+      "patchedHash": "f9e4ebf154598254bfb3d746c5f0f4d9c80361e19a366d166aac4c9dffd02344",
+      "ok": true,
+      "error": null,
+      "ms": 85.93695900000239,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    },
+    {
+      "id": "21099925",
+      "name": "Trend Break Targets [MarkitTick]",
+      "sourceHash": "4ca4c0de1d3b59ceae485d31a4f3dcc7223034348d5af089131f44df7b653e15",
+      "patchedHash": "75ae01ee83425232e8e11bdba0f8943f7d063f81d155256abb46b9e6b1fda477",
+      "ok": true,
+      "error": null,
+      "ms": 107.83450000000084,
+      "alerts": 0,
+      "shapes": [],
+      "alertTitles": []
+    }
+  ]
+}

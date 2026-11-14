@@ -1,0 +1,277 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Adaptive Range Filter [MarkitTick]", overlay = true, max_labels_count = 500, behind_chart = false)
+
+// ── INPUTS ──────────────────────────────────────────────────
+var string GRP_CORE = "⚙️ Core"
+var string GRP_FLT  = "🕯️ Filters"
+var string GRP_VIS  = "🎨 Visuals"
+var string GRP_DASH = "📊 Dashboard"
+var string GRP_WH   = "🔔 Alerts"
+var string GRP_COL  = "🌈 Colors"
+float i_rngQty     = input.float(2.0, "Range Multiplier", options = [0.618, 1.0, 1.618, 2.0, 2.618, 3.0, 3.618], group = GRP_CORE, tooltip = "The range is this value times the smoothed average of the absolute close-to-close change · the Range Filter moves only when price goes beyond the range from its current value, then follows at one range distance · higher: wider range, the line moves less often · lower: narrower range, the line moves more often")
+i_rngPer           = input.int(20, "Range Length", minval = 1, group = GRP_CORE, tooltip = "EMA length used to average the absolute close-to-close change · higher: slower average · lower: faster average · replaced by the automatic length while Auto Length is on, except until it has enough history or while an average change is zero")
+i_autoLb           = input.bool(false, "Auto Length", group = GRP_CORE, tooltip = "On: the EMA length comes from the ratio of the 10-bar to the 200-bar average absolute close-to-close change · equal averages give 100 and a ratio of 2 or more in either direction gives 20, so the length stays between 20 and 100 · it needs about 200 bars, and until then, or while either average is zero, Range Length is used · Off: Range Length is used as set")
+i_steady           = input.bool(false, "Double Smoothing", group = GRP_CORE, tooltip = "On: a second EMA, of length 2 × Range Length − 1, is applied to the averaged change before the Range Multiplier, so the range is smoother · Off: one EMA")
+i_sideShield       = input.bool(false, "Chop Widening", group = GRP_CORE, tooltip = "On: chop is measured over the last 20 bars as the sum of true ranges (ATR with a period of 1) against the high-low span, and the range is multiplied by 1 + chop · chop is 0 when the two are equal and grows as the sum gets larger · no widening until 20 bars exist or while the span is zero · Off: the range is not widened")
+i_closeBeyond      = input.bool(false, "Breakout Signals", group = GRP_CORE, tooltip = "On: a signal condition needs the close beyond the Range Filter by half the current range, above for BULL and below for BEAR for as many candles in a row as Breakout Candles sets · the line and candles take the colour of the last confirmed BULL or BEAR condition · Off: the close must be on the correct side of the line, the line's last move must be in that direction and the close must differ from the previous close")
+i_cbBars           = input.int(1, "Breakout Candles", minval = 1, group = GRP_CORE, tooltip = "Number of candles in a row that must each close beyond the Range Filter by half the current range before a BULL or BEAR condition is confirmed · each candle is checked against the Range Filter and range of its own bar · 1: a single candle · higher: slower, fewer conditions · used only while Breakout Signals is on")
+i_htfOn            = input.bool(false, "HTF Filter", group = GRP_FLT, tooltip = "On: a long needs the higher timeframe's state to be bullish, and a short needs it bearish · with Breakout Signals on, the state is the direction of the last BULL or BEAR condition, counted before the HTF and Strength filters and before the bar's confirmation · with it off, the state is the Range Filter direction · the higher timeframe runs the same calculation with the same settings (Range Multiplier, Range Length, Auto Length, Double Smoothing, Chop Widening, Breakout Signals, Breakout Candles, Smoothing and Smoothing Length) and is read at its last confirmed bar · at a timeframe equal to the chart's it is the chart's own state on the current bar, so this filter does not block a condition there · a state not known yet, or one that has not formed yet, passes neither · Off: no higher timeframe check")
+i_htfTf            = input.timeframe("240", "HTF Timeframe", group = GRP_FLT, tooltip = "Higher timeframe for the HTF Filter · not lower than the chart timeframe · equal to the chart timeframe is valid and reads the chart's own state on the current bar, a higher one reads the state at its last confirmed bar · the state is the last BULL or BEAR condition's direction with Breakout Signals on, otherwise the Range Filter direction · a lower one is skipped and the dashboard says so")
+i_adxOn            = input.bool(false, "Strength Filter", group = GRP_FLT, tooltip = "On: a signal passes only when ADX is at or above the threshold · ADX is read on the signal bar and acted on at its confirmed close · Off: no strength check")
+i_adxMin           = input.float(20.0, "ADX Threshold", minval = 0.0, maxval = 100.0, group = GRP_FLT, tooltip = "Minimum ADX for a signal to pass · ADX at or above this value passes")
+i_adxLen           = input.int(14, "ADX Length", minval = 1, group = GRP_FLT, tooltip = "Length used to calculate ADX")
+i_smMode           = input.string("None", "Smoothing", options = ["None", "SMA", "EMA", "RMA", "WMA", "HMA"], group = GRP_FLT, tooltip = "Smooths the close that the Range Filter and its range are built from · signals compare the raw close · None: no smoothing")
+i_smLen            = input.int(20, "Smoothing Length", minval = 1, group = GRP_FLT, tooltip = "Length of the smoothing · ignored while Smoothing is None")
+i_showMk           = input.bool(true, "Signal Markers", group = GRP_VIS, tooltip = "BULL and BEAR labels on signal bars · a signal is the first confirmed BULL after a BEAR, or the reverse, on the bar's close, and it must pass the HTF and Strength filters when they are on")
+i_showFilt         = input.bool(true, "Range Filter", group = GRP_VIS, tooltip = "Draws the Range Filter line · off hides the line only, signals, candles and the dashboard are unchanged")
+i_showCandles      = input.bool(true, "Trend Candles", group = GRP_VIS, tooltip = "Colours the whole candle, body, wicks and border, with the Range Filter colour")
+i_showDash         = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Draws the dashboard table · off hides the table only, calculations and alerts are unchanged")
+i_dashPos          = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = GRP_DASH, tooltip = "Chart corner where the dashboard is drawn")
+i_tradeDir         = input.string("Long & Short", "Trade Direction", options = ["Long & Short", "Long Only", "Short Only"], group = GRP_WH, tooltip = "Which trades the alerts send, once per bar close · Long & Short: a BULL opens a long and closes a short, a BEAR opens a short and closes a long · Long Only: a BULL opens a long and a BEAR closes it, no short orders are sent · Short Only: a BEAR opens a short and a BULL closes it, no long orders are sent · markers, candles and the dashboard show both signals in every mode")
+i_actionLong       = input.string("long", "↑ Long Action", group = GRP_WH, tooltip = "Text sent in the action field of the alert payload when a long is opened")
+i_actionShort      = input.string("short", "↓ Short Action", group = GRP_WH, tooltip = "Text sent in the action field of the alert payload when a short is opened")
+i_actionCloseLong  = input.string("closelong", "✕ Close Long Action", group = GRP_WH, tooltip = "Text sent in the action field of the alert payload when a long is closed")
+i_actionCloseShort = input.string("closeshort", "✕ Close Short Action", group = GRP_WH, tooltip = "Text sent in the action field of the alert payload when a short is closed")
+C_UP               = input.color(#05ff9b, "Filter Up", group = GRP_COL, tooltip = "Range Filter line and candles while the line is rising · with Breakout Signals on, after the last confirmed BULL condition")
+C_DN               = input.color(#ff0583, "Filter Down", group = GRP_COL, tooltip = "Range Filter line and candles while the line is falling · with Breakout Signals on, after the last confirmed BEAR condition")
+C_FLAT             = input.color(#cccccc, "Filter Flat", group = GRP_COL, tooltip = "Range Filter line and candles before the line's first move · with Breakout Signals on, before the first confirmed BULL or BEAR condition")
+C_SUP              = input.color(#00b36b, "Bull", group = GRP_COL, tooltip = "BULL marker and bullish dashboard values")
+C_RES              = input.color(#b8005d, "Bear", group = GRP_COL, tooltip = "BEAR marker and bearish dashboard values")
+C_LBL_TXT          = input.color(#ffffff, "Label Text", group = GRP_COL, tooltip = "Text on the markers")
+C_DASH_HDR         = input.color(color.new(#3a2a6d, 55), "Dash Header", group = GRP_COL, tooltip = "Dashboard header fill")
+C_DASH_BG          = input.color(color.new(#0a0f1a, 10), "Dash BG", group = GRP_COL, tooltip = "Dashboard background · alternate rows use a faded copy")
+C_DASH_TXT         = input.color(#ffffff, "Dash Text", group = GRP_COL, tooltip = "Dashboard text · row labels use a faded copy")
+C_BAR_HI           = input.color(#26a69a, "Bar High", group = GRP_COL, tooltip = "Dashboard progress bar at 66% and above · also colours the passing filter rows")
+C_BAR_MID          = input.color(#f9a825, "Bar Mid", group = GRP_COL, tooltip = "Dashboard progress bar from 33% up to 66%")
+C_BAR_LO           = input.color(#ef5350, "Bar Low", group = GRP_COL, tooltip = "Dashboard progress bar below 33% · also colours the failing filter rows")
+C_WARN             = input.color(color.new(#f9a825, 80), "Warning Fill", group = GRP_COL, tooltip = "Fill of a dashboard row whose filter is skipped")
+
+// ── CORE LOGIC ──────────────────────────────────────────────
+int SS_LEN = 20
+var float LN2   = math.log(2)
+var float LN_SS = math.log(SS_LEN)
+f_tfFmt(string tf) =>
+    switch
+        str.endswith(tf, "T") => str.replace(tf, "T", "t")
+        str.endswith(tf, "S") => str.tostring(timeframe.in_seconds(tf)) + "s"
+        str.endswith(tf, "M") => str.tostring(math.round(timeframe.in_seconds(tf) / 2628003)) + "M"
+        str.endswith(tf, "W") => str.tostring(math.round(timeframe.in_seconds(tf) / 604800)) + "W"
+        str.endswith(tf, "D") => str.tostring(math.round(timeframe.in_seconds(tf) / 86400)) + "D"
+        timeframe.in_seconds(tf) % 3600 == 0 => str.tostring(math.round(timeframe.in_seconds(tf) / 3600)) + "H"
+        => str.tostring(math.round(timeframe.in_seconds(tf) / 60)) + "m"
+f_px(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+f_numFmt(float v) =>
+    string _out = "—"
+    if not na(v)
+        float _a  = math.abs(v)
+        float _r0 = math.round(_a, 2)
+        float _rK = math.round(_a / 1000.0, 1)
+        float _rM = math.round(_a / 1000000.0, 1)
+        float _rB = math.round(_a / 1000000000.0, 1)
+        _out := (v < 0 ? "-" : "") + (_r0 < 1000 ? str.tostring(_r0, "#.##") : _rK < 1000 ? str.tostring(_rK, "#.#") + "K" : _rM < 1000 ? str.tostring(_rM, "#.#") + "M" : str.tostring(_rB, "#.#") + "B")
+    _out
+f_esc(string s) =>
+    str.replace_all(str.replace_all(s, "\\", "\\\\"), "\"", "\\\"")
+f_payload(string act, string dir, string trend) =>
+    string _inner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","trend":"{4}"', f_esc(act), f_esc(syminfo.tickerid), f_esc(timeframe.period), dir, trend)
+    "{" + _inner + "}"
+f_condEma(float x, bool cond, int n) =>
+    var float emaVal = float(na)
+    if cond
+        if na(emaVal)
+            emaVal := x
+        emaVal := (x - emaVal) * (2.0 / (n + 1)) + emaVal
+    emaVal
+f_rngSize(float x, float qty, int n, bool steady) =>
+    float _ac  = f_condEma(math.abs(x - x[1]), true, n)
+    float _ac2 = f_condEma(_ac, true, 2 * n - 1)
+    qty * (steady ? _ac2 : _ac)
+f_rngFilt(float h, float l, float rng) =>
+    float _r     = rng
+    var float _rf = float(na)
+    if na(_rf)
+        _rf := (h + l) / 2
+    float _rp = _rf
+    if h - _r > _rp
+        _rf := h - _r
+    if l + _r < _rp
+        _rf := l + _r
+    float _f1  = _rf
+    [_f1, _r]
+f_core(float c, float h, float l) =>
+    float _smSma = ta.sma(c, i_smLen)
+    float _smEma = ta.ema(c, i_smLen)
+    float _smRma = ta.rma(c, i_smLen)
+    float _smWma = ta.wma(c, i_smLen)
+    float _smHma = ta.hma(c, i_smLen)
+    float _srcS = switch i_smMode
+        "SMA" => _smSma
+        "EMA" => _smEma
+        "RMA" => _smRma
+        "WMA" => _smWma
+        "HMA" => _smHma
+        => c
+    float _hVal = _srcS
+    float _lVal = _srcS
+    float _midV = _srcS
+    float _alAbs  = math.abs(ta.change(c))
+    float _alFast = ta.sma(_alAbs, 10)
+    float _alSlow = ta.sma(_alAbs, 200)
+    float _alDev  = na(_alFast) or na(_alSlow) or _alFast <= 0 or _alSlow <= 0 ? float(na) : math.min(math.abs(math.log(_alFast / _alSlow)), LN2)
+    int _rngLen = i_autoLb and not na(_alDev) ? math.max(20, math.min(100, math.round(100 - (100 - 20) * (_alDev / LN2)))) : i_rngPer
+    float _rngF = f_rngSize(_midV, i_rngQty, _rngLen, i_steady)
+    float _ssSpan = ta.highest(h, SS_LEN) - ta.lowest(l, SS_LEN)
+    float _ssPath = math.sum(ta.atr(1), SS_LEN)
+    float _ssChop = bar_index < SS_LEN - 1 ? float(na) : _ssSpan <= 0 ? float(na) : _ssPath <= 0 ? 0.0 : math.max(math.log(_ssPath / _ssSpan) / LN_SS, 0.0)
+    [_filt, _rngV] = f_rngFilt(_hVal, _lVal, i_sideShield and not na(_ssChop) ? _rngF * (1 + _ssChop) : _rngF)
+    var float _fdir = 0.0
+    _fdir := _filt > _filt[1] ? 1 : _filt < _filt[1] ? -1 : _fdir
+    var int _stepCnt = 0
+    _stepCnt := _fdir != _fdir[1] ? 1 : _filt != _filt[1] ? _stepCnt + 1 : _stepCnt
+    bool _bkL = c > _filt + 0.5 * _rngV
+    bool _bkS = c < _filt - 0.5 * _rngV
+    bool _cnL = i_closeBeyond ? math.sum(_bkL ? 1 : 0, i_cbBars) == i_cbBars : c > _filt and c != c[1] and _fdir == 1
+    bool _cnS = i_closeBeyond ? math.sum(_bkS ? 1 : 0, i_cbBars) == i_cbBars : c < _filt and c != c[1] and _fdir == -1
+    var int _cnState = 0
+    _cnState := _cnL ? 1 : _cnS ? -1 : _cnState
+    float _dispSt = i_closeBeyond ? float(_cnState) : _fdir
+    [_filt, _rngV, _fdir, _stepCnt, _ssChop, _dispSt, _cnL, _cnS, _rngLen]
+f_htfDir() =>
+    [_hF, _hR, _hD, _hS, _hC, _hX, _hL, _hSh, _hLn] = f_core(close, high, low)
+    _hX[1]
+float srcC = close
+[filt, rngV, fdir, stepCnt, ssChop, dispSt, _rawLong, _rawShort, rngLen] = f_core(close, high, low)
+bool upward   = fdir == 1
+bool downward = fdir == -1
+float _htfDir = float(na)
+var int _htfSec   = timeframe.in_seconds(i_htfTf)
+var int _chartSec = timeframe.in_seconds()
+bool _htfSkip = i_htfOn and _htfSec < _chartSec
+bool _htfLive = i_htfOn and not _htfSkip
+if _htfLive
+    if _htfSec == _chartSec
+        _htfDir := dispSt
+    else
+        _htfDir := request.security(syminfo.tickerid, i_htfTf, f_htfDir(), lookahead = barmerge.lookahead_on)
+bool _htfBull = _htfDir == 1
+bool _htfBear = _htfDir == -1
+[_diP, _diM, _adxV] = ta.dmi(i_adxLen, i_adxLen)
+bool _strPass = not na(_adxV) and _adxV >= i_adxMin
+bool _okLong  = (not _htfLive or _htfBull) and (not i_adxOn or _strPass)
+bool _okShort = (not _htfLive or _htfBear) and (not i_adxOn or _strPass)
+bool longCond  = _rawLong and _okLong and barstate.isconfirmed and chart.is_standard
+bool shortCond = _rawShort and _okShort and barstate.isconfirmed and chart.is_standard
+var int condIni = 0
+int _prevIni = condIni
+condIni := longCond ? 1 : shortCond ? -1 : condIni
+bool longSignal  = longCond and _prevIni == -1
+bool shortSignal = shortCond and _prevIni == 1
+var int _lastDir = 0
+bool _newLong    = longSignal
+bool _newShort   = shortSignal
+var int _lastBar = int(na)
+if _newLong or _newShort
+    _lastDir := _newLong ? 1 : -1
+    _lastBar := bar_index
+
+// ── ALERTS ──────────────────────────────────────────────────
+string _trendTxt = upward ? "bullish" : downward ? "bearish" : "neutral"
+bool _allowLong  = i_tradeDir != "Short Only"
+bool _allowShort = i_tradeDir != "Long Only"
+bool _fireBuy        = _newLong and _allowLong and barstate.isconfirmed
+bool _fireSell       = _newShort and _allowShort and barstate.isconfirmed
+bool _fireCloseLong  = _newShort and _allowLong and barstate.isconfirmed
+bool _fireCloseShort = _newLong and _allowShort and barstate.isconfirmed
+if _fireBuy
+    alert(f_payload(i_actionLong, "long", _trendTxt), alert.freq_once_per_bar_close)
+if _fireSell
+    alert(f_payload(i_actionShort, "short", _trendTxt), alert.freq_once_per_bar_close)
+if _fireCloseLong
+    alert(f_payload(i_actionCloseLong, "long", _trendTxt), alert.freq_once_per_bar_close)
+if _fireCloseShort
+    alert(f_payload(i_actionCloseShort, "short", _trendTxt), alert.freq_once_per_bar_close)
+alertcondition(_fireBuy, "BUY Signal", "MarkitTick — BUY Signal Fired")
+alertcondition(_fireSell, "SELL Signal", "MarkitTick — SELL Signal Fired")
+alertcondition(_fireCloseLong, "Close Long Signal", "MarkitTick — Close Long")
+alertcondition(_fireCloseShort, "Close Short Signal", "MarkitTick — Close Short")
+
+// ── VISUALS ─────────────────────────────────────────────────
+color _fCol = i_closeBeyond ? (condIni == 1 ? C_UP : condIni == -1 ? C_DN : C_FLAT) : upward ? C_UP : downward ? C_DN : C_FLAT
+plot(chart.is_standard ? filt : na, "Range Filter", color = i_showFilt ? _fCol : na, linewidth = 3, display = display.all - display.pine_screener)
+plot(chart.is_standard ? fdir : na, "External Output - Trend Signal", color = C_FLAT, display = display.none, editable = false)
+color _cCol = i_showCandles and chart.is_standard ? _fCol : na
+plotcandle(open, high, low, close, title = "Trend Candles", color = _cCol, wickcolor = _cCol, bordercolor = _cCol, display = display.all - display.pine_screener)
+if i_showMk and _newLong
+    label.new(bar_index, low, "BULL", yloc = yloc.belowbar, color = C_SUP, style = label.style_label_up, textcolor = C_LBL_TXT, size = size.small)
+if i_showMk and _newShort
+    label.new(bar_index, high, "BEAR", yloc = yloc.abovebar, color = C_RES, style = label.style_label_down, textcolor = C_LBL_TXT, size = size.small)
+
+// ── DASHBOARD ───────────────────────────────────────────────
+string _posC = switch i_dashPos
+    "Top Left"     => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left"  => position.bottom_left
+    => position.top_right
+var table _tb = i_showDash ? table.new(_posC, 2, 18, bgcolor = C_DASH_BG, frame_color = color.new(#3a2a6d, 40), frame_width = 1, border_color = color.new(#2a3040, 40), border_width = 1) : na
+f_zebra(int r) =>
+    r % 2 == 1 ? C_DASH_BG : color.new(C_DASH_BG, 40)
+f_row(table t, int r, string lbl, string val, color vc, color bg, string tip) =>
+    table.cell(t, 0, r, "  " + lbl, text_color = color.new(C_DASH_TXT, 25), text_halign = text.align_left, text_size = size.small, bgcolor = bg, tooltip = tip)
+    table.cell(t, 1, r, val + "  ", text_color = vc, text_halign = text.align_right, text_size = size.small, bgcolor = bg, tooltip = tip)
+f_bar(float val, float maxVal) =>
+    int filled = math.round(math.min(val / maxVal, 1.0) * 10)
+    string bar  = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar + "  " + str.tostring(math.round(val / maxVal * 100)) + "%"
+f_barColor(float pct) =>
+    pct >= 0.66 ? C_BAR_HI : pct >= 0.33 ? C_BAR_MID : C_BAR_LO
+if barstate.islast
+    if i_showDash and chart.is_standard
+        table.cell(_tb, 0, 0, "ARF", text_color = C_DASH_TXT, text_halign = text.align_left, text_size = size.small, bgcolor = C_DASH_HDR)
+        table.cell(_tb, 1, 0, syminfo.ticker + "  ·  " + f_tfFmt(timeframe.period), text_color = C_DASH_TXT, text_halign = text.align_right, text_size = size.small, bgcolor = C_DASH_HDR)
+        int r = 1
+        f_row(_tb, r, "Trend", upward ? "Bullish" : downward ? "Bearish" : "—", upward ? C_SUP : downward ? C_RES : C_DASH_TXT, f_zebra(r), "Direction the Range Filter last moved · shows — before its first move")
+        r += 1
+        string _pvTxt = na(srcC) or na(filt) ? "—" : srcC > filt ? "Above" : srcC < filt ? "Below" : "At"
+        color  _pvCol = na(srcC) or na(filt) ? C_DASH_TXT : srcC > filt ? C_SUP : srcC < filt ? C_RES : C_DASH_TXT
+        f_row(_tb, r, "Price vs Filter", _pvTxt, _pvCol, f_zebra(r), "Where the close sits against the Range Filter · a BULL needs the close above it and a BEAR the close below it · with Breakout Signals on, the close must be beyond it by half the current range for as many candles in a row as Breakout Candles sets")
+        r += 1
+        f_row(_tb, r, "Last Signal", _lastDir == 1 ? "BULL" : _lastDir == -1 ? "BEAR" : "—", _lastDir == 1 ? C_SUP : _lastDir == -1 ? C_RES : C_DASH_TXT, f_zebra(r), "Last BULL or BEAR signal · shows — before the first signal · the chart keeps at most the last 500 markers")
+        r += 1
+        f_row(_tb, r, "Bars Since", na(_lastBar) ? "—" : f_numFmt(bar_index - _lastBar), C_DASH_TXT, f_zebra(r), "Bars since the last signal · shows — before the first signal")
+        r += 1
+        f_row(_tb, r, "Range Filter", f_px(filt), C_DASH_TXT, f_zebra(r), "Current price of the Range Filter")
+        r += 1
+        f_row(_tb, r, "Range", f_px(rngV), C_DASH_TXT, f_zebra(r), "Distance the Range Filter follows price at on this bar, after Chop Widening when it is on")
+        r += 1
+        if i_autoLb
+            f_row(_tb, r, "Length", f_numFmt(rngLen), C_DASH_TXT, f_zebra(r), "EMA length actually used this bar · the automatic length once it has enough history, otherwise Range Length")
+            r += 1
+        if i_sideShield
+            f_row(_tb, r, "Chop", na(ssChop) ? "—" : f_bar(ssChop * 100, 100), na(ssChop) ? C_DASH_TXT : f_barColor(ssChop), f_zebra(r), "Chop over the last 20 bars, the sum of true ranges (ATR with a period of 1) against the high-low span, as a percentage · 0 when the two are equal, growing as the sum gets larger · the range is multiplied by 1 plus this reading as a fraction · shows — until 20 bars have formed or while the span is zero")
+            r += 1
+        f_row(_tb, r, "Steps", fdir == 0 ? "—" : f_numFmt(stepCnt), C_DASH_TXT, f_zebra(r), "Bars the Range Filter has moved in its current direction since the last flip, the flip bar counting as 1 · shows — before its first move")
+        r += 1
+        if i_htfOn
+            string _hTxt = _htfSkip ? "Skipped" : _htfBull ? "Bullish" : _htfBear ? "Bearish" : "—"
+            bool _hAgree = dispSt == 1 ? _htfBull : dispSt == -1 ? _htfBear : false
+            color _hCol = _htfSkip ? C_DASH_TXT : _hAgree ? C_BAR_HI : C_BAR_LO
+            f_row(_tb, r, "HTF", _hTxt, _hCol, _htfSkip ? C_WARN : f_zebra(r), "State on the higher timeframe with the same settings, read at its last confirmed bar, or the chart's own state on the current bar when the timeframe equals the chart timeframe · with Breakout Signals on, the state is the direction of the last BULL or BEAR condition, counted before the HTF and Strength filters and before the bar's confirmation, otherwise it is the Range Filter direction · Bullish and Bearish show that direction · green when it agrees with the chart's own state, which is that same kind of state, red when it does not or the chart's own state has not formed yet · shows — while the higher timeframe state is not known yet or has not formed yet · the HTF timeframe must not be lower than the chart timeframe, a lower one is skipped and passes")
+            r += 1
+        if i_adxOn
+            f_row(_tb, r, "Strength", f_numFmt(_adxV), _strPass ? C_BAR_HI : C_BAR_LO, f_zebra(r), "ADX at the last bar · passes at or above the ADX Threshold")
+            r += 1
+        if i_smMode != "None"
+            f_row(_tb, r, "Smoothing", i_smMode + " " + str.tostring(i_smLen), C_DASH_TXT, f_zebra(r), "Smooths the close that the Range Filter and its range are built from · signals compare the raw close")
+            r += 1
+        if r <= 17
+            table.clear(_tb, 0, r, 1, 17)
+var table _stdNote = table.new(position.middle_center, 1, 2, force_overlay = true)
+if barstate.islast and not chart.is_standard
+    table.cell(_stdNote, 0, 0, "This indicator runs only on standard charts.", text_color = #FF0000, text_size = size.large, bgcolor = #2A2E39, text_formatting = text.format_bold)
+    table.cell(_stdNote, 0, 1, "Heikin Ashi, Renko, Kagi, Point & Figure, Range and Line Break\nshow synthetic prices. Switch to Candles.", text_color = #FF0000, text_size = size.normal, bgcolor = #2A2E39, text_formatting = text.format_bold)

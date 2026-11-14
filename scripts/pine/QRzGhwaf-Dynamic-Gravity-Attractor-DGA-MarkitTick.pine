@@ -1,0 +1,339 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator(title="Dynamic Gravity Attractor (DGA) [MarkitTick]", overlay=true, max_bars_back=1000, max_lines_count=100, max_labels_count=50, max_boxes_count=50)
+// === INPUTS ===
+grp_core = "⚙️ Core Settings"
+i_lookback = input.int(300, "History Depth (bars)", minval=50, maxval=2000, group=grp_core, tooltip="")
+i_zones = input.int(8, "Number of Gravity Zones", minval=3, maxval=15, group=grp_core, tooltip="")
+i_resolution = input.int(20, "Level Cluster Resolution (ATR%)", minval=5, maxval=100, group=grp_core, tooltip="")
+i_G = input.float(1.0, "Gravitational Constant G", minval=0.1, maxval=5.0, step=0.1, group=grp_core, tooltip="")
+grp_mass = "⚖️ Mass Components"
+i_w_vol = input.float(0.60, "Volume Weight in Mass", minval=0.0, maxval=1.0, step=0.05, group=grp_mass)
+i_w_touch = input.float(0.40, "Touch Frequency Weight in Mass", minval=0.0, maxval=1.0, step=0.05, group=grp_mass)
+i_min_touches = input.int(2, "Minimum Touch Count", minval=1, maxval=10, group=grp_mass)
+grp_vis = "🎨 Visual Settings"
+i_show_field = input.bool(true, "Show Gravity Field (Halo)", group=grp_vis)
+i_show_labels = input.bool(true, "Show Labels", group=grp_vis)
+i_show_table = input.bool(true, "Show Gravity Dashboard", group=grp_vis)
+i_line_width = input.int(1, "Line Width", minval=1, maxval=4, group=grp_vis)
+i_extend_right = input.bool(true, "Extend Lines Right", group=grp_vis)
+i_tbl_pos = input.string("top_right", "Dashboard Position", options=["top_right","top_left","bottom_right","bottom_left"], group=grp_vis)
+i_show_boxes_gc = input.bool(true, "Show Boxes & ⚖ Gravity Center", group=grp_vis)
+i_show_lines = input.bool(true, "Show Gravity Zone Lines", group=grp_vis)
+i_col_above_a = input.color(color.rgb(191,90,242), "Zone Color Above A", group=grp_vis)
+i_col_above_b = input.color(color.rgb(106,13,173), "Zone Color Above B", group=grp_vis)
+i_col_below_a = input.color(color.rgb(255,179,64), "Zone Color Below A", group=grp_vis)
+i_col_below_b = input.color(color.rgb(200,75,0), "Zone Color Below B", group=grp_vis)
+i_col_center = input.color(color.rgb(0,229,255), "Gravity Center Color", group=grp_vis)
+i_col_bull_border = input.color(color.rgb(255,140,0), "Bull Border Color", group=grp_vis)
+i_col_bear_border = input.color(color.rgb(155,48,255), "Bear Border Color", group=grp_vis)
+string GRP_DASH = "Dash"
+color dash_bg_color = input.color(color.rgb(10,10,18,5), "BG", group=GRP_DASH)
+color dash_txt_color = input.color(color.rgb(220,220,235,0), "Text", group=GRP_DASH)
+// === CONSTANTS ===
+atr_val = ta.atr(14)
+cluster_size = atr_val * (i_resolution / 100.0)
+string clean_ticker = syminfo.prefix + ":" + syminfo.ticker
+// === PIVOT STORAGE ===
+var float[] piv_price = array.new_float(0)
+var float[] piv_volume = array.new_float(0)
+var int[] piv_touch = array.new_int(0)
+var int[] piv_bar = array.new_int(0)
+// === PIVOT DETECTION ===
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool isValid = true
+    for i = 0 to len * 2
+        if i != len and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool isValid = true
+    for i = 0 to len * 2
+        if i != len and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+is_pivot_high = f_pivotHigh(high, 5)
+is_pivot_low = f_pivotLow(low, 5)
+// === CLUSTER MANAGEMENT ===
+find_cluster(price) =>
+    idx = -1
+    best_dist = cluster_size
+    sz = array.size(piv_price)
+    if sz > 0
+        for i = 0 to sz - 1
+            d = math.abs(array.get(piv_price, i) - price)
+            if d <= cluster_size and d <= best_dist
+                idx := i
+                best_dist := d
+    idx
+add_or_update(price, vol) =>
+    idx = find_cluster(price)
+    if idx == -1
+        array.push(piv_price, price)
+        array.push(piv_volume, vol)
+        array.push(piv_touch, 1)
+        array.push(piv_bar, bar_index)
+    else
+        existing_price = array.get(piv_price, idx)
+        existing_vol = array.get(piv_volume, idx)
+        existing_touch = array.get(piv_touch, idx)
+        new_vol = existing_vol + vol
+        new_price = (existing_price * existing_vol + price * vol) / new_vol
+        array.set(piv_price, idx, new_price)
+        array.set(piv_volume, idx, new_vol)
+        array.set(piv_touch, idx, existing_touch + 1)
+        array.set(piv_bar, idx, bar_index)
+avg_vol_sma = ta.sma(volume, 5)[5]
+// === PIVOT REGISTRATION ===
+if barstate.isconfirmed
+    if not na(is_pivot_high)
+        add_or_update(is_pivot_high, avg_vol_sma)
+    if not na(is_pivot_low)
+        add_or_update(is_pivot_low, avg_vol_sma)
+// === PHYSICS / MASS ===
+wt = i_w_vol + i_w_touch
+w_vol = i_w_vol / wt
+w_touch = i_w_touch / wt
+compute_mass(vol_val, touch_val, max_vol, max_touch) =>
+    norm_vol = max_vol > 0 ? vol_val / max_vol : 0.0
+    norm_touch = max_touch > 0 ? touch_val / max_touch : 0.0
+    (norm_vol * w_vol) + (norm_touch * w_touch)
+compute_gravity(mass, distance) =>
+    d = math.max(math.abs(distance), atr_val * 0.01)
+    i_G * mass / (d * d)
+// === GRAVITY FIELD ===
+var float[] grav_vals = array.new_float(0)
+var float[] grav_price = array.new_float(0)
+var float[] grav_mass = array.new_float(0)
+array.clear(grav_vals)
+array.clear(grav_price)
+array.clear(grav_mass)
+sz_r = array.size(piv_price)
+if sz_r > 0
+    max_vol = 0.0
+    max_touch = 0
+    for i = 0 to sz_r - 1
+        if bar_index - array.get(piv_bar, i) <= i_lookback
+            v = array.get(piv_volume, i)
+            t = array.get(piv_touch, i)
+            if v > max_vol
+                max_vol := v
+            if t > max_touch
+                max_touch := t
+    for i = 0 to sz_r - 1
+        if bar_index - array.get(piv_bar, i) <= i_lookback
+            touch_i = array.get(piv_touch, i)
+            if touch_i >= i_min_touches
+                price_i = array.get(piv_price, i)
+                vol_i = array.get(piv_volume, i)
+                dist_i = price_i - close
+                mass_i = compute_mass(vol_i, touch_i, max_vol, max_touch)
+                grav_i = compute_gravity(mass_i, dist_i)
+                array.push(grav_vals, grav_i)
+                array.push(grav_price, price_i)
+                array.push(grav_mass, mass_i)
+// === SORTING ===
+gsz_r = array.size(grav_vals)
+if gsz_r > 1
+    for i = 0 to gsz_r - 2
+        for j = 0 to gsz_r - i - 2
+            if array.get(grav_vals, j) < array.get(grav_vals, j + 1)
+                tv = array.get(grav_vals, j)
+                tp = array.get(grav_price, j)
+                tm = array.get(grav_mass, j)
+                array.set(grav_vals, j, array.get(grav_vals, j + 1))
+                array.set(grav_price, j, array.get(grav_price, j + 1))
+                array.set(grav_mass, j, array.get(grav_mass, j + 1))
+                array.set(grav_vals, j + 1, tv)
+                array.set(grav_price, j + 1, tp)
+                array.set(grav_mass, j + 1, tm)
+// === DRAWING ===
+get_zone_color(price_lvl, mass_val, rank) =>
+    is_above = price_lvl > close
+    intensity = math.max(0, math.min(100, mass_val * 100))
+    alpha = math.round(math.max(10, 90 - rank * 8))
+    is_above ? color.from_gradient(intensity, 0, 100, color.new(i_col_above_a, alpha), color.new(i_col_above_b, alpha)) : color.from_gradient(intensity, 0, 100, color.new(i_col_below_a, alpha), color.new(i_col_below_b, alpha))
+var float strongest_above = na
+var float strongest_below = na
+var float strongest_grav_above = 0.0
+var float strongest_grav_below = 0.0
+var float net_force = 0.0
+var line[] dga_lines = array.new_line()
+var label[] dga_labels = array.new_label()
+var box[] dga_boxes = array.new_box()
+for ln in dga_lines
+    line.delete(ln)
+for lb in dga_labels
+    label.delete(lb)
+for bx in dga_boxes
+    box.delete(bx)
+array.clear(dga_lines)
+array.clear(dga_labels)
+array.clear(dga_boxes)
+strongest_above := na
+strongest_below := na
+strongest_grav_above := 0.0
+strongest_grav_below := 0.0
+net_force := 0.0
+gsz_d = array.size(grav_vals)
+n_zones = math.min(i_zones, gsz_d)
+if n_zones > 0
+    max_grav = array.get(grav_vals, 0)
+    for rank = 0 to n_zones - 1
+        g_val = array.get(grav_vals, rank)
+        g_price = array.get(grav_price, rank)
+        g_mass = array.get(grav_mass, rank)
+        zone_col = get_zone_color(g_price, g_mass, rank)
+        line_style = rank == 0 ? line.style_solid : (rank <= 2 ? line.style_solid : line.style_dashed)
+        lw = rank == 0 ? math.min(i_line_width + 1, 4) : i_line_width
+        right_ext = i_extend_right ? bar_index + 15 : bar_index
+        if i_show_lines
+            ln = line.new(x1=bar_index - 30, y1=g_price, x2=right_ext, y2=g_price, color=zone_col, width=lw, style=line_style, extend=extend.none)
+            array.push(dga_lines, ln)
+        if i_show_field and i_show_boxes_gc and rank < 5
+            halo_size = atr_val * (g_mass * 0.5 + 0.1)
+            bx = box.new(left=bar_index - 30, top=g_price + halo_size, right=right_ext, bottom=g_price - halo_size, bgcolor=color.new(zone_col, 92), border_color=color.new(zone_col, 85), border_width=1, extend=extend.none)
+            array.push(dga_boxes, bx)
+        if i_show_labels and i_show_lines and rank < 8
+            grav_pct = max_grav > 0 ? math.round(g_val / max_grav * 100) : 0
+            lbl_text = (g_price > close ? "↑ " : "↓ ") + str.tostring(math.round(g_price, 2)) + "  ⬤" + str.tostring(grav_pct) + "%"
+            lb = label.new(x=right_ext + 1, y=g_price, text=lbl_text, color=color.new(zone_col, 20), textcolor=color.white, style=label.style_label_left, size=size.small)
+            array.push(dga_labels, lb)
+        if i_show_labels and i_show_field and i_show_boxes_gc and rank < 5
+            grav_pct_bx = max_grav > 0 ? math.round(g_val / max_grav * 100) : 0
+            lbl_text_bx = (g_price > close ? "↑ " : "↓ ") + str.tostring(math.round(g_price, 2)) + "  ⬤" + str.tostring(grav_pct_bx) + "%"
+            lb_bx = label.new(x=right_ext + 1, y=g_price, text=lbl_text_bx, color=color.new(zone_col, 20), textcolor=color.white, style=label.style_label_left, size=size.small)
+            array.push(dga_labels, lb_bx)
+        if g_price > close
+            if na(strongest_above) or g_val > strongest_grav_above
+                strongest_above := g_price
+                strongest_grav_above := g_val
+            net_force -= g_val
+        else
+            if na(strongest_below) or g_val > strongest_grav_below
+                strongest_below := g_price
+                strongest_grav_below := g_val
+            net_force += g_val
+    if i_show_boxes_gc and not na(strongest_above) and not na(strongest_below)
+        total_grav = strongest_grav_above + strongest_grav_below
+        mid_gravity = total_grav > 0 ? (strongest_above * strongest_grav_above + strongest_below * strongest_grav_below) / total_grav : (strongest_above + strongest_below) / 2.0
+        ln_cg = line.new(x1=bar_index - 30, y1=mid_gravity, x2=i_extend_right ? bar_index + 15 : bar_index, y2=mid_gravity, color=color.new(i_col_center, 45), width=1, style=line.style_dotted, extend=extend.none)
+        array.push(dga_lines, ln_cg)
+        if i_show_labels
+            lb_cg = label.new(x=(i_extend_right ? bar_index + 15 : bar_index) + 20, y=mid_gravity, text="⚖ Gravity Center " + str.tostring(math.round(mid_gravity, 2)), color=color.new(i_col_center, 20), textcolor=color.white, style=label.style_label_left, size=size.small)
+            array.push(dga_labels, lb_cg)
+// === NET FORCE ===
+live_net_force = 0.0
+live_sz = array.size(piv_price)
+if live_sz > 0
+    live_max_vol = 0.0
+    live_max_touch = 0
+    for i = 0 to live_sz - 1
+        if bar_index - array.get(piv_bar, i) <= i_lookback
+            v = array.get(piv_volume, i)
+            t = array.get(piv_touch, i)
+            if v > live_max_vol
+                live_max_vol := v
+            if t > live_max_touch
+                live_max_touch := t
+    for i = 0 to live_sz - 1
+        if bar_index - array.get(piv_bar, i) <= i_lookback
+            touch_i = array.get(piv_touch, i)
+            if touch_i >= i_min_touches
+                price_i = array.get(piv_price, i)
+                vol_i = array.get(piv_volume, i)
+                dist_i = price_i - close
+                mass_i = compute_mass(vol_i, touch_i, live_max_vol, live_max_touch)
+                grav_i = compute_gravity(mass_i, dist_i)
+                if price_i > close
+                    live_net_force -= grav_i
+                else
+                    live_net_force += grav_i
+// === CANDLE COLORING ===
+bias_bull = live_net_force > 0
+bias_bear = live_net_force < 0
+bodyColor = bias_bull ? color.new(i_col_below_a, 55) : bias_bear ? color.new(i_col_above_a, 50) : na
+borderColor = bias_bull ? color.new(i_col_bull_border, 20) : bias_bear ? color.new(i_col_bear_border, 15) : na
+barcolor(bias_bull ? color.new(i_col_below_a, 55) : bias_bear ? color.new(i_col_above_a, 50) : na)
+plotcandle(open, high, low, close, title="Heatmap Candles", color=bodyColor, wickcolor=borderColor, bordercolor=borderColor)
+// === DASHBOARD ===
+f_blockBar(float rawVal, float domainMax) =>
+    float pct = math.min(math.max(rawVal / domainMax * 100.0, 0.0), 100.0)
+    int n = math.round(pct / 10.0)
+    string s = ""
+    for i = 1 to 10
+        s += i <= n ? "█" : "░"
+    s + " " + str.tostring(math.round(pct), "##0") + "%"
+f_blockColor(float rawVal, float lo, float mid, float hi) =>
+    rawVal >= hi ? color.rgb(0, 255, 120) : rawVal >= mid ? color.rgb(80, 255, 0) : rawVal >= lo ? color.rgb(200, 200, 0) : color.rgb(110, 110, 110)
+tbl_pos = switch i_tbl_pos
+    "top_right" => position.top_right
+    "top_left" => position.top_left
+    "bottom_right" => position.bottom_right
+    => position.bottom_left
+var table dash = table.new(tbl_pos, 2, 8, border_width=1, border_color=color.rgb(50,50,70,20), frame_width=1, frame_color=color.rgb(60,60,90,10))
+color hdrBg = color.rgb(30,30,45,10)
+color altBg = color.rgb(20,20,25,10)
+color oddBg = dash_bg_color
+gsz_now = array.size(grav_vals)
+above_txt = not na(strongest_above) ? str.tostring(strongest_above, format.mintick) : "—"
+below_txt = not na(strongest_below) ? str.tostring(strongest_below, format.mintick) : "—"
+netForceTxt = net_force > 0 ? "📈 Support" : net_force < 0 ? "📉 Resist" : "⚪ Flat"
+netForceClr = net_force > 0 ? color.rgb(0,255,120) : net_force < 0 ? color.rgb(255,70,70) : color.rgb(140,140,140)
+biasTxt = bias_bull ? "📈 Bullish" : bias_bear ? "📉 Bearish" : "⚪ Neutral"
+biasClr = bias_bull ? color.rgb(0,255,120) : bias_bear ? color.rgb(255,70,70) : color.rgb(140,140,140)
+topMassPct = gsz_now > 0 ? array.get(grav_mass, 0) * 100.0 : 0.0
+topMassBar = f_blockBar(topMassPct, 100.0)
+topMassClr = f_blockColor(topMassPct, 20.0, 50.0, 75.0)
+atrTxt = str.tostring(cluster_size, format.mintick)
+if i_show_table
+    table.cell(dash, 0, 0, "🌌 DGA Field", text_color=dash_txt_color, bgcolor=hdrBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 0, font.family_monospace)
+    table.cell(dash, 1, 0, "", text_color=dash_txt_color, bgcolor=hdrBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 0, font.family_monospace)
+    table.merge_cells(dash, 0, 0, 1, 0)
+    table.cell(dash, 0, 1, "Levels", text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 1, font.family_monospace)
+    table.cell(dash, 1, 1, str.tostring(gsz_now), text_color=color.rgb(200,200,60), bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 1, font.family_monospace)
+    table.cell(dash, 0, 2, "Attractor ↑", text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 2, font.family_monospace)
+    table.cell(dash, 1, 2, above_txt, text_color=color.rgb(200,200,60), bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 2, font.family_monospace)
+    table.cell(dash, 0, 3, "Attractor ↓", text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 3, font.family_monospace)
+    table.cell(dash, 1, 3, below_txt, text_color=color.rgb(200,200,60), bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 3, font.family_monospace)
+    table.cell(dash, 0, 4, "Net Force", text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 4, font.family_monospace)
+    table.cell(dash, 1, 4, netForceTxt, text_color=netForceClr, bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 4, font.family_monospace)
+    table.cell(dash, 0, 5, "Bias", text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 5, font.family_monospace)
+    table.cell(dash, 1, 5, biasTxt, text_color=biasClr, bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 5, font.family_monospace)
+    table.cell(dash, 0, 6, "ATR Cluster", text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 6, font.family_monospace)
+    table.cell(dash, 1, 6, atrTxt, text_color=color.rgb(200,200,60), bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 6, font.family_monospace)
+    table.cell(dash, 0, 7, "Top Mass", text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell_set_text_font_family(dash, 0, 7, font.family_monospace)
+    table.cell(dash, 1, 7, topMassBar, text_color=topMassClr, bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 1, 7, font.family_monospace)
+// === ALERTS ===
+near_strongest_above = not na(strongest_above) and math.abs(close - strongest_above) < atr_val * 0.3
+near_strongest_below = not na(strongest_below) and math.abs(close - strongest_below) < atr_val * 0.3
+sigShiftUp = net_force[1] > 0 and net_force[2] <= 0
+sigShiftDown = net_force[1] < 0 and net_force[2] >= 0
+sigShift = sigShiftUp or sigShiftDown
+if barstate.isconfirmed
+    if near_strongest_above
+        alert("{" + str.format('"sig":"DGA_RES","tkr":"{0}","tf":"{1}","px":"{2}"', clean_ticker, timeframe.period, str.tostring(close, format.mintick)) + "}", alert.freq_once_per_bar_close)
+    if near_strongest_below
+        alert("{" + str.format('"sig":"DGA_SUP","tkr":"{0}","tf":"{1}","px":"{2}"', clean_ticker, timeframe.period, str.tostring(close, format.mintick)) + "}", alert.freq_once_per_bar_close)
+    if sigShift
+        alert("{" + str.format('"sig":"DGA_SHIFT","tkr":"{0}","tf":"{1}","px":"{2}"', clean_ticker, timeframe.period, str.tostring(close, format.mintick)) + "}", alert.freq_once_per_bar_close)

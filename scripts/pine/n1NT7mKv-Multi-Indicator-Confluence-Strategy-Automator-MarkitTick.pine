@@ -1,0 +1,309 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Multi-Indicator Confluence Strategy Automator [MarkitTick]", overlay=true, max_bars_back=500, max_labels_count=50, max_lines_count=50, max_boxes_count=50)
+// === INPUTS ===
+string GRP_BASE  = "Baseline"
+string GRP_C1    = "Confirm 1"
+string GRP_C2    = "Confirm 2"
+string GRP_VOL   = "Volume"
+string GRP_EXIT  = "Exit"
+string GRP_RISK  = "Risk"
+string GRP_VIS   = "Vis"
+string GRP_DASH  = "Dash"
+string GRP_DECAY = "Confluence Decay"
+string GRP_REG   = "Regime (Hurst)"
+string GRP_MOM   = "Momentum Inflation"
+string GRP_BDI   = "Baseline Distance-Integral"
+string GRP_LAG   = "Cross-Asset Lead-Lag"
+i_base_len    = input.int(21,    "Baseline HMA Length",   minval=5,  maxval=200, group=GRP_BASE)
+i_c1_len      = input.int(14,    "ADX/DMI Length",        minval=2,  maxval=50,  group=GRP_C1)
+i_c1_sig      = input.int(14,    "ADX Smoothing",         minval=2,  maxval=50,  group=GRP_C1)
+i_c1_thresh   = input.float(20.0,"ADX Trend Thresh",      minval=5.0, maxval=50.0, step=1.0, group=GRP_C1)
+i_c2_len      = input.int(20,    "CCI Length",            minval=5,  maxval=100, group=GRP_C2)
+i_c2_thresh   = input.float(50.0,"CCI Thresh",            minval=10.0, maxval=150.0, step=5.0, group=GRP_C2)
+i_vol_len     = input.int(20,    "Volume RMA Length",     minval=2,  maxval=100, group=GRP_VOL)
+i_vol_mult    = input.float(1.0, "Volume Mult",           minval=0.1, maxval=5.0, step=0.1, group=GRP_VOL)
+i_exit_len    = input.int(10,    "Exit CCI Length",       minval=2,  maxval=50,  group=GRP_EXIT)
+i_atr_len     = input.int(14,    "ATR Length",            minval=2,  maxval=50,  group=GRP_RISK)
+i_atr_sl_mult = input.float(1.5, "SL ATR Mult",          minval=0.1, maxval=10.0, step=0.1, group=GRP_RISK)
+i_atr_tp1     = input.float(1.0, "TP1 ATR Mult",         minval=0.1, maxval=10.0, step=0.1, group=GRP_RISK)
+i_atr_tp2     = input.float(2.0, "TP2 ATR Mult",         minval=0.1, maxval=10.0, step=0.1, group=GRP_RISK)
+i_atr_tp3     = input.float(3.0, "TP3 ATR Mult",         minval=0.1, maxval=10.0, step=0.1, group=GRP_RISK)
+i_min_score   = input.int(3,     "Min Confluence Score",  minval=1, maxval=3,    group=GRP_VOL, tooltip="")
+i_min_gap     = input.int(5,     "Min Bars Between Signals", minval=0, maxval=50, group=GRP_VOL, tooltip="")
+i_show_base   = input.bool(true,  "Baseline",             group=GRP_VIS)
+i_show_levels = input.bool(true,  "Risk Levels",          group=GRP_VIS)
+i_show_table  = input.bool(true,  "Dashboard",            group=GRP_VIS)
+i_show_bcolor = input.bool(true,  "Bar Coloring",         group=GRP_VIS)
+color col_bull    = input.color(color.rgb(0, 200, 150, 0),   "Bull",    group=GRP_VIS)
+color col_bear    = input.color(color.rgb(255, 75, 110, 0),  "Bear",    group=GRP_VIS)
+color col_neutral = input.color(color.rgb(107, 122, 153, 0), "Neutral", group=GRP_VIS)
+color dash_bg_color  = input.color(color.rgb(8, 14, 26, 5),     "BG",   group=GRP_DASH)
+color dash_txt_color = input.color(color.rgb(184, 194, 216, 0), "Text", group=GRP_DASH)
+i_use_decay     = input.bool(false,  "Enable Confluence Decay",        group=GRP_DECAY, tooltip="")
+i_decay_bars    = input.int(10,      "Max Age (bars) before full decay", minval=3, maxval=50, group=GRP_DECAY, tooltip="")
+i_use_hurst     = input.bool(true,  "Enable Hurst Regime Detector",   group=GRP_REG, tooltip="")
+i_hurst_len     = input.int(50,      "Hurst Window",                   minval=20, maxval=200, group=GRP_REG, tooltip="")
+float i_hurst_trend   = input.float(0.55, "Trending threshold (H>)",   minval=0.50, maxval=0.75, step=0.01, group=GRP_REG, tooltip="")
+float i_hurst_mr      = input.float(0.45, "Mean-Revert threshold (H<)", minval=0.25, maxval=0.50, step=0.01, group=GRP_REG, tooltip="")
+i_use_mominfl   = input.bool(true,  "Enable Momentum Inflation Ratio", group=GRP_MOM, tooltip="")
+i_mom_len       = input.int(50,      "Momentum lookback",              minval=10, maxval=200, group=GRP_MOM, tooltip="")
+float i_mom_thresh    = input.float(1.5, "Inflation alert ratio",      minval=1.0, maxval=5.0, step=0.1, group=GRP_MOM, tooltip="")
+i_use_bdi       = input.bool(true,  "Enable Baseline Distance-Integral", group=GRP_BDI, tooltip="")
+i_bdi_len       = input.int(20,      "BDI window",                    minval=5, maxval=100, group=GRP_BDI, tooltip="")
+i_use_lag       = input.bool(true,  "Enable Cross-Asset Lead-Lag",    group=GRP_LAG, tooltip="")
+string i_lag_sym     = input.string("GC1!", "Lead symbol",         group=GRP_LAG, tooltip="")
+i_lag_shift          = input.int(3,  "Lag (bars)",                    minval=1, maxval=20, group=GRP_LAG, tooltip="")
+i_lag_len            = input.int(20, "Correlation window",            minval=10, maxval=100, group=GRP_LAG, tooltip="")
+float i_lag_thresh   = input.float(0.5, "Correlation threshold",      minval=0.0, maxval=1.0, step=0.05, group=GRP_LAG, tooltip="")
+// === HELPERS ===
+var string clean_ticker = syminfo.prefix + ":" + syminfo.ticker
+f_blockBar(float rawVal, float domainMax) =>
+    float  pct = math.min(math.max(rawVal / domainMax * 100.0, 0.0), 100.0)
+    int    n   = math.round(pct / 10.0)
+    string s   = ""
+    for i = 1 to 10
+        s += i <= n ? "█" : "░"
+    s + " " + str.tostring(math.round(pct), "##0") + "%"
+f_blockColor(float rawVal, float lo, float hi) =>
+    rawVal >= hi ? color.rgb(0, 200, 150) : rawVal >= lo ? color.rgb(240, 165, 0) : color.rgb(107, 122, 153)
+// === RISK (ATR) ===
+float atr_val = ta.atr(i_atr_len)
+// === BASELINE ===
+float baseline  = ta.hma(close, i_base_len)
+float _base_buf1 = atr_val[1] * 0.15
+bool  base_bull = close[1] > baseline[1] + _base_buf1
+bool  base_bear = close[1] < baseline[1] - _base_buf1
+// === CONFIRMATION 1 — ADX/DMI ===
+[c1_diplus, c1_diminus, c1_adx] = ta.dmi(i_c1_len, i_c1_sig)
+bool c1_trend_on = c1_adx[1] > i_c1_thresh
+bool c1_bull = c1_trend_on and c1_diplus[1] > c1_diminus[1]
+bool c1_bear = c1_trend_on and c1_diminus[1] > c1_diplus[1]
+// === CONFIRMATION 2 — CCI ===
+float c2_cci  = ta.cci(close, i_c2_len)
+bool  c2_bull = c2_cci[1] > i_c2_thresh
+bool  c2_bear = c2_cci[1] < -i_c2_thresh
+// === VOLUME FILTER ===
+float vol_avg = ta.rma(volume, i_vol_len)
+bool  vol_ok  = volume[1] > vol_avg[1] * i_vol_mult
+// === EXIT INDICATOR ===
+float exit_cci   = ta.cci(close, i_exit_len)
+bool  exit_long  = exit_cci[1] < 0.0 and exit_cci[2] >= 0.0
+bool  exit_short = exit_cci[1] > 0.0 and exit_cci[2] <= 0.0
+// === BASELINE DISTANCE-INTEGRAL (BDI) ===
+float bdi_val = i_use_bdi ? math.sum(close[1] - baseline[1], i_bdi_len) : 0.0
+// === HURST EXPONENT (RESCALED RANGE, SIMPLIFIED) ===
+float _hurst_sma   = ta.sma(close, i_hurst_len)
+float _hurst_stdev = ta.stdev(close, i_hurst_len)
+f_hurst(int hlen) =>
+    float h_result = 0.5
+    if hlen >= 4
+        float src_mean = _hurst_sma[1]
+        float rs_std   = _hurst_stdev[1]
+        float cumdev   = 0.0
+        float rng_hi   = 0.0
+        float rng_lo   = 0.0
+        for j = 0 to hlen - 1
+            cumdev  := cumdev + (close[j + 1] - src_mean)
+            rng_hi  := math.max(rng_hi, cumdev)
+            rng_lo  := math.min(rng_lo, cumdev)
+        float rs_range = rng_hi - rng_lo
+        float rs_ratio = (rs_std > 1e-10) ? rs_range / rs_std : 0.0
+        float log_n    = (hlen > 1) ? math.log(hlen) : 1.0
+        float log_rs   = (rs_ratio > 1e-10) ? math.log(rs_ratio) : 0.0
+        h_result := (log_n > 1e-10) ? log_rs / log_n : 0.5
+    h_result
+float hurst_val      = i_use_hurst ? f_hurst(i_hurst_len) : 0.5
+bool  hurst_trending = i_use_hurst and hurst_val > i_hurst_trend
+bool  hurst_mr       = i_use_hurst and hurst_val < i_hurst_mr
+// === MOMENTUM INFLATION RATIO ===
+float mom_speed    = math.abs(nz(close[1]) - nz(close[2]))
+float mom_atr_now  = nz(atr_val[1])
+float mom_hist_spd = ta.rma(math.abs(close - close[1]), i_mom_len)
+float mom_hist_atr = ta.rma(atr_val, i_mom_len)
+float mom_norm_cur = (mom_atr_now > 1e-10) ? mom_speed / mom_atr_now : 0.0
+float mom_norm_avg = (mom_hist_atr[1] > 1e-10) ? mom_hist_spd[1] / mom_hist_atr[1] : 0.0
+float mom_ratio    = (mom_norm_avg > 1e-10) ? mom_norm_cur / mom_norm_avg : 1.0
+bool  mom_inflated = i_use_mominfl and mom_ratio > i_mom_thresh
+// === CROSS-ASSET LEAD-LAG CORRELATION ===
+float lag_lead_price = request.security(i_lag_sym, timeframe.period, close[i_lag_shift + 1], lookahead=barmerge.lookahead_off)
+float lag_pearson    = ta.correlation(lag_lead_price, close[1], i_lag_len)
+bool  lag_confirms   = i_use_lag and math.abs(lag_pearson) >= i_lag_thresh
+bool  lag_bearish_lead = lag_confirms and lag_pearson < 0.0
+bool  lag_bullish_lead = lag_confirms and lag_pearson > 0.0
+// === CONFLUENCE SCORE ===
+int score_bull = (base_bull ? 1 : 0) + (c1_bull ? 1 : 0) + (c2_bull ? 1 : 0)
+int score_bear = (base_bear ? 1 : 0) + (c1_bear ? 1 : 0) + (c2_bear ? 1 : 0)
+// === CONFLUENCE DECAY ===
+var int decay_bull_age = 0
+var int decay_bear_age = 0
+bool full_bull_state = base_bull and c1_bull and c2_bull and vol_ok
+bool full_bear_state = base_bear and c1_bear and c2_bear and vol_ok
+if barstate.isconfirmed
+    if full_bull_state
+        decay_bull_age := decay_bull_age + 1
+    else
+        decay_bull_age := 0
+    if full_bear_state
+        decay_bear_age := decay_bear_age + 1
+    else
+        decay_bear_age := 0
+float decay_factor_bull = i_use_decay ? math.max(0.0, 1.0 - decay_bull_age / i_decay_bars) : 1.0
+float decay_factor_bear = i_use_decay ? math.max(0.0, 1.0 - decay_bear_age / i_decay_bars) : 1.0
+float decayed_score_bull = score_bull * decay_factor_bull
+float decayed_score_bear = score_bear * decay_factor_bear
+// === ENTRY SIGNALS ===
+bool entry_long_base  = base_bull and c1_bull and c2_bull and vol_ok and score_bull >= i_min_score
+bool entry_short_base = base_bear and c1_bear and c2_bear and vol_ok and score_bear >= i_min_score
+bool hurst_gate_long  = not i_use_hurst or hurst_trending or (hurst_mr and entry_short_base)
+bool hurst_gate_short = not i_use_hurst or hurst_trending or (hurst_mr and entry_long_base)
+bool decay_gate_long  = not i_use_decay or decayed_score_bull >= i_min_score
+bool decay_gate_short = not i_use_decay or decayed_score_bear >= i_min_score
+bool lag_gate_long    = not i_use_lag or lag_bullish_lead or not lag_confirms
+bool lag_gate_short   = not i_use_lag or lag_bearish_lead or not lag_confirms
+bool mom_gate         = not i_use_mominfl or not mom_inflated
+bool entry_long  = entry_long_base  and hurst_gate_long  and decay_gate_long  and lag_gate_long  and mom_gate
+bool entry_short = entry_short_base and hurst_gate_short and decay_gate_short and lag_gate_short and mom_gate
+var int bars_since_sig = 999
+bool raw_sig_long  = entry_long  and not entry_long[1]
+bool raw_sig_short = entry_short and not entry_short[1]
+bool cooldown_ok   = bars_since_sig >= i_min_gap
+bool sig_long  = raw_sig_long  and cooldown_ok
+bool sig_short = raw_sig_short and cooldown_ok
+if barstate.isconfirmed
+    bars_since_sig := (sig_long or sig_short) ? 0 : bars_since_sig + 1
+// === TRADE LEVELS (var, persisted) ===
+var float lvl_entry  = na
+var float lvl_sl     = na
+var float lvl_tp1    = na
+var float lvl_tp2    = na
+var float lvl_tp3    = na
+var bool  lvl_isLong = false
+var line  ln_entry   = na
+var line  ln_sl      = na
+var line  ln_tp1     = na
+var line  ln_tp2     = na
+var line  ln_tp3     = na
+var label lb_entry   = na
+var label lb_sl      = na
+var label lb_tp1     = na
+var label lb_tp2     = na
+var label lb_tp3     = na
+if (sig_long or sig_short) and not na(atr_val[1]) and atr_val[1] > 0.0
+    lvl_isLong := sig_long
+    lvl_entry  := close[1]
+    lvl_sl     := sig_long ? close[1] - atr_val[1] * i_atr_sl_mult : close[1] + atr_val[1] * i_atr_sl_mult
+    lvl_tp1    := sig_long ? close[1] + atr_val[1] * i_atr_tp1     : close[1] - atr_val[1] * i_atr_tp1
+    lvl_tp2    := sig_long ? close[1] + atr_val[1] * i_atr_tp2     : close[1] - atr_val[1] * i_atr_tp2
+    lvl_tp3    := sig_long ? close[1] + atr_val[1] * i_atr_tp3     : close[1] - atr_val[1] * i_atr_tp3
+    line.delete(ln_entry)
+    line.delete(ln_sl)
+    line.delete(ln_tp1)
+    line.delete(ln_tp2)
+    line.delete(ln_tp3)
+    label.delete(lb_entry)
+    label.delete(lb_sl)
+    label.delete(lb_tp1)
+    label.delete(lb_tp2)
+    label.delete(lb_tp3)
+    ln_entry := line.new(bar_index - 1, lvl_entry, bar_index + 20, lvl_entry, color=color.new(col_neutral, 30), width=1, style=line.style_dashed)
+    ln_sl    := line.new(bar_index - 1, lvl_sl,    bar_index + 20, lvl_sl,    color=color.new(col_bear, 20),    width=1, style=line.style_dashed)
+    ln_tp1   := line.new(bar_index - 1, lvl_tp1,   bar_index + 20, lvl_tp1,   color=color.new(col_bull, 40),    width=1, style=line.style_dotted)
+    ln_tp2   := line.new(bar_index - 1, lvl_tp2,   bar_index + 20, lvl_tp2,   color=color.new(col_bull, 25),    width=1, style=line.style_dotted)
+    ln_tp3   := line.new(bar_index - 1, lvl_tp3,   bar_index + 20, lvl_tp3,   color=color.new(col_bull, 10),    width=2, style=line.style_dotted)
+    lb_entry := label.new(bar_index + 20, lvl_entry, str.format("ENTRY {0}", str.tostring(lvl_entry, format.mintick)), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(col_neutral, 30), textcolor=color.white, size=size.small)
+    lb_sl    := label.new(bar_index + 20, lvl_sl,    str.format("SL {0}",    str.tostring(lvl_sl,    format.mintick)), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(col_bear, 20),    textcolor=color.white, size=size.small)
+    lb_tp1   := label.new(bar_index + 20, lvl_tp1,   str.format("TP1 {0}",  str.tostring(lvl_tp1,   format.mintick)), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(col_bull, 40),    textcolor=color.white, size=size.small)
+    lb_tp2   := label.new(bar_index + 20, lvl_tp2,   str.format("TP2 {0}",  str.tostring(lvl_tp2,   format.mintick)), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(col_bull, 25),    textcolor=color.white, size=size.small)
+    lb_tp3   := label.new(bar_index + 20, lvl_tp3,   str.format("TP3 {0}",  str.tostring(lvl_tp3,   format.mintick)), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(col_bull, 10),    textcolor=color.white, size=size.small)
+// === DRAWING ===
+plot(i_show_base ? baseline : na, "Baseline HMA", color=base_bull ? color.new(col_bull, 20) : base_bear ? color.new(col_bear, 20) : color.new(col_neutral, 20), linewidth=2)
+color bodyColor = base_bull ? col_bull : base_bear ? col_bear : col_neutral
+plotcandle(i_show_bcolor ? open : na, high, low, close, title="Heatmap Candles", color=bodyColor, wickcolor=bodyColor, bordercolor=bodyColor)
+plotshape(i_show_levels and sig_long,  "Long Signal",  style=shape.triangleup,   location=location.belowbar, color=col_bull, size=size.small)
+plotshape(i_show_levels and sig_short, "Short Signal", style=shape.triangledown, location=location.abovebar, color=col_bear, size=size.small)
+// === DASHBOARD ===
+var color _c_bull    = color.rgb(0, 200, 150)
+var color _c_bear    = color.rgb(255, 75, 110)
+var color _c_neut    = color.rgb(107, 122, 153)
+var color _c_warn    = color.rgb(240, 165, 0)
+var color _c_cyan    = color.rgb(0, 184, 217)
+var color _c_sub     = color.rgb(184, 194, 216, 0)
+var color hdrBg      = color.rgb(13, 27, 48, 10)
+var color altBg      = color.rgb(10, 21, 38, 10)
+var table dash = table.new(position.top_right, 2, 16,
+     border_width=1, border_color=color.rgb(30, 45, 75, 20),
+     frame_width=1,  frame_color=color.rgb(37, 53, 80, 10),
+     force_overlay=true)
+if i_show_table
+    color oddBg = dash_bg_color
+    string base_str = base_bull ? "▲ Bull" : base_bear ? "▼ Bear" : "— Flat"
+    color  base_col = base_bull ? _c_bull : base_bear ? _c_bear : _c_neut
+    string c1_str   = c1_bull ? "▲ Bull" : c1_bear ? "▼ Bear" : "— No Trend"
+    color  c1_col   = c1_bull ? _c_bull : c1_bear ? _c_bear : _c_neut
+    string c2_str   = c2_bull ? "▲ Bull" : c2_bear ? "▼ Bear" : "— Neutral"
+    color  c2_col   = c2_bull ? _c_bull : c2_bear ? _c_bear : _c_neut
+    string vol_str  = vol_ok ? "✔ Confirmed" : "✘ Weak"
+    color  vol_col  = vol_ok ? _c_cyan : _c_neut
+    string exit_str = exit_long ? "↓ Exit Long" : exit_short ? "↑ Exit Short" : "— Hold"
+    color  exit_col = exit_long ? _c_bear : exit_short ? _c_bull : _c_neut
+    int    score_disp    = math.max(score_bull, score_bear)
+    float  score_pct     = score_disp * 100.0 / 3.0
+    string score_bar_str = f_blockBar(score_pct, 100.0)
+    color  score_bar_col = f_blockColor(score_pct, 30.0, 80.0)
+    string atr_str = str.tostring(atr_val, format.mintick)
+    string adx_str = str.tostring(math.round(c1_adx[1], 1))
+    float  best_decay = math.max(decay_factor_bull, decay_factor_bear)
+    string decay_str  = i_use_decay ? "↓" + str.tostring(math.round((1.0 - best_decay) * 100.0)) + "% age=" + str.tostring(math.max(decay_bull_age, decay_bear_age)) + "b" : "—"
+    color  decay_col  = i_use_decay ? (best_decay > 0.7 ? _c_bull : best_decay > 0.4 ? _c_warn : _c_bear) : _c_neut
+    string hurst_str  = i_use_hurst ? (hurst_trending ? "⬆ Trend" : hurst_mr ? "↔ MeanRev" : "~ Random") + " H=" + str.tostring(math.round(hurst_val, 2)) : "—"
+    color  hurst_col  = i_use_hurst ? (hurst_trending ? _c_bull : hurst_mr ? _c_warn : _c_neut) : _c_neut
+    string mom_str    = i_use_mominfl ? (mom_inflated ? "⚡ " : "✔ ") + str.tostring(math.round(mom_ratio, 2)) + "x" : "—"
+    color  mom_col    = i_use_mominfl ? (mom_inflated ? _c_bear : _c_bull) : _c_neut
+    string bdi_str    = i_use_bdi ? (bdi_val > 0.0 ? "▲ +" : "▼ ") + str.tostring(bdi_val, format.mintick) : "—"
+    color  bdi_col    = i_use_bdi ? (bdi_val > 0.0 ? _c_bull : bdi_val < 0.0 ? _c_bear : _c_neut) : _c_neut
+    string lag_str    = i_use_lag ? (lag_confirms ? (lag_bullish_lead ? "▲ " : "▼ ") + str.tostring(math.round(lag_pearson, 2)) : "~ " + str.tostring(math.round(lag_pearson, 2))) : "—"
+    color  lag_col    = i_use_lag ? (lag_bullish_lead ? _c_bull : lag_bearish_lead ? _c_bear : _c_neut) : _c_neut
+    table.cell(dash, 0, 0,  "⚡ MICSA",    text_color=color.white,    bgcolor=hdrBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 0,  clean_ticker, text_color=dash_txt_color, bgcolor=hdrBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 1,  "Baseline",   text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 1,  base_str,     text_color=base_col,       bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 2,  "Confirm 1",  text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 2,  c1_str,       text_color=c1_col,         bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 3,  "Confirm 2",  text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 3,  c2_str,       text_color=c2_col,         bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 4,  "Volume",     text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 4,  vol_str,      text_color=vol_col,        bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 5,  "Exit",       text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 5,  exit_str,     text_color=exit_col,       bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 6,  "Score",      text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 6,  score_bar_str, text_color=score_bar_col, bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 7,  "ADX",        text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 7,  adx_str,      text_color=_c_sub,         bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 8,  "ATR",        text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 8,  atr_str,      text_color=_c_sub,         bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 9,  i_use_decay  ? "Decay"    : "", text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 9,  i_use_decay  ? decay_str  : "", text_color=decay_col,      bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 10, i_use_hurst  ? "Hurst"    : "", text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 10, i_use_hurst  ? hurst_str  : "", text_color=hurst_col,      bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 11, i_use_mominfl ? "Mom.Infl" : "", text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 11, i_use_mominfl ? mom_str    : "", text_color=mom_col,        bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 12, i_use_bdi    ? "BDI"      : "", text_color=dash_txt_color, bgcolor=altBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 12, i_use_bdi    ? bdi_str    : "", text_color=bdi_col,        bgcolor=altBg, text_size=size.small, text_halign=text.align_right)
+    table.cell(dash, 0, 13, i_use_lag    ? "Lead-Lag" : "", text_color=dash_txt_color, bgcolor=oddBg, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 13, i_use_lag    ? lag_str    : "", text_color=lag_col,        bgcolor=oddBg, text_size=size.small, text_halign=text.align_right)
+    table.cell_set_text_font_family(dash, 0, 6, font.family_monospace)
+    table.cell_set_text_font_family(dash, 1, 6, font.family_monospace)
+// === ALERTS ===
+alertcondition(sig_long,   title="MICSA — Long Entry",  message="MICSA: confluence long entry confirmed")
+alertcondition(sig_short,  title="MICSA — Short Entry", message="MICSA: confluence short entry confirmed")
+alertcondition(exit_long,  title="MICSA — Exit Long",   message="MICSA: exit signal for long position")
+alertcondition(exit_short, title="MICSA — Exit Short",  message="MICSA: exit signal for short position")
+if (sig_long or sig_short) and barstate.isconfirmed
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"side\":\"{2}\",\"entry\":\"{3}\",\"sl\":\"{4}\",\"tp1\":\"{5}\",\"tp2\":\"{6}\",\"tp3\":\"{7}\"", syminfo.tickerid, timeframe.period, sig_long ? "long" : "short", str.tostring(lvl_entry, format.mintick), str.tostring(lvl_sl, format.mintick), str.tostring(lvl_tp1, format.mintick), str.tostring(lvl_tp2, format.mintick), str.tostring(lvl_tp3, format.mintick)) + "}", alert.freq_once_per_bar_close)
+if exit_long and barstate.isconfirmed
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"exit_long\",\"price\":\"{2}\"", syminfo.tickerid, timeframe.period, str.tostring(close[1], format.mintick)) + "}", alert.freq_once_per_bar_close)
+if exit_short and barstate.isconfirmed
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"exit_short\",\"price\":\"{2}\"", syminfo.tickerid, timeframe.period, str.tostring(close[1], format.mintick)) + "}", alert.freq_once_per_bar_close)

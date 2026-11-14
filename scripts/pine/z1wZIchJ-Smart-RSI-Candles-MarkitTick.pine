@@ -1,0 +1,188 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Smart RSI Candles [MarkitTick]", overlay = false, format = format.price, precision = 2)
+
+// =============================================================================
+// 1. CONSTANTS & INPUTS
+// =============================================================================
+
+const float RSI_MID = 50.0
+const float RSI_MAX = 100.0
+const float RSI_MIN = 0.0
+const float EPSILON = 1e-10
+
+int rsiLen = input.int(14, "RSI Length", minval = 2)
+
+int divLeft  = input.int(5,  "Divergence Pivot Left",  minval = 1)
+int divRight = input.int(5,  "Divergence Pivot Right", minval = 1)
+int maxLookb = input.int(60, "Max Divergence Lookback",minval = 10)
+
+color clrBullCandle = input.color(#089981, "Bull Candle Color")
+color clrBearCandle = input.color(#f23645, "Bear Candle Color")
+color clrMidline    = input.color(color.new(color.white, 50), "Midline Color")
+color clrObLine     = input.color(color.new(color.red,   25), "OverBought Color")
+color clrOsLine     = input.color(color.new(color.green, 25), "OverSold Color")
+
+color clrBullRegDiv = input.color(color.green, "Regular Bullish Div Color", tooltip="Bullish Divergence: Price makes a Lower Low, but the Index makes a Higher Low. This suggests selling pressure is drying up.")
+color clrBearRegDiv = input.color(color.red,   "Regular Bearish Div Color", tooltip="Bearish Divergence: Price makes a Higher High, but the Index makes a Lower High. This suggests momentum is waning despite rising prices.")
+color clrBullHidDiv = input.color(#00B0FF,     "Hidden Bullish Div Color",  tooltip="Price makes a Higher Low, but the Index makes a Lower Low. Suggests trend continuation.")
+color clrBearHidDiv = input.color(#E040FB,     "Hidden Bearish Div Color",  tooltip="Price makes a Lower High, but the Index makes a Higher High. Suggests trend continuation.")
+
+// =============================================================================
+// 2. TYPES & METHODS
+// =============================================================================
+
+type RsiScaler
+    float prevChartMid
+    float prevInvDif
+
+method init(RsiScaler this) =>
+    this.prevChartMid := na
+    this.prevInvDif   := na
+
+method calculate_wick_mapping(RsiScaler this, float rawRsiVal, float priceClose, float rsiHighest, float rsiLowest, float priceHighest, float priceLowest) =>
+    float rsiRng   = math.max(rsiHighest - rsiLowest, EPSILON)
+    float priceRng = priceHighest - priceLowest
+    float dif      = priceRng / rsiRng
+    float invDif   = 1.0 / math.max(dif, EPSILON)
+
+    float chart80  = priceClose + (80.0 - rawRsiVal) * dif
+    float chart20  = priceClose + (20.0 - rawRsiVal) * dif
+    float chartMid = (chart80 + chart20) * 0.5
+
+    float h_wick = math.min(math.max(RSI_MID + (high - chartMid) * invDif, RSI_MIN), RSI_MAX)
+    float l_wick = math.min(math.max(RSI_MID + (low  - chartMid) * invDif, RSI_MIN), RSI_MAX)
+
+    this.prevChartMid := chartMid
+    this.prevInvDif   := invDif
+
+    [h_wick, l_wick]
+
+type PivotData
+    float price
+    float rsi
+    int   time_idx
+
+// =============================================================================
+// 3. MAIN CALCULATION LOGIC
+// =============================================================================
+
+var RsiScaler rsiScaler = RsiScaler.new()
+var PivotData lastPl    = PivotData.new(na, na, na)
+var PivotData lastPh    = PivotData.new(na, na, na)
+
+if barstate.isfirst
+    rsiScaler.init()
+
+float rawRsi = ta.rsi(close, rsiLen)
+float _alpha = 1.0 / float(rsiLen)
+
+float c_rsi = rawRsi
+
+float _chgO  = open - close[1]
+float _gainO = math.max(_chgO,  0.0)
+float _lossO = math.max(-_chgO, 0.0)
+
+float _chg     = close - close[1]
+float _avgGain = ta.rma(math.max(_chg,  0.0), rsiLen)
+float _avgLoss = ta.rma(math.max(-_chg, 0.0), rsiLen)
+
+float _agO = _alpha * _gainO + (1.0 - _alpha) * nz(_avgGain[1], _gainO)
+float _alO = _alpha * _lossO + (1.0 - _alpha) * nz(_avgLoss[1], _lossO)
+float _rsO = _alO < EPSILON ? RSI_MAX : (_agO < EPSILON ? RSI_MIN : 100.0 - 100.0 / (1.0 + _agO / _alO))
+float o_rsi = math.min(math.max(_rsO, RSI_MIN), RSI_MAX)
+
+float rsiHst = ta.highest(rawRsi, rsiLen)
+float rsiLst = ta.lowest(rawRsi,  rsiLen)
+float pxHst  = ta.highest(close,  rsiLen)
+float pxLst  = ta.lowest(close,   rsiLen)
+
+[h_val, l_val] = rsiScaler.calculate_wick_mapping(rawRsi, close, rsiHst, rsiLst, pxHst, pxLst)
+float h_rsi = h_val
+float l_rsi = l_val
+
+float bodyTop = math.max(o_rsi, c_rsi)
+float bodyBot = math.min(o_rsi, c_rsi)
+h_rsi := math.max(h_rsi, bodyTop)
+l_rsi := math.min(l_rsi, bodyBot)
+
+bool isPl = not na(ta.pivotlow(l_rsi, divLeft, divRight))
+bool isPh = not na(ta.pivothigh(h_rsi, divLeft, divRight))
+
+float curPriceL  = low[divRight]
+float curRsiL    = l_rsi[divRight]
+float curPriceH  = high[divRight]
+float curRsiH    = h_rsi[divRight]
+int   curIdx     = bar_index[divRight]
+
+bool bullRegDiv = false
+bool bearRegDiv = false
+bool bullHidDiv = false
+bool bearHidDiv = false
+
+if isPl
+    if not na(lastPl.price)
+        int barsPassed = curIdx - lastPl.time_idx
+        if barsPassed <= maxLookb
+            if curPriceL < lastPl.price and curRsiL > lastPl.rsi
+                bullRegDiv := true
+                line.new(lastPl.time_idx, lastPl.rsi, curIdx, curRsiL, color=clrBullRegDiv, width=2)
+                line.new(lastPl.time_idx, lastPl.price, curIdx, curPriceL, color=clrBullRegDiv, width=2, force_overlay=true)
+            else if curPriceL > lastPl.price and curRsiL < lastPl.rsi
+                bullHidDiv := true
+                line.new(lastPl.time_idx, lastPl.rsi, curIdx, curRsiL, color=clrBullHidDiv, width=2, style=line.style_dashed)
+                line.new(lastPl.time_idx, lastPl.price, curIdx, curPriceL, color=clrBullHidDiv, width=2, force_overlay=true, style=line.style_dashed)
+    lastPl := PivotData.new(curPriceL, curRsiL, curIdx)
+
+if isPh
+    if not na(lastPh.price)
+        int barsPassed = curIdx - lastPh.time_idx
+        if barsPassed <= maxLookb
+            if curPriceH > lastPh.price and curRsiH < lastPh.rsi
+                bearRegDiv := true
+                line.new(lastPh.time_idx, lastPh.rsi, curIdx, curRsiH, color=clrBearRegDiv, width=2)
+                line.new(lastPh.time_idx, lastPh.price, curIdx, curPriceH, color=clrBearRegDiv, width=2, force_overlay=true)
+            else if curPriceH < lastPh.price and curRsiH > lastPh.rsi
+                bearHidDiv := true
+                line.new(lastPh.time_idx, lastPh.rsi, curIdx, curRsiH, color=clrBearHidDiv, width=2, style=line.style_dashed)
+                line.new(lastPh.time_idx, lastPh.price, curIdx, curPriceH, color=clrBearHidDiv, width=2, force_overlay=true, style=line.style_dashed)
+    lastPh := PivotData.new(curPriceH, curRsiH, curIdx)
+
+// =============================================================================
+// 4. VISUALS & ALERTS
+// =============================================================================
+
+bool isBull = not na(c_rsi) and not na(o_rsi) and c_rsi >= o_rsi
+bool isBear = not na(c_rsi) and not na(o_rsi) and c_rsi <  o_rsi
+
+plotcandle(isBull ? o_rsi : na, h_rsi, l_rsi, c_rsi, title="RSI Candles (Bullish)", color=clrBullCandle, wickcolor=clrBullCandle, bordercolor=clrBullCandle, display=display.pane)
+plotcandle(isBear ? o_rsi : na, h_rsi, l_rsi, c_rsi, title="RSI Candles (Bearish)", color=clrBearCandle, wickcolor=clrBearCandle, bordercolor=clrBearCandle, display=display.pane)
+
+hline(70, "OverBought", color=clrObLine)
+hline(30, "OverSold",   color=clrOsLine)
+hline(50, "Midline",    color=clrMidline)
+
+plotshape(bullRegDiv ? curPriceL : na, title="Bull Reg Div", style=shape.labelup,   location=location.absolute, color=clrBullRegDiv, text="Bull", textcolor=color.white, size=size.small, force_overlay=true, offset=-divRight)
+plotshape(bearRegDiv ? curPriceH : na, title="Bear Reg Div", style=shape.labeldown, location=location.absolute, color=clrBearRegDiv, text="Bear", textcolor=color.white, size=size.small, force_overlay=true, offset=-divRight)
+plotshape(bullHidDiv ? curPriceL : na, title="Bull Hid Div", style=shape.labelup,   location=location.absolute, color=clrBullHidDiv, text="H-Bull", textcolor=color.black, size=size.small, force_overlay=true, offset=-divRight)
+plotshape(bearHidDiv ? curPriceH : na, title="Bear Hid Div", style=shape.labeldown, location=location.absolute, color=clrBearHidDiv, text="H-Bear", textcolor=color.white, size=size.small, force_overlay=true, offset=-divRight)
+
+bool anyBullDiv = bullRegDiv or bullHidDiv
+bool anyBearDiv = bearRegDiv or bearHidDiv
+
+if anyBullDiv
+    string event_type = bullRegDiv ? "RSI_REG_DIV_BULL" : "RSI_HID_DIV_BULL"
+    float sl_val = curPriceL
+    float tp_val = close + (close - sl_val) * 1.5 
+    string json_payload = '{"event":"' + event_type + '","symbol":"' + syminfo.ticker + '","entry":' + str.tostring(close, format.mintick) + ',"sl":' + str.tostring(sl_val, format.mintick) + ',"tp":' + str.tostring(tp_val, format.mintick) + '}'
+    alert(json_payload, alert.freq_once_per_bar_close)
+
+if anyBearDiv
+    string event_type = bearRegDiv ? "RSI_REG_DIV_BEAR" : "RSI_HID_DIV_BEAR"
+    float sl_val = curPriceH
+    float tp_val = close - (sl_val - close) * 1.5 
+    string json_payload = '{"event":"' + event_type + '","symbol":"' + syminfo.ticker + '","entry":' + str.tostring(close, format.mintick) + ',"sl":' + str.tostring(sl_val, format.mintick) + ',"tp":' + str.tostring(tp_val, format.mintick) + '}'
+    alert(json_payload, alert.freq_once_per_bar_close)

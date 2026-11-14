@@ -1,0 +1,91 @@
+// © [MarkitTick]
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+//@version=6
+indicator("GARCH Volume Volatility [MarkitTick]", overlay = false, explicit_plot_zorder = true)
+
+// -----------------------------------------------------------------------------
+// INPUTS
+// -----------------------------------------------------------------------------
+string group_core    = "Core Settings"
+string group_display = "Visuals"
+
+bool  useEWMA       = input.bool(true, "Use EWMA", tooltip = "If disabled, uses simple SMA variance.", group = group_core)
+bool  useLog        = input.bool(true, "Log Returns", tooltip = "Calculates logarithmic returns instead of percentage change.", group = group_core)
+int   garchLength   = input.int(21, "Length", minval = 1, group = group_core)
+int   stdevLookback = input.int(100, "Threshold Lookback", minval = 5, group = group_core)
+float lambda        = input.float(0.94, "EWMA Lambda", minval = 0.0, maxval = 0.999, step = 0.01, tooltip = "Decay factor. Only applies if EWMA is enabled.", group = group_core)
+
+bool  showStatLines = input.bool(true, "Show Thresholds", group = group_display)
+float highK         = input.float(1.5, "High Band (StdDev)", minval = 0.1, step = 0.1, group = group_display)
+float lowK          = input.float(1.0, "Low Band (StdDev)", minval = 0.0, step = 0.1, group = group_display)
+
+// -----------------------------------------------------------------------------
+// FUNCTIONS
+// -----------------------------------------------------------------------------
+calc_returns(float cur, float prev, bool isLog) =>
+    float result = 0.0
+    if prev != 0
+        if isLog and cur > 0 and prev > 0
+            result := math.log(cur / prev)
+        else
+            result := (cur / prev) - 1.0
+    result
+
+// -----------------------------------------------------------------------------
+// CALCULATIONS
+// -----------------------------------------------------------------------------
+float curVol  = volume
+float prevVol = nz(volume[1], curVol)
+
+// Returns
+float volRet = calc_returns(curVol, prevVol, useLog)
+
+// Variance Proxy
+float r2 = volRet * volRet
+
+// Variance Smoothing
+float varProxy = na
+
+if useEWMA
+    var float ewmaVar = na
+    if barstate.isfirst
+        ewmaVar := r2
+    else
+        ewmaVar := lambda * nz(ewmaVar, r2) + (1.0 - lambda) * r2
+    varProxy := ewmaVar
+else
+    varProxy := ta.sma(r2, garchLength)
+
+// Volatility
+float volProxy = math.sqrt(varProxy)
+
+// Dynamic Thresholds
+float meanVol  = ta.sma(volProxy, stdevLookback)
+float stdevVol = ta.stdev(volProxy, stdevLookback)
+float highVol  = meanVol + highK * stdevVol
+float lowVol   = math.max(0.0, meanVol - lowK * stdevVol)
+
+// -----------------------------------------------------------------------------
+// VISUALS
+// -----------------------------------------------------------------------------
+// Plot Splitting for Style Tab Control
+// Logic mirrors original switch: High -> Mean -> Low -> Base
+float p_high = volProxy > highVol ? volProxy[1] : na
+float p_mean = volProxy <= highVol and volProxy > meanVol ? volProxy[1] : na
+float p_low  = volProxy <= meanVol and volProxy > lowVol ? volProxy[1] : na
+float p_base = volProxy <= lowVol ? volProxy[1] : na
+
+// Histogram Plots
+plot(p_high, "Vol High", color = color.red, style = plot.style_histogram, linewidth = 3)
+plot(p_mean, "Vol Mean", color = color.maroon, style = plot.style_histogram, linewidth = 3)
+plot(p_low,  "Vol Low",  color = color.new(color.green, 50), style = plot.style_histogram, linewidth = 3)
+plot(p_base, "Vol Base", color = color.green, style = plot.style_histogram, linewidth = 3)
+
+// Threshold Plots
+// Fixed: Removed 'string' type declaration to allow auto-inference of the correct 'display' type
+displaySetting = showStatLines ? display.all - display.status_line : display.none
+
+plot(meanVol, "Mean Vol", color = color.white, linewidth = 1, display = displaySetting)
+plot(highVol, "High Vol", color = color.red,   linewidth = 1, display = displaySetting)
+plot(lowVol,  "Low Vol",  color = color.green, linewidth = 1, display = displaySetting)

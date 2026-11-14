@@ -1,0 +1,612 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Adaptive RSI Supertrend [MarkitTick]", overlay=false, format=format.price, precision=2)
+
+// ==============================================================================
+// Global Methods
+// ==============================================================================
+
+calculate_angle(src, len) =>
+    if len <= 0 or na(src) or na(src[len])
+        na
+    else
+        delta_y = src - src[len]
+        delta_x = len
+        angle_rad = math.atan(delta_y / delta_x)
+        angle_rad * (180 / math.pi)
+
+apply_smoothing(src, len, mode) =>
+    float out = src
+    if len > 1
+        out := switch mode
+            "Standard" => ta.sma(src, len)
+            "Smooth"   => ta.rma(src, len)
+            "Fast"     => ta.rma(src, len)
+            "Faster"   => ta.wma(ta.wma(src, len), len)
+            "Fastest"  => ta.vwma(ta.vwma(ta.vwma(src, len), len), len)
+            "Ultra"    => ta.hma(src, len)
+            => src
+    out
+
+f_signalFilter(src, len, mode, proc_n, meas_n, alpha_min, alpha_max) =>
+    var float _kalman_est = na
+    var float _kalman_cov = 1.0
+    var float _llama_out  = na
+    float out = na
+    if mode == "RMA"
+        out := ta.rma(src, len)
+    else if mode == "Kalman Filter"
+        if na(_kalman_est)
+            _kalman_est := src
+        _kalman_cov := _kalman_cov + proc_n
+        _kalman_gain = _kalman_cov / (_kalman_cov + meas_n)
+        _kalman_est := _kalman_est + _kalman_gain * (src - _kalman_est)
+        _kalman_cov := (1 - _kalman_gain) * _kalman_cov
+        out := _kalman_est
+    else
+        if na(_llama_out)
+            _llama_out := src
+        _slope = (src - src[len]) / len
+        _range = ta.highest(src, len) - ta.lowest(src, len)
+        _efficiency = _range != 0 ? math.min(math.abs(_slope * len) / _range, 1.0) : 0.0
+        _alpha = alpha_min + _efficiency * (alpha_max - alpha_min)
+        _llama_out := _llama_out + _alpha * (src - _llama_out)
+        out := _llama_out
+    out
+
+f_arsi(len) =>
+    u = ta.highest(close, len)
+    l = ta.lowest(close, len)
+    _r = u - l
+    _d = close - close[1]
+    _diff = u > u[1] ? _r : l < l[1] ? -_r : _d
+    _num = ta.rma(_diff, len)
+    _den = ta.rma(math.abs(_diff), len)
+    _den != 0 ? _num / _den * 50 + 50 : 50
+
+// ==============================================================================
+// Settings & Inputs
+// ==============================================================================
+length        = input.int(14, minval=2, title="ARSI Length")
+signal_length = input.int(14, minval=1, title="Signal Length")
+atrPeriod = input.int(14, minval=1, title="Supertrend ATR Length")
+factor    = input.float(2.0, minval=0.1, step=0.1, title="Factor")
+show_candles  = input.bool(true, title="Show Color Matched Candles")
+
+string GRP_FILT  = "Filter Type"
+filter_type      = input.string("RMA", title="Signal Filter Type", options=["RMA", "Kalman Filter", "LLAMA"], group=GRP_FILT)
+kalman_process_n = input.float(0.01, minval=0.0001, step=0.001, title="Kalman Process Noise", group=GRP_FILT)
+kalman_measure_n = input.float(0.10, minval=0.0001, step=0.01,  title="Kalman Measurement Noise", group=GRP_FILT)
+llama_alpha_min  = input.float(0.05, minval=0.01, maxval=0.99, step=0.01, title="LLAMA Min Alpha", group=GRP_FILT)
+llama_alpha_max  = input.float(0.50, minval=0.01, maxval=0.99, step=0.01, title="LLAMA Max Alpha", group=GRP_FILT)
+
+enable_smoothing  = input.bool(false,        title="Enable Smoothing for Merged Line")
+merge_smooth_type = input.string("Standard", title="Merged Line Smoothing Type", options=["Standard", "Smooth", "Fast", "Faster", "Fastest", "Ultra"])
+merge_smooth_len  = input.int(5, minval=1,  title="Merged Line Smoothing Length")
+
+string GRP_SIG   = "Signal Options"
+show_crossover   = input.bool(true,         title="Show Crossover Signals on Chart", group=GRP_SIG)
+
+string GRP_VFILT  = "Volume Filter"
+use_vol_filter    = input.bool(false,  title="Enable Volume Filter on Signals", group=GRP_VFILT)
+vol_filter_len    = input.int(20, minval=5, title="Volume MA Length",          group=GRP_VFILT)
+vol_filter_mult   = input.float(1.0, minval=0.1, step=0.1, title="Volume Multiplier (x MA)", group=GRP_VFILT)
+
+string GRP_HTF  = "HTF Trend Filter"
+use_htf_filter  = input.bool(false,       title="Enable HTF Trend Filter", group=GRP_HTF)
+htf_tf          = input.timeframe("D",   title="HTF Timeframe",          group=GRP_HTF)
+htf_arsi_len    = input.int(14, minval=2, title="HTF ARSI Length",       group=GRP_HTF)
+
+string GRP_SQZ   = "Squeeze Mode"
+show_squeeze     = input.bool(true, title="Show Squeeze Detection",           group=GRP_SQZ)
+sqz_angle_thresh = input.float(5.0, minval=1.0, step=0.5, title="Squeeze Angle Threshold", group=GRP_SQZ)
+
+string GRP_HIST  = "Histogram"
+show_histogram   = input.bool(true, title="Show ARSI/Merged Histogram",      group=GRP_HIST)
+
+string GRP_RS    = "Regime Score"
+show_regime      = input.bool(true, title="Show Regime Score in Dashboard",   group=GRP_RS)
+regime_ema_len   = input.int(50, minval=10, title="Regime EMA Length",        group=GRP_RS)
+
+string GRP_SR    = "Dynamic S/R Levels"
+show_sr_levels   = input.bool(true, title="Show Dynamic S/R on Chart",        group=GRP_SR)
+sr_lookback      = input.int(50, minval=10, title="S/R Lookback Bars",        group=GRP_SR)
+
+// ==============================================================================
+// Trade Label Inputs
+// ==============================================================================
+string GRP_TL     = "Trade Labels"
+show_trade_labels = input.bool(false,  title="Show Entry / SL / TP Labels",        group=GRP_TL)
+tl_sl_mult        = input.float(0,  title="SL Padding (× ATR beyond S/R zone)", group=GRP_TL, minval=0.0, step=0.1)
+tl_rr1            = input.float(1.0,  title="TP1 Risk:Reward Ratio",              group=GRP_TL, minval=0.1, step=0.1)
+tl_rr2            = input.float(2.0,  title="TP2 Risk:Reward Ratio",              group=GRP_TL, minval=0.1, step=0.1)
+tl_rr3            = input.float(3.0,  title="TP3 Min Risk:Reward Ratio",          group=GRP_TL, minval=0.1, step=0.1)
+tl_line_len       = input.int(50,     title="Line Length (bars)",                  group=GRP_TL, minval=5, maxval=200)
+
+string GRP_DASH  = 'Dash'
+show_dashboard   = input.bool(true, 'Show Dashboard',                     group=GRP_DASH)
+
+string GRP_ALRT = "Alerts"
+alrt_cross      = input.bool(true, title="Alert: ARSI/Merged Crossover",  group=GRP_ALRT)
+alrt_sqz_break  = input.bool(true, title="Alert: Squeeze Breakout",       group=GRP_ALRT)
+alrt_st_flip    = input.bool(true, title="Alert: Supertrend Flip",        group=GRP_ALRT)
+alrt_ob_os      = input.bool(true, title="Alert: OB/OS Zone Entry",       group=GRP_ALRT)
+
+string GRP_COL       = "Colors"
+color_arsi_up_strong = input.color(color.new(#00E5FF, 0),  title="ARSI/Candle Up Strong",          group=GRP_COL)
+color_arsi_up_weak   = input.color(color.new(#006064, 0),  title="ARSI/Candle Up Weak",             group=GRP_COL)
+color_arsi_dn_strong = input.color(color.new(#FF1744, 0),  title="ARSI/Candle Down Strong",         group=GRP_COL)
+color_arsi_dn_weak   = input.color(color.new(#880E4F, 0),  title="ARSI/Candle Down Weak",           group=GRP_COL)
+color_arsi_neutral   = input.color(color.rgb(80,90,110),   title="ARSI/Candle Neutral",             group=GRP_COL)
+color_merged         = input.color(color.new(#E040FB, 0),  title="Merged Line Color",               group=GRP_COL)
+color_ob             = input.color(color.new(#FF4081, 60), title="Overbought Color",                group=GRP_COL)
+color_mid            = input.color(color.new(#5C6BC0, 50), title="Middle Line Color",               group=GRP_COL)
+color_os             = input.color(color.new(#00BCD4, 60), title="Oversold Color",                  group=GRP_COL)
+color_text_up        = input.color(color.new(#00E5FF, 0),  title="Text Up Color",                   group=GRP_COL)
+color_text_dn        = input.color(color.new(#FF1744, 0),  title="Text Down Color",                 group=GRP_COL)
+color_text_neutral   = input.color(color.rgb(120,130,150), title="Text Neutral Color",              group=GRP_COL)
+color_cross_up       = input.color(color.new(#00E5FF, 0),  title="Bullish Cross Background Color",  group=GRP_COL)
+color_cross_dn       = input.color(color.new(#FF1744, 0),  title="Bearish Cross Background Color",  group=GRP_COL)
+color_label_text     = input.color(color.white,            title="Label Text Color",                group=GRP_COL)
+color_squeeze        = input.color(color.new(#FFD600, 85), title="Squeeze Background Color",        group=GRP_COL)
+color_hist_bull      = input.color(color.new(#00E5FF, 30), title="Histogram Bull Color",            group=GRP_COL)
+color_hist_bear      = input.color(color.new(#FF1744, 30), title="Histogram Bear Color",            group=GRP_COL)
+color_sr_res         = input.color(color.new(#FF1744, 60), title="Resistance Color",                group=GRP_COL)
+color_sr_sup         = input.color(color.new(#00E5FF, 60), title="Support Color",                   group=GRP_COL)
+dash_bg_color        = input.color(color.rgb(10,10,18,5),    'BG',   group=GRP_COL)
+dash_txt_color       = input.color(color.rgb(220,220,235,0), 'Text', group=GRP_COL)
+
+// ==============================================================================
+// Core Calculations (Always Global Scope)
+// ==============================================================================
+market_atr = ta.atr(14)
+arsi       = f_arsi(length)
+signal     = f_signalFilter(arsi, signal_length, filter_type, kalman_process_n, kalman_measure_n, llama_alpha_min, llama_alpha_max)
+rsi_angle  = calculate_angle(arsi, length)
+signal_angle = ta.sma(rsi_angle, length)
+
+// ==============================================================================
+// HTF Trend Filter
+// ==============================================================================
+htf_arsi_raw = request.security(syminfo.tickerid, htf_tf, f_arsi(htf_arsi_len)[1], lookahead=barmerge.lookahead_on)
+htf_bull     = htf_arsi_raw >= 50.0
+htf_bear     = htf_arsi_raw < 50.0
+
+// ==============================================================================
+// Volume Filter
+// ==============================================================================
+vol_ma        = ta.sma(volume, vol_filter_len)
+vol_confirmed = volume >= vol_ma * vol_filter_mult
+
+// ==============================================================================
+// Supertrend Based on ARSI
+// ==============================================================================
+
+
+arsi_atr  = ta.rma(math.abs(arsi - arsi[1]), atrPeriod)
+upperBand = arsi + factor * arsi_atr
+lowerBand = arsi - factor * arsi_atr
+
+var float supertrend = na
+var bool  trendUp    = true
+prevSupertrend = supertrend
+prevTrendUp    = trendUp
+
+if na(prevSupertrend)
+    supertrend := upperBand
+    trendUp    := true
+else
+    if arsi > prevSupertrend
+        trendUp := true
+    else if arsi < prevSupertrend
+        trendUp := false
+    else
+        trendUp := prevTrendUp
+    supertrend := trendUp ? math.max(lowerBand, prevSupertrend) : math.min(upperBand, prevSupertrend)
+
+st_flipped_bull = trendUp and not trendUp[1]
+st_flipped_bear = not trendUp and trendUp[1]
+
+// ==============================================================================
+// Merging Logic & Advanced Smoothing
+// ==============================================================================
+raw_merged   = na(supertrend) ? signal : (signal + supertrend) / 2
+final_merged = enable_smoothing ? apply_smoothing(raw_merged, merge_smooth_len, merge_smooth_type) : raw_merged
+
+// ==============================================================================
+// Color Logic
+// ==============================================================================
+base_arsi_color = (rsi_angle > signal_angle ? (rsi_angle < 0 ? color_arsi_up_weak : color_arsi_up_strong) : rsi_angle < signal_angle ? (rsi_angle > 0 ? color_arsi_dn_weak : color_arsi_dn_strong) : color_arsi_neutral)
+is_green_shade  = base_arsi_color == color_arsi_up_strong or base_arsi_color == color_arsi_up_weak
+is_red_shade    = base_arsi_color == color_arsi_dn_strong or base_arsi_color == color_arsi_dn_weak
+arsi_color      = is_green_shade and arsi < final_merged ? color_arsi_neutral : is_red_shade and arsi > final_merged ? color_arsi_neutral : base_arsi_color
+
+arsi_gradient   = color.from_gradient(arsi, 20, 80, color_arsi_dn_strong, color_arsi_up_strong)
+arsi_plot_color = arsi_color == color_arsi_neutral ? color_arsi_neutral : arsi_gradient
+merged_slope    = final_merged - final_merged[1]
+merged_gradient = color.from_gradient(merged_slope, -0.5, 0.5, color_arsi_dn_strong, color_arsi_up_strong)
+merged_col      = color.new(merged_gradient, 20)
+
+// ==============================================================================
+// Crossover Signals with Filters
+// ==============================================================================
+raw_bull_cross = ta.crossover(arsi[1], final_merged[1])
+raw_bear_cross = ta.crossunder(arsi[1], final_merged[1])
+
+bull_cross = raw_bull_cross and (use_vol_filter ? vol_confirmed : true) and (use_htf_filter ? htf_bull : true)
+bear_cross = raw_bear_cross and (use_vol_filter ? vol_confirmed : true) and (use_htf_filter ? htf_bear : true)
+
+atr_offset = nz(market_atr) * 0.5
+ob_cross   = arsi[1] > 80 and arsi[2] <= 80
+os_cross   = arsi[1] < 20 and arsi[2] >= 20
+
+// ==============================================================================
+// Squeeze Mode
+// ==============================================================================
+is_squeeze    = math.abs(rsi_angle) <= sqz_angle_thresh and arsi >= 40 and arsi <= 60
+was_squeeze   = math.abs(rsi_angle[1]) <= sqz_angle_thresh and arsi[1] >= 40 and arsi[1] <= 60
+squeeze_break = was_squeeze and not is_squeeze
+
+// ==============================================================================
+// Momentum Acceleration
+// ==============================================================================
+mom_accel     = rsi_angle - rsi_angle[3]
+mom_accel_str = math.min(math.abs(mom_accel) / 5.0, 10.0)
+
+// ==============================================================================
+// Regime Score (Composite 0-100)
+// ==============================================================================
+regime_ema      = ta.rma(close, regime_ema_len)
+price_above_ema = close > regime_ema
+regime_arsi_s   = math.min(math.max((arsi - 20) / 60.0 * 25.0, 0), 25.0)
+regime_angle_s  = math.min(math.max(rsi_angle / 90.0 * 25.0 + 12.5, 0), 25.0)
+regime_st_s     = trendUp ? 25.0 : 0.0
+regime_ema_s    = price_above_ema ? 25.0 : 0.0
+regime_score    = regime_arsi_s + regime_angle_s + regime_st_s + regime_ema_s
+
+// ==============================================================================
+// Dynamic S/R Levels
+// ==============================================================================
+sr_high = ta.highest(high, sr_lookback)
+sr_low  = ta.lowest(low,  sr_lookback)
+
+var box sr_res_box = na
+var box sr_sup_box = na
+
+if show_sr_levels
+    if not na(sr_res_box)
+        box.delete(sr_res_box)
+    if not na(sr_sup_box)
+        box.delete(sr_sup_box)
+    sr_pad = market_atr * 0.25
+    sr_res_box := box.new(bar_index - sr_lookback, sr_high + sr_pad, bar_index, sr_high - sr_pad, border_color=color.new(color_sr_res, 70), border_width=1, border_style=line.style_solid, bgcolor=color.new(color_sr_res, 85), force_overlay=true)
+    sr_sup_box := box.new(bar_index - sr_lookback, sr_low  + sr_pad, bar_index, sr_low  - sr_pad, border_color=color.new(color_sr_sup, 70), border_width=1, border_style=line.style_solid, bgcolor=color.new(color_sr_sup, 85), force_overlay=true)
+
+// ==============================================================================
+// Angle Label on Chart
+// ==============================================================================
+angle_class = switch
+    rsi_angle > -5 and rsi_angle < 5 => "Sideways"
+    rsi_angle >= 70  => "Extreme Uptrend"
+    rsi_angle >= 45  => "Strong Uptrend"
+    rsi_angle >= 20  => "Healthy Uptrend"
+    rsi_angle >= 5   => "Weak Uptrend"
+    rsi_angle <= -70 => "Extreme Downtrend"
+    rsi_angle <= -45 => "Strong Downtrend"
+    rsi_angle <= -20 => "Healthy Downtrend"
+    rsi_angle <= -5  => "Weak Downtrend"
+    => "Undefined"
+
+trend_label = angle_class + " / " + str.tostring(rsi_angle, "#.##") + "°"
+text_color  = rsi_angle > 0 ? color_text_up : rsi_angle < 0 ? color_text_dn : color_text_neutral
+
+var label chart_angle_label = label.new(na, na, text='', style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.gray, size=size.normal, force_overlay=true)
+label.set_x(chart_angle_label, bar_index)
+label.set_y(chart_angle_label, close)
+label.set_text(chart_angle_label, trend_label)
+label.set_textcolor(chart_angle_label, text_color)
+
+
+// ==============================================================================
+// hlines
+// ==============================================================================
+hline(80, "Overbought", color=color_ob)
+hline(50, "Middle",     color=color_mid)
+hline(20, "Oversold",   color=color_os)
+
+// ==============================================================================
+// Background & Plots
+// ==============================================================================
+bg_bull  = color.new(#00E5FF, 97)
+bg_bear  = color.new(#FF1744, 97)
+bg_mid   = color.new(#5C6BC0, 99)
+bg_color = arsi >= 65 ? color.from_gradient(arsi, 65, 80, bg_mid, bg_bear) : arsi <= 35 ? color.from_gradient(arsi, 20, 35, bg_bull, bg_mid) : bg_mid
+sqz_bg   = show_squeeze and is_squeeze ? color_squeeze : na
+
+bgcolor(bg_color)
+bgcolor(sqz_bg)
+
+plot(arsi,         "Adaptive RSI", color=arsi_plot_color, linewidth=2, display=display.all - display.status_line)
+plot(final_merged, "Merged Line",  color=merged_col,      linewidth=2, display=display.all - display.status_line)
+
+hist_val   = arsi - final_merged
+hist_color = hist_val >= 0 ? color_hist_bull : color_hist_bear
+plot(show_histogram ? hist_val : na, "Histogram", color=hist_color, style=plot.style_histogram, linewidth=1, display=display.all - display.status_line)
+
+// ==============================================================================
+// Crossover Signal Shapes
+// ==============================================================================
+plotshape(show_crossover and bull_cross ? low[1]  - atr_offset : na, title="Bullish Cross", style=shape.labelup,   location=location.absolute, color=color_cross_up, text="BULL", textcolor=color_label_text, size=size.small, force_overlay=true, display=display.all - display.status_line)
+plotshape(show_crossover and bear_cross ? high[1] + atr_offset : na, title="Bearish Cross", style=shape.labeldown, location=location.absolute, color=color_cross_dn, text="BEAR", textcolor=color_label_text, size=size.small, force_overlay=true, display=display.all - display.status_line)
+
+// ==============================================================================
+// Candle Coloring
+// ==============================================================================
+candle_col = show_candles ? arsi_color : na
+plotcandle(show_candles ? open : na, show_candles ? high : na, show_candles ? low : na, show_candles ? close : na, title="ARSI Matched Candles", color=candle_col, wickcolor=candle_col, bordercolor=candle_col, force_overlay=true, display=display.all - display.status_line)
+barcolor(show_candles ? candle_col : na)
+
+// ==============================================================================
+// Dashboard
+// ==============================================================================
+f_blockBar(float score) =>
+    int    n = math.min(math.max(math.round(score), 0), 10)
+    string s = ''
+    for i = 1 to 10
+        s += i <= n ? '█' : '░'
+    s
+
+f_blockColor(float score) =>
+    score >= 7.0 ? color.rgb(0,229,255) : score >= 4.0 ? color.rgb(224,64,251) : score >= 1.5 ? color.rgb(255,64,129) : color.rgb(80,90,110)
+
+f_segFillColor(float pct) =>
+    color.from_gradient(pct, 0.0, 100.0, color.rgb(255,235,59), color.rgb(0,200,83))
+
+f_segEmptyColor() =>
+    color.new(color.gray, 100)
+
+var string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+
+var int bars_since_cross = 0
+bars_since_cross := bull_cross or bear_cross ? 0 : bars_since_cross + 1
+
+float arsi_score  = arsi / 10.0
+float sig_score   = signal / 10.0
+float angle_abs   = math.abs(rsi_angle)
+float angle_score = math.min(angle_abs / 9.0, 10.0)
+float regime_bs   = regime_score / 10.0
+float accel_score = mom_accel_str
+
+string arsi_bar   = f_blockBar(arsi_score)
+string signal_bar = f_blockBar(sig_score)
+string angle_bar  = f_blockBar(angle_score)
+string regime_bar = f_blockBar(regime_bs)
+string accel_bar  = f_blockBar(accel_score)
+color  arsi_blk   = f_blockColor(arsi_score)
+color  signal_blk = f_blockColor(sig_score)
+color  angle_blk  = f_blockColor(angle_score)
+color  regime_blk = f_blockColor(regime_bs)
+color  accel_blk  = mom_accel > 0 ? color.rgb(0,229,255) : mom_accel < 0 ? color.rgb(255,23,68) : color.rgb(80,90,110)
+
+float arsi_pct   = math.min(math.max(arsi_score   / 10.0 * 100.0, 0.0), 100.0)
+float signal_pct = math.min(math.max(sig_score    / 10.0 * 100.0, 0.0), 100.0)
+float angle_pct  = math.min(math.max(angle_score  / 10.0 * 100.0, 0.0), 100.0)
+float accel_pct  = math.min(math.max(accel_score  / 10.0 * 100.0, 0.0), 100.0)
+
+string trend_val  = trendUp ? '▲ Bull ST' : '▼ Bear ST'
+color  trend_col  = trendUp ? color.rgb(0,229,255) : color.rgb(255,23,68)
+string bias_val   = rsi_angle >= 5.0 ? '▲ Bull Bias' : rsi_angle <= -5.0 ? '▼ Bear Bias' : '⚖ Neutral'
+color  bias_col   = rsi_angle >= 5.0 ? color.rgb(0,229,255) : rsi_angle <= -5.0 ? color.rgb(255,23,68) : color.rgb(120,130,150)
+string htf_val    = htf_bull ? '▲ Bull ' + htf_tf : '▼ Bear ' + htf_tf
+color  htf_col    = htf_bull ? color.rgb(0,229,255) : color.rgb(255,23,68)
+string vol_val    = vol_confirmed ? '✔ Active' : '✘ Weak'
+color  vol_col    = vol_confirmed ? color.rgb(0,229,255) : color.rgb(255,23,68)
+string sqz_val    = is_squeeze ? '⚡ Squeeze' : '— Clear'
+color  sqz_col    = is_squeeze ? color.rgb(255,214,0) : color.rgb(80,90,110)
+string atr_val    = str.tostring(nz(market_atr), format.mintick)
+string dur_val    = '⏳ ' + str.tostring(bars_since_cross) + ' Bars'
+string regime_str = str.tostring(math.round(regime_score)) + ' / 100'
+color  reg_tcol   = regime_score >= 70 ? color.rgb(0,229,255) : regime_score >= 40 ? color.rgb(224,64,251) : color.rgb(255,23,68)
+string sr_val     = str.tostring(sr_high, format.mintick) + ' / ' + str.tostring(sr_low, format.mintick)
+
+var table dash = table.new(position.top_right, 11, 15,
+    border_width=1, border_color=color.rgb(50,50,70,20),
+    frame_width=1,  frame_color=color.rgb(60,60,90,10), force_overlay=true)
+
+color hdrBg = color.rgb(30,30,45,10)
+color altBg = color.rgb(20,20,25,10)
+color oddBg = dash_bg_color
+
+f_drawSegBar(table t, int row, float pct, string pctText, color rowBg) =>
+    int filled = math.round(pct / 10.0)
+    for seg = 0 to 9
+        bool isFilled = seg < filled
+        color segBg = isFilled ? f_segFillColor((seg + 1) * 10.0) : f_segEmptyColor()
+        string segTxt = seg == 4 ? pctText : ''
+        color txtClr = seg == 4 ? (isFilled ? color.black : dash_txt_color) : color.black
+        table.cell(t, seg + 1, row, segTxt, bgcolor=segBg, text_color=txtClr, text_halign=text.align_center, text_size=size.tiny)
+
+f_fillValueRow(table t, int row, color rowBg) =>
+    for seg = 1 to 9
+        table.cell(t, seg + 1, row, '', bgcolor=rowBg)
+    table.merge_cells(t, 1, row, 10, row)
+
+if show_dashboard
+    table.cell(dash, 0, 0,  '  [MarkitTick] ARS', bgcolor=hdrBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 0,  clean_ticker + ' · ' + timeframe.period, bgcolor=hdrBg, text_color=dash_txt_color, text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 0, hdrBg)
+
+    table.cell(dash, 0, 1,  '  ARSI Level',      bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    f_drawSegBar(dash, 1, arsi_pct, str.tostring(math.round(arsi_pct), '##0') + '%', altBg)
+
+    table.cell(dash, 0, 2,  '  Signal Strength', bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    f_drawSegBar(dash, 2, signal_pct, str.tostring(math.round(signal_pct), '##0') + '%', oddBg)
+
+    table.cell(dash, 0, 3,  '  Angle Momentum',  bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    f_drawSegBar(dash, 3, angle_pct, str.tostring(math.round(angle_pct), '##0') + '%', altBg)
+
+    table.cell(dash, 0, 4,  '  Acceleration',    bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    f_drawSegBar(dash, 4, accel_pct, str.tostring(math.round(accel_pct), '##0') + '%', oddBg)
+
+    table.cell(dash, 0, 5,  '  Supertrend',      bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 5,  trend_val,           bgcolor=altBg, text_color=trend_col,      text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 5, altBg)
+
+    table.cell(dash, 0, 6,  '  Market Bias',     bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 6,  bias_val,            bgcolor=oddBg, text_color=bias_col,       text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 6, oddBg)
+
+    table.cell(dash, 0, 7,  '  Angle Class',     bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 7,  angle_class,         bgcolor=altBg, text_color=text_color,     text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 7, altBg)
+
+    table.cell(dash, 0, 8,  '  HTF Trend',       bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 8,  htf_val,             bgcolor=oddBg, text_color=htf_col,        text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 8, oddBg)
+
+    table.cell(dash, 0, 9,  '  Volume',          bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 9,  vol_val,             bgcolor=altBg, text_color=vol_col,        text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 9, altBg)
+
+    table.cell(dash, 0, 10, '  Squeeze',         bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 10, sqz_val,             bgcolor=oddBg, text_color=sqz_col,        text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 10, oddBg)
+
+    table.cell(dash, 0, 11, '  Volatility ATR',  bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 11, atr_val,             bgcolor=altBg, text_color=color.rgb(224,64,251), text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 11, altBg)
+
+    table.cell(dash, 0, 12, '  Last Cross',      bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 12, dur_val,             bgcolor=oddBg, text_color=color.rgb(92,107,192), text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 12, oddBg)
+
+    table.cell(dash, 0, 13, '  S/R Zone',        bgcolor=altBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 13, show_sr_levels ? sr_val : '—', bgcolor=altBg, text_color=color.rgb(180,180,200), text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 13, altBg)
+
+    table.cell(dash, 0, 14, '  Regime Score',    bgcolor=oddBg, text_color=dash_txt_color, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 14, show_regime ? regime_str : '—', bgcolor=oddBg, text_color=show_regime ? reg_tcol : color.rgb(80,90,110), text_halign=text.align_right, text_size=size.small)
+    f_fillValueRow(dash, 14, oddBg)
+
+    table.cell_set_text_font_family(dash, 0, 0, font.family_monospace)
+    for row = 1 to 14
+        table.cell_set_text_font_family(dash, 0, row, font.family_monospace)
+        if row != 1 and row != 2 and row != 3 and row != 4
+            table.cell_set_text_font_family(dash, 1, row, font.family_monospace)
+
+// ==============================================================================
+// Entry / SL / TP Labels + Dashed Lines
+// ==============================================================================
+
+
+// ── Persistent label handles ──────────────────────────────────────────────────
+var label tl_entry = na
+var label tl_sl    = na
+var label tl_tp1   = na
+var label tl_tp2   = na
+var label tl_tp3   = na
+
+// ── Persistent line handles ───────────────────────────────────────────────────
+var line tl_line_entry = na
+var line tl_line_sl    = na
+var line tl_line_tp1   = na
+var line tl_line_tp2   = na
+var line tl_line_tp3   = na
+
+// ── Color constants (solid, matching screenshot palette) ──────────────────────
+color _c_sl    = #F23645          
+color _c_entry = #607D8B          
+color _c_tp1   = #089981         
+color _c_tp2   = #089981          
+color _c_tp3   = #089981          
+
+bull_signal = bull_cross
+bear_signal = bear_cross
+
+if show_trade_labels and not na(market_atr) and market_atr > 0
+    if bull_signal
+        float _entry = open
+        float _sl    = sr_low   - tl_sl_mult  * market_atr   
+        float _risk  = _entry   - _sl                        
+        float _tp1   = _entry   + _risk * tl_rr1             
+        float _tp2   = _entry   + _risk * tl_rr2              
+        float _tp3   = _entry + _risk * tl_rr3                                         
+
+        label.delete(tl_entry)  , line.delete(tl_line_entry)
+        label.delete(tl_sl)     , line.delete(tl_line_sl)
+        label.delete(tl_tp1)    , line.delete(tl_line_tp1)
+        label.delete(tl_tp2)    , line.delete(tl_line_tp2)
+        label.delete(tl_tp3)    , line.delete(tl_line_tp3)
+
+        int _x2 = bar_index + tl_line_len      
+        int _xl = bar_index + tl_line_len + 1     
+
+        tl_line_entry := line.new(bar_index, _entry, _x2, _entry, extend=extend.none, style=line.style_dashed, color=color.new(_c_entry, 30), width=1, force_overlay=true)
+        tl_line_sl    := line.new(bar_index, _sl,    _x2, _sl,    extend=extend.none, style=line.style_dashed, color=color.new(_c_sl,    30), width=1, force_overlay=true)
+        tl_line_tp1   := line.new(bar_index, _tp1,   _x2, _tp1,   extend=extend.none, style=line.style_dashed, color=color.new(_c_tp1,   30), width=1, force_overlay=true)
+        tl_line_tp2   := line.new(bar_index, _tp2,   _x2, _tp2,   extend=extend.none, style=line.style_dashed, color=color.new(_c_tp2,   30), width=1, force_overlay=true)
+        tl_line_tp3   := line.new(bar_index, _tp3,   _x2, _tp3,   extend=extend.none, style=line.style_dashed, color=color.new(_c_tp3,   30), width=1, force_overlay=true)
+
+        tl_entry := label.new(_xl, _entry, "ENTRY " + str.tostring(_entry, format.mintick), style=label.style_label_left, color=_c_entry, textcolor=color.white, size=size.small, force_overlay=true)
+        tl_sl    := label.new(_xl, _sl,    "SL "    + str.tostring(_sl,    format.mintick), style=label.style_label_left, color=_c_sl,    textcolor=color.white, size=size.small, force_overlay=true)
+        tl_tp1   := label.new(_xl, _tp1,   "TP1 "   + str.tostring(_tp1,   format.mintick), style=label.style_label_left, color=_c_tp1,   textcolor=color.white, size=size.small, force_overlay=true)
+        tl_tp2   := label.new(_xl, _tp2,   "TP2 "   + str.tostring(_tp2,   format.mintick), style=label.style_label_left, color=_c_tp2,   textcolor=color.white, size=size.small, force_overlay=true)
+        tl_tp3   := label.new(_xl, _tp3,   "TP3 "   + str.tostring(_tp3,   format.mintick), style=label.style_label_left, color=_c_tp3,   textcolor=color.white, size=size.small, force_overlay=true)
+
+    else if bear_signal
+        float _entry = open
+        float _sl    = sr_high  + tl_sl_mult  * market_atr   
+        float _risk  = _sl      - _entry                     
+        float _tp1   = _entry   - _risk * tl_rr1              
+        float _tp2   = _entry   - _risk * tl_rr2              
+        float _tp3   = _entry - _risk * tl_rr3                                          
+
+        label.delete(tl_entry)  , line.delete(tl_line_entry)
+        label.delete(tl_sl)     , line.delete(tl_line_sl)
+        label.delete(tl_tp1)    , line.delete(tl_line_tp1)
+        label.delete(tl_tp2)    , line.delete(tl_line_tp2)
+        label.delete(tl_tp3)    , line.delete(tl_line_tp3)
+
+        int _x2 = bar_index + tl_line_len
+        int _xl = bar_index + tl_line_len + 1
+
+        tl_line_entry := line.new(bar_index, _entry, _x2, _entry, extend=extend.none, style=line.style_dashed, color=color.new(_c_entry, 30), width=1, force_overlay=true)
+        tl_line_sl    := line.new(bar_index, _sl,    _x2, _sl,    extend=extend.none, style=line.style_dashed, color=color.new(_c_sl,    30), width=1, force_overlay=true)
+        tl_line_tp1   := line.new(bar_index, _tp1,   _x2, _tp1,   extend=extend.none, style=line.style_dashed, color=color.new(_c_tp1,   30), width=1, force_overlay=true)
+        tl_line_tp2   := line.new(bar_index, _tp2,   _x2, _tp2,   extend=extend.none, style=line.style_dashed, color=color.new(_c_tp2,   30), width=1, force_overlay=true)
+        tl_line_tp3   := line.new(bar_index, _tp3,   _x2, _tp3,   extend=extend.none, style=line.style_dashed, color=color.new(_c_tp3,   30), width=1, force_overlay=true)
+
+        tl_entry := label.new(_xl, _entry, "ENTRY " + str.tostring(_entry, format.mintick), style=label.style_label_left, color=_c_entry, textcolor=color.white, size=size.small, force_overlay=true)
+        tl_sl    := label.new(_xl, _sl,    "SL "    + str.tostring(_sl,    format.mintick), style=label.style_label_left, color=_c_sl,    textcolor=color.white, size=size.small, force_overlay=true)
+        tl_tp1   := label.new(_xl, _tp1,   "TP1 "   + str.tostring(_tp1,   format.mintick), style=label.style_label_left, color=_c_tp1,   textcolor=color.white, size=size.small, force_overlay=true)
+        tl_tp2   := label.new(_xl, _tp2,   "TP2 "   + str.tostring(_tp2,   format.mintick), style=label.style_label_left, color=_c_tp2,   textcolor=color.white, size=size.small, force_overlay=true)
+        tl_tp3   := label.new(_xl, _tp3,   "TP3 "   + str.tostring(_tp3,   format.mintick), style=label.style_label_left, color=_c_tp3,   textcolor=color.white, size=size.small, force_overlay=true)
+
+// ==============================================================================
+// Alert Conditions
+// ==============================================================================
+alertcondition(alrt_cross   and bull_cross,      title="Bull Cross",      message="ATMO: Bullish Crossover Signal")
+alertcondition(alrt_cross   and bear_cross,      title="Bear Cross",      message="ATMO: Bearish Crossover Signal")
+alertcondition(alrt_sqz_break and squeeze_break, title="Squeeze Breakout",message="ATMO: Squeeze Breakout — Momentum Incoming")
+alertcondition(alrt_st_flip and st_flipped_bull, title="ST Flip Bull",    message="ATMO: Supertrend Flipped Bullish")
+alertcondition(alrt_st_flip and st_flipped_bear, title="ST Flip Bear",    message="ATMO: Supertrend Flipped Bearish")
+alertcondition(alrt_ob_os   and ob_cross,  title="OB Entry",message="ATMO: ARSI Entered Overbought Zone")
+alertcondition(alrt_ob_os   and os_cross, title="OS Entry",message="ATMO: ARSI Entered Oversold Zone")
+
+if barstate.isconfirmed and alrt_cross and bull_cross
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"bull_cross\",\"arsi\":\"{2}\",\"merged\":\"{3}\"", syminfo.tickerid, timeframe.period, str.tostring(arsi, format.mintick), str.tostring(final_merged, format.mintick)) + "}", alert.freq_once_per_bar_close)
+if barstate.isconfirmed and alrt_cross and bear_cross
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"bear_cross\",\"arsi\":\"{2}\",\"merged\":\"{3}\"", syminfo.tickerid, timeframe.period, str.tostring(arsi, format.mintick), str.tostring(final_merged, format.mintick)) + "}", alert.freq_once_per_bar_close)
+if barstate.isconfirmed and alrt_sqz_break and squeeze_break
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"squeeze_breakout\",\"price\":\"{2}\"", syminfo.tickerid, timeframe.period, str.tostring(close, format.mintick)) + "}", alert.freq_once_per_bar_close)
+if barstate.isconfirmed and alrt_st_flip and st_flipped_bull
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"st_flip_bull\",\"price\":\"{2}\"", syminfo.tickerid, timeframe.period, str.tostring(close, format.mintick)) + "}", alert.freq_once_per_bar_close)
+if barstate.isconfirmed and alrt_st_flip and st_flipped_bear
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"st_flip_bear\",\"price\":\"{2}\"", syminfo.tickerid, timeframe.period, str.tostring(close, format.mintick)) + "}", alert.freq_once_per_bar_close)
+if barstate.isconfirmed and alrt_ob_os and ob_cross
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"ob_entry\",\"arsi\":\"{2}\"", syminfo.tickerid, timeframe.period, str.tostring(arsi, format.mintick)) + "}", alert.freq_once_per_bar_close)
+if barstate.isconfirmed and alrt_ob_os and os_cross
+    alert("{" + str.format("\"ticker\":\"{0}\",\"tf\":\"{1}\",\"event\":\"os_entry\",\"arsi\":\"{2}\"", syminfo.tickerid, timeframe.period, str.tostring(arsi, format.mintick)) + "}", alert.freq_once_per_bar_close)

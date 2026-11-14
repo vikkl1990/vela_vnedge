@@ -81,7 +81,10 @@ test('catalogue links every manifest entry, retains separate verified authors an
   for (const s of manifest) {
     const row = c.scripts[s.id]; assert.ok(row, s.id); assert.equal(row.file, s.file);
     if (row.publication) assert.ok(c.publications[row.publication], s.id);
-    if (s.status !== 'removed') {
+    if (s.status === 'unavailable') {
+      assert.ok(row.publication && c.publications[row.publication].reviewBlocker, `${s.id}: unavailable source must have a dated blocker`);
+      assert.equal(c.sources[s.file], undefined, `${s.id}: unavailable is not source-reviewed`);
+    } else if (s.status !== 'removed') {
       const source = fs.readFileSync(path.join(SCRIPTS_DIR, 'pine', s.file), 'utf8');
       assert.equal(authorReview({ ...s, source, patches: [] }, {}, c).sourceStatus, 'matches', `${s.id}: reconcile source changes before claiming the old conditions still apply`);
     }

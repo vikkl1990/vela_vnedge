@@ -1,0 +1,625 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Value Area Trail [MarkitTick]", overlay = true, max_labels_count = 500, behind_chart = false)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+const int    MAX_WIN   = 500
+const int    MAX_ROWS  = 500
+const int    DASH_ROWS = 30
+const string GRP_FLT   = "🕯️ Filters"
+const string GRP_VP    = "📶 Volume Profile"
+const string GRP_TRD   = "📐 Trade Tools"
+const string GRP_VIS   = "🎨 Visuals"
+const string GRP_DASH  = "📊 Dashboard"
+const string GRP_WH    = "🔔 Alerts"
+const string GRP_COL   = "🌈 Colors"
+const string GRP_DCOL  = "🌈 Dashboard Colors"
+i_htfOn            = input.bool(false, "HTF Filter", group = GRP_FLT, tooltip = "On: the whole indicator runs on the higher timeframe, as if it were added to a chart of that timeframe · the volume profile, the trailing line, the trend, the signals, the Strength Filter, the trade levels and the dashboard all use the HTF Timeframe's bars with the same settings, so every count of bars (Window, Swing Left, Swing Right, Smoothing Length, ADX Length) counts higher timeframe bars · the trailing line and the candle colour are drawn on the chart from the higher timeframe's last closed bar · a signal appears on the first chart bar after the higher timeframe bar that confirmed it closes, with its entry at that bar's close · a target counts when a closed higher timeframe bar touches it, the stop when one closes beyond it · a timeframe equal to the chart's changes nothing · a timeframe lower than the chart's is skipped and the indicator runs on the chart timeframe · Off: the indicator runs on the chart timeframe")
+i_htfTf            = input.timeframe("240", "HTF Timeframe", group = GRP_FLT, tooltip = "Timeframe the indicator runs on while HTF Filter is on · not lower than the chart timeframe · equal to the chart timeframe is valid and changes nothing · a lower one is skipped, the indicator runs on the chart timeframe, and the dashboard says so")
+i_adxOn            = input.bool(false, "Strength Filter", group = GRP_FLT, tooltip = "On: a BULL or BEAR passes only when ADX is at or above the threshold · ADX is read on the signal bar and acted on at its confirmed close · a blocked flip still closes an open signal against it · Off: no strength check")
+i_adxMin           = input.float(20.0, "ADX Threshold", minval = 0.0, maxval = 100.0, group = GRP_FLT, tooltip = "Minimum ADX for a signal to pass · ADX at or above this value passes")
+i_adxLen           = input.int(14, "ADX Length", minval = 1, group = GRP_FLT, tooltip = "Length used to calculate ADX")
+i_smMode           = input.string("None", "Smoothing", options = ["None", "SMA", "EMA", "RMA", "WMA", "HMA"], group = GRP_FLT, tooltip = "Smooths the close that is compared with the value area and the trailing line to start and flip the trend · the profile itself is built from the raw bars · None: no smoothing")
+i_smLen            = input.int(5, "Smoothing Length", minval = 1, group = GRP_FLT, tooltip = "Length of the smoothing · ignored while Smoothing is None")
+i_window           = input.int(10, "Window (bars)", minval = 1, maxval = MAX_WIN, group = GRP_VP, tooltip = "Number of chart bars, the current one included, the rolling volume profile is built from in Fixed Bars mode. No profile, line or signal forms until the chart holds this many bars. Maximum 500.")
+i_winMode          = input.string("Fixed Bars", "Window Mode", options = ["Fixed Bars", "Swing"], group = GRP_VP, tooltip = "Fixed Bars builds the profile from the last Window (bars) bars. Swing builds it from the latest confirmed swing high or swing low, whichever is newer, through the current bar; each new confirmed swing restarts it. A swing high is a pivot high over Swing Left bars before it and Swing Right bars after it, a swing low the same for lows, so a swing is confirmed Swing Right bars after its own bar. No profile, line or signal forms before the first swing. A swing older than 500 bars is capped to the last 500 bars and the dashboard says so.")
+i_swL              = input.int(5, "Swing Left", minval = 1, maxval = 50, group = GRP_VP, tooltip = "Bars before a swing high or low that it must stand out from. Used in Swing mode only.")
+i_swR              = input.int(2, "Swing Right", minval = 1, maxval = 50, group = GRP_VP, tooltip = "Bars after a swing high or low that it must stand out from; the swing is confirmed this many bars after its own bar. Used in Swing mode only.")
+i_rows             = input.int(24, "Rows", minval = 2, maxval = MAX_ROWS, group = GRP_VP, tooltip = "Number of price rows the profile range, highest high to lowest low of the window, is split into. Each row is at least one tick tall: on a range narrower than Rows × one tick, fewer rows are used and the dashboard says so.")
+i_vaPct            = input.int(70, "Value Area %", minval = 1, maxval = 100, group = GRP_VP, tooltip = "Share of the window's volume the value area holds. It grows from the POC one row per side per step, adding the larger of the next row above and the next row below.")
+i_lockSignal       = input.bool(false, "Lock Signal", group = GRP_TRD, tooltip = "Freeze current signal · block new ones")
+i_tradeOn          = input.bool(true, "Trade Levels", group = GRP_TRD, tooltip = "On: each BULL or BEAR signal that passes the filters opens a trade with its entry at the close of the signal bar, its stop at the trailing line on that bar and three targets at the multiples of the risk below, the risk being the distance from the entry to the stop · alerts then carry the entry, the stop and the targets, and an alert is sent at each target and at the stop · a target counts on the touch, the stop when a bar closes beyond it · a signal whose stop is not on the losing side of the entry by more than one tick, or whose farthest target is not above zero, opens no trade and sends no entry alert · Off: no trade levels, and the signals and the alerts stay as they are")
+i_tp1R             = input.float(1.0, "TP1 Multiple", minval = 0.1, step = 0.1, group = GRP_TRD, tooltip = "Distance of the first target from the entry as a multiple of the risk · the three targets are sorted nearest to farthest, the nearest is TP1, and the dashboard says so when they were reordered")
+i_tp2R             = input.float(2.0, "TP2 Multiple", minval = 0.1, step = 0.1, group = GRP_TRD, tooltip = "Distance of the second target from the entry as a multiple of the risk · the three targets are sorted nearest to farthest, and the dashboard says so when they were reordered")
+i_tp3R             = input.float(3.0, "TP3 Multiple", minval = 0.1, step = 0.1, group = GRP_TRD, tooltip = "Distance of the third target from the entry as a multiple of the risk · the three targets are sorted nearest to farthest, the farthest is TP3 and closes the trade, and the dashboard says so when they were reordered")
+i_showLine         = input.bool(true, "Show Trail Line", group = GRP_VIS, tooltip = "Shows the trailing line: the value area low in an uptrend, the value area high in a downtrend. Off hides the line only; the trend, the signals and the alerts keep running.")
+i_showMarkers      = input.bool(true, "Show Signal Markers", group = GRP_VIS, tooltip = "Shows a BULL or BEAR label on each confirmed trend flip that passes the Strength filter when it is on. Off stops the labels only; the signals and the alerts keep running.")
+i_colorCandles     = input.bool(true, "Color Candles", group = GRP_VIS, tooltip = "Colours each candle's body, wicks and border in the trend colour; with no trend the chart's own candle shows. Off leaves the chart's own candles; the trend, the signals and the alerts keep running.")
+i_showLevels       = input.bool(true, "Show Trade Levels", group = GRP_VIS, tooltip = "Shows the entry, stop and target lines and labels of the last trade · Off hides the drawing only; the trade, its alerts and the dashboard keep running · Works only while Trade Levels is on")
+i_showDash         = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Shows the dashboard. While it is off, any active warning is still listed in its place.")
+i_dashPos          = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = GRP_DASH, tooltip = "Corner of the chart the dashboard sits in.")
+i_actionLong       = input.string("long", "↑ Long Action", group = GRP_WH, tooltip = "Action word sent in the webhook payload when the trend flips up and the signal passes the filters.")
+i_actionShort      = input.string("short", "↓ Short Action", group = GRP_WH, tooltip = "Action word sent in the webhook payload when the trend flips down and the signal passes the filters.")
+i_actionCloseLong  = input.string("closelong", "✕ Close Long Action", group = GRP_WH, tooltip = "Action word sent in the webhook payload when an open long signal is closed by a flip down or by the profile becoming undefined, and, while Trade Levels is on, when the last target is hit or the stop is hit on a long trade.")
+i_actionCloseShort = input.string("closeshort", "✕ Close Short Action", group = GRP_WH, tooltip = "Action word sent in the webhook payload when an open short signal is closed by a flip up or by the profile becoming undefined, and, while Trade Levels is on, when the last target is hit or the stop is hit on a short trade.")
+i_actionPartLong   = input.string("partialcloselong", "✕ Partial Close Long Action", group = GRP_WH, tooltip = "Action word sent in the webhook payload when a target other than the last one is hit on a long trade and the rest of the trade stays open.")
+i_actionPartShort  = input.string("partialcloseshort", "✕ Partial Close Short Action", group = GRP_WH, tooltip = "Action word sent in the webhook payload when a target other than the last one is hit on a short trade and the rest of the trade stays open.")
+C_SUP              = input.color(#26a69a, "Bullish", group = GRP_COL, tooltip = "Uptrend line and candles, BULL marker fill and bullish dashboard values.")
+C_RES              = input.color(#ef5350, "Bearish", group = GRP_COL, tooltip = "Downtrend line and candles, BEAR marker fill and bearish dashboard values.")
+C_MARK_TXT         = input.color(#ffffff, "Marker Text", group = GRP_COL, tooltip = "Text of the BULL and BEAR markers.")
+C_ENTRY            = input.color(#2196f3, "Entry", group = GRP_COL, tooltip = "Entry line and label of the trade, and its dashboard value.")
+C_SL               = input.color(#ef5350, "Stop", group = GRP_COL, tooltip = "Stop line and label of the trade, and its dashboard value.")
+C_TP               = input.color(#26a69a, "Targets", group = GRP_COL, tooltip = "Target lines and labels of the trade, and their dashboard values · the TP1 and TP2 lines are faded copies of this colour.")
+C_LVL_TXT          = input.color(#ffffff, "Level Text", group = GRP_COL, tooltip = "Text of the entry, stop and target labels.")
+C_DASH_BG          = input.color(color.new(#0a0f1a, 10), "Background", group = GRP_DCOL, tooltip = "Dashboard row fill; every other row shows a faded copy of it.")
+C_DASH_HDR         = input.color(color.new(#3a2a6d, 55), "Header", group = GRP_DCOL, tooltip = "Dashboard header row fill.")
+C_DASH_TXT         = input.color(#ffffff, "Text", group = GRP_DCOL, tooltip = "Dashboard text and neutral values; labels show a faded copy of it.")
+C_DASH_WARN        = input.color(color.new(#f9a825, 80), "Warning Row", group = GRP_DCOL, tooltip = "Fill of a dashboard row while it warns: partial or missing data, or a setting capped to a limit.")
+C_BAR_LO           = input.color(#7B8798, "Bar: Low End", group = GRP_DCOL, tooltip = "Colours the descriptive progress bars at 0%; the colour moves smoothly toward the high end as the percentage grows.")
+C_BAR_HI           = input.color(#CFE9FF, "Bar: High End", group = GRP_DCOL, tooltip = "Colours the descriptive progress bars at 100%; the colour moves smoothly from the low end as the percentage grows.")
+
+// ── CORE LOGIC ──────────────────────────────────────────────────
+f_esc(string s) =>
+    str.replace_all(str.replace_all(s, "\\", "\\\\"), "\"", "\\\"")
+f_pxj(float v) =>
+    na(v) ? "null" : str.format('"{0}"', str.tostring(v, format.mintick))
+f_lv(float e, float s, float a, float b, float c) =>
+    str.format(',"entry":{0},"sl":{1},"tp1":{2},"tp2":{3},"tp3":{4}', f_pxj(e), f_pxj(s), f_pxj(a), f_pxj(b), f_pxj(c))
+f_payload(string act, string dir, string trend, string why, float poc, float vah, float val, string xt) =>
+    string _inner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","trend":"{4}","reason":"{5}","poc":{6},"vah":{7},"val":{8}{9}', f_esc(act), f_esc(syminfo.tickerid), f_esc(timeframe.period), dir, trend, why, f_pxj(poc), f_pxj(vah), f_pxj(val), xt)
+    "{" + _inner + "}"
+max_bars_back(high, MAX_WIN)
+max_bars_back(low, MAX_WIN)
+max_bars_back(volume, MAX_WIN)
+bool  isStd    = chart.is_standard
+bool  swMode   = i_winMode == "Swing"
+f_core(bool conf) =>
+    float _smSma = ta.sma(close, i_smMode == "SMA" ? i_smLen : 1)
+    float _smEma = ta.ema(close, i_smLen)
+    float _smRma = ta.rma(close, i_smLen)
+    float _smWma = ta.wma(close, i_smMode == "WMA" ? i_smLen : 1)
+    float _smHma = ta.hma(close, i_smMode == "HMA" ? i_smLen : 2)
+    float _srcS = switch i_smMode
+        "SMA" => _smSma
+        "EMA" => _smEma
+        "RMA" => _smRma
+        "WMA" => _smWma
+        "HMA" => _smHma
+        => close
+    var array<float> vpProf = array.new_float(MAX_ROWS, 0.0)
+    var array<float> vpDiff = array.new_float(MAX_ROWS + 1, 0.0)
+    var float cumVol = 0.0
+    if isStd
+        cumVol += nz(volume)
+    float swPh     = ta.pivothigh(high, swMode ? i_swL : 1, swMode ? i_swR : 1)
+    float swPl     = ta.pivotlow(low, swMode ? i_swL : 1, swMode ? i_swR : 1)
+    var int swBar  = int(na)
+    if swMode and (not na(swPh) or not na(swPl))
+        swBar := bar_index - i_swR
+    int   swLen    = na(swBar) ? int(na) : bar_index - swBar + 1
+    bool  swCap    = swMode and not na(swLen) and swLen > MAX_WIN
+    int   vpWin    = swMode ? (na(swLen) ? int(na) : math.min(swLen, MAX_WIN)) : i_window
+    bool  vpFull   = swMode ? not na(vpWin) : bar_index >= i_window - 1
+    bool  vpReady  = false
+    bool  vpPosOk  = true
+    float vpHi     = na
+    float vpLo     = na
+    float vpVol    = 0.0
+    int   vpRows   = i_rows
+    float vpRowH   = na
+    float vpPoc    = na
+    float vpVah    = na
+    float vpVal    = na
+    float vpPocVol = na
+    float vpVaVol  = na
+    if isStd and vpFull
+        for j = 0 to vpWin - 1
+            float _h = high[j]
+            float _l = low[j]
+            vpHi := na(vpHi) ? _h : math.max(vpHi, _h)
+            vpLo := na(vpLo) ? _l : math.min(vpLo, _l)
+            vpVol += nz(volume[j])
+        vpPosOk := not na(vpLo) and vpLo > 0
+        if vpVol > 0 and vpPosOk and not na(vpHi)
+            float _rng = vpHi - vpLo
+            vpRows := _rng >= i_rows * syminfo.mintick ? i_rows : math.max(1, math.min(i_rows, math.floor(_rng / syminfo.mintick + 1e-6)))
+            vpRowH := _rng / vpRows
+            array.fill(vpProf, 0.0, 0, vpRows)
+            array.fill(vpDiff, 0.0, 0, vpRows + 1)
+            bool _rhPos = vpRowH > 0
+            int  _rMax  = vpRows - 1
+            for j = 0 to vpWin - 1
+                float _v = nz(volume[j])
+                if _v > 0
+                    float _h = high[j]
+                    float _l = low[j]
+                    int _a = _rhPos ? math.min(_rMax, math.max(0, math.floor((_l - vpLo) / vpRowH))) : 0
+                    int _b = _rhPos ? math.min(_rMax, math.max(0, math.floor((_h - vpLo) / vpRowH))) : 0
+                    if _a == _b or _h <= _l
+                        vpProf.set(_a, vpProf.get(_a) + _v)
+                    else
+                        float _span = _h - _l
+                        vpProf.set(_a, vpProf.get(_a) + _v * (vpLo + (_a + 1) * vpRowH - _l) / _span)
+                        vpProf.set(_b, vpProf.get(_b) + _v * (_h - (vpLo + _b * vpRowH)) / _span)
+                        if _b - _a > 1
+                            float _d = _v * vpRowH / _span
+                            vpDiff.set(_a + 1, vpDiff.get(_a + 1) + _d)
+                            vpDiff.set(_b, vpDiff.get(_b) - _d)
+            float _run  = 0.0
+            float _best = -1.0
+            int   _poc  = 0
+            float _mid  = (vpRows - 1) / 2.0
+            for k = 0 to vpRows - 1
+                _run += vpDiff.get(k)
+                float _rv = vpProf.get(k) + _run
+                vpProf.set(k, _rv)
+                if _rv > _best or (_rv == _best and math.abs(k - _mid) < math.abs(_poc - _mid))
+                    _best := _rv
+                    _poc  := k
+            float _target = vpVol * i_vaPct / 100.0
+            float _acc    = _best
+            int   _up     = _poc
+            int   _dn     = _poc
+            while _acc < _target and (_up < vpRows - 1 or _dn > 0)
+                float _vu = _up < vpRows - 1 ? vpProf.get(_up + 1) : -1.0
+                float _vd = _dn > 0 ? vpProf.get(_dn - 1) : -1.0
+                bool _takeUp = _vu > _vd ? true : _vd > _vu ? false : (_up + 1 - _poc) <= (_poc - _dn + 1)
+                if _takeUp
+                    _up  += 1
+                    _acc += _vu
+                else
+                    _dn  -= 1
+                    _acc += _vd
+            vpVah    := vpLo + (_up + 1) * vpRowH
+            vpVal    := vpLo + _dn * vpRowH
+            vpPoc    := vpLo + (_poc + 0.5) * vpRowH
+            vpPocVol := _best
+            vpVaVol  := _acc
+            vpReady  := true
+    var int   trDir  = 0
+    var float trLine = float(na)
+    bool flipUp    = false
+    bool flipDn    = false
+    bool lostTrend = false
+    if vpReady
+        if trDir == 1
+            trLine := math.max(trLine, vpVal)
+            if conf and _srcS < trLine
+                trDir  := -1
+                trLine := vpVah
+                flipDn := true
+        else if trDir == -1
+            trLine := math.min(trLine, vpVah)
+            if conf and _srcS > trLine
+                trDir  := 1
+                trLine := vpVal
+                flipUp := true
+        else if conf
+            if _srcS > vpVah
+                trDir  := 1
+                trLine := vpVal
+                flipUp := true
+            else if _srcS < vpVal
+                trDir  := -1
+                trLine := vpVah
+                flipDn := true
+    else if trDir != 0 and conf
+        trDir     := 0
+        trLine    := na
+        lostTrend := true
+    [vpFull, vpWin, swCap, vpReady, vpPosOk, vpHi, vpLo, vpVol, vpRows, vpPoc, vpVah, vpVal, vpPocVol, vpVaVol, trDir, trLine, flipUp, flipDn, lostTrend, cumVol]
+f_htfPack() =>
+    [_h1, _h2, _h3, _h4, _h5, _h6, _h7, _h8, _h9, _h10, _h11, _h12, _h13, _h14, _h15, _h16, _h17, _h18, _h19, _h20] = f_core(true)
+    [_pDiP, _pDiM, _pAdx] = ta.dmi(i_adxLen, i_adxLen)
+    [_h1[1], _h2[1], _h3[1], _h4[1], _h5[1], _h6[1], _h7[1], _h8[1], _h9[1], _h10[1], _h11[1], _h12[1], _h13[1], _h14[1], _h15[1], _h16[1], _h17[1], _h18[1], _h19[1], _h20[1], _pAdx[1], high[1], low[1], close[1], bar_index[1]]
+[cFull, cWin, cCap, cReady, cPosOk, cHi, cLo, cVol, cRows, cPoc, cVah, cVal, cPocVol, cVaVol, cDir, cLine, cFlipUp, cFlipDn, cLost, cCum] = f_core(barstate.isconfirmed)
+var int _htfSec   = timeframe.in_seconds(i_htfTf)
+var int _chartSec = timeframe.in_seconds()
+bool _htfSkip = i_htfOn and _htfSec < _chartSec
+bool _htfRun  = i_htfOn and isStd and _htfSec > _chartSec
+[_diP, _diM, _adxC] = ta.dmi(i_adxLen, i_adxLen)
+[vpFull, vpWin, swCap, vpReady, vpPosOk, vpHi, vpLo, vpVol, vpRows, vpPoc, vpVah, vpVal, vpPocVol, vpVaVol, trDir, trLine, flipUp, flipDn, lostTrend, cumVol, _adxV, _eH, _eL, _eC, _eIdx] = if _htfRun
+    [_q1, _q2, _q3, _q4, _q5, _q6, _q7, _q8, _q9, _q10, _q11, _q12, _q13, _q14, _q15, _q16, _q17, _q18, _q19, _q20, _q21, _q22, _q23, _q24, _q25] = request.security(syminfo.tickerid, i_htfTf, f_htfPack(), lookahead = barmerge.lookahead_on)
+    [_q1, _q2, _q3, _q4, _q5, _q6, _q7, _q8, _q9, _q10, _q11, _q12, _q13, _q14, _q15, _q16, _q17, _q18, _q19, _q20, _q21, _q22, _q23, _q24, _q25]
+else
+    [cFull, cWin, cCap, cReady, cPosOk, cHi, cLo, cVol, cRows, cPoc, cVah, cVal, cPocVol, cVaVol, cDir, cLine, cFlipUp, cFlipDn, cLost, cCum, _adxC, high, low, close, bar_index]
+int  _eChg  = ta.change(_eIdx)
+bool _eNew  = not _htfRun or _eChg != 0
+bool _eConf = barstate.isconfirmed or _htfRun
+bool _strPass = not na(_adxV) and _adxV >= i_adxMin
+bool _okLong  = not i_adxOn or _strPass
+bool _okShort = not i_adxOn or _strPass
+var int  tdDir    = int(na)
+var int  tdBar    = int(na)
+var bool tdActive = false
+bool   sigLong       = false
+bool   sigShort      = false
+bool   sigCloseLong  = false
+bool   sigCloseShort = false
+string closeWhy      = "reversal"
+bool _locked = i_lockSignal and barstate.islast
+if (flipUp or flipDn or lostTrend) and not _locked and _eNew
+    bool _wasLong  = tdActive and tdDir == 1
+    bool _wasShort = tdActive and tdDir == -1
+    if flipUp
+        sigCloseShort := _wasShort
+        if _okLong
+            sigLong  := true
+            tdDir    := 1
+            tdBar    := _eIdx
+            tdActive := true
+            if i_showMarkers
+                label.new(bar_index, low, "BULL", xloc = xloc.bar_index, yloc = yloc.belowbar, color = C_SUP, style = label.style_label_up, textcolor = C_MARK_TXT, size = size.small)
+        else if _wasShort
+            tdActive := false
+    else if flipDn
+        sigCloseLong := _wasLong
+        if _okShort
+            sigShort := true
+            tdDir    := -1
+            tdBar    := _eIdx
+            tdActive := true
+            if i_showMarkers
+                label.new(bar_index, high, "BEAR", xloc = xloc.bar_index, yloc = yloc.abovebar, color = C_RES, style = label.style_label_down, textcolor = C_MARK_TXT, size = size.small)
+        else if _wasLong
+            tdActive := false
+    else
+        sigCloseLong  := _wasLong
+        sigCloseShort := _wasShort
+        closeWhy      := "profile_undefined"
+        tdActive      := false
+
+var int   tlSide     = 0
+var int   tlBar      = int(na)
+var float tlEntry    = float(na)
+var float tlSl       = float(na)
+var float tlTp1      = float(na)
+var float tlTp2      = float(na)
+var float tlTp3      = float(na)
+var int   tlOw1      = 1
+var int   tlOw2      = 2
+var int   tlOw3      = 3
+var bool  tlTp1Hit   = false
+var bool  tlTp2Hit   = false
+var bool  tlTp3Hit   = false
+var bool  tlSlHit    = false
+var bool  tlInv      = false
+var int   tlCloseBar = int(na)
+var line  tlSlLn     = na
+var line  tlEnLn     = na
+var line  tlT1Ln     = na
+var line  tlT2Ln     = na
+var line  tlT3Ln     = na
+var label tlSlLb     = na
+var label tlEnLb     = na
+var label tlT1Lb     = na
+var label tlT2Lb     = na
+var label tlT3Lb     = na
+f_pct(float lvl, float entry, bool isL) =>
+    float _p = (isL ? lvl - entry : entry - lvl) / entry * 100
+    (_p >= 0 ? "+" : "") + str.tostring(_p, "0.00") + "%"
+f_tlNm(int o) =>
+    string _s = o == 0 ? "Entry" : "TP" + str.tostring(o)
+    if o < 1 and tlOw1 == o
+        _s += " / TP1"
+    if o < 2 and tlOw2 == o
+        _s += " / TP2"
+    if o < 3 and tlOw3 == o
+        _s += " / TP3"
+    _s
+f_tlLb(int o) =>
+    o == 0 ? tlEnLb : o == 1 ? tlT1Lb : o == 2 ? tlT2Lb : tlT3Lb
+f_tlDel() =>
+    line.delete(tlSlLn)
+    line.delete(tlEnLn)
+    line.delete(tlT1Ln)
+    line.delete(tlT2Ln)
+    line.delete(tlT3Ln)
+    label.delete(tlSlLb)
+    label.delete(tlEnLb)
+    label.delete(tlT1Lb)
+    label.delete(tlT2Lb)
+    label.delete(tlT3Lb)
+var float tlR1    = math.min(i_tp1R, math.min(i_tp2R, i_tp3R))
+var float tlR3    = math.max(i_tp1R, math.max(i_tp2R, i_tp3R))
+var float tlR2    = math.max(math.min(i_tp1R, i_tp2R), math.min(math.max(i_tp1R, i_tp2R), i_tp3R))
+var bool  tlReord = i_tp1R != tlR1 or i_tp2R != tlR2 or i_tp3R != tlR3
+bool  tlTp1Now = false
+bool  tlTp2Now = false
+bool  tlTp3Now = false
+bool  tlSlNow  = false
+if i_tradeOn and tlSide != 0 and not (tlSlHit or tlTp3Hit or tlInv) and bar_index > tlBar and _eNew
+    bool _isL = tlSide == 1
+    bool _c1  = _isL ? _eH >= tlTp1 : _eL <= tlTp1
+    bool _c2  = _isL ? _eH >= tlTp2 : _eL <= tlTp2
+    bool _c3  = _isL ? _eH >= tlTp3 : _eL <= tlTp3
+    bool _cs  = _eConf and (_isL ? _eC < tlSl : _eC > tlSl)
+    if _c1 and not tlTp1Hit
+        tlTp1Hit := true
+        tlTp1Now := true
+        if not na(f_tlLb(tlOw1))
+            label.set_text(f_tlLb(tlOw1), f_tlNm(tlOw1) + " ✓ HIT " + f_pct(tlTp1, tlEntry, _isL))
+    if _c2 and not tlTp2Hit
+        tlTp2Hit := true
+        tlTp2Now := true
+        if not na(f_tlLb(tlOw2))
+            label.set_text(f_tlLb(tlOw2), f_tlNm(tlOw2) + " ✓ HIT " + f_pct(tlTp2, tlEntry, _isL))
+    if _c3 and not tlTp3Hit
+        tlTp3Hit := true
+        tlTp3Now := true
+        if not na(f_tlLb(tlOw3))
+            label.set_text(f_tlLb(tlOw3), f_tlNm(tlOw3) + " ✓ HIT " + f_pct(tlTp3, tlEntry, _isL))
+    if _cs and not tlTp3Hit
+        tlSlHit := true
+        tlSlNow := true
+        if not na(tlSlLb)
+            label.set_text(tlSlLb, "SL ✓ HIT " + f_pct(_eC, tlEntry, _isL))
+int    tlSidePrev = tlSide
+string tlTxtPrev  = tlSide != 0 and (sigCloseLong or sigCloseShort or tlTp1Now or tlTp2Now or tlTp3Now or tlSlNow) ? f_lv(tlEntry, tlSl, tlTp1, tlTp2, tlTp3) : ""
+bool alLong       = sigLong
+bool alShort      = sigShort
+bool alCloseLong  = sigCloseLong
+bool alCloseShort = sigCloseShort
+if i_tradeOn
+    bool _open = tlSide != 0 and not (tlSlHit or tlTp3Hit or tlInv)
+    alCloseLong  := sigCloseLong and _open and tlSide == 1
+    alCloseShort := sigCloseShort and _open and tlSide == -1
+    alLong       := false
+    alShort      := false
+    if alCloseLong or alCloseShort
+        tlInv := true
+    if sigLong or sigShort
+        bool  _isL = sigLong
+        bool  _blk = (tlSlNow or tlTp3Now) and tlSidePrev == (_isL ? 1 : -1)
+        float _en  = _eC
+        float _sl  = trLine
+        float _rk  = _isL ? _en - _sl : _sl - _en
+        float _t1  = _isL ? _en + _rk * tlR1 : _en - _rk * tlR1
+        float _t2  = _isL ? _en + _rk * tlR2 : _en - _rk * tlR2
+        float _t3  = _isL ? _en + _rk * tlR3 : _en - _rk * tlR3
+        bool  _ok  = not _blk and not na(_sl) and _sl > 0 and _rk > syminfo.mintick and _t3 > 0
+        if _ok
+            alLong     := _isL
+            alShort    := not _isL
+            f_tlDel()
+            tlSide     := _isL ? 1 : -1
+            tlBar      := bar_index
+            tlEntry    := _en
+            tlSl       := _sl
+            tlTp1      := _t1
+            tlTp2      := _t2
+            tlTp3      := _t3
+            tlTp1Hit   := false
+            tlTp2Hit   := false
+            tlTp3Hit   := false
+            tlSlHit    := false
+            tlInv      := false
+            tlCloseBar := int(na)
+            tlOw1      := math.round_to_mintick(_t1) == math.round_to_mintick(_en) ? 0 : 1
+            tlOw2      := math.round_to_mintick(_t2) == math.round_to_mintick(_t1) ? tlOw1 : 2
+            tlOw3      := math.round_to_mintick(_t3) == math.round_to_mintick(_t2) ? tlOw2 : 3
+            tlSlLn     := i_showLevels ? line.new(bar_index, _sl, bar_index + 1, _sl, color = C_SL, style = line.style_solid, width = 2) : na
+            tlEnLn     := i_showLevels ? line.new(bar_index, _en, bar_index + 1, _en, color = C_ENTRY, style = line.style_dashed, width = 1) : na
+            tlT1Ln     := i_showLevels ? line.new(bar_index, _t1, bar_index + 1, _t1, color = color.new(C_TP, 40), style = line.style_dashed, width = 1) : na
+            tlT2Ln     := i_showLevels ? line.new(bar_index, _t2, bar_index + 1, _t2, color = color.new(C_TP, 20), style = line.style_dashed, width = 1) : na
+            tlT3Ln     := i_showLevels ? line.new(bar_index, _t3, bar_index + 1, _t3, color = color.new(C_TP, 0), style = line.style_dashed, width = 1) : na
+            tlSlLb     := i_showLevels ? label.new(bar_index, _sl, "✕ SL " + str.tostring(_sl, format.mintick), style = label.style_label_left, color = color.new(C_SL, 0), textcolor = C_LVL_TXT, size = size.small) : na
+            tlEnLb     := i_showLevels ? label.new(bar_index, _en, "▶ " + f_tlNm(0) + " " + str.tostring(_en, format.mintick), style = label.style_label_left, color = color.new(C_ENTRY, 0), textcolor = C_LVL_TXT, size = size.small) : na
+            tlT1Lb     := i_showLevels and tlOw1 == 1 ? label.new(bar_index, _t1, "◆ " + f_tlNm(1) + " " + str.tostring(_t1, format.mintick), style = label.style_label_left, color = color.new(C_TP, 0), textcolor = C_LVL_TXT, size = size.small) : na
+            tlT2Lb     := i_showLevels and tlOw2 == 2 ? label.new(bar_index, _t2, "✦ " + f_tlNm(2) + " " + str.tostring(_t2, format.mintick), style = label.style_label_left, color = color.new(C_TP, 0), textcolor = C_LVL_TXT, size = size.small) : na
+            tlT3Lb     := i_showLevels and tlOw3 == 3 ? label.new(bar_index, _t3, "◆ " + f_tlNm(3) + " " + str.tostring(_t3, format.mintick), style = label.style_label_left, color = color.new(C_TP, 0), textcolor = C_LVL_TXT, size = size.small) : na
+string tlTxtNow = tlSide != 0 and (alLong or alShort) ? f_lv(tlEntry, tlSl, tlTp1, tlTp2, tlTp3) : ""
+bool tlClosed = tlSide != 0 and (tlSlHit or tlTp3Hit or tlInv)
+if tlClosed and na(tlCloseBar)
+    tlCloseBar := bar_index
+bool _tlExt = tlClosed ? tlCloseBar == bar_index : barstate.islast
+if tlSide != 0 and _tlExt and not na(tlSlLn)
+    int _tlX = tlClosed ? tlCloseBar + 10 : last_bar_index + 10
+    line.set_x2(tlSlLn, _tlX)
+    line.set_x2(tlEnLn, _tlX)
+    line.set_x2(tlT1Ln, _tlX)
+    line.set_x2(tlT2Ln, _tlX)
+    line.set_x2(tlT3Ln, _tlX)
+    label.set_x(tlSlLb, _tlX)
+    label.set_x(tlEnLb, _tlX)
+    if not na(tlT1Lb)
+        label.set_x(tlT1Lb, _tlX)
+    if not na(tlT2Lb)
+        label.set_x(tlT2Lb, _tlX)
+    if not na(tlT3Lb)
+        label.set_x(tlT3Lb, _tlX)
+
+// ── ALERTS ──────────────────────────────────────────────────────
+string trTxt = trDir == 1 ? "up" : trDir == -1 ? "down" : "none"
+if alLong and barstate.isconfirmed
+    alert(f_payload(i_actionLong, "long", trTxt, "trend_flip", vpPoc, vpVah, vpVal, tlTxtNow), alert.freq_once_per_bar_close)
+if alShort and barstate.isconfirmed
+    alert(f_payload(i_actionShort, "short", trTxt, "trend_flip", vpPoc, vpVah, vpVal, tlTxtNow), alert.freq_once_per_bar_close)
+if alCloseLong and barstate.isconfirmed
+    alert(f_payload(i_actionCloseLong, "long", trTxt, closeWhy, vpPoc, vpVah, vpVal, tlTxtPrev), alert.freq_once_per_bar_close)
+if alCloseShort and barstate.isconfirmed
+    alert(f_payload(i_actionCloseShort, "short", trTxt, closeWhy, vpPoc, vpVah, vpVal, tlTxtPrev), alert.freq_once_per_bar_close)
+string tlDirP  = tlSidePrev == 1 ? "long" : "short"
+string tlPartP = tlSidePrev == 1 ? i_actionPartLong : i_actionPartShort
+string tlClsP  = tlSidePrev == 1 ? i_actionCloseLong : i_actionCloseShort
+if tlTp1Now
+    alert(f_payload(tlPartP, tlDirP, trTxt, "tp1_hit", vpPoc, vpVah, vpVal, tlTxtPrev), alert.freq_once_per_bar)
+if tlTp2Now
+    alert(f_payload(tlPartP, tlDirP, trTxt, "tp2_hit", vpPoc, vpVah, vpVal, tlTxtPrev), alert.freq_once_per_bar)
+if tlTp3Now
+    alert(f_payload(tlClsP, tlDirP, trTxt, "tp3_hit", vpPoc, vpVah, vpVal, tlTxtPrev), alert.freq_once_per_bar)
+if tlSlNow
+    alert(f_payload(tlClsP, tlDirP, trTxt, "stop_hit", vpPoc, vpVah, vpVal, tlTxtPrev), alert.freq_once_per_bar_close)
+alertcondition(alLong and barstate.isconfirmed, "BUY Signal", "MarkitTick — BUY Signal Fired")
+alertcondition(alShort and barstate.isconfirmed, "SELL Signal", "MarkitTick — SELL Signal Fired")
+alertcondition(alCloseLong and barstate.isconfirmed, "Close Long Signal", "MarkitTick — Close Long")
+alertcondition(alCloseShort and barstate.isconfirmed, "Close Short Signal", "MarkitTick — Close Short")
+alertcondition(tlTp1Now, "TP1 Hit", "MarkitTick — TP1 Hit")
+alertcondition(tlTp2Now, "TP2 Hit", "MarkitTick — TP2 Hit")
+alertcondition(tlTp3Now, "TP3 Hit", "MarkitTick — TP3 Hit")
+alertcondition(tlSlNow, "SL Hit", "MarkitTick — SL Hit")
+
+// ── VISUALS ─────────────────────────────────────────────────────
+plot(vpReady and trDir == 1 ? trLine : na, "Trail Line Up", color = i_showLine ? C_SUP : na, linewidth = 2, style = plot.style_linebr, display = display.all - display.pine_screener)
+plot(vpReady and trDir == -1 ? trLine : na, "Trail Line Down", color = i_showLine ? C_RES : na, linewidth = 2, style = plot.style_linebr, display = display.all - display.pine_screener)
+color candleC = i_colorCandles and vpReady ? (trDir == 1 ? C_SUP : trDir == -1 ? C_RES : na) : na
+plotcandle(open, high, low, close, title = "Trend Candles", color = candleC, wickcolor = candleC, bordercolor = candleC, display = display.all - display.pine_screener)
+
+// ── DASHBOARD ───────────────────────────────────────────────────
+f_pos(string p) =>
+    p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : position.top_right
+f_tf(string p) =>
+    string _n = str.replace_all(str.replace_all(str.replace_all(str.replace_all(str.replace_all(p, "T", ""), "S", ""), "D", ""), "W", ""), "M", "")
+    int _q = _n == "" ? 1 : int(str.tonumber(_n))
+    str.contains(p, "T") ? str.tostring(_q) + "t" : str.contains(p, "S") ? str.tostring(_q) + "s" : str.contains(p, "D") ? str.tostring(_q) + "D" : str.contains(p, "W") ? str.tostring(_q) + "W" : str.contains(p, "M") ? str.tostring(_q) + "M" : _q % 60 == 0 ? str.tostring(int(_q / 60)) + "H" : str.tostring(_q) + "m"
+f_abbr(float v) =>
+    string _s = "—"
+    if not na(v)
+        float  _a  = math.abs(v)
+        string _sg = v < 0 ? "-" : ""
+        float  _r  = math.round(_a, 2)
+        if _r < 1000
+            _s := _sg + str.tostring(_r, "0.##")
+        else
+            float _k = math.round(_a / 1e3, 1)
+            if _k < 1000
+                _s := _sg + str.tostring(_k, "0.#") + "K"
+            else
+                float _m = math.round(_a / 1e6, 1)
+                if _m < 1000
+                    _s := _sg + str.tostring(_m, "0.#") + "M"
+                else
+                    _s := _sg + str.tostring(math.round(_a / 1e9, 1), "0.#") + "B"
+    _s
+f_bar(float pct01) =>
+    int    _filled = math.round(pct01 * 10)
+    string _bar    = ""
+    for i = 1 to 10
+        _bar += i <= _filled ? "█" : "░"
+    _bar + "  " + str.tostring(math.round(pct01 * 100)) + "%"
+f_cell2(table t, int r, string lbl, string val, color vc, color bg, string tip) =>
+    table.cell(t, 0, r, lbl, text_color = color.new(C_DASH_TXT, 25), text_halign = text.align_left, text_size = size.small, bgcolor = bg, tooltip = tip)
+    table.cell(t, 1, r, val + "  ", text_color = vc, text_halign = text.align_right, text_size = size.small, bgcolor = bg, tooltip = tip)
+var table ntcTbl = na
+if barstate.islast and not isStd
+    if na(ntcTbl)
+        ntcTbl := table.new(position.middle_center, 1, 2, force_overlay = true)
+    table.cell(ntcTbl, 0, 0, "This indicator runs only on standard charts.", text_color = #FF0000, text_size = size.large, bgcolor = #2A2E39, text_formatting = text.format_bold)
+    table.cell(ntcTbl, 0, 1, "Heikin Ashi, Renko, Kagi, Point & Figure, Range and Line Break\nshow synthetic prices. Switch to Candles.", text_color = #FF0000, text_size = size.normal, bgcolor = #2A2E39, text_formatting = text.format_bold)
+var table dash = table.new(f_pos(i_dashPos), 2, DASH_ROWS, border_width = 1, border_color = color.new(#2a3040, 40), frame_width = 1, frame_color = color.new(#3a2a6d, 40))
+if barstate.islast and isStd
+    string _tk    = syminfo.volumetype == "tick" ? " Built on tick volume: the feed counts trades, not units traded." : ""
+    bool   _warm  = not vpFull
+    bool   _noRep = vpFull and cumVol <= 0
+    bool   _noWin = vpFull and not _noRep and vpVol <= 0
+    bool   _negPx = vpFull and vpVol > 0 and not vpPosOk
+    bool   _cap   = vpReady and vpRows < i_rows
+    color  _rowA  = C_DASH_BG
+    color  _rowB  = color.new(C_DASH_BG, 40)
+    string _rowsT = _cap ? str.tostring(vpRows) + " of " + str.tostring(i_rows) + " (capped)" : str.tostring(i_rows)
+    string _winT  = swMode ? (na(vpWin) ? "—" : str.tostring(vpWin) + " bars · swing" + (swCap ? " (capped)" : "")) : str.tostring(i_window) + " bars"
+    string _bw    = _htfRun ? "Higher timeframe bars" : "Chart bars"
+    string _winP  = swMode ? _bw + " the profile is built from: from the latest confirmed swing high or low through the current bar. A swing older than " + str.tostring(MAX_WIN) + " bars is capped to the last " + str.tostring(MAX_WIN) + " bars, shown as capped in the warning fill." : _bw + " the profile is built from, the current one included."
+    bool   _swCp  = vpReady and swCap
+    string _cpT   = _swCp ? " (capped)" : ""
+    string _htfT  = _htfSkip ? "Skipped · below chart" : _htfRun ? f_tf(i_htfTf) : "Same as chart"
+    string _htfP  = "Timeframe the whole indicator runs on while HTF Filter is on · the profile, the trend, the signals, the Strength Filter, the trade levels and every value in this dashboard are those of the higher timeframe's last closed bar · equal to the chart timeframe changes nothing · a timeframe lower than the chart's is skipped, the indicator runs on the chart timeframe, and the row shows in the warning fill"
+    string _rowsP = "Price rows of the profile. Each row is at least one tick tall: on a range narrower than Rows × one tick, fewer rows are used and this row shows the rows applied against the rows requested, marked (capped), in the warning fill."
+    string _tlRoP = "The three target multiples were not in increasing order and were sorted: the nearest is TP1 and the farthest is TP3."
+    int r = 0
+    if i_showDash
+        color  _trC  = trDir == 1 ? C_SUP : trDir == -1 ? C_RES : C_DASH_TXT
+        color  _sgC  = na(tdDir) ? C_DASH_TXT : tdDir == 1 ? C_SUP : C_RES
+        float  _vaP  = vpReady and vpVol > 0 ? math.min(math.max(vpVaVol / vpVol, 0.0), 1.0) : na
+        string _trT  = not vpReady or trDir == 0 ? "—" : trDir == 1 ? "Up" : "Down"
+        string _lnT  = vpReady and trDir != 0 ? str.tostring(trLine, format.mintick) : "—"
+        string _sgT  = na(tdDir) ? "—" : tdDir == 1 ? "BULL" : "BEAR"
+        string _stT  = na(tdDir) ? "—" : tdActive ? "Active" : "Closed"
+        string _bsT  = na(tdBar) ? "—" : str.tostring(_eIdx - tdBar)
+        string _wvT  = vpFull and cumVol > 0 ? f_abbr(vpVol) : "—"
+        table.cell(dash, 0, 0, "VAT", text_color = C_DASH_TXT, text_halign = text.align_left, text_size = size.small, bgcolor = C_DASH_HDR)
+        table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + f_tf(_htfRun ? i_htfTf : timeframe.period), text_color = C_DASH_TXT, text_halign = text.align_right, text_size = size.small, bgcolor = C_DASH_HDR)
+        r := 1
+        f_cell2(dash, r, "  Lock", i_lockSignal ? "ACTIVE" : "OFF", i_lockSignal ? C_RES : C_DASH_TXT, r % 2 == 1 ? _rowA : _rowB, "While on, a new signal on the chart's last bar draws no marker and sends no alert; the current signal stays frozen.")
+        r += 1
+        if i_htfOn
+            f_cell2(dash, r, "  HTF", _htfT, C_DASH_TXT, _htfSkip ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, _htfP)
+            r += 1
+        if i_adxOn
+            f_cell2(dash, r, "  Strength", f_abbr(_adxV), na(_adxV) ? C_DASH_TXT : _strPass ? C_BAR_HI : C_BAR_LO, r % 2 == 1 ? _rowA : _rowB, "ADX at the last bar · a signal passes at or above the ADX Threshold of " + str.tostring(i_adxMin) + " · while ADX is still undefined on the first bars it shows — and no signal passes.")
+            r += 1
+        if i_smMode != "None"
+            f_cell2(dash, r, "  Smoothing", i_smMode + " " + str.tostring(i_smLen), C_DASH_TXT, r % 2 == 1 ? _rowA : _rowB, "Smooths the close that is compared with the value area and the trailing line; the profile itself is built from the raw bars · while the smoothed close is still undefined on the first bars, no trend starts or flips.")
+            r += 1
+        f_cell2(dash, r, "  Trend", _trT, _trC, r % 2 == 1 ? _rowA : _rowB, "Live trend of the trailing line. Needs " + (swMode ? "a confirmed swing" : str.tostring(i_window) + " bars") + " to form the profile, then a confirmed close beyond the value area to start the first trend; the em dash shows until then." + _tk)
+        r += 1
+        f_cell2(dash, r, "  Trail Line", _lnT, _trC, r % 2 == 1 ? _rowA : _rowB, "Value area low in an uptrend, rising only; value area high in a downtrend, falling only. A confirmed close beyond it flips the trend." + _tk)
+        r += 1
+        f_cell2(dash, r, "  Last Signal", _sgT, _sgC, r % 2 == 1 ? _rowA : _rowB, "Last signal shown on the chart. Only the newest 500 markers stay on the chart; the platform removes older ones." + _tk)
+        r += 1
+        f_cell2(dash, r, "  Signal Status", _stT, C_DASH_TXT, r % 2 == 1 ? _rowA : _rowB, "Active while the last signal is open; Closed once the profile became undefined while it was open, or once the trend flipped against it while a filter blocked the opposite signal.")
+        r += 1
+        f_cell2(dash, r, "  Bars Since Signal", _bsT, C_DASH_TXT, r % 2 == 1 ? _rowA : _rowB, "Bars since the last signal was registered.")
+        r += 1
+        if i_tradeOn
+            f_cell2(dash, r, "  Entry", tlSide == 0 ? "—" : str.tostring(tlEntry, format.mintick), tlSide == 0 ? C_DASH_TXT : C_ENTRY, r % 2 == 1 ? _rowA : _rowB, "Entry of the last trade: the close of its signal bar.")
+            r += 1
+            f_cell2(dash, r, "  Stop", tlSide == 0 ? "—" : str.tostring(tlSl, format.mintick), tlSide == 0 ? C_DASH_TXT : C_SL, r % 2 == 1 ? _rowA : _rowB, "Stop of the last trade: the trailing line on its signal bar. It counts when a bar closes beyond it." + _tk)
+            r += 1
+            f_cell2(dash, r, "  TP1", tlSide == 0 ? "—" : str.tostring(tlTp1, format.mintick), tlSide == 0 ? C_DASH_TXT : C_TP, r % 2 == 1 ? _rowA : _rowB, "First target of the last trade. A target counts on the touch." + _tk)
+            r += 1
+            f_cell2(dash, r, "  TP2", tlSide == 0 ? "—" : str.tostring(tlTp2, format.mintick), tlSide == 0 ? C_DASH_TXT : C_TP, r % 2 == 1 ? _rowA : _rowB, "Second target of the last trade. A target counts on the touch." + _tk)
+            r += 1
+            f_cell2(dash, r, "  TP3", tlSide == 0 ? "—" : str.tostring(tlTp3, format.mintick), tlSide == 0 ? C_DASH_TXT : C_TP, r % 2 == 1 ? _rowA : _rowB, "Third target of the last trade; it closes the trade. A target counts on the touch." + _tk)
+            r += 1
+            if tlReord
+                f_cell2(dash, r, "  Targets", "Reordered", C_DASH_TXT, C_DASH_WARN, _tlRoP)
+                r += 1
+        f_cell2(dash, r, "  POC", vpReady ? str.tostring(vpPoc, format.mintick) + _cpT : "—", C_DASH_TXT, _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Middle of the profile row holding the most volume; on equal rows, the row nearest the middle of the range, the lower one if equally near." + _tk)
+        r += 1
+        f_cell2(dash, r, "  VAH", vpReady ? str.tostring(vpVah, format.mintick) + _cpT : "—", C_DASH_TXT, _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Top of the value area." + _tk)
+        r += 1
+        f_cell2(dash, r, "  VAL", vpReady ? str.tostring(vpVal, format.mintick) + _cpT : "—", C_DASH_TXT, _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Bottom of the value area." + _tk)
+        r += 1
+        f_cell2(dash, r, "  VA Share", na(_vaP) ? "—" : f_bar(_vaP) + _cpT, na(_vaP) ? C_DASH_TXT : color.from_gradient(math.round(_vaP * 100), 0, 100, C_BAR_LO, C_BAR_HI), _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Share of the window's volume the value area actually holds; it reaches at least the Value Area % setting, more where the last row added overshoots it." + _tk)
+        r += 1
+        f_cell2(dash, r, "  Profile High", vpReady ? str.tostring(vpHi, format.mintick) + _cpT : "—", C_DASH_TXT, _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Highest high of the window.")
+        r += 1
+        f_cell2(dash, r, "  Profile Low", vpReady ? str.tostring(vpLo, format.mintick) + _cpT : "—", C_DASH_TXT, _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Lowest low of the window.")
+        r += 1
+        f_cell2(dash, r, "  Rows", _rowsT, C_DASH_TXT, _cap ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, _rowsP)
+        r += 1
+        f_cell2(dash, r, "  Window", _winT, C_DASH_TXT, swCap ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, _winP)
+        r += 1
+        f_cell2(dash, r, "  Window Volume", _wvT + _cpT, C_DASH_TXT, _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Total volume of the window's bars." + _tk)
+        r += 1
+        f_cell2(dash, r, "  POC Volume", vpReady ? f_abbr(vpPocVol) + _cpT : "—", C_DASH_TXT, _swCp ? C_DASH_WARN : r % 2 == 1 ? _rowA : _rowB, "Volume in the POC row." + _tk)
+        r += 1
+    else if _cap
+        f_cell2(dash, r, "  Rows", _rowsT, C_DASH_TXT, C_DASH_WARN, _rowsP)
+        r += 1
+    if not i_showDash and swCap
+        f_cell2(dash, r, "  Window", _winT, C_DASH_TXT, C_DASH_WARN, _winP)
+        r += 1
+    if not i_showDash and _htfSkip
+        f_cell2(dash, r, "  HTF", _htfT, C_DASH_TXT, C_DASH_WARN, _htfP)
+        r += 1
+    if not i_showDash and i_tradeOn and tlReord
+        f_cell2(dash, r, "  Targets", "Reordered", C_DASH_TXT, C_DASH_WARN, _tlRoP)
+        r += 1
+    if _warm
+        f_cell2(dash, r, "  Profile", swMode ? "Waiting · first swing" : "Building · " + str.tostring(_eIdx + 1) + " / " + str.tostring(i_window) + " bars", C_DASH_TXT, C_DASH_WARN, swMode ? "The profile starts at the first confirmed swing high or low; no line, trend or signal forms before it does." : "The profile needs " + str.tostring(i_window) + " bars of history; no line, trend or signal forms before it does.")
+        r += 1
+    if _noRep
+        f_cell2(dash, r, "  Volume", "Not reported", C_DASH_TXT, C_DASH_WARN, "This symbol reports no volume, so no profile, line or signal can form on it.")
+        r += 1
+    if _noWin
+        f_cell2(dash, r, "  Volume", "None in window", C_DASH_TXT, C_DASH_WARN, "No bar in the window carries volume, so the profile, the line and the signals are undefined until volume returns.")
+        r += 1
+    if _negPx
+        f_cell2(dash, r, "  Profile", "Skipped · price at or below zero", C_DASH_TXT, C_DASH_WARN, "The window holds a price at or below zero, which is not a level; no profile, line or signal forms until it leaves the window.")
+        r += 1
+    if r < DASH_ROWS
+        table.clear(dash, 0, r, 1, DASH_ROWS - 1)

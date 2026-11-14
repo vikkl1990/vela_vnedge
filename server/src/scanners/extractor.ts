@@ -13,6 +13,7 @@ import { WILLY_HTF_MARKET, readWillyHtfAlert } from './willyHtf.ts';
 import { NOT_AN_ENTRY, READER_FIXES, closesSide, reversalClosed, labelStyleSide, type LabelStyleSides } from './readerFixes.ts';
 import {plotLifecycle} from './plotLifecycle.ts';
 import { readWillyNative } from './willyNative.ts';
+import {MARKITTICK_NATIVE,readMarkitTick} from './markitTick.ts';
 
 export type Side = 'long' | 'short';
 export type EventKind = 'entry' | 'exit' | 'info';
@@ -405,6 +406,7 @@ export function declaredChannels(source: string): Set<'alert' | 'alertcondition'
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
+  if(opts.scannerId && MARKITTICK_NATIVE[opts.scannerId])return readMarkitTick(alerts,opts);
   // These versioned profiles read only causal source exports; legacy alerts cannot leak entries or exits.
   if(plotLifecycle(opts.scannerId)){
     if(opts.reader!==2||opts.invert)return [];

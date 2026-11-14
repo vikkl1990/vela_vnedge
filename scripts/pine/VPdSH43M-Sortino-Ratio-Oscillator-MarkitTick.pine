@@ -1,0 +1,267 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Sortino Ratio Oscillator [MarkitTick]", overlay=false, max_bars_back=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// USER-DEFINED TYPE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type DivState
+    float pivot_price   = na
+    float pivot_sortino = na
+    int   pivot_index   = na
+    bool  confirmed     = false
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GROUP 0 — COLOR SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string GRP_COLOR = "Color Settings"
+color C_BULL    = input.color(#0b7788, "Bull",        group=GRP_COLOR, inline="main")
+color C_BEAR    = input.color(#9f0808, "Bear",        group=GRP_COLOR, inline="main")
+color C_SIG     = input.color(#FF8C00, "Signal Line", group=GRP_COLOR, inline="sig")
+color C_BIAS_LO = input.color(#FF1744, "Bias Low",    group=GRP_COLOR, inline="sig")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GROUP 1 — SORTINO SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string GRP_SORT = "Sortino Settings"
+int   cfg_length  = input.int(20,    "Lookback Length",  minval=2,  group=GRP_SORT)
+int   cfg_sig_len = input.int(9,     "Signal Length",    minval=1,  group=GRP_SORT)
+float cfg_ob      = input.float(1.5, "Overbought Level", step=0.1,  group=GRP_SORT)
+float cfg_os      = input.float(-1.5,"Oversold Level",   step=0.1,  group=GRP_SORT)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GROUP 2 — CANDLE COLORING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string GRP_CANDLE = "Candle Coloring"
+bool cfg_candle_on = input.bool(true, "Enable Candle Coloring", group=GRP_CANDLE)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GROUP 3 — DIVERGENCE SETTINGS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string GRP_DIV = "Divergence Settings"
+bool cfg_div_on      = input.bool(true, "Enable Divergence",         group=GRP_DIV)
+bool cfg_div_regular = input.bool(true, "Show Regular  (RB / RD)",   group=GRP_DIV)
+bool cfg_div_hidden  = input.bool(true, "Show Hidden   (HB / HD)",   group=GRP_DIV)
+int  cfg_div_left    = input.int(5,     "Pivot Lookback Left",  minval=1, maxval=50, group=GRP_DIV)
+int  cfg_div_right   = input.int(5,     "Pivot Lookback Right", minval=1, maxval=50, group=GRP_DIV)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GROUP 4 — WEBHOOK ACTION NAMES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string GRP_WH = "Webhook Action Names"
+string cfg_act_cross_above_zero = input.string("sortino_cross_above_zero", "Cross Above Zero",     group=GRP_WH)
+string cfg_act_cross_below_zero = input.string("sortino_cross_below_zero", "Cross Below Zero",     group=GRP_WH)
+string cfg_act_cross_above_ob   = input.string("sortino_cross_above_ob",   "Cross Above OB Level", group=GRP_WH)
+string cfg_act_cross_below_os   = input.string("sortino_cross_below_os",   "Cross Below OS Level", group=GRP_WH)
+string cfg_act_reg_bull         = input.string("sortino_reg_bull_div",     "Regular Bull Div",     group=GRP_WH)
+string cfg_act_reg_bear         = input.string("sortino_reg_bear_div",     "Regular Bear Div",     group=GRP_WH)
+string cfg_act_hid_bull         = input.string("sortino_hid_bull_div",     "Hidden Bull Div",      group=GRP_WH)
+string cfg_act_hid_bear         = input.string("sortino_hid_bear_div",     "Hidden Bear Div",      group=GRP_WH)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CORE ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float ret          = (close - close[1]) / close[1]
+float downside_ret = ret < 0.0 ? ret : 0.0
+float mean_ret     = ta.sma(ret,                         cfg_length)
+float downside_sq  = ta.sma(downside_ret * downside_ret, cfg_length)
+float downside_dev = math.sqrt(downside_sq)
+float sortino      = downside_dev != 0.0 ? mean_ret / downside_dev : na
+float sig          = ta.sma(sortino, cfg_sig_len)
+
+bool valid_hist       = not na(sortino[1]) and not na(sortino[2])
+bool cross_above_zero = valid_hist and sortino[1] > 0.0    and sortino[2] <= 0.0
+bool cross_below_zero = valid_hist and sortino[1] < 0.0    and sortino[2] >= 0.0
+bool cross_above_ob   = valid_hist and sortino[1] > cfg_ob and sortino[2] <= cfg_ob
+bool cross_below_os   = valid_hist and sortino[1] < cfg_os and sortino[2] >= cfg_os
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OSCILLATOR VISUALS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool  valid_sortino = not na(sortino)
+bool  is_rising     = valid_sortino and not na(sortino[1]) and sortino > sortino[1]
+color hist_color =
+     valid_sortino and sortino >= 0.0 and is_rising      ? color.new(C_BULL, 0)  :
+     valid_sortino and sortino >= 0.0 and not is_rising  ? color.new(C_BULL, 45) :
+     valid_sortino and sortino <  0.0 and not is_rising  ? color.new(C_BEAR, 0)  :
+     color.new(C_BEAR, 45)
+
+plot(sortino, "Sortino Histogram", color=hist_color, style=plot.style_histogram, linewidth=4)
+
+p_sortino_fill = plot(sortino, "Sortino (Fill Ref)", color=na, display=display.none)
+p_signal       = plot(sig,     "Signal Line",        color=C_SIG, linewidth=2)
+
+color cloud_color = valid_sortino and not na(sig) and sortino > sig ? color.new(C_BULL, 75) : color.new(C_BEAR, 75)
+fill(p_sortino_fill, p_signal, color=cloud_color, title="Sortino/Signal Cloud")
+
+hline(0,      "Zero Line",  color=color.new(color.gray, 50), linestyle=hline.style_solid,  linewidth=1)
+hline(cfg_ob, "Overbought", color=color.new(#0b7788, 40),    linestyle=hline.style_dashed, linewidth=1)
+hline(cfg_os, "Oversold",   color=color.new(#9f0808, 40),    linestyle=hline.style_dashed, linewidth=1)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PIVOT FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+f_pivotHigh(series float src, simple int left, simple int right) =>
+    float candidate = src[right]
+    bool  isValid   = not na(candidate)
+    if isValid
+        for i = 1 to right + left
+            if i != right and not na(src[i]) and src[i] >= candidate
+                isValid := false
+    isValid ? candidate : na
+
+f_pivotLow(series float src, simple int left, simple int right) =>
+    float candidate = src[right]
+    bool  isValid   = not na(candidate)
+    if isValid
+        for i = 1 to right + left
+            if i != right and not na(src[i]) and src[i] <= candidate
+                isValid := false
+    isValid ? candidate : na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DIVERGENCE ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var DivState bull_state = DivState.new()
+var DivState bear_state = DivState.new()
+
+float ph_price = f_pivotHigh(close, cfg_div_left, cfg_div_right)
+float pl_price = f_pivotLow(close,  cfg_div_left, cfg_div_right)
+
+float ph_sortino = sortino[cfg_div_right]
+float pl_sortino = sortino[cfg_div_right]
+
+bool new_ph = not na(ph_price) and not na(ph_sortino)
+bool new_pl = not na(pl_price) and not na(pl_sortino)
+
+int actual_ph_idx = bar_index - cfg_div_right
+int actual_pl_idx = bar_index - cfg_div_right
+
+float snap_bear_price   = bear_state.pivot_price
+float snap_bear_sortino = bear_state.pivot_sortino
+int   snap_bear_idx     = bear_state.pivot_index
+
+float snap_bull_price   = bull_state.pivot_price
+float snap_bull_sortino = bull_state.pivot_sortino
+int   snap_bull_idx     = bull_state.pivot_index
+
+bool reg_bear_div = false   
+bool hid_bear_div = false   
+
+if cfg_div_on and new_ph
+    if not na(snap_bear_price) and not na(snap_bear_sortino)
+        if cfg_div_regular and ph_price > snap_bear_price and ph_sortino < snap_bear_sortino
+            reg_bear_div := true
+        if cfg_div_hidden  and ph_price < snap_bear_price and ph_sortino > snap_bear_sortino
+            hid_bear_div := true
+    bear_state.pivot_price   := ph_price
+    bear_state.pivot_sortino := ph_sortino
+    bear_state.pivot_index   := actual_ph_idx
+    bear_state.confirmed     := true
+
+bool reg_bull_div = false   
+bool hid_bull_div = false   
+
+if cfg_div_on and new_pl
+    if not na(snap_bull_price) and not na(snap_bull_sortino)
+        if cfg_div_regular and pl_price < snap_bull_price and pl_sortino > snap_bull_sortino
+            reg_bull_div := true
+        if cfg_div_hidden  and pl_price > snap_bull_price and pl_sortino < snap_bull_sortino
+            hid_bull_div := true
+    bull_state.pivot_price   := pl_price
+    bull_state.pivot_sortino := pl_sortino
+    bull_state.pivot_index   := actual_pl_idx
+    bull_state.confirmed     := true
+
+
+if reg_bull_div and not na(snap_bull_idx)
+    line.new(snap_bull_idx, snap_bull_price, actual_pl_idx, pl_price,
+             color=C_BULL, style=line.style_solid, width=2, force_overlay=true)
+    label.new(actual_pl_idx, pl_price, "RB",
+              color=color.new(C_BULL, 15), textcolor=color.white,
+              style=label.style_label_up, size=size.small, force_overlay=true)
+
+if hid_bull_div and not na(snap_bull_idx)
+    line.new(snap_bull_idx, snap_bull_price, actual_pl_idx, pl_price,
+             color=color.new(C_BULL, 40), style=line.style_dashed, width=1, force_overlay=true)
+    label.new(actual_pl_idx, pl_price, "HB",
+              color=color.new(C_BULL, 45), textcolor=color.white,
+              style=label.style_label_up, size=size.small, force_overlay=true)
+
+if reg_bear_div and not na(snap_bear_idx)
+    line.new(snap_bear_idx, snap_bear_price, actual_ph_idx, ph_price,
+             color=C_BEAR, style=line.style_solid, width=2, force_overlay=true)
+    label.new(actual_ph_idx, ph_price, "RD",
+              color=color.new(C_BEAR, 15), textcolor=color.white,
+              style=label.style_label_down, size=size.small, force_overlay=true)
+
+if hid_bear_div and not na(snap_bear_idx)
+    line.new(snap_bear_idx, snap_bear_price, actual_ph_idx, ph_price,
+             color=color.new(C_BEAR, 40), style=line.style_dashed, width=1, force_overlay=true)
+    label.new(actual_ph_idx, ph_price, "HD",
+              color=color.new(C_BEAR, 45), textcolor=color.white,
+              style=label.style_label_down, size=size.small, force_overlay=true)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANDLE COLORING 
+// ═══════════════════════════════════════════════════════════════════════════════
+
+plotcandle(cfg_candle_on ? open  : na,
+           cfg_candle_on ? high  : na,
+           cfg_candle_on ? low   : na,
+           cfg_candle_on ? close : na,
+           title="Price Candles",
+           color=hist_color, wickcolor=hist_color, bordercolor=hist_color,
+           force_overlay=true)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERT ENGINE 
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var string JSON_TPL = '"action": "{0}", "ticker": "{1}", "tf": "{2}", "entry": "{3}", "tp": "{4}", "sl": "{5}", "sortino": {6}, "signal": {7}'
+
+f_buildAlert(string action_name) =>
+    float entryPrice = close
+    float tpPrice    = 0.0
+    float slPrice    = 0.0
+    string inner_json = str.format(
+         JSON_TPL,
+         action_name,
+         syminfo.tickerid,
+         timeframe.period,
+         str.tostring(entryPrice, format.mintick),
+         str.tostring(tpPrice,    format.mintick),
+         str.tostring(slPrice,    format.mintick),
+         str.tostring(sortino,    format.mintick),
+         str.tostring(sig,        format.mintick))
+    "{" + inner_json + "}"
+
+if cross_above_zero and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_cross_above_zero), alert.freq_once_per_bar_close)
+if cross_below_zero and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_cross_below_zero), alert.freq_once_per_bar_close)
+if cross_above_ob and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_cross_above_ob), alert.freq_once_per_bar_close)
+if cross_below_os and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_cross_below_os), alert.freq_once_per_bar_close)
+if reg_bull_div and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_reg_bull), alert.freq_once_per_bar_close)
+if reg_bear_div and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_reg_bear), alert.freq_once_per_bar_close)
+if hid_bull_div and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_hid_bull), alert.freq_once_per_bar_close)
+if hid_bear_div and barstate.isconfirmed
+    alert(f_buildAlert(cfg_act_hid_bear), alert.freq_once_per_bar_close)

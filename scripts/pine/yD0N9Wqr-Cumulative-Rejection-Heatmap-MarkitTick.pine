@@ -1,0 +1,257 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Cumulative Rejection Heatmap [MarkitTick]", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ── INPUTS ─────────────────────────────────────────────────────
+i_lookback      = input.int(150, "Window", minval=20, maxval=500, group="🔥 Heatmap")
+i_binCount      = input.int(40, "Bins", minval=10, maxval=100, group="🔥 Heatmap")
+i_wickRatio     = input.float(0.55, "Min Wick Ratio", minval=0.1, maxval=0.95, step=0.05, group="🔥 Heatmap")
+i_minRangeATR   = input.float(0.05, "Min Range (xATR)", minval=0.0, step=0.01, group="🔥 Heatmap")
+i_heatWidthPct  = input.float(12.0, "Heatmap Width %", minval=2.0, maxval=40.0, group="🔥 Heatmap")
+i_maxTriangles  = input.int(20, "Max Triangles Count", minval=1, maxval=500, group="🔥 Heatmap", tooltip="Set the maximum number of triangles shown on the chart")
+
+i_dashPos       = input.string("Top Right", "Dashboard Pos", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group="📊 Dashboard")
+i_dashBg        = input.color(color.new(#0d1321, 12), "BG", group="📊 Dashboard")
+i_dashHeaderBg  = input.color(color.new(#5c6bc0, 25), "Header BG", group="📊 Dashboard")
+i_dashLabelClr  = input.color(color.new(#90a4c8, 12), "Label Text", group="📊 Dashboard")
+i_dashValueClr  = input.color(color.new(#f4f7fb, 0), "Value Text", group="📊 Dashboard")
+
+var string GRP_WH         = "🔔 Alerts"
+i_actionLong              = input.string("long",       "↑ Long Action",        group=GRP_WH)
+i_actionShort             = input.string("short",      "↓ Short Action",       group=GRP_WH)
+i_actionCloseLong         = input.string("closelong",  "✕ Close Long Action",  group=GRP_WH)
+i_actionCloseShort        = input.string("closeshort", "✕ Close Short Action", group=GRP_WH)
+
+i_colMax        = input.color(#ff3d00, "Max Rejection", group="🎨 Colors")
+i_colMid        = input.color(#ff9800, "Mid Rejection", group="🎨 Colors")
+i_colMin        = input.color(color.new(#0b0f14, 90), "Low/No Rejection", group="🎨 Colors")
+i_colSR         = input.color(#00e5c7, "Key S/R Border", group="🎨 Colors")
+i_srTopN        = input.int(3, "Top S/R Levels", minval=1, maxval=10, group="🎨 Colors")
+i_useGradient   = input.bool(true, "Use Neon Gradient", group="🎨 Colors")
+i_dashBorderClr = input.color(color.new(#7e57c2, 30), "Dash Border", group="🎨 Colors")
+i_dashFrameClr  = input.color(color.new(#26c6da, 10), "Dash Frame", group="🎨 Colors")
+i_dashRowBg     = input.color(color.new(#0d1321, 0), "Dash Row BG", group="🎨 Colors")
+i_barGradLow    = input.color(#ff3d00, "Bar Gradient Low", group="🎨 Colors")
+i_barGradHigh   = input.color(#00e5c7, "Bar Gradient High", group="🎨 Colors")
+
+// ── CORE LOGIC ─────────────────────────────────────────────────
+float atrVal = ta.atr(14)
+float barRange = high - low
+bool validBar = barRange > atrVal * i_minRangeATR
+
+float upperWick = high - math.max(close, open)
+float lowerWick = math.min(close, open) - low
+bool rejUp   = validBar and (upperWick / barRange) >= i_wickRatio
+bool rejDown = validBar and (lowerWick / barRange) >= i_wickRatio
+
+float rejUpPrice   = rejUp   ? high : na
+float rejDownPrice = rejDown ? low  : na
+
+var matrix<float> hitMatrix = matrix.new<float>(i_lookback, i_binCount, 0.0)
+var int writeRow = 0
+
+float winHigh = ta.highest(high, i_lookback)
+float winLow  = ta.lowest(low, i_lookback)
+float binSize = (winHigh - winLow) / i_binCount
+
+f_binIndex(float price) =>
+    int idx = na
+    if not na(price) and binSize > 0
+        idx := int(math.min(math.max(math.floor((price - winLow) / binSize), 0), i_binCount - 1))
+    idx
+
+int binUp   = f_binIndex(rejUpPrice)
+int binDown = f_binIndex(rejDownPrice)
+
+if barstate.isconfirmed
+    for b = 0 to i_binCount - 1
+        matrix.set(hitMatrix, writeRow, b, 0.0)
+    if not na(binUp)
+        matrix.set(hitMatrix, writeRow, binUp, matrix.get(hitMatrix, writeRow, binUp) + 1.0)
+    if not na(binDown)
+        matrix.set(hitMatrix, writeRow, binDown, matrix.get(hitMatrix, writeRow, binDown) + 1.0)
+    writeRow := (writeRow + 1) % i_lookback
+
+array<float> binTotals = array.new_float(i_binCount, 0.0)
+for b = 0 to i_binCount - 1
+    array.set(binTotals, b, array.sum(matrix.col(hitMatrix, b)))
+
+float maxHit = array.max(binTotals)
+
+f_barColorGrad(float pct) =>
+    i_useGradient ? color.from_gradient(pct, 0.0, 1.0, color.new(i_colSR, 0), color.new(i_colMax, 0)) : (pct >= 0.66 ? color.new(i_colMax, 0) : pct >= 0.33 ? color.new(i_colMid, 0) : i_colMin)
+
+f_bar(float val, float maxVal, color clr) =>
+    int filled = math.round(math.min(val / maxVal, 1.0) * 10)
+    string bar = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar + "  " + str.tostring(math.round(val / maxVal * 100)) + "%"
+
+f_barColor(float pct) =>
+    color.from_gradient(pct, 0.0, 1.0, color.new(i_barGradLow, 0), color.new(i_barGradHigh, 0))
+
+var array<box> heatBoxes = array.new<box>()
+var array<label> heatLabels = array.new<label>()
+f_clearBoxes() =>
+    if array.size(heatBoxes) > 0
+        for bx in heatBoxes
+            box.delete(bx)
+        array.clear(heatBoxes)
+    if array.size(heatLabels) > 0
+        for lb in heatLabels
+            label.delete(lb)
+        array.clear(heatLabels)
+
+int heatLeft  = bar_index + 1
+int heatRight = bar_index + math.min(math.max(int(math.round(i_lookback * (i_heatWidthPct / 100.0))), 5), 490)
+
+if barstate.isconfirmed
+    f_clearBoxes()
+    for b = 0 to i_binCount - 1
+        float total = array.get(binTotals, b)
+        if total > 0 and maxHit > 0
+            float pct = total / maxHit
+            color cellClr = f_barColorGrad(pct)
+            float top = winLow + (b + 1) * binSize
+            float bot = winLow + b * binSize
+            box hb = box.new(heatLeft, top, heatRight, bot, border_color=na, bgcolor=color.new(cellClr, 100 - int(pct * 60)))
+            array.push(heatBoxes, hb)
+            label hbLbl = label.new(heatRight, (top + bot) / 2, str.tostring(int(total)) + " (" + str.tostring(math.round(pct * 100)) + "%)", style=label.style_label_left, color=color.new(cellClr, 40), textcolor=i_colSR, size=size.small)
+            array.push(heatLabels, hbLbl)
+
+var array<line> srLines = array.new<line>()
+var array<label> srLabels = array.new<label>()
+f_clearSR() =>
+    if array.size(srLines) > 0
+        for ln in srLines
+            line.delete(ln)
+        array.clear(srLines)
+    if array.size(srLabels) > 0
+        for lb in srLabels
+            label.delete(lb)
+        array.clear(srLabels)
+
+if barstate.isconfirmed and maxHit > 0
+    f_clearSR()
+    array<float> sortedTot = array.copy(binTotals)
+    array.sort(sortedTot, order.descending)
+    int topN = math.min(i_srTopN, array.size(sortedTot))
+    for k = 0 to topN - 1
+        float thresh = array.get(sortedTot, k)
+        for b = 0 to i_binCount - 1
+            if array.get(binTotals, b) == thresh and thresh > 0
+                float lvl = winLow + b * binSize + binSize / 2
+                line srLn = line.new(bar_index - i_lookback, lvl, heatRight, lvl, color=i_colSR, width=1, style=line.style_dashed, extend=extend.none)
+                array.push(srLines, srLn)
+                label srLbl = label.new(heatRight, lvl, "S/R " + str.tostring(lvl, format.mintick), style=label.style_label_left, color=color.new(i_colSR, 20), textcolor=i_dashValueClr, size=size.small)
+                array.push(srLabels, srLbl)
+
+bool longSignal  = rejDown and not rejUp and barstate.isconfirmed
+bool shortSignal = rejUp and not rejDown and barstate.isconfirmed
+
+// ── ALERTS ─────────────────────────────────────────────────────
+string _longInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"long","entry":"{3}"',
+     i_actionLong, syminfo.tickerid, timeframe.period,
+     str.tostring(close[1], format.mintick))
+string longPayload = "{" + _longInner + "}"
+
+string _shortInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"short","entry":"{3}"',
+     i_actionShort, syminfo.tickerid, timeframe.period,
+     str.tostring(close[1], format.mintick))
+string shortPayload = "{" + _shortInner + "}"
+
+string _closeLongInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closelong","entry":"{3}"',
+     i_actionCloseLong, syminfo.tickerid, timeframe.period,
+     str.tostring(close[1], format.mintick))
+string closeLongPayload = "{" + _closeLongInner + "}"
+
+string _closeShortInner = str.format(
+     '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"closeshort","entry":"{3}"',
+     i_actionCloseShort, syminfo.tickerid, timeframe.period,
+     str.tostring(close[1], format.mintick))
+string closeShortPayload = "{" + _closeShortInner + "}"
+
+if longSignal and barstate.isconfirmed
+    alert(longPayload, alert.freq_once_per_bar_close)
+if shortSignal and barstate.isconfirmed
+    alert(shortPayload, alert.freq_once_per_bar_close)
+if shortSignal and barstate.isconfirmed
+    alert(closeLongPayload, alert.freq_once_per_bar_close)
+if longSignal and barstate.isconfirmed
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+
+alertcondition(longSignal  and barstate.isconfirmed, "BUY Signal",         "MarkitTick — BUY Signal Fired")
+alertcondition(shortSignal and barstate.isconfirmed, "SELL Signal",        "MarkitTick — SELL Signal Fired")
+alertcondition(shortSignal and barstate.isconfirmed, "Close Long Signal",  "MarkitTick — Close Long")
+alertcondition(longSignal  and barstate.isconfirmed, "Close Short Signal", "MarkitTick — Close Short")
+
+// ── VISUALS ────────────────────────────────────────────────────
+var array<label> upTriangles = array.new<label>()
+var array<label> downTriangles = array.new<label>()
+
+if rejUp
+    label l_up = label.new(bar_index, na, text="▼", style=label.style_none, yloc=yloc.abovebar, textcolor=i_colMax, size=size.small)
+    array.push(upTriangles, l_up)
+    if array.size(upTriangles) > i_maxTriangles
+        label.delete(array.shift(upTriangles))
+
+if rejDown
+    label l_dn = label.new(bar_index, na, text="▲", style=label.style_none, yloc=yloc.belowbar, textcolor=i_colSR, size=size.small)
+    array.push(downTriangles, l_dn)
+    if array.size(downTriangles) > i_maxTriangles
+        label.delete(array.shift(downTriangles))
+
+// ── DASHBOARD ──────────────────────────────────────────────────
+f_pos(string p) =>
+    p == "Top Right" ? position.top_right : p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : position.bottom_left
+
+var table dash = table.new(f_pos(i_dashPos), 2, 8, bgcolor=i_dashBg, border_color=i_dashBorderClr, border_width=1, frame_color=i_dashFrameClr, frame_width=2)
+
+float bestTotal = maxHit
+int   bestBin = -1
+for b = 0 to i_binCount - 1
+    if array.get(binTotals, b) == bestTotal
+        bestBin := b
+
+float bestLevel = bestBin >= 0 ? winLow + bestBin * binSize + binSize / 2 : na
+var float upRejCount = 0.0
+var float downRejCount = 0.0
+if barstate.isconfirmed
+    upRejCount := rejUp ? upRejCount + 1 : upRejCount
+    downRejCount := rejDown ? downRejCount + 1 : downRejCount
+float biasSum = upRejCount + downRejCount
+float upBiasPct = biasSum > 0 ? upRejCount / biasSum : 0.0
+
+table.cell(dash, 0, 0, "⚡ " + syminfo.ticker, text_color=i_dashValueClr, bgcolor=i_dashHeaderBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 0, syminfo.prefix, text_color=color.new(i_dashValueClr, 25), bgcolor=i_dashHeaderBg, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 1, "Window", text_color=i_dashLabelClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 1, str.tostring(i_lookback), text_color=i_dashValueClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 2, "Bins", text_color=i_dashLabelClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 2, str.tostring(i_binCount), text_color=i_dashValueClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 3, "Peak Level", text_color=i_dashLabelClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 3, na(bestLevel) ? "—" : str.tostring(bestLevel, format.mintick), text_color=i_dashValueClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_right)
+
+string barStr = maxHit > 0 ? f_bar(bestTotal, maxHit, f_barColor(1.0)) : f_bar(0.0, 1.0, f_barColor(0.0))
+color barClr = maxHit > 0 ? f_barColor(bestTotal / maxHit) : f_barColor(0.0)
+table.cell(dash, 0, 4, "Peak Density", text_color=i_dashLabelClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 4, barStr, text_color=barClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 5, "ATR", text_color=i_dashLabelClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 5, str.tostring(atrVal, format.mintick), text_color=i_dashValueClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_right)
+
+table.cell(dash, 0, 6, "Range Hi/Lo", text_color=i_dashLabelClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 6, str.tostring(winHigh, format.mintick) + " / " + str.tostring(winLow, format.mintick), text_color=i_dashValueClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_right)
+
+string biasStr = f_bar(upRejCount, math.max(biasSum, 1.0), f_barColor(upBiasPct))
+color biasClr = f_barColor(upBiasPct)
+table.cell(dash, 0, 7, "Bull/Bear Bias", text_color=i_dashLabelClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_left)
+table.cell(dash, 1, 7, biasStr, text_color=biasClr, bgcolor=i_dashRowBg, text_size=size.small, text_halign=text.align_right)

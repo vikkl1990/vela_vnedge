@@ -1,0 +1,472 @@
+// © MarkitTick
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+//@version=6
+indicator("Sloped LinReg Volume Profile [MarkitTick]", overlay=true, max_polylines_count=100, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// =============================================================================
+// Mandatory Visual Helpers (Global Scope)
+// =============================================================================
+
+f_blockBar(float score) =>
+    int n = math.min(math.max(math.round(score), 0), 10)
+    str.repeat('█', n) + str.repeat('░', 10 - n)
+
+f_blockColor(float score) =>
+    score >= 7.0 ? color.rgb(0, 255, 120) : score >= 4.0 ? color.rgb(80, 255, 0) : score >= 1.5 ? color.rgb(200, 200, 0) : color.rgb(110, 110, 110)
+
+// =============================================================================
+// Table Architecture Declaration
+// =============================================================================
+var table dash = table.new(position.top_right, 2, 11,
+     border_width = 1,
+     border_color = color.rgb(50, 50, 70, 20),
+     frame_width  = 1,
+     frame_color  = color.rgb(60, 60, 90, 10))
+
+// =============================================================================
+// Dashboard Settings & Inputs
+// =============================================================================
+string GRP_DASH       = '📊 Dashboard Settings'
+color  dash_bg_color  = input.color(color.rgb(10, 10, 18, 5),    'Background Color', group = GRP_DASH)
+color  dash_txt_color = input.color(color.rgb(220, 220, 235, 0), 'Text Color',       group = GRP_DASH)
+
+if chart.is_heikinashi or chart.is_renko
+    runtime.error("This script requires standard candlestick charts. Non-standard charts (Heikin Ashi/Renko) distort volume and price action.")
+
+float DEFAULT_BUY_RATIO = 0.5
+float PERCENT_DIVISOR   = 100.0
+
+type VP_Slot
+    float Low
+    float High
+    float Volume
+    float BuyVolume
+    float SellVolume
+
+string G1 = "Linear Regression Settings"
+int    lengthInput      = input.int(100, "Channel Length", minval=10, maxval=5000, group=G1)
+string sourceStr        = input.string("close", "Source", options=["close", "high", "low", "hl2", "hlc3", "ohlc4"], group=G1)
+bool   useUpperDevInput = input.bool(true, "Upper Deviation", inline="Upper", group=G1)
+float  upperMultInput   = input.float(2.0, "", active=useUpperDevInput, inline="Upper", group=G1)
+bool   useLowerDevInput = input.bool(true, "Lower Deviation", inline="Lower", group=G1)
+float  lowerMultInput   = input.float(2.0, "", active=useLowerDevInput, inline="Lower", group=G1)
+
+string G2 = "Sloped Volume Profile Settings"
+int    i_rowSize   = input.int(50, "Number of Rows", minval=10, maxval=100, group=G2)
+int    i_widthPct  = input.int(30, "Profile Width %", minval=5, maxval=80, group=G2)
+bool   i_showPOC   = input.bool(true, "Show POC Line", group=G2)
+bool   i_showVA    = input.bool(true, "Show Value Area Lines", group=G2)
+bool   i_fillVA    = input.bool(true, "Fill Value Area Background", group=G2)
+bool   i_showExt   = input.bool(true, "Show Profile Extremes (Max/Min)", group=G2)
+float  i_vaPct     = input.float(70.0, "Value Area %", minval=50.0, maxval=90.0, step=1.0, group=G2)
+
+string G5 = "Advanced Quant Analytics"
+bool   i_showInsta    = input.bool(true, "Highlight Institutional Footprints", group=G5)
+color  c_instaCol     = input.color(color.rgb(255, 235, 59, 20), "Institutional Footprint Color", group=G5)
+bool   i_showDeltaPoc = input.bool(true, "Show Delta POC Line", group=G5)
+color  c_deltaPoc     = input.color(color.new(color.fuchsia, 0), "Delta POC Color", group=G5)
+bool   i_showAvwap    = input.bool(true, "Calculate Anchored VWAP (Dashboard)", group=G5)
+
+string G3 = "Color Palette & Visuals"
+color  colorLine   = input.color(color.new(color.white, 50), "Channel Lines", group=G3)
+color  i_upColor   = input.color(color.new(#26a69a, 30), "Bullish Volume", group=G3)
+color  i_dnColor   = input.color(color.new(#ef5350, 30), "Bearish Volume", group=G3)
+color  i_pocColor  = input.color(color.new(color.yellow, 0), "POC Color", group=G3)
+color  i_vahColor  = input.color(color.new(color.blue, 40), "VAH Color", group=G3)
+color  i_valColor  = input.color(color.new(color.blue, 40), "VAL Color", group=G3)
+color  i_vaFillCol = input.color(color.new(color.blue, 85), "VA Background Fill", group=G3)
+color  i_extColor  = input.color(color.new(color.gray, 30), "Profile Extremes Line", group=G3)
+
+// =============================================================================
+// SOURCE SELECTION  
+// =============================================================================
+float srcVal = switch sourceStr
+    "high"  => high
+    "low"   => low
+    "hl2"   => hl2
+    "hlc3"  => hlc3
+    "ohlc4" => ohlc4
+    =>          close
+
+// =============================================================================
+// PERSISTENT DRAW-OBJECT ARRAYS 
+// =============================================================================
+var array<polyline> polyArr      = array.new<polyline>()
+var array<line>     profileLines = array.new<line>()
+var array<label>    profileLabels = array.new<label>()
+
+// =============================================================================
+// LINEAR REGRESSION — CLOSED-FORM SLOPE & INTERCEPT 
+// =============================================================================
+int    lenM1   = lengthInput - 1
+float  fLen    = float(lengthInput)
+float  sumX    = fLen * lenM1 * 0.5         
+float  sumXSqr = fLen * lenM1 * (2.0 * fLen - 1.0) / 6.0  
+
+
+float  sumY   = 0.0
+float  sumXY  = 0.0
+
+array<float> hArr = array.new<float>(lengthInput)
+array<float> lArr = array.new<float>(lengthInput)
+array<float> oArr = array.new<float>(lengthInput)
+array<float> cArr = array.new<float>(lengthInput)
+array<float> vArr = array.new<float>(lengthInput)
+
+
+float upDev      = 0.0
+float dnDev      = 0.0
+float stdDevAcc  = 0.0
+float maxDev     = -1e10
+float minDev     = 1e10
+
+for i = 0 to lenM1
+    int   bi    = lenM1 - i        
+    float sv    = srcVal[bi]
+    float hi    = high[bi]
+    float lo    = low[bi]
+    float op    = open[bi]
+    float cl    = close[bi]
+    float vo    = volume[bi]
+
+    float fx    = float(i)
+    sumY       += sv
+    sumXY      += sv * fx
+
+    hArr.set(i, hi)
+    lArr.set(i, lo)
+    oArr.set(i, op)
+    cArr.set(i, cl)
+    vArr.set(i, vo)
+
+
+float denom     = fLen * sumXSqr - sumX * sumX
+float s         = denom != 0.0 ? (fLen * sumXY - sumX * sumY) / denom : 0.0
+float intercept = (sumY - s * sumX) / fLen
+float startPrice = intercept
+float endPrice   = intercept + s * lenM1
+
+for k = 0 to lenM1
+    float bY      = intercept + s * float(k)
+    float priceUp = hArr.get(k) - bY
+    float priceDn = bY - lArr.get(k)
+    if priceUp > upDev
+        upDev := priceUp
+    if priceDn > dnDev
+        dnDev := priceDn
+    float diff    = sumY != 0.0 ? (k < lengthInput ? hArr.get(k) + lArr.get(k) : 0.0) : 0.0
+    float sdiff   = (k < lengthInput ? float(k) : 0.0)  
+upDev      := 0.0
+dnDev      := 0.0
+stdDevAcc  := 0.0
+maxDev     := -1e10
+minDev     := 1e10
+
+for k = 0 to lenM1
+    float fk      = float(k)
+    float bY      = intercept + s * fk
+    float priceUp = hArr.get(k) - bY
+    float priceDn = bY - lArr.get(k)
+    if priceUp > upDev
+        upDev := priceUp
+    if priceDn > dnDev
+        dnDev := priceDn
+    float sv_k    = switch sourceStr
+        "high"  => hArr.get(k)
+        "low"   => lArr.get(k)
+        "hl2"   => (hArr.get(k) + lArr.get(k)) * 0.5
+        "hlc3"  => (hArr.get(k) + lArr.get(k) + cArr.get(k)) / 3.0
+        "ohlc4" => (oArr.get(k) + hArr.get(k) + lArr.get(k) + cArr.get(k)) * 0.25
+        =>          cArr.get(k)
+    float sdiff   = sv_k - bY
+    stdDevAcc    += sdiff * sdiff
+    float dH      = hArr.get(k) - bY
+    float dL      = lArr.get(k) - bY
+    if dH > maxDev
+        maxDev := dH
+    if dL < minDev
+        minDev := dL
+
+float stdDev = math.sqrt(stdDevAcc / fLen)
+
+float upperStartPrice = startPrice + (useUpperDevInput ? upperMultInput * stdDev : upDev)
+float upperEndPrice   = endPrice   + (useUpperDevInput ? upperMultInput * stdDev : upDev)
+float lowerStartPrice = startPrice + (useLowerDevInput ? -lowerMultInput * stdDev : -dnDev)
+float lowerEndPrice   = endPrice   + (useLowerDevInput ? -lowerMultInput * stdDev : -dnDev)
+int   startIdx        = bar_index - lengthInput + 1
+
+// =============================================================================
+// VOLUME PROFILE SLOT CONSTRUCTION  
+// =============================================================================
+float rng     = maxDev - minDev
+float slotSz  = rng > 0.0 ? rng / i_rowSize : 0.0
+float invSz   = rng > 0.0 ? i_rowSize / rng  : 0.0
+int   maxSlotIdx = i_rowSize - 1
+
+array<VP_Slot> slots = array.new<VP_Slot>(i_rowSize)
+for j = 0 to maxSlotIdx
+    float sl = minDev + slotSz * j
+    slots.set(j, VP_Slot.new(sl, sl + slotSz, 0.0, 0.0, 0.0))
+
+// =============================================================================
+// VOLUME DISTRIBUTION LOOP 
+// =============================================================================
+float totalBuyVolGlobal  = 0.0
+float totalSellVolGlobal = 0.0
+float totalVolGlobal     = 0.0
+
+for k = 0 to lenM1
+    float bY    = startPrice + s * float(k)
+    float dVol  = vArr.get(k)
+    float dH    = hArr.get(k) - bY
+    float dL    = lArr.get(k) - bY
+    float bSz   = dH - dL
+    bool isBull = cArr.get(k) >= oArr.get(k)
+
+    int sIdx = int(math.max(0.0, math.floor((dL - minDev) * invSz)))
+    int eIdx = int(math.min(maxSlotIdx, math.floor((dH - minDev) * invSz)))
+
+    if sIdx <= eIdx and bSz > 0.0
+        float volPerP = dVol / bSz
+        for j = sIdx to eIdx
+            VP_Slot slot = slots.get(j)
+            float ov = math.min(dH, slot.High) - math.max(dL, slot.Low)
+            if ov > 0.0
+                float slotVol = volPerP * ov
+                slot.Volume    += slotVol
+                totalVolGlobal += slotVol
+                if isBull
+                    slot.BuyVolume       += slotVol
+                    totalBuyVolGlobal    += slotVol
+                else
+                    slot.SellVolume      += slotVol
+                    totalSellVolGlobal   += slotVol
+
+// =============================================================================
+// POC / DELTA-POC / INSTITUTIONAL THRESHOLD — SINGLE COMBINED PASS 
+// =============================================================================
+float meanVol      = totalVolGlobal / i_rowSize
+float varSum       = 0.0
+for j = 0 to maxSlotIdx
+    float diff = slots.get(j).Volume - meanVol
+    varSum += diff * diff
+float stDevVol     = math.sqrt(varSum / i_rowSize)
+float instThreshold = meanVol + 2.0 * stDevVol
+
+float maxV      = 0.0
+int   pIdx      = 0
+float maxDelta  = -1e10
+int   dpIdx     = 0
+
+for j = 0 to maxSlotIdx
+    VP_Slot slot = slots.get(j)
+    if slot.Volume > maxV
+        maxV  := slot.Volume
+        pIdx  := j
+    float absDelta = math.abs(slot.BuyVolume - slot.SellVolume)
+    if absDelta > maxDelta
+        maxDelta := absDelta
+        dpIdx    := j
+
+float pocDev      = minDev + (pIdx  + DEFAULT_BUY_RATIO) * slotSz
+float deltaPocDev = minDev + (dpIdx + DEFAULT_BUY_RATIO) * slotSz
+
+// =============================================================================
+// VALUE AREA EXPANSION 
+// =============================================================================
+float vaTarget = totalVolGlobal * (i_vaPct * 0.01)
+float vaVol    = maxV
+int   vaHi     = pIdx
+int   vaLo     = pIdx
+
+while vaVol < vaTarget and (vaHi < maxSlotIdx or vaLo > 0)
+    float uV = vaHi < maxSlotIdx ? slots.get(vaHi + 1).Volume : 0.0
+    float lV = vaLo > 0          ? slots.get(vaLo - 1).Volume : 0.0
+    if uV >= lV and vaHi < maxSlotIdx
+        vaHi += 1
+        vaVol += uV
+    else if vaLo > 0
+        vaLo -= 1
+        vaVol += lV
+    else if vaHi < maxSlotIdx
+        vaHi += 1
+        vaVol += uV
+    else
+        break
+
+float vahDev = minDev + (vaHi + 1) * slotSz
+float valDev = minDev +  vaLo      * slotSz
+
+// =============================================================================
+// ANCHORED VWAP 
+// =============================================================================
+float currentAvwap = math.sum(hlc3 * volume, lengthInput) / math.sum(volume, lengthInput)
+
+// =============================================================================
+// VISUAL RENDERING — CLEAR OLD OBJECTS  
+// =============================================================================
+while polyArr.size() > 0
+    polyline.delete(polyArr.pop())
+while profileLines.size() > 0
+    line.delete(profileLines.pop())
+while profileLabels.size() > 0
+    label.delete(profileLabels.pop())
+
+profileLines.push(line.new(startIdx, startPrice,      bar_index, endPrice,          width=1, color=colorLine))
+profileLines.push(line.new(startIdx, upperStartPrice, bar_index, upperEndPrice,      width=1, color=colorLine))
+profileLines.push(line.new(startIdx, lowerStartPrice, bar_index, lowerEndPrice,      width=1, color=colorLine))
+
+// =============================================================================
+// PROFILE BAR RENDERING 
+// =============================================================================
+float profW   = math.max(lengthInput * (i_widthPct * 0.01), 5.0)
+float invMaxV = maxV > 0.0 ? 1.0 / maxV : 0.0
+float stepsToEnd = float(lenM1)
+
+for j = 0 to maxSlotIdx
+    VP_Slot slot = slots.get(j)
+    if slot.Volume > 0.0
+        float wBuy  = slot.BuyVolume  * invMaxV * profW
+        float wSell = slot.SellVolume * invMaxV * profW
+        float d_bot = slot.Low
+        float d_top = slot.High
+
+        color currentUpCol = (i_showInsta and slot.Volume > instThreshold) ? c_instaCol : i_upColor
+        color currentDnCol = (i_showInsta and slot.Volume > instThreshold) ? c_instaCol : i_dnColor
+
+        int   iBuy        = int(math.round(wBuy))
+        int   iSell       = int(math.round(wSell))
+        float sBuyOffset  = float(iBuy)
+        float sSellOffset = float(iSell)
+
+        if wBuy > 0.0
+            int endBuyIdx = startIdx + iBuy
+            chart.point p1 = chart.point.from_index(startIdx,   startPrice + d_bot)
+            chart.point p2 = chart.point.from_index(startIdx,   startPrice + d_top)
+            chart.point p3 = chart.point.from_index(endBuyIdx,  startPrice + s * sBuyOffset + d_top)
+            chart.point p4 = chart.point.from_index(endBuyIdx,  startPrice + s * sBuyOffset + d_bot)
+            polyArr.push(polyline.new(array.from(p1, p2, p3, p4), closed=true, line_color=color.new(currentUpCol, 10), fill_color=currentUpCol))
+
+        if wSell > 0.0
+            int startSellIdx = startIdx + iBuy
+            int endSellIdx   = startSellIdx + iSell
+            chart.point p1 = chart.point.from_index(startSellIdx, startPrice + s * sBuyOffset + d_bot)
+            chart.point p2 = chart.point.from_index(startSellIdx, startPrice + s * sBuyOffset + d_top)
+            chart.point p3 = chart.point.from_index(endSellIdx,   startPrice + s * (sBuyOffset + sSellOffset) + d_top)
+            chart.point p4 = chart.point.from_index(endSellIdx,   startPrice + s * (sBuyOffset + sSellOffset) + d_bot)
+            polyArr.push(polyline.new(array.from(p1, p2, p3, p4), closed=true, line_color=color.new(currentDnCol, 10), fill_color=currentDnCol))
+
+// =============================================================================
+// KEY-LEVEL LINES & LABELS 
+// =============================================================================
+int   endChannelIdx = bar_index
+float endBase       = startPrice + s * stepsToEnd  
+
+if i_showPOC
+    profileLines.push(line.new(startIdx, startPrice + pocDev, endChannelIdx, endBase + pocDev, color=i_pocColor, width=3))
+    profileLabels.push(label.new(endChannelIdx, endBase + pocDev, text='POC', color=color.new(color.black, 100), textcolor=i_pocColor, style=label.style_label_left, size=size.small))
+
+if i_showDeltaPoc
+    profileLines.push(line.new(startIdx, startPrice + deltaPocDev, endChannelIdx, endBase + deltaPocDev, color=c_deltaPoc, width=2, style=line.style_dashed))
+    profileLabels.push(label.new(endChannelIdx, endBase + deltaPocDev, text='Delta POC', color=color.new(color.black, 100), textcolor=c_deltaPoc, style=label.style_label_left, size=size.small))
+
+color c_vah = i_showVA ? i_vahColor : na
+color c_val = i_showVA ? i_valColor : na
+line l_vah = line.new(startIdx, startPrice + vahDev, endChannelIdx, endBase + vahDev, color=c_vah, style=line.style_dashed, width=2)
+line l_val = line.new(startIdx, startPrice + valDev, endChannelIdx, endBase + valDev, color=c_val, style=line.style_dashed, width=2)
+profileLines.push(l_vah)
+profileLines.push(l_val)
+profileLabels.push(label.new(endChannelIdx, endBase + vahDev, text='VAH', color=color.new(color.black, 100), textcolor=c_vah, style=label.style_label_left, size=size.small))
+profileLabels.push(label.new(endChannelIdx, endBase + valDev, text='VAL', color=color.new(color.black, 100), textcolor=c_val, style=label.style_label_left, size=size.small))
+
+color c_ext = i_showExt ? i_extColor : na
+profileLines.push(line.new(startIdx, startPrice + maxDev, endChannelIdx, endBase + maxDev, color=c_ext, style=line.style_dotted, width=1))
+profileLines.push(line.new(startIdx, startPrice + minDev, endChannelIdx, endBase + minDev, color=c_ext, style=line.style_dotted, width=1))
+
+if i_fillVA
+    linefill.new(l_vah, l_val, color=i_vaFillCol)
+
+// =============================================================================
+// INSTITUTIONAL DASHBOARD MAPPING 
+// =============================================================================
+bool   isBullTrend = s > 0.0
+string t_trendLbl  = isBullTrend ? '▲ Bullish' : '▼ Bearish'
+color  t_trendCol  = isBullTrend ? color.rgb(0, 255, 120) : color.rgb(255, 60, 80)
+
+bool   isBullBreak = close > upperEndPrice
+bool   isBearBreak = close < lowerEndPrice
+string t_regLbl    = isBullBreak ? '🚀 Overbought (Upper)' : isBearBreak ? '🩸 Oversold (Lower)' : '⚖️ Inside Channel'
+color  t_regCol    = isBullBreak ? color.rgb(0, 255, 120)  : isBearBreak ? color.rgb(255, 60, 80)  : color.rgb(200, 200, 60)
+
+float  currentPoc  = endBase + pocDev
+string t_pocLbl    = str.tostring(currentPoc, format.mintick)
+color  t_pocCol    = color.rgb(200, 200, 60)
+
+float  rawBuyRatio = totalVolGlobal > 0.0 ? (totalBuyVolGlobal / totalVolGlobal) : 0.5
+float  deltaScore  = rawBuyRatio * 10.0
+string statePrefix = rawBuyRatio > 0.5 ? '🟢 ' : '🔴 '
+string t_deltaLbl  = statePrefix + f_blockBar(deltaScore)
+color  t_deltaCol  = f_blockColor(deltaScore)
+
+string t_durLbl = '⏳ ' + str.tostring(lengthInput) + ' Bars'
+color  t_durCol = color.rgb(140, 180, 255)
+
+float  currDeltaPoc = endBase + deltaPocDev
+string t_dpocLbl    = str.tostring(currDeltaPoc, format.mintick)
+color  t_dpocCol    = c_deltaPoc
+
+string t_vwapLbl = i_showAvwap ? str.tostring(currentAvwap, format.mintick) : '—'
+color  t_vwapCol = color.rgb(140, 180, 255)
+
+float  vaBinsOccupied = math.max(1.0, vaHi - vaLo + 1)
+float  compScore  = math.max(0.0, math.min(10.0, 10.0 - (vaBinsOccupied / i_rowSize * 10.0)))
+string compPrefix = compScore >= 7.0 ? '⚡ ' : '○ '
+string t_compLbl  = compPrefix + f_blockBar(compScore)
+color  t_compCol  = f_blockColor(compScore)
+
+float  chWidth    = upperEndPrice - lowerEndPrice
+float  posRatio   = chWidth > 0.0 ? (close - lowerEndPrice) / chWidth : 0.5
+float  posScore   = math.max(0.0, math.min(10.0, posRatio * 10.0))
+string posPrefix  = posScore >= 8.0 ? '⬆️ ' : posScore <= 2.0 ? '⬇️ ' : '〰️ '
+string t_posLbl   = posPrefix + f_blockBar(posScore)
+color  t_posCol   = f_blockColor(posScore)
+
+// =============================================================================
+// CELL POPULATION 
+// =============================================================================
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+color  hdrBg = color.rgb(30, 30, 45, 10)
+color  altBg = color.rgb(20, 20, 25, 10)
+color  oddBg = dash_bg_color
+
+table.cell(dash, 0, 0, '  [MarkitTick] Sloped Profile', bgcolor = hdrBg, text_color = dash_txt_color, text_halign = text.align_left)
+table.cell(dash, 1, 0, clean_ticker + ' · ' + timeframe.period, bgcolor = hdrBg, text_color = dash_txt_color, text_halign = text.align_right)
+
+table.cell(dash, 0, 1, '  LinReg Slope', bgcolor = altBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 1, t_trendLbl,       bgcolor = altBg, text_color = t_trendCol,     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 2, '  Price Regime', bgcolor = oddBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 2, t_regLbl,         bgcolor = oddBg, text_color = t_regCol,       text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 3, '  Volume POC',   bgcolor = altBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 3, t_pocLbl,         bgcolor = altBg, text_color = t_pocCol,       text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 4, '  Buy Vol Bias', bgcolor = oddBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 4, t_deltaLbl,       bgcolor = oddBg, text_color = t_deltaCol,     text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 5, '  Channel Age',  bgcolor = altBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 5, t_durLbl,         bgcolor = altBg, text_color = t_durCol,       text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 6, '  Delta POC (Max)', bgcolor = oddBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 6, t_dpocLbl,           bgcolor = oddBg, text_color = t_dpocCol,      text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 7, '  Anchored VWAP', bgcolor = altBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 7, t_vwapLbl,          bgcolor = altBg, text_color = t_vwapCol,      text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 8, '  Vol Compression', bgcolor = oddBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 8, t_compLbl,           bgcolor = oddBg, text_color = t_compCol,      text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 9, '  Pos Oscillator', bgcolor = altBg, text_color = dash_txt_color, text_halign = text.align_left,  text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 9, t_posLbl,            bgcolor = altBg, text_color = t_posCol,       text_halign = text.align_right, text_font_family = font.family_monospace, text_size = size.small)

@@ -1,0 +1,497 @@
+// // This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Multi-Session Volume Profile [MarkitTick]", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+// =============================================================================
+// 1. CONSTANTS & INPUTS
+// =============================================================================
+
+string G_SETTINGS = "--- General Settings ---"
+string G_THEME    = "--- Visual Theme ---"
+string G_ALERTS   = "--- Alerts ---"
+string G_SCOPE    = "--- Profile Scope ---"
+
+int    i_rowSize   = input.int(24, "Row Resolution", minval = 10, maxval = 500, group = G_SETTINGS, tooltip = "Higher values = smoother profile but more resource intensive.")
+float  i_vaPct     = input.float(70.0, "Value Area %", minval = 0, maxval = 100, group = G_SETTINGS)
+bool   i_showText  = input.bool(true, "Show Labels", group = G_SETTINGS)
+bool   i_showShift = input.bool(true, "Show POC Shift", group = G_SETTINGS)
+
+string i_theme     = input.string("Pro Dark", "Color Theme", options = ["Pro Dark", "Pro Light", "Midnight", "Custom"], group = G_THEME)
+
+string G_C_DAILY   = "--- Custom: Daily Settings ---"
+color  i_dcPoc     = input.color(#ffeb3b, "POC Color", group = G_C_DAILY)
+color  i_dcVa      = input.color(#fbc02d, "VA Color", group = G_C_DAILY)
+color  i_dcBg      = input.color(color.new(#ffeb3b, 85), "VA Background", group = G_C_DAILY)
+string i_dsPoc     = input.string(line.style_solid, "POC Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_DAILY)
+string i_dsVa      = input.string(line.style_dotted, "VA Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_DAILY)
+int    i_dwPoc     = input.int(2, "POC Width", group = G_C_DAILY)
+int    i_dwVa      = input.int(1, "VA Width", group = G_C_DAILY)
+
+string G_C_WEEK    = "--- Custom: Weekly Settings ---"
+color  i_wcPoc     = input.color(#2962ff, "POC Color", group = G_C_WEEK)
+color  i_wcVa      = input.color(#448aff, "VA Color", group = G_C_WEEK)
+color  i_wcBg      = input.color(color.new(#2962ff, 85), "VA Background", group = G_C_WEEK)
+string i_wsPoc     = input.string(line.style_solid, "POC Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_WEEK)
+string i_wsVa      = input.string(line.style_dashed, "VA Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_WEEK)
+int    i_wwPoc     = input.int(2, "POC Width", group = G_C_WEEK)
+int    i_wwVa      = input.int(1, "VA Width", group = G_C_WEEK)
+
+string G_C_MONTH   = "--- Custom: Monthly Settings ---"
+color  i_mcPoc     = input.color(#e040fb, "POC Color", group = G_C_MONTH)
+color  i_mcVa      = input.color(#ea80fc, "VA Color", group = G_C_MONTH)
+color  i_mcBg      = input.color(color.new(#e040fb, 85), "VA Background", group = G_C_MONTH)
+string i_msPoc     = input.string(line.style_solid, "POC Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_MONTH)
+string i_msVa      = input.string(line.style_dashed, "VA Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_MONTH)
+int    i_mwPoc     = input.int(2, "POC Width", group = G_C_MONTH)
+int    i_mwVa      = input.int(1, "VA Width", group = G_C_MONTH)
+
+string G_C_SESS    = "--- Custom: Session Settings ---"
+color  i_scPoc     = input.color(#00e5ff, "POC Color", group = G_C_SESS)
+color  i_scVa      = input.color(#18ffff, "VA Color", group = G_C_SESS)
+color  i_scBg      = input.color(color.new(#00e5ff, 85), "VA Background", group = G_C_SESS)
+string i_ssPoc     = input.string(line.style_solid, "POC Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_SESS)
+string i_ssVa      = input.string(line.style_dotted, "VA Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group = G_C_SESS)
+int    i_swPoc     = input.int(2, "POC Width", group = G_C_SESS)
+int    i_swVa      = input.int(1, "VA Width", group = G_C_SESS)
+
+
+bool   i_showD     = input.bool(true, "Daily Profile", group = G_SCOPE)
+bool   i_showW     = input.bool(true, "Weekly Profile", group = G_SCOPE)
+bool   i_showM     = input.bool(false, "Monthly Profile", group = G_SCOPE)
+bool   i_showS     = input.bool(false, "Session Profile", group = G_SCOPE)
+string i_sessStr   = input.session("0930-1600", "Session Time", group = G_SCOPE)
+int    i_weekStart = input.int(2, "Start of Week (1=Sun, 2=Mon)", options=[1, 2, 3, 4, 5, 6, 7], group = G_SCOPE)
+
+bool   i_useAlerts = input.bool(true, "Enable Crossing Alerts", group = G_ALERTS)
+int    i_alertDist = input.int(5, "Approach Distance (Ticks)", minval = 1, group = G_ALERTS)
+
+// =============================================================================
+// 2. QUANTITATIVE TYPES 
+// =============================================================================
+
+type VPSlot
+    float top
+    float bottom
+    float volume
+
+type VolumeProfile
+    array<float>  rawVol
+    array<float>  rawLow
+    array<float>  rawHigh
+    array<VPSlot> slots
+    
+    float sessionHigh
+    float sessionLow
+    float totalVolume
+    float maxSlotVol
+    
+    float pocPrice
+    float vahPrice
+    float valPrice
+    float prevPocPrice
+    int   pocIdx
+    int   startIndex
+    int   endIndex
+    int   allocatedRows
+    
+    line  lnPoc
+    line  lnVah
+    line  lnVal
+    label lblPoc
+    box   bxVa
+    
+    color cPoc
+    color cVa
+    color cBg
+    string stPoc
+    string stVa
+    int    wdPoc
+    int    wdVa
+
+// =============================================================================
+// 3. METHODS & LOGIC
+// =============================================================================
+
+method init(VolumeProfile this, int rows, color cPoc, color cVa, color cBg, string stPoc, string stVa, int wdPoc, int wdVa) =>
+    this.rawVol       := array.new<float>()
+    this.rawLow       := array.new<float>()
+    this.rawHigh      := array.new<float>()
+    this.slots        := array.new<VPSlot>(rows)
+    this.allocatedRows:= rows
+    
+    for i = 0 to rows - 1
+        this.slots.set(i, VPSlot.new(0.0, 0.0, 0.0))
+    
+    this.sessionHigh  := high
+    this.sessionLow   := low
+    this.totalVolume  := 0.0
+    this.prevPocPrice := na
+    this.lnPoc        := line(na)
+    this.lnVah        := line(na)
+    this.lnVal        := line(na)
+    this.lblPoc       := label(na)
+    this.bxVa         := box(na)
+    
+    this.cPoc         := cPoc
+    this.cVa          := cVa
+    this.cBg          := cBg
+    this.stPoc        := stPoc
+    this.stVa         := stVa
+    this.wdPoc        := wdPoc
+    this.wdVa         := wdVa
+
+method reset(VolumeProfile this, int newStartIndex) =>
+    this.prevPocPrice := this.pocPrice
+    this.rawVol.clear()
+    this.rawLow.clear()
+    this.rawHigh.clear()
+    
+    int slotCount = this.slots.size()
+    for i = 0 to slotCount - 1
+        VPSlot slotRef = this.slots.get(i)
+        slotRef.volume := 0.0
+     
+    this.totalVolume := 0.0
+    this.maxSlotVol  := 0.0
+    this.sessionHigh := high
+    this.sessionLow  := low
+    this.startIndex  := newStartIndex
+    
+    this.lnPoc       := line(na)
+    this.lnVah       := line(na)
+    this.lnVal       := line(na)
+    this.lblPoc      := label(na)
+    this.bxVa        := box(na)
+
+method addData(VolumeProfile this, float vol, float lo, float hi) =>
+    this.rawVol.push(vol)
+    this.rawLow.push(lo)
+    this.rawHigh.push(hi)
+    
+    this.sessionHigh := math.max(this.sessionHigh, hi)
+    this.sessionLow  := math.min(this.sessionLow, lo)
+
+method calculate(VolumeProfile this, int rows, float vaPct) =>
+    int dataSize = this.rawVol.size()
+    
+    if dataSize > 0
+        float sHigh     = this.sessionHigh
+        float sLow      = this.sessionLow
+        float rangeSize = sHigh - sLow
+        
+        if rangeSize > 0
+            float slotSize  = rangeSize / rows
+            float invRange  = rows / rangeSize
+            int   maxIdx    = rows - 1
+            float halfSlot  = slotSize * 0.5
+           
+            int slotCount = this.slots.size()
+      
+            for i = 0 to slotCount - 1
+                VPSlot s = this.slots.get(i)
+                s.bottom := sLow + (slotSize * i)
+                s.top    := sLow + (slotSize * (i + 1))
+                s.volume := 0.0
+ 
+            for i = 0 to dataSize - 1
+                float dVol = this.rawVol.get(i)
+                float dLo  = this.rawLow.get(i)
+                float dHi  = this.rawHigh.get(i)
+                float dRng = dHi - dLo
+                
+                int idxStart = int(math.min(maxIdx, math.max(0.0, math.floor((dLo - sLow) * invRange))))
+                int idxEnd   = int(math.min(maxIdx, math.floor((dHi - sLow) * invRange)))
+                
+                if idxStart <= idxEnd
+                    if dRng > 0
+                        float volPerPrice = dVol / dRng
+                        for j = idxStart to idxEnd
+                            VPSlot s = this.slots.get(j)
+                            float overlap = math.min(dHi, s.top) - math.max(dLo, s.bottom)
+                            if overlap > 0
+                                s.volume += volPerPrice * overlap
+                    else
+                        VPSlot dojiSlot = this.slots.get(idxStart)
+                        dojiSlot.volume += dVol
+
+            float maxV = 0.0
+            int   pIdx = 0
+            float tot  = 0.0
+            
+            for i = 0 to slotCount - 1
+                float slotVol = this.slots.get(i).volume
+                tot += slotVol
+                if slotVol > maxV
+                    maxV := slotVol
+                    pIdx := i
+                    
+            this.totalVolume := tot
+            this.maxSlotVol  := maxV
+            this.pocIdx      := pIdx
+            this.pocPrice    := sLow + (pIdx * slotSize) + halfSlot
+
+            float targetVaVol  = tot * (vaPct / 100.0)
+            float currentVaVol = maxV
+            int   vaTopIdx     = pIdx
+            int   vaBotIdx     = pIdx
+            int   lastIdx      = slotCount - 1
+            
+            while currentVaVol < targetVaVol
+                if vaTopIdx >= lastIdx and vaBotIdx <= 0
+                    break
+                    
+                float volAbove = vaTopIdx < lastIdx ? this.slots.get(vaTopIdx + 1).volume : 0.0
+                float volBelow = vaBotIdx > 0       ? this.slots.get(vaBotIdx - 1).volume : 0.0
+                
+                if volAbove >= volBelow
+                    if vaTopIdx < lastIdx
+                        vaTopIdx     += 1
+                        currentVaVol += volAbove
+                    else if vaBotIdx > 0
+                        vaBotIdx     -= 1
+                        currentVaVol += volBelow
+                else
+                    if vaBotIdx > 0
+                        vaBotIdx     -= 1
+                        currentVaVol += volBelow
+                    else if vaTopIdx < lastIdx
+                        vaTopIdx     += 1
+                        currentVaVol += volAbove
+
+            this.vahPrice := sLow + ((vaTopIdx + 1) * slotSize)
+            this.valPrice := sLow + (vaBotIdx * slotSize)
+        else
+            this.pocPrice    := sLow
+            this.vahPrice    := sLow
+            this.valPrice    := sLow
+            this.totalVolume := 0.0
+            for i = 0 to dataSize - 1
+                this.totalVolume += this.rawVol.get(i)
+
+method draw(VolumeProfile this, string typeStr, bool isLive, bool showShift) =>
+    if isLive
+        line.delete(this.lnPoc)
+        line.delete(this.lnVah)
+        line.delete(this.lnVal)
+        label.delete(this.lblPoc)
+        box.delete(this.bxVa) 
+
+    int endIdx   = this.endIndex
+    int startIdx = this.startIndex
+    
+    if not na(this.pocPrice)
+        this.lnPoc := line.new(startIdx, this.pocPrice, endIdx, this.pocPrice, color=this.cPoc, width=this.wdPoc, style=this.stPoc)
+        
+        if not na(this.vahPrice) and not na(this.valPrice)
+            this.lnVah := line.new(startIdx, this.vahPrice, endIdx, this.vahPrice, color=this.cVa, width=this.wdVa, style=this.stVa)
+            this.lnVal := line.new(startIdx, this.valPrice, endIdx, this.valPrice, color=this.cVa, width=this.wdVa, style=this.stVa)
+            this.bxVa  := box.new(startIdx, this.vahPrice, endIdx, this.valPrice, border_width=0, bgcolor=this.cBg)
+
+        if i_showText and barstate.islast
+            string labelTxt = typeStr + "-POC: " + str.tostring(this.pocPrice, format.mintick)
+            
+            if showShift and not na(this.prevPocPrice)
+                float diff   = this.pocPrice - this.prevPocPrice
+                string arrow = diff > 0 ? "▲" : (diff < 0 ? "▼" : "=")
+                labelTxt    := labelTxt + "\n(" + arrow + " " + str.tostring(math.abs(diff), format.mintick) + ")"
+
+            this.lblPoc := label.new(endIdx + 5, this.pocPrice, 
+                 labelTxt, 
+                 style=label.style_label_left, 
+                 color=color.new(color.black, 100), 
+                 textcolor=this.cPoc, 
+                 size=size.small)
+
+method checkAlerts(VolumeProfile this, string typeStr, int proxTicks, bool useAlerts, bool xPoc, bool xVah, bool xVal) =>
+    if useAlerts and not na(this.pocPrice) and not na(this.vahPrice) and not na(this.valPrice)
+        float dist = proxTicks * syminfo.mintick
+        string msg = ""
+        
+        if xPoc
+            msg := typeStr + " POC Crossing: " + str.tostring(close)
+            alert(msg, alert.freq_once_per_bar)
+        else if math.abs(close - this.pocPrice) <= dist
+            msg := typeStr + " POC Approaching: " + str.tostring(close)
+            alert(msg, alert.freq_once_per_bar)
+            
+        if xVah
+            msg := typeStr + " VAH Crossing: " + str.tostring(close)
+            alert(msg, alert.freq_once_per_bar)
+        else if math.abs(close - this.vahPrice) <= dist
+            msg := typeStr + " VAH Approaching: " + str.tostring(close)
+            alert(msg, alert.freq_once_per_bar)
+
+        if xVal
+            msg := typeStr + " VAL Crossing: " + str.tostring(close)
+            alert(msg, alert.freq_once_per_bar)
+        else if math.abs(close - this.valPrice) <= dist
+            msg := typeStr + " VAL Approaching: " + str.tostring(close)
+            alert(msg, alert.freq_once_per_bar)
+
+// =============================================================================
+// 4. COLOR THEME & MAIN LOGIC
+// =============================================================================
+
+var color t_dPoc = na, var color t_dVa = na, var color t_dBg = na
+var color t_wPoc = na, var color t_wVa = na, var color t_wBg = na
+var color t_mPoc = na, var color t_mVa = na, var color t_mBg = na
+var color t_sPoc = na, var color t_sVa = na, var color t_sBg = na
+
+var string s_dPoc = na, var string s_dVa = na, var int w_dPoc = 2, var int w_dVa = 1
+var string s_wPoc = na, var string s_wVa = na, var int w_wPoc = 2, var int w_wVa = 1
+var string s_mPoc = na, var string s_mVa = na, var int w_mPoc = 2, var int w_mVa = 1
+var string s_sPoc = na, var string s_sVa = na, var int w_sPoc = 2, var int w_sVa = 1
+
+if bar_index == 0
+    s_dPoc := line.style_solid, s_dVa := line.style_dotted
+    s_wPoc := line.style_solid, s_wVa := line.style_dashed
+    s_mPoc := line.style_solid, s_mVa := line.style_dashed
+    s_sPoc := line.style_solid, s_sVa := line.style_dotted
+    
+    if i_theme == "Custom"
+        t_dPoc := i_dcPoc, t_dVa := i_dcVa, t_dBg := i_dcBg
+        t_wPoc := i_wcPoc, t_wVa := i_wcVa, t_wBg := i_wcBg
+        t_mPoc := i_mcPoc, t_mVa := i_mcVa, t_mBg := i_mcBg
+        t_sPoc := i_scPoc, t_sVa := i_scVa, t_sBg := i_scBg
+        
+        s_dPoc := i_dsPoc, s_dVa := i_dsVa, w_dPoc := i_dwPoc, w_dVa := i_dwVa
+        s_wPoc := i_wsPoc, s_wVa := i_wsVa, w_wPoc := i_wwPoc, w_wVa := i_wwVa
+        s_mPoc := i_msPoc, s_mVa := i_msVa, w_mPoc := i_mwPoc, w_mVa := i_mwVa
+        s_sPoc := i_ssPoc, s_sVa := i_ssVa, w_sPoc := i_swPoc, w_sVa := i_swVa
+        
+    else if i_theme == "Pro Dark"
+        t_dPoc := #ffeb3b, t_dVa := #fbc02d, t_dBg := color.new(#ffeb3b, 85)
+        t_wPoc := #2962ff, t_wVa := #448aff, t_wBg := color.new(#2962ff, 85)
+        t_mPoc := #e040fb, t_mVa := #ea80fc, t_mBg := color.new(#e040fb, 85)
+        t_sPoc := #00e5ff, t_sVa := #18ffff, t_sBg := color.new(#00e5ff, 85)
+    else if i_theme == "Pro Light"
+        t_dPoc := #f57f17, t_dVa := #f9a825, t_dBg := color.new(#f57f17, 80)
+        t_wPoc := #0d47a1, t_wVa := #1565c0, t_wBg := color.new(#0d47a1, 80)
+        t_mPoc := #aa00ff, t_mVa := #d500f9, t_mBg := color.new(#aa00ff, 80)
+        t_sPoc := #006064, t_sVa := #0097a7, t_sBg := color.new(#006064, 80)
+    else 
+        color cW = color.white, color cS = color.silver, color cG = color.new(color.gray, 92)
+        t_dPoc := cW, t_dVa := cS, t_dBg := cG
+        t_wPoc := cW, t_wVa := cS, t_wBg := cG
+        t_mPoc := cW, t_mVa := cS, t_mBg := cG
+        t_sPoc := cW, t_sVa := cS, t_sBg := cG
+
+var VolumeProfile dailyVP   = VolumeProfile.new()
+var VolumeProfile weeklyVP  = VolumeProfile.new()
+var VolumeProfile monthlyVP = VolumeProfile.new()
+var VolumeProfile sessionVP = VolumeProfile.new()
+
+if bar_index == 0
+    dailyVP.init(i_rowSize, t_dPoc, t_dVa, t_dBg, s_dPoc, s_dVa, w_dPoc, w_dVa)
+    weeklyVP.init(i_rowSize, t_wPoc, t_wVa, t_wBg, s_wPoc, s_wVa, w_wPoc, w_wVa)
+    monthlyVP.init(i_rowSize, t_mPoc, t_mVa, t_mBg, s_mPoc, s_mVa, w_mPoc, w_mVa)
+    sessionVP.init(i_rowSize, t_sPoc, t_sVa, t_sBg, s_sPoc, s_sVa, w_sPoc, w_sVa)
+    
+    dailyVP.startIndex   := 0
+    weeklyVP.startIndex  := 0
+    monthlyVP.startIndex := 0
+    sessionVP.startIndex := 0
+
+bool isNewDay    = ta.change(time("D")) != 0
+bool isNewMonth  = ta.change(time("M")) != 0
+int  dayNum      = dayofweek
+bool isStartDay  = dayNum == i_weekStart
+bool isNewWeek   = isNewDay and isStartDay
+bool inSession   = not na(time(timeframe.period, i_sessStr))
+bool isNewSession= inSession and not inSession[1]
+
+// ---------------------------
+// Process Daily Profile
+// ---------------------------
+if i_showD
+    if isNewDay
+        dailyVP.endIndex := bar_index - 1
+        if dailyVP.rawVol.size() > 0
+            dailyVP.calculate(i_rowSize, i_vaPct)
+            dailyVP.draw("D", false, i_showShift)
+        dailyVP.reset(bar_index)
+
+    dailyVP.addData(volume, low, high)
+
+    bool xPoc = ta.cross(close, dailyVP.pocPrice)
+    bool xVah = ta.cross(close, dailyVP.vahPrice)
+    bool xVal = ta.cross(close, dailyVP.valPrice)
+
+    if barstate.islast
+        dailyVP.endIndex := bar_index
+        dailyVP.calculate(i_rowSize, i_vaPct)
+        dailyVP.draw("D", true, i_showShift)
+        dailyVP.checkAlerts("Daily", i_alertDist, i_useAlerts, xPoc, xVah, xVal)
+
+// ---------------------------
+// Process Weekly Profile
+// ---------------------------
+if i_showW
+    if isNewWeek
+        weeklyVP.endIndex := bar_index - 1
+        if weeklyVP.rawVol.size() > 0
+            weeklyVP.calculate(i_rowSize, i_vaPct)
+            weeklyVP.draw("W", false, i_showShift)
+        weeklyVP.reset(bar_index)
+
+    weeklyVP.addData(volume, low, high)
+
+    bool xPoc = ta.cross(close, weeklyVP.pocPrice)
+    bool xVah = ta.cross(close, weeklyVP.vahPrice)
+    bool xVal = ta.cross(close, weeklyVP.valPrice)
+
+    if barstate.islast
+        weeklyVP.endIndex := bar_index
+        weeklyVP.calculate(i_rowSize, i_vaPct)
+        weeklyVP.draw("W", true, i_showShift)
+        weeklyVP.checkAlerts("Weekly", i_alertDist, i_useAlerts, xPoc, xVah, xVal)
+
+// ---------------------------
+// Process Monthly Profile
+// ---------------------------
+if i_showM
+    if isNewMonth
+        monthlyVP.endIndex := bar_index - 1
+        if monthlyVP.rawVol.size() > 0
+            monthlyVP.calculate(i_rowSize, i_vaPct)
+            monthlyVP.draw("M", false, i_showShift)
+        monthlyVP.reset(bar_index)
+
+    monthlyVP.addData(volume, low, high)
+
+    bool xPoc = ta.cross(close, monthlyVP.pocPrice)
+    bool xVah = ta.cross(close, monthlyVP.vahPrice)
+    bool xVal = ta.cross(close, monthlyVP.valPrice)
+
+    if barstate.islast
+        monthlyVP.endIndex := bar_index
+        monthlyVP.calculate(i_rowSize, i_vaPct)
+        monthlyVP.draw("M", true, i_showShift)
+        monthlyVP.checkAlerts("Monthly", i_alertDist, i_useAlerts, xPoc, xVah, xVal)
+
+// ---------------------------
+// Process Session Profile
+// ---------------------------
+if i_showS
+    if isNewSession
+        sessionVP.endIndex := bar_index - 1
+        if sessionVP.rawVol.size() > 0
+            sessionVP.calculate(i_rowSize, i_vaPct)
+            sessionVP.draw("S", false, i_showShift)
+        sessionVP.reset(bar_index)
+
+    if inSession
+        sessionVP.addData(volume, low, high)
+
+    bool xPoc = ta.cross(close, sessionVP.pocPrice)
+    bool xVah = ta.cross(close, sessionVP.vahPrice)
+    bool xVal = ta.cross(close, sessionVP.valPrice)
+
+    if barstate.islast and inSession
+        sessionVP.endIndex := bar_index
+        sessionVP.calculate(i_rowSize, i_vaPct)
+        sessionVP.draw("S", true, i_showShift)
+        sessionVP.checkAlerts("Session", i_alertDist, i_useAlerts, xPoc, xVah, xVal)
