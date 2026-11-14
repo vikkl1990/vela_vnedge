@@ -875,5 +875,22 @@
     },
     "edge": true,
     "exitMode": "levels"
+  },
+  "liquidity-void-detector-zeiierman-author-direction": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Buy-Side Imbalance",
+      "Sell-Side Imbalance"
+    ],
+    "sides": {
+      "Buy-Side Imbalance": "short",
+      "Sell-Side Imbalance": "long"
+    },
+    "edge": true,
+    "exitMode": "levels"
   }
 }

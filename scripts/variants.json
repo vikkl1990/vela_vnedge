@@ -70,5 +70,11 @@
     "base": "triangular-hull-moving-average-volatility",
     "name": "Triangular Hull Moving Average Volatility | author signals",
     "why": "Exact source-direction contract; independent evidence, disabled by default. Author provides signal/structure; exits remain the bot policy, not a claimed native lifecycle."
+  },
+  {
+    "id": "liquidity-void-detector-zeiierman-author-direction",
+    "base": "liquidity-void-detector-zeiierman",
+    "name": "Liquidity Void Detector | refill direction (research)",
+    "why": "Author and raw source describe Buy-Side Imbalance as downward refill and Sell-Side Imbalance as upward refill. This tests that direction separately; threshold observations are a hypothesis, not a complete author trading strategy. Bot exits and independent evidence are required."
   }
 ]

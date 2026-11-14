@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from author_review_records import load_records
 
 
 def build(args):
@@ -56,6 +57,12 @@ def build(args):
         if not r.get('reviewedAt') or 'reviewVersion' not in r or 'reviewUpdatedAt' not in r:
             raise ValueError('Manual review needs pinned publication revision and review time: ' + key)
         reviews[key] = dict(r)
+    blocked = {}
+    if args.review_receipts:
+        completed, blocked = load_records(args.review_receipts, repo)
+        if set(completed) & set(reviews):
+            raise ValueError('A completion receipt would replace an existing author review')
+        reviews.update(completed)
     publications = {}
     scripts = {}
     notes = json.loads((research / 'integration-notes.json').read_text())
@@ -74,6 +81,8 @@ def build(args):
             reviewedAt=None, role=None, summary=None, requirements=None, reviewVersion=None, reviewUpdatedAt=None)
         if key in reviews:
             publication.update(reviews[key])
+        if key in blocked:
+            publication['reviewBlocker'] = blocked[key]
         publications[key] = publication
     catalog = dict(schema=1, generatedAt=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         sourceStudy=dict(revision=revision, path='docs/research/script-study-2026-11-12/contracts.jsonl',
@@ -96,4 +105,5 @@ if __name__ == '__main__':
     parser.add_argument('--research', required=True)
     parser.add_argument('--study-repo', required=True)
     parser.add_argument('--willy-review', required=True)
+    parser.add_argument('--review-receipts', help='Checkpointed, source-pinned author review directory')
     build(parser.parse_args())

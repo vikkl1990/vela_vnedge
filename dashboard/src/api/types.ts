@@ -879,7 +879,9 @@ export interface LibraryDetail extends LibraryEntry {
 export interface AuthorReview {
   asOf: string; sourceStatus: 'unreviewed' | 'matches' | 'changed'; sourceReviewedAt: string | null
   sourceHash: string; reviewedSourceHash: string | null; descriptionStatus: 'unavailable' | 'retrieved' | 'changed' | 'reviewed'
-  publication: { url: string; author: string | null; retrievedAt: string | null; updatedAt: string | null; version: number | null; reviewedAt: string | null; role: string | null; summary: string | null; requirements: string | null } | null
+  publication: { url: string; author: string | null; retrievedAt: string | null; updatedAt: string | null; version: number | null; reviewedAt: string | null; role: string | null; summary: string | null; requirements: string | null; reviewBlocker?: { blocker: string; checkedAt: string | null } } | null
+  reconciliationStatus: 'unreviewed' | 'publication changed' | 'description only' | 'matches' | 'source changed or not inspected'
+  reconciliation: { sourceChecked: boolean; scope: string; findings: Array<{ kind: string; marker: string; evidence: string; sourceLine: number | null; action: string }> } | null
   contract: { type: string; idea: string; entries: Array<{ marker: string; channel: string; side: string; line: number; condition: string }>; notEntries: Array<{ marker: string; channel: string; role: string; line: number }>; stop: { has: boolean; how: string }; targets: { has: boolean; how: string }; exit: { has: boolean; how: string }; timing: { note: string; knownAtClose: boolean; pivotLagBars: number; lookahead: string; repaints: boolean }; claims: Array<{ marker: string; problem: string; line: number; evidence: string }> } | null
   claimMeaning: string; integrationNotes: string[]; patches: string[]; admission: string
   reading: { reader: number; sources: string[] | null; labels: string[] | null; sides: Record<string, string> | null; exitMode: string; entryProtection: string }

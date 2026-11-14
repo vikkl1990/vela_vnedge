@@ -1,0 +1,256 @@
+{
+  "at": "2026-11-14T03:42:58.062Z",
+  "symbol": "ETHUSD",
+  "tf": "15m",
+  "bars": 2000,
+  "from": 1792123200000,
+  "to": 1793922300000,
+  "scope": "Historical source-output and prefix stability checks only; not an execution/profit backtest and not promotion evidence. All production risk settings remain unchanged.",
+  "rows": [
+    {
+      "id": "structure-anchored-vwap-upstream-2-0",
+      "sourceSha256": "615d87562a417f16e63f360612aff3bc27448a21bb3137a8eb72a84b5079d22e",
+      "sourceChangedAgainstControl": true,
+      "control": "structure-anchored-vwap",
+      "entries": 22,
+      "longs": 11,
+      "shorts": 11,
+      "exits": 39,
+      "stopUpdates": 8,
+      "controlEntries": 19,
+      "controlExits": 19,
+      "prefixChecks": [
+        {
+          "at": 1792499400000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,2399.35,2411.11,[2387.59,2375.84,2364.08],\"SHORT\",\"alert\",1792499400000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,2399.35,2411.11,[2387.59,2375.84,2364.08],\"SHORT\",\"alert\",1792499400000]"
+          ]
+        },
+        {
+          "at": 1793087100000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,2314.05,2324.66,[2303.44,2292.84,2282.23],\"SHORT\",\"alert\",1793087100000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,2314.05,2324.66,[2303.44,2292.84,2282.23],\"SHORT\",\"alert\",1793087100000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "synapse-trail-pro-author-native",
+      "sourceSha256": "f8f2c37e37c8a9527a732254bf82a297f93ba47bb16fbcf0f8ba4542360592b2",
+      "sourceChangedAgainstControl": false,
+      "control": "synapse-trail-pro",
+      "entries": 44,
+      "longs": 22,
+      "shorts": 22,
+      "exits": 104,
+      "stopUpdates": 23,
+      "controlEntries": 42,
+      "controlExits": 13,
+      "prefixChecks": [
+        {
+          "at": 1792499400000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,2399.35,2387.6,[2411.1,2422.85,2434.6],\"LONG\",\"alert\",1792499400000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,2399.35,2387.6,[2411.1,2422.85,2434.6],\"LONG\",\"alert\",1792499400000]"
+          ]
+        },
+        {
+          "at": 1792794600000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,2381.45,2391,[2371.9,2362.35,2352.8],\"SHORT\",\"alert\",1792794600000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,2381.45,2391,[2371.9,2362.35,2352.8],\"SHORT\",\"alert\",1792794600000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "liquidity-trail-matrix-author-native",
+      "sourceSha256": "1d5aae3f3abf131ba052a994276850847e408c18b712a4706e66d85ff1c04121",
+      "sourceChangedAgainstControl": false,
+      "control": "liquidity-trail-matrix",
+      "entries": 31,
+      "longs": 12,
+      "shorts": 19,
+      "exits": 76,
+      "stopUpdates": 19,
+      "controlEntries": 31,
+      "controlExits": 26,
+      "prefixChecks": [
+        {
+          "at": 1792504800000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,2467.5,2404.72,[2530.28,2593.06,2655.85],\"LONG\",\"alert\",1792504800000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,2467.5,2404.72,[2530.28,2593.06,2655.85],\"LONG\",\"alert\",1792504800000]"
+          ]
+        },
+        {
+          "at": 1792964700000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,2332,2338.47,[2325.53,2319.07,2312.6],\"SHORT\",\"alert\",1792964700000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,2332,2338.47,[2325.53,2319.07,2312.6],\"SHORT\",\"alert\",1792964700000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "high-volume-pivot-support-resistance-zones-author-signals",
+      "sourceSha256": "8f92751949a7c4fa439e2996970b5b0ab74c8cc1fd48f02c74638bf24b31fd61",
+      "sourceChangedAgainstControl": false,
+      "control": "high-volume-pivot-support-resistance-zones",
+      "entries": 92,
+      "longs": 52,
+      "shorts": 40,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 64,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792483200000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"Flipped Sup Retest\",\"shape\",1792483200000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"Flipped Sup Retest\",\"shape\",1792483200000]"
+          ]
+        },
+        {
+          "at": 1792584000000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"Resistance Hold Retest\",\"shape\",1792584000000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"Resistance Hold Retest\",\"shape\",1792584000000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dynamic-trend-bands-anchored-vwap-signals-author-signals",
+      "sourceSha256": "d8713120af4565c8de65dfc46d5e23cfa1a04d71a89085963f9b3f815bee98f0",
+      "sourceChangedAgainstControl": false,
+      "control": "dynamic-trend-bands-anchored-vwap-signals",
+      "entries": 49,
+      "longs": 17,
+      "shorts": 32,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 17,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792532700000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,null,null,[],\"Break Up Triangle\",\"shape\",1792532700000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,null,null,[],\"Break Up Triangle\",\"shape\",1792532700000]"
+          ]
+        },
+        {
+          "at": 1792793700000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"Break Dn Triangle\",\"shape\",1792793700000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"Break Dn Triangle\",\"shape\",1792793700000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "triangular-hull-moving-average-volatility-author-signals",
+      "sourceSha256": "28a1cd0bb4e243f1a8a34177ae622c294c7e461bb5a37142bcf944c55b6153fa",
+      "sourceChangedAgainstControl": false,
+      "control": "triangular-hull-moving-average-volatility",
+      "entries": 65,
+      "longs": 32,
+      "shorts": 33,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 32,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792502100000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"long\",null,null,null,[],\"Up\",\"shape\",1792502100000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"long\",null,null,null,[],\"Up\",\"shape\",1792502100000]"
+          ]
+        },
+        {
+          "at": 1792747800000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"Dn\",\"shape\",1792747800000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"Dn\",\"shape\",1792747800000]"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "liquidity-void-detector-zeiierman-author-direction",
+      "sourceSha256": "f16031b51b8dadac052e8db5a23f6c913b837ba5cbcaa5d90fbe5d6e3b4ad6df",
+      "sourceChangedAgainstControl": false,
+      "control": "liquidity-void-detector-zeiierman",
+      "entries": 62,
+      "longs": 25,
+      "shorts": 37,
+      "exits": 0,
+      "stopUpdates": 0,
+      "controlEntries": 62,
+      "controlExits": 0,
+      "prefixChecks": [
+        {
+          "at": 1792524600000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"Buy-Side Imbalance\",\"alertcondition\",1792524600000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"Buy-Side Imbalance\",\"alertcondition\",1792524600000]"
+          ]
+        },
+        {
+          "at": 1792671300000,
+          "matches": true,
+          "full": [
+            "[\"entry\",\"short\",null,null,null,[],\"Buy-Side Imbalance\",\"alertcondition\",1792671300000]"
+          ],
+          "prefix": [
+            "[\"entry\",\"short\",null,null,null,[],\"Buy-Side Imbalance\",\"alertcondition\",1792671300000]"
+          ]
+        }
+      ]
+    }
+  ]
+}
