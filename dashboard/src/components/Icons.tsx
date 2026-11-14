@@ -185,3 +185,31 @@ export const IconPanelLeft = ({ size = 16, ...p }: P) => (
     <path d="M9 4v16" />
   </svg>
 )
+
+export const IconSearch = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="M20 20l-4.2-4.2" />
+  </svg>
+)
+export const IconChevronDown = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+)
+export const IconLogOut = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M16 8l4 4-4 4M20 12H9" />
+  </svg>
+)
+export const IconKeyboard = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <rect x="3" y="6" width="18" height="12" rx="2" />
+    <path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" />
+  </svg>
+)
+export const IconCornerDownLeft = ({ size = 16, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M20 5v6a2 2 0 0 1-2 2H5M9 9l-4 4 4 4" />
+  </svg>
+)
