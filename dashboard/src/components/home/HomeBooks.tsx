@@ -1,3 +1,5 @@
+import { mlState, aucEvidence } from '../../lib/mlPresentation'
+import { quietShadowCount, screenMeanR } from '../../lib/bookEvidence'
 import { liveStatus } from '../../lib/liveStatus'
 import { useMemo, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
@@ -14,8 +16,6 @@ import { BookCard, BookDot } from '../kit/books'
 function useIncubatorView() {
   return useQuery({ queryKey: ['incubator'], queryFn: api.incubator, refetchInterval: 60_000, staleTime: 20_000 })
 }
-
-const DAY = 86_400_000
 
 // ---------- Live status ----------
 
@@ -126,8 +126,8 @@ export function BookCards() {
         <BookCard
           book="backtest"
           state={queue.data ? (queue.data.running ? 'Running' : 'Idle') : '–'}
-          headline={scripts ? String(scripts.length) : '–'}
-          sub={scripts ? `scripts in the library · ${onLadder} have a pair on the ladder (candidate, shadow or live)${lastScreen ? ` · last screen ${new Date(lastScreen).toISOString().slice(0, 16).replace('T', ' ')} UTC` : ''}` : 'Replay on history'}
+          headline={scripts ? `${scripts.length} catalogued` : '–'}
+          sub={scripts ? `scripts in the library · ${onLadder} have a pair on the ladder (candidate, shadow or account)${lastScreen ? ` · last screen ${new Date(lastScreen).toISOString().slice(0, 16).replace('T', ' ')} UTC` : ''}` : 'Replay on history'}
           footer={<Link to="/lab">Open the Lab</Link>}
         />
       </div>
@@ -159,7 +159,7 @@ export function PromotionLadder() {
 
   const pairs = inc.data?.pairs
   const now = learning.data?.at ?? 0
-  const shadowQuiet = pairs?.filter((p) => p.stage === 'shadow' && (p.lastTradeAt != null ? now - p.lastTradeAt > 30 * DAY : (p.stats?.trades ?? 0) === 0)).length ?? null
+  const shadowQuiet = pairs && now > 0 ? quietShadowCount(pairs, now) : null
   const cand = inc.data?.candidates
   const blocked = cand ? Math.max(0, cand.passed - cand.counts.admissible) : null
 
@@ -176,15 +176,15 @@ export function PromotionLadder() {
       </div>
       <div className="home-stages">
         <Stage
-          book="backtest" name="BACKTEST" count={num('candidate') ?? '–'} what="pairs passed the screen"
+          book="backtest" name="BACKTEST" count={num('candidate') ?? '–'} what="candidate cells; screen freshness checked on admission"
           gate={cfg ? `${cfg.screen.minTrades}+ trades, profit factor ${cfg.screen.minProfitFactor}+, ${cfg.screen.minWindowsUp} of ${cfg.screen.slices} windows up, after ${cfg.screen.stressBps} bps of stress` : undefined}
         />
         <Stage
           book="shadow" name="SHADOW" count={num('shadow') ?? '–'} what={proposed ? `collecting live evidence, ${proposed} proposed` : 'collecting live evidence'}
-          gate={cfg ? `${cfg.gate.minTrades} trades over ${cfg.gate.minDays}+ days, profit factor ${cfg.gate.minPfR}+, ${cfg.gate.minPositiveWeeksPct}% positive weeks, ${fmtR(cfg.gate.minAvgR)} a trade` : undefined}
+          gate={cfg ? `Default gate; timeframe and policy checks also apply: ${cfg.gate.minTrades} trades over ${cfg.gate.minDays}+ days, profit factor ${cfg.gate.minPfR}+, ${cfg.gate.minPositiveWeeksPct}% positive weeks, ${fmtR(cfg.gate.minAvgR)} a trade` : undefined}
         />
         <Stage
-          book="paper" name="PAPER" count={num('live') ?? '–'} what="trading the paper account"
+          book="paper" name="PAPER" count={num('live') ?? '–'} what="account allocations; not a fill count"
           gate={checks.length ? `all ${checks.length} go-live checks pass` : undefined}
         />
         <Stage book="live" name="LIVE" count="–" what="strategy-level live evidence not reported" />
@@ -214,10 +214,10 @@ export function RealityGap() {
   const l = learning.data
 
   const screens = (inc.data?.pairs ?? []).map((p) => p.screen).filter((x): x is NonNullable<typeof x> => !!x && x.pass && Number.isFinite(x.avgR))
-  const screenAvg = screens.length ? screens.reduce((a, x) => a + x.avgR, 0) / screens.length : null
+  const screenAvg = screenMeanR(screens)
 
   const rows: GapRow[] = [
-    { key: 'backtest', book: 'backtest', label: 'Backtest screen', value: screenAvg, tip: screenAvg == null ? 'No pair has passed its screen yet, so there is no screen average to show.' : `Mean of the screen's average R over ${screens.length} pairs that passed it` },
+    { key: 'backtest', book: 'backtest', label: 'Backtest screen', value: screenAvg, tip: screenAvg == null ? 'No pair has passed its screen yet, so there is no screen average to show.' : `Trade-weighted screen R over ${screens.length} pairs that passed it` },
     { key: 'shadow', book: 'shadow', label: 'Shadow, forward', value: l && l.shadow.trades > 0 ? l.shadow.avgR : null, tip: l ? `${l.shadow.trades} shadow trades in ${l.shadow.windowDays ?? 30} days` : undefined },
     { key: 'paper', book: 'paper', label: 'Paper, available history', value: l && l.live.trades > 0 ? l.live.avgR : null, tip: l ? `${l.live.trades} paper trades` : undefined },
     {
@@ -250,39 +250,32 @@ export function RealityGap() {
 
 // ---------- ML advisor ----------
 
-const MODES = ['Off', 'Advise', 'Size', 'Gate'] as const
-
 export function MlAdvisor() {
   const ml = useMl()
   const yard = useMlYardstick()
   const m = ml.data
   const model = m?.global?.model ?? null
   const auc = model?.auc ?? null
-  const asScore = m?.config?.useAsScore === true
-  const current: (typeof MODES)[number] = asScore ? 'Gate' : 'Off'
+  const state = mlState(ml.isError ? undefined : m?.config)
   return (
     <section className="home-panel home-ml" aria-label="ML advisor">
       <div className="home-panel-head">
         <h2>ML advisor</h2>
-        <span className="home-ml-pill">{asScore ? 'In use' : auc != null && auc < 0.55 ? 'Off, no skill yet' : 'Off'}</span>
+        <span className="home-ml-pill">{state.label}</span>
       </div>
-      <div className="home-modes" role="list" aria-label="Advisor modes" title="The configuration has one switch today: the model score is either used or not. Off and Gate are the two states it can be in.">
-        {MODES.map((x) => (
-          <div key={x} role="listitem" className={`home-mode ${x === current ? 'on' : ''}`} aria-current={x === current ? 'true' : undefined}>{x}</div>
-        ))}
-      </div>
+      <p className="home-note">{state.detail}</p>
       <div className="home-auc">
         <span className="home-auc-num mono">{auc != null ? auc.toFixed(2) : '–'}</span>
         <span className="home-auc-text">
-          {auc == null ? (ml.isLoading ? 'Loading the model.' : 'No model has been trained yet.') : <>out-of-sample AUC on weeks it never saw.{auc < 0.55 ? ' A coin flip.' : ''}</>}
+          {auc == null ? (ml.isLoading ? 'Loading the model.' : ml.isError ? 'Model data is unavailable.' : 'No global model is reported.') : <>AUC on the time-ordered held-out test sample. {aucEvidence(auc)}</>}
         </span>
       </div>
       {m && model && (
         <span className="home-note">
-          Trained on {m.samples.toLocaleString('en-US')} trades{m.trainedAt ? ` on ${new Date(m.trainedAt).toISOString().slice(0, 10)}` : ''}, tested on {model.holdout.toLocaleString('en-US')} it did not see.
+          Evaluation dataset: {m.samples.toLocaleString('en-US')} samples{m.trainedAt ? ` on ${new Date(m.trainedAt).toISOString().slice(0, 10)}` : ''}, {model.holdout.toLocaleString('en-US')} held out for testing.
         </span>
       )}
-      <span className="home-note">It unlocks only when it beats taking every signal on weeks it never saw.{yard.data?.call?.text ? ` Yardstick: ${yard.data.call.text}` : ''}</span>
+      <span className="home-note">A profitable gate needs a frozen forward evaluation. AUC alone does not switch any setting.{yard.data?.call?.text ? ` Yardstick: ${yard.data.call.text}` : ''}</span>
       <Link to="/lab#ml" className="home-link">Open the ML workbench</Link>
     </section>
   )

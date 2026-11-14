@@ -1,5 +1,6 @@
+import { mlState, aucEvidence } from '../lib/mlPresentation'
 import { Link } from 'react-router-dom'
-import { useLibraryDetail, useMlScanner } from '../api/queries'
+import { useLibraryDetail, useMl, useMlScanner } from '../api/queries'
 import type { LibraryDetail, Scanner } from '../api/types'
 import { BookChip } from '../components/kit/books'
 import { EmptyState } from '../components/kit'
@@ -16,11 +17,10 @@ import '../styles/pages/strategy-books.css'
 const NOT_YET = 'opens after the previous step'
 const FILLED: Record<Book, string> = {
   backtest: 'Bar fills on history, costs charged.',
-  shadow: 'Live prices, priced at the tape, fees charged. No money.',
+  shadow: 'Simulated fills on live market data, with fees. Fill source depends on execution policy.',
   paper: 'The simulated account on live prices.',
-  live: 'Real orders on the exchange. Off.',
+  live: 'Production orders and fills are verified separately on Exchange.',
 }
-const MIN_AUC = 0.55
 /** The incubator's stage names in the ladder's words ("live" there means the paper account, not real money). */
 const STAGE_WORD: Record<string, string> = { live: 'in the paper account', shadow: 'in shadow', proposed: 'proposed for promotion', tracked: 'tracked', candidate: 'candidate', retired: 'retired', demote_proposed: 'proposed for demotion' }
 
@@ -48,20 +48,16 @@ function BooksBody({ d, s, onOpenReading, id }: { d: LibraryDetail; s: Scanner; 
   const screenAvgR = rTrades > 0 ? rWeighted.reduce((a, p) => a + p.screen!.avgR! * p.screen!.trades!, 0) / rTrades : null
   const passed = screens.filter((p) => p.screen!.pass).length
 
-  const paperN = st && st.trades > 0 ? st.trades : d.paper?.n ?? 0
-  const ladder = ladderOf({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN })
-  const next = nextStep({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN, runs: d.status !== 'fails', quarantined: d.status === 'quarantined' })
+  const paperN = d.paper?.n ?? 0
+  const ladder = ladderOf({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN, enabled: d.enabled, runs: d.status === 'runs' })
+  const next = nextStep({ stages: d.stages, shadowTrades: d.shadow?.n, paperTrades: paperN, enabled: d.enabled, runs: d.status === 'runs', quarantined: d.status === 'quarantined' })
 
   const nums: Record<Book, BookNumbers | null> = {
     backtest: screens.length
       ? { trades: screenTrades, win: null, avgR: screenAvgR, net: null, sub: `${passed} of ${screens.length} ${screens.length === 1 ? 'pair' : 'pairs'} passed the screen` }
       : warm ? { trades: warm.trades, win: warm.winRatePct, avgR: null, net: null, sub: `Warm run, profit factor ${fmtProfitFactor(warm.profitFactor)}` } : null,
     shadow: d.shadow ? { trades: d.shadow.n, win: d.shadow.win * 100, avgR: d.shadow.n ? d.shadow.r / d.shadow.n : null, net: null, sub: 'Last 30 days' } : null,
-    paper: paperN > 0
-      ? st && st.trades > 0
-        ? { trades: st.trades, win: st.winRatePct, avgR: st.avgR, net: st.pnl, sub: `Profit factor ${fmtProfitFactor(st.profitFactor)}` }
-        : { trades: d.paper!.n, win: null, avgR: d.paper!.r / d.paper!.n, net: d.paper!.net }
-      : null,
+    paper: d.paper ? { trades: d.paper.n, win: st?.trades === paperN ? st.winRatePct : null, avgR: paperN ? d.paper.r / paperN : null, net: d.paper.net, sub: 'Recorded history with risk data' } : null,
     live: null,
   }
 
@@ -74,12 +70,10 @@ function BooksBody({ d, s, onOpenReading, id }: { d: LibraryDetail; s: Scanner; 
     shadow: d.shadow
       ? { big: fmtR(d.shadow.r), sub: `${fmtInt(d.shadow.n)} ${d.shadow.n === 1 ? 'trade' : 'trades'} in 30 days · ${Math.round(d.shadow.win * 100)}% won`, bigTone: tone(d.shadow.r) }
       : { big: '–', sub: ladder.steps.backtest === 'todo' ? 'Opens after the backtest screen' : 'No shadow trades in the last 30 days' },
-    paper: paperN > 0
-      ? { big: st && st.trades > 0 ? usd(st.pnl) : usd(d.paper!.net), sub: `${fmtInt(paperN)} ${paperN === 1 ? 'trade' : 'trades'}${st && st.trades > 0 ? ` · average ${fmtR(st.avgR)}` : ''}`, bigTone: tone(st && st.trades > 0 ? st.pnl : d.paper!.net) }
-      : { big: '–', sub: ladder.steps.shadow === 'todo' ? 'Opens after shadow' : 'No paper trades yet' },
+    paper: d.paper ? { big: usd(d.paper.net), sub: `${fmtInt(paperN)} recorded trades · average ${fmtR(d.paper.r / paperN)} · history, not current eligibility`, bigTone: tone(d.paper.net) } : { big: '–', sub: 'No paper history reported' },
     live: { big: 'Not reported', sub: 'Strategy-level production fills are not available in this view' },
   }
-  const stateWord = (b: Book, x: StepState) => (x === 'done' ? 'Reached' : x === 'now' ? (b === 'shadow' ? 'Collecting' : b === 'paper' ? 'Trading' : 'Armed') : b === 'backtest' ? 'Not screened' : 'Locked')
+  const stateWord = (b: Book, x: StepState) => (x === 'done' ? 'Reached' : x === 'now' ? (b === 'shadow' ? 'Collecting' : b === 'paper' ? 'Allocated' : 'Armed') : b === 'backtest' ? 'Not screened' : 'Not reported')
 
   const stageTally = (Object.entries(d.stages) as Array<[string, number]>).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${STAGE_WORD[k] ?? k}`).join(' · ')
 
@@ -193,42 +187,20 @@ function ContractCard({ d, onOpenReading }: { d: LibraryDetail; onOpenReading: (
   )
 }
 
-const MODES = ['Off', 'Advise', 'Size', 'Gate'] as const
-
 function MlLensCard({ id }: { id: string }) {
   const ml = useMlScanner(id)
+  const global = useMl()
   const m = ml.data?.model ?? null
-  const noSkill = m ? m.auc < MIN_AUC : null
+  const state = mlState(global.isError ? undefined : global.data?.config)
   return (
     <section className="sb-card sb-card-pad sb-ml" aria-label="ML lens">
-      <div className="sb-card-head">
-        <h2>ML lens</h2>
-        {m && <span className="sb-badge">{noSkill ? 'No skill' : `AUC ${m.auc.toFixed(2)}`}</span>}
-      </div>
-      <ul className="sb-modes" aria-label="Advisor modes for this strategy">
-        {MODES.map((x) => <li key={x} className={`sb-mode ${x === 'Off' ? 'on' : ''}`} aria-current={x === 'Off' ? 'true' : undefined}>{x}</li>)}
-      </ul>
-      {ml.isLoading && !ml.data ? (
-        <p className="muted small" style={{ margin: 0 }}>Loading the model…</p>
-      ) : ml.isError ? (
-        <p className="muted small" style={{ margin: 0 }}>The model for this strategy could not be read.</p>
-      ) : !m ? (
-        <div className="sb-advice"><b>No model yet.</b> <span>{ml.data ? `${fmtInt(ml.data.samples)} samples is too few to train one, so there is no advice for the next signal.` : 'There is no model for this strategy.'}</span></div>
-      ) : (
-        <>
-          <div className="sb-auc">
-            <span className="sb-auc-n mono">{m.auc.toFixed(2)}</span>
-            <span className="sb-auc-what">AUC on {fmtInt(m.holdout)} unseen trades for this strategy's signals. Needs {MIN_AUC.toFixed(2)} to advise.</span>
-          </div>
-          <div className="sb-advice">
-            <b>For the next signal:</b>{' '}
-            {noSkill
-              ? <span>Take every signal at full size. The model's score on unseen trades is below 0.55, so it has no advice to give.</span>
-              : <span>The model clears {MIN_AUC.toFixed(2)} on unseen trades, so it could advise. The advisor stays Off for this strategy until it is switched on.</span>}
-          </div>
-        </>
-      )}
-      <Link className="link" to="/lab">Open the ML workbench</Link>
+      <div className="sb-card-head"><h2>ML lens</h2><span className="sb-badge">{state.label}</span></div>
+      <p className="small muted">Global configuration: {state.detail} The engine may use a timeframe or global fallback model; this card is the scanner-specific evaluation.</p>
+      {ml.isLoading && !ml.data ? <p className="muted small">Loading the model…</p>
+        : ml.isError ? <p className="muted small">The scanner model could not be read.</p>
+        : !m ? <div className="sb-advice">No scanner-specific model is reported. This does not establish that the scanner has no predictive value or that the engine has no fallback model.</div>
+        : <><div className="sb-auc"><span className="sb-auc-n mono">{m.auc.toFixed(2)}</span><span className="sb-auc-what">AUC on {fmtInt(m.holdout)} held-out trades.</span></div><div className="sb-advice">{aucEvidence(m.auc)} No AUC threshold on this page authorizes a gate or changes position size.</div></>}
+      <Link className="link" to="/lab#ml">Open the ML workbench</Link>
     </section>
   )
 }

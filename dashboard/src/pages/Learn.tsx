@@ -1,14 +1,12 @@
+import { mlState } from '../lib/mlPresentation'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../api/client'
 import { useMl, useMlYardstick } from '../api/queries'
 import type { MlRule, MlScannerInsight, YardBook } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { Empty, ErrorState, Loading, PageTitle, Panel, Pill, Segmented, Time } from '../components/ui'
 import { Callout, EmptyState, Stat, StatGrid, TabPanel, Tabs } from '../components/kit'
 import { fmtPct } from '../lib/format'
-import { useToast } from '../lib/toast'
 import '../styles/pages/learn.css'
 
 /** Model probabilities are 0–1; show as a percentage with 1 decimal. */
@@ -17,19 +15,10 @@ const r = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? 
 
 export function Learn() {
   const ml = useMl()
-  const qc = useQueryClient()
-  const toast = useToast()
   const [sel, setSel] = useState<string>('')
   const [tab, setTab] = useState<'scanners' | 'gate' | 'global' | 'tf'>('scanners')
-  const train = useMutation({
-    mutationFn: () => api.mlTrain(),
-    onSuccess: (s) => {
-      void qc.invalidateQueries({ queryKey: ['ml'] })
-      toast.success('Models trained', `${s.samples} samples · ${s.scannersWithModel} scanner models`)
-    },
-    onError: (e) => toast.error('Training failed', (e as Error).message),
-  })
   const d = ml.data
+  const state = mlState(ml.isError ? undefined : d?.config)
   const scanners = useMemo(() => (d?.scanners ?? []).filter((s) => s.samples > 0), [d])
   const current: MlScannerInsight | undefined = scanners.find((s) => s.scannerId === sel) ?? scanners[0]
 
@@ -71,22 +60,12 @@ export function Learn() {
   return (
     <div className="page">
       <PageTitle
-        sub="A win-probability model per scanner, trained on the entry features of every backtest and account trade. The buckets turn that data into plain rules."
-        actions={d ? (
-          <button className="btn btn-cta" onClick={() => train.mutate()} disabled={train.isPending || (d.counts?.total ?? d.samples) < 30} title="Models also retrain by themselves within two minutes after new samples arrive">
-            {train.isPending ? 'Training…' : 'Train now'}
-          </button>
-        ) : undefined}
+        sub="A win-probability model per scanner, trained on eligible entry features and resolved outcomes from backtest and account trades. The buckets turn that data into plain rules."
+        actions={<Link className="btn btn-cta" to="/lab#ml">Open training workbench</Link>}
       />
-      {d?.config && d.config.minProb > 0 ? (
-        <Callout tone="warn" title={<>The gate is on at <span className="mono">{pct(d.config.minProb)}</span></>}>
-          Entries the model rates below it are refused. The yardstick is exploratory; it does not certify that setting.
-        </Callout>
-      ) : (
-        <Callout tone="info" title="Advisory only">
-          The model gates nothing (<span className="mono">ml.minProb 0</span>). Threshold comparisons use saved entry predictions on trades that were eligible and executed. A threshold picked here needs a frozen forward test before use. Gate and score settings are in Settings, Machine learning.
-        </Callout>
-      )}
+      <Callout tone={state.gate ? 'warn' : 'info'} title={state.label}>
+        {state.detail} Threshold comparisons are exploratory; only verified entry predictions can propose a research candidate, and a new frozen forward test is still required.
+      </Callout>
       {ml.isLoading && !d && (
         <>
           <Loading kind="kpi" rows={5} />

@@ -1,3 +1,4 @@
+import { mlState, aucEvidence } from '../lib/mlPresentation'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -19,13 +20,6 @@ import '../styles/pages/lab.css'
 /** One backtest made on this page since it was opened. The server keeps only the newest result per cell, not a history. */
 interface SessionRun { key: number; scannerId: string; scannerName: string; symbol: string; tf: string; at: number; trades: number; winRatePct: number | null; profitFactor: number | null; pnl: number | null }
 
-/** The proposed rule for this redesign: how good the model must be, on weeks it never saw, before it may do each job. */
-const PROPOSED_MODES = [
-  { id: 'off', name: 'Off', what: 'Every signal at full size', auc: 0 },
-  { id: 'advise', name: 'Advise', what: 'Shows a score; changes nothing', auc: 0.55 },
-  { id: 'size', name: 'Size', what: 'Scales size with confidence, never above the cap', auc: 0.58 },
-  { id: 'gate', name: 'Gate', what: 'Skips signals it expects to lose', auc: 0.62 },
-] as const
 
 const R = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? '–' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}R`)
 const prob = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? '–' : fmtPct(v * 100))
@@ -46,7 +40,7 @@ export function Lab() {
     <div className="page lab-page">
       <PageHeader
         title="Lab"
-        subtitle="Backtest and train here. Nothing in the Lab can trade: a result matters only when it climbs the ladder from backtest to shadow to paper to live."
+        subtitle="Backtest and train here. Backtests are simulations. Retraining changes future ML predictions; configured gates and risk rules remain in force."
         actions={
           <nav className="lab-jump" aria-label="Lab sections">
             <a href="#backtest" className="lab-jump-link">Backtest</a>
@@ -108,8 +102,6 @@ function BacktestSection({ onRun }: { onRun: (r: SessionRun) => void }) {
 
   const canRun = auth.can('backtest')
   const disabled = !scanner || !symbol || !tf || runBt.isPending || !canRun
-  const paper = config.data?.paper
-  const fee = paper ? `${paper.feeRatePct}%${paper.feeTaxPct ? ` plus ${paper.feeTaxPct}% tax` : ''}` : null
 
   const run = () => {
     if (!scanner) return
@@ -160,7 +152,7 @@ function BacktestSection({ onRun }: { onRun: (r: SessionRun) => void }) {
           </div>
           <div className="lab-costs">
             <b>Costs are charged as the backtest engine does today.</b>
-            <span>{fee ? <>Every fill pays the paper account&apos;s commission ({fee}) and slippage ({paper?.slippageBps} bps, or the book&apos;s observed crossing when it is known); funding is not modelled.</> : 'Every fill pays the paper account’s commission and tax and slippage; funding is not modelled.'}</span>
+            <span>The engine applies product-specific maker/taker fees and tax when available, otherwise configured fallbacks. Current product rates are a cost scenario, not historical fee reconstruction. Funding needs recorded settlements; spread and depth depend on data coverage.</span>
           </div>
           <button type="submit" className="btn btn-cta lab-run" disabled={disabled} title={!canRun ? 'Your role cannot run backtests' : !scanner ? 'Choose a scanner first' : undefined}>
             {runBt.isPending ? 'Running…' : 'Run backtest'}
@@ -170,8 +162,8 @@ function BacktestSection({ onRun }: { onRun: (r: SessionRun) => void }) {
         </form>
 
         <div className="lab-bt-main">
-          <Callout tone="info" title="Planned">
-            Run a strategy with its own exits and stress-test it. Today the Lab runs the bot&apos;s standard backtest. The design is in <span className="mono">docs/research/script-perspective-2026-11-14/README.md</span>.
+          <Callout tone="info" title="Backtest policy">
+            This form runs the selected scanner under the configured backtest policy. Separate native-exit and execution comparisons are recorded as shadow research plans; they do not automatically change account exits. <Link to="/incubator">Review research plans</Link>.
           </Callout>
           <BacktestResultPanel scannerName={scanner?.name} symbol={symbol} tf={tf} chosen={!!scanner} result={result} loading={!!scanner && stored.isLoading && !result} pending={runBt.isPending} error={stored.isError && !result ? stored.error : null} tick={tick} />
         </div>
@@ -228,16 +220,6 @@ function ResultBody({ result, cols }: { result: BacktestResult; tick?: number; c
 // ML workbench
 // ---------------------------------------------------------------------------------------------------------------
 
-/** The model's headline AUC in plain words. 0.5 is a coin flip. */
-function verdict(auc: number | null): { text: string; tone: 'loss' | 'warn' | 'gain' | 'muted'; reached: number } {
-  if (auc === null) return { text: 'No model yet', tone: 'muted', reached: -1 }
-  const reached = PROPOSED_MODES.reduce((k, m, i) => (auc >= m.auc ? i : k), 0)
-  if (reached === 0) return { text: 'No skill yet: a coin flip', tone: 'loss', reached }
-  if (reached === 1) return { text: 'Enough to advise, not to size or gate', tone: 'warn', reached }
-  if (reached === 2) return { text: 'Enough to size, not to gate', tone: 'warn', reached }
-  return { text: 'Enough to gate', tone: 'gain', reached }
-}
-
 function MlSection() {
   const ml = useMl()
   const auth = useAuth()
@@ -255,24 +237,21 @@ function MlSection() {
   })
   const d = ml.data
   const model = d?.global?.model ?? null
-  const v = verdict(model ? model.auc : null)
-  const gateOn = (d?.config?.minProb ?? 0) > 0
-  const scoreOn = !!d?.config?.useAsScore
   const total = d ? (d.counts?.total ?? d.samples) : 0
   const canTrain = auth.canTrade && !!d && total >= 30
-  const nowMode = gateOn || scoreOn ? 'gate' : 'off'
+  const state = mlState(ml.isError ? undefined : d?.config)
 
   return (
     <section id="ml" className="lab-sec lab-sec-ml" aria-labelledby="lab-ml-h">
       <div className="lab-sec-head">
         <h2 id="lab-ml-h" className="lab-sec-title lab-ml-title">ML workbench</h2>
-        <Pill tone="accent">{nowMode === 'off' ? 'Advisor off' : gateOn ? `Gate at ${prob(d?.config?.minProb)}` : 'Score on'}{model && v.reached === 0 ? ' · no skill' : ''}</Pill>
+        <Pill tone="accent">{state.label}</Pill>
         <span className="lab-grow" />
         <button type="button" className="btn btn-cta" onClick={() => setConfirm(true)} disabled={!canTrain || train.isPending} title={!auth.canTrade ? 'Training needs trade permission' : !d ? undefined : total < 30 ? 'Needs at least 30 stored samples' : 'Models also retrain by themselves within two minutes after new samples arrive'}>
           {train.isPending ? 'Training…' : 'Train now'}
         </button>
       </div>
-      <p className="lab-sec-lede">A model may advise, size or gate a trade only after it beats &ldquo;take every signal&rdquo; on weeks it never saw. Nothing below changes a trade until then.</p>
+      <p className="lab-sec-lede">{state.detail} Training replaces models used for future predictions; it does not automatically change gate or risk settings.</p>
 
       {ml.isLoading && !d && <Loading kind="cards" rows={3} />}
       {ml.isError && !d && <ErrorState error={ml.error} onRetry={() => ml.refetch()} />}
@@ -280,7 +259,7 @@ function MlSection() {
         <>
           <div className="lab-ml-grid">
             <ModelCard d={d} model={model} />
-            <Reach model={model} v={v} nowMode={nowMode} gateOn={gateOn} scoreOn={scoreOn} minProb={d.config?.minProb ?? 0} />
+            <Reach model={model} />
           </div>
           <Calibration />
           <Importance items={d.global?.importance ?? []} />
@@ -325,7 +304,7 @@ function ModelCard({ d, model }: { d: MlSnapshot; model: MlMetrics | null }) {
     ...(eco ? [
       ['Held-out net R', <><span className={tone(eco.testNetR)}>{R(eco.testNetR)}</span> <span className="muted small">· at {prob(eco.threshold)}: keeps {fmtInt(eco.selectedN)} for {R(eco.selectedNetR)}, drops the rest for {R(eco.rejectedNetR)}</span></>] as [string, React.ReactNode],
     ] : []),
-    ['Settings', <>gate {d.config && d.config.minProb > 0 ? prob(d.config.minProb) : 'off'} <span className="muted small">· use as score {d.config?.useAsScore ? 'on' : 'off'}</span></>],
+    ['Settings', mlState(d.config).label],
   ]
   return (
     <div className="lab-card">
@@ -338,36 +317,13 @@ function ModelCard({ d, model }: { d: MlSnapshot; model: MlMetrics | null }) {
   )
 }
 
-function Reach({ model, v, nowMode, gateOn, scoreOn, minProb }: { model: MlMetrics | null; v: ReturnType<typeof verdict>; nowMode: string; gateOn: boolean; scoreOn: boolean; minProb: number }) {
-  const lo = 0.4, hi = 0.7
-  const at = (x: number) => `${Math.min(100, Math.max(0, ((x - lo) / (hi - lo)) * 100))}%`
-  return (
-    <div className="lab-card">
-      <h3 className="lab-card-title">What it has to reach <span className="lab-proposed">proposed rule</span></h3>
-      <div className="lab-auc">
-        <span className={`lab-auc-num mono tone-${v.tone}`}>{model ? model.auc.toFixed(2) : '–'}</span>
-        <span className="lab-auc-label">AUC on held-out trades<br /><b className={`tone-${v.tone}`}>{v.text}</b></span>
-      </div>
-      <div className="lab-scale" role="img" aria-label={`AUC ${model ? model.auc.toFixed(2) : 'not available'} on a scale from ${lo} to ${hi}; the proposed bars are 0.55, 0.58 and 0.62`}>
-        <span className="lab-scale-fill" style={{ width: model ? at(model.auc) : '0%' }} />
-        {PROPOSED_MODES.slice(1).map((m) => <span key={m.id} className="lab-scale-tick" style={{ left: at(m.auc) }} />)}
-        <span className="lab-scale-tick lab-scale-coin" style={{ left: at(0.5) }} />
-      </div>
-      <div className="lab-scale-ends mono"><span>{lo.toFixed(2)}</span><span>0.50 coin flip</span><span>{hi.toFixed(2)}</span></div>
-      <ul className="lab-modes">
-        {PROPOSED_MODES.map((m, i) => {
-          const reached = v.reached >= i && model !== null
-          const state = nowMode === m.id ? (m.id === 'gate' && !gateOn && scoreOn ? 'now: score on' : 'now') : m.id === 'off' ? '' : reached ? 'reached' : `needs ${m.auc.toFixed(2)}`
-          return (
-            <li key={m.id} className={nowMode === m.id ? 'on' : ''}>
-              <b>{m.name}</b><span className="lab-mode-what">{m.what}</span><span className={`mono small ${reached && m.id !== 'off' ? 'gain' : 'muted'}`}>{state}</span>
-            </li>
-          )
-        })}
-      </ul>
-      <p className="lab-note">The 0.55, 0.58 and 0.62 bars are a proposed rule, not a setting. Today the model only acts as a score when &ldquo;use as score&rdquo; is on ({scoreOn ? 'on' : 'off'}), and as a hard gate when the gate is above zero ({gateOn ? prob(minProb) : 'off'}); there is no advise or size mode yet.</p>
-    </div>
-  )
+function Reach({ model }: { model: MlMetrics | null }) {
+  return <div className="lab-card">
+    <h3 className="lab-card-title">Evaluation limits</h3>
+    <div className="lab-auc"><span className="lab-auc-num mono">{model ? model.auc.toFixed(2) : '–'}</span><span className="lab-auc-label">Held-out ranking AUC</span></div>
+    <p className="lab-note">{aucEvidence(model?.auc)} Training, calibration and testing use separate chronological partitions; the test period is not necessarily whole weeks.</p>
+    <p className="lab-note">There are no automatic Advise, Size or Gate tiers at 0.55, 0.58 or 0.62 AUC. Gate and score are independent configuration switches. A threshold selected from past trades requires a new frozen forward evaluation before use.</p>
+  </div>
 }
 
 function Calibration() {
@@ -422,7 +378,8 @@ function Calibration() {
                 </div>
               </div>
             )}
-            <div className="lab-call"><b>Would the gate have paid?</b> <span>{y.call.text}</span></div>
+            <p className="lab-note">The tables describe saved entry scores. The research-candidate verdict below uses only verified model, feature, training-cutoff and policy receipts: {fmtInt(b.verifiedAtEntry ?? 0)} in this book. Unverified scores do not count toward that verdict.</p>
+            <div className="lab-call"><b>Verified-entry evaluation:</b> <span>{y.call.text}</span></div>
             <p className="lab-note">Built from the model score saved when each trade opened. A threshold read off this table still needs a forward test before it is used.</p>
           </>
         )

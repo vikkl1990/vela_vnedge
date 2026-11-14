@@ -129,7 +129,7 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
         meta={finalR != null ? <Pill tone={finalR >= 0 ? 'ok' : 'danger'}>{lv.exitReason ?? 'closed'} {fmtR(finalR)}</Pill> : <Pill tone="accent">still open</Pill>}
         actions={<>
           <label className="field-inline replay-detail">Replay detail <select className="select select-sm" aria-label="Replay detail" value={execution ? 'execution' : 'strategy'} onChange={(e) => onResolution(e.target.value as 'strategy' | 'execution')}><option value="execution">Execution · 1m</option><option value="strategy">Strategy candle overview</option></select></label>
-          <Link className="btn btn-sm" to="/trades">← Journals</Link>
+          <Link className="btn btn-sm" to="/trades">← Trades</Link>
         </>}
       />
 

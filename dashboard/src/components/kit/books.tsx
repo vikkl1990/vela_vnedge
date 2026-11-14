@@ -46,7 +46,7 @@ export function MlLensToggle() {
   )
 }
 
-const STEP_WORD: Record<StepState, string> = { done: 'reached', now: 'here now', todo: 'not reached' }
+const STEP_WORD: Record<StepState, string> = { done: 'reached', now: 'currently allocated', todo: 'no evidence reported' }
 
 /** Four pips, backtest to live: filled = reached, ringed = here now, dim = not reached. */
 export function LadderPips({ ladder }: { ladder: Ladder }) {
