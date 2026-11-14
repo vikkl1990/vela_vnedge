@@ -56,4 +56,3 @@ export function gateOf(action: string | null | undefined): { key: string; label:
   if (a === 'info') return { key: 'info', label: 'info', tone: 'muted' }
   return { key: 'other', label: a.replace(/^rejected:/, '').slice(0, 24) || '—', tone: 'muted' }
 }
-
