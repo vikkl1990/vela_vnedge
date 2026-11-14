@@ -1,0 +1,142 @@
+/* ==========================================================================
+   VN EDGE design tokens — colour, type, spacing, radius, elevation, motion.
+   Every value the interface uses comes from here; components never hard-code a colour.
+   Dark is the default; light is `[data-theme='light']`. Existing names are kept so older rules keep working.
+   ========================================================================== */
+
+:root {
+  /* --- surfaces: three steps of depth over the page background --- */
+  --bg: #0a1020;
+  --surface: #0f1829;
+  --surface-2: #141f35;
+  --surface-3: #1b2943;
+  --surface-glass: color-mix(in srgb, var(--bg) 78%, transparent);
+  --border: rgba(150, 175, 215, 0.11);
+  --border-strong: rgba(150, 175, 215, 0.22);
+  --border-subtle: rgba(150, 175, 215, 0.06);
+
+  /* --- text: AA on every surface above --- */
+  --text: #eef4fc;
+  --muted: #a9b8cf;
+  --muted-2: #8fa1bb;
+
+  /* --- brand accent --- */
+  --accent: #1878f2;
+  --accent-2: #4499ff;
+  --accent-3: #87bfff;
+  --accent-soft: rgba(24, 120, 242, 0.16);
+  --accent-glow: rgba(44, 169, 244, 0.18);
+  --action: #1266d2;
+  --action-hover: #0d56b8;
+  --gradient-accent: linear-gradient(135deg, #1a7bf5 0%, #4d9fff 100%);
+
+  /* --- meaning: gain, loss, caution, information --- */
+  --gain: #52c48a;
+  --gain-soft: hsla(146, 45%, 48%, 0.14);
+  --loss: #ff7c86;
+  --loss-soft: hsla(354, 100%, 70%, 0.13);
+  --warn: #e0b04a;
+  --warn-soft: rgba(224, 176, 74, 0.14);
+  --info: #6cb4ff;
+  --info-soft: rgba(108, 180, 255, 0.14);
+
+  /* --- shape --- */
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --pill: 999px;
+
+  /* --- elevation --- */
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.035) inset, 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 6px 18px rgba(0, 0, 0, 0.32);
+  --shadow-3: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-strong);
+  --ring: 0 0 0 3px rgba(68, 153, 255, 0.35);
+
+  /* --- type --- */
+  --font-ui: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 13.5px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+  --tracking-label: 0.1em;
+
+  /* --- layout --- */
+  --side-w: 236px;
+  --side-w-collapsed: 64px;
+  --topbar-h: 56px;
+  --content-max: 1760px;
+
+  /* --- motion: short, never decorative; collapsed by prefers-reduced-motion in base.css --- */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+
+  /* --- layers --- */
+  --z-sticky: 40;
+  --z-sidebar: 50;
+  --z-overlay: 900;
+  --z-dialog: 1000;
+  --z-toast: 1200;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f3f6fb;
+  --surface: #ffffff;
+  --surface-2: #f6f9fd;
+  --surface-3: #e9f0f8;
+  --surface-glass: color-mix(in srgb, var(--bg) 82%, transparent);
+  --border: rgba(20, 40, 80, 0.10);
+  --border-strong: rgba(20, 40, 80, 0.18);
+  --border-subtle: rgba(20, 40, 80, 0.05);
+  --text: #14233a;
+  --muted: #50627a;
+  --muted-2: #586b82;
+  /* darker semantic colours so 11–13px text on white clears 4.5:1 */
+  --accent-2: #1266d2;
+  --accent-3: #125cb3;
+  --gain: hsl(146 48% 28%);
+  --loss: hsl(354 70% 42%);
+  --warn: #8a6512;
+  --info: #145fb0;
+  --accent-soft: rgba(24, 120, 242, 0.10);
+  --accent-glow: rgba(44, 169, 244, 0.14);
+  --gain-soft: hsla(146, 45%, 40%, 0.12);
+  --loss-soft: hsla(354, 80%, 50%, 0.10);
+  --info-soft: rgba(20, 95, 176, 0.10);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 4px 14px rgba(16, 24, 40, 0.09);
+  --shadow-3: 0 12px 36px rgba(16, 24, 40, 0.18), 0 0 0 1px var(--border-strong);
+  --ring: 0 0 0 3px rgba(18, 102, 210, 0.28);
+  color-scheme: light;
+}
+
+:root {
+  /* spacing scale */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --pad-panel: 12px 16px;
+  --pad-cell: 6px 10px;
+  --pad-kpi: 14px 16px;
+  --gap-page: 16px;
+}
+:root[data-density='compact'] {
+  --pad-panel: 8px 12px;
+  --pad-cell: 3px 8px;
+  --pad-kpi: 8px 12px;
+  --gap-page: 10px;
+}
