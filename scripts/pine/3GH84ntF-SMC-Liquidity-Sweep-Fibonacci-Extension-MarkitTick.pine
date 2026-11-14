@@ -1,0 +1,941 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("SMC Liquidity Sweep & Fibonacci Extension [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+if syminfo.type == "heikinashi" or syminfo.type == "renko" or syminfo.type == "linebreak" or syminfo.type == "kagi" or syminfo.type == "pointfigure"
+    runtime.error("Non-standard chart detected. Use standard candlesticks.")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SMC INPUTS ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+int   swing_len     = input.int(5,     "Swing Length",          minval=2,             group="Market Structure")
+float rr_ratio      = input.float(2.0, "Risk/Reward Ratio",     minval=1.0, step=0.1, group="Market Structure")
+color col_bull      = input.color(#00FFFF,                      "Bullish (Cyan)",       group="SMC Visuals")
+color col_bear      = input.color(#FF00FF,                      "Bearish (Magenta)",    group="SMC Visuals")
+color col_bull_zone = input.color(color.new(#00FFFF, 90),       "Support Zone Fill",    group="SMC Visuals")
+color col_bear_zone = input.color(color.new(#FF00FF, 90),       "Resistance Zone Fill", group="SMC Visuals")
+color col_text      = input.color(color.white,                  "Text/Label Color",     group="SMC Visuals")
+
+bool  use_sweep     = input.bool(false, "Enable Liquidity Sweep Filter", group="① Liquidity Sweep Filter")
+bool  use_htf       = input.bool(false, "Enable HTF Bias Filter",        group="② HTF Bias Filter")
+simple string htf_tf = input.timeframe("240", "HTF Timeframe",           group="② HTF Bias Filter")
+
+bool  use_pd        = input.bool(false, "Enable Premium/Discount Zone",  group="③ Premium / Discount Zone")
+color col_premium   = input.color(color.new(#FF00FF, 85), "Premium Zone Fill",    group="③ Premium / Discount Zone")
+color col_discount  = input.color(color.new(#00FFFF, 85), "Discount Zone Fill",   group="③ Premium / Discount Zone")
+color col_eq        = input.color(color.new(#FFFFFF, 85), "Equilibrium Fill",     group="③ Premium / Discount Zone")
+
+bool  use_sessions  = input.bool(false, "Enable Session Kill Zones",     group="④ Session Kill Zones")
+color col_london    = input.color(color.new(#FFD700, 88), "London Open Color",    group="④ Session Kill Zones")
+color col_ny        = input.color(color.new(#00FF88, 88), "NY Open Color",        group="④ Session Kill Zones")
+color col_asian     = input.color(color.new(#FF6600, 88), "Asian Range Color",    group="④ Session Kill Zones")
+
+bool  use_fvg       = input.bool(true, "Enable FVG Engine",              group="⑤ Fair Value Gap")
+color col_fvg_bull  = input.color(color.new(#00FFFF, 80), "FVG Bull Fill",        group="⑤ Fair Value Gap")
+color col_fvg_bear  = input.color(color.new(#FF00FF, 80), "FVG Bear Fill",        group="⑤ Fair Value Gap")
+
+bool  use_ind       = input.bool(true, "Enable Inducement Detection",    group="⑥ Inducement Detection")
+color col_ind       = input.color(#FFFF00, "Inducement Label Color",     group="⑥ Inducement Detection")
+
+bool  use_mss       = input.bool(false, "Require Full Body Close (MSS)", group="⑦ MSS Body Confirmation")
+
+bool  use_atr_sl    = input.bool(false, "Enable ATR-Adaptive SL",        group="⑧ ATR-Adaptive SL")
+int   atr_len       = input.int(14,    "ATR Length",     minval=1,       group="⑧ ATR-Adaptive SL")
+float atr_sl_mult   = input.float(1.5, "ATR SL Multiplier", minval=0.1, step=0.1, group="⑧ ATR-Adaptive SL")
+
+bool  use_ob_mit    = input.bool(false, "Enable OB Mitigation Tracker",  group="⑨ OB Mitigation Tracker")
+bool  hide_ob_mit   = input.bool(false, "Hide Mitigated OBs",            group="⑨ OB Mitigation Tracker")
+color col_ob_mit    = input.color(color.new(#808080, 85), "Mitigated OB Color",   group="⑨ OB Mitigation Tracker")
+
+bool  use_conf      = input.bool(true, "Enable Confluence Score Dashboard", group="⑩ Confluence Score")
+color col_conf_hi   = input.color(#00FF00, "Score 4–5 Color",            group="⑩ Confluence Score")
+color col_conf_mid  = input.color(#FFAA00, "Score 2–3 Color",            group="⑩ Confluence Score")
+color col_conf_lo   = input.color(#FF0000, "Score 0–1 Color",            group="⑩ Confluence Score")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── FIBONACCI INPUTS ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+string GROUP_ZIGZAG       = "ZigZag Detection"
+int    cfg_zigzag_depth   = input.int(5,   "Pivot Lookback Depth", minval=2, maxval=500, group=GROUP_ZIGZAG, tooltip="Number of bars to look left/right for pivot detection")
+bool   cfg_use_atr        = input.bool(true, "Use ATR-Based Threshold", group=GROUP_ZIGZAG)
+float  cfg_fixed_dev      = input.float(5.0, "Fixed Deviation %", minval=0.1, maxval=50.0, step=0.1, group=GROUP_ZIGZAG)
+int    cfg_atr_period     = input.int(14,  "ATR Period", minval=1, maxval=100, group=GROUP_ZIGZAG)
+float  cfg_atr_mult       = input.float(2.0, "ATR Multiplier", minval=0.1, maxval=10.0, step=0.1, group=GROUP_ZIGZAG)
+
+string GROUP_INVALIDATION      = "Structure Invalidation"
+bool   cfg_invalidation_enabled = input.bool(true, "Enable Structure Invalidation", group=GROUP_INVALIDATION, tooltip="Invalidate structures when price breaks the setup")
+string cfg_invalidation_action  = input.string("Gray Out", "Invalidation Action", options=["Gray Out", "Delete"], group=GROUP_INVALIDATION)
+
+string GROUP_FIB         = "Fibonacci Settings"
+bool   cfg_use_log       = input.bool(false, "Use Logarithmic Scale",  group=GROUP_FIB)
+bool   cfg_show_0618     = input.bool(false, "Show 0.618 Level",       group=GROUP_FIB)
+bool   cfg_show_100      = input.bool(true,  "Show 1.000 Level",       group=GROUP_FIB)
+bool   cfg_show_1272     = input.bool(true,  "Show 1.272 Level",       group=GROUP_FIB)
+bool   cfg_show_1618     = input.bool(true,  "Show 1.618 Level",       group=GROUP_FIB)
+bool   cfg_extend_right  = input.bool(true,  "Extend Lines Right",     group=GROUP_FIB)
+
+string GROUP_DISPLAY              = "Display Settings"
+int    cfg_max_structures         = input.int(1,   "Keep Last N Structures", minval=1, maxval=5, group=GROUP_DISPLAY)
+bool   cfg_show_abc_labels        = input.bool(true, "Show A-B-C Labels",        group=GROUP_DISPLAY)
+bool   cfg_show_structure_lines   = input.bool(true, "Show Structure Lines",      group=GROUP_DISPLAY)
+bool   cfg_show_elliott_labels    = input.bool(true, "Show Elliott Wave Labels",  group=GROUP_DISPLAY)
+
+string GROUP_WEBHOOK         = "Webhook Action Names"
+string cfg_action_long       = input.string("long",       "Open Long Action",    group=GROUP_WEBHOOK, tooltip="e.g., long, buy")
+string cfg_action_short      = input.string("short",      "Open Short Action",   group=GROUP_WEBHOOK, tooltip="e.g., short, sell")
+string cfg_action_close_long = input.string("closelong",  "Close Long Action",   group=GROUP_WEBHOOK, tooltip="e.g., closelong, close_long, sell")
+string cfg_action_close_short = input.string("closeshort","Close Short Action",  group=GROUP_WEBHOOK, tooltip="e.g., closeshort, close_short, buy")
+
+string GROUP_COLORS          = "Visual Styling"
+color  cfg_col_bull          = input.color(#00E676,                    "Bullish Structure Color",    group=GROUP_COLORS)
+color  cfg_col_bear          = input.color(#FF5252,                    "Bearish Structure Color",    group=GROUP_COLORS)
+color  cfg_col_neutral       = input.color(#787B86,                    "Neutral / Default Color",    group=GROUP_COLORS)
+color  cfg_col_label_bg      = input.color(color.new(#1E1E1E, 20),    "Label Background",           group=GROUP_COLORS)
+color  cfg_col_invalidated   = input.color(#555555,                    "Invalidated Structure Color",group=GROUP_COLORS)
+color  cfg_col_text          = input.color(color.white,                "Text Color",                 group=GROUP_COLORS)
+
+string GROUP_TEST      = "Webhook Test"
+bool   cfg_enable_test = input.bool(false, "Enable Test Alert (Fires on EVERY bar close)", group=GROUP_TEST, tooltip="Turn this ON, set up your alert, and wait for the current candle to close to verify Webhook routing. TURN OFF when done.")
+
+string GRP_DASH       = '📊 Dashboard Settings'
+color  dash_bg_color  = input.color(color.rgb(10, 10, 18, 5),    'Background Color', group = GRP_DASH)
+color  dash_txt_color = input.color(color.rgb(220, 220, 235, 0), 'Text Color',       group = GRP_DASH)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── UDTs ─────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type SwingPoint
+    int   index
+    float price
+    bool  is_active
+
+type MarketStructure
+    int   trend
+    float last_high
+    float last_low
+    float range_high
+    float range_low
+
+type SignalEngine
+    string action
+    float  entry_price
+    float  sl_price
+    float  tp_price
+    bool   trigger
+
+type FVGZone
+    int   left
+    float top
+    float bottom
+    bool  is_bull
+    bool  mitigated
+    box   bx
+
+type OBBlock
+    int   left
+    int   right
+    float top
+    float bottom
+    bool  is_bull
+    bool  mitigated
+    box   bx
+
+type InducementPoint
+    int   index
+    float price
+    bool  is_bull
+    bool  broken
+
+type ConflScore
+    int  score
+    bool htf_ok
+    bool in_session
+    bool fvg_present
+    bool sweep_ok
+    bool pd_ok
+
+type ZigZagPoint
+    int   barIdx
+    float price
+    bool  isHigh
+
+type ABCStructure
+    ZigZagPoint     pointA
+    ZigZagPoint     pointB
+    ZigZagPoint     pointC
+    bool            isBullish
+    bool            isActive
+    array<line>     extLines
+    array<label>    extLabels
+    array<linefill> extFills
+    label           lblZone
+    line            lineAB
+    line            lineBC
+    label           lblA
+    label           lblB
+    label           lblC
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SHARED PIVOT FUNCTIONS  ──────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  valid     = true
+    for i = 1 to len * 2
+        if i != len and src[i] >= candidate
+            valid := false
+    valid ? candidate : na
+
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  valid     = true
+    for i = 1 to len * 2
+        if i != len and src[i] <= candidate
+            valid := false
+    valid ? candidate : na
+
+f_blockBar(float score) =>
+    int    n = math.min(math.max(math.round(score), 0), 10)
+    string s = ''
+    for i = 1 to 10
+        s += i <= n ? '█' : '░'
+    s
+
+f_blockColor(float score) =>
+    score >= 7.0 ? color.rgb(0, 255, 120) : score >= 4.0 ? color.rgb(80, 255, 0) : score >= 1.5 ? color.rgb(200, 200, 0) : color.rgb(110, 110, 110)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SMC STATE ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+var SwingPoint             last_ph        = SwingPoint.new(0, 0.0, false)
+var SwingPoint             last_pl        = SwingPoint.new(0, 0.0, false)
+var MarketStructure        ms             = MarketStructure.new(0, 0.0, 0.0, 0.0, 0.0)
+var SignalEngine           signal         = SignalEngine.new("", 0.0, 0.0, 0.0, false)
+var ConflScore             cscore         = ConflScore.new(0, false, false, false, false, false)
+var array<OBBlock>         ob_list        = array.new<OBBlock>()
+var array<FVGZone>         fvg_list       = array.new<FVGZone>()
+var array<InducementPoint> ind_list       = array.new<InducementPoint>()
+var int                    pd_anchor_left = na
+var bool                   active_bull_sweep = false
+var bool                   active_bear_sweep = false
+var float                  active_sweep_low  = na
+var float                  active_sweep_high = na
+
+var array<ZigZagPoint>  zigzagPoints = array.new<ZigZagPoint>()
+var array<ABCStructure> structures   = array.new<ABCStructure>()
+
+var table dash = table.new(position.top_right, 2, 8,
+     border_width = 1,
+     border_color = color.rgb(50, 50, 70, 20),
+     frame_width  = 1,
+     frame_color  = color.rgb(60, 60, 90, 10))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── COMMON CALCULATIONS ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+float atr_val           = ta.atr(atr_len)
+float atrValue          = atr_len == cfg_atr_period ? atr_val : ta.atr(cfg_atr_period)
+float adaptiveThreshold = cfg_use_atr ? (atrValue * cfg_atr_mult) : (close * cfg_fixed_dev / 100.0)
+
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SMC ENGINE ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float ph = f_pivotHigh(high, swing_len)
+float pl = f_pivotLow(low,  swing_len)
+
+if last_pl.is_active and low[1] < last_pl.price
+    active_bull_sweep := true
+    active_sweep_low  := na(active_sweep_low) ? low[1] : math.min(active_sweep_low, low[1])
+
+if last_pl.is_active and close[1] < last_pl.price
+    active_bull_sweep := false
+    active_sweep_low  := na
+
+if last_ph.is_active and high[1] > last_ph.price
+    active_bear_sweep := true
+    active_sweep_high := na(active_sweep_high) ? high[1] : math.max(active_sweep_high, high[1])
+
+if last_ph.is_active and close[1] > last_ph.price
+    active_bear_sweep := false
+    active_sweep_high := na
+
+bool sweep_bull_ok = use_sweep ? active_bull_sweep : true
+bool sweep_bear_ok = use_sweep ? active_bear_sweep : true
+
+if not na(ph)
+    last_ph.index     := bar_index[swing_len]
+    last_ph.price     := ph
+    last_ph.is_active := true
+
+if not na(pl)
+    last_pl.index     := bar_index[swing_len]
+    last_pl.price     := pl
+    last_pl.is_active := true
+
+[htf_close, htf_ema] = request.security(syminfo.tickerid, htf_tf, [close[1], ta.sma(close, 50)[1]], lookahead=barmerge.lookahead_on)
+bool htf_bull_bias = use_htf ? htf_close > htf_ema : true
+bool htf_bear_bias = use_htf ? htf_close < htf_ema : true
+
+bool fvg_bull_detected = use_fvg ? (low[1] > high[3] and close[2] > open[2]) : false
+bool fvg_bear_detected = use_fvg ? (high[1] < low[3] and close[2] < open[2]) : false
+
+if fvg_bull_detected
+    array.push(fvg_list, FVGZone.new(bar_index[2], low[1], high[3], true,  false, box(na)))
+if fvg_bear_detected
+    array.push(fvg_list, FVGZone.new(bar_index[2], low[3], high[1], false, false, box(na)))
+
+if array.size(fvg_list) > 30
+    FVGZone evicted = array.shift(fvg_list)
+    box.delete(evicted.bx)
+
+bool fvg_bull_near = false
+bool fvg_bear_near = false
+
+if use_fvg
+    int _fvg_sz = array.size(fvg_list)
+    if _fvg_sz > 0
+        for i = 0 to _fvg_sz - 1
+            FVGZone z = array.get(fvg_list, i)
+            if not z.mitigated
+                if z.is_bull and low[1] <= z.top
+                    z.mitigated := true
+                    box.delete(z.bx)
+                    array.set(fvg_list, i, z)
+                else if not z.is_bull and high[1] >= z.bottom
+                    z.mitigated := true
+                    box.delete(z.bx)
+                    array.set(fvg_list, i, z)
+                else
+                    int fvg_eff_left = math.max(z.left, bar_index - 499)
+                    box.delete(z.bx)
+                    z.bx := box.new(fvg_eff_left, z.top, bar_index + 3, z.bottom, border_color=na, bgcolor=z.is_bull ? col_fvg_bull : col_fvg_bear)
+                    array.set(fvg_list, i, z)
+                    if z.is_bull
+                        fvg_bull_near := true
+                    else
+                        fvg_bear_near := true
+
+bool ind_bull_broken = false
+bool ind_bear_broken = false
+
+if use_ind and ms.trend != 0 and not na(ph)
+    if ph < ms.last_high and ph > ms.last_low
+        array.push(ind_list, InducementPoint.new(bar_index[swing_len], ph, true, false))
+if use_ind and ms.trend != 0 and not na(pl)
+    if pl > ms.last_low and pl < ms.last_high
+        array.push(ind_list, InducementPoint.new(bar_index[swing_len], pl, false, false))
+
+if use_ind
+    int _ind_sz = array.size(ind_list)
+    if _ind_sz > 0
+        for i = 0 to _ind_sz - 1
+            InducementPoint ip = array.get(ind_list, i)
+            if not ip.broken
+                if ip.is_bull and low[1] < ip.price
+                    ip.broken       := true
+                    ind_bull_broken := true
+                    array.set(ind_list, i, ip)
+                    label.new(ip.index, ip.price, "IDM", color=color.new(col_ind, 100), textcolor=col_ind, style=label.style_label_down, size=size.small)
+                else if not ip.is_bull and high[1] > ip.price
+                    ip.broken       := true
+                    ind_bear_broken := true
+                    array.set(ind_list, i, ip)
+                    label.new(ip.index, ip.price, "IDM", color=color.new(col_ind, 100), textcolor=col_ind, style=label.style_label_up, size=size.small)
+
+if array.size(ind_list) > 50
+    array.shift(ind_list)
+
+var bool  was_london  = false
+var bool  was_ny      = false
+var bool  was_asian   = false
+var box   london_box  = na
+var float london_high = na
+var float london_low  = na
+var int   london_left = na
+var box   ny_box      = na
+var float ny_high     = na
+var float ny_low      = na
+var int   ny_left     = na
+var box   asian_box   = na
+var float asian_high  = na
+var float asian_low   = na
+var int   asian_left  = na
+
+bool now_london = hour(time, "UTC") >= 8  and hour(time, "UTC") < 11
+bool now_ny     = hour(time, "UTC") >= 13 and hour(time, "UTC") < 16
+bool now_asian  = hour(time, "UTC") >= 0  and hour(time, "UTC") < 3
+bool in_session = now_london or now_ny or now_asian
+
+if use_sessions
+    bool london_open = now_london and not was_london
+    bool ny_open     = now_ny     and not was_ny
+    bool asian_open  = now_asian  and not was_asian
+
+    if london_open
+        london_left := bar_index
+        london_high := high
+        london_low  := low
+    if now_london and not na(london_left)
+        london_high := math.max(london_high, high)
+        london_low  := math.min(london_low,  low)
+        box.delete(london_box)
+        london_box  := box.new(london_left, london_high, bar_index + 1, london_low, border_color=na, bgcolor=col_london)
+
+    if ny_open
+        ny_left := bar_index
+        ny_high := high
+        ny_low  := low
+    if now_ny and not na(ny_left)
+        ny_high := math.max(ny_high, high)
+        ny_low  := math.min(ny_low,  low)
+        box.delete(ny_box)
+        ny_box  := box.new(ny_left, ny_high, bar_index + 1, ny_low, border_color=na, bgcolor=col_ny)
+
+    if asian_open
+        asian_left := bar_index
+        asian_high := high
+        asian_low  := low
+    if now_asian and not na(asian_left)
+        asian_high := math.max(asian_high, high)
+        asian_low  := math.min(asian_low,  low)
+        box.delete(asian_box)
+        asian_box  := box.new(asian_left, asian_high, bar_index + 1, asian_low, border_color=na, bgcolor=col_asian)
+
+    was_london := now_london
+    was_ny     := now_ny
+    was_asian  := now_asian
+
+var box pd_box_premium  = na
+var box pd_box_eq       = na
+var box pd_box_discount = na
+
+float range_mid   = (ms.range_high + ms.range_low) / 2
+float range_q1    = ms.range_low + (ms.range_high - ms.range_low) * 0.25
+float range_q3    = ms.range_low + (ms.range_high - ms.range_low) * 0.75
+bool  in_discount = use_pd and ms.range_high != ms.range_low ? close[1] < range_mid : true
+bool  in_premium  = use_pd and ms.range_high != ms.range_low ? close[1] > range_mid : true
+
+if use_pd and ms.range_high != ms.range_low and not na(pd_anchor_left)
+    box.delete(pd_box_premium)
+    box.delete(pd_box_eq)
+    box.delete(pd_box_discount)
+    int pd_eff_left = math.max(pd_anchor_left, bar_index - 499)
+    int pd_right    = bar_index + 20
+    pd_box_premium  := box.new(pd_eff_left, ms.range_high, pd_right, range_q3, border_color=na, bgcolor=col_premium)
+    pd_box_eq       := box.new(pd_eff_left, range_q3,      pd_right, range_q1, border_color=na, bgcolor=col_eq)
+    pd_box_discount := box.new(pd_eff_left, range_q1,      pd_right, ms.range_low, border_color=na, bgcolor=col_discount)
+
+mss_bull_confirm(float level) =>
+    use_mss ? (math.min(open[1], close[1]) > level) : (close[1] > level)
+
+mss_bear_confirm(float level) =>
+    use_mss ? (math.max(open[1], close[1]) < level) : (close[1] < level)
+
+f_sl_bull(float swing_low) =>
+    use_atr_sl ? swing_low - (atr_val * atr_sl_mult) : swing_low
+
+f_sl_bear(float swing_high) =>
+    use_atr_sl ? swing_high + (atr_val * atr_sl_mult) : swing_high
+
+if use_ob_mit
+    int _ob_sz = array.size(ob_list)
+    if _ob_sz > 0
+        for i = 0 to _ob_sz - 1
+            OBBlock ob = array.get(ob_list, i)
+            if not ob.mitigated
+                bool hit_bull = ob.is_bull     and low[1]  <= ob.bottom
+                bool hit_bear = not ob.is_bull and high[1] >= ob.top
+                if hit_bull or hit_bear
+                    ob.mitigated := true
+                    if hide_ob_mit
+                        box.delete(ob.bx)
+                    else
+                        box.set_bgcolor(ob.bx, col_ob_mit)
+                    array.set(ob_list, i, ob)
+
+if array.size(ob_list) > 30
+    array.shift(ob_list)
+
+bool bullish_break = last_ph.is_active and mss_bull_confirm(last_ph.price) and sweep_bull_ok and htf_bull_bias and in_discount
+bool bearish_break = last_pl.is_active and mss_bear_confirm(last_pl.price) and sweep_bear_ok and htf_bear_bias and in_premium
+
+signal.trigger := false
+
+if bullish_break
+    float true_low  = use_sweep and not na(active_sweep_low) ? active_sweep_low : last_pl.price
+    pd_anchor_left := bar_index
+    ms.range_low   := true_low
+    ms.range_high  := last_ph.price
+    float sl_price  = f_sl_bull(true_low)
+    float risk      = close[1] - sl_price
+    float tp_price  = close[1] + (risk * rr_ratio)
+    string lbl      = ms.trend == 1 ? "BOS" : "CHoCH"
+
+    int line_x1 = math.max(last_ph.index, bar_index - 499)
+    int mid_x   = math.round((line_x1 + bar_index) / 2)
+
+    line.new(line_x1, last_ph.price, bar_index, last_ph.price, color=col_bull, style=line.style_dashed, width=1)
+    label.new(mid_x, last_ph.price, lbl, color=color.new(color.white, 100), textcolor=col_bull, style=label.style_label_down, size=size.small)
+
+    float ob_top    = true_low + (atr_val * 0.5)
+    int ob_eff_left = math.max(last_pl.index, bar_index - 499)
+    box ob_bx       = box.new(ob_eff_left, ob_top, bar_index + 10, true_low, border_color=na, bgcolor=col_bull_zone)
+    array.push(ob_list, OBBlock.new(last_pl.index, bar_index + 10, ob_top, true_low, true, false, ob_bx))
+
+    signal.action      := "Buy"
+    signal.entry_price := close[1]
+    signal.sl_price    := sl_price
+    signal.tp_price    := tp_price
+    signal.trigger     := true
+    ms.trend           := 1
+    ms.last_high       := last_ph.price
+    last_ph.is_active  := false
+    active_bull_sweep  := false
+    active_sweep_low   := na
+
+    if use_conf
+        cscore.htf_ok      := htf_bull_bias
+        cscore.sweep_ok    := sweep_bull_ok
+        cscore.pd_ok       := in_discount
+        cscore.fvg_present := fvg_bull_near
+        cscore.in_session  := in_session
+        cscore.score       := (cscore.htf_ok ? 1 : 0) + (cscore.sweep_ok ? 1 : 0) + (cscore.pd_ok ? 1 : 0) + (cscore.fvg_present ? 1 : 0) + (cscore.in_session ? 1 : 0)
+
+if bearish_break
+    float true_high = use_sweep and not na(active_sweep_high) ? active_sweep_high : last_ph.price
+    pd_anchor_left := bar_index
+    ms.range_low   := last_pl.price
+    ms.range_high  := true_high
+    float sl_price  = f_sl_bear(true_high)
+    float risk      = sl_price - close[1]
+    float tp_price  = close[1] - (risk * rr_ratio)
+    string lbl      = ms.trend == -1 ? "BOS" : "CHoCH"
+
+    int line_x1 = math.max(last_pl.index, bar_index - 499)
+    int mid_x   = math.round((line_x1 + bar_index) / 2)
+
+    line.new(line_x1, last_pl.price, bar_index, last_pl.price, color=col_bear, style=line.style_dashed, width=1)
+    label.new(mid_x, last_pl.price, lbl, color=color.new(color.white, 100), textcolor=col_bear, style=label.style_label_up, size=size.small)
+
+    float ob_bottom = true_high - (atr_val * 0.5)
+    int ob_eff_left = math.max(last_ph.index, bar_index - 499)
+    box ob_bx       = box.new(ob_eff_left, true_high, bar_index + 10, ob_bottom, border_color=na, bgcolor=col_bear_zone)
+    array.push(ob_list, OBBlock.new(last_ph.index, bar_index + 10, true_high, ob_bottom, false, false, ob_bx))
+
+    signal.action      := "Sell"
+    signal.entry_price := close[1]
+    signal.sl_price    := sl_price
+    signal.tp_price    := tp_price
+    signal.trigger     := true
+    ms.trend           := -1
+    ms.last_low        := last_pl.price
+    last_pl.is_active  := false
+    active_bear_sweep  := false
+    active_sweep_high  := na
+
+    if use_conf
+        cscore.htf_ok      := htf_bear_bias
+        cscore.sweep_ok    := sweep_bear_ok
+        cscore.pd_ok       := in_premium
+        cscore.fvg_present := fvg_bear_near
+        cscore.in_session  := in_session
+        cscore.score       := (cscore.htf_ok ? 1 : 0) + (cscore.sweep_ok ? 1 : 0) + (cscore.pd_ok ? 1 : 0) + (cscore.fvg_present ? 1 : 0) + (cscore.in_session ? 1 : 0)
+
+color score_col = cscore.score >= 4 ? col_conf_hi : cscore.score >= 2 ? col_conf_mid : col_conf_lo
+
+if use_conf and signal.trigger
+    string sc_txt = "Score: " + str.tostring(cscore.score)
+    string tt_txt = str.format("HTF: {0}\nSession: {1}\nFVG: {2}\nSweep: {3}\nPD: {4}",
+         cscore.htf_ok ? "✓" : "✗", cscore.in_session ? "✓" : "✗", cscore.fvg_present ? "✓" : "✗", cscore.sweep_ok ? "✓" : "✗", cscore.pd_ok ? "✓" : "✗")
+    float  lbl_y     = signal.action == "Buy" ? close[1] - (atr_val * 0.2) : close[1] + (atr_val * 0.2)  
+    string lbl_style = signal.action == "Buy" ? label.style_label_up   : label.style_label_down
+    label.new(bar_index, lbl_y, sc_txt, color=color.new(score_col, 80), textcolor=col_text, style=lbl_style, size=size.small, tooltip=tt_txt)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── FIBONACCI ENGINE ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+calcExtensionTarget(float priceA, float priceB, float priceC, float ratio, bool useLog) =>
+    bool canUseLog = useLog and priceA > 0 and priceB > 0 and priceC > 0
+    canUseLog ? math.exp(math.log(priceC) + ((math.log(priceB) - math.log(priceA)) * ratio)) : priceC + ((priceB - priceA) * ratio)
+
+getElliottLabel(float ratio, bool isBullish) =>
+    string waveLabel = ""
+    if cfg_show_elliott_labels
+        switch
+            ratio == 0.618 => waveLabel := "Wave 5"
+            ratio == 1.0   => waveLabel := "C/3?"
+            ratio == 1.272 => waveLabel := "Harmonic"
+            ratio == 1.618 => waveLabel := "Wave 3"
+    waveLabel
+
+getExtensionColor(float ratio, bool isBullish) =>
+    color baseColor = isBullish ? cfg_col_bull : cfg_col_bear
+    int transparency = switch
+        ratio == 1.618                      => 0
+        ratio == 1.0 or ratio == 1.272      => 20
+        ratio == 1.5                        => 30
+        =>                                     50
+    color.new(baseColor, transparency)
+
+getStructureColor(bool isBullish) =>
+    isBullish ? cfg_col_bull : cfg_col_bear
+
+detectPivots() =>
+    float pivotHigh = f_pivotHigh(high, cfg_zigzag_depth)
+    float pivotLow  = f_pivotLow(low,  cfg_zigzag_depth)
+    int   pivotBar  = bar_index - cfg_zigzag_depth
+    [pivotHigh, pivotLow, pivotBar, not na(pivotHigh), not na(pivotLow)]
+
+isSignificantPivot(float newPrice, float lastPrice, float threshold) =>
+    math.abs(newPrice - lastPrice) >= threshold
+
+addZigZagPoint(int barIdx, float price, bool isHigh, array<ZigZagPoint> points, float threshold) =>
+    ZigZagPoint newPoint = ZigZagPoint.new(barIdx, price, isHigh)
+    if array.size(points) > 0
+        ZigZagPoint lastPoint = array.get(points, array.size(points) - 1)
+        if lastPoint.isHigh == isHigh
+            bool shouldUpdate = isHigh ? (price > lastPoint.price) : (price < lastPoint.price)
+            if shouldUpdate
+                lastPoint.barIdx := barIdx
+                lastPoint.price  := price
+        else
+            if isSignificantPivot(price, lastPoint.price, threshold)
+                array.push(points, newPoint)
+    else
+        array.push(points, newPoint)
+    while array.size(points) > 100
+        array.shift(points)
+
+detectABCStructure(array<ZigZagPoint> points) =>
+    ABCStructure result = na
+    if array.size(points) >= 3
+        ZigZagPoint pC = array.get(points, array.size(points) - 1)
+        ZigZagPoint pB = array.get(points, array.size(points) - 2)
+        ZigZagPoint pA = array.get(points, array.size(points) - 3)
+        bool isBullishSetup = not pA.isHigh and pB.isHigh and not pC.isHigh
+        bool isBearishSetup = pA.isHigh and not pB.isHigh and pC.isHigh
+        if isBullishSetup and (pC.price > pA.price and pC.price < pB.price)
+            result := ABCStructure.new(pA, pB, pC, true,  true, array.new<line>(), array.new<label>(), array.new<linefill>(), na, na, na, na, na, na)
+        if isBearishSetup and (pC.price < pA.price and pC.price > pB.price)
+            result := ABCStructure.new(pA, pB, pC, false, true, array.new<line>(), array.new<label>(), array.new<linefill>(), na, na, na, na, na, na)
+    result
+
+structureExists(ABCStructure newStruct, array<ABCStructure> structs) =>
+    bool exists = false
+    int  _sz    = array.size(structs)
+    if _sz > 0
+        for i = 0 to _sz - 1
+            ABCStructure existing = array.get(structs, i)
+            if existing.pointA.barIdx == newStruct.pointA.barIdx and existing.pointB.barIdx == newStruct.pointB.barIdx and existing.pointC.barIdx == newStruct.pointC.barIdx
+                exists := true
+                break
+    exists
+
+drawStructureLines(ABCStructure s) =>
+    color lineColor = getStructureColor(s.isBullish)
+    if cfg_show_structure_lines
+        s.lineAB := line.new(s.pointA.barIdx, s.pointA.price, s.pointB.barIdx, s.pointB.price, color=lineColor, width=2, style=line.style_solid)
+        s.lineBC := line.new(s.pointB.barIdx, s.pointB.price, s.pointC.barIdx, s.pointC.price, color=lineColor, width=2, style=line.style_dashed)
+    if cfg_show_abc_labels
+        float _abc_off = atr_val * 0.3  
+        s.lblA := label.new(s.pointA.barIdx, s.isBullish ? s.pointA.price - _abc_off : s.pointA.price + _abc_off, "A", style=s.isBullish ? label.style_label_up : label.style_label_down, color=cfg_col_label_bg, textcolor=lineColor, size=size.small)
+        s.lblB := label.new(s.pointB.barIdx, s.isBullish ? s.pointB.price + _abc_off : s.pointB.price - _abc_off, "B", style=s.isBullish ? label.style_label_down : label.style_label_up, color=cfg_col_label_bg, textcolor=lineColor, size=size.small)
+        s.lblC := label.new(s.pointC.barIdx, s.isBullish ? s.pointC.price - _abc_off : s.pointC.price + _abc_off, "C", style=s.isBullish ? label.style_label_up : label.style_label_down, color=cfg_col_label_bg, textcolor=lineColor, size=size.small)
+
+drawExtensionLevels(ABCStructure s) =>
+    float priceA   = s.pointA.price
+    float priceB   = s.pointB.price
+    float priceC   = s.pointC.price
+    int   startBar = s.pointC.barIdx
+    int   endBar   = cfg_extend_right ? bar_index + 50 : bar_index
+
+    array<float> ratios = array.new<float>()
+    if cfg_show_0618  
+        array.push(ratios, 0.618)
+    if cfg_show_100   
+        array.push(ratios, 1.0)
+    if cfg_show_1272  
+        array.push(ratios, 1.272)
+    array.push(ratios, 1.5)
+    if cfg_show_1618  
+        array.push(ratios, 1.618)
+
+    line  line1500   = na
+    line  line1618   = na
+    float cached1500 = na 
+    float cached1618 = na
+
+    int _r_sz = array.size(ratios)
+    if _r_sz > 0
+        for i = 0 to _r_sz - 1
+            float  ratio       = array.get(ratios, i)
+            float  targetPrice = calcExtensionTarget(priceA, priceB, priceC, ratio, cfg_use_log)
+            color  levelColor  = getExtensionColor(ratio, s.isBullish)
+            string elliottLbl  = getElliottLabel(ratio, s.isBullish)
+            bool   isZoneLine  = (ratio == 1.5)
+
+            if not isZoneLine
+                line extLine = line.new(startBar, targetPrice, endBar, targetPrice, color=levelColor, width=1,
+                     style=ratio == 1.618 ? line.style_solid : line.style_dotted,
+                     extend=cfg_extend_right ? extend.right : extend.none)
+                array.push(s.extLines, extLine)
+                if ratio == 1.618
+                    line1618    := extLine
+                    cached1618  := targetPrice
+                string labelText = str.tostring(ratio, "#.###") + (elliottLbl != "" ? " (" + elliottLbl + ")" : "") + " - " + str.tostring(targetPrice, format.mintick)
+                array.push(s.extLabels, label.new(startBar, targetPrice, labelText, style=label.style_label_right, color=color.new(levelColor, 80), textcolor=cfg_col_text, size=size.small))
+            else
+                line extLine = line.new(startBar, targetPrice, endBar, targetPrice, color=color.new(color.white, 100), width=0, extend=cfg_extend_right ? extend.right : extend.none)
+                line1500    := extLine
+                cached1500  := targetPrice
+                array.push(s.extLines, extLine)
+
+    if not na(line1500) and not na(line1618)
+        color baseColor = getStructureColor(s.isBullish)
+        array.push(s.extFills, linefill.new(line1500, line1618, color=color.new(baseColor, 85)))
+        s.lblZone := label.new(startBar, (cached1500 + cached1618) / 2, "Golden Zone", style=label.style_label_left, color=color.new(color.white, 100), textcolor=baseColor, size=size.small)
+
+cleanupStructure(ABCStructure s) =>
+    int _el = array.size(s.extLines)
+    if _el > 0
+        for i = 0 to _el - 1
+            line.delete(array.get(s.extLines, i))
+    int _ell = array.size(s.extLabels)
+    if _ell > 0
+        for i = 0 to _ell - 1
+            label.delete(array.get(s.extLabels, i))
+    int _ef = array.size(s.extFills)
+    if _ef > 0
+        for i = 0 to _ef - 1
+            linefill.delete(array.get(s.extFills, i))
+    label.delete(s.lblZone)
+    line.delete(s.lineAB)
+    line.delete(s.lineBC)
+    label.delete(s.lblA)
+    label.delete(s.lblB)
+    label.delete(s.lblC)
+
+grayOutStructure(ABCStructure s) =>
+    color grayColor  = cfg_col_invalidated
+    color grayTrans  = color.new(cfg_col_invalidated, 70)
+    int _el = array.size(s.extLines)
+    if _el > 0
+        for i = 0 to _el - 1
+            line extLine = array.get(s.extLines, i)
+            if not na(extLine)
+                line.set_color(extLine, grayColor)
+    int _ell = array.size(s.extLabels)
+    if _ell > 0
+        for i = 0 to _ell - 1
+            label extLabel = array.get(s.extLabels, i)
+            if not na(extLabel)
+                label.set_textcolor(extLabel, grayColor)
+                label.set_color(extLabel, grayTrans)
+    int _ef = array.size(s.extFills)
+    if _ef > 0
+        for i = 0 to _ef - 1
+            linefill fill = array.get(s.extFills, i)
+            if not na(fill)
+                linefill.set_color(fill, color.new(grayColor, 90))
+    if not na(s.lblZone) 
+        label.set_textcolor(s.lblZone, grayColor)
+    if not na(s.lineAB)  
+        line.set_color(s.lineAB, grayColor)
+    if not na(s.lineBC)  
+        line.set_color(s.lineBC, grayColor)
+    if not na(s.lblA)    
+        label.set_textcolor(s.lblA, grayColor)
+    if not na(s.lblB)    
+        label.set_textcolor(s.lblB, grayColor)
+    if not na(s.lblC)    
+        label.set_textcolor(s.lblC, grayColor)
+
+checkAndInvalidateStructures(array<ABCStructure> structs, float currentClose) =>
+    bool bullishInvalidated = false
+    bool bearishInvalidated = false
+    int  _sz = array.size(structs)
+    if cfg_invalidation_enabled and _sz > 0
+        array<int> indicesToRemove = array.new<int>()
+        for i = 0 to _sz - 1
+            ABCStructure s = array.get(structs, i)
+            if s.isActive
+                bool isInvalidated = false
+                if s.isBullish  and currentClose < s.pointA.price
+                    isInvalidated      := true
+                    bullishInvalidated := true
+                if not s.isBullish and currentClose > s.pointA.price
+                    isInvalidated      := true
+                    bearishInvalidated := true
+                if isInvalidated
+                    s.isActive := false
+                    if cfg_invalidation_action == "Delete"
+                        cleanupStructure(s)
+                        array.push(indicesToRemove, i)
+                    else
+                        grayOutStructure(s)
+        int _ri = array.size(indicesToRemove)
+        if _ri > 0
+            for j = _ri - 1 to 0
+                array.remove(structs, array.get(indicesToRemove, j))
+    [bullishInvalidated, bearishInvalidated]
+
+manageStructures(array<ABCStructure> structs, int maxCount) =>
+    while array.size(structs) > maxCount
+        cleanupStructure(array.shift(structs))
+
+[fib_ph, fib_pl, fib_bar, fib_newHigh, fib_newLow] = detectPivots()
+
+if fib_newHigh
+    addZigZagPoint(fib_bar, fib_ph, true,  zigzagPoints, adaptiveThreshold)
+if fib_newLow
+    addZigZagPoint(fib_bar, fib_pl, false, zigzagPoints, adaptiveThreshold)
+
+ABCStructure newStructure = detectABCStructure(zigzagPoints)
+bool isNewStructure = not na(newStructure) and not structureExists(newStructure, structures)
+
+bool newBullishStructure = isNewStructure and not na(newStructure) and     newStructure.isBullish
+bool newBearishStructure = isNewStructure and not na(newStructure) and not newStructure.isBullish
+
+if isNewStructure
+    drawStructureLines(newStructure)
+    drawExtensionLevels(newStructure)
+    array.push(structures, newStructure)
+    manageStructures(structures, cfg_max_structures)
+
+int _st_sz = array.size(structures)
+if _st_sz > 0
+    for i = 0 to _st_sz - 1
+        ABCStructure s = array.get(structures, i)
+        int _el_sz = array.size(s.extLines)
+        if _el_sz > 0
+            for j = 0 to _el_sz - 1
+                line extLine = array.get(s.extLines, j)
+                if not na(extLine) and not cfg_extend_right
+                    line.set_x2(extLine, bar_index)
+
+[bullInvalidated, bearInvalidated] = checkAndInvalidateStructures(structures, close[1])
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SMC ALERT ENGINE ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+method generate_json_payload(SignalEngine this) =>
+    string inner = str.format(
+         '"ticker":"{0}","action":"{1}","entry":{2},"tp":{3},"sl":{4},"score":{5},"timeframe":"{6}"',
+         clean_ticker, this.action,
+         str.tostring(this.entry_price, format.mintick),
+         str.tostring(this.tp_price,    format.mintick),
+         str.tostring(this.sl_price,    format.mintick),
+         str.tostring(cscore.score), timeframe.period)
+    "{" + inner + "}"
+
+if signal.trigger and barstate.isconfirmed
+    alert(signal.generate_json_payload(), alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── FIBONACCI ALERT ENGINE ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+float fib_alert_entry    = close[1]
+float fib_alert_tp_bull  = na
+float fib_alert_sl_bull  = na
+float fib_alert_tp_bear  = na
+float fib_alert_sl_bear  = na
+
+if not na(newStructure)
+    float fib_tp = calcExtensionTarget(newStructure.pointA.price, newStructure.pointB.price, newStructure.pointC.price, 1.618, cfg_use_log)
+    float fib_sl = newStructure.pointA.price
+    if newStructure.isBullish
+        fib_alert_tp_bull := fib_tp
+        fib_alert_sl_bull := fib_sl
+    else
+        fib_alert_tp_bear := fib_tp
+        fib_alert_sl_bear := fib_sl
+
+
+string fib_tpl = '"action":"{0}","ticker":"{1}","tf":"{2}","entry":"{3}","tp":"{4}","sl":"{5}"'
+
+if barstate.isconfirmed
+    if newBullishStructure
+        alert("{" + str.format(fib_tpl, cfg_action_long,  clean_ticker, timeframe.period,
+             str.tostring(fib_alert_entry, format.mintick),
+             str.tostring(fib_alert_tp_bull, format.mintick),
+             str.tostring(fib_alert_sl_bull, format.mintick)) + "}", alert.freq_once_per_bar_close)
+
+    if newBearishStructure
+        alert("{" + str.format(fib_tpl, cfg_action_short, clean_ticker, timeframe.period,
+             str.tostring(fib_alert_entry, format.mintick),
+             str.tostring(fib_alert_tp_bear, format.mintick),
+             str.tostring(fib_alert_sl_bear, format.mintick)) + "}", alert.freq_once_per_bar_close)
+
+    if bullInvalidated
+        alert("{" + str.format(fib_tpl, cfg_action_close_long,  clean_ticker, timeframe.period,
+             str.tostring(close[1], format.mintick), "0", "0") + "}", alert.freq_once_per_bar_close)
+
+    if bearInvalidated
+        alert("{" + str.format(fib_tpl, cfg_action_close_short, clean_ticker, timeframe.period,
+             str.tostring(close[1], format.mintick), "0", "0") + "}", alert.freq_once_per_bar_close)
+
+    if cfg_enable_test
+        alert("{" + str.format('"action":"test","ticker":"{0}","tf":"{1}"', clean_ticker, timeframe.period) + "}", alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── INSTITUTIONAL DASHBOARD — self-cleaning, unconditional every bar ─────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+string dash_trend_val = ms.trend == 1 ? '▲ Bullish' : ms.trend == -1 ? '▼ Bearish' : '○ Neutral'
+color  dash_trend_col = ms.trend == 1 ? color.rgb(0,255,120) : ms.trend == -1 ? color.rgb(255,60,80) : color.rgb(140,140,140)
+
+float  dash_cscore_norm = cscore.score * 2.0
+string dash_cscore_val  = str.tostring(cscore.score) + '/5 ' + f_blockBar(dash_cscore_norm)
+color  dash_cscore_col  = f_blockColor(dash_cscore_norm)
+
+string dash_htf_val = use_htf ? (htf_bull_bias ? '▲ Bull HTF' : '▼ Bear HTF') : '○ HTF Off'
+color  dash_htf_col = use_htf ? (htf_bull_bias ? color.rgb(0,255,120) : color.rgb(255,60,80)) : color.rgb(140,140,140)
+
+string dash_pd_val = not use_pd ? '○ P/D Off' : in_discount ? '📉 Discount' : in_premium ? '📈 Premium' : '⚖️  Mid'
+color  dash_pd_col = not use_pd ? color.rgb(140,140,140) : in_discount ? color.rgb(0,255,120) : in_premium ? color.rgb(255,60,80) : color.rgb(200,200,0)
+
+string dash_sess_name = now_london ? 'London' : now_ny ? 'New York' : now_asian ? 'Asian' : 'Off-Hours'
+string dash_sess_val  = in_session ? '⚡ ' + dash_sess_name : '○ ' + dash_sess_name
+color  dash_sess_col  = in_session ? color.rgb(255,215,0) : color.rgb(140,140,140)
+
+string dash_sweep_val = active_bull_sweep ? '▲ Bull Active' : active_bear_sweep ? '▼ Bear Active' : '○ None'
+color  dash_sweep_col = active_bull_sweep ? color.rgb(0,255,120) : active_bear_sweep ? color.rgb(255,60,80) : color.rgb(140,140,140)
+
+string dash_atr_val = str.tostring(atr_val, format.mintick)
+color  dash_atr_col = color.rgb(200,200,60)
+
+color hdr_bg = color.rgb(30, 30, 45, 10)
+color alt_bg = color.rgb(20, 20, 25, 10)
+color odd_bg = dash_bg_color
+
+table.cell(dash, 0, 0, '  SMC + Fib',           bgcolor=hdr_bg, text_color=color.rgb(180,180,210), text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 0, clean_ticker + ' · ' + timeframe.period, bgcolor=hdr_bg, text_color=color.rgb(180,180,210), text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 1, '  Trend Bias',           bgcolor=alt_bg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 1, dash_trend_val,            bgcolor=alt_bg, text_color=dash_trend_col,  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 2, '  Confluence',            bgcolor=odd_bg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 2, dash_cscore_val,           bgcolor=odd_bg, text_color=dash_cscore_col, text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 3, '  HTF Bias',              bgcolor=alt_bg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 3, dash_htf_val,              bgcolor=alt_bg, text_color=dash_htf_col,    text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 4, '  P/D Zone',              bgcolor=odd_bg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 4, dash_pd_val,               bgcolor=odd_bg, text_color=dash_pd_col,     text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 5, '  Session',               bgcolor=alt_bg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 5, dash_sess_val,             bgcolor=alt_bg, text_color=dash_sess_col,   text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 6, '  Liq. Sweep',            bgcolor=odd_bg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 6, dash_sweep_val,            bgcolor=odd_bg, text_color=dash_sweep_col,  text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)
+
+table.cell(dash, 0, 7, '  ATR Value',             bgcolor=alt_bg, text_color=dash_txt_color, text_halign=text.align_left,  text_font_family=font.family_monospace, text_size=size.small)
+table.cell(dash, 1, 7, dash_atr_val,              bgcolor=alt_bg, text_color=dash_atr_col,    text_halign=text.align_right, text_font_family=font.family_monospace, text_size=size.small)

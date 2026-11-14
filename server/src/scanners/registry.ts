@@ -4,6 +4,8 @@ import { DATA_DIR, PINE_DIR, SCRIPTS_DIR } from '../config.ts';
 import { pineLibraries } from '../pine/libraries.ts';
 import { applyPatches } from '../pine/patches.ts';
 import { familyFor, originOf } from '../library/families.ts';
+import { variantCompatibleSource } from './variantCompat.ts';
+import { markitTickSourceError } from './markitTick.ts';
 
 /** `removed`: retired from the library for good (decision 127); the row stays in the manifest so the library sync never re-imports it, the source file is gone, and the registry never loads it. */
 export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable' | 'removed';
@@ -44,6 +46,8 @@ export interface LoadedScanner extends ScannerMeta {
   patches: string[];
   /** Decision 195: a variant is the same source read another way (scripts/variants.json); this is the id it was made from. */
   variantOf?: string;
+  /** Intent of a separate reading, not proof of native lifecycle or profitability. */
+  variantReason?: string;
 }
 
 /** Decision 195: scanner variants — one source, a second id with its own reading (its contract lives in specs.json). */
@@ -113,6 +117,8 @@ export class ScannerRegistry {
       const source = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       const { source: compatible, applied } = source ? applyPatches(source, m.file) : { source: '', applied: [] };
       let { status, reason } = reviewedStatus(m, report[m.id]);
+      const nativeSourceError=markitTickSourceError(m.id,source);
+      if(nativeSourceError){status='incompatible';reason=nativeSourceError;}
       let patched = compatible;
       try { patched = pineLibraries().pin(compatible); pineLibraries().resolver(patched); }
       catch (error) { status = 'incompatible'; reason = reason ?? `Pine dependencies: ${(error as Error).message}`; }
@@ -128,7 +134,17 @@ export class ScannerRegistry {
     for (const v of loadVariants()) {
       const b = this.map.get(v.base);
       if (!b || this.map.has(v.id)) continue;
-      this.map.set(v.id, { ...b, id: v.id, name: v.name, variantOf: v.base });
+      const variant={ ...b, id: v.id, name: v.name, variantOf: v.base, variantReason: v.why };
+      try {
+        const compatibility=variantCompatibleSource(v.id,b.source);
+        if(compatibility.patch){
+          const lowered=applyPatches(compatibility.source,b.file);
+          variant.patched=pineLibraries().pin(lowered.source);
+          pineLibraries().resolver(variant.patched);
+          variant.patches=[compatibility.patch,...lowered.applied];
+        }
+      }catch(error){variant.status='incompatible';variant.reason=(error as Error).message;}
+      this.map.set(v.id,variant);
     }
   }
 

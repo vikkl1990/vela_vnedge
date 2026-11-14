@@ -1,3 +1,5 @@
+import {candleReplayBlock} from './basket.ts';
+import {plotLifecycle} from '../scanners/plotLifecycle.ts';
 /**
  * Decision 191: one place that says how a scanner trades, asked by every path that trades or measures it.
  *
@@ -31,6 +33,7 @@ export function bookPaperConfig(cfg: AppConfig, book: Book): PaperConfig {
  */
 export function scannerExitPolicy(cfg: AppConfig, scannerId: string, now = Date.now()): ExitOverride | undefined {
   const sc = cfg.scanners[scannerId];
+  if(plotLifecycle(scannerId))return {...sc?.exit,fallbackRR:[0,0,0]}; // No invented targets in these source-pinned profiles.
   const base: ExitOverride | undefined = sc?.exitMode === 'script' ? { ...(sc.exit ?? {}), ...scriptModeExit(cfg.paper) } : sc?.exit;
   const from = cfg.paper.scriptExitTrailFrom;
   return sc?.exitMode === 'script' && from !== undefined && now >= from ? { ...base, ...scriptModeProtection(cfg.paper) } : base;
@@ -46,8 +49,12 @@ export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { exec
 
 /** Everything a backtest needs to trade a scanner the way `book` trades it today. */
 export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number; productFees?:ProductFees } = {}) {
+  const blocked=candleReplayBlock(scannerId);if(blocked)throw Error(blocked);
   const sc: Partial<ScannerConfig> = cfg.scanners[scannerId] ?? {};
   return {
+    // Scoped replay version: changes only native author research, preserving other
+    // scanners' screening signatures and evidence identities.
+    ...(sc.reader===3||plotLifecycle(scannerId)?{scriptStopAmendments:'after-close-v1' as const}:{}),
     cfg: withProductFees(scannerEntryConfig({...bookPaperConfig(cfg, book),...(opts.executor || cfg.execution.mode!=='paper' ? {reclaimTrials:undefined} : {})},sc,tf),opts.productFees,opts.productFees?.symbol??''),
     ...(opts.productFees?{productFees:opts.productFees}:{}),
     entryProtection: sc.entryProtection,

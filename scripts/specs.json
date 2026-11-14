@@ -368,8 +368,15 @@
     ]
   },
   "role-reversal": {
-    "sources": ["alertcondition"],
-    "labels": ["Flip Held as Support", "Flip Held as Resistance", "Failed Flip (Bearish)", "Failed Flip (Bullish)"],
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Flip Held as Support",
+      "Flip Held as Resistance",
+      "Failed Flip (Bearish)",
+      "Failed Flip (Bullish)"
+    ],
     "sides": {
       "resistance broken": "none",
       "support broken": "none",
@@ -673,5 +680,1790 @@
       "intrabarModelInput": "Conservative",
       "showPreviewInput": false
     }
+  },
+  "structure-anchored-vwap-upstream-2-0": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "alertTpHitInput": true,
+      "showSlHitAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "synapse-trail-pro-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "alertTpHitInput": true,
+      "alertSlHitInput": true,
+      "alertFlipInput": true,
+      "enableAlertsInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0.3333333333333333,
+        0.3333333333333333,
+        0.3333333333333333
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "liquidity-trail-matrix-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": false,
+      "alertTpHitInput": true,
+      "showSlHitAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "high-volume-pivot-support-resistance-zones-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Resistance Breakout",
+      "Support Breakdown",
+      "Support Hold Retest",
+      "Resistance Hold Retest",
+      "Flipped Res Retest",
+      "Flipped Sup Retest"
+    ],
+    "sides": {
+      "Resistance Breakout": "long",
+      "Support Breakdown": "short",
+      "Support Hold Retest": "long",
+      "Resistance Hold Retest": "short",
+      "Flipped Res Retest": "long",
+      "Flipped Sup Retest": "short"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "dynamic-trend-bands-anchored-vwap-signals-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Break Up Triangle",
+      "Break Dn Triangle"
+    ],
+    "sides": {
+      "Break Up Triangle": "long",
+      "Break Dn Triangle": "short"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "triangular-hull-moving-average-volatility-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Up",
+      "Dn"
+    ],
+    "sides": {
+      "Up": "long",
+      "Dn": "short"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "liquidity-void-detector-zeiierman-author-direction": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Buy-Side Imbalance",
+      "Sell-Side Imbalance"
+    ],
+    "sides": {
+      "Buy-Side Imbalance": "short",
+      "Sell-Side Imbalance": "long"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "false-breakout-expo-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "False Breakout Up",
+      "False Breakout Down"
+    ],
+    "sides": {
+      "False Breakout Up": "short",
+      "False Breakout Down": "long"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "adaptive-smart-money-liquidity-sweep-levels-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Upper Liquidity Wick Sweep",
+      "Lower Liquidity Wick Sweep"
+    ],
+    "sides": {
+      "Upper Liquidity Wick Sweep": "short",
+      "Lower Liquidity Wick Sweep": "long"
+    },
+    "edge": false,
+    "exitMode": "levels"
+  },
+  "zero-lag-ma-trend-levels-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "label"
+    ],
+    "labels": [
+      "▲",
+      "▼"
+    ],
+    "sides": {
+      "▲": "long",
+      "▼": "short"
+    },
+    "inputs": {
+      "show_levl": true
+    },
+    "exitMode": "levels"
+  },
+  "swing-failure-zones-and-signals-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Bullish Signal",
+      "Bearish Signal"
+    ],
+    "sides": {
+      "Bullish Signal": "long",
+      "Bearish Signal": "short"
+    },
+    "edge": false,
+    "exitMode": "levels"
+  },
+  "zone-shift-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "label"
+    ],
+    "labels": [
+      "⯁"
+    ],
+    "labelStyles": {
+      "⯁": {
+        "style_label_up": "long",
+        "style_label_down": "short"
+      }
+    },
+    "exitMode": "levels"
+  },
+  "breaker-blocks-with-signals-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "2. signal UP",
+      "2. signal DN"
+    ],
+    "sides": {
+      "2. signal UP": "long",
+      "2. signal DN": "short"
+    },
+    "edge": false,
+    "exitMode": "levels"
+  },
+  "rsi-volume-ladder-basket": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "VNEDGE RSI volume candidate"
+    ],
+    "sides": {
+      "VNEDGE RSI volume candidate": "long"
+    },
+    "edge": false,
+    "exitMode": "levels",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        1,
+        0,
+        0
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "reactive-trail-system-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "tpBeAlertInput": true,
+      "slRevAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "reaction-level-matrix-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "webhookInput": true,
+      "tpBeAlertInput": true,
+      "slRevAlertInput": true
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
+  },
+  "strat-trap-vwap-engine-author-native": {
+    "enabled": false,
+    "reader": 3,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {
+      "alertFmtInput": "JSON",
+      "enableAlertsInput": true,
+      "entryAlertInput": true,
+      "tpBeAlertInput": true,
+      "slAlertInput": true,
+      "entryModeInput": "Trap Bar",
+      "minFtcAlignInput": 0
+    },
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    },
+    "timezone": "America/New_York"
+  },
+  "smart-swing-vwap-zeiierman-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Bullish AVWAP retest",
+      "Bearish AVWAP retest"
+    ],
+    "sides": {
+      "Bullish AVWAP retest": "long",
+      "Bearish AVWAP retest": "short",
+      "Bullish polarity flip": "none",
+      "Bearish polarity flip": "none",
+      "Cross above AVWAP": "none",
+      "Cross below AVWAP": "none",
+      "New ranked anchor": "none",
+      "Any ranked AVWAP event": "none"
+    },
+    "exitMode": "levels"
+  },
+  "smart-money-breakout-signals-author-native-v1": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "derived"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {},
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      },
+      "trailSteps": [],
+      "trailStall": {
+        "minutes": 0,
+        "factor": 1
+      }
+    }
+  },
+  "machine-learning-rsi-ai-classification-ranking-zeiierman-author-native-v1": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "derived"
+    ],
+    "exitMode": "both",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "inputs": {},
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        0,
+        0,
+        1
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      },
+      "trailSteps": [],
+      "trailStall": {
+        "minutes": 0,
+        "factor": 1
+      }
+    },
+    "sides": {
+      "ST Flip Up": "none",
+      "ST Flip Dn": "none",
+      "Trend Flip Up": "none",
+      "Trend Flip Down": "none"
+    }
+  },
+  "early-swing-confirmation-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "quiet-range-tracker-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "fibonacci-swing-flip-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "banker-hot-money-flow-tracker-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "value-area-trail-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "momentum-confluence-engine-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "state-transition-matrix-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "adaptive-range-filter-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "stochastic-range-regime-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "macd-multi-ma-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "aroon-money-flow-confluence-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "trailing-reversal-trading-system-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "weinstein-stage-cycle-tracker-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "turtle-soup-failed-breakout-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "coppock-curve-multi-filter-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "nrtr-adaptive-trailing-reverse-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "qqe-trend-confluence-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smartfit-trend-channels-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "multi-ma-trend-ribbon-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "triple-supertrend-confluence-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "trend-angle-momentum-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "bollinger-fibonacci-trend-extension-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-trend-filter-confirmation-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "liquidity-stress-exhaustion-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "chandelier-exit-trend-navigator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "mcginley-dynamic-fusion-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "multi-confluence-signal-engine-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "fan-principle-signals-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "percentage-price-oscillator-navigator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "obv-signal-confluence-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dynamic-market-metrics-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "session-seasonality-deviation-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "cardwell-dual-confluence-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "fractal-timeframe-collision-node-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "volatility-squeeze-ignition-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "liquidity-radar-engine-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "williams-vix-fix-elite-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dynamic-mss-navigator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "liquidity-entry-signals-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "cumulative-rejection-heatmap-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "cardwell-range-analyze-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "triple-confluence-navigator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "multi-indicator-confluence-strategy-automator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "elliott-wave-scanner-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "adaptive-rsi-supertrend-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dynamic-gravity-attractor-dga-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "cardwell-rsi-trade-navigator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "intra-candle-pressure-dissector-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "historical-pattern-projection-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "market-weariness-spectrum-indicator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "alpha-signal-engine-pro-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "quantum-imbalance-trap-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "liquidity-sweep-retracements-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-money-renko-matrix-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "inducement-engine-liquidity-targets-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "auto-pattern-detector-targets-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-gap-support-and-resistance-breakout-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "market-structure-target-tracker-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "sloped-linreg-volume-profile-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-trend-flow-pro-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-money-sentiment-index-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dynamic-pivot-fibo-analytics-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "renko-heatmap-pro-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "twiggs-liquidity-order-block-engine-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "candle-volume-decomposition-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smc-liquidity-sweep-fibonacci-extension-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "multi-factor-regime-engine-pro-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "swingregress-volatility-analytics-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "daily-bias-liquidity-profiler-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "alphatrend-momentum-matrix-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "squeeze-bollinger-bands-tracker-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "levels",
+    "edge": false,
+    "entryProtection": "native",
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        1,
+        0,
+        0
+      ],
+      "trailAfterR": 0,
+      "floorAtR": 0,
+      "trailSteps": []
+    }
+  },
+  "parabolic-sar-smart-filter-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-money-concept-liquidity-sweep-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "sortino-ratio-oscillator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "garch-volumetric-cloud-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "levels",
+    "edge": false,
+    "entryProtection": "native",
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        1,
+        0,
+        0
+      ],
+      "trailAfterR": 0,
+      "floorAtR": 0,
+      "trailSteps": []
+    }
+  },
+  "regression-aligned-candlestick-architect-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dynamic-fibtrend-signals-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "delta-absorption-scanner-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "advanced-fibonacci-confluence-matrix-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "multi-pool-liquidity-confluence-scorer-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "alpha-signal-engine-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "mesa-adaptive-cycle-engine-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alert"
+    ],
+    "exitMode": "levels",
+    "edge": false,
+    "entryProtection": "native",
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        1,
+        0,
+        0
+      ],
+      "trailAfterR": 0,
+      "floorAtR": 0,
+      "trailSteps": []
+    }
+  },
+  "volume-defense-zones-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-rsi-candles-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "tetratrend-engine-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "adaptive-linear-regression-structure-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "institutional-order-flow-shield-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dow-jones-institutional-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "adaptive-channel-breakout-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "bernoulli-process-trend-probability-entropy-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "multi-session-volume-profile-suite-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dynamic-trend-based-fibonacci-extension-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-safezone-stops-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "daily-bias-trade-manager-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "multi-session-volume-profile-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-fear-greed-index-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "accumulation-distribution-oscillator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-fixed-volume-profile-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "support-and-resistance-breakout-signals-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-money-flow-oscillator-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "accumulative-swing-cloud-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-candlestick-pattern-filter-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "volume-flow-and-delta-analysis-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "liquidity-strain-detector-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "hybrid-smart-money-concepts-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "trend-stress-quant-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "smart-gap-concepts-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "amihud-illiquidity-ratio-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "dynamic-pivot-point-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "garch-volume-volatility-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
+  },
+  "trend-break-targets-markittick": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [],
+    "exitMode": "levels",
+    "edge": false,
+    "labels": [
+      "VNEDGE REVIEW HOLD — NO ENTRY"
+    ]
   }
 }

@@ -2,7 +2,7 @@ import {DeltaFeed} from '../delta/ws.ts';
 import {DepthRecorder} from '../execution/depthRecorder.ts';
 import type {Db} from '../db.ts';
 
-type Feed=Pick<DeltaFeed,'on'|'start'|'stop'|'subscribe'|'unsubscribe'>;
+type Feed=Pick<DeltaFeed,'start'|'stop'|'subscribe'|'unsubscribe'> & {on(event:string|symbol,listener:(...args:any[])=>void):unknown};
 /** Advisory sockets never enter the execution feed. Delta limits ob_updates to 100 symbols/socket. */
 export class AdvisoryDepthPool {
  readonly recorder:DepthRecorder;

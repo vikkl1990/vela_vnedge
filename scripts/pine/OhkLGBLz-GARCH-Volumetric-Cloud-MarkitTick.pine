@@ -1,0 +1,160 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("GARCH Volumetric Cloud [MarkitTick]", overlay=true)
+
+// -----------------------------------------------------------------------------
+// INPUTS & CONFIGURATION
+// -----------------------------------------------------------------------------
+string grp_vol     = "GARCH Volume Engine"
+string grp_cloud   = "Cloud & Trend Engine"
+string grp_color   = "Modern Colors"
+string grp_webhook = "Webhook Actions (Automation)"
+
+bool  useEWMA       = input.bool(true,  "Use EWMA",                    group = grp_vol)
+bool  useLog        = input.bool(true,  "Log Returns",                  group = grp_vol)
+int   garchLength   = input.int(21,     "Variance Length", minval = 1,  group = grp_vol)
+int   stdevLookback = input.int(100,    "Threshold Lookback",           group = grp_vol)
+float lambda        = input.float(0.94, "EWMA Lambda",     step = 0.01, group = grp_vol)
+float highK         = input.float(1.5,  "High Volatility Band (StdDev)",group = grp_vol)
+
+int ema1 = input.int(8,  "Cloud Fast Length",      group = grp_cloud)
+int ema2 = input.int(13, "Cloud Mid-Fast Length",  group = grp_cloud)
+int ema3 = input.int(21, "Cloud Mid-Slow Length",  group = grp_cloud)
+int ema4 = input.int(34, "Cloud Slow Length",      group = grp_cloud)
+
+color col_bull = input.color(#00E5FF, "Bullish Theme", group = grp_color)
+color col_bear = input.color(#FF3D71, "Bearish Theme", group = grp_color)
+
+string action_long  = input.string("long",  "Action: Long",  group = grp_webhook)
+string action_short = input.string("short", "Action: Short", group = grp_webhook)
+
+// -----------------------------------------------------------------------------
+// USER-DEFINED TYPES (UDTs) & MODULES
+// -----------------------------------------------------------------------------
+type VolEngine
+    float volProxy
+    bool  isHighVol
+
+type HAEngine
+    float haOpen
+    float haHigh
+    float haLow
+    float haClose
+
+type CloudState
+    float e1
+    float e2
+    float e3
+    float e4
+    bool  isBull
+
+method calc_returns(float cur, float prev, bool isLog) =>
+    float result = 0.0
+    if prev != 0.0
+        result := (isLog and cur > 0.0 and prev > 0.0) ? math.log(cur / prev) : (cur / prev) - 1.0
+    result
+
+// -----------------------------------------------------------------------------
+// ENGINE FACTORIES & VECTORIZED LOGIC
+// -----------------------------------------------------------------------------
+f_get_garch(float volRet, int gLength, float lamb, int lb, float hk, bool useE) =>
+    float r2 = volRet * volRet
+    float smaVar = ta.sma(r2, gLength)
+    var float ewmaVar = na
+    float safePrev = nz(ewmaVar[1], r2)
+    ewmaVar := na(ewmaVar[1]) ? r2 : lamb * safePrev + (1.0 - lamb) * r2
+    float varProxy = useE ? ewmaVar : smaVar
+    float volPx = math.sqrt(varProxy)
+    float meanVol  = ta.sma(volPx, lb)
+    float stdevVol = ta.stdev(volPx, lb)
+    VolEngine.new(volPx, volPx > meanVol + hk * stdevVol)
+
+f_get_ha(float o, float h, float l, float c) =>
+    float haClose = (o + h + l + c) / 4.0
+    var float haOpen = na
+    haOpen := na(haOpen[1]) ? (o + c) / 2.0 : (haOpen[1] + nz(haClose[1], haClose)) / 2.0
+    float haHigh = math.max(h, math.max(haOpen, haClose))
+    float haLow  = math.min(l, math.min(haOpen, haClose))
+    HAEngine.new(haOpen, haHigh, haLow, haClose)
+
+method derive_cloud(HAEngine this, int l1, int l2, int l3, int l4) =>
+    float e1 = ta.ema(this.haClose, l1)
+    float e2 = ta.ema(this.haClose, l2)
+    float e3 = ta.ema(this.haClose, l3)
+    float e4 = ta.ema(this.haClose, l4)
+    CloudState.new(e1, e2, e3, e4, e1 > e4)
+
+// -----------------------------------------------------------------------------
+// STATE INSTANTIATION & EXECUTION
+// -----------------------------------------------------------------------------
+float volRet = calc_returns(volume, nz(volume[1], volume), useLog)
+
+VolEngine  vEngine = f_get_garch(volRet, garchLength, lambda, stdevLookback, highK, useEWMA)
+HAEngine   hEngine = f_get_ha(open, high, low, close)
+CloudState cState  = hEngine.derive_cloud(ema1, ema2, ema3, ema4)
+
+color themeColor = cState.isBull ? col_bull : col_bear
+
+float haOpen  = hEngine.haOpen
+float haHigh  = hEngine.haHigh
+float haLow   = hEngine.haLow
+float haClose = hEngine.haClose
+
+float e1 = cState.e1
+float e2 = cState.e2
+float e3 = cState.e3
+float e4 = cState.e4
+
+// -----------------------------------------------------------------------------
+// VISUAL RENDERING
+// -----------------------------------------------------------------------------
+barcolor(color.new(color.black, 100))
+
+plotcandle(haOpen, haHigh, haLow, haClose,
+     title       = "HA Candles",
+     color       = themeColor,
+     wickcolor   = themeColor,
+     bordercolor = themeColor)
+
+p1 = plot(e1, "Cloud L1", color = color.new(themeColor, 40), linewidth = 1)
+p2 = plot(e2, "Cloud L2", color = na)
+p3 = plot(e3, "Cloud L3", color = na)
+p4 = plot(e4, "Cloud L4", color = color.new(themeColor, 40), linewidth = 1)
+
+float eMid = (e2 + e3) / 2.0
+plot(eMid, "Cloud Spine", color = color.new(themeColor, 20), linewidth = 2)
+
+fill(p1, p2, color = color.new(themeColor, 50), title = "Gradient Inner")
+fill(p2, p3, color = color.new(themeColor, 65), title = "Gradient Core")
+fill(p3, p4, color = color.new(themeColor, 78), title = "Gradient Outer")
+
+// -----------------------------------------------------------------------------
+// ALERT & EXECUTION ENGINE
+// -----------------------------------------------------------------------------
+bool crossUp   = e1[1] > e4[1] and e1[2] <= e4[2]
+bool crossDown = e1[1] < e4[1] and e1[2] >= e4[2]
+
+bool isHighVol  = vEngine.isHighVol
+bool validLong  = crossUp   and isHighVol[1]
+bool validShort = crossDown and isHighVol[1]
+
+float lowest5    = ta.lowest(low, 5)
+float highest5   = ta.highest(high, 5)
+float entryPrice = close
+float slPrice    = validLong ? lowest5 : (validShort ? highest5 : na)
+float tpPrice    = validLong ? entryPrice + (entryPrice - slPrice) * 1.5 : (validShort ? entryPrice - (slPrice - entryPrice) * 1.5 : na)
+
+string json_template = '"action": "{0}", "ticker": "{1}", "tf": "{2}", "entry": "{3}", "tp": "{4}", "sl": "{5}"'
+
+if validLong and barstate.isconfirmed
+    string inner_json = str.format(json_template, action_long, syminfo.tickerid, timeframe.period, str.tostring(entryPrice, format.mintick), str.tostring(tpPrice, format.mintick), str.tostring(slPrice, format.mintick))
+    string alertMsg   = "{" + inner_json + "}"
+    alert(alertMsg, alert.freq_once_per_bar_close)
+
+if validShort and barstate.isconfirmed
+    string inner_json = str.format(json_template, action_short, syminfo.tickerid, timeframe.period, str.tostring(entryPrice, format.mintick), str.tostring(tpPrice, format.mintick), str.tostring(slPrice, format.mintick))
+    string alertMsg   = "{" + inner_json + "}"
+    alert(alertMsg, alert.freq_once_per_bar_close)

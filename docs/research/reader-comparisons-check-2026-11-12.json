@@ -1,0 +1,1128 @@
+{
+  "checkedAt": "2026-11-12T13:48:52.675733+00:00",
+  "baselineCommit": "0afe4098ec120090a2ea1b468cd09505a95cf35f",
+  "sources": [
+    "https://github.com/vikkl1990/vela_vnedge/pull/10",
+    "https://api.india.delta.exchange/v2/history/candles",
+    "https://api.india.delta.exchange/v2/products",
+    "https://api.india.delta.exchange/v2/l2orderbook/INITUSD",
+    "https://api.india.delta.exchange/v2/l2orderbook/AIOTUSD",
+    "https://api.india.delta.exchange/v2/l2orderbook/JCTUSD",
+    "https://api.india.delta.exchange/v2/l2orderbook/EVAAUSD"
+  ],
+  "liveBefore": {
+    "since": "2026-11-12T13:23:52Z",
+    "through": "2026-11-12T13:45:15.430Z",
+    "comparisons": 4,
+    "arms": 8,
+    "scansPerArm": 2,
+    "entries": 0,
+    "fills": 0,
+    "observedCohortSplits": [
+      "trend-impulse-channels-zeiierman: removal of AINUSD 15m from account allocation",
+      "supertrend-cluster-zeiierman: removal of STRKUSD 1h from account allocation"
+    ]
+  },
+  "method": "Read-only VM receipts and journal. Local public Delta India candle runs. Find raw historical signals, then rerun each observed entry cutoff without later candles using the configured live history length. Evaluate the existing regime and base full-fee gates. Both readings consume identical bars. No entries are backfilled into VM books.",
+  "limitations": [
+    "This is signal and admission diagnosis, not a net-profit backtest or evidence of actual historical fills.",
+    "Final-history signals can disappear at live-length prefixes; observed-signal prefix checks do not exhaustively discover events absent from the final run.",
+    "Historical spread, depth, funding, competing positions and order arrival were not reconstructed. The reported passing count is a necessary check only.",
+    "Current depth snapshots cannot establish historical execution or future liquidity.",
+    "Ordinary past trades include different historical policies and cannot be pooled into the new experiment."
+  ],
+  "eth24h": [
+    {
+      "scanner": "trend-impulse-channels-zeiierman",
+      "symbol": "ETHUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 4,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 4,
+          "confirmedEntries": 4,
+          "passesRegimeAndBaseEconomics": 0,
+          "regimeRefusals": 1,
+          "economicsRefusals": 4,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T23:00:00.000Z",
+              "side": "long",
+              "label": "Upper Retest",
+              "source": "shape",
+              "atrPct": 0.4640008516318651,
+              "stopPct": 0.6948707245807383,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.69% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-11T23:30:00.000Z",
+              "side": "long",
+              "label": "Upper Retest",
+              "source": "shape",
+              "atrPct": 0.4708027529545437,
+              "stopPct": 0.7066104627080347,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.71% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T05:15:00.000Z",
+              "side": "short",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 0.32805614657524307,
+              "stopPct": 0.4918153123394237,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.49% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T11:30:00.000Z",
+              "side": "short",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 0.29750978181645343,
+              "stopPct": 0.44631848892834025,
+              "maker": false,
+              "regime": "regime: ATR 0.30% < 0.3%",
+              "economics": "stop too tight for fees (0.45% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 4,
+          "confirmedEntries": 4,
+          "passesRegimeAndBaseEconomics": 0,
+          "regimeRefusals": 1,
+          "economicsRefusals": 4,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T23:00:00.000Z",
+              "side": "short",
+              "label": "Upper Retest",
+              "source": "shape",
+              "atrPct": 0.4640008516318651,
+              "stopPct": 0.6948707245807494,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.69% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-11T23:30:00.000Z",
+              "side": "short",
+              "label": "Upper Retest",
+              "source": "shape",
+              "atrPct": 0.4708027529545437,
+              "stopPct": 0.7066104627080236,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.71% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T05:15:00.000Z",
+              "side": "long",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 0.32805614657524307,
+              "stopPct": 0.4918153123394237,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.49% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T11:30:00.000Z",
+              "side": "long",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 0.29750978181645343,
+              "stopPct": 0.44631848892834025,
+              "maker": false,
+              "regime": "regime: ATR 0.30% < 0.3%",
+              "economics": "stop too tight for fees (0.45% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scanner": "liquidity-trail-matrix-atr-maker",
+      "symbol": "ETHUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 2,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 2,
+          "confirmedEntries": 2,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 0,
+          "economicsRefusals": 1,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T17:15:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.5210146673381402,
+              "stopPct": 0.782128249898343,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T11:30:00.000Z",
+              "side": "short",
+              "label": "\ud83d\udd34 SHORT",
+              "source": "alert",
+              "atrPct": 0.29750978181645343,
+              "stopPct": 0.446175462814612,
+              "maker": true,
+              "regime": null,
+              "economics": "stop too tight for fees (0.45% stop vs 0.08% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 2,
+          "confirmedEntries": 2,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 0,
+          "economicsRefusals": 1,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T17:15:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.5210146673381402,
+              "stopPct": 0.782128249898343,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T11:30:00.000Z",
+              "side": "short",
+              "label": "\ud83d\udd34 SHORT",
+              "source": "alert",
+              "atrPct": 0.29750978181645343,
+              "stopPct": 0.446175462814612,
+              "maker": true,
+              "regime": null,
+              "economics": "stop too tight for fees (0.45% stop vs 0.08% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scanner": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+      "symbol": "ETHUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 3,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 3,
+          "confirmedEntries": 3,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 0,
+          "economicsRefusals": 2,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T15:30:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 0.4977098018795705,
+              "stopPct": 0.7455844030498899,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-11T22:30:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 0.3993343265202746,
+              "stopPct": 0.6001409237796687,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.60% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-11T22:45:00.000Z",
+              "side": "short",
+              "label": "\ud83d\udd34 SHORT",
+              "source": "alert",
+              "atrPct": 0.3961679221620687,
+              "stopPct": 0.5931399956243903,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.59% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 1,
+          "confirmedEntries": 1,
+          "passesRegimeAndBaseEconomics": 0,
+          "regimeRefusals": 0,
+          "economicsRefusals": 1,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T22:45:00.000Z",
+              "side": "short",
+              "label": "Short Signal",
+              "source": "alertcondition",
+              "atrPct": 0.3961679221620687,
+              "stopPct": 0.5931399956243903,
+              "maker": false,
+              "regime": null,
+              "economics": "stop too tight for fees (0.59% stop vs 0.12% round-trip cost; need \u2265 6\u00d7)",
+              "passesKnownChecks": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scanner": "supertrend-cluster-zeiierman",
+      "symbol": "ETHUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 1,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 1,
+          "confirmedEntries": 1,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 0,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T23:15:00.000Z",
+              "side": "short",
+              "label": "Short",
+              "source": "alertcondition",
+              "atrPct": 0.4746899746544687,
+              "stopPct": 0.7124731602576794,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 1,
+          "confirmedEntries": 1,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 0,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T23:15:00.000Z",
+              "side": "short",
+              "label": "Major Short",
+              "source": "shape",
+              "atrPct": 0.4746899746544687,
+              "stopPct": 0.7124731602576794,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "selected24h": [
+    {
+      "scanner": "trend-impulse-channels-zeiierman",
+      "symbol": "INITUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 3,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 3,
+          "confirmedEntries": 3,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 2,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-12T03:45:00.000Z",
+              "side": "long",
+              "label": "Upper Retest",
+              "source": "shape",
+              "atrPct": 3.820616066724878,
+              "stopPct": 5.732630130703972,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.04 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T05:00:00.000Z",
+              "side": "short",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 5.454497264248632,
+              "stopPct": 8.18031365749862,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.05 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T07:45:00.000Z",
+              "side": "short",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 5.327685731990272,
+              "stopPct": 7.992639411152879,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 3,
+          "confirmedEntries": 3,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 2,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-12T03:45:00.000Z",
+              "side": "short",
+              "label": "Upper Retest",
+              "source": "shape",
+              "atrPct": 3.820616066724878,
+              "stopPct": 5.732630130703972,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.04 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T05:00:00.000Z",
+              "side": "long",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 5.454497264248632,
+              "stopPct": 8.18031365749862,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.05 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-12T07:45:00.000Z",
+              "side": "long",
+              "label": "Lower Retest",
+              "source": "shape",
+              "atrPct": 5.327685731990272,
+              "stopPct": 7.992639411152891,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scanner": "liquidity-trail-matrix-atr-maker",
+      "symbol": "AIOTUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 4,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 4,
+          "confirmedEntries": 4,
+          "passesRegimeAndBaseEconomics": 4,
+          "regimeRefusals": 0,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T21:45:00.000Z",
+              "side": "short",
+              "label": "\ud83d\udd34 SHORT",
+              "source": "alert",
+              "atrPct": 0.8565411532726744,
+              "stopPct": 1.283941516156764,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T03:15:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.7609268767450706,
+              "stopPct": 1.1405726380151668,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T08:30:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.8232340983389904,
+              "stopPct": 1.2337506018295596,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T12:30:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.781382201767143,
+              "stopPct": 1.1754122938530838,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 4,
+          "confirmedEntries": 4,
+          "passesRegimeAndBaseEconomics": 4,
+          "regimeRefusals": 0,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T21:45:00.000Z",
+              "side": "short",
+              "label": "\ud83d\udd34 SHORT",
+              "source": "alert",
+              "atrPct": 0.8565411532726744,
+              "stopPct": 1.283941516156764,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T03:15:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.7609268767450706,
+              "stopPct": 1.1405726380151668,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T08:30:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.8232340983389904,
+              "stopPct": 1.2337506018295596,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T12:30:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 0.781382201767143,
+              "stopPct": 1.1754122938530838,
+              "maker": true,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scanner": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+      "symbol": "JCTUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 0,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 0,
+          "confirmedEntries": 0,
+          "passesRegimeAndBaseEconomics": 0,
+          "regimeRefusals": 0,
+          "economicsRefusals": 0,
+          "confirmed": []
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 0,
+          "confirmedEntries": 0,
+          "passesRegimeAndBaseEconomics": 0,
+          "regimeRefusals": 0,
+          "economicsRefusals": 0,
+          "confirmed": []
+        }
+      ]
+    },
+    {
+      "scanner": "supertrend-cluster-zeiierman",
+      "symbol": "EVAAUSD",
+      "window": {
+        "from": "2026-11-11T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 3,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 3,
+          "confirmedEntries": 3,
+          "passesRegimeAndBaseEconomics": 2,
+          "regimeRefusals": 1,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-11T19:45:00.000Z",
+              "side": "long",
+              "label": "Base ST Long",
+              "source": "shape",
+              "atrPct": 0.659465344025485,
+              "stopPct": 0.986505351326193,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.05 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-11T22:45:00.000Z",
+              "side": "short",
+              "label": "Base ST Short",
+              "source": "shape",
+              "atrPct": 0.5325101894909536,
+              "stopPct": 0.801220908050359,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-12T08:15:00.000Z",
+              "side": "long",
+              "label": "Long",
+              "source": "alertcondition",
+              "atrPct": 1.265052906152817,
+              "stopPct": 1.8990230986944152,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 1,
+          "confirmedEntries": 1,
+          "passesRegimeAndBaseEconomics": 1,
+          "regimeRefusals": 0,
+          "economicsRefusals": 0,
+          "confirmed": [
+            {
+              "bar": "2026-11-12T08:15:00.000Z",
+              "side": "long",
+              "label": "Major Long",
+              "source": "shape",
+              "atrPct": 1.265052906152817,
+              "stopPct": 1.8990230986944152,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "mlJct7d": [
+    {
+      "scanner": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+      "symbol": "JCTUSD",
+      "window": {
+        "from": "2026-11-05T13:30:00.000Z",
+        "to": "2026-11-12T13:30:00.000Z"
+      },
+      "prefixBarsChecked": 33,
+      "arms": [
+        {
+          "role": "control",
+          "historyEntries": 33,
+          "confirmedEntries": 27,
+          "passesRegimeAndBaseEconomics": 18,
+          "regimeRefusals": 6,
+          "economicsRefusals": 4,
+          "confirmed": [
+            {
+              "bar": "2026-11-06T01:15:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 2.60801630955689,
+              "stopPct": 3.902136884484368,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-06T02:30:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 4.610984205492409,
+              "stopPct": 6.910432740691045,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.00 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-06T10:15:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 5.882165978334263,
+              "stopPct": 8.824427480916022,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-06T11:45:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 4.600418402973831,
+              "stopPct": 6.901041666666667,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-07T02:45:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 2.2144348487978958,
+              "stopPct": 3.3333333333333326,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-07T04:15:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 3.38141585605374,
+              "stopPct": 5.066747572815536,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-07T12:45:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 3.395455764071579,
+              "stopPct": 5.083565459610023,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-08T01:45:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 1.7483740311247793,
+              "stopPct": 2.636396924203589,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-08T02:45:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 2.1933793980065333,
+              "stopPct": 3.297872340425539,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.07 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-08T04:00:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 2.910882623021873,
+              "stopPct": 4.35788661781721,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-08T05:45:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 3.287652108112423,
+              "stopPct": 4.929078014184405,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.01 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-08T14:00:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 15.056398437359405,
+              "stopPct": null,
+              "maker": false,
+              "regime": null,
+              "economics": "target invalid after tick rounding",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-08T17:15:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 8.915342806508967,
+              "stopPct": 13.369192391643288,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-08T20:45:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 14.996937996604789,
+              "stopPct": null,
+              "maker": false,
+              "regime": null,
+              "economics": "target invalid after tick rounding",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-09T01:45:00.000Z",
+              "side": "short",
+              "label": "\ud83d\udd34 SHORT",
+              "source": "alert",
+              "atrPct": 14.752368793162542,
+              "stopPct": null,
+              "maker": false,
+              "regime": null,
+              "economics": "target invalid after tick rounding",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-09T13:45:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 6.132144863821107,
+              "stopPct": 9.19387075283146,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-10T00:30:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 3.0344209988989967,
+              "stopPct": 4.551463644948062,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-10T01:30:00.000Z",
+              "side": "short",
+              "label": "\ud83d\udd34 SHORT",
+              "source": "alert",
+              "atrPct": 4.971395851522152,
+              "stopPct": 7.454959618968732,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-10T08:45:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 7.2203214730743746,
+              "stopPct": 10.833205462636181,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-10T10:15:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 9.348254719840696,
+              "stopPct": 14.024279760826245,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-10T13:45:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 5.552676932245147,
+              "stopPct": 8.334459003106842,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-10T14:45:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 11.346581129439276,
+              "stopPct": null,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.08 < 0.1)",
+              "economics": "target invalid after tick rounding",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-11T02:00:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 3.916686132169263,
+              "stopPct": 5.875892366831413,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-11T03:00:00.000Z",
+              "side": "long",
+              "label": "\ud83d\udfe2 LONG",
+              "source": "alert",
+              "atrPct": 4.10900008863927,
+              "stopPct": 6.1561313748143265,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-11T07:00:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 6.102611087209483,
+              "stopPct": 9.159891598915994,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-11T12:15:00.000Z",
+              "side": "long",
+              "label": "Trend Flip Up",
+              "source": "alertcondition",
+              "atrPct": 5.9077838375317535,
+              "stopPct": 8.857938718662945,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.06 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-11T13:15:00.000Z",
+              "side": "short",
+              "label": "Trend Flip Down",
+              "source": "alertcondition",
+              "atrPct": 8.33574565549854,
+              "stopPct": 12.497997115846825,
+              "maker": false,
+              "regime": "regime: choppy (efficiency 0.06 < 0.1)",
+              "economics": null,
+              "passesKnownChecks": false
+            }
+          ]
+        },
+        {
+          "role": "candidate",
+          "historyEntries": 5,
+          "confirmedEntries": 4,
+          "passesRegimeAndBaseEconomics": 3,
+          "regimeRefusals": 0,
+          "economicsRefusals": 1,
+          "confirmed": [
+            {
+              "bar": "2026-11-07T12:45:00.000Z",
+              "side": "long",
+              "label": "Long Signal",
+              "source": "alertcondition",
+              "atrPct": 3.395455764071579,
+              "stopPct": 5.083565459610023,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-09T01:45:00.000Z",
+              "side": "short",
+              "label": "Short Signal",
+              "source": "alertcondition",
+              "atrPct": 14.752368793162542,
+              "stopPct": null,
+              "maker": false,
+              "regime": null,
+              "economics": "target invalid after tick rounding",
+              "passesKnownChecks": false
+            },
+            {
+              "bar": "2026-11-10T01:30:00.000Z",
+              "side": "short",
+              "label": "Short Signal",
+              "source": "alertcondition",
+              "atrPct": 4.971395851522152,
+              "stopPct": 7.454959618968732,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            },
+            {
+              "bar": "2026-11-11T03:00:00.000Z",
+              "side": "long",
+              "label": "Long Signal",
+              "source": "alertcondition",
+              "atrPct": 4.10900008863927,
+              "stopPct": 6.1561313748143265,
+              "maker": false,
+              "regime": null,
+              "economics": null,
+              "passesKnownChecks": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "changes": [
+    "Canonical comparison reporting matches only known equivalent classifier/vote markers across channels; stored signals and admissions unchanged.",
+    "Reading comparison identity excludes account enabled/hidden/symbol/timeframe/pair allocation metadata only. Actual source, reading, cost, regime and execution settings remain versioned.",
+    "Retarget the existing eight arms to INITUSD, AIOTUSD, JCTUSD and EVAAUSD without adding comparison slots. Preserve the deployed Liquidity Trail ATR-maker source on both arms.",
+    "Keep experimental scope, causal fills, full fees, $150 margin, 3% stop-risk ceiling and all evidence rules."
+  ],
+  "pr10": "Overlaps already-deployed comparison infrastructure. Adopt activity-based market selection through the deployed raw-result fanout; do not run its independent rollout in addition."
+}

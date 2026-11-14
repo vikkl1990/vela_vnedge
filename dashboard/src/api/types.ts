@@ -214,7 +214,7 @@ export interface Scanner {
   /** How the script is read (decision 48): entry channels, timezone, derivation rule, overrides. */
   reads?: { sources: EntrySource[] | null; timezone: string | null; rule: 'trailing' | 'oscillator' | null; inputs: Record<string, number | string | boolean> | null; exit: Record<string, unknown> | null; labels?: string[] | null; edge?: boolean | null; invert?: boolean
     /** Decision 195/201: the scanner's explicit title contract, and the id it is a variant of. */
-    sides?: Record<string, 'long' | 'short' | 'none'> | null; variantOf?: string | null }
+    sides?: Record<string, 'long' | 'short' | 'none'> | null; labelStyles?: Record<string, Record<string,'long'|'short'|'none'>> | null; variantOf?: string | null }
   /** What it produced when last profiled: the author's plan, a direction, information, nothing. */
   kind?: ProfileKind | null
   profiledAt?: number | null
@@ -690,6 +690,7 @@ export interface RestorationView {
   seed?:{exact:number;compatible:number;netR:number};stats?:IncubatorStats;halves?:number[];stressedR?:number|null;invalidFills?:number
 }
 export interface IncubatorPair {
+  paperCopy?:{eligible:boolean;reason:string|null}|null
   restoration?:RestorationView|null
   collection?:{status:string;active:boolean;lastSuccessBar:number|null;nextCloseAt:number;
     scan:{bar_time:number;at:number;status:string;reason:string|null;last_success_bar:number|null;last_success_at:number|null;entry_signals:number}|null;
@@ -715,6 +716,7 @@ export interface CandidateBlockers {
   counts: { cooldown?: number; unavailable?: number; expired: number; stale: number; outside: number; refused: number; rescreen: number; capped: number; noSlot: number; cohort: number; admissible: number }
 }
 export interface IncubatorView {
+  paperCopy?:{enabled:boolean;eligible:number;at:number}
   capacity?: {total:number; used:number; free:number; overflow:number; general:{slots:number;used:number;free:number}; reserves:Array<{slots:number;used:number;free:number;tfs?:string[];markets?:string[]}>}
   rotation?: {enabled:boolean;maxPerDay:number;usedToday:number;last:Array<{at:number;out:number;in:number}>}
   candidates?: CandidateBlockers
@@ -728,7 +730,7 @@ export interface IncubatorView {
       /** Decision 196: how the gate judges (cohort of markets, or each pair), and its per-timeframe minimums. */
       pool?: 'cohort' | 'pair'; minTradesByTf?: Record<string, number>; minDaysByTf?: Record<string, number>; maxDaysByTf?: Record<string, number>
     }
-    promote: { maxPerWeek: number; maxFleet: number }
+    promote: { maxPerWeek: number; maxFleet: number; auto?: boolean; reviewMinutes?: number }
     demote: { window: number; minTrades: number; maxPfR: number; silentDays?: number; silentDaysByTf?: Record<string, number>; marketOutDays?: number; costStarvedRefusals?: number; costStarvedDays?: number }
   }
   counts: Partial<Record<IncubatorStage, number>>
@@ -736,7 +738,8 @@ export interface IncubatorView {
   lastRun: { at: number; slice: string; scripts: number; symbols: number; runs: number; passed: number; new: number; ms: number; truncated?: number; report?: { admitted: string[]; proposed: string[]; retired: string[]; demoteProposed: string[] } } | null
   /** When the daily job last announced itself; newer than lastRun.at means that run never finished. */
   lastStart?: { at: number; slice: string } | null
-  /** The last hunt: judge + auto-promotion + digest, run when the daily screen finished or on a click. */
+  automation?: { attemptAt:number; successAt:number; evidenceAt:number; screenAt:number; actor:string|null; error:string|null; enabled:boolean; paper:boolean; running:boolean; intervalMinutes:number; evidenceMinutes:number; nextAt:number }
+  /** Last evidence review, including automatic promotion results and blockers. */
   lastHunt?: { at: number; actor: string; screen: { at: number; slice: string; runs: number; passed: number; newCandidates: number; quarantined: number; minutes: number } | null; admitted: string[]; proposed: string[]; promoted: string[]; blocked: string[]; retired: string[]; demoteProposed: string[]; brewing: number; free: number; auto: boolean } | null
   runner: { startedAt?: number; runs: number; skipped: number; errors: number; entries: number; lastBarAt: number; active: number }
   pairs: IncubatorPair[]; events: IncubatorEvent[]
@@ -873,6 +876,19 @@ export interface LibraryDetail extends LibraryEntry {
   license: string | null; pineVersion: string | null; lines: number | null; patches: string[]; reason: string | null
   health: { fails: number; lastError: string | null; quarantined: boolean; reason: string | null } | null
   pairs: LibraryPair[]; recent: LibraryTrade[]
+  authorReview?: AuthorReview
+}
+
+export interface AuthorReview {
+  variant?: { base: string; reason: string | null } | null
+  asOf: string; sourceStatus: 'unreviewed' | 'matches' | 'changed'; sourceReviewedAt: string | null
+  sourceHash: string; reviewedSourceHash: string | null; descriptionStatus: 'unavailable' | 'retrieved' | 'changed' | 'reviewed'
+  publication: { url: string; author: string | null; retrievedAt: string | null; updatedAt: string | null; version: number | null; reviewedAt: string | null; role: string | null; summary: string | null; requirements: string | null; reviewBlocker?: { blocker: string; checkedAt: string | null } } | null
+  reconciliationStatus: 'unreviewed' | 'publication changed' | 'description only' | 'matches' | 'source changed or not inspected'
+  reconciliation: { sourceChecked: boolean; scope: string; findings: Array<{ kind: string; marker: string; evidence: string; sourceLine: number | null; action: string }> } | null
+  contract: { type: string; idea: string; reviewScope?: string; entries: Array<{ marker: string; channel: string; side: string; line: number | null; condition: string }>; notEntries: Array<{ marker: string; channel: string; role: string; line: number }>; stop: { has: boolean | null; how: string }; targets: { has: boolean | null; how: string }; exit: { has: boolean | null; how: string }; timing: { note: string; knownAtClose: boolean | null; pivotLagBars: number | null; lookahead: string; repaints: boolean | null }; claims: Array<{ marker: string; problem: string; line: number; evidence: string }> } | null
+  claimMeaning: string; integrationNotes: string[]; patches: string[]; admission: string
+  reading: { reader: number; sources: string[] | null; labels: string[] | null; sides: Record<string, string> | null; labelStyles?: Record<string, Record<string,string>> | null; exitMode: string; entryProtection: string }
 }
 
 /** Decision 174: screening on demand. */

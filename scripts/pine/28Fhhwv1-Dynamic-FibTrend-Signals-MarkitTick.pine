@@ -1,0 +1,357 @@
+/// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator(title="Dynamic FibTrend Signals [MarkitTick]",
+          overlay=true,
+          max_lines_count=500,
+          max_labels_count=500,
+          max_boxes_count=200)
+
+
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+
+// ─────────────────────────────────────────────
+//  GROUP 1 ▸ SuperTrend Settings
+// ─────────────────────────────────────────────
+grpST       = "⚡ SuperTrend"
+st_atr_len  = input.int   (10,   "ATR Length",          group=grpST)
+st_factor   = input.float (3.0,  "Factor",    step=0.1, group=grpST)
+st_bull_col = input.color (color.new(#00c853, 0), "Bullish Color", group=grpST)
+st_bear_col = input.color (color.new(#ff1744, 0), "Bearish Color", group=grpST)
+st_show     = input.bool  (true, "Show SuperTrend",     group=grpST)
+
+// ─────────────────────────────────────────────
+//  GROUP 2 ▸ Swing High / Low Settings
+// ─────────────────────────────────────────────
+grpSW     = "🔄 Swing High / Low"
+sw_len    = input.int  (10,   "Swing Lookback",    group=grpSW, minval=2)
+sw_show   = input.bool (true, "Show Swing Levels", group=grpSW)
+sw_hi_col = input.color(color.new(#f57f17, 0), "Swing High Color", group=grpSW)
+sw_lo_col = input.color(color.new(#1565c0, 0), "Swing Low Color",  group=grpSW)
+
+// ─────────────────────────────────────────────
+//  GROUP 3 ▸ Fibonacci Settings
+// ─────────────────────────────────────────────
+grpFB        = "📐 Fibonacci Retracement"
+fib_show     = input.bool  (true, "Show Fibonacci Levels", group=grpFB)
+fib_lookback = input.int   (50,   "Fib Lookback Bars",     group=grpFB, minval=10)
+fib_col      = input.color (color.new(#9c27b0, 60), "Fib Line Color", group=grpFB)
+fib_lbl_show = input.bool  (true, "Show Fib Labels",       group=grpFB)
+
+// ─────────────────────────────────────────────
+//  GROUP 4 ▸ Trade Levels (Entry / Target / SL)
+// ─────────────────────────────────────────────
+grpTR      = "🎯 Trade Levels"
+tl_show    = input.bool  (true, "Show Trade Levels",   group=grpTR)
+tl_rr      = input.float (2.0,  "Risk : Reward Ratio", group=grpTR, step=0.5, minval=0.5)
+entry_col  = input.color (color.new(#ffeb3b, 0), "Entry Zone Color", group=grpTR)
+target_col = input.color (color.new(#00e676, 0), "Target Color",     group=grpTR)
+sl_col     = input.color (color.new(#ff5252, 0), "Stop Loss Color",  group=grpTR)
+
+// ─────────────────────────────────────────────
+//  CALCULATIONS ▸ SuperTrend
+// ─────────────────────────────────────────────
+[st_val, st_dir] = ta.supertrend(st_factor, st_atr_len)
+
+// ─────────────────────────────────────────────
+//  SIGNAL LOGIC 
+// ─────────────────────────────────────────────
+bullSignal = st_dir[1] < 0 and st_dir[2] >= 0
+bearSignal = st_dir[1] > 0 and st_dir[2] <= 0
+
+atrVal = ta.atr(14)
+
+// ─────────────────────────────────────────────
+//  PLOTS ▸ SuperTrend
+// ─────────────────────────────────────────────
+st_color = st_dir < 0 ? st_bull_col : st_bear_col
+plot(st_show ? st_val : na, "SuperTrend",
+     color=st_color, linewidth=2, style=plot.style_line)
+
+bullFill = st_dir < 0 ? st_val : na
+bearFill = st_dir > 0 ? st_val : na
+p_bull = plot(st_show ? bullFill : na, display=display.none)
+p_bear = plot(st_show ? bearFill : na, display=display.none)
+p_cls  = plot(close,                   display=display.none)
+fill(p_bull, p_cls, color=color.new(st_bull_col, 90))
+fill(p_bear, p_cls, color=color.new(st_bear_col, 90))
+
+// ─────────────────────────────────────────────
+//  SIGNAL ARROWS
+// ─────────────────────────────────────────────
+plotshape(tl_show and bullSignal, "Buy Signal",
+          shape.arrowup, location.belowbar,
+          color=color.new(#00e676, 0), size=size.normal,
+          text="BUY", textcolor=color.new(#00e676, 0))
+
+plotshape(tl_show and bearSignal, "Sell Signal",
+          shape.arrowdown, location.abovebar,
+          color=color.new(#ff5252, 0), size=size.normal,
+          text="SELL", textcolor=color.new(#ff5252, 0))
+
+// ─────────────────────────────────────────────
+//  CALCULATIONS ▸ Swing High / Low
+// ─────────────────────────────────────────────
+swingHigh = f_pivotHigh(high, sw_len)
+swingLow  = f_pivotLow (low,  sw_len)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+var int   swingHighBar  = na
+var int   swingLowBar   = na
+
+if not na(swingHigh)
+    lastSwingHigh := swingHigh
+    swingHighBar  := bar_index - sw_len
+
+if not na(swingLow)
+    lastSwingLow := swingLow
+    swingLowBar  := bar_index - sw_len
+
+// ─────────────────────────────────────────────
+//  PLOTS ▸ Swing Markers
+// ─────────────────────────────────────────────
+plotshape(sw_show and not na(swingHigh), "Swing High",
+          shape.triangledown, location.abovebar,
+          color=sw_hi_col, size=size.small, offset=-sw_len)
+
+plotshape(sw_show and not na(swingLow), "Swing Low",
+          shape.triangleup, location.belowbar,
+          color=sw_lo_col, size=size.small, offset=-sw_len)
+
+// ─────────────────────────────────────────────
+//  DRAW ▸ Swing Lines + Labels 
+// ─────────────────────────────────────────────
+var line  lineSwHi = na
+var line  lineSwLo = na
+var label lblSwHi  = na
+var label lblSwLo  = na
+
+if sw_show
+    line.delete(lineSwHi)
+    label.delete(lblSwHi)
+    if not na(lastSwingHigh)
+        lineSwHi := line.new(swingHighBar, lastSwingHigh,
+                             bar_index + 5, lastSwingHigh,
+                             color=sw_hi_col, width=1,
+                             style=line.style_dashed)
+        lblSwHi  := label.new(bar_index + 5, lastSwingHigh,
+                              " SH: " + str.tostring(lastSwingHigh, format.mintick),
+                              color=color.new(sw_hi_col, 80),
+                              textcolor=sw_hi_col,
+                              style=label.style_label_left, size=size.small)
+
+    line.delete(lineSwLo)
+    label.delete(lblSwLo)
+    if not na(lastSwingLow)
+        lineSwLo := line.new(swingLowBar, lastSwingLow,
+                             bar_index + 5, lastSwingLow,
+                             color=sw_lo_col, width=1,
+                             style=line.style_dashed)
+        lblSwLo  := label.new(bar_index + 5, lastSwingLow,
+                              " SL: " + str.tostring(lastSwingLow, format.mintick),
+                              color=color.new(sw_lo_col, 80),
+                              textcolor=sw_lo_col,
+                              style=label.style_label_left, size=size.small)
+
+// ─────────────────────────────────────────────
+//  CALCULATIONS ▸ Fibonacci Retracement
+// ─────────────────────────────────────────────
+fibHigh  = ta.highest(high, fib_lookback)
+fibLow   = ta.lowest (low,  fib_lookback)
+fibRange = fibHigh - fibLow
+
+var array<float>  fibLevels = array.from(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+var array<string> fibNames  = array.from("0%", "23.6%", "38.2%", "50%", "61.8%", "78.6%", "100%")
+
+var array<line>  fibLines  = array.new<line>()
+var array<label> fibLabels = array.new<label>()
+
+// ─────────────────────────────────────────────
+//  DRAW ▸ Fibonacci Lines + Labels 
+// ─────────────────────────────────────────────
+if fib_show
+    int _lsz = array.size(fibLines)
+    if _lsz > 0
+        for i = 0 to _lsz - 1
+            line.delete(array.get(fibLines, i))
+    array.clear(fibLines)
+
+    int _lblsz = array.size(fibLabels)
+    if _lblsz > 0
+        for i = 0 to _lblsz - 1
+            label.delete(array.get(fibLabels, i))
+    array.clear(fibLabels)
+
+    int _sz = array.size(fibLevels)
+    if _sz > 0
+        for i = 0 to _sz - 1
+            float  lvl      = array.get(fibLevels, i)
+            float  price    = fibHigh - fibRange * lvl
+            string lname    = array.get(fibNames, i)
+            int    lineAlpha = i == 2 or i == 4 ? 20 : 60
+            color  fibLineCol = color.new(fib_col, lineAlpha)
+
+            array.push(fibLines,
+                       line.new(bar_index - fib_lookback, price,
+                                bar_index + 3, price,
+                                color=fibLineCol, width=1,
+                                style=line.style_dotted))
+
+            if fib_lbl_show
+                array.push(fibLabels,
+                           label.new(bar_index + 3, price,
+                                     " " + lname + "  " + str.tostring(price, format.mintick),
+                                     color=color.new(fib_col, 85),
+                                     textcolor=color.new(fib_col, 0),
+                                     style=label.style_label_left, size=size.tiny))
+
+// ─────────────────────────────────────────────
+//  DRAW ▸ Trade Levels — Entry / Target / SL 
+// ─────────────────────────────────────────────
+var line  lineEntry  = na
+var line  lineTarget = na
+var line  lineSL     = na
+var box   entryBox   = na
+var label lblTarget  = na
+var label lblEntry   = na
+var label lblSL      = na
+
+var float entryPrice  = na
+var float targetPrice = na
+var float slPrice     = na
+var bool  isBullTrade = true
+
+if tl_show and (bullSignal or bearSignal)
+    line.delete(lineEntry)
+    line.delete(lineTarget)
+    line.delete(lineSL)
+    box.delete(entryBox)
+    label.delete(lblTarget)
+    label.delete(lblEntry)
+    label.delete(lblSL)
+
+    isBullTrade   := bullSignal
+    entryPrice    := close[1]      
+    float slDist   = atrVal * 1.5
+
+    if isBullTrade
+        slPrice     := entryPrice - slDist
+        targetPrice := entryPrice + slDist * tl_rr
+    else
+        slPrice     := entryPrice + slDist
+        targetPrice := entryPrice - slDist * tl_rr
+
+    int endBar = bar_index + 40
+
+    entryBox   := box.new(bar_index, entryPrice + atrVal * 0.3,
+                          endBar,    entryPrice - atrVal * 0.3,
+                          border_color=entry_col,
+                          bgcolor=color.new(entry_col, 85))
+
+    lineEntry  := line.new(bar_index, entryPrice,  endBar, entryPrice,
+                           color=entry_col,  width=2)
+    lineTarget := line.new(bar_index, targetPrice, endBar, targetPrice,
+                           color=target_col, width=2, style=line.style_dashed)
+    lineSL     := line.new(bar_index, slPrice,     endBar, slPrice,
+                           color=sl_col,     width=2, style=line.style_dashed)
+
+    lblTarget  := label.new(endBar, targetPrice,
+                            " 🎯 TARGET  " + str.tostring(targetPrice, format.mintick),
+                            color=color.new(target_col, 80), textcolor=target_col,
+                            style=label.style_label_left, size=size.small)
+
+    lblEntry   := label.new(endBar, entryPrice,
+                            " ⚡ ENTRY  " + str.tostring(entryPrice, format.mintick),
+                            color=color.new(entry_col, 80), textcolor=entry_col,
+                            style=label.style_label_left, size=size.small)
+
+    lblSL      := label.new(endBar, slPrice,
+                            " 🛑 STOP  " + str.tostring(slPrice, format.mintick),
+                            color=color.new(sl_col, 80), textcolor=sl_col,
+                            style=label.style_label_left, size=size.small)
+
+// ─────────────────────────────────────────────
+//  INFO TABLE ▸ Top Right 
+// ─────────────────────────────────────────────
+var table infoTable = table.new(position.top_right, 2, 7,
+                                border_width=1,
+                                border_color=color.new(color.gray, 60),
+                                frame_width=1,
+                                frame_color=color.new(color.gray, 40))
+
+table.cell(infoTable, 0, 0, "📊 PRO TRADING INDICATOR",
+           bgcolor=color.new(#1a1a2e, 0),
+           text_color=color.white,
+           text_size=size.small, text_halign=text.align_center)
+table.merge_cells(infoTable, 0, 0, 1, 0)
+
+string stStatus = st_dir < 0 ? "▲ BULLISH" : "▼ BEARISH"
+color  stColor  = st_dir < 0 ? st_bull_col : st_bear_col
+
+table.cell(infoTable, 0, 1, "SuperTrend",
+           bgcolor=color.new(#16213e, 0), text_color=color.new(color.gray, 20), text_size=size.small)
+table.cell(infoTable, 1, 1, stStatus,
+           bgcolor=color.new(#16213e, 0), text_color=stColor, text_size=size.small)
+
+table.cell(infoTable, 0, 2, "Swing High",
+           bgcolor=color.new(#16213e, 0), text_color=color.new(color.gray, 20), text_size=size.small)
+table.cell(infoTable, 1, 2, not na(lastSwingHigh) ? str.tostring(lastSwingHigh, format.mintick) : "—",
+           bgcolor=color.new(#16213e, 0), text_color=sw_hi_col, text_size=size.small)
+
+table.cell(infoTable, 0, 3, "Swing Low",
+           bgcolor=color.new(#16213e, 0), text_color=color.new(color.gray, 20), text_size=size.small)
+table.cell(infoTable, 1, 3, not na(lastSwingLow) ? str.tostring(lastSwingLow, format.mintick) : "—",
+           bgcolor=color.new(#16213e, 0), text_color=sw_lo_col, text_size=size.small)
+
+table.cell(infoTable, 0, 4, "Entry",
+           bgcolor=color.new(#16213e, 0), text_color=color.new(color.gray, 20), text_size=size.small)
+table.cell(infoTable, 1, 4, not na(entryPrice) ? str.tostring(entryPrice, format.mintick) : "—",
+           bgcolor=color.new(#16213e, 0), text_color=entry_col, text_size=size.small)
+
+table.cell(infoTable, 0, 5, "Target",
+           bgcolor=color.new(#16213e, 0), text_color=color.new(color.gray, 20), text_size=size.small)
+table.cell(infoTable, 1, 5, not na(targetPrice) ? str.tostring(targetPrice, format.mintick) : "—",
+           bgcolor=color.new(#16213e, 0), text_color=target_col, text_size=size.small)
+
+table.cell(infoTable, 0, 6, "Stop Loss",
+           bgcolor=color.new(#16213e, 0), text_color=color.new(color.gray, 20), text_size=size.small)
+table.cell(infoTable, 1, 6, not na(slPrice) ? str.tostring(slPrice, format.mintick) : "—",
+           bgcolor=color.new(#16213e, 0), text_color=sl_col, text_size=size.small)
+
+// ─────────────────────────────────────────────
+//  ALERTS
+// ─────────────────────────────────────────────
+if bullSignal and barstate.isconfirmed
+    alert(str.format("🟢 [{0}] MTI Pro BUY — SuperTrend flipped BULLISH | Entry: {1} | TP: {2} | SL: {3} | TF: {4}",
+          syminfo.tickerid,
+          str.tostring(entryPrice,  format.mintick),
+          str.tostring(targetPrice, format.mintick),
+          str.tostring(slPrice,     format.mintick),
+          timeframe.period),
+          alert.freq_once_per_bar_close)
+
+if bearSignal and barstate.isconfirmed
+    alert(str.format("🔴 [{0}] MTI Pro SELL — SuperTrend flipped BEARISH | Entry: {1} | TP: {2} | SL: {3} | TF: {4}",
+          syminfo.tickerid,
+          str.tostring(entryPrice,  format.mintick),
+          str.tostring(targetPrice, format.mintick),
+          str.tostring(slPrice,     format.mintick),
+          timeframe.period),
+          alert.freq_once_per_bar_close)

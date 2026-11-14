@@ -1,0 +1,353 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Liquidity Sweep Retracements [MarkitTick]", overlay=true, max_labels_count=500, max_lines_count=500)
+// ─── Input Group Labels ───────────────────────────────────────────────────────
+string GRP_SW    = "Swing Settings"
+string GRP_RET   = "Retracement"
+string GRP_ANOM  = "Anomaly"
+string GRP_SCORE = "Score"
+string GRP_RMV   = "RMV"
+string GRP_LIQ   = "SMC"
+string GRP_ALERT = "Alerts"
+string GRP_CANDLE = "Candle Color"
+string GRP_DASH  = "Dash"
+string GRP_COL   = "Colors"
+// ─── User Inputs ─────────────────────────────────────────────────────────────
+showIndicator  = input.bool(true,  "Show Swing",             group=GRP_SW)
+leftBars       = input.int(5,      "Left Bars",              minval=1, group=GRP_SW)
+rightBars      = input.int(5,      "Right Bars",             minval=1, group=GRP_SW)
+showQuality    = input.bool(true,  "Show Quality Badge",     group=GRP_RET)
+maxRetHistory  = input.int(20,     "Max Saved Retracements", minval=1, maxval=500, group=GRP_RET)
+enableAnomaly  = input.bool(true,  "Enable Anomaly Detection",        group=GRP_ANOM)
+anomalyStdMult = input.float(1.5,  "Std Dev Threshold",  minval=0.5, maxval=4.0, step=0.1, group=GRP_ANOM)
+enableQScore   = input.bool(true,  "Enable Quality Score Filter",     group=GRP_SCORE)
+qScoreStdMult  = input.float(1.0,  "Anomaly Threshold (Std Dev)", minval=0.5, maxval=3.0, step=0.1, group=GRP_SCORE)
+enableRMV      = input.bool(true,  "Enable RMV",        group=GRP_RMV)
+rmvMult        = input.float(2.0,  "Aggr Threshold",    minval=0.5, maxval=3.0, step=0.1, group=GRP_RMV)
+i_showLiq      = input.bool(true,  "Liq Sweeps",          group=GRP_LIQ)
+i_liqLen       = input.int(10,     "Sweep Lookback",      minval=3, maxval=50, group=GRP_LIQ)
+enableSmartAlert = input.bool(true, "Enable Smart JSON Alerts",        group=GRP_ALERT)
+alertStdMult     = input.float(1.0, "Alert Deviation Threshold", minval=0.5, maxval=3.0, step=0.1, group=GRP_ALERT)
+showCandleColor = input.bool(true, "Enable", group=GRP_CANDLE)
+enableDash      = input.bool(false, "Show Dashboard",         group=GRP_DASH)
+htfTf           = input.timeframe("240", "HTF TF", group=GRP_DASH)
+col_step_high   = input.color(color.new(#ff0014, 0),  "Pivot High",         group=GRP_COL)
+col_step_low    = input.color(color.new(#00ff0a, 0),  "Pivot Low",          group=GRP_COL)
+col_corr_lbl    = input.color(color.new(#f5c518, 0),  "Correction Label",   group=GRP_COL)
+col_corr_bg     = input.color(color.new(#1a1a2e, 10), "Label BG",           group=GRP_COL)
+col_healthy     = input.color(color.new(#00e676, 0),  "Healthy Zone",       group=GRP_COL)
+col_weak        = input.color(color.new(#ff6d00, 0),  "Weak Zone",          group=GRP_COL)
+col_reversal    = input.color(color.new(#ff1744, 0),  "Reversal Zone",      group=GRP_COL)
+col_proj        = input.color(color.new(#40c4ff, 0),  "Projection",         group=GRP_COL)
+col_anomaly_op  = input.color(color.new(#ff9800, 0),  "Anomaly Opportunity", group=GRP_COL)
+col_anomaly_dn  = input.color(color.new(#e040fb, 0),  "Anomaly Danger",      group=GRP_COL)
+col_qscore_warn = input.color(color.new(#ff5252, 0),  "Low-Prob Warning",    group=GRP_COL)
+col_rmv_agg     = input.color(color.rgb(180, 0, 255), "RMV Aggressive",      group=GRP_COL)
+i_cLiqB         = input.color(color.rgb(0, 200, 100), "Liq Sweep Bull",      group=GRP_COL)
+i_cLiqS         = input.color(color.rgb(220, 50, 80), "Liq Sweep Bear",      group=GRP_COL)
+dash_bg         = input.color(color.rgb(10, 10, 18, 5),    "Dash BG",   group=GRP_COL)
+dash_txt        = input.color(color.rgb(220, 220, 235, 0), "Dash Text", group=GRP_COL)
+// ─── Helper Functions ────────────────────────────────────────────────────────
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+
+f_qualityLabel(float pct) =>
+    pct < 23.0  ? "Impulse"  :
+     pct < 38.0  ? "Shallow" :
+     pct <= 61.8 ? "Healthy" :
+     pct <= 78.6 ? "Deep"    :
+                   "Reversal?"
+
+f_qualityColor(float pct) =>
+    pct < 23.0  ? col_proj    :
+     pct < 38.0  ? col_healthy :
+     pct <= 61.8 ? col_healthy :
+     pct <= 78.6 ? col_weak    :
+                   col_reversal
+
+f_blockBar(float rawVal, float domainMax) =>
+    float  pct = math.min(math.max(rawVal / domainMax * 100.0, 0.0), 100.0)
+    int    n   = math.round(pct / 10.0)
+    string s   = ""
+    for i = 1 to 10
+        s += i <= n ? "█" : "░"
+    s + " " + str.tostring(math.round(pct), "##0") + "%"
+
+f_blockColor(float rawVal, float lo, float mid, float hi) =>
+    rawVal >= hi  ? color.rgb(0, 255, 120) :
+     rawVal >= mid ? color.rgb(80, 255, 0)  :
+     rawVal >= lo  ? color.rgb(200, 200, 0) :
+                     color.rgb(110, 110, 110)
+
+f_stdDev(array<float> arr) =>
+    int   sz  = array.size(arr)
+    float avg = sz >= 2 ? array.avg(arr) : na
+    float dev = na
+    if not na(avg) and sz >= 2
+        float sumSq = 0.0
+        for v in arr
+            sumSq += math.pow(v - avg, 2)
+        dev := math.sqrt(sumSq / sz)
+    dev
+
+f_anomalyType(float retPct, float avg, float stdDev, float mult) =>
+    int result = 0
+    if not na(avg) and not na(stdDev) and stdDev > 0.0
+        if retPct < avg - stdDev * mult
+            result := 1
+        else if retPct > avg + stdDev * mult
+            result := -1
+    result
+
+f_buildAlertJson(float retPct, float avgRet, float deviation, int anomType) =>
+    string ctx = anomType ==  1 ? "Shallow retracement - potential impulse opportunity" :
+                 anomType == -1 ? "Deep retracement - caution, reversal risk elevated"  :
+                                  "Normal retracement - within historical range"
+    "{" + str.format(
+         "\"Ticker\":\"{0}\",\"Timeframe\":\"{1}\",\"Retracement\":{2},\"Prev_Avg_Ret\":{3},\"Deviation\":{4},\"Context\":\"{5}\"",
+         syminfo.tickerid,
+         timeframe.period,
+         str.tostring(math.round(retPct,    1)),
+         str.tostring(math.round(avgRet,    1)),
+         str.tostring(math.round(deviation, 1)),
+         ctx) + "}"
+
+f_drawLabel(int cBi, float cVal, float retPct, bool isHigh, float avgH, float stdDevH, float vel, float avgVelH) =>
+    string retStr   = str.tostring(math.round(retPct, 1), "##0.0") + "%"
+    string qualStr  = showQuality ? "\n" + f_qualityLabel(retPct) : ""
+    int    anomType = enableAnomaly ? f_anomalyType(retPct, avgH, stdDevH, anomalyStdMult) : 0
+    string anomStr  = anomType ==  1 ? "\nOpportunity" :
+                      anomType == -1 ? "\nDanger"      : ""
+    int    qsType   = enableQScore  ? f_anomalyType(retPct, avgH, stdDevH, qScoreStdMult)  : 0
+    string qsStr    = (enableQScore and qsType != 0) ? "\nLow Prob" : ""
+    bool   isAgg    = enableRMV and not na(avgVelH) and avgVelH > 0.0 and vel > avgVelH * rmvMult
+    string aggStr   = isAgg ? "\nAggressive" : ""
+    color  lblColor = isAgg ? col_rmv_agg :
+                      anomType ==  1 ? col_anomaly_op :
+                      anomType == -1 ? col_anomaly_dn :
+                      (enableQScore and qsType != 0) ? col_qscore_warn :
+                      f_qualityColor(retPct)
+    label.new(cBi, cVal, text=retStr + qualStr + anomStr + qsStr + aggStr,
+         color=col_corr_bg, textcolor=lblColor,
+         style=isHigh ? label.style_label_down : label.style_label_up,
+         size=size.normal, xloc=xloc.bar_index)
+// ─── Persistent State Variables ──────────────────────────────────────────────
+var float phs                = 0.0
+var float pls                = 0.0
+var float lastPH             = na
+var float lastPL             = na
+var int   lastPHBi           = na
+var int   lastPLBi           = na
+var float lastRetPct         = na
+var array<float> retHistory  = array.new<float>()
+var array<float> velHistory  = array.new<float>()
+var float liveSwingLow       = na
+var int   liveSwingLowBi     = na
+var float livePoint2         = na
+var int   livePoint2Bi       = na
+var float livePoint3         = na
+var int   livePoint3Bi       = na
+var label liveRetLabel       = na
+var color candleColor        = na
+var float liveRetPctSmooth   = na
+var float liveVelocity       = na
+// ─── Per-Bar Calculations & Derived Values ───────────────────────────────────
+float ph_raw = f_pivotHigh(high, leftBars)
+float pl_raw = f_pivotLow(low,  leftBars)
+bool newPH   = not na(ph_raw)
+bool newPL   = not na(pl_raw)
+float ph_new = ph_raw
+float pl_new = pl_raw
+int   strHistSz  = array.size(retHistory)
+float avgRet     = strHistSz >= 2 ? array.avg(retHistory) : na
+float stdDevRet  = strHistSz >= 2 ? f_stdDev(retHistory)  : na
+int   velHistSz  = array.size(velHistory)
+float avgVel     = velHistSz >= 2 ? array.avg(velHistory)  : na
+float _velDomMax = ta.highest(nz(liveVelocity), 50)
+bool  liveIsAgg  = enableRMV and not na(avgVel) and avgVel > 0.0 and nz(liveVelocity) > avgVel * rmvMult
+float rmvNorm    = _velDomMax > 0.0 ? math.min(nz(liveVelocity) / _velDomMax * 100.0, 100.0) : 0.0
+float _recentHigh = ta.highest(high[1], i_liqLen)
+float _recentLow  = ta.lowest(low[1],   i_liqLen)
+bool  _bslSweep   = high > _recentHigh and close < _recentHigh and close < open
+bool  _sslSweep   = low  < _recentLow  and close > _recentLow  and close > open
+float healthScore = not na(avgRet) ? math.max(0.0, math.min(100.0, 100.0 - avgRet)) : na
+string trendLabel = not na(healthScore) ? (healthScore > 65.0 ? "▲ Strong" : healthScore > 40.0 ? "◆ Normal" : "▼ Weak") : "◆ Normal"
+color  trendColor = not na(healthScore) ? (healthScore > 65.0 ? col_healthy : healthScore > 40.0 ? col_proj : col_weak) : col_proj
+string clean_ticker = syminfo.prefix + ":" + syminfo.ticker
+float _htfClose = request.security(syminfo.tickerid, htfTf, close[1],             lookahead=barmerge.lookahead_on)
+float _htfSma20 = request.security(syminfo.tickerid, htfTf, ta.sma(close, 20)[1], lookahead=barmerge.lookahead_on)
+bool  htfBull      = not na(_htfClose) and not na(_htfSma20) and _htfClose > _htfSma20
+string htfAlignStr = htfBull ? "▲ Bull" : "▼ Bear"
+color  htfAlignCol = htfBull ? color.rgb(0, 255, 120) : color.rgb(255, 50, 80)
+// ─── Dashboard Table: Declaration & Cell Population ─────────────────────────
+var table dash = table.new(position.top_right, 2, 10,
+     border_width=1, border_color=color.rgb(50, 50, 70, 20),
+     frame_width=1,  frame_color=color.rgb(60, 60, 90, 10))
+color hdrBg = color.rgb(30, 30, 45, 10)
+color altBg = color.rgb(20, 20, 35, 10)
+float dashRet    = not na(lastRetPct)  ? lastRetPct  : 0.0
+float dashHealth = not na(healthScore) ? healthScore : 0.0
+string dashRetBar    = f_blockBar(dashRet,    100.0)
+string dashHealthBar = f_blockBar(dashHealth, 100.0)
+color  dashRetCol    = f_qualityColor(dashRet)
+color  dashHealthCol = f_blockColor(dashHealth, 30.0, 50.0, 65.0)
+string dashQualStr   = f_qualityLabel(dashRet)
+string dashAvgStr    = str.tostring(math.round(not na(avgRet) ? avgRet : 0.0, 1), "##0.0") + "%"
+string dashSwingStr  = str.tostring(strHistSz) + " Bars"
+string dashVelBar    = f_blockBar(rmvNorm, 100.0)
+color  dashVelCol    = liveIsAgg ? col_rmv_agg : f_blockColor(rmvNorm, 20.0, 50.0, 75.0)
+color _dashBgR0 = enableDash ? hdrBg   : color.rgb(0, 0, 0, 100)
+color _dashBgR1 = enableDash ? altBg   : color.rgb(0, 0, 0, 100)
+color _dashBgR2 = enableDash ? dash_bg : color.rgb(0, 0, 0, 100)
+table.cell(dash, 0, 0, clean_ticker,    text_color=dash_txt,      bgcolor=_dashBgR0, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 0, timeframe.period,text_color=dash_txt,      bgcolor=_dashBgR0, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 1, "Last Ret",      text_color=dash_txt,      bgcolor=_dashBgR1, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 1, dashRetBar,      text_color=dashRetCol,    bgcolor=_dashBgR1, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 2, "Quality",       text_color=dash_txt,      bgcolor=_dashBgR2, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 2, dashQualStr,     text_color=dashRetCol,    bgcolor=_dashBgR2, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 3, "Trend",         text_color=dash_txt,      bgcolor=_dashBgR1, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 3, trendLabel,      text_color=trendColor,    bgcolor=_dashBgR1, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 4, "Health",        text_color=dash_txt,      bgcolor=_dashBgR2, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 4, dashHealthBar,   text_color=dashHealthCol, bgcolor=_dashBgR2, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 5, "Swings",        text_color=dash_txt,      bgcolor=_dashBgR1, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 5, dashSwingStr,    text_color=color.rgb(140, 180, 255), bgcolor=_dashBgR1, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 6, "Avg Ret",       text_color=dash_txt,      bgcolor=_dashBgR2, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 6, dashAvgStr,      text_color=col_corr_lbl,  bgcolor=_dashBgR2, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 7, "RMV",           text_color=dash_txt,      bgcolor=_dashBgR1, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 7, dashVelBar,      text_color=dashVelCol,    bgcolor=_dashBgR1, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 8, "HTF TF",        text_color=dash_txt,      bgcolor=_dashBgR2, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 8, htfTf,           text_color=dash_txt,      bgcolor=_dashBgR2, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 0, 9, "HTF Align",     text_color=dash_txt,      bgcolor=_dashBgR1, text_halign=text.align_left,  text_size=size.small, text_font_family=font.family_monospace)
+table.cell(dash, 1, 9, htfAlignStr,     text_color=htfAlignCol,   bgcolor=_dashBgR1, text_halign=text.align_right, text_size=size.small, text_font_family=font.family_monospace)
+// ─── Main Pivot Detection & Retracement Signal Logic ────────────────────────
+if showIndicator
+    phs := fixnan(ph_new)
+    pls := fixnan(pl_new)
+    if newPH and barstate.isconfirmed
+        int   cBi  = bar_index - leftBars
+        float cVal = ph_new
+        bool  phAfterPl = not na(lastPL) and not na(lastPLBi) and (na(lastPH) or lastPLBi > lastPHBi)
+        if phAfterPl
+            float _base  = na(lastPH) ? na : lastPH
+            float _swing = na(_base)  ? na : lastPL - _base
+            if not na(_swing) and _swing > 0.0
+                float retPct = (cVal - lastPL) / _swing * 100.0
+                if retPct > 0.0 and retPct <= 200.0
+                    lastRetPct := retPct
+                    array.push(retHistory, retPct)
+                    if array.size(retHistory) > maxRetHistory
+                        array.shift(retHistory)
+                    float retBarsH = lastPLBi >= 0 ? math.max(cBi - lastPLBi, 1) : 1
+                    float velH     = retPct / retBarsH
+                    array.push(velHistory, velH)
+                    if array.size(velHistory) > maxRetHistory
+                        array.shift(velHistory)
+                    f_drawLabel(cBi, cVal, retPct, true, avgRet, stdDevRet, velH, avgVel)
+                    if enableSmartAlert and not na(avgRet)
+                        float dev    = retPct - avgRet
+                        int   aType  = f_anomalyType(retPct, avgRet, stdDevRet, alertStdMult)
+                        bool  worthy = math.abs(dev) >= stdDevRet * alertStdMult
+                        if worthy or na(stdDevRet)
+                            alert(f_buildAlertJson(retPct, avgRet, dev, aType), alert.freq_once_per_bar_close)
+        lastPH   := cVal
+        lastPHBi := cBi
+    if newPL and barstate.isconfirmed
+        int   cBi  = bar_index - leftBars
+        float cVal = pl_new
+        bool  plAfterPh = not na(lastPH) and not na(lastPHBi) and (na(lastPL) or lastPHBi > lastPLBi)
+        if plAfterPh
+            float _base  = na(lastPL) ? na : lastPL
+            float _swing = na(_base)  ? na : lastPH - _base
+            if not na(_swing) and _swing > 0.0
+                float retPct = (lastPH - cVal) / _swing * 100.0
+                if retPct > 0.0 and retPct <= 200.0
+                    lastRetPct := retPct
+                    array.push(retHistory, retPct)
+                    if array.size(retHistory) > maxRetHistory
+                        array.shift(retHistory)
+                    float retBarsL = lastPHBi >= 0 ? math.max(cBi - lastPHBi, 1) : 1
+                    float velL     = retPct / retBarsL
+                    array.push(velHistory, velL)
+                    if array.size(velHistory) > maxRetHistory
+                        array.shift(velHistory)
+                    f_drawLabel(cBi, cVal, retPct, false, avgRet, stdDevRet, velL, avgVel)
+                    if enableSmartAlert and not na(avgRet)
+                        float dev    = retPct - avgRet
+                        int   aType  = f_anomalyType(retPct, avgRet, stdDevRet, alertStdMult)
+                        bool  worthy = math.abs(dev) >= stdDevRet * alertStdMult
+                        if worthy or na(stdDevRet)
+                            alert(f_buildAlertJson(retPct, avgRet, dev, aType), alert.freq_once_per_bar_close)
+        lastPL   := cVal
+        lastPLBi := cBi
+// ─── Plots & Liquidity Sweep Shapes ─────────────────────────────────────────
+plot(showIndicator ? phs : na, "Pivot High", style=plot.style_cross, color=col_step_high, linewidth=1, offset=-rightBars, display=display.all - display.price_scale - display.status_line)
+plot(showIndicator ? pls : na, "Pivot Low",  style=plot.style_cross, color=col_step_low,  linewidth=1, offset=-rightBars, display=display.all - display.price_scale - display.status_line)
+plotshape(i_showLiq and _bslSweep ? high : na, "BSL Sweep", shape.labeldown, location.abovebar, i_cLiqS, text="LS", textcolor=color.white, size=size.tiny)
+plotshape(i_showLiq and _sslSweep ? low  : na, "SSL Sweep", shape.labelup,   location.belowbar, i_cLiqB, text="LS", textcolor=color.white, size=size.tiny)
+// ─── Live Retracement Tracking ──────────────────────────────────────────────
+if showIndicator
+    if newPL
+        liveSwingLow   := pl_new
+        liveSwingLowBi := bar_index - leftBars
+        livePoint2     := na
+        livePoint2Bi   := na
+        livePoint3     := na
+        livePoint3Bi   := na
+    if not na(liveSwingLow)
+        if na(livePoint2) or high > livePoint2
+            livePoint2   := high
+            livePoint2Bi := bar_index
+    if not na(livePoint2) and bar_index > livePoint2Bi
+        if na(livePoint3) or low < livePoint3
+            livePoint3   := low
+            livePoint3Bi := bar_index
+    if not na(liveSwingLow) and not na(livePoint2) and not na(livePoint3)
+        float liveSwing = livePoint2 - liveSwingLow
+        if liveSwing > 0.0
+            float liveRetPct = (livePoint2 - livePoint3) / liveSwing * 100.0
+            if liveRetPct > 0.0 and liveRetPct <= 200.0
+                if not na(liveRetLabel)
+                    label.delete(liveRetLabel)
+                string liveRetStr  = str.tostring(math.round(liveRetPct, 1), "##0.0") + "%"
+                string liveQualStr = showQuality ? "\n" + f_qualityLabel(liveRetPct) : ""
+                color  liveColor   = f_qualityColor(liveRetPct)
+                float  liveBars    = livePoint2Bi > 0 ? math.max(bar_index - livePoint2Bi, 1) : 1
+                liveVelocity       := liveRetPct / liveBars
+                liveRetPctSmooth   := liveRetPct
+                liveRetLabel := label.new(
+                     bar_index, livePoint3,
+                     text="⚡ " + liveRetStr + liveQualStr,
+                     color=col_corr_bg,
+                     textcolor=liveColor,
+                     style=label.style_label_left,
+                     size=size.normal,
+                     xloc=xloc.bar_index)
+// ─── Candle Heatmap Coloring ─────────────────────────────────────────────────
+color _gcLow  = color.from_gradient(nz(liveRetPctSmooth, 30.0), 0.0,  61.8, color.new(col_healthy,  10), color.new(col_weak,     40))
+color _gcHigh = color.from_gradient(nz(liveRetPctSmooth, 30.0), 61.8, 100.0, color.new(col_weak,    40), color.new(col_reversal,  5))
+color _gcAgg  = color.from_gradient(rmvNorm,                    0.0,  100.0, color.rgb(120, 0, 200, 30), color.rgb(180, 0, 255,   5))
+color _gc     = liveIsAgg ? _gcAgg : (nz(liveRetPctSmooth, 30.0) <= 61.8 ? _gcLow : _gcHigh)
+candleColor  := _gc
+color bodyColor   = showCandleColor ? candleColor : na
+color borderColor = showCandleColor ? candleColor : na
+plotcandle(open, high, low, close,
+     title       = "Heatmap Candles",
+     color       = bodyColor,
+     wickcolor   = borderColor,
+     bordercolor = borderColor)

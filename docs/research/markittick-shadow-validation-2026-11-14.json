@@ -1,0 +1,290 @@
+{
+  "verifiedAt": "2026-11-14T14:26:53.780Z",
+  "scope": "mechanics only: synthetic OHLC tape/depth; NOT executable historical fills or profitability evidence",
+  "simulation": {
+    "fillSource": "tape",
+    "latencyMs": 100,
+    "marginPerTrade": 150,
+    "maxStopLossPct": 3,
+    "referenceEquity": 1000
+  },
+  "datasetHash": "12ef8dbd50bbc3be1c20da5099454768514c3aea83708f06c5a1373fbbc5c02f",
+  "bars": 1000,
+  "from": 1793763000000,
+  "to": 1794662100000,
+  "continuousActivation": "offline tests only; no VM plan changes",
+  "reports": [
+    {
+      "id": "mesa-adaptive-cycle-engine-markittick",
+      "control": "generic-unmapped-control",
+      "sourceHash": "cbc593c97c0606d7522b83699fd8b04c0e0c8e5be8f03b241372a1b18cd1169d",
+      "currentReading": {
+        "entries": 81,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 81,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "prefixChecks": 8,
+      "restarts": 7,
+      "filled": 34,
+      "closed": 33,
+      "open": 1,
+      "maxRisk": 11.899769408027929,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "cancelled",
+          "reason": "pending order removed during restart",
+          "n": 1
+        },
+        {
+          "action": "cancelled",
+          "reason": "reversal: the held position could not be closed",
+          "n": 24
+        },
+        {
+          "action": "ignored",
+          "reason": "already in position",
+          "n": 5
+        },
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 34
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.25% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.26% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.29% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.41% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.46% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.23% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 2
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.24% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.25% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.26% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.27% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.28% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.29% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 2
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.31% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "id": "squeeze-bollinger-bands-tracker-markittick",
+      "control": "generic-unmapped-control",
+      "sourceHash": "4d44fd1f394db1e818611856cfdd5109fa9608299607169a65019f9ed2681121",
+      "currentReading": {
+        "entries": 0,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 70,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "prefixChecks": 6,
+      "restarts": 7,
+      "filled": 26,
+      "closed": 25,
+      "open": 1,
+      "maxRisk": 28.465942487742023,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "cancelled",
+          "reason": "pending order removed during restart",
+          "n": 1
+        },
+        {
+          "action": "cancelled",
+          "reason": "reversal: the held position could not be closed",
+          "n": 3
+        },
+        {
+          "action": "ignored",
+          "reason": "already in position",
+          "n": 20
+        },
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 26
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.19% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.20% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.26% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "reversal refused, position kept: stop too tight for fees (0.29% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.21% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.22% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.24% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.28% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.29% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.32% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 2
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.36% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.38% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.39% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.40% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 2
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.41% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.43% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.45% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "id": "garch-volumetric-cloud-markittick",
+      "control": "generic-unmapped-control",
+      "sourceHash": "c74d88f30e432b801f93f50f103a8126aac06b4f539a2489e19a4cc3db337031",
+      "currentReading": {
+        "entries": 0,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "candidateReading": {
+        "entries": 4,
+        "exits": 0,
+        "stopAmendments": 0
+      },
+      "prefixChecks": 1,
+      "restarts": 7,
+      "filled": 3,
+      "closed": 3,
+      "open": 0,
+      "maxRisk": 10.176279461999902,
+      "eligible": 0,
+      "admission": [
+        {
+          "action": "opened",
+          "reason": null,
+          "n": 3
+        },
+        {
+          "action": "rejected",
+          "reason": "stop too tight for fees (0.19% stop vs 0.12% round-trip cost; need ≥ 4×)",
+          "n": 1
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,262 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Weinstein Stage Cycle Tracker [MarkitTick]", overlay = true, behind_chart = false)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+var string GRP_CORE = "⚙️ Core Settings"
+i_src        = input.source(close, "Source", group = GRP_CORE, tooltip = "Price series the stage is read from · Weinstein uses the close")
+i_maLen      = input.int(30, "MA Length", group = GRP_CORE, minval = 2, tooltip = "Length of the stage moving average · Weinstein uses 30 weeks for investors, 10 weeks for traders, and 30 days on a daily chart for traders")
+i_slopeLen   = input.int(4, "Slope Lookback", group = GRP_CORE, minval = 1, tooltip = "Bars back used to measure the moving average slope · not from Weinstein's book, which judges the slope by eye")
+i_flatPct    = input.float(0.5, "Flat Slope %", group = GRP_CORE, minval = 0, step = 0.1, tooltip = "Slope inside ± this percentage counts as flat · not from Weinstein's book, which judges a flat MA by eye")
+i_rangeLen   = input.int(30, "Range Lookback", group = GRP_CORE, minval = 2, tooltip = "Bars before the current one whose highest high and lowest low mark the trading range · a close above it with the MA no longer declining starts Stage 2, a close below it with the MA no longer rising starts Stage 4 · not from Weinstein's book, which reads the range by eye")
+i_volLen     = input.int(20, "Volume Avg Length", group = GRP_CORE, minval = 1, tooltip = "Bars in the average that current volume is compared with · only bars carrying volume are averaged")
+
+var string GRP_FILT = "🕯️ Filters"
+i_useHtf     = input.bool(false, "HTF Confirmation", group = GRP_FILT, tooltip = "Stage 2 alert needs a bullish higher timeframe · Stage 4 alert needs a bearish one")
+i_htfTf      = input.timeframe("1M", "HTF Timeframe", group = GRP_FILT, tooltip = "Not lower than the chart timeframe · a lower one is skipped and shown as skipped")
+i_useAdx     = input.bool(false, "Trend Strength Filter", group = GRP_FILT, tooltip = "Stage 2 and Stage 4 alerts need ADX of the previous bar at or above the threshold")
+i_adxThresh  = input.float(20.0, "ADX Threshold", group = GRP_FILT, minval = 0, maxval = 100, step = 0.5, tooltip = "Minimum ADX for a Stage 2 or Stage 4 alert")
+i_adxLen     = input.int(14, "ADX Length", group = GRP_FILT, minval = 1, tooltip = "Length of the ADX used by the trend strength filter")
+i_smooth     = input.string("None", "Adaptive Smoothing", options = ["None", "SMA", "EMA", "WMA", "HMA", "RMA"], group = GRP_FILT, tooltip = "Smooths the source before the stage is read · None keeps it raw")
+i_smoothLen  = input.int(5, "Smoothing Length", group = GRP_FILT, minval = 1, tooltip = "Length of the adaptive smoothing")
+i_useVol     = input.bool(false, "Breakout Volume", group = GRP_FILT, tooltip = "Stage 2 alert needs the breakout bar's volume at or above the multiple of the average of the bars before it · skipped on a symbol with no volume")
+i_volMult    = input.float(2.0, "Volume Multiple", group = GRP_FILT, minval = 1, step = 0.1, tooltip = "Minimum breakout volume as a multiple of the average · Weinstein asks for at least 2x")
+i_volLb      = input.int(4, "Volume Lookback", group = GRP_FILT, minval = 1, tooltip = "Bars before the breakout bar in the volume average · only bars carrying volume are averaged · Weinstein uses 4 weeks on a weekly chart")
+
+var string GRP_VIS = "🎨 Visuals"
+i_showMa     = input.bool(true, "Show Stage MA", group = GRP_VIS)
+i_showCandles = input.bool(true, "Candle Coloring", group = GRP_VIS, tooltip = "Colors each candle with the color of its stage")
+i_showBg     = input.bool(true, "Stage Background", group = GRP_VIS)
+i_bgTransp   = input.int(75, "Background Transparency", group = GRP_VIS, minval = 0, maxval = 100)
+
+var string GRP_DASH = "📊 Dashboard"
+i_showDash   = input.bool(true, "Show Dashboard", group = GRP_DASH)
+i_dashPos    = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = GRP_DASH)
+
+var string GRP_WH = "🔔 Alerts"
+i_actS1      = input.string("stage1", "Stage 1 Action", group = GRP_WH)
+i_actS2      = input.string("stage2", "Stage 2 Action", group = GRP_WH)
+i_actS3      = input.string("stage3", "Stage 3 Action", group = GRP_WH)
+i_actS4      = input.string("stage4", "Stage 4 Action", group = GRP_WH)
+
+var string GRP_COL = "🌈 Colors"
+C_BASE       = input.color(#787b86, "Stage 1 Basing", group = GRP_COL)
+C_SUP        = input.color(#26a69a, "Stage 2 Advancing", group = GRP_COL)
+C_TOP        = input.color(#ff9800, "Stage 3 Topping", group = GRP_COL)
+C_RES        = input.color(#ef5350, "Stage 4 Declining", group = GRP_COL)
+C_BAR_HI     = input.color(#26a69a, "Bar High", group = GRP_COL)
+C_BAR_MID    = input.color(#f9a825, "Bar Mid", group = GRP_COL)
+C_BAR_LO     = input.color(#ef5350, "Bar Low", group = GRP_COL)
+C_DASH_HDR   = input.color(color.new(#3a2a6d, 55), "Dashboard Header", group = GRP_COL)
+C_DASH_BG    = input.color(color.new(#0a0f1a, 10), "Dashboard Background", group = GRP_COL)
+C_DASH_TXT   = input.color(#ffffff, "Dashboard Text", group = GRP_COL)
+C_WARN       = input.color(color.new(#f9a825, 80), "Warning Row", group = GRP_COL)
+
+// ── CORE LOGIC ──────────────────────────────────────────────────
+f_smooth(float src, string m, int len) =>
+    float s = ta.sma(src, len)
+    float e = ta.ema(src, len)
+    float w = ta.wma(src, len)
+    float h = ta.hma(src, len)
+    float r = ta.rma(src, len)
+    m == "SMA" ? s : m == "EMA" ? e : m == "WMA" ? w : m == "HMA" ? h : m == "RMA" ? r : src
+
+f_stageName(int s) =>
+    na(s) ? "—" : s == 1 ? "Stage 1 · Basing" : s == 2 ? "Stage 2 · Advancing" : s == 3 ? "Stage 3 · Topping" : "Stage 4 · Declining"
+
+float coreSrc  = f_smooth(i_src, i_smooth, i_smoothLen)
+float coreMa   = ta.sma(coreSrc, i_maLen)
+float maBase   = coreMa[i_slopeLen]
+float maSlope  = na(maBase) or maBase == 0 ? float(na) : (coreMa - maBase) / maBase * 100
+float maDist   = na(coreMa) or coreMa == 0 ? float(na) : (coreSrc - coreMa) / coreMa * 100
+bool  rising   = not na(maSlope) and maSlope > i_flatPct
+bool  falling  = not na(maSlope) and maSlope < -i_flatPct
+bool  above    = not na(coreMa) and coreSrc > coreMa
+bool  below    = not na(coreMa) and coreSrc < coreMa
+bool  notRising  = not na(maSlope) and maSlope <= i_flatPct
+bool  notFalling = not na(maSlope) and maSlope >= -i_flatPct
+float rangeHi  = ta.highest(high, i_rangeLen)[1]
+float rangeLo  = ta.lowest(low, i_rangeLen)[1]
+bool  breakUp  = not na(rangeHi) and coreSrc > rangeHi and above and notFalling
+bool  breakDn  = not na(rangeLo) and coreSrc < rangeLo and below and notRising
+
+var int lastRiseBar = int(na)
+var int lastFallBar = int(na)
+if rising
+    lastRiseBar := bar_index
+if falling
+    lastFallBar := bar_index
+
+var int stage          = int(na)
+var int lastStage      = int(na)
+var int stageStartTime = int(na)
+var int stageStartBar  = int(na)
+
+int  prevStage = stage
+bool maRose    = not na(lastRiseBar) and not na(stageStartBar) and lastRiseBar >= stageStartBar
+bool maFell    = not na(lastFallBar) and not na(stageStartBar) and lastFallBar >= stageStartBar
+int  newStage  = na(maSlope) ? int(na) : na(prevStage) ? (rising and above ? 2 : falling and not above ? 4 : int(na)) : prevStage == 1 ? (breakDn ? 4 : breakUp ? 2 : 1) : prevStage == 2 ? (breakDn ? 4 : notRising and maRose ? 3 : notRising and not above ? 1 : 2) : prevStage == 3 ? (breakDn ? 4 : breakUp ? 2 : 3) : (breakUp ? 2 : notFalling and maFell ? 1 : notFalling and not below ? 3 : 4)
+if not na(newStage) and (na(prevStage) or newStage != prevStage)
+    lastStage      := prevStage
+    stageStartTime := time
+    stageStartBar  := bar_index
+stage := newStage
+
+bool stageChanged = not na(stage) and not na(stage[1]) and stage != stage[1]
+
+float avgSum   = math.sum(nz(volume), i_volLen)
+float avgCnt   = math.sum(nz(volume) > 0 ? 1 : 0, i_volLen)
+float avgVol   = avgCnt > 0 ? avgSum / avgCnt : float(na)
+float volRatio = na(avgVol) or avgVol <= 0 or na(volume) ? float(na) : volume / avgVol
+float volSum   = math.sum(nz(volume), i_volLb)
+float volCnt   = math.sum(nz(volume) > 0 ? 1 : 0, i_volLb)
+float volBase  = volCnt > 0 ? volSum / volCnt : float(na)
+float volPrev  = volBase[1]
+var bool anyVol = false
+anyVol := anyVol or nz(volume) > 0
+bool  volSkipped  = not anyVol
+float brkVolRatio = na(volPrev) or volPrev <= 0 ? float(na) : nz(volume) / volPrev
+bool  volOk       = not i_useVol or volSkipped or (not na(brkVolRatio) and brkVolRatio >= i_volMult)
+
+string htfTicker  = chart.is_standard ? syminfo.tickerid : ticker.standard(syminfo.tickerid)
+bool   htfValid   = timeframe.in_seconds(i_htfTf) >= timeframe.in_seconds()
+bool   htfActive  = i_useHtf and htfValid
+int    htfBiasSrc = na(maSlope) ? int(na) : rising and above ? 1 : falling and not above ? -1 : 0
+int    htfBias    = request.security(htfTicker, htfValid ? i_htfTf : timeframe.period, htfBiasSrc[1], lookahead = barmerge.lookahead_on)
+bool   htfOkBull  = not htfActive or (not na(htfBias) and htfBias == 1)
+bool   htfOkBear  = not htfActive or (not na(htfBias) and htfBias == -1)
+
+[diPlus, diMinus, adx] = ta.dmi(i_adxLen, i_adxLen)
+float adxPrev    = adx[1]
+bool  strengthOk = not i_useAdx or (not na(adxPrev) and adxPrev >= i_adxThresh)
+
+bool evtS1 = stageChanged and stage == 1
+bool evtS2 = stageChanged and stage == 2 and htfOkBull and strengthOk and volOk
+bool evtS3 = stageChanged and stage == 3
+bool evtS4 = stageChanged and stage == 4 and htfOkBear and strengthOk
+
+// ── ALERTS ──────────────────────────────────────────────────────
+f_payload(string act, string dir) =>
+    string _inner = str.format('"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","event":"{4}","stage":"{5}","prev_stage":"{6}","price":"{7}","ma":"{8}","ma_slope_pct":"{9}","time":"{10}"',
+         act, syminfo.tickerid, timeframe.period, dir, f_stageName(stage), str.tostring(stage), str.tostring(lastStage),
+         str.tostring(close, format.mintick), str.tostring(coreMa, format.mintick), str.tostring(maSlope, "#.##"), str.tostring(time))
+    "{" + _inner + "}"
+
+if evtS1 and barstate.isconfirmed
+    alert(f_payload(i_actS1, "neutral"), alert.freq_once_per_bar_close)
+if evtS2 and barstate.isconfirmed
+    alert(f_payload(i_actS2, "bullish"), alert.freq_once_per_bar_close)
+if evtS3 and barstate.isconfirmed
+    alert(f_payload(i_actS3, "neutral"), alert.freq_once_per_bar_close)
+if evtS4 and barstate.isconfirmed
+    alert(f_payload(i_actS4, "bearish"), alert.freq_once_per_bar_close)
+
+alertcondition(evtS1 and barstate.isconfirmed, "Stage 1 · Basing", "MarkitTick — {{ticker}} entered Stage 1 · Basing")
+alertcondition(evtS2 and barstate.isconfirmed, "Stage 2 · Advancing", "MarkitTick — {{ticker}} entered Stage 2 · Advancing")
+alertcondition(evtS3 and barstate.isconfirmed, "Stage 3 · Topping", "MarkitTick — {{ticker}} entered Stage 3 · Topping")
+alertcondition(evtS4 and barstate.isconfirmed, "Stage 4 · Declining", "MarkitTick — {{ticker}} entered Stage 4 · Declining")
+
+// ── VISUALS ─────────────────────────────────────────────────────
+color stageCol = na(stage) ? C_BASE : stage == 1 ? C_BASE : stage == 2 ? C_SUP : stage == 3 ? C_TOP : C_RES
+
+plot(i_showMa ? coreMa : na, "Stage MA", color = stageCol, linewidth = 2)
+bgcolor(i_showBg and not na(stage) ? color.new(stageCol, i_bgTransp) : na, title = "Stage Background")
+
+color candleCol = i_showCandles and not na(stage) ? stageCol : na
+plotcandle(open, high, low, close, title = "Stage Candles", color = candleCol, wickcolor = candleCol, bordercolor = candleCol)
+
+// ── DASHBOARD ───────────────────────────────────────────────────
+f_pos(string p) =>
+    p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : position.top_right
+
+f_tf(string tf) =>
+    int    n       = str.length(tf)
+    string u       = str.substring(tf, n - 1, n)
+    bool   hasUnit = u == "T" or u == "S" or u == "D" or u == "W" or u == "M"
+    string q       = hasUnit ? str.substring(tf, 0, n - 1) : tf
+    string qty     = q == "" ? "1" : q
+    float  mins    = hasUnit ? float(na) : str.tonumber(qty)
+    hasUnit ? (u == "S" ? qty + "s" : qty + u) : mins % 60 == 0 ? str.tostring(mins / 60, "#") + "H" : str.tostring(mins, "#") + "m"
+
+f_num(float v) =>
+    string res = "—"
+    if not na(v)
+        float  a   = math.abs(v)
+        string sgn = v < 0 ? "-" : ""
+        float  r2  = math.round(a, 2)
+        float  k   = math.round(a / 1e3, 1)
+        float  m   = math.round(a / 1e6, 1)
+        float  b   = math.round(a / 1e9, 1)
+        res := r2 < 1000 ? sgn + str.tostring(r2, "#.##") : k < 1000 ? sgn + str.tostring(k, "#.#") + "K" : m < 1000 ? sgn + str.tostring(m, "#.#") + "M" : sgn + str.tostring(b, "#.#") + "B"
+    res
+
+f_pct(float v) =>
+    na(v) ? "—" : (v > 0 ? "+" : "") + str.tostring(v, "#.##") + "%"
+
+f_barColor(float pct) =>
+    pct >= 0.66 ? C_BAR_HI : pct >= 0.33 ? C_BAR_MID : C_BAR_LO
+
+f_bar(float val, float maxVal) =>
+    int filled = math.round(math.min(val / maxVal, 1.0) * 10)
+    string bar = ""
+    for i = 1 to 10
+        bar += i <= filled ? "█" : "░"
+    bar + "  " + str.tostring(math.round(val / maxVal * 100)) + "%"
+
+f_row(table t, int r, string lbl, string val, color vc, string tip = "") =>
+    color bg = r % 2 == 1 ? C_DASH_BG : color.new(C_DASH_BG, 40)
+    table.cell(t, 0, r, "  " + lbl, text_color = color.new(C_DASH_TXT, 25), text_halign = text.align_left, text_size = size.small, bgcolor = bg, tooltip = tip)
+    table.cell(t, 1, r, val + "  ", text_color = vc, text_halign = text.align_right, text_size = size.small, bgcolor = bg, tooltip = tip)
+
+var table dash = table.new(f_pos(i_dashPos), 2, 16, bgcolor = C_DASH_BG, frame_color = color.new(#3a2a6d, 40), frame_width = 1, border_color = color.new(#2a3040, 40), border_width = 1)
+
+if barstate.islast and i_showDash
+    color stateCol = na(stage) ? C_DASH_TXT : stage == 2 ? C_SUP : stage == 4 ? C_RES : C_DASH_TXT
+    bool  knownStart = not na(lastStage)
+    string tickTip   = syminfo.volumetype == "tick" ? "Volume on this symbol is tick volume · a count of trades, not units traded" : ""
+    string warmTip   = "No stage is shown until Smoothing Length (when smoothing is on), MA Length and Slope Lookback bars have loaded, and then until the MA first rises with price above it or falls with price at or below it · a breakout or breakdown also needs Range Lookback bars"
+    table.cell(dash, 0, 0, "WSCT", text_color = C_DASH_TXT, text_halign = text.align_left, text_size = size.small, bgcolor = C_DASH_HDR)
+    table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + f_tf(timeframe.period), text_color = C_DASH_TXT, text_halign = text.align_right, text_size = size.small, bgcolor = C_DASH_HDR)
+    int r = 1
+    f_row(dash, r, "Stage", f_stageName(stage), stateCol, warmTip)
+    r += 1
+    f_row(dash, r, "Previous", f_stageName(lastStage), C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "Since", knownStart ? str.format_time(stageStartTime, "yyyy-MM-dd", syminfo.timezone) : "—", C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "Bars in Stage", knownStart ? str.tostring(bar_index - stageStartBar + 1) : "—", C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "Stage MA", na(coreMa) ? "—" : str.tostring(coreMa, format.mintick), C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "MA Slope", f_pct(maSlope), rising ? C_SUP : falling ? C_RES : C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "Distance to MA", f_pct(maDist), na(maDist) ? C_DASH_TXT : maDist > 0 ? C_SUP : maDist < 0 ? C_RES : C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "Range High", na(rangeHi) ? "—" : str.tostring(rangeHi, format.mintick), C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "Range Low", na(rangeLo) ? "—" : str.tostring(rangeLo, format.mintick), C_DASH_TXT)
+    r += 1
+    f_row(dash, r, "Volume", f_num(volume), C_DASH_TXT, tickTip)
+    r += 1
+    f_row(dash, r, "Vol vs Avg", na(volRatio) ? "—" : str.tostring(volRatio, "#.##") + "x", C_DASH_TXT, tickTip)
+    r += 1
+    if i_useHtf
+        string htfTxt = not htfValid ? "Skipped · below chart TF" : na(htfBias) ? "—" : (htfBias == 1 ? "Bullish" : htfBias == -1 ? "Bearish" : "Neutral") + " · " + f_tf(i_htfTf)
+        color  htfCol = not htfValid or na(htfBias) ? C_DASH_TXT : htfBias == 1 ? C_SUP : htfBias == -1 ? C_RES : C_DASH_TXT
+        f_row(dash, r, "HTF Bias", htfTxt, htfCol)
+        r += 1
+    if i_useAdx
+        f_row(dash, r, "Trend Strength", na(adxPrev) ? "—" : f_bar(adxPrev, 100), na(adxPrev) ? C_DASH_TXT : f_barColor(adxPrev / 100))
+        r += 1
+    if i_smooth != "None"
+        f_row(dash, r, "Smoothing", i_smooth + " " + str.tostring(i_smoothLen), C_DASH_TXT)
+        r += 1
+    if i_useVol
+        string volTxt = volSkipped ? "Skipped · no volume" : na(brkVolRatio) ? "—" : (brkVolRatio >= i_volMult ? "Pass · " : "Fail · ") + str.tostring(brkVolRatio, "#.##") + "x"
+        color  volCol = volSkipped or na(brkVolRatio) ? C_DASH_TXT : brkVolRatio >= i_volMult ? C_SUP : C_RES
+        color  volBg  = volSkipped ? C_WARN : r % 2 == 1 ? C_DASH_BG : color.new(C_DASH_BG, 40)
+        table.cell(dash, 0, r, "  Breakout Volume", text_color = color.new(C_DASH_TXT, 25), text_halign = text.align_left, text_size = size.small, bgcolor = volBg, tooltip = tickTip)
+        table.cell(dash, 1, r, volTxt + "  ", text_color = volCol, text_halign = text.align_right, text_size = size.small, bgcolor = volBg, tooltip = tickTip)
+        r += 1

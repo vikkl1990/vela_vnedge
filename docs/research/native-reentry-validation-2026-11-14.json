@@ -1,0 +1,1514 @@
+{
+  "verifiedAt": "2026-11-14T16:34:20.989Z",
+  "baselineCommit": "9e6ad5a31b771bcc9865e579af81307a7276ca0e",
+  "baselineTree": "453d0ee9336ecbf91aea62a96811a9bc3028a0bf",
+  "implementationHash": "d6ee43f9c3361a8bb6031c22aca47a8321c5cc7b09e5983b923248d97096bc69",
+  "scope": "Execution mechanics only; synthetic OHLC path and depth. No profitability or promotion claim.",
+  "exclusions": [
+    "historical order book/queue and funding not reconstructed",
+    "historical market eligibility not reconstructed",
+    "ordinary account portfolio not simulated"
+  ],
+  "dataset": {
+    "hash": "4a8e19cffc5af6a04978c438b1eccc81c7f8b60393b4df47d3c17df6f3417fde",
+    "source": "https://api.india.delta.exchange",
+    "bars": 1254,
+    "from": 1793518200000,
+    "to": 1794645900000
+  },
+  "settings": {
+    "mode": "paper",
+    "margin": 150,
+    "stopCap": 3,
+    "feeGate": 6,
+    "latencyMs": 1500,
+    "fillSource": "candles"
+  },
+  "changedPlans": [
+    "author-savwap-eth-15m-v1",
+    "author-synapse-eth-15m-v1",
+    "author-liquidity-eth-15m-v1",
+    "author-reactive-eth-15m-v1",
+    "author-reaction-eth-15m-v1",
+    "author-strat-eth-15m-v1"
+  ],
+  "ordinaryIdentityChanges": [],
+  "reports": [
+    {
+      "scannerId": "structure-anchored-vwap-upstream-2-0",
+      "rawEntries": 12,
+      "sameBarClosureAndEntry": 1,
+      "prefixChecks": 1,
+      "sourceHash": "e8b418f487ab3936985f00e8e2ec14f4d975863b87a41fbfd14e4cba835774fa",
+      "baseline": {
+        "positions": [],
+        "maxRisk": 0,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.11% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.15% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.01 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.08 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.51% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.53% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.61% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.76% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.77% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      },
+      "candidate": {
+        "positions": [],
+        "maxRisk": 0,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.11% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.15% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.01 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.08 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.51% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.53% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.61% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.76% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.77% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      }
+    },
+    {
+      "scannerId": "synapse-trail-pro-author-native",
+      "rawEntries": 22,
+      "sameBarClosureAndEntry": 1,
+      "prefixChecks": 1,
+      "sourceHash": "1ba7f3ae80fbe52253fc489106a09697847aa3e6c5083e3d65174ec2d04a3d09",
+      "baseline": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 2
+          }
+        ],
+        "maxRisk": 7.725707742239964,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.13% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.15% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.16% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.25% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.27% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.28% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.04 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.51% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.53% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.60% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.61% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.71% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.75% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.77% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      },
+      "candidate": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 2
+          }
+        ],
+        "maxRisk": 7.725707742239964,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.13% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.15% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.16% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.25% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.27% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.28% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.04 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.51% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.53% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.60% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.61% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.71% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.75% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.77% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      }
+    },
+    {
+      "scannerId": "liquidity-trail-matrix-author-native",
+      "rawEntries": 14,
+      "sameBarClosureAndEntry": 2,
+      "prefixChecks": 2,
+      "sourceHash": "b774836d2e3d915871f9367844b7ee1eb04fc6509da867290fc5183bfb8b392d",
+      "baseline": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 3
+          }
+        ],
+        "maxRisk": 29.28286412383042,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 3
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.14% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.16% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.01 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "reversal refused, position kept: stop too tight for fees (0.51% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.35% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.41% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.78% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.81% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      },
+      "candidate": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 3
+          }
+        ],
+        "maxRisk": 29.28286412383042,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 3
+          },
+          {
+            "action": "rejected",
+            "reason": "native re-entry refused; existing close retained: stop too tight for fees (0.51% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.14% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.16% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.01 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.35% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.41% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.78% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.81% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      }
+    },
+    {
+      "scannerId": "reactive-trail-system-author-native",
+      "rawEntries": 32,
+      "sameBarClosureAndEntry": 5,
+      "prefixChecks": 3,
+      "sourceHash": "2d41d96870064f118f45d1e332b9a105487027fd61248cd97c197465cbef058c",
+      "baseline": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 4
+          }
+        ],
+        "maxRisk": 13.29905529359944,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 4
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.13% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.14% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.16% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.25% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.02 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.07 < 0.1)",
+            "n": 4
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.09 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.10 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "reversal refused, position kept: stop too tight for fees (0.33% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "reversal refused, position kept: stop too tight for fees (0.65% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.18% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.23% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.39% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.47% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.54% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.55% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.68% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.78% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.79% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      },
+      "candidate": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 4
+          }
+        ],
+        "maxRisk": 13.29905529359944,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 4
+          },
+          {
+            "action": "rejected",
+            "reason": "native re-entry refused; existing close retained: stop too tight for fees (0.33% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "native re-entry refused; existing close retained: stop too tight for fees (0.65% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.13% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.14% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.16% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.25% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.02 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.07 < 0.1)",
+            "n": 4
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.09 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.10 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.18% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.23% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.39% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.47% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.54% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.55% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.68% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.78% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.79% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      }
+    },
+    {
+      "scannerId": "reaction-level-matrix-author-native",
+      "rawEntries": 39,
+      "sameBarClosureAndEntry": 10,
+      "prefixChecks": 3,
+      "sourceHash": "f427733e30c464d16b8b047a3da03c2dfea8b12812d29859ced87b6558ec74d6",
+      "baseline": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 3
+          }
+        ],
+        "maxRisk": 15.040009378512094,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 3
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.13% < 0.3%",
+            "n": 4
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.17% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.18% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.26% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.28% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.01 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.02 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.04 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.06 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.10 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "reversal refused, position kept: stop too tight for fees (0.46% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.22% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.30% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.36% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.38% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.44% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.49% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.52% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.56% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.57% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.59% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.63% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.70% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.74% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.75% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      },
+      "candidate": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 3
+          }
+        ],
+        "maxRisk": 15.040009378512094,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 3
+          },
+          {
+            "action": "rejected",
+            "reason": "native re-entry refused; existing close retained: stop too tight for fees (0.46% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.13% < 0.3%",
+            "n": 4
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.17% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.18% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.26% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.28% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.01 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.02 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.04 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.06 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.10 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.22% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.30% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.36% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.38% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.44% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.49% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.52% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.56% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.57% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.59% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.63% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.70% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.74% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.75% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      }
+    },
+    {
+      "scannerId": "strat-trap-vwap-engine-author-native",
+      "rawEntries": 46,
+      "sameBarClosureAndEntry": 0,
+      "prefixChecks": 0,
+      "sourceHash": "271608789b8babb49a68fe9991a1cdb9d57f0b0818c414e150abc7605096c8fb",
+      "baseline": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 3
+          }
+        ],
+        "maxRisk": 9.572714728271912,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 3
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.11% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.14% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.18% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.23% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.26% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.27% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.02 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.03 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.04 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.05 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.06 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.07 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.09 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.10 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.20% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.28% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.31% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.32% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.33% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.35% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.36% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.38% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.39% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.43% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.45% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.46% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.49% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.52% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.59% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.62% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.63% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.66% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      },
+      "candidate": {
+        "positions": [
+          {
+            "status": "closed",
+            "n": 3
+          }
+        ],
+        "maxRisk": 9.572714728271912,
+        "eligible": 0,
+        "admission": [
+          {
+            "action": "opened",
+            "reason": null,
+            "n": 3
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.11% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.12% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.14% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.18% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.23% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.26% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.27% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.29% < 0.3%",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: ATR 0.30% < 0.3%",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.02 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.03 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.04 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.05 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.06 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.07 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.09 < 0.1)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "regime: choppy (efficiency 0.10 < 0.1)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.20% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.28% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.31% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.32% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.33% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.35% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.36% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.38% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.39% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.43% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.45% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.46% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.49% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.50% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.52% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 2
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.59% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.62% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.63% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          },
+          {
+            "action": "rejected",
+            "reason": "stop too tight for fees (0.66% stop vs 0.14% round-trip cost; need ≥ 6×)",
+            "n": 1
+          }
+        ]
+      }
+    }
+  ]
+}

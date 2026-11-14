@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 
 const modules = [
+  {path:'/signals',name:'Signals',role:'Trace account events from receipt to decision.',authority:'Read-only account log. Pending orders are not fills; ordinary shadow evidence stays in Incubator.'},
   {path:'/library',name:'Library',role:'Find and inspect script sources.',authority:'Catalog and favorites; importing a script does not allocate it to the account.'},
   {path:'/scanners',name:'Scanners',role:'Configure how a script is read and run.',authority:'Inputs, signal reading and explicit operator allocations. Backtest reviews are advisory while Incubator manages the fleet.'},
   {path:'/incubator',name:'Incubator',role:'Screen candidates and collect forward evidence.',authority:'Owns candidate stages and promotion rules. Versioned TP/stop experiments are separate evidence.'},
@@ -16,10 +17,18 @@ export function WorkflowGuide() {
   const {pathname}=useLocation()
   const current=modules.find(m=>pathname===m.path||pathname.startsWith(`${m.path}/`))
   if(!current)return null
-  return <details className="panel small" style={{padding:'10px 14px',marginBottom:12}}>
-    <summary><strong>{current.name}</strong> · {current.role} <span className="muted">How the modules connect</span></summary>
-    <p>{current.authority}</p>
-    <p className="muted">Script source → scanner event → account admission → order/fill journal. Research shares market data and the execution engine; its results remain separate from account performance.</p>
-    <div className="table-wrap"><table className="table table-dense"><thead><tr><th>Module</th><th>Responsibility and control</th></tr></thead><tbody>{modules.map(m=><tr key={m.path}><td><Link to={m.path}>{m.name}</Link></td><td>{m.authority}</td></tr>)}</tbody></table></div>
-  </details>
+  const primary = ['/signals', '/scanners', '/incubator', '/decisions']
+  return <div className="research-workflow">
+    <nav className="workflow-links" aria-label="Research workflow">
+      {primary.map(path => { const module = modules.find(m => m.path === path)!; return <Link key={path} to={path} aria-current={current.path === path ? 'page' : undefined}>{module.name}</Link> })}
+    </nav>
+    <details className="workflow-help">
+      <summary>How this workspace connects</summary>
+      <div className="workflow-help-content">
+        <p><strong>{current.name}</strong> · {current.role} {current.authority}</p>
+        <div className="workflow-directory">{modules.filter(m => !primary.includes(m.path)).map(m => <Link key={m.path} to={m.path}><strong>{m.name}</strong><span>{m.role}</span></Link>)}</div>
+        <p className="muted small">Sources → scanner events → admission → orders and fills. Research shares the execution engine; experimental evidence stays separate from promotion and account returns.</p>
+      </div>
+    </details>
+  </div>
 }

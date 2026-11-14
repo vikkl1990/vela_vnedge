@@ -1,0 +1,447 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick 
+
+//@version=6
+indicator("Institutional Order Flow Shield [MarkitTick]", overlay = true,
+     max_labels_count = 500, max_lines_count = 100)
+
+// =============================================================================
+// PART 1: USER-DEFINED TYPES (UDTs) & INPUTS
+// =============================================================================
+
+type FlowState
+    float cumBuyVol   = 0.0
+    float cumSellVol  = 0.0
+    int   buyCount    = 0
+    int   sellCount   = 0
+    float netWhaleVol = 0.0
+    float bullStr     = 0.0
+    float bearStr     = 0.0
+    float maxStrength = 500.0  
+
+type DetectionResult
+    int    spoofCount   = 0
+    int    icebergCount = 0
+    string lastEvent    = "WAITING"
+    string lastDecision = "WAIT/NEUTRAL"
+    float  confidence   = 0.0  
+
+string G_FLOW   = "⚡ Order Flow Engine"
+string G_DETECT = "🛡️ Spoof & Iceberg Detection"
+string G_MATRIX = "🎯 Decision Matrix"
+string G_FILTER = "🔬 Smart Filters [NEW]"
+string G_VIS    = "🎨 Visualization"
+
+string i_ltfTF       = input.timeframe("1", "Intrabar Timeframe (LTF)", group = G_FLOW,
+     tooltip = "Lower timeframe for weighted volume delta.\n'1' = 1-minute candles inside each chart bar.")
+int   i_flowBatchLen = input.int(21, "Flow Batch Length (bars)", minval = 2, maxval = 50, group = G_FLOW)
+int   i_volSmaLen    = input.int(20, "Volume SMA Length",        minval = 5, maxval = 100, group = G_FLOW)
+float i_flowRatio    = input.float(1.8, "Flow Sensitivity Ratio", minval = 1.0, maxval = 5.0, step = 0.1, group = G_FLOW,
+     tooltip = "When avg buy size > (avg sell size × ratio), ACCUMULATION fires.")
+
+float i_minSpoof     = input.float(1000.0, "Min Spoof Volume Diff",    minval = 0,   group = G_DETECT)
+float i_minIceberg   = input.float(2000.0, "Min Iceberg Volume",       minval = 0,   group = G_DETECT)
+float i_spoofPullPct = input.float(0.4,    "Spoof Pull Threshold (%)", minval = 0.1, maxval = 0.9, step = 0.05, group = G_DETECT)
+float i_icebergMul   = input.float(2.0,    "Iceberg Avg Multiplier",   minval = 1.0, maxval = 5.0, step = 0.1,  group = G_DETECT)
+
+bool  i_spoofRequireReversal = input.bool(false, "Require Price Reversal to Confirm Spoof", group = G_DETECT,
+     tooltip = "Bar must show directional price reversal for spoof to be confirmed.\nReduces false positives in flat/low-vol markets.")
+float i_spoofPrevRvolMin     = input.float(1.5, "Min Previous-Bar RVOL for Spoof", minval = 1.0, maxval = 5.0, step = 0.1, group = G_DETECT,
+     tooltip = "Previous bar must have been a high-volume spike.\nFilters out routine volume fluctuations in quiet sessions.")
+
+int   i_warmupBars    = input.int(30,    "Warmup Bars",                 minval = 5,    maxval = 200,  group = G_MATRIX)
+float i_strongBuyLvl  = input.float(0.65,"Strong Buy Threshold",        minval = 0.50, maxval = 0.95, step = 0.05, group = G_MATRIX)
+float i_strongSellLvl = input.float(0.35,"Strong Sell Threshold",       minval = 0.05, maxval = 0.50, step = 0.05, group = G_MATRIX)
+int   i_decayRate     = input.int(10,    "Strength Decay per event",    minval = 1,    maxval = 50,   group = G_MATRIX,
+     tooltip = "How fast the non-dominant side decays per signal event.")
+int   i_boostRate     = input.int(20,    "Strength Boost per signal",   minval = 5,    maxval = 100,  group = G_MATRIX)
+float i_passiveDecay  = input.float(0.5, "Passive Decay % per bar",     minval = 0.0,  maxval = 5.0, step = 0.1, group = G_MATRIX,
+     tooltip = "Both sides lose this % of strength every bar.\nPrevents score from saturating over long runs.")
+
+bool  i_useRvolFilter  = input.bool(false,  "RVOL Filter (require above-avg volume)", group = G_FILTER,
+     tooltip = "Only fire signals when current bar volume > threshold.\nRemoves signals from thin/irrelevant bars.")
+float i_rvolMin        = input.float(1.2,  "Min RVOL to enable signals",  minval = 0.8, maxval = 4.0, step = 0.1, group = G_FILTER)
+bool  i_useAtrFilter   = input.bool(false,  "ATR Volatility Gate",          group = G_FILTER,
+     tooltip = "Suppresses signals on extremely quiet/flat bars.\nAvoids false signals in choppy low-range conditions.")
+float i_atrMinPct      = input.float(0.3,  "Min ATR% of price for signal", minval = 0.05, maxval = 2.0, step = 0.05, group = G_FILTER,
+     tooltip = "Bar must have ATR >= this % of close price to trigger signals.")
+bool  i_useVwapFilter  = input.bool(false,  "VWAP Alignment Filter",        group = G_FILTER,
+     tooltip = "Reduces confidence of counter-VWAP signals.\nDoes not block, but lowers confidence score.")
+bool  i_useTrendFilter = input.bool(false,  "EMA 50/200 Trend Filter",      group = G_FILTER,
+     tooltip = "Adds trend alignment bonus to confidence score.\nDoes not block signals, but labels them as counter-trend.")
+
+color  i_colBullish  = input.color(color.new(#00e676, 0),  "Bullish Signal",       group = G_VIS)
+color  i_colBearish  = input.color(color.new(#ff1744, 0),  "Bearish Signal",       group = G_VIS)
+color  i_colSpoof    = input.color(color.new(#ff6f00, 0),  "Spoof Event",          group = G_VIS)
+color  i_colIceberg  = input.color(color.new(#00e5ff, 0),  "Iceberg/Wall Event",   group = G_VIS)
+color  i_colNeutral  = input.color(color.new(#ffca28, 0),  "Neutral/Wait",         group = G_VIS)
+color  i_colText     = input.color(color.white,            "Label Text",           group = G_VIS)
+color  i_colDashBg   = input.color(color.new(#131624, 10), "Dashboard Background", group = G_VIS)
+color  i_colDashBrd  = input.color(color.new(#3d4c70, 0),  "Dashboard Border",     group = G_VIS)
+string i_dashPos     = input.string("Top Right", "Dashboard Position",
+     options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = G_VIS)
+bool   i_showLabels  = input.bool(true, "Show Event Labels on Chart", group = G_VIS)
+bool   i_showDash    = input.bool(true, "Show Dashboard Table",       group = G_VIS)
+
+// =============================================================================
+// PART 2: ORDER FLOW ENGINE
+// =============================================================================
+
+[ltfClose, ltfOpen, ltfHigh, ltfLow, ltfVol] =
+     request.security_lower_tf(syminfo.tickerid, i_ltfTF, [close, open, high, low, volume])
+
+float buyVol       = 0.0
+float sellVol      = 0.0
+int   ltfBuyCount  = 0
+int   ltfSellCount = 0
+float wickRejUp    = 0.0  
+float wickRejDn    = 0.0   
+
+int ltfSize = array.size(ltfClose)
+if ltfSize > 0
+    for i = 0 to ltfSize - 1
+        float c   = ltfClose.get(i)
+        float o   = ltfOpen.get(i)
+        float h   = ltfHigh.get(i)
+        float l   = ltfLow.get(i)
+        float v   = ltfVol.get(i)
+        float rng = math.max(h - l, syminfo.mintick)
+
+        float pos = (c - l) / rng
+        buyVol   += v * pos
+        sellVol  += v * (1.0 - pos)
+
+        float uWick = h - math.max(c, o)
+        float lWick = math.min(c, o) - l
+        wickRejUp += (uWick / rng) * v
+        wickRejDn += (lWick / rng) * v
+
+        if c > o
+            ltfBuyCount  += 1
+        else if c < o
+            ltfSellCount += 1
+else
+    float barRange = math.max(high - low, syminfo.mintick)
+    float pos      = (close - low) / barRange
+    buyVol        := volume * pos
+    sellVol       := volume * (1.0 - pos)
+    float uWick    = high - math.max(close, open)
+    float lWick    = math.min(close, open) - low
+    wickRejUp     := (uWick / barRange) * volume
+    wickRejDn     := (lWick / barRange) * volume
+    ltfBuyCount   := close > open ? 1 : 0
+    ltfSellCount  := close < open ? 1 : 0
+
+float adjBuyVol  = math.max(0.0, buyVol  - wickRejUp * 0.5)
+float adjSellVol = math.max(0.0, sellVol - wickRejDn * 0.5)
+float barDelta   = adjBuyVol - adjSellVol   
+
+float cumBuyBatch  = math.sum(adjBuyVol,  i_flowBatchLen)
+float cumSellBatch = math.sum(adjSellVol, i_flowBatchLen)
+float buyCountBat  = math.sum(ltfBuyCount  > 0 ? 1.0 : 0.0, i_flowBatchLen)
+float sellCountBat = math.sum(ltfSellCount > 0 ? 1.0 : 0.0, i_flowBatchLen)
+float avgBuySize   = buyCountBat  > 0 ? cumBuyBatch  / buyCountBat  : 0.0
+float avgSellSize  = sellCountBat > 0 ? cumSellBatch / sellCountBat : 0.0
+
+bool  flowAccum  = avgBuySize  > (avgSellSize * i_flowRatio) and cumBuyBatch  > cumSellBatch
+bool  flowDistri = avgSellSize > (avgBuySize  * i_flowRatio) and cumSellBatch > cumBuyBatch
+float flowImpact = flowAccum ? (cumBuyBatch - cumSellBatch) : flowDistri ? (cumSellBatch - cumBuyBatch) : 0.0
+
+// =============================================================================
+// PART 3: SMART FILTERS 
+// =============================================================================
+
+float vAvg       = ta.sma(volume, i_volSmaLen)
+float rvol       = vAvg > 0 ? volume / vAvg : 1.0
+float prevRvol   = vAvg[1] > 0 ? volume[1] / vAvg[1] : 1.0
+bool  rvolGate   = not i_useRvolFilter or rvol >= i_rvolMin
+
+float atr14      = ta.atr(14)
+float atrPct     = close > 0 ? (atr14 / close) * 100.0 : 1.0
+bool  atrGate    = not i_useAtrFilter or atrPct >= i_atrMinPct
+
+bool  baseGate   = rvolGate and atrGate
+
+float vwapVal    = ta.vwap(hlc3)
+bool  aboveVwap  = close > vwapVal
+bool  belowVwap  = close < vwapVal
+
+float ema50      = ta.ema(close, 50)
+float ema200     = ta.ema(close, 200)
+bool  upTrend    = ema50 > ema200
+bool  downTrend  = ema50 < ema200
+
+bool  bullTrendOk = not i_useTrendFilter or upTrend
+bool  bearTrendOk = not i_useTrendFilter or downTrend
+bool  bullVwapOk  = not i_useVwapFilter  or aboveVwap
+bool  bearVwapOk  = not i_useVwapFilter  or belowVwap
+
+// =============================================================================
+// PART 4: SPOOF & ICEBERG DETECTION ENGINE
+// =============================================================================
+
+float smartIceLimit  = math.max(i_minIceberg, vAvg * i_icebergMul)
+float smartSpoofMin  = math.max(i_minSpoof,   vAvg * 1.5)
+float volDiff        = math.abs(volume[1] - volume)
+
+bool prevWasSpike    = prevRvol >= i_spoofPrevRvolMin
+bool volDropCondition = volume < (nz(volume[1]) * i_spoofPullPct) and volDiff >= smartSpoofMin
+
+bool priceRevUp      = close > open  and close > close[1] 
+bool priceRevDown    = close <= open and close < close[1] 
+
+bool isSpoofPull     = volDropCondition and prevWasSpike and baseGate
+
+bool isSpoofBidPull  = isSpoofPull and priceRevUp and (not i_spoofRequireReversal or priceRevUp)
+bool isSpoofAskPull  = isSpoofPull and priceRevDown and (not i_spoofRequireReversal or priceRevDown)
+
+bool isIcebergGrow    = volume > nz(volume[1]) and volume >= smartIceLimit and volDiff >= (smartIceLimit * 0.2) and baseGate
+bool isIcebergBidWall = isIcebergGrow and close > open
+bool isIcebergAskWall = isIcebergGrow and close <= open
+
+bool isNewPriceZone  = math.abs(close - close[1]) > (atr14 * 0.5)
+bool isNewWhaleEntry = rvol >= (i_icebergMul * 0.8) and isNewPriceZone and baseGate
+bool isNewWhaleBid   = isNewWhaleEntry and close > open
+bool isNewWhaleAsk   = isNewWhaleEntry and close <= open
+
+// =============================================================================
+// PART 5: DECISION MATRIX
+// =============================================================================
+
+var FlowState       fs  = FlowState.new()
+var DetectionResult det = DetectionResult.new()
+var int             warmupCounter = 0
+var bool            isCalibrated  = false
+
+if not isCalibrated
+    warmupCounter += 1
+    if warmupCounter >= i_warmupBars
+        isCalibrated := true
+
+if isCalibrated
+    float decayMul   = 1.0 - math.max(0.0, math.min(0.99, i_passiveDecay / 100.0))
+    fs.bullStr       := math.max(0.0, fs.bullStr * decayMul)
+    fs.bearStr       := math.max(0.0, fs.bearStr * decayMul)
+    fs.netWhaleVol   += barDelta
+
+if isCalibrated and barstate.isconfirmed
+    if isSpoofPull
+        det.spoofCount  += 1
+    if isIcebergGrow or isNewWhaleEntry
+        det.icebergCount += 1
+
+bool rawBullEvent = (flowAccum or isIcebergBidWall or isSpoofAskPull or isNewWhaleBid) and baseGate
+bool rawBearEvent = (flowDistri or isIcebergAskWall or isSpoofBidPull or isNewWhaleAsk) and baseGate
+
+bool resolvedBull = rawBullEvent and (not rawBearEvent or barDelta >= 0.0)
+bool resolvedBear = rawBearEvent and (not rawBullEvent or barDelta <  0.0)
+
+float confScore = 0.0
+if resolvedBull
+    confScore := 0.0
+    confScore += flowAccum         ? 25.0 : 0.0
+    confScore += isIcebergBidWall  ? 20.0 : 0.0
+    confScore += isNewWhaleBid     ? 15.0 : 0.0
+    confScore += isSpoofAskPull    ? 10.0 : 0.0
+    confScore += bullTrendOk       ? 15.0 : 0.0
+    confScore += bullVwapOk        ? 15.0 : 0.0
+if resolvedBear
+    confScore := 0.0
+    confScore += flowDistri        ? 25.0 : 0.0
+    confScore += isIcebergAskWall  ? 20.0 : 0.0
+    confScore += isNewWhaleAsk     ? 15.0 : 0.0
+    confScore += isSpoofBidPull    ? 10.0 : 0.0
+    confScore += bearTrendOk       ? 15.0 : 0.0
+    confScore += bearVwapOk        ? 15.0 : 0.0
+
+if isCalibrated and barstate.isconfirmed
+    if resolvedBull
+        fs.bullStr     := math.min(fs.maxStrength, fs.bullStr + i_boostRate)
+        fs.bearStr     := math.max(0.0, fs.bearStr - i_decayRate)
+        fs.netWhaleVol += flowImpact
+        det.confidence := confScore
+        det.lastEvent  := flowAccum ? "ACCUMULATION" : isIcebergBidWall ? "BID WALL" : isSpoofAskPull ? "ASK PULL" : isNewWhaleBid ? "WHALE BID" : "BULL SIGNAL"
+
+    if resolvedBear
+        fs.bearStr     := math.min(fs.maxStrength, fs.bearStr + i_boostRate)
+        fs.bullStr     := math.max(0.0, fs.bullStr - i_decayRate)
+        fs.netWhaleVol -= flowImpact
+        det.confidence := confScore
+        det.lastEvent  := flowDistri ? "DISTRIBUTION" : isIcebergAskWall ? "ASK WALL" : isSpoofBidPull ? "BID PULL" : isNewWhaleAsk ? "WHALE ASK" : "BEAR SIGNAL"
+
+float totalPower   = fs.bullStr + fs.bearStr
+float powerBalance = totalPower > 0 ? fs.bullStr / totalPower : 0.5
+
+string decisionText = powerBalance > i_strongBuyLvl ? "STRONG BUY" : powerBalance < i_strongSellLvl ? "STRONG SELL" : "WAIT/NEUTRAL"
+color  decisionCol  = powerBalance > i_strongBuyLvl ? i_colBullish : powerBalance < i_strongSellLvl ? i_colBearish : i_colNeutral
+
+if isCalibrated
+    det.lastDecision := decisionText
+
+// =============================================================================
+// PART 6: VISUALIZATION (Dashboard + Labels + Bar Color)
+// =============================================================================
+
+color barCol = resolvedBull and isCalibrated and confScore >= 50 ? i_colBullish : resolvedBear and isCalibrated and confScore >= 50 ? i_colBearish : na
+barcolor(barCol)
+
+if i_showLabels and isCalibrated and barstate.isconfirmed
+    string rvolTag  = "\nRVOL: " + str.tostring(rvol, "#.00") + "x"
+
+    if flowAccum and resolvedBull
+        label.new(bar_index, low, "ACM",
+             color = i_colBullish, textcolor = i_colText,
+             style = label.style_label_up, size = size.small,
+             tooltip = "🚨 ACCUMULATION — BEAR TRAP" +
+             "\nConf: "    + str.tostring(confScore, "#.00") + "%" +
+             "\nVWAP: "    + (aboveVwap ? "ABOVE ✅" : "BELOW ⚠️") +
+             "\nAvg Buy: " + str.tostring(avgBuySize, format.volume) +
+             " > Avg Sell × " + str.tostring(i_flowRatio, "#.00") +
+             "\nImpact: "  + str.tostring(flowImpact, format.volume) + rvolTag +
+             "\nTrend: "   + (upTrend ? "UP ✅" : downTrend ? "DOWN ⚠️" : "NEUTRAL"))
+
+    if flowDistri and resolvedBear
+        label.new(bar_index, high, "DST",
+             color = i_colBearish, textcolor = i_colText,
+             style = label.style_label_down, size = size.small,
+             tooltip = "🚨 DISTRIBUTION — BULL TRAP" +
+             "\nConf: "     + str.tostring(confScore, "#.00") + "%" +
+             "\nVWAP: "     + (belowVwap ? "BELOW ✅" : "ABOVE ⚠️") +
+             "\nAvg Sell: " + str.tostring(avgSellSize, format.volume) +
+             " > Avg Buy × " + str.tostring(i_flowRatio, "#.00") +
+             "\nImpact: "   + str.tostring(flowImpact, format.volume) + rvolTag +
+             "\nTrend: "    + (downTrend ? "DOWN ✅" : upTrend ? "UP ⚠️" : "NEUTRAL"))
+
+    if isSpoofBidPull
+        label.new(bar_index, high, "BPL",
+             color = i_colSpoof, textcolor = i_colText,
+             style = label.style_label_down, size = size.small,
+             tooltip = "📉 BID PULL — Spoof Detected" +
+             "\nConf: "          + str.tostring(confScore, "#.00") + "%" +
+             "\nVol Drop: "      + str.tostring((1 - i_spoofPullPct) * 100, "#") + "%" +
+             "\nVol Diff: "      + str.tostring(volDiff, format.volume) +
+             "\nPrev RVOL: "     + str.tostring(prevRvol, "#.00") + "x" +
+             "\nPrice Reversal: " + (priceRevUp ? "YES ✅" : "NO ❌"))
+
+    if isSpoofAskPull
+        label.new(bar_index, low, "APL",
+             color = i_colSpoof, textcolor = i_colText,
+             style = label.style_label_up, size = size.small,
+             tooltip = "📉 ASK PULL — Spoof Detected" +
+             "\nConf: "          + str.tostring(confScore, "#.00") + "%" +
+             "\nVol Drop: "      + str.tostring((1 - i_spoofPullPct) * 100, "#") + "%" +
+             "\nVol Diff: "      + str.tostring(volDiff, format.volume) +
+             "\nPrev RVOL: "     + str.tostring(prevRvol, "#.00") + "x" +
+             "\nPrice Reversal: " + (priceRevDown ? "YES ✅" : "NO ❌"))
+
+    if isIcebergBidWall
+        label.new(bar_index, low, "BWL",
+             color = i_colIceberg, textcolor = i_colText,
+             style = label.style_label_up, size = size.small,
+             tooltip = "🧊 ICEBERG BID WALL" +
+             "\nVolume: "    + str.tostring(volume, format.volume) +
+             "\nRVOL: "      + str.tostring(rvol, "#.00") + "x" +
+             "\nThreshold: " + str.tostring(smartIceLimit, format.volume))
+
+    if isIcebergAskWall
+        label.new(bar_index, high, "AWL",
+             color = i_colIceberg, textcolor = i_colText,
+             style = label.style_label_down, size = size.small,
+             tooltip = "🧊 ICEBERG ASK WALL" +
+             "\nVolume: "    + str.tostring(volume, format.volume) +
+             "\nRVOL: "      + str.tostring(rvol, "#.00") + "x" +
+             "\nThreshold: " + str.tostring(smartIceLimit, format.volume))
+
+    if isNewWhaleBid and not isIcebergBidWall
+        label.new(bar_index, low, "WBD",
+             color = color.new(i_colIceberg, 30), textcolor = i_colText,
+             style = label.style_label_up, size = size.small,
+             tooltip = "🐋 WHALE BID ENTRY (RVOL-Based)" +
+             "\nRVOL: "       + str.tostring(rvol, "#.00") + "x" +
+             "\nPrice Move: " + str.tostring(math.abs(close - close[1]) / syminfo.mintick, format.volume) + " ticks")
+
+    if isNewWhaleAsk and not isIcebergAskWall
+        label.new(bar_index, high, "WAK",
+             color = color.new(i_colIceberg, 30), textcolor = i_colText,
+             style = label.style_label_down, size = size.small,
+             tooltip = "🐋 WHALE ASK ENTRY (RVOL-Based)" +
+             "\nRVOL: "       + str.tostring(rvol, "#.00") + "x" +
+             "\nPrice Move: " + str.tostring(math.abs(close - close[1]) / syminfo.mintick, format.volume) + " ticks")
+
+var table dashboard = na
+
+if i_showDash
+    var string dashPos = i_dashPos == "Top Left" ? position.top_left : i_dashPos == "Top Right" ? position.top_right : i_dashPos == "Bottom Left" ? position.bottom_left : position.bottom_right
+
+    if barstate.islast
+        if not na(dashboard)
+            table.delete(dashboard)
+
+        dashboard := table.new(dashPos, 2, 11,
+             bgcolor      = i_colDashBg,
+             border_color = i_colDashBrd, border_width = 1,
+             frame_color  = i_colDashBrd, frame_width  = 2)
+
+        table.cell(dashboard, 0, 0, "🛡️ Institutional Order Flow Shield ",
+             text_color = color.white, text_size = size.normal,
+             bgcolor = color.new(#0a0c14, 0), text_halign = text.align_center)
+        table.merge_cells(dashboard, 0, 0, 1, 0)
+
+        color whaleCol = fs.netWhaleVol > 0 ? i_colBullish : fs.netWhaleVol < 0 ? i_colBearish : i_colNeutral
+        table.cell(dashboard, 0, 1, "NET WHALE FLOW",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 1, str.tostring(fs.netWhaleVol, format.volume),
+             text_color = whaleCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        table.cell(dashboard, 0, 2, "DECISION MATRIX",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 2, det.lastDecision,
+             text_color = decisionCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        color confCol = det.confidence >= 70.0 ? i_colBullish : det.confidence >= 40.0 ? i_colNeutral : color.new(#90a4ae, 0)
+        table.cell(dashboard, 0, 3, "SIGNAL CONF. [NEW]",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 3, str.tostring(det.confidence, "#.00") + "%",
+             text_color = confCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        color rvolCol = rvol >= 2.0 ? i_colBullish : rvol >= i_rvolMin ? i_colNeutral : color.new(#607d8b, 0)
+        table.cell(dashboard, 0, 4, "RVOL (Relative Vol) [NEW]",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 4, str.tostring(rvol, "#.00") + "x" + (rvolGate ? " ✅" : " ⛔"),
+             text_color = rvolCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        color vwapCol = aboveVwap ? i_colBullish : i_colBearish
+        table.cell(dashboard, 0, 5, "VWAP POSITION [NEW]",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 5, aboveVwap ? "ABOVE ▲" : "BELOW ▼",
+             text_color = vwapCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        color trendCol = upTrend ? i_colBullish : downTrend ? i_colBearish : i_colNeutral
+        table.cell(dashboard, 0, 6, "EMA TREND 50/200 [NEW]",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 6, upTrend ? "BULLISH ↑" : downTrend ? "BEARISH ↓" : "CROSSING",
+             text_color = trendCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        color atrGateCol = atrGate ? i_colBullish : color.new(#607d8b, 0)
+        table.cell(dashboard, 0, 7, "ATR GATE [NEW]",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 7, str.tostring(atrPct, "#.00") + "%" + (atrGate ? " ✅" : " ⛔"),
+             text_color = atrGateCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        table.cell(dashboard, 0, 8, "SPOOF EVENTS",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 8, str.tostring(det.spoofCount),
+             text_color = i_colSpoof, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        table.cell(dashboard, 0, 9, "ICEBERG / WALLS",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 9, str.tostring(det.icebergCount),
+             text_color = i_colIceberg, text_size = size.normal, bgcolor = color.new(#1c2035, 0))
+
+        string powerStr = str.tostring(powerBalance * 100, "#.00") + "% BULL"
+        color  powerCol = powerBalance > i_strongBuyLvl ? i_colBullish : powerBalance < i_strongSellLvl ? i_colBearish : i_colNeutral
+        table.cell(dashboard, 0, 10, "POWER BALANCE",
+             text_color = color.new(#90a4ae, 0), text_size = size.small, bgcolor = color.new(#1c2035, 0))
+        table.cell(dashboard, 1, 10, powerStr,
+             text_color = powerCol, text_size = size.normal, bgcolor = color.new(#1c2035, 0))

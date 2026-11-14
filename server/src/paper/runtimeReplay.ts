@@ -17,7 +17,7 @@ export type ReplayEvent = {at:number;sequence:number} & (
  | {kind:'context';symbol:string;tf:string;bar:Bar}
  | {kind:'quote';symbol:string;bid:number;ask:number;exchangeAt:number}
  | {kind:'trade';symbol:string;price:number;qty:number;exchangeAt:number}
- | {kind:'exit';scannerId:string;symbol:string;tf:string;exitType:'close'|'tp1'|'tp2'|'tp3'|'sl'}
+ | {kind:'exit';scannerId:string;symbol:string;tf:string;exitType:'close'|'tp1'|'tp2'|'tp3'|'sl'|'stop_update';stopPrice?:number}
  | {kind:'funding';symbol:string;ratePct:number;mark:number}
  | {kind:'mark';symbol:string;price:number}
  | {kind:'restart'}
@@ -61,7 +61,7 @@ export function replayRuntime(cfgIn:AppConfig,eventsIn:ReplayEvent[],manifest:Re
     }
     case 'bar':paper!.onBar(e.symbol,e.bar,now,{historical:e.historical});break;
     case 'trade':paper!.onTrade(e.symbol,e.price,e.qty,e.exchangeAt,now);break;
-    case 'exit':paper!.commitDecision(()=>paper!.onScriptExit(e.scannerId,e.symbol,e.tf,e.exitType,undefined,now,'both'));break;
+    case 'exit':paper!.commitDecision(()=>paper!.onScriptExit(e.scannerId,e.symbol,e.tf,e.exitType,e.exitType==='stop_update'?e.stopPrice:undefined,now,'both'));break;
     case 'funding':paper!.reconcileFunding(e.symbol,e.ratePct,e.mark,now);break;
     case 'restart':paper!.removeAllListeners();start();break;
    }

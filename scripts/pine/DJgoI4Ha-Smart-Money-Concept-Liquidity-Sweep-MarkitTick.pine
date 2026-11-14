@@ -1,0 +1,487 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Smart Money Concept: Liquidity Sweep [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+if syminfo.type == "heikinashi" or syminfo.type == "renko" or syminfo.type == "linebreak" or syminfo.type == "kagi" or syminfo.type == "pointfigure"
+    runtime.error("Non-standard chart detected. Use standard candlesticks.")
+
+// ─── Inputs ───────────────────────────────────────────────────────────────────
+int   swing_len    = input.int(5,     "Swing Length",          minval=2,             group="Market Structure")
+float rr_ratio     = input.float(2.0, "Risk/Reward Ratio",     minval=1.0, step=0.1, group="Market Structure")
+color col_bull     = input.color(#00FFFF,                      "Bullish (Cyan)",       group="Visuals")
+color col_bear     = input.color(#FF00FF,                      "Bearish (Magenta)",    group="Visuals")
+color col_bull_zone= input.color(color.new(#00FFFF, 90),       "Support Zone Fill",    group="Visuals")
+color col_bear_zone= input.color(color.new(#FF00FF, 90),       "Resistance Zone Fill", group="Visuals")
+color col_text     = input.color(color.white,                  "Text/Label Color",     group="Visuals")
+bool  color_candles= input.bool(true,                          "Color Candles",        group="Visuals")
+
+bool  use_sweep    = input.bool(false,  "Enable Liquidity Sweep Filter", group="① Liquidity Sweep Filter")
+bool  use_htf      = input.bool(false,  "Enable HTF Bias Filter",        group="② HTF Bias Filter")
+simple string htf_tf= input.timeframe("240", "HTF Timeframe",           group="② HTF Bias Filter")
+
+bool  use_pd       = input.bool(false,  "Enable Premium/Discount Zone",  group="③ Premium / Discount Zone")
+color col_premium  = input.color(color.new(#FF00FF, 85), "Premium Zone Fill",    group="③ Premium / Discount Zone")
+color col_discount = input.color(color.new(#00FFFF, 85), "Discount Zone Fill",   group="③ Premium / Discount Zone")
+color col_eq       = input.color(color.new(#FFFFFF, 85), "Equilibrium Fill",     group="③ Premium / Discount Zone")
+
+bool  use_sessions = input.bool(false,  "Enable Session Kill Zones",     group="④ Session Kill Zones")
+color col_london   = input.color(color.new(#FFD700, 88), "London Open Color",    group="④ Session Kill Zones")
+color col_ny       = input.color(color.new(#00FF88, 88), "NY Open Color",        group="④ Session Kill Zones")
+color col_asian    = input.color(color.new(#FF6600, 88), "Asian Range Color",    group="④ Session Kill Zones")
+
+bool  use_fvg      = input.bool(true,  "Enable FVG Engine",             group="⑤ Fair Value Gap")
+color col_fvg_bull = input.color(color.new(#00FFFF, 80), "FVG Bull Fill",        group="⑤ Fair Value Gap")
+color col_fvg_bear = input.color(color.new(#FF00FF, 80), "FVG Bear Fill",        group="⑤ Fair Value Gap")
+
+bool  use_ind      = input.bool(true,  "Enable Inducement Detection",   group="⑥ Inducement Detection")
+color col_ind      = input.color(#FFFF00, "Inducement Label Color",     group="⑥ Inducement Detection")
+
+bool  use_mss      = input.bool(false,  "Require Full Body Close (MSS)", group="⑦ MSS Body Confirmation")
+
+bool  use_atr_sl   = input.bool(false,  "Enable ATR-Adaptive SL",        group="⑧ ATR-Adaptive SL")
+int   atr_len      = input.int(14,     "ATR Length",     minval=1,      group="⑧ ATR-Adaptive SL")
+float atr_sl_mult  = input.float(1.5,  "ATR SL Multiplier", minval=0.1, step=0.1, group="⑧ ATR-Adaptive SL")
+
+bool  use_ob_mit   = input.bool(false,  "Enable OB Mitigation Tracker",  group="⑨ OB Mitigation Tracker")
+bool  hide_ob_mit  = input.bool(false, "Hide Mitigated OBs",            group="⑨ OB Mitigation Tracker")
+color col_ob_mit   = input.color(color.new(#808080, 85), "Mitigated OB Color",  group="⑨ OB Mitigation Tracker")
+
+bool  use_conf     = input.bool(true,  "Enable Confluence Score Dashboard", group="⑩ Confluence Score")
+color col_conf_hi  = input.color(#00FF00, "Score 4–5 Color",            group="⑩ Confluence Score")
+color col_conf_mid = input.color(#FFAA00, "Score 2–3 Color",            group="⑩ Confluence Score")
+color col_conf_lo  = input.color(#FF0000, "Score 0–1 Color",            group="⑩ Confluence Score")
+
+// ─── UDTs ─────────────────────────────────────────────────────────────────────
+type SwingPoint
+    int   index
+    float price
+    bool  is_active
+
+type MarketStructure
+    int   trend
+    float last_high
+    float last_low
+    float range_high
+    float range_low
+
+type SignalEngine
+    string action
+    float  entry_price
+    float  sl_price
+    float  tp_price
+    bool   trigger
+
+type FVGZone
+    int   left
+    float top
+    float bottom
+    bool  is_bull
+    bool  mitigated
+    box   bx
+
+type OBBlock
+    int   left
+    int   right
+    float top
+    float bottom
+    bool  is_bull
+    bool  mitigated
+    box   bx
+
+type InducementPoint
+    int   index
+    float price
+    bool  is_bull
+    bool  broken
+
+type ConflScore
+    int  score
+    bool htf_ok
+    bool in_session
+    bool fvg_present
+    bool sweep_ok
+    bool pd_ok
+
+// ─── State ────────────────────────────────────────────────────────────────────
+var SwingPoint             last_ph  = SwingPoint.new(0, 0.0, false)
+var SwingPoint             last_pl  = SwingPoint.new(0, 0.0, false)
+var MarketStructure        ms       = MarketStructure.new(0, 0.0, 0.0, 0.0, 0.0)
+var SignalEngine           signal   = SignalEngine.new("", 0.0, 0.0, 0.0, false)
+var ConflScore             cscore   = ConflScore.new(0, false, false, false, false, false)
+var array<OBBlock>         ob_list  = array.new<OBBlock>()
+var array<FVGZone>         fvg_list = array.new<FVGZone>()
+var array<InducementPoint> ind_list = array.new<InducementPoint>()
+var int                    pd_anchor_left = na
+
+var bool                   active_bull_sweep = false
+var bool                   active_bear_sweep = false
+var float                  active_sweep_low  = na
+var float                  active_sweep_high = na
+
+// ─── Pivot Functions ──────────────────────────────────────────────────────────
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  valid     = true
+    for i = 0 to len * 2
+        if i != len and src[i] >= candidate
+            valid := false
+    valid ? candidate : na
+
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  valid     = true
+    for i = 0 to len * 2
+        if i != len and src[i] <= candidate
+            valid := false
+    valid ? candidate : na
+
+float ph = f_pivotHigh(high, swing_len)
+float pl = f_pivotLow(low,  swing_len)
+
+// ─── ① Sweep Detection Engine ─────────────────────────────────────────────────
+if last_pl.is_active and low[1] < last_pl.price
+    active_bull_sweep := true
+    active_sweep_low  := na(active_sweep_low) ? low[1] : math.min(active_sweep_low, low[1])
+
+if last_pl.is_active and close[1] < last_pl.price
+    active_bull_sweep := false
+    active_sweep_low  := na
+
+if last_ph.is_active and high[1] > last_ph.price
+    active_bear_sweep := true
+    active_sweep_high := na(active_sweep_high) ? high[1] : math.max(active_sweep_high, high[1])
+
+if last_ph.is_active and close[1] > last_ph.price
+    active_bear_sweep := false
+    active_sweep_high := na
+
+bool sweep_bull_ok = use_sweep ? active_bull_sweep : true
+bool sweep_bear_ok = use_sweep ? active_bear_sweep : true
+
+// ─── Update Structure ─────────────────────────────────────────────────────────
+if not na(ph)
+    last_ph.index     := bar_index[swing_len]
+    last_ph.price     := ph
+    last_ph.is_active := true
+
+if not na(pl)
+    last_pl.index     := bar_index[swing_len]
+    last_pl.price     := pl
+    last_pl.is_active := true
+
+float atr_val = ta.atr(atr_len)
+
+// ─── ② HTF Bias Filter ────────────────────────────
+[htf_close, htf_ema] = request.security(syminfo.tickerid, htf_tf, [close[1], ta.sma(close, 50)[1]], lookahead=barmerge.lookahead_on)
+bool htf_bull_bias = use_htf ? htf_close > htf_ema : true
+bool htf_bear_bias = use_htf ? htf_close < htf_ema : true
+
+// ─── ⑤ FVG Engine ─────────────────────────────────────────────────────────────
+bool fvg_bull_detected = use_fvg ? (low[1] > high[3] and close[2] > open[2]) : false
+bool fvg_bear_detected = use_fvg ? (high[1] < low[3] and close[2] < open[2]) : false
+
+if fvg_bull_detected
+    array.push(fvg_list, FVGZone.new(bar_index[2], low[1], high[3], true,  false, box(na)))
+if fvg_bear_detected
+    array.push(fvg_list, FVGZone.new(bar_index[2], low[3], high[1], false, false, box(na)))
+
+if array.size(fvg_list) > 30
+    FVGZone evicted = array.shift(fvg_list)
+    box.delete(evicted.bx)
+
+bool fvg_bull_near = false
+bool fvg_bear_near = false
+
+if use_fvg
+    int _fvg_sz = array.size(fvg_list)
+    if _fvg_sz > 0
+        for i = 0 to _fvg_sz - 1
+            FVGZone z = array.get(fvg_list, i)
+            if not z.mitigated
+                if z.is_bull and low[1] <= z.top
+                    z.mitigated := true
+                    box.delete(z.bx)
+                    array.set(fvg_list, i, z)
+                else if not z.is_bull and high[1] >= z.bottom
+                    z.mitigated := true
+                    box.delete(z.bx)
+                    array.set(fvg_list, i, z)
+                else
+                    int fvg_eff_left = math.max(z.left, bar_index - 499)
+                    box.delete(z.bx)
+                    z.bx := box.new(fvg_eff_left, z.top, bar_index + 3, z.bottom, border_color=na, bgcolor=z.is_bull ? col_fvg_bull : col_fvg_bear)
+                    array.set(fvg_list, i, z)
+                    if z.is_bull
+                        fvg_bull_near := true
+                    else
+                        fvg_bear_near := true
+
+// ─── ⑥ Inducement Detection ───────────────────────────────────────────────────
+bool ind_bull_broken = false
+bool ind_bear_broken = false
+
+if use_ind and ms.trend != 0 and not na(ph)
+    if ph < ms.last_high and ph > ms.last_low
+        array.push(ind_list, InducementPoint.new(bar_index[swing_len], ph, true, false))
+if use_ind and ms.trend != 0 and not na(pl)
+    if pl > ms.last_low and pl < ms.last_high
+        array.push(ind_list, InducementPoint.new(bar_index[swing_len], pl, false, false))
+
+if use_ind
+    int _ind_sz = array.size(ind_list)
+    if _ind_sz > 0
+        for i = 0 to _ind_sz - 1
+            InducementPoint ip = array.get(ind_list, i)
+            if not ip.broken
+                if ip.is_bull and low[1] < ip.price
+                    ip.broken       := true
+                    ind_bull_broken := true
+                    array.set(ind_list, i, ip)
+                    label.new(ip.index, ip.price, "IDM", color=color.new(col_ind, 100), textcolor=col_ind, style=label.style_label_down, size=size.small)
+                else if not ip.is_bull and high[1] > ip.price
+                    ip.broken       := true
+                    ind_bear_broken := true
+                    array.set(ind_list, i, ip)
+                    label.new(ip.index, ip.price, "IDM", color=color.new(col_ind, 100), textcolor=col_ind, style=label.style_label_up, size=size.small)
+
+if array.size(ind_list) > 50
+    array.shift(ind_list)
+
+// ─── ④Session Kill Zones ─────────────────────────────────────────────────────
+var bool  was_london  = false
+var bool  was_ny      = false
+var bool  was_asian   = false
+var box   london_box  = na
+var float london_high = na
+var float london_low  = na
+var int   london_left = na
+var box   ny_box      = na
+var float ny_high     = na
+var float ny_low      = na
+var int   ny_left     = na
+var box   asian_box   = na
+var float asian_high  = na
+var float asian_low   = na
+var int   asian_left  = na
+
+bool now_london = hour(time, "UTC") >= 8  and hour(time, "UTC") < 11
+bool now_ny     = hour(time, "UTC") >= 13 and hour(time, "UTC") < 16
+bool now_asian  = hour(time, "UTC") >= 0  and hour(time, "UTC") < 3
+bool in_session = now_london or now_ny or now_asian
+
+if use_sessions
+    bool london_open = now_london and not was_london
+    bool ny_open     = now_ny     and not was_ny
+    bool asian_open  = now_asian  and not was_asian
+
+    if london_open
+        london_left := bar_index
+        london_high := high
+        london_low  := low
+    if now_london and not na(london_left)
+        london_high := math.max(london_high, high)
+        london_low  := math.min(london_low,  low)
+        box.delete(london_box)
+        london_box  := box.new(london_left, london_high, bar_index + 1, london_low, border_color=na, bgcolor=col_london)
+
+    if ny_open
+        ny_left := bar_index
+        ny_high := high
+        ny_low  := low
+    if now_ny and not na(ny_left)
+        ny_high := math.max(ny_high, high)
+        ny_low  := math.min(ny_low,  low)
+        box.delete(ny_box)
+        ny_box  := box.new(ny_left, ny_high, bar_index + 1, ny_low, border_color=na, bgcolor=col_ny)
+
+    if asian_open
+        asian_left := bar_index
+        asian_high := high
+        asian_low  := low
+    if now_asian and not na(asian_left)
+        asian_high := math.max(asian_high, high)
+        asian_low  := math.min(asian_low,  low)
+        box.delete(asian_box)
+        asian_box  := box.new(asian_left, asian_high, bar_index + 1, asian_low, border_color=na, bgcolor=col_asian)
+
+    was_london := now_london
+    was_ny     := now_ny
+    was_asian  := now_asian
+
+// ─── ③ Premium / Discount Zone ────────────────────────────────────────────────
+var box pd_box_premium  = na
+var box pd_box_eq       = na
+var box pd_box_discount = na
+
+float range_mid  = (ms.range_high + ms.range_low) / 2
+float range_q1   = ms.range_low + (ms.range_high - ms.range_low) * 0.25
+float range_q3   = ms.range_low + (ms.range_high - ms.range_low) * 0.75
+bool  in_discount = use_pd and ms.range_high != ms.range_low ? close[1] <= range_mid : true
+bool  in_premium  = use_pd and ms.range_high != ms.range_low ? close[1] >= range_mid : true
+
+if use_pd and ms.range_high != ms.range_low and not na(pd_anchor_left)
+    box.delete(pd_box_premium)
+    box.delete(pd_box_eq)
+    box.delete(pd_box_discount)
+    int pd_eff_left = math.max(pd_anchor_left, bar_index - 499)
+    int pd_right    = bar_index + 20
+    pd_box_premium  := box.new(pd_eff_left, ms.range_high, pd_right, range_q3, border_color=na, bgcolor=col_premium)
+    pd_box_eq       := box.new(pd_eff_left, range_q3,      pd_right, range_q1, border_color=na, bgcolor=col_eq)
+    pd_box_discount := box.new(pd_eff_left, range_q1,      pd_right, ms.range_low, border_color=na, bgcolor=col_discount)
+
+// ─── Helper Functions ─────────────────────────────────────────────────────────
+mss_bull_confirm(float level) =>
+    use_mss ? (math.min(open[1], close[1]) > level) : (close[1] > level)
+
+mss_bear_confirm(float level) =>
+    use_mss ? (math.max(open[1], close[1]) < level) : (close[1] < level)
+
+f_sl_bull(float swing_low) =>
+    use_atr_sl ? swing_low - (atr_val * atr_sl_mult) : swing_low
+
+f_sl_bear(float swing_high) =>
+    use_atr_sl ? swing_high + (atr_val * atr_sl_mult) : swing_high
+
+// ─── ⑨ OB Mitigation Tracker ──────────────────────────────────────────────────
+if use_ob_mit
+    int _ob_sz = array.size(ob_list)
+    if _ob_sz > 0
+        for i = 0 to _ob_sz - 1
+            OBBlock ob = array.get(ob_list, i)
+            if not ob.mitigated
+                bool hit_bull = ob.is_bull     and low[1]  <= ob.bottom
+                bool hit_bear = not ob.is_bull and high[1] >= ob.top
+                if hit_bull or hit_bear
+                    ob.mitigated := true
+                    if hide_ob_mit
+                        box.delete(ob.bx)
+                    else
+                        box.set_bgcolor(ob.bx, col_ob_mit)
+                    array.set(ob_list, i, ob)
+
+if array.size(ob_list) > 30
+    array.shift(ob_list)
+
+// ─── Signal Blocks ────────────────────────────────────────────────────────────
+bool bullish_break = last_ph.is_active and mss_bull_confirm(last_ph.price) and sweep_bull_ok and htf_bull_bias and in_discount
+bool bearish_break = last_pl.is_active and mss_bear_confirm(last_pl.price) and sweep_bear_ok and htf_bear_bias and in_premium
+
+signal.trigger := false
+
+if bullish_break
+    float true_low     = use_sweep and not na(active_sweep_low) ? active_sweep_low : last_pl.price
+    pd_anchor_left    := bar_index
+    ms.range_low      := true_low
+    ms.range_high     := last_ph.price
+    float sl_price     = f_sl_bull(true_low)
+    float risk         = close[1] - sl_price
+    float tp_price     = close[1] + (risk * rr_ratio)
+    string lbl         = ms.trend == 1 ? "BOS" : "CHoCH"
+    
+    int line_x1        = math.max(last_ph.index, bar_index - 499)
+    int mid_x          = math.round((line_x1 + bar_index) / 2)
+    
+    line.new(line_x1, last_ph.price, bar_index, last_ph.price, color=col_bull, style=line.style_dashed, width=1)
+    label.new(mid_x, last_ph.price, lbl, color=color.new(color.white, 100), textcolor=col_bull, style=label.style_label_down, size=size.small)
+         
+    float ob_top       = true_low + (atr_val * 0.5)
+    float ob_bottom    = true_low
+    int ob_eff_left    = math.max(last_pl.index, bar_index - 499)
+    box ob_bx = box.new(ob_eff_left, ob_top, bar_index + 10, ob_bottom, border_color=na, bgcolor=col_bull_zone)
+    OBBlock new_ob = OBBlock.new(last_pl.index, bar_index + 10, ob_top, ob_bottom, true, false, ob_bx)
+    array.push(ob_list, new_ob)
+    
+    signal.action      := "Buy"
+    signal.entry_price := close[1]
+    signal.sl_price    := sl_price
+    signal.tp_price    := tp_price
+    signal.trigger     := true
+    ms.trend           := 1
+    ms.last_high       := last_ph.price
+    last_ph.is_active  := false
+    
+    active_bull_sweep  := false
+    active_sweep_low   := na
+    
+    if use_conf
+        cscore.htf_ok      := htf_bull_bias
+        cscore.sweep_ok    := sweep_bull_ok
+        cscore.pd_ok       := in_discount
+        cscore.fvg_present := fvg_bull_near
+        cscore.in_session  := in_session
+        cscore.score       := (cscore.htf_ok ? 1 : 0) + (cscore.sweep_ok ? 1 : 0) + (cscore.pd_ok  ? 1 : 0) + (cscore.fvg_present ? 1 : 0) + (cscore.in_session ? 1 : 0)
+
+if bearish_break
+    float true_high    = use_sweep and not na(active_sweep_high) ? active_sweep_high : last_ph.price
+    pd_anchor_left    := bar_index
+    ms.range_low      := last_pl.price
+    ms.range_high     := true_high
+    float sl_price     = f_sl_bear(true_high)
+    float risk         = sl_price - close[1]
+    float tp_price     = close[1] - (risk * rr_ratio)
+    string lbl         = ms.trend == -1 ? "BOS" : "CHoCH"
+    
+    int line_x1        = math.max(last_pl.index, bar_index - 499)
+    int mid_x          = math.round((line_x1 + bar_index) / 2)
+    
+    line.new(line_x1, last_pl.price, bar_index, last_pl.price, color=col_bear, style=line.style_dashed, width=1)
+    label.new(mid_x, last_pl.price, lbl, color=color.new(color.white, 100), textcolor=col_bear, style=label.style_label_up, size=size.small)
+         
+    float ob_top       = true_high
+    float ob_bottom    = true_high - (atr_val * 0.5)
+    int ob_eff_left    = math.max(last_ph.index, bar_index - 499)
+    box ob_bx = box.new(ob_eff_left, ob_top, bar_index + 10, ob_bottom, border_color=na, bgcolor=col_bear_zone)
+    OBBlock new_ob = OBBlock.new(last_ph.index, bar_index + 10, ob_top, ob_bottom, false, false, ob_bx)
+    array.push(ob_list, new_ob)
+    
+    signal.action      := "Sell"
+    signal.entry_price := close[1]
+    signal.sl_price    := sl_price
+    signal.tp_price    := tp_price
+    signal.trigger     := true
+    ms.trend           := -1
+    ms.last_low        := last_pl.price
+    last_pl.is_active  := false
+    
+    active_bear_sweep  := false
+    active_sweep_high  := na
+    
+    if use_conf
+        cscore.htf_ok      := htf_bear_bias
+        cscore.sweep_ok    := sweep_bear_ok
+        cscore.pd_ok       := in_premium
+        cscore.fvg_present := fvg_bear_near
+        cscore.in_session  := in_session
+        cscore.score       := (cscore.htf_ok ? 1 : 0) + (cscore.sweep_ok ? 1 : 0) + (cscore.pd_ok  ? 1 : 0) + (cscore.fvg_present ? 1 : 0) + (cscore.in_session ? 1 : 0)
+
+// ─── ⑩ Confluence Score Dashboard ─────────────────────────────────────────────
+color score_col = cscore.score >= 4 ? col_conf_hi : cscore.score >= 2 ? col_conf_mid : col_conf_lo
+
+if use_conf and signal.trigger
+    string sc_txt = "Score: " + str.tostring(cscore.score)
+    string tt_txt = str.format("HTF: {0}\nSession: {1}\nFVG: {2}\nSweep: {3}\nPD: {4}",
+         cscore.htf_ok ? "✓" : "✗", cscore.in_session ? "✓" : "✗", cscore.fvg_present ? "✓" : "✗", cscore.sweep_ok ? "✓" : "✗", cscore.pd_ok ? "✓" : "✗")
+    
+    float lbl_y = signal.action == "Buy" ? low - (atr_val * 0.2) : high + (atr_val * 0.2)
+    string lbl_style = signal.action == "Buy" ? label.style_label_up : label.style_label_down
+    
+    label.new(bar_index, lbl_y, sc_txt, color=color.new(score_col, 80), textcolor=col_text, style=lbl_style, size=size.small, tooltip=tt_txt)
+
+// ─── Visuals ──────────────────────────────────────────────────────────────────
+color dynamic_candle_col = na
+if color_candles
+    dynamic_candle_col := ms.trend == 1 ? col_bull : ms.trend == -1 ? col_bear : na
+
+plotcandle(open, high, low, close, title="Structure Candles", color=dynamic_candle_col, wickcolor=dynamic_candle_col, bordercolor=dynamic_candle_col)
+
+method generate_json_payload(SignalEngine this) =>
+    string inner = str.format(
+         '"ticker":"{0}","action":"{1}","entry":{2},"tp":{3},"sl":{4},"score":{5},"timeframe":"{6}"',
+         syminfo.tickerid, this.action, str.tostring(this.entry_price, format.mintick), str.tostring(this.tp_price, format.mintick), str.tostring(this.sl_price, format.mintick), str.tostring(cscore.score), timeframe.period)
+    "{" + inner + "}"
+
+if signal.trigger and barstate.isconfirmed
+    alert(signal.generate_json_payload(), alert.freq_once_per_bar_close)

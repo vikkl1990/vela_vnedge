@@ -1,0 +1,603 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Smart Fixed Volume Profile [MarkitTick]", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+// =============================================================================
+// 1. CONSTANTS
+// =============================================================================
+int   MAX_DATA_POINTS       = 5000
+int   MIN_PROFILE_WIDTH     = 25
+int   MIN_BAR_WIDTH         = 3
+int   PROFILE_GAP           = 5
+float HIGH_INTENSITY_FLOOR  = 1e10
+float DEFAULT_BUY_RATIO     = 0.5
+float PERCENT_DIVISOR       = 100.0
+
+// =============================================================================
+// 2. INPUTS
+// =============================================================================
+
+// --- Fixed Volume Profile Inputs ---
+string G_GLOBAL_VP  = "--- Fixed Volume Profile: Global ---"
+int    i_startTime  = input.time(timestamp("2025-08-01 10:00"), "Start Date", confirm = true, group = G_GLOBAL_VP)
+int    i_endTime    = input.time(timestamp("2025-10-06 14:30"), "End Date", confirm = true, group = G_GLOBAL_VP)
+bool   i_extend     = input.bool(true, "Extend to Present", group = G_GLOBAL_VP)
+
+string G_PROFILE_VP = "--- Fixed Volume Profile: Settings ---"
+bool   i_custTF     = input.bool(true, "Use Custom Timeframe", group = G_PROFILE_VP)
+string i_tfProfile  = input.timeframe("", "Custom Timeframe", group = G_PROFILE_VP)
+int    i_rowSize    = input.int(24, "Number of Rows", minval = 10, maxval = 500, group = G_PROFILE_VP)
+int    i_widthPct   = input.int(30, "Profile Width %", minval = 5, maxval = 80, group = G_PROFILE_VP)
+string i_placement  = input.string("Left", "Profile Placement", options = ["Left", "Right"], group = G_PROFILE_VP)
+bool   i_showPOC    = input.bool(true, "Show POC Line", group = G_PROFILE_VP)
+bool   i_showVA     = input.bool(true, "Show Value Area", group = G_PROFILE_VP)
+float  i_vaPct      = input.float(70.0, "Value Area %", minval = 50.0, maxval = 90.0, step = 1.0, group = G_PROFILE_VP)
+
+string G_LIQUIDITY_VP = "--- Fixed Volume Profile: Liquidity ---"
+bool   i_showDelta    = input.bool(true, "Show Delta Profile", group = G_LIQUIDITY_VP)
+bool   i_showInst     = input.bool(true, "Highlight Unusual Volume", group = G_LIQUIDITY_VP)
+float  i_unuThresh    = input.float(2.0, "Unusual Threshold (x Avg)", minval = 1.1, maxval = 10.0, step = 0.1, group = G_LIQUIDITY_VP)
+
+string G_VISUAL_VP = "--- Fixed Volume Profile: Visuals ---"
+color  i_upColor   = input.color(color.new(#26a69a, 50), "Bullish Volume", group = G_VISUAL_VP)
+color  i_dnColor   = input.color(color.new(#ef5350, 50), "Bearish Volume", group = G_VISUAL_VP)
+color  i_pocColor  = input.color(color.new(#ffeb3b, 50), "POC Color", group = G_VISUAL_VP)
+color  i_vahColor  = input.color(color.new(#2196f3, 0), "VAH Color", group = G_VISUAL_VP)
+color  i_valColor  = input.color(color.new(#2196f3, 0), "VAL Color", group = G_VISUAL_VP)
+color  i_bgColor   = input.color(color.new(#787b86, 85), "Range Background", group = G_VISUAL_VP)
+bool   i_showBg    = input.bool(true, "Show Range Background", group = G_VISUAL_VP)
+
+// --- Smart Gap Concepts Inputs ---
+string G_LOGIC_GAPS = "--- Smart Gaps: Logic ---"
+bool   i_showGaps   = input.bool(true, "Show Smart Gaps", group = G_LOGIC_GAPS)
+float  I_MIN_GAP    = input.float(0.0, "Min Gap Size (Points)", minval = 0.0, group = G_LOGIC_GAPS)
+int    I_PIVOT_L    = input.int(5, "Structure Lookback Left", minval = 1, group = G_LOGIC_GAPS)
+int    I_PIVOT_R    = input.int(5, "Structure Lookback Right", minval = 1, group = G_LOGIC_GAPS)
+int    I_VOL_LEN    = input.int(20, "Volume Avg Length", minval = 1, group = G_LOGIC_GAPS)
+float  I_VOL_MULT   = input.float(1.5, "Volume Spike Multiplier", minval = 1.0, group = G_LOGIC_GAPS)
+int    I_TREND_MAT  = input.int(20, "Trend Maturity (Bars)", minval = 5, group = G_LOGIC_GAPS, tooltip = "Minimum bars since the last pivot start to consider a gap as 'Exhaustion'.")
+
+string G_VISUAL_GAPS = "--- Smart Gaps: Visuals ---"
+color  C_BREAKAWAY   = input.color(color.new(color.blue, 75), "Breakaway Gap (Start)", group = G_VISUAL_GAPS)
+color  C_RUNAWAY     = input.color(color.new(color.orange, 75), "Runaway Gap (Middle)", group = G_VISUAL_GAPS)
+color  C_EXHAUSTION  = input.color(color.new(color.red, 75), "Exhaustion Gap (End)", group = G_VISUAL_GAPS)
+int    I_EXTEND_GAPS = input.int(10, "Box Extension", minval = 1, group = G_VISUAL_GAPS)
+
+// --- Liquidity Strain Detector Inputs ---
+string G_STRAIN        = "--- Liquidity Strain Detector ---"
+bool   i_showStrain    = input.bool(true, "Show Liquidity Strain", group = G_STRAIN)
+int    LEN_TREND       = input.int(50, "Trend Filter Length", minval = 10, group = G_STRAIN)
+int    LEN_STATS       = input.int(20, "Statistical Lookback", minval = 5, group = G_STRAIN)
+float  THRESHOLD_SIGMA = input.float(2.0, "Stress Threshold (Sigma)", step = 0.1, group = G_STRAIN)
+
+// =============================================================================
+// 3. TYPE DEFINITIONS
+// =============================================================================
+
+// --- Volume Profile Types ---
+type VP_Slot
+    float Low
+    float High
+    float Volume
+    int   TimeCount
+    float Intensity
+    float BuyVolume
+    float SellVolume
+
+type VP_Meta
+    float Low
+    float High
+    float SlotWidth
+    float PocPrice
+    float PocVolume
+    int   PocIndex
+    int   Start
+    int   End
+    float TotalVolume
+    float MaxIntensity
+    float MinIntensity
+    float AvgIntensity
+    float VahPrice
+    float ValPrice
+
+type VP_Engine
+    array<float>   Volumes
+    array<float>   Lows
+    array<float>   Highs
+    array<int>     Indices
+    array<VP_Slot> Slots
+    VP_Meta        Meta
+    array<float>   Opens
+    array<float>   Closes
+
+// --- Smart Gap Types ---
+type StructureEngine
+    float lastPivotHigh
+    float lastPivotLow
+    int   lastPivotHighIdx
+    int   lastPivotLowIdx
+    int   leftLen
+    int   rightLen
+
+type Gapmetrics
+    bool   isValid
+    bool   isBullish
+    float  top
+    float  bottom
+    string gapType
+
+// --- Liquidity Strain Types ---
+type LiquidityEngine
+    float raw_illiquidity
+    float z_score
+    bool  is_high_stress
+
+// =============================================================================
+// 4. METHODS & HELPERS
+// =============================================================================
+
+// --- Liquidity Strain Methods ---
+method update(LiquidityEngine self, int len, float threshold) =>
+    float vol_safe = volume == 0 ? 1.0 : volume
+    float impact   = ta.tr(true) / vol_safe
+    self.raw_illiquidity := math.log(impact + 1)
+    float mean = ta.sma(self.raw_illiquidity, len)
+    float std  = ta.stdev(self.raw_illiquidity, len)
+    self.z_score := std == 0 ? 0.0 : (self.raw_illiquidity - mean) / std
+    self.is_high_stress := self.z_score > threshold
+
+// --- Smart Gap Methods ---
+method update(StructureEngine eng) =>
+    float ph = ta.pivothigh(high, eng.leftLen, eng.rightLen)
+    float pl = ta.pivotlow(low, eng.leftLen, eng.rightLen)
+    
+    if not na(ph)
+        eng.lastPivotHigh    := ph
+        eng.lastPivotHighIdx := bar_index - eng.rightLen
+        
+    if not na(pl)
+        eng.lastPivotLow     := pl
+        eng.lastPivotLowIdx := bar_index - eng.rightLen
+
+method analyzeGap(StructureEngine eng, float volAvg, float volMult, int maturityThreshold) =>
+    Gapmetrics result = Gapmetrics.new(false, false, na, na, "Standard")
+    
+    bool  bullGap = low > high[2] and close[1] > open[1]
+    bool  bearGap = high < low[2] and close[1] < open[1]
+    float gapSize = 0.0
+    
+    if bullGap
+        gapSize        := low - high[2]
+        result.isValid := true
+        result.isBullish := true
+        result.top     := low
+        result.bottom  := high[2]
+    else if bearGap
+        gapSize        := low[2] - high
+        result.isValid := true
+        result.isBullish := false
+        result.top     := low[2]
+        result.bottom  := high
+        
+    if result.isValid and gapSize >= I_MIN_GAP
+        bool isBreakout = false
+        if result.isBullish and not na(eng.lastPivotHigh)
+            isBreakout := close[1] > eng.lastPivotHigh and close[2] <= eng.lastPivotHigh
+        else if not result.isBullish and not na(eng.lastPivotLow)
+            isBreakout := close[1] < eng.lastPivotLow and close[2] >= eng.lastPivotLow
+
+        bool isHighVolume  = volume[1] > volAvg * volMult
+        int  trendDuration = 0
+        
+        if result.isBullish
+            if not na(eng.lastPivotLowIdx)
+                trendDuration := bar_index - eng.lastPivotLowIdx
+        else
+            if not na(eng.lastPivotHighIdx)
+                trendDuration := bar_index - eng.lastPivotHighIdx
+        
+        bool isExtended     = trendDuration > maturityThreshold
+        bool isExhaustionSig = isHighVolume and isExtended
+
+        if isBreakout
+            result.gapType := "Breakaway"
+        else if isExhaustionSig
+            result.gapType := "Exhaustion"
+        else 
+            result.gapType := "Runaway"
+    else
+        result.isValid := false
+        
+    result
+
+// --- Volume Profile Helpers ---
+GetOptimalTimeframe(int startTime, int endTime) =>
+    int    diff = endTime - startTime
+    string sel  = "1D"
+    if diff <= 300000 or timeframe.isseconds
+        sel := "1"
+    else
+        int mins = int(diff / 60000)
+        sel := mins < 5    ? "1"   : mins < 15   ? "3"   : mins < 25   ? "5"   : mins < 75   ? "15"  : 
+               mins < 150  ? "30"  : mins < 225  ? "45"  : mins < 360  ? "60"  : mins < 600  ? "120" :
+               mins < 900  ? "180" : mins < 1440 ? "240" : mins < 2160 ? "360" : mins < 2880 ? "480" :
+               mins < 4320 ? "720" : "1D"
+    sel
+
+// Use pop() for efficient array clearing with object deletion
+ClearVP(array<box> profileBoxes, array<line> profileLines, array<label> profileLabels, box bgBox) =>
+    while profileBoxes.size() > 0
+        box.delete(profileBoxes.pop())
+    
+    while profileLines.size() > 0
+        line.delete(profileLines.pop())
+    
+    while profileLabels.size() > 0
+        label.delete(profileLabels.pop())
+    
+    if not na(bgBox)
+        box.delete(bgBox)
+
+CalcVPBounds(VP_Engine eng) =>
+    int sz = eng.Volumes.size()
+    if sz > 0
+        eng.Meta.High := eng.Highs.max()
+        eng.Meta.Low  := eng.Lows.min()
+    else
+        eng.Meta.High := high
+        eng.Meta.Low  := low
+
+BuildVPSlots(VP_Engine eng, int rows) =>
+    float rng = eng.Meta.High - eng.Meta.Low
+    if rng > 0
+        float sz   = rng / rows
+        float base = eng.Meta.Low
+        eng.Slots.clear()
+        for i = 0 to rows - 1
+            float sl = base + sz * i
+            eng.Slots.push(VP_Slot.new(sl, sl + sz, 0.0, 0, 0.0, 0.0, 0.0))
+
+DistributeVP(VP_Engine eng, int rows) =>
+    int dataSize = eng.Volumes.size()
+    int slotSize = eng.Slots.size()
+    
+    if slotSize > 0 and dataSize > 0
+        float pLow = eng.Meta.Low
+        float rng  = eng.Meta.High - pLow
+        
+        if rng > 0
+            float invSz      = rows / rng
+            int   opensSize  = eng.Opens.size()
+            int   closesSize = eng.Closes.size()
+            int   maxSlotIdx = slotSize - 1
+            
+            for d = 0 to dataSize - 1
+                float dVol   = eng.Volumes.get(d)
+                float dLo    = eng.Lows.get(d)
+                float dHi    = eng.Highs.get(d)
+                float bSz    = dHi - dLo
+                float dOpen  = d < opensSize  ? eng.Opens.get(d)  : dLo
+                float dClose = d < closesSize ? eng.Closes.get(d) : dHi
+                bool  isBullish = dClose >= dOpen
+                
+                int sIdx = int(math.max(0.0, math.floor((dLo - pLow) * invSz)))
+                int eIdx = int(math.min(maxSlotIdx, math.floor((dHi - pLow) * invSz)))
+            
+                if sIdx <= eIdx
+                    float volPerP = dVol > 0 and bSz > 0 ? dVol / bSz : 0.0
+                    for j = sIdx to eIdx
+                        VP_Slot s = eng.Slots.get(j)
+                        s.TimeCount += 1
+                        
+                        if volPerP > 0
+                            float ov = math.min(dHi, s.High) - math.max(dLo, s.Low)
+                            if ov > 0
+                                float slotVol = volPerP * ov
+                                s.Volume += slotVol
+                                if isBullish
+                                    s.BuyVolume += slotVol
+                                else
+                                    s.SellVolume += slotVol
+
+FinalizeVP(VP_Engine eng, int rows) =>
+    int sc = eng.Slots.size()
+    if sc > 0
+        float tot          = 0.0
+        float maxV         = 0.0
+        int   pIdx         = 0
+        float pPrc         = 0.0
+        float maxIntensity = 0.0
+        float minIntensity = HIGH_INTENSITY_FLOOR
+        float sumIntensity = 0.0
+        int   validSlots   = 0
+        
+        for i = 0 to sc - 1
+            VP_Slot s  = eng.Slots.get(i)
+            float   sv = s.Volume
+            tot += sv
+            if sv > maxV
+                maxV := sv
+                pPrc := s.Low
+                pIdx := i
+            
+            if s.TimeCount > 0
+                s.Intensity  := sv / s.TimeCount
+                maxIntensity := math.max(maxIntensity, s.Intensity)
+                minIntensity := math.min(minIntensity, s.Intensity)
+                sumIntensity += s.Intensity
+                validSlots   += 1
+        
+        float rng = eng.Meta.High - eng.Meta.Low
+        eng.Meta.PocVolume    := maxV
+        eng.Meta.PocPrice     := pPrc + (rng / rows) * DEFAULT_BUY_RATIO
+        eng.Meta.PocIndex     := pIdx
+        eng.Meta.TotalVolume  := tot
+        eng.Meta.SlotWidth    := rng > 0 ? rng / sc : 0.0
+        eng.Meta.MaxIntensity := maxIntensity
+        eng.Meta.MinIntensity := minIntensity > maxIntensity ? 0.0 : minIntensity
+        eng.Meta.AvgIntensity := validSlots > 0 ? sumIntensity / validSlots : 0.0
+        
+     
+        if i_showVA
+            float vaTarget = tot * (i_vaPct / PERCENT_DIVISOR)
+            float vaVol    = maxV
+            int   vaHi     = pIdx
+            int   vaLo     = pIdx
+            int   maxIdx   = sc - 1
+            
+            while vaVol < vaTarget and (vaHi < maxIdx or vaLo > 0)
+                float uV = vaHi < maxIdx ? eng.Slots.get(vaHi + 1).Volume : 0.0
+                float lV = vaLo > 0      ? eng.Slots.get(vaLo - 1).Volume : 0.0
+                
+                if uV >= lV and vaHi < maxIdx
+                    vaHi  += 1
+                    vaVol += uV
+                else if vaLo > 0
+                    vaLo  -= 1
+                    vaVol += lV
+                else if vaHi < maxIdx
+                    vaHi  += 1
+                    vaVol += uV
+                else
+                    break
+            
+            eng.Meta.VahPrice := eng.Meta.Low + (vaHi + 1) * eng.Meta.SlotWidth
+            eng.Meta.ValPrice := eng.Meta.Low + vaLo * eng.Meta.SlotWidth
+
+// =============================================================================
+// 5. GLOBAL STATE
+// =============================================================================
+
+// --- Liquidity State ---
+var LiquidityEngine liqEngine = LiquidityEngine.new(0.0, 0.0, false)
+
+// --- Smart Gaps State ---
+var StructureEngine gapEngine      = StructureEngine.new(na, na, na, na, I_PIVOT_L, I_PIVOT_R)
+var array<box>      activeBoxes    = array.new<box>()
+var array<line>     activeLines    = array.new<line>()
+var array<float>    activeLevels   = array.new<float>()
+var array<bool>     activeIsBullish = array.new<bool>()
+
+// --- Volume Profile State ---
+var VP_Engine vpEngine = VP_Engine.new(
+    array.new<float>(), array.new<float>(), array.new<float>(), array.new<int>(),
+    array.new<VP_Slot>(), VP_Meta.new(high, low, 0.0, 0.0, 0.0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, na, na),
+    array.new<float>(), array.new<float>())
+
+var array<box>   profileBoxes  = array.new<box>()
+var array<line>  profileLines  = array.new<line>()
+var array<label> profileLabels = array.new<label>()
+var box          bgBox         = na
+var bool         vpDone        = false
+
+// =============================================================================
+// 6. MAIN LOGIC EXECUTION
+// =============================================================================
+
+// GLOBAL TIME FILTER
+bool inRange = time >= i_startTime and (i_extend or time <= i_endTime)
+
+// ------------------------------------
+// A. Liquidity Strain Execution
+// ------------------------------------
+liqEngine.update(LEN_STATS, THRESHOLD_SIGMA)
+
+float trend_baseline = ta.ema(close, LEN_TREND)
+bool  is_downtrend   = close < trend_baseline
+bool  is_uptrend     = close > trend_baseline
+
+bool seller_exhaustion = liqEngine.is_high_stress and is_downtrend and close < open
+bool buyer_exhaustion  = liqEngine.is_high_stress and is_uptrend and close > open
+
+// Plot only if enabled AND within the user's specific time range
+plotshape(i_showStrain and inRange and seller_exhaustion, "Seller Exhaustion", shape.labelup, location.belowbar, color.green, 0, "SE", color.white)
+plotshape(i_showStrain and inRange and buyer_exhaustion, "Buyer Exhaustion", shape.labeldown, location.abovebar, color.red, 0, "BE", color.white)
+
+// ------------------------------------
+// B. Smart Gaps Execution
+// ------------------------------------
+gapEngine.update()
+float      volMA   = ta.sma(volume, I_VOL_LEN)
+Gapmetrics gapData = gapEngine.analyzeGap(volMA, I_VOL_MULT, I_TREND_MAT)
+
+// Visuals only created if enabled AND within the user's specific time range
+if i_showGaps and inRange and gapData.isValid
+    color  boxColor = na
+    string txt      = na
+    
+    if gapData.gapType == "Breakaway"
+        boxColor := C_BREAKAWAY
+        txt      := "BREAKAWAY"
+    else if gapData.gapType == "Runaway"
+        boxColor := C_RUNAWAY
+        txt      := "RUNAWAY"
+    else if gapData.gapType == "Exhaustion"
+        boxColor := C_EXHAUSTION
+        txt      := "EXHAUSTION"
+        
+    box b = box.new(left = bar_index[2], top = gapData.top, bottom = gapData.bottom, right = bar_index + I_EXTEND_GAPS,
+         bgcolor = boxColor, 
+         border_color = na, 
+         text = txt, text_color = color.white, text_size = size.tiny)
+         
+    float mid = math.avg(gapData.top, gapData.bottom)
+    line l = line.new(x1 = bar_index[2], y1 = mid, x2 = bar_index + I_EXTEND_GAPS, y2 = mid,
+         color = color.new(boxColor, 20), style = line.style_dotted)
+         
+    activeBoxes.push(b)
+    activeLines.push(l)
+    activeLevels.push(mid)
+    activeIsBullish.push(gapData.isBullish)
+
+// Smart Gaps Garbage Collection 
+int boxCount = activeBoxes.size()
+if boxCount > 0
+    for i = boxCount - 1 to 0
+        float level  = activeLevels.get(i)
+        bool  isBull = activeIsBullish.get(i)
+        bool  remove = false
+        
+        if isBull and low <= level
+            remove := true
+        else if not isBull and high >= level
+            remove := true
+            
+        if remove
+            box.delete(activeBoxes.get(i))
+            line.delete(activeLines.get(i))
+            activeBoxes.remove(i)
+            activeLines.remove(i)
+            activeLevels.remove(i)
+            activeIsBullish.remove(i)
+
+// ------------------------------------
+// C. Volume Profile Execution
+// ------------------------------------
+
+// 1. Determine Optimal Timeframe
+var string optTf = na
+if barstate.isfirst
+    optTf := i_custTF ? i_tfProfile : GetOptimalTimeframe(i_startTime, i_extend ? timenow : i_endTime)
+
+// 2. Fetch Data using Optimal Timeframe
+[v, l, h, o, c] = request.security(syminfo.tickerid, optTf, [volume, low, high, open, close], lookahead = barmerge.lookahead_off)
+
+// 3. Accumulate Data into Engine
+if inRange and not na(v)
+    if vpEngine.Volumes.size() < MAX_DATA_POINTS
+        vpEngine.Volumes.push(v)
+        vpEngine.Lows.push(l)
+        vpEngine.Highs.push(h)
+        vpEngine.Opens.push(o)
+        vpEngine.Closes.push(c)
+        vpEngine.Indices.push(bar_index)
+    
+    
+    if not inRange[1]
+        vpEngine.Meta.Start := bar_index
+
+bool rngEnded = not inRange and inRange[1]
+bool liveUpd  = barstate.islast and i_extend
+
+// 4. Process and Render
+if (rngEnded or liveUpd) and (not vpDone or liveUpd)
+    if not i_extend
+        vpDone := true
+    
+    vpEngine.Meta.End := rngEnded ? bar_index - 1 : bar_index
+    
+    // --- Calculate Profile ---
+    CalcVPBounds(vpEngine)
+    BuildVPSlots(vpEngine, i_rowSize)
+    DistributeVP(vpEngine, i_rowSize)
+    FinalizeVP(vpEngine, i_rowSize)
+    
+    // --- RENDER ---
+    ClearVP(profileBoxes, profileLines, profileLabels, bgBox)
+    
+    int mst = vpEngine.Meta.Start
+    int men = vpEngine.Meta.End
+    
+    // Determine profile width
+    int rangeBars    = men - mst
+    int profileWidth = math.round(rangeBars * (i_widthPct / PERCENT_DIVISOR))
+    profileWidth    := math.max(profileWidth, MIN_PROFILE_WIDTH)
+    
+    // Draw Background
+    if i_showBg
+        bgBox := box.new(mst, vpEngine.Meta.High, men, vpEngine.Meta.Low, border_color = color.new(i_bgColor, 70), bgcolor = i_bgColor, border_width = 1)
+
+    // Draw Main Profile
+    float maxV          = vpEngine.Meta.PocVolume
+    float avgVol        = i_rowSize > 0 ? vpEngine.Meta.TotalVolume / i_rowSize : 0.0
+    float instThreshVal = avgVol * i_unuThresh
+    int   mSlots        = vpEngine.Slots.size()
+    
+    int right_shift = profileWidth + PROFILE_GAP
+    int lineStart   = mst
+    int lineEnd     = i_placement == "Left" ? men : men + right_shift
+    
+    for i = 0 to mSlots - 1
+        VP_Slot s = vpEngine.Slots.get(i)
+        if s.Volume > 0
+            float vRat = maxV > 0 ? s.Volume / maxV : 0.0
+            int   bW   = math.max(math.round(profileWidth * vRat), MIN_BAR_WIDTH)
+            
+            int bL = 0
+            int bR = 0
+            
+            if i_placement == "Left"
+                bL := mst
+                bR := mst + bW
+            else
+                bR := men + right_shift
+                bL := bR - bW
+                
+            bool isInst = i_showInst and s.Volume >= instThreshVal
+            
+            if i_showDelta
+                float bRat   = s.Volume > 0 ? s.BuyVolume / s.Volume : DEFAULT_BUY_RATIO
+                int   totalW = bR - bL
+                int   buyW   = math.round(totalW * bRat)
+                int   buyR   = bL + buyW
+                int   sellL  = buyR
+                
+                color cBuy  = isInst ? color.new(color.green, 25) : i_upColor
+                color cSell = isInst ? color.new(color.red, 25)   : i_dnColor
+                
+                if buyW > 0
+                    profileBoxes.push(box.new(bL, s.High, buyR, s.Low, bgcolor = cBuy, border_color = color.new(cBuy, 50)))
+                if bR > sellL
+                    profileBoxes.push(box.new(sellL, s.High, bR, s.Low, bgcolor = cSell, border_color = color.new(cSell, 50)))
+            else
+                color cBar = s.BuyVolume > s.SellVolume ? i_upColor : i_dnColor
+                if i == vpEngine.Meta.PocIndex
+                    cBar := i_pocColor
+                else if isInst
+                    cBar := color.new(color.yellow, 75)
+                
+                profileBoxes.push(box.new(bL, s.High, bR, s.Low, bgcolor = cBar, border_color = color.new(cBar, 50)))
+
+    // Draw POC Line
+    if i_showPOC
+        profileLines.push(line.new(lineStart, vpEngine.Meta.PocPrice, lineEnd, vpEngine.Meta.PocPrice, color = i_pocColor, width = 2))
+        
+        int    lblX     = i_placement == "Left" ? men + 2 : lineEnd + 2
+        string lblStyle = label.style_label_left
+        
+        profileLabels.push(label.new(lblX, vpEngine.Meta.PocPrice, "POC: " + str.tostring(vpEngine.Meta.PocPrice, format.mintick), 
+             style = lblStyle, color = color.new(i_pocColor, 30), textcolor = color.black))
+
+    // Draw Value Area
+    if i_showVA
+        profileLines.push(line.new(lineStart, vpEngine.Meta.VahPrice, lineEnd, vpEngine.Meta.VahPrice, color = i_vahColor, style = line.style_dashed))
+        profileLines.push(line.new(lineStart, vpEngine.Meta.ValPrice, lineEnd, vpEngine.Meta.ValPrice, color = i_valColor, style = line.style_dashed))
+        
+        int    lblX     = i_placement == "Left" ? men + 2 : lineEnd + 2
+        string lblStyle = label.style_label_left
+        
+        profileLabels.push(label.new(lblX, vpEngine.Meta.VahPrice, "(VAH)", style = lblStyle, color = color.new(i_vahColor, 30), textcolor = color.black))
+        profileLabels.push(label.new(lblX, vpEngine.Meta.ValPrice, "(VAL)", style = lblStyle, color = color.new(i_valColor, 30), textcolor = color.black))

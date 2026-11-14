@@ -1,0 +1,156 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { SCRIPTS_DIR, DEFAULT_CONFIG } from '../config.ts';
+import { authorReview, authorReviewCatalog, type AuthorReviewCatalog, type SourceContract } from './authorReview.ts';
+
+const source = 'indicator("test")\nplot(close)';
+const sha256 = createHash('sha256').update(source).digest('hex');
+const script = { id: 'test', file: 'test.pine', source, patches: [] };
+function fixture(): AuthorReviewCatalog {
+  return { schema: 1, generatedAt: '2026-11-14', scripts: { test: { file: 'test.pine', publication: 'pub', integrationNotes: [] } },
+    sources: { 'test.pine': { sha256, reviewedAt: '2026-11-12', entries: [], notEntries: [], claims: [] } as unknown as SourceContract },
+    publications: { pub: { url: 'https://www.tradingview.com/script/test/', author: 'ActualAuthor', retrievedAt: '2026-11-14', updatedAt: '2026-11-13', version: 2,
+      reviewedAt: null, role: null, summary: null, requirements: null, reviewVersion: null, reviewUpdatedAt: null } } };
+}
+
+test('source changes hide obsolete entry conditions and claims; matching filenames are insufficient', () => {
+  const c = fixture();
+  assert.equal(authorReview(script, {}, c).sourceStatus, 'matches');
+  const stale = authorReview({ ...script, source: source + '\nplot(open)' }, {}, c);
+  assert.equal(stale.sourceStatus, 'changed'); assert.equal(stale.contract, null);
+  const unknown = authorReview({ ...script, id: 'unknown' }, {}, c);
+  assert.equal(unknown.sourceStatus, 'unreviewed'); assert.equal(unknown.contract, null);
+  const alias = authorReview({ ...script, id: 'variant', variantOf: 'test', variantReason: 'Read confirmed retests only' }, {}, c);
+  assert.equal(alias.sourceStatus, 'matches');
+  assert.deepEqual(alias.variant,{base:'test',reason:'Read confirmed retests only'});
+  assert.equal(authorReview(script,{},c).variant,null);
+  assert.equal(authorReview({ ...script, file: 'another.pine' }, {}, c).sourceStatus, 'unreviewed');
+});
+
+test('page retrieval is not author review; publication updates invalidate the current-review label', () => {
+  const c = fixture();
+  assert.equal(authorReview(script, {}, c).descriptionStatus, 'retrieved');
+  Object.assign(c.publications.pub, { reviewedAt: '2026-11-14', reviewVersion: 2, reviewUpdatedAt: '2026-11-13' });
+  assert.equal(authorReview(script, {}, c).descriptionStatus, 'reviewed');
+  c.publications.pub.version = 3;
+  assert.equal(authorReview(script, {}, c).descriptionStatus, 'changed');
+  c.publications.pub.version = 2; c.publications.pub.updatedAt = '2026-11-14';
+  assert.equal(authorReview(script, {}, c).descriptionStatus, 'changed');
+  c.publications.pub.retrievedAt = null;
+  assert.equal(authorReview(script, {}, c).descriptionStatus, 'unavailable');
+});
+
+test('reading inspection does not mutate scanner settings, capital, risk or evidence configuration', () => {
+  const config = structuredClone(DEFAULT_CONFIG), before = JSON.stringify(config);
+  const reading = config.scanners['structure-anchored-vwap'];
+  const review = authorReview(script, reading, fixture());
+  assert.match(review.admission, /neither enables/);
+  assert.equal(JSON.stringify(config), before);
+});
+
+test('new author findings are pinned independently from the earlier full-source study', () => {
+  const c = fixture();
+  Object.assign(c.publications.pub, { reviewedAt: '2026-11-14', reviewVersion: 2, reviewUpdatedAt: '2026-11-13',
+    reconciliation: { pageSha256: sha256, sourceChecked: true, sourceHashes: { 'test.pine': sha256 }, scope: 'Entry branches', findings: [] } });
+  assert.equal(authorReview(script, {}, c).reconciliationStatus, 'matches');
+  assert.ok(authorReview(script, {}, c).reconciliation);
+  const changed = authorReview({ ...script, source: source + '\nplot(open)' }, {}, c);
+  assert.equal(changed.reconciliationStatus, 'source changed or not inspected');
+  assert.equal(changed.reconciliation, null);
+  c.publications.pub.version = 3;
+  assert.equal(authorReview(script, {}, c).reconciliation, null);
+  c.publications.pub.version = 2;
+  c.publications.pub.reconciliation!.sourceChecked = false;
+  c.publications.pub.reconciliation!.sourceHashes = {};
+  assert.equal(authorReview(script, {}, c).reconciliationStatus, 'description only');
+});
+
+test('claims for another scanner reading do not leak through shared source', () => {
+  const c = fixture();
+  c.sources['test.pine'].claims = ['test', 'other'].map(scannerId => ({ scannerId, marker: 'Buy', problem: 'role', line: 2, evidence: 'Historical fixture' }));
+  assert.deepEqual(authorReview(script, {}, c).contract!.claims.map(x => x.scannerId), ['test']);
+  assert.deepEqual(authorReview({ ...script, id: 'alias', variantOf: 'test' }, {}, c).contract!.claims.map(x => x.scannerId), ['test']);
+});
+
+test('catalogue links every manifest entry, retains separate verified authors and usable entry conditions', () => {
+  const c = authorReviewCatalog();
+  const manifest = JSON.parse(fs.readFileSync(path.join(SCRIPTS_DIR, 'manifest.json'), 'utf8')) as Array<{ id: string; file: string; status: string }>;
+  for (const s of manifest) {
+    const row = c.scripts[s.id]; assert.ok(row, s.id); assert.equal(row.file, s.file);
+    if (row.publication) assert.ok(c.publications[row.publication], s.id);
+    if (s.status === 'unavailable') {
+      assert.ok(row.publication && c.publications[row.publication].reviewBlocker, `${s.id}: unavailable source must have a dated blocker`);
+      assert.equal(c.sources[s.file], undefined, `${s.id}: unavailable is not source-reviewed`);
+    } else if (s.status !== 'removed') {
+      const source = fs.readFileSync(path.join(SCRIPTS_DIR, 'pine', s.file), 'utf8');
+      assert.equal(authorReview({ ...s, source, patches: [] }, {}, c).sourceStatus, 'matches', `${s.id}: reconcile source changes before claiming the old conditions still apply`);
+    }
+  }
+  for (const [file, x] of Object.entries(c.sources)) {
+    assert.match(x.sha256, /^[a-f0-9]{64}$/); assert.ok(Array.isArray(x.entries), file);
+    for (const e of x.entries) { assert.equal(typeof e.condition, 'string', file); assert.equal(typeof e.marker, 'string', file); }
+    assert.ok(Array.isArray(x.claims), file);
+  }
+  const ladder = c.publications[c.scripts['rsi-volume-ladder'].publication!];
+  assert.equal(ladder.author, 'wielkieef', 'the import feed is not the author');
+  assert.match(c.scripts['rsi-volume-ladder'].integrationNotes.join(' '), /ignores same-direction adds/);
+});
+
+test('every retained publication has a reconciled review or an explicit dated blocker', () => {
+  const c = authorReviewCatalog();
+  const manifest = JSON.parse(fs.readFileSync(path.join(SCRIPTS_DIR, 'manifest.json'), 'utf8')) as Array<{ id: string; file: string; status: string; author: string }>;
+  for (const s of manifest.filter(s => s.status !== 'removed')) {
+    const key = c.scripts[s.id]?.publication;
+    if (!key) {
+      assert.equal(s.author, 'operator', `${s.id}: missing external publication identity`);
+      assert.match(s.file, /^OPERATOR\d+-/, s.id);
+      continue; // Local strategies have source contracts, not external author pages.
+    }
+    const p = c.publications[key];
+    if (p.reviewBlocker) {
+      assert.ok(p.reviewBlocker.blocker.trim(), s.id);
+      assert.ok(Number.isFinite(Date.parse(p.reviewBlocker.checkedAt ?? '')), `${s.id}: undated blocker`);
+      assert.equal(p.reviewedAt, null, `${s.id}: blocked is not reconciled`);
+    } else {
+      assert.ok(p.retrievedAt && p.reviewedAt && p.summary && p.requirements, `${s.id}: author review unfinished`);
+      assert.equal(p.reviewVersion, p.version, s.id);
+      assert.equal(p.reviewUpdatedAt, p.updatedAt, s.id);
+      if (p.reconciliation?.sourceChecked) {
+        const hash = createHash('sha256').update(fs.readFileSync(path.join(SCRIPTS_DIR, 'pine', s.file))).digest('hex');
+        assert.equal(p.reconciliation.sourceHashes[s.file], hash, `${s.id}: reconciliation source drift`);
+      }
+    }
+  }
+});
+
+test('optional catalogue failures are unavailable, cached safely and recover after atomic replacement', async t => {
+  const os = await import('node:os');
+  const {AuthorReviewCatalogLoader} = await import('./authorReview.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-recovery-'));
+  t.after(() => fs.rmSync(dir, {recursive:true,force:true}));
+  const file = path.join(dir,'reviews.json'), loader = new AuthorReviewCatalogLoader(file);
+  const missing = loader.load();
+  assert.match(missing.unavailableReason!,/missing or unreadable/);
+  assert.equal(authorReview(script,{},missing).sourceStatus,'unreviewed');
+  fs.writeFileSync(file,'{"schema":1,');
+  const broken = loader.load();
+  assert.match(broken.unavailableReason!,/invalid or incomplete/);
+  assert.equal(loader.load(),broken,'unchanged bad versions are not reparsed');
+  const valid = authorReviewCatalog();
+  assert.equal(valid.unavailableReason,undefined);
+  const replace = (data:unknown) => {fs.writeFileSync(file+'.tmp',JSON.stringify(data));fs.renameSync(file+'.tmp',file);};
+  replace(valid);
+  const restored = loader.load();
+  assert.equal(restored.unavailableReason,undefined);
+  assert.equal(loader.load(),restored);
+  assert.ok(Object.keys(restored.sources).length>2000);
+  replace({...valid,sources:{bad:{claims:null}}});
+  assert.match(loader.load().unavailableReason!,/invalid/,'valid JSON with unsafe nested shapes is not published');
+  replace(valid);
+  assert.equal(loader.load().unavailableReason,undefined,'repair is visible without restart');
+  fs.unlinkSync(file);
+  assert.equal(Object.keys(loader.load().sources).length,0,'missing data never retains a reviewed label');
+});

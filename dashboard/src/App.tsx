@@ -16,6 +16,7 @@ import { TradeReplay } from './pages/TradeReplay'
 import { Learn } from './pages/Learn'
 import { Logs } from './pages/Logs'
 import { Overview } from './pages/Overview'
+import { Terminal } from './pages/Terminal'
 import { ScannerDetail } from './pages/ScannerDetail'
 import { Scanners } from './pages/Scanners'
 import { Settings } from './pages/Settings'
@@ -31,7 +32,8 @@ export default function App() {
       <AuthGate>
       <Routes>
         <Route element={<Layout />}>
-          <Route index element={<Overview />} />
+          <Route index element={<Terminal />} />
+          <Route path="overview" element={<Overview />} />
           <Route path="scanners" element={<Scanners />} />
           <Route path="scanners/:id" element={<ScannerDetail />} />
           <Route path="signals" element={<Signals />} />

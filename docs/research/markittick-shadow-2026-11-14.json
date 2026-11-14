@@ -1,0 +1,4878 @@
+{
+  "verifiedAt": "2026-11-14T15:02:52.226Z",
+  "scope": "Feasibility only: 2000 closed 15m bars, existing regime/fee/size gates, 3 fresh public depth samples at >=$750. Historical spread/latency unavailable: feasible is an upper bound. No profit ranking or promotion evidence.",
+  "sources": [
+    "https://api.india.delta.exchange/v2/products",
+    "https://api.india.delta.exchange/v2/tickers",
+    "https://api.india.delta.exchange/v2/l2orderbook/{symbol}"
+  ],
+  "selected": [
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "rows": [
+        {
+          "symbol": "BTCUSD",
+          "turnoverUsd": 1252877531.5299156,
+          "signals": 155,
+          "feasible": 24
+        },
+        {
+          "symbol": "ETHUSD",
+          "turnoverUsd": 671513897.4114983,
+          "signals": 159,
+          "feasible": 48
+        },
+        {
+          "symbol": "SOLUSD",
+          "turnoverUsd": 132211819.21460056,
+          "signals": 157,
+          "feasible": 49
+        },
+        {
+          "symbol": "ARIAUSD",
+          "turnoverUsd": 13490737.96659994,
+          "signals": 171,
+          "feasible": 80
+        },
+        {
+          "symbol": "XRPUSD",
+          "turnoverUsd": 11273265.650500007,
+          "signals": 177,
+          "feasible": 52
+        },
+        {
+          "symbol": "ZECUSD",
+          "turnoverUsd": 6441417.000999993,
+          "signals": 147,
+          "feasible": 72
+        }
+      ]
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "rows": [
+        {
+          "symbol": "BTCUSD",
+          "turnoverUsd": 1252877531.5299156,
+          "signals": 144,
+          "feasible": 30
+        },
+        {
+          "symbol": "ETHUSD",
+          "turnoverUsd": 671513897.4114983,
+          "signals": 146,
+          "feasible": 48
+        },
+        {
+          "symbol": "SOLUSD",
+          "turnoverUsd": 132211819.21460056,
+          "signals": 146,
+          "feasible": 58
+        },
+        {
+          "symbol": "ARIAUSD",
+          "turnoverUsd": 13490737.96659994,
+          "signals": 153,
+          "feasible": 128
+        },
+        {
+          "symbol": "XRPUSD",
+          "turnoverUsd": 11273265.650500007,
+          "signals": 150,
+          "feasible": 71
+        },
+        {
+          "symbol": "ZECUSD",
+          "turnoverUsd": 6441417.000999993,
+          "signals": 152,
+          "feasible": 116
+        }
+      ]
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "rows": [
+        {
+          "symbol": "BTCUSD",
+          "turnoverUsd": 1252877531.5299156,
+          "signals": 10,
+          "feasible": 2
+        },
+        {
+          "symbol": "ETHUSD",
+          "turnoverUsd": 671513897.4114983,
+          "signals": 8,
+          "feasible": 2
+        },
+        {
+          "symbol": "SOLUSD",
+          "turnoverUsd": 132211819.21460056,
+          "signals": 7,
+          "feasible": 2
+        },
+        {
+          "symbol": "ARIAUSD",
+          "turnoverUsd": 13490737.96659994,
+          "signals": 11,
+          "feasible": 6
+        },
+        {
+          "symbol": "XRPUSD",
+          "turnoverUsd": 11273265.650500007,
+          "signals": 11,
+          "feasible": 3
+        },
+        {
+          "symbol": "ZECUSD",
+          "turnoverUsd": 6441417.000999993,
+          "signals": 11,
+          "feasible": 6
+        }
+      ]
+    }
+  ],
+  "allCells": [
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "BTCUSD",
+      "turnoverUsd": 1252877531.5299156,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 155,
+      "counts": {
+        "regime": 116,
+        "fees": 11,
+        "feasible": 24
+      },
+      "depth": [
+        {
+          "at": 1794668549870,
+          "exchangeAt": 1794668548191,
+          "latencyMs": 306,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.169,
+          "costPct": 0.11875837147309866,
+          "crossingPct": 0.0007583714730986679
+        },
+        {
+          "at": 1794668554389,
+          "exchangeAt": 1794668553455,
+          "latencyMs": 190,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.355,
+          "costPct": 0.11875819322554353,
+          "crossingPct": 0.0007581932255435298
+        },
+        {
+          "at": 1794668558718,
+          "exchangeAt": 1794668556526,
+          "latencyMs": 193,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.553,
+          "costPct": 0.11875800357019681,
+          "crossingPct": 0.0007580035701968156
+        }
+      ],
+      "probeQty": 12,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BTCUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "BTCUSD",
+      "turnoverUsd": 1252877531.5299156,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 144,
+      "counts": {
+        "regime": 86,
+        "feasible": 30,
+        "fees": 19
+      },
+      "depth": [
+        {
+          "at": 1794668549870,
+          "exchangeAt": 1794668548191,
+          "latencyMs": 306,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.169,
+          "costPct": 0.11875837147309866,
+          "crossingPct": 0.0007583714730986679
+        },
+        {
+          "at": 1794668554389,
+          "exchangeAt": 1794668553455,
+          "latencyMs": 190,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.355,
+          "costPct": 0.11875819322554353,
+          "crossingPct": 0.0007581932255435298
+        },
+        {
+          "at": 1794668558718,
+          "exchangeAt": 1794668556526,
+          "latencyMs": 193,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.553,
+          "costPct": 0.11875800357019681,
+          "crossingPct": 0.0007580035701968156
+        }
+      ],
+      "probeQty": 12,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BTCUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "BTCUSD",
+      "turnoverUsd": 1252877531.5299156,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 10,
+      "counts": {
+        "fees": 3,
+        "regime": 5,
+        "feasible": 2
+      },
+      "depth": [
+        {
+          "at": 1794668549870,
+          "exchangeAt": 1794668548191,
+          "latencyMs": 306,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.169,
+          "costPct": 0.11875837147309866,
+          "crossingPct": 0.0007583714730986679
+        },
+        {
+          "at": 1794668554389,
+          "exchangeAt": 1794668553455,
+          "latencyMs": 190,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.355,
+          "costPct": 0.11875819322554353,
+          "crossingPct": 0.0007581932255435298
+        },
+        {
+          "at": 1794668558718,
+          "exchangeAt": 1794668556526,
+          "latencyMs": 193,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 791.553,
+          "costPct": 0.11875800357019681,
+          "crossingPct": 0.0007580035701968156
+        }
+      ],
+      "probeQty": 12,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BTCUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "ETHUSD",
+      "turnoverUsd": 671513897.4114983,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 159,
+      "counts": {
+        "regime": 92,
+        "feasible": 48,
+        "fees": 13
+      },
+      "depth": [
+        {
+          "at": 1794668550051,
+          "exchangeAt": 1794668548199,
+          "latencyMs": 181,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 759.96575,
+          "costPct": 0.12069748998556597,
+          "crossingPct": 0.0026974899855659756
+        },
+        {
+          "at": 1794668554763,
+          "exchangeAt": 1794668552527,
+          "latencyMs": 374,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 760.08875,
+          "costPct": 0.1206970534691071,
+          "crossingPct": 0.0026970534691071013
+        },
+        {
+          "at": 1794668558980,
+          "exchangeAt": 1794668558080,
+          "latencyMs": 262,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 760.3142500000001,
+          "costPct": 0.12069625355568192,
+          "crossingPct": 0.002696253555681924
+        }
+      ],
+      "probeQty": 41,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ETHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "ETHUSD",
+      "turnoverUsd": 671513897.4114983,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 146,
+      "counts": {
+        "regime": 63,
+        "feasible": 48,
+        "fees": 28
+      },
+      "depth": [
+        {
+          "at": 1794668550051,
+          "exchangeAt": 1794668548199,
+          "latencyMs": 181,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 759.96575,
+          "costPct": 0.12069748998556597,
+          "crossingPct": 0.0026974899855659756
+        },
+        {
+          "at": 1794668554763,
+          "exchangeAt": 1794668552527,
+          "latencyMs": 374,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 760.08875,
+          "costPct": 0.1206970534691071,
+          "crossingPct": 0.0026970534691071013
+        },
+        {
+          "at": 1794668558980,
+          "exchangeAt": 1794668558080,
+          "latencyMs": 262,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 760.3142500000001,
+          "costPct": 0.12069625355568192,
+          "crossingPct": 0.002696253555681924
+        }
+      ],
+      "probeQty": 41,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ETHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "ETHUSD",
+      "turnoverUsd": 671513897.4114983,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 8,
+      "counts": {
+        "regime": 4,
+        "feasible": 2,
+        "fees": 2
+      },
+      "depth": [
+        {
+          "at": 1794668550051,
+          "exchangeAt": 1794668548199,
+          "latencyMs": 181,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 759.96575,
+          "costPct": 0.12069748998556597,
+          "crossingPct": 0.0026974899855659756
+        },
+        {
+          "at": 1794668554763,
+          "exchangeAt": 1794668552527,
+          "latencyMs": 374,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 760.08875,
+          "costPct": 0.1206970534691071,
+          "crossingPct": 0.0026970534691071013
+        },
+        {
+          "at": 1794668558980,
+          "exchangeAt": 1794668558080,
+          "latencyMs": 262,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 760.3142500000001,
+          "costPct": 0.12069625355568192,
+          "crossingPct": 0.002696253555681924
+        }
+      ],
+      "probeQty": 41,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ETHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "AKEUSD",
+      "turnoverUsd": 167025800.17199755,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 141,
+      "counts": {
+        "regime": 68,
+        "feasible": 69
+      },
+      "depth": [
+        {
+          "at": 1794668550191,
+          "exchangeAt": 1794668549026,
+          "latencyMs": 140,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 719.37,
+          "costPct": 0.3368025633540631,
+          "crossingPct": 0.21880256335406312
+        },
+        {
+          "at": 1794668554900,
+          "exchangeAt": 1794668554667,
+          "latencyMs": 137,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 718.533,
+          "costPct": 0.32926378329179595,
+          "crossingPct": 0.21126378329179596
+        },
+        {
+          "at": 1794668559122,
+          "exchangeAt": 1794668558511,
+          "latencyMs": 142,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 717.7529999999999,
+          "costPct": 0.36293105566954986,
+          "crossingPct": 0.24493105566954984
+        }
+      ],
+      "probeQty": 6,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AKEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "AKEUSD",
+      "turnoverUsd": 167025800.17199755,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 129,
+      "counts": {
+        "feasible": 106,
+        "regime": 17
+      },
+      "depth": [
+        {
+          "at": 1794668550191,
+          "exchangeAt": 1794668549026,
+          "latencyMs": 140,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 719.37,
+          "costPct": 0.3368025633540631,
+          "crossingPct": 0.21880256335406312
+        },
+        {
+          "at": 1794668554900,
+          "exchangeAt": 1794668554667,
+          "latencyMs": 137,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 718.533,
+          "costPct": 0.32926378329179595,
+          "crossingPct": 0.21126378329179596
+        },
+        {
+          "at": 1794668559122,
+          "exchangeAt": 1794668558511,
+          "latencyMs": 142,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 717.7529999999999,
+          "costPct": 0.36293105566954986,
+          "crossingPct": 0.24493105566954984
+        }
+      ],
+      "probeQty": 6,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AKEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "AKEUSD",
+      "turnoverUsd": 167025800.17199755,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 6,
+      "counts": {
+        "size": 1,
+        "feasible": 5
+      },
+      "depth": [
+        {
+          "at": 1794668550191,
+          "exchangeAt": 1794668549026,
+          "latencyMs": 140,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 719.37,
+          "costPct": 0.3368025633540631,
+          "crossingPct": 0.21880256335406312
+        },
+        {
+          "at": 1794668554900,
+          "exchangeAt": 1794668554667,
+          "latencyMs": 137,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 718.533,
+          "costPct": 0.32926378329179595,
+          "crossingPct": 0.21126378329179596
+        },
+        {
+          "at": 1794668559122,
+          "exchangeAt": 1794668558511,
+          "latencyMs": 142,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 717.7529999999999,
+          "costPct": 0.36293105566954986,
+          "crossingPct": 0.24493105566954984
+        }
+      ],
+      "probeQty": 6,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AKEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "SOLUSD",
+      "turnoverUsd": 132211819.21460056,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 157,
+      "counts": {
+        "regime": 98,
+        "fees": 6,
+        "feasible": 49
+      },
+      "depth": [
+        {
+          "at": 1794668550575,
+          "exchangeAt": 1794668550014,
+          "latencyMs": 384,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 815.8975,
+          "costPct": 0.1328302942465141,
+          "crossingPct": 0.014830294246514112
+        },
+        {
+          "at": 1794668555052,
+          "exchangeAt": 1794668554849,
+          "latencyMs": 152,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 815.8975,
+          "costPct": 0.1328302942465141,
+          "crossingPct": 0.014830294246514112
+        },
+        {
+          "at": 1794668559275,
+          "exchangeAt": 1794668556815,
+          "latencyMs": 153,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 816.1175,
+          "costPct": 0.13282629645853108,
+          "crossingPct": 0.014826296458531093
+        }
+      ],
+      "probeQty": 11,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOLUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "SOLUSD",
+      "turnoverUsd": 132211819.21460056,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 146,
+      "counts": {
+        "regime": 50,
+        "fees": 30,
+        "feasible": 58
+      },
+      "depth": [
+        {
+          "at": 1794668550575,
+          "exchangeAt": 1794668550014,
+          "latencyMs": 384,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 815.8975,
+          "costPct": 0.1328302942465141,
+          "crossingPct": 0.014830294246514112
+        },
+        {
+          "at": 1794668555052,
+          "exchangeAt": 1794668554849,
+          "latencyMs": 152,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 815.8975,
+          "costPct": 0.1328302942465141,
+          "crossingPct": 0.014830294246514112
+        },
+        {
+          "at": 1794668559275,
+          "exchangeAt": 1794668556815,
+          "latencyMs": 153,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 816.1175,
+          "costPct": 0.13282629645853108,
+          "crossingPct": 0.014826296458531093
+        }
+      ],
+      "probeQty": 11,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOLUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "SOLUSD",
+      "turnoverUsd": 132211819.21460056,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 7,
+      "counts": {
+        "regime": 3,
+        "fees": 2,
+        "feasible": 2
+      },
+      "depth": [
+        {
+          "at": 1794668550575,
+          "exchangeAt": 1794668550014,
+          "latencyMs": 384,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 815.8975,
+          "costPct": 0.1328302942465141,
+          "crossingPct": 0.014830294246514112
+        },
+        {
+          "at": 1794668555052,
+          "exchangeAt": 1794668554849,
+          "latencyMs": 152,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 815.8975,
+          "costPct": 0.1328302942465141,
+          "crossingPct": 0.014830294246514112
+        },
+        {
+          "at": 1794668559275,
+          "exchangeAt": 1794668556815,
+          "latencyMs": 153,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 816.1175,
+          "costPct": 0.13282629645853108,
+          "crossingPct": 0.014826296458531093
+        }
+      ],
+      "probeQty": 11,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOLUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "SOPHUSD",
+      "turnoverUsd": 14183814.365799986,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 144,
+      "counts": {
+        "regime": 68,
+        "feasible": 69,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668550716,
+          "exchangeAt": 1794668550563,
+          "latencyMs": 141,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 732.1990000000001,
+          "costPct": 0.3217697401935862,
+          "crossingPct": 0.20376974019358615
+        },
+        {
+          "at": 1794668555184,
+          "exchangeAt": 1794668554495,
+          "latencyMs": 132,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 730.3339999999998,
+          "costPct": 0.32229009193054636,
+          "crossingPct": 0.20429009193054637
+        },
+        {
+          "at": 1794668559412,
+          "exchangeAt": 1794668559276,
+          "latencyMs": 137,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 732.1990000000001,
+          "costPct": 0.3217697401935862,
+          "crossingPct": 0.20376974019358615
+        }
+      ],
+      "probeQty": 3730,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOPHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "SOPHUSD",
+      "turnoverUsd": 14183814.365799986,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 151,
+      "counts": {
+        "feasible": 124,
+        "regime": 21,
+        "fees": 3
+      },
+      "depth": [
+        {
+          "at": 1794668550716,
+          "exchangeAt": 1794668550563,
+          "latencyMs": 141,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 732.1990000000001,
+          "costPct": 0.3217697401935862,
+          "crossingPct": 0.20376974019358615
+        },
+        {
+          "at": 1794668555184,
+          "exchangeAt": 1794668554495,
+          "latencyMs": 132,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 730.3339999999998,
+          "costPct": 0.32229009193054636,
+          "crossingPct": 0.20429009193054637
+        },
+        {
+          "at": 1794668559412,
+          "exchangeAt": 1794668559276,
+          "latencyMs": 137,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 732.1990000000001,
+          "costPct": 0.3217697401935862,
+          "crossingPct": 0.20376974019358615
+        }
+      ],
+      "probeQty": 3730,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOPHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "SOPHUSD",
+      "turnoverUsd": 14183814.365799986,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 13,
+      "counts": {
+        "regime": 6,
+        "fees": 3,
+        "feasible": 4
+      },
+      "depth": [
+        {
+          "at": 1794668550716,
+          "exchangeAt": 1794668550563,
+          "latencyMs": 141,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 732.1990000000001,
+          "costPct": 0.3217697401935862,
+          "crossingPct": 0.20376974019358615
+        },
+        {
+          "at": 1794668555184,
+          "exchangeAt": 1794668554495,
+          "latencyMs": 132,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 730.3339999999998,
+          "costPct": 0.32229009193054636,
+          "crossingPct": 0.20429009193054637
+        },
+        {
+          "at": 1794668559412,
+          "exchangeAt": 1794668559276,
+          "latencyMs": 137,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 732.1990000000001,
+          "costPct": 0.3217697401935862,
+          "crossingPct": 0.20376974019358615
+        }
+      ],
+      "probeQty": 3730,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOPHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "ARIAUSD",
+      "turnoverUsd": 13490737.96659994,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 171,
+      "counts": {
+        "regime": 83,
+        "feasible": 80
+      },
+      "depth": [
+        {
+          "at": 1794668550957,
+          "exchangeAt": 1794668548800,
+          "latencyMs": 241,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.4164,
+          "costPct": 0.16333662443643,
+          "crossingPct": 0.04533662443642999
+        },
+        {
+          "at": 1794668555316,
+          "exchangeAt": 1794668553625,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.5668,
+          "costPct": 0.16332749112336972,
+          "crossingPct": 0.04532749112336972
+        },
+        {
+          "at": 1794668559674,
+          "exchangeAt": 1794668559492,
+          "latencyMs": 262,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.7923999999999,
+          "costPct": 0.15324406515116518,
+          "crossingPct": 0.03524406515116519
+        }
+      ],
+      "probeQty": 376,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ARIAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "ARIAUSD",
+      "turnoverUsd": 13490737.96659994,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 153,
+      "counts": {
+        "regime": 20,
+        "feasible": 128
+      },
+      "depth": [
+        {
+          "at": 1794668550957,
+          "exchangeAt": 1794668548800,
+          "latencyMs": 241,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.4164,
+          "costPct": 0.16333662443643,
+          "crossingPct": 0.04533662443642999
+        },
+        {
+          "at": 1794668555316,
+          "exchangeAt": 1794668553625,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.5668,
+          "costPct": 0.16332749112336972,
+          "crossingPct": 0.04532749112336972
+        },
+        {
+          "at": 1794668559674,
+          "exchangeAt": 1794668559492,
+          "latencyMs": 262,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.7923999999999,
+          "costPct": 0.15324406515116518,
+          "crossingPct": 0.03524406515116519
+        }
+      ],
+      "probeQty": 376,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ARIAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "ARIAUSD",
+      "turnoverUsd": 13490737.96659994,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 11,
+      "counts": {
+        "feasible": 6,
+        "regime": 5
+      },
+      "depth": [
+        {
+          "at": 1794668550957,
+          "exchangeAt": 1794668548800,
+          "latencyMs": 241,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.4164,
+          "costPct": 0.16333662443643,
+          "crossingPct": 0.04533662443642999
+        },
+        {
+          "at": 1794668555316,
+          "exchangeAt": 1794668553625,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.5668,
+          "costPct": 0.16332749112336972,
+          "crossingPct": 0.04532749112336972
+        },
+        {
+          "at": 1794668559674,
+          "exchangeAt": 1794668559492,
+          "latencyMs": 262,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 746.7923999999999,
+          "costPct": 0.15324406515116518,
+          "crossingPct": 0.03524406515116519
+        }
+      ],
+      "probeQty": 376,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ARIAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "XRPUSD",
+      "turnoverUsd": 11273265.650500007,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 177,
+      "counts": {
+        "regime": 107,
+        "fees": 14,
+        "feasible": 52
+      },
+      "depth": [
+        {
+          "at": 1794668551098,
+          "exchangeAt": 1794668550106,
+          "latencyMs": 141,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.5468,
+          "costPct": 0.13833140185015533,
+          "crossingPct": 0.020331401850155327
+        },
+        {
+          "at": 1794668555458,
+          "exchangeAt": 1794668554508,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.6232,
+          "costPct": 0.138329335230747,
+          "crossingPct": 0.020329335230747002
+        },
+        {
+          "at": 1794668559813,
+          "exchangeAt": 1794668558073,
+          "latencyMs": 139,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.6996,
+          "costPct": 0.13832726903140338,
+          "crossingPct": 0.020327269031403392
+        }
+      ],
+      "probeQty": 764,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "XRPUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "XRPUSD",
+      "turnoverUsd": 11273265.650500007,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 150,
+      "counts": {
+        "regime": 58,
+        "fees": 13,
+        "feasible": 71
+      },
+      "depth": [
+        {
+          "at": 1794668551098,
+          "exchangeAt": 1794668550106,
+          "latencyMs": 141,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.5468,
+          "costPct": 0.13833140185015533,
+          "crossingPct": 0.020331401850155327
+        },
+        {
+          "at": 1794668555458,
+          "exchangeAt": 1794668554508,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.6232,
+          "costPct": 0.138329335230747,
+          "crossingPct": 0.020329335230747002
+        },
+        {
+          "at": 1794668559813,
+          "exchangeAt": 1794668558073,
+          "latencyMs": 139,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.6996,
+          "costPct": 0.13832726903140338,
+          "crossingPct": 0.020327269031403392
+        }
+      ],
+      "probeQty": 764,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "XRPUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "XRPUSD",
+      "turnoverUsd": 11273265.650500007,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 11,
+      "counts": {
+        "feasible": 3,
+        "regime": 6,
+        "fees": 2
+      },
+      "depth": [
+        {
+          "at": 1794668551098,
+          "exchangeAt": 1794668550106,
+          "latencyMs": 141,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.5468,
+          "costPct": 0.13833140185015533,
+          "crossingPct": 0.020331401850155327
+        },
+        {
+          "at": 1794668555458,
+          "exchangeAt": 1794668554508,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.6232,
+          "costPct": 0.138329335230747,
+          "crossingPct": 0.020329335230747002
+        },
+        {
+          "at": 1794668559813,
+          "exchangeAt": 1794668558073,
+          "latencyMs": 139,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.6996,
+          "costPct": 0.13832726903140338,
+          "crossingPct": 0.020327269031403392
+        }
+      ],
+      "probeQty": 764,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "XRPUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "TACUSD",
+      "turnoverUsd": 9140595.332499992,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 151,
+      "counts": {
+        "feasible": 58,
+        "regime": 73,
+        "fees": 12
+      },
+      "depth": [
+        {
+          "at": 1794668551236,
+          "exchangeAt": 1794668549335,
+          "latencyMs": 138,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 764.7238,
+          "costPct": 0.3833637823224591,
+          "crossingPct": 0.2653637823224591
+        },
+        {
+          "at": 1794668555590,
+          "exchangeAt": 1794668555323,
+          "latencyMs": 132,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 765.4577,
+          "costPct": 0.3097545541706662,
+          "crossingPct": 0.1917545541706662
+        },
+        {
+          "at": 1794668559946,
+          "exchangeAt": 1794668559556,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 764.7238,
+          "costPct": 0.3862014081423869,
+          "crossingPct": 0.2682014081423869
+        }
+      ],
+      "probeQty": 7339,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "TACUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "TACUSD",
+      "turnoverUsd": 9140595.332499992,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 155,
+      "counts": {
+        "feasible": 114,
+        "regime": 34,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668551236,
+          "exchangeAt": 1794668549335,
+          "latencyMs": 138,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 764.7238,
+          "costPct": 0.3833637823224591,
+          "crossingPct": 0.2653637823224591
+        },
+        {
+          "at": 1794668555590,
+          "exchangeAt": 1794668555323,
+          "latencyMs": 132,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 765.4577,
+          "costPct": 0.3097545541706662,
+          "crossingPct": 0.1917545541706662
+        },
+        {
+          "at": 1794668559946,
+          "exchangeAt": 1794668559556,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 764.7238,
+          "costPct": 0.3862014081423869,
+          "crossingPct": 0.2682014081423869
+        }
+      ],
+      "probeQty": 7339,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "TACUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "TACUSD",
+      "turnoverUsd": 9140595.332499992,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 5,
+      "counts": {
+        "feasible": 5
+      },
+      "depth": [
+        {
+          "at": 1794668551236,
+          "exchangeAt": 1794668549335,
+          "latencyMs": 138,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 764.7238,
+          "costPct": 0.3833637823224591,
+          "crossingPct": 0.2653637823224591
+        },
+        {
+          "at": 1794668555590,
+          "exchangeAt": 1794668555323,
+          "latencyMs": 132,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 765.4577,
+          "costPct": 0.3097545541706662,
+          "crossingPct": 0.1917545541706662
+        },
+        {
+          "at": 1794668559946,
+          "exchangeAt": 1794668559556,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 764.7238,
+          "costPct": 0.3862014081423869,
+          "crossingPct": 0.2682014081423869
+        }
+      ],
+      "probeQty": 7339,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "TACUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "ZECUSD",
+      "turnoverUsd": 6441417.000999993,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 147,
+      "counts": {
+        "regime": 71,
+        "feasible": 72
+      },
+      "depth": [
+        {
+          "at": 1794668551365,
+          "exchangeAt": 1794668551203,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.537,
+          "costPct": 0.12252524521173365,
+          "crossingPct": 0.004525245211733656
+        },
+        {
+          "at": 1794668555726,
+          "exchangeAt": 1794668555573,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.879,
+          "costPct": 0.12252330065249485,
+          "crossingPct": 0.004523300652494862
+        },
+        {
+          "at": 1794668560085,
+          "exchangeAt": 1794668559985,
+          "latencyMs": 139,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.7800000000001,
+          "costPct": 0.12252386337933469,
+          "crossingPct": 0.004523863379334687
+        }
+      ],
+      "probeQty": 9,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ZECUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "ZECUSD",
+      "turnoverUsd": 6441417.000999993,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 152,
+      "counts": {
+        "regime": 22,
+        "feasible": 116,
+        "fees": 8
+      },
+      "depth": [
+        {
+          "at": 1794668551365,
+          "exchangeAt": 1794668551203,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.537,
+          "costPct": 0.12252524521173365,
+          "crossingPct": 0.004525245211733656
+        },
+        {
+          "at": 1794668555726,
+          "exchangeAt": 1794668555573,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.879,
+          "costPct": 0.12252330065249485,
+          "crossingPct": 0.004523300652494862
+        },
+        {
+          "at": 1794668560085,
+          "exchangeAt": 1794668559985,
+          "latencyMs": 139,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.7800000000001,
+          "costPct": 0.12252386337933469,
+          "crossingPct": 0.004523863379334687
+        }
+      ],
+      "probeQty": 9,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ZECUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "ZECUSD",
+      "turnoverUsd": 6441417.000999993,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 11,
+      "counts": {
+        "regime": 5,
+        "feasible": 6
+      },
+      "depth": [
+        {
+          "at": 1794668551365,
+          "exchangeAt": 1794668551203,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.537,
+          "costPct": 0.12252524521173365,
+          "crossingPct": 0.004525245211733656
+        },
+        {
+          "at": 1794668555726,
+          "exchangeAt": 1794668555573,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.879,
+          "costPct": 0.12252330065249485,
+          "crossingPct": 0.004523300652494862
+        },
+        {
+          "at": 1794668560085,
+          "exchangeAt": 1794668559985,
+          "latencyMs": 139,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 795.7800000000001,
+          "costPct": 0.12252386337933469,
+          "crossingPct": 0.004523863379334687
+        }
+      ],
+      "probeQty": 9,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "ZECUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "UNIUSD",
+      "turnoverUsd": 4454051.558999999,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 159,
+      "counts": {
+        "feasible": 83,
+        "regime": 74
+      },
+      "depth": [
+        {
+          "at": 1794668551497,
+          "exchangeAt": 1794668551095,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.309,
+          "costPct": 0.1760663892383647,
+          "crossingPct": 0.05806638923836473
+        },
+        {
+          "at": 1794668555858,
+          "exchangeAt": 1794668555507,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.601,
+          "costPct": 0.17604391989939272,
+          "crossingPct": 0.05804391989939274
+        },
+        {
+          "at": 1794668560225,
+          "exchangeAt": 1794668558836,
+          "latencyMs": 140,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.455,
+          "costPct": 0.17605515239476005,
+          "crossingPct": 0.05805515239476005
+        }
+      ],
+      "probeQty": 146,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "UNIUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "UNIUSD",
+      "turnoverUsd": 4454051.558999999,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 155,
+      "counts": {
+        "fees": 15,
+        "regime": 21,
+        "feasible": 111
+      },
+      "depth": [
+        {
+          "at": 1794668551497,
+          "exchangeAt": 1794668551095,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.309,
+          "costPct": 0.1760663892383647,
+          "crossingPct": 0.05806638923836473
+        },
+        {
+          "at": 1794668555858,
+          "exchangeAt": 1794668555507,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.601,
+          "costPct": 0.17604391989939272,
+          "crossingPct": 0.05804391989939274
+        },
+        {
+          "at": 1794668560225,
+          "exchangeAt": 1794668558836,
+          "latencyMs": 140,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.455,
+          "costPct": 0.17605515239476005,
+          "crossingPct": 0.05805515239476005
+        }
+      ],
+      "probeQty": 146,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "UNIUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "UNIUSD",
+      "turnoverUsd": 4454051.558999999,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 9,
+      "counts": {
+        "feasible": 7,
+        "fees": 1,
+        "regime": 1
+      },
+      "depth": [
+        {
+          "at": 1794668551497,
+          "exchangeAt": 1794668551095,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.309,
+          "costPct": 0.1760663892383647,
+          "crossingPct": 0.05806638923836473
+        },
+        {
+          "at": 1794668555858,
+          "exchangeAt": 1794668555507,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.601,
+          "costPct": 0.17604391989939272,
+          "crossingPct": 0.05804391989939274
+        },
+        {
+          "at": 1794668560225,
+          "exchangeAt": 1794668558836,
+          "latencyMs": 140,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 754.455,
+          "costPct": 0.17605515239476005,
+          "crossingPct": 0.05805515239476005
+        }
+      ],
+      "probeQty": 146,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "UNIUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "LINKUSD",
+      "turnoverUsd": 3393066.2700000014,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 161,
+      "counts": {
+        "regime": 85,
+        "fees": 11,
+        "feasible": 61
+      },
+      "depth": [
+        {
+          "at": 1794668551631,
+          "exchangeAt": 1794668551279,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.216,
+          "costPct": 0.13942245072835144,
+          "crossingPct": 0.02142245072835145
+        },
+        {
+          "at": 1794668555986,
+          "exchangeAt": 1794668555332,
+          "latencyMs": 128,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.4589999999998,
+          "costPct": 0.13941556911875647,
+          "crossingPct": 0.021415569118756486
+        },
+        {
+          "at": 1794668560358,
+          "exchangeAt": 1794668558857,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.297,
+          "costPct": 0.1394201563671296,
+          "crossingPct": 0.02142015636712961
+        }
+      ],
+      "probeQty": 81,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "LINKUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "LINKUSD",
+      "turnoverUsd": 3393066.2700000014,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 153,
+      "counts": {
+        "regime": 51,
+        "feasible": 83,
+        "fees": 14
+      },
+      "depth": [
+        {
+          "at": 1794668551631,
+          "exchangeAt": 1794668551279,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.216,
+          "costPct": 0.13942245072835144,
+          "crossingPct": 0.02142245072835145
+        },
+        {
+          "at": 1794668555986,
+          "exchangeAt": 1794668555332,
+          "latencyMs": 128,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.4589999999998,
+          "costPct": 0.13941556911875647,
+          "crossingPct": 0.021415569118756486
+        },
+        {
+          "at": 1794668560358,
+          "exchangeAt": 1794668558857,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.297,
+          "costPct": 0.1394201563671296,
+          "crossingPct": 0.02142015636712961
+        }
+      ],
+      "probeQty": 81,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "LINKUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "LINKUSD",
+      "turnoverUsd": 3393066.2700000014,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 7,
+      "counts": {
+        "regime": 5,
+        "feasible": 2
+      },
+      "depth": [
+        {
+          "at": 1794668551631,
+          "exchangeAt": 1794668551279,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.216,
+          "costPct": 0.13942245072835144,
+          "crossingPct": 0.02142245072835145
+        },
+        {
+          "at": 1794668555986,
+          "exchangeAt": 1794668555332,
+          "latencyMs": 128,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.4589999999998,
+          "costPct": 0.13941556911875647,
+          "crossingPct": 0.021415569118756486
+        },
+        {
+          "at": 1794668560358,
+          "exchangeAt": 1794668558857,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.297,
+          "costPct": 0.1394201563671296,
+          "crossingPct": 0.02142015636712961
+        }
+      ],
+      "probeQty": 81,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "LINKUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "INITUSD",
+      "turnoverUsd": 3328955.0071999924,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 153,
+      "counts": {
+        "regime": 72,
+        "feasible": 73,
+        "fees": 2
+      },
+      "depth": [
+        {
+          "at": 1794668551767,
+          "exchangeAt": 1794668551479,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.139,
+          "costPct": 0.14858883507519985,
+          "crossingPct": 0.030588835075199845
+        },
+        {
+          "at": 1794668556121,
+          "exchangeAt": 1794668555730,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.525,
+          "costPct": 0.16895541401273323,
+          "crossingPct": 0.05095541401273324
+        },
+        {
+          "at": 1794668560500,
+          "exchangeAt": 1794668558717,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.911,
+          "costPct": 0.14855767761650343,
+          "crossingPct": 0.030557677616503437
+        }
+      ],
+      "probeQty": 772,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "INITUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "INITUSD",
+      "turnoverUsd": 3328955.0071999924,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 149,
+      "counts": {
+        "feasible": 119,
+        "fees": 2,
+        "regime": 23
+      },
+      "depth": [
+        {
+          "at": 1794668551767,
+          "exchangeAt": 1794668551479,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.139,
+          "costPct": 0.14858883507519985,
+          "crossingPct": 0.030588835075199845
+        },
+        {
+          "at": 1794668556121,
+          "exchangeAt": 1794668555730,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.525,
+          "costPct": 0.16895541401273323,
+          "crossingPct": 0.05095541401273324
+        },
+        {
+          "at": 1794668560500,
+          "exchangeAt": 1794668558717,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.911,
+          "costPct": 0.14855767761650343,
+          "crossingPct": 0.030557677616503437
+        }
+      ],
+      "probeQty": 772,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "INITUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "INITUSD",
+      "turnoverUsd": 3328955.0071999924,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 13,
+      "counts": {
+        "feasible": 7,
+        "regime": 6
+      },
+      "depth": [
+        {
+          "at": 1794668551767,
+          "exchangeAt": 1794668551479,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.139,
+          "costPct": 0.14858883507519985,
+          "crossingPct": 0.030588835075199845
+        },
+        {
+          "at": 1794668556121,
+          "exchangeAt": 1794668555730,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.525,
+          "costPct": 0.16895541401273323,
+          "crossingPct": 0.05095541401273324
+        },
+        {
+          "at": 1794668560500,
+          "exchangeAt": 1794668558717,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.911,
+          "costPct": 0.14855767761650343,
+          "crossingPct": 0.030557677616503437
+        }
+      ],
+      "probeQty": 772,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "INITUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "AAVEUSD",
+      "turnoverUsd": 2981260.134999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 151,
+      "counts": {
+        "regime": 77,
+        "feasible": 65,
+        "fees": 3
+      },
+      "depth": [
+        {
+          "at": 1794668551900,
+          "exchangeAt": 1794668551745,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 833.88,
+          "costPct": 0.14678111958555295,
+          "crossingPct": 0.028781119585552968
+        },
+        {
+          "at": 1794668556256,
+          "exchangeAt": 1794668554054,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 834.04,
+          "costPct": 0.1467755982926489,
+          "crossingPct": 0.02877559829264893
+        },
+        {
+          "at": 1794668560633,
+          "exchangeAt": 1794668559497,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 833.88,
+          "costPct": 0.14678111958555295,
+          "crossingPct": 0.028781119585552968
+        }
+      ],
+      "probeQty": 8,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AAVEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "AAVEUSD",
+      "turnoverUsd": 2981260.134999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 151,
+      "counts": {
+        "regime": 26,
+        "feasible": 105,
+        "fees": 12
+      },
+      "depth": [
+        {
+          "at": 1794668551900,
+          "exchangeAt": 1794668551745,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 833.88,
+          "costPct": 0.14678111958555295,
+          "crossingPct": 0.028781119585552968
+        },
+        {
+          "at": 1794668556256,
+          "exchangeAt": 1794668554054,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 834.04,
+          "costPct": 0.1467755982926489,
+          "crossingPct": 0.02877559829264893
+        },
+        {
+          "at": 1794668560633,
+          "exchangeAt": 1794668559497,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 833.88,
+          "costPct": 0.14678111958555295,
+          "crossingPct": 0.028781119585552968
+        }
+      ],
+      "probeQty": 8,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AAVEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "AAVEUSD",
+      "turnoverUsd": 2981260.134999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 7,
+      "counts": {
+        "feasible": 3,
+        "regime": 2,
+        "fees": 2
+      },
+      "depth": [
+        {
+          "at": 1794668551900,
+          "exchangeAt": 1794668551745,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 833.88,
+          "costPct": 0.14678111958555295,
+          "crossingPct": 0.028781119585552968
+        },
+        {
+          "at": 1794668556256,
+          "exchangeAt": 1794668554054,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 834.04,
+          "costPct": 0.1467755982926489,
+          "crossingPct": 0.02877559829264893
+        },
+        {
+          "at": 1794668560633,
+          "exchangeAt": 1794668559497,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 833.88,
+          "costPct": 0.14678111958555295,
+          "crossingPct": 0.028781119585552968
+        }
+      ],
+      "probeQty": 8,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AAVEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "EVAAUSD",
+      "turnoverUsd": 2797681.351900003,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 164,
+      "counts": {
+        "fees": 1,
+        "regime": 80,
+        "feasible": 78
+      },
+      "depth": [
+        {
+          "at": 1794668552035,
+          "exchangeAt": 1794668551774,
+          "latencyMs": 135,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 763.101,
+          "costPct": 0.368962847644027,
+          "crossingPct": 0.250962847644027
+        },
+        {
+          "at": 1794668556387,
+          "exchangeAt": 1794668556329,
+          "latencyMs": 131,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.99925,
+          "costPct": 0.32980021180020846,
+          "crossingPct": 0.21180021180020847
+        },
+        {
+          "at": 1794668560767,
+          "exchangeAt": 1794668558645,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 752.51025,
+          "costPct": 0.2295599422067572,
+          "crossingPct": 0.11155994220675722
+        }
+      ],
+      "probeQty": 405,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "EVAAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "EVAAUSD",
+      "turnoverUsd": 2797681.351900003,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 131,
+      "counts": {
+        "regime": 30,
+        "feasible": 96
+      },
+      "depth": [
+        {
+          "at": 1794668552035,
+          "exchangeAt": 1794668551774,
+          "latencyMs": 135,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 763.101,
+          "costPct": 0.368962847644027,
+          "crossingPct": 0.250962847644027
+        },
+        {
+          "at": 1794668556387,
+          "exchangeAt": 1794668556329,
+          "latencyMs": 131,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.99925,
+          "costPct": 0.32980021180020846,
+          "crossingPct": 0.21180021180020847
+        },
+        {
+          "at": 1794668560767,
+          "exchangeAt": 1794668558645,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 752.51025,
+          "costPct": 0.2295599422067572,
+          "crossingPct": 0.11155994220675722
+        }
+      ],
+      "probeQty": 405,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "EVAAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "EVAAUSD",
+      "turnoverUsd": 2797681.351900003,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 17,
+      "counts": {
+        "feasible": 9,
+        "regime": 8
+      },
+      "depth": [
+        {
+          "at": 1794668552035,
+          "exchangeAt": 1794668551774,
+          "latencyMs": 135,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 763.101,
+          "costPct": 0.368962847644027,
+          "crossingPct": 0.250962847644027
+        },
+        {
+          "at": 1794668556387,
+          "exchangeAt": 1794668556329,
+          "latencyMs": 131,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.99925,
+          "costPct": 0.32980021180020846,
+          "crossingPct": 0.21180021180020847
+        },
+        {
+          "at": 1794668560767,
+          "exchangeAt": 1794668558645,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 752.51025,
+          "costPct": 0.2295599422067572,
+          "crossingPct": 0.11155994220675722
+        }
+      ],
+      "probeQty": 405,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "EVAAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "DOGEUSD",
+      "turnoverUsd": 2696442.920099996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 155,
+      "counts": {
+        "regime": 101,
+        "fees": 12,
+        "feasible": 40
+      },
+      "depth": [
+        {
+          "at": 1794668552169,
+          "exchangeAt": 1794668550939,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8965,
+          "costPct": 0.16681620698072125,
+          "crossingPct": 0.048816206980721255
+        },
+        {
+          "at": 1794668556519,
+          "exchangeAt": 1794668554507,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.0195,
+          "costPct": 0.16680826486618766,
+          "crossingPct": 0.04880826486618766
+        },
+        {
+          "at": 1794668560902,
+          "exchangeAt": 1794668560617,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8965,
+          "costPct": 0.16681620698072125,
+          "crossingPct": 0.048816206980721255
+        }
+      ],
+      "probeQty": 123,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "DOGEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "DOGEUSD",
+      "turnoverUsd": 2696442.920099996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 163,
+      "counts": {
+        "regime": 65,
+        "fees": 19,
+        "feasible": 71
+      },
+      "depth": [
+        {
+          "at": 1794668552169,
+          "exchangeAt": 1794668550939,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8965,
+          "costPct": 0.16681620698072125,
+          "crossingPct": 0.048816206980721255
+        },
+        {
+          "at": 1794668556519,
+          "exchangeAt": 1794668554507,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.0195,
+          "costPct": 0.16680826486618766,
+          "crossingPct": 0.04880826486618766
+        },
+        {
+          "at": 1794668560902,
+          "exchangeAt": 1794668560617,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8965,
+          "costPct": 0.16681620698072125,
+          "crossingPct": 0.048816206980721255
+        }
+      ],
+      "probeQty": 123,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "DOGEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "DOGEUSD",
+      "turnoverUsd": 2696442.920099996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 12,
+      "counts": {
+        "fees": 5,
+        "regime": 6,
+        "feasible": 1
+      },
+      "depth": [
+        {
+          "at": 1794668552169,
+          "exchangeAt": 1794668550939,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8965,
+          "costPct": 0.16681620698072125,
+          "crossingPct": 0.048816206980721255
+        },
+        {
+          "at": 1794668556519,
+          "exchangeAt": 1794668554507,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.0195,
+          "costPct": 0.16680826486618766,
+          "crossingPct": 0.04880826486618766
+        },
+        {
+          "at": 1794668560902,
+          "exchangeAt": 1794668560617,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8965,
+          "costPct": 0.16681620698072125,
+          "crossingPct": 0.048816206980721255
+        }
+      ],
+      "probeQty": 123,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "DOGEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "AINUSD",
+      "turnoverUsd": 2645040.099999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 156,
+      "counts": {
+        "regime": 74,
+        "feasible": 79
+      },
+      "depth": [
+        {
+          "at": 1794668552305,
+          "exchangeAt": 1794668552115,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.47,
+          "costPct": 0.1548818327230565,
+          "crossingPct": 0.03688183272305651
+        },
+        {
+          "at": 1794668556660,
+          "exchangeAt": 1794668556224,
+          "latencyMs": 141,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.6,
+          "costPct": 0.15487549563838426,
+          "crossingPct": 0.03687549563838426
+        },
+        {
+          "at": 1794668561044,
+          "exchangeAt": 1794668560141,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.755,
+          "costPct": 0.13771538395377936,
+          "crossingPct": 0.019715383953779378
+        }
+      ],
+      "probeQty": 65,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AINUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "AINUSD",
+      "turnoverUsd": 2645040.099999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 134,
+      "counts": {
+        "feasible": 109,
+        "regime": 19
+      },
+      "depth": [
+        {
+          "at": 1794668552305,
+          "exchangeAt": 1794668552115,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.47,
+          "costPct": 0.1548818327230565,
+          "crossingPct": 0.03688183272305651
+        },
+        {
+          "at": 1794668556660,
+          "exchangeAt": 1794668556224,
+          "latencyMs": 141,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.6,
+          "costPct": 0.15487549563838426,
+          "crossingPct": 0.03687549563838426
+        },
+        {
+          "at": 1794668561044,
+          "exchangeAt": 1794668560141,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.755,
+          "costPct": 0.13771538395377936,
+          "crossingPct": 0.019715383953779378
+        }
+      ],
+      "probeQty": 65,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AINUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "AINUSD",
+      "turnoverUsd": 2645040.099999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 12,
+      "counts": {
+        "feasible": 4,
+        "regime": 6,
+        "fees": 2
+      },
+      "depth": [
+        {
+          "at": 1794668552305,
+          "exchangeAt": 1794668552115,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.47,
+          "costPct": 0.1548818327230565,
+          "crossingPct": 0.03688183272305651
+        },
+        {
+          "at": 1794668556660,
+          "exchangeAt": 1794668556224,
+          "latencyMs": 141,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.6,
+          "costPct": 0.15487549563838426,
+          "crossingPct": 0.03687549563838426
+        },
+        {
+          "at": 1794668561044,
+          "exchangeAt": 1794668560141,
+          "latencyMs": 142,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.755,
+          "costPct": 0.13771538395377936,
+          "crossingPct": 0.019715383953779378
+        }
+      ],
+      "probeQty": 65,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AINUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "BNBUSD",
+      "turnoverUsd": 2337932.1210999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 165,
+      "counts": {
+        "regime": 135,
+        "fees": 15,
+        "feasible": 8
+      },
+      "depth": [
+        {
+          "at": 1794668552439,
+          "exchangeAt": 1794668552340,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.5070000000001,
+          "costPct": 0.12133116807408215,
+          "crossingPct": 0.003331168074082148
+        },
+        {
+          "at": 1794668556793,
+          "exchangeAt": 1794668554616,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.65,
+          "costPct": 0.12133055786843992,
+          "crossingPct": 0.003330557868439935
+        },
+        {
+          "at": 1794668561182,
+          "exchangeAt": 1794668560593,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.4159999999999,
+          "costPct": 0.1213315565032142,
+          "crossingPct": 0.0033315565032142024
+        }
+      ],
+      "probeQty": 13,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BNBUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "BNBUSD",
+      "turnoverUsd": 2337932.1210999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 162,
+      "counts": {
+        "regime": 127,
+        "fees": 6,
+        "feasible": 22
+      },
+      "depth": [
+        {
+          "at": 1794668552439,
+          "exchangeAt": 1794668552340,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.5070000000001,
+          "costPct": 0.12133116807408215,
+          "crossingPct": 0.003331168074082148
+        },
+        {
+          "at": 1794668556793,
+          "exchangeAt": 1794668554616,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.65,
+          "costPct": 0.12133055786843992,
+          "crossingPct": 0.003330557868439935
+        },
+        {
+          "at": 1794668561182,
+          "exchangeAt": 1794668560593,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.4159999999999,
+          "costPct": 0.1213315565032142,
+          "crossingPct": 0.0033315565032142024
+        }
+      ],
+      "probeQty": 13,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BNBUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "BNBUSD",
+      "turnoverUsd": 2337932.1210999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 7,
+      "counts": {
+        "regime": 6,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668552439,
+          "exchangeAt": 1794668552340,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.5070000000001,
+          "costPct": 0.12133116807408215,
+          "crossingPct": 0.003331168074082148
+        },
+        {
+          "at": 1794668556793,
+          "exchangeAt": 1794668554616,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.65,
+          "costPct": 0.12133055786843992,
+          "crossingPct": 0.003330557868439935
+        },
+        {
+          "at": 1794668561182,
+          "exchangeAt": 1794668560593,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 780.4159999999999,
+          "costPct": 0.1213315565032142,
+          "crossingPct": 0.0033315565032142024
+        }
+      ],
+      "probeQty": 13,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BNBUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "LTCUSD",
+      "turnoverUsd": 2026795.5459999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 161,
+      "counts": {
+        "regime": 111,
+        "feasible": 33,
+        "fees": 13
+      },
+      "depth": [
+        {
+          "at": 1794668552577,
+          "exchangeAt": 1794668551061,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8919999999999,
+          "costPct": 0.1608632661808897,
+          "crossingPct": 0.04286326618088969
+        },
+        {
+          "at": 1794668556924,
+          "exchangeAt": 1794668555419,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.216,
+          "costPct": 0.16084490145671812,
+          "crossingPct": 0.042844901456718126
+        },
+        {
+          "at": 1794668561317,
+          "exchangeAt": 1794668561164,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.054,
+          "costPct": 0.16085408185130304,
+          "crossingPct": 0.04285408185130304
+        }
+      ],
+      "probeQty": 162,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "LTCUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "LTCUSD",
+      "turnoverUsd": 2026795.5459999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 163,
+      "counts": {
+        "regime": 82,
+        "feasible": 61,
+        "fees": 12
+      },
+      "depth": [
+        {
+          "at": 1794668552577,
+          "exchangeAt": 1794668551061,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8919999999999,
+          "costPct": 0.1608632661808897,
+          "crossingPct": 0.04286326618088969
+        },
+        {
+          "at": 1794668556924,
+          "exchangeAt": 1794668555419,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.216,
+          "costPct": 0.16084490145671812,
+          "crossingPct": 0.042844901456718126
+        },
+        {
+          "at": 1794668561317,
+          "exchangeAt": 1794668561164,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.054,
+          "costPct": 0.16085408185130304,
+          "crossingPct": 0.04285408185130304
+        }
+      ],
+      "probeQty": 162,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "LTCUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "LTCUSD",
+      "turnoverUsd": 2026795.5459999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 6,
+      "counts": {
+        "regime": 4,
+        "feasible": 2
+      },
+      "depth": [
+        {
+          "at": 1794668552577,
+          "exchangeAt": 1794668551061,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.8919999999999,
+          "costPct": 0.1608632661808897,
+          "crossingPct": 0.04286326618088969
+        },
+        {
+          "at": 1794668556924,
+          "exchangeAt": 1794668555419,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.216,
+          "costPct": 0.16084490145671812,
+          "crossingPct": 0.042844901456718126
+        },
+        {
+          "at": 1794668561317,
+          "exchangeAt": 1794668561164,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.054,
+          "costPct": 0.16085408185130304,
+          "crossingPct": 0.04285408185130304
+        }
+      ],
+      "probeQty": 162,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "LTCUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "PIEVERSEUSD",
+      "turnoverUsd": 1843480.0629999985,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 152,
+      "counts": {
+        "regime": 95,
+        "feasible": 48,
+        "fees": 7
+      },
+      "depth": [
+        {
+          "at": 1794668552712,
+          "exchangeAt": 1794668552397,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.069,
+          "costPct": 0.15688533983009792,
+          "crossingPct": 0.03888533983009793
+        },
+        {
+          "at": 1794668557069,
+          "exchangeAt": 1794668556954,
+          "latencyMs": 145,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.1765,
+          "costPct": 0.16256631487489004,
+          "crossingPct": 0.04456631487489004
+        },
+        {
+          "at": 1794668561446,
+          "exchangeAt": 1794668559585,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.4345,
+          "costPct": 0.2307658772834874,
+          "crossingPct": 0.11276587728348741
+        }
+      ],
+      "probeQty": 43,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "PIEVERSEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "PIEVERSEUSD",
+      "turnoverUsd": 1843480.0629999985,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 132,
+      "counts": {
+        "regime": 51,
+        "feasible": 74
+      },
+      "depth": [
+        {
+          "at": 1794668552712,
+          "exchangeAt": 1794668552397,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.069,
+          "costPct": 0.15688533983009792,
+          "crossingPct": 0.03888533983009793
+        },
+        {
+          "at": 1794668557069,
+          "exchangeAt": 1794668556954,
+          "latencyMs": 145,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.1765,
+          "costPct": 0.16256631487489004,
+          "crossingPct": 0.04456631487489004
+        },
+        {
+          "at": 1794668561446,
+          "exchangeAt": 1794668559585,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.4345,
+          "costPct": 0.2307658772834874,
+          "crossingPct": 0.11276587728348741
+        }
+      ],
+      "probeQty": 43,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "PIEVERSEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "PIEVERSEUSD",
+      "turnoverUsd": 1843480.0629999985,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 13,
+      "counts": {
+        "regime": 7,
+        "fees": 2,
+        "feasible": 4
+      },
+      "depth": [
+        {
+          "at": 1794668552712,
+          "exchangeAt": 1794668552397,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.069,
+          "costPct": 0.15688533983009792,
+          "crossingPct": 0.03888533983009793
+        },
+        {
+          "at": 1794668557069,
+          "exchangeAt": 1794668556954,
+          "latencyMs": 145,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.1765,
+          "costPct": 0.16256631487489004,
+          "crossingPct": 0.04456631487489004
+        },
+        {
+          "at": 1794668561446,
+          "exchangeAt": 1794668559585,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 756.4345,
+          "costPct": 0.2307658772834874,
+          "crossingPct": 0.11276587728348741
+        }
+      ],
+      "probeQty": 43,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "PIEVERSEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "BCHUSD",
+      "turnoverUsd": 1701057.6055000005,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 172,
+      "counts": {
+        "fees": 10,
+        "regime": 98,
+        "feasible": 60
+      },
+      "depth": [
+        {
+          "at": 1794668552852,
+          "exchangeAt": 1794668552346,
+          "latencyMs": 140,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.5727999999999,
+          "costPct": 0.13205053509121192,
+          "crossingPct": 0.014050535091211925
+        },
+        {
+          "at": 1794668557204,
+          "exchangeAt": 1794668554663,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.8191999999999,
+          "costPct": 0.13204593019172747,
+          "crossingPct": 0.01404593019172748
+        },
+        {
+          "at": 1794668561583,
+          "exchangeAt": 1794668561122,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7488,
+          "costPct": 0.13204724556926514,
+          "crossingPct": 0.014047245569265161
+        }
+      ],
+      "probeQty": 352,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BCHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "BCHUSD",
+      "turnoverUsd": 1701057.6055000005,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 146,
+      "counts": {
+        "feasible": 89,
+        "regime": 31,
+        "fees": 17
+      },
+      "depth": [
+        {
+          "at": 1794668552852,
+          "exchangeAt": 1794668552346,
+          "latencyMs": 140,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.5727999999999,
+          "costPct": 0.13205053509121192,
+          "crossingPct": 0.014050535091211925
+        },
+        {
+          "at": 1794668557204,
+          "exchangeAt": 1794668554663,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.8191999999999,
+          "costPct": 0.13204593019172747,
+          "crossingPct": 0.01404593019172748
+        },
+        {
+          "at": 1794668561583,
+          "exchangeAt": 1794668561122,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7488,
+          "costPct": 0.13204724556926514,
+          "crossingPct": 0.014047245569265161
+        }
+      ],
+      "probeQty": 352,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BCHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "BCHUSD",
+      "turnoverUsd": 1701057.6055000005,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 9,
+      "counts": {
+        "feasible": 3,
+        "regime": 3,
+        "fees": 3
+      },
+      "depth": [
+        {
+          "at": 1794668552852,
+          "exchangeAt": 1794668552346,
+          "latencyMs": 140,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.5727999999999,
+          "costPct": 0.13205053509121192,
+          "crossingPct": 0.014050535091211925
+        },
+        {
+          "at": 1794668557204,
+          "exchangeAt": 1794668554663,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.8191999999999,
+          "costPct": 0.13204593019172747,
+          "crossingPct": 0.01404593019172748
+        },
+        {
+          "at": 1794668561583,
+          "exchangeAt": 1794668561122,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7488,
+          "costPct": 0.13204724556926514,
+          "crossingPct": 0.014047245569265161
+        }
+      ],
+      "probeQty": 352,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BCHUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "BERAUSD",
+      "turnoverUsd": 1625904.0789000015,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 145,
+      "counts": {
+        "regime": 100,
+        "feasible": 32,
+        "fees": 7
+      },
+      "depth": [
+        {
+          "at": 1794668552988,
+          "exchangeAt": 1794668551738,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.3092,
+          "costPct": 0.3564462915976358,
+          "crossingPct": 0.2384462915976358
+        },
+        {
+          "at": 1794668557337,
+          "exchangeAt": 1794668554266,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.3092,
+          "costPct": 0.3564462915976358,
+          "crossingPct": 0.2384462915976358
+        },
+        {
+          "at": 1794668561716,
+          "exchangeAt": 1794668561072,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.5803,
+          "costPct": 0.3566784690967707,
+          "crossingPct": 0.2386784690967707
+        }
+      ],
+      "probeQty": 7289,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BERAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "BERAUSD",
+      "turnoverUsd": 1625904.0789000015,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 140,
+      "counts": {
+        "regime": 73,
+        "feasible": 63
+      },
+      "depth": [
+        {
+          "at": 1794668552988,
+          "exchangeAt": 1794668551738,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.3092,
+          "costPct": 0.3564462915976358,
+          "crossingPct": 0.2384462915976358
+        },
+        {
+          "at": 1794668557337,
+          "exchangeAt": 1794668554266,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.3092,
+          "costPct": 0.3564462915976358,
+          "crossingPct": 0.2384462915976358
+        },
+        {
+          "at": 1794668561716,
+          "exchangeAt": 1794668561072,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.5803,
+          "costPct": 0.3566784690967707,
+          "crossingPct": 0.2386784690967707
+        }
+      ],
+      "probeQty": 7289,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BERAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "BERAUSD",
+      "turnoverUsd": 1625904.0789000015,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 3,
+      "counts": {
+        "regime": 1,
+        "fees": 1,
+        "feasible": 1
+      },
+      "depth": [
+        {
+          "at": 1794668552988,
+          "exchangeAt": 1794668551738,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.3092,
+          "costPct": 0.3564462915976358,
+          "crossingPct": 0.2384462915976358
+        },
+        {
+          "at": 1794668557337,
+          "exchangeAt": 1794668554266,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 749.3092,
+          "costPct": 0.3564462915976358,
+          "crossingPct": 0.2384462915976358
+        },
+        {
+          "at": 1794668561716,
+          "exchangeAt": 1794668561072,
+          "latencyMs": 133,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.5803,
+          "costPct": 0.3566784690967707,
+          "crossingPct": 0.2386784690967707
+        }
+      ],
+      "probeQty": 7289,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BERAUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "HYPEUSD",
+      "turnoverUsd": 1590565.3561000011,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 161,
+      "counts": {
+        "regime": 103,
+        "feasible": 44,
+        "fees": 8
+      },
+      "depth": [
+        {
+          "at": 1794668553124,
+          "exchangeAt": 1794668553019,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.368,
+          "costPct": 0.12222104469529116,
+          "crossingPct": 0.004221044695291159
+        },
+        {
+          "at": 1794668557467,
+          "exchangeAt": 1794668555181,
+          "latencyMs": 130,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.6032000000001,
+          "costPct": 0.12221972730479119,
+          "crossingPct": 0.004219727304791204
+        },
+        {
+          "at": 1794668561853,
+          "exchangeAt": 1794668561193,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.5136,
+          "costPct": 0.12222022907085169,
+          "crossingPct": 0.004220229070851688
+        }
+      ],
+      "probeQty": 112,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "HYPEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "HYPEUSD",
+      "turnoverUsd": 1590565.3561000011,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 153,
+      "counts": {
+        "regime": 51,
+        "feasible": 86,
+        "fees": 8
+      },
+      "depth": [
+        {
+          "at": 1794668553124,
+          "exchangeAt": 1794668553019,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.368,
+          "costPct": 0.12222104469529116,
+          "crossingPct": 0.004221044695291159
+        },
+        {
+          "at": 1794668557467,
+          "exchangeAt": 1794668555181,
+          "latencyMs": 130,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.6032000000001,
+          "costPct": 0.12221972730479119,
+          "crossingPct": 0.004219727304791204
+        },
+        {
+          "at": 1794668561853,
+          "exchangeAt": 1794668561193,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.5136,
+          "costPct": 0.12222022907085169,
+          "crossingPct": 0.004220229070851688
+        }
+      ],
+      "probeQty": 112,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "HYPEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "HYPEUSD",
+      "turnoverUsd": 1590565.3561000011,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 10,
+      "counts": {
+        "regime": 7,
+        "fees": 2,
+        "feasible": 1
+      },
+      "depth": [
+        {
+          "at": 1794668553124,
+          "exchangeAt": 1794668553019,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.368,
+          "costPct": 0.12222104469529116,
+          "crossingPct": 0.004221044695291159
+        },
+        {
+          "at": 1794668557467,
+          "exchangeAt": 1794668555181,
+          "latencyMs": 130,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.6032000000001,
+          "costPct": 0.12221972730479119,
+          "crossingPct": 0.004219727304791204
+        },
+        {
+          "at": 1794668561853,
+          "exchangeAt": 1794668561193,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 753.5136,
+          "costPct": 0.12222022907085169,
+          "crossingPct": 0.004220229070851688
+        }
+      ],
+      "probeQty": 112,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "HYPEUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "AVAXUSD",
+      "turnoverUsd": 1556187.2011999995,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 165,
+      "counts": {
+        "regime": 87,
+        "feasible": 69,
+        "fees": 5
+      },
+      "depth": [
+        {
+          "at": 1794668553260,
+          "exchangeAt": 1794668553037,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.439,
+          "costPct": 0.19631875734237486,
+          "crossingPct": 0.07831875734237488
+        },
+        {
+          "at": 1794668557600,
+          "exchangeAt": 1794668557070,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.736,
+          "costPct": 0.17019206680586293,
+          "crossingPct": 0.05219206680586294
+        },
+        {
+          "at": 1794668561988,
+          "exchangeAt": 1794668561488,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.538,
+          "costPct": 0.17020569042025005,
+          "crossingPct": 0.052205690420250056
+        }
+      ],
+      "probeQty": 99,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AVAXUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "AVAXUSD",
+      "turnoverUsd": 1556187.2011999995,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 155,
+      "counts": {
+        "fees": 17,
+        "feasible": 94,
+        "regime": 37
+      },
+      "depth": [
+        {
+          "at": 1794668553260,
+          "exchangeAt": 1794668553037,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.439,
+          "costPct": 0.19631875734237486,
+          "crossingPct": 0.07831875734237488
+        },
+        {
+          "at": 1794668557600,
+          "exchangeAt": 1794668557070,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.736,
+          "costPct": 0.17019206680586293,
+          "crossingPct": 0.05219206680586294
+        },
+        {
+          "at": 1794668561988,
+          "exchangeAt": 1794668561488,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.538,
+          "costPct": 0.17020569042025005,
+          "crossingPct": 0.052205690420250056
+        }
+      ],
+      "probeQty": 99,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AVAXUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "AVAXUSD",
+      "turnoverUsd": 1556187.2011999995,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 8,
+      "counts": {
+        "regime": 5,
+        "feasible": 2,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668553260,
+          "exchangeAt": 1794668553037,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.439,
+          "costPct": 0.19631875734237486,
+          "crossingPct": 0.07831875734237488
+        },
+        {
+          "at": 1794668557600,
+          "exchangeAt": 1794668557070,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.736,
+          "costPct": 0.17019206680586293,
+          "crossingPct": 0.05219206680586294
+        },
+        {
+          "at": 1794668561988,
+          "exchangeAt": 1794668561488,
+          "latencyMs": 135,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 758.538,
+          "costPct": 0.17020569042025005,
+          "crossingPct": 0.052205690420250056
+        }
+      ],
+      "probeQty": 99,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AVAXUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "HUSD",
+      "turnoverUsd": 1196566.6730000002,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 151,
+      "counts": {
+        "feasible": 73,
+        "regime": 67,
+        "fees": 7
+      },
+      "depth": [
+        {
+          "at": 1794668553394,
+          "exchangeAt": 1794668551136,
+          "latencyMs": 134,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.7199999999999,
+          "costPct": 0.27159546960144776,
+          "crossingPct": 0.15359546960144774
+        },
+        {
+          "at": 1794668557735,
+          "exchangeAt": 1794668557563,
+          "latencyMs": 135,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 746.9560000000001,
+          "costPct": 0.2754389923904422,
+          "crossingPct": 0.15743899239044226
+        },
+        {
+          "at": 1794668562124,
+          "exchangeAt": 1794668559634,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 746.9560000000001,
+          "costPct": 0.2754389923904422,
+          "crossingPct": 0.15743899239044226
+        }
+      ],
+      "probeQty": 392,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "HUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "HUSD",
+      "turnoverUsd": 1196566.6730000002,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 152,
+      "counts": {
+        "feasible": 119,
+        "fees": 5,
+        "regime": 21
+      },
+      "depth": [
+        {
+          "at": 1794668553394,
+          "exchangeAt": 1794668551136,
+          "latencyMs": 134,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.7199999999999,
+          "costPct": 0.27159546960144776,
+          "crossingPct": 0.15359546960144774
+        },
+        {
+          "at": 1794668557735,
+          "exchangeAt": 1794668557563,
+          "latencyMs": 135,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 746.9560000000001,
+          "costPct": 0.2754389923904422,
+          "crossingPct": 0.15743899239044226
+        },
+        {
+          "at": 1794668562124,
+          "exchangeAt": 1794668559634,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 746.9560000000001,
+          "costPct": 0.2754389923904422,
+          "crossingPct": 0.15743899239044226
+        }
+      ],
+      "probeQty": 392,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "HUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "HUSD",
+      "turnoverUsd": 1196566.6730000002,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 2,
+      "counts": {
+        "regime": 1,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668553394,
+          "exchangeAt": 1794668551136,
+          "latencyMs": 134,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.7199999999999,
+          "costPct": 0.27159546960144776,
+          "crossingPct": 0.15359546960144774
+        },
+        {
+          "at": 1794668557735,
+          "exchangeAt": 1794668557563,
+          "latencyMs": 135,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 746.9560000000001,
+          "costPct": 0.2754389923904422,
+          "crossingPct": 0.15743899239044226
+        },
+        {
+          "at": 1794668562124,
+          "exchangeAt": 1794668559634,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 746.9560000000001,
+          "costPct": 0.2754389923904422,
+          "crossingPct": 0.15743899239044226
+        }
+      ],
+      "probeQty": 392,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "HUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "AIOTUSD",
+      "turnoverUsd": 1079845.159,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 161,
+      "counts": {
+        "feasible": 63,
+        "regime": 80,
+        "fees": 10
+      },
+      "depth": [
+        {
+          "at": 1794668553526,
+          "exchangeAt": 1794668551326,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 766.1279999999999,
+          "costPct": 0.16812217279618868,
+          "crossingPct": 0.05012217279618868
+        },
+        {
+          "at": 1794668557872,
+          "exchangeAt": 1794668555466,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 766.4639999999999,
+          "costPct": 0.155575150300604,
+          "crossingPct": 0.03757515030060402
+        },
+        {
+          "at": 1794668562260,
+          "exchangeAt": 1794668560823,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 767.664,
+          "costPct": 0.1555164134308788,
+          "crossingPct": 0.03751641343087882
+        }
+      ],
+      "probeQty": 48,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AIOTUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "AIOTUSD",
+      "turnoverUsd": 1079845.159,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 149,
+      "counts": {
+        "regime": 20,
+        "feasible": 123,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668553526,
+          "exchangeAt": 1794668551326,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 766.1279999999999,
+          "costPct": 0.16812217279618868,
+          "crossingPct": 0.05012217279618868
+        },
+        {
+          "at": 1794668557872,
+          "exchangeAt": 1794668555466,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 766.4639999999999,
+          "costPct": 0.155575150300604,
+          "crossingPct": 0.03757515030060402
+        },
+        {
+          "at": 1794668562260,
+          "exchangeAt": 1794668560823,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 767.664,
+          "costPct": 0.1555164134308788,
+          "crossingPct": 0.03751641343087882
+        }
+      ],
+      "probeQty": 48,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AIOTUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "AIOTUSD",
+      "turnoverUsd": 1079845.159,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 13,
+      "counts": {
+        "fees": 1,
+        "feasible": 8,
+        "regime": 4
+      },
+      "depth": [
+        {
+          "at": 1794668553526,
+          "exchangeAt": 1794668551326,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 766.1279999999999,
+          "costPct": 0.16812217279618868,
+          "crossingPct": 0.05012217279618868
+        },
+        {
+          "at": 1794668557872,
+          "exchangeAt": 1794668555466,
+          "latencyMs": 137,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 766.4639999999999,
+          "costPct": 0.155575150300604,
+          "crossingPct": 0.03757515030060402
+        },
+        {
+          "at": 1794668562260,
+          "exchangeAt": 1794668560823,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 767.664,
+          "costPct": 0.1555164134308788,
+          "crossingPct": 0.03751641343087882
+        }
+      ],
+      "probeQty": 48,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "AIOTUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "BLESSUSD",
+      "turnoverUsd": 870431.2287999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 146,
+      "counts": {
+        "regime": 82,
+        "feasible": 59
+      },
+      "depth": [
+        {
+          "at": 1794668553662,
+          "exchangeAt": 1794668553282,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7601,
+          "costPct": 0.20507565086255847,
+          "crossingPct": 0.08707565086255846
+        },
+        {
+          "at": 1794668558001,
+          "exchangeAt": 1794668556533,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 750.9411,
+          "costPct": 0.1398126295124717,
+          "crossingPct": 0.021812629512471704
+        },
+        {
+          "at": 1794668562392,
+          "exchangeAt": 1794668562035,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 749.9583,
+          "costPct": 0.1835236431145469,
+          "crossingPct": 0.06552364311454692
+        }
+      ],
+      "probeQty": 819,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BLESSUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "BLESSUSD",
+      "turnoverUsd": 870431.2287999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 149,
+      "counts": {
+        "feasible": 115,
+        "regime": 27
+      },
+      "depth": [
+        {
+          "at": 1794668553662,
+          "exchangeAt": 1794668553282,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7601,
+          "costPct": 0.20507565086255847,
+          "crossingPct": 0.08707565086255846
+        },
+        {
+          "at": 1794668558001,
+          "exchangeAt": 1794668556533,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 750.9411,
+          "costPct": 0.1398126295124717,
+          "crossingPct": 0.021812629512471704
+        },
+        {
+          "at": 1794668562392,
+          "exchangeAt": 1794668562035,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 749.9583,
+          "costPct": 0.1835236431145469,
+          "crossingPct": 0.06552364311454692
+        }
+      ],
+      "probeQty": 819,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BLESSUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "BLESSUSD",
+      "turnoverUsd": 870431.2287999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 9,
+      "counts": {
+        "feasible": 7,
+        "fees": 2
+      },
+      "depth": [
+        {
+          "at": 1794668553662,
+          "exchangeAt": 1794668553282,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7601,
+          "costPct": 0.20507565086255847,
+          "crossingPct": 0.08707565086255846
+        },
+        {
+          "at": 1794668558001,
+          "exchangeAt": 1794668556533,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 750.9411,
+          "costPct": 0.1398126295124717,
+          "crossingPct": 0.021812629512471704
+        },
+        {
+          "at": 1794668562392,
+          "exchangeAt": 1794668562035,
+          "latencyMs": 132,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 749.9583,
+          "costPct": 0.1835236431145469,
+          "crossingPct": 0.06552364311454692
+        }
+      ],
+      "probeQty": 819,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BLESSUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "INJUSD",
+      "turnoverUsd": 857072.9219999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 163,
+      "counts": {
+        "feasible": 69,
+        "regime": 84,
+        "fees": 6
+      },
+      "depth": [
+        {
+          "at": 1794668553789,
+          "exchangeAt": 1794668553636,
+          "latencyMs": 127,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.568,
+          "costPct": 0.1704109014675111,
+          "crossingPct": 0.05241090146751111
+        },
+        {
+          "at": 1794668558130,
+          "exchangeAt": 1794668558030,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.37,
+          "costPct": 0.17042463958059711,
+          "crossingPct": 0.052424639580597114
+        },
+        {
+          "at": 1794668562544,
+          "exchangeAt": 1794668562368,
+          "latencyMs": 152,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.172,
+          "costPct": 0.17043838489773938,
+          "crossingPct": 0.052438384897739374
+        }
+      ],
+      "probeQty": 99,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "INJUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "INJUSD",
+      "turnoverUsd": 857072.9219999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 151,
+      "counts": {
+        "feasible": 111,
+        "fees": 2,
+        "regime": 31
+      },
+      "depth": [
+        {
+          "at": 1794668553789,
+          "exchangeAt": 1794668553636,
+          "latencyMs": 127,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.568,
+          "costPct": 0.1704109014675111,
+          "crossingPct": 0.05241090146751111
+        },
+        {
+          "at": 1794668558130,
+          "exchangeAt": 1794668558030,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.37,
+          "costPct": 0.17042463958059711,
+          "crossingPct": 0.052424639580597114
+        },
+        {
+          "at": 1794668562544,
+          "exchangeAt": 1794668562368,
+          "latencyMs": 152,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.172,
+          "costPct": 0.17043838489773938,
+          "crossingPct": 0.052438384897739374
+        }
+      ],
+      "probeQty": 99,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "INJUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "INJUSD",
+      "turnoverUsd": 857072.9219999998,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 8,
+      "counts": {
+        "regime": 3,
+        "fees": 3,
+        "feasible": 2
+      },
+      "depth": [
+        {
+          "at": 1794668553789,
+          "exchangeAt": 1794668553636,
+          "latencyMs": 127,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.568,
+          "costPct": 0.1704109014675111,
+          "crossingPct": 0.05241090146751111
+        },
+        {
+          "at": 1794668558130,
+          "exchangeAt": 1794668558030,
+          "latencyMs": 129,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.37,
+          "costPct": 0.17042463958059711,
+          "crossingPct": 0.052424639580597114
+        },
+        {
+          "at": 1794668562544,
+          "exchangeAt": 1794668562368,
+          "latencyMs": 152,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 755.172,
+          "costPct": 0.17043838489773938,
+          "crossingPct": 0.052438384897739374
+        }
+      ],
+      "probeQty": 99,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "INJUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "SOLVUSD",
+      "turnoverUsd": 611507.9840000004,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 135,
+      "counts": {
+        "regime": 80,
+        "feasible": 42,
+        "fees": 8
+      },
+      "depth": [
+        {
+          "at": 1794668553925,
+          "exchangeAt": 1794668551023,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 757.6744999999999,
+          "costPct": 0.26888273394446527,
+          "crossingPct": 0.15088273394446527
+        },
+        {
+          "at": 1794668558264,
+          "exchangeAt": 1794668556942,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.5877500000001,
+          "costPct": 0.2001950988515836,
+          "crossingPct": 0.08219509885158362
+        },
+        {
+          "at": 1794668562682,
+          "exchangeAt": 1794668561975,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.8480000000001,
+          "costPct": 0.22308703592275958,
+          "crossingPct": 0.10508703592275957
+        }
+      ],
+      "probeQty": 1735,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOLVUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "SOLVUSD",
+      "turnoverUsd": 611507.9840000004,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 152,
+      "counts": {
+        "regime": 49,
+        "feasible": 96
+      },
+      "depth": [
+        {
+          "at": 1794668553925,
+          "exchangeAt": 1794668551023,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 757.6744999999999,
+          "costPct": 0.26888273394446527,
+          "crossingPct": 0.15088273394446527
+        },
+        {
+          "at": 1794668558264,
+          "exchangeAt": 1794668556942,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.5877500000001,
+          "costPct": 0.2001950988515836,
+          "crossingPct": 0.08219509885158362
+        },
+        {
+          "at": 1794668562682,
+          "exchangeAt": 1794668561975,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.8480000000001,
+          "costPct": 0.22308703592275958,
+          "crossingPct": 0.10508703592275957
+        }
+      ],
+      "probeQty": 1735,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOLVUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "SOLVUSD",
+      "turnoverUsd": 611507.9840000004,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 5,
+      "counts": {
+        "feasible": 3,
+        "regime": 2
+      },
+      "depth": [
+        {
+          "at": 1794668553925,
+          "exchangeAt": 1794668551023,
+          "latencyMs": 136,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 757.6744999999999,
+          "costPct": 0.26888273394446527,
+          "crossingPct": 0.15088273394446527
+        },
+        {
+          "at": 1794668558264,
+          "exchangeAt": 1794668556942,
+          "latencyMs": 134,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.5877500000001,
+          "costPct": 0.2001950988515836,
+          "crossingPct": 0.08219509885158362
+        },
+        {
+          "at": 1794668562682,
+          "exchangeAt": 1794668561975,
+          "latencyMs": 138,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 757.8480000000001,
+          "costPct": 0.22308703592275958,
+          "crossingPct": 0.10508703592275957
+        }
+      ],
+      "probeQty": 1735,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SOLVUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "BMTUSD",
+      "turnoverUsd": 610346.1879999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 145,
+      "counts": {
+        "feasible": 67,
+        "regime": 73,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668554066,
+          "exchangeAt": 1794668552081,
+          "latencyMs": 141,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        },
+        {
+          "at": 1794668558394,
+          "exchangeAt": 1794668555877,
+          "latencyMs": 129,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        },
+        {
+          "at": 1794668562820,
+          "exchangeAt": 1794668562608,
+          "latencyMs": 138,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        }
+      ],
+      "probeQty": 3371,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BMTUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "BMTUSD",
+      "turnoverUsd": 610346.1879999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 171,
+      "counts": {
+        "feasible": 142,
+        "regime": 24,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668554066,
+          "exchangeAt": 1794668552081,
+          "latencyMs": 141,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        },
+        {
+          "at": 1794668558394,
+          "exchangeAt": 1794668555877,
+          "latencyMs": 129,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        },
+        {
+          "at": 1794668562820,
+          "exchangeAt": 1794668562608,
+          "latencyMs": 138,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        }
+      ],
+      "probeQty": 3371,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BMTUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "BMTUSD",
+      "turnoverUsd": 610346.1879999996,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 8,
+      "counts": {
+        "feasible": 4,
+        "regime": 4
+      },
+      "depth": [
+        {
+          "at": 1794668554066,
+          "exchangeAt": 1794668552081,
+          "latencyMs": 141,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        },
+        {
+          "at": 1794668558394,
+          "exchangeAt": 1794668555877,
+          "latencyMs": 129,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        },
+        {
+          "at": 1794668562820,
+          "exchangeAt": 1794668562608,
+          "latencyMs": 138,
+          "allowed": false,
+          "reason": "cost exceeds ceiling",
+          "notional": 748.19345,
+          "costPct": 0.25316557783285537,
+          "crossingPct": 0.13516557783285538
+        }
+      ],
+      "probeQty": 3371,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "BMTUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "mesa-adaptive-cycle-engine-markittick",
+      "symbol": "SUIUSD",
+      "turnoverUsd": 497016.7933,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 161,
+      "counts": {
+        "regime": 109,
+        "feasible": 43,
+        "fees": 5
+      },
+      "depth": [
+        {
+          "at": 1794668554199,
+          "exchangeAt": 1794668550974,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7254999999999,
+          "costPct": 0.14479169457469376,
+          "crossingPct": 0.026791694574693773
+        },
+        {
+          "at": 1794668558525,
+          "exchangeAt": 1794668556959,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 752.1283,
+          "costPct": 0.14477734636497228,
+          "crossingPct": 0.02677734636497228
+        },
+        {
+          "at": 1794668562956,
+          "exchangeAt": 1794668561135,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7254999999999,
+          "costPct": 0.14479169457469376,
+          "crossingPct": 0.026791694574693773
+        }
+      ],
+      "probeQty": 1007,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SUIUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "squeeze-bollinger-bands-tracker-markittick",
+      "symbol": "SUIUSD",
+      "turnoverUsd": 497016.7933,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 146,
+      "counts": {
+        "feasible": 85,
+        "regime": 49,
+        "fees": 8
+      },
+      "depth": [
+        {
+          "at": 1794668554199,
+          "exchangeAt": 1794668550974,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7254999999999,
+          "costPct": 0.14479169457469376,
+          "crossingPct": 0.026791694574693773
+        },
+        {
+          "at": 1794668558525,
+          "exchangeAt": 1794668556959,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 752.1283,
+          "costPct": 0.14477734636497228,
+          "crossingPct": 0.02677734636497228
+        },
+        {
+          "at": 1794668562956,
+          "exchangeAt": 1794668561135,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7254999999999,
+          "costPct": 0.14479169457469376,
+          "crossingPct": 0.026791694574693773
+        }
+      ],
+      "probeQty": 1007,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SUIUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    },
+    {
+      "scannerId": "garch-volumetric-cloud-markittick",
+      "symbol": "SUIUSD",
+      "turnoverUsd": 497016.7933,
+      "bars": 2000,
+      "from": 1792863000000,
+      "to": 1794662100000,
+      "signals": 9,
+      "counts": {
+        "feasible": 1,
+        "regime": 7,
+        "fees": 1
+      },
+      "depth": [
+        {
+          "at": 1794668554199,
+          "exchangeAt": 1794668550974,
+          "latencyMs": 133,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7254999999999,
+          "costPct": 0.14479169457469376,
+          "crossingPct": 0.026791694574693773
+        },
+        {
+          "at": 1794668558525,
+          "exchangeAt": 1794668556959,
+          "latencyMs": 131,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 752.1283,
+          "costPct": 0.14477734636497228,
+          "crossingPct": 0.02677734636497228
+        },
+        {
+          "at": 1794668562956,
+          "exchangeAt": 1794668561135,
+          "latencyMs": 136,
+          "allowed": true,
+          "reason": "passes cost gate",
+          "notional": 751.7254999999999,
+          "costPct": 0.14479169457469376,
+          "crossingPct": 0.026791694574693773
+        }
+      ],
+      "probeQty": 1007,
+      "fees": {
+        "source": "delta-product",
+        "symbol": "SUIUSD",
+        "feeRatePct": 0.05,
+        "makerFeeRatePct": 0.02
+      }
+    }
+  ]
+}

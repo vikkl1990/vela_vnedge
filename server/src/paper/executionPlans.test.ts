@@ -271,3 +271,26 @@ test('renaming a plan preserves its policy cohort while a trailing change create
  p.trailing!.giveBackPct=25;
  assert.notEqual(planSnapshot(c,p,'source-a').signature,before.signature);
 });
+
+test('invalid basket configuration is rejected at save and cannot hide other plan results',t=>{
+ const {c,service,ctx}=setup(t);service.observe(ctx);
+ const before=service.view(),signatures=before.configured.map(p=>p.signature);
+ const id='rsi-volume-ladder-basket';
+ c.scanners[id]={enabled:false,symbols:null,timeframes:null,exitMode:'both',inputs:{length:7}};
+ c.executionPlans!.push({id:'bad-basket',revision:1,enabled:true,scannerId:id,symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,basket:'rsi-volume-ladder-v1',readingOverride:{version:1}});
+ assert.ok(validateConfig(c).some(e=>e.includes('bad-basket')&&e.includes('reviewed default inputs')));
+ const view=service.view();
+ assert.deepEqual(view.cohorts,before.cohorts);
+ assert.deepEqual(view.configured.slice(0,3).map(p=>p.signature),signatures,'valid evidence identities are unchanged');
+ assert.equal(view.configured.at(-1)!.signature,null);
+ assert.match(view.configured.at(-1)!.configurationError!,/reviewed default inputs/);
+ delete c.scanners[id].inputs;
+ assert.equal(validateConfig(c).filter(e=>e.includes('executionPlans')).length,0);
+ assert.equal(service.view().configured.at(-1)!.configurationError,null);
+ c.paper.marginPerTrade=100;
+ assert.ok(validateConfig(c).some(e=>e.includes('bad-basket')&&e.includes('$150')));
+ c.paper.marginPerTrade=150;c.paper.maxStopLossPct=0;
+ assert.ok(validateConfig(c).some(e=>e.includes('bad-basket')&&e.includes('stop cap')));
+ c.executionPlans!.at(-1)!.maxStopLossPct=3;
+ assert.equal(validateConfig(c).filter(e=>e.includes('executionPlans')).length,0,'an explicit plan cap satisfies the same snapshot guard');
+});

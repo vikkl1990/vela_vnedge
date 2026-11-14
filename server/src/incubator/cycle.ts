@@ -298,7 +298,11 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (store.shadowHolds(r)) continue;
     const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
     if (!(staleDays > 0)) continue;
-    const {trades:t,since} = store.shadowEvaluation(r,now);
+    const forward = store.shadowEvaluation(r,now), since = forward.since;
+    // Activity and performance are different questions. A recent executed trade under
+    // the previous policy is activity, but must never determine the current policy's PnL.
+    const t = forward.restoration ? forward.trades
+      : store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=since&&t.exitAt<now);
     // decision 184: a pair back from the account is given the stale cap from its demotion, not from an admission it has
     // been live since (the shadow runner does not trade a live cell, so its last shadow trade predates the whole stint)
     const lastAt = Math.max(since, store.lastDemotion(r.id)?.at ?? 0, ...t.map(x => x.entryAt));
@@ -475,7 +479,7 @@ function admit(store: IncubatorStore, cfg: AppConfig, rep: CycleReport, now: num
 }
 
 /**
- * Decision 157: admission on its own, outside the nightly hunt. Judging, promotion and demotion keep their daily pace;
+ * Decision 157: admission on its own, outside the evidence review;
  * this only fills free shadow slots with candidates whose blocker has cleared (the market gate allows the market again,
  * a re-screen landed, a slot was freed). Returns the pairs admitted.
  */
@@ -621,8 +625,15 @@ export function demote(store: IncubatorStore, cfg: AppConfig, id: number, actor:
  */
 export function autoPromote(store: IncubatorStore, cfg: AppConfig, setScanner: (id: string, patch: Partial<ScannerConfig>) => void, now = Date.now()): { promoted: string[]; blocked: string[] } {
   const promoted: string[] = [], blocked: string[] = [];
+  if(!cfg.incubator.enabled||!cfg.incubator.promote.auto||cfg.execution.mode!=='paper')return {promoted,blocked};
+  // ConfigStore replaces its snapshot on every write. Accumulate successful patches
+  // here so later approvals see prior allocations and enforce cumulative capacity.
+  const current=structuredClone(cfg);
   for (const r of store.list(['proposed'])) {
-    try { approve(store, cfg, r.id, 'auto', setScanner, now); promoted.push(name(r)); }
+    try { approve(store, current, r.id, 'auto', (id,patch)=>{
+      setScanner(id,patch);
+      current.scanners[id]={...(current.scanners[id]??{enabled:false,symbols:null,timeframes:null,exitMode:'both'}),...patch};
+    }, now); promoted.push(name(r)); }
     catch (e: any) { blocked.push(`${name(r)}: ${e?.message ?? e}`); }
   }
   return { promoted, blocked };

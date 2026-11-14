@@ -1,0 +1,529 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+//@version=6
+indicator("Fibonacci Swing Flip [MarkitTick]", overlay=true, max_lines_count=500, max_labels_count=500, behind_chart=false)
+
+// ── INPUTS ──────────────────────────────────────────────────────
+var string GRP_CORE  = "⚙️ Core Settings"
+var string GRP_TRADE = "📐 Trade Tools"
+var string GRP_VIS   = "🎨 Visuals"
+var string GRP_DASH  = "📊 Dashboard"
+var string GRP_ALERT = "🔔 Alerts"
+var string GRP_COL   = "🌈 Colors"
+
+i_left     = input.int(10, "Left Bars", minval=1, maxval=50, step=1, group=GRP_CORE, tooltip="Bars to the left of a swing that must be lower (for a swing high) or higher (for a swing low) than it. Applies to both swing highs and swing lows.")
+i_right    = input.int(10, "Right Bars", minval=1, maxval=50, step=1, group=GRP_CORE, tooltip="Bars to the right of a swing that must be lower (for a swing high) or higher (for a swing low) to confirm it. A swing is known only this many bars after it forms, so every signal is delayed by this many bars. Applies to both swing highs and swing lows.")
+i_breakOpt = input.string("38.2%", "Break Level", options=["23.6%", "38.2%", "50%", "61.8%", "78.6%"], group=GRP_CORE, tooltip="Fraction of the active swing leg that price must close beyond to flip the trend. 38.2% is the default. A smaller percentage flips sooner, a larger one later. 50% is not a Fibonacci ratio (ChartSchool derives it from Dow Theory); it is offered because it is one of the most common retracement levels. Closing exactly on the level is not a break.")
+
+i_tradeOn  = input.bool(true, "Enable Trade Levels", group=GRP_TRADE, tooltip="Off: BULL and BEAR are the only outputs; no stop or target is drawn, shown or sent. On: each signal opens a trade with entry, stop, TP1, TP2 and TP3, and the trade alerts fire.")
+i_lock     = input.bool(false, "Lock Signal", group=GRP_TRADE, tooltip="Freeze current signal · block new ones")
+i_stopLen  = input.int(14, "Stop ATR Length", minval=1, maxval=100, step=1, group=GRP_TRADE, tooltip="ATR length for the stop distance. Used only when Enable Trade Levels is on.")
+i_stopMult = input.float(1.5, "Stop ATR Multiple", minval=0.5, maxval=10.0, step=0.1, group=GRP_TRADE, tooltip="Stop distance in ATR from the entry. TP1, TP2 and TP3 sit at 1, 2 and 3 times this distance. Used only when Enable Trade Levels is on.")
+
+i_showLeg   = input.bool(false, "Show Leg and Break Level", group=GRP_VIS, tooltip="Draws the active swing leg and its break level. Display only.")
+i_showSwing = input.bool(false, "Show Swing Points", group=GRP_VIS, tooltip="Draws a small mark on each accepted swing. Display only.")
+i_showMark  = input.bool(true, "Show Signal Markers", group=GRP_VIS, tooltip="Draws BULL and BEAR labels. Display only; alerts and the trend state do not depend on it.")
+i_showTrade = input.bool(true, "Show Trade Levels", group=GRP_VIS, tooltip="Draws entry, stop and targets of the open trade. Has an effect only when Enable Trade Levels is on. Display only.")
+i_colorCandles = input.bool(true, "Color Candles", group=GRP_VIS, tooltip="Colors each candle in the current trend colour (Bull or Bear): body, wicks and border. The chart's own candles stay underneath. Candles stay uncolored until the first trend is set. Display only.")
+i_maxFlips  = input.int(50, "Max Flips Displayed", minval=1, maxval=200, step=1, group=GRP_VIS, tooltip="Removes older drawings only. It changes nothing the indicator tracks, alerts on or counts. The platform keeps at most 500 labels and 500 lines.")
+
+i_showDash = input.bool(true, "Show Dashboard", group=GRP_DASH, tooltip="Shows the dashboard table on the chart.")
+i_dashPos  = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=GRP_DASH, tooltip="Corner of the chart where the dashboard is drawn.")
+
+i_actLong      = input.string("long", "↑ Long Action", group=GRP_ALERT, tooltip="Action word sent in the webhook payload for a long entry.")
+i_actShort     = input.string("short", "↓ Short Action", group=GRP_ALERT, tooltip="Action word sent in the webhook payload for a short entry.")
+i_actCloseLong = input.string("closelong", "✕ Close Long Action", group=GRP_ALERT, tooltip="Action word sent when a long position is closed.")
+i_actCloseShort = input.string("closeshort", "✕ Close Short Action", group=GRP_ALERT, tooltip="Action word sent when a short position is closed.")
+i_actPartLong  = input.string("partialcloselong", "✕ Partial Close Long Action", group=GRP_ALERT, tooltip="Action word sent when TP1 or TP2 partly closes a long trade. Used only when Enable Trade Levels is on.")
+i_actPartShort = input.string("partialcloseshort", "✕ Partial Close Short Action", group=GRP_ALERT, tooltip="Action word sent when TP1 or TP2 partly closes a short trade. Used only when Enable Trade Levels is on.")
+i_tp1Size      = input.float(33.0, "TP1 Close %", minval=1.0, maxval=100.0, step=1.0, group=GRP_ALERT, tooltip="Share of the position closed at TP1. If TP1 and TP2 together exceed 100%, both are scaled in proportion to 100% and the dashboard says so. The rest closes at TP3. Used only when Enable Trade Levels is on.")
+i_tp2Size      = input.float(33.0, "TP2 Close %", minval=1.0, maxval=100.0, step=1.0, group=GRP_ALERT, tooltip="Share of the position closed at TP2. If TP1 and TP2 together exceed 100%, both are scaled in proportion to 100% and the dashboard says so. Used only when Enable Trade Levels is on.")
+
+C_SUP   = input.color(#26a69a, "Bull", group=GRP_COL, tooltip="Bullish colour: BULL markers and bullish dashboard values.")
+C_RES   = input.color(#ef5350, "Bear", group=GRP_COL, tooltip="Bearish colour: BEAR markers and bearish dashboard values.")
+C_LEG   = input.color(#787b86, "Leg Line", group=GRP_COL, tooltip="Colour of the swing leg line.")
+C_LVL   = input.color(#ff9800, "Break Level", group=GRP_COL, tooltip="Colour of the break level line and its label.")
+C_SWG   = input.color(#b2b5be, "Swing Point", group=GRP_COL, tooltip="Colour of the swing point marks.")
+C_TXT   = input.color(#ffffff, "Label Text", group=GRP_COL, tooltip="Text colour of every chart label.")
+C_SL    = input.color(#ef5350, "Stop", group=GRP_COL, tooltip="Colour of the stop line and label.")
+C_ENTRY = input.color(#2196f3, "Entry", group=GRP_COL, tooltip="Colour of the entry line and label.")
+C_TP1   = input.color(color.new(#26a69a, 40), "TP1", group=GRP_COL, tooltip="Colour of the TP1 line and label.")
+C_TP2   = input.color(color.new(#26a69a, 20), "TP2", group=GRP_COL, tooltip="Colour of the TP2 line and label.")
+C_TP3   = input.color(color.new(#26a69a, 0), "TP3", group=GRP_COL, tooltip="Colour of the TP3 line and label.")
+C_DASH_HDR = input.color(color.new(#3a2a6d, 55), "Dashboard Header", group=GRP_COL, tooltip="Fill of the dashboard header row.")
+C_DASH_BG  = input.color(color.new(#0a0f1a, 10), "Dashboard Background", group=GRP_COL, tooltip="Background of the dashboard rows.")
+C_DASH_TXT = input.color(#ffffff, "Dashboard Text", group=GRP_COL, tooltip="Text colour of the dashboard.")
+C_WARN     = input.color(color.new(#f9a825, 80), "Dashboard Warning", group=GRP_COL, tooltip="Fill of a dashboard row that warns.")
+
+// ── CORE LOGIC ──────────────────────────────────────────────────
+var line slLine = na
+var line entryLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+var label slLbl = na
+var label entryLbl = na
+var label tp1Lbl = na
+var label tp2Lbl = na
+var label tp3Lbl = na
+var line actDiagL = na
+var line actLvlL = na
+var label actLblL = na
+var array<label> arrMk = array.new<label>(0)
+var array<label> arrSwg = array.new<label>(0)
+var array<line> arrDiag = array.new<line>(0)
+var array<line> arrLvl = array.new<line>(0)
+var array<label> arrLbl = array.new<label>(0)
+
+var int pType = 0
+var float pPx = na
+var int pBar = na
+var float aPx = na
+var int aBar = na
+var int trend = 0
+var bool initial = true
+var int actDir = 0
+var float actHigh = na
+var float actLow = na
+var int actHighBar = na
+var int actLowBar = na
+var float actLvl = na
+var int lastFlipBar = na
+var int lastFlipDir = 0
+var int posDir = 0
+var bool lastRejected = false
+
+var int trDir = 0
+var float trEntry = na
+var float trSl = na
+var float trTp1 = na
+var float trTp2 = na
+var float trTp3 = na
+var int trEntryBar = na
+var bool tp1Hit = false
+var bool tp2Hit = false
+var bool tp3Hit = false
+var bool slHit = false
+var int closeBar = na
+
+f_esc(string s) =>
+    str.replace_all(str.replace_all(s, "\\", "\\\\"), "\"", "\\\"")
+
+f_tf() =>
+    string out = ""
+    if timeframe.isseconds
+        out := str.tostring(timeframe.multiplier) + "s"
+    else if timeframe.isticks
+        out := str.tostring(timeframe.multiplier) + "t"
+    else if timeframe.isminutes
+        out := timeframe.multiplier % 60 == 0 ? str.tostring(math.round(timeframe.multiplier / 60)) + "H" : str.tostring(timeframe.multiplier) + "m"
+    else if timeframe.isdaily
+        out := str.tostring(timeframe.multiplier) + "D"
+    else if timeframe.isweekly
+        out := str.tostring(timeframe.multiplier) + "W"
+    else
+        out := str.tostring(timeframe.multiplier) + "M"
+    out
+
+f_pctTxt(float lvl, float entry, bool isLong) =>
+    float _p = (isLong ? lvl - entry : entry - lvl) / entry * 100
+    (_p >= 0 ? "+" : "") + str.tostring(_p, "0.00") + "%"
+
+f_deleteLevels() =>
+    line.delete(slLine)
+    line.delete(entryLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(entryLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+
+f_capLine(array<line> arr, line l, int cap) =>
+    if not na(l)
+        array.push(arr, l)
+        if array.size(arr) > cap
+            line.delete(array.shift(arr))
+
+f_capLabel(array<label> arr, label l, int cap) =>
+    if not na(l)
+        array.push(arr, l)
+        if array.size(arr) > cap
+            label.delete(array.shift(arr))
+
+f_newDiag(bool show, int dir, int hiBar, float hi, int loBar, float lo) =>
+    show ? line.new(dir == 1 ? loBar : hiBar, dir == 1 ? lo : hi, dir == 1 ? hiBar : loBar, dir == 1 ? hi : lo, xloc=xloc.bar_index, extend=extend.none, color=C_LEG, style=line.style_solid, width=1) : na
+
+f_newLvl(bool show, float y) =>
+    show ? line.new(bar_index, y, bar_index, y, xloc=xloc.bar_index, extend=extend.none, color=C_LVL, style=line.style_dashed, width=1) : na
+
+f_newLvlLbl(bool show, float y, string txt) =>
+    show ? label.new(bar_index, y, txt, xloc=xloc.bar_index, yloc=yloc.price, color=color.new(C_LVL, 0), style=label.style_label_left, textcolor=C_TXT, size=size.small) : na
+
+float brkR = i_breakOpt == "23.6%" ? 0.236 : i_breakOpt == "38.2%" ? 0.382 : i_breakOpt == "50%" ? 0.5 : i_breakOpt == "78.6%" ? 0.786 : 0.618
+bool std = chart.is_standard
+bool conf = barstate.isconfirmed and std
+float atrStop = ta.atr(i_stopLen)
+float phRaw = ta.pivothigh(high, i_left, i_right)
+float plRaw = ta.pivotlow(low, i_left, i_right)
+int pivBar = bar_index - i_right
+bool bothPiv = not na(phRaw) and not na(plRaw)
+bool candH = conf and not bothPiv and not na(phRaw)
+bool candL = conf and not bothPiv and not na(plRaw)
+
+bool legChanged = false
+bool swgNew = false
+bool swgRepl = false
+if candH
+    if pType == 0
+        pType := 1
+        pPx := phRaw
+        pBar := pivBar
+        swgNew := true
+    else if pType == -1
+        aPx := pPx
+        aBar := pBar
+        pType := 1
+        pPx := phRaw
+        pBar := pivBar
+        legChanged := true
+        swgNew := true
+    else if phRaw > pPx
+        pPx := phRaw
+        pBar := pivBar
+        legChanged := not na(aPx)
+        swgNew := true
+        swgRepl := true
+else if candL
+    if pType == 0
+        pType := -1
+        pPx := plRaw
+        pBar := pivBar
+        swgNew := true
+    else if pType == 1
+        aPx := pPx
+        aBar := pBar
+        pType := -1
+        pPx := plRaw
+        pBar := pivBar
+        legChanged := true
+        swgNew := true
+    else if plRaw < pPx
+        pPx := plRaw
+        pBar := pivBar
+        legChanged := not na(aPx)
+        swgNew := true
+        swgRepl := true
+
+bool hasLeg = not na(aPx)
+int legDir = hasLeg ? (pType == 1 ? 1 : -1) : 0
+float legHigh = pType == 1 ? pPx : aPx
+float legLow = pType == 1 ? aPx : pPx
+int legHighBar = pType == 1 ? pBar : aBar
+int legLowBar = pType == 1 ? aBar : pBar
+
+bool evEndA = false
+bool evActA = false
+bool actNowA = false
+if conf and hasLeg
+    if trend == 0
+        trend := legDir
+        actNowA := true
+    else if legChanged and legDir == trend
+        evEndA := actDir != 0
+        actNowA := true
+if actNowA
+    actDir := legDir
+    actHigh := legHigh
+    actLow := legLow
+    actHighBar := legHighBar
+    actLowBar := legLowBar
+    actLvl := legDir == 1 ? legHigh - brkR * (legHigh - legLow) : legLow + brkR * (legHigh - legLow)
+    evActA := true
+float sAHigh = actHigh
+float sALow = actLow
+int sAHB = actHighBar
+int sALB = actLowBar
+int sADir = actDir
+float sALvl = actLvl
+
+bool flipBear = false
+bool flipBull = false
+if conf and actDir != 0
+    float cR = math.round_to_mintick(close)
+    float lR = math.round_to_mintick(actLvl)
+    if actDir == 1 and cR < lR
+        flipBear := true
+    else if actDir == -1 and cR > lR
+        flipBull := true
+
+bool evEndB = false
+bool evActB = false
+if flipBear or flipBull
+    trend := flipBear ? -1 : 1
+    initial := false
+    lastFlipBar := bar_index
+    lastFlipDir := trend
+    evEndB := true
+    actDir := 0
+    actLvl := na
+    if hasLeg and legDir == trend
+        actDir := legDir
+        actHigh := legHigh
+        actLow := legLow
+        actHighBar := legHighBar
+        actLowBar := legLowBar
+        actLvl := legDir == 1 ? legHigh - brkR * (legHigh - legLow) : legLow + brkR * (legHigh - legLow)
+        evActB := true
+
+bool trLong = trDir == 1
+bool trLive = trDir != 0 and bar_index > trEntryBar and not slHit and not tp3Hit
+bool tp1Now = trLive and (trLong ? high >= trTp1 : low <= trTp1) and not tp1Hit
+bool tp2Now = trLive and (trLong ? high >= trTp2 : low <= trTp2) and not tp2Hit
+bool tp3Now = trLive and (trLong ? high >= trTp3 : low <= trTp3) and not tp3Hit
+if tp1Now
+    tp1Hit := true
+if tp2Now
+    tp2Hit := true
+if tp3Now
+    tp3Hit := true
+bool slNow = trLive and conf and (trLong ? close < trSl : close > trSl) and not tp3Hit and not slHit
+if slNow
+    slHit := true
+if slNow or tp3Now
+    posDir := 0
+bool tradeClosed = slHit or tp3Hit
+if trDir != 0 and tradeClosed and na(closeBar)
+    closeBar := bar_index
+
+bool _locked = i_lock and barstate.islast
+bool newBull = flipBull and not _locked
+bool newBear = flipBear and not _locked
+bool newSig = newBull or newBear
+int sigDir = newBull ? 1 : newBear ? -1 : 0
+int prevPos = posDir
+float sDist = i_stopMult * atrStop
+float sSl = close - sigDir * sDist
+float sTp1 = close + sigDir * sDist
+float sTp2 = close + sigDir * 2 * sDist
+float sTp3 = close + sigDir * 3 * sDist
+bool tradeOk = newSig and i_tradeOn and not na(sDist) and sDist > syminfo.mintick and sSl > 0 and sTp1 > 0 and sTp2 > 0 and sTp3 > 0
+int pvDir = trDir
+float pvTp1 = trTp1
+float pvTp2 = trTp2
+float pvTp3 = trTp3
+string trSide = pvDir == 1 ? "long" : "short"
+bool anyExit = tp1Now or tp2Now or tp3Now or slNow
+string trEntryTxt = anyExit ? str.tostring(trEntry, format.mintick) : ""
+string trSlTxt = anyExit ? str.tostring(trSl, format.mintick) : ""
+if newSig
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+    slHit := false
+    closeBar := na
+    trDir := tradeOk ? sigDir : 0
+    trEntry := tradeOk ? close : na
+    trSl := tradeOk ? sSl : na
+    trTp1 := tradeOk ? sTp1 : na
+    trTp2 := tradeOk ? sTp2 : na
+    trTp3 := tradeOk ? sTp3 : na
+    trEntryBar := bar_index
+    lastRejected := i_tradeOn and not tradeOk
+    posDir := i_tradeOn ? (tradeOk ? sigDir : 0) : sigDir
+
+float sizeTot = i_tp1Size + i_tp2Size
+bool sizesScaled = i_tradeOn and sizeTot > 100
+float sz1 = sizesScaled ? i_tp1Size * 100 / sizeTot : i_tp1Size
+float sz2 = sizesScaled ? i_tp2Size * 100 / sizeTot : i_tp2Size
+
+// ── ALERTS ──────────────────────────────────────────────────────
+string FMT_ENTRY   = '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","entry":"{4}"'
+string FMT_ENTRY_T = '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","entry":"{4}","sl":"{5}","tp1":"{6}","tp2":"{7}","tp3":"{8}"'
+string FMT_TP      = '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","entry":"{4}","sl":"{5}","tp":"{6}"'
+string FMT_PART    = '"action":"{0}","ticker":"{1}","tf":"{2}","direction":"{3}","entry":"{4}","sl":"{5}","tp":"{6}","size":"{7}"'
+var string tkr = f_esc(syminfo.tickerid)
+string sigEntry = newSig ? str.tostring(close, format.mintick) : ""
+bool entryFires = newSig and barstate.isconfirmed and (not i_tradeOn or tradeOk)
+
+if newBull and entryFires
+    string _inner = i_tradeOn ? str.format(FMT_ENTRY_T, f_esc(i_actLong), tkr, timeframe.period, "long", sigEntry, str.tostring(sSl, format.mintick), str.tostring(sTp1, format.mintick), str.tostring(sTp2, format.mintick), str.tostring(sTp3, format.mintick)) : str.format(FMT_ENTRY, f_esc(i_actLong), tkr, timeframe.period, "long", sigEntry)
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+if newBear and entryFires
+    string _inner = i_tradeOn ? str.format(FMT_ENTRY_T, f_esc(i_actShort), tkr, timeframe.period, "short", sigEntry, str.tostring(sSl, format.mintick), str.tostring(sTp1, format.mintick), str.tostring(sTp2, format.mintick), str.tostring(sTp3, format.mintick)) : str.format(FMT_ENTRY, f_esc(i_actShort), tkr, timeframe.period, "short", sigEntry)
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+if newBear and barstate.isconfirmed and prevPos == 1
+    string _inner = str.format(FMT_ENTRY, f_esc(i_actCloseLong), tkr, timeframe.period, "long", sigEntry)
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+if newBull and barstate.isconfirmed and prevPos == -1
+    string _inner = str.format(FMT_ENTRY, f_esc(i_actCloseShort), tkr, timeframe.period, "short", sigEntry)
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+
+if tp1Now
+    string _inner = str.format(FMT_PART, f_esc(pvDir == 1 ? i_actPartLong : i_actPartShort), tkr, timeframe.period, trSide, trEntryTxt, trSlTxt, str.tostring(pvTp1, format.mintick), str.tostring(sz1, "#.##"))
+    alert("{" + _inner + "}", alert.freq_once_per_bar)
+if tp2Now
+    string _inner = str.format(FMT_PART, f_esc(pvDir == 1 ? i_actPartLong : i_actPartShort), tkr, timeframe.period, trSide, trEntryTxt, trSlTxt, str.tostring(pvTp2, format.mintick), str.tostring(sz2, "#.##"))
+    alert("{" + _inner + "}", alert.freq_once_per_bar)
+if tp3Now
+    string _inner = str.format(FMT_TP, f_esc(pvDir == 1 ? i_actCloseLong : i_actCloseShort), tkr, timeframe.period, trSide, trEntryTxt, trSlTxt, str.tostring(pvTp3, format.mintick))
+    alert("{" + _inner + "}", alert.freq_once_per_bar)
+if slNow and barstate.isconfirmed
+    string _inner = str.format(FMT_TP, f_esc(pvDir == 1 ? i_actCloseLong : i_actCloseShort), tkr, timeframe.period, trSide, trEntryTxt, trSlTxt, str.tostring(close, format.mintick))
+    alert("{" + _inner + "}", alert.freq_once_per_bar_close)
+
+alertcondition(newBull and entryFires, "BULL Signal", "MarkitTick — BULL Signal Fired")
+alertcondition(newBear and entryFires, "BEAR Signal", "MarkitTick — BEAR Signal Fired")
+alertcondition(newBear and barstate.isconfirmed and prevPos == 1, "Close Long Signal", "MarkitTick — Close Long")
+alertcondition(newBull and barstate.isconfirmed and prevPos == -1, "Close Short Signal", "MarkitTick — Close Short")
+alertcondition(tp1Now, "TP1 Hit", "MarkitTick — TP1 Hit")
+alertcondition(tp2Now, "TP2 Hit", "MarkitTick — TP2 Hit")
+alertcondition(tp3Now, "TP3 Hit", "MarkitTick — TP3 Hit")
+alertcondition(slNow and barstate.isconfirmed, "SL Hit", "MarkitTick — SL Hit")
+
+// ── VISUALS ─────────────────────────────────────────────────────
+if evEndA and not na(actLvlL)
+    line.set_x2(actLvlL, bar_index)
+    label.set_x(actLblL, bar_index)
+if evActA
+    actDiagL := f_newDiag(i_showLeg, sADir, sAHB, sAHigh, sALB, sALow)
+    actLvlL := f_newLvl(i_showLeg, sALvl)
+    actLblL := f_newLvlLbl(i_showLeg, sALvl, i_breakOpt)
+    f_capLine(arrDiag, actDiagL, i_maxFlips)
+    f_capLine(arrLvl, actLvlL, i_maxFlips)
+    f_capLabel(arrLbl, actLblL, i_maxFlips)
+if evEndB and not na(actLvlL)
+    line.set_x2(actLvlL, bar_index)
+    label.set_x(actLblL, bar_index)
+if evActB
+    actDiagL := f_newDiag(i_showLeg, actDir, actHighBar, actHigh, actLowBar, actLow)
+    actLvlL := f_newLvl(i_showLeg, actLvl)
+    actLblL := f_newLvlLbl(i_showLeg, actLvl, i_breakOpt)
+    f_capLine(arrDiag, actDiagL, i_maxFlips)
+    f_capLine(arrLvl, actLvlL, i_maxFlips)
+    f_capLabel(arrLbl, actLblL, i_maxFlips)
+if barstate.islast and actDir != 0 and not na(actLvlL)
+    line.set_x2(actLvlL, bar_index)
+    label.set_x(actLblL, bar_index)
+
+if swgRepl and array.size(arrSwg) > 0
+    label.delete(array.pop(arrSwg))
+if swgNew and i_showSwing
+    label swgL = label.new(pBar, pPx, "", xloc=xloc.bar_index, yloc=pType == 1 ? yloc.abovebar : yloc.belowbar, color=C_SWG, style=label.style_circle, size=size.tiny)
+    f_capLabel(arrSwg, swgL, i_maxFlips)
+
+if newSig and i_showMark
+    label mkL = label.new(bar_index, high, newBull ? "BULL" : "BEAR", xloc=xloc.bar_index, yloc=newBull ? yloc.belowbar : yloc.abovebar, color=newBull ? C_SUP : C_RES, style=newBull ? label.style_label_up : label.style_label_down, textcolor=C_TXT, size=size.small)
+    f_capLabel(arrMk, mkL, i_maxFlips)
+
+if newSig
+    f_deleteLevels()
+    slLine := na
+    entryLine := na
+    tp1Line := na
+    tp2Line := na
+    tp3Line := na
+    slLbl := na
+    entryLbl := na
+    tp1Lbl := na
+    tp2Lbl := na
+    tp3Lbl := na
+    if tradeOk and i_showTrade
+        slLine := line.new(bar_index, trSl, bar_index, trSl, xloc=xloc.bar_index, extend=extend.none, color=C_SL, style=line.style_solid, width=2)
+        entryLine := line.new(bar_index, trEntry, bar_index, trEntry, xloc=xloc.bar_index, extend=extend.none, color=C_ENTRY, style=line.style_dashed, width=1)
+        tp1Line := line.new(bar_index, trTp1, bar_index, trTp1, xloc=xloc.bar_index, extend=extend.none, color=C_TP1, style=line.style_dashed, width=1)
+        tp2Line := line.new(bar_index, trTp2, bar_index, trTp2, xloc=xloc.bar_index, extend=extend.none, color=C_TP2, style=line.style_dashed, width=1)
+        tp3Line := line.new(bar_index, trTp3, bar_index, trTp3, xloc=xloc.bar_index, extend=extend.none, color=C_TP3, style=line.style_dashed, width=1)
+        slLbl := label.new(bar_index, trSl, "✕ SL " + str.tostring(trSl, format.mintick), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(C_SL, 0), textcolor=C_TXT, size=size.small)
+        entryLbl := label.new(bar_index, trEntry, "▶ Entry " + str.tostring(trEntry, format.mintick), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(C_ENTRY, 0), textcolor=C_TXT, size=size.small)
+        tp1Lbl := label.new(bar_index, trTp1, "◆ TP1 " + str.tostring(trTp1, format.mintick), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(C_TP1, 0), textcolor=C_TXT, size=size.small)
+        tp2Lbl := label.new(bar_index, trTp2, "✦ TP2 " + str.tostring(trTp2, format.mintick), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(C_TP2, 0), textcolor=C_TXT, size=size.small)
+        tp3Lbl := label.new(bar_index, trTp3, "◆ TP3 " + str.tostring(trTp3, format.mintick), xloc=xloc.bar_index, yloc=yloc.price, style=label.style_label_left, color=color.new(C_TP3, 0), textcolor=C_TXT, size=size.small)
+
+if not na(tp1Lbl) and tp1Now and not newSig
+    label.set_text(tp1Lbl, "TP1 ✓ HIT " + f_pctTxt(trTp1, trEntry, trLong))
+if not na(tp2Lbl) and tp2Now and not newSig
+    label.set_text(tp2Lbl, "TP2 ✓ HIT " + f_pctTxt(trTp2, trEntry, trLong))
+if not na(tp3Lbl) and tp3Now and not newSig
+    label.set_text(tp3Lbl, "TP3 ✓ HIT " + f_pctTxt(trTp3, trEntry, trLong))
+if not na(slLbl) and slNow and not newSig
+    label.set_text(slLbl, "SL ✓ HIT " + f_pctTxt(close, trEntry, trLong))
+
+bool extUpdate = tradeClosed ? closeBar == bar_index : barstate.islast
+if not na(slLine) and extUpdate
+    int extX = tradeClosed ? closeBar + 10 : last_bar_index + 10
+    line.set_x2(slLine, extX)
+    line.set_x2(entryLine, extX)
+    line.set_x2(tp1Line, extX)
+    line.set_x2(tp2Line, extX)
+    line.set_x2(tp3Line, extX)
+    label.set_x(slLbl, extX)
+    label.set_x(entryLbl, extX)
+    label.set_x(tp1Lbl, extX)
+    label.set_x(tp2Lbl, extX)
+    label.set_x(tp3Lbl, extX)
+color candleCol = i_colorCandles and std ? (trend == 1 ? C_SUP : trend == -1 ? C_RES : na) : na
+plotcandle(open, high, low, close, title="Trend Candles", color=candleCol, wickcolor=candleCol, bordercolor=candleCol)
+
+// ── DASHBOARD ───────────────────────────────────────────────────
+var table dash = table.new(i_dashPos == "Top Left" ? position.top_left : i_dashPos == "Bottom Right" ? position.bottom_right : i_dashPos == "Bottom Left" ? position.bottom_left : position.top_right, 2, 16, border_width=1, border_color=color.new(#2a3040, 40), frame_width=1, frame_color=color.new(#3a2a6d, 40))
+var table notice = table.new(position.middle_center, 1, 2, force_overlay=true)
+
+f_row(table t, int r, string lbl, string val, color vcol, color bg, string tip) =>
+    table.cell(t, 0, r, "  " + lbl, text_color=color.new(C_DASH_TXT, 25), text_halign=text.align_left, text_size=size.small, bgcolor=bg)
+    table.cell(t, 1, r, val + "  ", text_color=vcol, text_halign=text.align_right, text_size=size.small, bgcolor=bg, tooltip=tip)
+
+if barstate.islast
+    if not std
+        table.clear(dash, 0, 0, 1, 15)
+        table.cell(notice, 0, 0, "This indicator runs only on standard charts.", text_color=#FF0000, bgcolor=#2A2E39, text_size=size.large, text_formatting=text.format_bold)
+        table.cell(notice, 0, 1, "Heikin Ashi, Renko, Kagi, Point & Figure, Range and Line Break\nshow synthetic prices. Switch to Candles.", text_color=#FF0000, bgcolor=#2A2E39, text_size=size.normal, text_formatting=text.format_bold)
+    else
+        table.clear(notice, 0, 0, 0, 1)
+        color bgA = C_DASH_BG
+        color bgB = color.new(C_DASH_BG, 40)
+        int n = 0
+        if not i_showDash
+            table.clear(dash, 0, 0, 1, 15)
+            if sizesScaled
+                f_row(dash, 0, "Partial Sizes", "Scaled to 100%", C_DASH_TXT, C_WARN, "TP1 Close % and TP2 Close % total more than 100%, so both were scaled in proportion to 100%.")
+        else
+            table.cell(dash, 0, 0, "FSF", text_color=C_DASH_TXT, text_halign=text.align_left, text_size=size.small, bgcolor=C_DASH_HDR)
+            table.cell(dash, 1, 0, syminfo.ticker + "  ·  " + f_tf() + "  ", text_color=C_DASH_TXT, text_halign=text.align_right, text_size=size.small, bgcolor=C_DASH_HDR)
+            f_row(dash, 1 + n, "Lock", i_lock ? "ACTIVE" : "OFF", i_lock ? C_RES : C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+            n += 1
+            string trendTxt = trend == 0 ? "None" : (initial ? "Initial-" : "") + (trend == 1 ? "Bull" : "Bear")
+            f_row(dash, 1 + n, "Trend", trendTxt, trend == 1 ? C_SUP : trend == -1 ? C_RES : C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "No signal until two swings are accepted: this needs at least Left Bars + Right Bars + 1 bars for the first swing, and more for the second. The first accepted swing leg sets the trend silently (Initial).")
+            n += 1
+            f_row(dash, 1 + n, "Active Leg", actDir == 1 ? "Up" : actDir == -1 ? "Down" : "None", actDir == 1 ? C_SUP : actDir == -1 ? C_RES : C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+            n += 1
+            f_row(dash, 1 + n, "Break Level", actDir != 0 ? str.tostring(actLvl, format.mintick) : "—", C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+            n += 1
+            float legRange = actHigh - actLow
+            float retr = actDir == 1 ? (actHigh - close) / legRange * 100 : (close - actLow) / legRange * 100
+            f_row(dash, 1 + n, "Retraced", actDir != 0 and legRange > 0 ? str.tostring(retr, "0.0") + "%" : "—", C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+            n += 1
+            f_row(dash, 1 + n, "Last Flip", lastFlipDir == 0 ? "none" : (lastFlipDir == 1 ? "BULL, " : "BEAR, ") + str.tostring(bar_index - lastFlipBar) + " bars ago", lastFlipDir == 1 ? C_SUP : lastFlipDir == -1 ? C_RES : C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "Older signal markers and drawings beyond Max Flips Displayed are removed from the chart only; nothing tracked changes.")
+            n += 1
+            if i_tradeOn
+                string trTxt = trDir == 0 ? (lastRejected ? "No Trade" : "Flat") : tradeClosed ? "Flat" : (trDir == 1 ? "Long" : "Short")
+                f_row(dash, 1 + n, "Trade", trTxt, trDir == 1 and not tradeClosed ? C_SUP : trDir == -1 and not tradeClosed ? C_RES : C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "No Trade means the signal did not arm a trade because the stop distance was undefined (ATR still warming up), no more than one tick, or a level was at or below zero.")
+                n += 1
+                f_row(dash, 1 + n, "Entry", trDir != 0 ? str.tostring(trEntry, format.mintick) : "—", C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+                n += 1
+                f_row(dash, 1 + n, "Stop", trDir != 0 ? str.tostring(trSl, format.mintick) + (slHit ? " ✓" : "") : "—", C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+                n += 1
+                f_row(dash, 1 + n, "TP1", trDir != 0 ? str.tostring(trTp1, format.mintick) + (tp1Hit ? " ✓" : "") : "—", C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+                n += 1
+                f_row(dash, 1 + n, "TP2", trDir != 0 ? str.tostring(trTp2, format.mintick) + (tp2Hit ? " ✓" : "") : "—", C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+                n += 1
+                f_row(dash, 1 + n, "TP3", trDir != 0 ? str.tostring(trTp3, format.mintick) + (tp3Hit ? " ✓" : "") : "—", C_DASH_TXT, n % 2 == 0 ? bgA : bgB, "")
+                n += 1
+            if sizesScaled
+                f_row(dash, 1 + n, "Partial Sizes", "Scaled to 100%", C_DASH_TXT, C_WARN, "TP1 Close % and TP2 Close % total more than 100%, so both were scaled in proportion to 100%.")
+                n += 1
+            if 1 + n <= 15
+                table.clear(dash, 0, 1 + n, 1, 15)

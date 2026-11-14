@@ -1,0 +1,224 @@
+[
+  {
+    "file": "AO8IiV8S-Fear-and-Greed-Index-BigBeluga.pine",
+    "sha256": "b9672e71b4123a58f11b1b4283d99606c9e5c43d30c96702b20568fb77532de4",
+    "reviewedAt": "2026-11-14",
+    "type": "context-only",
+    "idea": "Composite of RSI, normalized distance from SMA and candle-direction volume share. Threshold crossings annotate sentiment; no autonomous trade or protection is specified.",
+    "entries": [],
+    "notEntries": [
+      {
+        "marker": "Greed: <score>",
+        "channel": "label",
+        "role": "info",
+        "line": 144
+      },
+      {
+        "marker": "Fear: <score>",
+        "channel": "label",
+        "role": "info",
+        "line": 155
+      }
+    ],
+    "stop": {
+      "has": false,
+      "how": "No author stop."
+    },
+    "targets": {
+      "has": false,
+      "how": "No author targets."
+    },
+    "exit": {
+      "has": false,
+      "how": "No position lifecycle."
+    },
+    "timing": {
+      "knownAtClose": true,
+      "pivotLagBars": 0,
+      "lookahead": "none in source; runtime data availability still requires validation",
+      "repaints": false,
+      "note": "Threshold labels require a closed bar and more than five bars since the last annotation. The last-bar gauge redraws. This is a candle-derived sentiment proxy, not measured exchange flow."
+    },
+    "claims": []
+  },
+  {
+    "file": "0p0kXntP-Volume-Delta-Pivot-Matrix-BigBeluga-v3.0.pine",
+    "sha256": "7848d3bafdc5d64cf026263f9bcee40278264f732666950683cb62d1e91aa33b",
+    "reviewedAt": "2026-11-14",
+    "type": "context-only",
+    "idea": "Pivot support/resistance ranked by a close-location volume proxy across the pivot window. The latest release changes the proxy calculation, not a trade lifecycle.",
+    "entries": [],
+    "notEntries": [
+      {
+        "marker": "Price level / delta volume",
+        "channel": "label",
+        "role": "info",
+        "line": 171
+      }
+    ],
+    "stop": {
+      "has": false,
+      "how": "No author stop."
+    },
+    "targets": {
+      "has": false,
+      "how": "No author targets."
+    },
+    "exit": {
+      "has": false,
+      "how": "No position lifecycle."
+    },
+    "timing": {
+      "knownAtClose": true,
+      "pivotLagBars": 5,
+      "lookahead": "none in source; runtime data availability still requires validation",
+      "repaints": true,
+      "note": "Default pivots confirm after five right bars. Levels and relative delta labels are redrawn on the last bar, anchored retrospectively at the pivot. No entry alerts or strategy orders exist."
+    },
+    "claims": []
+  },
+  {
+    "file": "oM444F7G-Trend-Fair-Value-Gap-Delta-ChartPrime.pine",
+    "sha256": "7011cd0acb2f72c4d626375f894677e06ea8754532d5ab54b4b65a302c5dea79",
+    "reviewedAt": "2026-11-14",
+    "type": "context-only",
+    "idea": "SMA/ATR bands determine trend; aligned three-bar gaps display middle-candle volume-position estimates and mitigation statistics. The source defines no entry or exit orders.",
+    "entries": [],
+    "notEntries": [
+      {
+        "marker": "Current Bullish/Bearish Trend Stats",
+        "channel": "label",
+        "role": "info",
+        "line": 295
+      }
+    ],
+    "stop": {
+      "has": false,
+      "how": "No author stop."
+    },
+    "targets": {
+      "has": false,
+      "how": "No author targets."
+    },
+    "exit": {
+      "has": false,
+      "how": "No position lifecycle."
+    },
+    "timing": {
+      "knownAtClose": true,
+      "pivotLagBars": 0,
+      "lookahead": "none in source; runtime data availability still requires validation",
+      "repaints": false,
+      "note": "Trend changes and gap creation require closed bars. Gap drawings start two bars earlier than confirmation; mitigation may change on the forming bar. The bullish volume calculation lacks the bearish zero-range guard."
+    },
+    "claims": []
+  },
+  {
+    "file": "wMcOiPoG-Absorption-Reversal-Delta-Trap.pine",
+    "sha256": "59625b6abb04edf297cb7bb697f2349686d011c03f79301616275fbc9fd27aca",
+    "reviewedAt": "2026-11-14",
+    "type": "complete-strategy",
+    "idea": "Absorption reversal with a confirmation window, buffered extreme protection, R target, break-even and time exit. The published spacing expression bypasses absorption after the gap; no activation is justified until corrected and lower-timeframe coverage is validated.",
+    "entries": [
+      {
+        "marker": "Long",
+        "channel": "strategy",
+        "side": "long",
+        "line": 201,
+        "condition": "Flat position; absorption setup then selected confirmation within its window; direction, session, trend and stop-width checks all pass. Current source has an unparenthesized spacing OR that can create a setup without absorption; remains quarantined."
+      },
+      {
+        "marker": "Short",
+        "channel": "strategy",
+        "side": "short",
+        "line": 203,
+        "condition": "Flat position; absorption setup then selected confirmation within its window; direction, session, trend and stop-width checks all pass. Current source has an unparenthesized spacing OR that can create a setup without absorption; remains quarantined."
+      }
+    ],
+    "notEntries": [
+      {
+        "marker": "Absorption Glow",
+        "channel": "shape",
+        "role": "info",
+        "line": 112
+      }
+    ],
+    "stop": {
+      "has": true,
+      "how": "Buffered absorption extreme. Bracket is issued once the strategy position is visible."
+    },
+    "targets": {
+      "has": true,
+      "how": "Default 2R relative to the strategy average fill."
+    },
+    "exit": {
+      "has": true,
+      "how": "Stop/target OCO; optional break-even at 1R; default 30-bar time exit."
+    },
+    "timing": {
+      "knownAtClose": true,
+      "pivotLagBars": 0,
+      "lookahead": "none in source; runtime data availability still requires validation",
+      "repaints": false,
+      "note": "Bar-close strategy, default next-bar order fills. Lower-timeframe candle delta falls back to an estimate when missing; neither is actual aggressor-side trade flow. Missing LTF history changes the strategy."
+    },
+    "claims": []
+  },
+  {
+    "file": "E31jKiTS-Structure-Anchored-VWAP-WillyAlgoTrader-v2.0.pine",
+    "sha256": "615d87562a417f16e63f360612aff3bc27448a21bb3137a8eb72a84b5079d22e",
+    "reviewedAt": "2026-11-14",
+    "type": "complete-strategy",
+    "idea": "Structure-anchored VWAP v1.2.1 (TradingView publication revision 2): confirmed retests, delayed reclaim, sigma floor and leg-flip exit. Reviewed as the complete diff from the earlier source contract plus lifecycle call sites.",
+    "entries": [
+      {
+        "marker": "LONG / buy",
+        "channel": "alert",
+        "side": "long",
+        "line": 1546,
+        "condition": "Closed, warmed-up bar; retest or pending reclaim in the current leg direction, optional strength threshold, positive ATR stop and author position flat after earlier exits. Default retest needs close back on the leg side; reclaim window is three bars."
+      },
+      {
+        "marker": "SHORT / sell",
+        "channel": "alert",
+        "side": "short",
+        "line": 1551,
+        "condition": "Closed, warmed-up bar; retest or pending reclaim in the current leg direction, optional strength threshold, positive ATR stop and author position flat after earlier exits. Default retest needs close back on the leg side; reclaim window is three bars."
+      }
+    ],
+    "notEntries": [
+      {
+        "marker": "new_leg_bull / new_leg_bear",
+        "channel": "alert",
+        "role": "info",
+        "line": 1573
+      },
+      {
+        "marker": "vwap_cross_up / vwap_cross_dn",
+        "channel": "alert",
+        "role": "info",
+        "line": 1585
+      }
+    ],
+    "stop": {
+      "has": true,
+      "how": "ATR multiplier at entry; optional break-even amendment after TP1. A stop amendment is not a fill."
+    },
+    "targets": {
+      "has": true,
+      "how": "Three ordered R levels; source model holds the position through TP3."
+    },
+    "exit": {
+      "has": true,
+      "how": "Stop, later break-even stop, TP3 or opposing leg flip. Exits are processed before new entries. Target/BE notifications must be explicitly enabled."
+    },
+    "timing": {
+      "knownAtClose": true,
+      "pivotLagBars": 0,
+      "lookahead": "none in source; runtime data availability still requires validation",
+      "repaints": false,
+      "note": "Reconstructed pivot anchors are not earlier entries. Confirmed-bar management starts after the entry bar. A same-bar exit and new entry must both survive extraction. Internal candle hit statistics are not exchange fills."
+    },
+    "claims": []
+  }
+]

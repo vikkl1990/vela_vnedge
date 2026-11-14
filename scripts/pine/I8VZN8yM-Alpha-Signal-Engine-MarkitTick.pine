@@ -1,0 +1,433 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Alpha Signal Engine [MarkitTick]", overlay=true, max_bars_back=500)
+
+// ══════════════════════════════════════════════════════════════════
+// UDTs & INPUTS
+// ══════════════════════════════════════════════════════════════════
+
+
+type FilterState
+    bool htf        = false
+    bool adx        = false
+    bool volume     = false
+    bool rsi        = false
+    bool volatility = false
+    bool body       = false
+
+type SignalState
+    bool  longSignal  = false
+    bool  shortSignal = false
+    int   direction   = 1
+    float trendLine   = na
+
+
+var string GRP_ST = "⚙️ Supertrend Settings"
+
+i_length            = input.int   (14,  "ATR Length",              minval=2,             group=GRP_ST)
+i_baseFactor        = input.float (3.0, "Base Factor",             minval=0.1, step=0.1, group=GRP_ST)
+i_volatilityWeight  = input.float (1.0, "Volatility Weight",       minval=0.1,           group=GRP_ST)
+i_priceChangeWeight = input.float (5.0, "Price Change Weight",     minval=0.1,           group=GRP_ST)
+i_smoothing         = input.int   (3,   "Factor Smoothing (bars)", minval=1,             group=GRP_ST)
+
+
+var string GRP_FL = "🔎 Filter Settings"
+
+i_useHTF        = input.bool      (false,  "Enable HTF Alignment Filter",  group=GRP_FL)
+i_htfTF         = input.timeframe ("D",   "HTF Timeframe",                group=GRP_FL)
+
+i_useADX        = input.bool  (false,  "Enable ADX Trending Filter",   group=GRP_FL)
+i_adxLen        = input.int   (14,    "ADX Length",    minval=1,      group=GRP_FL)
+i_adxThresh     = input.int   (20,    "ADX Min Threshold", minval=1,  group=GRP_FL)
+
+i_useVolume     = input.bool  (false,  "Enable Volume Surge Filter",   group=GRP_FL)
+i_volLen        = input.int   (20,    "Volume MA Length", minval=1,   group=GRP_FL)
+i_volMult       = input.float (1.2,   "Volume Multiplier", minval=0.1, step=0.1, group=GRP_FL)
+
+i_useRSI        = input.bool  (false,  "Enable RSI Momentum Filter",   group=GRP_FL)
+i_rsiLen        = input.int   (14,    "RSI Length",    minval=1,      group=GRP_FL)
+
+i_useVolatility = input.bool  (false,  "Enable ATR Volatility Regime", group=GRP_FL)
+i_atrRegimeLow  = input.float (0.7,   "ATR Ratio Min", minval=0.1, step=0.1, group=GRP_FL)
+i_atrRegimeHigh = input.float (2.0,   "ATR Ratio Max", minval=0.5, step=0.1, group=GRP_FL)
+
+i_useBody       = input.bool  (false,  "Enable Candle Body Filter",    group=GRP_FL)
+i_bodyMult      = input.float (0.3,   "Min Body / ATR Ratio", minval=0.1, step=0.05, group=GRP_FL)
+
+
+var string GRP_VIS = "🎨 Visual Settings"
+
+i_upColor       = input.color(#00C9A7,     "Uptrend Color",         group=GRP_VIS)
+i_downColor     = input.color(#FF5370,     "Downtrend Color",       group=GRP_VIS)
+i_fillTransp    = input.int  (90,          "Fill Transparency",     minval=0, maxval=100, group=GRP_VIS)
+i_showSignals   = input.bool (true,        "Show Buy/Sell Signals", group=GRP_VIS)
+i_showDashboard = input.bool (true,        "Show Filter Dashboard", group=GRP_VIS)
+
+
+var string GRP_WH = "🔔 Webhook Action Names"
+
+i_actionLong       = input.string("long",       "Long Action",        group=GRP_WH)
+i_actionShort      = input.string("short",      "Short Action",       group=GRP_WH)
+i_actionCloseLong  = input.string("closelong",  "Close Long Action",  group=GRP_WH)
+i_actionCloseShort = input.string("closeshort", "Close Short Action", group=GRP_WH)
+
+// ══════════════════════════════════════════════════════════════════
+// CORE CALCULATION ENGINE
+// ══════════════════════════════════════════════════════════════════
+
+
+float atr       = ta.atr(i_length)
+float priceMove = math.abs(close - close[1]) / close[1]
+float dynRaw    = i_baseFactor + (atr / close) * i_volatilityWeight + priceMove * i_priceChangeWeight
+float factor    = ta.sma(dynRaw, i_smoothing)
+
+float upperBand = (high + low) / 2.0 + factor * atr
+float lowerBand = (high + low) / 2.0 - factor * atr
+
+var float trendLine = na
+var int   direction = 1
+
+if na(trendLine)
+    trendLine := upperBand
+
+
+if close > trendLine
+    direction := 1
+    trendLine := math.max(lowerBand, trendLine)
+else
+    direction := -1
+    trendLine := math.min(upperBand, trendLine)
+
+bool trendFlipUp   = direction == 1  and direction[1] == -1
+bool trendFlipDown = direction == -1 and direction[1] == 1
+
+
+int htfDirection = request.security(
+     syminfo.tickerid,
+     i_htfTF,
+     direction[1],
+     lookahead=barmerge.lookahead_on)
+
+bool htfBullish = htfDirection == 1
+bool htfBearish = htfDirection == -1
+
+bool filterHTF_long  = not i_useHTF or htfBullish
+bool filterHTF_short = not i_useHTF or htfBearish
+
+
+[_, _, adxVal] = ta.dmi(i_adxLen, i_adxLen)
+
+bool isTrending = adxVal > i_adxThresh
+bool filterADX  = not i_useADX or isTrending
+
+
+float volMA      = ta.sma(volume, i_volLen)
+bool  isVolSurge = volume > volMA * i_volMult
+bool  filterVol  = not i_useVolume or isVolSurge
+
+
+float rsiVal      = ta.rsi(close, i_rsiLen)
+bool  rsiLongOK   = rsiVal > 50.0
+bool  rsiShortOK  = rsiVal < 50.0
+bool  filterRSI_long  = not i_useRSI or rsiLongOK
+bool  filterRSI_short = not i_useRSI or rsiShortOK
+
+
+float atrMA        = ta.sma(atr, 50)
+float atrRatio     = atrMA > 0.0 ? atr / atrMA : 1.0
+bool  inNormalVol  = atrRatio >= i_atrRegimeLow and atrRatio <= i_atrRegimeHigh
+bool  filterVolatility = not i_useVolatility or inNormalVol
+
+
+float bodySize     = math.abs(close - open)
+float minBodySize  = atr * i_bodyMult
+bool  isStrongBody = bodySize >= minBodySize
+bool  filterBody   = not i_useBody or isStrongBody
+
+
+FilterState fs = FilterState.new(
+     htf        = i_useHTF        ? (htfBullish or htfBearish) : true,
+     adx        = i_useADX        ? isTrending                 : true,
+     volume     = i_useVolume     ? isVolSurge                 : true,
+     rsi        = i_useRSI        ? (rsiLongOK or rsiShortOK)  : true,
+     volatility = i_useVolatility ? inNormalVol                : true,
+     body       = i_useBody       ? isStrongBody               : true)
+
+
+bool longSignal  = trendFlipUp   and filterHTF_long  and filterADX and
+                   filterVol     and filterRSI_long  and filterVolatility and filterBody
+
+bool shortSignal = trendFlipDown and filterHTF_short and filterADX and
+                   filterVol     and filterRSI_short and filterVolatility and filterBody
+
+SignalState ss = SignalState.new(
+     longSignal  = longSignal,
+     shortSignal = shortSignal,
+     direction   = direction,
+     trendLine   = trendLine)
+
+// ══════════════════════════════════════════════════════════════════
+// VISUALIZATION & DASHBOARD
+// ══════════════════════════════════════════════════════════════════
+
+
+plot_up = plot(
+     ss.direction == 1  ? ss.trendLine : na,
+     "Up Trend",
+     color     = i_upColor,
+     linewidth = 2,
+     style     = plot.style_linebr,
+     display   = display.all - display.price_scale - display.status_line)
+
+plot_down = plot(
+     ss.direction == -1 ? ss.trendLine : na,
+     "Down Trend",
+     color     = i_downColor,
+     linewidth = 2,
+     style     = plot.style_linebr,
+     display   = display.all - display.price_scale - display.status_line)
+
+plot_mid = plot(
+     (open + close) / 2.0,
+     display = display.none)
+
+plot_band = plot(ss.trendLine, "Band Anchor", color=na, display=display.none)
+
+
+int   _denseTransp = math.max(0, i_fillTransp - 50)
+float _midPrice    = (open + close) / 2.0
+float _topVal      = math.max(_midPrice, nz(ss.trendLine, _midPrice))
+float _botVal      = math.min(_midPrice, nz(ss.trendLine, _midPrice))
+
+color _topFill = ss.direction == 1 ? color.new(i_upColor,   _denseTransp) : color.new(i_downColor, i_fillTransp)
+color _botFill = ss.direction == 1 ? color.new(i_upColor,   i_fillTransp) : color.new(i_downColor, _denseTransp)
+
+fill(plot_band, plot_mid, _topVal, _botVal, _topFill, _botFill)
+
+
+plotshape(
+     i_showSignals and ss.longSignal  ? ss.trendLine : na,
+     title     = "Buy Signal",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = i_upColor,
+     textcolor = color.white,
+     text      = "B",
+     size      = size.small)
+
+plotshape(
+     i_showSignals and ss.shortSignal ? ss.trendLine : na,
+     title     = "Sell Signal",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = i_downColor,
+     textcolor = color.white,
+     text      = "S",
+     size      = size.small)
+
+
+f_statusIcon(bool isEnabled, bool state) =>
+    string _r = "🔴 OFF"
+    if not isEnabled
+        _r := "⚪ OFF"
+    else if state
+        _r := "🟢 ON "
+    _r
+
+f_htfIcon(bool isEnabled) =>
+    string _r = "🔴 Opposed"
+    if not isEnabled
+        _r := "⚪ OFF"
+    else if ss.direction == 1 and fs.htf
+        _r := "🟢 ↑ Aligned"
+    else if ss.direction == -1 and fs.htf
+        _r := "🟢 ↓ Aligned"
+    _r
+
+
+
+var table dash = table.new(
+     position     = position.top_right,
+     columns      = 2,
+     rows         = 9,
+     bgcolor      = color.new(color.black, 75),
+     border_color = color.new(color.gray,  60),
+     border_width = 1,
+     frame_color  = color.new(color.gray,  40),
+     frame_width  = 1)
+
+f_cell(int col, int row, string txt, color bg, color tc) =>
+    table.cell(dash, col, row, txt,
+         bgcolor    = bg,
+         text_color = tc,
+         text_size  = size.small)
+
+if i_showDashboard
+
+    f_cell(0, 0, "Filter", color.new(color.blue, 60), color.white)
+    f_cell(1, 0, "Status", color.new(color.blue, 60), color.white)
+
+    bool htfOK = not i_useHTF or fs.htf
+    f_cell(0, 1, "HTF Align", color.new(color.gray, 80), color.silver)
+    f_cell(1, 1, f_htfIcon(i_useHTF),
+         color.new(htfOK ? color.green : color.red, 80),
+         htfOK ? color.lime : color.red)
+
+    bool adxOK = not i_useADX or fs.adx
+    f_cell(0, 2, "ADX Trend", color.new(color.gray, 80), color.silver)
+    f_cell(1, 2, f_statusIcon(i_useADX, fs.adx),
+         color.new(adxOK ? color.green : color.red, 80),
+         adxOK ? color.lime : color.red)
+
+    bool volOK = not i_useVolume or fs.volume
+    f_cell(0, 3, "Vol Surge", color.new(color.gray, 80), color.silver)
+    f_cell(1, 3, f_statusIcon(i_useVolume, fs.volume),
+         color.new(volOK ? color.green : color.red, 80),
+         volOK ? color.lime : color.red)
+
+    bool rsiDirOK = ss.direction == 1 ? rsiLongOK : rsiShortOK
+    bool rsiOK    = not i_useRSI or rsiDirOK
+    f_cell(0, 4, "RSI Gate", color.new(color.gray, 80), color.silver)
+    f_cell(1, 4, f_statusIcon(i_useRSI, rsiDirOK),
+         color.new(rsiOK ? color.green : color.red, 80),
+         rsiOK ? color.lime : color.red)
+
+    bool volRegOK = not i_useVolatility or fs.volatility
+    f_cell(0, 5, "ATR Regime", color.new(color.gray, 80), color.silver)
+    f_cell(1, 5, f_statusIcon(i_useVolatility, fs.volatility),
+         color.new(volRegOK ? color.green : color.red, 80),
+         volRegOK ? color.lime : color.red)
+
+    bool bodyOK = not i_useBody or fs.body
+    f_cell(0, 6, "Body Str", color.new(color.gray, 80), color.silver)
+    f_cell(1, 6, f_statusIcon(i_useBody, fs.body),
+         color.new(bodyOK ? color.green : color.red, 80),
+         bodyOK ? color.lime : color.red)
+
+    f_cell(0, 7, "Direction", color.new(color.gray, 80), color.silver)
+    f_cell(1, 7,
+         ss.direction == 1 ? "🟢 Bullish" : "🔴 Bearish",
+         color.new(ss.direction == 1 ? color.green : color.red, 80),
+         ss.direction == 1 ? color.lime : color.red)
+
+    bool   anySignal = ss.longSignal or ss.shortSignal
+    string _sigTxt   = "— Wait"
+    if ss.longSignal
+        _sigTxt := "⚡ BUY"
+    else if ss.shortSignal
+        _sigTxt := "⚡ SELL"
+
+    color _sigBg = anySignal ? color.new(ss.longSignal ? color.green : color.red, 60) : color.new(color.gray, 80)
+    color _sigTc = anySignal ? color.white : color.silver
+
+    f_cell(0, 8, "Signal", color.new(color.gray, 75), color.white)
+    f_cell(1, 8, _sigTxt, _sigBg, _sigTc)
+
+// ══════════════════════════════════════════════════════════════════
+// ALERTS & JSON WEBHOOK
+// ══════════════════════════════════════════════════════════════════
+
+
+float entryPrice = close[1]
+float atrVal     = atr[1]
+
+float longSL  = ss.trendLine - atrVal
+float longTP1 = entryPrice   + atrVal * 1.5
+float longTP2 = entryPrice   + atrVal * 2.5
+float longTP3 = entryPrice   + atrVal * 3.5
+
+float shortSL  = ss.trendLine + atrVal
+float shortTP1 = entryPrice   - atrVal * 1.5
+float shortTP2 = entryPrice   - atrVal * 2.5
+float shortTP3 = entryPrice   - atrVal * 3.5
+
+
+string _longInner = str.format(
+     '"action":"{0}","symbol":"{1}","timeframe":"{2}",' +
+     '"entry":"{3}","sl":"{4}",' +
+     '"tp1":"{5}","tp2":"{6}","tp3":"{7}",' +
+     '"direction":"long",' +
+     '"filter_htf":"{8}","filter_adx":"{9}",' +
+     '"filter_vol":"{10}","filter_rsi":"{11}",' +
+     '"filter_regime":"{12}","filter_body":"{13}"',
+     i_actionLong,
+     syminfo.tickerid,
+     timeframe.period,
+     str.tostring(entryPrice, format.mintick),
+     str.tostring(longSL,     format.mintick),
+     str.tostring(longTP1,    format.mintick),
+     str.tostring(longTP2,    format.mintick),
+     str.tostring(longTP3,    format.mintick),
+     str.tostring(fs.htf),
+     str.tostring(fs.adx),
+     str.tostring(fs.volume),
+     str.tostring(rsiLongOK),
+     str.tostring(fs.volatility),
+     str.tostring(fs.body))
+
+string longPayload = "{" + _longInner + "}"
+
+string _shortInner = str.format(
+     '"action":"{0}","symbol":"{1}","timeframe":"{2}",' +
+     '"entry":"{3}","sl":"{4}",' +
+     '"tp1":"{5}","tp2":"{6}","tp3":"{7}",' +
+     '"direction":"short",' +
+     '"filter_htf":"{8}","filter_adx":"{9}",' +
+     '"filter_vol":"{10}","filter_rsi":"{11}",' +
+     '"filter_regime":"{12}","filter_body":"{13}"',
+     i_actionShort,
+     syminfo.tickerid,
+     timeframe.period,
+     str.tostring(entryPrice,  format.mintick),
+     str.tostring(shortSL,     format.mintick),
+     str.tostring(shortTP1,    format.mintick),
+     str.tostring(shortTP2,    format.mintick),
+     str.tostring(shortTP3,    format.mintick),
+     str.tostring(fs.htf),
+     str.tostring(fs.adx),
+     str.tostring(fs.volume),
+     str.tostring(rsiShortOK),
+     str.tostring(fs.volatility),
+     str.tostring(fs.body))
+
+string shortPayload = "{" + _shortInner + "}"
+
+string _closeLongInner = str.format(
+     '"action":"{0}","symbol":"{1}","timeframe":"{2}",' +
+     '"direction":"closelong","reason":"trend_flip"',
+     i_actionCloseLong,
+     syminfo.tickerid,
+     timeframe.period)
+
+string closeLongPayload = "{" + _closeLongInner + "}"
+
+string _closeShortInner = str.format(
+     '"action":"{0}","symbol":"{1}","timeframe":"{2}",' +
+     '"direction":"closeshort","reason":"trend_flip"',
+     i_actionCloseShort,
+     syminfo.tickerid,
+     timeframe.period)
+
+string closeShortPayload = "{" + _closeShortInner + "}"
+
+
+if ss.longSignal and barstate.isconfirmed
+    alert(longPayload, alert.freq_once_per_bar_close)
+
+if ss.shortSignal and barstate.isconfirmed
+    alert(shortPayload, alert.freq_once_per_bar_close)
+
+if trendFlipDown and barstate.isconfirmed
+    alert(closeLongPayload, alert.freq_once_per_bar_close)
+
+if trendFlipUp and barstate.isconfirmed
+    alert(closeShortPayload, alert.freq_once_per_bar_close)
+
+
+alertcondition(ss.longSignal,  "BUY Signal",        "MarkitTick — BUY Signal Fired")
+alertcondition(ss.shortSignal, "SELL Signal",        "MarkitTick — SELL Signal Fired")
+alertcondition(trendFlipDown,  "Close Long Signal",  "MarkitTick — Close Long")
+alertcondition(trendFlipUp,    "Close Short Signal", "MarkitTick — Close Short")

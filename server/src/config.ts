@@ -1,3 +1,6 @@
+import {candleReplayBlock} from './paper/basket.ts';
+import {readerContractError,labelStyleContractError,type LabelStyleSides} from './scanners/readerFixes.ts';
+import {willyNativeReady} from './scanners/willyContracts.ts';
 import {scannerPairs} from './scanners/allocation.ts';
 import { validateExecutionPlans, type ExecutionPlan } from './paper/executionPlans.ts';
 import fs from 'node:fs';
@@ -282,7 +285,7 @@ export interface PaperConfig {
  */
 export type ExitOverride = Partial<Pick<PaperConfig,
   'floorAtR' | 'floorKeepR' | 'trailAfterR' | 'trailGiveBackPct' | 'trailAtrMult' | 'earlyCut' |
-  'fallbackRR' | 'tpSplit' | 'scriptTargets' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
+  'breakEvenAfterTp1' | 'trendExit' | 'structureTrail' | 'fallbackRR' | 'tpSplit' | 'scriptTargets' | 'trailSteps' | 'trailStall' | 'earlyStall' | 'fallbackAtrSl' | 'staleBars'>>;
 
 /** How one scanner treats the trend: with it, against it, or ignoring it. */
 export type TrendGateMode = 'follow' | 'fade' | 'off';
@@ -320,10 +323,19 @@ export interface ScannerConfig {
    * inference, which is a guess.
    */
   sides?: Record<string, 'long' | 'short' | 'none'>;
+  /** Reader-2 exact label-text/style contract for ambiguous glyphs. */
+  labelStyles?: LabelStyleSides;
   /** Decision 195: the plot (and oscillator mode/levels) a generic rule reads; a live run will not trade an unpinned generic rule. */
   rulePin?: { plot: string; mode?: 'zero' | 'obos'; ob?: number; os?: number } | null;
   /** Rising edge only: a condition or shape true on consecutive bars is one entry, on its first bar (decision 57). */
   edge?: boolean;
+  /**
+   * Decision 241: the reader revision this scanner's outputs are read with. Unset or 1: the reader its record was earned
+   * under. 2: reversal alerts close the side they name first, closing and failure titles are not entries, "Dn" is a
+   * direction. Part of the reading, so opting in starts a new record.
+   */
+  /** 3: explicit author lifecycle; only validated adapters or context-only roles. */
+  reader?: 1 | 2 | 3;
   /** IANA timezone the script's sessions and clock functions run in (default Etc/UTC; session scripts usually mean America/New_York). */
   timezone?: string;
   /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
@@ -450,7 +462,9 @@ export interface IncubatorConfig {
     /** Decision 106: no more live cells than this on one market, or for one scanner, so the fleet spreads across pairs. */
     maxPerMarket?: number; maxPerScanner?: number;
     /** Promote gate proposals into the fleet without the owner's click, within maxPerWeek and maxFleet (decision 55). */
-    auto?: boolean };
+    auto?: boolean;
+    /** Paper-only evidence review cadence; fresh closes can request a review after five minutes. */
+    reviewMinutes?: number };
   demote: { window: number; minTrades: number; maxPfR: number;
     /** Decision 106: a live cell with no account trade for this many days is proposed for demotion; it holds a slot and does nothing. */
     silentDays?: number;
@@ -628,7 +642,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     admit: { rotation: { enabled: false, maxPerDay: 12, idleDaysByTf: { '15m': 7, '1h': 14, '4h': 28 }, cooldownDays: 3 }, cohortMarkets: { default: 5, '1h': 8, '4h': 12 }, minCohortMarkets: 3,
       reserve: [{ tfs: ['4h'], markets: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD'], slots: 80 }, { tfs: ['4h'], slots: 200 }] },
-    promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6 },
+    promote: { maxPerWeek: 2, maxFleet: 20, auto: false, maxPerMarket: 2, maxPerScanner: 6, reviewMinutes: 15 },
     demote: { window: 50, minTrades: 30, maxPfR: 0.9, silentDays: 14, silentDaysByTf: { '1h': 30, '4h': 60 }, marketOutDays: 3, costStarvedRefusals: 5, costStarvedDays: 14 },
     cooldownDays: 30,
     mirror: { enabled: false, minTrades: 5, minNetR: 0, minTurnoverUsd: 2_000_000 },
@@ -915,13 +929,17 @@ export function validateConfig(c: AppConfig): string[] {
     ...Object.entries(p.exitBySymbol??{}).map(([k,v])=>[`paper.exitBySymbol.${k}`,v] as const),
     ...Object.entries(c.scanners??{}).filter(([,v])=>v.exit!==undefined).map(([k,v])=>[`scanners.${k}.exit`,v.exit!] as const)];
   for(const [name,o] of targetOverrides){
+    if(o.breakEvenAfterTp1!==undefined&&typeof o.breakEvenAfterTp1!=='boolean')errs.push(`${name}.breakEvenAfterTp1 must be boolean`);
+    if(o.trendExit&&!(typeof o.trendExit.enabled==='boolean'&&o.trendExit.emaLen>=2&&o.trendExit.minR>=0))errs.push(`${name}.trendExit is invalid`);
+    if(o.structureTrail&&!(typeof o.structureTrail.enabled==='boolean'&&Number.isInteger(o.structureTrail.pivot)&&o.structureTrail.pivot>=1&&o.structureTrail.incrPct>=0&&Array.isArray(o.structureTrail.books)&&o.structureTrail.books.every(b=>['account','shadow'].includes(b))))errs.push(`${name}.structureTrail is invalid`);
     if(o.scriptTargets!==undefined&&!['use','widen','ignore'].includes(o.scriptTargets))errs.push(`${name}.scriptTargets must be use|widen|ignore`);
     if(o.fallbackRR!==undefined&&(!Array.isArray(o.fallbackRR)||o.fallbackRR.length!==3||!o.fallbackRR.every((n,i,a)=>Number.isFinite(n)&&n>0&&(i===0||n>a[i-1]))))errs.push(`${name}.fallbackRR must be three increasing positive values`);
     if(o.tpSplit!==undefined&&(!Array.isArray(o.tpSplit)||o.tpSplit.length!==3||!o.tpSplit.every(n=>Number.isFinite(n)&&n>=0&&n<=1)||Math.abs(o.tpSplit.reduce((a,b)=>a+b,0)-1)>1e-6))errs.push(`${name}.tpSplit must be three fractions summing to one`);
   }
   if (p.minSizeShare !== undefined && !(Number.isFinite(p.minSizeShare) && p.minSizeShare >= 0 && p.minSizeShare <= 1)) errs.push('paper.minSizeShare must be 0..1');
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
-  errs.push(...validateExecutionPlans(c.executionPlans, TF_SECONDS));
+  for(const [id,sc] of Object.entries(c.scanners??{}))if(sc.enabled&&candleReplayBlock(id))errs.push(`scanner ${id}: requires an isolated basket shadow execution plan; ordinary scanning is unsupported`);
+  errs.push(...validateExecutionPlans(c.executionPlans, TF_SECONDS, c));
   if (p.scalperOffer?.joinedAt !== undefined && !(Number.isFinite(p.scalperOffer.joinedAt) && p.scalperOffer.joinedAt >= 0)) errs.push('paper.scalperOffer.joinedAt must be an epoch timestamp in milliseconds');
   const offerProof=p.scalperOffer?.verification;
   if(offerProof && (offerProof.source!=='delta-india-trading-preferences'||!/^[a-f0-9]{64}$/.test(offerProof.accountHash)||typeof offerProof.connectionRevision!=='string'||!offerProof.connectionRevision||![offerProof.verifiedAt,offerProof.effectiveFrom].every(n=>Number.isSafeInteger(n)&&n>0)||offerProof.effectiveFrom<offerProof.verifiedAt)) errs.push('paper.scalperOffer.verification must contain account-bound evidence with no backdating');
@@ -960,6 +978,7 @@ export function validateConfig(c: AppConfig): string[] {
     if (inc.gate?.staleDaysByTf !== undefined && !Object.values(inc.gate.staleDaysByTf).every(v => v > 0 && v <= 365)) errs.push('incubator.gate.staleDaysByTf values must be 1..365 days');
     if (inc.screen?.retryPerNight !== undefined && !(Number.isInteger(inc.screen.retryPerNight) && inc.screen.retryPerNight >= 0 && inc.screen.retryPerNight <= 200)) errs.push('incubator.screen.retryPerNight must be 0..200');
     if (!(inc.promote?.maxPerWeek >= 0 && inc.promote?.maxFleet >= 1)) errs.push('incubator.promote needs maxPerWeek ≥ 0 and maxFleet ≥ 1');
+    if(inc.promote?.reviewMinutes!==undefined&&(!Number.isInteger(inc.promote.reviewMinutes)||inc.promote.reviewMinutes<5||inc.promote.reviewMinutes>1440))errs.push('incubator.promote.reviewMinutes must be an integer from 5 to 1440');
     if (!(inc.screen?.slices >= 1 && inc.screen?.slices <= 31)) errs.push('incubator.screen.slices must be 1..31');
   }
   return errs;
@@ -1201,6 +1220,11 @@ export function validateExtendedConfig(c: AppConfig): string[] {
     if (sc?.rule != null && !GENERIC_RULES.includes(sc.rule)) errs.push(`scanners.${id}.rule must be ${GENERIC_RULES.join('|')}`);
     if (sc?.sources != null && (!Array.isArray(sc.sources) || sc.sources.some(x => !['alert', 'alertcondition', 'shape', 'derived', 'label'].includes(x)))) errs.push(`scanners.${id}.sources must list alert|alertcondition|shape|derived|label`);
     if (sc?.sides != null && (typeof sc.sides !== 'object' || Object.values(sc.sides).some(v => !['long', 'short', 'none'].includes(v as string)))) errs.push(`scanners.${id}.sides must map titles to long|short|none`);
+    if (sc?.reader != null && ![1, 2, 3].includes(sc.reader as number)) errs.push(`scanners.${id}.reader must be 1, 2 or 3`);
+    if(sc?.reader===3&&!willyNativeReady(id))errs.push(`scanners.${id}: reader 3 requires a validated Willy adapter or non-trading role`);
+    if(sc?.reader===3&&(sc.invert||sc.rule))errs.push(`scanners.${id}: native reader cannot invert or substitute a derived rule`);
+    const readerError=readerContractError(id,sc?.reader,sc?.sides);if(readerError)errs.push(`scanners.${id}: ${readerError}`);
+    const styleError=labelStyleContractError(sc?.reader,sc?.labelStyles);if(styleError)errs.push(`scanners.${id}: ${styleError}`);
     if (sc?.timezone != null) { try { new Intl.DateTimeFormat('en-US', { timeZone: sc.timezone }); } catch { errs.push(`scanners.${id}.timezone is not an IANA timezone`); } }
     if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
   }

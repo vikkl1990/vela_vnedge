@@ -1,0 +1,63 @@
+// © [MarkitTick]
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+//@version=6
+indicator("Dynamic Pivot Point [MarkitTick]", overlay = true)
+
+// -----------------------------------------------------------------------------
+// Inputs
+// -----------------------------------------------------------------------------
+string GROUP_SETTINGS = 'Pivot Points Settings'
+
+bool   showPivotInput = input.bool(true, title = 'Show Pivot Points', group = GROUP_SETTINGS)
+int    pilenInput     = input.int(5, title = 'Pivot Length', minval = 1, group = GROUP_SETTINGS)
+string tfInput        = input.timeframe('', title = 'Timeframe', group = GROUP_SETTINGS)
+
+// -----------------------------------------------------------------------------
+// Calculations
+// -----------------------------------------------------------------------------
+// Fetching HTF data using Tuple Extraction for efficiency
+[htfHigh, htfLow, htfClose] = request.security(syminfo.tickerid, tfInput, [high, low, close])
+
+// Core Pivot Math
+float pivot = (htfHigh + htfLow + htfClose) / 3.0
+float r1    = 2 * pivot - htfLow
+float s1    = 2 * pivot - htfHigh
+float r2    = pivot + htfHigh - htfLow
+float s2    = pivot - (htfHigh - htfLow)
+float r3    = htfHigh + 2 * (pivot - htfLow)
+float s3    = htfLow - 2 * (htfHigh - pivot)
+
+// Smoothing (Dynamic Component)
+// Calculated in global scope to ensure consistency of the EMA history buffer
+float Mapi = ta.ema(pivot, pilenInput)
+float mas1 = ta.ema(s1, pilenInput)
+float mar1 = ta.ema(r1, pilenInput)
+float mas2 = ta.ema(s2, pilenInput)
+float mar2 = ta.ema(r2, pilenInput)
+float mas3 = ta.ema(s3, pilenInput)
+float mar3 = ta.ema(r3, pilenInput)
+
+// Prepare conditional series for plotting
+float p_pivot = showPivotInput ? Mapi : na
+float p_s1    = showPivotInput ? mas1 : na
+float p_s2    = showPivotInput ? mas2 : na
+float p_s3    = showPivotInput ? mas3 : na
+float p_r1    = showPivotInput ? mar1 : na
+float p_r2    = showPivotInput ? mar2 : na
+float p_r3    = showPivotInput ? mar3 : na
+
+// -----------------------------------------------------------------------------
+// Visuals
+// -----------------------------------------------------------------------------
+// Using Plot Splitting to enable native Style tab control
+plot(p_pivot, title = "Pivot",        color = color.white, linewidth = 1)
+
+plot(p_s1,    title = "Support 1",    color = color.green, linewidth = 1)
+plot(p_s2,    title = "Support 2",    color = color.green, linewidth = 1)
+plot(p_s3,    title = "Support 3",    color = color.green, linewidth = 1)
+
+plot(p_r1,    title = "Resistance 1", color = color.red,   linewidth = 1)
+plot(p_r2,    title = "Resistance 2", color = color.red,   linewidth = 1)
+plot(p_r3,    title = "Resistance 3", color = color.red,   linewidth = 1)

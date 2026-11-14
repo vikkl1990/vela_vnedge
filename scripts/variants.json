@@ -40,5 +40,119 @@
     "base": "trend-impulse-channels-zeiierman",
     "name": "Trend Impulse Channels | continuation maker",
     "why": "Decision 215: preserve the measured Upper Retest long / Lower Retest short continuation reading with a 0.1-ATR passive entry and five-minute expiry."
+  },
+  {
+    "id": "synapse-trail-pro-author-native",
+    "base": "synapse-trail-pro",
+    "name": "Synapse Trail Pro | author-native lifecycle",
+    "why": "Versioned author-intent reading with explicit lifecycle; disabled until independent evidence passes."
+  },
+  {
+    "id": "liquidity-trail-matrix-author-native",
+    "base": "liquidity-trail-matrix",
+    "name": "Liquidity Trail Matrix | author-native lifecycle",
+    "why": "Versioned author-intent reading with explicit lifecycle; disabled until independent evidence passes."
+  },
+  {
+    "id": "high-volume-pivot-support-resistance-zones-author-signals",
+    "base": "high-volume-pivot-support-resistance-zones",
+    "name": "High Volume Pivot Support Resistance Zones | author signals",
+    "why": "Exact source-direction contract; independent evidence, disabled by default. Author provides signal/structure; exits remain the bot policy, not a claimed native lifecycle."
+  },
+  {
+    "id": "dynamic-trend-bands-anchored-vwap-signals-author-signals",
+    "base": "dynamic-trend-bands-anchored-vwap-signals",
+    "name": "Dynamic Trend Bands Anchored Vwap Signals | author signals",
+    "why": "Exact source-direction contract; independent evidence, disabled by default. Author provides signal/structure; exits remain the bot policy, not a claimed native lifecycle."
+  },
+  {
+    "id": "triangular-hull-moving-average-volatility-author-signals",
+    "base": "triangular-hull-moving-average-volatility",
+    "name": "Triangular Hull Moving Average Volatility | author signals",
+    "why": "Exact source-direction contract; independent evidence, disabled by default. Author provides signal/structure; exits remain the bot policy, not a claimed native lifecycle."
+  },
+  {
+    "id": "liquidity-void-detector-zeiierman-author-direction",
+    "base": "liquidity-void-detector-zeiierman",
+    "name": "Liquidity Void Detector | refill direction (research)",
+    "why": "Author and raw source describe Buy-Side Imbalance as downward refill and Sell-Side Imbalance as upward refill. This tests that direction separately; threshold observations are a hypothesis, not a complete author trading strategy. Bot exits and independent evidence are required."
+  },
+  {
+    "id": "false-breakout-expo-author-signals",
+    "base": "false-breakout-expo",
+    "name": "False Breakout | failed-break direction",
+    "why": "Alert names describe the failed breakout, not the trade: failed up is short and failed down is long. Exact source conditions, separate evidence; bot-managed exits are research assumptions."
+  },
+  {
+    "id": "adaptive-smart-money-liquidity-sweep-levels-author-signals",
+    "base": "adaptive-smart-money-liquidity-sweep-levels",
+    "name": "Adaptive Smart Money Liquidity | wick sweeps",
+    "why": "Upper wick sweeps are bearish and lower wick sweeps bullish. Only confirmed wick-sweep alerts qualify; detection, removal, mass liquidation and depth-balance alerts remain context. Bot-managed exits are research assumptions."
+  },
+  {
+    "id": "zero-lag-ma-trend-levels-author-retests",
+    "base": "zero-lag-ma-trend-levels",
+    "name": "Zero-Lag MA Trend Levels | confirmed retests",
+    "why": "Read only the author's up/down box retest labels, at their creation bar rather than previous-bar drawing position. Cross diamonds are context. Separate evidence with bot-managed exits, not an author-native exit lifecycle."
+  },
+  {
+    "id": "swing-failure-zones-and-signals-author-signals",
+    "base": "swing-failure-zones-and-signals",
+    "name": "Swing Failure Zones | authored reversal signals",
+    "why": "The source reuses its Swing Failure alert titles for zone mitigation. Read only the actual Bullish/Bearish Signal shapes, which implement the authored sweep and opposite-extreme close. Management stays bot-defined and evidence separate."
+  },
+  {
+    "id": "zone-shift-author-retests",
+    "base": "zone-shift",
+    "name": "Zone Shift | confirmed retest diamonds",
+    "why": "The same diamond glyph means long below a bullish bar and short above a bearish bar. Read only exact label_up/label_down styles on their confirmed creation bar. Unknown styles do not enter; bot-managed exits and separate evidence remain required."
+  },
+  {
+    "id": "breaker-blocks-with-signals-author-retests",
+    "base": "breaker-blocks-with-signals",
+    "name": "Breaker Blocks | confirmed retests",
+    "why": "The author permits entries only on breaker-block retests. Read exact signal UP/DN conditions, excluding block formation, reset, mitigation and swing-level context. PD targets and midpoint invalidation are not encoded as native orders here; exits remain bot policy with separate evidence. A source-pinned drawing-method compatibility adapter restores missing geometry only for this variant; the legacy scanner is unchanged."
+  },
+  {
+    "id": "rsi-volume-ladder-basket",
+    "base": "rsi-volume-ladder",
+    "name": "RSI Volume Ladder | basket research",
+    "why": "Opt-in experimental basket adapter. Up to three actual-fill entries share one $150 margin budget and the existing stop-risk cap. Candidate marker excludes the Pine broker simulator state; production orders are not supported."
+  },
+  {
+    "id": "reactive-trail-system-author-native",
+    "base": "reactive-trail-system",
+    "name": "Reactive Trail System | author lifecycle (research)",
+    "why": "Confirmed trade entries with native SL and three target milestones; TP3 closes the position. Destination-only reversal closes the old side; entry-qualified flips only. Disabled separate-evidence research profile; no promotion or account activation."
+  },
+  {
+    "id": "reaction-level-matrix-author-native",
+    "base": "reaction-level-matrix",
+    "name": "Reaction Level Matrix | author lifecycle (research)",
+    "why": "Confirmed scored reaction entries, native stop and TP3 closure; TP1/TP2 milestones and acknowledged BE updates. Level-break notices remain context. Disabled separate-evidence research profile; no promotion or account activation."
+  },
+  {
+    "id": "strat-trap-vwap-engine-author-native",
+    "base": "strat-trap-vwap-engine",
+    "name": "STRAT Trap & VWAP Engine | author lifecycle (research)",
+    "why": "Versioned full-risk trade payloads only. Setups and filtered trigger notices never enter. Author default Trap Bar mode, reload-stable FTC filter off, native stop/BE and TP3 closure. Disabled separate-evidence research profile; no promotion or account activation."
+  },
+  {
+    "id": "smart-swing-vwap-zeiierman-author-retests",
+    "base": "smart-swing-vwap-zeiierman",
+    "name": "Smart Swing VWAP | polarity-aligned retests (research)",
+    "why": "Confirmed retests after price moves away and returns to polarity-aligned AVWAP. Crosses, polarity flips and anchor notices are context. Author defines no position exits; this research profile explicitly retains bot-managed exits with separate evidence."
+  },
+  {
+    "id": "smart-money-breakout-signals-author-native-v1",
+    "base": "smart-money-breakout-signals",
+    "name": "Smart Money Breakout | native geometry v1 (research)",
+    "why": "Source-pinned closed-bar breakout, actual native stop and three target milestones; full closure at TP3. Separate experimental evidence; legacy long-only account reader unchanged."
+  },
+  {
+    "id": "machine-learning-rsi-ai-classification-ranking-zeiierman-author-native-v1",
+    "base": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+    "name": "ML RSI | classifier and Supertrend v1 (research)",
+    "why": "Source-pinned confirmed classifier entries only, native protective Supertrend with causal amendments and opposite-side flip exits; no invented TP. Separate experimental evidence; legacy account reader unchanged."
   }
 ]

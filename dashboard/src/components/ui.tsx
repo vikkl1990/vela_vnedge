@@ -427,11 +427,11 @@ export function BookBadge({ book, mode = 'paper', short = false, generic = false
   return <span className={`pill pill-${m.tone} ${className}`} title={m.hint}>{short ? m.label.replace(' account', '') : m.label}</span>
 }
 
-export function PageTitle({ pre, accent, post, sub }: { pre: string; accent: string; post?: string; sub?: ReactNode }) {
+export function PageTitle({ pre, accent, post, sub }: { pre: string; accent?: string; post?: string; sub?: ReactNode }) {
   return (
     <div className="page-title">
       <h1>
-        {pre} <em>{accent}</em>
+        {pre}{accent && <> <em>{accent}</em></>}
         {post ? ` ${post}` : ''}
       </h1>
       {sub && <p className="page-sub">{sub}</p>}

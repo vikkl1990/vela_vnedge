@@ -1,3 +1,5 @@
+import {candleReplayBlock} from './basket.ts';
+import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell} from './makerPricing.ts';
 import {offerStatus} from './costs.ts';
 import {withProductFees,type ProductFees} from './productFees.ts';
@@ -40,6 +42,9 @@ export interface BacktestInput {
   /** Account-only plan restriction. Shadow may measure native plans without making them account eligible. */
   requireAtrStop?: boolean;
   entryProtection?: EntryProtection;
+  /** Versioned native-reader research only. Amend at the close, after that bar's path;
+   * candle replay cannot reproduce the live engine's sub-bar acknowledgement latency. */
+  scriptStopAmendments?: 'after-close-v1';
   /** The market's maintenance margin and leverage ceiling (Delta's product record); the config's figures when absent. */
   maintenanceMarginPct?: number; maxLeverage?: number;
   /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
@@ -98,6 +103,7 @@ export interface BacktestInput {
 
 export interface BacktestResult {
   version: number;
+  scriptStopAmendments?: 'after-close-v1';
   at: number; bars: number; from: number; to: number; signals: number; entries: number;
   stats: ReturnType<typeof computeStats> & { pnlPct: number; open: number };
   trades: Array<ReturnType<typeof tradeOf> & {setupAt: number}>;
@@ -108,6 +114,7 @@ export interface BacktestResult {
 }
 
 export function runBacktest(inp: BacktestInput): BacktestResult {
+  const blocked=candleReplayBlock(inp.executionPlan?.sourceScannerId??inp.scannerId);if(blocked||inp.executionPlan?.basket)throw Error(blocked??'Basket execution requires stateful shadow replay');
   const { bars } = inp;
   if(makerTapeCell(inp.cfg,inp))throw Error('tape-timed maker policy requires recorded trades and depth; candle backtests cannot qualify it');
   const trial=selectiveReclaimRule(inp.cfg,inp);
@@ -192,8 +199,11 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   /** Whether a market entry at `price` would be admitted (levels, fees, size), without opening it: a reversal asks before it closes the held trade. */
   const admissible = (price: number, ev: ScanEvent, sigI: number): boolean => {
     if(alignmentBlock(ev.side!,bars[sigI].time+tfMs))return false;
+    const nativeError=nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,ev.sl,ev.tp);
+    if(nativeError){refuse(nativeError);return false;}
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) return false;
+    if(nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,lv.sl,lv.tp))return false;
     if (inp.requireAtrStop && lv.source !== 'atr-fallback') return false;
     if (checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0)) return false;
     return sizeContracts(price, lv.sl, { equity:inp.executionPlan?.referenceEquity??equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score).qty >= 1;
@@ -202,8 +212,12 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean, fillAt = at + (maker ? 0 : tfMs)): boolean => {
     const aligned=alignmentBlock(ev.side!,Math.max(at,bars[sigI].time+tfMs));
     if(aligned){refuse(aligned);return false;}
+    const nativeError=nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,ev.sl,ev.tp);
+    if(nativeError){refuse(nativeError);return false;}
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) { refuse(lv.error); return false; }
+    const roundedNativeError=nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,lv.sl,lv.tp);
+    if(roundedNativeError){refuse(roundedNativeError);return false;}
     if (inp.requireAtrStop && lv.source !== 'atr-fallback') { refuse('account requires ATR stop'); return false; }
     const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0, { maker });
     if (feeErr) { refuse('stop too tight for fees'); return false; }
@@ -345,11 +359,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     const evs = byBar.get(bar.time);
     if (!evs) continue;
     for (const ev of evs) {
-      if (ev.kind === 'exit' && inp.exitMode !== 'levels' && reclaim && (!ev.side || ev.side === reclaim.ev.side)) { flow('script cancelled setup'); reclaim = null; }
+      const amendment = ev.exitType === 'stop_update' && inp.scriptStopAmendments === 'after-close-v1';
+      if (ev.kind === 'exit' && !amendment && inp.exitMode !== 'levels' && reclaim && (!ev.side || ev.side === reclaim.ev.side)) { flow('script cancelled setup'); reclaim = null; }
       if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
         // Script messages are market instructions after the close; resting targets already had their chance in the price path.
         const type = ev.exitType ?? 'close';
-        applyScriptExit(open, type, undefined, bar.time + tfMs, cfg, inp.exitMode, bar.close, { marketPrice: bar.close, quoted: false });
+        // An amendment supplies a new resting level, not an execution price. Other script
+        // messages still execute at the current close, never at a retrospective target.
+        applyScriptExit(open, type, amendment ? ev.price : undefined, bar.time + tfMs, cfg, inp.exitMode, bar.close, { marketPrice: bar.close, quoted: false });
         if (open.status === 'closed') finish(open);
       }
     }
@@ -417,6 +434,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   stats.open = open ? 1 : 0;
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
+    ...(inp.scriptStopAmendments?{scriptStopAmendments:inp.scriptStopAmendments}:{}),
     version: SIMULATION_VERSION, costCoverage: { ...(inp.productFees&&!inp.executionPlan?{feeSchedule:{...inp.productFees,basis:'current-product-scenario' as const}}:{}), crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: feeOffer==='exchange-verified'?'verified-from':feeOffer==='enrollment-recorded'?'enrollment-dated':feeOffer }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
     stats, trades: closed.map(p => ({...tradeOf(p), setupAt: setupTimes.get(p.id)!})).reverse(), equity: curve, rejected, ...(inp.entry?.reclaim || trial ? {entryFlow: {...entryFlow, pendingAtEnd: reclaim ? 1 : 0}} : {}),
   };

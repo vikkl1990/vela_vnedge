@@ -7222,3 +7222,474 @@ A timestamp can be valid but too old to drive real-time execution. Reject trade 
 A frozen 52-minute archive held 30,877 trades, including 74 delayed over five seconds in one burst. Three targeted stale/restart regressions fail on baseline. A paired replay of 984 prints for 40 policy-bound held positions changed no orders, exit intents, stops, P&L or fees. This is a bounded reconstruction, not a full profit backtest. A separate 638-trade fixed-input regression preserves 1,190 order rows and 1,603 policy identities.
 
 All 25 recorded maker fills had fresh trade-through and quote/depth support; median tick lead was only 29 ms. Only one trade was closed. That does not qualify switching maker timing or establish a profit benefit. Retain actual `paper_bar` and `paper_closed_minute` inputs with per-book receipt times prospectively: final OHLC cannot reconstruct partial candle arrival. Details and limitations: [research record](research/stale-tick-maker-2026-11-12.html).
+
+## 241. Opt-in reader fixes for reversals, closing and failure titles, and "Dn" (12 November 2026)
+
+The line-by-line script study ([summary](research/script-study-2026-11-12/README.md)) found three faults in how the reader turns script outputs into events. Each is reproduced by a regression test against the current reader:
+
+1. **Reversal sides.** "🔄 REVERSAL | Long → Short" is sent when a long closes. The reader took the first side word and inverted it, so the close was filed for the short side and the long stayed open. "Short → Long" happened to come out right, and "REVERSAL → LONG", which names only the new side, is unchanged.
+2. **Closing and failure titles.** A title that closes a position ("Cierre Long", "Salida Short", "Long Win", "Short Loss") or reports that a pattern failed ("Measured Move Invalidated", "Band Walk Ended", "Support lost", "Bull Brake") carries a direction word and was read as an entry. Closing a position is now an exit for the side it names; a failed pattern is information. A shape is not rescued by its geometry. Genuine SELL entries and the existing exit wordings are untouched.
+3. **"Dn".** "Break Dn" was never read while "Break Up" was. "Dn" is now a direction; a scanner's `sides` contract still decides what any title means, so a non-entry flip marker ("ST Flip Dn") stays off where the contract says so.
+
+The fixes change what a scanner trades, and a scanner's record means "this reading of this source". So they are opt-in: a scanner gets them when its reading sets `reader: 2`. The reading is part of the trade policy's identity, so a scanner that opts in starts a new record and every other scanner keeps its own. A held trade keeps the reading it was bound with. No scanner opts in here: deploying this changes nothing that trades.
+
+Opting in would change the reading of 26 scanners with live or shadow pairs, three of them enabled: Pivot Channel Breaks ("Break Dn", which its contract keeps off), Machine Learning RSI ("ST Flip Dn", which would become a short unless its contract maps the flip markers to none) and Liquidity Trail Matrix's ATR maker (reversal exits). Each should opt in as a shadow variant compared with its current reading, reading changes separately from stop and target changes.
+
+
+## 242. Compare scanner readings prospectively with causal execution (12 November 2026)
+
+Review of decision 241 found two additional gaps: aliased scanner identities omitted `reader`, and shape/label closing titles could still be entries. Include reader 2 in the alias identity without changing historical identities for unset/reader 1. Read unambiguous closing shapes and causally timed labels as exits, including when entry channels exclude them; preserve explicit title contracts. Reject ML RSI reader-2 configurations unless both ST flip markers and both trend-flip conditions are explicitly off.
+
+Run four paired ETHUSD 15m comparisons in the experimental shadow book: Trend Impulse's deliberate continuation reading versus native retest directions; Liquidity Trail ATR maker with corrected reversal exits; ML RSI confirmed entries without flip markers; SuperTrend Cluster vote markers without base-ST markers. Native here changes interpretation only, not the author's stops or targets. Fan out one raw Pine result before the current reader can discard a candidate marker. Apply the existing market and regime checks to each arm's actual side, and preserve scanner-specific entry protection/pricing. Version each reading, source and resolved execution snapshot; existing scanner policies remain unchanged. Use the existing bounded research scheduling turns; account workers and the evidence-priority share stay reserved. Record successful scans even when there is no signal. Pair opposite interpretations of the same raw marker, and expose one-sided signals and refusals.
+
+Execution-plan positions previously lacked a policy simulation version and silently bypassed causal exit pricing. New plan snapshots explicitly carry model 211 and register their actual contract quantity for depth execution. Stops wait for fresh post-arrival depth, retain partial exposure and recover after restart; existing unversioned positions keep their original snapshot. New prospective cohorts do not absorb historical candle-priced results. Prints remain an independent audit benchmark, not proof that an entire order could fill at one print.
+
+These eight arms remain experimental and cannot count toward copying, promotion or sizing. Keep paper mode, $150 margin, existing risk caps, evidence rules and all account scanner readings unchanged. The idempotent rollout appends only the eight plans, checks the protected settings, preserves prior plans and backs up configuration. Initial scope is one liquid market/timeframe to isolate interpretation; expansion requires later-date evidence under the corrected execution model, not the script-study verdict alone.
+
+Validation includes old/new reader fixtures, alias policy isolation, raw-run candidate-only signal delivery, ML flip protection, side-aware gating, reversal exits, causal latency/depth/partial/restart behavior, historical snapshot preservation, experimental evidence exclusion and configuration preservation. Also repair pre-existing CI typing (declare the ESM ops directory and correct type-only test/feed contracts); no runtime risk setting changes. No profitability benefit is claimed before prospective observations close.
+
+Release checks: 1,277 server tests and 25 dashboard tests pass; server TypeScript, dashboard lint and production build pass.
+
+## 243. Keep reading comparisons continuous and collect evidence on active markets (12 November 2026)
+
+The first two live bars scanned all eight ETH arms but produced no entries. A local 24-hour signal replay confirmed four Trend Impulse entries per reading, all failing the existing base fee test; Liquidity maker had one of two passing regime/base-economics checks; ML RSI had one of three control entries passing and none of its one confirmed-entry candidate; Cluster had one passing vote in both readings. These are necessary admission checks, not historical fills or profit results. Retain every existing gate.
+
+Two actual comparison gaps were found. Unrelated removal of AIN and STRK from account allocations created new Trend Impulse and Cluster cohort signatures at the next bar. For reading comparisons only, exclude enabled/hidden and symbol/timeframe/pair allocation metadata from identity; the explicit plan cell, reading, source, economics and execution remain versioned. Retain full metadata in the frozen snapshot and leave legacy exit-experiment signatures unchanged. Old records remain separate; no historical evidence is merged.
+
+The same ML classifier entry appears as an alert, a `Long/Short Signal` condition, or a `Long/Short` shape; Cluster's `Long/Short` conditions and `Major Long/Short` shapes share a vote. Match these exact, scanner-specific equivalents in reporting. Keep raw event keys and admissions unchanged. Base-ST flips, trend flips and unknown markers are not equivalent, even on the same side and bar. Opposite interpretations of a Trend Impulse retest remain matched by their raw marker.
+
+PR #10 overlaps the already-deployed raw-result comparison path. Use its activity-based market proposal through that existing path: INITUSD for Trend Impulse, AIOTUSD for Liquidity Trail, JCTUSD for ML RSI and EVAAUSD for Cluster, all 15m. Preserve the enabled Liquidity ATR-maker source and identical execution on both arms; do not substitute the disabled base source or append a second set of eight plans. The local prefix checks found plausible forward opportunities under existing gates (ML RSI had three candidate entries passing known checks over seven days, none in the latest day). This is research-market selection, not account allocation or promotion. Current full-depth, quote, cost, integer-size and risk checks still decide each actual order.
+
+`ops/enable-reader-comparisons.ts --active-markets` replaces only the original, unedited eight ETH plans with eight new market identities. Dry run writes nothing; edited plans are refused; the migration is backed up and idempotent. Roll out with the service stopped and no original comparison orders or positions outstanding. Keep every other configuration field, $150 margin, risk caps and evidence rules unchanged. Comparison trades stay experimental and cannot qualify copying, promotion or sizing. Preserve the old ETH receipts. See [diagnostic evidence and limitations](research/reader-comparisons-check-2026-11-12.json).
+
+Regression coverage reproduces both identity and cross-channel matching faults, checks negative flip matches, verifies both maker arms require fresh post-placement trade-through, and checks configuration preservation and migration idempotence. These checks prove plumbing; forward fills and later net outcomes remain to be observed.
+
+## 244. Author intent is a versioned contract, not a generic marker guess (13 November 2026)
+
+The author review covered all 48 current WillyAlgoTrader publications and all 219 current BigBeluga publications, including their public descriptions and release notes. The BigBeluga report cross-references 217 installed publications and 190 earlier source-study records. This is not a new line-by-line source audit of all 219 programs, a profitability ranking, or authority to switch on every script. Context, manual, external-data and unavailable-source tools have different jobs from entry generators. Preserve deliberate interpretations from decisions 67 and 195, including Kinetic's Bull Spike, Asia-only Killzones and Pivot Channel's long-only reading.
+
+Add opt-in reader 3 for validated Willy lifecycle adapters. Its initial trading support is Structure-Anchored VWAP, Synapse Trail Pro and Liquidity Trail Matrix; the reviewed context/manual roles cannot create orders. Other native adapters fail configuration validation until implemented and tested. A review record alone is not an executable contract. Unset/1/2 readings retain their identities and behaviour. Reader 3 has a separate evidence identity, respects entry channels/allow-lists and explicit exclusions, and refuses inverted or derived substitutions.
+
+Synapse's `stp.events.v1` packet contains multiple lifecycle events; retain the old-position exit and independently qualified entry. Break-even activation is a `stop_update`, not a close. It cannot loosen a stop, act before entry, affect a different side or consume an unfilled setup. Causal positions persist the desired stop until the existing amendment latency has elapsed, including across restart. If triggered, the exit waits for later executable depth. No price or fill is invented from the author's alert. Legacy replay applies the amendment as a state change, without fees or a fill.
+
+Add three disabled Willy profiles. Import the 12 November Structure-Anchored VWAP release as a separate source version. Synapse and Liquidity Trail use separate aliases. Enable target/break-even notifications explicitly: their source defaults otherwise omit those events. Preserve author levels and model position splits (equal thirds for Synapse; the full position through TP3 for the other two). Disable unrelated automatic BE, floor, trail, trend, structure, stall and time exits within these profiles; the source's own BE notification owns its amendment timing. Account sizing, fees, admission gates and risk caps remain the bot's. The source's win labels and internal candle simulation never become exchange evidence.
+
+For BigBeluga, direct source inspection plus extractor fixtures reproduced six gaps across three publications: Resistance Breakout was read short, Support Breakdown long, two flipped-level retests were omitted, and the short `Dn` outputs from Dynamic Trend Bands and Triangular Hull were omitted. Add three disabled `author-signals` variants with exact title-to-direction mappings and separate identities. These scripts provide signals/structure; their variants explicitly retain bot-managed exits rather than claiming a native stop/target lifecycle. No global Dn activation or changes to the enabled legacy readings.
+
+Validation: all 1,295 server tests pass, including actual Pine execution of the three Willy source files, malformed/context/filtered-event checks, old-reader controls, native-profile resolution, duplicate BigBeluga shapes, restart-safe amendments, and causal exits in both books. Server TypeScript checking passes. These are correctness checks using synthetic paths, not evidence of improved net returns. No VM configuration, paper mode, $150 margin, risk caps, evidence thresholds or existing positions changed. Six new profiles remain disabled; activation and paper admission require the existing evidence process. See the [per-publication BigBeluga review](research/bigbeluga-author-review-2026-11-13.html) and [reader reproductions](research/bigbeluga-reader-probes-2026-11-13.json).
+
+## 245. Source-pinned author review in the Library (2026-11-14)
+
+A runnable Pine file is not proof that the bot implements its author's strategy. Reconcile every retained manifest entry to a source contract and expose the author's description-review status separately. Reuse the earlier line-by-line study only after hashing the original source; review the five newer source versions separately. The retained inventory has 2,638 entries, all with matching source contracts. Of its 2,626 linked publications, 248 author explanations/updates are reconciled, 2,378 remain pending, and 20 pages were unavailable. The full historical manifest includes additional retired entries; fetched pages are never counted as reviewed. Public raw descriptions stay outside the repository.
+
+The Library detail now shows source-pinned entry conditions, context/management markers, author stop/target/exit logic, timing, runtime patches, the configured reading and integration notes. A changed source hides obsolete conditions. A changed publication revision/date marks the author review stale. Historical claims retain their scanner scope and are shown as prior research, not as newly reproduced faults; refuted and unchecked claims are excluded. The verified publication author is shown separately from historical import-feed grouping, so screening/family allocation is not silently changed. These records are read-only and are not used for activation, promotion, sizing or trade evidence.
+
+The old RSI Volume Ladder verdict was too broad: its Pine code adds up to three legs and recalculates a shared bracket, while PaperEngine ignores same-direction adds. It is a single-position adaptation today. A native basket adapter would need actual-fill basket state, OCO amendments, cooldown parity and aggregate margin/risk accounting. Do not import its percentage-equity sizing. Absorption Reversal remains quarantined for the spacing-expression defect and unvalidated lower-timeframe coverage. Fear/Greed, Volume Delta Pivot Matrix and Trend FVG Delta remain context, not automatic entries. Preserve deliberate decisions 67/195 and the four independent reading comparisons.
+
+This change does not alter the deployed reader fixes, scanner activation, execution, evidence policy, paper mode, $150 margin or risk caps. Tests cover stale source/publication handling, shared-source claim isolation, all retained source hashes and configuration immutability. See [the full retained-script index and remaining review queue](research/library-author-reconciliation-2026-11-14.html). Native lifecycle correctness and profitability still require their own tests; this catalogue does not certify either.
+
+## 246. Author review receipts and tested experimental profiles (2026-11-14)
+
+Continue the author review beyond the earlier Willy/BigBeluga work. Each completed receipt identifies the exact cached publication revision/date and page hash, review time, inspected source hashes, scope, findings and required treatment. The importer rejects missing text reviews, stale publication/source hashes, duplicate receipts and unknown sources. Blocked pages are recorded separately and never counted as reviewed; a readable page with unrelated author prose is also unresolved. Raw descriptions remain outside git. Library exposes the reconciliation separately from the earlier full-source study and hides stale source-specific findings. Neither record is promotion evidence or native-engine certification. The full review remains in progress; the dated coverage artifact records completed counts without extrapolating from retrieval.
+
+Reproduce Liquidity Void Detector's direction mismatch: Buy-Side Imbalance describes an upward displacement and expected downward refill; Sell-Side describes the opposite. The generic title reader trades the displacement direction. Add a disabled, separately identified `author-direction` variant with explicit inverse mappings and condition-only channels. This is a refill hypothesis with bot-managed protection/exits, not a complete author strategy. Preserve its legacy reader and history. Other author/source contradictions, missing close alerts, DCA baskets, grid slots and synthetic averaging limitations are documented rather than silently translated into unsupported single-position trades.
+
+Actual patched-source runs exercise both directions for the three BigBeluga signal profiles and Liquidity Void. Historical checks on 2,000 ETH 15m bars exercise all seven reviewed profiles, including the three Willy lifecycles. Fourteen sampled signal bars match prefix runs without later candles. These are source-output correctness checks, not tape-execution backtests or profit claims. Native shadow integration tests verify delayed fills, original targets, full research fees, stop amendments with acknowledgement latency, causal depth exits and exclusion from shared eligible evidence.
+
+`ops/enable-author-shadow.ts` adds five ETH 15m experimental plans: author-lifecycle Structure-Anchored VWAP, Synapse Trail Pro and Liquidity Trail Matrix, and exact-direction High Volume Pivot Zones / Dynamic Trend Bands. They use the five free slots, preserving all 25 existing plans and the 30-plan ceiling. THMA and Liquidity Void remain disabled pending research capacity. The script refuses changed profiles or edited plan IDs, supports a no-write dry run, backs up atomically and changes only `executionPlans`. Account scanner activation, paper mode, $150 margin, the existing 3% stop ceiling and all risk/evidence configuration remain untouched. The new trades are experimental and cannot qualify a cell for copying, promotion or sizing.
+
+Validation: 1,305 server tests, 25 dashboard tests, TypeScript, dashboard build/lint and receipt-validator checks pass. Dry run against the VM's relevant configuration passes. See [historical source checks](research/author-shadow-source-checks-2026-11-14.json) and [review coverage](research/library-author-reconciliation-2026-11-14.html).
+
+## 247. Author signal contracts and native replay parity (2026-11-14)
+
+Continue the publication/source reconciliation without rewriting measured legacy readers. Add six disabled profiles with separate reading identities. False Breakout names the failed move: Up is the author's short, Down its long. Adaptive Smart Money Liquidity permits only upper-wick rejection shorts and lower-wick rejection longs; discovery/removal, body liquidations and depth balance stay context. Zero-Lag MA reads confirmed box-retest labels, at label creation rather than the earlier drawing bar. Swing Failure reads its Bullish/Bearish Signal shapes: the source reuses the Swing Failure alert titles for zone mitigation, so the alert channel cannot identify a new authored reversal safely. Zone Shift requires a new exact label-text/style contract because both directions use the same diamond. Reader2 alone opts in; the source-confirmed runtime styles map explicitly to direction, missing/unknown styles fail closed, and an explicit non-entry title still wins. Empty/unset style fields preserve existing strategy identities. These profiles retain bot-managed exits; none claims an authored stop/target lifecycle or account eligibility.
+
+Actual Pine execution tests exercise both directions and exact output channels. On the same 2,000-bar ETH 15m history, these profiles yield 22/170/44/18 entries versus 22/711/0/36 from their controls. Twelve reviewed profiles pass 865 additional prefix runs covering every observed actionable-event bar after warm-up and regularly sampled quiet bars. No later candles are supplied in those runs. Quiet bars are sampled, not exhaustive, and these checks are not proof of profitable execution. See the [source comparisons](research/author-followup-source-checks-2026-11-14.json) and [prefix audit](research/author-prefix-checks-2026-11-14.json).
+
+The standalone backtest command was bypassing scanner-specific inputs, timezone, readings, drawings and exit/entry policies. It now calls the existing shared historical observer and account-policy resolver, includes current Delta product fees and contract constraints, and labels candle-only results explicitly. A command-level regression fixture verifies that confirmed retest labels survive when the same script also declares unnamed crossover shapes. Current product fees remain a scenario, not a historical fee backfill.
+
+The historical engine discarded every script amendment price while correctly discarding retrospective execution prices. Native reader-3 backtest policies now carry an explicit `scriptStopAmendments: after-close-v1` option, also returned with results and included in screen-policy signatures. A stop amendment supplies its level after that bar's path, cannot close a trade or charge a fee, cannot loosen protection or affect the other side, and does not cancel an unfilled reclaim. Other readers retain their earlier policy signatures. This candle model does not reproduce sub-bar acknowledgement timing; the live experimental engine continues using its already-tested durable acknowledgement and causal depth exits. No production execution behavior is changed by this replay correction.
+
+Library distinguishes earlier source-study interpretations from newer reconciliation findings and explains each separate variant's purpose. Findings about the base reader are not presented as proof that its variant still has that fault. Research receipts continue to require exact publication/source hashes; unavailable or contradictory pages remain blocked. Full publication review is still in progress, with the latest coverage recorded in the generated index.
+
+A parity check against the deployed baseline and sanitized VM research configuration found zero changed strategy identities across 2,651 existing loaded scanners. Replay policy differs only for the three reader-3 native profiles. See [identity parity](research/author-policy-parity-2026-11-14.json).
+
+Paper mode, $150 margin, risk caps, evidence thresholds and existing scanner readings remain unchanged. The five experiments from decision246 stay active; these six additional profiles remain disabled while the 30 research slots are occupied. Neither source tests nor candle comparisons supply promotion evidence.
+
+Breaker Blocks receives a separate retest-only profile. Its numbered retest alertconditions are entries; block formation, cancellation, mitigation and swing breaks are not. The runtime crashes on nullable drawing-method deletes and silently loses geometry through UDT method dispatch. A source-hash-pinned, variant-only compatibility adapter rewrites equivalent drawing namespace calls; a source change fails closed. The raw source and legacy scanner remain untouched. On 2,000 ETH 15m bars the candidate produces eight retests (five long, three short); 22 action/quiet prefix checks agree. See [Breaker compatibility and prefix evidence](research/author-breaker-prefix-checks-2026-11-14.json).
+
+Release validation: 1,316 server tests pass, including real-source entry channels and shadow engine fills for the six additional profiles. Server type checking, 25 dashboard tests, dashboard lint/build and review-receipt validation pass. Source-output and synthetic fill tests establish correctness, not improved returns; forward observations remain separate from promotion evidence.
+
+## 248. Complete the retained-library author reconciliation pass (2026-11-14)
+
+Finish the 2,378-publication remaining queue with disjoint parallel reviews and hash-pinned receipts. Combined with earlier reviews, the retained library has 2,589 reconciled publications and 37 explicitly blocked publications, with none left unprocessed. Seventeen blocked pages were unavailable; the other twenty lack meaningful conditions or describe a different source. Eight local operator scripts have no external publication and are labelled separately. The 2,638 retained source contracts still match their original bytes. The 571 retired manifest entries are not included in this retained-library completion claim.
+
+The 4,310 reconciliation findings include source discrepancies, integration requirements and interpretation limits, not 4,310 deployed bugs. Author descriptions and updates are from the dated cached primary pages, mostly retrieved on 13 November; a later reconciliation time does not imply a fresh upstream check. Relevant source branches were checked against the earlier full-source study and their hashes, not represented as a second independent line-by-line audit of every file. Missing or unrelated author text remains blocked instead of being replaced by inferred intent.
+
+Publish the completed records in Library and the searchable research index. Separate unfinished reviews from blocked evidence, and local operator sources from unavailable external pages. Preserve the actual check time on blocked receipts and reject missing, naive or future timestamps. Label earlier protection/exit/timing interpretations as historical, because newer reconciliation findings may correct them. Tests require every retained external publication to have either a current substantive review or a dated blocker, and verify inspected source hashes.
+
+This completion release changes research metadata, validation and presentation only. No reader, Pine source, execution path, scanner activation, evidence identity or configuration changes. The tested corrections from decisions246/247 remain isolated: five experimental shadow plans are running within the existing30-plan limit; other tested profiles await capacity. Unimplemented basket, stop-entry, scale-out, external-series and per-pattern lifecycle work remains explicit in each record. Review completion neither enables those strategies nor certifies execution parity or profitability. Paper mode, $150 margin, risk caps and evidence rules stay unchanged.
+
+Validation: all 1,317 server tests, 25 dashboard tests and three receipt-validator tests pass, along with server type checking and dashboard lint/build. The report JavaScript parses, all 2,638 report rows reconcile to the manifest, and source contracts plus scanner-to-publication links are unchanged from the deployed baseline. An independent reviewer caught and corrected the local-operator/publication distinction before release.
+
+### 249. Shadow basket entries and quantity-aware author exits (2026-11-14)
+
+RSI Volume Ladder's Pine broker state is not our position state. Its reviewed source
+permits three long legs, a strict 1.5% drop from the previous entry, a 4% target from
+average cost, and a stop 3% below the lowest entry. The separate, disabled
+`rsi-volume-ladder-basket` variant exposes only its RSI/volume candidate; the
+hash-guarded adapter leaves the base source/reader unchanged. Its experimental
+`basket: "rsi-volume-ladder-v1"` execution plan owns spacing, cooldown and the
+confirmed-fill lifecycle. Generic single-position backtests explicitly refuse it.
+
+One basket is one position and journal trade. Three allocations share the existing
+$150 margin budget (up to $50 per leg); sizing rechecks the *aggregate* configured
+stop-risk ceiling, including entry/exit costs and adverse funding. Additional
+entries cannot spend another $150, reuse an already consumed signal bar, reverse,
+add after any exit, replace a breached stop, or survive a restart as invented fills.
+The weighted basis and shared bracket change only on confirmed fills; fees, exact
+entry context and the add-to-position join commit atomically. Risk distances and
+excursion tracking rebase after a confirmed addition. The shared bracket remains a
+paper engine instruction with causal exit latency, not a claim that a native OCO
+order has been installed on Delta. Existing account and shadow positions retain
+their frozen policies.
+
+A separate prospective `partialExitVersion: 1` is included in the identity of new
+native-author shadow cohorts (reader 3) and basket plans. Previously a script's
+TP2/TP3 notification could lose all but the first leg in the causal-exit conversion;
+the completed first target was not marked hit. The new durable request queue keeps
+each requested leg, uses each notification's own arrival time, marks completion
+only from reported quantity, and acknowledges break-even only after TP1 is filled.
+A stop or full close arriving during a partial TP is retained with its original
+arrival deadline and takes priority over later targets. Resting target fills remain
+a through-price queue approximation, now bounded by observed contracts and deduped
+by trade ID (or a conservative time/price/size key) across restarts. Neither candle
+extremes nor chart labels create retrospective fills. Market exits use subsequent
+executable depth, with taker fees and tax; resting exits use their maker fee.
+
+Promotion/copying/sizing evidence rules are unchanged: all these positions retain
+`experiment` scope. No account reader, paper-mode setting, margin, risk cap, offer
+setting or research capacity is changed. The three existing native-author plans
+receive new prospective execution identities; other plans retain theirs. Basket
+continuous activation awaits a free research slot: the VM already has all 30
+configured slots occupied. No plan is silently removed and capacity is not raised.
+
+Validation: baseline-vs-corrected partial-target regression; quantity conservation,
+fees, aggregate budget, stop during TP, restart and database-failure tests; real
+Pine candidate/prefix checks. The saved ETH 15m candle simulation in
+`docs/research/basket-execution-validation-2026-11-14.json` checks lifecycle mechanics
+using synthetic OHLC observations/depth, **not historical executable P&L or profit
+improvement**. Its 25 candidates produce three filled entries in two baskets, with
+seven restarts and zero eligible promotion trades. This is sufficient for deploying
+the isolated execution adapter, not for admitting the basket to the account.
+
+### 250. Four additional author profiles and causal reversal admission (2026-11-14)
+
+Add separate, disabled account-scanner profiles for Reactive Trail System, Reaction
+Level Matrix, STRAT Trap & VWAP Engine, and Smart Swing VWAP retests. No existing
+scanner spec or Pine source changes. The first three use reader 3, full native
+entry geometry, acknowledged script stop amendments, and the author's TP3 closure;
+TP1/TP2 are milestones, not invented partial sales. Their native exit profiles
+suppress unrelated bot trails, floors and stale exits. Reactive's `SL moved to
+entry:` message needs its own parser. Its destination-only reversal already uses
+the correct old-side parser and receives regression coverage, not a duplicate fix.
+Reaction level-break alerts remain context. STRAT accepts only the reviewed
+`STRAT` / `1.9.0` JSON actions; setups, filtered trigger notices, future schemas and
+text without complete geometry cannot enter. Default Trap Bar mode is retained,
+with the forming-HTF FTC admission filter off. Smart Swing's variant reads only
+polarity-aligned retests; its author supplies no native position exits, so its
+bot-managed exits are explicit research assumptions. The current broader reading
+keeps its original identity.
+
+The saved-candle shadow test exposed a causal reversal admission bug: an exit
+request returned `false` while waiting for a fill and the caller cancelled the
+valid replacement as though the close had failed. New Reactive/Reaction plan
+snapshots include `reversalEntryVersion: 1`. Only those experimental positions
+retain the replacement while a durable exit is outstanding. A fresh observation
+after full close rechecks levels, executable price, fees, sizing and risk. The
+original 60-second entry expiry remains; partial closes do not release the new
+entry, and restart still cancels unfilled market requests. Other cohorts and the
+account retain their previous execution identities.
+
+The user explicitly requested increasing research capacity during this work.
+`MAX_RESEARCH_PLANS` increases from 30 to 34, with no change to account position or
+daily-entry limits. `ops/enable-lifecycle-shadow.ts` installs four ETHUSD 15m plans
+through the existing guarded author-plan installer. It preserves all 30 old plans,
+supports a no-write dry run, backs up atomically, refuses edited profiles/plan IDs,
+and rejects overflow. The account scanner profiles remain disabled. These plans
+use the existing $1,000 experimental reference purse, $150 margin setting and 3%
+stop-risk ceiling with full research fees. Paper mode, all actual capital/risk
+settings, ML and promotion/copying/sizing evidence rules are unchanged; every
+result remains experimental and excluded from eligibility.
+
+Validation includes real Pine output and closed-bar prefix checks; current-reader
+counts; shadow entries, TP milestones, acknowledged BE, restart, actual-depth exit
+pricing and fees; baseline-vs-corrected reversal timing, partial closes, expiry,
+invalid levels and renewed risk refusal; atomic/idempotent capacity rollout.
+The saved ETH 15m replay uses synthetic OHLC observations/depth and demonstrates
+mechanics only, not executable historical profit or readiness for promotion.
+Further native adapters (including AlgoAlpha target geometry, stop-entry expiry,
+external-series and per-pattern invalidation) still require their own tests; this
+release does not claim that all library execution gaps have been fixed.
+
+### 251. Shared observational contracts and scanner readiness (2026-11-14)
+
+The source-pinned author catalogue now feeds one `ContractRegistry`, shared by
+scanner contract details, the contribution ledger and the active readiness matrix.
+The matrix covers enabled account scanners, shadow/proposed/live/tracked cells,
+and each enabled execution plan separately. It records source and patched hashes,
+reader revision, intent, effective reading, native/basket support, remaining review
+gaps and per-cell scan receipts. Author context is not treated as a failed entry
+scanner. Historical audit notes are explicitly historical, since newer adapters
+can have resolved them. Unmatched source bytes hide old entry/exit conditions.
+
+Research rows resolve the same `planSnapshot` and product fees as execution and
+join observations by the exact current plan signature. A raw source scan cannot
+stand in for a reading-comparison receipt. Mixed base-scanner activity is labelled
+as historical activity, never qualified evidence. A matching behavior probe is
+distinct from profitability, causal certification, promotion or live readiness.
+The diagnostic contract version is separate from all existing evidence identities.
+
+`GET /api/scanners/readiness` and `GET /api/scanners/:id/contract?plan=...` are
+read-only, authenticated through the existing API. Scanners → Contract registry &
+readiness exposes filters, pagination, every allocated cell, refusals, author
+conditions, effective policies and source versions. No new execution gate is added.
+The existing contribution detail links to the same registry. Source processing is
+cached; the matrix yields between scanner batches and reads only allocated
+scanners' probes instead of loading the full 136k-observation library.
+
+Tests cover stale source/publication handling, role separation, per-profile native
+and basket capabilities, reading/exit identity changes, exact research cohorts,
+quiet versus failed scans, context data dependencies, UI filters, and zero writes
+to configuration/database during inspection. A read-only VM fixture exercises
+509 enabled/shadow scanner IDs plus 34 research plans; VM-only library imports
+are absent from this local fixture and must be checked on deployment. This is a
+visibility change, not a profitability improvement. Paper mode, $150 margin, risk
+caps, scanner allocations, all execution plans and evidence rules remain unchanged.
+
+
+## 252. Source-pinned breakout and ML RSI lifecycles in experimental shadow (14 November 2026)
+
+The readiness matrix identifies enabled scanners whose native management is not
+consumed. Add two independent v1 profiles: Smart Money Breakout reads confirmed
+breakouts plus its own SL/three targets (full exit at TP3); ML RSI reads confirmed
+classifier entries, Supertrend stops/amendments and opposite-side flip exits, with
+no fixed target. SHA-guarded observation plots expose source-calculated series;
+legacy source/readings and deliberate one-sided contracts are unchanged.
+
+Native geometry must remain valid at the quote, after rounding and at deferred
+fill. Never replace these stops with ATR or silently delete crossed targets.
+Management uses existing causal execution, durable partial/stop state and full
+fees. Scanner-specific IDs and research policy identities isolate evidence.
+
+Two ETHUSD 15m experimental plans extend research capacity from 34 to 36, retaining
+all existing plans and leaving account capacity, paper mode, $150 margin, risk
+caps, fee gate and promotion/copy/sizing rules unchanged. Guarded activation only
+appends plans; it neither enables an account scanner nor promotes an experiment.
+
+The source replay checks original alert/shape parity, 54 prefix cases and 14
+restart recoveries over 1,019 closed candles. Native profiles produce four and six
+simulated fills respectively. This OHLC-derived tape/depth run tests mechanics,
+not executable profitability. Nine additional regression tests cover extraction,
+geometry, causal execution, registry descriptions and rollout isolation. See
+[the validation record](research/native-contract-lifecycles-2026-11-14.md). Other
+readiness gaps stay visible and require their own tested correction.
+
+## 253. Research workspace views and truthful signal outcomes (14 November 2026)
+
+Signals, Scanners and Incubator were mixing operational logs, settings, evidence and diagnostics in long pages. Incubator duplicated the Decisions approval queue, Radar's market/timeframe links did not filter its tables, and grouped Signals counted pending orders as opened positions.
+
+- Signals separates account events, diagnostics and costs. Pending orders and interrupted receipts stay separate from actual opened/reversed entries; the grouped and summary fill counts agree. Global 24-hour activity is explicitly independent of the filtered 500-receipt window.
+- Scanners separates its directory, contract readiness and contributions. Fleet-wide controls move below the directory in a disclosure; permissions and confirmations are retained.
+- Incubator separates shadow evidence, candidates, account allocations, experiments and operations. Decisions is the proposal approval surface and owns re-judging. Pending demotions remain visible as account allocations, with a link to their proposal. Cohort filtering retains every member of a matching cohort.
+- Filters and sections use URL state; Back/Forward and old disclosure anchors work. Radar cell links carry the market and timeframe into the appropriate Incubator view. Trackers shows one research group at a time and separates paper account trials.
+- Decision clocks use current time, not the last screening timestamp. Shared navigation explains ownership without another control surface.
+
+Validation: dashboard outcome/navigation regressions; dashboard build, lint and server type check; browser checks with isolated synthetic fixtures for filters, history, old anchors, read-only permissions, pending fills, empty states and mobile layouts. No server trading logic, configuration, scanner reading, evidence policy, paper mode, $150 margin or risk cap changes.
+
+## 254. Optional research data cannot block startup or hide valid plans (14 November 2026)
+
+The shared contract registry eagerly loaded the author-review catalogue during API construction. A missing or truncated research file could prevent the service from starting, and the review builder replaced that file in place. Loading is now deferred, malformed or missing versions return an explicitly unavailable catalogue, and repaired/replaced files invalidate diagnostic caches without restarting. The builder writes and syncs a temporary file in the same directory before atomic replacement. Unavailable reviews never inherit a source-matched or reviewed status.
+
+Basket plans now validate their effective $150/default-input/stop-cap prerequisites when saving configuration, using the same snapshot resolver as execution. The comparison view isolates legacy invalid plans with an explicit configuration error instead of hiding valid plans and historical results. Valid policy signatures, trades and risk rules are unchanged.
+
+Manual readiness refresh bypasses the 60-second cache and coalesces concurrent requests. A fresh running receipt is shown as scanning, never as a completed comparison scan or promotion evidence. Automatic polling still uses the bounded cache.
+
+Validation covers missing, truncated and structurally invalid catalogues, atomic replacement failure and recovery, lazy registry construction, diagnostic cache invalidation, basket save validation, preservation of valid cohort identities and results, and in-flight/forced-refresh reporting. This is a reliability and presentation correction: no scanners or plans enabled, no change to paper mode, $150 margin, risk caps, evidence rules or execution.
+
+## 255. Basket stop costs, per-leg evidence and stateful-only screening (14 November 2026)
+
+Basket execution is an isolated shadow research adapter, not a candle-screenable strategy. Its old R denominator was price-to-stop distance, while its P&L paid commissions; add-on legs also bypassed the first-entry audit path. Pricing each leg's stop separately understated nonlinear impact on the combined exit.
+
+New basket snapshots carry `basketAccountingVersion: 2`, which changes only basket evidence identities. At every confirmed entry the risk basis includes all paid entry commissions and GST, known funding debits, one modeled full-quantity stop fill, and its closing commission. Add-on sizing can shrink the existing candidate quantity until that combined loss fits the unchanged stop-risk cap and remaining margin. Funding credits never enlarge the risk budget. Actual later funding, depth changes and gaps can still produce a result worse than −1R. Cash P&L is not normalized or rewritten. Existing positions without the version retain their frozen accounting; ordinary plan signatures are unchanged.
+
+Every confirmed basket leg now stores its order and plan-event IDs, individual fill time/quantity/price, paid fee, quote timestamps, exact pricing/admission depth when available, and cumulative fill budget in the existing durable leg ledger. The first-entry audit stays immutable. A `basket-add` decision records subsequent budgets without counting another trade. Evidence commits in the same transaction as the fill, rolls back on failure, and survives restart. Journal details expose all legs; missing legacy evidence stays unknown.
+
+Nightly screening skips the basket before Pine execution, preserves the cursor's script indices, and records an explicit unsupported count instead of negative strategy evidence. Retry admission, imported candle results, pair-agent coverage, manual screens, ordinary activation and direct candle backtests cannot route this adapter through the unsupported single-position model. Isolated stateful shadow execution remains available. Promotion and shared evidence rules are unchanged.
+
+Validation: 1,370 server tests, server typecheck, 32 dashboard tests, dashboard build/lint and four author-record tests passed. Added coverage includes one/three-leg modeled stops with GST and slippage, combined-depth impact, funding, unchanged cash P&L on identical fills, per-leg depth/order linkage, transaction rollback/retry, restart preservation and screening/API guards. These establish accounting correctness, not profitability. Deployment retains paper mode, $150 total margin, all risk/evidence settings and the existing 36 plans; no basket plan is installed or activated by this correction.
+
+## 256. One prospective ETH basket in experimental shadow (14 November 2026)
+
+Activate RSI Volume Ladder's reviewed basket adapter on ETHUSD 15m, using fresh production observations. Its three possible legs share the existing $150 margin budget and 3% stop-risk ceiling against the research plan's $1,000 reference equity. Accounting version 2 includes paid entry costs and the modeled combined stop exit; full research fees apply. Source-pinned RSI/volume conditions, spacing, targets, stops and cooldowns remain unchanged.
+
+The guarded `ops/enable-basket-shadow.ts` installer appends exactly one plan, requires paper mode and the reviewed sizing/reader settings, refuses an edited existing plan, supports a write-free dry run, backs up before atomic replacement, and is idempotent. Stop the service before applying it. Research capacity increases from 36 to 37 to preserve all existing experiments. Account capacity, scanner activation, risk settings and evidence eligibility do not change; this experiment cannot supply promotion evidence.
+
+Validation distinguishes completed scans, qualifying signals, first fills, add-ons and exits. A running scan or synthetic mechanics test cannot establish that market entries or exits occurred. After activation, inspect the exact cohort's durable events, leg ledger, fee budgets and causal exit reports; stages with no real market event remain unverified. Never fabricate downtime fills or relax conditions to produce a result.
+
+## 257. Source-specific targets, MarkitTick research and a shared trading workspace (14 November 2026)
+
+The operator now permits flexible per-trade margin (including $50) and leverage research within a $1,000 total purse; $150 is no longer a mandatory design constraint. This does not authorize changing existing risk ceilings or treating leverage as a source of profitability. The current account and basket settings remain unchanged in this release. A pure advisory capital planner chooses quantity from stop risk and full execution costs, then chooses funding leverage within the current product/policy/liquidation ceilings. It reserves modeled entry margin and commission, including nonlinear impact, and honors remaining portfolio risk and pending-margin reservations supplied by the caller. It is not connected to admission or orders.
+
+MarkitTick's 139 publications are inventoried: 114 public sources receive targeted source and full-publication entry/exit review, and 25 private/protected sources remain explicitly unavailable. Three already installed sources are preserved. Add 111 public source files with their original attribution/license headers; 108 remain quarantined pending adapters or runtime corrections. All new profiles are disabled. Compilation alone cannot remove those holds.
+
+Three source-pinned JSON readers pass causal prefix and isolated shadow mechanics checks: MESA Adaptive Cycle Engine (2R target), Squeeze Bollinger Bands Tracker (band-derived target), and GARCH Volumetric Cloud (1.5R). GARCH here models volume-return variability, not price volatility. Readers accept only valid native bracket entry payloads, do not backdate fills to payload reference prices, and ignore chart/static duplicates. Their profiles preserve source SL/TP and have no forced 6R target or inherited trail. Changed source bytes fail closed. Readiness names the adapter and states the missing prospective profit/evidence stage. No current scanner reading or evidence identity changes.
+
+A 1,018-trade recorded-path sensitivity study tested six smaller fixed targets with full/half exits, next-observation fills, adverse exit stress and full gross commissions. Selection used earlier entries only. The one positive earlier selection lost more on later dates; no universal TP replacement is activated. Smaller-risk reweighting reduces later losses but does not prove a profitable capital allocator. A 79-market basket study, followed by minute replay on eight candidates, identifies LIT, SOLV and PENDLE for prospective evaluation, not paper promotion. Modeled paths and current depth are not historical executable fills. See [the research report](research/capital-targets-universe-2026-11-14.html).
+
+The new home workspace combines a searchable all-market watchlist, price candles, actual held entry/SL/allocated TP levels, one account capital strip, scalp/swing display filters, current execution policy and signal-to-execution receipts. These filters allocate no quotas. Operations remains available at `/overview`; existing authentication, risk controls and research pages remain available. Unknown source-review facts are represented as unknown, not fabricated safe defaults or line numbers.
+
+Validation: source hashes and quarantine behavior, native geometry, isolated shadow fees/restarts and zero promotion-eligible records, capital cost/risk invariants, full server tests/typecheck, dashboard tests/build/lint, and responsive dark/light UI checks on explicitly labeled local fixtures. The ETH basket's first real-time shadow fill reconciled with its saved depth, taxed fee and risk budget; no add-ons or closed exits had yet occurred. This release enables no new account or research plan and changes no VM configuration.
+
+## 258. Matched native-target shadow studies on six liquid markets (14 November 2026)
+
+Activate only experimental shadow comparisons for MESA Adaptive Cycle Engine, Squeeze Bollinger Bands Tracker and GARCH Volumetric Cloud on BTC, ETH, SOL, ARIA, XRP and ZEC, all 15m. A public-data feasibility screen examines the 30 highest-turnover available crypto histories, 2,000 closed bars per cell and three fresh depth samples at at least $750. Selection is by liquidity among cells with passing historical entry conditions, not by profit. Historical spread and execution latency are unavailable, so historical feasible counts are upper bounds. The normal live fee, regime, fresh-depth and sizing gates still decide each entry. No signal or fill is invented to exercise a stage.
+
+Each source cell runs once and feeds two arms: the author's native TP/SL, versus the configured account R ladder, trail and floor with the SAME native initial SL and entry model. At rollout the control allocates its target exit to 6R and trails from 0.5R; native targets are MESA 2R, Squeeze band-derived and GARCH 1.5R, without the account trail. This is an exit-only control, not a claim that these not-yet-approved scanners traded in the account before. An explicit `exitPolicy: account-ladder` and `comparison.kind: exit-policy` prevent accidentally comparing the new native profile against itself. Validation requires the same source, reading, entry, reference purse, risk and enabled state. New fields are absent on old plans, preserving their identities. Full fees including GST and causal exits apply to both arms.
+
+Research capacity increases from 37 to 73 to hold 36 comparison arms, requiring only 18 new source evaluations per 15m close. This does not expand the account's eight-position limit, margin, stop-risk cap or any other capital/risk/evidence setting. Each research plan is an independent $1,000 reference purse; their combined dollars are not a portfolio return. The activation script changes only executionPlans, keeps existing plans byte-equivalent as JSON, refuses edited treatments, writes atomically with backup and is idempotent. It accepts the existing positive margin rather than imposing $150 as a new mandatory rule.
+
+Both full cohorts and shared-signal closed comparisons are reported; unfilled, unfinished and different-admission cases remain visible. Native holding time changes later entry availability, so a favorable matched subset alone is insufficient. Experimental plans remain excluded from copying, promotion and sizing evidence. A chosen policy must subsequently collect ordinary prospective shadow evidence under the unchanged shared evidence rules before paper admission. No new scanner is enabled for the account by this rollout.
+
+Validation covers paired policy isolation, invalid mixed comparisons, equal causal entry fills and fees, distinct exit behavior, durable restart policies, experimental evidence exclusion, source deduplication, configuration preservation and bounded/idempotent activation. See [the dated study](research/markittick-shadow-2026-11-14.html).
+
+## 259. Reproducible execution evidence before contract-driven rollout (14 November 2026)
+
+The execution-contract study pooled historical policies and inferred author ownership from exit labels.
+The replacement exporter uses an explicitly bounded, read-only SQLite transaction and retains every
+closed row in the window, including trackers, experiments, quarantined records and invalid outcomes.
+It exports saved policies, per-fill fee components, funding, orders and available execution receipts.
+Book, frozen scope, policy and plan signature remain separate cohorts. Exact trade-level holding
+medians replace weighted medians of cell medians. Schema, producer and data hashes make runs auditable.
+Unknowns stay unknown: `sl` is not proof of a bot stop, `tp1` is not proof of an author target, an ATR
+stop does not establish the TP's origin, and missing gross fees or vouchers are not zero costs.
+
+A research contract manifest pins Pine bytes, patched source, effective reading and implementation.
+It names external versus adapter lifecycle control and requires source parity, closed-bar causality,
+accounting, restart and execution-pricing proofs. Proofs cannot be borrowed from another manifest,
+future time or failed/conflicting latest check. The readiness result applies to proposed contract
+adoption, not existing trading. It always grants no paper eligibility. Source reviews remain separate
+from executable mechanics and profitability evidence.
+
+The review builder covers active profiles and the top 150 by recorded trade activity, with explicit
+variant lineage from the existing registry. Historical claims require an exact-contract disposition:
+confirmed, intentional variant, fixed, unsupported or unknown. Confirmed/fixed decisions require a
+regression reference. Trend Impulse's preserved breakout reading is annotated as intentional; its
+separate as-drawn variant is fixed, backed by decision 195 and existing source/reader regression tests.
+A missing current scanner or a file/profile error is visible, never silently treated as validated.
+
+This release is offline research tooling. It changes no reader, execution path, fees, sizing, margin,
+risk cap, evidence identity or eligibility rule. It does not enable scanners, write the VM configuration,
+restart the bot, or claim that native author exits improve profit. Wider stops remain compatible with
+unchanged equity-risk limits through smaller positions. The next implementation step is to verify
+high-impact adapters and attach exact-version causal mechanics proofs before broader shadow rollout.
+
+Validation: 1,402 server tests, server typecheck and four author-record checks pass. The export CLI is exercised end to end against a read-only SQLite connection, including private output permissions, tamper detection and overwrite refusal. A 30-day production-data snapshot was exported without changing the VM service or configuration.
+
+
+## 260. Preserve native shadow entries while a real close is pending (14 November 2026)
+
+Six validated native research scanners receive a new execution snapshot version.
+Structure-Anchored VWAP 2.0, Synapse Trail Pro and Liquidity Trail Matrix gain the
+causal reversal wait already present on Reactive Trail and Reaction Level Matrix.
+All six, including STRAT Trap, may retain a same-side entry only after a full
+native close has already been requested. Partial targets and stop amendments do
+not permit pyramiding. The replacement waits for all actual close fills, retains
+its original expiry, and rechecks every entry and risk constraint at fill time.
+A refused entry does not withdraw the independent author close. Restart cancels
+unfilled market entries and retains durable exits.
+
+This changes six existing experimental plan signatures, with no extra plan slots.
+Held snapshots and ordinary scanner identities remain unchanged. No changes to
+account reading, sizing, margin, fee gate, risk caps, or promotion/copy evidence.
+The retained candle mechanics comparison shows 15 completed trades in each arm,
+not a demonstrated profit or fill-count uplift; forward shadow evidence is required.
+See [the scoped validation](research/native-reentry-corrections-2026-11-14.md).
+
+
+## 261. Review forward evidence independently of screening (14 November 2026)
+
+Automatic paper promotion was already enabled on the VM, but evaluation depended
+on completed nightly/pair-agent screens or a manual review. Fresh closed trades
+could leave a newly qualified cell waiting for hours. A persisted review loop now
+checks once a minute, judges every 15 minutes by default, and can judge five minutes
+after the preceding attempt when new account or shadow closes arrive. Nightly,
+pair-agent and manual requests share one in-flight evaluation. Failed reviews
+keep their screen unacknowledged and retry after five minutes, including across
+restart. The cadence is configurable from 5 to 1,440 minutes.
+
+Every review retries existing proposals as well as newly proposed cells. The
+existing approval path rechecks qualified forward evidence, market eligibility,
+restoration, overlap and allocation caps. Batch approvals now accumulate each
+successful scanner patch: ConfigStore replaces its snapshot, so using the original
+snapshot could overwrite a preceding market added to the same scanner and miss
+cumulative diversity limits. Automatic promotion is restricted to enabled paper
+incubators. Manual demotion decisions retain their existing ownership.
+
+This changes allocation timing, not strategy parameters or thresholds. The legacy
+backtest tuner remains advisory while the incubator owns allocations. Tracker,
+experimental-plan, old-reader, quarantined and unqualified historical outcomes
+cannot establish promotion evidence. Native execution experiments stay separate.
+Paper mode, margin, risk caps, fee gates, source/reading identities and evidence
+requirements are unchanged. Higher profit factor or win rate is not established
+by these correctness tests; promoted cells must be measured prospectively.
+
+Validation covers cumulative allocations/caps, failed writes, capacity retries,
+exact-policy qualification and excluded histories, disabled modes, single-flight
+reviews, cadence, closed-trade wakeups and durable failure recovery. The dashboard
+shows the current automatic-review status, last success, failure and next due time.
+
+## 262. Judge retirement with the current execution evidence (14 November 2026)
+
+The promotion audit found zero full promotions but 28 paper-copy candidates. Raw
+shadow results were still used for non-restoration performance retirement: old
+losses could retire a positive new policy, and old wins could conceal current
+losses. Retirement now uses the same exact-policy evidence boundary, including
+negative forward results from incomplete restorations. Missing runtime policy
+cannot establish performance; offline historical research remains explicit.
+
+Activity-based expiry keeps its existing clock and observations. Copy, promotion,
+restoration, sizing, entry and risk rules are unchanged. No historical positions,
+policies or enrollment records are rewritten. The Incubator separates paper-copy
+eligibility from promotion and shows the gate's sample instead of mixed history.
+Viewing copy status is read-only.
+
+The seven-day replay found 24 premature failed-screen retirements among 26 cases
+with current-policy observations; eight had positive current results. Their small
+samples do not establish future profit or authorize promotion. Prior retirements
+return only through fresh screening and available shadow capacity. See
+`research/paper-qualification-audit-2026-11-14.md` for scope and evidence.
+
+## 263. Retain fresh paper entries during transient exchange recovery (14 November 2026)
+
+Five copied entries were permanently rejected between 08:01:08 and 08:01:17 UTC
+while the exchange feed reconnected and its product-status catalogue refreshed.
+Existing resting orders already waited through these transient conditions. New
+receipts now wait too, using the durable signal inbox, only in paper mode without
+an exchange executor. Disconnection, awaiting a system snapshot and stale product
+status are retryable; maintenance and product halts remain definitive refusals.
+
+Waiting creates no position, order or capacity reservation. It never extends the
+existing receipt-recovery deadline (at most 60 seconds). Recovery uses fresh prices
+and depth and reruns the normal admission path, including signal age, fees, regime,
+size and risk gates. Copy entries additionally recheck their current allocation,
+turnover, exact-policy evidence and restoration status before and after asynchronous
+preparation and at allocation. Missing evidence resolution fails closed. Exits do
+not wait for entry recovery. Historical rejected receipts remain final.
+
+No source/reader identity, evidence threshold, execution-plan policy, account
+setting or risk cap changes. Nine fills from eight of the 28 candidates in the
+last 24 hours establish that copying is working; the seven candle-model maker
+fills are not proof of queue execution on the exchange. Recovering a fresh
+decision is a reliability correction, not a demonstrated profit-factor increase.
+See `research/paper-copy-fills-2026-11-14.md` for all 28 cells and limitations.

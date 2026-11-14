@@ -1,11 +1,15 @@
-import { Disclosure } from '../components/Disclosure'
+import { ResearchSections } from '../components/ResearchSections'
+import { choice, sectionFromUrl } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
+import { summarizeOutcomes, gateOf } from '../lib/signalOutcomes'
+import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import {CostAudit} from '../components/ExecutionPlans'
 import { DecisionTrace } from '../components/DecisionTrace'
 import { ScannerPipelinePanel } from '../components/ScannerPipeline'
 import { Fragment, useCallback, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useHealth, useMarkets, useScannerIndex, useSignalActivity, useSignals } from '../api/queries'
-import type { Signal, SignalKind, Side } from '../api/types'
+import type { Signal } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { ActionPill, ErrorState, Loading, PageTitle, Panel, Pill, ScoreBadge, Segmented, SidePill, StatusDot, Time } from '../components/ui'
 import { fmtPrice, truncate } from '../lib/format'
@@ -148,13 +152,13 @@ export function Signals() {
   const recovery=health.data?.signalRecovery
   const scanners = useScannerIndex()
   const markets = useMarkets()
-  const [params] = useSearchParams()
-  const [scanner, setScanner] = useState(params.get('scanner') ?? '')
-  const [symbol, setSymbol] = useState(params.get('symbol') ?? '')
-  const [tf, setTf] = useState(params.get('tf') ?? '')
-  const [kind, setKind] = useState<'' | SignalKind>((params.get('kind') as SignalKind) || '')
-  const [side, setSide] = useState<'' | Side>('')
-  const [view, setView] = useState<'grouped' | 'flat'>('grouped')
+  const { params, set, hash } = useResearchFilters()
+  const scanner = params.get('scanner') ?? '', symbol = params.get('symbol') ?? '', tf = params.get('tf') ?? ''
+  const kind = choice(params.get('kind'), ['', 'entry', 'exit', 'info'], '')
+  const side = choice(params.get('side'), ['', 'long', 'short'], '')
+  const view = choice(params.get('view'), ['grouped', 'flat'], 'grouped')
+  const section = sectionFromUrl(params, hash, ['events', 'diagnostics', 'costs'], 'events', { '#signal-diagnostics': 'diagnostics', '#execution-costs': 'costs' })
+  const clear = () => set({ scanner: null, symbol: null, tf: null, kind: null, side: null })
   const q = useMemo(() => ({ limit: 500, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined, tf: tf || undefined }), [scanner, symbol, kind, tf])
   const signals = useSignals(q)
 
@@ -162,15 +166,17 @@ export function Signals() {
   const symbolOptions = useMemo(() => {
     const set = new Set<string>((markets.data ?? []).map((m) => m.symbol))
     for (const s of signals.data ?? []) set.add(s.symbol)
-    return Array.from(set)
-  }, [markets.data, signals.data])
+    if (symbol) set.add(symbol)
+    return Array.from(set).sort()
+  }, [markets.data, signals.data, symbol])
 
   const outcomes = useMemo(() => summarizeOutcomes(rows), [rows])
 
   return (
     <div className="page">
-      <div className="banner small" role="note"><b>View only.</b> Signals record received alerts and their decisions. An interrupted decision stays pending until recovery completes; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
-      <PageTitle pre="Every alert," accent="scored" post="and actioned." sub="Every alert the account's scanners raised and what the account did with it. Shadow-book runs are judged in the Incubator, not here." />
+      <PageTitle pre="Signals" sub="Account alerts, entry decisions and pending orders. Follow a signal through to its fill; review shadow evidence in Incubator." />
+      <ResearchSections label="Signal views" value={section} options={[{ value: 'events', label: 'Account events' }, { value: 'diagnostics', label: 'Diagnostics' }, { value: 'costs', label: 'Fees & execution' }]} />
+      {section === 'events' && <>
       <Panel title="Entry signal flow · last 24 hours" right={<span className="muted small">All scanners and markets · independent of table filters</span>}>
         {activity.isError ? <ErrorState error={activity.error} onRetry={()=>activity.refetch()}/> : !flow ? <Loading/> : <>
           <div className="chips">
@@ -180,18 +186,41 @@ export function Signals() {
             <Pill tone="ok">{flow.paperFilled} paper entries filled</Pill>
             <Pill tone="muted">{flow.shadowFilled} regular shadow entries filled</Pill>
           </div>
-          <p className="small muted">Candidates include account entry signals and shadow signals held from copying. A copy hold is a detected signal, not a scanner failure. Tracker-only signals are outside this count. Filled entries use fill time, so they can originate from earlier signals.</p>
+          <details className="small scope-note"><summary>Count scope and copy holds</summary><p className="muted">Candidates include account entry signals and shadow signals held from copying. A copy hold is a detected signal, not a scanner failure. Tracker-only signals are outside this count. Filled entries use fill time, so they can originate from earlier signals.</p>
           {flow.held.length>0&&<div className="chips">{flow.held.map(r=><Pill key={r.reason} tone="warn">{r.reason}: {r.n}</Pill>)}</div>}
           <p className="small muted"><Link to="/incubator">Review cell evidence in the Incubator</Link>. Held signals remain diagnostic observations and never count toward promotion.</p>
           {(flow.copyRecordedSince===null||flow.copyRecordedSince>flow.since)&&<p className="small muted">Copy-hold history does not cover this entire window; observed candidates are a lower bound.</p>}
+          </details>
         </>}
       </Panel>
-      {recovery&&<Panel title="Signal recovery" right={<Pill tone={recovery.pending?'warn':'ok'}>{recovery.pending?`${recovery.pending} awaiting decision`:'No pending decisions'}</Pill>}>
+      {recovery && recovery.pending > 0 && <Panel title="Signal recovery" right={<Pill tone={recovery.pending?'warn':'ok'}>{recovery.pending?`${recovery.pending} awaiting decision`:'No pending decisions'}</Pill>}>
         <p className="small muted">Interrupted paper decisions resume from their saved receipt. Completed decisions are not repeated. Entries expire after at most 60 seconds and recheck current admission rules; exits stay tied to their original position and wait for a fresh price.</p>
         {recovery.pending>0&&<div className="table-wrap"><table className="table small"><thead><tr><th>Signal</th><th>Market</th><th>Received</th><th>Attempts</th><th>Waiting on</th></tr></thead><tbody>{recovery.recent.map(r=><tr key={r.signal_id}><td>#{r.signal_id} · {r.kind}</td><td>{r.symbol} · {r.tf}</td><td><Time t={r.received_at}/></td><td>{r.attempts}</td><td>{r.last_error??'Decision in progress'}</td></tr>)}</tbody></table></div>}
       </Panel>}
+      <Panel
+        title={
+          <span>
+            Signals <span className="muted small">({rows.length})</span>
+          </span>
+        }
+        right={<Segmented ariaLabel="Signal layout" value={view} onChange={v => set({ view: v })} options={[{ value: 'grouped', label: 'By cell' }, { value: 'flat', label: 'All events' }]} />}
+        pad={false}
+      >
+        <div className="research-filters">
+          <label>Scanner<select className="select" value={scanner} onChange={e => set({ scanner: e.target.value })}>
+            <option value="">All scanners</option>
+            {scanner && !scanners.data?.some(s => s.id === scanner) && <option value={scanner}>{scanner}</option>}
+            {(scanners.data ?? []).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select></label>
+          <label>Market<select className="select" value={symbol} onChange={e => set({ symbol: e.target.value })}><option value="">All markets</option>{symbolOptions.map(s => <option key={s}>{s}</option>)}</select></label>
+          <label>Timeframe<select className="select" value={tf} onChange={e => set({ tf: e.target.value })}><option value="">All timeframes</option>{[...new Set([...DELTA_TIMEFRAMES, ...(tf ? [tf] : [])])].map(t => <option key={t}>{t}</option>)}</select></label>
+          <label>Event<select className="select" value={kind} onChange={e => set({ kind: e.target.value })}><option value="">All events</option><option value="entry">Entry</option><option value="exit">Exit</option><option value="info">Information</option></select></label>
+          <label>Side<select className="select" value={side} onChange={e => set({ side: e.target.value })}><option value="">Both sides</option><option value="long">Long</option><option value="short">Short</option></select></label>
+          <button className="btn btn-sm" disabled={!scanner && !symbol && !tf && !kind && !side} onClick={clear}>Clear filters</button>
+        </div>
+        <p className="research-result-count muted small" role="status">{rows.length} matching events from the latest {signals.data?.length ?? 0} receipts (up to 500). Side filters apply to this loaded window.</p>
       {outcomes.total > 0 && (
-        <Panel title={`What became of the last ${outcomes.total} account signals`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
+        <Panel title={`Outcomes · ${outcomes.total} matching events`} right={<span className="muted small">{outcomes.entries} entry signals · {outcomes.opened} opened ({outcomes.entries ? Math.round(outcomes.opened / outcomes.entries * 100) : 0}%)</span>}>
           <div className="chips">
             {outcomes.buckets.map((b) => (
               <Pill key={b.key} tone={b.tone} title={b.hint}>{b.label} <span className="mono">{b.n}</span></Pill>
@@ -199,110 +228,20 @@ export function Signals() {
           </div>
         </Panel>
       )}
-      <Panel
-        title={
-          <span>
-            Signals <span className="muted small">({rows.length})</span>
-          </span>
-        }
-        right={
-          <div className="row gap filters">
-            <Segmented ariaLabel="View" value={view} onChange={(v) => setView(v as 'grouped' | 'flat')} options={[{ value: 'grouped', label: 'By cell' }, { value: 'flat', label: 'Flat' }]} />
-            <select className="select select-sm" value={scanner} onChange={(e) => setScanner(e.target.value)} aria-label="Scanner">
-              <option value="">All scanners</option>
-              {(scanners.data ?? []).map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-            <select className="select select-sm" value={symbol} onChange={(e) => setSymbol(e.target.value)} aria-label="Symbol">
-              <option value="">All symbols</option>
-              {symbolOptions.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-            <input className="input input-sm" aria-label="Timeframe" placeholder="All timeframes" value={tf} onChange={e=>setTf(e.target.value)} style={{width:110}} />
-            <select className="select select-sm" value={kind} onChange={(e) => setKind(e.target.value as '' | SignalKind)} aria-label="Kind">
-              <option value="">All kinds</option>
-              <option value="entry">entry</option>
-              <option value="exit">exit</option>
-              <option value="info">info</option>
-            </select>
-            <select className="select select-sm" value={side} onChange={(e) => setSide(e.target.value as '' | Side)} aria-label="Side">
-              <option value="">Both sides</option>
-              <option value="long">long</option>
-              <option value="short">short</option>
-            </select>
-          </div>
-        }
-        pad={false}
-      >
         {signals.isLoading && !signals.data && <Loading kind="table" rows={10} cols={9} />}
         {signals.isError && !signals.data && <ErrorState error={signals.error} onRetry={() => signals.refetch()} />}
         {signals.data && (view === 'flat' ? <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" /> : <GroupedSignals signals={rows} />)}
       </Panel>
-      <Disclosure id="signal-diagnostics" title="Decision trace and scanner pipeline" hint="Inspect admission decisions and where processing stopped"><DecisionTrace/><ScannerPipelinePanel/></Disclosure>
-      <Disclosure id="execution-costs" title="Fees and execution costs" hint="Verified offer status and recorded costs for recent paper positions"><CostAudit/></Disclosure>
+      </>}
+      {section === 'diagnostics' && <section id="signal-diagnostics" className="research-view">
+      <div className="banner small" role="note"><b>Account log · read only.</b> Signals record received alerts and their decisions. An interrupted decision stays pending until recovery completes; nothing here can open a trade. Each refusal names its gate, and the <Link to="/gates">Gate Center</Link> explains every gate and its current state.</div>
+        <DecisionTrace/><ScannerPipelinePanel/>
+      </section>}
+      {section === 'costs' && <section id="execution-costs"><CostAudit/></section>}
     </div>
   )
 }
 
-
-/** The fate of a batch of signals, in the operator's words: how many became trades, and what refused the rest. */
-function summarizeOutcomes(rows: Signal[]) {
-  const defs: Array<{ key: string; label: string; tone: 'ok' | 'danger' | 'warn' | 'muted' | 'accent'; hint: string; test: (a: string, s: Signal) => boolean }> = [
-    { key: 'opened', label: 'opened', tone: 'ok', hint: 'became a position', test: (a) => a === 'opened' },
-    { key: 'market', label: 'market not suitable', tone: 'warn', hint: 'the markets-today gate: illiquid, too quiet to pay the round trip, or not paying recently (decision 56)', test: (a) => a.startsWith('rejected:market') },
-    { key: 'fee', label: 'stop too tight for fees', tone: 'warn', hint: 'The modeled stop distance is below the configured multiple of round-trip costs. This is an admission rule, not a prediction of the trade outcome.', test: (a) => /stop too tight/.test(a) },
-    { key: 'capacity', label: 'margin / position cap', tone: 'warn', hint: 'no room in the account: margin, position limits, or a scrap-sized fill refused (decision 53)', test: (a) => /margin|max positions|position cap|intended size|budget/.test(a) },
-    { key: 'received', label: 'awaiting decision', tone: 'warn', hint: 'Saved receipt waiting for processing or recovery', test: (a) => a.startsWith('received:') },
-    { key: 'stale', label: 'stale (scan too late)', tone: 'danger', hint: 'the scan finished after the signal aged out', test: (a) => /stale/.test(a) },
-    { key: 'halted', label: 'halted / loss limit', tone: 'danger', hint: 'kill switch, daily or weekly loss limit, cooldown', test: (a) => /halt|loss limit|cooldown/.test(a) },
-    { key: 'regime', label: 'regime', tone: 'muted', hint: 'weekend or ATR floor', test: (a) => /regime/.test(a) },
-    { key: 'exitnopos', label: 'exit, no position', tone: 'muted', hint: 'an exit signal with nothing open to close', test: (a) => /no position/.test(a) },
-    { key: 'inpos', label: 'already in position', tone: 'muted', hint: 'the scanner already holds this market', test: (a) => /already in position/.test(a) },
-    { key: 'reset', label: 'before the last reset', tone: 'muted', hint: 'the paper account was reset after this signal; whatever it did is no longer in the journal', test: (a) => a === 'reset' },
-    { key: 'info', label: 'info only', tone: 'muted', hint: 'a marker or note the script drew, not a trade call', test: (a, s) => a === 'info' || s.kind === 'info' },
-  ]
-  const counts = new Map<string, number>()
-  let entries = 0
-  for (const s of rows) {
-    const a = String(s.action ?? '')
-    if (s.kind === 'entry') entries++
-    const d = defs.find((x) => x.test(a, s))
-    const k = d ? d.key : a.startsWith('rejected') ? 'other-rejected' : 'other'
-    counts.set(k, (counts.get(k) ?? 0) + 1)
-  }
-  const buckets = defs.filter((d) => counts.get(d.key)).map((d) => ({ ...d, n: counts.get(d.key)! }))
-  if (counts.get('other-rejected')) buckets.push({ key: 'other-rejected', label: 'rejected (other)', tone: 'warn', hint: 'see the Action column', n: counts.get('other-rejected')!, test: () => false })
-  if (counts.get('other')) buckets.push({ key: 'other', label: 'other', tone: 'muted', hint: '', n: counts.get('other')!, test: () => false })
-  return { total: rows.length, entries, opened: counts.get('opened') ?? 0, buckets }
-}
-
-
-/** The gate an action names, in the operator's words, with where to read about it (decision 120). */
-function gateOf(action: string | null | undefined): { key: string; label: string; tone: 'ok' | 'danger' | 'warn' | 'muted' | 'accent'; href?: string } {
-  const a = String(action ?? '')
-  if (a === 'opened' || a === 'reversed' || a.startsWith('pending')) return { key: 'opened', label: 'opened', tone: 'ok' }
-  if (a.startsWith('rejected:risk regime')) return { key: 'regime', label: 'regime gate', tone: 'warn', href: '/gates' }
-  if (a.startsWith('rejected:stop too tight')) return { key: 'cost', label: 'cost rule', tone: 'warn', href: '/gates' }
-  if (a.startsWith('rejected:risk market')) return { key: 'market', label: 'market gate', tone: 'warn', href: '/gates' }
-  if (a.startsWith('rejected:unpriceable')) return { key: 'quote', label: 'no quote', tone: 'warn', href: '/gates' }
-  if (/rejected:(risk )?(max |margin|budget)/.test(a) || /positions on|position budget/.test(a)) return { key: 'capacity', label: 'capacity', tone: 'warn', href: '/gates' }
-  if (/rejected:risk (burst|re-entry|cooldown)/.test(a)) return { key: 'guard', label: 'guard', tone: 'muted', href: '/gates' }
-  if (/halt|loss limit/.test(a)) return { key: 'halt', label: 'halted', tone: 'danger', href: '/gates' }
-  if (/stale/.test(a)) return { key: 'stale', label: 'stale', tone: 'danger' }
-  if (/rejected:ml/.test(a)) return { key: 'model', label: 'model gate', tone: 'warn', href: '/learn' }
-  if (/trend/.test(a)) return { key: 'trend', label: 'trend gate', tone: 'warn', href: '/gates' }
-  if (a.startsWith('ignored')) return { key: 'ignored', label: 'ignored', tone: 'muted' }
-  if (a === 'reset') return { key: 'reset', label: 'before reset', tone: 'muted' }
-  if (a === 'closed' || a === 'reduced') return { key: 'exit', label: a, tone: 'accent' }
-  if (a === 'info') return { key: 'info', label: 'info', tone: 'muted' }
-  return { key: 'other', label: a.replace(/^rejected:/, '').slice(0, 24) || '—', tone: 'muted' }
-}
 
 /**
  * Decision 120: the log grouped by cell — one scanner on one market and timeframe — with the cell's funnel on the
@@ -335,7 +274,7 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
       </div>
       <table className="table small signals-grouped">
         <caption className="sr-only">Signals grouped by cell</caption>
-        <thead><tr><th scope="col">Cell</th><th scope="col">Signals</th><th scope="col">Opened</th><th scope="col">Refused by</th><th scope="col">Last</th></tr></thead>
+        <thead><tr><th scope="col">Cell</th><th scope="col">Signals</th><th scope="col">Opened</th><th scope="col">Other outcomes</th><th scope="col">Last</th></tr></thead>
         <tbody>
           {groups.map((g) => (
             <Fragment key={g.k}>
@@ -343,7 +282,7 @@ function GroupedSignals({ signals }: { signals: Signal[] }) {
                 <th scope="rowgroup"><span className="muted mono">{open.has(g.k) ? '▾' : '▸'}</span> <Link to={`/scanners/${g.scannerId}`} className="strong" onClick={(e) => e.stopPropagation()}>{g.scannerName}</Link> <span className="mono">{g.symbol} {g.tf}</span></th>
                 <td className="mono" data-label="signals">{g.entries}{g.list.length !== g.entries ? <span className="muted"> +{g.list.length - g.entries} exits/info</span> : null}</td>
                 <td className={`mono ${g.opened ? 'gain' : 'muted'}`} data-label="opened">{g.opened}</td>
-                <td data-label="refused by">{[...g.counts.entries()].filter(([k]) => k !== 'opened').sort((a, b) => b[1] - a[1]).map(([k, n]) => { const sample = g.list.find((s) => gateOf(s.action).key === k); const gg = gateOf(sample?.action); return <Pill key={k} tone={gg.tone} title={sample?.action ?? ''}>{n} {gg.label}</Pill> })}</td>
+                <td data-label="other outcomes">{[...g.counts.entries()].filter(([k]) => k !== 'opened').sort((a, b) => b[1] - a[1]).map(([k, n]) => { const sample = g.list.find((s) => gateOf(s.action).key === k); const gg = gateOf(sample?.action); return <Pill key={k} tone={gg.tone} title={sample?.action ?? ''}>{n} {gg.label}</Pill> })}</td>
                 <td className="muted" data-label="last"><Time t={g.last} /></td>
               </tr>
               {open.has(g.k) && g.list.slice(0, 60).map((s) => {

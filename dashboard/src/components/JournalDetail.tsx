@@ -31,7 +31,7 @@ export function JournalDetailPanel({ book, id, onClose }: {book: string; id: num
             <div><dt>Contracts / remaining</dt><dd>{r.qty ?? 'Unknown'} / {r.qtyOpen ?? 'Unknown'}</dd></div>
             <div><dt>Entry notional / derived margin</dt><dd>{money(r.notional)} / {money(r.margin)}</dd></div>
             <div><dt>Recorded margin leverage</dt><dd>{r.marginLeverage === null ? 'Unknown' : `${r.marginLeverage}×`}</dd></div>
-            <div><dt>Original dollar risk</dt><dd>{money(r.risk)}</dd></div>
+            <div><dt>{d.basketEntries?.length ? 'Basket risk at latest entry' : 'Original dollar risk'}</dt><dd>{money(r.risk)}</dd></div>
             <div><dt>Gross trading / commission</dt><dd>{money(r.grossTrading)} / {money(r.commission)}</dd></div>
             <div><dt>Recorded funding cashflow</dt><dd>{money(r.funding)}</dd></div>
             <div><dt>{r.status === 'closed' ? 'Closed net' : 'Realized net so far (no open valuation)'}</dt><dd>{r.realizedNet === null ? 'Unknown' : <Pnl value={r.realizedNet} />}</dd></div>
@@ -40,6 +40,13 @@ export function JournalDetailPanel({ book, id, onClose }: {book: string; id: num
           </dl>
         </div>
         {r.pending && <p>Pending limit: {price(r.pending.price)} · expires {r.pending.expiresAt === null ? 'unknown' : <Time t={r.pending.expiresAt} mode="datetime" />}</p>}
+        {!!d.basketEntries?.length && <>
+          <h3>Basket entry ledger</h3>
+          <p className="muted">One position, one shared margin budget. Each leg keeps its own fill and costs. Risk is set at the latest confirmed entry; later funding charges or a price gap can produce a loss beyond 1R. Expand the execution audit for the recorded calculation.</p>
+          <div className="table-wrap"><table className="table"><thead><tr><th>Leg</th><th>Filled</th><th>Contracts</th><th>Price</th><th>Entry fee</th><th>Evidence</th></tr></thead><tbody>
+            {d.basketEntries.map(b=><tr key={b.sequence}><td>{b.sequence}</td><td><Time t={b.at} mode="datetime" /></td><td>{b.qty}</td><td>{price(b.price)}</td><td>{money(b.fee)}</td><td>{b.context?.audit ? 'Recorded' : 'Legacy: not retained'}</td></tr>)}
+          </tbody></table></div>
+        </>}
         <h3>Entry signal</h3>
         {d.signal ? <p><Time t={d.signal.at} mode="datetime" /> · {d.signal.label} · {d.signal.message} · Current signal record: {d.signal.action}</p> : <p className="muted">No retained signal is linked to this record.</p>}
         <h3>Every recorded fill</h3>
@@ -51,7 +58,7 @@ export function JournalDetailPanel({ book, id, onClose }: {book: string; id: num
         <h3>Decision timeline</h3>
         {d.decisions.length ? <div className="table-wrap"><table className="table"><thead><tr><th>Time</th><th>Stage</th><th>Reason</th></tr></thead><tbody>{d.decisions.map((e, i) => <tr key={i}><td><Time t={e.at} mode="datetime" /></td><td>{e.stage}</td><td>{e.reason ?? '—'}</td></tr>)}</tbody></table></div> : <p className="muted">No decision events retained for this trade.</p>}
         <p>Path samples: {d.pathCoverage.samples}. {!r.missingPosition && <Link className="btn btn-sm" to={`/trades/${r.id}/replay`}>Replay trade path</Link>}</p>
-        <details><summary>Frozen policy, ML features and entry execution audit</summary><p>Scope: {r.evidenceScope} · Policy: {r.policyId ?? 'Not recorded'} · Configuration: {r.configFingerprint ?? 'Not recorded'}</p><pre className="small" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({policy:d.policy,features:d.features,entryExecution:d.entryExecution,entryFillEvidence:d.entryFillEvidence},null,2)}</pre></details>
+        <details><summary>Frozen policy, ML features and entry execution audit</summary><p>Scope: {r.evidenceScope} · Policy: {r.policyId ?? 'Not recorded'} · Configuration: {r.configFingerprint ?? 'Not recorded'}</p><pre className="small" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({policy:d.policy,features:d.features,entryExecution:d.entryExecution,entryFillEvidence:d.entryFillEvidence,basketEntries:d.basketEntries},null,2)}</pre></details>
         <p className="small muted">{d.caveats.join(' ')}</p>
       </>
     }}</QueryState>

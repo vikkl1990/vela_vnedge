@@ -1,3 +1,4 @@
+import type {BasketState} from './basket.ts';
 import { offerEffectiveFrom, commissionRatePct, admissionCostPct, type EntryExecution } from './costs.ts';
 /**
  * Pure paper-trading position logic shared by the live engine and the backtester.
@@ -15,9 +16,10 @@ import type { Side, ExitType } from '../scanners/extractor.ts';
 import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import type { TradePolicy } from './tradePolicy.ts';
 
-export interface Fill { orderId?: number; liquidity?: 'maker' | 'taker'; feeWaived?: boolean; feeGross?: number; feeDiscount?: number; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
+export interface Fill { planEventId?:number; orderId?: number; liquidity?: 'maker' | 'taker'; feeWaived?: boolean; feeGross?: number; feeDiscount?: number; at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
 
 export interface Position {
+  basket?: BasketState;
   policy?: TradePolicy;
   executionPlan?: ExecutionPlanSnapshot;
   id: number;
@@ -933,7 +935,8 @@ export function applyFundingSettlement(pos: Position, ratePct: number, markPrice
       || at < (pos.openedAt ?? pos.entryAt) || (pos.exitAt !== null && pos.exitAt !== undefined && at >= pos.exitAt)
       || pos.fills.some(f => f.reason === 'funding' && f.at === at)) return null;
   const exited = pos.fills.filter(f => f.at <= at && f.reason !== 'entry' && f.reason !== 'funding').reduce((n,f)=>n+f.qty,0);
-  const qty = Math.max(0,pos.qty-exited);
+  const entered=pos.basket?pos.fills.filter(f=>f.reason==='entry'&&f.at<=at).reduce((n,f)=>n+f.qty,0):pos.qty;
+  const qty = Math.max(0,entered-exited);
   if (!(qty>0)) return null;
   const pnl=-(ratePct/100)*qty*pos.contractValue*markPrice*(pos.side==='long'?1:-1);
   const fill: Fill={at,price:markPrice,qty:0,reason:'funding',fee:0,pnl};
@@ -943,6 +946,15 @@ export function applyFundingSettlement(pos: Position, ratePct: number, markPrice
 /** Script-emitted exit event applied according to the scanner's exit mode. */
 export function applyScriptExit(pos: Position, exitType: ExitType, price: number | undefined, at: number, cfg: PaperConfig, mode: ExitMode, fallbackPrice: number, execution?: { marketPrice: number; quoted: boolean }): Fill[] {
   if (pos.status !== 'open' || mode === 'levels') return [];
+  if (exitType === 'stop_update') {
+    // An amendment is not a fill. Replay applies it after this bar's management;
+    // the live engine uses its durable acknowledgement clock instead.
+    if (price && price > 0 && Number.isFinite(price) && Number.isFinite(at) && at >= pos.entryAt && (pos.sl === null || (pos.side === 'long' ? price > pos.sl : price < pos.sl))) {
+      pos.sl = price;
+      if (pos.side === 'long' ? price >= pos.entryPrice : price <= pos.entryPrice) pos.breakEven = true;
+    }
+    return [];
+  }
   const px = price && Number.isFinite(price) && price > 0 ? price : fallbackPrice;
   const m = exitType.match(/^tp(\d)$/);
   if (m) {

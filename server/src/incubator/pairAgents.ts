@@ -1,3 +1,4 @@
+import {candleReplayBlock} from '../paper/basket.ts';
 import { createHash } from 'node:crypto';
 import type { AppConfig } from '../config.ts';
 import type { Db } from '../db.ts';
@@ -55,7 +56,7 @@ export class PairAgents {
 
   async view() {
     const {db,cfg,store}=this.deps,c=cfg(), settings={...AGENT_DEFAULTS,...c.incubator.agents},now=this.now(),s=this.state();
-    const scanners=this.deps.scanners(), tfs=[...new Set(c.incubator.tfs?.length?c.incubator.tfs:[c.incubator.tf])];
+    const scanners=this.deps.scanners().filter(sc=>!candleReplayBlock(sc.id)), tfs=[...new Set(c.incubator.tfs?.length?c.incubator.tfs:[c.incubator.tf])];
     const signatures=new Map(scanners.flatMap(sc=>tfs.map(tf=>[`${sc.id}|${tf}`,coverageSignature(c,sc,tf)] as const)));
     const evidence=new Map(db.all<{scanner_id:string;symbol:string;tf:string;at:number;signature:string;result:string}>('SELECT * FROM pair_screen_evidence')
       .filter(r=>r.at<=now && r.at>now-settings.refreshDays*DAY && r.signature===signatures.get(`${r.scanner_id}|${r.tf}`))

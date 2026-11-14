@@ -1,0 +1,317 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © [MarkitTick]
+
+//@version=6
+indicator("Trend Break Targets [MarkitTick]", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// =============================================================================
+// CONSTANTS
+// =============================================================================
+const float FIBONACCI_1_618 = 1.618
+const float FIBONACCI_2_618 = 2.618
+const int MAX_CHOCH_OBJECTS = 2
+
+// =============================================================================
+// INPUT CONFIGURATION
+// =============================================================================
+
+// Group: TBT Settings
+startDate        = input.time(timestamp("2025-06-01 00:00 +0000"), title="Start Date", confirm=true, group="TBT Settings")
+endDate          = input.time(timestamp("2025-07-31 00:00 +0000"), title="End Date",   confirm=true, group="TBT Settings")
+priceSource      = input.string("High", title="Price Source", options=["High","Low"], group="TBT Settings")
+pivotLeft        = input.int(5, title="Pivot Left", minval=1, group="TBT Settings")
+pivotRight       = input.int(5, title="Pivot Right", minval=1, group="TBT Settings")
+fallbackLB       = input.int(50, title="Fallback Lookback", minval=3, group="TBT Settings")
+targetExtendBars = input.int(100, title="Extend Target Line (Bars)", minval=10, group="TBT Settings")
+showTarget2      = input.bool(false, title="Show Target 2", group="TBT Settings")
+showTarget3      = input.bool(false, title="Show Target 3", group="TBT Settings")
+
+// Group: TBT Style
+colorAnchor      = input.color(color.blue, "Point Point Color", group="TBT Style")
+colorTrendline   = input.color(color.white, "Trendline Color", group="TBT Style")
+colorBreakBull   = input.color(color.green, "Breakout Label Bull", group="TBT Style")
+colorBreakBear   = input.color(color.red, "Breakout Label Bear", group="TBT Style")
+colorT1          = input.color(color.new(color.green, 0), "Target 1 Color", group="TBT Style")
+colorT2          = input.color(color.new(color.lime, 0), "Target 2 Color", group="TBT Style")
+colorT3          = input.color(color.new(color.teal, 0), "Target 3 Color", group="TBT Style")
+
+// Group: CHOCH Inputs
+chochLength      = input.int(5, 'Swing Detection Length', minval = 1, tooltip = 'Bars left/right for swing points', group="CHOCH Settings")
+showChochLines   = input.bool(true, 'Show Break Levels', group="CHOCH Settings")
+
+// Group: CHOCH Style
+colorChochBull   = input.color(color.green, 'CHOCH Bullish Color', group="CHOCH Style")
+colorChochBear   = input.color(color.red, 'CHOCH Bearish Color', group="CHOCH Style")
+
+// =============================================================================
+// COMPILE-TIME OPTIMIZATIONS
+// =============================================================================
+
+isHighSource = priceSource == "High"
+
+labelStyleDown = label.style_label_down
+labelStyleUp = label.style_label_up
+
+// =============================================================================
+// TBT STATE VARIABLES
+// =============================================================================
+
+var float startPrice = na
+var float endPrice   = na
+var int   startBar   = na
+var int   endBar     = na
+var float trendSlope = na
+var label firstLabel  = na
+var label secondLabel = na
+var line  trendLine   = na
+var line  targetLine     = na
+var line  connectorLine  = na
+var label targetLabel    = na
+var label breakoutLabel  = na
+var line  targetLine2    = na
+var line  connectorLine2 = na
+var label targetLabel2   = na
+var line  targetLine3    = na
+var line  connectorLine3 = na
+var label targetLabel3   = na
+var bool upTriggered = false
+var bool dnTriggered = false
+var int  prevStartBar = na
+var int  prevEndBar   = na
+
+// =============================================================================
+// PIVOT TRACKING
+// =============================================================================
+
+ph = ta.pivothigh(high, pivotLeft, pivotRight)
+pl = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var int   ph1_bar = na
+var float ph1_prc = na
+var int   pl1_bar = na
+var float pl1_prc = na
+
+if not na(ph)
+    ph1_bar := bar_index - pivotRight
+    ph1_prc := ph
+
+if not na(pl)
+    pl1_bar := bar_index - pivotRight
+    pl1_prc := pl
+
+// =============================================================================
+// ANCHOR CAPTURE & TRENDLINE MANAGEMENT
+// =============================================================================
+
+currentPrice = isHighSource ? high : low
+
+if time == startDate
+    startPrice := currentPrice
+    startBar   := bar_index
+    if not na(firstLabel)
+        label.delete(firstLabel)
+    firstLabel := label.new(startBar, startPrice, "1", 
+                           style = isHighSource ? labelStyleDown : labelStyleUp, 
+                           color = colorAnchor, 
+                           textcolor = color.white)
+
+if time == endDate
+    endPrice := currentPrice
+    endBar   := bar_index
+    if not na(secondLabel)
+        label.delete(secondLabel)
+    secondLabel := label.new(endBar, endPrice, "2", 
+                            style = isHighSource ? labelStyleDown : labelStyleUp, 
+                            color = colorAnchor, 
+                            textcolor = color.white)
+    
+    barDiff = endBar - startBar
+    if not na(startPrice) and barDiff != 0
+        trendSlope := (endPrice - startPrice) / barDiff
+
+validTrendData = not na(startPrice) and not na(endPrice) and not na(trendSlope)
+
+if validTrendData
+    if na(trendLine)
+        trendLine := line.new(startBar, startPrice, endBar, endPrice, extend=extend.right, color=colorTrendline, width=1)
+    else
+        line.set_xy1(trendLine, startBar, startPrice)
+        line.set_xy2(trendLine, endBar, endPrice)
+
+currLinePrice = validTrendData ? startPrice + trendSlope * (bar_index - startBar) : na
+
+// =============================================================================
+// ANCHOR CHANGE DETECTION & CLEANUP
+// =============================================================================
+
+anchorsChanged = startBar != prevStartBar or endBar != prevEndBar
+
+if anchorsChanged
+    prevStartBar := startBar
+    prevEndBar   := endBar
+    upTriggered  := false
+    dnTriggered  := false
+    
+    label.delete(targetLabel)
+    label.delete(breakoutLabel)
+    label.delete(targetLabel2)
+    label.delete(targetLabel3)
+    line.delete(targetLine)
+    line.delete(connectorLine)
+    line.delete(targetLine2)
+    line.delete(connectorLine2)
+    line.delete(targetLine3)
+    line.delete(connectorLine3)
+    
+    targetLine := na
+    connectorLine := na
+    targetLabel := na
+    breakoutLabel := na
+    targetLine2 := na
+    connectorLine2 := na
+    targetLabel2 := na
+    targetLine3 := na
+    connectorLine3 := na
+    targetLabel3 := na
+
+// =============================================================================
+// BREAKOUT DETECTION
+// =============================================================================
+
+upBreak = validTrendData and close > currLinePrice and not upTriggered
+dnBreak = validTrendData and close < currLinePrice and not dnTriggered
+
+// =============================================================================
+// TARGET CALCULATION & DRAWING
+// =============================================================================
+
+lowestLow = ta.lowest(low, fallbackLB)
+highestHigh = ta.highest(high, fallbackLB)
+
+if isHighSource and upBreak
+    upTriggered := true
+    
+    breakoutLabel := label.new(bar_index, high, "BC", style=labelStyleDown, color=colorBreakBull, textcolor=color.white)
+
+    float pivotPrice = na
+    int   pivotBar   = na
+    
+    if not na(pl1_prc) and not na(pl1_bar) and pl1_bar < bar_index
+        pivotPrice := pl1_prc
+        pivotBar   := pl1_bar
+    else
+        pivotPrice := lowestLow
+    
+    if not na(pivotPrice)
+        pivotLinePrice = not na(pivotBar) ? 
+                         startPrice + trendSlope * (pivotBar - startBar) : 
+                         startPrice + trendSlope * (bar_index - fallbackLB - startBar)
+        
+        if not na(pivotLinePrice)
+            dist = math.abs(pivotLinePrice - pivotPrice)
+            
+            tgtPrice = currLinePrice + dist
+            targetLine := line.new(bar_index, tgtPrice, bar_index + targetExtendBars, tgtPrice, extend=extend.none, style=line.style_dotted, width=1, color=colorT1)
+            connectorLine := line.new(bar_index, currLinePrice, bar_index, tgtPrice, color=colorT1, width=1)
+            targetLabel := label.new(bar_index, tgtPrice, "T1", style=labelStyleDown, color=colorT1, textcolor=color.white)
+
+            if showTarget2
+                tgtPrice2 = currLinePrice + dist * FIBONACCI_1_618
+                targetLine2 := line.new(bar_index, tgtPrice2, bar_index + targetExtendBars, tgtPrice2, extend=extend.none, style=line.style_dotted, width=1, color=colorT2)
+                connectorLine2 := line.new(bar_index, currLinePrice, bar_index, tgtPrice2, color=colorT2, width=1)
+                targetLabel2 := label.new(bar_index, tgtPrice2, "T2", style=labelStyleDown, color=colorT2, textcolor=color.white)
+
+            if showTarget3
+                tgtPrice3 = currLinePrice + dist * FIBONACCI_2_618
+                targetLine3 := line.new(bar_index, tgtPrice3, bar_index + targetExtendBars, tgtPrice3, extend=extend.none, style=line.style_dotted, width=1, color=colorT3)
+                connectorLine3 := line.new(bar_index, currLinePrice, bar_index, tgtPrice3, color=colorT3, width=1)
+                targetLabel3 := label.new(bar_index, tgtPrice3, "T3", style=labelStyleDown, color=colorT3, textcolor=color.white)
+
+if not isHighSource and dnBreak
+    dnTriggered := true
+    
+    breakoutLabel := label.new(bar_index, low, "BC", style=labelStyleUp, color=colorBreakBear, textcolor=color.white)
+
+    float pivotPrice = na
+    int   pivotBar   = na
+
+    if not na(ph1_prc) and not na(ph1_bar) and ph1_bar < bar_index
+        pivotPrice := ph1_prc
+        pivotBar   := ph1_bar
+    else
+        pivotPrice := highestHigh
+
+    if not na(pivotPrice)
+        pivotLinePrice = not na(pivotBar) ? 
+                         startPrice + trendSlope * (pivotBar - startBar) : 
+                         startPrice + trendSlope * (bar_index - fallbackLB - startBar)
+        
+        if not na(pivotLinePrice)
+            dist = math.abs(pivotLinePrice - pivotPrice)
+            
+            tgtPrice = currLinePrice - dist
+            targetLine := line.new(bar_index, tgtPrice, bar_index + targetExtendBars, tgtPrice, extend=extend.none, style=line.style_dotted, width=1, color=colorT1)
+            connectorLine := line.new(bar_index, currLinePrice, bar_index, tgtPrice, color=colorT1, width=1)
+            targetLabel := label.new(bar_index, tgtPrice, "T1", style=labelStyleUp, color=colorT1, textcolor=color.white)
+
+            if showTarget2
+                tgtPrice2 = currLinePrice - dist * FIBONACCI_1_618
+                targetLine2 := line.new(bar_index, tgtPrice2, bar_index + targetExtendBars, tgtPrice2, extend=extend.none, style=line.style_dotted, width=1, color=colorT2)
+                connectorLine2 := line.new(bar_index, currLinePrice, bar_index, tgtPrice2, color=colorT2, width=1)
+                targetLabel2 := label.new(bar_index, tgtPrice2, "T2", style=labelStyleUp, color=colorT2, textcolor=color.white)
+
+            if showTarget3
+                tgtPrice3 = currLinePrice - dist * FIBONACCI_2_618
+                targetLine3 := line.new(bar_index, tgtPrice3, bar_index + targetExtendBars, tgtPrice3, extend=extend.none, style=line.style_dotted, width=1, color=colorT3)
+                connectorLine3 := line.new(bar_index, currLinePrice, bar_index, tgtPrice3, color=colorT3, width=1)
+                targetLabel3 := label.new(bar_index, tgtPrice3, "T3", style=labelStyleUp, color=colorT3, textcolor=color.white)
+
+// =============================================================================
+// CHOCH (CHANGE OF CHARACTER) LOGIC
+// =============================================================================
+
+ph_choch = ta.pivothigh(high, chochLength, chochLength)
+pl_choch = ta.pivotlow(low, chochLength, chochLength)
+
+var float last_swing_high = na
+var float last_swing_low  = na
+var int   trend_state     = 0
+
+var array<label> choch_labels = array.new<label>()
+var array<line>  choch_lines  = array.new<line>()
+
+if not na(ph_choch)
+    last_swing_high := ph_choch
+
+if not na(pl_choch)
+    last_swing_low := pl_choch
+
+bullish_choch = trend_state != 1 and not na(last_swing_high) and close > last_swing_high
+bearish_choch = trend_state != -1 and not na(last_swing_low) and close < last_swing_low
+
+if bullish_choch
+    trend_state := 1
+    lbl = label.new(bar_index, low, text='CHOCH', style=labelStyleUp, color=colorChochBull, textcolor=color.white, size=size.tiny)
+    array.push(choch_labels, lbl)
+    if array.size(choch_labels) > MAX_CHOCH_OBJECTS
+        label.delete(array.shift(choch_labels))
+    
+    if showChochLines
+        ln = line.new(bar_index[chochLength], last_swing_high, bar_index, last_swing_high, color=colorChochBull, style=line.style_dashed)
+        array.push(choch_lines, ln)
+        if array.size(choch_lines) > MAX_CHOCH_OBJECTS
+            line.delete(array.shift(choch_lines))
+
+if bearish_choch
+    trend_state := -1
+    lbl = label.new(bar_index, high, text='CHOCH', style=labelStyleDown, color=colorChochBear, textcolor=color.white, size=size.tiny)
+    array.push(choch_labels, lbl)
+    if array.size(choch_labels) > MAX_CHOCH_OBJECTS
+        label.delete(array.shift(choch_labels))
+    
+    if showChochLines
+        ln = line.new(bar_index[chochLength], last_swing_low, bar_index, last_swing_low, color=colorChochBear, style=line.style_dashed)
+        array.push(choch_lines, ln)
+        if array.size(choch_lines) > MAX_CHOCH_OBJECTS
+            line.delete(array.shift(choch_lines))

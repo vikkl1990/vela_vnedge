@@ -1,0 +1,603 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © MarkitTick
+
+//@version=6
+indicator("Dynamic Pivot Fibo Analytics [MarkitTick]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ══════════════════════════════════════════════════════
+// SECTION 1 — INPUT GROUPS
+// ══════════════════════════════════════════════════════
+string GRP_SW   = "⚙️ Swing Settings"
+string GRP_FLT  = "🔍 Swing Filter"
+string GRP_DIR  = "🧭 Direction Filter"
+string GRP_EXT  = "📏 Fib Extensions"
+string GRP_GP   = "✨ Golden Pocket"
+string GRP_TCH  = "🔔 Level Touch Alerts"
+string GRP_HIST = "📜 Historical Swings"
+string GRP_SWL  = "〰️ Swing Line"
+string GRP_VIS  = "🎨 Visual Settings"
+string GRP_DASH = "📊 Dashboard Settings"
+
+// ── Swing ──
+showSwing  = input.bool(true, "Show Swing Pivots",       group = GRP_SW)
+leftBars   = input.int(5,    "Left Bars",  minval = 1,   group = GRP_SW)
+extBars    = input.int(60,   "Extend Lines (bars right)", minval = 10, maxval = 500, group = GRP_SW)
+
+// ── Swing Filter ──
+useMinSize    = input.bool(false, "Enable Minimum Swing Size Filter",                          group = GRP_FLT)
+minSizeMode   = input.string("ATR", "Filter Mode", options = ["ATR", "Percent"],               group = GRP_FLT)
+minAtrMult    = input.float(0.5,  "Min Size (ATR multiplier)", minval = 0.1, step = 0.1,       group = GRP_FLT)
+minPct        = input.float(0.3,  "Min Size (% of price)",     minval = 0.01, step = 0.01,     group = GRP_FLT)
+atrLen        = input.int(14,     "ATR Length",                minval = 1,                     group = GRP_FLT)
+
+// ── Direction Filter ──
+dirMode = input.string("Both", "Show Setups", options = ["Both", "Long Only", "Short Only"],   group = GRP_DIR)
+
+// ── Extensions ──
+showExt   = input.bool(true, "Show Fib Extensions (1.272 / 1.618 / 2.000)",                  group = GRP_EXT)
+col_1272  = input.color(color.new(#00BFFF, 0),  "1.272 Color",                                group = GRP_EXT)
+col_1618  = input.color(color.new(#FF00FF, 0),  "1.618 Color",                                group = GRP_EXT)
+col_2000  = input.color(color.new(#FF4444, 0),  "2.000 Color",                                group = GRP_EXT)
+
+// ── Golden Pocket ──
+showGP    = input.bool(true,  "Show Golden Pocket Zone (0.618–0.65)",                          group = GRP_GP)
+col_gp    = input.color(color.new(#FFD700, 75), "Golden Pocket Fill Color",                   group = GRP_GP)
+
+// ── Level Touch Alerts ──
+alertTouch    = input.bool(false, "Enable Level Touch Alerts",                                 group = GRP_TCH)
+alertTch382   = input.bool(true,  "Alert on 0.382 Touch",                                     group = GRP_TCH)
+alertTch618   = input.bool(true,  "Alert on 0.618 Touch",                                     group = GRP_TCH)
+alertTchAll   = input.bool(false, "Alert on ALL Levels Touch",                                 group = GRP_TCH)
+touchHighlight = input.bool(true, "Highlight Line on Touch (color change)",                    group = GRP_TCH)
+col_touch     = input.color(color.new(#FFFFFF, 0), "Touch Highlight Color",                    group = GRP_TCH)
+
+// ── Historical Swings ──
+showHist   = input.bool(false, "Show Historical Swings",                                       group = GRP_HIST)
+histCount  = input.int(3,     "Number of Historical Swings", minval = 1, maxval = 5,           group = GRP_HIST)
+col_hist   = input.color(color.new(#606060, 60), "Historical Level Color",                     group = GRP_HIST)
+
+// ── Swing Line ──
+showSwingLine = input.bool(true,  "Show Swing Line (Low → High)",                             group = GRP_SWL)
+col_swingLine = input.color(color.new(#FFFFFF, 60), "Swing Line Color",                        group = GRP_SWL)
+swingLineWdt  = input.int(1, "Swing Line Width", minval = 1, maxval = 3,                       group = GRP_SWL)
+
+// ── Visual ──
+lineWdt    = input.int(1, "Normal Level Width",            minval = 1, maxval = 4,             group = GRP_VIS)
+lineWdtKey = input.int(2, "Key Level Width (0.382/0.618)", minval = 1, maxval = 4,             group = GRP_VIS)
+col_entry  = input.color(color.new(#FF2D6B, 0),  "0.000 Color",                               group = GRP_VIS)
+col_236    = input.color(color.new(#B0B0FF, 0),  "0.236 Color",                               group = GRP_VIS)
+col_382    = input.color(color.new(#00FFD1, 0),  "0.382 Color  ★ Key",                        group = GRP_VIS)
+col_500    = input.color(color.new(#FFFFFF, 0),  "0.500 Color",                               group = GRP_VIS)
+col_618    = input.color(color.new(#FFD700, 0),  "0.618 Color  ★ Key",                        group = GRP_VIS)
+col_786    = input.color(color.new(#FF9500, 0),  "0.786 Color",                               group = GRP_VIS)
+col_100    = input.color(color.new(#FF2D6B, 40), "1.000 Color",                               group = GRP_VIS)
+col_fill   = input.color(color.new(#7B2FFF, 88), "Zone Fill (0.000–0.618)",                   group = GRP_VIS)
+
+// ── Dashboard ──
+color dash_bg_color  = input.color(color.rgb(10, 10, 18, 5),    "Background Color", group = GRP_DASH)
+color dash_txt_color = input.color(color.rgb(220, 220, 235, 0), "Text Color",       group = GRP_DASH)
+
+// ══════════════════════════════════════════════════════
+// MANDATORY VISUAL HELPERS
+// ══════════════════════════════════════════════════════
+f_blockBar(float score) =>
+    int    n = math.min(math.max(int(math.round(score)), 0), 10)
+    string s = ''
+    for i = 1 to 10
+        s += i <= n ? '█' : '░'
+    s
+
+f_blockColor(float score) =>
+    score >= 7.0 ? color.rgb(0, 255, 120) : score >= 4.0 ? color.rgb(80, 255, 0) : score >= 1.5 ? color.rgb(200, 200, 0) : color.rgb(110, 110, 110)
+
+// ══════════════════════════════════════════════════════
+// CUSTOM PIVOT FUNCTIONS
+// ══════════════════════════════════════════════════════
+f_pivotHigh(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] >= candidate
+            isValid := false
+    isValid ? candidate : na
+
+f_pivotLow(series float src, simple int len) =>
+    float candidate = src[len]
+    bool  isValid   = true
+    for i = 1 to len * 2
+        if i != len and src[i] <= candidate
+            isValid := false
+    isValid ? candidate : na
+
+// ══════════════════════════════════════════════════════
+// ATR FOR FILTER
+// ══════════════════════════════════════════════════════
+float atrVal = ta.atr(atrLen)
+
+string clean_ticker = syminfo.prefix + ':' + syminfo.ticker
+
+// ══════════════════════════════════════════════════════
+// PIVOT STATE
+// ══════════════════════════════════════════════════════
+float ph_raw = f_pivotHigh(high, leftBars)
+float pl_raw = f_pivotLow(low,   leftBars)
+
+var float lastPH     = na
+var float lastPL     = na
+var int   lastPH_bar = na
+var int   lastPL_bar = na
+
+var float[] hist_anchors   = array.new<float>()
+var float[] hist_opposites = array.new<float>()
+var int[]   hist_bars      = array.new<int>()
+var bool[]  hist_isBear    = array.new<bool>()
+
+if not na(ph_raw)
+    lastPH     := ph_raw
+    lastPH_bar := bar_index
+
+if not na(pl_raw)
+    lastPL     := pl_raw
+    lastPL_bar := bar_index
+
+bool shortSetup = not na(lastPH) and not na(lastPL) and lastPH_bar > lastPL_bar and not na(ph_raw)
+bool longSetup  = not na(lastPH) and not na(lastPL) and lastPL_bar > lastPH_bar and not na(pl_raw)
+
+bool showShort = dirMode == "Both" or dirMode == "Short Only"
+bool showLong  = dirMode == "Both" or dirMode == "Long Only"
+shortSetup    := shortSetup and showShort
+longSetup     := longSetup  and showLong
+
+bool newSetup = shortSetup or longSetup
+
+// ══════════════════════════════════════════════════════
+// CURRENT SETUP PARAMETERS
+// ══════════════════════════════════════════════════════
+float anchor    = shortSetup ? lastPH     : longSetup ? lastPL     : na
+float opposite  = shortSetup ? lastPL     : longSetup ? lastPH     : na
+int   anchorBar = shortSetup ? lastPH_bar : longSetup ? lastPL_bar : na
+int   oppBar    = shortSetup ? lastPL_bar : longSetup ? lastPH_bar : na
+bool  isBear    = shortSetup
+float rng       = not na(anchor) and not na(opposite) ? math.abs(anchor - opposite) : na
+
+bool sizeOk = true
+if useMinSize and not na(rng)
+    if minSizeMode == "ATR"
+        sizeOk := rng >= atrVal * minAtrMult
+    else
+        sizeOk := rng >= anchor * (minPct / 100.0)
+
+newSetup := newSetup and sizeOk
+
+// ══════════════════════════════════════════════════════
+//  FIB PRICE CALCULATIONS
+// ══════════════════════════════════════════════════════
+f_fib(float anch, float rn, float ratio, bool bear) =>
+    bear ? anch - rn * ratio : anch + rn * ratio
+
+float p000  = anchor
+float p236  = not na(anchor) ? f_fib(anchor, rng, 0.236, isBear) : na
+float p382  = not na(anchor) ? f_fib(anchor, rng, 0.382, isBear) : na
+float p500  = not na(anchor) ? f_fib(anchor, rng, 0.500, isBear) : na
+float p618  = not na(anchor) ? f_fib(anchor, rng, 0.618, isBear) : na
+float p650  = not na(anchor) ? f_fib(anchor, rng, 0.650, isBear) : na 
+float p786  = not na(anchor) ? f_fib(anchor, rng, 0.786, isBear) : na
+float p100  = opposite
+float p1272 = not na(anchor) ? f_fib(anchor, rng, 1.272, isBear) : na
+float p1618 = not na(anchor) ? f_fib(anchor, rng, 1.618, isBear) : na
+float p2000 = not na(anchor) ? f_fib(anchor, rng, 2.000, isBear) : na
+
+int x2 = bar_index + extBars
+
+// ══════════════════════════════════════════════════════
+// DRAWING INFRASTRUCTURE
+// ══════════════════════════════════════════════════════
+var line[]     drawnLines   = array.new<line>()
+var label[]    drawnLabels  = array.new<label>()
+var line[]     drawnHistLn  = array.new<line>()
+var label[]    drawnHistLb  = array.new<label>()
+var line       ln_fill_a    = na
+var line       ln_fill_b    = na
+var linefill   lf_zone      = na
+var line       ln_gp_a      = na
+var line       ln_gp_b      = na
+var linefill   lf_gp        = na
+var line       ln_swing     = na
+var label      dot_ph       = na  
+var label      dot_pl       = na  
+
+var bool tch_000  = false
+var bool tch_236  = false
+var bool tch_382  = false
+var bool tch_500  = false
+var bool tch_618  = false
+var bool tch_786  = false
+var bool tch_100  = false
+var bool tch_1272 = false
+var bool tch_1618 = false
+var bool tch_2000 = false
+
+f_clearMain() =>
+    int sz = array.size(drawnLines)
+    if sz > 0
+        for i = 0 to sz - 1
+            line.delete(array.get(drawnLines, i))
+    array.clear(drawnLines)
+    int sz2 = array.size(drawnLabels)
+    if sz2 > 0
+        for i = 0 to sz2 - 1
+            label.delete(array.get(drawnLabels, i))
+    array.clear(drawnLabels)
+
+f_clearHist() =>
+    int sz = array.size(drawnHistLn)
+    if sz > 0
+        for i = 0 to sz - 1
+            line.delete(array.get(drawnHistLn, i))
+    array.clear(drawnHistLn)
+    int sz2 = array.size(drawnHistLb)
+    if sz2 > 0
+        for i = 0 to sz2 - 1
+            label.delete(array.get(drawnHistLb, i))
+    array.clear(drawnHistLb)
+
+f_drawLevel(float price, string txt, color col, int wdt, string lstyle, int x1, int x2r) =>
+    line ln = switch lstyle
+        "dashed" => line.new(x1, price, x2r, price, color = col, width = wdt, style = line.style_dashed)
+        => line.new(x1, price, x2r, price, color = col, width = wdt, style = line.style_dotted)
+    label lb = label.new(x2r, price,
+         text      = txt,
+         color     = color.new(#000000, 100),
+         textcolor = col,
+         style     = label.style_label_left,
+         size      = wdt >= 2 ? size.normal : size.small)
+    [ln, lb]
+
+// ══════════════════════════════════════════════════════
+// DRAW ON NEW SETUP
+// ══════════════════════════════════════════════════════
+if newSetup
+    if showHist and not na(anchor) and not na(opposite)
+        array.unshift(hist_anchors,   anchor)
+        array.unshift(hist_opposites, opposite)
+        array.unshift(hist_bars,      anchorBar)
+        array.unshift(hist_isBear,    isBear)
+        if array.size(hist_anchors) > histCount + 1
+            array.pop(hist_anchors)
+            array.pop(hist_opposites)
+            array.pop(hist_bars)
+            array.pop(hist_isBear)
+
+    f_clearMain()
+    line.delete(ln_fill_a)
+    line.delete(ln_fill_b)
+    linefill.delete(lf_zone)
+    line.delete(ln_gp_a)
+    line.delete(ln_gp_b)
+    linefill.delete(lf_gp)
+    line.delete(ln_swing)
+
+    tch_000  := false
+    tch_236  := false
+    tch_382  := false
+    tch_500  := false
+    tch_618  := false
+    tch_786  := false
+    tch_100  := false
+    tch_1272 := false
+    tch_1618 := false
+    tch_2000 := false
+
+    if showSwingLine
+        ln_swing := line.new(oppBar, opposite, anchorBar, anchor,
+             color = col_swingLine, width = swingLineWdt, style = line.style_solid)
+
+    label.delete(dot_ph)
+    label.delete(dot_pl)
+    if showSwing
+        float phPrice = isBear ? anchor   : opposite
+        float plPrice = isBear ? opposite : anchor
+        int   phBar   = isBear ? anchorBar : oppBar
+        int   plBar   = isBear ? oppBar    : anchorBar
+        dot_ph := label.new(phBar, phPrice, text = '',
+             style = label.style_circle, color = col_entry, size = size.tiny)
+        dot_pl := label.new(plBar, plPrice, text = '',
+             style = label.style_circle, color = col_382,  size = size.tiny)
+
+    [ln0, lb0] = f_drawLevel(p000,  str.format("0.000  {0}", str.tostring(p000,  format.mintick)), col_entry, lineWdtKey, "dashed", anchorBar, x2)
+    [ln1, lb1] = f_drawLevel(p236,  str.format("0.236  {0}", str.tostring(p236,  format.mintick)), col_236,   lineWdt,    "dotted", anchorBar, x2)
+    [ln2, lb2] = f_drawLevel(p382,  str.format("0.382 ★  {0}", str.tostring(p382, format.mintick)), col_382,  lineWdtKey, "dashed", anchorBar, x2)
+    [ln3, lb3] = f_drawLevel(p500,  str.format("0.500  {0}", str.tostring(p500,  format.mintick)), col_500,   lineWdt,    "dotted", anchorBar, x2)
+    [ln4, lb4] = f_drawLevel(p618,  str.format("0.618 ★  {0}", str.tostring(p618, format.mintick)), col_618,  lineWdtKey, "dashed", anchorBar, x2)
+    [ln5, lb5] = f_drawLevel(p786,  str.format("0.786  {0}", str.tostring(p786,  format.mintick)), col_786,   lineWdt,    "dotted", anchorBar, x2)
+    [ln6, lb6] = f_drawLevel(p100,  str.format("1.000  {0}", str.tostring(p100,  format.mintick)), col_100,   lineWdt,    "dotted", anchorBar, x2)
+
+    array.push(drawnLines,  ln0)
+    array.push(drawnLabels, lb0)
+    array.push(drawnLines,  ln1)
+    array.push(drawnLabels, lb1)
+    array.push(drawnLines,  ln2)
+    array.push(drawnLabels, lb2)
+    array.push(drawnLines,  ln3)
+    array.push(drawnLabels, lb3)
+    array.push(drawnLines,  ln4)
+    array.push(drawnLabels, lb4)
+    array.push(drawnLines,  ln5)
+    array.push(drawnLabels, lb5)
+    array.push(drawnLines,  ln6)
+    array.push(drawnLabels, lb6)
+
+    if showExt
+        [ln7,  lb7]  = f_drawLevel(p1272, str.format("1.272  {0}", str.tostring(p1272, format.mintick)), col_1272, lineWdt, "dotted", anchorBar, x2)
+        [ln8,  lb8]  = f_drawLevel(p1618, str.format("1.618  {0}", str.tostring(p1618, format.mintick)), col_1618, lineWdtKey, "dashed", anchorBar, x2)
+        [ln9,  lb9]  = f_drawLevel(p2000, str.format("2.000  {0}", str.tostring(p2000, format.mintick)), col_2000, lineWdt, "dotted", anchorBar, x2)
+        array.push(drawnLines, ln7)
+        array.push(drawnLabels, lb7)
+        array.push(drawnLines, ln8)
+        array.push(drawnLabels, lb8)
+        array.push(drawnLines, ln9)
+        array.push(drawnLabels, lb9)
+
+    float fillTop = isBear ? p000 : p618
+    float fillBot = isBear ? p618 : p000
+    ln_fill_a := line.new(anchorBar, fillTop, x2, fillTop, color = color.new(#000000, 100))
+    ln_fill_b := line.new(anchorBar, fillBot, x2, fillBot, color = color.new(#000000, 100))
+    lf_zone   := linefill.new(ln_fill_a, ln_fill_b, col_fill)
+
+    if showGP
+        float gpTop = isBear ? p618 : p650
+        float gpBot = isBear ? p650 : p618
+        ln_gp_a := line.new(anchorBar, gpTop, x2, gpTop, color = color.new(#000000, 100))
+        ln_gp_b := line.new(anchorBar, gpBot, x2, gpBot, color = color.new(#000000, 100))
+        lf_gp   := linefill.new(ln_gp_a, ln_gp_b, col_gp)
+
+// ══════════════════════════════════════════════════════
+// HISTORICAL SWINGS DRAW
+// ══════════════════════════════════════════════════════
+if showHist and newSetup
+    f_clearHist()
+    int hSz = array.size(hist_anchors)
+    if hSz > 1
+        int drawCount = math.min(hSz - 1, histCount)
+        for h = 1 to drawCount
+            float hAnch  = array.get(hist_anchors,   h)
+            float hOpp   = array.get(hist_opposites, h)
+            int   hBar   = array.get(hist_bars,      h)
+            bool  hBear  = array.get(hist_isBear,    h)
+            float hRng   = math.abs(hAnch - hOpp)
+            float h382 = hBear ? hAnch - hRng * 0.382 : hAnch + hRng * 0.382
+            float h618 = hBear ? hAnch - hRng * 0.618 : hAnch + hRng * 0.618
+            int   hX2  = hBar + extBars
+            array.push(drawnHistLn, line.new(hBar, hAnch, hX2, hAnch, color = col_hist, width = 1, style = line.style_dotted))
+            array.push(drawnHistLn, line.new(hBar, h382,  hX2, h382,  color = col_hist, width = 1, style = line.style_dotted))
+            array.push(drawnHistLn, line.new(hBar, h618,  hX2, h618,  color = col_hist, width = 1, style = line.style_dotted))
+            array.push(drawnHistLn, line.new(hBar, hOpp,  hX2, hOpp,  color = col_hist, width = 1, style = line.style_dotted))
+            array.push(drawnHistLb, label.new(hX2, h382,
+                 text = str.format("0.382  {0}", str.tostring(h382, format.mintick)),
+                 color = color.new(#000000, 100), textcolor = col_hist,
+                 style = label.style_label_left, size = size.tiny))
+            array.push(drawnHistLb, label.new(hX2, h618,
+                 text = str.format("0.618  {0}", str.tostring(h618, format.mintick)),
+                 color = color.new(#000000, 100), textcolor = col_hist,
+                 style = label.style_label_left, size = size.tiny))
+
+// ══════════════════════════════════════════════════════
+// TOUCH DETECTION & HIGHLIGHT
+// ══════════════════════════════════════════════════════
+f_touches(float lvl) =>
+    not na(lvl) and low <= lvl and high >= lvl
+
+if not na(anchor) and sizeOk
+    int sz = array.size(drawnLines)
+
+
+    bool t000  = f_touches(p000)
+    bool t236  = f_touches(p236)
+    bool t382  = f_touches(p382)
+    bool t500  = f_touches(p500)
+    bool t618  = f_touches(p618)
+    bool t786  = f_touches(p786)
+    bool t100  = f_touches(p100)
+    bool t1272 = showExt ? f_touches(p1272) : false
+    bool t1618 = showExt ? f_touches(p1618) : false
+    bool t2000 = showExt ? f_touches(p2000) : false
+
+    if touchHighlight and sz >= 7
+        if t000  and not tch_000
+            line.set_color(array.get(drawnLines, 0), col_touch)
+        if t236  and not tch_236
+            line.set_color(array.get(drawnLines, 1), col_touch)
+        if t382  and not tch_382
+            line.set_color(array.get(drawnLines, 2), col_touch)
+        if t500  and not tch_500
+            line.set_color(array.get(drawnLines, 3), col_touch)
+        if t618  and not tch_618
+            line.set_color(array.get(drawnLines, 4), col_touch)
+        if t786  and not tch_786
+            line.set_color(array.get(drawnLines, 5), col_touch)
+        if t100  and not tch_100
+            line.set_color(array.get(drawnLines, 6), col_touch)
+        if showExt and sz >= 10
+            if t1272 and not tch_1272
+                line.set_color(array.get(drawnLines, 7), col_touch)
+            if t1618 and not tch_1618
+                line.set_color(array.get(drawnLines, 8), col_touch)
+            if t2000 and not tch_2000
+                line.set_color(array.get(drawnLines, 9), col_touch)
+
+    if barstate.isconfirmed
+        if alertTouch
+            if alertTchAll
+                if t000  and not tch_000
+                    alert(str.format("{0} | Fib Touch 0.000 @ {1} | TF: {2}", clean_ticker, str.tostring(p000,  format.mintick), timeframe.period), alert.freq_once_per_bar_close)
+                if t236  and not tch_236
+                    alert(str.format("{0} | Fib Touch 0.236 @ {1} | TF: {2}", clean_ticker, str.tostring(p236,  format.mintick), timeframe.period), alert.freq_once_per_bar_close)
+                if t786  and not tch_786
+                    alert(str.format("{0} | Fib Touch 0.786 @ {1} | TF: {2}", clean_ticker, str.tostring(p786,  format.mintick), timeframe.period), alert.freq_once_per_bar_close)
+                if t100  and not tch_100
+                    alert(str.format("{0} | Fib Touch 1.000 @ {1} | TF: {2}", clean_ticker, str.tostring(p100,  format.mintick), timeframe.period), alert.freq_once_per_bar_close)
+            if alertTch382 or alertTchAll
+                if t382 and not tch_382
+                    alert(str.format("{0} | Fib Touch 0.382 @ {1} | TF: {2}", clean_ticker, str.tostring(p382, format.mintick), timeframe.period), alert.freq_once_per_bar_close)
+            if alertTch618 or alertTchAll
+                if t618 and not tch_618
+                    alert(str.format("{0} | Fib Touch 0.618 @ {1} | TF: {2}", clean_ticker, str.tostring(p618, format.mintick), timeframe.period), alert.freq_once_per_bar_close)
+        if t000
+            tch_000  := true
+        if t236
+            tch_236  := true
+        if t382
+            tch_382  := true
+        if t500
+            tch_500  := true
+        if t618
+            tch_618  := true
+        if t786
+            tch_786  := true
+        if t100
+            tch_100  := true
+        if t1272
+            tch_1272 := true
+        if t1618
+            tch_1618 := true
+        if t2000
+            tch_2000 := true
+
+
+// ══════════════════════════════════════════════════════
+// DASHBOARD METRICS (Global Scope, Unconditional)
+// ══════════════════════════════════════════════════════
+
+bool   dash_hasSetup = not na(anchor) and sizeOk
+bool   dash_isBull   = longSetup and dash_hasSetup
+bool   dash_isBear   = shortSetup and dash_hasSetup
+string dash_dir_str  = dash_hasSetup ? (dash_isBull ? '▲ Bull Setup' : '▼ Bear Setup') : '— No Setup'
+color  dash_dir_col  = dash_hasSetup ? (dash_isBull ? color.rgb(0, 255, 120) : color.rgb(255, 60, 80)) : color.rgb(110, 110, 110)
+
+float  dash_rng_atr   = not na(rng) and not na(atrVal) and atrVal > 0 ? rng / atrVal : 0.0
+float  dash_rng_score = math.min(dash_rng_atr * 2.0, 10.0)
+string dash_rng_str   = not na(rng) ? f_blockBar(dash_rng_score) : '——————————'
+color  dash_rng_col   = not na(rng) ? f_blockColor(dash_rng_score) : color.rgb(110, 110, 110)
+
+string dash_382_str = not na(p382) ? str.tostring(p382, format.mintick) : '—'
+color  dash_382_col = color.rgb(0, 255, 209)  
+
+string dash_618_str = not na(p618) ? str.tostring(p618, format.mintick) : '—'
+color  dash_618_col = color.rgb(255, 215, 0)   
+
+int    dash_tch_count = (tch_000 ? 1 : 0) + (tch_236 ? 1 : 0) + (tch_382 ? 1 : 0) +
+     (tch_500 ? 1 : 0) + (tch_618 ? 1 : 0) + (tch_786 ? 1 : 0) + (tch_100 ? 1 : 0)
+float  dash_tch_score = math.min(dash_tch_count / 7.0 * 10.0, 10.0)
+string dash_tch_str   = dash_hasSetup ? f_blockBar(dash_tch_score) : '——————————'
+color  dash_tch_col   = dash_hasSetup ? f_blockColor(dash_tch_score) : color.rgb(110, 110, 110)
+
+float  dash_prox_raw   = not na(p618) and not na(rng) and rng > 0 ? math.abs(close - p618) / rng : 1.0
+float  dash_prox_score = math.max(math.min((1.0 - dash_prox_raw) * 10.0, 10.0), 0.0)
+string dash_prox_pfx   = dash_prox_raw <= 0.1 ? '🎯 ' : dash_prox_raw <= 0.25 ? '⚡ ' : '○ '
+string dash_prox_str   = dash_hasSetup ? dash_prox_pfx + f_blockBar(dash_prox_score) : '——————————'
+color  dash_prox_col   = dash_hasSetup ? f_blockColor(dash_prox_score) : color.rgb(110, 110, 110)
+
+int    dash_age      = not na(anchorBar) ? bar_index - anchorBar : na
+string dash_age_str  = not na(dash_age) ? '⏳ ' + str.tostring(dash_age) + ' bars' : '⏳ —'
+color  dash_age_col  = color.rgb(140, 180, 255)
+
+string dash_filter_str = useMinSize ? (sizeOk ? '✅ Pass' : '⚠️ Filtered') : '⚖️ Disabled'
+color  dash_filter_col = useMinSize ? (sizeOk ? color.rgb(0, 255, 120) : color.rgb(255, 180, 0)) : color.rgb(140, 140, 160)
+
+// ══════════════════════════════════════════════════════
+// TABLE DECLARATION (Global Scope)
+// ══════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 9,
+     border_width = 1,
+     border_color = color.rgb(50, 50, 70, 20),
+     frame_width  = 1,
+     frame_color  = color.rgb(60, 60, 90, 10))
+
+// ══════════════════════════════════════════════════════
+// TABLE POPULATION 
+// ══════════════════════════════════════════════════════
+color hdrBg = color.rgb(30, 30, 45, 10)
+color altBg = color.rgb(20, 20, 25, 10)
+color oddBg = dash_bg_color
+
+table.cell(dash, 0, 0, '  Swing Fibo Levels',
+     bgcolor = hdrBg, text_color = color.rgb(200, 200, 235, 0),
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 0, clean_ticker + ' · ' + timeframe.period,
+     bgcolor = hdrBg, text_color = color.rgb(160, 160, 190, 0),
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 1, '  Direction',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 1, dash_dir_str,
+     bgcolor = altBg, text_color = dash_dir_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 2, '  Swing Range',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 2, dash_rng_str,
+     bgcolor = oddBg, text_color = dash_rng_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 3, '  0.382 ★',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 3, dash_382_str,
+     bgcolor = altBg, text_color = dash_382_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 4, '  0.618 ★',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 4, dash_618_str,
+     bgcolor = oddBg, text_color = dash_618_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 5, '  Levels Touched',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 5, dash_tch_str,
+     bgcolor = altBg, text_color = dash_tch_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 6, '  0.618 Proximity',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 6, dash_prox_str,
+     bgcolor = oddBg, text_color = dash_prox_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 7, '  Setup Age',
+     bgcolor = altBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 7, dash_age_str,
+     bgcolor = altBg, text_color = dash_age_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)
+
+table.cell(dash, 0, 8, '  Size Filter',
+     bgcolor = oddBg, text_color = dash_txt_color,
+     text_halign = text.align_left,
+     text_font_family = font.family_monospace, text_size = size.small)
+table.cell(dash, 1, 8, dash_filter_str,
+     bgcolor = oddBg, text_color = dash_filter_col,
+     text_halign = text.align_right,
+     text_font_family = font.family_monospace, text_size = size.small)

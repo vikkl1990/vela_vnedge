@@ -1,3 +1,5 @@
+import {candleReplayBlock} from '../paper/basket.ts';
+import {transientTradingBlock} from '../delta/tradingStatus.ts';
 import {recordGatedSignal} from '../evidence/gatedSignals.ts';
 import {sameExitSource} from './boundExits.ts';
 import { pilotCapacityRefusal, pilotUsage, reservePilotEntry, type PilotUsage } from '../paper/pilotCapacity.ts';
@@ -85,6 +87,8 @@ interface Overlay { at: number; plots: WorkerResult['plots']; shapes: WorkerResu
 export class ScannerEngine extends EventEmitter {
   /** Decision 191: an exchange-mirrored account enters at market, so its backtests do too. */
   executorAttached?: () => boolean;
+  /** Recovery must requalify copied entries against the current shared evidence, not the receipt's old approval. */
+  copyRecoveryRefusal?: (cell:{scannerId:string;symbol:string;tf:string})=>string|null;
   private registry: ScannerRegistry;
   readonly health: ScriptHealth;
   private cfgRef: () => AppConfig;
@@ -181,7 +185,7 @@ export class ScannerEngine extends EventEmitter {
   }
   runsOn(id: string, symbol: string, tf: string): boolean { return this.pairsFor(id).some(p => p.symbol === symbol && p.tf === tf); }
   /** Quarantined scripts are not scheduled: they failed in a way that repeats (see health.ts). */
-  isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return s.status === 'ok' && c.enabled && !c.hidden && !this.health.isQuarantined(s.id); }
+  isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return !candleReplayBlock(s.id) && s.status === 'ok' && c.enabled && !c.hidden && !this.health.isQuarantined(s.id); }
 
   /** All (symbol, tf) pairs any active scanner needs. */
   requiredSeries(): Array<{ symbol: string; tf: string }> {
@@ -391,6 +395,7 @@ export class ScannerEngine extends EventEmitter {
   }
 
   runNow(id: string): number {
+    const blocked=candleReplayBlock(id);if(blocked)throw Object.assign(Error(blocked),{status:400});
     const s = this.registry.get(id);
     if (!s || s.status !== 'ok') return 0;
     let n = 0;
@@ -399,6 +404,7 @@ export class ScannerEngine extends EventEmitter {
   }
 
   async runBacktestNow(id: string, symbol: string, tf: string): Promise<BacktestResult | null> {
+    const blocked=candleReplayBlock(id);if(blocked)throw Object.assign(Error(blocked),{status:400});
     const s = this.registry.get(id);
     if (!s || s.status !== 'ok') return null;
     await this.candles.track(symbol, tf, this.cfgRef().historyBars);
@@ -661,9 +667,32 @@ export class ScannerEngine extends EventEmitter {
         if(Date.now()-row.received_at>maxMs)return 'rejected:interrupted entry expired before recovery';
         if(!loaded||this.deliveryFingerprint(loaded,delivery.tf)!==delivery.fingerprint)return 'rejected:source or policy changed before signal decision';
         if(!delivery.copied&&(!this.isActive(loaded)||!this.runsOn(loaded.id,delivery.symbol,delivery.tf)))return 'rejected:scanner allocation no longer active';
+        if(recovery&&delivery.copied){
+          const reason=this.copyRecoveryRefusal?this.copyRecoveryRefusal(delivery):'copy evidence unavailable during recovery';
+          if(reason)return `rejected:${reason}`;
+        }
         return null;
       };
-      if(!invalidEntry()&&delivery.ev.kind==='entry')await this.paper.prepareEntryDepth?.(delivery.symbol);
+      const temporaryExchangeBlock=()=>{
+        if(delivery.ev.kind!=='entry'||this.cfgRef().execution.mode!=='paper'||this.executorAttached?.())return null;
+        const reason=this.paper.entryBlock?.(delivery.symbol,Date.now());
+        return reason&&transientTradingBlock(reason)?reason:null;
+      };
+      const defer=(reason:string)=>{
+        const action=`received:waiting for exchange: ${reason}`;
+        this.inbox.defer(row,action);
+        return {action,positionId:null};
+      };
+      // Wait before expensive depth preparation, and check again at the atomic decision boundary.
+      // Neither path extends received_at, reserves capacity nor creates a pending paper order.
+      const initiallyRefused=invalidEntry();
+      const waiting=!initiallyRefused&&temporaryExchangeBlock();
+      if(waiting){
+        defer(waiting);
+        const sig=this.db.signalById(row.signal_id);if(sig)this.emit('signal',sig);
+        return;
+      }
+      if(!initiallyRefused&&delivery.ev.kind==='entry')await this.paper.prepareEntryDepth?.(delivery.symbol);
       if(this.stopping)return;
       const blocked=invalidEntry();
       const target=this.paper.openPositions().find(p=>p.id===delivery.targetPositionId);
@@ -674,6 +703,10 @@ export class ScannerEngine extends EventEmitter {
       const decide=()=>this.paper.commitDecision(()=>{
         if(this.stopping)throw Error('scanner stopped before allocation');
         const refused=invalidEntry();
+        const waiting=!refused&&temporaryExchangeBlock();
+        if(waiting)return defer(waiting);
+        if(!refused&&recovery&&delivery.ev.kind==='entry'&&!this.paper.hasFreshPrice(delivery.symbol,delivery.ev.side==='long'?'buy':'sell'))
+          throw new Error('waiting for fresh market price after interruption');
         const result=refused?{action:refused,positionId:null}:this.applyDelivery(scanner,delivery,row.signal_id,recovery);
         if(refused)recordGatedSignal(this.db,{scannerId:delivery.scannerId,symbol:delivery.symbol,tf:delivery.tf,
           book:0,at:Date.now(),event:delivery.ev,stage:'recovery',reason:refused,signalId:row.signal_id,sourceHash:delivery.sourceHash??null,

@@ -2,8 +2,11 @@
   "name": "vela-vnedge",
   "version": "0.1.0",
   "private": true,
-  "description": "VNEdge — Pine-script scanner bot (PineTS + Vela) paper-trading on Delta Exchange India",
-  "workspaces": ["server", "dashboard"],
+  "description": "VNEdge \u2014 Pine-script scanner bot (PineTS + Vela) paper-trading on Delta Exchange India",
+  "workspaces": [
+    "server",
+    "dashboard"
+  ],
   "scripts": {
     "dev": "npm run dev --workspace=server",
     "dev:dashboard": "npm run dev --workspace=dashboard",
@@ -11,7 +14,11 @@
     "start": "npm run start --workspace=server",
     "test": "npm test --workspace=server",
     "backtest": "npm run backtest --workspace=server",
-    "verdict": "npm run verdict --workspace=server"
+    "verdict": "npm run verdict --workspace=server",
+    "research:execution-evidence": "node --no-warnings=ExperimentalWarning ops/export-execution-evidence.ts",
+    "research:contract-review": "node --no-warnings=ExperimentalWarning ops/build-execution-contract-review.ts"
   },
-  "engines": { "node": ">=22.18" }
+  "engines": {
+    "node": ">=22.18"
+  }
 }

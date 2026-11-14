@@ -114,3 +114,23 @@ test('script TP labels use the current close and taker fee when no resting targe
   assert.equal(fill.price, 101);
   assert.ok(Math.abs(fill.fee - 101 * fill.qty * .0005) < 1e-9);
 });
+
+test('native replay amendments protect later bars without closing, loosening, or rewriting the observation bar',()=>{
+ const quiet=Array.from({length:21},(_,i)=>bar(i,100,100.5,99.5,100));
+ const candles=[...quiet,bar(21,100,102,99,101),bar(22,101,101.5,99.5,100.5),bar(23,100.5,101,100.5,101)];
+ const entry={...events[0],barTime:20*M15,barIndex:20,sl:98,tp:[110,120,130]};
+ const amend={kind:'exit',exitType:'stop_update',side:'long',price:100,barTime:21*M15,barIndex:21,source:'alert',label:'Author stop amendment',message:'',tp:[]};
+ const close={...amend,exitType:'close',barTime:23*M15,barIndex:23};
+ const input={...base,bars:candles,events:[entry,amend,close] as any,exitMode:'both' as const,entryProtection:'native' as const,cfg:{...cfg,skipScriptStops:false,minRiskFeeRatio:0}};
+ const legacy=runBacktest(input),updated=runBacktest({...input,scriptStopAmendments:'after-close-v1'});
+ assert.equal(legacy.scriptStopAmendments,undefined);assert.equal(updated.scriptStopAmendments,'after-close-v1');
+ assert.notEqual(legacy.trades[0].exitReason,'be','legacy replay remains identifiable separately');
+ const trade=updated.trades[0],fill=trade.fills.at(-1)!;
+ assert.equal(trade.exitReason,'be');assert.equal(fill.price,100);
+ assert.ok(fill.at>=22*M15,'bar 21 dipped below the new level BEFORE it was known');
+ assert.equal(trade.fills.length,2,'amendment is not an execution or fee');
+ const wrongSide=runBacktest({...input,events:[entry,{...amend,side:'short'},close] as any,scriptStopAmendments:'after-close-v1'});
+ assert.notEqual(wrongSide.trades[0].exitReason,'be');
+ const loosening=runBacktest({...input,events:[entry,{...amend,price:97},close] as any,scriptStopAmendments:'after-close-v1'});
+ assert.equal(loosening.trades[0].sl,98);
+});

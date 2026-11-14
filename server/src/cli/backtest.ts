@@ -3,16 +3,17 @@ import fs from 'node:fs';
  * Standalone backtest: npm run backtest -- <scanner-id> [SYMBOL] [TF] [BARS]
  * Runs the script through PineTS on real Delta history and replays the paper engine.
  */
-import { DeltaRest } from '../delta/rest.ts';
+import { DeltaRest, marketSpec } from '../delta/rest.ts';
 import { PinePool } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
-import { extractEvents } from '../scanners/extractor.ts';
-import { applyRules } from '../scanners/rules.ts';
+import { observeHistoricalRun } from '../scanners/profile.ts';
 import { runBacktest } from '../paper/backtest.ts';
+import { backtestPolicy } from '../paper/policy.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 
 const [id, symbol = 'BTCUSD', tf = '15m', barsArg = '1000'] = process.argv.slice(2);
 if (!id) { console.error('usage: npm run backtest -- <scanner-id> [SYMBOL] [TF] [BARS]'); process.exit(1); }
+if (!TF_SECONDS[tf] || !Number.isInteger(Number(barsArg)) || Number(barsArg)<2) throw new Error('a supported timeframe and integer bar count >= 2 are required');
 const registry = new ScannerRegistry();
 const s = registry.get(id);
 if (!s) { console.error(`unknown scanner ${id}. Known: ${registry.all().map(x => x.id).join(', ')}`); process.exit(1); }
@@ -20,18 +21,20 @@ if (s.status !== 'ok') { console.error(`${id} is ${s.status}: ${s.reason}`); pro
 const cfg = new ConfigStore().get();
 const rest = new DeltaRest();
 const product = await rest.product(symbol);
-const market = { contractValue: Number(product?.contract_value ?? 0.001), tickSize: Number(product?.tick_size ?? 0.5) };
+if (!product) throw new Error(`unknown Delta product ${symbol}`);
+const market = marketSpec(product);
 const candles = await rest.recentCandles(symbol, tf, Number(barsArg), TF_SECONDS[tf]);
 const bars = candles.slice(0, -1).map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
 const pool = new PinePool(1, 180_000);
-const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: 10 });
-await pool.stop();
+const sc = cfg.scanners[id];
+const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: bars.length, inputs: sc?.inputs, timezone: sc?.timezone }).finally(()=>pool.stop());
 if (!res.ok) { console.error('script error:', res.error); process.exit(1); }
-const events = extractEvents(res.alerts, res.shapes, { derived: applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, bars, mode: 'backtest' }) });
-const exitMode = cfg.scanners[id]?.exitMode ?? 'both';
+const {events,profile} = observeHistoricalRun(s,sc,symbol,tf,bars,res,'cli-backtest');
+const policy = backtestPolicy(cfg,id,tf,'account',{productFees:market.productFees});
 const funding = process.env.FUNDING_FILE ? JSON.parse(fs.readFileSync(process.env.FUNDING_FILE, 'utf8')) : undefined;
-const bt = runBacktest({ funding, scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
+const bt = runBacktest({ funding, scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, ...policy, ...market });
 console.log(`\n${s.name} — ${symbol} ${tf}, ${bars.length} bars (${new Date(bt.from).toISOString().slice(0, 10)} → ${new Date(bt.to).toISOString().slice(0, 10)}), script ${res.ms} ms`);
+console.log(`reading ${profile.signature}; account policy; candle-only research, not tape replay or promotion evidence; current product fees are a scenario, not historical fee verification`);
 console.log(`cost coverage: ${JSON.stringify(bt.costCoverage)}`);
 console.log(`events: ${events.length} (entries ${events.filter(e => e.kind === 'entry').length}, exits ${events.filter(e => e.kind === 'exit').length})  rejected: ${JSON.stringify(bt.rejected)}`);
 const st = bt.stats;

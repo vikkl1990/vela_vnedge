@@ -175,7 +175,7 @@ export class DeltaConnection {
     this.lastStarted = Date.now();
     const promise = (async () => {
       let ok = true, message = 'Authenticated wallet and position reads verified. Trading permission was not tested.';
-      let eligibility:ScalperEligibility|void;
+      let eligibility:ScalperEligibility|void=undefined;
       try { eligibility=await this.probe(c); } catch (e) { ok = false; message = failureMessage(e); }
       if (this.read()?.revision !== c.revision) throw new ConnectionError(409, 'Credentials changed during the check. Check the saved credentials again.');
       this.last = { revision: c.revision, result: { ok, at: Date.now(), latencyMs: Date.now() - this.lastStarted, message, ...(eligibility?{scalperOffer:{active:eligibility.active,checkedAt:eligibility.checkedAt}}:{}) } };

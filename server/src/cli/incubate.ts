@@ -1,3 +1,4 @@
+import {candleReplayBlock} from '../paper/basket.ts';
 import {admissionCostPct} from '../paper/costs.ts';
 import {resolveTradePolicy} from '../paper/tradePolicy.ts';
 /**
@@ -97,13 +98,14 @@ out(`live fleet synced: +${synced.added} −${synced.removed}`);
 if (process.env.ADD) {
   let added = 0;
   for (const x of JSON.parse(fs.readFileSync(process.env.ADD, 'utf8'))) {
+    if(candleReplayBlock(x.scannerId)){out(`${x.scannerId}: skipped import — ${candleReplayBlock(x.scannerId)}`);continue;}
     const k = recordScreen(store, { scannerId: x.scannerId, symbol: x.symbol, tf: x.tf }, { ...x.result, at: Date.now() }, inc);
     if (k === 'new' || k === 'updated') added++;
   }
   out(`recorded ${added} screen results from ${process.env.ADD}`);
 }
 const sliceArg = process.env.SLICE ?? 'walk';
-const summary: any = { at: started, slice: sliceArg, tf: TF, walked: [] as string[], done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0, tooCoarse: 0 };
+const summary: any = { at: started, slice: sliceArg, tf: TF, walked: [] as string[], done: 0, scripts: 0, symbols: 0, runs: 0, silentSkipped: 0, failed: 0, passed: 0, new: 0, updated: 0, cooldown: 0, quarantined: 0, skippedSick: 0, tooCoarse: 0, unsupported: [] as string[] };
 // The job announces itself before it screens: a start with no matching finish is how the dashboard
 // tells a killed run from one that never ran (2026-10-11: three nights died unnoticed).
 // decision 176: a hand run (IDS=, TF=, SLICE=, MARKETS=) keeps its own marker; the nightly's `lastStart` is what the
@@ -173,7 +175,7 @@ while (sliceArg !== 'none') {
   // fails again is marked and never retried; one that works clears its record like any healthy script.
   const retryN = handRun ? 0 : inc.screen.retryPerNight ?? 20;
   if (retryN > 0 && cursor.scriptIdx === 0 && !cursor.retry) {
-    const due = health.dueForRetry(7 * DAY).slice(0, retryN).map(r => r.scannerId).filter(id => registry.get(id)?.status === 'ok');
+    const due = health.dueForRetry(7 * DAY).slice(0, retryN).map(r => r.scannerId).filter(id => registry.get(id)?.status === 'ok' && !candleReplayBlock(id));
     for (const id of due) health.releaseOne(id);
     cursor = { ...cursor, retry: due }; saveCursor(cursor);
   }
@@ -190,7 +192,7 @@ while (sliceArg !== 'none') {
   // ---- candles, fetched once per market ----
   const toBars = (c: any[]): Bar[] => c.slice(0, -1).map(x => ({ time: x.time * 1000, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }));
   const data = new Map<string, { bars: Bar[]; m1: Bar[]; market: ReturnType<typeof marketSpec> }>();
-  for (const symbol of universe) {
+  for (const symbol of (scripts.some(s=>!candleReplayBlock(s.id)) ? universe : [])) {
     if(Date.now()-started>BUDGET_MS){out('time budget spent while loading candles');break;}
     try {
       const p = await rest.product(symbol);
@@ -234,6 +236,8 @@ while (sliceArg !== 'none') {
   let stopped = false;
   for (const [idx, s] of scripts.entries()) {
     if (idx < cursor.scriptIdx) continue;   // already screened on an earlier night
+    const unsupported=candleReplayBlock(s.id);
+    if(unsupported){summary.unsupported.push(s.id);summary.done++;out(`  ${s.id}: skipped — ${unsupported}`);continue;}
     if (idx % 10 === 0) saveCursor({ ...cursor, scriptIdx: idx });
     if (Date.now() - started > BUDGET_MS) { stopped = true; saveCursor({ ...cursor, scriptIdx: idx }); summary.truncated = scripts.length - idx; out(`time budget spent after ${idx} of ${scripts.length} scripts: ${summary.truncated} wait for this slice's next turn`); break; }
     const mu = process.memoryUsage(); const rss = memoryUsedBytes();
@@ -378,6 +382,7 @@ if (shadowOnly) {
   for (const v of fail) out(`  fails: ${v.scannerId} ${v.symbol} ${v.tf} — ${v.reason || `PF ${v.pf.toFixed(2)}, ${v.trades} trades, ${v.avgR.toFixed(2)}R`}`);
   if (process.env.OUT) fs.writeFileSync(process.env.OUT, JSON.stringify(verdicts, null, 1));
 }
+if(summary.unsupported.length)out(`stateful-only: ${summary.unsupported.length} script passes skipped before Pine; no screening evidence recorded`);
 if (dry) { out('dry run: no screen recorded, no judge'); process.exit(0); }
 // ---- judge ----
 const judgeRegistry = new ScannerRegistry();

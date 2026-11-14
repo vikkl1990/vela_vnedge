@@ -5,6 +5,7 @@
  */
 import type { App } from '../app.ts';
 import { FAMILIES } from './families.ts';
+import { authorReview } from './authorReview.ts';
 
 const DAY = 86_400_000;
 type Stages = Partial<Record<'live' | 'shadow' | 'proposed' | 'tracked' | 'candidate' | 'retired' | 'demote_proposed', number>>;
@@ -86,7 +87,7 @@ export class LibraryService {
       ...(entry ?? {}), id: s.id, name: s.name, author: s.author, family: s.family, origin: s.origin, url: s.url, license: s.license,
       scriptType: s.scriptType, overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, patches: s.patches, reason: s.reason,
       health: health ? { fails: health.fails, lastError: health.lastError, quarantined: health.quarantined, reason: health.reason } : null,
-      pairs, recent,
+      pairs, recent, authorReview: authorReview(s, this.app.scanners.scannerConfig(id)),
     };
   }
 

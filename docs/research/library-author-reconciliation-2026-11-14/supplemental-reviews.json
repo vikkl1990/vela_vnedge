@@ -1,0 +1,82 @@
+{
+  "vE8YNVgM": {
+    "role": "Signal",
+    "summary": "Confirmed swing pivots define sloped support and resistance. A qualifying price cross after an uninterrupted interval is the signal; the pivot's drawing date is not the signal availability date.",
+    "requirements": "The author supplies no complete stop/target lifecycle. Inputs choose close or wick and whether earlier line breaks invalidate it. A shorter pivot length or added break filter is a distinct strategy, not a reader correction.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2023-10-17T14:35:44.862923+00:00"
+  },
+  "IV6eZF3w": {
+    "role": "Trade setup",
+    "summary": "A confirmed structural break or change of character produces a directional breakout setup with volatility-derived targets. Close-versus-wick confirmation is configurable.",
+    "requirements": "Displayed target-hit statistics are the indicator's internal model, not exchange profitability. Preserve the existing tested long-side allow-list; a two-sided author reading needs separate evidence and native level extraction.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 2,
+    "reviewUpdatedAt": "2025-02-22T09:00:05.473547+00:00"
+  },
+  "K0dz3kws": {
+    "role": "Signal / context",
+    "summary": "Ranked swings establish a volume-weighted trend leg. The author uses aligned polarity, pullbacks and qualified retests for decisions; plain price crosses also provide context.",
+    "requirements": "Reconstructed VWAP starts at a past pivot but becomes usable only when the new anchor is accepted. The author provides no complete position lifecycle. Current cross entries are a bot interpretation and must not be silently replaced.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2026-07-27T10:40:15.133412+00:00"
+  },
+  "VrTL3VwF": {
+    "role": "Signal",
+    "summary": "An RSI analogue classifier combines rank and confidence with trend, volatility and chop filters. The classifier's Long/Short outputs are distinct from SuperTrend regime flips.",
+    "requirements": "Keep ST Flip Up and ST Flip Dn out of the classifier-only comparison. Scores are not calibrated win probabilities. Future-horizon training labels must be mature before use; source implementation, not the author's no-repaint claim alone, determines causality.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2026-06-01T08:34:40.098123+00:00"
+  },
+  "r8j7m88J": {
+    "role": "Signal",
+    "summary": "Five weighted SuperTrend members must meet the consensus threshold and agree with the selected base member before the cluster regime changes.",
+    "requirements": "Base ST Long/Short mark only one member's flip. Use Major Long/Short or their matching Long/Short conditions for the consensus variant. The cluster line is a guide, not a complete author stop/target plan.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 2,
+    "reviewUpdatedAt": "2026-04-04T09:10:09.066944+00:00"
+  },
+  "d3IaFa7c": {
+    "role": "Signal",
+    "summary": "ATR-based discrete trend steps define a volatility channel. The author's upper retest is a bearish resistance test; the lower retest is a bullish support test.",
+    "requirements": "Decision 195 intentionally trades the opposite interpretation as continuation. Keep it distinct from the existing native retest variant. Step markers describe trend state; the author does not prescribe a full trade lifecycle.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2025-06-09T11:58:41.098389+00:00"
+  },
+  "pIdVZEJY": {
+    "role": "Trade setup",
+    "summary": "Heikin-Ashi SuperTrend changes arm a buffered breakout; price confirmation and the buffered trailing line govern the trade.",
+    "requirements": "Synthetic Heikin-Ashi prices must never become executable Delta fills. Reconcile the Pine strategy ledger, pending stop/limit orders and confirmation timing before calling a signal-plus-bot-stop reading author-native. Retain bot capital and risk controls.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2026-06-05T05:36:25.545620+00:00"
+  },
+  "XuywwObg": {
+    "role": "Trade setup",
+    "summary": "Long-only oversold RSI plus exceptional volume permits up to three ladder entries, each requiring a further price drop. The target follows average entry and the stop follows the lowest fill, with separate exit cooldowns.",
+    "requirements": "The bot currently ignores additional same-direction entries, so it does not reproduce this basket. A native adapter needs fill-based basket state, aggregate margin/risk checks, OCO updates and cooldown parity. The historical source-study verdict is not engine validation. Do not import the author's equity sizing or claim its candle fills as exchange fills.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2026-05-10T22:46:49.406884+00:00"
+  },
+  "wMcOiPoG": {
+    "role": "Trade setup — held for correctness",
+    "summary": "Extreme estimated delta, a stalled body, swing extreme and rejection wick arm an absorption reversal. The default waits up to three bars for a confirming close; violating the extreme cancels it.",
+    "requirements": "The source spacing OR can bypass the required absorption test. Keep the existing quarantine until the expression and lower-timeframe data coverage are validated. Delta is a candle proxy, not exchange aggressor flow; source position sizing and costs are placeholders.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2026-10-26T21:44:05.269537+00:00"
+  },
+  "oM444F7G": {
+    "role": "Context",
+    "summary": "SMA/ATR trend bands and aligned fair-value gaps guide discretionary pullback analysis. The author suggests rejection at unmitigated gaps, but the code does not emit a complete rejection-entry condition.",
+    "requirements": "Do not trade the bullish/bearish statistics label or gap creation as a confirmed entry. Volume boxes estimate candle-position shares. A causal rejection rule and explicit protection would be a new, separately evaluated strategy.",
+    "reviewedAt": "2026-11-13T19:01:49.579936+00:00",
+    "reviewVersion": 1,
+    "reviewUpdatedAt": "2026-10-27T13:12:47.354703+00:00"
+  }
+}

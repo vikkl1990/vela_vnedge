@@ -28,6 +28,8 @@ jobs:
       - run: npm ci
       - name: Type-check server
         run: npx tsc --noEmit -p server/tsconfig.json
+      - name: Validate author-review receipts
+        run: python3 ops/test_author_review_records.py
       - name: Server unit + integration tests
         working-directory: server
         env:
