@@ -551,7 +551,8 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
       events.push({ kind: 'entry', side, tp: [], label: l.text.slice(0, 60), message: `label "${l.text.slice(0, 80)}"${at !== l.time ? ' (drawn at an earlier bar)' : ''}`, source: 'label', barTime: at, barIndex: -1 });
     }
   }
-  const kept = events;
+  // The basket owns its fill-based lifecycle. Pine's synthetic broker exits are not our fills.
+  const kept = opts.scannerId==='rsi-volume-ladder-basket' ? events.filter(e=>e.kind==='entry'&&e.source==='shape'&&e.label==='VNEDGE RSI volume candidate') : events;
   // decision 195: inverted, the whole contract turns over — an exit the script raises for its long closes the short
   // this reading holds; the script's own stop and targets belong to the other side and are dropped
   const flip = (s: Side) => (s === 'long' ? 'short' as const : 'long' as const);
@@ -573,7 +574,8 @@ export function describeEvent(ev: ScanEvent): string {
     if (ev.sl !== undefined) parts.push(`stop ${fmtN(ev.sl)}`);
     if (ev.tp.length) parts.push(`targets ${ev.tp.map(fmtN).join(' / ')}`);
     if (ev.score !== undefined) parts.push(`score ${fmtN(ev.score)}`);
-    if (ev.source === 'shape') parts.push(`(${ev.label} marker drawn by the script; stop/targets from ATR)`);
+    if(ev.label==='VNEDGE RSI volume candidate')parts.push('(basket candidate; fill-dependent spacing, shared stop and target)');
+    else if (ev.source === 'shape') parts.push(`(${ev.label} marker drawn by the script; stop/targets from ATR)`);
     else if (ev.source === 'alertcondition') parts.push(`(script condition "${ev.label}"; stop/targets from ATR)`);
     else if (ev.source === 'derived') parts.push(`(derived from ${ev.label}${ev.sl === undefined ? '; stop from ATR' : ''})`);
     else if (ev.sl === undefined) parts.push('(no stop published; ATR fallback)');

@@ -1,3 +1,4 @@
+import {BASKET_SCANNER} from './basket.ts';
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
 import {withProductFees,type ProductFees} from './productFees.ts';
 import { createHash } from 'node:crypto';
@@ -31,6 +32,7 @@ export interface PlanComparison { group: string; role: 'control' | 'candidate' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
 export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
+  basket?: 'rsi-volume-ladder-v1';
   id: string; revision: number; enabled: boolean;
   scannerId: string; symbol: string; tf: string;
   variant: 'current' | 'native' | 'atr';
@@ -47,6 +49,7 @@ export interface ExecutionPlan {
   readingOverride?: ReadingOverride;
 }
 export interface ExecutionPlanSnapshot {
+  basket?: ExecutionPlan['basket'];
   id: string; revision: number; signature: string; sourceScannerId: string;
   variant: ExecutionPlan['variant']; symbol: string; tf: string;
   sourceHash:string|null; reading:AppConfig['scanners'][string]|null;
@@ -58,8 +61,10 @@ export interface ExecutionPlanSnapshot {
   readingOverride?: ReadingOverride;
   /** Absent on historical cohorts: their execution rules remain frozen. */
   executionVersion?: number;
+  partialExitVersion?: 1;
 }
-export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'>): string {
+export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'>): string {
+  if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
   const c=p.paper, ladder=c.fallbackRR.join('/'), allocation=c.tpSplit.map(x=>`${Math.round(x*100)}%`).join('/');
   const trail=c.trailAfterR>0?`trail from ${c.trailAfterR}R · ${c.trailAtrMult>0?`${c.trailAtrMult} ATR distance`:c.trailGiveBackPct>0?`${c.trailGiveBackPct}% peak giveback`:`${c.trailDistanceR||1}R distance`}`:'trail off';
   const floor=c.floorAtR>0?` · floor ${c.floorKeepR}R from ${c.floorAtR}R`:'';
@@ -88,11 +93,12 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
   if(p.trailing)Object.assign(paper,{trailAfterR:p.trailing.afterR,trailGiveBackPct:p.trailing.giveBackPct,
     floorAtR:p.trailing.floorAtR,floorKeepR:p.trailing.floorKeepR,trailAtrMult:0,trailDistanceR:0,trailSteps:[],trailStall:undefined});
   if(p.maxStopLossPct!==undefined)paper.maxStopLossPct=paper.maxStopLossPct>0?Math.min(paper.maxStopLossPct,p.maxStopLossPct):p.maxStopLossPct;
-  const result = {id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
+  const result = {...(p.basket?{basket:p.basket}:{}),id:p.id,revision:p.revision,executionVersion:CAUSAL_EXIT_VERSION,sourceHash,reading:sc?structuredClone(sc):null,sourceScannerId:p.scannerId,variant:p.variant,symbol:p.symbol,tf:p.tf,
     paper,exitMode,requireAtrStop:Boolean(paper.skipScriptStops),referenceEquity:p.referenceEquity,maxHoldMinutes:p.maxHoldMinutes,
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
-  const versioned = {...result,...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
+  if(p.basket && (paper.sizingMode!=='margin'||paper.marginPerTrade!==150||!(paper.maxStopLossPct!>0)||Object.keys(sc?.inputs??{}).length))throw Error('basket requires $150 margin, a stop cap and reviewed default inputs');
+  const versioned = {...result,...(sc?.reader===3||p.basket?{partialExitVersion:1 as const}:{}),...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
   // Presentation/grouping edits must not reset evidence for an identical policy.
   // A reading experiment chooses its own cell and enabled state. Account allocation edits
   // must not split its evidence or make a held position look like a different policy.
@@ -107,6 +113,7 @@ export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSna
   return p.variant === 'current' ? events.map(ev=>protectEntry(ev,p.reading?.entryProtection)) : adaptPlan(events,bars,p.variant);
 }
 export function planBacktest(p: ExecutionPlanSnapshot) {
+  if(p.basket)throw Error('basket execution requires stateful shadow replay; single-position candle backtest is unsupported');
   const le=p.paper.limitEntry;
   return {cfg:p.paper,exitMode:p.exitMode,scannerExitResolved:true as const,requireAtrStop:p.requireAtrStop,
     ...(p.reading?.reader===3?{scriptStopAmendments:'after-close-v1' as const}:{}),
@@ -120,6 +127,8 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
+    if(p.basket!==undefined&&(p.basket!=='rsi-volume-ladder-v1'||p.scannerId!==BASKET_SCANNER||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.comparison))errors.push(`executionPlans.${p.id}: basket requires its versioned source and unmodified native bracket`);
+    if(p.scannerId===BASKET_SCANNER&&!p.basket)errors.push(`executionPlans.${p.id}: basket source requires its execution adapter`);
     if(p.readingOverride!==undefined){
       const r=p.readingOverride;
       if(!r||!Number.isInteger(r.version)||r.version<1||Object.keys(r).some(k=>!['version','reader','sources','labels','sides','labelStyles','invert','edge'].includes(k))||p.variant!=='current')errors.push(`executionPlans.${p.id}: invalid reading version or override`);
