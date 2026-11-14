@@ -205,7 +205,7 @@ function StrategiesBody({ data }: { data: LibraryList }) {
 
       {noShadowCell > 0 && (
         <Callout tone="info" title={`${fmtInt(noShadowCell)} screened ${noShadowCell === 1 ? 'script has' : 'scripts have'} no shadow cell yet.`} actions={<Link className="btn btn-sm" to="/library">Browse the library</Link>}>
-          They passed or were have screening or allocation records, but no shadow participation is reported in this view. Incubator shows current admission reasons.
+          They have screening or allocation records, but no shadow participation is reported in this view. Incubator shows current admission reasons.
         </Callout>
       )}
     </>

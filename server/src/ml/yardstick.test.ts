@@ -38,6 +38,19 @@ test('yardstick: discarding winners along with losers does not count as paying',
   assert.ok(y.thresholds.find(x => x.minProb === 0.45)!.deltaSumR < 0);
 });
 
+test('yardstick explains a losing set that fails the unchanged per-trade evidence minimum', () => {
+  const y = yardstick([
+    ...Array.from({ length: 825 }, () => t(0.58, -43.9 / 825)),
+    ...Array.from({ length: 100 }, () => t(0.8, 0.5)),
+  ]);
+  assert.equal(y.verdict.pays, false);
+  assert.equal(y.verdict.minProb, null);
+  assert.match(y.verdict.text, /mean R at or below -0\.10R/);
+  assert.match(y.verdict.text, /825 trades worth −43\.9R \(-0\.053R per trade\)/);
+  assert.doesNotMatch(y.verdict.text, /no threshold drops a losing set/);
+  assert.match(theCall(y, y).text, /does not qualify a gate candidate/);
+});
+
 test('yardstick: unscored trades are kept by every gate and counted apart', () => {
   const y = yardstick([t(null, 0.5), t(null, -1), ...Array.from({ length: 10 }, () => t(0.3, -1))]);
   assert.equal(y.unscored, 2); assert.equal(y.scored, 10);
