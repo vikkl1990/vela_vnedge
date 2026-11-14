@@ -92,6 +92,8 @@ export interface PendingEntry {
   limit?: { price: number; expiresAt: number; atr: number; sl?: number; tp?: number[]; bars: number; quoteAnchor?: number };
   /** Decision 186: a reversal's held position, closed only when this entry fills (a cancelled reversal keeps it). */
   replacingId?: number;
+  /** Native author close already requested; never turn this wait into another exit. */
+  awaitingNativeClose?: boolean;
   reclaim?: {state: ReclaimState; event: ScanEvent; context: EntryContext; ruleKey: string; checkpoint?:ReclaimCheckpoint; recovery?:{startedAt:number}};
   reclaimRuleKey?: string;
 }
@@ -744,18 +746,23 @@ export class PaperEngine extends EventEmitter {
     // risk gate, size, exposure — with the existing position counted as gone; only then is the existing
     // position closed. A replacement that cannot be admitted leaves the position as it was.
     let replacing: Position | undefined;
+    const awaitingNativeClose = !!existing && this.book===2 && ctx.executionPlan?.nativeReentryVersion===1 &&
+      this.partial(existing) && this.partialExits.closing(existing);
     if (existing) {
-      if (existing.side === ev.side && !ctx.executionPlan?.basket) return { action: 'ignored', reason: 'already in position' };
-      if(!ctx.executionPlan?.basket){
-      if (!cfg.allowReversal) return { action: 'ignored', reason: 'opposite signal while in position (reversal disabled)' };
-      const markNow = this.marks.get(existing.symbol) ?? ctx.refPrice;
-      if (!reversalAllowed(existing, markNow, cfg)) {
-        return { action: 'ignored', reason: `reversal held: position at ${openR(existing, markNow).toFixed(2)}R, below the ${cfg.reversalMinR}R needed to bank it` };
-      }
-      replacing = existing;
+      if (existing.side === ev.side && !ctx.executionPlan?.basket && !awaitingNativeClose) return { action: 'ignored', reason: 'already in position' };
+      if (!ctx.executionPlan?.basket) {
+        if (existing.side !== ev.side) {
+          if (!cfg.allowReversal) return { action: 'ignored', reason: 'opposite signal while in position (reversal disabled)' };
+          const markNow = this.marks.get(existing.symbol) ?? ctx.refPrice;
+          if (!reversalAllowed(existing, markNow, cfg)) {
+            return { action: 'ignored', reason: `reversal held: position at ${openR(existing, markNow).toFixed(2)}R, below the ${cfg.reversalMinR}R needed to bank it` };
+          }
+        }
+        replacing = existing;
       }
     }
-    const refused = (reason: string): EntryDecision => ({ action: 'rejected', reason: replacing ? `reversal refused, position kept: ${reason}` : reason });
+    const refused = (reason: string): EntryDecision => ({ action: 'rejected', reason: awaitingNativeClose ?
+      `native re-entry refused; existing close retained: ${reason}` : replacing ? `reversal refused, position kept: ${reason}` : reason });
     let closed: Position | undefined;
     if (this.findPending(ctx.scannerId, ctx.symbol, ctx.tf)) return { action: 'ignored', reason: 'entry already pending' };
     if (this.open.size + this.pending.size - (replacing ? 1 : 0) >= cfg.maxOpenPositions) return refused(`max open positions (${cfg.maxOpenPositions})`);
@@ -821,7 +828,7 @@ export class PaperEngine extends EventEmitter {
       const x = this.risk.exposureCheck({ symbol: ctx.symbol, side: ev.side!, tf: ctx.tf, notional: size.qty * ctx.market.contractValue * price, replacing: replacing?.id });
       if (x) return refused(`risk ${x}`);
     }
-    const deferReversal = Boolean(replacing) && (cfg.fillSource === 'tape' || (cfg.latencyMs ?? 0) > 0);
+    const deferReversal = Boolean(replacing) && (awaitingNativeClose || cfg.fillSource === 'tape' || (cfg.latencyMs ?? 0) > 0);
     if (replacing && !deferReversal) {
       const ref = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
       const exitQuote = this.marketPrice(replacing.symbol, replacing.side === 'long' ? 'sell' : 'buy', ref, cfg, ctx.at);
@@ -840,16 +847,17 @@ export class PaperEngine extends EventEmitter {
       this.logInfo(`${this.book ? 'INCUBATOR ' : ''}LIMIT ${pe.side.toUpperCase()} ${pe.symbol} ${pe.tf} @ ${limitPrice} (${off} ATR back from ${quoteAnchor?'quote ':'signal '}${limitReference}), rests ${le.bars} bars [${ctx.scannerId}]`);
       return { action: 'pending', reason: planned ? `reclaim trial: maker limit at ${limitPrice}, expires in ${Math.round((planned.expiresAt-ctx.at)/60_000)} minutes` : `resting limit at ${limitPrice}, ${off} ATR back${quoteAnchor?' from executable quote':''}, for ${le.bars} ${ctx.tf} bars`, pendingId: id, closed };
     }
-    if (cfg.fillSource === 'tape' || (cfg.latencyMs ?? 0) > 0) {
+    if (awaitingNativeClose || cfg.fillSource === 'tape' || (cfg.latencyMs ?? 0) > 0) {
       // latency model (decision 75: every mode): the order reaches the book latencyMs after the signal and fills at the
       // first price after that — a tape print, or in candles mode the next 1m candle update, or the mark once the feed is quiet
       const id = this.nextId();
       const pe: PendingEntry = { id, observation:entryObservation(ev,ctx), policy:ctx.policy, reservation:this.reservation(size,price,ctx.market.contractValue), executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, signalPrice: price, levels, market: ctx.market, at: ctx.at, dueAt: ctx.at + (cfg.latencyMs ?? 0), signalId: ctx.signalId, features: ctx.features, mlProb: ctx.mlProb ?? null, score: ev.score ?? ctx.scoreOverride, leverageMult, sizeScale: ctx.sizeScale,
-        ...(deferReversal ? { replacingId: replacing!.id } : {}) };
+        ...(deferReversal ? { replacingId: replacing!.id } : {}),...(awaitingNativeClose?{awaitingNativeClose:true}:{}) };
       this.pending.set(id, pe);
       this.db.run("UPDATE positions SET scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, entry_price=?, entry_at=?, signal_id=?, fills=? WHERE id=?", pe.scannerId, pe.scannerName, pe.symbol, pe.tf, pe.side, price, pe.at, pe.signalId, JSON.stringify({ pending: { dueAt: pe.dueAt, levels }, pendingEntry:pe }), id);
       this.logInfo(`PENDING ${pe.side.toUpperCase()} ${pe.symbol} @~${price.toFixed(2)} fills at first price after +${cfg.latencyMs ?? 0}ms [${ctx.scannerId}]`);
-      return { action: 'pending', reason: cfg.fillSource === 'tape' ? 'awaiting tape fill' : 'awaiting fill after the latency window', pendingId: id, closed };
+      return { action: 'pending', reason: awaitingNativeClose ? 'awaiting native close and a fresh entry fill' :
+        cfg.fillSource === 'tape' ? 'awaiting tape fill' : 'awaiting fill after the latency window', pendingId: id, closed };
     }
     const pos = this.openAt(this.nextId(), { market:ctx.market, policy:ctx.policy, executionPlan:ctx.executionPlan, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue, maintenanceMarginPct: ctx.market.maintenanceMarginPct, entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, leverage: size.leverage, marginLeverage: size.marginLeverage, features: ctx.features, mlProb: ctx.mlProb ?? null, quoted: quoted.quoted, scannerTag: ctx.scannerId }, cfg, entryContext);
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
@@ -1089,6 +1097,12 @@ export class PaperEngine extends EventEmitter {
     // expiry belongs in the fill path, not only in housekeeping: a print can arrive past the
     // deadline before the next housekeeping tick and would otherwise still be filled
     if (receivedAt > pe.dueAt + PENDING_EXPIRY_MS) return cancel(`no fill within ${PENDING_EXPIRY_MS / 1000}s of the latency window`);
+    // The author has issued an independent close. Do not cancel the fresh entry merely
+    // because that close is partial, and do not sell the residual a second time.
+    // Price, fees, risk and exposure are all rechecked below after actual closure.
+    if(pe.awaitingNativeClose && pe.replacingId!==undefined && this.open.has(pe.replacingId)){
+      this.pending.set(pe.id,pe);return null;
+    }
     const exchangeBlock = this.entryBlock?.(pe.symbol, receivedAt);
     if (exchangeBlock) {
       if (transientTradingBlock(exchangeBlock)) { this.pending.set(pe.id, pe); return null; }

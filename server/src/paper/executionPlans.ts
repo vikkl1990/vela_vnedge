@@ -1,5 +1,6 @@
 import {MARKITTICK_NATIVE} from '../scanners/markitTick.ts';
 import {plotLifecycle} from '../scanners/plotLifecycle.ts';
+import {nativeReentry} from '../scanners/nativeLifecycle.ts';
 import {BASKET_SCANNER,BASKET_ACCOUNTING_VERSION} from './basket.ts';
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
 import {withProductFees,type ProductFees} from './productFees.ts';
@@ -74,6 +75,8 @@ export interface ExecutionPlanSnapshot {
   partialExitVersion?: 1;
   /** Causal close-then-open reversal; scoped to newly validated author profiles. */
   reversalEntryVersion?: 1;
+  /** A native full-close instruction may precede a fresh same-side entry on one bar. */
+  nativeReentryVersion?: 1;
 }
 export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'|'exitPolicy'>>): string {
   if(plotLifecycle(p.sourceScannerId))return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
@@ -114,8 +117,10 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     ...(p.takeProfit?{takeProfit:structuredClone(p.takeProfit)}:{}),...(p.label?{label:p.label}:{}),
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
   if(p.basket && (paper.sizingMode!=='margin'||paper.marginPerTrade!==150||!(paper.maxStopLossPct!>0)||Object.keys(sc?.inputs??{}).length))throw Error('basket requires $150 margin, a stop cap and reviewed default inputs');
-  const reversalEntryVersion=sc?.reader===3&&['reactive-trail-system-author-native','reaction-level-matrix-author-native'].includes(p.scannerId)?1 as const:undefined;
-  const versioned = {...result,...(sc?.reader===3||p.basket||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),...(reversalEntryVersion?{reversalEntryVersion}:{}),...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
+  const native = nativeReentry(p.scannerId,sc?.reader);
+  const versioned = {...result,...(sc?.reader===3||p.basket||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),
+    ...(native?{reversalEntryVersion:1 as const,nativeReentryVersion:1 as const}:{}),
+    ...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
   // Presentation/grouping edits must not reset evidence for an identical policy.
   // A reading experiment chooses its own cell and enabled state. Account allocation edits
   // must not split its evidence or make a held position look like a different policy.
