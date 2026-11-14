@@ -1,4 +1,4 @@
-import { choice } from '../lib/researchNavigation'
+import { choice, scannerSectionFromUrl } from '../lib/researchNavigation'
 import { useResearchFilters } from '../lib/useResearchFilters'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -28,7 +28,7 @@ export function Scanners() {
   const scanners = useScanners()
   const auth = useAuth()
   // filters live in the URL so a link, Back and Forward keep them; defaults stay out of it
-  const { params, set, hash } = useResearchFilters()
+  const { params, set, setSection, hash } = useResearchFilters()
   const activity = choice(params.get('activity'), ['all', 'scheduled', 'fault', 'unallocated', 'context', 'off', 'unknown'], 'all')
   const config = useConfig()
   const markets = useMarkets()
@@ -38,7 +38,9 @@ export function Scanners() {
   const releaseNow = (s: Scanner) => release.mutate(s.id, { onSuccess: () => toast.success(`${s.name} released: it runs again from its next bar`), onError: (e) => toast.error(String((e as Error).message ?? e)) })
   const toast = useToast()
   // narrow screens start on cards: a wide table is the wrong first look on a phone
-  const [view, setView] = useState<'list' | 'cards' | 'table'>(() => (typeof window !== 'undefined' && window.matchMedia?.('(max-width: 700px)').matches ? 'cards' : 'list'))
+  const defaultView = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 700px)').matches ? 'cards' : 'list'
+  const view = choice(params.get('view'), ['list', 'cards', 'table'], defaultView)
+  const setView = (value: 'list' | 'cards' | 'table') => set({ view: value })
   const pipeline = useScannerPipeline()
   const cat = choice(params.get('category'), CATEGORIES, 'All') as Category
   const filter = params.get('q') ?? ''
@@ -53,14 +55,8 @@ export function Scanners() {
   const bookFilter = book === 'account' || book === 'shadow' || book === 'none' ? book : 'all'
   const setBookFilter = (value: string) => set({ book: value === 'all' ? null : value })
   const busy = !auth.canTrade || update.isPending || bulkBusy
-  // The tab is local state; a link to #readiness or #contributions (the Incubator uses them) opens that tab.
-  const [tab, setTab] = useState<ScTab>(() => tabFromHash(hash) ?? tabFromSection(params.get('section')) ?? (book ? 'catalogue' : 'trading'))
-  const [seenHash, setSeenHash] = useState(hash)
-  if (hash !== seenHash) {
-    setSeenHash(hash)
-    const t = tabFromHash(hash)
-    if (t) setTab(t)
-  }
+  const tab = scannerSectionFromUrl(params, hash)
+  const setTab = (value: ScTab) => setSection(value)
 
   // Inline chips offer the globally configured symbols plus anything a scanner already uses
   // (the full market list is hundreds of symbols — edit the global list on Settings).
@@ -744,8 +740,6 @@ function BookCells({ s }: { s: Scanner }) {
 // ---------- tabs and fleet numbers ----------
 
 type ScTab = 'trading' | 'catalogue' | 'quarantined' | 'readiness' | 'contributions'
-const tabFromSection = (v: string | null): ScTab | null => (v === 'readiness' ? 'readiness' : v === 'contributions' ? 'contributions' : null)
-const tabFromHash = (h: string): ScTab | null => (h === '#readiness' ? 'readiness' : h === '#contributions' || h === '#contribution-ledger' ? 'contributions' : null)
 /** On in the account, or allocated in the account, shadow or proposed books. */
 const isTrading = (s: Scanner) => s.enabled || !!(s.books && (s.books.account.length || s.books.shadow.length || s.books.proposed.length))
 const isQuarantined = (s: Scanner) => !!s.health?.quarantined
