@@ -12,6 +12,8 @@ import { Callout, PageHeader, Stat, StatGrid, TabPanel, Tabs } from '../componen
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { fmtInt, fmtMoney, fmtProfitFactor, fmtPct, fmtPnl, fmtR, pnlClass } from '../lib/format'
+import { BookCards, LiveStatusStrip, MlAdvisor, PromotionLadder, RealityGap } from '../components/home/HomeBooks'
+import '../styles/pages/home.css'
 import { RunHealthPanel } from '../components/RunHealthPanel'
 
 export function Overview() {
@@ -44,7 +46,6 @@ export function Overview() {
     return n ? sumR / n : null
   }, [s])
 
-  const visibleScanners = (scanners.data ?? []).filter((x) => !x.hidden).length
   const net = s ? s.closedPnl + s.openPnl : 0
   const day = risk.data?.day
   const markets = useMarketsToday()
@@ -58,20 +59,71 @@ export function Overview() {
   const signals24 = activity.data?.entries
 
   const eqSpark = useMemo(() => (equity.data ?? []).slice(-120).map((p) => p.equity), [equity.data])
-  const [tab, setTab] = useState<'scanners' | 'system' | 'markets'>('scanners')
+  const [tab, setTab] = useState<'account' | 'scanners' | 'system' | 'markets'>('account')
   const health = useHealth()
 
   return (
     <div className="page overview-page">
       <PageHeader
-        title="Operations"
-        subtitle={scanners.data ? `Paper account on Delta India data; fills and P&L are simulated. ${visibleScanners} scripts in the library, ${(scanners.data ?? []).filter((x) => x.enabled).length} enabled on the account. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'}
+        title="Home"
+        subtitle="Four books, one view. Every number says which book it comes from."
         meta={health.data ? <BookBadge book="account" mode={health.data.mode} /> : undefined}
         actions={<Link to="/trades" className="btn btn-sm">Trade journal →</Link>}
       />
       <TickerTape />
-      <NeedsYou />
+      <LiveStatusStrip />
+      <BookCards />
+      <div className="home-split">
+        <PromotionLadder />
+        <RealityGap />
+      </div>
+      <div className="home-split">
+        <NeedsYou />
+        <MlAdvisor />
+      </div>
 
+      <Panel
+        title={<span>Open positions, paper</span>}
+        right={<div className="row gap"><Link to="/trades?period=today&reason=sl" className="btn btn-xs">Today's stops</Link><Link to="/trades" className="btn btn-xs">Open trade journal →</Link></div>}
+        pad={false}
+      >
+        {positions.isLoading && !positions.data ? (
+          <Loading kind="table" rows={3} cols={10} />
+        ) : positions.isError && !positions.data ? (
+          <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
+        ) : (
+          <PositionsTable positions={positions.data ?? []} compact />
+        )}
+      </Panel>
+
+      <div className="grid-2-1">
+        <Panel title="Equity curve" right={<span className="muted small mono">USD · simulated equity</span>}>
+          <QueryState {...equity} data={equity.data} empty="No equity points yet." hint="The curve starts with the first fill." skeleton="chart" skeletonHeight={240} onRetry={() => equity.refetch()}>
+            {(d) => <EquityChart data={d} height={240} baseline={s?.initialEquity} />}
+          </QueryState>
+        </Panel>
+        <Panel title="Live signals" right={<Link to="/signals" className="btn btn-xs">All signals →</Link>} pad={false}>
+          <QueryState {...signals} data={signals.data} empty="No signals yet." hint="No recorded events yet. Check scheduled pairs and signal conditions on Scanners." skeleton="cards" skeletonRows={4} onRetry={() => signals.refetch()}>
+            {(d) => <AlertsFeed signals={d} limit={15} />}
+          </QueryState>
+        </Panel>
+      </div>
+
+      {/* the long tail of the old page, one tab at a time instead of one long scroll */}
+      <Tabs
+        idPrefix="ov"
+        label="More about the paper account"
+        value={tab}
+        onChange={setTab}
+        items={[
+          { id: 'account', label: 'Paper account' },
+          { id: 'scanners', label: 'By scanner', count: pnlRows.length || undefined },
+          { id: 'system', label: 'System' },
+          { id: 'markets', label: 'Markets today', count: mt?.enabled ? `${allowedN}/${tracked.length}` : undefined },
+        ]}
+      />
+      <TabPanel idPrefix="ov" id="account" value={tab}>
+        <div className="stack">
       {stats.isLoading && !s && <Loading kind="kpi" rows={3} />}
       {stats.isError && !s && <ErrorState error={stats.error} onRetry={() => stats.refetch()} />}
       {s && (
@@ -117,46 +169,8 @@ export function Overview() {
           </div>
         </>
       )}
-
-      <Panel
-        title="Open positions"
-        right={<div className="row gap"><Link to="/trades?period=today&reason=sl" className="btn btn-xs">Today's stops</Link><Link to="/trades" className="btn btn-xs">Open trade journal →</Link></div>}
-        pad={false}
-      >
-        {positions.isLoading && !positions.data ? (
-          <Loading kind="table" rows={3} cols={10} />
-        ) : positions.isError && !positions.data ? (
-          <ErrorState error={positions.error} onRetry={() => positions.refetch()} />
-        ) : (
-          <PositionsTable positions={positions.data ?? []} compact />
-        )}
-      </Panel>
-
-      <div className="grid-2-1">
-        <Panel title="Equity curve" right={<span className="muted small mono">USD · simulated equity</span>}>
-          <QueryState {...equity} data={equity.data} empty="No equity points yet." hint="The curve starts with the first fill." skeleton="chart" skeletonHeight={240} onRetry={() => equity.refetch()}>
-            {(d) => <EquityChart data={d} height={240} baseline={s?.initialEquity} />}
-          </QueryState>
-        </Panel>
-        <Panel title="Live signals" right={<Link to="/signals" className="btn btn-xs">All signals →</Link>} pad={false}>
-          <QueryState {...signals} data={signals.data} empty="No signals yet." hint="No recorded events yet. Check scheduled pairs and signal conditions on Scanners." skeleton="cards" skeletonRows={4} onRetry={() => signals.refetch()}>
-            {(d) => <AlertsFeed signals={d} limit={15} />}
-          </QueryState>
-        </Panel>
-      </div>
-
-      {/* the long tail of the old page, one tab at a time instead of one long scroll */}
-      <Tabs
-        idPrefix="ov"
-        label="More about the account"
-        value={tab}
-        onChange={setTab}
-        items={[
-          { id: 'scanners', label: 'By scanner', count: pnlRows.length || undefined },
-          { id: 'system', label: 'System' },
-          { id: 'markets', label: 'Markets today', count: mt?.enabled ? `${allowedN}/${tracked.length}` : undefined },
-        ]}
-      />
+        </div>
+      </TabPanel>
       <TabPanel idPrefix="ov" id="scanners" value={tab}>
         <div className="grid-2-1">
           <Panel title="PnL by scanner" right={<span className="muted small">since the reset · click a row for the scanner</span>}>
