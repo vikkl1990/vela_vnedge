@@ -1,3 +1,4 @@
+import {candleReplayBlock} from '../paper/basket.ts';
 /**
  * Walk-forward validation service: runs every active scanner×symbol×timeframe over the deep
  * candle cache, persists the results (`walk_forward` table) and hands the OOS summaries to the
@@ -98,9 +99,10 @@ export class ValidationService {
 
   /** Pairs a run would cover. */
   jobs(opts: RunOptions = {}): Array<{ s: LoadedScanner; symbol: string; tf: string }> {
+    if(opts.scanner){const blocked=candleReplayBlock(opts.scanner);if(blocked)throw Object.assign(Error(blocked),{status:400});}
     const out: Array<{ s: LoadedScanner; symbol: string; tf: string }> = [];
     const scanners = opts.scanner ? [this.deps.registry.get(opts.scanner)].filter((s): s is LoadedScanner => Boolean(s && s.status === 'ok')) : this.deps.registry.all().filter(s => this.deps.scanners.isActive(s));
-    for (const s of scanners) {
+    for (const s of scanners.filter(s=>!candleReplayBlock(s.id))) {
       // the scanner's explicit pairs (decision 70), never the symbols × timeframes product: validation must describe the strategy that is deployed
       const pairs = this.deps.scanners.pairsFor(s.id).filter(p => (!opts.symbol || p.symbol === opts.symbol) && (!opts.tf || p.tf === opts.tf));
       for (const { symbol, tf } of pairs) if (tf in TF_SECONDS) out.push({ s, symbol, tf });

@@ -1,3 +1,4 @@
+import {candleReplayBlock} from '../paper/basket.ts';
 import {recordGatedSignal} from '../evidence/gatedSignals.ts';
 import {sameExitSource} from './boundExits.ts';
 import { pilotCapacityRefusal, pilotUsage, reservePilotEntry, type PilotUsage } from '../paper/pilotCapacity.ts';
@@ -181,7 +182,7 @@ export class ScannerEngine extends EventEmitter {
   }
   runsOn(id: string, symbol: string, tf: string): boolean { return this.pairsFor(id).some(p => p.symbol === symbol && p.tf === tf); }
   /** Quarantined scripts are not scheduled: they failed in a way that repeats (see health.ts). */
-  isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return s.status === 'ok' && c.enabled && !c.hidden && !this.health.isQuarantined(s.id); }
+  isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return !candleReplayBlock(s.id) && s.status === 'ok' && c.enabled && !c.hidden && !this.health.isQuarantined(s.id); }
 
   /** All (symbol, tf) pairs any active scanner needs. */
   requiredSeries(): Array<{ symbol: string; tf: string }> {
@@ -391,6 +392,7 @@ export class ScannerEngine extends EventEmitter {
   }
 
   runNow(id: string): number {
+    const blocked=candleReplayBlock(id);if(blocked)throw Object.assign(Error(blocked),{status:400});
     const s = this.registry.get(id);
     if (!s || s.status !== 'ok') return 0;
     let n = 0;
@@ -399,6 +401,7 @@ export class ScannerEngine extends EventEmitter {
   }
 
   async runBacktestNow(id: string, symbol: string, tf: string): Promise<BacktestResult | null> {
+    const blocked=candleReplayBlock(id);if(blocked)throw Object.assign(Error(blocked),{status:400});
     const s = this.registry.get(id);
     if (!s || s.status !== 'ok') return null;
     await this.candles.track(symbol, tf, this.cfgRef().historyBars);

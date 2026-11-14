@@ -1,5 +1,5 @@
 import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
-import {BASKET_SCANNER,BASKET_MARKER,basketRefusal,basketLevels,basketSizing} from './basket.ts';
+import {BASKET_SCANNER,BASKET_MARKER,basketRefusal,basketLevels,basketSizing,basketStopRisk,sizeBasketEntry} from './basket.ts';
 import {PartialExits} from './partialExits.ts';
 import {reclaimRestoreRefusal,recoverReclaim,nextReclaimMinute,type ReclaimCheckpoint} from './reclaimRecovery.ts';
 import {isExecutableTrade} from '../execution/tradeFreshness.ts';
@@ -12,9 +12,9 @@ import type { ExecutionPlanSnapshot } from './executionPlans.ts';
 import {makeTradePolicy,saveTradePolicy,loadTradePolicy,type TradePolicy} from './tradePolicy.ts';
 import {scannerExitPolicy} from './policy.ts';
 import {applyFundingSettlement, restingEntryStop} from './logic.ts';
-import {recordFillBudget} from './decisionTrace.ts';
+import {recordFillBudget,fillBudget} from './decisionTrace.ts';
 import {depthPlan} from './depthPlan.ts';
-import { initEntryExecution, recordEntryExecution, recordEntryFillEvidence, type EntryFillEvidence, type EntryDepthSnapshot, type EntryAdmissionDepth, type LimitFillObservation } from './entryExecution.ts';
+import { initEntryExecution, recordEntryExecution, recordEntryFillEvidence, entryFillAudit, type EntryFillEvidence, type EntryDepthSnapshot, type EntryAdmissionDepth, type LimitFillObservation } from './entryExecution.ts';
 import {alignmentRule,alignmentRefusal} from './entryAlignment.ts';
 import {createReclaim, advanceReclaim, type ReclaimState} from './reclaim.ts';
 import {selectiveReclaimRule,trialRiskConfig,expansionRatio} from './selectiveEntry.ts';
@@ -882,6 +882,7 @@ export class PaperEngine extends EventEmitter {
       const sl=basketLevels(price,market.tickSize,held).sl;
       const budget=basketSizing(cfg,cell.executionPlan.referenceEquity,sl,held);
       if(error||!budget||(held&&this.exitExecution.active(held.id)))return {qty:0,riskAmount:0,leverage:0,marginLeverage:0,reason:error??'basket: aggregate risk or margin budget exhausted'};
+      if(cell.executionPlan.basketAccountingVersion===2)return sizeBasketEntry(price,sl,{equity:cell.executionPlan.referenceEquity,availableMargin:cell.executionPlan.referenceEquity,contractValue:market.contractValue,tickSize:market.tickSize,maintenanceMarginPct:market.maintenanceMarginPct,maxLeverage:market.maxLeverage,cfg,wantedLeverage:cfg.marginLeverage?.base,entryExecution},held);
       return sizeContracts(price,sl,{equity:cell.executionPlan.referenceEquity,availableMargin:cell.executionPlan.referenceEquity,contractValue:market.contractValue,tickSize:market.tickSize,maintenanceMarginPct:market.maintenanceMarginPct,maxLeverage:market.maxLeverage,cfg:budget,wantedLeverage:cfg.marginLeverage?.base,entryExecution},0,score);
     }
     if(cell?.executionPlan) return sizeContracts(price,sl,{equity:cell.executionPlan.referenceEquity,availableMargin:cell.executionPlan.referenceEquity,contractValue:market.contractValue,tickSize:market.tickSize,maintenanceMarginPct:market.maintenanceMarginPct,maxLeverage:market.maxLeverage,cfg,wantedLeverage:cfg.marginLeverage?.base,entryExecution},0,score);
@@ -917,6 +918,10 @@ export class PaperEngine extends EventEmitter {
       pos.basket={version:1,entries:1,lastEntry:pos.entryPrice,lowestEntry:pos.entryPrice,marginUsed:pos.entryPrice*pos.qty*pos.contractValue/pos.marginLeverage!,lastSignalBar:p.features!.basket_signal_bar};
       const geometry=basketLevels(pos.entryPrice,p.market.tickSize);pos.sl=pos.slOriginal=geometry.sl;pos.tp=geometry.tp;pos.legs=[pos.qty];pos.tpHit=[false];
       pos.riskAmount=(pos.entryPrice-pos.sl)*pos.qty*pos.contractValue;
+      if(p.executionPlan.basketAccountingVersion===2){
+        pos.riskAmount=basketStopRisk(cfg,pos.sl,pos.qty,pos.contractValue,pos.entryPrice*pos.qty*pos.contractValue,pos.fees);
+        if(pos.riskAmount>p.executionPlan.referenceEquity*cfg.maxStopLossPct!/100+1e-8||pos.basket.marginUsed>50+1e-8)throw Error('basket fill exceeds aggregate cost or margin budget');
+      }
     }
     pos.executionPlan = p.executionPlan;pos.policy=p.policy;
     try {
@@ -947,7 +952,11 @@ export class PaperEngine extends EventEmitter {
   }
 
   private recordBasketEntry(pos:Position,fill:Fill,context:FillContext){
-    this.db.run('INSERT INTO paper_basket_entries VALUES(?,?,?,?,?,?,?,?,?)',pos.id,pos.basket!.entries,fill.at,fill.qty,fill.price,fill.fee,pos.basket!.lastSignalBar,fill.planEventId??null,JSON.stringify(context));
+    const cfg=this.configFor(pos);
+    // The first-entry diagnostic tables remain immutable. Every leg has its own
+    // order-keyed evidence here, not a later quote or the basket's average price.
+    const audit=entryFillAudit(pos,fill,cfg,context.source,context.ref,context,this.quotes?.markState?.(pos.symbol));
+    this.db.run('INSERT INTO paper_basket_entries VALUES(?,?,?,?,?,?,?,?,?)',pos.id,pos.basket!.entries,fill.at,fill.qty,fill.price,fill.fee,pos.basket!.lastSignalBar,fill.planEventId??null,JSON.stringify({...context,audit,budget:fillBudget(pos,cfg)}));
   }
   private addBasket(held:Position,leg:Position,market:MarketInfo,bar:number,context:FillContext):Position {
     if(!this.decisionActive||!held.basket||!this.partial(held))throw Error('basket addition requires atomic shadow execution');
@@ -959,6 +968,8 @@ export class PaperEngine extends EventEmitter {
     const stopFill=slip(sl,'sell',cfg,sl*leg.qty*leg.contractValue);
     const loss=(leg.entryPrice-stopFill)*leg.qty*leg.contractValue+fill.fee+feeFor(stopFill,leg.qty,leg.contractValue,cfg);
     if(!budget||loss>held.executionPlan!.referenceEquity*budget.maxStopLossPct!/100+1e-8||leg.entryPrice*leg.qty*leg.contractValue/leg.marginLeverage!>budget.marginPerTrade!+1e-8)throw Error('basket fill exceeds reserved margin');
+    const aggregateRisk=basketStopRisk(cfg,sl,qty,held.contractValue,price*qty*held.contractValue,held.fees+fill.fee,held.realizedPnl);
+    if(held.executionPlan!.basketAccountingVersion===2&&aggregateRisk>held.executionPlan!.referenceEquity*cfg.maxStopLossPct!/100+1e-8)throw Error('basket fill exceeds aggregate stop cost budget');
     held.basket={...held.basket,entries:held.basket.entries+1,lastEntry:leg.entryPrice,lowestEntry:Math.min(held.basket.lowestEntry,leg.entryPrice),marginUsed:held.basket.marginUsed+leg.entryPrice*leg.qty*leg.contractValue/leg.marginLeverage!,lastSignalBar:bar};
     held.qty=held.qtyOpen=qty;held.entryPrice=price;held.sl=held.slOriginal=sl;
     held.tp=[roundTick(price*1.04,market.tickSize)];held.legs=[qty];held.tpHit=[false];
@@ -966,11 +977,13 @@ export class PaperEngine extends EventEmitter {
     held.leverage=price*qty*held.contractValue/held.executionPlan!.referenceEquity;
     held.liqPrice=liquidationPrice('long',price,held.marginLeverage,cfg,held.maintenanceMarginPct);
     held.riskAmount=(price-sl)*qty*held.contractValue;held.fees+=fill.fee;held.fills.push(fill);
+    if(held.executionPlan!.basketAccountingVersion===2)held.riskAmount=aggregateRisk;
     // Excursions before a cost-basis change cannot be reinterpreted under the new risk distance.
     held.peakR=0;held.worstR=0;held.peakAt=fill.at;held.worstAt=fill.at;this.peakSeen.set(held.id,0);
     this.db.run("DELETE FROM positions WHERE id=? AND status='pending' AND bt=2",leg.id);
     this.db.run('UPDATE paper_execution_positions SET market_qty=?,desired_stop=NULL,ack_at=NULL WHERE position_id=? AND book=2',qty,held.id);
     this.persistFill(held,fill,context);this.recordBasketEntry(held,fill,context);this.persist(held);
+    recordFillBudget(this.db,held,this.book,cfg,'basket-add');
     this.emit('order',orderOf(held,fill));this.emit('position',{type:'updated',position:held});
     this.recordPath(held,leg.entryPrice,fill.at,'basket add','confirmed addition; shared bracket recalculated');
     return held;

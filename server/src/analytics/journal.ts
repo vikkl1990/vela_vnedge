@@ -135,6 +135,7 @@ export class Journal {
     return { row, signal, policy: rawPolicy ? { id: rawPolicy.id, strategyId: rawPolicy.strategy_id, sourceHash: rawPolicy.source_hash, snapshot: parsed(rawPolicy.snapshot) } : null,
       features: meta?.features ?? null, entryExecution: entry,
       entryFillEvidence,
+      basketEntries: this.db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='paper_basket_entries'") ? this.db.all<Raw>('SELECT sequence,at,qty,price,fee,signal_bar,plan_event_id,context FROM paper_basket_entries WHERE position_id=? ORDER BY sequence',id).map(x=>({...x,context:parsed(x.context)})) : [],
       orders: this.db.all('SELECT id,at,side,qty,price,fee,reason,price_source,ref_price,bid,ask,quote_at FROM orders WHERE position_id=? AND bt=? ORDER BY at,id', id, bt).map((o:any)=>({...o,liquidity:meta?.fills?.find((f:any)=>f.orderId===o.id)?.liquidity??null})),
       decisions: this.db.all('SELECT at,stage,reason,snapshot FROM decision_trace WHERE position_id=? AND book=? ORDER BY at,id', id, currentBook).map((r: any) => ({ ...r, snapshot: parsed(r.snapshot) })),
       pathCoverage: this.db.get('SELECT count(*) samples,min(at) fromAt,max(at) throughAt FROM position_path WHERE position_id=?', id),
