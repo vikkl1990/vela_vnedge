@@ -298,7 +298,11 @@ export function evaluate(store: IncubatorStore, cfg: AppConfig, now = Date.now()
     if (store.shadowHolds(r)) continue;
     const staleDays = inc.gate.staleDaysByTf?.[r.tf] ?? inc.gate.staleDays ?? 0;
     if (!(staleDays > 0)) continue;
-    const {trades:t,since} = store.shadowEvaluation(r,now);
+    const forward = store.shadowEvaluation(r,now), since = forward.since;
+    // Activity and performance are different questions. A recent executed trade under
+    // the previous policy is activity, but must never determine the current policy's PnL.
+    const t = forward.restoration ? forward.trades
+      : store.trades(r.scannerId,r.symbol,r.tf,2).filter(t=>t.entryAt>=since&&t.exitAt<now);
     // decision 184: a pair back from the account is given the stale cap from its demotion, not from an admission it has
     // been live since (the shadow runner does not trade a live cell, so its last shadow trade predates the whole stint)
     const lastAt = Math.max(since, store.lastDemotion(r.id)?.at ?? 0, ...t.map(x => x.entryAt));

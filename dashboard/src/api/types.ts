@@ -690,6 +690,7 @@ export interface RestorationView {
   seed?:{exact:number;compatible:number;netR:number};stats?:IncubatorStats;halves?:number[];stressedR?:number|null;invalidFills?:number
 }
 export interface IncubatorPair {
+  paperCopy?:{eligible:boolean;reason:string|null}|null
   restoration?:RestorationView|null
   collection?:{status:string;active:boolean;lastSuccessBar:number|null;nextCloseAt:number;
     scan:{bar_time:number;at:number;status:string;reason:string|null;last_success_bar:number|null;last_success_at:number|null;entry_signals:number}|null;
@@ -715,6 +716,7 @@ export interface CandidateBlockers {
   counts: { cooldown?: number; unavailable?: number; expired: number; stale: number; outside: number; refused: number; rescreen: number; capped: number; noSlot: number; cohort: number; admissible: number }
 }
 export interface IncubatorView {
+  paperCopy?:{enabled:boolean;eligible:number;at:number}
   capacity?: {total:number; used:number; free:number; overflow:number; general:{slots:number;used:number;free:number}; reserves:Array<{slots:number;used:number;free:number;tfs?:string[];markets?:string[]}>}
   rotation?: {enabled:boolean;maxPerDay:number;usedToday:number;last:Array<{at:number;out:number;in:number}>}
   candidates?: CandidateBlockers

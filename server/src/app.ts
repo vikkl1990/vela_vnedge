@@ -957,9 +957,12 @@ export class App {
       const key = `${r.scannerId}|${r.symbol}|${r.tf}`;
       const trades = judged ? this.incubatorStore.trades(r.scannerId, r.symbol, r.tf, book) : [];
       const restoration=this.incubatorStore.restoration(r,now);
+      const copyReason = r.stage === 'shadow' || r.stage === 'proposed'
+        ? this.incubatorStore.copyRefusal(r,cfg.incubator.mirror,markets.get(r.symbol)?.turnoverUsd??null,now,{readOnly:true}) : undefined;
       return {
         ...r, rotationUntil: r.stage === 'candidate' ? rotation.paused[r.id]?.until ?? null : null, proposedAt: proposedAt.get(r.id) ?? null, scannerName: names.get(r.scannerId) ?? r.scannerId,
         restoration,
+        paperCopy: copyReason === undefined ? null : {eligible:copyReason===null,reason:copyReason},
         collection: restoration?.startedAt ? this.incubator.collectionOf(r,restoration.startedAt,now) : null,
         admissionEvidence: r.screen ? admissionEvidence(r,cfg.incubator) : null,
         stats: judged ? pairStats(trades, r.since, now) : null,
@@ -974,6 +977,8 @@ export class App {
     });
     return {
       automation: this.evidenceReview.view(),
+      paperCopy: {enabled:Boolean(cfg.incubator.enabled&&cfg.incubator.mirror?.enabled&&cfg.execution.mode==='paper'),
+        eligible:pairs.filter(p=>p.paperCopy?.eligible).length,at:now},
       capacity: shadowCapacity(pairs.filter(r => r.stage === 'shadow' || r.stage === 'proposed'), cfg.incubator),
       rotation: { enabled: cfg.incubator.admit.rotation?.enabled ?? false, maxPerDay: cfg.incubator.admit.rotation?.maxPerDay ?? 0, usedToday: rotation.day === Math.floor(now / 86400_000) ? rotation.used : 0, last: rotation.last },
       enabled: cfg.incubator.enabled, config: cfg.incubator, counts: this.incubatorStore.counts(),

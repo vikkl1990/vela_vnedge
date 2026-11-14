@@ -87,12 +87,14 @@ export default function Incubator() {
             const groups = new Map<string, IncubatorPair[]>()
             for (const p of [...shadow, ...by('proposed')]) { const k = byCohort ? `${p.scannerId}|${p.tf}` : `pair:${p.id}`; groups.set(k, [...(groups.get(k) ?? []), p]) }
             return [...groups.entries()].map(([k, ps]) => {
-              const trades = ps.reduce((a, p) => a + (p.stats?.trades ?? 0), 0)
-              const netR = ps.reduce((a, p) => a + (p.stats?.netR ?? 0), 0)
-              const days = Math.max(0, ...ps.map((p) => p.stats?.days ?? 0))
+              const gate = ps.find((p) => p.gate)?.gate ?? null
+              // The gate owns the evidence sample. All-time journal results can contain
+              // older readers/fills and must not make its sample look complete.
+              const trades = gate?.stats?.trades ?? 0
+              const netR = gate?.stats?.netR ?? 0
+              const days = gate?.stats?.days ?? 0
               const pos = ps.filter((p) => (p.stats?.trades ?? 0) >= 3 && (p.stats?.avgR ?? 0) > 0).length
               const judged = ps.filter((p) => (p.stats?.trades ?? 0) >= 3).length
-              const gate = ps.find((p) => p.gate)?.gate ?? null
               const rate = days > 0 ? trades / days : 0
               // decision 196: the minimums of this timeframe, as the judge applies them (4h needs 45 days, not 14)
               const gg = gateFor(g, ps[0].tf)
@@ -120,6 +122,10 @@ export default function Incubator() {
                 </Callout>
               )}
               <PolicyHealthStatus />
+              {d.paperCopy && <div className="banner small" role="status">
+                <strong>{d.paperCopy.eligible} cells pass paper-copy checks</strong> · {d.paperCopy.enabled ? 'Copying enabled' : 'Copying off'}.
+                {' '}Full promotion is separate: {by('proposed').length} proposals waiting. A copy candidate still needs a new signal and must pass entry pricing, liquidity and account risk checks.
+              </div>}
 
               <ol className="inc-funnel" aria-label="Where pairs are in the pipeline">
                 <li><FunnelStage n="1" label="Candidates" value={candidates.length} sub={candidateLine(d.candidates, d.lastAdmit)} title={candidateHint(d.candidates)} on={tab === 'candidates'} onClick={() => set({ section: 'candidates' })} /></li>
@@ -206,7 +212,7 @@ export default function Incubator() {
                           <Fragment key={c.k}>
                             <tr className="cohort-row">
                               <th scope="rowgroup" colSpan={1}><Link to={`/scanners/${c.scannerId}`} className="strong">{c.scanner}</Link> <span className="mono muted">{c.tf}</span> <span className="muted small">· {byCohort ? `${c.members.length} markets` : <span className="mono">{c.symbol}</span>}</span>{!byCohort && c.members[0].stage === 'proposed' && <> <Pill tone="ok">proposed</Pill></>}{!byCohort && c.members[0].market && !c.members[0].market.allowed && <> <Pill tone="warn" title={c.members[0].market.reasons.join(' · ')}>market out</Pill></>}{c.gate?.strategyComparison && <> <Pill tone={c.gate.strategyComparison.preferred === 'script' ? 'ok' : 'muted'} title={c.gate.strategyComparison.reason}>{c.gate.strategyComparison.preferred === 'script' ? 'own exits' : 'fleet exits'}</Pill></>}</th>
-                              <td className="small"><Need have={c.trades} need={c.gg.minTrades} /> trades · <Need have={c.days} need={c.gg.minDays} /> days · <span className={`mono ${c.trades ? (c.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{c.trades ? fmtR(c.avgR) : '–'}</span>/trade · {byCohort ? (c.judged ? `${c.pos}/${c.judged} markets +` : 'no market judged') : `PF ${pf(c.members[0].stats?.pfR)}`}</td>
+                              <td className="small"><Need have={c.trades} need={c.gg.minTrades} /> trades · <Need have={c.days} need={c.gg.minDays} /> days · <span className={`mono ${c.trades ? (c.avgR >= 0 ? 'gain' : 'loss') : 'muted'}`}>{c.trades ? fmtR(c.avgR) : '–'}</span>/trade · {`PF ${pf(c.gate?.stats?.pfR)}`}<div className="muted">Current gate evidence</div>{!byCohort && c.members[0].paperCopy && <div title={c.members[0].paperCopy.reason??'Evidence and turnover pass; fresh signal and entry checks still required'}>{c.members[0].paperCopy.eligible ? 'Paper-copy candidate' : c.members[0].paperCopy.reason}</div>}</td>
                               <td className="small muted">{c.members.reduce((a, p) => a + (p.funnel?.entries ?? 0), 0)} signals · {c.members.reduce((a, p) => a + (p.funnel?.opened ?? 0), 0)} opened</td>
                               <td className="small"><Pill tone={c.gate?.decision === 'propose' ? 'ok' : c.gate?.decision === 'retire' ? 'danger' : 'muted'}>{c.gate?.decision ?? 'brewing'}</Pill> <span className="muted mono" title="Estimated time to trade-count and age minimums only, at the observed trade rate. Profitability and other gate requirements must also pass.">{c.gate?.decision === 'propose' ? 'gate passed' : c.eta === Infinity ? 'collecting evidence' : c.eta <= 0 ? 'sample minimums met' : `sample in ~${Math.ceil(c.eta)}d`}</span>{c.gate?.decision === 'brewing' && c.gate.reasons.length > 0 && <div className="muted">{c.gate.reasons.join('; ')}</div>}</td>
                               <td className="mono">{c.members.reduce((a, p) => a + (p.openShadow ?? 0), 0) || ''}</td>
