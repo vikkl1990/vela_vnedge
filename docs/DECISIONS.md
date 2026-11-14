@@ -7494,3 +7494,15 @@ not executable profitability. Nine additional regression tests cover extraction,
 geometry, causal execution, registry descriptions and rollout isolation. See
 [the validation record](research/native-contract-lifecycles-2026-11-14.md). Other
 readiness gaps stay visible and require their own tested correction.
+
+## 253. Research workspace views and truthful signal outcomes (14 November 2026)
+
+Signals, Scanners and Incubator were mixing operational logs, settings, evidence and diagnostics in long pages. Incubator duplicated the Decisions approval queue, Radar's market/timeframe links did not filter its tables, and grouped Signals counted pending orders as opened positions.
+
+- Signals separates account events, diagnostics and costs. Pending orders and interrupted receipts stay separate from actual opened/reversed entries; the grouped and summary fill counts agree. Global 24-hour activity is explicitly independent of the filtered 500-receipt window.
+- Scanners separates its directory, contract readiness and contributions. Fleet-wide controls move below the directory in a disclosure; permissions and confirmations are retained.
+- Incubator separates shadow evidence, candidates, account allocations, experiments and operations. Decisions is the proposal approval surface and owns re-judging. Pending demotions remain visible as account allocations, with a link to their proposal. Cohort filtering retains every member of a matching cohort.
+- Filters and sections use URL state; Back/Forward and old disclosure anchors work. Radar cell links carry the market and timeframe into the appropriate Incubator view. Trackers shows one research group at a time and separates paper account trials.
+- Decision clocks use current time, not the last screening timestamp. Shared navigation explains ownership without another control surface.
+
+Validation: dashboard outcome/navigation regressions; dashboard build, lint and server type check; browser checks with isolated synthetic fixtures for filters, history, old anchors, read-only permissions, pending fills, empty states and mobile layouts. No server trading logic, configuration, scanner reading, evidence policy, paper mode, $150 margin or risk cap changes.

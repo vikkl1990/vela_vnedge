@@ -1,4 +1,7 @@
-import { useMemo, useState } from 'react'
+import { Disclosure } from '../components/Disclosure'
+import { choice, researchHref } from '../lib/researchNavigation'
+import { useResearchFilters } from '../lib/useResearchFilters'
+import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { useRadar } from '../api/queries'
 import type { RadarCell, RadarMarket } from '../api/types'
@@ -22,11 +25,11 @@ function Cell({ c, symbol, tf, maxDensity }: { c: RadarCell | null; symbol: stri
   const peak = Math.max(1, ...c.bins.map((b) => Math.max(b.opened, b.stops)))
   return (
     <td className="radar-td">
-      <Link className={`radar-cell radar-l${level}`} to={`/incubator?symbol=${symbol}&tf=${tf}`} title={`${symbol} ${tf}: ${c.signals} account signals, ${c.shadowSignals} shadow signals, ${c.opened} entries, ${c.stops} stops, ${r1(c.netR)}R`}>
+      <Link className={`radar-cell radar-l${level}`} to={researchHref('/incubator', { symbol, tf, section: c.shadow > 0 ? 'shadow' : c.live > 0 ? 'account' : 'candidates' })} title={`${symbol} ${tf}: ${c.signals} account signals, ${c.shadowSignals} shadow signals, ${c.opened} entries, ${c.stops} stops, ${r1(c.netR)}R`}>
         <div className="radar-chips">
-          {c.live > 0 && <span className="radar-chip radar-live">{c.live} live</span>}
-          {c.shadow > 0 && <span className="radar-chip radar-shadow">{c.shadow}</span>}
-          {c.candidate > 0 && <span className="radar-chip radar-cand">{c.candidate}</span>}
+          {c.live > 0 && <span className="radar-chip radar-live">{c.live} account</span>}
+          {c.shadow > 0 && <span className="radar-chip radar-shadow">{c.shadow} shadow</span>}
+          {c.candidate > 0 && <span className="radar-chip radar-cand">{c.candidate} candidates</span>}
           {c.tracked > 0 && <span className="radar-chip radar-trk">{c.tracked} tracked</span>}
         </div>
         <div className="radar-spark" aria-hidden="true">
@@ -47,10 +50,11 @@ function Cell({ c, symbol, tf, maxDensity }: { c: RadarCell | null; symbol: stri
 }
 
 export default function Radar() {
-  const [hours, setHours] = useState(24)
-  const [group, setGroup] = useState<'all' | 'majors' | 'alts'>('all')
-  const [sort, setSort] = useState<'turnover' | 'signals' | 'netR' | 'pairs'>('turnover')
-  const [onlyActive, setOnlyActive] = useState(true)
+  const { params, set } = useResearchFilters()
+  const hours = Number(choice(params.get('hours'), ['6', '24', '72', '168'], '24'))
+  const group = choice(params.get('group'), ['all', 'majors', 'alts'], 'all')
+  const sort = choice(params.get('sort'), ['turnover', 'signals', 'netR', 'pairs'], 'turnover')
+  const onlyActive = params.get('active') !== '0'
   const q = useRadar(hours)
   const view = useMemo(() => {
     const v = q.data
@@ -67,7 +71,6 @@ export default function Radar() {
   return (
     <>
       <PageTitle pre="Signal" accent="radar" sub={<>Where the scanners sit and what they produce, market × timeframe, last {hours} h. A cell's shade is entries per pair; bars are entries up and stops down; a quiet cell names what silenced it. Filled activity combines account and ordinary shadow trades; experimental plans and unfilled orders are excluded.</>} />
-      <PairAgentsPanel />
       <QueryState {...q} data={view ?? undefined} empty="No markets in the book." onRetry={() => q.refetch()}>
         {(v) => (
           <>
@@ -81,14 +84,14 @@ export default function Radar() {
               ) })}
             </div>
             <Panel title={`${v.markets.length} markets`} pad={false} right={
-              <span className="row gap small">
-                <select className="select select-sm" value={hours} onChange={(e) => setHours(Number(e.target.value))} aria-label="Window">{[6, 24, 72, 168].map((h) => <option key={h} value={h}>{h < 48 ? `${h} h` : `${h / 24} d`}</option>)}</select>
-                <select className="select select-sm" value={group} onChange={(e) => setGroup(e.target.value as typeof group)} aria-label="Markets"><option value="all">All markets</option><option value="majors">Majors</option><option value="alts">Alts</option></select>
-                <select className="select select-sm" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Sort"><option value="turnover">By turnover</option><option value="signals">By signals</option><option value="netR">By net R</option><option value="pairs">By pairs</option></select>
-                <label className="small muted"><input type="checkbox" checked={onlyActive} onChange={(e) => setOnlyActive(e.target.checked)} /> active only</label>
+              <span className="row gap small research-inline-filters">
+                <select className="select select-sm" value={hours} onChange={(e) => set({ hours: e.target.value })} aria-label="Window">{[6, 24, 72, 168].map((h) => <option key={h} value={h}>{h < 48 ? `${h} h` : `${h / 24} d`}</option>)}</select>
+                <select className="select select-sm" value={group} onChange={(e) => set({ group: e.target.value })} aria-label="Markets"><option value="all">All markets</option><option value="majors">Majors</option><option value="alts">Alts</option></select>
+                <select className="select select-sm" value={sort} onChange={(e) => set({ sort: e.target.value })} aria-label="Sort"><option value="turnover">By turnover</option><option value="signals">By signals</option><option value="netR">By net R</option><option value="pairs">By pairs</option></select>
+                <label className="small muted"><input type="checkbox" checked={onlyActive} onChange={(e) => set({ active: e.target.checked ? null : '0' })} /> active only</label>
               </span>
             }>
-              <div className="table-wrap"><table className="table small radar-table">
+              <div className="table-wrap"><table className="table small radar-table"><caption className="sr-only">Market coverage by timeframe; signals are separate from fills</caption>
                 <thead><tr><th>Market</th>{v.tfs.map((tf) => <th key={tf}>{tf}</th>)}</tr></thead>
                 <tbody>{v.markets.map((m) => (
                   <tr key={m.symbol}>
@@ -97,6 +100,7 @@ export default function Radar() {
                   </tr>
                 ))}</tbody>
               </table></div>
+              {v.markets.length === 0 && <p className="empty">No markets match. Try All markets or turn off active only.</p>}
             </Panel>
             <div className="radar-legend small muted">
               <span><span className="radar-chip radar-live">live</span> the account trades it</span>
@@ -109,6 +113,7 @@ export default function Radar() {
           </>
         )}
       </QueryState>
+      <Disclosure id="pair-agents" title="Pair coverage agents" hint="Inspect pair coverage and advisory allocation work"><PairAgentsPanel /></Disclosure>
     </>
   )
 }
