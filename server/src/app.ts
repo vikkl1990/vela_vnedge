@@ -1,4 +1,5 @@
 import {candleReplayBlock} from './paper/basket.ts';
+import {copyRecoveryRefusal} from './incubator/copyRecovery.ts';
 import {bindScalperConnection} from './connections/scalperOffer.ts';
 import {productFees,withProductFees} from './paper/productFees.ts';
 import {currentPolicyIds,policyHealth} from './analytics/policyHealth.ts';
@@ -212,6 +213,7 @@ export class App {
     this.enricher = new FeatureEnricher(this.db, this.candles);
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.scanners.executorAttached = () => Boolean(this.executor);
+    this.scanners.copyRecoveryRefusal = cell => copyRecoveryRefusal(this.incubatorStore,cfg().incubator.mirror,cell);
     this.resolvedSymbols = cfg().symbols;
     this.planComparisons = new PlanComparisons(this.db,cfg,this.shadow,id=>this.sourceHashFor(id));
     this.incubator = new ShadowRunner({

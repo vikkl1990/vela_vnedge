@@ -7669,3 +7669,27 @@ with current-policy observations; eight had positive current results. Their smal
 samples do not establish future profit or authorize promotion. Prior retirements
 return only through fresh screening and available shadow capacity. See
 `research/paper-qualification-audit-2026-11-14.md` for scope and evidence.
+
+## 263. Retain fresh paper entries during transient exchange recovery (14 November 2026)
+
+Five copied entries were permanently rejected between 08:01:08 and 08:01:17 UTC
+while the exchange feed reconnected and its product-status catalogue refreshed.
+Existing resting orders already waited through these transient conditions. New
+receipts now wait too, using the durable signal inbox, only in paper mode without
+an exchange executor. Disconnection, awaiting a system snapshot and stale product
+status are retryable; maintenance and product halts remain definitive refusals.
+
+Waiting creates no position, order or capacity reservation. It never extends the
+existing receipt-recovery deadline (at most 60 seconds). Recovery uses fresh prices
+and depth and reruns the normal admission path, including signal age, fees, regime,
+size and risk gates. Copy entries additionally recheck their current allocation,
+turnover, exact-policy evidence and restoration status before and after asynchronous
+preparation and at allocation. Missing evidence resolution fails closed. Exits do
+not wait for entry recovery. Historical rejected receipts remain final.
+
+No source/reader identity, evidence threshold, execution-plan policy, account
+setting or risk cap changes. Nine fills from eight of the 28 candidates in the
+last 24 hours establish that copying is working; the seven candle-model maker
+fills are not proof of queue execution on the exchange. Recovering a fresh
+decision is a reliability correction, not a demonstrated profit-factor increase.
+See `research/paper-copy-fills-2026-11-14.md` for all 28 cells and limitations.
