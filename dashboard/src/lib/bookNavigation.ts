@@ -19,3 +19,11 @@ export function scopeLocation(pathname: string, search: string, hash: string, sc
   }
   return { pathname, search: `?${p}`, hash }
 }
+
+/** Pin an implicit selection into this history entry without discarding journal filters. */
+export function rememberScopeLocation(pathname: string, search: string, hash: string, scope: BookScope) {
+  const p = new URLSearchParams(search)
+  if (p.has('bookScope')) return null
+  p.set('bookScope', scope)
+  return { pathname, search: `?${p}`, hash }
+}

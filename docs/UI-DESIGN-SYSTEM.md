@@ -64,8 +64,8 @@ one, never a page of its own.
 - `lib/books.ts` holds the model as pure, tested functions: `ladderOf` places a strategy from its incubator stages
   and trades, `nextStep` says the next step in a sentence, `inScope` filters by book.
 - `lib/bookScope.tsx` keeps the **book scope** (All, Live, Paper, Shadow, Backtest) and the **ML lens** for the whole
-  dashboard. The scope is remembered and can be set from a link with `?book=paper`. The book switch and the lens sit in
-  the top bar; Live shows `off` until real money is armed.
+  dashboard. The scope is remembered and is recorded in each history entry with `?bookScope=paper` (legacy book links on Home, Strategies and Trades remain supported). The book switch and the lens sit in
+  the top bar; Live reports the actual runtime transport state and shows unknown when that status is unavailable.
 - `components/kit/books.tsx` has `BookChip`, `BookDot`, `BookCard`, `LadderPips`, `BookSwitch` and `MlLensToggle`.
   Each book has a colour (`--book-live`, `--book-paper`, `--book-shadow`, `--book-backtest`, `--book-ml`) and a second
   cue that is not colour: shadow is dashed, backtest is hatched, live carries a state word.

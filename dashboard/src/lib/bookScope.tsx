@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { parseScope, type BookScope } from './books'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { scopeFromLocation, scopeLocation } from './bookNavigation'
+import { scopeFromLocation, scopeLocation, rememberScopeLocation } from './bookNavigation'
 
 const SCOPE_KEY = 'vnedge.book'
 const LENS_KEY = 'vnedge.mllens'
@@ -39,6 +39,10 @@ export function BookProvider({ children }: { children: ReactNode }) {
   const scope = scopeFromLocation(location.pathname, location.search, remembered)
   // Derive from each route synchronously, including client links and browser history.
   if (scope !== remembered) setRemembered(scope)
+  useEffect(() => {
+    const pinned = rememberScopeLocation(location.pathname, location.search, location.hash, scope)
+    if (pinned) navigate(pinned, { replace: true })
+  }, [navigate, location.pathname, location.search, location.hash, scope])
   const [mlLens, setLens] = useState<boolean>(readLens)
   useEffect(() => {
     try { localStorage.setItem(SCOPE_KEY, scope) } catch { /* ignore */ }
