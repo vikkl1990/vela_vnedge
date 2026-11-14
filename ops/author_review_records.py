@@ -26,7 +26,11 @@ def load_records(directory, repo):
             if r.get('status') == 'blocked':
                 if not r.get('blocker'):
                     raise ValueError(f'Blocked review requires a reason: {key}')
-                blocked[key] = {'blocker': r['blocker'], 'checkedAt': r.get('reviewedAt')}
+                checked = r.get('checkedAt') or r.get('reviewedAt')
+                timestamp = datetime.datetime.fromisoformat((checked or '').replace('Z', '+00:00'))
+                if timestamp.tzinfo is None or timestamp > datetime.datetime.now(datetime.timezone.utc):
+                    raise ValueError(f'Blocked review requires an actual timezone-aware check: {key}')
+                blocked[key] = {'blocker': r['blocker'], 'checkedAt': checked}
                 continue
             if r.get('status') != 'reviewed':
                 raise ValueError(f'Unknown review status: {key}')

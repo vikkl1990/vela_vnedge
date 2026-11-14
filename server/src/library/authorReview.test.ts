@@ -95,3 +95,30 @@ test('catalogue links every manifest entry, retains separate verified authors an
   assert.equal(ladder.author, 'wielkieef', 'the import feed is not the author');
   assert.match(c.scripts['rsi-volume-ladder'].integrationNotes.join(' '), /ignores same-direction adds/);
 });
+
+test('every retained publication has a reconciled review or an explicit dated blocker', () => {
+  const c = authorReviewCatalog();
+  const manifest = JSON.parse(fs.readFileSync(path.join(SCRIPTS_DIR, 'manifest.json'), 'utf8')) as Array<{ id: string; file: string; status: string; author: string }>;
+  for (const s of manifest.filter(s => s.status !== 'removed')) {
+    const key = c.scripts[s.id]?.publication;
+    if (!key) {
+      assert.equal(s.author, 'operator', `${s.id}: missing external publication identity`);
+      assert.match(s.file, /^OPERATOR\d+-/, s.id);
+      continue; // Local strategies have source contracts, not external author pages.
+    }
+    const p = c.publications[key];
+    if (p.reviewBlocker) {
+      assert.ok(p.reviewBlocker.blocker.trim(), s.id);
+      assert.ok(Number.isFinite(Date.parse(p.reviewBlocker.checkedAt ?? '')), `${s.id}: undated blocker`);
+      assert.equal(p.reviewedAt, null, `${s.id}: blocked is not reconciled`);
+    } else {
+      assert.ok(p.retrievedAt && p.reviewedAt && p.summary && p.requirements, `${s.id}: author review unfinished`);
+      assert.equal(p.reviewVersion, p.version, s.id);
+      assert.equal(p.reviewUpdatedAt, p.updatedAt, s.id);
+      if (p.reconciliation?.sourceChecked) {
+        const hash = createHash('sha256').update(fs.readFileSync(path.join(SCRIPTS_DIR, 'pine', s.file))).digest('hex');
+        assert.equal(p.reconciliation.sourceHashes[s.file], hash, `${s.id}: reconciliation source drift`);
+      }
+    }
+  }
+});
