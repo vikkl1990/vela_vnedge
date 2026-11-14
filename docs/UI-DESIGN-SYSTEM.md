@@ -54,6 +54,29 @@ Density (`comfortable` / `compact`) changes `--pad-*` and `--gap-page`, not the 
 A page must work at 1440, 1024 and 390 px with no horizontal page scroll (tables scroll inside their own wrapper), and
 every control needs a visible label or an `aria-label`.
 
+## The four books and the ladder
+
+The dashboard reads the product as four **books** on one **ladder**: **Backtest** (history), **Shadow** (research trades
+on live prices, never money), **Paper** (the simulated account) and **Live** (real money, off until every go-live
+check passes). A strategy climbs one step at a time. **ML is a lens**, an optional model score on any number that has
+one, never a page of its own.
+
+- `lib/books.ts` holds the model as pure, tested functions: `ladderOf` places a strategy from its incubator stages
+  and trades, `nextStep` says the next step in a sentence, `inScope` filters by book.
+- `lib/bookScope.tsx` keeps the **book scope** (All, Live, Paper, Shadow, Backtest) and the **ML lens** for the whole
+  dashboard. The scope is remembered and can be set from a link with `?book=paper`. The book switch and the lens sit in
+  the top bar; Live shows `off` until real money is armed.
+- `components/kit/books.tsx` has `BookChip`, `BookDot`, `BookCard`, `LadderPips`, `BookSwitch` and `MlLensToggle`.
+  Each book has a colour (`--book-live`, `--book-paper`, `--book-shadow`, `--book-backtest`, `--book-ml`) and a second
+  cue that is not colour: shadow is dashed, backtest is hatched, live carries a state word.
+- Rule for every new number: it says which book it comes from, and it comes from an existing hook. Where the data does
+  not exist yet the page says so instead of showing a placeholder.
+
+The sidebar groups the pages as **Work** (Home, Workspace, Strategies, Decisions, Trades), **Markets** (Signals, Radar,
+Trade health, Chart), **Lab** (Lab, Scanners, Library, Incubator, Trackers, Performance, Daily, Learn) and **Control**
+(Live control, Gates, Exchange, Settings, Logs). Strategies is the front door to the Scanners, Library and Incubator
+views of the same script.
+
 ## Moving around
 
 - **⌘K / Ctrl+K** or `/` opens the command palette: pages, actions and every scanner. Actions that change anything
