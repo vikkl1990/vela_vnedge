@@ -7595,3 +7595,23 @@ unchanged equity-risk limits through smaller positions. The next implementation 
 high-impact adapters and attach exact-version causal mechanics proofs before broader shadow rollout.
 
 Validation: 1,402 server tests, server typecheck and four author-record checks pass. The export CLI is exercised end to end against a read-only SQLite connection, including private output permissions, tamper detection and overwrite refusal. A 30-day production-data snapshot was exported without changing the VM service or configuration.
+
+
+## 260. Preserve native shadow entries while a real close is pending (14 November 2026)
+
+Six validated native research scanners receive a new execution snapshot version.
+Structure-Anchored VWAP 2.0, Synapse Trail Pro and Liquidity Trail Matrix gain the
+causal reversal wait already present on Reactive Trail and Reaction Level Matrix.
+All six, including STRAT Trap, may retain a same-side entry only after a full
+native close has already been requested. Partial targets and stop amendments do
+not permit pyramiding. The replacement waits for all actual close fills, retains
+its original expiry, and rechecks every entry and risk constraint at fill time.
+A refused entry does not withdraw the independent author close. Restart cancels
+unfilled market entries and retains durable exits.
+
+This changes six existing experimental plan signatures, with no extra plan slots.
+Held snapshots and ordinary scanner identities remain unchanged. No changes to
+account reading, sizing, margin, fee gate, risk caps, or promotion/copy evidence.
+The retained candle mechanics comparison shows 15 completed trades in each arm,
+not a demonstrated profit or fill-count uplift; forward shadow evidence is required.
+See [the scoped validation](research/native-reentry-corrections-2026-11-14.md).
