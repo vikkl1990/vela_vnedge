@@ -50,16 +50,21 @@ export class PlanComparisons {
       UNIQUE(plan_id,source_event))`);
     db.run('CREATE INDEX IF NOT EXISTS idx_plan_events_scanner ON execution_plan_events(scanner_id,at)');
     db.run('CREATE TABLE IF NOT EXISTS execution_plan_scans(scanner_id TEXT NOT NULL,bar_at INTEGER NOT NULL,at INTEGER NOT NULL,entries INTEGER NOT NULL,exits INTEGER NOT NULL,drops TEXT NOT NULL,PRIMARY KEY(scanner_id,bar_at))');
+    // A basket add fills into its existing position, not the temporary pending id.
+    // Recover its event join from the same-transaction per-leg ledger after a crash.
+    db.run(`UPDATE execution_plan_events SET position_id=(SELECT b.position_id FROM paper_basket_entries b WHERE b.plan_event_id=execution_plan_events.id),
+      filled_at=(SELECT b.at FROM paper_basket_entries b WHERE b.plan_event_id=execution_plan_events.id),action='opened',reason=NULL
+      WHERE action IN ('processing','pending') AND id IN (SELECT plan_event_id FROM paper_basket_entries WHERE plan_event_id IS NOT NULL)`);
     // Recover the join if a process stopped between the atomic position write and the event update.
     db.run(`UPDATE execution_plan_events SET position_id=(SELECT p.id FROM positions p
       WHERE p.bt=2 AND json_extract(p.fills,'$.features.plan_event_id')=execution_plan_events.id LIMIT 1)
       WHERE action='processing' AND position_id IS NULL`);
     db.run("UPDATE execution_plan_events SET action='interrupted', reason='process stopped during admission; inspect linked position' WHERE action='processing'");
     db.run("UPDATE execution_plan_events SET action='cancelled',reason='pending order removed during restart' WHERE action='pending' AND position_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM positions p WHERE p.id=execution_plan_events.position_id)");
-    paper.on('order',(o:{positionId:number;reason:string;at:number})=>{
+    paper.on('order',(o:{positionId:number;reason:string;at:number;planEventId?:number})=>{
       if(o.reason!=='entry')return;
-      const p=paper.position(o.positionId),id=p?.features?.plan_event_id;
-      if(id)db.run("UPDATE execution_plan_events SET position_id=?,filled_at=?,action='opened' WHERE id=?",o.positionId,o.at,id);
+      const p=paper.position(o.positionId),id=o.planEventId??p?.features?.plan_event_id;
+      if(id)db.run("UPDATE execution_plan_events SET position_id=?,filled_at=?,action='opened',reason=NULL WHERE id=?",o.positionId,o.at,id);
     });
     paper.on('pending',(e:{type:string;id?:number;reason?:string})=>{
       if(e.type==='cancelled'&&e.id!==undefined)db.run("UPDATE execution_plan_events SET action='cancelled',reason=? WHERE position_id=?",e.reason??'cancelled',e.id);
@@ -142,7 +147,8 @@ export class PlanComparisons {
       const p=JSON.parse(row.snapshot) as ExecutionPlanSnapshot;
       const events=this.db.all<any>('SELECT e.*,p.status,p.realized_pnl,p.fees,p.risk_amount,p.exit_reason,p.exit_at FROM execution_plan_events e LEFT JOIN positions p ON p.id=e.position_id AND p.bt=2 WHERE e.scanner_id=? ORDER BY e.at',row.scanner_id);
       eventsByCohort.set(row.scanner_id,events);
-      const closed=events.filter(e=>e.status==='closed').sort((a,b)=>a.exit_at-b.exit_at);
+      const positions=[...new Map(events.filter(e=>e.status==='open'||e.status==='closed').map(e=>[e.position_id,e])).values()];
+      const closed=positions.filter(e=>e.status==='closed').sort((a,b)=>a.exit_at-b.exit_at);
       let balance=0,peak=0,drawdown=0;
       for(const e of closed){balance+=e.realized_pnl-e.fees;peak=Math.max(peak,balance);drawdown=Math.max(drawdown,peak-balance);}
       const reasons:Record<string,number>={};
@@ -150,17 +156,17 @@ export class PlanComparisons {
       const gains=closed.map(e=>e.realized_pnl-e.fees).filter(n=>n>0),losses=closed.map(e=>e.realized_pnl-e.fees).filter(n=>n<0);
       const avgWin=gains.length?gains.reduce((a,b)=>a+b,0)/gains.length:null,avgLoss=losses.length?losses.reduce((a,b)=>a+b,0)/losses.length:null;
       const scans=this.db.get<{n:number;last:number|null}>('SELECT count(*) n,max(at) last FROM execution_plan_scans WHERE scanner_id=?',row.scanner_id)!;
-      return {executionVersion:p.executionVersion??null,readingVersion:p.readingOverride?.version??null,scans:scans.n,lastScanAt:scans.last,id:p.id,label:p.label??p.id,comparison:p.comparison,revision:p.revision,signature:p.signature,sourceScannerId:p.sourceScannerId,takeProfitLabel:takeProfitLabel(p),symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
+      return {partialExitVersion:p.partialExitVersion??null,executionVersion:p.executionVersion??null,readingVersion:p.readingOverride?.version??null,scans:scans.n,lastScanAt:scans.last,id:p.id,label:p.label??p.id,comparison:p.comparison,revision:p.revision,signature:p.signature,sourceScannerId:p.sourceScannerId,takeProfitLabel:takeProfitLabel(p),symbol:p.symbol,tf:p.tf,variant:p.variant,firstAt:row.first_at,
         referenceEquity:p.referenceEquity,margin:p.paper.marginPerTrade,leverage:p.paper.marginLeverage?.base,
         maxStopLossPct:p.paper.maxStopLossPct,avgWin,avgLoss,winRate:closed.length?gains.length/closed.length:null,
         payoffRatio:avgWin!==null&&avgLoss!==null?avgWin/-avgLoss:null,
         breakEvenWinRate:avgWin!==null&&avgLoss!==null?-avgLoss/(avgWin-avgLoss):null,
         signals:events.length,placed:events.filter(e=>e.position_id!==null).length,
-        filled:events.filter(e=>e.status==='open'||e.status==='closed').length,
-        pending:events.filter(e=>e.status==='pending').length,open:events.filter(e=>e.status==='open').length,
+        filled:positions.length,filledEntries:events.filter(e=>e.status==='open'||e.status==='closed').length,
+        pending:events.filter(e=>e.status==='pending').length,open:positions.filter(e=>e.status==='open').length,
         closed:closed.length,stops:closed.filter(e=>e.exit_reason==='sl').length,net:balance,fees:closed.reduce((n,e)=>n+e.fees,0),
         avgR:closed.length?closed.reduce((n,e)=>n+(e.risk_amount>0?(e.realized_pnl-e.fees)/e.risk_amount:0),0)/closed.length:null,
-        drawdown,reasons,positionIds:events.filter(e=>e.status==='open'||e.status==='closed').slice(-5).reverse().map(e=>e.position_id as number)};
+        drawdown,reasons,positionIds:positions.slice(-5).reverse().map(e=>e.position_id as number)};
     });
     const comparisons=[];
     for(const group of new Set(configured.filter(p=>p.comparison).map(p=>p.comparison!.group))){

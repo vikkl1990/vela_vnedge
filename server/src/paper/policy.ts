@@ -46,6 +46,7 @@ export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { exec
 
 /** Everything a backtest needs to trade a scanner the way `book` trades it today. */
 export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number; productFees?:ProductFees } = {}) {
+  if(scannerId==='rsi-volume-ladder-basket')throw Error('basket execution requires stateful shadow replay; single-position candle backtest is unsupported');
   const sc: Partial<ScannerConfig> = cfg.scanners[scannerId] ?? {};
   return {
     // Scoped replay version: changes only native author research, preserving other

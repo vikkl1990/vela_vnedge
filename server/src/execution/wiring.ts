@@ -159,7 +159,7 @@ export function wireRealtime(app: App): void {
   app.feed.on('trade', (t: WsTrade) => { depth.onTrade(t);
     const receivedAt = Date.now();
     replay.record(t.symbol,'trade',t,receivedAt,'execution-feed');
-    if (isExecutableTrade(t, receivedAt)) { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs, receivedAt); }
+    if (isExecutableTrade(t, receivedAt)) { app.tapeAudit.onTrade(t); for (const b of books) b.onTrade(t.symbol, t.price, t.qty, t.timeMs, receivedAt, t.id); }
     else replay.record(t.symbol,'trade_rejected',{reason:tradeRefusal(t,receivedAt),eventAt:t.timeMs,ageMs:receivedAt-t.timeMs},receivedAt,'execution-feed');
     try { flow.onTrade(t); } catch(e:any) { log.warn(`order flow print: ${e.message}`); }
   });

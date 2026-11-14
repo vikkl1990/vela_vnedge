@@ -112,5 +112,11 @@
     "base": "breaker-blocks-with-signals",
     "name": "Breaker Blocks | confirmed retests",
     "why": "The author permits entries only on breaker-block retests. Read exact signal UP/DN conditions, excluding block formation, reset, mitigation and swing-level context. PD targets and midpoint invalidation are not encoded as native orders here; exits remain bot policy with separate evidence. A source-pinned drawing-method compatibility adapter restores missing geometry only for this variant; the legacy scanner is unchanged."
+  },
+  {
+    "id": "rsi-volume-ladder-basket",
+    "base": "rsi-volume-ladder",
+    "name": "RSI Volume Ladder | basket research",
+    "why": "Opt-in experimental basket adapter. Up to three actual-fill entries share one $150 margin budget and the existing stop-risk cap. Candidate marker excludes the Pine broker simulator state; production orders are not supported."
   }
 ]

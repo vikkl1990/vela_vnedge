@@ -1,0 +1,56 @@
+{
+  "verifiedAt": "2026-11-14T07:22:18.943Z",
+  "scope": "mechanics only: synthetic OHLC tape/depth, NOT profitability or executable historical fills",
+  "sourceHash": "d27a58fbf2a53db503d89a2c02dc726b17f0bdccbd9575b244d517d15e130edb",
+  "bars": 1000,
+  "from": 1792665900000,
+  "to": 1793565000000,
+  "candidates": 25,
+  "prefixChecks": 25,
+  "restarts": 7,
+  "cohort": {
+    "filled": 2,
+    "filledEntries": 3,
+    "closed": 1,
+    "open": 1
+  },
+  "orders": 4,
+  "receipts": [
+    {
+      "id": 1,
+      "status": "closed",
+      "qty": 20,
+      "realized_pnl": -19.608351000000038,
+      "fees": 0.5403802406699999,
+      "legs": 2
+    },
+    {
+      "id": 3,
+      "status": "open",
+      "qty": 11,
+      "realized_pnl": 0,
+      "fees": 0.143288912052,
+      "legs": 1
+    }
+  ],
+  "eventsByAction": [
+    {
+      "action": "opened",
+      "reason": null,
+      "n": 3
+    },
+    {
+      "action": "rejected",
+      "reason": "basket: author cooldown after confirmed close",
+      "n": 2
+    },
+    {
+      "action": "rejected",
+      "reason": "basket: needs a fresh drop greater than 1.5% from the last fill",
+      "n": 20
+    }
+  ],
+  "maxMargin": 93.5507064,
+  "maxRisk": 19.63950658388003,
+  "eligible": 0
+}

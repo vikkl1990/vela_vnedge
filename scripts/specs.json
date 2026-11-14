@@ -1003,5 +1003,54 @@
     },
     "edge": false,
     "exitMode": "levels"
+  },
+  "rsi-volume-ladder-basket": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "VNEDGE RSI volume candidate"
+    ],
+    "sides": {
+      "VNEDGE RSI volume candidate": "long"
+    },
+    "edge": false,
+    "exitMode": "levels",
+    "entryProtection": "native",
+    "entryExecution": "market",
+    "exit": {
+      "scriptTargets": "use",
+      "tpSplit": [
+        1,
+        0,
+        0
+      ],
+      "floorAtR": 0,
+      "trailAfterR": 0,
+      "staleBars": 0,
+      "earlyCut": {
+        "minutes": 0,
+        "r": -1
+      },
+      "earlyStall": {
+        "minutes": 0,
+        "minR": 0,
+        "maxR": 1
+      },
+      "breakEvenAfterTp1": false,
+      "trendExit": {
+        "enabled": false,
+        "emaLen": 20,
+        "minR": 1
+      },
+      "structureTrail": {
+        "enabled": false,
+        "pivot": 2,
+        "incrPct": 0,
+        "books": []
+      }
+    }
   }
 }

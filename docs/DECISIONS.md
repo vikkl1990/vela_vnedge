@@ -7331,3 +7331,54 @@ Publish the completed records in Library and the searchable research index. Sepa
 This completion release changes research metadata, validation and presentation only. No reader, Pine source, execution path, scanner activation, evidence identity or configuration changes. The tested corrections from decisions246/247 remain isolated: five experimental shadow plans are running within the existing30-plan limit; other tested profiles await capacity. Unimplemented basket, stop-entry, scale-out, external-series and per-pattern lifecycle work remains explicit in each record. Review completion neither enables those strategies nor certifies execution parity or profitability. Paper mode, $150 margin, risk caps and evidence rules stay unchanged.
 
 Validation: all 1,317 server tests, 25 dashboard tests and three receipt-validator tests pass, along with server type checking and dashboard lint/build. The report JavaScript parses, all 2,638 report rows reconcile to the manifest, and source contracts plus scanner-to-publication links are unchanged from the deployed baseline. An independent reviewer caught and corrected the local-operator/publication distinction before release.
+
+### 249. Shadow basket entries and quantity-aware author exits (2026-11-14)
+
+RSI Volume Ladder's Pine broker state is not our position state. Its reviewed source
+permits three long legs, a strict 1.5% drop from the previous entry, a 4% target from
+average cost, and a stop 3% below the lowest entry. The separate, disabled
+`rsi-volume-ladder-basket` variant exposes only its RSI/volume candidate; the
+hash-guarded adapter leaves the base source/reader unchanged. Its experimental
+`basket: "rsi-volume-ladder-v1"` execution plan owns spacing, cooldown and the
+confirmed-fill lifecycle. Generic single-position backtests explicitly refuse it.
+
+One basket is one position and journal trade. Three allocations share the existing
+$150 margin budget (up to $50 per leg); sizing rechecks the *aggregate* configured
+stop-risk ceiling, including entry/exit costs and adverse funding. Additional
+entries cannot spend another $150, reuse an already consumed signal bar, reverse,
+add after any exit, replace a breached stop, or survive a restart as invented fills.
+The weighted basis and shared bracket change only on confirmed fills; fees, exact
+entry context and the add-to-position join commit atomically. Risk distances and
+excursion tracking rebase after a confirmed addition. The shared bracket remains a
+paper engine instruction with causal exit latency, not a claim that a native OCO
+order has been installed on Delta. Existing account and shadow positions retain
+their frozen policies.
+
+A separate prospective `partialExitVersion: 1` is included in the identity of new
+native-author shadow cohorts (reader 3) and basket plans. Previously a script's
+TP2/TP3 notification could lose all but the first leg in the causal-exit conversion;
+the completed first target was not marked hit. The new durable request queue keeps
+each requested leg, uses each notification's own arrival time, marks completion
+only from reported quantity, and acknowledges break-even only after TP1 is filled.
+A stop or full close arriving during a partial TP is retained with its original
+arrival deadline and takes priority over later targets. Resting target fills remain
+a through-price queue approximation, now bounded by observed contracts and deduped
+by trade ID (or a conservative time/price/size key) across restarts. Neither candle
+extremes nor chart labels create retrospective fills. Market exits use subsequent
+executable depth, with taker fees and tax; resting exits use their maker fee.
+
+Promotion/copying/sizing evidence rules are unchanged: all these positions retain
+`experiment` scope. No account reader, paper-mode setting, margin, risk cap, offer
+setting or research capacity is changed. The three existing native-author plans
+receive new prospective execution identities; other plans retain theirs. Basket
+continuous activation awaits a free research slot: the VM already has all 30
+configured slots occupied. No plan is silently removed and capacity is not raised.
+
+Validation: baseline-vs-corrected partial-target regression; quantity conservation,
+fees, aggregate budget, stop during TP, restart and database-failure tests; real
+Pine candidate/prefix checks. The saved ETH 15m candle simulation in
+`docs/research/basket-execution-validation-2026-11-14.json` checks lifecycle mechanics
+using synthetic OHLC observations/depth, **not historical executable P&L or profit
+improvement**. Its 25 candidates produce three filled entries in two baskets, with
+seven restarts and zero eligible promotion trades. This is sufficient for deploying
+the isolated execution adapter, not for admitting the basket to the account.
