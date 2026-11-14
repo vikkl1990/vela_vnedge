@@ -9,6 +9,8 @@ import {PaperEngine} from './engine.ts';
 import {PlanComparisons,type ComparisonScan} from './planComparisons.ts';
 import {eligibleEvidence} from '../evidence/trades.ts';
 import {AUTHOR_SHADOW_PLANS,enableAuthorShadow} from '../../../ops/enable-author-shadow.ts';
+import {planBacktest,planSnapshot} from './executionPlans.ts';
+import {backtestPolicy} from './policy.ts';
 
 function fixture(t:any){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'author-shadow-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
@@ -28,7 +30,12 @@ test('author shadow activation is atomic, idempotent, confined to free research 
  assert.deepEqual(next.executionPlans.slice(0,25),raw.executionPlans);
  assert.equal(enableAuthorShadow(file).changed,false);
  const cfg=new ConfigStore(file).get();
- for(const p of AUTHOR_SHADOW_PLANS)assert.equal(cfg.scanners[p.scannerId].enabled,false);
+ for(const p of AUTHOR_SHADOW_PLANS){
+  assert.equal(cfg.scanners[p.scannerId].enabled,false);
+  const version=cfg.scanners[p.scannerId].reader===3?'after-close-v1':undefined;
+  assert.equal(planBacktest(planSnapshot(cfg,p,'source')).scriptStopAmendments,version);
+  assert.equal(backtestPolicy(cfg,p.scannerId,p.tf,'shadow').scriptStopAmendments,version);
+ }
  next.executionPlans[29].label='operator edit';fs.writeFileSync(file,JSON.stringify(next));
  assert.throws(()=>enableAuthorShadow(file),/will not be overwritten/);
  next.executionPlans=raw.executionPlans.concat({...raw.executionPlans[0],id:'occupied-slot-26'});fs.writeFileSync(file,JSON.stringify(next));
@@ -65,4 +72,39 @@ test('native author lifecycle runs in experimental shadow, retains stop acknowle
  assert.equal(paper.openPositions().length,0);
  assert.equal(db.get<any>(`SELECT count(*) n FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id WHERE ${eligibleEvidence}`)!.n,0);
  assert.ok(db.all<any>('SELECT evidence_scope FROM positions').every(p=>p.evidence_scope==='experiment'));
+});
+
+test('the corrected signal readers enter isolated shadow plans with unchanged margin and risk ceilings',t=>{
+ const {file}=fixture(t),cfg=new ConfigStore(file).get(),T=1800000000000,H=900000;
+ Object.assign(cfg.paper,{fillSource:'tape',latencyMs:100,slippageBps:0,quotedSlippageBps:0,useSpread:false,requireQuote:false,maxSignalAgeSec:0,liquidation:false});
+ const cases=[
+  {id:'false-breakout-expo-author-signals',channel:'alertcondition',label:'False Breakout Down'},
+  {id:'adaptive-smart-money-liquidity-sweep-levels-author-signals',channel:'alertcondition',label:'Lower Liquidity Wick Sweep'},
+  {id:'zero-lag-ma-trend-levels-author-retests',channel:'label',label:'▲'},
+  {id:'swing-failure-zones-and-signals-author-signals',channel:'shape',label:'Bullish Signal'},
+  {id:'zone-shift-author-retests',channel:'label',label:'⯁'},
+  {id:'breaker-blocks-with-signals-author-retests',channel:'alertcondition',label:'2. signal UP'},
+ ];
+ cfg.executionPlans=cases.map((c,i)=>({id:`author-followup-${i}`,revision:1,enabled:true,scannerId:c.id,symbol:'ETHUSD',tf:'15m',variant:'current',referenceEquity:1000,readingOverride:{version:1}}));
+ const db=new Db(':memory:');t.after(()=>db.db.close());let now=T;
+ const engine=new PaperEngine(db,()=>cfg,{book:2,now:()=>now});engine.causalExits=true;engine.sourceHashFor=()=> 'source';
+ const service=new PlanComparisons(db,()=>cfg,engine,()=> 'source');
+ const bars=Array.from({length:60},(_,i)=>({time:T-(60-i)*H,open:100,high:101,low:99,close:100,volume:1000}));
+ for(const c of cases){
+  const result:ComparisonScan['result']={id:1,ok:true,ms:1,bars:60,lastBarTime:T-H,warnings:0,alerts:[],shapes:[],labels:[],plots:[]};
+  if(c.channel==='alertcondition')result.alerts=[{type:'alertcondition',title:c.label,message:c.label,time:T-H,barIndex:59}];
+  if(c.channel==='shape')result.shapes=[{title:c.label,times:[T-H]}];
+  if(c.channel==='label')result.labels=[{text:c.label,style:'style_label_up',time:T-2*H,createdAt:T-H,y:100}];
+  const input:ComparisonScan={scannerId:c.id,scannerName:c.id,symbol:'ETHUSD',tf:'15m',patched:'source',since:T-H,newLabelKeys:new Set(),bars,market:{tickSize:.01,contractValue:.01},at:now,refPrice:100,refusal:()=>null,result};
+  service.observeScan(input);service.observeScan(input);
+ }
+ assert.equal(engine.pendingEntries().length,cases.length);assert.equal(engine.openPositions().length,0);
+ now=T+100;engine.onTrade('ETHUSD',100,1e6,now,now);
+ assert.equal(engine.openPositions().length,cases.length);
+ for(const p of engine.openPositions()){
+  assert.equal(p.side,'long');assert.equal(p.executionPlan!.paper.marginPerTrade,150);
+  assert.ok(p.riskAmount<=30);assert.ok(p.fills[0].fee>0);
+  assert.equal(p.executionPlan!.paper.scalperOffer?.enabled,false);
+ }
+ assert.equal(db.get<any>(`SELECT count(*) n FROM positions p LEFT JOIN trade_policies t ON t.id=p.policy_id WHERE ${eligibleEvidence}`)!.n,0);
 });

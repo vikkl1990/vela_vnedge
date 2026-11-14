@@ -44,7 +44,7 @@ export class ContributionService {
   detail(id:string){
     const s=this.a.registry.get(id);if(!s)return null;
     const sc=this.a.config.get().scanners[id];
-    return {id,name:s.name,url:s.url,...this.source(id),reading:{sources:sc?.sources??null,labels:sc?.labels??null,rule:sc?.rule??null,inputs:sc?.inputs??{},edge:sc?.edge??null,invert:sc?.invert??false,sides:sc?.sides??null,timezone:sc?.timezone??'Etc/UTC'},
+    return {id,name:s.name,url:s.url,...this.source(id),reading:{sources:sc?.sources??null,labels:sc?.labels??null,rule:sc?.rule??null,inputs:sc?.inputs??{},edge:sc?.edge??null,invert:sc?.invert??false,sides:sc?.sides??null,labelStyles:sc?.labelStyles??null,timezone:sc?.timezone??'Etc/UTC'},
       profiles:this.a.profiles.forScanner(id).map(p=>({...p,evidence:evidenceState(p,profileSignature(s,sc,p.tf))}))};
   }
   private async build(now:number){

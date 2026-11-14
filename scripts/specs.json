@@ -368,8 +368,15 @@
     ]
   },
   "role-reversal": {
-    "sources": ["alertcondition"],
-    "labels": ["Flip Held as Support", "Flip Held as Resistance", "Failed Flip (Bearish)", "Failed Flip (Bullish)"],
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Flip Held as Support",
+      "Flip Held as Resistance",
+      "Failed Flip (Bearish)",
+      "Failed Flip (Bullish)"
+    ],
     "sides": {
       "resistance broken": "none",
       "support broken": "none",
@@ -891,6 +898,110 @@
       "Sell-Side Imbalance": "long"
     },
     "edge": true,
+    "exitMode": "levels"
+  },
+  "false-breakout-expo-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "False Breakout Up",
+      "False Breakout Down"
+    ],
+    "sides": {
+      "False Breakout Up": "short",
+      "False Breakout Down": "long"
+    },
+    "edge": true,
+    "exitMode": "levels"
+  },
+  "adaptive-smart-money-liquidity-sweep-levels-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "Upper Liquidity Wick Sweep",
+      "Lower Liquidity Wick Sweep"
+    ],
+    "sides": {
+      "Upper Liquidity Wick Sweep": "short",
+      "Lower Liquidity Wick Sweep": "long"
+    },
+    "edge": false,
+    "exitMode": "levels"
+  },
+  "zero-lag-ma-trend-levels-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "label"
+    ],
+    "labels": [
+      "▲",
+      "▼"
+    ],
+    "sides": {
+      "▲": "long",
+      "▼": "short"
+    },
+    "inputs": {
+      "show_levl": true
+    },
+    "exitMode": "levels"
+  },
+  "swing-failure-zones-and-signals-author-signals": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "shape"
+    ],
+    "labels": [
+      "Bullish Signal",
+      "Bearish Signal"
+    ],
+    "sides": {
+      "Bullish Signal": "long",
+      "Bearish Signal": "short"
+    },
+    "edge": false,
+    "exitMode": "levels"
+  },
+  "zone-shift-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "label"
+    ],
+    "labels": [
+      "⯁"
+    ],
+    "labelStyles": {
+      "⯁": {
+        "style_label_up": "long",
+        "style_label_down": "short"
+      }
+    },
+    "exitMode": "levels"
+  },
+  "breaker-blocks-with-signals-author-retests": {
+    "enabled": false,
+    "reader": 2,
+    "sources": [
+      "alertcondition"
+    ],
+    "labels": [
+      "2. signal UP",
+      "2. signal DN"
+    ],
+    "sides": {
+      "2. signal UP": "long",
+      "2. signal DN": "short"
+    },
+    "edge": false,
     "exitMode": "levels"
   }
 }

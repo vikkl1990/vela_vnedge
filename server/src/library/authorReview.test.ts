@@ -23,8 +23,10 @@ test('source changes hide obsolete entry conditions and claims; matching filenam
   assert.equal(stale.sourceStatus, 'changed'); assert.equal(stale.contract, null);
   const unknown = authorReview({ ...script, id: 'unknown' }, {}, c);
   assert.equal(unknown.sourceStatus, 'unreviewed'); assert.equal(unknown.contract, null);
-  const alias = authorReview({ ...script, id: 'variant', variantOf: 'test' }, {}, c);
+  const alias = authorReview({ ...script, id: 'variant', variantOf: 'test', variantReason: 'Read confirmed retests only' }, {}, c);
   assert.equal(alias.sourceStatus, 'matches');
+  assert.deepEqual(alias.variant,{base:'test',reason:'Read confirmed retests only'});
+  assert.equal(authorReview(script,{},c).variant,null);
   assert.equal(authorReview({ ...script, file: 'another.pine' }, {}, c).sourceStatus, 'unreviewed');
 });
 

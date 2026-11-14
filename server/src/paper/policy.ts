@@ -48,6 +48,9 @@ export function entryPolicy(cfg: AppConfig, tf: string, book: Book, opts: { exec
 export function backtestPolicy(cfg: AppConfig, scannerId: string, tf: string, book: Book, opts: { executor?: boolean; now?: number; productFees?:ProductFees } = {}) {
   const sc: Partial<ScannerConfig> = cfg.scanners[scannerId] ?? {};
   return {
+    // Scoped replay version: changes only native author research, preserving other
+    // scanners' screening signatures and evidence identities.
+    ...(sc.reader===3?{scriptStopAmendments:'after-close-v1' as const}:{}),
     cfg: withProductFees(scannerEntryConfig({...bookPaperConfig(cfg, book),...(opts.executor || cfg.execution.mode!=='paper' ? {reclaimTrials:undefined} : {})},sc,tf),opts.productFees,opts.productFees?.symbol??''),
     ...(opts.productFees?{productFees:opts.productFees}:{}),
     entryProtection: sc.entryProtection,

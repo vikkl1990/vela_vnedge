@@ -2,7 +2,7 @@
 import {withProductFees,type ProductFees} from './productFees.ts';
 import { createHash } from 'node:crypto';
 import type { AppConfig, PaperConfig, ExitMode, ScannerConfig } from '../config.ts';
-import {readerContractError} from '../scanners/readerFixes.ts';
+import {readerContractError,labelStyleContractError} from '../scanners/readerFixes.ts';
 import {willyNativeReady} from '../scanners/willyContracts.ts';
 import {CAUSAL_EXIT_VERSION} from './exitExecution.ts';
 import {scannerEntryConfig} from './entryProtection.ts';
@@ -29,7 +29,7 @@ export interface ProfitCapturePlan {
 }
 export interface PlanComparison { group: string; role: 'control' | 'candidate' }
 /** Interpretation only: changing Pine inputs or trading rules requires a different experiment. */
-export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'invert'|'edge'>;
+export type ReadingOverride = {version:number} & Pick<Partial<ScannerConfig>,'reader'|'sources'|'labels'|'sides'|'labelStyles'|'invert'|'edge'>;
 export interface ExecutionPlan {
   id: string; revision: number; enabled: boolean;
   scannerId: string; symbol: string; tf: string;
@@ -109,6 +109,7 @@ export function planEvents(events: ScanEvent[], bars: Bar[], p: ExecutionPlanSna
 export function planBacktest(p: ExecutionPlanSnapshot) {
   const le=p.paper.limitEntry;
   return {cfg:p.paper,exitMode:p.exitMode,scannerExitResolved:true as const,requireAtrStop:p.requireAtrStop,
+    ...(p.reading?.reader===3?{scriptStopAmendments:'after-close-v1' as const}:{}),
     executionPlan:p,entry:le?.enabled?{pullbackAtr:le.atr,pullbackBars:le.bars,limitWhenFlatOnly:true as const}:undefined};
 }
 export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: Record<string,number>): string[] {
@@ -121,10 +122,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     if(!p)continue;ids.add(p.id);
     if(p.readingOverride!==undefined){
       const r=p.readingOverride;
-      if(!r||!Number.isInteger(r.version)||r.version<1||Object.keys(r).some(k=>!['version','reader','sources','labels','sides','invert','edge'].includes(k))||p.variant!=='current')errors.push(`executionPlans.${p.id}: invalid reading version or override`);
+      if(!r||!Number.isInteger(r.version)||r.version<1||Object.keys(r).some(k=>!['version','reader','sources','labels','sides','labelStyles','invert','edge'].includes(k))||p.variant!=='current')errors.push(`executionPlans.${p.id}: invalid reading version or override`);
       if(r?.reader===3&&!willyNativeReady(p.scannerId))errors.push(`executionPlans.${p.id}: reader 3 requires a validated Willy adapter or non-trading role`);
       if(r?.reader===3&&r.invert)errors.push(`executionPlans.${p.id}: native reader cannot invert its contract`);
       const readerError=readerContractError(p.scannerId,r?.reader,r?.sides);if(readerError)errors.push(`executionPlans.${p.id}: ${readerError}`);
+      const styleError=labelStyleContractError(r?.reader,r?.labelStyles);if(styleError)errors.push(`executionPlans.${p.id}: ${styleError}`);
       if(r?.reader!==undefined&&![1,2,3].includes(r.reader))errors.push(`executionPlans.${p.id}: invalid reader`);
       if(r?.sources!==undefined&&(!Array.isArray(r.sources)||r.sources.some(v=>!['alert','alertcondition','shape','derived','label'].includes(v))))errors.push(`executionPlans.${p.id}: invalid reading sources`);
       if(r?.labels!==undefined&&(!Array.isArray(r.labels)||r.labels.some(v=>typeof v!=='string'||!v.trim())))errors.push(`executionPlans.${p.id}: invalid reading labels`);

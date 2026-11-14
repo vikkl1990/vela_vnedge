@@ -76,5 +76,41 @@
     "base": "liquidity-void-detector-zeiierman",
     "name": "Liquidity Void Detector | refill direction (research)",
     "why": "Author and raw source describe Buy-Side Imbalance as downward refill and Sell-Side Imbalance as upward refill. This tests that direction separately; threshold observations are a hypothesis, not a complete author trading strategy. Bot exits and independent evidence are required."
+  },
+  {
+    "id": "false-breakout-expo-author-signals",
+    "base": "false-breakout-expo",
+    "name": "False Breakout | failed-break direction",
+    "why": "Alert names describe the failed breakout, not the trade: failed up is short and failed down is long. Exact source conditions, separate evidence; bot-managed exits are research assumptions."
+  },
+  {
+    "id": "adaptive-smart-money-liquidity-sweep-levels-author-signals",
+    "base": "adaptive-smart-money-liquidity-sweep-levels",
+    "name": "Adaptive Smart Money Liquidity | wick sweeps",
+    "why": "Upper wick sweeps are bearish and lower wick sweeps bullish. Only confirmed wick-sweep alerts qualify; detection, removal, mass liquidation and depth-balance alerts remain context. Bot-managed exits are research assumptions."
+  },
+  {
+    "id": "zero-lag-ma-trend-levels-author-retests",
+    "base": "zero-lag-ma-trend-levels",
+    "name": "Zero-Lag MA Trend Levels | confirmed retests",
+    "why": "Read only the author's up/down box retest labels, at their creation bar rather than previous-bar drawing position. Cross diamonds are context. Separate evidence with bot-managed exits, not an author-native exit lifecycle."
+  },
+  {
+    "id": "swing-failure-zones-and-signals-author-signals",
+    "base": "swing-failure-zones-and-signals",
+    "name": "Swing Failure Zones | authored reversal signals",
+    "why": "The source reuses its Swing Failure alert titles for zone mitigation. Read only the actual Bullish/Bearish Signal shapes, which implement the authored sweep and opposite-extreme close. Management stays bot-defined and evidence separate."
+  },
+  {
+    "id": "zone-shift-author-retests",
+    "base": "zone-shift",
+    "name": "Zone Shift | confirmed retest diamonds",
+    "why": "The same diamond glyph means long below a bullish bar and short above a bearish bar. Read only exact label_up/label_down styles on their confirmed creation bar. Unknown styles do not enter; bot-managed exits and separate evidence remain required."
+  },
+  {
+    "id": "breaker-blocks-with-signals-author-retests",
+    "base": "breaker-blocks-with-signals",
+    "name": "Breaker Blocks | confirmed retests",
+    "why": "The author permits entries only on breaker-block retests. Read exact signal UP/DN conditions, excluding block formation, reset, mitigation and swing-level context. PD targets and midpoint invalidation are not encoded as native orders here; exits remain bot policy with separate evidence. A source-pinned drawing-method compatibility adapter restores missing geometry only for this variant; the legacy scanner is unchanged."
   }
 ]

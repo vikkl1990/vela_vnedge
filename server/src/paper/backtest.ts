@@ -40,6 +40,9 @@ export interface BacktestInput {
   /** Account-only plan restriction. Shadow may measure native plans without making them account eligible. */
   requireAtrStop?: boolean;
   entryProtection?: EntryProtection;
+  /** Versioned native-reader research only. Amend at the close, after that bar's path;
+   * candle replay cannot reproduce the live engine's sub-bar acknowledgement latency. */
+  scriptStopAmendments?: 'after-close-v1';
   /** The market's maintenance margin and leverage ceiling (Delta's product record); the config's figures when absent. */
   maintenanceMarginPct?: number; maxLeverage?: number;
   /** This scanner's trend-gate mode; defaults to `cfg.trendGate.mode` when the gate is on. */
@@ -98,6 +101,7 @@ export interface BacktestInput {
 
 export interface BacktestResult {
   version: number;
+  scriptStopAmendments?: 'after-close-v1';
   at: number; bars: number; from: number; to: number; signals: number; entries: number;
   stats: ReturnType<typeof computeStats> & { pnlPct: number; open: number };
   trades: Array<ReturnType<typeof tradeOf> & {setupAt: number}>;
@@ -345,11 +349,14 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     const evs = byBar.get(bar.time);
     if (!evs) continue;
     for (const ev of evs) {
-      if (ev.kind === 'exit' && inp.exitMode !== 'levels' && reclaim && (!ev.side || ev.side === reclaim.ev.side)) { flow('script cancelled setup'); reclaim = null; }
+      const amendment = ev.exitType === 'stop_update' && inp.scriptStopAmendments === 'after-close-v1';
+      if (ev.kind === 'exit' && !amendment && inp.exitMode !== 'levels' && reclaim && (!ev.side || ev.side === reclaim.ev.side)) { flow('script cancelled setup'); reclaim = null; }
       if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
         // Script messages are market instructions after the close; resting targets already had their chance in the price path.
         const type = ev.exitType ?? 'close';
-        applyScriptExit(open, type, undefined, bar.time + tfMs, cfg, inp.exitMode, bar.close, { marketPrice: bar.close, quoted: false });
+        // An amendment supplies a new resting level, not an execution price. Other script
+        // messages still execute at the current close, never at a retrospective target.
+        applyScriptExit(open, type, amendment ? ev.price : undefined, bar.time + tfMs, cfg, inp.exitMode, bar.close, { marketPrice: bar.close, quoted: false });
         if (open.status === 'closed') finish(open);
       }
     }
@@ -417,6 +424,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   stats.open = open ? 1 : 0;
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
+    ...(inp.scriptStopAmendments?{scriptStopAmendments:inp.scriptStopAmendments}:{}),
     version: SIMULATION_VERSION, costCoverage: { ...(inp.productFees&&!inp.executionPlan?{feeSchedule:{...inp.productFees,basis:'current-product-scenario' as const}}:{}), crossing: inp.spreadPct && inp.spreadPct > 0 ? 'observed' : 'fallback', funding: cfg.fundingCharges === false ? 'disabled' : inp.funding ? 'provided' : 'not-modelled', depthImpact: (cfg.depthUsdPerBp ?? 0) > 0 ? 'modelled' : 'not-modelled', feeWaiver: feeOffer==='exchange-verified'?'verified-from':feeOffer==='enrollment-recorded'?'enrollment-dated':feeOffer }, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
     stats, trades: closed.map(p => ({...tradeOf(p), setupAt: setupTimes.get(p.id)!})).reverse(), equity: curve, rejected, ...(inp.entry?.reclaim || trial ? {entryFlow: {...entryFlow, pendingAtEnd: reclaim ? 1 : 0}} : {}),
   };
