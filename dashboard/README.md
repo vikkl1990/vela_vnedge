@@ -1,6 +1,6 @@
 # VNEdge dashboard
 
-Local trading-terminal UI for the VNEdge paper-trading bot (42 Pine scanners on Delta India).
+Local trading-terminal UI for the VNEdge paper-trading bot (Pine scanners on Delta India).
 Vite 7 + React 19 + TypeScript. Charts: `@luxalgo/vela` (+ `@luxalgo/vela-pinets` for
 on-chart Pine scripts) and `recharts` for equity/PnL. Data via the REST + SSE contract in
 `../docs/API.md`.
@@ -48,11 +48,30 @@ src/
   api/        types.ts (API.md mirror) · client.ts (typed fetch) · queries.ts (React Query hooks)
   sse/        bus.ts (typed event bus) · SSEProvider.tsx (EventSource + backoff + cache updates)
   chart/      deltaProvider.ts (Vela DataProvider over /api/candles + SSE) · VelaChart.tsx · FallbackChart.tsx
-  components/ Layout, DataTable, PositionsTable, TickerTape, AlertsFeed, charts (recharts), ui primitives, Icons
-  pages/      Overview, Scanners, ScannerDetail, Signals, Trades, ChartPage, Settings, Logs
-  lib/        format.ts, timeframes.ts, categories.ts, toast.tsx, theme.tsx, useNow.ts
-  app.css     design tokens + all styling (dark default, light via toggle)
+  components/
+    shell/    the frame around every page: nav.ts + navModel.ts (the pages as data), Sidebar, Topbar, AccountMenu, CommandPalette
+    kit/      page-level building blocks: PageHeader, Tabs/TabPanel, Callout, Stat/StatGrid, Sparkline, EmptyState, Section, Toolbar
+    …         Layout, DataTable, PositionsTable, TickerTape, AlertsFeed, charts (recharts), ui primitives, Icons
+  pages/      one file per route, loaded on first visit (see App.tsx)
+  styles/     tokens → base → shell → components → kit → polish → pages (imported in that order from main.tsx)
+  lib/        format.ts, timeframes.ts, commandSearch.ts, hotkeys.ts, toast.tsx, theme.tsx, useNow.ts
 ```
+
+## Design system
+
+Everything visual comes from `styles/tokens.css` (colour, type scale, spacing, radius, elevation, motion; dark by
+default, light via `[data-theme='light']`). Components never hard-code a colour. Page layouts are built from the kit in
+`components/kit`: a `PageHeader` (plain title and one sentence of context), a `StatGrid` of `Stat`s for the headline
+numbers, `Callout` for anything that needs a sentence, `Tabs` to keep a long page to one primary view, `Toolbar` for
+filters and `EmptyState` for "nothing here, and why". Page-specific CSS lives in `styles/pages/<page>.css`, imported by
+the page. See [docs/UI-DESIGN-SYSTEM.md](../docs/UI-DESIGN-SYSTEM.md).
+
+## Navigating
+
+Press **⌘K / Ctrl+K** (or `/`) to jump to any page or scanner, or to run an action such as switching theme.
+`g` then a letter goes to a page (`g o` Overview, `g s` Scanners …; `?` lists them all), `[` collapses the sidebar,
+`t` toggles the theme and `d` the row density. The sidebar groups the pages as Trade, Research and Control; Profile
+and Users are in the account menu at the top right.
 
 ## Charting notes
 

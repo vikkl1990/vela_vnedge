@@ -50,6 +50,8 @@ jobs:
       - run: npm ci
       - name: Lint
         run: npm run lint --workspace=dashboard
+      - name: Unit tests
+        run: node --no-warnings --test dashboard/test/*.test.ts
       - name: Build
         run: npm run build --workspace=dashboard
       - uses: actions/upload-artifact@v4

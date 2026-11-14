@@ -1,5 +1,5 @@
 import type { MarketVerdict } from '../api/types'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useEquity, useHealth, useLearning, useMarketsToday, useOps, useOpsMetricsHistory, usePositions, useRefreshMarketsToday, useRisk, useScannerIndex, useSignalActivity, useSignals, useStats } from '../api/queries'
 import { AlertsFeed } from '../components/AlertsFeed'
@@ -7,7 +7,10 @@ import { EquityChart, Sparkline } from '../components/charts'
 import { ScannerPnlBoard, type ScannerPnlRow } from '../components/ScannerPnlBoard'
 import { PositionsTable } from '../components/PositionsTable'
 import { TickerTape } from '../components/TickerTape'
-import { ErrorState, KpiTile, Loading, PageTitle, Panel, Pill, QueryState } from '../components/ui'
+import { BookBadge, ErrorState, Loading, Panel, Pill, QueryState } from '../components/ui'
+import { Callout, PageHeader, Stat, StatGrid, TabPanel, Tabs } from '../components/kit'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api/client'
 import { fmtInt, fmtMoney, fmtProfitFactor, fmtPct, fmtPnl, fmtR, pnlClass } from '../lib/format'
 import { RunHealthPanel } from '../components/RunHealthPanel'
 
@@ -54,38 +57,55 @@ export function Overview() {
   const activity = useSignalActivity()
   const signals24 = activity.data?.entries
 
+  const eqSpark = useMemo(() => (equity.data ?? []).slice(-120).map((p) => p.equity), [equity.data])
+  const [tab, setTab] = useState<'scanners' | 'system' | 'markets'>('scanners')
+  const health = useHealth()
+
   return (
     <div className="page overview-page">
+      <PageHeader
+        title="Overview"
+        subtitle={scanners.data ? `Paper account on Delta India data; fills and P&L are simulated. ${visibleScanners} scripts in the library, ${(scanners.data ?? []).filter((x) => x.enabled).length} enabled on the account. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'}
+        meta={health.data ? <BookBadge book="account" mode={health.data.mode} /> : undefined}
+        actions={<Link to="/trades" className="btn btn-sm">Trade journal →</Link>}
+      />
       <TickerTape />
-      <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={scanners.data ? `Paper account on Delta India data; fills and P&L simulated. ${visibleScanners} scripts in the visible library, ${(scanners.data ?? []).filter(s => s.enabled).length} account-enabled. The shadow book and backtests never touch it.` : 'Paper account on Delta India data. The shadow book and backtests never touch it.'} />
-      <AttentionBanner />
+      <NeedsYou />
 
       {stats.isLoading && !s && <Loading kind="kpi" rows={3} />}
       {stats.isError && !s && <ErrorState error={stats.error} onRetry={() => stats.refetch()} />}
       {s && (
         <>
-          <div className="hero-grid">
-            <KpiTile
+          <StatGrid min={250}>
+            <Stat
               label="Equity (USD)"
               value={fmtMoney(s.equity, 2)}
-              tone={day ? (pnlClass(day.pnl) as 'gain' | 'loss' | 'neutral') : 'neutral'}
-              sub={<span>{day ? <span className={pnlClass(day.pnl)}>{fmtPnl(day.pnl)} since 00:00 UTC</span> : null}<span className="muted"> · net {fmtPnl(net)} on {fmtMoney(s.initialEquity, 0)} · drawdown −{fmtPct(s.drawdownPct)} from the peak</span></span>}
+              tone={day ? (day.pnl > 0 ? 'gain' : day.pnl < 0 ? 'loss' : undefined) : undefined}
+              spark={eqSpark}
+              sub={<span>{day ? <span className={pnlClass(day.pnl)}>{fmtPnl(day.pnl)} since 00:00 UTC</span> : null}<span> · net {fmtPnl(net)} on {fmtMoney(s.initialEquity, 0)} · {fmtPct(s.drawdownPct)} below the peak</span></span>}
             />
-            <KpiTile
-              label="Open PnL (USD)"
+            <Stat
+              label="Open P&L (USD)"
               value={fmtPnl(s.openPnl)}
-              tone={pnlClass(s.openPnl) as 'gain' | 'loss' | 'neutral'}
-              hint="Open positions: banked legs, fees and mark"
-              sub={<span className="muted">{s.openPositions} open · {fmtPct(openRiskPct)} of equity in initial stop-risk budgets{s.openFees ? ` · fees so far ${fmtMoney(s.openFees)}` : ''}</span>}
+              tone={s.openPnl > 0 ? 'gain' : s.openPnl < 0 ? 'loss' : undefined}
+              title="Open positions: banked legs, fees and mark"
+              sub={`${s.openPositions} open${s.openFees ? ` · fees so far ${fmtMoney(s.openFees)}` : ''}`}
             />
-            <KpiTile
-              label="Markets the gate allows today"
+            <Stat
+              label="Open risk"
+              value={fmtPct(openRiskPct)}
+              tone={openRiskPct >= 8 ? 'warn' : undefined}
+              title="Stored initial stop-risk budgets of open positions; current stops may already have moved"
+              sub={`of equity in initial stop-risk budgets across ${s.openPositions} position${s.openPositions === 1 ? '' : 's'}`}
+            />
+            <Stat
+              label="Markets the gate allows"
               value={mt ? (mt.enabled ? `${allowedN} of ${tracked.length}` : 'gate off') : '–'}
-              tone={mt?.enabled && allowedN === 0 ? 'loss' : 'neutral'}
-              hint="The market gate's verdict: turnover, book cost and quote, judged every hour"
-              sub={<span className="muted"><span title={activity.data ? `Journal count as of ${new Date(activity.data.at).toISOString()}` : 'Loading journal count'}>{signals24 ?? '–'} signals reached account admission in 24 h</span> · <Link to="/signals">{activity.data?.copyHeld ?? '–'} held before admission</Link> · <Link to="/gates">every gate</Link></span>}
+              tone={mt?.enabled && allowedN === 0 ? 'loss' : undefined}
+              title="The market gate's verdict: turnover, book cost and quote, judged every hour"
+              sub={<span><span title={activity.data ? `Journal count as of ${new Date(activity.data.at).toISOString()}` : 'Loading journal count'}>{signals24 ?? '–'} signals reached admission in 24 h</span> · <Link to="/signals">{activity.data?.copyHeld ?? '–'} held</Link> · <Link to="/gates">every gate</Link></span>}
             />
-          </div>
+          </StatGrid>
           <EdgeVerdictLine />
           <div className="stat-strip" role="list" aria-label="Secondary figures">
             <span role="listitem"><span className="stat-k">Closed</span> <span className={`mono ${pnlClass(s.closedPnl)}`}>{fmtPnl(s.closedPnl)}</span> <span className="muted">fees {fmtMoney(s.closedFees)}</span></span>
@@ -118,79 +138,107 @@ export function Overview() {
             {(d) => <EquityChart data={d} height={240} baseline={s?.initialEquity} />}
           </QueryState>
         </Panel>
-        <Panel
-          title="Live signals"
-          right={
-            <Link to="/signals" className="btn btn-xs">
-              All signals →
-            </Link>
-          }
-          pad={false}
-        >
+        <Panel title="Live signals" right={<Link to="/signals" className="btn btn-xs">All signals →</Link>} pad={false}>
           <QueryState {...signals} data={signals.data} empty="No signals yet." hint="No recorded events yet. Check scheduled pairs and signal conditions on Scanners." skeleton="cards" skeletonRows={4} onRetry={() => signals.refetch()}>
             {(d) => <AlertsFeed signals={d} limit={15} />}
           </QueryState>
         </Panel>
       </div>
 
-      <div className="grid-2-1">
-        <Panel title="PnL by scanner" right={<span className="muted small">since the reset · click a row for the scanner</span>}>
-          {stats.isLoading && !s ? <Loading kind="chart" height={240} /> : <ScannerPnlBoard rows={pnlRows} />}
-        </Panel>
-        <AlertsStatusLine />
-        <SystemPanel />
-        <RunHealthPanel />
+      {/* the long tail of the old page, one tab at a time instead of one long scroll */}
+      <Tabs
+        idPrefix="ov"
+        label="More about the account"
+        value={tab}
+        onChange={setTab}
+        items={[
+          { id: 'scanners', label: 'By scanner', count: pnlRows.length || undefined },
+          { id: 'system', label: 'System' },
+          { id: 'markets', label: 'Markets today', count: mt?.enabled ? `${allowedN}/${tracked.length}` : undefined },
+        ]}
+      />
+      <TabPanel idPrefix="ov" id="scanners" value={tab}>
+        <div className="grid-2-1">
+          <Panel title="PnL by scanner" right={<span className="muted small">since the reset · click a row for the scanner</span>}>
+            {stats.isLoading && !s ? <Loading kind="chart" height={240} /> : <ScannerPnlBoard rows={pnlRows} />}
+          </Panel>
+          <FleetPanel />
+        </div>
+      </TabPanel>
+      <TabPanel idPrefix="ov" id="system" value={tab}>
+        <div className="grid-2">
+          <SystemPanel />
+          <div className="stack">
+            <AlertsStatusLine />
+            <RunHealthPanel />
+          </div>
+        </div>
+      </TabPanel>
+      <TabPanel idPrefix="ov" id="markets" value={tab}>
         <MarketsTodayPanel />
-        <Panel title="Scanner fleet">
-          <QueryState {...scanners} data={scanners.data} empty="No scanners loaded." hint="Drop .pine files into the scanners folder and restart the server." onRetry={() => scanners.refetch()}>
-            {(d) => {
-              const ok = d.filter((x) => !x.hidden && x.status === 'ok').length
-              const en = d.filter((x) => x.enabled).length
-              const err = d.filter((x) => x.enabled && !x.hidden && x.lastRunError).length
-              const removed = d.filter((x) => x.hidden).length
-              return (
-                <div className="fleet">
-                  <div className="fleet-row" title="The same count as the Scanners page: loaded scripts minus the removed ones">
-                    <span>In the list</span>
-                    <span className="mono">{d.length - removed}</span>
-                  </div>
-                  <div className="fleet-row">
-                    <span>Removed</span>
-                    <span className="mono muted">{removed}</span>
-                  </div>
-                  <div className="fleet-row">
-                    <span>Runnable in visible library</span>
-                    <span className="mono gain">{ok}</span>
-                  </div>
-                  <div className="fleet-row">
-                    <span>Account-enabled scanners</span>
-                    <span className="mono accent">{en}</span>
-                  </div>
-                  <div className="fleet-row">
-                    <span>Incompatible in visible library</span>
-                    <span className="mono loss">{d.filter((x) => !x.hidden && x.status === 'incompatible').length}</span>
-                  </div>
-                  <div className="fleet-row">
-                    <span>Unavailable in visible library</span>
-                    <span className="mono warn">{d.filter((x) => !x.hidden && x.status === 'unavailable').length}</span>
-                  </div>
-                  <div className="fleet-row">
-                    <span>Enabled scanners with last-run errors</span>
-                    <span className={`mono ${err ? 'loss' : ''}`}>{err}</span>
-                  </div>
-                  <Link to="/scanners" className="btn btn-sm mt">
-                    Manage scanners
-                  </Link>
-                </div>
-              )
-            }}
-          </QueryState>
-        </Panel>
-      </div>
+      </TabPanel>
     </div>
   )
 }
 
+/** Scanner counts at a glance, with the way into the Scanners page. */
+function FleetPanel() {
+  const scanners = useScannerIndex()
+  return (
+    <Panel title="Scanner fleet">
+      <QueryState {...scanners} data={scanners.data} empty="No scanners loaded." hint="Drop .pine files into the scanners folder and restart the server." onRetry={() => scanners.refetch()}>
+        {(d) => {
+          const ok = d.filter((x) => !x.hidden && x.status === 'ok').length
+          const en = d.filter((x) => x.enabled).length
+          const err = d.filter((x) => x.enabled && !x.hidden && x.lastRunError).length
+          const removed = d.filter((x) => x.hidden).length
+          const rows: Array<[string, number, string, string?]> = [
+            ['In the list', d.length - removed, '', 'The same count as the Scanners page: loaded scripts minus the removed ones'],
+            ['Removed', removed, 'muted'],
+            ['Runnable in the visible library', ok, 'gain'],
+            ['Enabled on the account', en, 'accent'],
+            ['Incompatible in the visible library', d.filter((x) => !x.hidden && x.status === 'incompatible').length, 'loss'],
+            ['Unavailable in the visible library', d.filter((x) => !x.hidden && x.status === 'unavailable').length, 'warn'],
+            ['Enabled, last run failed', err, err ? 'loss' : ''],
+          ]
+          return (
+            <div className="fleet">
+              {rows.map(([label, n, tone, tip]) => (
+                <div className="fleet-row" key={label} title={tip}>
+                  <span>{label}</span>
+                  <span className={`mono ${tone}`}>{n}</span>
+                </div>
+              ))}
+              <Link to="/scanners" className="btn btn-sm mt">Manage scanners</Link>
+            </div>
+          )
+        }}
+      </QueryState>
+    </Panel>
+  )
+}
+
+/** Everything that waits for the operator, in one place: faults, proposals, a silent alert channel. Nothing renders when there is none. */
+function NeedsYou() {
+  const h = useHealth()
+  const ops = useOps()
+  const inc = useQuery({ queryKey: ['incubator'], queryFn: api.incubator, refetchInterval: 60_000, staleTime: 20_000 })
+  const items: Array<{ key: string; text: string; to: string; cta: string }> = (h.data?.attention ?? []).map((it) => ({ key: it.key, text: it.text, to: it.href, cta: 'Open' }))
+  const proposals = inc.data?.pairs.filter((p) => p.stage === 'proposed' || p.stage === 'demote_proposed').length ?? 0
+  if (proposals > 0) items.push({ key: 'proposals', text: `${proposals} proposal${proposals === 1 ? ' is' : 's are'} waiting for a decision`, to: '/decisions', cta: 'Decide' })
+  if (ops.data?.alerts && !ops.data.alerts.configured) items.push({ key: 'alerts', text: 'The alert channel is not configured: a halt or a stranded position reaches nobody', to: '/settings', cta: 'Set up' })
+  if (!items.length) return null
+  return (
+    <section className="needs" aria-label="Needs you">
+      <div className="needs-head"><h2>Needs you</h2><span className="mono needs-count">{items.length}</span></div>
+      <ul className="needs-list">
+        {items.map((it) => (
+          <li key={it.key}><span className="needs-text">{it.text}</span><Link to={it.to} className="btn btn-xs">{it.cta} →</Link></li>
+        ))}
+      </ul>
+    </section>
+  )
+}
 
 /** Which pairs the fleet may trade now, and why the others are out — the market-level gate of decision 56. */
 function MarketsTodayPanel() {
@@ -234,26 +282,6 @@ function MarketsTodayPanel() {
   )
 }
 
-
-/** Faults that outrank every number on the page: a dead daily job, a scanner in the account that is not running. Nothing renders when there are none. */
-function AttentionBanner() {
-  const h = useHealth()
-  const items = h.data?.attention ?? []
-  if (!items.length) return null
-  return (
-    <div className="banner banner-warn attention attention-row small" role="alert">
-      <span className="attention-head"><b>Needs attention</b> <span className="muted">{items.length}</span></span>
-      <ul>
-        {items.map((it) => (
-          <li key={it.key}>
-            {it.text} · <Link to={it.href}>open</Link>
-          </li>
-        ))}
-      </ul>
-      <Link to="/decisions" className="btn btn-xs attention-all">Decisions →</Link>
-    </div>
-  )
-}
 
 /** Whether anyone would hear a halt: the alert channel, what it last sent, and what last failed. */
 function AlertsStatusLine() {
@@ -316,9 +344,12 @@ function EdgeVerdictLine() {
       {b.costShare !== null ? <span className="muted"> · costs {Math.round(b.costShare * 100)}% of risk</span> : null}
     </span>
   )
+  const w = word(d.live)
   return (
-    <div className={`banner small ${word(d.live) === 'failing' ? 'banner-warn' : ''}`} role="note" title="Paying: the 90% confidence band of R per trade is above zero. Failing: it is below zero. Undecided: it straddles zero, which is what a small sample looks like.">
-      Edge: {book('Account', d.live)}{d.current ? <> · {book('Under current settings', d.current)}</> : null} · {book('Shadow', d.shadow)}
-    </div>
+    <Callout tone={w === 'paying' ? 'ok' : w === 'failing' ? 'warn' : 'info'} title="Is there an edge?">
+      <span title="Paying: the 90% confidence band of R per trade is above zero. Failing: it is below zero. Undecided: it straddles zero, which is what a small sample looks like.">
+        {book('Account', d.live)}{d.current ? <> · {book('Under current settings', d.current)}</> : null} · {book('Shadow', d.shadow)}
+      </span>
+    </Callout>
   )
 }
