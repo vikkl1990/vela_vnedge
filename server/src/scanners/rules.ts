@@ -11,6 +11,7 @@
 import type { WorkerAlert, WorkerLabel, WorkerPlot, WorkerShape } from '../pine/worker.ts';
 import type { ScanEvent, Side } from './extractor.ts';
 import { NUM_SRC, numOf } from './extractor.ts';
+import {plotLifecycle,readPlotLifecycle} from './plotLifecycle.ts';
 import { logger } from '../log.ts';
 import type { Bar } from '../data/candleStore.ts';
 import type { GenericRule } from '../config.ts';
@@ -198,7 +199,7 @@ export const RULES: Record<string, Rule> = {
 };
 
 export function applyRules(ctx: RuleContext): ScanEvent[] {
-  const rule = ctx.rule ? GENERIC_RULES[ctx.rule] : RULES[ctx.ruleFor ?? ctx.scannerId];
+  const rule = plotLifecycle(ctx.scannerId) ? readPlotLifecycle : ctx.rule ? GENERIC_RULES[ctx.rule] : RULES[ctx.ruleFor ?? ctx.scannerId];
   if (!rule) return [];
   try { return rule(ctx); } catch (e: any) {
     // decision 195: a broken rule is not a quiet bar — it is counted and logged once per scanner and message

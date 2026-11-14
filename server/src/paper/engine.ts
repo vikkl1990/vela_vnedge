@@ -1,3 +1,4 @@
+import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {BASKET_SCANNER,BASKET_MARKER,basketRefusal,basketLevels,basketSizing} from './basket.ts';
 import {PartialExits} from './partialExits.ts';
 import {reclaimRestoreRefusal,recoverReclaim,nextReclaimMinute,type ReclaimCheckpoint} from './reclaimRecovery.ts';
@@ -781,8 +782,12 @@ export class PaperEngine extends EventEmitter {
     let price = limitPrice ?? quoted.price;
     const entryContext: FillContext = { ref: reference, source: quoted.quoted ? 'quote' : 'slippage' };
     const geometry=ctx.executionPlan?.basket?basketLevels(price,ctx.market.tickSize,existing):{sl:ev.sl,tp:ev.tp};
+    const nativeError=nativeGeometryError(ctx.executionPlan?.sourceScannerId??ctx.scannerId,ev.side!,price,geometry.sl,geometry.tp);
+    if(nativeError)return refused(nativeError);
     const levels = resolveLevels({ side: ev.side!, price, ...geometry, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return refused(levels.error);
+    const roundedNativeError=nativeGeometryError(ctx.executionPlan?.sourceScannerId??ctx.scannerId,ev.side!,price,levels.sl,levels.tp);
+    if(roundedNativeError)return refused(roundedNativeError);
     // decision 146: a stop the scanner placed itself (source script or mixed) loses in both books and both halves of
     // decision 145's sample; the account takes only entries on the engine's own ATR stop. The shadow book keeps them.
     const nativeAllowed = !ctx.executionPlan && ctx.policy?.reading.entryProtection === 'native';
@@ -1088,8 +1093,12 @@ export class PaperEngine extends EventEmitter {
     }
     // the signal's levels are absolute; the fill price must still sit on the right side of them
     const geometry=pe.executionPlan?.basket?basketLevels(price,pe.market.tickSize,this.findOpen(pe.scannerId,pe.symbol,pe.tf)):{sl:pe.levels.sl,tp:pe.levels.tp};
+    const nativeError=nativeGeometryError(pe.executionPlan?.sourceScannerId??pe.scannerId,pe.side,price,geometry.sl,geometry.tp);
+    if(nativeError)return cancel(nativeError);
     const levels = resolveLevels({ side: pe.side, price, ...geometry }, cfg, pe.market.tickSize);
     if ('error' in levels) return cancel(`price moved past levels before fill (${levels.error})`);
+    const roundedNativeError=nativeGeometryError(pe.executionPlan?.sourceScannerId??pe.scannerId,pe.side,price,levels.sl,levels.tp);
+    if(roundedNativeError)return cancel(roundedNativeError);
     const feeErr = checkRiskVsFees(price, levels.sl, cfg, pe.symbol, this.spreadPct(pe.symbol, cfg, receivedAt));
     if (feeErr) return cancel(feeErr);
     // decision 186: a reversal's held position is still open; it is closed only if this entry fills

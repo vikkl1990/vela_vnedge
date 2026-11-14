@@ -142,5 +142,17 @@
     "base": "smart-swing-vwap-zeiierman",
     "name": "Smart Swing VWAP | polarity-aligned retests (research)",
     "why": "Confirmed retests after price moves away and returns to polarity-aligned AVWAP. Crosses, polarity flips and anchor notices are context. Author defines no position exits; this research profile explicitly retains bot-managed exits with separate evidence."
+  },
+  {
+    "id": "smart-money-breakout-signals-author-native-v1",
+    "base": "smart-money-breakout-signals",
+    "name": "Smart Money Breakout | native geometry v1 (research)",
+    "why": "Source-pinned closed-bar breakout, actual native stop and three target milestones; full closure at TP3. Separate experimental evidence; legacy long-only account reader unchanged."
+  },
+  {
+    "id": "machine-learning-rsi-ai-classification-ranking-zeiierman-author-native-v1",
+    "base": "machine-learning-rsi-ai-classification-ranking-zeiierman",
+    "name": "ML RSI | classifier and Supertrend v1 (research)",
+    "why": "Source-pinned confirmed classifier entries only, native protective Supertrend with causal amendments and opposite-side flip exits; no invented TP. Separate experimental evidence; legacy account reader unchanged."
   }
 ]

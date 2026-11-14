@@ -11,6 +11,7 @@ import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
 import { readingLegacy } from './legacy.ts';
 import { WILLY_HTF_MARKET, readWillyHtfAlert } from './willyHtf.ts';
 import { NOT_AN_ENTRY, READER_FIXES, closesSide, reversalClosed, labelStyleSide, type LabelStyleSides } from './readerFixes.ts';
+import {plotLifecycle} from './plotLifecycle.ts';
 import { readWillyNative } from './willyNative.ts';
 
 export type Side = 'long' | 'short';
@@ -404,6 +405,12 @@ export function declaredChannels(source: string): Set<'alert' | 'alertcondition'
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
+  // These versioned profiles read only causal source exports; legacy alerts cannot leak entries or exits.
+  if(plotLifecycle(opts.scannerId)){
+    if(opts.reader!==2||opts.invert)return [];
+    return (opts.derived??[]).filter(e=>(opts.sinceBarTime===undefined||e.barTime>=opts.sinceBarTime)&&
+      (e.kind!=='entry'||((!opts.sources||opts.sources.includes('derived'))&&(!opts.labels?.length||opts.labels.some(l=>e.label.toLowerCase().startsWith(l.toLowerCase()))))));
+  }
   if (opts.reader === 3) return readWillyNative(alerts, shapes, opts, parseAlertAll);
   const allow = (src: 'alert' | 'alertcondition' | 'shape' | 'derived' | 'label') => !opts.sources || opts.sources.includes(src);
   // decision 172: the newer reading rules are withheld from a scanner whose record predates them

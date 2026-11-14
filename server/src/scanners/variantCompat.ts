@@ -1,7 +1,13 @@
 import {createHash} from 'node:crypto';
+import {lifecycleSources} from './plotLifecycle.ts';
 
 /** Compatibility work must not rewrite the source that an existing scanner earned evidence on. */
 export function variantCompatibleSource(id: string, source: string): {source: string; patch?: string} {
+  const lifecycle=lifecycleSources[id];
+  if(lifecycle){
+    if(createHash('sha256').update(source).digest('hex')!==lifecycle.hash)throw Error('Source changed: review native lifecycle exports');
+    return {source:source+'\n'+lifecycle.exports.join('\n')+'\n',patch:'native-lifecycle-observations-v1'};
+  }
   if(id==='rsi-volume-ladder-basket'){
     if(createHash('sha256').update(source).digest('hex')!=='6d0caa5efb17677078d409fc353acb21d92cdd48826643f2aa94f8a99642c5f0')throw new Error('RSI Volume Ladder source changed: review basket adapter');
     return {source:source+'\nplotshape(entrySignal, title="VNEDGE RSI volume candidate", style=shape.triangleup, location=location.belowbar)\n',patch:'rsi-volume-basket-candidate-v1'};

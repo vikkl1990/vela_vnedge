@@ -1,3 +1,4 @@
+import {nativeGeometryError} from '../scanners/plotLifecycle.ts';
 import {quoteMakerCell,passiveMakerPrice,tradedVolume,makerTapeCell} from './makerPricing.ts';
 import {offerStatus} from './costs.ts';
 import {withProductFees,type ProductFees} from './productFees.ts';
@@ -196,8 +197,11 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   /** Whether a market entry at `price` would be admitted (levels, fees, size), without opening it: a reversal asks before it closes the held trade. */
   const admissible = (price: number, ev: ScanEvent, sigI: number): boolean => {
     if(alignmentBlock(ev.side!,bars[sigI].time+tfMs))return false;
+    const nativeError=nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,ev.sl,ev.tp);
+    if(nativeError){refuse(nativeError);return false;}
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) return false;
+    if(nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,lv.sl,lv.tp))return false;
     if (inp.requireAtrStop && lv.source !== 'atr-fallback') return false;
     if (checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0)) return false;
     return sizeContracts(price, lv.sl, { equity:inp.executionPlan?.referenceEquity??equity, contractValue: inp.contractValue, tickSize: inp.tickSize, maintenanceMarginPct: inp.maintenanceMarginPct, maxLeverage: inp.maxLeverage, cfg }, 0, ev.score).qty >= 1;
@@ -206,8 +210,12 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const openAt = (price: number, at: number, ev: ScanEvent, sigI: number, maker: boolean, fillAt = at + (maker ? 0 : tfMs)): boolean => {
     const aligned=alignmentBlock(ev.side!,Math.max(at,bars[sigI].time+tfMs));
     if(aligned){refuse(aligned);return false;}
+    const nativeError=nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,ev.sl,ev.tp);
+    if(nativeError){refuse(nativeError);return false;}
     const lv = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: atr[sigI] }, cfg, inp.tickSize);
     if ('error' in lv) { refuse(lv.error); return false; }
+    const roundedNativeError=nativeGeometryError(inp.executionPlan?.sourceScannerId??inp.scannerId,ev.side!,price,lv.sl,lv.tp);
+    if(roundedNativeError){refuse(roundedNativeError);return false;}
     if (inp.requireAtrStop && lv.source !== 'atr-fallback') { refuse('account requires ATR stop'); return false; }
     const feeErr = checkRiskVsFees(price, lv.sl, inp.costRatio ? { ...cfg, minRiskFeeRatio: inp.costRatio, minRiskFeeRatioBySymbol: undefined } : cfg, inp.symbol, inp.spreadPct ?? 0, { maker });
     if (feeErr) { refuse('stop too tight for fees'); return false; }

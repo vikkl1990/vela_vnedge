@@ -1,3 +1,4 @@
+import {plotLifecycle} from '../scanners/plotLifecycle.ts';
 import {BASKET_SCANNER} from './basket.ts';
 /** Versioned, explicit research plans. One source event feeds every plan in a cell. */
 import {withProductFees,type ProductFees} from './productFees.ts';
@@ -14,8 +15,8 @@ import { exitConfigFor } from './logic.ts';
 import { scannerExitPolicy, entryPolicy } from './policy.ts';
 import { adaptPlan } from './planStudy.ts';
 
-// Decision 250: four additional isolated author profiles; account position capacity is separate.
-export const MAX_RESEARCH_PLANS = 34;
+// Decision 252: two source-pinned lifecycle profiles added to 34 existing experiments; account capacity is separate.
+export const MAX_RESEARCH_PLANS = 36;
 /** Explicit TP experiment; original stop and sizing stay fixed. Trail changes are opt-in and labeled. */
 export interface TakeProfitPlan {
   mode: 'native' | 'r';
@@ -67,7 +68,8 @@ export interface ExecutionPlanSnapshot {
   /** Causal close-then-open reversal; scoped to newly validated author profiles. */
   reversalEntryVersion?: 1;
 }
-export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'>): string {
+export function takeProfitLabel(p: Pick<ExecutionPlanSnapshot,'paper'|'takeProfit'|'basket'> & Partial<Pick<ExecutionPlanSnapshot,'sourceScannerId'>>): string {
+  if(plotLifecycle(p.sourceScannerId))return p.sourceScannerId?.startsWith('machine-learning')?'Native Supertrend stop and flip exit · no fixed TP':'Native stop and TP1/TP2 milestones · closes at TP3';
   if(p.basket)return 'Basket: up to 3 entries · $150 total margin · 4% shared target · 3% below lowest fill stop';
   const c=p.paper, ladder=c.fallbackRR.join('/'), allocation=c.tpSplit.map(x=>`${Math.round(x*100)}%`).join('/');
   const trail=c.trailAfterR>0?`trail from ${c.trailAfterR}R · ${c.trailAtrMult>0?`${c.trailAtrMult} ATR distance`:c.trailGiveBackPct>0?`${c.trailGiveBackPct}% peak giveback`:`${c.trailDistanceR||1}R distance`}`:'trail off';
@@ -103,7 +105,7 @@ export function planSnapshot(cfg: AppConfig, p: ExecutionPlan, sourceHash: strin
     ...(p.comparison?{comparison:structuredClone(p.comparison)}:{})};
   if(p.basket && (paper.sizingMode!=='margin'||paper.marginPerTrade!==150||!(paper.maxStopLossPct!>0)||Object.keys(sc?.inputs??{}).length))throw Error('basket requires $150 margin, a stop cap and reviewed default inputs');
   const reversalEntryVersion=sc?.reader===3&&['reactive-trail-system-author-native','reaction-level-matrix-author-native'].includes(p.scannerId)?1 as const:undefined;
-  const versioned = {...result,...(sc?.reader===3||p.basket?{partialExitVersion:1 as const}:{}),...(reversalEntryVersion?{reversalEntryVersion}:{}),...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
+  const versioned = {...result,...(sc?.reader===3||p.basket||plotLifecycle(p.scannerId)?{partialExitVersion:1 as const}:{}),...(reversalEntryVersion?{reversalEntryVersion}:{}),...(p.readingOverride?{readingOverride:structuredClone(p.readingOverride)}:{})};
   // Presentation/grouping edits must not reset evidence for an identical policy.
   // A reading experiment chooses its own cell and enabled state. Account allocation edits
   // must not split its evidence or make a held position look like a different policy.
@@ -121,7 +123,7 @@ export function planBacktest(p: ExecutionPlanSnapshot) {
   if(p.basket)throw Error('basket execution requires stateful shadow replay; single-position candle backtest is unsupported');
   const le=p.paper.limitEntry;
   return {cfg:p.paper,exitMode:p.exitMode,scannerExitResolved:true as const,requireAtrStop:p.requireAtrStop,
-    ...(p.reading?.reader===3?{scriptStopAmendments:'after-close-v1' as const}:{}),
+    ...(p.reading?.reader===3||plotLifecycle(p.sourceScannerId)?{scriptStopAmendments:'after-close-v1' as const}:{}),
     executionPlan:p,entry:le?.enabled?{pullbackAtr:le.atr,pullbackBars:le.bars,limitWhenFlatOnly:true as const}:undefined};
 }
 export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: Record<string,number>): string[] {
@@ -133,6 +135,7 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
     if(p.basket!==undefined&&(p.basket!=='rsi-volume-ladder-v1'||p.scannerId!==BASKET_SCANNER||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.comparison))errors.push(`executionPlans.${p.id}: basket requires its versioned source and unmodified native bracket`);
+    if(plotLifecycle(p.scannerId)&&(p.variant!=='current'||!p.readingOverride||p.trailing||p.takeProfit||p.basket||p.readingOverride.invert||p.readingOverride.reader!==undefined&&p.readingOverride.reader!==2))errors.push(`executionPlans.${p.id}: native plot lifecycle requires its versioned current reading and native exit policy`);
     if(p.scannerId===BASKET_SCANNER&&!p.basket)errors.push(`executionPlans.${p.id}: basket source requires its execution adapter`);
     if(p.readingOverride!==undefined){
       const r=p.readingOverride;
