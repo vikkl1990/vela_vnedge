@@ -85,5 +85,26 @@ test('readiness separates quiet scans, cell failures and exact plan evidence wit
  db.run("INSERT INTO execution_plan_scans VALUES(?,?,?,1,0,'[]')",currentId,now-900000,now-1000);
  db.run("INSERT INTO execution_plan_events(at,plan_id,scanner_id,source_event,action,reason) VALUES(?,?,?,?,?,?)",now-1000,'compare',currentId,'new','rejected','fee cost');
  const fresh=await svc.view(now+61000),p=fresh.rows.find(r=>r.planId==='compare')!;assert.equal(p.runtime,'collecting');assert.equal(p.activity.signals,1);assert.deepEqual(p.activity.reasons,{'fee cost':1});
- cfg.incubator.enabled=false;const held=await svc.view(now+122000);assert.equal(held.rows.find(r=>r.planId==='compare')!.runtime,'held');
+ store.noteShadowScan({scannerId:'s',symbol:'ETHUSD',tf:'15m'},now,'running',null,0,now+62000);
+ assert.equal(await svc.view(now+63000),fresh,'automatic requests retain the bounded cache');
+ const [running,joined]=await Promise.all([svc.view(now+63000,true),svc.view(now+63001,true)]);
+ assert.equal(running,joined,'concurrent refreshes share one build');
+ const inFlight=running.rows.find(r=>r.planId==='compare')!;
+ assert.equal(inFlight.runtime,'scanning');assert.equal(inFlight.cells[0].state,'running');
+ assert.equal(inFlight.cells[0].lastAt,now-1000,'running source does not invent a completed plan receipt');
+ assert.equal(inFlight.activity.signals,1);assert.equal(inFlight.activity.fills,0);
+ cfg.incubator.enabled=false;const held=await svc.view(now+122000,true);assert.equal(held.rows.find(r=>r.planId==='compare')!.runtime,'held');
+});
+
+test('contract registry defers research IO and invalidates cached details after catalogue recovery',()=>{
+ let calls=0,current:AuthorReviewCatalog={schema:1,generatedAt:'',scripts:{},sources:{},publications:{},unavailableReason:'Catalogue unavailable'};
+ const registry=new ContractRegistry(undefined,()=>{calls++;return current;});
+ assert.equal(calls,0,'constructing API services does not read the catalogue');
+ const unavailable=registry.get(scanner,{});
+ assert.equal(unavailable.summary.role,'unresolved');assert.ok(unavailable.summary.gaps.includes('Catalogue unavailable'));
+ current=catalog();
+ const recovered=registry.get(scanner,{});
+ assert.equal(recovered.summary.role,'entry');assert.equal(recovered.author.entries.length,1);
+ assert.ok(!recovered.summary.gaps.includes('Catalogue unavailable'));
+ assert.equal(registry.get(scanner,{}),recovered,'unchanged versions retain the cache');
 });

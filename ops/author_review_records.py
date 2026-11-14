@@ -6,8 +6,29 @@ the precise cached publication and inspected source bytes named by its queue.
 import datetime
 import hashlib
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
+
+
+def write_catalog_atomic(file, catalog):
+    """Readers see the old or complete new catalogue, never a partial write."""
+    file = Path(file)
+    data = json.dumps(catalog, ensure_ascii=False, separators=(',', ':')) + '\n'
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=file.parent,
+                                         prefix=file.name + '.', suffix='.tmp', delete=False) as out:
+            temporary = Path(out.name)
+            out.write(data)
+            out.flush()
+            os.fchmod(out.fileno(), file.stat().st_mode & 0o777 if file.exists() else 0o644)
+            os.fsync(out.fileno())
+        os.replace(temporary, file)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def load_records(directory, repo):

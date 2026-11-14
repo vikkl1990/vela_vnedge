@@ -122,3 +122,32 @@ test('every retained publication has a reconciled review or an explicit dated bl
     }
   }
 });
+
+test('optional catalogue failures are unavailable, cached safely and recover after atomic replacement', async t => {
+  const os = await import('node:os');
+  const {AuthorReviewCatalogLoader} = await import('./authorReview.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-recovery-'));
+  t.after(() => fs.rmSync(dir, {recursive:true,force:true}));
+  const file = path.join(dir,'reviews.json'), loader = new AuthorReviewCatalogLoader(file);
+  const missing = loader.load();
+  assert.match(missing.unavailableReason!,/missing or unreadable/);
+  assert.equal(authorReview(script,{},missing).sourceStatus,'unreviewed');
+  fs.writeFileSync(file,'{"schema":1,');
+  const broken = loader.load();
+  assert.match(broken.unavailableReason!,/invalid or incomplete/);
+  assert.equal(loader.load(),broken,'unchanged bad versions are not reparsed');
+  const valid = authorReviewCatalog();
+  assert.equal(valid.unavailableReason,undefined);
+  const replace = (data:unknown) => {fs.writeFileSync(file+'.tmp',JSON.stringify(data));fs.renameSync(file+'.tmp',file);};
+  replace(valid);
+  const restored = loader.load();
+  assert.equal(restored.unavailableReason,undefined);
+  assert.equal(loader.load(),restored);
+  assert.ok(Object.keys(restored.sources).length>2000);
+  replace({...valid,sources:{bad:{claims:null}}});
+  assert.match(loader.load().unavailableReason!,/invalid/,'valid JSON with unsafe nested shapes is not published');
+  replace(valid);
+  assert.equal(loader.load().unavailableReason,undefined,'repair is visible without restart');
+  fs.unlinkSync(file);
+  assert.equal(Object.keys(loader.load().sources).length,0,'missing data never retains a reviewed label');
+});

@@ -126,7 +126,7 @@ export function planBacktest(p: ExecutionPlanSnapshot) {
     ...(p.reading?.reader===3||plotLifecycle(p.sourceScannerId)?{scriptStopAmendments:'after-close-v1' as const}:{}),
     executionPlan:p,entry:le?.enabled?{pullbackAtr:le.atr,pullbackBars:le.bars,limitWhenFlatOnly:true as const}:undefined};
 }
-export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: Record<string,number>): string[] {
+export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: Record<string,number>, cfg?:AppConfig): string[] {
   if(plans===undefined)return [];
   if(!Array.isArray(plans))return ['executionPlans must be an array'];
   const errors:string[]=[],ids=new Set<string>();
@@ -134,6 +134,11 @@ export function validateExecutionPlans(plans: ExecutionPlan[] | undefined, tfs: 
   for(const p of plans){
     if(!p || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(p.id??'') || ids.has(p.id))errors.push('executionPlans requires unique safe ids');
     if(!p)continue;ids.add(p.id);
+    // Validate effective basket prerequisites at save time, using the same policy
+    // resolver as execution (including symbol/scanner overrides and the plan cap).
+    if(p.basket&&cfg){
+      try{planSnapshot(cfg,p);}catch(error){errors.push(`executionPlans.${p.id}: ${error instanceof Error?error.message:'invalid effective basket policy'}`);}
+    }
     if(p.basket!==undefined&&(p.basket!=='rsi-volume-ladder-v1'||p.scannerId!==BASKET_SCANNER||p.variant!=='current'||!p.readingOverride||p.takeProfit||p.trailing||p.comparison))errors.push(`executionPlans.${p.id}: basket requires its versioned source and unmodified native bracket`);
     if(plotLifecycle(p.scannerId)&&(p.variant!=='current'||!p.readingOverride||p.trailing||p.takeProfit||p.basket||p.readingOverride.invert||p.readingOverride.reader!==undefined&&p.readingOverride.reader!==2))errors.push(`executionPlans.${p.id}: native plot lifecycle requires its versioned current reading and native exit policy`);
     if(p.scannerId===BASKET_SCANNER&&!p.basket)errors.push(`executionPlans.${p.id}: basket source requires its execution adapter`);

@@ -7506,3 +7506,13 @@ Signals, Scanners and Incubator were mixing operational logs, settings, evidence
 - Decision clocks use current time, not the last screening timestamp. Shared navigation explains ownership without another control surface.
 
 Validation: dashboard outcome/navigation regressions; dashboard build, lint and server type check; browser checks with isolated synthetic fixtures for filters, history, old anchors, read-only permissions, pending fills, empty states and mobile layouts. No server trading logic, configuration, scanner reading, evidence policy, paper mode, $150 margin or risk cap changes.
+
+## 254. Optional research data cannot block startup or hide valid plans (14 November 2026)
+
+The shared contract registry eagerly loaded the author-review catalogue during API construction. A missing or truncated research file could prevent the service from starting, and the review builder replaced that file in place. Loading is now deferred, malformed or missing versions return an explicitly unavailable catalogue, and repaired/replaced files invalidate diagnostic caches without restarting. The builder writes and syncs a temporary file in the same directory before atomic replacement. Unavailable reviews never inherit a source-matched or reviewed status.
+
+Basket plans now validate their effective $150/default-input/stop-cap prerequisites when saving configuration, using the same snapshot resolver as execution. The comparison view isolates legacy invalid plans with an explicit configuration error instead of hiding valid plans and historical results. Valid policy signatures, trades and risk rules are unchanged.
+
+Manual readiness refresh bypasses the 60-second cache and coalesces concurrent requests. A fresh running receipt is shown as scanning, never as a completed comparison scan or promotion evidence. Automatic polling still uses the bounded cache.
+
+Validation covers missing, truncated and structurally invalid catalogues, atomic replacement failure and recovery, lazy registry construction, diagnostic cache invalidation, basket save validation, preservation of valid cohort identities and results, and in-flight/forced-refresh reporting. This is a reliability and presentation correction: no scanners or plans enabled, no change to paper mode, $150 margin, risk caps, evidence rules or execution.

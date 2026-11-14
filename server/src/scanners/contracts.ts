@@ -30,6 +30,7 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
   catalog:AuthorReviewCatalog=authorReviewCatalog()):ScannerContractDetail {
   const review=authorReview(s,sc,catalog),role=contractRole(review),facts=sourceFacts(s.patched),reader=sc.reader??1;
   const gaps:string[]=[],capabilities:string[]=[];
+  if(review.unavailableReason)gaps.push(review.unavailableReason);
   if(review.sourceStatus!=='matches')gaps.push(review.sourceStatus==='changed'?'Installed source differs from the reviewed source.':'No source-matched review.');
   if(review.descriptionStatus!=='reviewed')gaps.push(`Author publication: ${review.descriptionStatus}.`);
   const entryOff=Array.isArray(sc.sources)&&sc.sources.length===0;
@@ -76,9 +77,13 @@ export function scannerContract(s:LoadedScanner, sc:Partial<ScannerConfig>, plan
 /** Cache only immutable source/reading records, never runtime evidence or eligibility. */
 export class ContractRegistry {
   private cache=new Map<string,{key:string;detail:ScannerContractDetail}>();
-  constructor(privateCatalog?:AuthorReviewCatalog){this.catalog=privateCatalog??authorReviewCatalog();}
-  private catalog:AuthorReviewCatalog;
+  private privateCatalog:AuthorReviewCatalog|undefined;
+  private loadCatalog:()=>AuthorReviewCatalog;
+  constructor(privateCatalog?:AuthorReviewCatalog,loadCatalog=authorReviewCatalog){this.privateCatalog=privateCatalog;this.loadCatalog=loadCatalog;}
+  private catalog:AuthorReviewCatalog|undefined;
   get(s:LoadedScanner,sc:Partial<ScannerConfig>,plan?:ExecutionPlanSnapshot){
+    const catalog=this.privateCatalog??this.loadCatalog();
+    if(catalog!==this.catalog){this.catalog=catalog;this.cache.clear();}
     const id=plan?`plan:${plan.id}`:s.id;
     const key=hash(stable({source:s.source,patched:s.patched,id:s.id,file:s.file,variantOf:s.variantOf,variantReason:s.variantReason,sc,plan}));
     const old=this.cache.get(id);if(old?.key===key)return old.detail;

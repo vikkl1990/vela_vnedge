@@ -20,7 +20,7 @@ export interface ReadinessCell {
 export interface ReadinessRow {
   key: string; scannerId: string; name: string; author: string; planId: string | null;
   enabled: boolean; contract: ContractSummary; cells: ReadinessCell[];
-  runtime: 'held' | 'collecting' | 'waiting' | 'unallocated';
+  runtime: 'held' | 'collecting' | 'scanning' | 'waiting' | 'unallocated';
   runtimeReasons: string[];
   profiles: {matching: number; other: number};
   activity: {signals: number; fills: number; pending: number; reasons: Record<string,number>; scope: string};

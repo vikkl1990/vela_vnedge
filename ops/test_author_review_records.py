@@ -4,7 +4,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from author_review_records import load_records
+from unittest.mock import patch
+from author_review_records import load_records, write_catalog_atomic
 
 
 class ReviewReceipts(unittest.TestCase):
@@ -63,6 +64,23 @@ class ReviewReceipts(unittest.TestCase):
             self.write({**r, 'checkedAt': value})
             with self.subTest(value=value), self.assertRaises(ValueError):
                 load_records(self.root, self.root)
+
+
+class AtomicCatalogue(unittest.TestCase):
+    def test_replace_failure_keeps_old_catalogue_and_cleans_temporary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / 'catalog.json'
+            write_catalog_atomic(file, {'schema': 1, 'generation': 'old'})
+            original = file.read_bytes()
+            with patch('author_review_records.os.replace', side_effect=OSError('injected failure')):
+                with self.assertRaises(OSError):
+                    write_catalog_atomic(file, {'schema': 1, 'generation': 'new'})
+            self.assertEqual(file.read_bytes(), original)
+            self.assertEqual(list(Path(directory).iterdir()), [file])
+            file.chmod(0o640)
+            write_catalog_atomic(file, {'schema': 1, 'generation': 'new'})
+            self.assertEqual(json.loads(file.read_text())['generation'], 'new')
+            self.assertEqual(file.stat().st_mode & 0o777, 0o640)
 
 
 if __name__ == '__main__':

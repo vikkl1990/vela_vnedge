@@ -20,9 +20,9 @@ export class ReadinessService {
   private cache:{at:number;value:ScannerReadiness}|null=null;
   private pending:Promise<ScannerReadiness>|null=null;
   constructor(a:Dependencies,contracts=new ContractRegistry()){this.a=a;this.contracts=contracts;}
-  async view(now=Date.now()){
-    if(this.cache&&now-this.cache.at<60_000)return this.cache.value;
+  async view(now=Date.now(),refresh=false){
     if(this.pending)return this.pending;
+    if(!refresh&&this.cache&&now-this.cache.at<60_000)return this.cache.value;
     this.pending=this.build(now);
     try{const value=await this.pending;this.cache={at:now,value};return value;}finally{this.pending=null;}
   }
@@ -73,7 +73,7 @@ export class ReadinessService {
       if(!profiles.has(id))profiles.set(id,a.profiles.forScanner(id));
       const ps=profiles.get(id)!.filter(x=>cs.some(c=>c.symbol===x.market&&c.tf===x.tf));
       const matching=ps.filter(x=>x.signature===profileSignature(s,sc,x.tf)&&x.kind!=='broken').length;
-      const runtime=reasons.length?'held':!cs.length?'unallocated':cs.some(c=>c.state==='scanned')?'collecting':'waiting';
+      const runtime=reasons.length?'held':!cs.length?'unallocated':cs.some(c=>c.state==='running')?'scanning':cs.some(c=>c.state==='scanned')?'collecting':'waiting';
       rows.push({key:p?`plan:${p.id}`:id,scannerId:id,name:p?`${s.name} · ${p.id}`:s.name,author:s.author,planId:p?.id??null,enabled:Boolean(sc.enabled),contract:d.summary,cells:cs,runtime,runtimeReasons:reasons,
         profiles:{matching,other:ps.length-matching},activity:p?empty('Current research cohort only; excluded from promotion.'):activity(id),
         policy:{signature:p?.signature??null,executionVersion:p?.executionVersion??null,partialExitVersion:p?.partialExitVersion??null,reversalEntryVersion:p?.reversalEntryVersion??null,
@@ -91,7 +91,11 @@ export class ReadinessService {
       const scan=a.db.get<{at:number|null}>('SELECT max(at) at FROM execution_plan_scans WHERE scanner_id=?',cohort);
       const c=cell(p.scannerId,p.symbol,p.tf,'research');
       // Raw scanner runs cannot stand in for a completed reading comparison.
-      if(p.readingOverride){c.lastAt=scan?.at??null;c.state=!c.lastAt?'unobserved':lastFresh(c.lastAt,p.tf,now)?'scanned':'stale';c.reason=c.lastAt?null:'No scan recorded for this exact plan cohort';}
+      if(p.readingOverride){
+        const running=c.state==='running';
+        c.lastAt=scan?.at??null;c.state=running?'running':!c.lastAt?'unobserved':lastFresh(c.lastAt,p.tf,now)?'scanned':'stale';
+        c.reason=running?'Source scan in progress; this does not count as completed cohort evidence':c.lastAt?null:'No scan recorded for this exact plan cohort';
+      }
       await make(p.scannerId,[c],snap);
       const row=rows.at(-1)!;
       for(const e of a.db.all<{action:string;reason:string|null;n:number}>('SELECT action,reason,count(*) n FROM execution_plan_events WHERE scanner_id=? AND at>=? AND at<? GROUP BY action,reason',cohort,from,now)){row.activity.signals+=e.n;if(e.reason)row.activity.reasons[e.reason]=(row.activity.reasons[e.reason]??0)+e.n;}
@@ -102,6 +106,7 @@ export class ReadinessService {
       notes:['Read-only: no scanner, evidence identity, allocation, fee rule, margin or risk setting is changed.',
         'Author intent, implemented adapters, source-matched probes and trading eligibility are separate. A running scanner is not certified profitable or live-ready.',
         'Collecting means at least one allocated cell has a recent successful scan; inspect every cell for partial coverage. Freshness allows two bars plus two minutes. A quiet scan is not a fault.',
+        'Scanning means a source run is in progress; it does not count as a completed scan or trade. Refresh requests a fresh snapshot; automatic polling may use the 60-second cache.',
         'Activity is last 24 hours, not an outcome cohort. Base rows combine paper and retained shadow history across readings; research rows use the exact current plan signature. Tracker and research data do not become promotion evidence.',
         'The author catalogue is a dated local review, not a live update check. Historical notes can predate implemented adapters; current capabilities are listed separately.']};
   }
