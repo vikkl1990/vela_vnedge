@@ -1,5 +1,6 @@
 import { useExecutionQuality } from '../api/queries'
 import { Panel, Pill, QueryState, Time } from './ui'
+import { Callout } from './kit'
 
 export function AccountObserverPanel() {
   const q = useExecutionQuality()
@@ -9,8 +10,7 @@ export function AccountObserverPanel() {
       if (!o) return <p>Observer status unavailable on this server.</p>
       const a = o.account
       return <>
-        <p><Pill tone={o.state === 'observing' ? 'ok' : 'warn'}>{o.state}</Pill> {o.message} {o.syncing && <span className="muted">Sync in progress…</span>}</p>
-        <p className="small muted">Observes the saved production account while paper trading continues. This component can read exchange data only.</p>
+        <Callout tone={o.state === 'observing' ? 'ok' : 'warn'} title={`Observer: ${o.state}`}>{o.message} {o.syncing && 'Sync in progress…'} It watches the saved production account while paper trading continues, and can only read exchange data.</Callout>
         {a && <>
           <div className="grid-2">
             <dl className="kv-list">

@@ -15,6 +15,8 @@ import { decisionMarks } from '../chart/decisionMarks'
 import { positionOverlay } from '../chart/positionOverlay'
 import { AlertsFeed } from '../components/AlertsFeed'
 import { ChipSelect, Panel, Pill, QueryState } from '../components/ui'
+import { Callout, PageHeader, Toolbar } from '../components/kit'
+import '../styles/pages/chart.css'
 import { fmtPct, fmtPrice, pnlClass } from '../lib/format'
 import { DELTA_TIMEFRAMES, FRAME_PRESET } from '../lib/timeframes'
 import { useNow } from '../lib/useNow'
@@ -165,90 +167,100 @@ export function ChartPage() {
 
   return (
     <div className="page page-chart">
-      <nav className="chart-tools panel" aria-label="Chart tools">
-        <span className="chips-label">Explore</span>
-        <a className="btn btn-xs" href="#chart-price">Price &amp; frames</a>
-        <a className="btn btn-xs" href="#chart-order-flow">Order flow · Delta / CVD</a>
-        <a className="btn btn-xs" href="#chart-venues" onClick={() => setComparisonOpen(true)}>Compare venues</a>
-        <a className="btn btn-xs" href="#chart-values" onClick={() => setReadoutOpen(true)}>Scanner values</a>
-        <span className="muted small">Measured crypto footprints: BTC · ETH · SOL</span>
-      </nav>
-      <p className="muted small">Indicator plots are a live preview; timeline marks and the decision feed come from the bot journal. {heldScanner && !heldScanner.enabled ? `Held scanner ${heldScanner.name} is displayed read-only (disabled for entries).` : ''}</p>
-      {scripts.length > 0 && <details className="small"><summary>Bot script inputs and source versions</summary>{scripts.map(s => <p key={s.id} className="mono">{s.title} · source {s.sourceHash ?? 'unknown'} · bot timezone {s.timezone ?? 'UTC'} · inputs {JSON.stringify(s.inputs ?? {})}{s.timezone && s.timezone !== 'UTC' ? ' · Chart metadata uses UTC; this custom timezone is not reproduced.' : ''}</p>)}</details>}
-      {(positions.data?.length ?? 0) > 0 && <div className="row gap" style={{ flexWrap: 'wrap' }}><span className="chips-label">Open positions</span>{positions.data?.map(p => <button key={p.id} className={`btn btn-xs ${position?.id === p.id ? 'btn-on' : ''}`} onClick={() => { setSymbol(p.symbol); setPositionId(p.id); setTf(p.tf); setShowPosition(true) }}>#{p.id} {p.symbol} · {p.tf} · {p.side}</button>)}</div>}
-      <div className="toolbar chart-section" id="chart-price">
-        <label className="field-inline">
-          <span className="chips-label">Symbol</span>
-          <select className="select" value={symbol} onChange={(e) => setSymbol(e.target.value)} aria-label="Symbol">
-            {!symbolOptions.includes(symbol) && <option value={symbol}>{symbol}</option>}
-            {symbolOptions.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="seg" role="group" aria-label="View">
-          <button className={`btn btn-xs ${view === 'single' ? 'btn-on' : ''}`} onClick={() => setView('single')} aria-pressed={view === 'single'}>Single</button>
-          <button className={`btn btn-xs ${view === 'frames' ? 'btn-on' : ''}`} onClick={() => setView('frames')} aria-pressed={view === 'frames'} title="The same market on several timeframes, every frame drawing the selected scripts">Frames</button>
-        </span>
-        {view === 'single' ? (
+      <PageHeader
+        title="Chart"
+        subtitle="Price, the bot's decisions and the scripts behind them. Indicator plots are a live preview; the marks and the decision feed come from the bot journal."
+        actions={
+          <nav className="chart-jumps" aria-label="Chart sections">
+            <a className="btn btn-sm" href="#chart-price">Price &amp; frames</a>
+            <a className="btn btn-sm" href="#chart-order-flow" title="Measured crypto footprints: BTC, ETH, SOL">Order flow · Delta / CVD</a>
+            <a className="btn btn-sm" href="#chart-venues" onClick={() => setComparisonOpen(true)} title="Measured crypto footprints: BTC, ETH, SOL">Compare venues</a>
+            <a className="btn btn-sm" href="#chart-values" onClick={() => setReadoutOpen(true)}>Scanner values</a>
+          </nav>
+        }
+      />
+      {heldScanner && !heldScanner.enabled && <Callout tone="info" title="Read-only script">Held scanner {heldScanner.name} is drawn read-only because it is disabled for new entries.</Callout>}
+      {scripts.length > 0 && <details className="small chart-inputs"><summary>Bot script inputs and source versions</summary>{scripts.map(s => <p key={s.id} className="mono">{s.title} · source {s.sourceHash ?? 'unknown'} · bot timezone {s.timezone ?? 'UTC'} · inputs {JSON.stringify(s.inputs ?? {})}{s.timezone && s.timezone !== 'UTC' ? ' · Chart metadata uses UTC; this custom timezone is not reproduced.' : ''}</p>)}</details>}
+
+      <div className="chart-controls panel chart-section" id="chart-price">
+        <Toolbar end={
+          <>
+            {market && (
+              <span className="chart-quote">
+                <span className="mono strong">{fmtPrice(live, market.tickSize)}</span>
+                <span className={`mono ${pnlClass(market.change24hPct)}`}>{fmtPct(market.change24hPct, 1, true)}</span>
+                <span className="muted small chart-desc">{market.description}</span>
+              </span>
+            )}
+            <span className="muted small">
+              {scripts.length} script{scripts.length === 1 ? '' : 's'} on chart
+              {Object.keys(scriptErrors).length ? <span className="loss"> · {Object.keys(scriptErrors).length} error(s)</span> : null}
+            </span>
+          </>
+        }>
           <label className="field-inline">
-            <span className="chips-label">Timeframe</span>
-            <select className="select" value={tf} onChange={(e) => setTf(e.target.value)} aria-label="Timeframe">
-              {DELTA_TIMEFRAMES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
+            <span className="chips-label">Symbol</span>
+            <select className="select" value={symbol} onChange={(e) => setSymbol(e.target.value)} aria-label="Symbol">
+              {!symbolOptions.includes(symbol) && <option value={symbol}>{symbol}</option>}
+              {symbolOptions.map((s) => (
+                <option key={s} value={s}>
+                  {s}
                 </option>
               ))}
             </select>
           </label>
-        ) : (
-          <FramePicker value={frames} onChange={setFrames} />
-        )}
-        {market && (
-          <span className="row gap">
-            <span className="mono strong">{fmtPrice(live, market.tickSize)}</span>
-            <span className={`mono ${pnlClass(market.change24hPct)}`}>{fmtPct(market.change24hPct, 1, true)}</span>
-            <span className="muted small">{market.description}</span>
+          <span className="seg" role="group" aria-label="View">
+            <button className={`btn btn-xs ${view === 'single' ? 'btn-on' : ''}`} onClick={() => setView('single')} aria-pressed={view === 'single'}>Single</button>
+            <button className={`btn btn-xs ${view === 'frames' ? 'btn-on' : ''}`} onClick={() => setView('frames')} aria-pressed={view === 'frames'} title="The same market on several timeframes, every frame drawing the selected scripts">Frames</button>
           </span>
-        )}
-        {symbolPositions.length > 0 && <label className="field-inline"><span className="chips-label">Open position</span><select className="select" aria-label="Open position" value={position?.id ?? ''} onChange={e => setPositionId(Number(e.target.value))}>{symbolPositions.map(p => <option key={p.id} value={p.id}>#{p.id} · {p.side} · {p.tf} · {p.scannerName}</option>)}</select></label>}
-        {position && (
-          <label className="field-inline" title="Draw this position's entry, stop and targets on the chart">
-            <input type="checkbox" checked={showPosition} onChange={(e) => setShowPosition(e.target.checked)} />
-            <span className="chips-label">
-              Position #{position.id} · {position.side} · {position.scannerName}
-              {peakR != null && <span className="muted small"> · peak {peakR >= 0 ? '+' : ''}{peakR.toFixed(2)}R</span>}
-              {entrySignal?.mlProb != null && (
-                <span className="muted small" title="Recorded model probability when the entry was evaluated; this is not a current price forecast.">
-                  {' '}· model {(entrySignal.mlProb * 100).toFixed(0)}%
-                </span>
-              )}
-            </span>
-          </label>
-        )}
-        <span className="grow" />
-        <span className="muted small">
-          {scripts.length} script{scripts.length === 1 ? '' : 's'} on chart
-          {Object.keys(scriptErrors).length ? <span className="loss"> · {Object.keys(scriptErrors).length} error(s)</span> : null}
-        </span>
-      </div>
+          {view === 'single' ? (
+            <label className="field-inline">
+              <span className="chips-label">Timeframe</span>
+              <select className="select" value={tf} onChange={(e) => setTf(e.target.value)} aria-label="Timeframe">
+                {DELTA_TIMEFRAMES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <FramePicker value={frames} onChange={setFrames} />
+          )}
+          {symbolPositions.length > 0 && <label className="field-inline"><span className="chips-label">Open position</span><select className="select" aria-label="Open position" value={position?.id ?? ''} onChange={e => setPositionId(Number(e.target.value))}>{symbolPositions.map(p => <option key={p.id} value={p.id}>#{p.id} · {p.side} · {p.tf} · {p.scannerName}</option>)}</select></label>}
+          {position && (
+            <label className="field-inline" title="Draw this position's entry, stop and targets on the chart">
+              <input type="checkbox" checked={showPosition} onChange={(e) => setShowPosition(e.target.checked)} />
+              <span className="chips-label">
+                Position #{position.id} · {position.side} · {position.scannerName}
+                {peakR != null && <span className="muted small"> · peak {peakR >= 0 ? '+' : ''}{peakR.toFixed(2)}R</span>}
+                {entrySignal?.mlProb != null && (
+                  <span className="muted small" title="Recorded model probability when the entry was evaluated; this is not a current price forecast.">
+                    {' '}· model {(entrySignal.mlProb * 100).toFixed(0)}%
+                  </span>
+                )}
+              </span>
+            </label>
+          )}
+        </Toolbar>
 
-      <div className="chips-row">
-        <ChipSelect label="Overlay scripts" options={scannerNames} value={shownSelection} onChange={setSelected} emptyLabel={enabledScanners.length ? 'none selected' : 'no enabled scanners'} />
-        {addedScanners.map((s) => (
-          <span key={s.id} className="chip chip-on" title="Added from the Library">
-            {s.name}
-            <button className="chip-x" onClick={() => removeAdded(s.id)} aria-label={`Remove ${s.name} from the chart`}>×</button>
-          </span>
-        ))}
-        {sources.some((s) => s.isLoading) && <span className="muted small">loading sources…</span>}
-        {Object.entries(scriptErrors).map(([id, msg]) => (
-          <Pill key={id} tone="danger" title={msg}>
-            {enabledScanners.find((s) => s.id === id)?.name ?? addedScanners.find((s) => s.id === id)?.name ?? id}: error
-          </Pill>
-        ))}
+        {(positions.data?.length ?? 0) > 0 && <div className="chart-row"><span className="chips-label">Open positions</span>{positions.data?.map(p => <button key={p.id} className={`btn btn-xs ${position?.id === p.id ? 'btn-on' : ''}`} aria-pressed={position?.id === p.id} onClick={() => { setSymbol(p.symbol); setPositionId(p.id); setTf(p.tf); setShowPosition(true) }}>#{p.id} {p.symbol} · {p.tf} · {p.side}</button>)}</div>}
+
+        <div className="chips-row">
+          <ChipSelect label="Overlay scripts" options={scannerNames} value={shownSelection} onChange={setSelected} emptyLabel={enabledScanners.length ? 'none selected' : 'no enabled scanners'} />
+          {addedScanners.map((s) => (
+            <span key={s.id} className="chip chip-on" title="Added from the Library">
+              {s.name}
+              <button className="chip-x" onClick={() => removeAdded(s.id)} aria-label={`Remove ${s.name} from the chart`}>×</button>
+            </span>
+          ))}
+          {sources.some((s) => s.isLoading) && <span className="muted small">loading sources…</span>}
+          {Object.entries(scriptErrors).map(([id, msg]) => (
+            <Pill key={id} tone="danger" title={msg}>
+              {enabledScanners.find((s) => s.id === id)?.name ?? addedScanners.find((s) => s.id === id)?.name ?? id}: error
+            </Pill>
+          ))}
+        </div>
       </div>
 
       {positionBadge}

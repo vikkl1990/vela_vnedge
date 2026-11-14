@@ -1,9 +1,12 @@
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthGate'
 import { Disclosure } from '../components/Disclosure'
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useConfig, useConfigDefaults, useMarkets, useStats, useUpdateConfig } from '../api/queries'
 import type { ConfigPatch } from '../api/types'
-import { ChipSelect, ConfirmDialog, ErrorState, Loading, PageTitle, Panel, Pill, SymbolPicker } from '../components/ui'
+import { ChipSelect, ConfirmDialog, ErrorState, Loading, Panel, Pill, SymbolPicker } from '../components/ui'
+import { Callout, PageHeader } from '../components/kit'
+import '../styles/pages/settings.css'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { MEASURED } from '../lib/measured'
 import { useToast } from '../lib/toast'
@@ -158,6 +161,27 @@ function setPath(o: Record<string, unknown>, path: string, v: unknown): Record<s
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const show = (v: unknown) => (v === undefined || v === null ? 'unset' : Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'on' : 'off') : typeof v === 'number' ? (Math.abs(v) >= 10_000 ? v.toLocaleString() : String(v)) : String(v))
 
+/** Which section is under the top of the viewport, for the left list. `ready` flips once the sections exist in the DOM. */
+function useScrollSpy(ids: string[], ready: boolean): [string, (id: string) => void] {
+  const [active, setActive] = useState(ids[0] ?? '')
+  const key = ids.join('|')
+  useEffect(() => {
+    if (!ready || typeof IntersectionObserver === 'undefined') return
+    const list = key.split('|')
+    const els = list.map((id) => document.getElementById(id)).filter((el): el is HTMLElement => !!el)
+    if (!els.length) return
+    const visible = new Set<string>()
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) { if (e.isIntersecting) visible.add(e.target.id); else visible.delete(e.target.id) }
+      const current = [...list].reverse().find((id) => visible.has(id))
+      if (current) setActive(current)
+    }, { rootMargin: '-110px 0px -72% 0px' })
+    els.forEach((el) => io.observe(el))
+    return () => io.disconnect()
+  }, [key, ready])
+  return [active, setActive]
+}
+
 export function Settings() {
   const { canTrade, isAdmin } = useAuth()
   const stats = useStats()
@@ -189,7 +213,18 @@ export function Settings() {
   const dirty = changes.length > 0 || (!!draft && !!server && !same(getPath(draft, 'symbols'), getPath(server, 'symbols')))
   const highRisk = changes.filter((c) => c.section.risk === 'high' || c.path === 'incubator.mirror.enabled')
 
-  if (config.isLoading && !config.data) return <div className="page"><PageTitle pre="Every number" accent="the system" post="runs on." /><Loading rows={8} /></div>
+  const navIds = useMemo(() => [...SECTIONS.map((sec) => `settings-${sec.key}`), ...(isAdmin ? ['delta-connection'] : []), 'fee-audit', 'scanner-overrides'], [isAdmin])
+  const [activeId, setActiveId] = useScrollSpy(navIds, !!form && !!server)
+  // arriving with a #hash (for example from the Exchange page): scroll there once the sections exist
+  const hash = useLocation().hash
+  const ready = !!form && !!server
+  useEffect(() => {
+    if (!ready || !hash) return
+    const el = document.getElementById(hash.slice(1))
+    if (el) { el.scrollIntoView({ block: 'start' }); if (navIds.includes(el.id)) setActiveId(el.id) }
+  }, [ready, hash, navIds, setActiveId])
+
+  if (config.isLoading && !config.data) return <div className="page"><PageHeader title="Settings" subtitle="Loading the saved settings." /><Loading rows={8} /></div>
   if (config.isError && !config.data) return <ErrorState error={config.error} onRetry={() => config.refetch()} />
   if (!form || !server) return <Loading rows={6} />
 
@@ -245,46 +280,103 @@ export function Settings() {
     )
   }
 
+  const editedKeys = new Set(changes.map((c) => c.section.key))
+  const editedTitles = SECTIONS.filter((sec) => editedKeys.has(sec.key)).map((sec) => sec.title)
+  const riskGroups = (['high', 'medium', 'low'] as Risk[]).map((risk) => ({ risk, items: SECTIONS.filter((sec) => sec.risk === risk) }))
+  const navLink = (id: string, label: string, extra?: ReactNode) => (
+    <li key={id}>
+      <a href={`#${id}`} className={`settings-nav-link ${activeId === id ? 'on' : ''}`} aria-current={activeId === id ? 'location' : undefined} onClick={() => setActiveId(id)}>
+        <span className="settings-nav-label">{label}</span>{extra}
+      </a>
+    </li>
+  )
+  const editedMark = (
+    <span className="settings-nav-edited" title="Has unsaved changes"><span aria-hidden>●</span><span className="sr-only">has unsaved changes</span></span>
+  )
+  const saveLabel = update.isPending ? 'Saving…' : highRisk.length ? 'Review and save' : 'Save settings'
+  const saveDisabled = !canTrade || !dirty || update.isPending || Object.keys(errors).length > 0
+
   return (
-    <div className="page">
-      <div className="page-head">
-        <PageTitle pre="Every number" accent="the system" post="runs on." sub="Grouped by what a change can cost. Research references and code defaults are labeled separately; a change in a red section is read back to you before it is saved." />
-        <div className="page-actions">
-          <Pill tone="muted">execution: {config.data?.execution?.mode ?? 'paper'}</Pill>
+    <div className="page settings-page">
+      <PageHeader
+        title="Settings"
+        subtitle="Every setting the system runs on, grouped by what a change can cost. A change in a red group is read back to you before it is saved."
+        meta={<Pill tone="muted">execution: {config.data?.execution?.mode ?? 'paper'}</Pill>}
+        actions={<>
           {dirty && <Pill tone="warn">{changes.length} unsaved change{changes.length === 1 ? '' : 's'}</Pill>}
           <button className="btn" onClick={() => setDraft(null)} disabled={!dirty || update.isPending}>Revert</button>
-          <button className="btn btn-cta" onClick={save} disabled={!canTrade || !dirty || update.isPending || Object.keys(errors).length > 0}>{update.isPending ? 'Saving…' : highRisk.length ? 'Review and save' : 'Save settings'}</button>
+          <button className="btn btn-cta" onClick={save} disabled={saveDisabled}>{saveLabel}</button>
+        </>}
+      />
+      {!canTrade && <Callout tone="info" title="Read-only access">Your role can look at settings but cannot change trading configuration.</Callout>}
+
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="Settings sections">
+          {riskGroups.map((g) => (
+            <div className="settings-nav-group" key={g.risk}>
+              <h2 className="settings-nav-head"><span className={`settings-nav-dot risk-${g.risk}`} aria-hidden />{RISK_LABEL[g.risk]}</h2>
+              <ul>{g.items.map((sec) => navLink(`settings-${sec.key}`, sec.title, editedKeys.has(sec.key) ? editedMark : undefined))}</ul>
+            </div>
+          ))}
+          <div className="settings-nav-group">
+            <h2 className="settings-nav-head"><span className="settings-nav-dot risk-none" aria-hidden />Connection and audit</h2>
+            <ul>
+              {isAdmin && navLink('delta-connection', 'Delta connection')}
+              {navLink('fee-audit', 'Fee audit')}
+              {navLink('scanner-overrides', 'Scanner overrides')}
+            </ul>
+          </div>
+        </nav>
+
+        <div className="settings-main">
+          <fieldset className="settings-groups" disabled={!canTrade || update.isPending} aria-label="Trading settings">
+            {SECTIONS.map((sec) => (
+              <section key={sec.key} id={`settings-${sec.key}`} className={`settings-group risk-${sec.risk}`} aria-label={sec.title}>
+                <Panel title={<span>{sec.title} <Pill tone={RISK_TONE[sec.risk]}>{RISK_LABEL[sec.risk]}</Pill></span>} right={editedKeys.has(sec.key) ? <Pill tone="warn">edited</Pill> : undefined}>
+                  <p className="muted small settings-intro">{sec.intro}</p>
+                  {sec.key === 'sizing' && (
+                    <Callout tone="info" title={`Active mode: ${String(getPath(form, 'paper.sizingMode') ?? 'risk')}`}>
+                      {(Number(getPath(form, 'paper.maxStopLossPct')) > 0 && stats.data) ? `Modeled stop-risk ceiling $${(stats.data.equity * Number(getPath(form, 'paper.maxStopLossPct')) / 100).toFixed(2)} at current equity.` : 'The stop-risk cap is unavailable or off.'} The margin budget can be reduced by caps and contract rounding.
+                    </Callout>
+                  )}
+                  <div className="form form-2 settings-fields">
+                    {sec.fields.filter((f) => !((f.path === 'paper.marginPerTrade' || f.path.startsWith('paper.marginLeverage.')) && getPath(form, 'paper.sizingMode') !== 'margin') && !(f.path === 'universe.top' && (getPath(form, 'universe.mode') ?? 'list') !== 'top')).map(field)}
+                    {sec.key === 'data' && (
+                      <div className={`field ${errors.symbols ? 'field-error' : ''}`} style={{ gridColumn: '1 / -1' }}>
+                        <span className="field-label">Symbols{(getPath(form, 'universe.mode') ?? 'list') !== 'list' && <span className="muted"> · used when the universe is a fixed list</span>}</span>
+                        <SymbolPicker options={symbolOptions} value={(getPath(form, 'symbols') as string[] | undefined) ?? []} onChange={(v) => edit('symbols', v)} />
+                        {errors.symbols && <span className="field-err">{errors.symbols}</span>}
+                        {config.data?.resolvedSymbols && <span className="muted small">scanning {config.data.resolvedSymbols.length} symbols now</span>}
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+              </section>
+            ))}
+          </fieldset>
+
+          <DeltaConnectionPanel />
+          <Disclosure id="fee-audit" title="Effective fees and scalper eligibility" hint="Read the active offer status and recent position fee breakdown"><CostAudit /></Disclosure>
+          <section id="scanner-overrides" className="settings-group" aria-label="Per-scanner overrides">
+            <Panel title="Per-scanner overrides" right={<span className="muted small">edited on each scanner's page and on the Scanners page</span>}>
+              <div className="muted small">{Object.keys(config.data?.scanners ?? {}).length} scanner override(s) stored: reading, exit mode, pairs, inputs. They layer over the groups above.</div>
+            </Panel>
+          </section>
         </div>
       </div>
 
-      <nav className="section-links" aria-label="Settings sections">{isAdmin && <a href="#delta-connection">Delta connection</a>}{SECTIONS.map(sec => <a key={sec.key} href={`#settings-${sec.key}`}>{sec.title}</a>)}<a href="#fee-audit">Fee audit</a></nav>
-      <DeltaConnectionPanel />
-      <Disclosure id="fee-audit" title="Effective fees and scalper eligibility" hint="Read the active offer status and recent position fee breakdown"><CostAudit /></Disclosure>
-
-      {!canTrade && <p className="banner small" role="note">Read-only access. Your role can inspect settings but cannot change trading configuration.</p>}
-      <fieldset className="settings-grid" disabled={!canTrade || update.isPending} aria-label="Trading settings">
-        {SECTIONS.map((sec) => (
-          <section key={sec.key} id={`settings-${sec.key}`}><Panel title={<span>{sec.title} <Pill tone={RISK_TONE[sec.risk]}>{RISK_LABEL[sec.risk]}</Pill></span>} right={changes.some((c) => c.section.key === sec.key) ? <Pill tone="warn">edited</Pill> : undefined}>
-            <p className="muted small" style={{ marginTop: 0 }}>{sec.intro}</p>
-            {sec.key === 'sizing' && <p className="small" role="status">Active: {String(getPath(form,'paper.sizingMode') ?? 'risk')} · {(Number(getPath(form,'paper.maxStopLossPct')) > 0 && stats.data) ? `modeled stop-risk ceiling $${(stats.data.equity * Number(getPath(form,'paper.maxStopLossPct')) / 100).toFixed(2)} at current equity` : 'stop-risk cap unavailable or off'}. Margin budget can be reduced by caps and contract rounding.</p>}
-            <div className="form form-2">
-              {sec.fields.filter((f) => !((f.path === 'paper.marginPerTrade' || f.path.startsWith('paper.marginLeverage.')) && getPath(form,'paper.sizingMode') !== 'margin') && !(f.path === 'universe.top' && (getPath(form, 'universe.mode') ?? 'list') !== 'top')).map(field)}
-              {sec.key === 'data' && (
-                <div className={`field ${errors.symbols ? 'field-error' : ''}`} style={{ gridColumn: '1 / -1' }}>
-                  <span className="field-label">Symbols{(getPath(form, 'universe.mode') ?? 'list') !== 'list' && <span className="muted"> · used when the universe is a fixed list</span>}</span>
-                  <SymbolPicker options={symbolOptions} value={(getPath(form, 'symbols') as string[] | undefined) ?? []} onChange={(v) => edit('symbols', v)} />
-                  {errors.symbols && <span className="field-err">{errors.symbols}</span>}
-                  {config.data?.resolvedSymbols && <span className="muted small">scanning {config.data.resolvedSymbols.length} symbols now</span>}
-                </div>
-              )}
-            </div>
-          </Panel></section>
-        ))}
-      </fieldset>
-
-      <Panel title="Per-scanner overrides" right={<span className="muted small">edited on each scanner's page and on the Scanners page</span>}>
-        <div className="muted small">{Object.keys(config.data?.scanners ?? {}).length} scanner override(s) stored: reading, exit mode, pairs, inputs. They layer over the sections above.</div>
-      </Panel>
+      {dirty && (
+        <div className="settings-savebar" role="region" aria-label="Unsaved changes">
+          <div className="settings-savebar-text">
+            <b>{changes.length} unsaved change{changes.length === 1 ? '' : 's'}</b>
+            <span className="muted small"> in {editedTitles.join(', ') || 'symbols'}{highRisk.length ? ` · ${highRisk.length} in a group that can lose money` : ''}</span>
+          </div>
+          <div className="settings-savebar-actions">
+            <button className="btn" onClick={() => setDraft(null)} disabled={update.isPending}>Revert</button>
+            <button className="btn btn-cta" onClick={save} disabled={saveDisabled}>{saveLabel}</button>
+          </div>
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirm}

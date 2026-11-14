@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import type { DeltaConnectionStatus, DeltaEnvironment } from '../api/deltaConnection'
 import { useAuth } from '../auth/AuthGate'
 import { Panel, Pill, Time } from './ui'
+import { Callout } from './kit'
 
 const queryKey = ['delta-connection']
 
@@ -20,7 +21,7 @@ export function DeltaConnectionPanel() {
   const [notice, setNotice] = useState('')
   const status = query.data
   if (!isAdmin) return null
-  if (!safeTransport) return <Panel title="Delta India connection"><p role="alert">Open this dashboard over HTTPS or through your local SSH tunnel before entering API credentials.</p></Panel>
+  if (!safeTransport) return <section id="delta-connection" aria-label="Delta India API connection"><Panel title="Delta India connection"><Callout tone="danger" title="Not a safe connection">Open this dashboard over HTTPS or through your local SSH tunnel before entering API credentials.</Callout></Panel></section>
   const remember = (result: DeltaConnectionStatus) => client.setQueryData(queryKey, result)
   async function save(event: FormEvent) {
     event.preventDefault()
@@ -48,8 +49,8 @@ export function DeltaConnectionPanel() {
   return (
     <section id="delta-connection" aria-label="Delta India API connection">
       <Panel title="Delta India connection" right={<Pill tone={status?.check?.ok ? 'ok' : status?.configured ? 'warn' : 'muted'}>{query.isPending ? 'Loading…' : query.isError ? 'Status unavailable' : status?.check?.ok ? 'Read access verified' : status?.configured ? 'Saved · verify access' : 'Not connected'}</Pill>}>
-        <p className="small">Save a production API key and its secret with <b>Read Data</b> permission. The Exchange page will observe balances, positions, orders and recent history automatically. Saving credentials does not enable trading or change the account’s execution mode.</p>
-        <div className="grid-2">
+        <Callout tone="info" title="Read-only link">Save an API key and secret with <b>Read Data</b> permission. The Exchange page then shows balances, positions, orders and recent history. Saving credentials does not turn on trading or change the execution mode.</Callout>
+        <div className="grid-2 delta-connection-grid">
           <form onSubmit={save} autoComplete="off" className="form" aria-label="Save Delta credentials">
             <label className="field"><span className="field-label">Key environment</span>
               <select className="input" value={environment} onChange={e => setEnvironment(e.target.value as DeltaEnvironment)} required disabled={!!busy}>
@@ -62,7 +63,7 @@ export function DeltaConnectionPanel() {
           </form>
           <div>
             {query.isPending && <p className="muted small">Loading connection status…</p>}
-            {query.isError && <p className="text-danger small" role="alert">{query.error.message} <button className="btn btn-sm" onClick={() => void query.refetch()}>Retry</button></p>}
+            {query.isError && <Callout tone="danger" title="Status unavailable" actions={<button className="btn btn-sm" onClick={() => void query.refetch()}>Retry</button>}>{query.error.message}</Callout>}
             <dl className="kv-list">
               <div><dt>Saved connection</dt><dd>{status?.configured ? `Delta India ${status.environment}` : 'None'}</dd></div>
               <div><dt>Saved</dt><dd>{status?.savedAt ? <Time t={status.savedAt} mode="full" /> : '—'}</dd></div>
@@ -75,11 +76,11 @@ export function DeltaConnectionPanel() {
               <button type="button" className="btn" onClick={() => void act('check')} disabled={!!busy || !status?.configured}>{busy === 'check' ? 'Checking…' : 'Check saved connection'}</button>
               <button type="button" className="btn btn-danger-outline" onClick={() => void act('remove')} disabled={!!busy || !status?.configured}>{busy === 'remove' ? 'Removing…' : 'Remove saved credentials'}</button>
             </div>
-            <p className="muted small">Administrator access only. Credentials stay in an owner-only file on the bot server, outside settings and database backups, and are never returned to this page. Use HTTPS or the local SSH tunnel. Removal here does not revoke the key at Delta.</p>
+            <p className="muted small">Administrator access only. Credentials stay in an owner-only file on the bot server, outside settings and backups, and are never sent back to this page. Removing them here does not revoke the key at Delta.</p>
           </div>
         </div>
-        {notice && <p className="small" role="status">{notice}</p>}
-        {error && <p className="text-danger small" role="alert">{error}</p>}
+        {notice && <Callout tone="ok">{notice}</Callout>}
+        {error && <Callout tone="danger" title="Connection problem">{error}</Callout>}
       </Panel>
     </section>
   )

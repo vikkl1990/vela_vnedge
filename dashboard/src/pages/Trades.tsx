@@ -3,7 +3,8 @@ import { useSearchParams } from 'react-router-dom'
 import { TradeJournal } from '../components/TradeJournal'
 import { useCloseAll, useExecution, usePositions } from '../api/queries'
 import { PositionsTable } from '../components/PositionsTable'
-import { BookBadge, ConfirmDialog, ErrorState, Loading, PageTitle, Panel } from '../components/ui'
+import { BookBadge, ConfirmDialog, ErrorState, Loading, Panel } from '../components/ui'
+import { PageHeader } from '../components/kit'
 import { useToast } from '../lib/toast'
 
 export function Trades() {
@@ -16,13 +17,19 @@ export function Trades() {
   const mirrored = mode !== 'paper' && !exec.data?.dryRun
   const toast = useToast()
   const [confirmCloseAll, setConfirmCloseAll] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
   const openCount = positions.data?.length ?? 0
 
   return (
-    <div className="page">
-      <PageTitle pre="Every trade," accent="its" post="recorded story." sub={<>Paper and shadow journals: signals, sizing, stops, targets, costs and every retained fill. <BookBadge book={shadow ? "shadow" : "account"} mode={mode} short /></>} />
+    <div className="page trades-page">
+      <PageHeader
+        title="Journals"
+        subtitle={shadow ? 'The shadow book: signals the library took on paper, with synthetic dollars. It never touches the account.' : 'Every trade with its signal, sizing, stops, targets, costs and fills. Paper and shadow books are kept apart.'}
+        meta={<BookBadge book={shadow ? 'shadow' : 'account'} mode={mode} short />}
+        actions={<button className="btn btn-sm" aria-expanded={exportOpen} onClick={() => setExportOpen((v) => !v)}>{exportOpen ? 'Hide export' : 'Export CSV'}</button>}
+      />
 
-      <TradeJournal />
+      <TradeJournal exportOpen={exportOpen} onExportClose={() => setExportOpen(false)} />
 
       {!shadow && <Panel
         title={

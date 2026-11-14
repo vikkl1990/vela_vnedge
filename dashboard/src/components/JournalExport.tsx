@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../api/client'
 import type { JournalQuery } from '../api/journal'
+import { Callout } from './kit'
 import { journalExportQuery, type JournalExportBook, type JournalExportKind, type JournalExportRange } from '../lib/journalExport'
 
 export function JournalExport({ query, total, filterError }: { query: JournalQuery; total?: number; filterError: string | null }) {
@@ -50,7 +51,7 @@ export function JournalExport({ query, total, filterError }: { query: JournalQue
     </div>
     {range === 'filtered' && filterError && <p className="journal-export-status small" role="status">Correct the date or direction filter below, or choose complete history.</p>}
     {range === 'filtered' && currentBook && !filterError && total === 0 && <p className="journal-export-status small" role="status">No records match. Change the filters or choose complete history.</p>}
-    {error && <p className="journal-export-status loss" role="alert">{error}</p>}
-    {download && <p className="journal-export-status small" role="status">Download started: {download}</p>}
+    {error && <div className="journal-export-status"><Callout tone="danger" title="Export failed">{error}</Callout></div>}
+    {download && <div className="journal-export-status"><Callout tone="ok">Download started: {download}</Callout></div>}
   </section>
 }

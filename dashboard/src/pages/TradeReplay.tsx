@@ -6,6 +6,8 @@ import type { PathPoint } from '../api/types'
 import { VelaChart } from '../chart/VelaChart'
 import { replayOverlay } from '../chart/replayOverlay'
 import { Pill, QueryState } from '../components/ui'
+import { Callout, PageHeader } from '../components/kit'
+import '../styles/pages/trades.css'
 import { fmtDateTime, fmtPrice } from '../lib/format'
 import { tfMs as tfToMs } from '../lib/timeframes'
 
@@ -113,62 +115,70 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
   const events = seen.filter((p) => p.event)
   const progress = cursor != null ? Math.max(0, Math.min(1, (cursor - startT) / Math.max(1, endT - startT))) : 0
 
+  const phaseLabel = phase === 'before' ? 'Before the entry' : phase === 'open' ? 'In the trade' : 'Closed'
+  const rTone = (r: number | null) => (r == null ? '' : r >= 0 ? 'gain' : 'loss')
+
   return (
     <div className="replay">
-      <div className="replay-head">
-        <div>
-          <h1 className="replay-title">#{lv.id} {lv.symbol} <span className="muted">{tf}</span> <span className={`side-${lv.side}`}>{lv.side}</span></h1>
-          <div className="muted small">
-            {lv.scannerId ? <Link to={`/scanners/${encodeURIComponent(lv.scannerId)}`} className="link">{lv.scannerName ?? lv.scannerId}</Link> : 'scanner'}
-            {lv.book ? ` · ${lv.book} book` : ''} · opened {fmtDateTime(lv.entryAt)}{lv.exitAt ? ` · closed ${fmtDateTime(lv.exitAt)}` : ' · still open'}
-          </div>
-        </div>
-        <span className="grow" />
-        {finalR != null && <Pill tone={finalR >= 0 ? 'ok' : 'danger'}>{lv.exitReason ?? 'closed'} {fmtR(finalR)}</Pill>}
-        <Link className="btn btn-sm" to="/trades">Trades</Link>
-      </div>
+      <PageHeader
+        title={<>#{lv.id} {lv.symbol} <span className="muted">{tf}</span> <span className={`side-${lv.side}`}>{lv.side}</span></>}
+        subtitle={<>
+          {lv.scannerId ? <Link to={`/scanners/${encodeURIComponent(lv.scannerId)}`} className="link">{lv.scannerName ?? lv.scannerId}</Link> : 'scanner'}
+          {lv.book ? ` · ${lv.book} book` : ''} · opened {fmtDateTime(lv.entryAt)}{lv.exitAt ? ` · closed ${fmtDateTime(lv.exitAt)}` : ' · still open'}
+        </>}
+        meta={finalR != null ? <Pill tone={finalR >= 0 ? 'ok' : 'danger'}>{lv.exitReason ?? 'closed'} {fmtR(finalR)}</Pill> : <Pill tone="accent">still open</Pill>}
+        actions={<>
+          <label className="field-inline replay-detail">Replay detail <select className="select select-sm" aria-label="Replay detail" value={execution ? 'execution' : 'strategy'} onChange={(e) => onResolution(e.target.value as 'strategy' | 'execution')}><option value="execution">Execution · 1m</option><option value="strategy">Strategy candle overview</option></select></label>
+          <Link className="btn btn-sm" to="/trades">← Journals</Link>
+        </>}
+      />
 
-      <p className="muted small">Trade timeframe {lv.tf ?? '15m'} · replay {tf}. Recorded path samples and candle bars cannot establish tick ordering or exact hypothetical fills.</p>
-      {lv.execution && <details className="panel"><summary>Paper execution · model {lv.execution.version}</summary>
+      <Callout tone="info">Trade timeframe {lv.tf ?? '15m'}, replay {tf}. Recorded path samples and candle bars cannot show tick order or exact hypothetical fills.</Callout>
+      {lv.execution && <details className="panel replay-exec"><summary>Paper execution · model {lv.execution.version}</summary>
         <p className="muted small">Market exits use observed depth after the configured latency. Reports below are simulated fills, not exchange confirmations.</p>
         {lv.execution.pending && <p role="status">Exit {lv.execution.pending.status} · {lv.execution.pending.reason} · {lv.execution.pending.last_error ?? 'awaiting executable depth'}. Remaining quantity and margin are still held.</p>}
         {lv.execution.desiredStop != null && <p>Requested stop {fmtPrice(lv.execution.desiredStop)}; active stop {fmtPrice(lv.sl)}.</p>}
         {(lv.executionReports ?? []).map((r,i)=><p className="mono small" key={`${r.at}:${i}`}>{fmtDateTime(r.at)} · {r.reason} · {r.qty} contracts @ {fmtPrice(r.price)} · {((r.at-r.trigger_at)/1000).toFixed(2)}s after trigger</p>)}
       </details>}
-      <label className="field-inline">Replay detail <select className="select" aria-label="Replay detail" value={execution ? 'execution' : 'strategy'} onChange={(e) => onResolution(e.target.value as 'strategy' | 'execution')}><option value="execution">Execution · 1m</option><option value="strategy">Strategy candle overview</option></select></label>
+
+      <div className="replay-bar" role="group" aria-label="Replay controls">
+        <div className="replay-controls">
+          <button className="btn btn-sm" onClick={() => void seek(startT)} disabled={!chart} title="Back to before the entry (Home)" aria-label="Rewind to before the entry">⏮</button>
+          <button className="btn btn-sm" onClick={() => void seek(entryBar - barMs)} disabled={!chart} title="To the bar before the entry">Entry</button>
+          {playing
+            ? <button className="btn btn-sm btn-primary" onClick={pause} title="Pause (space)">Pause</button>
+            : <button className="btn btn-sm btn-primary" onClick={play} disabled={!chart} title="Play (space)">Play</button>}
+          <button className="btn btn-sm" onClick={step} disabled={!chart || ended} title="One bar (→)">Step</button>
+          {exitBar != null && <button className="btn btn-sm" onClick={() => void seek(exitBar)} disabled={!chart} title="To the exit bar">Exit</button>}
+          <select className="select select-sm" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} aria-label="Speed">
+            {SPEEDS.map((s) => <option key={s.ms} value={s.ms}>{s.label}</option>)}
+          </select>
+        </div>
+        <label className="replay-scrub">
+          <span className="sr-only">Position in the replay</span>
+          <input type="range" min={startT} max={endT} step={barMs} value={scrub ?? cursor ?? startT}
+            onChange={(e) => setScrub(Number(e.target.value))}
+            onPointerUp={() => { if (scrub != null) { void seek(scrub); setScrub(null) } }}
+            onKeyUp={() => { if (scrub != null) { void seek(scrub); setScrub(null) } }}
+            disabled={!chart} aria-label="Scrub the replay" />
+          <span className="muted small mono">{cursor != null && !ended ? fmtDateTime(cursor + barMs) : ended ? 'replay finished' : '–'} · {Math.round(progress * 100)}%</span>
+        </label>
+        <span className="muted small replay-keys">Space plays or pauses · → steps · Home rewinds</span>
+      </div>
+
       <div className="replay-grid">
         <div className="replay-chart">
           <VelaChart symbol={lv.symbol} tf={tf} height="100%" scripts={scripts} onChartReady={setChart} />
         </div>
 
         <aside className="replay-side" aria-label="The trade at the cursor">
-          <div className="replay-controls" role="group" aria-label="Replay">
-            <button className="btn btn-sm" onClick={() => void seek(startT)} disabled={!chart} title="Back to before the entry (Home)">⏮</button>
-            <button className="btn btn-sm" onClick={() => void seek(entryBar - barMs)} disabled={!chart} title="To the bar before the entry">Entry</button>
-            {playing
-              ? <button className="btn btn-sm btn-primary" onClick={pause} title="Pause (space)">Pause</button>
-              : <button className="btn btn-sm btn-primary" onClick={play} disabled={!chart} title="Play (space)">Play</button>}
-            <button className="btn btn-sm" onClick={step} disabled={!chart || ended} title="One bar (→)">Step</button>
-            {exitBar != null && <button className="btn btn-sm" onClick={() => void seek(exitBar)} disabled={!chart} title="To the exit bar">Exit</button>}
-            <select className="select select-sm" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} aria-label="Speed">
-              {SPEEDS.map((s) => <option key={s.ms} value={s.ms}>{s.label}</option>)}
-            </select>
+          <div className={`replay-phase ${phase}`} role="status">{phaseLabel}</div>
+          <div className="replay-r" role="group" aria-label="R so far">
+            <div><span className="replay-r-k">R now</span><span className={`replay-r-v mono ${rTone(rNow)}`}>{phase === 'before' ? '–' : fmtR(rNow)}</span></div>
+            <div><span className="replay-r-k">Best</span><span className="replay-r-v mono gain">{phase === 'before' ? '–' : fmtR(peak)}</span></div>
+            <div><span className="replay-r-k">Worst</span><span className="replay-r-v mono loss">{phase === 'before' ? '–' : fmtR(worst)}</span></div>
           </div>
-          <label className="replay-scrub">
-            <span className="sr-only">Position in the replay</span>
-            <input type="range" min={startT} max={endT} step={barMs} value={scrub ?? cursor ?? startT}
-              onChange={(e) => setScrub(Number(e.target.value))}
-              onPointerUp={() => { if (scrub != null) { void seek(scrub); setScrub(null) } }}
-              onKeyUp={() => { if (scrub != null) { void seek(scrub); setScrub(null) } }}
-              disabled={!chart} aria-label="Scrub the replay" />
-            <span className="muted small mono">{cursor != null && !ended ? fmtDateTime(cursor + barMs) : ended ? 'replay finished' : '–'} · {Math.round(progress * 100)}%</span>
-          </label>
-
-          <div className={`replay-phase ${phase}`}>{phase === 'before' ? 'Before the entry' : phase === 'open' ? 'In the trade' : 'Closed'}</div>
           <dl className="replay-facts">
-            <dt>R now</dt><dd className={`mono ${(rNow ?? 0) >= 0 ? 'gain' : 'loss'}`}>{phase === 'before' ? '–' : fmtR(rNow)}</dd>
-            <dt>Best so far</dt><dd className="mono gain">{phase === 'before' ? '–' : fmtR(peak)}</dd>
-            <dt>Worst so far</dt><dd className="mono loss">{phase === 'before' ? '–' : fmtR(worst)}</dd>
             <dt>Stop</dt><dd className="mono">{stopNow != null && phase !== 'before' ? `${fmtPrice(stopNow)} (${fmtR(rOf(stopNow))})` : '–'}</dd>
             <dt>Entry</dt><dd className="mono">{fmtPrice(lv.entryPrice)}</dd>
             <dt>Stop at entry</dt><dd className="mono">{fmtPrice(orig)} <span className="muted">−1R{lv.levelsSource ? ` · ${lv.levelsSource === 'atr-fallback' ? 'ATR' : 'script'}` : ''}</span></dd>
@@ -187,7 +197,6 @@ function ReplayBody({ lv, path, execution, onResolution }: { execution: boolean;
             </ul>
             {path.length < 2 && <p className="muted small">No minute path was recorded for this trade, so only its levels are drawn.</p>}
           </div>
-          <p className="muted small replay-keys">Space plays or pauses · → steps one bar · Home rewinds</p>
         </aside>
       </div>
     </div>
