@@ -106,6 +106,26 @@ test('a qualified copied entry still obeys risk refusal after exchange recovery'
  assert.match(x.db.signals({})[0].action,/daily risk cap/);assert.equal(x.paper.openPositions().length,0);
 });
 
+test('a recovered qualified pilot preserves the ordinary path quantity, fees, policy and usage',async t=>{
+ const baseline=inboxFixture(),recovered=inboxFixture();
+ t.after(()=>{for(const x of [baseline,recovered]){x.engine.stop();x.db.db.close();}});
+ for(const x of [baseline,recovered]){
+  x.cfg.scanners.s.enabled=false;
+  x.cfg.incubator.mirror!.pilot={sizeScale:1/3,maxDailyEntries:0,maxOpenPositions:0};
+  x.engine.copyRecoveryRefusal=()=>null;x.paper.setMark('BTCUSD',100);
+ }
+ await baseline.submit(baseline.entry,true);
+ let exchange:string|null='exchange feed disconnected';recovered.paper.entryBlock=()=>exchange;
+ await recovered.submit(recovered.entry,true);
+ assert.equal(recovered.db.kvGet('incubator.copyPilot'),undefined,'waiting does not consume pilot usage');
+ exchange=null;await recovered.engine.recoverSignals();await recovered.engine.recoverSignals();
+ const a=baseline.paper.openPositions()[0],b=recovered.paper.openPositions()[0];
+ assert.ok(a&&b);assert.equal(a.qty,b.qty);assert.equal(a.fees,b.fees);
+ assert.equal(a.riskAmount,b.riskAmount);assert.equal(a.policy?.id,b.policy?.id);
+ assert.deepEqual(baseline.db.kvGet('incubator.copyPilot'),recovered.db.kvGet('incubator.copyPilot'));
+ assert.equal(recovered.db.get<any>('SELECT count(*) n FROM orders').n,1);
+});
+
 test('exchange recovery requires a new price observation',async t=>{
  const x=inboxFixture();t.after(()=>{x.engine.stop();x.db.db.close();});
  let exchange:string|null='exchange feed disconnected';x.paper.entryBlock=()=>exchange;await x.submit();

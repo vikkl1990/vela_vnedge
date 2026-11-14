@@ -45,7 +45,8 @@ observations. Definitive halts, stale receipts, changed source/policy, failed
 evidence and risk refusals are not retried into a trade. Exits are independent.
 
 The three new reconnect regression cases fail on the baseline and pass with the
-fix. Local validation: 1,452 server tests, 35 dashboard tests, server typecheck,
+fix. Local validation: 1,452 server tests plus the added pilot-parity regression,
+35 dashboard tests, server typecheck,
 dashboard build and lint pass. Tests cover restart durability, unchanged receipt
 timestamps, no invented limit fills, single fills, disconnects during depth
 preparation, lost eligibility, quarantined/changed-source evidence, thin turnover,
