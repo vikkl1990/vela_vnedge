@@ -41,7 +41,7 @@ export function MlLensToggle() {
   const { mlLens, toggleMlLens } = useBook()
   return (
     <button type="button" className={`ml-lens ${mlLens ? 'on' : ''}`} aria-pressed={mlLens} onClick={toggleMlLens} title="The ML lens adds a model score wherever a number has one. It never changes a trade.">
-      ML lens <span className="ml-lens-state">{mlLens ? 'on' : 'off'}</span>
+      ML<span className="ml-lens-long"> lens</span> <span className="ml-lens-state">{mlLens ? 'on' : 'off'}</span>
     </button>
   )
 }

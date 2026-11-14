@@ -132,5 +132,5 @@
 .book-card-foot { margin-top: 2px; font-weight: 650; font-size: var(--fs-sm); }
 .tone-ml { color: var(--book-ml); }
 
-@media (max-width: 1320px) { .book-seg:not(.on) .book-seg-label { display: none; } .book-seg:not(.on) .book-seg-state { display: none; } .book-seg { padding: 0 9px; } }
+@media (max-width: 1640px) { .book-seg:not(.on) .book-seg-label { display: none; } .book-seg:not(.on) .book-seg-state { display: none; } .book-seg { padding: 0 9px; } .ml-lens-long { display: none; } .ml-lens { padding: 0 9px; } }
 @media (max-width: 640px) { .book-switch { max-width: 100%; overflow-x: auto; } .book-seg:not(.on) .book-seg-label { display: inline; } .book-seg-state { display: none; } }
